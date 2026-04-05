@@ -1,0 +1,69 @@
+name: Release CLI Assets
+
+on:
+  release:
+    types:
+      - published
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to upload assets to
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  publish-cli-assets:
+    runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - run: npm run release:prepare-npm
+      - run: npm run release:stage-github-assets
+      - name: Archive staged release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUTPUT_ROOT="$PWD/dist/github-release"
+          jq -cr '.assets[]' "$OUTPUT_ROOT/manifest.json" | while read -r asset; do
+            STAGE_DIRECTORY_NAME="$(jq -r '.stageDirectoryName' <<<"$asset")"
+            ARCHIVE_FILE_NAME="$(jq -r '.archiveFileName' <<<"$asset")"
+            if [[ "$ARCHIVE_FILE_NAME" == *.zip ]]; then
+              (
+                cd "$OUTPUT_ROOT"
+                zip -rq "$ARCHIVE_FILE_NAME" "$STAGE_DIRECTORY_NAME"
+              )
+            else
+              tar -C "$OUTPUT_ROOT" -czf "$OUTPUT_ROOT/$ARCHIVE_FILE_NAME" "$STAGE_DIRECTORY_NAME"
+            fi
+          done
+      - name: Write checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUTPUT_ROOT="$PWD/dist/github-release"
+          VERSION="$(jq -r '.version' "$OUTPUT_ROOT/manifest.json")"
+          (
+            cd "$OUTPUT_ROOT"
+            shasum -a 256 ./*.tar.gz ./*.zip > "soundscript-v${VERSION}-checksums.txt"
+          )
+      - name: Upload release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUTPUT_ROOT="$PWD/dist/github-release"
+          VERSION="$(jq -r '.version' "$OUTPUT_ROOT/manifest.json")"
+          gh release upload "$RELEASE_TAG" \
+            "$OUTPUT_ROOT"/*.tar.gz \
+            "$OUTPUT_ROOT"/*.zip \
+            "$OUTPUT_ROOT/soundscript-v${VERSION}-checksums.txt" \
+            --clobber

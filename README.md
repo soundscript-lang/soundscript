@@ -1,10 +1,12 @@
 # soundscript
 
 <p align="center">
-  <img src="./logo.svg" alt="soundscript logo" width="360" />
+  <img src="./logo.png" alt="soundscript logo" width="420" />
 </p>
 
 soundscript is a sound checker and language tooling layer for TypeScript projects.
+
+Prebuilt macOS, Linux, and Windows CLI downloads are attached to GitHub releases.
 
 The intended stable v1 surface is the checker, mixed `.ts` / `.sts` adoption story, the VS Code
 extension, a very small stdlib, and a narrow macro surface. Broader macro work and Wasm remain

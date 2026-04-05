@@ -22,6 +22,11 @@ This is the operator checklist for publishing the stable v1 surface.
    - every `@soundscript/cli-*` platform package
    - `@soundscript/soundscript`
    - `soundscript`
+6. Create or publish the GitHub release for the tag.
+   - The `Release CLI Assets` workflow stages per-platform archives in `dist/github-release/`,
+     writes a checksum file, and uploads the release assets to the matching GitHub release tag.
+   - For a backfill, run `npm run release:prepare-npm`, `npm run release:stage-github-assets`, then
+     archive and upload the staged folders from `dist/github-release/`.
 
 The release-prep script smoke-tests the host platform binary with `--version`, but non-host targets
 still need spot checks after publish.

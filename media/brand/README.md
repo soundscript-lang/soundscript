@@ -5,6 +5,7 @@ Primary variants based on the current shield logo:
 - `logo-dark.*`: full lockup on the dark field.
 - `logo-light.*`: full lockup for light surfaces with transparent background.
 - `icon.*`: icon-only shield mark with transparent background.
+- `github-org-avatar.*`: square icon export on white for GitHub org/repo avatars.
 - `wordmark-dark.*`: text-only lockup for dark backgrounds.
 - `wordmark-light.*`: text-only lockup for light backgrounds.
 - `icon-vscode.*`: simplified extension icon tuned for small-size use.

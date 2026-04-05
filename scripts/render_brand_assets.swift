@@ -164,10 +164,15 @@ func drawWordmark(at point: CGPoint, scale: CGFloat, soundColor: NSColor) {
 
 func renderFullLogo(size: NSSize, background: NSColor?, soundColor: NSColor) -> NSImage {
   let scale = size.width / 600
-  let shieldOrigin = CGPoint(x: 50 * scale, y: 45 * scale)
   let wordmark = wordmarkAttributes(soundColor: soundColor, fontSize: 52 * scale)
   let wordmarkSize = wordmark.size()
-  let wordmarkPoint = CGPoint(x: 155 * scale, y: 96 * scale - wordmarkSize.height / 2)
+  let shieldContainerWidth: CGFloat = 110 * scale
+  let contentStartX = (size.width - (shieldContainerWidth + wordmarkSize.width)) / 2
+  let shieldOrigin = CGPoint(x: contentStartX + 5 * scale, y: 45 * scale)
+  let wordmarkPoint = CGPoint(
+    x: contentStartX + shieldContainerWidth,
+    y: 96 * scale - wordmarkSize.height / 2
+  )
 
   return makeImage(size: size) {
     if let background {
@@ -178,6 +183,25 @@ func renderFullLogo(size: NSSize, background: NSColor?, soundColor: NSColor) -> 
 
     drawShield(at: shieldOrigin, scale: scale, showBadge: true)
     wordmark.draw(at: wordmarkPoint)
+  }
+}
+
+func renderGitHubAvatar(size: NSSize) -> NSImage {
+  let iconInset = min(size.width, size.height) * 0.14
+  let iconSize = NSSize(width: size.width - iconInset * 2, height: size.height - iconInset * 2)
+  let iconImage = renderIcon(size: iconSize, showBadge: true)
+
+  return makeImage(size: size) {
+    NSColor.white.setFill()
+    NSBezierPath(rect: NSRect(origin: .zero, size: size)).fill()
+    iconImage.draw(
+      in: NSRect(
+        x: (size.width - iconSize.width) / 2,
+        y: (size.height - iconSize.height) / 2,
+        width: iconSize.width,
+        height: iconSize.height
+      )
+    )
   }
 }
 
@@ -214,6 +238,7 @@ let outputs: [(String, NSImage)] = [
   ("media/brand/logo-dark.png", renderFullLogo(size: NSSize(width: 1800, height: 600), background: palette.darkBackground, soundColor: palette.lightWord)),
   ("media/brand/logo-light.png", renderFullLogo(size: NSSize(width: 1800, height: 600), background: nil, soundColor: palette.darkWord)),
   ("media/brand/icon.png", renderIcon(size: NSSize(width: 512, height: 512), showBadge: true)),
+  ("media/brand/github-org-avatar.png", renderGitHubAvatar(size: NSSize(width: 1024, height: 1024))),
   ("media/brand/wordmark-dark.png", renderWordmark(soundColor: palette.lightWord)),
   ("media/brand/wordmark-light.png", renderWordmark(soundColor: palette.darkWord)),
   ("media/brand/icon-vscode.png", renderIcon(size: NSSize(width: 512, height: 512), showBadge: false)),

@@ -2,6 +2,7 @@
   "name": "soundscript-workspace",
   "private": true,
   "scripts": {
+    "release:stage-github-assets": "deno run -A scripts/release/github_release_assets.ts",
     "release:prepare-npm": "deno run -A scripts/release/prepare_npm.ts",
     "release:publish-npm": "deno run -A scripts/release/publish_npm.ts",
     "release:prepare-stdlib": "deno run -A scripts/release/prepare_npm.ts --stdlib-only"

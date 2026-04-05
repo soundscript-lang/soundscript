@@ -21,6 +21,7 @@ import {
   STABLE_RUNTIME_MODULES,
   STDLIB_SOURCE,
 } from './npm_manifest.ts';
+import { smokeTestCliBinary } from './cli_smoke.ts';
 
 const PROJECT_TRANSFORM_DIST = join(CANONICAL_DIST, 'project-transform');
 const PROJECT_TRANSFORM_SOURCE = join(ROOT, 'src');
@@ -677,77 +678,6 @@ function isHostTarget(target: CliTarget): boolean {
   return nodeCpu !== undefined && target.os.includes(Deno.build.os) && target.cpu.includes(nodeCpu);
 }
 
-async function smokeTestHostBinary(outputPath: string, version: string): Promise<void> {
-  const result = await new Deno.Command(outputPath, {
-    args: ['--version'],
-    stderr: 'piped',
-    stdout: 'piped',
-  }).output();
-  if (!result.success) {
-    const stderr = new TextDecoder().decode(result.stderr).trim();
-    throw new Error(
-      stderr.length > 0
-        ? `Host CLI smoke test failed: ${stderr}`
-        : 'Host CLI smoke test failed without stderr output.',
-    );
-  }
-
-  const stdout = new TextDecoder().decode(result.stdout).trim();
-  if (stdout !== version) {
-    throw new Error(
-      `Host CLI smoke test returned ${JSON.stringify(stdout)} instead of ${
-        JSON.stringify(version)
-      }.`,
-    );
-  }
-
-  const smokeProjectRoot = await Deno.makeTempDir({ prefix: 'soundscript-cli-smoke-' });
-  try {
-    await Deno.mkdir(join(smokeProjectRoot, 'src'), { recursive: true });
-    await writeJson(join(smokeProjectRoot, 'tsconfig.json'), {
-      compilerOptions: {
-        strict: true,
-        noEmit: true,
-        target: 'ES2022',
-        module: 'ESNext',
-        moduleResolution: 'Bundler',
-      },
-      include: ['src/**/*.ts', 'src/**/*.sts'],
-    });
-    await Deno.writeTextFile(
-      join(smokeProjectRoot, 'src', 'main.sts'),
-      "console.log('Hello from Soundscript');\n",
-    );
-
-    const checkResult = await new Deno.Command(outputPath, {
-      args: ['check', '--project', join(smokeProjectRoot, 'tsconfig.json'), '--format', 'json'],
-      cwd: smokeProjectRoot,
-      stderr: 'piped',
-      stdout: 'piped',
-    }).output();
-    const checkStdout = new TextDecoder().decode(checkResult.stdout).trim();
-    const checkStderr = new TextDecoder().decode(checkResult.stderr).trim();
-    if (!checkResult.success) {
-      throw new Error(
-        checkStderr.length > 0
-          ? `Host CLI project smoke test failed: ${checkStderr}`
-          : `Host CLI project smoke test failed with stdout: ${checkStdout}`,
-      );
-    }
-
-    const payload = JSON.parse(checkStdout) as {
-      command?: string;
-      exitCode?: number;
-      summary?: { total?: number };
-    };
-    if (payload.command !== 'check' || payload.exitCode !== 0 || payload.summary?.total !== 0) {
-      throw new Error(`Host CLI project smoke test returned unexpected output: ${checkStdout}`);
-    }
-  } finally {
-    await Deno.remove(smokeProjectRoot, { recursive: true }).catch(() => undefined);
-  }
-}
-
 export function buildCliCompileArgs(outputPath: string, target: string): string[] {
   return [
     'compile',
@@ -783,7 +713,7 @@ async function compileCliTarget(version: string, target: CliTarget): Promise<voi
     throw new Error(`Failed to compile ${target.packageName}.`);
   }
   if (isHostTarget(target)) {
-    await smokeTestHostBinary(outputPath, version);
+    await smokeTestCliBinary(outputPath, version);
   }
 
   await Deno.writeTextFile(

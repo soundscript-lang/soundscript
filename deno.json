@@ -64,6 +64,7 @@
     "fmt:check": "deno fmt --check",
     "lint": "deno lint",
     "lsp": "deno run --allow-env --allow-read src/lsp_main.ts",
+    "smoke:cli": "deno run -A scripts/release/cli_smoke.ts ./bin/soundscript",
     "test": "deno test --allow-env --allow-read --allow-write",
     "verify": "deno fmt --check && deno lint && deno task check && deno task test"
   },
