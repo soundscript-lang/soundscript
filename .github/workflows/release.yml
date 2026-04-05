@@ -1,9 +1,6 @@
-name: Release CLI Assets
+name: Backfill CLI Assets
 
 on:
-  release:
-    types:
-      - published
   workflow_dispatch:
     inputs:
       tag:

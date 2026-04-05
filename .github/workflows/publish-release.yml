@@ -1,0 +1,233 @@
+name: Publish Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected_version:
+        description: Optional version expected from src/cli.ts
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: soundscript-publish-release
+  cancel-in-progress: false
+
+jobs:
+  publish-release:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Resolve release metadata
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="$(deno eval --allow-read 'const text = await Deno.readTextFile("src/cli.ts"); const match = text.match(/export const VERSION = '\''([^'\'']+)'\''/u); if (!match) throw new Error("Could not find VERSION in src/cli.ts."); console.log(match[1]);')"
+          if [[ -n "${{ inputs.expected_version }}" && "${{ inputs.expected_version }}" != "$VERSION" ]]; then
+            echo "Expected version ${{ inputs.expected_version }}, found $VERSION." >&2
+            exit 1
+          fi
+          TAG="v$VERSION"
+          PACKAGES_JSON="$(deno eval 'import { createPublishPlan } from "./scripts/release/publish_npm.ts"; console.log(JSON.stringify(createPublishPlan().map((target) => target.packageName)));')"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "packages_json=$PACKAGES_JSON" >> "$GITHUB_OUTPUT"
+
+      - name: Check tag and release state
+        id: state
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.meta.outputs.tag }}"
+          git fetch --force --tags origin
+
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            TAG_EXISTS=true
+            TAG_COMMIT="$(git rev-list -n 1 "$TAG")"
+            HEAD_COMMIT="$(git rev-parse HEAD)"
+            if [[ "$TAG_COMMIT" != "$HEAD_COMMIT" ]]; then
+              echo "Tag $TAG already exists on $TAG_COMMIT, not HEAD $HEAD_COMMIT." >&2
+              exit 1
+            fi
+          else
+            TAG_EXISTS=false
+          fi
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            RELEASE_EXISTS=true
+          else
+            RELEASE_EXISTS=false
+          fi
+
+          echo "tag_exists=$TAG_EXISTS" >> "$GITHUB_OUTPUT"
+          echo "release_exists=$RELEASE_EXISTS" >> "$GITHUB_OUTPUT"
+
+      - name: Check npm publish state
+        id: npm_state
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.meta.outputs.version }}"
+          PACKAGES_JSON='${{ steps.meta.outputs.packages_json }}'
+          PUBLISHED_COUNT=0
+          MISSING_COUNT=0
+
+          while IFS= read -r PACKAGE_NAME; do
+            [[ -z "$PACKAGE_NAME" ]] && continue
+            if npm view "${PACKAGE_NAME}@${VERSION}" version >/dev/null 2>&1; then
+              echo "already published: ${PACKAGE_NAME}@${VERSION}"
+              PUBLISHED_COUNT=$((PUBLISHED_COUNT + 1))
+            else
+              echo "not yet published: ${PACKAGE_NAME}@${VERSION}"
+              MISSING_COUNT=$((MISSING_COUNT + 1))
+            fi
+          done < <(jq -r '.[]' <<< "$PACKAGES_JSON")
+
+          if [[ "$PUBLISHED_COUNT" -gt 0 && "$MISSING_COUNT" -gt 0 ]]; then
+            echo "Mixed npm publish state detected for version $VERSION. Refusing to continue." >&2
+            exit 1
+          fi
+
+          if [[ "$MISSING_COUNT" -eq 0 ]]; then
+            echo "needs_publish=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "needs_publish=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run release checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          deno task check
+          deno task build
+          deno task smoke:cli
+          deno test --allow-env --allow-read --allow-run --allow-write \
+            scripts/release/prepare_npm_test.ts \
+            scripts/release/github_release_assets_test.ts
+
+      - name: Prepare npm packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run release:prepare-npm
+
+      - name: Verify npm token is configured
+        if: ${{ steps.npm_state.outputs.needs_publish == 'true' }}
+        shell: bash
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${NPM_TOKEN}" ]]; then
+            echo "NPM_TOKEN is required to publish a new release." >&2
+            exit 1
+          fi
+
+      - name: Publish npm packages
+        if: ${{ steps.npm_state.outputs.needs_publish == 'true' }}
+        shell: bash
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          cat <<EOF > "$HOME/.npmrc"
+          //registry.npmjs.org/:_authToken=${NPM_TOKEN}
+          EOF
+          npm whoami
+          npm run release:publish-npm
+
+      - name: Stage GitHub release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run release:stage-github-assets
+
+      - name: Archive staged release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUTPUT_ROOT="$PWD/dist/github-release"
+          jq -cr '.assets[]' "$OUTPUT_ROOT/manifest.json" | while read -r asset; do
+            STAGE_DIRECTORY_NAME="$(jq -r '.stageDirectoryName' <<<"$asset")"
+            ARCHIVE_FILE_NAME="$(jq -r '.archiveFileName' <<<"$asset")"
+            if [[ "$ARCHIVE_FILE_NAME" == *.zip ]]; then
+              (
+                cd "$OUTPUT_ROOT"
+                zip -rq "$ARCHIVE_FILE_NAME" "$STAGE_DIRECTORY_NAME"
+              )
+            else
+              tar -C "$OUTPUT_ROOT" -czf "$OUTPUT_ROOT/$ARCHIVE_FILE_NAME" "$STAGE_DIRECTORY_NAME"
+            fi
+          done
+
+      - name: Write checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUTPUT_ROOT="$PWD/dist/github-release"
+          VERSION="${{ steps.meta.outputs.version }}"
+          (
+            cd "$OUTPUT_ROOT"
+            shasum -a 256 ./*.tar.gz ./*.zip > "soundscript-v${VERSION}-checksums.txt"
+          )
+
+      - name: Create and push git tag
+        if: ${{ steps.state.outputs.tag_exists != 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.meta.outputs.tag }}"
+          VERSION="${{ steps.meta.outputs.version }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "soundscript v${VERSION}"
+          git push origin "$TAG"
+
+      - name: Create or update GitHub release
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.meta.outputs.tag }}"
+          VERSION="${{ steps.meta.outputs.version }}"
+          OUTPUT_ROOT="$PWD/dist/github-release"
+          NOTES_FILE="$RUNNER_TEMP/release-notes.md"
+          cat <<EOF > "$NOTES_FILE"
+          soundscript v${VERSION}
+
+          Docs: https://soundscript.dev/docs
+
+          This release includes the npm package publish plus prebuilt CLI archives for macOS, Linux, and Windows.
+          EOF
+
+          if [[ "${{ steps.state.outputs.release_exists }}" == "true" ]]; then
+            gh release upload "$TAG" \
+              "$OUTPUT_ROOT"/*.tar.gz \
+              "$OUTPUT_ROOT"/*.zip \
+              "$OUTPUT_ROOT/soundscript-v${VERSION}-checksums.txt" \
+              --clobber
+          else
+            gh release create "$TAG" \
+              "$OUTPUT_ROOT"/*.tar.gz \
+              "$OUTPUT_ROOT"/*.zip \
+              "$OUTPUT_ROOT/soundscript-v${VERSION}-checksums.txt" \
+              --title "soundscript v${VERSION}" \
+              --notes-file "$NOTES_FILE"
+          fi

@@ -135,6 +135,24 @@ Exit codes are:
 - `1` for project diagnostics or unsupported-code findings
 - `2` for CLI usage, project setup/configuration failures, or unexpected internal tool errors
 
+## Release automation
+
+The canonical release version comes from [src/cli.ts](src/cli.ts).
+
+For a normal public release, bump `VERSION` there, push `main`, then run the
+`Publish Release` GitHub Actions workflow. It will:
+
+- run the release checks
+- prepare and publish the npm package set
+- create and push the `v<version>` tag
+- create the GitHub release
+- attach the platform CLI archives plus checksums
+
+The workflow requires the `NPM_TOKEN` secret in the `soundscript` repo.
+
+If you need to reattach CLI archives to an existing release, use the separate
+`Backfill CLI Assets` workflow.
+
 ## What `.sts` means
 
 `.sts` files are checked in soundscript.
