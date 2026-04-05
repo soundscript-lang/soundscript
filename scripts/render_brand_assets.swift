@@ -202,13 +202,11 @@ func renderFullLogo(size: NSSize, background: NSColor?, soundColor: NSColor) -> 
 }
 
 func renderGitHubAvatar(size: NSSize) -> NSImage {
-  let iconInset = min(size.width, size.height) * 0.012
+  let iconInset = min(size.width, size.height) * 0.005
   let iconSize = NSSize(width: size.width - iconInset * 2, height: size.height - iconInset * 2)
-  let iconImage = renderIcon(size: iconSize, showBadge: true, scaleMultiplier: 1.04)
+  let iconImage = renderIcon(size: iconSize, showBadge: true, scaleMultiplier: 1.065)
 
   return makeImage(size: size) {
-    NSColor.white.setFill()
-    NSBezierPath(rect: NSRect(origin: .zero, size: size)).fill()
     iconImage.draw(
       in: NSRect(
         x: (size.width - iconSize.width) / 2,
