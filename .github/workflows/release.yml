@@ -58,6 +58,8 @@ jobs:
           )
       - name: Upload release assets
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           OUTPUT_ROOT="$PWD/dist/github-release"
