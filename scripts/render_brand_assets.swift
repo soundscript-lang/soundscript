@@ -163,15 +163,30 @@ func drawWordmark(at point: CGPoint, scale: CGFloat, soundColor: NSColor) {
 }
 
 func renderFullLogo(size: NSSize, background: NSColor?, soundColor: NSColor) -> NSImage {
-  let scale = size.width / 600
+  let horizontalPadding = size.width * 0.055
+  let verticalPadding = size.height * 0.12
+  let baseWordmark = wordmarkAttributes(soundColor: soundColor, fontSize: 52)
+  let baseWordmarkSize = baseWordmark.size()
+  let shieldBounds = NSRect(x: 5, y: 5, width: 91, height: 95)
+  let gap: CGFloat = 14
+  let availableWidth = size.width - horizontalPadding * 2
+  let availableHeight = size.height - verticalPadding * 2
+  let baseWidth = shieldBounds.width + gap + baseWordmarkSize.width
+  let baseHeight = max(shieldBounds.height, baseWordmarkSize.height)
+  let scale = min(availableWidth / baseWidth, availableHeight / baseHeight)
   let wordmark = wordmarkAttributes(soundColor: soundColor, fontSize: 52 * scale)
   let wordmarkSize = wordmark.size()
-  let shieldContainerWidth: CGFloat = 110 * scale
-  let contentStartX = (size.width - (shieldContainerWidth + wordmarkSize.width)) / 2
-  let shieldOrigin = CGPoint(x: contentStartX + 5 * scale, y: 45 * scale)
+  let totalWidth = shieldBounds.width * scale + gap * scale + wordmarkSize.width
+  let totalHeight = max(shieldBounds.height * scale, wordmarkSize.height)
+  let contentStartX = (size.width - totalWidth) / 2
+  let contentStartY = (size.height - totalHeight) / 2
+  let shieldOrigin = CGPoint(
+    x: contentStartX - shieldBounds.minX * scale,
+    y: contentStartY + (totalHeight - shieldBounds.height * scale) / 2 - shieldBounds.minY * scale
+  )
   let wordmarkPoint = CGPoint(
-    x: contentStartX + shieldContainerWidth,
-    y: 96 * scale - wordmarkSize.height / 2
+    x: contentStartX + shieldBounds.width * scale + gap * scale,
+    y: contentStartY + (totalHeight - wordmarkSize.height) / 2
   )
 
   return makeImage(size: size) {
@@ -187,9 +202,9 @@ func renderFullLogo(size: NSSize, background: NSColor?, soundColor: NSColor) -> 
 }
 
 func renderGitHubAvatar(size: NSSize) -> NSImage {
-  let iconInset = min(size.width, size.height) * 0.14
+  let iconInset = min(size.width, size.height) * 0.03
   let iconSize = NSSize(width: size.width - iconInset * 2, height: size.height - iconInset * 2)
-  let iconImage = renderIcon(size: iconSize, showBadge: true)
+  let iconImage = renderIcon(size: iconSize, showBadge: true, scaleMultiplier: 1.0)
 
   return makeImage(size: size) {
     NSColor.white.setFill()
@@ -205,9 +220,10 @@ func renderGitHubAvatar(size: NSSize) -> NSImage {
   }
 }
 
-func renderIcon(size: NSSize, showBadge: Bool) -> NSImage {
+func renderIcon(size: NSSize, showBadge: Bool, scaleMultiplier: CGFloat? = nil) -> NSImage {
   let baseSide: CGFloat = showBadge ? 110 : 112
-  let scale = min(size.width, size.height) / baseSide * (showBadge ? 0.9 : 0.86)
+  let effectiveScaleMultiplier = scaleMultiplier ?? (showBadge ? 0.9 : 0.86)
+  let scale = min(size.width, size.height) / baseSide * effectiveScaleMultiplier
   let contentWidth: CGFloat = showBadge ? 101 : 100
   let contentHeight: CGFloat = 100
   let origin = CGPoint(
@@ -235,14 +251,14 @@ func renderWordmark(soundColor: NSColor) -> NSImage {
 let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
 
 let outputs: [(String, NSImage)] = [
-  ("media/brand/logo-dark.png", renderFullLogo(size: NSSize(width: 1800, height: 600), background: palette.darkBackground, soundColor: palette.lightWord)),
-  ("media/brand/logo-light.png", renderFullLogo(size: NSSize(width: 1800, height: 600), background: nil, soundColor: palette.darkWord)),
+  ("media/brand/logo-dark.png", renderFullLogo(size: NSSize(width: 1800, height: 520), background: palette.darkBackground, soundColor: palette.lightWord)),
+  ("media/brand/logo-light.png", renderFullLogo(size: NSSize(width: 1800, height: 520), background: nil, soundColor: palette.darkWord)),
   ("media/brand/icon.png", renderIcon(size: NSSize(width: 512, height: 512), showBadge: true)),
   ("media/brand/github-org-avatar.png", renderGitHubAvatar(size: NSSize(width: 1024, height: 1024))),
   ("media/brand/wordmark-dark.png", renderWordmark(soundColor: palette.lightWord)),
   ("media/brand/wordmark-light.png", renderWordmark(soundColor: palette.darkWord)),
   ("media/brand/icon-vscode.png", renderIcon(size: NSSize(width: 512, height: 512), showBadge: false)),
-  ("logo.png", renderFullLogo(size: NSSize(width: 1800, height: 600), background: palette.darkBackground, soundColor: palette.lightWord)),
+  ("logo.png", renderFullLogo(size: NSSize(width: 1800, height: 520), background: palette.darkBackground, soundColor: palette.lightWord)),
   ("icon.png", renderIcon(size: NSSize(width: 512, height: 512), showBadge: true)),
 ]
 
