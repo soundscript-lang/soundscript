@@ -1,0 +1,10 @@
+.DS_Store
+.deno/
+bin/
+coverage/
+dist/
+node_modules/
+.worktrees/
+soundscript-out/
+soundscript-expanded/
+*.vsix

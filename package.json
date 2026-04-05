@@ -1,0 +1,9 @@
+{
+  "name": "soundscript-workspace",
+  "private": true,
+  "scripts": {
+    "release:prepare-npm": "deno run -A scripts/release/prepare_npm.ts",
+    "release:publish-npm": "deno run -A scripts/release/publish_npm.ts",
+    "release:prepare-stdlib": "deno run -A scripts/release/prepare_npm.ts --stdlib-only"
+  }
+}

@@ -1,0 +1,1 @@
+export function main() { return Number.isSafeInteger(1); }

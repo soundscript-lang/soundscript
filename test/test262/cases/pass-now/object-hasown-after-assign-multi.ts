@@ -1,0 +1,5 @@
+export function main(): boolean {
+  const target = { left: 1 };
+  Object.assign(target, { middle: 2 }, { right: 3 });
+  return Object.hasOwn(target, 'right');
+}

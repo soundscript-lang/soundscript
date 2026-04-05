@@ -1,0 +1,3 @@
+export function main(text: string): boolean {
+  return text.startsWith('a', 0);
+}

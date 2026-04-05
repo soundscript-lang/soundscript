@@ -1,0 +1,5 @@
+import { Twice } from './user_macro_module.macro';
+
+export const sourceValue = 21;
+export const doubled = Twice(sourceValue);
+export const doubledAgain = Twice(doubled);

@@ -1,0 +1,17 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "compile soundscript extension",
+      "type": "shell",
+      "command": "npm",
+      "args": [
+        "--prefix",
+        "editors/vscode",
+        "run",
+        "compile"
+      ],
+      "problemMatcher": "$tsc"
+    }
+  ]
+}

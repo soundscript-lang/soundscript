@@ -1,0 +1,2173 @@
+import ts from 'typescript';
+
+import { createAnnotationLookup } from '../annotation_syntax.ts';
+import { dirname, join } from '../platform/path.ts';
+import {
+  SOUND_DIAGNOSTIC_CODES,
+} from '../checker/engine/diagnostic_codes.ts';
+import { describeUnsupportedFeature } from '../checker/unsupported_feature_messages.ts';
+import * as publicMacroApi from '../macros.ts';
+import { getSoundScriptPackageExportInfoForResolvedModule } from '../soundscript_packages.ts';
+
+import type { MacroDefinition } from './macro_api.ts';
+import { getLoadedMacroDefinitionMetadata } from './macro_api_internal.ts';
+import {
+  MACRO_API_MODULE_SPECIFIER,
+  withMacroApiModuleResolution,
+} from './macro_api_module_support.ts';
+import {
+  collectNamedMacroDefinitions,
+  collectNamedMacroExports,
+  type LoadedNamedMacroExports,
+} from './macro_loader.ts';
+import { createMacroVmModuleEvaluator } from './macro_vm.ts';
+import {
+  type ImportedMacroSiteKind,
+  macroSiteKindForFactoryForm,
+  scanMacroFactoryExports,
+  type ScannedMacroFactoryExport,
+  sourceTextLooksLikeMacroModule,
+  usesLegacyDefineMacroAuthoring,
+} from './macro_factory_support.ts';
+import { collectImportedNamedBindings } from './macro_site_kind_support.ts';
+import { expandPreparedProgramWithFileRegistries } from './macro_expander.ts';
+import {
+  classifyImportedBindingUsage,
+  type ImportedBindingUsage,
+  macroInvocationReferenceSpans,
+  stripCompileTimeOnlyImportedBindings,
+} from './import_binding_usage.ts';
+import {
+  type CachedMacroModuleArtifactEntry,
+  createPreparedCompilerHostReuseState,
+  createPreparedProgram,
+  isProjectedSoundscriptDeclarationFile,
+  isSoundscriptMacroSourceFile,
+  isSoundscriptSourceFile,
+  type PreparedProgram,
+  toProjectedDeclarationSourceFileName,
+  toSourceFileName,
+} from './project_frontend.ts';
+import { MacroError } from './macro_errors.ts';
+
+type RewriteMacroExpander = LoadedNamedMacroExports['rewrite'] extends ReadonlyMap<string, infer T>
+  ? T
+  : never;
+type AdvancedMacroExpander = LoadedNamedMacroExports['advanced'] extends
+  ReadonlyMap<string, infer T> ? T
+  : never;
+
+interface PerFileMacroBindings {
+  readonly advancedRegistry: ReadonlyMap<string, AdvancedMacroExpander>;
+  readonly definitions: ReadonlyMap<string, MacroDefinition>;
+  readonly importedBindingUsage: ReadonlyMap<string, ImportedBindingUsage>;
+  readonly registry: ReadonlyMap<string, RewriteMacroExpander>;
+  readonly siteKindsBySpecifier: ReadonlyMap<string, ReadonlyMap<string, ImportedMacroSiteKind>>;
+}
+
+interface MutableEvaluatedModule {
+  dependencySourceTexts?: ReadonlyMap<string, string>;
+  directDependencies: Set<string>;
+  exports: Record<string, unknown>;
+  initialized: boolean;
+  sourceText: string;
+}
+
+interface ResolvedMacroBindingAuthority {
+  readonly exportName: string;
+  readonly resolvedFileName: string;
+}
+
+const PRESERVED_IMPORTED_MACRO_BINDINGS = new Set(['Do']);
+const UNSUPPORTED_AMBIENT_MACRO_GLOBALS = new Set([
+  'Bun',
+  'Deno',
+  'Date',
+  'Function',
+  'console',
+  'clearInterval',
+  'clearTimeout',
+  'eval',
+  'fetch',
+  'performance',
+  'process',
+  'queueMicrotask',
+  'setInterval',
+  'setTimeout',
+]);
+const UNSUPPORTED_AMBIENT_MACRO_MEMBER_GLOBALS = new Map<string, ReadonlySet<string>>([
+  ['Math', new Set(['random'])],
+  ['crypto', new Set(['getRandomValues', 'randomUUID'])],
+]);
+const ARRAY_TOP_LEVEL_MUTATION_METHODS = new Set([
+  'copyWithin',
+  'fill',
+  'pop',
+  'push',
+  'reverse',
+  'shift',
+  'sort',
+  'splice',
+  'unshift',
+]);
+const TYPED_ARRAY_TOP_LEVEL_MUTATION_METHODS = new Set([
+  'copyWithin',
+  'fill',
+  'reverse',
+  'set',
+  'sort',
+]);
+const MAP_TOP_LEVEL_MUTATION_METHODS = new Set([
+  'clear',
+  'delete',
+  'set',
+]);
+const SET_TOP_LEVEL_MUTATION_METHODS = new Set([
+  'add',
+  'clear',
+  'delete',
+]);
+const TYPED_ARRAY_CONSTRUCTOR_NAMES = new Set([
+  'BigInt64Array',
+  'BigUint64Array',
+  'Float16Array',
+  'Float32Array',
+  'Float64Array',
+  'Int8Array',
+  'Int16Array',
+  'Int32Array',
+  'Uint8Array',
+  'Uint8ClampedArray',
+  'Uint16Array',
+  'Uint32Array',
+]);
+const MACRO_GRAPH_ERROR_CODES = {
+  forbiddenGlobal: 'SOUNDSCRIPT_MACRO_FORBIDDEN_GLOBAL',
+  forbiddenInterop: 'SOUNDSCRIPT_MACRO_INTEROP_GRAPH',
+  forbiddenInvocation: 'SOUNDSCRIPT_MACRO_FORBIDDEN_INVOCATION',
+  forbiddenTopLevelEffect: 'SOUNDSCRIPT_MACRO_FORBIDDEN_TOP_LEVEL_EFFECT',
+  nonSoundscriptDependency: 'SOUNDSCRIPT_MACRO_NON_SOUNDSCRIPT_DEPENDENCY',
+  unsupportedSourceKind: 'SOUNDSCRIPT_MACRO_UNSUPPORTED_SOURCE_KIND',
+} as const;
+
+function unsupportedAmbientMacroGlobalError(fileName: string, name: string): Error {
+  return new Error(
+    `Macro module "${fileName}" uses unsupported ambient host global "${name}". Portable macro modules must use ctx.host instead of runtime globals.`,
+  );
+}
+
+function getLineAndColumn(text: string, position: number): { column: number; line: number } {
+  let line = 1;
+  let column = 1;
+  for (let index = 0; index < position; index += 1) {
+    if (text[index] === '\n') {
+      line += 1;
+      column = 1;
+    } else {
+      column += 1;
+    }
+  }
+  return { column, line };
+}
+
+function createMacroModuleError(
+  fileName: string,
+  sourceText: string,
+  message: string,
+  code: string,
+  start = 0,
+  end = start,
+): MacroError {
+  const startPosition = getLineAndColumn(sourceText, start);
+  const endPosition = getLineAndColumn(sourceText, end);
+  return new MacroError(message, {
+    code,
+    column: startPosition.column,
+    endColumn: endPosition.column,
+    endLine: endPosition.line,
+    filePath: fileName,
+    line: startPosition.line,
+    macroName: '(macro module)',
+  });
+}
+
+export interface MacroModuleCacheStats {
+  evaluatedModules: number;
+  moduleCacheHits: number;
+  moduleCacheInvalidations: number;
+  moduleCacheMisses: number;
+}
+
+export interface ProjectMacroEnvironment {
+  cacheStats(): MacroModuleCacheStats;
+  definitionsForFile(sourceFile: ts.SourceFile): ReadonlyMap<string, MacroDefinition>;
+  dispose(): void;
+  registriesForFile(sourceFile: ts.SourceFile): {
+    advancedRegistry: ReadonlyMap<string, AdvancedMacroExpander>;
+    registry: ReadonlyMap<string, RewriteMacroExpander>;
+  };
+  siteKindsBySpecifierForFile(
+    sourceFile: ts.SourceFile,
+  ): ReadonlyMap<string, ReadonlyMap<string, ImportedMacroSiteKind>>;
+  expandPreparedProgram(
+    preserveRemovedImportStatements?: boolean,
+    preserveMissingExpanders?: boolean,
+    annotateExpansions?: boolean,
+  ): ReadonlyMap<string, ts.SourceFile>;
+}
+
+type MacroMutableContainerKind =
+  | 'array'
+  | 'map'
+  | 'set'
+  | 'typedArray';
+
+function isLoadableMacroModuleFile(fileName: string): boolean {
+  return isSoundscriptMacroSourceFile(fileName);
+}
+
+function unwrapMacroTransparentExpression(expression: ts.Expression): ts.Expression {
+  let current = expression;
+
+  while (true) {
+    if (
+      ts.isParenthesizedExpression(current) ||
+      ts.isSatisfiesExpression(current) ||
+      ts.isNonNullExpression(current)
+    ) {
+      current = current.expression;
+      continue;
+    }
+
+    if (ts.isAsExpression(current) || ts.isTypeAssertionExpression(current)) {
+      current = current.expression;
+      continue;
+    }
+
+    return current;
+  }
+}
+
+function getMacroTopLevelCallMemberName(expression: ts.LeftHandSideExpression): string | undefined {
+  const unwrapped = unwrapMacroTransparentExpression(expression);
+
+  if (ts.isPropertyAccessExpression(unwrapped)) {
+    return unwrapped.name.text;
+  }
+
+  if (!ts.isElementAccessExpression(unwrapped)) {
+    return undefined;
+  }
+
+  const argumentExpression = unwrapped.argumentExpression
+    ? unwrapMacroTransparentExpression(unwrapped.argumentExpression)
+    : undefined;
+  if (
+    argumentExpression &&
+    (
+      ts.isStringLiteral(argumentExpression) ||
+      ts.isNoSubstitutionTemplateLiteral(argumentExpression)
+    )
+  ) {
+    return argumentExpression.text;
+  }
+
+  return undefined;
+}
+
+function macroTopLevelCallMethodMutatesContainer(
+  containerKind: MacroMutableContainerKind,
+  memberName: string | undefined,
+): boolean {
+  if (!memberName) {
+    return false;
+  }
+
+  switch (containerKind) {
+    case 'array':
+      return ARRAY_TOP_LEVEL_MUTATION_METHODS.has(memberName);
+    case 'map':
+      return MAP_TOP_LEVEL_MUTATION_METHODS.has(memberName);
+    case 'set':
+      return SET_TOP_LEVEL_MUTATION_METHODS.has(memberName);
+    case 'typedArray':
+      return TYPED_ARRAY_TOP_LEVEL_MUTATION_METHODS.has(memberName);
+  }
+}
+
+function inferMacroMutableContainerKindFromNewTarget(
+  expression: ts.Expression,
+): MacroMutableContainerKind | undefined {
+  const target = unwrapMacroTransparentExpression(expression);
+
+  if (!ts.isIdentifier(target)) {
+    return undefined;
+  }
+
+  if (target.text === 'Array') {
+    return 'array';
+  }
+
+  if (target.text === 'Map' || target.text === 'WeakMap') {
+    return 'map';
+  }
+
+  if (target.text === 'Set' || target.text === 'WeakSet') {
+    return 'set';
+  }
+
+  if (TYPED_ARRAY_CONSTRUCTOR_NAMES.has(target.text)) {
+    return 'typedArray';
+  }
+
+  return undefined;
+}
+
+function inferMacroMutableContainerKind(
+  expression: ts.Expression,
+  topLevelBindings: ReadonlyMap<string, ts.Expression>,
+  visitedBindings = new Set<string>(),
+): MacroMutableContainerKind | undefined {
+  const unwrapped = unwrapMacroTransparentExpression(expression);
+
+  if (ts.isArrayLiteralExpression(unwrapped)) {
+    return 'array';
+  }
+
+  if (ts.isNewExpression(unwrapped)) {
+    return inferMacroMutableContainerKindFromNewTarget(unwrapped.expression);
+  }
+
+  if (!ts.isIdentifier(unwrapped)) {
+    return undefined;
+  }
+
+  if (visitedBindings.has(unwrapped.text)) {
+    return undefined;
+  }
+
+  const initializer = topLevelBindings.get(unwrapped.text);
+  if (!initializer) {
+    return undefined;
+  }
+
+  visitedBindings.add(unwrapped.text);
+  return inferMacroMutableContainerKind(initializer, topLevelBindings, visitedBindings);
+}
+
+function createModuleResolutionHost(preparedProgram: PreparedProgram): ts.ModuleResolutionHost {
+  const baseHost = preparedProgram.preparedHost.host;
+  return {
+    directoryExists: baseHost.directoryExists?.bind(baseHost),
+    fileExists(fileName: string): boolean {
+      const sourceFileName = toSourceFileName(fileName);
+      return preparedProgram.preparedHost.getPreparedSourceFile(sourceFileName) !== undefined ||
+        baseHost.fileExists(sourceFileName);
+    },
+    getCurrentDirectory: baseHost.getCurrentDirectory?.bind(baseHost) ??
+      (() => ts.sys.getCurrentDirectory()),
+    getDirectories: baseHost.getDirectories?.bind(baseHost),
+    readFile(fileName: string): string | undefined {
+      const sourceFileName = toSourceFileName(fileName);
+      return preparedProgram.preparedHost.getPreparedSourceFile(sourceFileName)?.originalText ??
+        baseHost.readFile(sourceFileName);
+    },
+    realpath: baseHost.realpath?.bind(baseHost),
+    useCaseSensitiveFileNames: () => ts.sys.useCaseSensitiveFileNames,
+  };
+}
+
+function stripImportedMacroBindings(
+  sourceFile: ts.SourceFile,
+  strippedImportNames: ReadonlySet<string>,
+  preserveRemovedImportStatements = false,
+): ts.SourceFile {
+  if (strippedImportNames.size === 0) {
+    return sourceFile;
+  }
+
+  const statements: ts.Statement[] = [];
+  for (const statement of sourceFile.statements) {
+    if (!ts.isImportDeclaration(statement) || !statement.importClause) {
+      statements.push(statement);
+      continue;
+    }
+
+    const importClause = statement.importClause;
+    const keptDefaultImport = importClause.name && !strippedImportNames.has(importClause.name.text)
+      ? importClause.name
+      : undefined;
+    const namedBindings = importClause.namedBindings;
+    let keptNamedBindings = namedBindings;
+
+    if (namedBindings && ts.isNamespaceImport(namedBindings)) {
+      keptNamedBindings = strippedImportNames.has(namedBindings.name.text) ? undefined : namedBindings;
+    }
+
+    if (namedBindings && ts.isNamedImports(namedBindings)) {
+      const remainingElements = namedBindings.elements.filter((element) =>
+        !strippedImportNames.has(element.name.text)
+      );
+      keptNamedBindings = remainingElements.length > 0
+        ? ts.factory.updateNamedImports(namedBindings, remainingElements)
+        : undefined;
+    }
+
+    if (keptDefaultImport === importClause.name && keptNamedBindings === namedBindings) {
+      statements.push(statement);
+      continue;
+    }
+
+    if (!keptDefaultImport && !keptNamedBindings) {
+      if (preserveRemovedImportStatements) {
+        statements.push(ts.factory.createEmptyStatement());
+      }
+      continue;
+    }
+
+    const updatedImportClause = ts.factory.updateImportClause(
+      importClause,
+      importClause.isTypeOnly,
+      keptDefaultImport,
+      keptNamedBindings,
+    );
+    statements.push(
+      ts.factory.updateImportDeclaration(
+        statement,
+        statement.modifiers,
+        updatedImportClause,
+        statement.moduleSpecifier,
+        statement.attributes,
+      ),
+    );
+  }
+
+  return ts.factory.updateSourceFile(sourceFile, statements);
+}
+
+function createSingleFileJavaScriptProgram(
+  fileName: string,
+  text: string,
+): { checker: ts.TypeChecker; sourceFile: ts.SourceFile } {
+  const sourceFile = ts.createSourceFile(
+    fileName,
+    text,
+    ts.ScriptTarget.ES2022,
+    true,
+    ts.ScriptKind.JS,
+  );
+  const host = ts.createCompilerHost({
+    allowJs: true,
+    checkJs: true,
+    module: ts.ModuleKind.CommonJS,
+    noLib: true,
+    noResolve: true,
+    target: ts.ScriptTarget.ES2022,
+  });
+  host.fileExists = (candidate) => candidate === fileName;
+  host.readFile = (candidate) => candidate === fileName ? text : undefined;
+  host.getSourceFile = (candidate, languageVersion) =>
+    candidate === fileName
+      ? ts.createSourceFile(candidate, text, languageVersion, true, ts.ScriptKind.JS)
+      : undefined;
+  const program = ts.createProgram(
+    [fileName],
+    {
+      allowJs: true,
+      checkJs: true,
+      module: ts.ModuleKind.CommonJS,
+      noLib: true,
+      noResolve: true,
+      target: ts.ScriptTarget.ES2022,
+    },
+    host,
+  );
+  return {
+    checker: program.getTypeChecker(),
+    sourceFile: program.getSourceFile(fileName) ?? sourceFile,
+  };
+}
+
+function isIdentifierReference(node: ts.Identifier): boolean {
+  const parent = node.parent;
+  if (!parent) {
+    return false;
+  }
+
+  if (
+    (ts.isPropertyAccessExpression(parent) && parent.name === node) ||
+    (ts.isPropertyAssignment(parent) && parent.name === node) ||
+    (ts.isMethodDeclaration(parent) && parent.name === node) ||
+    (ts.isMethodSignature(parent) && parent.name === node) ||
+    (ts.isPropertyDeclaration(parent) && parent.name === node) ||
+    (ts.isPropertySignature(parent) && parent.name === node) ||
+    (ts.isGetAccessorDeclaration(parent) && parent.name === node) ||
+    (ts.isSetAccessorDeclaration(parent) && parent.name === node) ||
+    (ts.isBindingElement(parent) && (parent.name === node || parent.propertyName === node)) ||
+    (ts.isVariableDeclaration(parent) && parent.name === node) ||
+    (ts.isParameter(parent) && parent.name === node) ||
+    (ts.isFunctionDeclaration(parent) && parent.name === node) ||
+    (ts.isFunctionExpression(parent) && parent.name === node) ||
+    (ts.isArrowFunction(parent) && parent.name === node) ||
+    (ts.isClassDeclaration(parent) && parent.name === node) ||
+    (ts.isClassExpression(parent) && parent.name === node) ||
+    (ts.isLabeledStatement(parent) && parent.label === node) ||
+    (ts.isBreakStatement(parent) && parent.label === node) ||
+    (ts.isContinueStatement(parent) && parent.label === node) ||
+    (ts.isImportClause(parent) && parent.name === node) ||
+    (ts.isImportSpecifier(parent) && (parent.name === node || parent.propertyName === node)) ||
+    (ts.isNamespaceImport(parent) && parent.name === node) ||
+    (ts.isImportEqualsDeclaration(parent) && parent.name === node) ||
+    (ts.isExportSpecifier(parent) && (parent.name === node || parent.propertyName === node)) ||
+    (ts.isTypeParameterDeclaration(parent) && parent.name === node)
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
+function getPropertyAccessRootIdentifier(
+  expression: ts.Expression,
+): ts.Identifier | null {
+  if (ts.isIdentifier(expression)) {
+    return expression;
+  }
+  if (ts.isPropertyAccessExpression(expression)) {
+    return getPropertyAccessRootIdentifier(expression.expression);
+  }
+  if (ts.isElementAccessExpression(expression)) {
+    return getPropertyAccessRootIdentifier(expression.expression);
+  }
+  return null;
+}
+
+function isAssignmentOperatorKind(kind: ts.SyntaxKind): boolean {
+  return kind >= ts.SyntaxKind.FirstAssignment && kind <= ts.SyntaxKind.LastAssignment;
+}
+
+function findUnsupportedAmbientMacroGlobal(
+  fileName: string,
+  transpiledText: string,
+): { kind: 'global' | 'member'; name: string } | null {
+  const { checker, sourceFile } = createSingleFileJavaScriptProgram(fileName, transpiledText);
+  let unsupportedGlobal: { kind: 'global' | 'member'; name: string } | null = null;
+
+  function visit(node: ts.Node): void {
+    if (unsupportedGlobal) {
+      return;
+    }
+
+    if (ts.isIdentifier(node) && UNSUPPORTED_AMBIENT_MACRO_GLOBALS.has(node.text)) {
+      if (!isIdentifierReference(node)) {
+        return;
+      }
+
+      const symbol = checker.getSymbolAtLocation(node);
+      if (!symbol) {
+        unsupportedGlobal = { kind: 'global', name: node.text };
+        return;
+      }
+
+      const declarations = symbol.getDeclarations() ?? [];
+      if (!declarations.some((declaration) => declaration.getSourceFile() === sourceFile)) {
+        unsupportedGlobal = { kind: 'global', name: node.text };
+        return;
+      }
+    }
+
+    if (
+      ts.isPropertyAccessExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      node.expression.text === 'globalThis' &&
+      UNSUPPORTED_AMBIENT_MACRO_GLOBALS.has(node.name.text)
+    ) {
+      unsupportedGlobal = { kind: 'global', name: node.name.text };
+      return;
+    }
+
+    if (
+      ts.isElementAccessExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      node.expression.text === 'globalThis' &&
+      ts.isStringLiteral(node.argumentExpression) &&
+      UNSUPPORTED_AMBIENT_MACRO_GLOBALS.has(node.argumentExpression.text)
+    ) {
+      unsupportedGlobal = { kind: 'global', name: node.argumentExpression.text };
+      return;
+    }
+
+    if (ts.isPropertyAccessExpression(node)) {
+      const root = getPropertyAccessRootIdentifier(node.expression);
+      const unsupportedMembers = root
+        ? UNSUPPORTED_AMBIENT_MACRO_MEMBER_GLOBALS.get(root.text)
+        : undefined;
+      if (unsupportedMembers?.has(node.name.text)) {
+        unsupportedGlobal = {
+          kind: 'member',
+          name: `${root!.text}.${node.name.text}`,
+        };
+        return;
+      }
+    }
+
+    if (
+      ts.isElementAccessExpression(node) &&
+      ts.isStringLiteral(node.argumentExpression)
+    ) {
+      const root = getPropertyAccessRootIdentifier(node.expression);
+      const unsupportedMembers = root
+        ? UNSUPPORTED_AMBIENT_MACRO_MEMBER_GLOBALS.get(root.text)
+        : undefined;
+      if (unsupportedMembers?.has(node.argumentExpression.text)) {
+        unsupportedGlobal = {
+          kind: 'member',
+          name: `${root!.text}.${node.argumentExpression.text}`,
+        };
+      }
+    }
+
+    if (
+      ts.isCallExpression(node) &&
+      node.expression.kind === ts.SyntaxKind.ImportKeyword
+    ) {
+      unsupportedGlobal = { kind: 'member', name: 'import()' };
+      return;
+    }
+
+    ts.forEachChild(node, visit);
+  }
+
+  visit(sourceFile);
+  return unsupportedGlobal;
+}
+
+function validatePortableMacroModuleRuntime(fileName: string, transpiledText: string): void {
+  const unsupportedGlobal = findUnsupportedAmbientMacroGlobal(fileName, transpiledText);
+  if (!unsupportedGlobal) {
+    return;
+  }
+
+  if (unsupportedGlobal.kind === 'global') {
+    throw unsupportedAmbientMacroGlobalError(fileName, unsupportedGlobal.name);
+  }
+
+  throw new Error(
+    `Macro module "${fileName}" uses unsupported ambient runtime API "${unsupportedGlobal.name}". Portable macro modules must be deterministic and use ctx.host for explicit IO.`,
+  );
+}
+
+function createPortableMacroGlobalThis(
+  baseGlobal: typeof globalThis,
+  fileName: string,
+): typeof globalThis {
+  let proxy!: typeof globalThis;
+  const portableMath = new Proxy(baseGlobal.Math ?? Math, {
+    get(target, property, receiver) {
+      if (property === 'random') {
+        throw new Error(
+          `Macro module "${fileName}" uses unsupported ambient runtime API "Math.random". Portable macro modules must be deterministic and use ctx.host for explicit IO.`,
+        );
+      }
+      return Reflect.get(target, property, receiver);
+    },
+  });
+  const portableCrypto = new Proxy(baseGlobal.crypto ?? globalThis.crypto, {
+    get(target, property, receiver) {
+      if (property === 'randomUUID' || property === 'getRandomValues') {
+        throw new Error(
+          `Macro module "${fileName}" uses unsupported ambient runtime API "crypto.${
+            String(property)
+          }". Portable macro modules must be deterministic and use ctx.host for explicit IO.`,
+        );
+      }
+      return Reflect.get(target, property, receiver);
+    },
+  });
+
+  proxy = new Proxy(baseGlobal, {
+    defineProperty(_target, _property, _attributes) {
+      throw new Error(
+        `Macro module "${fileName}" cannot mutate globalThis. Macro execution only supports explicit capabilities on ctx.host.`,
+      );
+    },
+    deleteProperty() {
+      throw new Error(
+        `Macro module "${fileName}" cannot mutate globalThis. Macro execution only supports explicit capabilities on ctx.host.`,
+      );
+    },
+    get(target, property, receiver) {
+      if (property === 'globalThis') {
+        return proxy;
+      }
+      if (property === 'Math') {
+        return portableMath;
+      }
+      if (property === 'crypto') {
+        return portableCrypto;
+      }
+      if (typeof property === 'string' && UNSUPPORTED_AMBIENT_MACRO_GLOBALS.has(property)) {
+        throw unsupportedAmbientMacroGlobalError(fileName, property);
+      }
+      return Reflect.get(target, property, receiver);
+    },
+    getOwnPropertyDescriptor(target, property) {
+      if (property === 'globalThis') {
+        return {
+          configurable: true,
+          enumerable: false,
+          value: proxy,
+          writable: false,
+        };
+      }
+      if (property === 'Math') {
+        return {
+          configurable: false,
+          enumerable: false,
+          value: portableMath,
+          writable: false,
+        };
+      }
+      if (property === 'crypto') {
+        return {
+          configurable: false,
+          enumerable: false,
+          value: portableCrypto,
+          writable: false,
+        };
+      }
+      if (typeof property === 'string' && UNSUPPORTED_AMBIENT_MACRO_GLOBALS.has(property)) {
+        return undefined;
+      }
+      return Reflect.getOwnPropertyDescriptor(target, property);
+    },
+    has(target, property) {
+      if (typeof property === 'string' && UNSUPPORTED_AMBIENT_MACRO_GLOBALS.has(property)) {
+        return false;
+      }
+      return Reflect.has(target, property);
+    },
+    ownKeys(target) {
+      return Reflect.ownKeys(target).filter((property) =>
+        typeof property !== 'string' || !UNSUPPORTED_AMBIENT_MACRO_GLOBALS.has(property)
+      );
+    },
+    set() {
+      throw new Error(
+        `Macro module "${fileName}" cannot mutate globalThis. Macro execution only supports explicit capabilities on ctx.host.`,
+      );
+    },
+  });
+
+  return proxy;
+}
+
+function hasResolvedMacroBindings(bindings: PerFileMacroBindings): boolean {
+  return bindings.registry.size > 0 ||
+    bindings.advancedRegistry.size > 0 ||
+    [...bindings.importedBindingUsage.values()].some((usage) => usage !== 'runtimeOnly');
+}
+
+function scriptKindForHostFile(fileName: string): ts.ScriptKind {
+  if (/\.[cm]?tsx$/iu.test(fileName)) {
+    return ts.ScriptKind.TSX;
+  }
+  if (/\.[cm]?jsx$/iu.test(fileName)) {
+    return ts.ScriptKind.JS;
+  }
+  return ts.ScriptKind.TS;
+}
+
+function buildAlwaysAvailableMacroSiteKinds(
+  alwaysAvailableDefinitions: ReadonlyMap<string, MacroDefinition>,
+  alwaysAvailableExports: LoadedNamedMacroExports,
+): ReadonlyMap<string, ImportedMacroSiteKind> {
+  const alwaysAvailableMacroSiteKinds = new Map<string, ImportedMacroSiteKind>(
+    alwaysAvailableExports.siteKindsByExport,
+  );
+
+  for (const [macroName, definition] of alwaysAvailableDefinitions.entries()) {
+    const metadata = getLoadedMacroDefinitionMetadata(definition);
+    if (metadata) {
+      alwaysAvailableMacroSiteKinds.set(macroName, macroSiteKindForFactoryForm(metadata.form));
+    }
+  }
+
+  return alwaysAvailableMacroSiteKinds;
+}
+
+export function createProjectMacroEnvironment(
+  preparedProgram: PreparedProgram,
+  builtinDefinitionsBySpecifier: ReadonlyMap<string, ReadonlyMap<string, MacroDefinition>>,
+  builtinExportsBySpecifier: ReadonlyMap<string, LoadedNamedMacroExports>,
+  builtinFactoryModulesBySpecifier: ReadonlyMap<string, Readonly<Record<string, unknown>>>,
+  alwaysAvailableDefinitions: ReadonlyMap<string, MacroDefinition>,
+  alwaysAvailableExports: LoadedNamedMacroExports = {
+    advanced: new Map(),
+    rewrite: new Map(),
+    siteKindsByExport: new Map(),
+  },
+): ProjectMacroEnvironment {
+  const resolutionHost = createModuleResolutionHost(preparedProgram);
+  const moduleResolutionCache = preparedProgram.preparedHost.reuseState.moduleResolutionCache ??
+    createPreparedCompilerHostReuseState().moduleResolutionCache;
+  const resolvedImportCache = new Map<string, string | null>();
+  const evaluatedModuleCache = new Map<string, MutableEvaluatedModule>();
+  const compiledArtifactCache = new Map<string, CachedMacroModuleArtifactEntry>();
+  const stableCompiledArtifactCache =
+    preparedProgram.preparedHost.reuseState.macroModuleArtifactCache;
+  const macroModuleCandidateCache = new Map<string, boolean>();
+  const macroReexportBridgeCache = new Map<string, boolean>();
+  const macroModuleScanCache = new Map<string, ReadonlyMap<string, ScannedMacroFactoryExport>>();
+  const macroModuleSourceTextCache = new Map<string, string>();
+  const validatedMacroModuleFiles = new Set<string>();
+  const definitionsByResolvedFile = new Map<string, ReadonlyMap<string, MacroDefinition>>();
+  const exportsByResolvedFile = new Map<string, LoadedNamedMacroExports>();
+  const resolvedMacroBindingAuthorityCache = new Map<
+    string,
+    ResolvedMacroBindingAuthority | null
+  >();
+  const macroModuleEvaluator = createMacroVmModuleEvaluator();
+  const macroNamesByFile = new Map<string, ReadonlySet<string>>();
+  const bindingsByFile = new Map<string, PerFileMacroBindings>();
+  const macroTargetReuseState = createPreparedCompilerHostReuseState(
+    preparedProgram.preparedHost.host.getCurrentDirectory?.() ?? ts.sys.getCurrentDirectory(),
+  );
+  const macroCacheStats: MacroModuleCacheStats = {
+    evaluatedModules: 0,
+    moduleCacheHits: 0,
+    moduleCacheInvalidations: 0,
+    moduleCacheMisses: 0,
+  };
+  const alwaysAvailableMacroSiteKinds = buildAlwaysAvailableMacroSiteKinds(
+    alwaysAvailableDefinitions,
+    alwaysAvailableExports,
+  );
+
+  function macroNamesForFile(sourceFile: ts.SourceFile): ReadonlySet<string> {
+    const cached = macroNamesByFile.get(sourceFile.fileName);
+    if (cached) {
+      return cached;
+    }
+
+    const names = new Set<string>();
+    const originalFileName = preparedProgram.toSourceFileName(sourceFile.fileName);
+    const preparedSource = preparedProgram.preparedHost.getPreparedSourceFile(originalFileName);
+    const invocations = preparedSource?.rewriteResult.macrosById.values() ?? [];
+    for (const invocation of invocations) {
+      names.add(invocation.nameText);
+    }
+
+    macroNamesByFile.set(sourceFile.fileName, names);
+    return names;
+  }
+
+  function resolveImport(
+    containingFileName: string,
+    specifier: string,
+    options: { readonly fromMacroGraph?: boolean } = {},
+  ): string | null {
+    const normalizedContainingFileName = toSourceFileName(containingFileName);
+    if (options.fromMacroGraph && isLoadableMacroModuleFile(normalizedContainingFileName)) {
+      validateMacroModuleSourcePolicy(normalizedContainingFileName);
+    }
+    if (specifier === MACRO_API_MODULE_SPECIFIER || builtinDefinitionsBySpecifier.has(specifier)) {
+      return specifier;
+    }
+
+    const cacheKey = `${normalizedContainingFileName}\u0000${specifier}`;
+    const cached = resolvedImportCache.get(cacheKey);
+    if (cached !== undefined) {
+      return cached;
+    }
+
+    const resolved =
+      resolvePreferredSoundscriptMacroModule(specifier, normalizedContainingFileName) ??
+        ts.resolveModuleName(
+          specifier,
+          normalizedContainingFileName,
+          preparedProgram.options,
+          resolutionHost,
+          moduleResolutionCache,
+        ).resolvedModule;
+    const resolvedRuntimeFileName = resolved?.resolvedFileName;
+    if (!resolvedRuntimeFileName) {
+      resolvedImportCache.set(cacheKey, null);
+      return null;
+    }
+
+    if (options.fromMacroGraph) {
+      const interopImportRange = findMacroGraphInteropImportRange(
+        normalizedContainingFileName,
+        specifier,
+      );
+      if (interopImportRange) {
+        throw createMacroModuleError(
+          normalizedContainingFileName,
+          sourceTextForMacroModule(normalizedContainingFileName),
+          `Macro module "${normalizedContainingFileName}" cannot use #[interop] anywhere in its dependency graph. Macro graphs must stay entirely inside soundscript source.`,
+          MACRO_GRAPH_ERROR_CODES.forbiddenInterop,
+          interopImportRange.start,
+          interopImportRange.end,
+        );
+      }
+    }
+
+    if (isProjectedSoundscriptDeclarationFile(resolvedRuntimeFileName)) {
+      throw createMacroModuleError(
+        normalizedContainingFileName,
+        sourceTextForMacroModule(normalizedContainingFileName),
+        `Macro module "${normalizedContainingFileName}" cannot import "${specifier}" because macro graphs cannot cross projected declaration boundaries or #[interop] edges.`,
+        MACRO_GRAPH_ERROR_CODES.forbiddenInterop,
+      );
+    }
+
+    const packageMacroSourceEntry = getSoundScriptPackageExportInfoForResolvedModule(
+      specifier,
+      resolvedRuntimeFileName,
+      resolutionHost,
+    )?.sourceEntryPath;
+    const resolvedFileName = packageMacroSourceEntry
+      ? toSourceFileName(packageMacroSourceEntry)
+      : toSourceFileName(resolvedRuntimeFileName);
+    if (!isLoadableMacroModuleFile(resolvedFileName)) {
+      if (isPureMacroReexportBridgeModule(resolvedFileName)) {
+        validateMacroModuleSourcePolicy(resolvedFileName);
+        resolvedImportCache.set(cacheKey, resolvedFileName);
+        return resolvedFileName;
+      }
+
+      const resolvedSourceText =
+        preparedProgram.preparedHost.getPreparedSourceFile(resolvedFileName)?.originalText ??
+          resolutionHost.readFile(resolvedFileName) ??
+          '';
+      const looksLikeMacroModule = sourceTextLooksLikeMacroModule(resolvedSourceText) ||
+        usesLegacyDefineMacroAuthoring(resolvedSourceText);
+      if (looksLikeMacroModule) {
+        throw createMacroModuleError(
+          normalizedContainingFileName,
+          sourceTextForMacroModule(normalizedContainingFileName),
+          `Macro import "${specifier}" resolved to "${resolvedFileName}", but user-authored macro modules must come from a soundscript .macro.sts module.`,
+          MACRO_GRAPH_ERROR_CODES.unsupportedSourceKind,
+        );
+      }
+      throw createMacroModuleError(
+        normalizedContainingFileName,
+        sourceTextForMacroModule(normalizedContainingFileName),
+        `Macro module "${normalizedContainingFileName}" cannot import non-macro source "${specifier}". Macro graphs may only depend on .macro.sts modules.`,
+        MACRO_GRAPH_ERROR_CODES.nonSoundscriptDependency,
+      );
+    }
+
+    validateMacroModuleSourcePolicy(resolvedFileName);
+    resolvedImportCache.set(cacheKey, resolvedFileName);
+    return resolvedFileName;
+  }
+
+  function resolvePreferredSoundscriptMacroModule(
+    specifier: string,
+    containingFileName: string,
+  ): ts.ResolvedModuleFull | undefined {
+    if (!specifier.startsWith('.')) {
+      return undefined;
+    }
+
+    if (/\.(?:[cm]?[jt]sx?|[cm]?js)$/u.test(specifier)) {
+      return undefined;
+    }
+
+    const candidates = specifier.endsWith('.macro.sts')
+      ? [specifier]
+      : specifier.endsWith('.macro')
+      ? [`${specifier}.sts`, `${specifier}/index.macro.sts`]
+      : specifier.endsWith('.sts')
+      ? [specifier]
+      : [`${specifier}.sts`, `${specifier}/index.sts`]
+      ;
+    for (const candidate of candidates) {
+      const absoluteCandidate = join(dirname(containingFileName), candidate);
+      if (
+        resolutionHost.fileExists(absoluteCandidate) &&
+        isSoundscriptSourceFile(absoluteCandidate)
+      ) {
+        return {
+          extension: ts.Extension.Ts,
+          isExternalLibraryImport: false,
+          resolvedFileName: absoluteCandidate,
+        };
+      }
+    }
+
+    return undefined;
+  }
+
+  function isLikelyMacroModule(fileName: string): boolean {
+    const cached = macroModuleCandidateCache.get(fileName);
+    if (cached !== undefined) {
+      return cached;
+    }
+
+    const sourceText = sourceTextForMacroModule(fileName);
+    const result = sourceTextLooksLikeMacroModule(sourceText) ||
+      usesLegacyDefineMacroAuthoring(sourceText) ||
+      isPureMacroReexportBridgeModule(fileName);
+    macroModuleCandidateCache.set(fileName, result);
+    return result;
+  }
+
+  function sourceTextForMacroModule(fileName: string): string {
+    const cached = macroModuleSourceTextCache.get(fileName);
+    if (cached !== undefined) {
+      return cached;
+    }
+
+    const preparedSource = preparedProgram.preparedHost.getPreparedSourceFile(fileName);
+    const sourceText = preparedSource?.originalText;
+    if (sourceText === undefined) {
+      throw new Error(`Could not read macro module "${fileName}".`);
+    }
+
+    macroModuleSourceTextCache.set(fileName, sourceText);
+    return sourceText;
+  }
+
+  function isPureMacroReexportBridgeModule(fileName: string): boolean {
+    const cached = macroReexportBridgeCache.get(fileName);
+    if (cached !== undefined) {
+      return cached;
+    }
+
+    if (!isSoundscriptSourceFile(fileName) || isSoundscriptMacroSourceFile(fileName)) {
+      macroReexportBridgeCache.set(fileName, false);
+      return false;
+    }
+
+    const sourceText = sourceTextForMacroModule(fileName);
+    const sourceFile = ts.createSourceFile(
+      fileName,
+      sourceText,
+      ts.ScriptTarget.Latest,
+      true,
+      scriptKindForHostFile(fileName),
+    );
+
+    let sawReexport = false;
+    for (const statement of sourceFile.statements) {
+      if (ts.isImportDeclaration(statement)) {
+        continue;
+      }
+
+      if (
+        ts.isExportDeclaration(statement) &&
+        (
+          !statement.exportClause ||
+          ts.isNamedExports(statement.exportClause)
+        )
+      ) {
+        sawReexport = true;
+        continue;
+      }
+
+      macroReexportBridgeCache.set(fileName, false);
+      return false;
+    }
+
+    macroReexportBridgeCache.set(fileName, sawReexport);
+    return sawReexport;
+  }
+
+  function validateMacroModuleSourcePolicy(fileName: string): void {
+    if (validatedMacroModuleFiles.has(fileName)) {
+      return;
+    }
+
+    const sourceText = sourceTextForMacroModule(fileName);
+    const sourceFile = ts.createSourceFile(
+      fileName,
+      sourceText,
+      ts.ScriptTarget.Latest,
+      true,
+      scriptKindForHostFile(fileName),
+    );
+    const interopIndex = sourceText.indexOf('#[interop]');
+    if (interopIndex >= 0) {
+      throw createMacroModuleError(
+        fileName,
+        sourceText,
+        `Macro module "${fileName}" cannot use #[interop] anywhere in its dependency graph. Macro graphs must stay entirely inside soundscript source.`,
+        MACRO_GRAPH_ERROR_CODES.forbiddenInterop,
+        interopIndex,
+        interopIndex + '#[interop]'.length,
+      );
+    }
+    const annotationLookup = createAnnotationLookup(sourceFile);
+    const topLevelBindings = new Map<string, ts.Expression>();
+
+    for (const block of annotationLookup.getBlocks()) {
+      const interopAnnotation = block.annotations.find((annotation) =>
+        annotation.name === 'interop'
+      );
+      if (!interopAnnotation) {
+        continue;
+      }
+      throw createMacroModuleError(
+        fileName,
+        sourceText,
+        `Macro module "${fileName}" cannot use #[interop] anywhere in its dependency graph. Macro graphs must stay entirely inside soundscript source.`,
+        MACRO_GRAPH_ERROR_CODES.forbiddenInterop,
+        block.range.start,
+        block.range.end,
+      );
+    }
+
+    for (const statement of sourceFile.statements) {
+      if (!ts.isVariableStatement(statement)) {
+        continue;
+      }
+
+      for (const declaration of statement.declarationList.declarations) {
+        if (!ts.isIdentifier(declaration.name) || !declaration.initializer) {
+          continue;
+        }
+        topLevelBindings.set(declaration.name.text, declaration.initializer);
+      }
+    }
+
+    function visit(node: ts.Node, functionDepth: number): void {
+      if (ts.isClassStaticBlockDeclaration(node)) {
+        throw createMacroModuleError(
+          fileName,
+          sourceText,
+          `Macro module "${fileName}" cannot use class static blocks. Macro modules must stay deterministic and side-effect free at top level.`,
+          MACRO_GRAPH_ERROR_CODES.forbiddenTopLevelEffect,
+          node.getStart(sourceFile),
+          node.getEnd(),
+        );
+      }
+
+      if (ts.isGetAccessorDeclaration(node) || ts.isSetAccessorDeclaration(node)) {
+        const guidance = describeUnsupportedFeature('accessors');
+        throw createMacroModuleError(
+          fileName,
+          sourceText,
+          guidance.message,
+          SOUND_DIAGNOSTIC_CODES.unsupportedJavaScriptFeature,
+          node.name.getStart(sourceFile),
+          node.name.getEnd(),
+        );
+      }
+
+      const nextFunctionDepth = functionDepth + (ts.isFunctionLike(node) ? 1 : 0);
+      if (
+        functionDepth === 0 &&
+        ts.isBinaryExpression(node) &&
+        isAssignmentOperatorKind(node.operatorToken.kind)
+      ) {
+        throw createMacroModuleError(
+          fileName,
+          sourceText,
+          `Macro module "${fileName}" cannot perform top-level assignment or mutation. Macro module state must be derived from source and explicit ctx.host inputs.`,
+          MACRO_GRAPH_ERROR_CODES.forbiddenTopLevelEffect,
+          node.getStart(sourceFile),
+          node.getEnd(),
+        );
+      }
+
+      if (
+        functionDepth === 0 &&
+        (
+          ts.isPrefixUnaryExpression(node) ||
+          ts.isPostfixUnaryExpression(node)
+        ) &&
+        (
+          node.operator === ts.SyntaxKind.PlusPlusToken ||
+          node.operator === ts.SyntaxKind.MinusMinusToken
+        )
+      ) {
+        throw createMacroModuleError(
+          fileName,
+          sourceText,
+          `Macro module "${fileName}" cannot perform top-level assignment or mutation. Macro module state must be derived from source and explicit ctx.host inputs.`,
+          MACRO_GRAPH_ERROR_CODES.forbiddenTopLevelEffect,
+          node.getStart(sourceFile),
+          node.getEnd(),
+        );
+      }
+
+      if (
+        ts.isCallExpression(node) &&
+        node.expression.kind === ts.SyntaxKind.ImportKeyword
+      ) {
+        throw createMacroModuleError(
+          fileName,
+          sourceText,
+          `Macro module "${fileName}" cannot use dynamic import(). Macro graphs must be statically analyzable.`,
+          MACRO_GRAPH_ERROR_CODES.forbiddenTopLevelEffect,
+          node.getStart(sourceFile),
+          node.getEnd(),
+        );
+      }
+
+      if (functionDepth === 0 && ts.isCallExpression(node)) {
+        const receiver = ts.isPropertyAccessExpression(node.expression) ||
+            ts.isElementAccessExpression(node.expression)
+          ? node.expression.expression
+          : undefined;
+        const receiverKind = receiver
+          ? inferMacroMutableContainerKind(receiver, topLevelBindings)
+          : undefined;
+        if (
+          receiverKind &&
+          macroTopLevelCallMethodMutatesContainer(
+            receiverKind,
+            getMacroTopLevelCallMemberName(node.expression),
+          )
+        ) {
+          throw createMacroModuleError(
+            fileName,
+            sourceText,
+            `Macro module "${fileName}" cannot perform top-level assignment or mutation. Macro module state must be derived from source and explicit ctx.host inputs.`,
+            MACRO_GRAPH_ERROR_CODES.forbiddenTopLevelEffect,
+            node.getStart(sourceFile),
+            node.getEnd(),
+          );
+        }
+      }
+
+      ts.forEachChild(node, (child) => visit(child, nextFunctionDepth));
+    }
+
+    visit(sourceFile, 0);
+    validatedMacroModuleFiles.add(fileName);
+  }
+
+  function findMacroGraphInteropImportRange(
+    fileName: string,
+    specifier: string,
+  ): { readonly start: number; readonly end: number } | null {
+    const sourceText = sourceTextForMacroModule(fileName);
+    const sourceFile = ts.createSourceFile(
+      fileName,
+      sourceText,
+      ts.ScriptTarget.Latest,
+      true,
+      scriptKindForHostFile(fileName),
+    );
+    const annotationLookup = createAnnotationLookup(sourceFile);
+    for (const statement of sourceFile.statements) {
+      if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)) {
+        continue;
+      }
+      if (statement.moduleSpecifier.text !== specifier) {
+        continue;
+      }
+      const block = annotationLookup.getAttachedAnnotationBlock(statement);
+      const interopAnnotation = block?.annotations.find((annotation) =>
+        annotation.name === 'interop'
+      );
+      if (!interopAnnotation || !block) {
+        continue;
+      }
+      return { start: block.range.start, end: block.range.end };
+    }
+    return null;
+  }
+
+  function cloneDependencySourceTexts(
+    dependencySourceTexts: ReadonlyMap<string, string>,
+  ): Map<string, string> {
+    return new Map(dependencySourceTexts);
+  }
+
+  function isCachedEvaluatedModuleValid(
+    cached: CachedMacroModuleArtifactEntry,
+  ): boolean {
+    for (const [dependencyFileName, sourceText] of cached.dependencySourceTexts.entries()) {
+      if (sourceTextForMacroModule(dependencyFileName) !== sourceText) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  function collectImportedSpecifiersForMacroModule(fileName: string): string[] {
+    const sourceText = sourceTextForMacroModule(fileName);
+    const sourceFile = ts.createSourceFile(
+      fileName,
+      sourceText,
+      ts.ScriptTarget.Latest,
+      true,
+      scriptKindForHostFile(fileName),
+    );
+    const specifiers: string[] = [];
+    for (const statement of sourceFile.statements) {
+      if (
+        ts.isImportDeclaration(statement) &&
+        ts.isStringLiteral(statement.moduleSpecifier)
+      ) {
+        specifiers.push(statement.moduleSpecifier.text);
+        continue;
+      }
+
+      if (
+        ts.isExportDeclaration(statement) &&
+        statement.moduleSpecifier &&
+        ts.isStringLiteral(statement.moduleSpecifier)
+      ) {
+        specifiers.push(statement.moduleSpecifier.text);
+      }
+    }
+    return specifiers;
+  }
+
+  function collectDependencySourceTextsForCompilation(
+    fileName: string,
+    visited = new Set<string>(),
+  ): Map<string, string> {
+    if (visited.has(fileName)) {
+      return new Map([[fileName, sourceTextForMacroModule(fileName)]]);
+    }
+
+    visited.add(fileName);
+    validateMacroModuleSourcePolicy(fileName);
+    const dependencySourceTexts = new Map<string, string>([[
+      fileName,
+      sourceTextForMacroModule(fileName),
+    ]]);
+    for (const specifier of collectImportedSpecifiersForMacroModule(fileName)) {
+      const resolved = resolveImport(fileName, specifier, { fromMacroGraph: true });
+      if (
+        !resolved || resolved === MACRO_API_MODULE_SPECIFIER ||
+        builtinDefinitionsBySpecifier.has(specifier)
+      ) {
+        continue;
+      }
+      for (
+        const [dependencyFileName, dependencySourceText]
+          of collectDependencySourceTextsForCompilation(
+            resolved,
+            visited,
+          ).entries()
+      ) {
+        dependencySourceTexts.set(dependencyFileName, dependencySourceText);
+      }
+    }
+    return dependencySourceTexts;
+  }
+
+  function collectDependencySourceTextsForModule(
+    fileName: string,
+    visited = new Set<string>(),
+  ): Map<string, string> {
+    const cached = evaluatedModuleCache.get(fileName);
+    if (!cached) {
+      return new Map();
+    }
+
+    if (cached.dependencySourceTexts) {
+      return cloneDependencySourceTexts(cached.dependencySourceTexts);
+    }
+
+    if (visited.has(fileName)) {
+      return new Map([[fileName, cached.sourceText]]);
+    }
+
+    visited.add(fileName);
+    const dependencySourceTexts = new Map<string, string>([[fileName, cached.sourceText]]);
+    for (const dependencyFileName of cached.directDependencies) {
+      for (
+        const [transitiveDependencyFileName, sourceText] of collectDependencySourceTextsForModule(
+          dependencyFileName,
+          visited,
+        ).entries()
+      ) {
+        dependencySourceTexts.set(transitiveDependencyFileName, sourceText);
+      }
+    }
+    return dependencySourceTexts;
+  }
+
+  function scannedFactoriesForMacroModule(
+    fileName: string,
+  ): ReadonlyMap<string, ScannedMacroFactoryExport> {
+    const cached = macroModuleScanCache.get(fileName);
+    if (cached) {
+      return cached;
+    }
+    const scanned = scanMacroFactoryExports(fileName, sourceTextForMacroModule(fileName));
+    macroModuleScanCache.set(fileName, scanned);
+    return scanned;
+  }
+
+  function createMacroModuleErrorFromDiagnostic(
+    diagnostic: ts.Diagnostic,
+    fallbackFileName: string,
+    fallbackMessage: string,
+    fallbackCode = 'SOUNDSCRIPT_MACRO_EXPANSION',
+  ): MacroError {
+    const filePath = diagnostic.file?.fileName ?? fallbackFileName;
+    const sourceText = diagnostic.file?.text ?? sourceTextForMacroModule(filePath);
+    const start = diagnostic.start ?? 0;
+    const length = diagnostic.length ?? 0;
+    const originalMessage = ts.flattenDiagnosticMessageText(
+      diagnostic.messageText,
+      '\n',
+    ) || fallbackMessage;
+    const missingAmbientGlobalMatch = /^Cannot find name '([^']+)'\.?/u.exec(originalMessage) ??
+      /^Cannot find name '([^']+)'.*$/u.exec(originalMessage);
+    const missingAmbientGlobalName = missingAmbientGlobalMatch?.[1];
+    const mappedMessage = missingAmbientGlobalName &&
+        UNSUPPORTED_AMBIENT_MACRO_GLOBALS.has(missingAmbientGlobalName)
+      ? `Macro module "${filePath}" uses unsupported ambient host global "${missingAmbientGlobalName}". Portable macro modules must use ctx.host instead of runtime globals.`
+      : originalMessage;
+    return createMacroModuleError(
+      filePath,
+      sourceText,
+      mappedMessage,
+      missingAmbientGlobalName && UNSUPPORTED_AMBIENT_MACRO_GLOBALS.has(missingAmbientGlobalName)
+        ? MACRO_GRAPH_ERROR_CODES.forbiddenGlobal
+        : fallbackCode,
+      start,
+      start + length,
+    );
+  }
+
+  function emitCommonJsMacroArtifactWithFallback(
+    macroTargetProgram: PreparedProgram,
+    sourceFile: ts.SourceFile,
+    fileName: string,
+    compilerOptions: ts.CompilerOptions,
+  ): string {
+    let javaScriptText: string | undefined;
+    const emitResult = macroTargetProgram.program.emit(
+      sourceFile,
+      (_outputFileName: string, text: string) => {
+        javaScriptText = text;
+      },
+      undefined,
+      false,
+    );
+    const emitDiagnostics = emitResult.diagnostics.filter((diagnostic: ts.Diagnostic) =>
+      diagnostic.category === ts.DiagnosticCategory.Error
+    );
+    if (emitDiagnostics.length > 0) {
+      throw createMacroModuleErrorFromDiagnostic(
+        emitDiagnostics[0]!,
+        fileName,
+        `Failed to emit macro module "${fileName}".`,
+      );
+    }
+    if (javaScriptText !== undefined && !/^\s*(?:import|export)\b/mu.test(javaScriptText)) {
+      return javaScriptText;
+    }
+
+    const transpiled = ts.transpileModule(sourceFile.text, {
+      compilerOptions: {
+        ...compilerOptions,
+        module: ts.ModuleKind.CommonJS,
+        moduleResolution: ts.ModuleResolutionKind.Node10,
+        noEmit: false,
+        target: ts.ScriptTarget.ES2022,
+      },
+      fileName: fileName.endsWith('.macro.sts') ? `${fileName}.cts` : `${fileName}.ts`,
+      reportDiagnostics: true,
+    });
+    const transpileDiagnostics =
+      transpiled.diagnostics?.filter((diagnostic) =>
+        diagnostic.category === ts.DiagnosticCategory.Error
+      ) ?? [];
+    if (transpileDiagnostics.length > 0) {
+      throw createMacroModuleErrorFromDiagnostic(
+        transpileDiagnostics[0]!,
+        fileName,
+        `Failed to emit macro module "${fileName}".`,
+      );
+    }
+    return transpiled.outputText;
+  }
+
+  function createMacroTargetBaseHost(): ts.CompilerHost {
+    const baseHost = preparedProgram.preparedHost.host;
+    return withMacroApiModuleResolution({
+      ...baseHost,
+      fileExists(candidateFileName: string): boolean {
+        if (isSoundscriptSourceFile(toSourceFileName(candidateFileName))) {
+          const sourceFileName = toSourceFileName(candidateFileName);
+          if (preparedProgram.preparedHost.getPreparedSourceFile(sourceFileName)) {
+            return true;
+          }
+        }
+        return baseHost.fileExists(candidateFileName);
+      },
+      readFile(candidateFileName: string): string | undefined {
+        if (isSoundscriptSourceFile(toSourceFileName(candidateFileName))) {
+          const sourceFileName = toSourceFileName(candidateFileName);
+          const preparedSource = preparedProgram.preparedHost.getPreparedSourceFile(sourceFileName);
+          if (preparedSource) {
+            return preparedSource.originalText;
+          }
+        }
+        return baseHost.readFile(candidateFileName);
+      },
+    });
+  }
+
+  function compileResolvedMacroModuleArtifact(fileName: string): CachedMacroModuleArtifactEntry {
+    const cached = compiledArtifactCache.get(fileName);
+    if (cached) {
+      return cached;
+    }
+
+    const stableCached = stableCompiledArtifactCache.get(fileName);
+    if (stableCached && isCachedEvaluatedModuleValid(stableCached)) {
+      macroCacheStats.moduleCacheHits += 1;
+      compiledArtifactCache.set(fileName, stableCached);
+      return stableCached;
+    }
+    if (stableCached) {
+      macroCacheStats.moduleCacheInvalidations += 1;
+    }
+    stableCompiledArtifactCache.delete(fileName);
+    macroCacheStats.moduleCacheMisses += 1;
+
+    const dependencySourceTexts = collectDependencySourceTextsForCompilation(fileName);
+    const macroTargetProgram = createPreparedProgram({
+      alwaysAvailableMacroSiteKinds,
+      baseHost: createMacroTargetBaseHost(),
+      expansionEnabled: false,
+      options: {
+        ...preparedProgram.options,
+        module: ts.ModuleKind.CommonJS,
+        moduleResolution: ts.ModuleResolutionKind.Node10,
+        noEmit: false,
+        target: ts.ScriptTarget.ES2022,
+      },
+      preserveMacroAuthoring: true,
+      reusableCompilerHostState: macroTargetReuseState,
+      rootNames: [fileName],
+      runtime: preparedProgram.runtime,
+    });
+    const frontendDiagnostics = macroTargetProgram.frontendDiagnostics().filter((diagnostic) =>
+      diagnostic.category === 'error'
+    );
+    if (frontendDiagnostics.length > 0) {
+      const expansionDisabledDiagnostic = frontendDiagnostics.find((diagnostic) =>
+        diagnostic.code === 'SOUNDSCRIPT_EXPANSION_DISABLED'
+      );
+      if (expansionDisabledDiagnostic) {
+        const diagnosticFilePath = expansionDisabledDiagnostic.filePath ?? fileName;
+        throw createMacroModuleError(
+          diagnosticFilePath,
+          sourceTextForMacroModule(diagnosticFilePath),
+          `Macro module "${diagnosticFilePath}" cannot contain macro invocations. Macro authoring modules compile as soundscript, but macro syntax is disabled inside the macro target.`,
+          MACRO_GRAPH_ERROR_CODES.forbiddenInvocation,
+          0,
+          0,
+        );
+      }
+
+      const diagnostic = frontendDiagnostics[0]!;
+      const diagnosticFilePath = diagnostic.filePath ?? fileName;
+      throw createMacroModuleError(
+        diagnosticFilePath,
+        sourceTextForMacroModule(diagnosticFilePath),
+        diagnostic.message,
+        'SOUNDSCRIPT_MACRO_EXPANSION',
+        0,
+        0,
+      );
+    }
+
+    const sourceFile = macroTargetProgram.program.getSourceFile(
+      macroTargetProgram.toProgramFileName(fileName),
+    );
+    if (!sourceFile) {
+      throw createMacroModuleError(
+        fileName,
+        sourceTextForMacroModule(fileName),
+        `Failed to compile macro module "${fileName}".`,
+        'SOUNDSCRIPT_MACRO_EXPANSION',
+      );
+    }
+
+    const tsDiagnostics = [
+      ...macroTargetProgram.program.getSyntacticDiagnostics(sourceFile),
+      ...macroTargetProgram.program.getSemanticDiagnostics(sourceFile),
+    ].filter((diagnostic) => diagnostic.category === ts.DiagnosticCategory.Error);
+    if (tsDiagnostics.length > 0) {
+      throw createMacroModuleErrorFromDiagnostic(
+        tsDiagnostics[0]!,
+        fileName,
+        `Failed to compile macro module "${fileName}".`,
+      );
+    }
+
+    const javaScriptText = emitCommonJsMacroArtifactWithFallback(
+      macroTargetProgram,
+      sourceFile,
+      fileName,
+      macroTargetProgram.options,
+    );
+
+    const artifact: CachedMacroModuleArtifactEntry = {
+      dependencySourceTexts,
+      javaScriptText,
+    };
+    compiledArtifactCache.set(fileName, artifact);
+    stableCompiledArtifactCache.set(fileName, artifact);
+    return artifact;
+  }
+
+  function loadResolvedModuleValue(fileName: string): Record<string, unknown> {
+    const cached = evaluatedModuleCache.get(fileName);
+    if (cached) {
+      return cached.exports;
+    }
+
+    const sourceText = sourceTextForMacroModule(fileName);
+    validateMacroModuleSourcePolicy(fileName);
+    const compiledArtifact = compileResolvedMacroModuleArtifact(fileName);
+
+    const moduleRecord: MutableEvaluatedModule = {
+      directDependencies: new Set(),
+      exports: {},
+      initialized: false,
+      sourceText,
+    };
+    evaluatedModuleCache.set(fileName, moduleRecord);
+
+    try {
+      validatePortableMacroModuleRuntime(fileName, compiledArtifact.javaScriptText);
+      const portableGlobalThis = createPortableMacroGlobalThis(
+        macroModuleEvaluator.globalObject,
+        fileName,
+      );
+      const require = (specifier: string): unknown => {
+        if (specifier === MACRO_API_MODULE_SPECIFIER) {
+          return publicMacroApi;
+        }
+
+        const builtinFactoryModule = builtinFactoryModulesBySpecifier.get(specifier);
+        if (builtinFactoryModule) {
+          return builtinFactoryModule;
+        }
+
+        const resolved = resolveImport(fileName, specifier, { fromMacroGraph: true });
+        if (
+          !resolved || resolved === MACRO_API_MODULE_SPECIFIER ||
+          builtinDefinitionsBySpecifier.has(specifier)
+        ) {
+          throw new Error(
+            `Macro module "${fileName}" imports unsupported runtime dependency "${specifier}".`,
+          );
+        }
+
+        moduleRecord.directDependencies.add(resolved);
+        return loadResolvedModuleValue(resolved);
+      };
+      moduleRecord.exports = macroModuleEvaluator.evaluateCommonJsModule(
+        compiledArtifact.javaScriptText,
+        {
+          crypto: portableGlobalThis.crypto,
+          exports: moduleRecord.exports,
+          fileName,
+          globalThis: portableGlobalThis,
+          math: portableGlobalThis.Math,
+          require,
+        },
+      );
+    } catch (error) {
+      if (error instanceof MacroError) {
+        throw error;
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      const errorCode = message.includes('unsupported ambient host global') ||
+          message.includes('unsupported ambient runtime API')
+        ? MACRO_GRAPH_ERROR_CODES.forbiddenGlobal
+        : message.includes('cannot mutate globalThis')
+        ? MACRO_GRAPH_ERROR_CODES.forbiddenTopLevelEffect
+        : 'SOUNDSCRIPT_MACRO_EXPANSION';
+      throw createMacroModuleError(fileName, sourceText, message, errorCode);
+    }
+    macroCacheStats.evaluatedModules += 1;
+    moduleRecord.initialized = true;
+    moduleRecord.dependencySourceTexts = collectDependencySourceTextsForModule(fileName);
+    return moduleRecord.exports;
+  }
+
+  function definitionsForResolvedModule(fileName: string): ReadonlyMap<string, MacroDefinition> {
+    const cached = definitionsByResolvedFile.get(fileName);
+    if (cached) {
+      return cached;
+    }
+
+    let definitions: ReadonlyMap<string, MacroDefinition>;
+    try {
+      definitions = collectNamedMacroDefinitions(
+        fileName,
+        loadResolvedModuleValue(fileName),
+        {
+          moduleFileName: fileName,
+          scannedFactoryExports: scannedFactoriesForMacroModule(fileName),
+          sourceText: sourceTextForMacroModule(fileName),
+        },
+      );
+    } catch (error) {
+      if (error instanceof MacroError) {
+        throw error;
+      }
+      throw createMacroModuleError(
+        fileName,
+        sourceTextForMacroModule(fileName),
+        error instanceof Error ? error.message : String(error),
+        'SOUNDSCRIPT_MACRO_EXPANSION',
+      );
+    }
+    definitionsByResolvedFile.set(fileName, definitions);
+    return definitions;
+  }
+
+  function exportsForResolvedModule(fileName: string): LoadedNamedMacroExports {
+    const cached = exportsByResolvedFile.get(fileName);
+    if (cached) {
+      return cached;
+    }
+
+    let exports: LoadedNamedMacroExports;
+    try {
+      exports = collectNamedMacroExports(
+        fileName,
+        loadResolvedModuleValue(fileName),
+        preparedProgram,
+        {
+          moduleFileName: fileName,
+          scannedFactoryExports: scannedFactoriesForMacroModule(fileName),
+          sourceText: sourceTextForMacroModule(fileName),
+        },
+      );
+    } catch (error) {
+      if (error instanceof MacroError) {
+        throw error;
+      }
+      throw createMacroModuleError(
+        fileName,
+        sourceTextForMacroModule(fileName),
+        error instanceof Error ? error.message : String(error),
+        'SOUNDSCRIPT_MACRO_EXPANSION',
+      );
+    }
+    exportsByResolvedFile.set(fileName, exports);
+    return exports;
+  }
+
+  function resolveMacroBindingAuthority(
+    fileName: string,
+    exportName: string,
+    visiting = new Set<string>(),
+  ): ResolvedMacroBindingAuthority | null {
+    const cacheKey = `${fileName}\u0000${exportName}`;
+    const cached = resolvedMacroBindingAuthorityCache.get(cacheKey);
+    if (cached !== undefined) {
+      return cached;
+    }
+
+    if (visiting.has(cacheKey)) {
+      return null;
+    }
+    visiting.add(cacheKey);
+
+    try {
+      const builtinDefinitions = builtinDefinitionsBySpecifier.get(fileName);
+      if (builtinDefinitions?.has(exportName)) {
+        const authority = { exportName, resolvedFileName: fileName };
+        resolvedMacroBindingAuthorityCache.set(cacheKey, authority);
+        return authority;
+      }
+
+      if (definitionsForResolvedModule(fileName).has(exportName)) {
+        const authority = { exportName, resolvedFileName: fileName };
+        resolvedMacroBindingAuthorityCache.set(cacheKey, authority);
+        return authority;
+      }
+
+      const sourceText = sourceTextForMacroModule(fileName);
+      const sourceFile = ts.createSourceFile(
+        fileName,
+        sourceText,
+        ts.ScriptTarget.Latest,
+        true,
+        scriptKindForHostFile(fileName),
+      );
+      const importedBindingsByLocalName = new Map(
+        collectImportedNamedBindings(fileName, sourceText)
+          .map((binding) => [binding.localName, binding] as const),
+      );
+
+      for (const statement of sourceFile.statements) {
+        if (
+          !ts.isExportDeclaration(statement) ||
+          !statement.moduleSpecifier ||
+          !ts.isStringLiteral(statement.moduleSpecifier)
+        ) {
+          continue;
+        }
+
+        const resolved = resolveImport(fileName, statement.moduleSpecifier.text, {
+          fromMacroGraph: true,
+        });
+        if (!resolved || resolved === MACRO_API_MODULE_SPECIFIER) {
+          continue;
+        }
+
+        if (!statement.exportClause) {
+          const authority = resolveMacroBindingAuthority(resolved, exportName, visiting);
+          if (authority) {
+            resolvedMacroBindingAuthorityCache.set(cacheKey, authority);
+            return authority;
+          }
+          continue;
+        }
+
+        if (!ts.isNamedExports(statement.exportClause)) {
+          continue;
+        }
+
+        for (const element of statement.exportClause.elements) {
+          if (element.name.text !== exportName) {
+            continue;
+          }
+          const sourceName = element.propertyName?.text ?? element.name.text;
+          const authority = resolveMacroBindingAuthority(resolved, sourceName, visiting);
+          if (authority) {
+            resolvedMacroBindingAuthorityCache.set(cacheKey, authority);
+            return authority;
+          }
+        }
+      }
+
+      for (const statement of sourceFile.statements) {
+        if (
+          !ts.isExportDeclaration(statement) ||
+          !!statement.moduleSpecifier ||
+          !statement.exportClause ||
+          !ts.isNamedExports(statement.exportClause)
+        ) {
+          continue;
+        }
+
+        for (const element of statement.exportClause.elements) {
+          if (element.name.text !== exportName) {
+            continue;
+          }
+
+          const localName = element.propertyName?.text ?? element.name.text;
+          const binding = importedBindingsByLocalName.get(localName);
+          if (!binding) {
+            continue;
+          }
+
+          const resolved = resolveImport(fileName, binding.specifier, {
+            fromMacroGraph: true,
+          });
+          if (!resolved || resolved === MACRO_API_MODULE_SPECIFIER) {
+            continue;
+          }
+
+          const authority = resolveMacroBindingAuthority(resolved, binding.exportName, visiting);
+          if (authority) {
+            resolvedMacroBindingAuthorityCache.set(cacheKey, authority);
+            return authority;
+          }
+        }
+      }
+    } finally {
+      visiting.delete(cacheKey);
+    }
+
+    resolvedMacroBindingAuthorityCache.set(cacheKey, null);
+    return null;
+  }
+
+  function bindingsForSourceFile(sourceFile: ts.SourceFile): PerFileMacroBindings {
+    const cached = bindingsByFile.get(sourceFile.fileName);
+    if (cached) {
+      return cached;
+    }
+
+    const macroNames = macroNamesForFile(sourceFile);
+    if (macroNames.size === 0) {
+      const emptyBindings = {
+        advancedRegistry: new Map<string, AdvancedMacroExpander>(),
+        definitions: new Map<string, MacroDefinition>(),
+        importedBindingUsage: new Map<string, ImportedBindingUsage>(),
+        registry: new Map<string, RewriteMacroExpander>(),
+        siteKindsBySpecifier: new Map<string, Map<string, ImportedMacroSiteKind>>(),
+      };
+      bindingsByFile.set(sourceFile.fileName, emptyBindings);
+      return emptyBindings;
+    }
+
+    const definitions = new Map<string, MacroDefinition>();
+    const registry = new Map<string, RewriteMacroExpander>();
+    const advancedRegistry = new Map<string, AdvancedMacroExpander>();
+    const siteKindsBySpecifier = new Map<string, Map<string, ImportedMacroSiteKind>>();
+
+    for (const macroName of macroNames) {
+      const alwaysAvailableDefinition = alwaysAvailableDefinitions.get(macroName);
+      if (!alwaysAvailableDefinition) {
+        continue;
+      }
+
+      definitions.set(macroName, alwaysAvailableDefinition);
+      const alwaysAvailableRewrite = alwaysAvailableExports.rewrite.get(macroName);
+      const alwaysAvailableAdvanced = alwaysAvailableExports.advanced.get(macroName);
+      if (alwaysAvailableRewrite) {
+        registry.set(macroName, alwaysAvailableRewrite);
+      }
+      if (alwaysAvailableAdvanced) {
+        advancedRegistry.set(macroName, alwaysAvailableAdvanced);
+      }
+    }
+
+    for (const statement of sourceFile.statements) {
+      if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)) {
+        continue;
+      }
+
+      const candidateBindings: { localName: string; exportName: string }[] = [];
+      if (statement.importClause?.name && macroNames.has(statement.importClause.name.text)) {
+        candidateBindings.push({
+          localName: statement.importClause.name.text,
+          exportName: 'default',
+        });
+      }
+
+      const namedBindings = statement.importClause?.namedBindings;
+      if (namedBindings && ts.isNamedImports(namedBindings)) {
+        for (const element of namedBindings.elements) {
+          if (!macroNames.has(element.name.text)) {
+            continue;
+          }
+          candidateBindings.push({
+            localName: element.name.text,
+            exportName: element.propertyName?.text ?? element.name.text,
+          });
+        }
+      }
+
+      if (candidateBindings.length === 0) {
+        continue;
+      }
+
+      const specifier = statement.moduleSpecifier.text;
+      const builtinDefinitions = builtinDefinitionsBySpecifier.get(specifier) ?? null;
+      const builtinExports = builtinExportsBySpecifier.get(specifier) ?? null;
+      const resolved = builtinDefinitions
+        ? specifier
+        : resolveImport(sourceFile.fileName, specifier);
+      if (!resolved || resolved === MACRO_API_MODULE_SPECIFIER) {
+        continue;
+      }
+
+      if (!builtinDefinitions && !builtinExports && !isLikelyMacroModule(resolved)) {
+        continue;
+      }
+
+      for (const { localName, exportName } of candidateBindings) {
+        const authority = builtinDefinitions
+          ? { exportName, resolvedFileName: specifier }
+          : resolveMacroBindingAuthority(resolved, exportName);
+        if (!authority) {
+          continue;
+        }
+
+        const authorityBuiltinDefinitions = builtinDefinitionsBySpecifier.get(
+          authority.resolvedFileName,
+        ) ?? null;
+        const authorityBuiltinExports = builtinExportsBySpecifier.get(authority.resolvedFileName) ??
+          null;
+        const availableDefinitions = authorityBuiltinDefinitions ?? builtinDefinitions ??
+          definitionsForResolvedModule(authority.resolvedFileName);
+        const availableExports = authorityBuiltinExports ?? builtinExports ??
+          exportsForResolvedModule(authority.resolvedFileName);
+        const definition = availableDefinitions.get(authority.exportName);
+        if (!definition) {
+          continue;
+        }
+
+        definitions.set(localName, definition);
+        const definitionMetadata = getLoadedMacroDefinitionMetadata(definition);
+        if (definitionMetadata) {
+          let siteKindsForSpecifier = siteKindsBySpecifier.get(specifier);
+          if (!siteKindsForSpecifier) {
+            siteKindsForSpecifier = new Map();
+            siteKindsBySpecifier.set(specifier, siteKindsForSpecifier);
+          }
+          siteKindsForSpecifier.set(
+            exportName,
+            macroSiteKindForFactoryForm(definitionMetadata.form),
+          );
+        }
+        const rewriteExpander = availableExports.rewrite.get(authority.exportName);
+        const advancedExpander = availableExports.advanced.get(authority.exportName);
+        if (rewriteExpander) {
+          registry.set(localName, rewriteExpander);
+        }
+        if (advancedExpander) {
+          advancedRegistry.set(localName, advancedExpander);
+        }
+      }
+    }
+
+    const originalFileName = preparedProgram.toSourceFileName(sourceFile.fileName);
+    const preparedSource = preparedProgram.preparedHost.getPreparedSourceFile(originalFileName);
+    const classificationSourceFile = ts.createSourceFile(
+      originalFileName,
+      preparedSource?.originalText ?? sourceFile.text,
+      ts.ScriptTarget.Latest,
+      true,
+      scriptKindForHostFile(originalFileName),
+    );
+    const importedBindingUsage = new Map(
+      classifyImportedBindingUsage(
+        classificationSourceFile,
+        macroNames,
+        macroInvocationReferenceSpans(preparedSource?.rewriteResult.macrosById.values() ?? []),
+      ),
+    );
+    for (const localName of PRESERVED_IMPORTED_MACRO_BINDINGS) {
+      if (importedBindingUsage.get(localName) === 'compileTimeOnly') {
+        importedBindingUsage.set(localName, 'runtimeOnly');
+      }
+    }
+
+    const loaded = {
+      advancedRegistry,
+      definitions,
+      importedBindingUsage,
+      registry,
+      siteKindsBySpecifier,
+    };
+    bindingsByFile.set(sourceFile.fileName, loaded);
+    return loaded;
+  }
+
+  return {
+    cacheStats(): MacroModuleCacheStats {
+      return { ...macroCacheStats };
+    },
+    dispose(): void {
+      bindingsByFile.clear();
+    },
+
+    definitionsForFile(sourceFile: ts.SourceFile): ReadonlyMap<string, MacroDefinition> {
+      return bindingsForSourceFile(sourceFile).definitions;
+    },
+
+    registriesForFile(sourceFile: ts.SourceFile) {
+      const bindings = bindingsForSourceFile(sourceFile);
+      return {
+        advancedRegistry: bindings.advancedRegistry,
+        registry: bindings.registry,
+      };
+    },
+
+    siteKindsBySpecifierForFile(
+      sourceFile: ts.SourceFile,
+    ): ReadonlyMap<string, ReadonlyMap<string, ImportedMacroSiteKind>> {
+      return bindingsForSourceFile(sourceFile).siteKindsBySpecifier;
+    },
+
+    expandPreparedProgram(
+      preserveRemovedImportStatements = false,
+      preserveMissingExpanders = false,
+      annotateExpansions = false,
+    ): ReadonlyMap<string, ts.SourceFile> {
+      const sourceFiles = preparedProgram.program.getSourceFiles().filter((sourceFile) =>
+        !sourceFile.isDeclarationFile
+      );
+      const registriesByFile = new Map<
+        string,
+        {
+          registry: ReadonlyMap<string, RewriteMacroExpander>;
+          advancedRegistry: ReadonlyMap<string, AdvancedMacroExpander>;
+          siteKindsBySpecifier: ReadonlyMap<string, ReadonlyMap<string, ImportedMacroSiteKind>>;
+        }
+      >();
+      const bindingUsageByFile = new Map<string, ReadonlyMap<string, ImportedBindingUsage>>();
+      const hasBindingsByFile = new Map<string, boolean>();
+      const expandedFiles = new Map<string, ts.SourceFile>();
+      const macroSourceFiles: ts.SourceFile[] = [];
+
+      for (const sourceFile of sourceFiles) {
+        const macroNames = macroNamesForFile(sourceFile);
+        if (macroNames.size === 0) {
+          const sourceFileName = preparedProgram.toSourceFileName(sourceFile.fileName);
+          const preparedSource = preparedProgram.preparedHost.getPreparedSourceFile(sourceFileName);
+          expandedFiles.set(
+            sourceFile.fileName,
+            preparedSource
+              ? ts.createSourceFile(
+                sourceFile.fileName,
+                preparedSource.originalText,
+                preparedProgram.options.target ?? ts.ScriptTarget.Latest,
+                true,
+                scriptKindForHostFile(sourceFile.fileName),
+              )
+              : sourceFile,
+          );
+          continue;
+        }
+
+        const bindings = bindingsForSourceFile(sourceFile);
+        registriesByFile.set(sourceFile.fileName, {
+          registry: bindings.registry,
+          advancedRegistry: bindings.advancedRegistry,
+          siteKindsBySpecifier: bindings.siteKindsBySpecifier,
+        });
+        bindingUsageByFile.set(sourceFile.fileName, bindings.importedBindingUsage);
+        hasBindingsByFile.set(sourceFile.fileName, hasResolvedMacroBindings(bindings));
+        macroSourceFiles.push(sourceFile);
+      }
+
+      const expanded = macroSourceFiles.length > 0
+        ? expandPreparedProgramWithFileRegistries(
+          preparedProgram,
+          registriesByFile,
+          preserveMissingExpanders,
+          annotateExpansions,
+          macroSourceFiles,
+        )
+        : new Map<string, ts.SourceFile>();
+      for (const [fileName, sourceFile] of expanded.entries()) {
+        if (!hasBindingsByFile.get(fileName)) {
+          const sourceFileName = preparedProgram.toSourceFileName(fileName);
+          const preparedSource = preparedProgram.preparedHost.getPreparedSourceFile(sourceFileName);
+          expandedFiles.set(
+            fileName,
+            preparedSource
+              ? ts.createSourceFile(
+                fileName,
+                preparedSource.originalText,
+                preparedProgram.options.target ?? ts.ScriptTarget.Latest,
+                true,
+                scriptKindForHostFile(fileName),
+              )
+              : sourceFile,
+          );
+          continue;
+        }
+
+        expandedFiles.set(
+          fileName,
+          stripCompileTimeOnlyImportedBindings(
+            sourceFile,
+            bindingUsageByFile.get(fileName) ?? new Map(),
+            preserveRemovedImportStatements,
+          ),
+        );
+      }
+      return expandedFiles;
+    },
+  };
+}

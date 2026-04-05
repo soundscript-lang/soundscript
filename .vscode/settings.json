@@ -1,0 +1,14 @@
+{
+  "deno.enable": true,
+  "deno.enablePaths": ["src", "test", "examples"],
+  "soundscript.server.command": "deno",
+  "soundscript.server.args": [
+    "run",
+    "-A",
+    "src/main.ts",
+    "lsp"
+  ],
+  "soundscript.server.cwd": "workspace",
+  "typescript.tsdk": null,
+  "chatgpt.openOnStartup": false
+}

@@ -1,0 +1,3 @@
+export function main(): Promise<number> {
+  return Promise.resolve(1).then((value) => Promise.resolve(value + 1).then((inner) => inner + 1));
+}

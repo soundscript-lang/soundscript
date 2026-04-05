@@ -1,0 +1,31 @@
+import { macroSignature } from 'sts:macros';
+
+const TWICE_SIGNATURE = macroSignature.of(macroSignature.expr('value'));
+const REGISTER_SIGNATURE = macroSignature.of();
+
+// #[macro(call)]
+export function twice() {
+  return {
+    expand(ctx: any, decoded: any) {
+      return ctx.output.expr(
+        ctx.quote.expr`(${decoded.args.value}) * 2`,
+      );
+    },
+    signature: TWICE_SIGNATURE,
+  };
+}
+
+// #[macro(decl)]
+export function register() {
+  return {
+    declarationKinds: ['class'] as const,
+    expansionMode: 'augment' as const,
+    expand(ctx: any) {
+      const name = ctx.syntax.declaration().name ?? ctx.error('expected named declaration');
+      return ctx.output.stmt(
+        ctx.quote.stmt`export const ${`${name}Registry`} = ${name};`,
+      );
+    },
+    signature: REGISTER_SIGNATURE,
+  };
+}

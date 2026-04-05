@@ -1,0 +1,28 @@
+import { Try } from 'sts:prelude';
+
+export function safeDivide(dividend: number, divisor: number): number | null {
+  if (divisor === 0) {
+    return null;
+  }
+
+  return dividend / divisor;
+}
+
+export function divideThreeWays(
+  left: number,
+  middle: number,
+  right: number,
+): number | null {
+  const first = Try(safeDivide(left, middle));
+  const second = Try(safeDivide(first, right));
+  return second;
+}
+
+export function describeDivision(dividend: number, divisor: number): string {
+  const result = safeDivide(dividend, divisor);
+  if (result === null) {
+    return 'err:divide_by_zero';
+  }
+
+  return result === 4 ? 'ok:4' : 'ok';
+}

@@ -1,0 +1,24 @@
+import { macroSignature, type InvocationSyntax } from 'sts:macros';
+
+// #[macro(call)]
+export function Twice() {
+  return {
+    signature: macroSignature.of(macroSignature.expr('value')),
+    hover() {
+      return {
+        contents: 'Doubles the operand and yields the computed value.',
+      };
+    },
+    format(ctx: any) {
+      const invocation = ctx.node as InvocationSyntax;
+      return `Twice(${ctx.formatExpression(invocation.args[0]!.text())})`;
+    },
+    expand(ctx: any, signature: any) {
+      if (!signature) {
+        throw new Error('expected signature');
+      }
+
+      return ctx.output.expr(ctx.quote.expr`(${signature.args.value}) * 2`);
+    },
+  };
+}
