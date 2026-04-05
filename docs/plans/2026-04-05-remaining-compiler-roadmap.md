@@ -251,5 +251,6 @@ Required evidence:
 - `docs/plans/2026-03-22-beta-to-v1-prd-roadmap.md`
 - `docs/plans/2026-03-29-wasm-async-runtime-and-host-integration-plan.md`
 - `docs/plans/2026-03-29-runtime-target-platform-and-interop-plan.md`
+- `docs/plans/2026-04-05-wasm-js-interop-addendum.md`
 - `docs/reference/2026-03-29-machine-numerics-reference.md`
 - `docs/reference/2026-03-30-js-value-types-plan.md`
