@@ -67,3 +67,45 @@ Deno.test(
     assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), []);
   },
 );
+
+Deno.test(
+  'analyzeProject does not overflow on mutually recursive flow call summaries',
+  async () => {
+    const tempDirectory = await createTempProject({
+      'tsconfig.json': JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+          },
+          include: ['src/**/*.sts'],
+        },
+        null,
+        2,
+      ),
+      'src/index.sts': [
+        'function a(box: { value: string }): { value: string } {',
+        '  return b(box);',
+        '}',
+        '',
+        'function b(box: { value: string }): { value: string } {',
+        '  return a(box);',
+        '}',
+        '',
+        'const result = a({ value: "ok" });',
+        'const exact: string = result.value;',
+        'void exact;',
+        '',
+      ].join('\n'),
+    });
+
+    const result = await analyzeProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), []);
+  },
+);

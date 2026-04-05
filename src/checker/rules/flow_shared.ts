@@ -65,6 +65,8 @@ interface FlowCallResultSummary {
   readonly shape: FlowCallResultShape | undefined;
 }
 
+const activeFlowCallSummariesByContext = new WeakMap<AnalysisContext, Set<number>>();
+
 const ARRAY_MUTATION_METHODS = new Set([
   'copyWithin',
   'fill',
@@ -284,7 +286,9 @@ function recoveredValuesMatchWith(
 
     for (const [key, leftValue] of leftEntries) {
       const rightValue = rightEntries.get(key);
-      if (!rightValue || !recoveredValuesMatchWith(context, leftValue, rightValue, getPath, getValue)) {
+      if (
+        !rightValue || !recoveredValuesMatchWith(context, leftValue, rightValue, getPath, getValue)
+      ) {
         return false;
       }
     }
@@ -451,9 +455,7 @@ function getExpressionLiteralValue(
     }
 
     const receiverValue = getExpressionLiteralValue(context, expression.expression, state);
-    return receiverValue
-      ? getLiteralMemberValue(receiverValue, key)
-      : undefined;
+    return receiverValue ? getLiteralMemberValue(receiverValue, key) : undefined;
   }
 
   return undefined;
@@ -490,7 +492,8 @@ export function getUniformArrayElementBindingFromExpression(
       continue;
     }
 
-    const samePath = representativePath && elementPath && pathsMatch(representativePath, elementPath);
+    const samePath = representativePath && elementPath &&
+      pathsMatch(representativePath, elementPath);
     const bothNoPath = representativePath === undefined && elementPath === undefined;
     if (!samePath && !bothNoPath) {
       return undefined;
@@ -615,7 +618,8 @@ function getUniformMapEntryBindingsFromLiteral(
     }
 
     if (uniformKey) {
-      const sameKeyPath = representativeKeyPath && keyPath && pathsMatch(representativeKeyPath, keyPath);
+      const sameKeyPath = representativeKeyPath && keyPath &&
+        pathsMatch(representativeKeyPath, keyPath);
       const bothNoKeyPath = representativeKeyPath === undefined && keyPath === undefined;
       if (!sameKeyPath && !bothNoKeyPath) {
         uniformKey = false;
@@ -650,7 +654,9 @@ function getUniformMapEntryBindingsFromLiteral(
 
   return {
     key: uniformKey ? { path: representativeKeyPath, value: representativeKeyValue } : undefined,
-    value: uniformValue ? { path: representativeValuePath, value: representativeValueValue } : undefined,
+    value: uniformValue
+      ? { path: representativeValuePath, value: representativeValueValue }
+      : undefined,
   };
 }
 
@@ -663,7 +669,10 @@ export function getUniformSetElementBindingFromExpression(
   const unwrappedExpression = ts.isExpression(expressionValue)
     ? unwrapFlowTransparentExpression(expressionValue)
     : expressionValue;
-  if (!ts.isNewExpression(unwrappedExpression) || !isBuiltinSetConstruction(context, unwrappedExpression)) {
+  if (
+    !ts.isNewExpression(unwrappedExpression) ||
+    !isBuiltinSetConstruction(context, unwrappedExpression)
+  ) {
     return undefined;
   }
 
@@ -684,7 +693,10 @@ export function getUniformMapEntryBindingsFromExpression(
   const unwrappedExpression = ts.isExpression(expressionValue)
     ? unwrapFlowTransparentExpression(expressionValue)
     : expressionValue;
-  if (!ts.isNewExpression(unwrappedExpression) || !isBuiltinMapConstruction(context, unwrappedExpression)) {
+  if (
+    !ts.isNewExpression(unwrappedExpression) ||
+    !isBuiltinMapConstruction(context, unwrappedExpression)
+  ) {
     return undefined;
   }
 
@@ -1334,8 +1346,10 @@ export function normalizeExpressionPath(
         }
 
         const boundReceiverValue = state.boundValues.get(receiverId);
-        if (boundReceiverValue && ts.isExpression(boundReceiverValue) &&
-          ts.isCallExpression(boundReceiverValue)) {
+        if (
+          boundReceiverValue && ts.isExpression(boundReceiverValue) &&
+          ts.isCallExpression(boundReceiverValue)
+        ) {
           const callResultPath = getCallExpressionResultMemberPath(
             context,
             boundReceiverValue,
@@ -1431,8 +1445,10 @@ export function normalizeExpressionPath(
         }
 
         const boundReceiverValue = state.boundValues.get(receiverId);
-        if (key && boundReceiverValue && ts.isExpression(boundReceiverValue) &&
-          ts.isCallExpression(boundReceiverValue)) {
+        if (
+          key && boundReceiverValue && ts.isExpression(boundReceiverValue) &&
+          ts.isCallExpression(boundReceiverValue)
+        ) {
           const callResultPath = getCallExpressionResultMemberPath(
             context,
             boundReceiverValue,
@@ -1520,9 +1536,9 @@ export function normalizeExpressionSourcePath(
     const symbolId = getSymbolId(context, symbol);
     return state.extractedBindings.get(symbolId) ??
       state.aliases.get(symbolId) ?? {
-        baseSymbol: symbol,
-        segments: [],
-      };
+      baseSymbol: symbol,
+      segments: [],
+    };
   }
 
   if (ts.isPropertyAccessExpression(expression)) {
@@ -2219,7 +2235,9 @@ function updateObjectLiteralMemberValue(
 
     const propertyKey = ts.isShorthandPropertyAssignment(property)
       ? property.name.text
-      : (ts.isPropertyAssignment(property) ? getPropertyNameKey(context, property.name) : undefined);
+      : (ts.isPropertyAssignment(property)
+        ? getPropertyNameKey(context, property.name)
+        : undefined);
     if (propertyKey !== key) {
       properties.push(property);
       continue;
@@ -2590,14 +2608,18 @@ function recordVariableAssignmentTarget(
       const recoveredPropertyPath = argumentValue && ts.isExpression(argumentValue)
         ? getExpressionMemberPath(context, argumentValue, key, state)
         : undefined;
-      const propertyTarget = ts.isShorthandPropertyAssignment(property) ? property.name : property.initializer;
-      const defaultPath = ts.isShorthandPropertyAssignment(property) && property.objectAssignmentInitializer
-        ? normalizeExpressionPath(context, property.objectAssignmentInitializer, state)
-        : getAssignmentPatternDefaultPath(context, propertyTarget, state);
-      const defaultValue = ts.isShorthandPropertyAssignment(property) && property.objectAssignmentInitializer
-        ? (getExpressionLiteralValue(context, property.objectAssignmentInitializer, state) ??
-          property.objectAssignmentInitializer)
-        : getAssignmentPatternDefaultValue(context, propertyTarget, state);
+      const propertyTarget = ts.isShorthandPropertyAssignment(property)
+        ? property.name
+        : property.initializer;
+      const defaultPath =
+        ts.isShorthandPropertyAssignment(property) && property.objectAssignmentInitializer
+          ? normalizeExpressionPath(context, property.objectAssignmentInitializer, state)
+          : getAssignmentPatternDefaultPath(context, propertyTarget, state);
+      const defaultValue =
+        ts.isShorthandPropertyAssignment(property) && property.objectAssignmentInitializer
+          ? (getExpressionLiteralValue(context, property.objectAssignmentInitializer, state) ??
+            property.objectAssignmentInitializer)
+          : getAssignmentPatternDefaultValue(context, propertyTarget, state);
       const shouldUseDefault = argumentValue !== undefined &&
         ts.isExpression(argumentValue) &&
         propertyValue === undefined &&
@@ -2975,7 +2997,8 @@ export function recordForOfLoopHeaderAliases(
   iterableExpression: ts.Expression,
   state: AnalysisState,
 ): boolean {
-  const iterableValue = getExpressionLiteralValue(context, iterableExpression, state) ?? iterableExpression;
+  const iterableValue = getExpressionLiteralValue(context, iterableExpression, state) ??
+    iterableExpression;
   const unwrappedIterable = ts.isExpression(iterableValue)
     ? unwrapFlowTransparentExpression(iterableValue)
     : iterableValue;
@@ -3001,7 +3024,8 @@ export function recordForOfLoopHeaderAliases(
       continue;
     }
 
-    const samePath = representativePath && elementPath && pathsMatch(representativePath, elementPath);
+    const samePath = representativePath && elementPath &&
+      pathsMatch(representativePath, elementPath);
     const bothNoPath = representativePath === undefined && elementPath === undefined;
     if (!samePath && !bothNoPath) {
       return false;
@@ -3067,7 +3091,8 @@ export function getUniformArrayElementBindingFromFunctionBodyExpression(
       continue;
     }
 
-    const samePath = representativePath && elementPath && pathsMatch(representativePath, elementPath);
+    const samePath = representativePath && elementPath &&
+      pathsMatch(representativePath, elementPath);
     const bothNoPath = representativePath === undefined && elementPath === undefined;
     if (!samePath && !bothNoPath) {
       return undefined;
@@ -3100,7 +3125,10 @@ export function getUniformSetElementBindingFromFunctionBodyExpression(
   const unwrappedExpression = ts.isExpression(expressionValue)
     ? unwrapFlowTransparentExpression(expressionValue)
     : expressionValue;
-  if (!ts.isNewExpression(unwrappedExpression) || !isBuiltinSetConstruction(context, unwrappedExpression)) {
+  if (
+    !ts.isNewExpression(unwrappedExpression) ||
+    !isBuiltinSetConstruction(context, unwrappedExpression)
+  ) {
     return undefined;
   }
 
@@ -3109,7 +3137,11 @@ export function getUniformSetElementBindingFromFunctionBodyExpression(
     return undefined;
   }
 
-  return getUniformArrayElementBindingFromFunctionBodyExpression(context, iterableArgument, bindings);
+  return getUniformArrayElementBindingFromFunctionBodyExpression(
+    context,
+    iterableArgument,
+    bindings,
+  );
 }
 
 export function getUniformMapEntryBindingsFromFunctionBodyExpression(
@@ -3121,7 +3153,10 @@ export function getUniformMapEntryBindingsFromFunctionBodyExpression(
   const unwrappedExpression = ts.isExpression(expressionValue)
     ? unwrapFlowTransparentExpression(expressionValue)
     : expressionValue;
-  if (!ts.isNewExpression(unwrappedExpression) || !isBuiltinMapConstruction(context, unwrappedExpression)) {
+  if (
+    !ts.isNewExpression(unwrappedExpression) ||
+    !isBuiltinMapConstruction(context, unwrappedExpression)
+  ) {
     return undefined;
   }
 
@@ -3189,7 +3224,8 @@ export function isStableConstLocalBindingPath(
   context: AnalysisContext,
   path: NormalizedPath,
 ): boolean {
-  return isConstLocalBindingPath(path) && !constBindingMayAliasMutableState(context, path.baseSymbol);
+  return isConstLocalBindingPath(path) &&
+    !constBindingMayAliasMutableState(context, path.baseSymbol);
 }
 
 export function getFunctionLikeFromExpression(
@@ -3258,9 +3294,7 @@ function getBoundValue(
     }
 
     const receiverValue = getBoundValue(context, expression.expression, bindings);
-    return receiverValue
-      ? getLiteralMemberValue(receiverValue, key)
-      : undefined;
+    return receiverValue ? getLiteralMemberValue(receiverValue, key) : undefined;
   }
 
   return undefined;
@@ -3417,11 +3451,16 @@ function getFlowCallResultSummaryFromExpression(
     ts.isBinaryExpression(expression) &&
     expression.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken
   ) {
-    const leftSummary = getFlowCallResultSummaryFromExpression(context, expression.left, bindings) ??
-      (isDefinitelyNullishExpression(expression.left)
-        ? { canBeNullish: true, shape: undefined }
-        : undefined);
-    const rightSummary = getFlowCallResultSummaryFromExpression(context, expression.right, bindings);
+    const leftSummary =
+      getFlowCallResultSummaryFromExpression(context, expression.left, bindings) ??
+        (isDefinitelyNullishExpression(expression.left)
+          ? { canBeNullish: true, shape: undefined }
+          : undefined);
+    const rightSummary = getFlowCallResultSummaryFromExpression(
+      context,
+      expression.right,
+      bindings,
+    );
 
     if (!leftSummary || !rightSummary) {
       return undefined;
@@ -3450,19 +3489,17 @@ function getFlowCallResultSummaryFromExpression(
   }
 
   const branches = getEquivalentExpressionBranches(expression);
-  if (branches && !(
-    ts.isBinaryExpression(expression) &&
-    expression.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken
-  )) {
+  if (
+    branches && !(
+      ts.isBinaryExpression(expression) &&
+      expression.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken
+    )
+  ) {
     const [left, right] = branches;
     const leftSummary = getFlowCallResultSummaryFromExpression(context, left, bindings) ??
-      (isDefinitelyNullishExpression(left)
-        ? { canBeNullish: true, shape: undefined }
-        : undefined);
+      (isDefinitelyNullishExpression(left) ? { canBeNullish: true, shape: undefined } : undefined);
     const rightSummary = getFlowCallResultSummaryFromExpression(context, right, bindings) ??
-      (isDefinitelyNullishExpression(right)
-        ? { canBeNullish: true, shape: undefined }
-        : undefined);
+      (isDefinitelyNullishExpression(right) ? { canBeNullish: true, shape: undefined } : undefined);
     if (!leftSummary || !rightSummary) {
       return undefined;
     }
@@ -3659,11 +3696,43 @@ function createFunctionBodyBindings(sourceState: AnalysisState): FunctionBodyBin
 function getCallExpressionReceiverExpression(
   expression: ts.CallExpression,
 ): ts.Expression | undefined {
-  if (ts.isPropertyAccessExpression(expression.expression) || ts.isElementAccessExpression(expression.expression)) {
+  if (
+    ts.isPropertyAccessExpression(expression.expression) ||
+    ts.isElementAccessExpression(expression.expression)
+  ) {
     return expression.expression.expression;
   }
 
   return undefined;
+}
+
+function getActiveFlowCallSummaryIds(context: AnalysisContext): Set<number> {
+  let active = activeFlowCallSummariesByContext.get(context);
+  if (!active) {
+    active = new Set<number>();
+    activeFlowCallSummariesByContext.set(context, active);
+  }
+
+  return active;
+}
+
+function computeFlowCallSummaryWithCycleGuard<T>(
+  context: AnalysisContext,
+  declaration: ts.FunctionLikeDeclaration,
+  compute: () => T,
+): T | undefined {
+  const activeSummaryIds = getActiveFlowCallSummaryIds(context);
+  const declarationId = context.getNodeId(declaration);
+  if (activeSummaryIds.has(declarationId)) {
+    return undefined;
+  }
+
+  activeSummaryIds.add(declarationId);
+  try {
+    return compute();
+  } finally {
+    activeSummaryIds.delete(declarationId);
+  }
 }
 
 function getCallExpressionResultSummary(
@@ -3677,15 +3746,17 @@ function getCallExpressionResultSummary(
     return undefined;
   }
 
-  const bindings = getFunctionBindings(context, expression.arguments, declaration, state);
-  const receiverExpression = getCallExpressionReceiverExpression(expression);
-  if (receiverExpression) {
-    bindFunctionReceiverPath(
-      bindings,
-      normalizeExpressionPath(context, receiverExpression, state),
-    );
-  }
-  return getFunctionReturnSummary(context, body, bindings);
+  return computeFlowCallSummaryWithCycleGuard(context, declaration, () => {
+    const bindings = getFunctionBindings(context, expression.arguments, declaration, state);
+    const receiverExpression = getCallExpressionReceiverExpression(expression);
+    if (receiverExpression) {
+      bindFunctionReceiverPath(
+        bindings,
+        normalizeExpressionPath(context, receiverExpression, state),
+      );
+    }
+    return getFunctionReturnSummary(context, body, bindings);
+  });
 }
 
 export function getNestedFunctionBindings(
@@ -3761,15 +3832,22 @@ function getFunctionCallExpressionResultSummary(
     return undefined;
   }
 
-  const nestedBindings = getNestedFunctionBindings(context, expression.arguments, declaration, bindings);
-  const receiverExpression = getCallExpressionReceiverExpression(expression);
-  if (receiverExpression) {
-    bindFunctionReceiverPath(
-      nestedBindings,
-      resolveFunctionAliasValuePath(context, receiverExpression, bindings),
+  return computeFlowCallSummaryWithCycleGuard(context, declaration, () => {
+    const nestedBindings = getNestedFunctionBindings(
+      context,
+      expression.arguments,
+      declaration,
+      bindings,
     );
-  }
-  return getFunctionReturnSummary(context, body, nestedBindings);
+    const receiverExpression = getCallExpressionReceiverExpression(expression);
+    if (receiverExpression) {
+      bindFunctionReceiverPath(
+        nestedBindings,
+        resolveFunctionAliasValuePath(context, receiverExpression, bindings),
+      );
+    }
+    return getFunctionReturnSummary(context, body, nestedBindings);
+  });
 }
 
 function getCallExpressionResultPath(
@@ -4047,7 +4125,9 @@ function recordBindingName(
         shouldUseDefault
           ? getFunctionDefaultBindingPath(context, element, bindings)
           : (recoveredPropertyPath ?? propertyPath),
-        shouldUseDefault ? getFunctionDefaultBindingValue(context, element, bindings) : propertyValue,
+        shouldUseDefault
+          ? getFunctionDefaultBindingValue(context, element, bindings)
+          : propertyValue,
         bindings,
       );
     }
@@ -4235,8 +4315,10 @@ export function normalizeFunctionBodyPath(
         }
 
         const boundReceiverValue = bindings.boundValues.get(receiverId);
-        if (boundReceiverValue && ts.isExpression(boundReceiverValue) &&
-          ts.isCallExpression(boundReceiverValue)) {
+        if (
+          boundReceiverValue && ts.isExpression(boundReceiverValue) &&
+          ts.isCallExpression(boundReceiverValue)
+        ) {
           const callResultPath = getFunctionCallExpressionResultMemberPath(
             context,
             boundReceiverValue,
@@ -4285,7 +4367,12 @@ export function normalizeFunctionBodyPath(
             objectRestAlias &&
             !objectRestAlias.excludedKeys.includes(key)
           ) {
-            const restPath = getFunctionObjectRestAliasPath(context, objectRestAlias, key, bindings);
+            const restPath = getFunctionObjectRestAliasPath(
+              context,
+              objectRestAlias,
+              key,
+              bindings,
+            );
             if (restPath) {
               return restPath;
             }
@@ -4335,8 +4422,10 @@ export function normalizeFunctionBodyPath(
         }
 
         const boundReceiverValue = bindings.boundValues.get(receiverId);
-        if (key && boundReceiverValue && ts.isExpression(boundReceiverValue) &&
-          ts.isCallExpression(boundReceiverValue)) {
+        if (
+          key && boundReceiverValue && ts.isExpression(boundReceiverValue) &&
+          ts.isCallExpression(boundReceiverValue)
+        ) {
           const callResultPath = getFunctionCallExpressionResultMemberPath(
             context,
             boundReceiverValue,
