@@ -84,6 +84,7 @@ interface EffectComposition {
 interface BuiltinForwardedArgumentBehavior {
   argumentIndex: number;
   failureBoundary: EffectFailureBoundary;
+  memberName?: string;
 }
 
 interface BuiltinCallBehavior {
@@ -435,19 +436,22 @@ function applyForwardedFailureBoundary(mask: number, failureBoundary: EffectFail
 function createForwardedParameterKey(
   parameterIndex: number,
   failureBoundary: EffectFailureBoundary,
+  memberName?: string,
 ): string {
-  return `${parameterIndex}:${failureBoundary}`;
+  return `${parameterIndex}:${failureBoundary}:${memberName ?? ''}`;
 }
 
 function addForwardedParameter(
   forwardedParameters: Map<string, EffectForwardedParameterFact>,
   parameterIndex: number,
   failureBoundary: EffectFailureBoundary,
+  memberName?: string,
 ): void {
   forwardedParameters.set(
-    createForwardedParameterKey(parameterIndex, failureBoundary),
+    createForwardedParameterKey(parameterIndex, failureBoundary, memberName),
     {
       failureBoundary,
+      memberName,
       parameterIndex,
     },
   );
@@ -530,6 +534,44 @@ function getCurrentFunctionParameterIndex(
     }
     const parameterSymbol = context.checker.getSymbolAtLocation(parameter.name);
     if (parameterSymbol === symbol && hasCallableType(context, parameter)) {
+      return index;
+    }
+  }
+
+  return undefined;
+}
+
+function getCurrentFunctionMemberParameterIndex(
+  context: AnalysisContext,
+  parameters: readonly ts.ParameterDeclaration[],
+  expression: ts.Expression,
+  memberName: string,
+): number | undefined {
+  if (!ts.isIdentifier(expression)) {
+    return undefined;
+  }
+
+  const symbol = context.checker.getSymbolAtLocation(expression);
+  if (!symbol) {
+    return undefined;
+  }
+
+  for (const [index, parameter] of parameters.entries()) {
+    if (!ts.isIdentifier(parameter.name)) {
+      continue;
+    }
+    const parameterSymbol = context.checker.getSymbolAtLocation(parameter.name);
+    if (parameterSymbol !== symbol) {
+      continue;
+    }
+
+    const type = context.checker.getTypeAtLocation(parameter);
+    const memberSymbol = type.getProperty(memberName);
+    if (!memberSymbol) {
+      continue;
+    }
+    const memberType = context.checker.getTypeOfSymbolAtLocation(memberSymbol, parameter);
+    if (context.checker.getSignaturesOfType(memberType, ts.SignatureKind.Call).length > 0) {
       return index;
     }
   }
@@ -820,7 +862,47 @@ function getKnownStdlibJsonBehavior(
     };
   }
 
+  if (declarationName === 'parseAndDecode' || declarationName === 'decodeJson') {
+    return {
+      directMask: 0,
+      forwardedArguments: [{ argumentIndex: 1, failureBoundary: 'preserve', memberName: 'decode' }],
+    };
+  }
+
+  if (declarationName === 'encodeAndStringify' || declarationName === 'encodeJson') {
+    return {
+      directMask: 0,
+      forwardedArguments: [{ argumentIndex: 1, failureBoundary: 'preserve', memberName: 'encode' }],
+    };
+  }
+
   return undefined;
+}
+
+function getSummaryForSignatures(
+  context: AnalysisContext,
+  signatures: readonly ts.Signature[],
+): EffectComposition | undefined {
+  if (signatures.length === 0) {
+    return undefined;
+  }
+
+  let mask = 0;
+  let unknown = false;
+  for (const signature of signatures) {
+    const declaration = signature.getDeclaration();
+    if (!declaration || !isCallableDeclarationNode(declaration)) {
+      unknown = true;
+      continue;
+    }
+    const summary = getEffectSummaryForDeclaration(context, declaration);
+    mask |= summary.directMask;
+    if (summary.hasUnknownDirectEffects || summary.forwardedParameters.length > 0) {
+      unknown = true;
+    }
+  }
+
+  return { mask, unknown };
 }
 
 function resolveAliasedSymbol(checker: ts.TypeChecker, symbol: ts.Symbol): ts.Symbol {
@@ -1126,6 +1208,19 @@ function getKnownStdlibBehavior(
     };
   }
 
+  if (
+    declarationName &&
+    sourceFileName &&
+    isTrustedSoundStdlibModuleFile(sourceFileName, 'result') &&
+    (declarationName === 'ok' || declarationName === 'err' || declarationName === 'some' ||
+      declarationName === 'none')
+  ) {
+    return {
+      directMask: 0,
+      forwardedArguments: [],
+    };
+  }
+
   if (sourceFileName && isTrustedSoundStdlibModuleFile(sourceFileName, 'json')) {
     const jsonBehavior = getKnownStdlibJsonBehavior(declarationName);
     if (jsonBehavior) {
@@ -1238,27 +1333,115 @@ function getSummaryForCallableExpression(
   const type = context.checker.getTypeAtLocation(expression);
   const callSignatures = context.checker.getSignaturesOfType(type, ts.SignatureKind.Call);
   const constructSignatures = context.checker.getSignaturesOfType(type, ts.SignatureKind.Construct);
-  const signatures = [...callSignatures, ...constructSignatures];
-  if (signatures.length === 0) {
+  return getSummaryForSignatures(context, [...callSignatures, ...constructSignatures]);
+}
+
+function getObjectLiteralPropertyName(propertyName: ts.PropertyName | ts.PrivateIdentifier): string | undefined {
+  if (ts.isIdentifier(propertyName) || ts.isStringLiteral(propertyName) || ts.isNumericLiteral(propertyName)) {
+    return propertyName.text;
+  }
+  return undefined;
+}
+
+function getSummaryForObjectLiteralMember(
+  context: AnalysisContext,
+  expression: ts.ObjectLiteralExpression,
+  memberName: string,
+): EffectComposition | undefined {
+  for (const property of expression.properties) {
+    if (ts.isMethodDeclaration(property)) {
+      if (property.name && getObjectLiteralPropertyName(property.name) === memberName) {
+        const summary = getEffectSummaryForDeclaration(context, property);
+        return {
+          mask: summary.directMask,
+          unknown: summary.hasUnknownDirectEffects || summary.forwardedParameters.length > 0,
+        };
+      }
+      continue;
+    }
+
+    if (ts.isPropertyAssignment(property)) {
+      const propertyName = getObjectLiteralPropertyName(property.name);
+      if (propertyName !== memberName) {
+        continue;
+      }
+      return getSummaryForCallableExpression(context, property.initializer);
+    }
+
+    if (ts.isShorthandPropertyAssignment(property) && property.name.text === memberName) {
+      return getSummaryForCallableExpression(context, property.name);
+    }
+  }
+
+  return undefined;
+}
+
+function unwrapOuterExpression(expression: ts.Expression): ts.Expression {
+  let current = expression;
+  while (true) {
+    if (ts.isParenthesizedExpression(current)) {
+      current = current.expression;
+      continue;
+    }
+    if (ts.isAsExpression(current) || ts.isTypeAssertionExpression(current) || ts.isSatisfiesExpression(current)) {
+      current = current.expression;
+      continue;
+    }
+    return current;
+  }
+}
+
+function getSummaryForLocalMemberBinding(
+  context: AnalysisContext,
+  expression: ts.Expression,
+  memberName: string,
+): EffectComposition | undefined {
+  if (!ts.isIdentifier(expression)) {
     return undefined;
   }
 
-  let mask = 0;
-  let unknown = false;
-  for (const signature of signatures) {
-    const declaration = signature.getDeclaration();
-    if (!declaration || !isCallableDeclarationNode(declaration)) {
-      unknown = true;
+  const symbol = context.checker.getSymbolAtLocation(expression);
+  if (!symbol) {
+    return undefined;
+  }
+
+  for (const declaration of symbol.declarations ?? []) {
+    if (!ts.isVariableDeclaration(declaration) || !declaration.initializer) {
       continue;
     }
-    const summary = getEffectSummaryForDeclaration(context, declaration);
-    mask |= summary.directMask;
-    if (summary.hasUnknownDirectEffects || summary.forwardedParameters.length > 0) {
-      unknown = true;
+
+    const initializer = unwrapOuterExpression(declaration.initializer);
+    if (ts.isObjectLiteralExpression(initializer)) {
+      const summary = getSummaryForObjectLiteralMember(context, initializer, memberName);
+      if (summary) {
+        return summary;
+      }
     }
   }
 
-  return { mask, unknown };
+  return undefined;
+}
+
+function getSummaryForCallableMember(
+  context: AnalysisContext,
+  expression: ts.Expression,
+  memberName: string,
+): EffectComposition | undefined {
+  const localBindingSummary = getSummaryForLocalMemberBinding(context, expression, memberName);
+  if (localBindingSummary) {
+    return localBindingSummary;
+  }
+
+  const type = context.checker.getTypeAtLocation(expression);
+  const symbol = type.getProperty(memberName);
+  if (!symbol) {
+    return undefined;
+  }
+
+  const memberType = context.checker.getTypeOfSymbolAtLocation(symbol, expression);
+  const callSignatures = context.checker.getSignaturesOfType(memberType, ts.SignatureKind.Call);
+  const constructSignatures = context.checker.getSignaturesOfType(memberType, ts.SignatureKind.Construct);
+  return getSummaryForSignatures(context, [...callSignatures, ...constructSignatures]);
 }
 
 function summarizeForwardedArgumentInBody(
@@ -1267,18 +1450,23 @@ function summarizeForwardedArgumentInBody(
   argument: ts.Expression | undefined,
   forwardedParameters: Map<string, EffectForwardedParameterFact>,
   failureBoundary: EffectFailureBoundary,
+  memberName?: string,
 ): EffectComposition {
   if (!argument) {
     return { mask: 0, unknown: true };
   }
 
-  const parameterIndex = getCurrentFunctionParameterIndex(context, parameters, argument);
+  const parameterIndex = memberName
+    ? getCurrentFunctionMemberParameterIndex(context, parameters, argument, memberName)
+    : getCurrentFunctionParameterIndex(context, parameters, argument);
   if (parameterIndex !== undefined) {
-    addForwardedParameter(forwardedParameters, parameterIndex, failureBoundary);
+    addForwardedParameter(forwardedParameters, parameterIndex, failureBoundary, memberName);
     return { mask: 0, unknown: false };
   }
 
-  const summary = getSummaryForCallableExpression(context, argument) ?? { mask: 0, unknown: true };
+  const summary = (memberName
+    ? getSummaryForCallableMember(context, argument, memberName)
+    : getSummaryForCallableExpression(context, argument)) ?? { mask: 0, unknown: true };
   return {
     mask: applyForwardedFailureBoundary(summary.mask, failureBoundary),
     unknown: summary.unknown,
@@ -1341,6 +1529,7 @@ function buildDeclarationSummary(
       createForwardedParameterKey(
         forwardedParameter.parameterIndex,
         forwardedParameter.failureBoundary,
+        forwardedParameter.memberName,
       ),
       forwardedParameter,
     ]),
@@ -1379,6 +1568,7 @@ function buildDeclarationSummary(
                 node.arguments[forwardedArgument.argumentIndex],
                 forwardedParameters,
                 forwardedArgument.failureBoundary,
+                forwardedArgument.memberName,
               );
               summary.directMask |= applyContainingCallableBoundary(forwarded.mask, asyncBoundary);
               summary.hasUnknownDirectEffects ||= forwarded.unknown;
@@ -1417,7 +1607,8 @@ function buildDeclarationSummary(
 
   summary.forwardedParameters = [...forwardedParameters.values()].sort((left, right) =>
     left.parameterIndex - right.parameterIndex ||
-    left.failureBoundary.localeCompare(right.failureBoundary)
+    left.failureBoundary.localeCompare(right.failureBoundary) ||
+    (left.memberName ?? '').localeCompare(right.memberName ?? '')
   );
   inProgressSummaries.delete(declaration);
   return summary;
@@ -1461,10 +1652,16 @@ export function getEffectCompositionForCallLike(
     let mask = builtin.directMask;
     let unknown = false;
     for (const forwardedArgument of builtin.forwardedArguments) {
-      const forwarded = getSummaryForCallableExpression(
-        context,
-        expression.arguments?.[forwardedArgument.argumentIndex]!,
-      );
+      const forwarded = forwardedArgument.memberName
+        ? getSummaryForCallableMember(
+          context,
+          expression.arguments?.[forwardedArgument.argumentIndex]!,
+          forwardedArgument.memberName,
+        )
+        : getSummaryForCallableExpression(
+          context,
+          expression.arguments?.[forwardedArgument.argumentIndex]!,
+        );
       if (!forwarded) {
         unknown = true;
         continue;
@@ -1486,10 +1683,16 @@ export function getEffectCompositionForCallLike(
   let mask = summary.directMask;
   let unknown = summary.hasUnknownDirectEffects;
   for (const forwardedParameter of summary.forwardedParameters) {
-    const forwarded = getSummaryForCallableExpression(
-      context,
-      expression.arguments?.[forwardedParameter.parameterIndex]!,
-    );
+    const forwarded = forwardedParameter.memberName
+      ? getSummaryForCallableMember(
+        context,
+        expression.arguments?.[forwardedParameter.parameterIndex]!,
+        forwardedParameter.memberName,
+      )
+      : getSummaryForCallableExpression(
+        context,
+        expression.arguments?.[forwardedParameter.parameterIndex]!,
+      );
     if (!forwarded) {
       unknown = true;
       continue;

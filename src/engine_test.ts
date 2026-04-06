@@ -40,6 +40,31 @@ function loadProgram(projectPath: string): ts.Program {
   });
 }
 
+function normalizeForwardedParameters(
+  forwardedParameters: readonly {
+    failureBoundary: string;
+    memberName?: string;
+    parameterIndex: number;
+  }[],
+): readonly {
+  failureBoundary: string;
+  memberName?: string;
+  parameterIndex: number;
+}[] {
+  return forwardedParameters.map((forwardedParameter) =>
+    forwardedParameter.memberName === undefined
+      ? {
+        failureBoundary: forwardedParameter.failureBoundary,
+        parameterIndex: forwardedParameter.parameterIndex,
+      }
+      : {
+        failureBoundary: forwardedParameter.failureBoundary,
+        memberName: forwardedParameter.memberName,
+        parameterIndex: forwardedParameter.parameterIndex,
+      }
+  );
+}
+
 Deno.test('createAnalysisContext exposes stable identities and cached fact queries', async () => {
   const tempDirectory = await createTempProject([
     {
@@ -522,7 +547,7 @@ Deno.test('createAnalysisContext summarizes Promise continuation builtins with p
 
   assertEquals(mapValueSummary.directMask, INTERNAL_EFFECT_MASKS.suspend);
   assertEquals(mapValueSummary.hasUnknownDirectEffects, false);
-  assertEquals(mapValueSummary.forwardedParameters, []);
+  assertEquals(normalizeForwardedParameters(mapValueSummary.forwardedParameters), []);
 
   assertEquals(
     explodeLaterSummary.directMask,
@@ -535,21 +560,21 @@ Deno.test('createAnalysisContext summarizes Promise continuation builtins with p
   assertEquals(explodeLaterSummary.hasUnknownDirectEffects, false);
 
   assertEquals(forwardThenSummary.directMask, INTERNAL_EFFECT_MASKS.suspend);
-  assertEquals(forwardThenSummary.forwardedParameters, [{
+  assertEquals(normalizeForwardedParameters(forwardThenSummary.forwardedParameters), [{
     failureBoundary: 'reject',
     parameterIndex: 1,
   }]);
   assertEquals(forwardThenSummary.hasUnknownDirectEffects, false);
 
   assertEquals(recoverSummary.directMask, INTERNAL_EFFECT_MASKS.suspend);
-  assertEquals(recoverSummary.forwardedParameters, [{
+  assertEquals(normalizeForwardedParameters(recoverSummary.forwardedParameters), [{
     failureBoundary: 'reject',
     parameterIndex: 1,
   }]);
   assertEquals(recoverSummary.hasUnknownDirectEffects, false);
 
   assertEquals(finishSummary.directMask, INTERNAL_EFFECT_MASKS.suspend);
-  assertEquals(finishSummary.forwardedParameters, [{
+  assertEquals(normalizeForwardedParameters(finishSummary.forwardedParameters), [{
     failureBoundary: 'reject',
     parameterIndex: 1,
   }]);
@@ -680,7 +705,7 @@ Deno.test('createAnalysisContext summarizes portable globals and collection buil
   assertEquals(readMapSummary.directMask, 0);
   assertEquals(readMapSummary.hasUnknownDirectEffects, false);
   assertEquals(visitMapSummary.directMask, 0);
-  assertEquals(visitMapSummary.forwardedParameters, [{
+  assertEquals(normalizeForwardedParameters(visitMapSummary.forwardedParameters), [{
     failureBoundary: 'preserve',
     parameterIndex: 1,
   }]);
@@ -691,7 +716,7 @@ Deno.test('createAnalysisContext summarizes portable globals and collection buil
   assertEquals(createSetSummary.directMask, 0);
   assertEquals(createSetSummary.hasUnknownDirectEffects, false);
   assertEquals(visitSetSummary.directMask, 0);
-  assertEquals(visitSetSummary.forwardedParameters, [{
+  assertEquals(normalizeForwardedParameters(visitSetSummary.forwardedParameters), [{
     failureBoundary: 'preserve',
     parameterIndex: 1,
   }]);
@@ -852,19 +877,19 @@ Deno.test('createAnalysisContext summarizes deferred host schedulers without imm
   const cancelSummary = getEffectSummaryForDeclaration(context, cancelTimeout);
 
   assertEquals(microtaskSummary.directMask, INTERNAL_EFFECT_MASKS.hostInterop);
-  assertEquals(microtaskSummary.forwardedParameters, []);
+  assertEquals(normalizeForwardedParameters(microtaskSummary.forwardedParameters), []);
   assertEquals(microtaskSummary.hasUnknownDirectEffects, false);
 
   assertEquals(timeoutSummary.directMask, INTERNAL_EFFECT_MASKS.hostTime);
-  assertEquals(timeoutSummary.forwardedParameters, []);
+  assertEquals(normalizeForwardedParameters(timeoutSummary.forwardedParameters), []);
   assertEquals(timeoutSummary.hasUnknownDirectEffects, false);
 
   assertEquals(intervalSummary.directMask, INTERNAL_EFFECT_MASKS.hostTime);
-  assertEquals(intervalSummary.forwardedParameters, []);
+  assertEquals(normalizeForwardedParameters(intervalSummary.forwardedParameters), []);
   assertEquals(intervalSummary.hasUnknownDirectEffects, false);
 
   assertEquals(cancelSummary.directMask, INTERNAL_EFFECT_MASKS.hostTime);
-  assertEquals(cancelSummary.forwardedParameters, []);
+  assertEquals(normalizeForwardedParameters(cancelSummary.forwardedParameters), []);
   assertEquals(cancelSummary.hasUnknownDirectEffects, false);
 });
 
@@ -1200,7 +1225,9 @@ Deno.test('createAnalysisContext summarizes JSON and console builtins precisely'
     INTERNAL_EFFECT_MASKS.failsThrows,
   );
   assertEquals(
-    getEffectSummaryForDeclaration(context, parseWithReviver).forwardedParameters,
+    normalizeForwardedParameters(
+      getEffectSummaryForDeclaration(context, parseWithReviver).forwardedParameters,
+    ),
     [{ parameterIndex: 1, failureBoundary: 'preserve' }],
   );
   assertEquals(
@@ -1212,7 +1239,9 @@ Deno.test('createAnalysisContext summarizes JSON and console builtins precisely'
     INTERNAL_EFFECT_MASKS.failsThrows,
   );
   assertEquals(
-    getEffectSummaryForDeclaration(context, stringifyWithReplacer).forwardedParameters,
+    normalizeForwardedParameters(
+      getEffectSummaryForDeclaration(context, stringifyWithReplacer).forwardedParameters,
+    ),
     [{ parameterIndex: 1, failureBoundary: 'preserve' }],
   );
   assertEquals(
@@ -1258,10 +1287,35 @@ Deno.test('createAnalysisContext summarizes result, json, and debug stdlib helpe
     {
       path: 'src/stdlib/json.d.ts',
       contents: [
+        'import type { Decoder } from "./decode";',
+        'import type { Encoder } from "./encode";',
+        '',
         'export declare function parseJson(text: string): unknown;',
         'export declare function stringifyJson(value: unknown): unknown;',
         'export declare function parseJsonLike(text: string): unknown;',
         'export declare function stringifyJsonLike(value: unknown): unknown;',
+        'export declare function parseAndDecode<T, E>(text: string, decoder: Decoder<T, E>): T | E;',
+        'export declare function encodeAndStringify<T, E>(value: T, encoder: Encoder<T, unknown, E>): unknown;',
+        'export declare function decodeJson<T, E>(text: string, decoder: Decoder<T, E>): T | E;',
+        'export declare function encodeJson<T, E>(value: T, encoder: Encoder<T, unknown, E>): unknown;',
+        '',
+      ].join('\n'),
+    },
+    {
+      path: 'src/stdlib/decode.d.ts',
+      contents: [
+        'export type Decoder<T, E> = {',
+        '  decode(value: unknown): T | E;',
+        '};',
+        '',
+      ].join('\n'),
+    },
+    {
+      path: 'src/stdlib/encode.d.ts',
+      contents: [
+        'export type Encoder<T, TEncoded, E> = {',
+        '  encode(value: T): TEncoded | E;',
+        '};',
         '',
       ].join('\n'),
     },
@@ -1277,7 +1331,9 @@ Deno.test('createAnalysisContext summarizes result, json, and debug stdlib helpe
       path: 'src/index.ts',
       contents: [
         'import { resultOf } from "./stdlib/result";',
-        'import { parseJson, stringifyJson, parseJsonLike, stringifyJsonLike } from "./stdlib/json";',
+        'import { parseAndDecode, parseJson, stringifyJson, parseJsonLike, stringifyJsonLike, encodeAndStringify, decodeJson, encodeJson } from "./stdlib/json";',
+        'import type { Decoder } from "./stdlib/decode";',
+        'import type { Encoder } from "./stdlib/encode";',
         'import { assert, log } from "./stdlib/debug";',
         '',
         'export function captureJsonFailure(text: string) {',
@@ -1312,6 +1368,41 @@ Deno.test('createAnalysisContext summarizes result, json, and debug stdlib helpe
         '',
         'export function stringifyStdJsonLike(value: unknown) {',
         '  return stringifyJsonLike(value);',
+        '}',
+        '',
+        'export function parseAndDecodeHost(text: string) {',
+        '  return parseAndDecode(text, {',
+        '    decode(value: unknown) {',
+        '      console.log(value);',
+        '      return 1;',
+        '    },',
+        '  });',
+        '}',
+        '',
+        'export function forwardParseAndDecode(text: string, decoder: Decoder<number, Error>) {',
+        '  return parseAndDecode(text, decoder);',
+        '}',
+        '',
+        'export function encodeAndStringifyHost(value: number) {',
+        '  return encodeAndStringify(value, {',
+        '    encode(input: number) {',
+        '      console.log(input);',
+        '      return input;',
+        '    },',
+        '  });',
+        '}',
+        '',
+        'export function forwardEncodeJson(value: number, encoder: Encoder<number, unknown, Error>) {',
+        '  return encodeJson(value, encoder);',
+        '}',
+        '',
+        'export function decodeJsonHost(text: string) {',
+        '  return decodeJson(text, {',
+        '    decode(value: unknown) {',
+        '      console.log(value);',
+        '      return 1;',
+        '    },',
+        '  });',
         '}',
         '',
         'export function debugLogValue(value: unknown) {',
@@ -1349,6 +1440,11 @@ Deno.test('createAnalysisContext summarizes result, json, and debug stdlib helpe
   const stringifyStdJson = declarationsByName.get('stringifyStdJson');
   const parseStdJsonLike = declarationsByName.get('parseStdJsonLike');
   const stringifyStdJsonLike = declarationsByName.get('stringifyStdJsonLike');
+  const parseAndDecodeHost = declarationsByName.get('parseAndDecodeHost');
+  const forwardParseAndDecode = declarationsByName.get('forwardParseAndDecode');
+  const encodeAndStringifyHost = declarationsByName.get('encodeAndStringifyHost');
+  const forwardEncodeJson = declarationsByName.get('forwardEncodeJson');
+  const decodeJsonHost = declarationsByName.get('decodeJsonHost');
   const debugLogValue = declarationsByName.get('debugLogValue');
   const debugAssertValue = declarationsByName.get('debugAssertValue');
 
@@ -1360,6 +1456,11 @@ Deno.test('createAnalysisContext summarizes result, json, and debug stdlib helpe
   assertExists(stringifyStdJson);
   assertExists(parseStdJsonLike);
   assertExists(stringifyStdJsonLike);
+  assertExists(parseAndDecodeHost);
+  assertExists(forwardParseAndDecode);
+  assertExists(encodeAndStringifyHost);
+  assertExists(forwardEncodeJson);
+  assertExists(decodeJsonHost);
   assertExists(debugLogValue);
   assertExists(debugAssertValue);
 
@@ -1381,6 +1482,30 @@ Deno.test('createAnalysisContext summarizes result, json, and debug stdlib helpe
   assertEquals(getEffectSummaryForDeclaration(context, parseStdJsonLike).directMask, 0);
   assertEquals(getEffectSummaryForDeclaration(context, stringifyStdJsonLike).directMask, 0);
   assertEquals(
+    getEffectSummaryForDeclaration(context, parseAndDecodeHost).directMask,
+    INTERNAL_EFFECT_MASKS.hostInterop,
+  );
+  assertEquals(
+    normalizeForwardedParameters(
+      getEffectSummaryForDeclaration(context, forwardParseAndDecode).forwardedParameters,
+    ),
+    [{ parameterIndex: 1, failureBoundary: 'preserve', memberName: 'decode' }],
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, encodeAndStringifyHost).directMask,
+    INTERNAL_EFFECT_MASKS.hostInterop,
+  );
+  assertEquals(
+    normalizeForwardedParameters(
+      getEffectSummaryForDeclaration(context, forwardEncodeJson).forwardedParameters,
+    ),
+    [{ parameterIndex: 1, failureBoundary: 'preserve', memberName: 'encode' }],
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, decodeJsonHost).directMask,
+    INTERNAL_EFFECT_MASKS.hostInterop,
+  );
+  assertEquals(
     getEffectSummaryForDeclaration(context, debugLogValue).directMask,
     INTERNAL_EFFECT_MASKS.hostInterop,
   );
@@ -1391,5 +1516,7 @@ Deno.test('createAnalysisContext summarizes result, json, and debug stdlib helpe
   assertEquals(getEffectSummaryForDeclaration(context, captureJsonFailure).hasUnknownDirectEffects, false);
   assertEquals(getEffectSummaryForDeclaration(context, captureAsync).hasUnknownDirectEffects, false);
   assertEquals(getEffectSummaryForDeclaration(context, parseStdJson).hasUnknownDirectEffects, false);
+  assertEquals(getEffectSummaryForDeclaration(context, forwardParseAndDecode).hasUnknownDirectEffects, false);
+  assertEquals(getEffectSummaryForDeclaration(context, forwardEncodeJson).hasUnknownDirectEffects, false);
   assertEquals(getEffectSummaryForDeclaration(context, debugLogValue).hasUnknownDirectEffects, false);
 });

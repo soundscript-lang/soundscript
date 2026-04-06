@@ -79,6 +79,7 @@ export type EffectFailureBoundary = 'preserve' | 'reject' | 'capture';
 
 export interface EffectForwardedParameterFact {
   failureBoundary: EffectFailureBoundary;
+  memberName?: string;
   parameterIndex: number;
 }
 
