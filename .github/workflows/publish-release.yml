@@ -10,6 +10,7 @@ on:
 
 permissions:
   contents: write
+  id-token: write
 
 concurrency:
   group: soundscript-publish-release
@@ -129,29 +130,11 @@ jobs:
           set -euo pipefail
           npm run release:prepare-npm
 
-      - name: Verify npm token is configured
-        if: ${{ steps.npm_state.outputs.needs_publish == 'true' }}
-        shell: bash
-        env:
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          set -euo pipefail
-          if [[ -z "${NPM_TOKEN}" ]]; then
-            echo "NPM_TOKEN is required to publish a new release." >&2
-            exit 1
-          fi
-
       - name: Publish npm packages
         if: ${{ steps.npm_state.outputs.needs_publish == 'true' }}
         shell: bash
-        env:
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -euo pipefail
-          cat <<EOF > "$HOME/.npmrc"
-          //registry.npmjs.org/:_authToken=${NPM_TOKEN}
-          EOF
-          npm whoami
           npm run release:publish-npm
 
       - name: Stage GitHub release assets

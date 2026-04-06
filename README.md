@@ -148,7 +148,10 @@ For a normal public release, bump `VERSION` there, push `main`, then run the
 - create the GitHub release
 - attach the platform CLI archives plus checksums
 
-The workflow requires the `NPM_TOKEN` secret in the `soundscript` repo.
+The workflow is set up for npm trusted publishing from GitHub Actions. npm must
+be configured to trust the `publish-release.yml` workflow file in this
+repository. The workflow also needs GitHub's `id-token: write` permission,
+which is already configured in the workflow file.
 
 If you need to reattach CLI archives to an existing release, use the separate
 `Backfill CLI Assets` workflow.
