@@ -1,4 +1,4 @@
-import { assertEquals } from '@std/assert';
+import { assertEquals, assertStrictEquals, assertThrows } from '@std/assert';
 
 import { type Bind, type Kind, type Kind2 } from '@soundscript/soundscript/hkt';
 import { monadGen } from '@soundscript/soundscript/typeclasses';
@@ -27,6 +27,7 @@ import {
   tapErr,
   unwrapOr,
   unwrapOrElse,
+  unwrapOrThrow,
 } from './result.ts';
 
 Deno.test('result err() overload produces a void-backed err result', () => {
@@ -143,6 +144,38 @@ Deno.test('result unwrapOr and unwrapOrElse provide local fallbacks', () => {
   assertEquals(unwrapOr(err('boom'), 0), 0);
   assertEquals(unwrapOrElse(ok(1), () => 0), 1);
   assertEquals(unwrapOrElse(err('boom'), (error: string) => error.length), 4);
+});
+
+Deno.test('result unwrapOrThrow returns ok values and throws normalized err payloads', () => {
+  const failure = new TypeError('boom');
+
+  assertEquals(unwrapOrThrow(ok(1)), 1);
+  assertStrictEquals(
+    assertThrows(() => unwrapOrThrow(err(failure)), TypeError, 'boom'),
+    failure,
+  );
+
+  const primitiveError = assertThrows(() => unwrapOrThrow(err('bad input')), Error, 'bad input');
+  assertEquals(primitiveError.cause, 'bad input');
+
+  const mappedError = assertThrows(
+    () => unwrapOrThrow(err('bad input'), (error: string) => `mapped:${error}`),
+    Error,
+    'mapped:bad input',
+  );
+  assertEquals(mappedError.cause, 'mapped:bad input');
+});
+
+Deno.test('result unwrapOrThrow also accepts Option carriers', () => {
+  assertEquals(unwrapOrThrow(some(1)), 1);
+  assertThrows(() => unwrapOrThrow(none()), Error, 'Expected value.');
+
+  const mappedNone = assertThrows(
+    () => unwrapOrThrow(none(), () => 'missing user'),
+    Error,
+    'missing user',
+  );
+  assertEquals(mappedNone.cause, 'missing user');
 });
 
 Deno.test('result collect gathers ok values and short-circuits on the first err', () => {

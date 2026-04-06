@@ -526,7 +526,7 @@ Deno.test('prepare_npm --stdlib-only emits runtime stdlib JS that Node can impor
           [
             "import { defaulted, nullable, optional, readonlyRecord, string } from '@soundscript/soundscript/decode';",
             "import { emptyJsonRecord, isJsonObject, mergeJsonRecords } from '@soundscript/soundscript/json';",
-            "import { collect, err, mapErr, ok, tapErr, unwrapOr, unwrapOrElse } from '@soundscript/soundscript/result';",
+            "import { collect, err, mapErr, ok, some, tapErr, unwrapOr, unwrapOrElse, unwrapOrThrow } from '@soundscript/soundscript/result';",
             '',
             "const decodedName = defaulted(optional(string), 'anon').decode(undefined);",
             "if (decodedName.tag !== 'ok' || decodedName.value !== 'anon') {",
@@ -561,6 +561,8 @@ Deno.test('prepare_npm --stdlib-only emits runtime stdlib JS that Node can impor
             '  collected: collected.value,',
             "  fallback: unwrapOr(err('missing'), 7),",
             "  recovered: unwrapOrElse(err('boom'), (error) => error.length),",
+            '  required: unwrapOrThrow(ok(9)),',
+            '  present: unwrapOrThrow(some("user")),',
             '  keys: Object.keys(merged).sort(),',
             '  mapped: mapped.error,',
             '  tapped,',
@@ -576,7 +578,7 @@ Deno.test('prepare_npm --stdlib-only emits runtime stdlib JS that Node can impor
       );
       assertEquals(
         loadResult.stdout.trim(),
-        '{"collected":[1,2],"fallback":7,"recovered":4,"keys":["tags"],"mapped":"ERR:bad","tapped":"bad"}',
+        '{"collected":[1,2],"fallback":7,"recovered":4,"required":9,"present":"user","keys":["tags"],"mapped":"ERR:bad","tapped":"bad"}',
       );
     } finally {
       await Deno.remove(projectRoot, { recursive: true }).catch(() => undefined);
@@ -631,7 +633,7 @@ Deno.test('prepare_npm --stdlib-only tarball resolves NodeNext TypeScript consum
         [
           "import { defaulted, nullable, optional, readonlyRecord, string } from '@soundscript/soundscript/decode';",
           "import { copyJsonRecord, emptyJsonRecord, isJsonObject, mergeJsonRecords, type JsonValue } from '@soundscript/soundscript/json';",
-          "import { collect, err, mapErr, ok, tapErr, unwrapOr, unwrapOrElse, type Result } from '@soundscript/soundscript/result';",
+          "import { collect, err, mapErr, ok, some, tapErr, unwrapOr, unwrapOrElse, unwrapOrThrow, type Result } from '@soundscript/soundscript/result';",
           '',
           "const decodedName = defaulted(optional(string), 'anon').decode(undefined);",
           "const decodedRecord = readonlyRecord(nullable(string)).decode({ first: 'ok', second: null });",
@@ -646,6 +648,8 @@ Deno.test('prepare_npm --stdlib-only tarball resolves NodeNext TypeScript consum
           '});',
           "const fallback = unwrapOr(err('bad'), 0);",
           "const recovered = unwrapOrElse(err('bad'), (error) => error.length);",
+          'const required = unwrapOrThrow(ok(1));',
+          'const present = unwrapOrThrow(some("user"));',
           '',
           'if (isJsonObject(mergedJson)) {',
           '  const feature: JsonValue | undefined = mergedJson.feature;',
@@ -659,6 +663,8 @@ Deno.test('prepare_npm --stdlib-only tarball resolves NodeNext TypeScript consum
           'void tapped;',
           'void fallback;',
           'void recovered;',
+          'void required;',
+          'void present;',
           'void seen;',
           '',
         ].join('\n'),

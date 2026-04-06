@@ -66,6 +66,8 @@ export function tapErr<T, E>(
 ): Result<T, E>;
 export function unwrapOr<T, E>(value: Result<T, E>, fallback: T): T;
 export function unwrapOrElse<T, E>(value: Result<T, E>, fallback: (error: E) => T): T;
+export function unwrapOrThrow<T, E>(value: Result<T, E>, onErr?: (error: E) => unknown): T;
+export function unwrapOrThrow<T>(value: Option<T>, onNone?: () => unknown): T;
 export function collect<T, E>(values: readonly Result<T, E>[]): Result<readonly T[], E>;
 
 export const optionFunctor: Functor<OptionF>;

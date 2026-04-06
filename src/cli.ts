@@ -59,7 +59,7 @@ import {
 import { runProgram, type RunProgramOptions, type RunProgramResult } from './run_program.ts';
 import { projectEditorFile } from './editor_projection.ts';
 
-export const VERSION = '0.1.18';
+export const VERSION = '0.1.19';
 const FINDINGS_EXIT_CODE = 1;
 const CLI_FAILURE_EXIT_CODE = 2;
 

@@ -39,7 +39,7 @@ It re-exports the same core values and types:
 The stable `sts:*` surface stays focused and composable.
 
 - `sts:result` owns the canonical `Result` / `Option` carriers and result-first helpers such as
-  `mapErr`, `tapErr`, `unwrapOr`, `unwrapOrElse`, and `collect`.
+  `mapErr`, `tapErr`, `unwrapOr`, `unwrapOrElse`, `unwrapOrThrow`, and `collect`.
 - `sts:match` owns `Match` and `where`.
 - `sts:failures` owns `Failure`, `ErrorFrame`, and `normalizeThrown(...)`.
 - `sts:json` owns JSON boundary helpers for parsing, stringifying, and plain JSON validation, plus

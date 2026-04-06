@@ -190,6 +190,27 @@ export function unwrapOrElse<T, E>(value: Result<T, E>, fallback: (error: E) => 
   return isOk(value) ? value.value : fallback(value.error);
 }
 
+export function unwrapOrThrow<T, E>(value: Result<T, E>, onErr?: (error: E) => unknown): T;
+export function unwrapOrThrow<T>(value: Option<T>, onNone?: () => unknown): T;
+export function unwrapOrThrow<T, E>(
+  value: Result<T, E> | Option<T>,
+  onFailure?: ((error: E) => unknown) | (() => unknown),
+): T {
+  if (value.tag === 'ok' || value.tag === 'some') {
+    return value.value;
+  }
+
+  if (value.tag === 'err') {
+    throw normalizeResultThrowValue(
+      onFailure ? (onFailure as (error: E) => unknown)(value.error) : value.error,
+    );
+  }
+
+  throw normalizeResultThrowValue(
+    onFailure ? (onFailure as () => unknown)() : new Error('Expected value.'),
+  );
+}
+
 export function collect<T, E>(values: readonly Result<T, E>[]): Result<readonly T[], E> {
   const collectedValues: T[] = [];
   for (const value of values) {
@@ -199,6 +220,20 @@ export function collect<T, E>(values: readonly Result<T, E>[]): Result<readonly 
     collectedValues.push(value.value);
   }
   return ok(collectedValues);
+}
+
+function normalizeResultThrowValue(value: unknown): Error {
+  if (
+    typeof value === 'string' ||
+    typeof value === 'number' ||
+    typeof value === 'boolean' ||
+    typeof value === 'bigint' ||
+    typeof value === 'symbol'
+  ) {
+    return new Error(String(value), { cause: value });
+  }
+
+  return normalizeThrown(value);
 }
 
 function mapOption<A, B>(value: Option<A>, f: (value: A) => B): Option<B> {
