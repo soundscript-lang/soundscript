@@ -68,20 +68,20 @@ export interface AliasRelationshipFact {
   kind: AliasRelationshipKind;
 }
 
-export type EffectKind =
-  | 'await'
-  | 'callback'
-  | 'exception'
-  | 'mutation'
-  | 'none'
-  | 'unknown'
-  | 'yield';
+export type PublicEffectName = 'fails' | 'host' | 'mut' | 'suspend';
+
+export interface EffectParameterContractFact {
+  forbidMask: number;
+  parameterIndex: number;
+}
 
 export interface EffectSummaryFact {
+  directMask: number;
+  forbidMask: number;
+  forwardedParameterIndexes: readonly number[];
+  hasUnknownDirectEffects: boolean;
   nodeId: number;
-  kind: EffectKind;
-  invalidatesNarrowing: boolean;
-  reason: string;
+  parameterContracts: readonly EffectParameterContractFact[];
 }
 
 export type NarrowingInvalidationReason =

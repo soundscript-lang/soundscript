@@ -4408,7 +4408,7 @@ Deno.test('analyzeProject preserves unknown annotation namespaces and their nest
   assertEquals(result.diagnostics[0]?.metadata?.fixability, 'local_rewrite');
   assertEquals(
     result.diagnostics[0]?.metadata?.evidence?.map((fact) => `${fact.label}:${fact.value}`),
-    ['annotationName:eq', 'registeredBuiltins:extern, interop, newtype, unsafe, value, variance'],
+    ['annotationName:eq', 'registeredBuiltins:effects, extern, interop, newtype, unsafe, value, variance'],
   );
   assertEquals(
     result.diagnostics[0]?.metadata?.counterexample,
@@ -4420,7 +4420,7 @@ Deno.test('analyzeProject preserves unknown annotation namespaces and their nest
   );
   assertEquals(result.diagnostics[0]?.notes, [
     '`#[eq]` is not a registered builtin soundscript annotation.',
-    'Registered builtin annotations in v1 are `#[extern]`, `#[interop]`, `#[newtype]`, `#[unsafe]`, `#[value]`, and `#[variance(...)]`.',
+    'Registered builtin annotations in v1 are `#[effects(...)]`, `#[extern]`, `#[interop]`, `#[newtype]`, `#[unsafe]`, `#[value]`, and `#[variance(...)]`.',
     'Example: Replace `#[eq]` with a registered builtin annotation such as `#[extern]`, or remove it until that directive exists.',
   ]);
   assertEquals(
@@ -4486,6 +4486,203 @@ Deno.test('analyzeProject gives structured guidance for duplicate annotations in
     result.diagnostics[0]?.hint,
     'Keep a single annotation entry for each name in the attached block.',
   );
+});
+
+Deno.test('analyzeProject accepts builtin effects annotations on local functions and callback parameters', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/index.sts': [
+      'function each(',
+      '  values: number[],',
+      '  // #[effects(forbid: [fails])]',
+      '  callback: (value: number) => void,',
+      '): void {',
+      '  for (const value of values) {',
+      '    callback(value);',
+      '  }',
+      '}',
+      '',
+      '// #[effects(forbid: [fails, suspend, mut, host], via: [callback])]',
+      'function runOnce(callback: () => void): void {',
+      '  callback();',
+      '}',
+      '',
+      'runOnce(() => each([1, 2, 3], () => {}));',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics, []);
+});
+
+Deno.test('analyzeProject rejects invalid public effects annotation names', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/index.sts': [
+      '// #[effects(forbid: [fails.throws, throws])]',
+      'function main(): number {',
+      '  return 1;',
+      '}',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1039']);
+  assertEquals(result.diagnostics[0]?.metadata?.rule, 'invalid_effect_annotation');
+  assertEquals(result.diagnostics[0]?.metadata?.primarySymbol, '#[effects(...)]');
+});
+
+Deno.test('analyzeProject enforces local forbid fails contracts against inferred throw behavior', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/index.sts': [
+      '// #[effects(forbid: [fails])]',
+      'function explode(): number {',
+      '  throw new Error("boom");',
+      '}',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1040']);
+  assertEquals(result.diagnostics[0]?.metadata?.rule, 'effect_contract_violation');
+  assertEquals(result.diagnostics[0]?.metadata?.primarySymbol, 'explode');
+});
+
+Deno.test('analyzeProject enforces callback forbid contracts against failful arguments', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/index.sts': [
+      '// #[extern]',
+      'declare function runChecked(',
+      '  // #[effects(forbid: [fails])]',
+      '  callback: () => void,',
+      '): void;',
+      '',
+      'function bad(): void {',
+      '  throw new Error("boom");',
+      '}',
+      '',
+      'function main(): void {',
+      '  runChecked(bad);',
+      '}',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1040']);
+  assertEquals(result.diagnostics[0]?.metadata?.rule, 'effect_contract_violation');
+  assertEquals(result.diagnostics[0]?.line, 12);
+  assertEquals(result.diagnostics[0]?.column, 3);
+});
+
+Deno.test('analyzeProject checks callable assignability against callback forbid contracts', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/index.sts': [
+      'interface NeedsPureCallback {',
+      '  (',
+      '    // #[effects(forbid: [fails])]',
+      '    callback: () => void,',
+      '  ): void;',
+      '}',
+      '',
+      '// #[extern]',
+      'declare const needsPure: NeedsPureCallback;',
+      '',
+      'const general: (callback: () => void) => void = needsPure;',
+      'void general;',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1019']);
+  assertEquals(result.diagnostics[0]?.metadata?.rule, 'callable_effect_parameter_contravariance');
 });
 
 Deno.test('analyzeProject explains invalid variance contracts with concrete contract guidance', async () => {
@@ -6658,6 +6855,46 @@ Deno.test('analyzeProject reports actionable guidance for SOUND1020 invalidation
       endColumn: 25,
     },
   ]);
+});
+
+Deno.test('analyzeProject preserves narrowing across calls proven free of mut and suspend', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/index.sts': [
+      'function peek(box: { value: string | null }): string | null {',
+      '  return box.value;',
+      '}',
+      '',
+      'function use(box: { value: string | null }): string {',
+      '  if (box.value !== null) {',
+      '    peek(box);',
+      '    const value: string = box.value;',
+      '    return value;',
+      '  }',
+      '  return "";',
+      '}',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics, []);
 });
 
 Deno.test('analyzeProject keeps guarded Error Match arms free of generated-code diagnostics', async () => {

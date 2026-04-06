@@ -16,18 +16,23 @@ The design should stay lightweight:
 
 ## V1 Scope
 
-V1 tracks exactly three runtime effects:
+V1 tracks exactly four runtime effects:
 
+- `fails`
 - `suspend`
 - `mut`
 - `host`
 
 V1 deliberately does not include:
 
-- `throws`
 - `pure`
 - algebraic effects or handlers
 - general user-facing effect variables
+
+The internal implementation should still be hierarchical from day 1, with subeffects such as
+`fails.throws`, `fails.rejects`, `host.dom`, `host.io`, `host.random`, `host.time`, `host.interop`,
+and reserved future `mut.*` families. Those subeffects are implementation detail in v1; the public
+annotation surface stays coarse.
 
 ## Public Surface
 
@@ -52,7 +57,7 @@ Validation rules:
 - each field may appear at most once
 - `add` and `forbid` must be arrays of effect identifiers
 - `via` must be an array of parameter names
-- accepted v1 effect identifiers are exactly `suspend`, `mut`, and `host`
+- accepted v1 effect identifiers are exactly `fails`, `suspend`, `mut`, and `host`
 - reject positional arguments, unknown effects, duplicate effects inside a field, duplicate
   fields, and unknown or repeated `via` parameter names
 
@@ -147,7 +152,9 @@ Each callable summary should model:
 - whether any relevant effect remains unknown
 
 The internal representation should be future-ready for named hierarchical effects even though the
-public v1 validation set is flat. Do not hardcode checker architecture around exactly three bits.
+public v1 validation set is flat. Do not hardcode checker architecture around a one-bit-per-effect
+model; `fails.throws` and `fails.rejects` should remain distinguishable internally even though the
+public contract only exposes `fails`.
 
 ## Inference
 
@@ -191,7 +198,7 @@ Callback restrictions live on the parameter:
 // #[effects(via: [predicate])]
 function findIndex<T>(
   values: readonly T[],
-  // #[effects(forbid: [suspend, mut])]
+  // #[effects(forbid: [fails, suspend, mut])]
   predicate: (value: T, index: number) => boolean,
 ): number;
 ```
@@ -231,7 +238,7 @@ the relevant effects remain unknown.
 A bodyful local callable annotated with:
 
 ```ts
-// #[effects(forbid: [suspend, host])]
+// #[effects(forbid: [fails, suspend, host])]
 ```
 
 must be rejected if its computed summary:
@@ -284,8 +291,8 @@ Early uses:
 
 - fixed-layout object/class-static initializer paths that currently require syntactic
   side-effect-freedom
-- helper-call acceptance in places where lowering only needs proof of no `suspend`, no `mut`, and
-  no `host`
+- helper-call acceptance in places where lowering only needs proof of no `fails`, no `suspend`, no
+  `mut`, and no `host`
 
 This aligns with the wasm async/runtime direction:
 

@@ -1739,8 +1739,29 @@ Deno.test('runCli check --format json preserves unknown annotations without diag
     }>;
   };
 
-  assertEquals(result.exitCode, 0, result.output);
-  assertEquals(payload.diagnostics, []);
+  assertEquals(result.exitCode, 1);
+  assertEquals(payload.diagnostics[0]?.code, 'SOUND1007');
+  assertEquals(payload.diagnostics[0]?.metadata?.rule, 'unknown_annotation');
+  assertEquals(payload.diagnostics[0]?.metadata?.primarySymbol, '#[eq]');
+  assertEquals(payload.diagnostics[0]?.metadata?.replacementFamily, 'registered_annotation_name');
+  assertEquals(payload.diagnostics[0]?.metadata?.fixability, 'local_rewrite');
+  assertEquals(
+    payload.diagnostics[0]?.metadata?.evidence?.map((fact) => `${fact.label}:${fact.value}`),
+    ['annotationName:eq', 'registeredBuiltins:effects, extern, interop, newtype, unsafe, value, variance'],
+  );
+  assertEquals(
+    payload.diagnostics[0]?.metadata?.counterexample,
+    'An unknown annotation can look like a checked contract even though soundscript gives it no semantics.',
+  );
+  assertEquals(
+    payload.diagnostics[0]?.metadata?.example,
+    'Replace `#[eq]` with a registered builtin annotation such as `#[extern]`, or remove it until that directive exists.',
+  );
+  assertEquals(payload.diagnostics[0]?.notes, [
+    '`#[eq]` is not a registered builtin soundscript annotation.',
+    'Registered builtin annotations in v1 are `#[effects(...)]`, `#[extern]`, `#[interop]`, `#[newtype]`, `#[unsafe]`, `#[value]`, and `#[variance(...)]`.',
+    'Example: Replace `#[eq]` with a registered builtin annotation such as `#[extern]`, or remove it until that directive exists.',
+  ]);
 });
 
 Deno.test('runCli check --format json includes structured duplicate-annotation metadata', async () => {

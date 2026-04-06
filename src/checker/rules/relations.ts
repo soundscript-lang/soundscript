@@ -4,6 +4,7 @@ import type { ParsedAnnotationArgument } from '../../annotation_syntax.ts';
 import { SOUND_DIAGNOSTIC_CODES, SOUND_DIAGNOSTIC_MESSAGES } from '../engine/diagnostic_codes.ts';
 import type { AnalysisContext, ExportedNonOrdinaryFamily, ExportSummary } from '../engine/types.ts';
 import { getNodeDiagnosticRange, type SoundDiagnostic } from '../diagnostics.ts';
+import { effectMaskToPublicNames, getEffectSummaryForSignature } from '../effects.ts';
 import {
   collectExportedSymbolsBySourceFile,
   getKnownRecoveredNonOrdinaryFamily,
@@ -36,6 +37,7 @@ interface TupleShape {
 }
 
 type RelationDiagnosticKind =
+  | 'callableEffectContract'
   | 'callableParameterVariance'
   | 'exoticObjectWidening'
   | 'genericClassExactMatchVariance'
@@ -324,6 +326,101 @@ function createCallableParameterVarianceMismatch(
     hint:
       'Keep the exact callable type, widen parameter types, or wrap the callable with an adapter.',
   };
+}
+
+function createCallableEffectContractMismatch(
+  context: AnalysisContext,
+  sourceType: ts.Type,
+  targetType: ts.Type,
+  forbiddenEffects: readonly string[],
+  relation: 'outer' | 'parameter',
+  parameterName?: string,
+): RelationMismatch {
+  const sourceTypeText = context.checker.typeToString(sourceType);
+  const targetTypeText = context.checker.typeToString(targetType);
+  const forbiddenText = forbiddenEffects.map((effect) => `\`${effect}\``).join(', ');
+  return {
+    kind: 'callableEffectContract',
+    message: relation === 'outer'
+      ? 'Callable effect contracts are covariant in soundscript.'
+      : 'Higher-order callback effect contracts are contravariant in soundscript.',
+    metadata: {
+      rule: relation === 'outer' ? 'callable_effect_covariance' : 'callable_effect_parameter_contravariance',
+      fixability: 'local_rewrite',
+      invariant: relation === 'outer'
+        ? 'A callable assigned to an effect-forbidding surface must itself stay within that forbidden-effect contract.'
+        : 'Higher-order callback parameters may not demand stricter forbid contracts than the target callable surface declares.',
+      replacementFamily: 'adapter_or_effect_contract_alignment',
+      evidence: [
+        createVarianceEvidence('sourceType', sourceTypeText),
+        createVarianceEvidence('targetType', targetTypeText),
+        createVarianceEvidence('forbiddenEffects', forbiddenEffects.join(', ')),
+        ...(parameterName ? [createVarianceEvidence('parameterName', parameterName)] : []),
+      ],
+      counterexample: relation === 'outer'
+        ? `Code typed as '${targetTypeText}' could rely on forbidding ${forbiddenText}, but '${sourceTypeText}' may still perform them.`
+        : `Code typed as '${targetTypeText}' could pass a callback accepted by the target surface, but '${sourceTypeText}' demands a stricter forbid contract${parameterName ? ` on '${parameterName}'` : ''}.`,
+    },
+    notes: relation === 'outer'
+      ? [
+        `'${sourceTypeText}' cannot be widened to '${targetTypeText}' because the target callable surface forbids ${forbiddenText}.`,
+      ]
+      : [
+        `'${sourceTypeText}' cannot be widened to '${targetTypeText}' because it requires a stricter callback forbid contract${parameterName ? ` on '${parameterName}'` : ''}.`,
+      ],
+    hint:
+      'Align the callable effect contracts, or insert an adapter that enforces the stronger contract explicitly.',
+  };
+}
+
+function classifyUnsoundCallableEffectContractRelation(
+  context: AnalysisContext,
+  sourceType: ts.Type,
+  targetType: ts.Type,
+  sourceSignature: ts.Signature,
+  targetSignature: ts.Signature,
+): RelationMismatch | undefined {
+  const sourceSummary = getEffectSummaryForSignature(context, sourceSignature);
+  const targetSummary = getEffectSummaryForSignature(context, targetSignature);
+  const targetForbidMask = targetSummary?.forbidMask ?? 0;
+  if (targetForbidMask !== 0) {
+    if (!sourceSummary || sourceSummary.hasUnknownDirectEffects || (sourceSummary.directMask & targetForbidMask) !== 0) {
+      return createCallableEffectContractMismatch(
+        context,
+        sourceType,
+        targetType,
+        effectMaskToPublicNames(targetForbidMask),
+        'outer',
+      );
+    }
+  }
+
+  const sourceParameterContracts = new Map(
+    (sourceSummary?.parameterContracts ?? []).map((contract) => [contract.parameterIndex, contract]),
+  );
+  const targetParameterContracts = new Map(
+    (targetSummary?.parameterContracts ?? []).map((contract) => [contract.parameterIndex, contract]),
+  );
+  const parameterCount = Math.max(sourceSignature.getParameters().length, targetSignature.getParameters().length);
+  for (let index = 0; index < parameterCount; index += 1) {
+    const sourceForbidMask = sourceParameterContracts.get(index)?.forbidMask ?? 0;
+    const targetForbidMask = targetParameterContracts.get(index)?.forbidMask ?? 0;
+    if ((sourceForbidMask & ~targetForbidMask) === 0) {
+      continue;
+    }
+    const parameterName = targetSignature.getParameters()[index]?.getName() ??
+      sourceSignature.getParameters()[index]?.getName();
+    return createCallableEffectContractMismatch(
+      context,
+      sourceType,
+      targetType,
+      effectMaskToPublicNames(sourceForbidMask & ~targetForbidMask),
+      'parameter',
+      parameterName,
+    );
+  }
+
+  return undefined;
 }
 
 function createDiagnostic(node: ts.Node, details?: RelationDiagnosticDetails): SoundDiagnostic {
@@ -1899,6 +1996,17 @@ function classifyUnsoundSignatureRelation(
   );
   if (predicateMismatch) {
     return predicateMismatch;
+  }
+
+  const effectMismatch = classifyUnsoundCallableEffectContractRelation(
+    context,
+    sourceType,
+    targetType,
+    sourceSignature,
+    targetSignature,
+  );
+  if (effectMismatch) {
+    return effectMismatch;
   }
 
   return returnTypeNodeAliasMismatch;
@@ -9336,12 +9444,15 @@ function classifyUnsoundRelation(
 
 function toRelationDiagnosticDetails(mismatch: RelationMismatch): RelationDiagnosticDetails {
   switch (mismatch.kind) {
+    case 'callableEffectContract':
     case 'callableParameterVariance':
     case 'exoticObjectWidening':
       return {
-        code: mismatch.kind === 'callableParameterVariance'
+        code: mismatch.kind === 'exoticObjectWidening'
+          ? SOUND_DIAGNOSTIC_CODES.exoticObjectWidening
+          : mismatch.kind === 'callableParameterVariance'
           ? SOUND_DIAGNOSTIC_CODES.unsoundRelation
-          : SOUND_DIAGNOSTIC_CODES.exoticObjectWidening,
+          : SOUND_DIAGNOSTIC_CODES.unsoundRelation,
         metadata: mismatch.metadata,
         message: mismatch.message,
         notes: mismatch.notes,

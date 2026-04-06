@@ -368,3 +368,64 @@ Deno.test('createAnalysisContext only parses annotations from real comments and 
   assertEquals(annotations.hasAttachedAnnotation(importDeclaration, 'interop'), false);
   assertEquals(annotations.hasAttachedAnnotation(actual, 'unsafe'), true);
 });
+
+Deno.test('createAnalysisContext attaches effects annotations to function-valued parameters', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+          },
+          include: ['src/**/*.ts'],
+        },
+        null,
+        2,
+      ),
+    },
+    {
+      path: 'src/index.ts',
+      contents: [
+        'export function each(',
+        '  values: number[],',
+        '  // #[effects(forbid: [fails])]',
+        '  callback: (value: number) => void,',
+        '): void {',
+        '  for (const value of values) {',
+        '    callback(value);',
+        '  }',
+        '}',
+        '',
+      ].join('\n'),
+    },
+  ]);
+  const projectPath = join(tempDirectory, 'tsconfig.json');
+  const program = loadProgram(projectPath);
+  const context = createAnalysisContext({ program, workingDirectory: tempDirectory });
+  const sourceFile = context.getSourceFiles().find((file) => file.fileName.endsWith('/src/index.ts'));
+
+  assertExists(sourceFile);
+
+  const functionDeclaration = sourceFile.statements.find(ts.isFunctionDeclaration);
+  assertExists(functionDeclaration);
+  const callbackParameter = functionDeclaration.parameters[1];
+  assertExists(callbackParameter);
+
+  const annotations = context.getAnnotationLookup(sourceFile);
+  assertEquals(
+    annotations.getAttachedAnnotations(callbackParameter).map((annotation) => ({
+      argumentsText: annotation.argumentsText,
+      name: annotation.name,
+    })),
+    [
+      {
+        argumentsText: 'forbid: [fails]',
+        name: 'effects',
+      },
+    ],
+  );
+});

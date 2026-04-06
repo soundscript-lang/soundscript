@@ -365,6 +365,29 @@ compilerIntegrationTest(
 );
 
 compilerIntegrationTest(
+  'compileProject accepts provably effect-free helper calls in fixed-layout object literal initializers',
+  async () => {
+    const tempDirectory = await createCompilerTestProject([
+      'function scale(value: number): number {',
+      '  return value * 2;',
+      '}',
+      '',
+      'export function main(input: number): number {',
+      '  const box = { value: scale(input) };',
+      '  return box.value;',
+      '}',
+      '',
+    ].join('\n'));
+
+    const result = compileTempProject(tempDirectory);
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assertEquals(await invokeCompiledEntry(tempDirectory, 'main', [7]), 14);
+  },
+);
+
+compilerIntegrationTest(
   'compileProject executes plain sync while break and continue control flow',
   async () => {
     const tempDirectory = await createCompilerTestProject([

@@ -9,6 +9,7 @@ import type {
   ParsedTypeScriptPragma,
 } from '../engine/types.ts';
 import type { SoundDiagnostic } from '../diagnostics.ts';
+import { validateEffectsAnnotation } from '../effects.ts';
 
 import { isInteropTargetNode } from './trust.ts';
 
@@ -20,6 +21,7 @@ function createDiagnostic(
     | typeof SOUND_DIAGNOSTIC_CODES.annotationArgumentsNotSupported
     | typeof SOUND_DIAGNOSTIC_CODES.bannedTypeScriptPragma
     | typeof SOUND_DIAGNOSTIC_CODES.duplicateAnnotation
+    | typeof SOUND_DIAGNOSTIC_CODES.invalidEffectAnnotation
     | typeof SOUND_DIAGNOSTIC_CODES.invalidAnnotationTarget
     | typeof SOUND_DIAGNOSTIC_CODES.malformedAnnotation
     | typeof SOUND_DIAGNOSTIC_CODES.unknownAnnotation,
@@ -314,7 +316,8 @@ function isUnionBackedNewtypeTarget(
 }
 
 function isKnownAnnotation(annotationName: string): boolean {
-  return annotationName === 'extern' ||
+  return annotationName === 'effects' ||
+    annotationName === 'extern' ||
     annotationName === 'interop' ||
     annotationName === 'newtype' ||
     annotationName === 'unsafe' ||
@@ -341,7 +344,7 @@ function createUnknownAnnotationMessage(annotation: ParsedAnnotation): string {
 }
 
 function getRegisteredBuiltinAnnotationsText(): string {
-  return 'extern, interop, newtype, unsafe, value, variance';
+  return 'effects, extern, interop, newtype, unsafe, value, variance';
 }
 
 function createMalformedAnnotationDiagnostic(
@@ -420,7 +423,7 @@ function createUnknownAnnotationDiagnostic(
       },
       notes: [
         `\`${label}\` is not a registered builtin soundscript annotation.`,
-        'Registered builtin annotations in v1 are `#[extern]`, `#[interop]`, `#[newtype]`, `#[unsafe]`, `#[value]`, and `#[variance(...)]`.',
+        'Registered builtin annotations in v1 are `#[effects(...)]`, `#[extern]`, `#[interop]`, `#[newtype]`, `#[unsafe]`, `#[value]`, and `#[variance(...)]`.',
         `Example: ${example}`,
       ],
       hint:
@@ -471,6 +474,9 @@ function createDuplicateAnnotationDiagnostic(
 }
 
 function createUnexpectedArgumentsMessage(annotation: ParsedAnnotation): string {
+  if (annotation.name === 'effects') {
+    return `${SOUND_DIAGNOSTIC_MESSAGES.annotationArgumentsNotSupported} \`#[effects(...)]\` only supports named \`add\`, \`forbid\`, and \`via\` fields.`;
+  }
   if (annotation.name === 'value') {
     return `${SOUND_DIAGNOSTIC_MESSAGES.annotationArgumentsNotSupported} \`#[value]\` only supports the bare form or \`#[value(deep: true)]\`.`;
   }
@@ -478,7 +484,9 @@ function createUnexpectedArgumentsMessage(annotation: ParsedAnnotation): string 
 }
 
 function describeSupportedAnnotationArguments(annotationName: string): string {
-  return annotationName === 'value'
+  return annotationName === 'effects'
+    ? 'named `add`, `forbid`, and `via` fields'
+    : annotationName === 'value'
     ? 'bare form or `#[value(deep: true)]`'
     : 'bare form only';
 }
@@ -491,7 +499,9 @@ function createAnnotationArgumentsNotSupportedDiagnostic(
   const label = `#[${annotation.name}]`;
   const argumentsText = annotation.argumentsText !== undefined ? `(${annotation.argumentsText})` : '()';
   const supportedForm = describeSupportedAnnotationArguments(annotation.name);
-  const example = annotation.name === 'value'
+  const example = annotation.name === 'effects'
+    ? 'Use `#[effects(forbid: [fails])]` on a bodyful callable, `#[effects(add: [host])]` on a declaration-only callable, or `#[effects(forbid: [fails])]` on a function-valued parameter.'
+    : annotation.name === 'value'
     ? 'Use bare `#[value]` or `#[value(deep: true)]`.'
     : `Remove the arguments from \`#[${annotation.text}]\`.`;
 
@@ -529,6 +539,10 @@ function createAnnotationArgumentsNotSupportedDiagnostic(
 }
 
 function createInvalidTargetMessage(annotation: ParsedAnnotation): string {
+  if (annotation.name === 'effects') {
+    return `${SOUND_DIAGNOSTIC_MESSAGES.invalidAnnotationTarget} \`#[effects(...)]\` must attach to a callable declaration, callable signature, or function-valued parameter.`;
+  }
+
   if (annotation.name === 'interop') {
     return `${SOUND_DIAGNOSTIC_MESSAGES.invalidAnnotationTarget} \`#[interop]\` must attach to an import, \`require(...)\`, or \`import(...)\` boundary.`;
   }
@@ -647,6 +661,10 @@ function describeExpectedAnnotationTarget(annotationName: string, ownerName?: st
     return 'import, require(...), or import(...) boundary';
   }
 
+  if (annotationName === 'effects') {
+    return 'callable declaration, callable signature, or function-valued parameter';
+  }
+
   if (annotationName === 'extern') {
     return 'local ambient runtime declaration';
   }
@@ -756,6 +774,47 @@ function createInvalidAnnotationTargetDiagnostic(
   );
 }
 
+function createInvalidEffectAnnotationDiagnostic(
+  filePath: string,
+  line: number,
+  annotation: ParsedAnnotation,
+  message: string,
+): SoundDiagnostic {
+  const example =
+    'Use `#[effects(forbid: [fails])]` on a bodyful callable, `#[effects(add: [host], via: [callback])]` on a declaration-only callable, and `#[effects(forbid: [fails])]` on function-valued parameters.';
+
+  return createDiagnostic(
+    filePath,
+    line,
+    1,
+    SOUND_DIAGNOSTIC_CODES.invalidEffectAnnotation,
+    `${SOUND_DIAGNOSTIC_MESSAGES.invalidEffectAnnotation} ${message}`,
+    {
+      metadata: {
+        rule: 'invalid_effect_annotation',
+        primarySymbol: '#[effects(...)]',
+        fixability: 'boundary_annotation',
+        invariant:
+          'The builtin effects annotation only accepts the v0.2.0 public effect names and target-specific fields that the checker understands.',
+        replacementFamily: 'checked_effect_annotation',
+        evidence: [
+          { label: 'annotationText', value: annotation.text },
+          { label: 'contractIssue', value: message },
+        ],
+        counterexample:
+          'An invalid effects contract can look like a checked effect proof even though the language cannot assign it a stable meaning.',
+        example,
+      },
+      notes: [
+        `\`#[effects(...)]\` is invalid here: ${message}`,
+        `Example: ${example}`,
+      ],
+      hint:
+        'Rewrite the effects annotation to use only `fails`, `suspend`, `mut`, and `host` with target-appropriate fields.',
+    },
+  );
+}
+
 function validateAnnotationBlock(
   context: AnalysisContext,
   diagnostics: SoundDiagnostic[],
@@ -819,6 +878,7 @@ function validateAnnotationBlock(
     if (
       annotation.argumentsText !== undefined &&
       annotation.name !== 'variance' &&
+      annotation.name !== 'effects' &&
       !(annotation.name === 'value' && isSupportedValueAnnotationArguments(annotation))
     ) {
       diagnostics.push(
@@ -842,6 +902,21 @@ function validateAnnotationBlock(
           undefined,
         ),
       );
+      continue;
+    }
+
+    if (annotation.name === 'effects') {
+      const effectValidationError = validateEffectsAnnotation(context, block.targetNode, annotation);
+      if (effectValidationError) {
+        diagnostics.push(
+          createInvalidEffectAnnotationDiagnostic(
+            filePath,
+            block.startLine,
+            annotation,
+            effectValidationError,
+          ),
+        );
+      }
       continue;
     }
 

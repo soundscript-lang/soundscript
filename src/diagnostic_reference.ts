@@ -762,6 +762,69 @@ const DIAGNOSTIC_REFERENCES = {
       },
     ],
   },
+  SOUND1039: {
+    code: 'SOUND1039',
+    title: 'Effects annotations must use the supported v0.2.0 contract shape',
+    summary:
+      'soundscript only accepts `#[effects(...)]` with the public `fails`, `suspend`, `mut`, and `host` names, and only on supported callable or callback-parameter sites.',
+    repairHeuristic:
+      'Rewrite the annotation to use only `add`, `forbid`, and `via` with the public effect names, and move it to a supported callable declaration, signature, or function-valued parameter.',
+    details: [
+      'Bodyful callable declarations infer direct effects and only support `forbid` and `via`.',
+      'Declaration-only callable surfaces support `add` and `via`.',
+      'Function-valued parameters only support `forbid`.',
+    ],
+    examples: [
+      {
+        bad: '// #[effects(forbid: [fails.throws, throws])]',
+        good: '// #[effects(forbid: [fails])]',
+      },
+    ],
+    suggestions: [
+      {
+        applicability: 'manual',
+        title: 'Use the public effect names',
+        message:
+          'Replace internal or legacy names such as `throws` or `fails.throws` with the public `fails`, `suspend`, `mut`, and `host` umbrellas.',
+      },
+    ],
+  },
+  SOUND1040: {
+    code: 'SOUND1040',
+    title: 'Effect contracts must match implementation and callback arguments',
+    summary:
+      'A `forbid` contract only holds when the callable implementation and any constrained callback arguments stay within the declared effect surface.',
+    repairHeuristic:
+      'Either remove the forbidden effect from the implementation or callback flow, or relax the `#[effects(forbid: [...]) ]` contract to match reality.',
+    details: [
+      'Bodyful callable declarations are checked against their inferred direct effects.',
+      'Function-valued parameters annotated with `#[effects(forbid: [...])]` reject callback arguments that may perform forbidden effects.',
+    ],
+    examples: [
+      {
+        bad: [
+          '// #[effects(forbid: [fails])]',
+          'function explode(): number {',
+          '  throw new Error("boom");',
+          '}',
+        ].join('\n'),
+        good: [
+          '// #[effects(forbid: [fails])]',
+          'function safe(): number {',
+          '  return 1;',
+          '}',
+        ].join('\n'),
+      },
+    ],
+    suggestions: [
+      {
+        applicability: 'manual',
+        title: 'Align the contract with the implementation',
+        message:
+          'Remove the forbidden effect from the implementation or callback path, or loosen the `forbid` contract so callers are not promised behavior the checker cannot prove.',
+      },
+    ],
+  },
   SOUND1023: {
     code: 'SOUND1023',
     title: 'TypeScript pragmas are banned',

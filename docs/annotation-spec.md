@@ -81,6 +81,7 @@ Reserved builtin directive names are:
 
 - `extern`
 - `interop`
+- `effects`
 - `newtype`
 - `unsafe`
 - `value`
@@ -117,6 +118,9 @@ in their macro dependency graph.
 
 Builtin directives validate their own target rules:
 
+- `#[effects(...)]`
+  attaches to callable declarations and callable type members, plus function-valued parameters
+  for parameter-local negative contracts
 - `#[interop]`
   attaches to import boundaries
 - `#[extern]`
@@ -132,6 +136,35 @@ Builtin directives validate their own target rules:
   chain at the selected site
 
 Using a known annotation on the wrong target is an error.
+
+### `#[effects(...)]`
+
+`effects` is the builtin runtime effect directive used by the v0.2.0 effect system.
+
+Current supported surface:
+
+```ts
+// #[effects(add: [host], forbid: [fails, suspend], via: [callback])]
+function map<T, U>(values: readonly T[], callback: (value: T) => U): readonly U[] {
+  return values.map(callback);
+}
+```
+
+Current validation rules:
+
+- `add`, `forbid`, and `via` are the only supported fields
+- `add` and `forbid` must be arrays
+- `via` must be an array of parameter names
+- accepted public effect names are `fails`, `suspend`, `mut`, and `host`
+- dotted subeffects are internal implementation details only and are not public annotation names in v0.2.0
+- duplicate fields, duplicate effect names, unknown field names, and invalid `via` references are errors
+
+Current semantic direction:
+
+- bodyful local callables may use `forbid` and `via`
+- declaration-only callable surfaces may use `add` and `via`
+- function-valued parameters may use `forbid` only
+- the internal effect model may track hierarchical subeffects such as `fails.throws`, `fails.rejects`, and `host.random`, but those remain hidden behind the public umbrellas in v0.2.0
 
 ## Directive Notes
 
@@ -208,14 +241,14 @@ Current semantic limits:
 - they support `class`, `function`, `interface`, and `typeAlias`
 - they use explicit `replace` or `augment` expansion modes
 - they do not support arbitrary type-expression expansion
-- they do not attach to parameters or type parameters
+- they do not attach to parameters or type parameters, except for `#[effects(...)]` on function-valued parameters
 
 ## Current Non-Goals
 
 The following are intentionally out of scope for the current annotation system:
 
 - bare parser syntax for `#[...]`
-- parameter annotations
+- parameter annotations, except for `#[effects(...)]` on function-valued parameters
 - type-parameter annotations
 - arbitrary type-expression macros
 - statement-local user-defined declaration annotations
