@@ -165,6 +165,42 @@ export function resultOf<T, E>(
   }
 }
 
+export function mapErr<T, E1, E2>(
+  value: Result<T, E1>,
+  project: (error: E1) => E2,
+): Result<T, E2> {
+  return isErr(value) ? err(project(value.error)) : value;
+}
+
+export function tapErr<T, E>(
+  value: Result<T, E>,
+  effect: (error: E) => unknown,
+): Result<T, E> {
+  if (isErr(value)) {
+    effect(value.error);
+  }
+  return value;
+}
+
+export function unwrapOr<T, E>(value: Result<T, E>, fallback: T): T {
+  return isOk(value) ? value.value : fallback;
+}
+
+export function unwrapOrElse<T, E>(value: Result<T, E>, fallback: (error: E) => T): T {
+  return isOk(value) ? value.value : fallback(value.error);
+}
+
+export function collect<T, E>(values: readonly Result<T, E>[]): Result<readonly T[], E> {
+  const collectedValues: T[] = [];
+  for (const value of values) {
+    if (isErr(value)) {
+      return value;
+    }
+    collectedValues.push(value.value);
+  }
+  return ok(collectedValues);
+}
+
 function mapOption<A, B>(value: Option<A>, f: (value: A) => B): Option<B> {
   return isSome(value) ? some(f(value.value)) : value;
 }

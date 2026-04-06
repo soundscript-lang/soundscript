@@ -7,11 +7,13 @@ import {
   None,
   Ok,
   Some,
+  collect,
   err,
   isErr,
   isNone,
   isOk,
   isSome,
+  mapErr,
   none,
   ok,
   optionApplicative,
@@ -22,6 +24,9 @@ import {
   resultMonad,
   resultOf,
   some,
+  tapErr,
+  unwrapOr,
+  unwrapOrElse,
 } from './result.ts';
 
 Deno.test('result err() overload produces a void-backed err result', () => {
@@ -116,6 +121,33 @@ Deno.test('result resultOf maps async rejections when requested', async () => {
   );
 
   assertEquals(result, err('mapped:Non-Error thrown value.'));
+});
+
+Deno.test('result mapErr and tapErr rewrite or observe only err branches', () => {
+  const mapped = mapErr(err('boom'), (error: string) => error.length);
+  const untouched = mapErr(ok(1), (error: never) => error);
+
+  let observed: string | null = null;
+  const tapped = tapErr(err('boom'), (error: string) => {
+    observed = error;
+  });
+
+  assertEquals(mapped, err(4));
+  assertEquals(untouched, ok(1));
+  assertEquals(tapped, err('boom'));
+  assertEquals(observed, 'boom');
+});
+
+Deno.test('result unwrapOr and unwrapOrElse provide local fallbacks', () => {
+  assertEquals(unwrapOr(ok(1), 0), 1);
+  assertEquals(unwrapOr(err('boom'), 0), 0);
+  assertEquals(unwrapOrElse(ok(1), () => 0), 1);
+  assertEquals(unwrapOrElse(err('boom'), (error: string) => error.length), 4);
+});
+
+Deno.test('result collect gathers ok values and short-circuits on the first err', () => {
+  assertEquals(collect([ok(1), ok(2), ok(3)]), ok([1, 2, 3]));
+  assertEquals(collect([ok(1), err('boom'), ok(3)]), err('boom'));
 });
 
 Deno.test('result resultOf treats non-Promise thenables as ordinary sync values', () => {

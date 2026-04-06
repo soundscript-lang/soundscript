@@ -247,6 +247,34 @@ export function isJsonLikeValue(value: unknown): value is JsonLikeValue {
   return isJsonLikeValueInternal(value, new Set<object>());
 }
 
+export function isJsonObject(value: unknown): value is JsonObject {
+  return isJsonObjectInternal(value, new Set<object>());
+}
+
+export function emptyJsonRecord(): JsonObject {
+  return {};
+}
+
+export function copyJsonRecord(value: Readonly<Record<string, JsonValue>>): JsonObject {
+  const copied: JsonObject = {};
+  for (const [key, entry] of Object.entries(value)) {
+    copied[key] = entry;
+  }
+  return copied;
+}
+
+export function mergeJsonRecords(
+  ...records: readonly Readonly<Record<string, JsonValue>>[]
+): JsonObject {
+  const merged = emptyJsonRecord();
+  for (const record of records) {
+    for (const [key, value] of Object.entries(record)) {
+      merged[key] = value;
+    }
+  }
+  return merged;
+}
+
 function stringifyJsonWithInt64Mode(
   value: LosslessJsonValue,
   int64Mode: 'string' | 'lossless',
@@ -345,6 +373,28 @@ function isJsonValueInternal(value: unknown, visited: Set<object>): value is Jso
       }
     default:
       return false;
+  }
+}
+
+function isJsonObjectInternal(value: unknown, visited: Set<object>): value is JsonObject {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return false;
+  }
+
+  if (visited.has(value)) {
+    return true;
+  }
+
+  visited.add(value);
+  try {
+    for (const key of Object.keys(value)) {
+      if (!isJsonValueInternal((value as Record<string, unknown>)[key], visited)) {
+        return false;
+      }
+    }
+    return true;
+  } finally {
+    visited.delete(value);
   }
 }
 

@@ -123,3 +123,9 @@ export function encodeJson<T, E>(
   options?: JsonStringifyOptions,
 ): Result<string, E | JsonStringifyFailure>;
 export function isJsonLikeValue(value: unknown): value is JsonLikeValue;
+export function isJsonObject(value: unknown): value is JsonObject;
+export function emptyJsonRecord(): JsonObject;
+export function copyJsonRecord(value: Readonly<Record<string, JsonValue>>): JsonObject;
+export function mergeJsonRecords(
+  ...records: readonly Readonly<Record<string, JsonValue>>[]
+): JsonObject;

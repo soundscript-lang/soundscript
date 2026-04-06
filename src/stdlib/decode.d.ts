@@ -40,8 +40,13 @@ export const bigint: Decoder<bigint>;
 export function lazy<T, E>(getDecoder: () => Decoder<T, E>): Decoder<T, E>;
 
 export function optional<T, E>(decoder: Decoder<T, E>): OptionalDecoder<T, E>;
+export function nullable<T, E>(decoder: Decoder<T, E>): Decoder<T | null, E>;
+export function defaulted<T, E>(decoder: Decoder<T | undefined, E>, fallback: T): Decoder<T, E>;
 export function literal<const T extends string | number | boolean | null>(value: T): Decoder<T>;
 export function array<T, E>(item: Decoder<T, E>): Decoder<readonly T[], E | DecodeFailure>;
+export function readonlyRecord<T, E>(
+  valueDecoder: Decoder<T, E>,
+): Decoder<Readonly<Record<string, T>>, E | DecodeFailure>;
 export function tuple<const TElements extends TupleShape>(
   ...elements: TElements
 ): Decoder<

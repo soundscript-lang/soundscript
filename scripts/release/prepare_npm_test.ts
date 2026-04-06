@@ -11,6 +11,7 @@ import { CLI_TARGETS, parseVersion } from './npm_manifest.ts';
 
 const ROOT = join(dirname(fromFileUrl(import.meta.url)), '..', '..');
 const VERSION = parseVersion(ROOT);
+const TYPESCRIPT_CLI_PATH = join(ROOT, 'node_modules', 'typescript', 'bin', 'tsc');
 
 async function writeProjectFile(
   root: string,
@@ -523,11 +524,47 @@ Deno.test('prepare_npm --stdlib-only emits runtime stdlib JS that Node can impor
           '--input-type=module',
           '--eval',
           [
-            "import { isErr } from '@soundscript/soundscript/result';",
-            "import { stringifyJson } from '@soundscript/soundscript/json';",
-            "const result = stringifyJson({ ok: true });",
-            'if (isErr(result)) throw result.error;',
-            'console.log(result.value);',
+            "import { defaulted, nullable, optional, readonlyRecord, string } from '@soundscript/soundscript/decode';",
+            "import { emptyJsonRecord, isJsonObject, mergeJsonRecords } from '@soundscript/soundscript/json';",
+            "import { collect, err, mapErr, ok, tapErr, unwrapOr, unwrapOrElse } from '@soundscript/soundscript/result';",
+            '',
+            "const decodedName = defaulted(optional(string), 'anon').decode(undefined);",
+            "if (decodedName.tag !== 'ok' || decodedName.value !== 'anon') {",
+            "  throw new Error('defaulted decoder did not provide its fallback.');",
+            '}',
+            '',
+            "const decodedRecord = readonlyRecord(nullable(string)).decode({ first: 'ok', second: null });",
+            "if (decodedRecord.tag !== 'ok') {",
+            '  throw decodedRecord.error;',
+            '}',
+            '',
+            'const merged = mergeJsonRecords(emptyJsonRecord(), { tags: decodedRecord.value });',
+            'if (!isJsonObject(merged)) {',
+            "  throw new Error('expected merged json object.');",
+            '}',
+            '',
+            'const collected = collect([ok(1), ok(2)]);',
+            "if (collected.tag !== 'ok') {",
+            '  throw collected.error;',
+            '}',
+            '',
+            "let tapped = '';",
+            "tapErr(err('bad'), (error) => {",
+            '  tapped = error;',
+            '});',
+            "const mapped = mapErr(err('bad'), (error) => `ERR:${error}`);",
+            "if (mapped.tag !== 'err') {",
+            "  throw new Error('expected mapped err result.');",
+            '}',
+            '',
+            'console.log(JSON.stringify({',
+            '  collected: collected.value,',
+            "  fallback: unwrapOr(err('missing'), 7),",
+            "  recovered: unwrapOrElse(err('boom'), (error) => error.length),",
+            '  keys: Object.keys(merged).sort(),',
+            '  mapped: mapped.error,',
+            '  tapped,',
+            '}));',
           ].join('\n'),
         ],
         { cwd: projectRoot },
@@ -537,7 +574,107 @@ Deno.test('prepare_npm --stdlib-only emits runtime stdlib JS that Node can impor
         true,
         `node stdlib runtime smoke failed.\nstdout:\n${loadResult.stdout}\nstderr:\n${loadResult.stderr}`,
       );
-      assertEquals(loadResult.stdout.trim(), '{"ok":true}');
+      assertEquals(
+        loadResult.stdout.trim(),
+        '{"collected":[1,2],"fallback":7,"recovered":4,"keys":["tags"],"mapped":"ERR:bad","tapped":"bad"}',
+      );
+    } finally {
+      await Deno.remove(projectRoot, { recursive: true }).catch(() => undefined);
+    }
+  } finally {
+    await Deno.remove(distRoot, { recursive: true }).catch(() => undefined);
+  }
+});
+
+Deno.test('prepare_npm --stdlib-only tarball resolves NodeNext TypeScript consumers', async () => {
+  const { distRoot, tarballPath } = await prepareCanonicalTarball(
+    'soundscript-prepare-stdlib-types-node-next-',
+  );
+  try {
+    const projectRoot = await Deno.makeTempDir({ prefix: 'soundscript-stdlib-types-node-next-' });
+    try {
+      await writeProjectFile(
+        projectRoot,
+        'package.json',
+        JSON.stringify(
+          {
+            name: 'stdlib-types-node-next-smoke',
+            private: true,
+            type: 'module',
+          },
+          null,
+          2,
+        ),
+      );
+      await writeProjectFile(
+        projectRoot,
+        'tsconfig.json',
+        JSON.stringify(
+          {
+            compilerOptions: {
+              module: 'NodeNext',
+              moduleResolution: 'NodeNext',
+              noEmit: true,
+              strict: true,
+              target: 'ES2022',
+              verbatimModuleSyntax: true,
+            },
+            include: ['consumer.mts'],
+          },
+          null,
+          2,
+        ),
+      );
+      await writeProjectFile(
+        projectRoot,
+        'consumer.mts',
+        [
+          "import { defaulted, nullable, optional, readonlyRecord, string } from '@soundscript/soundscript/decode';",
+          "import { copyJsonRecord, emptyJsonRecord, isJsonObject, mergeJsonRecords, type JsonValue } from '@soundscript/soundscript/json';",
+          "import { collect, err, mapErr, ok, tapErr, unwrapOr, unwrapOrElse, type Result } from '@soundscript/soundscript/result';",
+          '',
+          "const decodedName = defaulted(optional(string), 'anon').decode(undefined);",
+          "const decodedRecord = readonlyRecord(nullable(string)).decode({ first: 'ok', second: null });",
+          'const sourceJson: Readonly<Record<string, JsonValue>> = { feature: true };',
+          'const copiedJson = copyJsonRecord(sourceJson);',
+          'const mergedJson = mergeJsonRecords(emptyJsonRecord(), copiedJson);',
+          'const collected = collect([ok(1), ok(2)] as const);',
+          "const mapped = mapErr(err('bad'), (error) => error.length);",
+          'const seen: string[] = [];',
+          "const tapped: Result<number, string> = tapErr(err('bad'), (error) => {",
+          '  seen.push(error);',
+          '});',
+          "const fallback = unwrapOr(err('bad'), 0);",
+          "const recovered = unwrapOrElse(err('bad'), (error) => error.length);",
+          '',
+          'if (isJsonObject(mergedJson)) {',
+          '  const feature: JsonValue | undefined = mergedJson.feature;',
+          '  void feature;',
+          '}',
+          '',
+          'void decodedName;',
+          'void decodedRecord;',
+          'void collected;',
+          'void mapped;',
+          'void tapped;',
+          'void fallback;',
+          'void recovered;',
+          'void seen;',
+          '',
+        ].join('\n'),
+      );
+      await installNpmTarballs(projectRoot, [tarballPath]);
+
+      const compileResult = await runCommand(
+        'node',
+        [TYPESCRIPT_CLI_PATH, '--project', join(projectRoot, 'tsconfig.json')],
+        { cwd: projectRoot },
+      );
+      assertEquals(
+        compileResult.success,
+        true,
+        `node-next stdlib type smoke failed.\nstdout:\n${compileResult.stdout}\nstderr:\n${compileResult.stderr}`,
+      );
     } finally {
       await Deno.remove(projectRoot, { recursive: true }).catch(() => undefined);
     }

@@ -38,6 +38,11 @@ The stable stdlib surface is intentionally small:
 - `sts:hkt` owning low-level higher-kinded type machinery
 - `sts:typeclasses` owning `Functor`, `Applicative`, `Monad`, `AsyncMonad`, and `Do`
 
+For a module-by-module overview of the stable and experimental builtin surfaces, see
+[docs/reference/builtin-modules.md](docs/reference/builtin-modules.md). For a practical guide to
+readonly-first code, `Try`, validation, and JSON boundaries, see
+[docs/guides/idiomatic-soundscript.md](docs/guides/idiomatic-soundscript.md).
+
 ## Runtime Contract
 
 Stable v1 does not promise a public Wasm target matrix, runtime-target flags, or host capability

@@ -495,6 +495,7 @@ Not part of the stable public macro surface:
 
 - [Annotation Spec](./annotation-spec.md)
 - [JSON Bridge](./json-bridge.md)
+- [Idiomatic SoundScript](./guides/idiomatic-soundscript.md)
 - [Derive Macros](./derive-macros.md)
 - [soundscript V1 User Contract](./v1-user-contract.md)
 - Soundstage packages now live in the separate Soundstage repository.

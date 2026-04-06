@@ -5,16 +5,19 @@ import { isErr, isOk } from '@soundscript/soundscript/result';
 import {
   array,
   bigint,
+  defaulted,
   DecodeFailure,
   field,
   lazy,
   literal,
+  nullable,
   number,
   object,
   option as decodeOption,
   optional,
   optionalField,
   refine,
+  readonlyRecord,
   result as decodeResult,
   string,
   tuple,
@@ -98,10 +101,12 @@ Deno.test('decode object prepends property and array path segments', () => {
 Deno.test('decode field and optionalField read object members directly', () => {
   const name = field('name', string).decode({ name: 'ok' });
   const nickname = optionalField('nickname', string).decode({});
+  const nicknameWithDefault = defaulted(optionalField('nickname', string), 'anon').decode({});
   const missing = field('name', string).decode({});
 
   assertTaggedEquals(name, { tag: 'ok', value: 'ok' });
   assertTaggedEquals(nickname, { tag: 'ok', value: undefined });
+  assertTaggedEquals(nicknameWithDefault, { tag: 'ok', value: 'anon' });
   assertEquals(isErr(missing), true);
   if (isOk(missing)) {
     throw new Error('expected required field failure');
@@ -136,6 +141,25 @@ Deno.test('decode union and refine reject unmatched values with DecodeFailure', 
   }
   assertEquals(badNumber.error instanceof DecodeFailure, true);
   assertEquals(badNumber.error.message, 'Expected a positive integer.');
+});
+
+Deno.test('decode nullable accepts null and readonlyRecord decodes record values with key paths', () => {
+  assertTaggedEquals(nullable(string).decode(null), { tag: 'ok', value: null });
+  assertTaggedEquals(nullable(string).decode('ok'), { tag: 'ok', value: 'ok' });
+
+  const decoded = readonlyRecord(string).decode({ first: 'ok', second: 'yep' });
+  assertTaggedEquals(decoded, {
+    tag: 'ok',
+    value: { first: 'ok', second: 'yep' },
+  });
+
+  const badRecord = readonlyRecord(string).decode({ first: 1 });
+  assertEquals(isErr(badRecord), true);
+  if (isOk(badRecord)) {
+    throw new Error('expected readonly record decode failure');
+  }
+  assertEquals(badRecord.error instanceof DecodeFailure, true);
+  assertEquals(badRecord.error.path, ['first']);
 });
 
 Deno.test('decode bigint accepts bigint values plus integer strings and safe integers', () => {

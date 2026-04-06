@@ -7097,7 +7097,7 @@ Deno.test('LSP server preserves notes and hints in published diagnostics', async
     true,
   );
   assertEquals(
-    params.diagnostics[0]?.message.includes('Use a readonly array, copy into a new array'),
+    params.diagnostics[0]?.message.includes('Make the array readonly, copy into a fresh array'),
     true,
   );
 
@@ -7238,8 +7238,8 @@ Deno.test('LSP server publishes flow invalidation metadata and related informati
       location: {
         uri,
         range: {
-          start: { line: 4, character: 8 },
-          end: { line: 4, character: 26 },
+          start: { line: 4, character: 6 },
+          end: { line: 4, character: 24 },
         },
       },
       message: 'Earlier narrowing established here.',

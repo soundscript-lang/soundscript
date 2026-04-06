@@ -118,6 +118,12 @@ const EXPR_OR_BLOCK_SIGNATURE = macroSignature.oneOf(
 );
 const BLOCK_SIGNATURE = macroSignature.of(macroSignature.block('body'));
 const DEFER_SIGNATURE = macroSignature.of(macroSignature.functionExpr('cleanup'));
+
+function tryEnclosingResultRequirementMessage(isAsync: boolean): string {
+  return isAsync
+    ? 'Try requires async functions, standalone helpers, and object-literal methods to return Promise<soundscript Result<Ok, Err>>.'
+    : 'Try requires the enclosing function, standalone helper, or object-literal method to return soundscript Result<Ok, Err>.';
+}
 const MATCH_SIGNATURE = macroSignature.of(
   macroSignature.expr('value'),
   macroSignature.arrayLiteral('arms'),
@@ -291,11 +297,7 @@ export function Try(): MacroDefinition<typeof SINGLE_EXPR_SIGNATURE> {
         const enclosingResult = ctx.semantics.primaryExprEnclosingFunctionCanonicalResult() ??
           ctx.semantics.enclosingFunctionCanonicalResult();
         const activeEnclosingResult = enclosingResult ??
-          ctx.error(
-            activeEnclosingFunction.isAsync
-              ? 'Try requires async functions to return Promise<soundscript Result<Ok, Err>>.'
-              : 'Try requires the enclosing function to return soundscript Result<Ok, Err>.',
-          );
+          ctx.error(tryEnclosingResultRequirementMessage(activeEnclosingFunction.isAsync));
 
         if (
           activeEnclosingFunction.hasDeclaredReturnType &&

@@ -3456,7 +3456,7 @@ Deno.test('Try macro rejects enclosing returns that are not canonical Result', a
 
   assertEquals(
     error.message,
-    'Try requires the enclosing function to return soundscript Result<Ok, Err>.',
+    'Try requires the enclosing function, standalone helper, or object-literal method to return soundscript Result<Ok, Err>.',
   );
 });
 
@@ -3474,7 +3474,29 @@ Deno.test('Try macro rejects async enclosing returns that are not Promise<Result
 
   assertEquals(
     error.message,
-    'Try requires async functions to return Promise<soundscript Result<Ok, Err>>.',
+    'Try requires async functions, standalone helpers, and object-literal methods to return Promise<soundscript Result<Ok, Err>>.',
+  );
+});
+
+Deno.test('Try macro rejects object-literal methods that do not return canonical Result', async () => {
+  const error = await captureTryMacroError([
+    "import { type Result } from 'sts:prelude';",
+    'declare function fetchValue(): Result<number, string>;',
+    '',
+    'const service = {',
+    '  compute(): number {',
+    '    const value = Try(fetchValue());',
+    '    return value;',
+    '  },',
+    '};',
+    '',
+    'void service;',
+    '',
+  ].join('\n'));
+
+  assertEquals(
+    error.message,
+    'Try requires the enclosing function, standalone helper, or object-literal method to return soundscript Result<Ok, Err>.',
   );
 });
 

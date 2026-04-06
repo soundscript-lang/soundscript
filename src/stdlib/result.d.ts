@@ -56,6 +56,17 @@ export function resultOf<T, E>(
 ): Promise<Result<T, E>>;
 export function resultOf<T>(fn: () => T): Result<T, Error>;
 export function resultOf<T, E>(fn: () => T, mapError: (error: Error) => E): Result<T, E>;
+export function mapErr<T, E1, E2>(
+  value: Result<T, E1>,
+  project: (error: E1) => E2,
+): Result<T, E2>;
+export function tapErr<T, E>(
+  value: Result<T, E>,
+  effect: (error: E) => unknown,
+): Result<T, E>;
+export function unwrapOr<T, E>(value: Result<T, E>, fallback: T): T;
+export function unwrapOrElse<T, E>(value: Result<T, E>, fallback: (error: E) => T): T;
+export function collect<T, E>(values: readonly Result<T, E>[]): Result<readonly T[], E>;
 
 export const optionFunctor: Functor<OptionF>;
 export const optionApplicative: Applicative<OptionF>;

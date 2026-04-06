@@ -126,3 +126,6 @@ The bigint-sensitive JSON bridge is owned by soundscript. It does not rely on:
 
 Host JSON APIs may still be used internally for ordinary fast paths, but correctness for bigint
 handling belongs to `sts:json` itself.
+
+For a practical overview of how JSON boundaries fit into service code, see
+[Idiomatic SoundScript](./guides/idiomatic-soundscript.md).

@@ -7,13 +7,17 @@ import { codec as createCodec } from './codec.ts';
 import { err, none, ok, some } from './result.ts';
 
 import {
+  copyJsonRecord,
   decodeJson,
+  emptyJsonRecord,
   encodeAndStringify,
   encodeJson,
+  isJsonObject,
   isJsonLikeValue,
   isJsonValue,
   JsonParseFailure,
   JsonStringifyFailure,
+  mergeJsonRecords,
   parseAndDecode,
   parseJson,
   parseJsonLike,
@@ -132,6 +136,24 @@ Deno.test('json isJsonValue rejects undefined and function positions', () => {
   assertEquals(isJsonValue({ ok: undefined }), false);
   assertEquals(isJsonValue({ run: () => 1 }), false);
   assertEquals(isJsonValue(undefined), false);
+});
+
+Deno.test('json isJsonObject narrows JSON records and record helpers return fresh objects', () => {
+  const source = { ok: true, nested: { count: 1 } } as const;
+
+  assertEquals(isJsonObject(source), true);
+  assertEquals(isJsonObject(['nope']), false);
+  assertEquals(isJsonObject(null), false);
+
+  const empty = emptyJsonRecord();
+  const copied = copyJsonRecord(source);
+  const merged = mergeJsonRecords(empty, copied, { extra: false, ok: false });
+
+  assertEquals(empty, {});
+  assertEquals(copied, source);
+  assertEquals(copied === source, false);
+  assertEquals(merged, { ok: false, nested: { count: 1 }, extra: false });
+  assertEquals(merged === copied, false);
 });
 
 Deno.test('json parseAndDecode composes JSON parsing with a decoder', () => {

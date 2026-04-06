@@ -752,12 +752,13 @@ Deno.test('runCli check --format json includes structured flow invalidation meta
   );
   assertEquals(
     payload.diagnostics[0]?.metadata?.example,
-    'Re-check after the boundary: `mutate(box); if (box.value !== null) { use(box.value); }`.',
+    'Capture before the call when stable: `const capturedValue = box.value; mutate(box); use(capturedValue);`, or re-check after the call.',
   );
   assertEquals(payload.diagnostics[0]?.notes, [
     'The earlier check for `box.value` was invalidated by this call boundary.',
     'Earlier proof: `box.value !== null`.',
-    'Example: Re-check after the boundary: `mutate(box); if (box.value !== null) { use(box.value); }`.',
+    'Capture a stable primitive or immutable snapshot into a fresh local before the call boundary, or re-check the value after the call.',
+    'Example: Capture before the call when stable: `const capturedValue = box.value; mutate(box); use(capturedValue);`, or re-check after the call.',
   ]);
 });
 
@@ -2705,6 +2706,151 @@ Deno.test('runCli build lowers debug log macros without requiring a synthetic he
   assertEquals(emitted.includes('__sts_log('), false);
 });
 
+Deno.test(
+  'runCli build preserves multiple published entrypoints across a shared helper graph',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'package.json',
+        contents: JSON.stringify(
+          {
+            name: 'sound-pkg',
+            version: '1.0.0',
+            soundscript: {
+              version: 1,
+              exports: {
+                '.': { source: './src/index.sts' },
+                './worker': { source: './src/worker.sts' },
+              },
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.sts', 'src/**/*.ts'],
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/index.sts',
+        contents: [
+          "import { alpha } from './shared/alpha';",
+          'export default function main(): number {',
+          '  return alpha(3);',
+          '}',
+          'export const indexValue = alpha(2);',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/worker.sts',
+        contents: [
+          "import { beta } from './shared/beta';",
+          'export default function runWorker(): number {',
+          '  return beta(3);',
+          '}',
+          'export const workerValue = beta(2);',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/shared/alpha.sts',
+        contents: [
+          "import { beta } from './beta';",
+          'export function alpha(depth: number): number {',
+          '  return depth <= 0 ? 0 : beta(depth - 1) + 1;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/shared/beta.sts',
+        contents: [
+          "import { alpha } from './alpha';",
+          'export function beta(depth: number): number {',
+          '  return depth <= 0 ? 0 : alpha(depth - 1) + 1;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ], { legacySoundMode: false });
+
+    const outDir = join(tempDirectory, 'dist-package');
+    const result = await runCli([
+      'build',
+      '--project',
+      join(tempDirectory, 'tsconfig.json'),
+      '--out-dir',
+      outDir,
+      '--format',
+      'json',
+    ]);
+    const payload = JSON.parse(result.output) as {
+      artifacts?: { emittedFiles: string[]; outDir: string; packageJsonPath: string };
+      exitCode: number;
+      summary: { errors: number; total: number };
+    };
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(payload.exitCode, 0);
+    assertEquals(payload.summary.errors, 0);
+    assertEquals(payload.summary.total, 0);
+    assertEquals(payload.artifacts?.outDir, outDir);
+
+    const distPackageJson = JSON.parse(await Deno.readTextFile(join(outDir, 'package.json'))) as {
+      exports: Record<string, { import: string; types: string }>;
+      soundscript: { exports: Record<string, { source: string }> };
+    };
+    assertEquals(distPackageJson.exports['.']?.import, './esm/index.js');
+    assertEquals(distPackageJson.exports['./worker']?.import, './esm/worker.js');
+    assertEquals(distPackageJson.exports['./worker']?.types, './types/worker.d.ts');
+    assertEquals(
+      distPackageJson.soundscript.exports['./worker']?.source,
+      './soundscript/src/worker.sts',
+    );
+
+    assert(payload.artifacts?.emittedFiles.includes(join(outDir, 'esm/worker.js')));
+    assert(payload.artifacts?.emittedFiles.includes(join(outDir, 'types/worker.d.ts')));
+
+    assertStringIncludes(
+      await Deno.readTextFile(join(outDir, 'esm/worker.js')),
+      "export { default } from './src/worker.js';",
+    );
+    assertStringIncludes(
+      await Deno.readTextFile(join(outDir, 'types/worker.d.ts')),
+      "export { default } from './src/worker';",
+    );
+    assertStringIncludes(
+      await Deno.readTextFile(join(outDir, 'esm/src/shared/alpha.js')),
+      "from './beta.js';",
+    );
+    assertStringIncludes(
+      await Deno.readTextFile(join(outDir, 'esm/src/shared/beta.js')),
+      "from './alpha.js';",
+    );
+    assertStringIncludes(
+      await Deno.readTextFile(join(outDir, 'types/src/worker.d.ts')),
+      'export default function runWorker(): number;',
+    );
+    assertStringIncludes(
+      await Deno.readTextFile(join(outDir, 'soundscript/src/shared/alpha.sts')),
+      'export function alpha(depth: number): number',
+    );
+  },
+);
+
 Deno.test('runCli build fails when soundscript.exports points to a missing source file', async () => {
   const tempDirectory = await createTempProject([
     {
@@ -4464,7 +4610,7 @@ Deno.test('runCli explains mutable array variance with notes and hint', async ()
   );
   assertStringIncludes(
     result.output,
-    'Use a readonly array, copy into a new array, or keep the exact element type.',
+    'Make the array readonly, copy into a fresh array before widening, or keep the exact element type.',
   );
   assertStringIncludes(result.output, 'src/index.sts:10:7');
 });

@@ -119,6 +119,23 @@ export function optional<T, E>(decoder: Decoder<T, E>): OptionalDecoder<T, E> {
   };
 }
 
+export function nullable<T, E>(decoder: Decoder<T, E>): Decoder<T | null, E> {
+  return {
+    decode(value) {
+      return value === null ? ok(null) : decoder.decode(value);
+    },
+  };
+}
+
+export function defaulted<T, E>(decoder: Decoder<T | undefined, E>, fallback: T): Decoder<T, E> {
+  return {
+    decode(value) {
+      const decoded = decoder.decode(value);
+      return isErr(decoded) ? decoded : ok(decoded.value ?? fallback);
+    },
+  };
+}
+
 export function literal<const T extends string | number | boolean | null>(value: T): Decoder<T> {
   return {
     decode(input) {
@@ -146,6 +163,29 @@ export function array<T, E>(item: Decoder<T, E>): Decoder<readonly T[], E | Deco
       }
 
       return ok(decodedValues);
+    },
+  };
+}
+
+export function readonlyRecord<T, E>(
+  valueDecoder: Decoder<T, E>,
+): Decoder<Readonly<Record<string, T>>, E | DecodeFailure> {
+  return {
+    decode(value) {
+      if (!isPlainObject(value)) {
+        return err(new DecodeFailure('Expected object record.', { cause: value }));
+      }
+
+      const decodedRecord: Record<string, T> = {};
+      for (const [key, entry] of Object.entries(value)) {
+        const decoded = valueDecoder.decode(entry);
+        if (isErr(decoded)) {
+          return err(prependPathIfPossible(decoded.error, key) as E | DecodeFailure);
+        }
+        decodedRecord[key] = decoded.value;
+      }
+
+      return ok(decodedRecord);
     },
   };
 }

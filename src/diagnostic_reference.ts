@@ -327,9 +327,10 @@ const DIAGNOSTIC_REFERENCES = {
     title: 'Assignment relies on an unsound assignability relation',
     summary: 'A value is being widened across a relation that soundscript does not preserve.',
     repairHeuristic:
-      'Stop widening through a relation soundscript rejects. Keep the precise type, switch to a readonly or structural surface, or redesign the API so the unsafe capability is never promised.',
+      'Stop widening through a relation soundscript rejects. Point at the mutable edge, then either make that surface readonly, copy into a fresh value before widening, or keep the exact source type so the unsafe write capability is never promised.',
     details: [
       'Common examples include mutable array variance, callable parameter variance, and class-to-class widening that only matches structurally.',
+      'When the mismatch comes from a writable property or index signature, the mutable edge is the thing to fix first: make it readonly, copy into a fresh object, or preserve the exact property/value type.',
     ],
     examples: [
       {
@@ -346,6 +347,18 @@ const DIAGNOSTIC_REFERENCES = {
     suggestions: [
       {
         applicability: 'manual',
+        title: 'Make the mutable edge readonly',
+        message:
+          'When the mismatch comes from a writable property, index signature, array, Map, or Set, prefer a readonly surface first.',
+      },
+      {
+        applicability: 'manual',
+        title: 'Copy into a fresh value before widening',
+        message:
+          'If the broader type is still useful, create a fresh object, array, Map, or Set with the widened type instead of reusing the original mutable value.',
+      },
+      {
+        applicability: 'manual',
         title: 'Preserve the original type or project explicitly',
         message:
           'Avoid widening through mutable containers or unrelated class targets; keep the exact class type, project to a structural interface, clone, or use a different API boundary instead.',
@@ -358,11 +371,12 @@ const DIAGNOSTIC_REFERENCES = {
     summary:
       'A previous narrowing crossed an aliasing, mutation, callback, or suspension boundary that makes it unsafe to reuse.',
     repairHeuristic:
-      'Re-establish the proof after the invalidating boundary, or copy a stable primitive/immutable value into a fresh local before the boundary so later code no longer depends on the invalidated path.',
+      'Re-establish the proof after the invalidating boundary, or capture the already-proven primitive or immutable snapshot into a fresh local before the boundary so later code no longer depends on the invalidated path.',
     details: [
       'Typical invalidating boundaries include function calls, mutation through aliases, callbacks that may run later, and `await`/suspension points.',
       'The diagnostic metadata names the narrowed value, the boundary kind, the exact invalidating expression, and the earlier proof site so tooling can explain the hazard concretely.',
       'Re-establish the narrowing after the boundary instead of assuming the earlier proof still holds.',
+      'In async code this usually means either `const captured = value.path; await ...; use(captured);` when the captured value is already stable, or `await ...; if (value.path !== null) { ... }` when it is not.',
     ],
     examples: [
       {
@@ -378,6 +392,21 @@ const DIAGNOSTIC_REFERENCES = {
           '  if (box.value !== null) {',
           '    use(box.value);',
           '  }',
+          '}',
+        ].join('\n'),
+      },
+      {
+        bad: [
+          'if (box.value !== null) {',
+          '  await refresh();',
+          '  return box.value.length;',
+          '}',
+        ].join('\n'),
+        good: [
+          'if (box.value !== null) {',
+          '  const value = box.value;',
+          '  await refresh();',
+          '  return value.length;',
           '}',
         ].join('\n'),
       },
@@ -406,9 +435,9 @@ const DIAGNOSTIC_REFERENCES = {
       },
       {
         applicability: 'manual',
-        title: 'Snapshot a stable value before the boundary',
+        title: 'Capture a stable value before await or helper calls',
         message:
-          'When safe, copy the already-proven primitive or immutable value into a fresh local before the invalidating boundary.',
+          'When safe, copy the already-proven primitive or immutable value into a fresh local before the invalidating boundary, especially before `await` or opaque helper calls.',
       },
     ],
   },

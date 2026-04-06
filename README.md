@@ -12,6 +12,10 @@ The intended stable v1 surface is the checker, mixed `.ts` / `.sts` adoption sto
 extension, a very small stdlib, and a narrow macro surface. Broader macro work and Wasm remain
 experimental.
 
+For the fastest orientation on the builtin surface and the recommended coding patterns, see
+[docs/reference/builtin-modules.md](docs/reference/builtin-modules.md) and
+[docs/guides/idiomatic-soundscript.md](docs/guides/idiomatic-soundscript.md).
+
 It adds a second file type, `.sts`, for code checked under a stricter rule set. Ordinary `.ts` files
 keep normal TypeScript behavior. The goal is incremental adoption: move the parts of a codebase you
 care about into `.sts`, keep the rest as `.ts`, and make interop explicit.

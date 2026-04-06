@@ -1,6 +1,56 @@
 import { assert, assertEquals, assertStringIncludes } from '@std/assert';
+import { dirname, fromFileUrl, join } from '@std/path';
 
-import { createInstalledStdlibPackageFiles } from './test_installed_stdlib.ts';
+import {
+  createInstalledStdlibPackageFiles,
+  writeInstalledStdlibPackage,
+} from './test_installed_stdlib.ts';
+
+const textDecoder = new TextDecoder();
+const typescriptCliPath = fromFileUrl(new URL('../node_modules/typescript/bin/tsc', import.meta.url));
+
+interface CommandResult {
+  code: number;
+  stderr: string;
+  stdout: string;
+}
+
+async function writeProjectFile(
+  root: string,
+  relativePath: string,
+  contents: string,
+): Promise<void> {
+  const filePath = join(root, relativePath);
+  await Deno.mkdir(dirname(filePath), { recursive: true });
+  await Deno.writeTextFile(filePath, contents);
+}
+
+async function runCommand(
+  command: string,
+  args: readonly string[],
+  cwd: string,
+): Promise<CommandResult> {
+  const output = await new Deno.Command(command, {
+    args: [...args],
+    cwd,
+    stderr: 'piped',
+    stdout: 'piped',
+  }).output();
+
+  return {
+    code: output.code,
+    stderr: textDecoder.decode(output.stderr),
+    stdout: textDecoder.decode(output.stdout),
+  };
+}
+
+function assertCommandSucceeded(label: string, result: CommandResult): void {
+  assertEquals(
+    result.code,
+    0,
+    `${label}\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
+  );
+}
 
 Deno.test('installed stdlib package hides experimental and thunk module exports', () => {
   const files = createInstalledStdlibPackageFiles('/virtual');
@@ -66,4 +116,135 @@ Deno.test('installed stdlib package emits parser-stable soundscript sources for 
   assertEquals(publishedTypeclasses.includes('= <A>('), false);
   assertStringIncludes(publishedTypeclasses, 'function bind<A>(effect: BoundEffect<F, A>): A {');
   assertStringIncludes(publishedTypeclasses, 'function runtime<F extends TypeLambda, T>(');
+});
+
+Deno.test('installed stdlib package resolves stable runtime subpaths from plain Node ESM consumers', async () => {
+  const root = await Deno.makeTempDir({ prefix: 'soundscript-installed-runtime-' });
+  await writeInstalledStdlibPackage(root);
+  await writeProjectFile(
+    root,
+    'consumer.mjs',
+    [
+      "import { defaulted, nullable, optional, readonlyRecord, string } from '@soundscript/soundscript/decode';",
+      "import { emptyJsonRecord, isJsonObject, mergeJsonRecords } from '@soundscript/soundscript/json';",
+      "import { collect, err, mapErr, ok, tapErr, unwrapOr, unwrapOrElse } from '@soundscript/soundscript/result';",
+      '',
+      "const decodedName = defaulted(optional(string), 'anon').decode(undefined);",
+      "if (decodedName.tag !== 'ok' || decodedName.value !== 'anon') {",
+      "  throw new Error('defaulted decoder did not provide its fallback.');",
+      '}',
+      '',
+      "const decodedRecord = readonlyRecord(nullable(string)).decode({ first: 'ok', second: null });",
+      "if (decodedRecord.tag !== 'ok') {",
+      '  throw decodedRecord.error;',
+      '}',
+      '',
+      'const merged = mergeJsonRecords(emptyJsonRecord(), { tags: decodedRecord.value });',
+      'if (!isJsonObject(merged)) {',
+      "  throw new Error('expected merged json object.');",
+      '}',
+      '',
+      'const collected = collect([ok(1), ok(2)]);',
+      "if (collected.tag !== 'ok') {",
+      '  throw collected.error;',
+      '}',
+      '',
+      "let tapped = '';",
+      "tapErr(err('bad'), (error) => {",
+      '  tapped = error;',
+      '});',
+      "const mapped = mapErr(err('bad'), (error) => `ERR:${error}`);",
+      "if (mapped.tag !== 'err') {",
+      "  throw new Error('expected mapped err result.');",
+      '}',
+      '',
+      'console.log(JSON.stringify({',
+      '  collected: collected.value,',
+      "  fallback: unwrapOr(err('missing'), 7),",
+      "  recovered: unwrapOrElse(err('boom'), (error) => error.length),",
+      '  keys: Object.keys(merged).sort(),',
+      '  mapped: mapped.error,',
+      '  tapped,',
+      '}));',
+      '',
+    ].join('\n'),
+  );
+
+  const result = await runCommand('node', ['consumer.mjs'], root);
+  assertCommandSucceeded('node consumer should resolve installed stdlib runtime subpaths', result);
+  assertStringIncludes(result.stdout, '"keys":["tags"]');
+  assertStringIncludes(result.stdout, '"mapped":"ERR:bad"');
+  assertStringIncludes(result.stdout, '"tapped":"bad"');
+});
+
+Deno.test('installed stdlib package declarations resolve from plain TypeScript NodeNext consumers', async () => {
+  const root = await Deno.makeTempDir({ prefix: 'soundscript-installed-types-' });
+  await writeInstalledStdlibPackage(root);
+  await writeProjectFile(
+    root,
+    'tsconfig.json',
+    JSON.stringify(
+      {
+        compilerOptions: {
+          module: 'NodeNext',
+          moduleResolution: 'NodeNext',
+          noEmit: true,
+          strict: true,
+          target: 'ES2022',
+          verbatimModuleSyntax: true,
+        },
+        include: ['consumer.mts'],
+      },
+      null,
+      2,
+    ),
+  );
+  await writeProjectFile(
+    root,
+    'consumer.mts',
+    [
+      "import { defaulted, nullable, optional, readonlyRecord, string } from '@soundscript/soundscript/decode';",
+      "import { copyJsonRecord, emptyJsonRecord, isJsonObject, mergeJsonRecords, type JsonValue } from '@soundscript/soundscript/json';",
+      "import { collect, err, mapErr, ok, tapErr, unwrapOr, unwrapOrElse, type Result } from '@soundscript/soundscript/result';",
+      '',
+      'const decodedName = defaulted(optional(string), \'anon\').decode(undefined);',
+      "const decodedRecord = readonlyRecord(nullable(string)).decode({ first: 'ok', second: null });",
+      'const sourceJson: Readonly<Record<string, JsonValue>> = { feature: true };',
+      'const copiedJson = copyJsonRecord(sourceJson);',
+      'const mergedJson = mergeJsonRecords(emptyJsonRecord(), copiedJson);',
+      'const collected = collect([ok(1), ok(2)] as const);',
+      "const mapped = mapErr(err('bad'), (error) => error.length);",
+      'const seen: string[] = [];',
+      "const tapped: Result<number, string> = tapErr(err('bad'), (error) => {",
+      '  seen.push(error);',
+      '});',
+      "const fallback = unwrapOr(err('bad'), 0);",
+      "const recovered = unwrapOrElse(err('bad'), (error) => error.length);",
+      '',
+      'if (isJsonObject(mergedJson)) {',
+      '  const feature: JsonValue | undefined = mergedJson.feature;',
+      '  void feature;',
+      '}',
+      '',
+      'void decodedName;',
+      'void decodedRecord;',
+      'void collected;',
+      'void mapped;',
+      'void tapped;',
+      'void fallback;',
+      'void recovered;',
+      'void seen;',
+      '',
+    ].join('\n'),
+  );
+
+  const result = await runCommand(
+    'node',
+    [typescriptCliPath, '--project', join(root, 'tsconfig.json')],
+    root,
+  );
+  assertCommandSucceeded(
+    'TypeScript NodeNext consumer should resolve installed stdlib declarations',
+    result,
+  );
 });

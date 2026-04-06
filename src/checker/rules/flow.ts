@@ -109,20 +109,67 @@ function createRelatedInformation(
   };
 }
 
+function invalidationCapturedValueExpression(
+  narrowedValue: string | undefined,
+): string {
+  return narrowedValue ?? 'box.value';
+}
+
+function invalidationRewriteExample(
+  kind: InvalidationBoundaryKind,
+  narrowedValue: string | undefined,
+  invalidatingBoundary: string,
+): string {
+  const capturedValue = invalidationCapturedValueExpression(narrowedValue);
+  switch (kind) {
+    case 'alias_or_escape':
+      return `Capture before the escape when stable: \`const capturedValue = ${capturedValue}; ${invalidatingBoundary}; use(capturedValue);\`, or re-check after the escape.`;
+    case 'call':
+      return `Capture before the call when stable: \`const capturedValue = ${capturedValue}; ${invalidatingBoundary}; use(capturedValue);\`, or re-check after the call.`;
+    case 'callback':
+      return `Capture before the callback boundary: \`const capturedValue = ${capturedValue}; ${invalidatingBoundary};\`, or re-check inside the callback before using the original path.`;
+    case 'mutation':
+      return `Capture before the write when stable: \`const capturedValue = ${capturedValue}; ${invalidatingBoundary}; use(capturedValue);\`, or re-check after the mutation.`;
+    case 'suspension':
+      return `Capture before await when stable: \`const capturedValue = ${capturedValue}; ${invalidatingBoundary}; use(capturedValue);\`, or re-check after await.`;
+  }
+}
+
+function invalidationRewriteHint(
+  kind: InvalidationBoundaryKind,
+): string {
+  switch (kind) {
+    case 'alias_or_escape':
+      return 'Capture a stable primitive or immutable snapshot into a fresh local before the alias or escape boundary, or re-check the value after the boundary.';
+    case 'call':
+      return 'Capture a stable primitive or immutable snapshot into a fresh local before the call boundary, or re-check the value after the call.';
+    case 'callback':
+      return 'Capture a stable primitive or immutable snapshot before the callback boundary, or re-check the value inside the callback before using the original path.';
+    case 'mutation':
+      return 'Capture a stable primitive or immutable snapshot before the mutation, or re-check the value after the write.';
+    case 'suspension':
+      return 'Capture a stable primitive or immutable snapshot into a fresh local before await, or re-check the value after await.';
+  }
+}
+
 function createDiagnostic(
   context: AnalysisContext,
   invalidation: InvalidationDiagnosticContext,
 ): SoundDiagnostic {
-  const example =
-    'Re-check after the boundary: `mutate(box); if (box.value !== null) { use(box.value); }`.';
   const boundaryKind = boundaryKindLabel(invalidation.boundaryKind);
   const narrowedValue = invalidation.fact
     ? formatNormalizedPath(context, invalidation.fact.path)
     : undefined;
   const invalidatingBoundary = formatNodeText(invalidation.node);
+  const example = invalidationRewriteExample(
+    invalidation.boundaryKind,
+    narrowedValue,
+    invalidatingBoundary,
+  );
   const earlierProof = invalidation.fact
     ? formatNodeText(invalidation.fact.sourceNode)
     : undefined;
+  const hint = invalidationRewriteHint(invalidation.boundaryKind);
   return {
     source: 'sound',
     code: SOUND_DIAGNOSTIC_CODES.unsoundFlowNarrowing,
@@ -151,10 +198,10 @@ function createDiagnostic(
         ? `The earlier check for \`${narrowedValue}\` was invalidated by this ${boundaryKind} boundary.`
         : 'A call, mutation, callback, alias, or suspension point can change the value after the earlier check.',
       ...(earlierProof ? [`Earlier proof: \`${earlierProof}\`.`] : []),
+      hint,
       `Example: ${example}`,
     ],
-    hint:
-      'Re-check the value after the invalidating boundary instead of carrying the earlier narrowing forward.',
+    hint,
     relatedInformation: invalidation.fact
       ? [createRelatedInformation(invalidation.fact.sourceNode, 'Earlier narrowing established here.')]
       : undefined,

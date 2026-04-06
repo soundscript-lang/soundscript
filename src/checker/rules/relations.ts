@@ -2329,8 +2329,10 @@ function classifyUnsoundMutableArrayRelation(
         `'${context.checker.typeToString(sourceType)}' cannot be widened to '${
           context.checker.typeToString(targetType)
         }' because writes through the target could push values the source array does not allow.`,
+        'Mutable edge: array writes such as `push`, indexed assignment, or `splice` would become unsound through the widened target surface.',
       ],
-      hint: 'Use a readonly array, copy into a new array, or keep the exact element type.',
+      hint:
+        'Make the array readonly, copy into a fresh array before widening, or keep the exact element type.',
     }
     : undefined;
 }
@@ -2476,9 +2478,10 @@ function classifyUnsoundWritableIndexSignatureRelation(
           }' values, but the source only accepts '${
             context.checker.typeToString(sourceIndexType)
           }'.`,
+          `Mutable edge: writes through the widened ${keyType} index signature could store values the source surface does not accept.`,
         ],
         hint:
-          'Use a readonly index signature, copy into a fresh object, or keep the exact value type.',
+          'Make the index signature readonly, copy into a fresh object before widening, or keep the exact value type.',
       };
     }
   }
@@ -8039,8 +8042,10 @@ function classifyUnsoundMutableMapOrSetRelation(
           `'${context.checker.typeToString(sourceType)}' cannot be widened to '${
             context.checker.typeToString(targetType)
           }' because writes through the target map could use incompatible keys or values.`,
+          'Mutable edge: `set(...)` on the widened map could introduce keys or values the source map would reject.',
         ],
-        hint: 'Use ReadonlyMap, copy into a new Map, or keep the exact key and value types.',
+        hint:
+          'Make the map surface ReadonlyMap, copy into a fresh Map before widening, or keep the exact key and value types.',
       };
     }
   }
@@ -8072,8 +8077,10 @@ function classifyUnsoundMutableMapOrSetRelation(
           `'${context.checker.typeToString(sourceType)}' cannot be widened to '${
             context.checker.typeToString(targetType)
           }' because writes through the target set could add incompatible values.`,
+          'Mutable edge: `add(...)` on the widened set could introduce values the source set would reject.',
         ],
-        hint: 'Use ReadonlySet, copy into a new Set, or keep the exact element type.',
+        hint:
+          'Make the set surface ReadonlySet, copy into a fresh Set before widening, or keep the exact element type.',
       };
     }
   }
@@ -8272,8 +8279,10 @@ function createWritablePropertyVarianceMismatch(
       }' to '${propertyName}', but the source only accepts '${
         context.checker.typeToString(sourceAcceptedType)
       }'.`,
+      `Mutable edge: writes through '${propertyName}' on the widened target would become unsound.`,
     ],
-    hint: 'Make the property readonly, copy into a fresh object, or keep the exact property type.',
+    hint:
+      `Make '${propertyName}' readonly, copy into a fresh object before widening, or keep '${propertyName}' at the exact accepted type.`,
   };
 }
 

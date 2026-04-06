@@ -2873,10 +2873,11 @@ Deno.test('analyzeProject explains mutable array variance with notes and hint', 
   assertEquals(result.diagnostics[0]?.message, 'Mutable arrays are invariant in soundscript.');
   assertEquals(result.diagnostics[0]?.notes, [
     "'Dog[]' cannot be widened to 'Animal[]' because writes through the target could push values the source array does not allow.",
+    'Mutable edge: array writes such as `push`, indexed assignment, or `splice` would become unsound through the widened target surface.',
   ]);
   assertEquals(
     result.diagnostics[0]?.hint,
-    'Use a readonly array, copy into a new array, or keep the exact element type.',
+    'Make the array readonly, copy into a fresh array before widening, or keep the exact element type.',
   );
   assertEquals(result.diagnostics[0]?.line, 10);
   assertEquals(result.diagnostics[0]?.column, 7);
@@ -5570,11 +5571,15 @@ Deno.test('analyzeProject reports actionable guidance for SOUND1020 invalidation
   });
 
   assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1020']);
-  assertEquals(result.diagnostics[0]?.hint, 'Re-check the value after the invalidating boundary instead of carrying the earlier narrowing forward.');
+  assertEquals(
+    result.diagnostics[0]?.hint,
+    'Capture a stable primitive or immutable snapshot into a fresh local before the call boundary, or re-check the value after the call.',
+  );
   assertEquals(result.diagnostics[0]?.notes, [
     'The earlier check for `box.value` was invalidated by this call boundary.',
     'Earlier proof: `box.value !== null`.',
-    'Example: Re-check after the boundary: `mutate(box); if (box.value !== null) { use(box.value); }`.',
+    'Capture a stable primitive or immutable snapshot into a fresh local before the call boundary, or re-check the value after the call.',
+    'Example: Capture before the call when stable: `const capturedValue = box.value; mutate(box); use(capturedValue);`, or re-check after the call.',
   ]);
   assertEquals(result.diagnostics[0]?.metadata?.rule, 'flow_narrowing_invalidation');
   assertEquals(result.diagnostics[0]?.metadata?.replacementFamily, 'recheck_after_boundary');
@@ -5593,7 +5598,7 @@ Deno.test('analyzeProject reports actionable guidance for SOUND1020 invalidation
   );
   assertEquals(
     result.diagnostics[0]?.metadata?.example,
-    'Re-check after the boundary: `mutate(box); if (box.value !== null) { use(box.value); }`.',
+    'Capture before the call when stable: `const capturedValue = box.value; mutate(box); use(capturedValue);`, or re-check after the call.',
   );
   assertEquals(result.diagnostics[0]?.line, 6);
   assertEquals(result.diagnostics[0]?.column, 5);
