@@ -4960,6 +4960,106 @@ Deno.test('analyzeProject tracks fetch host-object families and stdlib wrappers 
   ]);
 });
 
+Deno.test('analyzeProject tracks URL and text builtins under effect contracts', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/index.sts': [
+      'import { URL as StdURL, URLSearchParams as StdURLSearchParams } from "sts:url";',
+      'import { TextEncoder as StdTextEncoder, TextDecoder as StdTextDecoder } from "sts:text";',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function buildDomUrl(base: string): URL {',
+      '  return new URL("/x", base);',
+      '}',
+      '',
+      '// #[effects(forbid: [fails, suspend, mut, host])]',
+      'function canParseDomUrl(base: string): boolean {',
+      '  return URL.canParse("/x", base);',
+      '}',
+      '',
+      '// #[effects(forbid: [mut])]',
+      'function mutateDomParams(params: URLSearchParams): void {',
+      '  params.set("q", "music");',
+      '}',
+      '',
+      '// #[effects(forbid: [fails, suspend, mut, host])]',
+      'function readDomParams(params: URLSearchParams): boolean {',
+      '  return params.has("q");',
+      '}',
+      '',
+      '// #[effects(forbid: [fails, suspend, mut, host])]',
+      'function encodeDomText(input: string) {',
+      '  return new TextEncoder().encode(input);',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function decodeDomText(bytes: Uint8Array): string {',
+      '  return new TextDecoder("utf-8").decode(bytes);',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function buildStdUrl(base: string): StdURL {',
+      '  return new StdURL("/x", base);',
+      '}',
+      '',
+      '// #[effects(forbid: [mut])]',
+      'function mutateStdParams(params: StdURLSearchParams): void {',
+      '  params.set("q", "music");',
+      '}',
+      '',
+      '// #[effects(forbid: [fails, suspend, mut, host])]',
+      'function readStdParams(params: StdURLSearchParams): boolean {',
+      '  return params.has("q");',
+      '}',
+      '',
+      '// #[effects(forbid: [fails, suspend, mut, host])]',
+      'function encodeStdText(input: string) {',
+      '  return new StdTextEncoder().encode(input);',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function decodeStdText(bytes: Uint8Array): string {',
+      '  return new StdTextDecoder("utf-8").decode(bytes);',
+      '}',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), [
+    'SOUND1040',
+    'SOUND1040',
+    'SOUND1040',
+    'SOUND1040',
+    'SOUND1040',
+    'SOUND1040',
+  ]);
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.metadata?.primarySymbol), [
+    'buildDomUrl',
+    'mutateDomParams',
+    'decodeDomText',
+    'buildStdUrl',
+    'mutateStdParams',
+    'decodeStdText',
+  ]);
+});
+
 Deno.test('analyzeProject enforces callback forbid contracts against failful arguments', async () => {
   const tempDirectory = await createTempProject({
     'tsconfig.json': JSON.stringify(

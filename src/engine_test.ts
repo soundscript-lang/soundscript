@@ -984,3 +984,131 @@ Deno.test('createAnalysisContext summarizes fetch host-object families precisely
   assertEquals(getEffectSummaryForDeclaration(context, readRequest).hasUnknownDirectEffects, false);
   assertEquals(getEffectSummaryForDeclaration(context, readResponse).hasUnknownDirectEffects, false);
 });
+
+Deno.test('createAnalysisContext summarizes URL and text builtins precisely', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+          },
+          include: ['src/**/*.ts'],
+        },
+        null,
+        2,
+      ),
+    },
+    {
+      path: 'src/index.ts',
+      contents: [
+        'export function buildUrl(base: string): URL {',
+        '  return new URL("/x", base);',
+        '}',
+        '',
+        'export function canParseUrl(base: string): boolean {',
+        '  return URL.canParse("/x", base);',
+        '}',
+        '',
+        'export function mutateParams(params: URLSearchParams): void {',
+        '  params.set("q", "music");',
+        '}',
+        '',
+        'export function readParams(params: URLSearchParams): boolean {',
+        '  return params.has("q");',
+        '}',
+        '',
+        'export function buildEncoder(): TextEncoder {',
+        '  return new TextEncoder();',
+        '}',
+        '',
+        'export function encodeText(encoder: TextEncoder, input: string): Uint8Array {',
+        '  return encoder.encode(input);',
+        '}',
+        '',
+        'export function buildDecoder(): TextDecoder {',
+        '  return new TextDecoder("utf-8");',
+        '}',
+        '',
+        'export function decodeText(decoder: TextDecoder, bytes: Uint8Array): string {',
+        '  return decoder.decode(bytes);',
+        '}',
+        '',
+      ].join('\n'),
+    },
+  ]);
+  const projectPath = join(tempDirectory, 'tsconfig.json');
+  const program = loadProgram(projectPath);
+  const context = createAnalysisContext({ program, workingDirectory: tempDirectory });
+  const sourceFile = context.getSourceFiles().find((file) => file.fileName.endsWith('/src/index.ts'));
+
+  assertExists(sourceFile);
+
+  const declarationsByName = new Map(
+    sourceFile.statements
+      .filter(ts.isFunctionDeclaration)
+      .filter((declaration): declaration is ts.FunctionDeclaration & { name: ts.Identifier } =>
+        declaration.name !== undefined
+      )
+      .map((declaration) => [declaration.name.text, declaration]),
+  );
+
+  const buildUrl = declarationsByName.get('buildUrl');
+  const canParseUrl = declarationsByName.get('canParseUrl');
+  const mutateParams = declarationsByName.get('mutateParams');
+  const readParams = declarationsByName.get('readParams');
+  const buildEncoder = declarationsByName.get('buildEncoder');
+  const encodeText = declarationsByName.get('encodeText');
+  const buildDecoder = declarationsByName.get('buildDecoder');
+  const decodeText = declarationsByName.get('decodeText');
+
+  assertExists(buildUrl);
+  assertExists(canParseUrl);
+  assertExists(mutateParams);
+  assertExists(readParams);
+  assertExists(buildEncoder);
+  assertExists(encodeText);
+  assertExists(buildDecoder);
+  assertExists(decodeText);
+
+  assertEquals(
+    getEffectSummaryForDeclaration(context, buildUrl).directMask,
+    INTERNAL_EFFECT_MASKS.failsThrows,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, canParseUrl).directMask,
+    0,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, mutateParams).directMask,
+    INTERNAL_EFFECT_MASKS.mut,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, readParams).directMask,
+    0,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, buildEncoder).directMask,
+    0,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, encodeText).directMask,
+    0,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, buildDecoder).directMask,
+    INTERNAL_EFFECT_MASKS.failsThrows,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, decodeText).directMask,
+    INTERNAL_EFFECT_MASKS.failsThrows,
+  );
+  assertEquals(getEffectSummaryForDeclaration(context, canParseUrl).hasUnknownDirectEffects, false);
+  assertEquals(getEffectSummaryForDeclaration(context, readParams).hasUnknownDirectEffects, false);
+  assertEquals(getEffectSummaryForDeclaration(context, encodeText).hasUnknownDirectEffects, false);
+  assertEquals(getEffectSummaryForDeclaration(context, decodeText).hasUnknownDirectEffects, false);
+});

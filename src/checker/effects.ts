@@ -624,6 +624,98 @@ function getKnownFetchObjectFamilyBehavior(
   return undefined;
 }
 
+function getKnownUrlAndTextBehavior(
+  ownerName: string | undefined,
+  memberName: string | undefined,
+  expression: ts.CallExpression | ts.NewExpression,
+): BuiltinCallBehavior | undefined {
+  if (ts.isNewExpression(expression)) {
+    if (ownerName === 'URL' || ownerName === 'TextDecoder') {
+      return {
+        directMask: INTERNAL_EFFECT_MASKS.failsThrows,
+        forwardedArguments: [],
+      };
+    }
+
+    if (
+      ownerName === 'URLSearchParams' || ownerName === 'TextEncoder'
+    ) {
+      return {
+        directMask: 0,
+        forwardedArguments: [],
+      };
+    }
+  }
+
+  if ((ownerName === 'URL' || ownerName === 'URLConstructor') && memberName === 'canParse') {
+    return {
+      directMask: 0,
+      forwardedArguments: [],
+    };
+  }
+
+  if (ownerName === 'URL' && (memberName === 'toJSON' || memberName === 'toString')) {
+    return {
+      directMask: 0,
+      forwardedArguments: [],
+    };
+  }
+
+  if (ownerName === 'URLSearchParams') {
+    if (
+      memberName === 'append' || memberName === 'delete' || memberName === 'set' ||
+      memberName === 'sort'
+    ) {
+      return {
+        directMask: INTERNAL_EFFECT_MASKS.mut,
+        forwardedArguments: [],
+      };
+    }
+
+    if (
+      memberName === 'entries' || memberName === 'get' || memberName === 'has' ||
+      memberName === 'keys' || memberName === 'toString' || memberName === 'values'
+    ) {
+      return {
+        directMask: 0,
+        forwardedArguments: [],
+      };
+    }
+
+    if (memberName === 'forEach' && ts.isCallExpression(expression) && expression.arguments.length > 0) {
+      return {
+        directMask: 0,
+        forwardedArguments: [{ argumentIndex: 0, failureBoundary: 'preserve' }],
+      };
+    }
+  }
+
+  if (ownerName === 'TextEncoder') {
+    if (memberName === 'encode') {
+      return {
+        directMask: 0,
+        forwardedArguments: [],
+      };
+    }
+
+    if (memberName === 'encodeInto') {
+      return {
+        directMask: INTERNAL_EFFECT_MASKS.mut,
+        forwardedArguments: [],
+      };
+    }
+  }
+
+  if (ownerName === 'TextDecoder' && memberName === 'decode') {
+    return {
+      directMask: INTERNAL_EFFECT_MASKS.failsThrows,
+      forwardedArguments: [],
+    };
+  }
+
+  return undefined;
+}
+
 function resolveAliasedSymbol(checker: ts.TypeChecker, symbol: ts.Symbol): ts.Symbol {
   let current = symbol;
   while ((current.flags & ts.SymbolFlags.Alias) !== 0) {
@@ -725,6 +817,11 @@ function getKnownPortableBuiltinBehavior(
   }
 
   if (sourceFileName && isBundledDomDeclarationFile(sourceFileName)) {
+    const urlAndTextBehavior = getKnownUrlAndTextBehavior(ownerName, memberName, expression);
+    if (urlAndTextBehavior) {
+      return urlAndTextBehavior;
+    }
+
     const fetchObjectBehavior = getKnownFetchObjectFamilyBehavior(ownerName, memberName, expression);
     if (fetchObjectBehavior) {
       return fetchObjectBehavior;
@@ -872,6 +969,17 @@ function getKnownStdlibBehavior(
         directMask: INTERNAL_EFFECT_MASKS.hostIo | INTERNAL_EFFECT_MASKS.suspend,
         forwardedArguments: [],
       };
+    }
+  }
+
+  if (
+    sourceFileName &&
+    (isTrustedSoundStdlibModuleFile(sourceFileName, 'text') ||
+      isTrustedSoundStdlibModuleFile(sourceFileName, 'url'))
+  ) {
+    const urlAndTextBehavior = getKnownUrlAndTextBehavior(ownerName, declarationName, expression);
+    if (urlAndTextBehavior) {
+      return urlAndTextBehavior;
     }
   }
 
