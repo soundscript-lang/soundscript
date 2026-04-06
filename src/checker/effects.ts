@@ -701,6 +701,13 @@ function getKnownUrlAndTextBehavior(
         forwardedArguments: [],
       };
     }
+
+    if (ownerName === 'Blob') {
+      return {
+        directMask: 0,
+        forwardedArguments: [],
+      };
+    }
   }
 
   if (
@@ -716,6 +723,16 @@ function getKnownUrlAndTextBehavior(
   if (ownerName === 'URL' && (memberName === 'toJSON' || memberName === 'toString')) {
     return {
       directMask: 0,
+      forwardedArguments: [],
+    };
+  }
+
+  if (
+    (ownerName === 'URL' || ownerName === 'URLConstructor') &&
+    (memberName === 'createObjectURL' || memberName === 'revokeObjectURL')
+  ) {
+    return {
+      directMask: INTERNAL_EFFECT_MASKS.hostDom,
       forwardedArguments: [],
     };
   }
@@ -1071,6 +1088,13 @@ function getKnownPortableBuiltinBehavior(
   }
 
   if (sourceFileName && isBundledDomDeclarationFile(sourceFileName)) {
+    if (memberName === 'addEventListener' || memberName === 'removeEventListener') {
+      return {
+        directMask: INTERNAL_EFFECT_MASKS.hostDom,
+        forwardedArguments: [],
+      };
+    }
+
     const consoleBehavior = getKnownConsoleBehavior(ownerName, memberName);
     if (consoleBehavior) {
       return consoleBehavior;

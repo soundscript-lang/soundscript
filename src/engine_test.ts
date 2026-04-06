@@ -1028,6 +1028,163 @@ Deno.test('createAnalysisContext summarizes abort and cloning builtins precisely
   assertEquals(getEffectSummaryForDeclaration(context, parseUrl).hasUnknownDirectEffects, false);
 });
 
+Deno.test('createAnalysisContext summarizes DOM listener and object URL builtins precisely', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+          },
+          include: ['src/**/*.ts'],
+        },
+        null,
+        2,
+      ),
+    },
+    {
+      path: 'src/index.ts',
+      contents: [
+        'export function buildBlob(): Blob {',
+        '  return new Blob(["ok"]);',
+        '}',
+        '',
+        'export function registerAbortListener(',
+        '  signal: AbortSignal,',
+        '  listener: (event: Event) => void,',
+        '): void {',
+        '  signal.addEventListener("abort", listener);',
+        '}',
+        '',
+        'export function unregisterAbortListener(',
+        '  signal: AbortSignal,',
+        '  listener: (event: Event) => void,',
+        '): void {',
+        '  signal.removeEventListener("abort", listener);',
+        '}',
+        '',
+        'export function registerWindowListener(listener: (event: Event) => void): void {',
+        '  addEventListener("message", listener);',
+        '}',
+        '',
+        'export function unregisterWindowListener(listener: (event: Event) => void): void {',
+        '  removeEventListener("message", listener);',
+        '}',
+        '',
+        'export function createObjectUrl(blob: Blob): string {',
+        '  return URL.createObjectURL(blob);',
+        '}',
+        '',
+        'export function revokeObjectUrl(url: string): void {',
+        '  URL.revokeObjectURL(url);',
+        '}',
+        '',
+      ].join('\n'),
+    },
+  ]);
+  const projectPath = join(tempDirectory, 'tsconfig.json');
+  const program = loadProgram(projectPath);
+  const context = createAnalysisContext({ program, workingDirectory: tempDirectory });
+  const sourceFile = context.getSourceFiles().find((file) => file.fileName.endsWith('/src/index.ts'));
+
+  assertExists(sourceFile);
+
+  const declarationsByName = new Map(
+    sourceFile.statements
+      .filter(ts.isFunctionDeclaration)
+      .filter((declaration): declaration is ts.FunctionDeclaration & { name: ts.Identifier } =>
+        declaration.name !== undefined
+      )
+      .map((declaration) => [declaration.name.text, declaration]),
+  );
+
+  const buildBlob = declarationsByName.get('buildBlob');
+  const registerAbortListener = declarationsByName.get('registerAbortListener');
+  const unregisterAbortListener = declarationsByName.get('unregisterAbortListener');
+  const registerWindowListener = declarationsByName.get('registerWindowListener');
+  const unregisterWindowListener = declarationsByName.get('unregisterWindowListener');
+  const createObjectUrl = declarationsByName.get('createObjectUrl');
+  const revokeObjectUrl = declarationsByName.get('revokeObjectUrl');
+
+  assertExists(buildBlob);
+  assertExists(registerAbortListener);
+  assertExists(unregisterAbortListener);
+  assertExists(registerWindowListener);
+  assertExists(unregisterWindowListener);
+  assertExists(createObjectUrl);
+  assertExists(revokeObjectUrl);
+
+  assertEquals(
+    getEffectSummaryForDeclaration(context, buildBlob).directMask,
+    0,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, registerAbortListener).directMask,
+    INTERNAL_EFFECT_MASKS.hostDom,
+  );
+  assertEquals(
+    normalizeForwardedParameters(
+      getEffectSummaryForDeclaration(context, registerAbortListener).forwardedParameters,
+    ),
+    [],
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, unregisterAbortListener).directMask,
+    INTERNAL_EFFECT_MASKS.hostDom,
+  );
+  assertEquals(
+    normalizeForwardedParameters(
+      getEffectSummaryForDeclaration(context, unregisterAbortListener).forwardedParameters,
+    ),
+    [],
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, registerWindowListener).directMask,
+    INTERNAL_EFFECT_MASKS.hostDom,
+  );
+  assertEquals(
+    normalizeForwardedParameters(
+      getEffectSummaryForDeclaration(context, registerWindowListener).forwardedParameters,
+    ),
+    [],
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, unregisterWindowListener).directMask,
+    INTERNAL_EFFECT_MASKS.hostDom,
+  );
+  assertEquals(
+    normalizeForwardedParameters(
+      getEffectSummaryForDeclaration(context, unregisterWindowListener).forwardedParameters,
+    ),
+    [],
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, createObjectUrl).directMask,
+    INTERNAL_EFFECT_MASKS.hostDom,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, revokeObjectUrl).directMask,
+    INTERNAL_EFFECT_MASKS.hostDom,
+  );
+  assertEquals(getEffectSummaryForDeclaration(context, buildBlob).hasUnknownDirectEffects, false);
+  assertEquals(getEffectSummaryForDeclaration(context, registerAbortListener).hasUnknownDirectEffects, false);
+  assertEquals(
+    getEffectSummaryForDeclaration(context, unregisterAbortListener).hasUnknownDirectEffects,
+    false,
+  );
+  assertEquals(getEffectSummaryForDeclaration(context, registerWindowListener).hasUnknownDirectEffects, false);
+  assertEquals(
+    getEffectSummaryForDeclaration(context, unregisterWindowListener).hasUnknownDirectEffects,
+    false,
+  );
+  assertEquals(getEffectSummaryForDeclaration(context, createObjectUrl).hasUnknownDirectEffects, false);
+  assertEquals(getEffectSummaryForDeclaration(context, revokeObjectUrl).hasUnknownDirectEffects, false);
+});
+
 Deno.test('createAnalysisContext summarizes fetch host-object families precisely', async () => {
   const tempDirectory = await createTempProject([
     {

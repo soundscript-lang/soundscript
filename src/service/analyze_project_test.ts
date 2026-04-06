@@ -5144,6 +5144,87 @@ Deno.test('analyzeProject tracks abort and cloning builtins under effect contrac
   ]);
 });
 
+Deno.test('analyzeProject tracks DOM listener and object URL builtins under effect contracts', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/index.sts': [
+      'let registered = 0;',
+      '',
+      '// #[effects(forbid: [fails, suspend, mut, host])]',
+      'function buildBlob(): Blob {',
+      '  return new Blob(["ok"]);',
+      '}',
+      '',
+      '// #[effects(forbid: [host])]',
+      'function registerAbortListener(signal: AbortSignal): void {',
+      '  signal.addEventListener("abort", () => {',
+      '    registered += 1;',
+      '  });',
+      '}',
+      '',
+      '// #[effects(forbid: [host])]',
+      'function unregisterAbortListener(signal: AbortSignal, listener: (event: Event) => void): void {',
+      '  signal.removeEventListener("abort", listener);',
+      '}',
+      '',
+      '// #[effects(forbid: [host])]',
+      'function registerWindowListener(listener: (event: Event) => void): void {',
+      '  addEventListener("message", listener);',
+      '}',
+      '',
+      '// #[effects(forbid: [host])]',
+      'function unregisterWindowListener(listener: (event: Event) => void): void {',
+      '  removeEventListener("message", listener);',
+      '}',
+      '',
+      '// #[effects(forbid: [host])]',
+      'function createObjectUrl(blob: Blob): string {',
+      '  return URL.createObjectURL(blob);',
+      '}',
+      '',
+      '// #[effects(forbid: [host])]',
+      'function revokeObjectUrl(url: string): void {',
+      '  URL.revokeObjectURL(url);',
+      '}',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), [
+    'SOUND1040',
+    'SOUND1040',
+    'SOUND1040',
+    'SOUND1040',
+    'SOUND1040',
+    'SOUND1040',
+  ]);
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.metadata?.primarySymbol), [
+    'registerAbortListener',
+    'unregisterAbortListener',
+    'registerWindowListener',
+    'unregisterWindowListener',
+    'createObjectUrl',
+    'revokeObjectUrl',
+  ]);
+});
+
 Deno.test('analyzeProject tracks JSON and console builtins under effect contracts', async () => {
   const tempDirectory = await createTempProject({
     'tsconfig.json': JSON.stringify(
