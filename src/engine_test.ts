@@ -1112,3 +1112,117 @@ Deno.test('createAnalysisContext summarizes URL and text builtins precisely', as
   assertEquals(getEffectSummaryForDeclaration(context, encodeText).hasUnknownDirectEffects, false);
   assertEquals(getEffectSummaryForDeclaration(context, decodeText).hasUnknownDirectEffects, false);
 });
+
+Deno.test('createAnalysisContext summarizes JSON and console builtins precisely', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+          },
+          include: ['src/**/*.ts'],
+        },
+        null,
+        2,
+      ),
+    },
+    {
+      path: 'src/index.ts',
+      contents: [
+        'export function parseValue(text: string): unknown {',
+        '  return JSON.parse(text);',
+        '}',
+        '',
+        'export function parseWithReviver(',
+        '  text: string,',
+        '  reviver: (this: unknown, key: string, value: unknown) => unknown,',
+        '): unknown {',
+        '  return JSON.parse(text, reviver);',
+        '}',
+        '',
+        'export function stringifyValue(value: unknown): string | undefined {',
+        '  return JSON.stringify(value);',
+        '}',
+        '',
+        'export function stringifyWithReplacer(',
+        '  value: unknown,',
+        '  replacer: (this: unknown, key: string, value: unknown) => unknown,',
+        '): string | undefined {',
+        '  return JSON.stringify(value, replacer);',
+        '}',
+        '',
+        'export function logValue(value: unknown): void {',
+        '  console.log(value);',
+        '}',
+        '',
+      ].join('\n'),
+    },
+  ]);
+  const projectPath = join(tempDirectory, 'tsconfig.json');
+  const program = loadProgram(projectPath);
+  const context = createAnalysisContext({ program, workingDirectory: tempDirectory });
+  const sourceFile = context.getSourceFiles().find((file) => file.fileName.endsWith('/src/index.ts'));
+
+  assertExists(sourceFile);
+
+  const declarationsByName = new Map(
+    sourceFile.statements
+      .filter(ts.isFunctionDeclaration)
+      .filter((declaration): declaration is ts.FunctionDeclaration & { name: ts.Identifier } =>
+        declaration.name !== undefined
+      )
+      .map((declaration) => [declaration.name.text, declaration]),
+  );
+
+  const parseValue = declarationsByName.get('parseValue');
+  const parseWithReviver = declarationsByName.get('parseWithReviver');
+  const stringifyValue = declarationsByName.get('stringifyValue');
+  const stringifyWithReplacer = declarationsByName.get('stringifyWithReplacer');
+  const logValue = declarationsByName.get('logValue');
+
+  assertExists(parseValue);
+  assertExists(parseWithReviver);
+  assertExists(stringifyValue);
+  assertExists(stringifyWithReplacer);
+  assertExists(logValue);
+
+  assertEquals(
+    getEffectSummaryForDeclaration(context, parseValue).directMask,
+    INTERNAL_EFFECT_MASKS.failsThrows,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, parseWithReviver).directMask,
+    INTERNAL_EFFECT_MASKS.failsThrows,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, parseWithReviver).forwardedParameters,
+    [{ parameterIndex: 1, failureBoundary: 'preserve' }],
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, stringifyValue).directMask,
+    INTERNAL_EFFECT_MASKS.failsThrows,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, stringifyWithReplacer).directMask,
+    INTERNAL_EFFECT_MASKS.failsThrows,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, stringifyWithReplacer).forwardedParameters,
+    [{ parameterIndex: 1, failureBoundary: 'preserve' }],
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, logValue).directMask,
+    INTERNAL_EFFECT_MASKS.hostInterop,
+  );
+  assertEquals(getEffectSummaryForDeclaration(context, parseWithReviver).hasUnknownDirectEffects, false);
+  assertEquals(
+    getEffectSummaryForDeclaration(context, stringifyWithReplacer).hasUnknownDirectEffects,
+    false,
+  );
+  assertEquals(getEffectSummaryForDeclaration(context, logValue).hasUnknownDirectEffects, false);
+});

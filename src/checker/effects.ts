@@ -561,6 +561,10 @@ function isBundledDomDeclarationFile(fileName: string): boolean {
   return normalizeFileName(fileName).endsWith('/lib.dom.d.ts');
 }
 
+function isBundledEcmascriptDeclarationFile(fileName: string): boolean {
+  return /\/lib\.es[^/]*\.d\.ts$/.test(normalizeFileName(fileName));
+}
+
 function getKnownFetchObjectFamilyBehavior(
   ownerName: string | undefined,
   memberName: string | undefined,
@@ -716,6 +720,63 @@ function getKnownUrlAndTextBehavior(
   return undefined;
 }
 
+function isCallableExpression(context: AnalysisContext, expression: ts.Expression | undefined): boolean {
+  if (!expression) {
+    return false;
+  }
+
+  const type = context.checker.getTypeAtLocation(expression);
+  return context.checker.getSignaturesOfType(type, ts.SignatureKind.Call).length > 0;
+}
+
+function getKnownJsonBehavior(
+  context: AnalysisContext,
+  ownerName: string | undefined,
+  memberName: string | undefined,
+  expression: ts.CallExpression | ts.NewExpression,
+): BuiltinCallBehavior | undefined {
+  if (!ts.isCallExpression(expression) || ownerName !== 'JSON') {
+    return undefined;
+  }
+
+  if (memberName === 'parse' || memberName === 'stringify') {
+    return {
+      directMask: INTERNAL_EFFECT_MASKS.failsThrows,
+      forwardedArguments: expression.arguments.length > 1 && isCallableExpression(context, expression.arguments[1])
+        ? [{ argumentIndex: 1, failureBoundary: 'preserve' }]
+        : [],
+    };
+  }
+
+  return undefined;
+}
+
+function getKnownConsoleBehavior(
+  ownerName: string | undefined,
+  memberName: string | undefined,
+): BuiltinCallBehavior | undefined {
+  if (ownerName !== 'Console') {
+    return undefined;
+  }
+
+  if (
+    memberName === 'assert' || memberName === 'clear' || memberName === 'count' ||
+    memberName === 'countReset' || memberName === 'debug' || memberName === 'dir' ||
+    memberName === 'dirxml' || memberName === 'error' || memberName === 'group' ||
+    memberName === 'groupCollapsed' || memberName === 'groupEnd' || memberName === 'info' ||
+    memberName === 'log' || memberName === 'table' || memberName === 'time' ||
+    memberName === 'timeEnd' || memberName === 'timeLog' || memberName === 'timeStamp' ||
+    memberName === 'trace' || memberName === 'warn'
+  ) {
+    return {
+      directMask: INTERNAL_EFFECT_MASKS.hostInterop,
+      forwardedArguments: [],
+    };
+  }
+
+  return undefined;
+}
+
 function resolveAliasedSymbol(checker: ts.TypeChecker, symbol: ts.Symbol): ts.Symbol {
   let current = symbol;
   while ((current.flags & ts.SymbolFlags.Alias) !== 0) {
@@ -816,7 +877,19 @@ function getKnownPortableBuiltinBehavior(
     };
   }
 
+  if (sourceFileName && isBundledEcmascriptDeclarationFile(sourceFileName)) {
+    const jsonBehavior = getKnownJsonBehavior(context, ownerName, memberName, expression);
+    if (jsonBehavior) {
+      return jsonBehavior;
+    }
+  }
+
   if (sourceFileName && isBundledDomDeclarationFile(sourceFileName)) {
+    const consoleBehavior = getKnownConsoleBehavior(ownerName, memberName);
+    if (consoleBehavior) {
+      return consoleBehavior;
+    }
+
     const urlAndTextBehavior = getKnownUrlAndTextBehavior(ownerName, memberName, expression);
     if (urlAndTextBehavior) {
       return urlAndTextBehavior;

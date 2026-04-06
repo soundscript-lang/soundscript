@@ -5060,6 +5060,77 @@ Deno.test('analyzeProject tracks URL and text builtins under effect contracts', 
   ]);
 });
 
+Deno.test('analyzeProject tracks JSON and console builtins under effect contracts', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/index.sts': [
+      '// #[effects(forbid: [fails])]',
+      'function parseValue(text: string) {',
+      '  return JSON.parse(text);',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function stringifyValue(value: unknown) {',
+      '  return JSON.stringify(value);',
+      '}',
+      '',
+      '// #[effects(forbid: [host])]',
+      'function logValue(value: unknown): void {',
+      '  console.log(value);',
+      '}',
+      '',
+      '// #[effects(forbid: [host])]',
+      'function parseWithHostReviver(text: string) {',
+      '  return JSON.parse(text, (_key, raw) => {',
+      '    console.log(raw);',
+      '    return raw;',
+      '  });',
+      '}',
+      '',
+      '// #[effects(forbid: [host])]',
+      'function stringifyWithHostReplacer(value: unknown) {',
+      '  return JSON.stringify(value, (_key, raw) => {',
+      '    console.log(raw);',
+      '    return raw;',
+      '  });',
+      '}',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), [
+    'SOUND1040',
+    'SOUND1040',
+    'SOUND1040',
+    'SOUND1040',
+    'SOUND1040',
+  ]);
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.metadata?.primarySymbol), [
+    'parseValue',
+    'stringifyValue',
+    'logValue',
+    'parseWithHostReviver',
+    'stringifyWithHostReplacer',
+  ]);
+});
+
 Deno.test('analyzeProject enforces callback forbid contracts against failful arguments', async () => {
   const tempDirectory = await createTempProject({
     'tsconfig.json': JSON.stringify(
