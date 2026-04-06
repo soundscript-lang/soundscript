@@ -4860,6 +4860,106 @@ Deno.test('analyzeProject treats deferred host schedulers as host effects withou
   assertEquals(result.diagnostics[0]?.metadata?.primarySymbol, 'schedule');
 });
 
+Deno.test('analyzeProject tracks fetch host-object families and stdlib wrappers under effect contracts', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/index.sts': [
+      'import { Headers as FetchHeaders, Request as FetchRequest, Response as FetchResponse } from "sts:fetch";',
+      'import { crypto as randomCrypto } from "sts:random";',
+      '',
+      '// #[effects(forbid: [host])]',
+      'function buildDomObjects(): void {',
+      '  const headers = new Headers({ accept: "application/json" });',
+      '  const request = new Request("https://example.com", { headers });',
+      '  const response = new Response("ok");',
+      '  void request;',
+      '  void response;',
+      '}',
+      '',
+      '// #[effects(forbid: [mut])]',
+      'function mutateDomHeaders(headers: Headers): void {',
+      '  headers.set("x-id", "123");',
+      '}',
+      '',
+      '// #[effects(forbid: [fails, suspend, mut, host])]',
+      'function readDomHeaders(headers: Headers): boolean {',
+      '  return headers.has("x-id");',
+      '}',
+      '',
+      '// #[effects(forbid: [host, suspend])]',
+      'function readDomRequest(request: Request) {',
+      '  return request.text();',
+      '}',
+      '',
+      '// #[effects(forbid: [host])]',
+      'function buildStdObjects(): void {',
+      '  const headers = new FetchHeaders({ accept: "application/json" });',
+      '  const request = new FetchRequest("https://example.com", { headers });',
+      '  const response = new FetchResponse("ok");',
+      '  void request;',
+      '  void response;',
+      '}',
+      '',
+      '// #[effects(forbid: [mut])]',
+      'function mutateStdHeaders(headers: FetchHeaders): void {',
+      '  headers.set("x-id", "123");',
+      '}',
+      '',
+      '// #[effects(forbid: [fails, suspend, mut, host])]',
+      'function readStdHeaders(headers: FetchHeaders): boolean {',
+      '  return headers.has("x-id");',
+      '}',
+      '',
+      '// #[effects(forbid: [host, suspend])]',
+      'function readStdResponse(response: FetchResponse) {',
+      '  return response.text();',
+      '}',
+      '',
+      '// #[effects(forbid: [host, mut])]',
+      'function fillViaCrypto(bytes: Uint8Array): Uint8Array {',
+      '  return randomCrypto.getRandomValues(bytes);',
+      '}',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), [
+    'SOUND1040',
+    'SOUND1040',
+    'SOUND1040',
+    'SOUND1040',
+    'SOUND1040',
+    'SOUND1040',
+    'SOUND1040',
+  ]);
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.metadata?.primarySymbol), [
+    'buildDomObjects',
+    'mutateDomHeaders',
+    'readDomRequest',
+    'buildStdObjects',
+    'mutateStdHeaders',
+    'readStdResponse',
+    'fillViaCrypto',
+  ]);
+});
+
 Deno.test('analyzeProject enforces callback forbid contracts against failful arguments', async () => {
   const tempDirectory = await createTempProject({
     'tsconfig.json': JSON.stringify(

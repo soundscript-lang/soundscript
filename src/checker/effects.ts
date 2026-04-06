@@ -561,6 +561,69 @@ function isBundledDomDeclarationFile(fileName: string): boolean {
   return normalizeFileName(fileName).endsWith('/lib.dom.d.ts');
 }
 
+function getKnownFetchObjectFamilyBehavior(
+  ownerName: string | undefined,
+  memberName: string | undefined,
+  expression: ts.CallExpression | ts.NewExpression,
+): BuiltinCallBehavior | undefined {
+  if (
+    ts.isNewExpression(expression) &&
+    (ownerName === 'Headers' || ownerName === 'Request' || ownerName === 'Response')
+  ) {
+    return {
+      directMask: INTERNAL_EFFECT_MASKS.hostInterop,
+      forwardedArguments: [],
+    };
+  }
+
+  if (ownerName === 'Headers') {
+    if (memberName === 'append' || memberName === 'delete' || memberName === 'set') {
+      return {
+        directMask: INTERNAL_EFFECT_MASKS.mut,
+        forwardedArguments: [],
+      };
+    }
+    if (
+      memberName === 'entries' || memberName === 'get' || memberName === 'has' ||
+      memberName === 'keys' || memberName === 'values'
+    ) {
+      return {
+        directMask: 0,
+        forwardedArguments: [],
+      };
+    }
+    if (memberName === 'forEach' && ts.isCallExpression(expression) && expression.arguments.length > 0) {
+      return {
+        directMask: 0,
+        forwardedArguments: [{ argumentIndex: 0, failureBoundary: 'preserve' }],
+      };
+    }
+  }
+
+  if (ownerName === 'Request' || ownerName === 'Response') {
+    if (memberName === 'clone') {
+      return {
+        directMask: 0,
+        forwardedArguments: [],
+      };
+    }
+  }
+
+  if (ownerName === 'Body' || ownerName === 'Request' || ownerName === 'Response') {
+    if (
+      memberName === 'arrayBuffer' || memberName === 'blob' || memberName === 'formData' ||
+      memberName === 'json' || memberName === 'text'
+    ) {
+      return {
+        directMask: INTERNAL_EFFECT_MASKS.hostIo | INTERNAL_EFFECT_MASKS.suspend,
+        forwardedArguments: [],
+      };
+    }
+  }
+
+  return undefined;
+}
+
 function resolveAliasedSymbol(checker: ts.TypeChecker, symbol: ts.Symbol): ts.Symbol {
   let current = symbol;
   while ((current.flags & ts.SymbolFlags.Alias) !== 0) {
@@ -662,6 +725,11 @@ function getKnownPortableBuiltinBehavior(
   }
 
   if (sourceFileName && isBundledDomDeclarationFile(sourceFileName)) {
+    const fetchObjectBehavior = getKnownFetchObjectFamilyBehavior(ownerName, memberName, expression);
+    if (fetchObjectBehavior) {
+      return fetchObjectBehavior;
+    }
+
     if (
       memberName === 'queueMicrotask' &&
       (ownerName === undefined || ownerName === 'WindowOrWorkerGlobalScope')
@@ -772,14 +840,16 @@ function getKnownPortableBuiltinBehavior(
   return undefined;
 }
 
-function getKnownStdlibCallBehavior(
+function getKnownStdlibBehavior(
   context: AnalysisContext,
-  expression: ts.CallExpression,
+  expression: ts.CallExpression | ts.NewExpression,
 ): BuiltinCallBehavior | undefined {
   const declaration = context.checker.getResolvedSignature(expression)?.getDeclaration();
   const declarationName = getDeclarationName(declaration);
+  const ownerName = declaration ? getDeclarationOwnerName(declaration) : undefined;
   const sourceFileName = declaration?.getSourceFile().fileName;
   if (
+    ts.isCallExpression(expression) &&
     declarationName &&
     ASYNC_TASK_CONSTRUCTOR_FUNCTIONS.has(declarationName) &&
     declaration &&
@@ -791,15 +861,23 @@ function getKnownStdlibCallBehavior(
     };
   }
 
-  if (declarationName === 'fetch' && sourceFileName && isTrustedSoundStdlibModuleFile(sourceFileName, 'fetch')) {
-    return {
-      directMask: INTERNAL_EFFECT_MASKS.hostIo | INTERNAL_EFFECT_MASKS.suspend,
-      forwardedArguments: [],
-    };
+  if (sourceFileName && isTrustedSoundStdlibModuleFile(sourceFileName, 'fetch')) {
+    const fetchObjectBehavior = getKnownFetchObjectFamilyBehavior(ownerName, declarationName, expression);
+    if (fetchObjectBehavior) {
+      return fetchObjectBehavior;
+    }
+
+    if (declarationName === 'fetch') {
+      return {
+        directMask: INTERNAL_EFFECT_MASKS.hostIo | INTERNAL_EFFECT_MASKS.suspend,
+        forwardedArguments: [],
+      };
+    }
   }
 
   if (
     declarationName === 'getRandomValues' &&
+    ownerName === 'Crypto' &&
     sourceFileName &&
     isTrustedSoundStdlibModuleFile(sourceFileName, 'random')
   ) {
@@ -816,7 +894,7 @@ function getKnownBuiltinCallBehavior(
   context: AnalysisContext,
   expression: ts.CallExpression,
 ): BuiltinCallBehavior | undefined {
-  const stdlib = getKnownStdlibCallBehavior(context, expression);
+  const stdlib = getKnownStdlibBehavior(context, expression);
   if (stdlib) {
     return stdlib;
   }
@@ -1110,9 +1188,10 @@ export function getEffectCompositionForCallLike(
   context: AnalysisContext,
   expression: ts.CallExpression | ts.NewExpression,
 ): EffectComposition {
-  const builtin = ts.isCallExpression(expression)
-    ? getKnownBuiltinCallBehavior(context, expression)
-    : getKnownPortableBuiltinBehavior(context, expression);
+  const builtin = getKnownStdlibBehavior(context, expression) ??
+    (ts.isCallExpression(expression)
+      ? getKnownBuiltinCallBehavior(context, expression)
+      : getKnownPortableBuiltinBehavior(context, expression));
   if (builtin) {
     let mask = builtin.directMask;
     let unknown = false;

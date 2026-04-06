@@ -867,3 +867,120 @@ Deno.test('createAnalysisContext summarizes deferred host schedulers without imm
   assertEquals(cancelSummary.forwardedParameters, []);
   assertEquals(cancelSummary.hasUnknownDirectEffects, false);
 });
+
+Deno.test('createAnalysisContext summarizes fetch host-object families precisely', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+          },
+          include: ['src/**/*.ts'],
+        },
+        null,
+        2,
+      ),
+    },
+    {
+      path: 'src/index.ts',
+      contents: [
+        'export function buildHeaders(): Headers {',
+        '  return new Headers({ accept: "application/json" });',
+        '}',
+        '',
+        'export function mutateHeaders(headers: Headers): void {',
+        '  headers.set("x-id", "123");',
+        '}',
+        '',
+        'export function readHeaders(headers: Headers): boolean {',
+        '  return headers.has("x-id");',
+        '}',
+        '',
+        'export function buildRequest(url: string): Request {',
+        '  return new Request(url, { headers: new Headers() });',
+        '}',
+        '',
+        'export function buildResponse(): Response {',
+        '  return new Response("ok");',
+        '}',
+        '',
+        'export function readRequest(request: Request): Promise<string> {',
+        '  return request.text();',
+        '}',
+        '',
+        'export function readResponse(response: Response): Promise<string> {',
+        '  return response.text();',
+        '}',
+        '',
+      ].join('\n'),
+    },
+  ]);
+  const projectPath = join(tempDirectory, 'tsconfig.json');
+  const program = loadProgram(projectPath);
+  const context = createAnalysisContext({ program, workingDirectory: tempDirectory });
+  const sourceFile = context.getSourceFiles().find((file) => file.fileName.endsWith('/src/index.ts'));
+
+  assertExists(sourceFile);
+
+  const declarationsByName = new Map(
+    sourceFile.statements
+      .filter(ts.isFunctionDeclaration)
+      .filter((declaration): declaration is ts.FunctionDeclaration & { name: ts.Identifier } =>
+        declaration.name !== undefined
+      )
+      .map((declaration) => [declaration.name.text, declaration]),
+  );
+
+  const buildHeaders = declarationsByName.get('buildHeaders');
+  const mutateHeaders = declarationsByName.get('mutateHeaders');
+  const readHeaders = declarationsByName.get('readHeaders');
+  const buildRequest = declarationsByName.get('buildRequest');
+  const buildResponse = declarationsByName.get('buildResponse');
+  const readRequest = declarationsByName.get('readRequest');
+  const readResponse = declarationsByName.get('readResponse');
+
+  assertExists(buildHeaders);
+  assertExists(mutateHeaders);
+  assertExists(readHeaders);
+  assertExists(buildRequest);
+  assertExists(buildResponse);
+  assertExists(readRequest);
+  assertExists(readResponse);
+
+  assertEquals(
+    getEffectSummaryForDeclaration(context, buildHeaders).directMask,
+    INTERNAL_EFFECT_MASKS.hostInterop,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, mutateHeaders).directMask,
+    INTERNAL_EFFECT_MASKS.mut,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, readHeaders).directMask,
+    0,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, buildRequest).directMask,
+    INTERNAL_EFFECT_MASKS.hostInterop,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, buildResponse).directMask,
+    INTERNAL_EFFECT_MASKS.hostInterop,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, readRequest).directMask,
+    INTERNAL_EFFECT_MASKS.hostIo | INTERNAL_EFFECT_MASKS.suspend,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, readResponse).directMask,
+    INTERNAL_EFFECT_MASKS.hostIo | INTERNAL_EFFECT_MASKS.suspend,
+  );
+  assertEquals(getEffectSummaryForDeclaration(context, readHeaders).hasUnknownDirectEffects, false);
+  assertEquals(getEffectSummaryForDeclaration(context, readRequest).hasUnknownDirectEffects, false);
+  assertEquals(getEffectSummaryForDeclaration(context, readResponse).hasUnknownDirectEffects, false);
+});
