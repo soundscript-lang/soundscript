@@ -2,6 +2,7 @@ import { assertEquals, assertExists, assertStrictEquals } from '@std/assert';
 import { dirname, join } from '@std/path';
 import ts from 'typescript';
 
+import { getEffectSummaryForDeclaration, INTERNAL_EFFECT_MASKS } from './checker/effects.ts';
 import { createAnalysisContext } from './checker/engine/context.ts';
 
 interface TempProjectFile {
@@ -428,4 +429,129 @@ Deno.test('createAnalysisContext attaches effects annotations to function-valued
       },
     ],
   );
+});
+
+Deno.test('createAnalysisContext summarizes Promise continuation builtins with precise forwarded effects', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+          },
+          include: ['src/**/*.ts'],
+        },
+        null,
+        2,
+      ),
+    },
+    {
+      path: 'src/index.ts',
+      contents: [
+        'export function mapValue(source: Promise<number>): Promise<number> {',
+        '  return source.then((value) => value + 1);',
+        '}',
+        '',
+        'export function explodeLater(source: Promise<number>): Promise<number> {',
+        '  return source.then(() => {',
+        '    throw "boom";',
+        '  });',
+        '}',
+        '',
+        'export function forwardThen(',
+        '  source: Promise<number>,',
+        '  project: (value: number) => number,',
+        '): Promise<number> {',
+        '  return source.then(project);',
+        '}',
+        '',
+        'export function recover(',
+        '  source: Promise<number>,',
+        '  recoverer: (error: unknown) => number,',
+        '): Promise<number> {',
+        '  return source.catch(recoverer);',
+        '}',
+        '',
+        'export function finish(',
+        '  source: Promise<number>,',
+        '  callback: () => void,',
+        '): Promise<number> {',
+        '  return source.finally(callback);',
+        '}',
+        '',
+      ].join('\n'),
+    },
+  ]);
+  const projectPath = join(tempDirectory, 'tsconfig.json');
+  const program = loadProgram(projectPath);
+  const context = createAnalysisContext({ program, workingDirectory: tempDirectory });
+  const sourceFile = context.getSourceFiles().find((file) => file.fileName.endsWith('/src/index.ts'));
+
+  assertExists(sourceFile);
+
+  const functionDeclarations = sourceFile.statements.filter(ts.isFunctionDeclaration);
+  const declarationsByName = new Map(
+    functionDeclarations
+      .filter((declaration): declaration is ts.FunctionDeclaration & { name: ts.Identifier } =>
+        declaration.name !== undefined
+      )
+      .map((declaration) => [declaration.name.text, declaration]),
+  );
+
+  const mapValue = declarationsByName.get('mapValue');
+  const explodeLater = declarationsByName.get('explodeLater');
+  const forwardThen = declarationsByName.get('forwardThen');
+  const recover = declarationsByName.get('recover');
+  const finish = declarationsByName.get('finish');
+
+  assertExists(mapValue);
+  assertExists(explodeLater);
+  assertExists(forwardThen);
+  assertExists(recover);
+  assertExists(finish);
+
+  const mapValueSummary = getEffectSummaryForDeclaration(context, mapValue);
+  const explodeLaterSummary = getEffectSummaryForDeclaration(context, explodeLater);
+  const forwardThenSummary = getEffectSummaryForDeclaration(context, forwardThen);
+  const recoverSummary = getEffectSummaryForDeclaration(context, recover);
+  const finishSummary = getEffectSummaryForDeclaration(context, finish);
+
+  assertEquals(mapValueSummary.directMask, INTERNAL_EFFECT_MASKS.suspend);
+  assertEquals(mapValueSummary.hasUnknownDirectEffects, false);
+  assertEquals(mapValueSummary.forwardedParameters, []);
+
+  assertEquals(
+    explodeLaterSummary.directMask,
+    INTERNAL_EFFECT_MASKS.failsRejects | INTERNAL_EFFECT_MASKS.suspend,
+  );
+  assertEquals(
+    explodeLaterSummary.directMask & INTERNAL_EFFECT_MASKS.failsThrows,
+    0,
+  );
+  assertEquals(explodeLaterSummary.hasUnknownDirectEffects, false);
+
+  assertEquals(forwardThenSummary.directMask, INTERNAL_EFFECT_MASKS.suspend);
+  assertEquals(forwardThenSummary.forwardedParameters, [{
+    failureBoundary: 'reject',
+    parameterIndex: 1,
+  }]);
+  assertEquals(forwardThenSummary.hasUnknownDirectEffects, false);
+
+  assertEquals(recoverSummary.directMask, INTERNAL_EFFECT_MASKS.suspend);
+  assertEquals(recoverSummary.forwardedParameters, [{
+    failureBoundary: 'reject',
+    parameterIndex: 1,
+  }]);
+  assertEquals(recoverSummary.hasUnknownDirectEffects, false);
+
+  assertEquals(finishSummary.directMask, INTERNAL_EFFECT_MASKS.suspend);
+  assertEquals(finishSummary.forwardedParameters, [{
+    failureBoundary: 'reject',
+    parameterIndex: 1,
+  }]);
+  assertEquals(finishSummary.hasUnknownDirectEffects, false);
 });

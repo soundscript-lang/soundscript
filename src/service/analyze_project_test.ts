@@ -4600,6 +4600,89 @@ Deno.test('analyzeProject enforces local forbid fails contracts against inferred
   assertEquals(result.diagnostics[0]?.metadata?.primarySymbol, 'explode');
 });
 
+Deno.test('analyzeProject accepts pure Promise continuations under forbid fails contracts', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/index.sts': [
+      '// #[effects(forbid: [fails])]',
+      'function chain(source: Promise<number>): Promise<number> {',
+      '  return source.then((value) => value + 1);',
+      '}',
+      '',
+      '// #[effects(forbid: [fails], via: [project])]',
+      'function forwardThen(',
+      '  source: Promise<number>,',
+      '  project: (value: number) => number,',
+      '): Promise<number> {',
+      '  return source.then(project);',
+      '}',
+      '',
+      'const plusOne = (value: number): number => value + 1;',
+      'void chain(Promise.resolve(1));',
+      'void forwardThen(Promise.resolve(1), plusOne);',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics, []);
+});
+
+Deno.test('analyzeProject accepts sts:async task constructors under forbid contracts', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/index.sts': [
+      "import * as async from 'sts:async';",
+      "import type { Task } from 'sts:async';",
+      '',
+      '// #[effects(forbid: [fails, suspend, mut, host])]',
+      'function build(project: (value: number) => number): Task<number> {',
+      '  const seed = async.fromPromise(async () => 1);',
+      '  return async.map(seed, project);',
+      '}',
+      '',
+      'const plusOne = (value: number): number => value + 1;',
+      'void build(plusOne);',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics, []);
+});
+
 Deno.test('analyzeProject enforces callback forbid contracts against failful arguments', async () => {
   const tempDirectory = await createTempProject({
     'tsconfig.json': JSON.stringify(
@@ -6920,6 +7003,46 @@ Deno.test('analyzeProject preserves narrowing across declaration-only calls prov
       'function use(box: { value: string | null }): string {',
       '  if (box.value !== null) {',
       '    observe(box);',
+      '    const value: string = box.value;',
+      '    return value;',
+      '  }',
+      '  return "";',
+      '}',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics, []);
+});
+
+Deno.test('analyzeProject preserves narrowing across sts:async task constructor helpers', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/index.sts': [
+      "import * as async from 'sts:async';",
+      "import type { Task } from 'sts:async';",
+      '',
+      'function use(box: { value: string | null }, task: Task<number>): string {',
+      '  if (box.value !== null) {',
+      '    const mapped = async.map(task, (value: number) => value + 1);',
+      '    void mapped;',
       '    const value: string = box.value;',
       '    return value;',
       '  }',

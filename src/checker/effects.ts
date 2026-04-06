@@ -3,6 +3,8 @@ import ts from 'typescript';
 import type { ParsedAnnotation, ParsedAnnotationValue } from '../annotation_syntax.ts';
 import type {
   AnalysisContext,
+  EffectFailureBoundary,
+  EffectForwardedParameterFact,
   EffectParameterContractFact,
   EffectSummaryFact,
   PublicEffectName,
@@ -46,6 +48,26 @@ const ARRAY_CALLBACK_METHODS = new Set([
   'some',
 ]);
 
+const ASYNC_TASK_CONSTRUCTOR_FUNCTIONS = new Set([
+  'fail',
+  'flatMap',
+  'fromPromise',
+  'fromResult',
+  'map',
+  'mapError',
+  'parallel',
+  'race',
+  'recover',
+  'succeed',
+  'tap',
+  'tapError',
+  'taskApplicative',
+  'taskAsyncMonad',
+  'taskFunctor',
+  'taskMonad',
+  'timeout',
+]);
+
 const inProgressSummaries = new WeakMap<ts.Node, EffectSummaryFact>();
 
 export interface ParsedEffectsAnnotationContract {
@@ -58,6 +80,20 @@ interface EffectComposition {
   mask: number;
   unknown: boolean;
 }
+
+interface BuiltinForwardedArgumentBehavior {
+  argumentIndex: number;
+  failureBoundary: EffectFailureBoundary;
+}
+
+interface BuiltinCallBehavior {
+  directMask: number;
+  forwardedArguments: readonly BuiltinForwardedArgumentBehavior[];
+}
+
+type PromiseLikeChecker = ts.TypeChecker & {
+  getPromisedTypeOfPromise(type: ts.Type): ts.Type | undefined;
+};
 
 type EffectCallableDeclaration =
   | ts.ArrowFunction
@@ -317,20 +353,23 @@ function getParameterName(parameter: ts.ParameterDeclaration, index: number): st
   return ts.isIdentifier(parameter.name) ? parameter.name.text : `<param ${index + 1}>`;
 }
 
-function resolveViaParameterIndexes(
+function resolveViaParameters(
   parameters: readonly ts.ParameterDeclaration[],
   viaNames: readonly string[],
-): readonly number[] {
-  const indexes: number[] = [];
+): readonly EffectForwardedParameterFact[] {
+  const forwardedParameters: EffectForwardedParameterFact[] = [];
   for (const viaName of viaNames) {
-    const index = parameters.findIndex((parameter) =>
+    const parameterIndex = parameters.findIndex((parameter) =>
       ts.isIdentifier(parameter.name) && parameter.name.text === viaName
     );
-    if (index >= 0) {
-      indexes.push(index);
+    if (parameterIndex >= 0) {
+      forwardedParameters.push({
+        failureBoundary: 'preserve',
+        parameterIndex,
+      });
     }
   }
-  return indexes;
+  return forwardedParameters;
 }
 
 function getParameterContracts(
@@ -362,7 +401,7 @@ function emptySummary(nodeId: number): EffectSummaryFact {
   return {
     directMask: 0,
     forbidMask: 0,
-    forwardedParameterIndexes: [],
+    forwardedParameters: [],
     hasUnknownDirectEffects: false,
     nodeId,
     parameterContracts: [],
@@ -377,6 +416,31 @@ function normalizeFailuresForAsyncBoundary(mask: number): number {
 
 function applyContainingCallableBoundary(mask: number, isAsyncBoundary: boolean): number {
   return isAsyncBoundary ? normalizeFailuresForAsyncBoundary(mask) : mask;
+}
+
+function applyForwardedFailureBoundary(mask: number, failureBoundary: EffectFailureBoundary): number {
+  return failureBoundary === 'reject' ? normalizeFailuresForAsyncBoundary(mask) : mask;
+}
+
+function createForwardedParameterKey(
+  parameterIndex: number,
+  failureBoundary: EffectFailureBoundary,
+): string {
+  return `${parameterIndex}:${failureBoundary}`;
+}
+
+function addForwardedParameter(
+  forwardedParameters: Map<string, EffectForwardedParameterFact>,
+  parameterIndex: number,
+  failureBoundary: EffectFailureBoundary,
+): void {
+  forwardedParameters.set(
+    createForwardedParameterKey(parameterIndex, failureBoundary),
+    {
+      failureBoundary,
+      parameterIndex,
+    },
+  );
 }
 
 function collectLocalBindingSymbolIds(
@@ -469,24 +533,162 @@ function isArrayLikeType(context: AnalysisContext, type: ts.Type): boolean {
     type.symbol?.getName() === 'ReadonlyArray';
 }
 
+function normalizeFileName(fileName: string): string {
+  return fileName.replaceAll('\\', '/');
+}
+
+function isInstalledSoundStdlibModuleFile(fileName: string, moduleName: string): boolean {
+  const normalizedFileName = normalizeFileName(fileName);
+  return normalizedFileName.includes('/node_modules/@soundscript/soundscript/') &&
+    normalizedFileName.endsWith(`/${moduleName}.d.ts`);
+}
+
+function isLocalSoundStdlibModuleFile(fileName: string, moduleName: string): boolean {
+  const normalizedFileName = normalizeFileName(fileName);
+  return normalizedFileName.includes('/src/stdlib/') &&
+    (
+      normalizedFileName.endsWith(`/${moduleName}.d.ts`) ||
+      normalizedFileName.endsWith(`/${moduleName}.ts`)
+    );
+}
+
+function isTrustedSoundStdlibModuleFile(fileName: string, moduleName: string): boolean {
+  return isInstalledSoundStdlibModuleFile(fileName, moduleName) ||
+    isLocalSoundStdlibModuleFile(fileName, moduleName);
+}
+
+function resolveAliasedSymbol(checker: ts.TypeChecker, symbol: ts.Symbol): ts.Symbol {
+  let current = symbol;
+  while ((current.flags & ts.SymbolFlags.Alias) !== 0) {
+    const aliased = checker.getAliasedSymbol(current);
+    if (aliased === current) {
+      break;
+    }
+    current = aliased;
+  }
+  return current;
+}
+
+function isDeclarationBackedBuiltinSymbolNamed(
+  checker: ts.TypeChecker,
+  symbol: ts.Symbol | undefined,
+  name: string,
+): boolean {
+  if (!symbol) {
+    return false;
+  }
+
+  const resolved = resolveAliasedSymbol(checker, symbol);
+  if (resolved.getName() !== name) {
+    return false;
+  }
+
+  const declarations = resolved.declarations ?? [];
+  return declarations.length > 0 &&
+    declarations.every((declaration) => declaration.getSourceFile().isDeclarationFile);
+}
+
+function isPromiseType(context: AnalysisContext, type: ts.Type): boolean {
+  const promisedType = (context.checker as PromiseLikeChecker).getPromisedTypeOfPromise(type);
+  if (!promisedType) {
+    return false;
+  }
+
+  return isDeclarationBackedBuiltinSymbolNamed(context.checker, type.aliasSymbol, 'Promise') ||
+    isDeclarationBackedBuiltinSymbolNamed(context.checker, type.getSymbol(), 'Promise');
+}
+
+function isOmittedPromiseHandlerArgument(argument: ts.Expression | undefined): boolean {
+  return !argument || (ts.isIdentifier(argument) && argument.text === 'undefined');
+}
+
+function getDeclarationName(declaration: ts.Declaration | undefined): string | undefined {
+  if (!declaration) {
+    return undefined;
+  }
+
+  const name = (declaration as ts.NamedDeclaration).name;
+  return name && ts.isIdentifier(name) ? name.text : undefined;
+}
+
+function getKnownStdlibCallBehavior(
+  context: AnalysisContext,
+  expression: ts.CallExpression,
+): BuiltinCallBehavior | undefined {
+  const declaration = context.checker.getResolvedSignature(expression)?.getDeclaration();
+  const declarationName = getDeclarationName(declaration);
+  if (
+    declarationName &&
+    ASYNC_TASK_CONSTRUCTOR_FUNCTIONS.has(declarationName) &&
+    declaration &&
+    isTrustedSoundStdlibModuleFile(declaration.getSourceFile().fileName, 'async')
+  ) {
+    return {
+      directMask: 0,
+      forwardedArguments: [],
+    };
+  }
+
+  return undefined;
+}
+
 function getKnownBuiltinCallBehavior(
   context: AnalysisContext,
   expression: ts.CallExpression,
-): { directMask: number; forwardedArgumentIndexes: readonly number[] } | undefined {
+): BuiltinCallBehavior | undefined {
+  const stdlib = getKnownStdlibCallBehavior(context, expression);
+  if (stdlib) {
+    return stdlib;
+  }
+
   if (!ts.isPropertyAccessExpression(expression.expression)) {
     return undefined;
   }
 
   const receiverType = context.checker.getTypeAtLocation(expression.expression.expression);
-  if (!isArrayLikeType(context, receiverType)) {
+  const memberName = expression.expression.name.text;
+  if (isArrayLikeType(context, receiverType) && ARRAY_CALLBACK_METHODS.has(memberName)) {
+    return {
+      directMask: 0,
+      forwardedArguments: expression.arguments.length > 0
+        ? [{ argumentIndex: 0, failureBoundary: 'preserve' }]
+        : [],
+    };
+  }
+
+  if (!isPromiseType(context, receiverType)) {
     return undefined;
   }
 
-  const memberName = expression.expression.name.text;
-  if (ARRAY_CALLBACK_METHODS.has(memberName)) {
+  if (memberName === 'then') {
+    const forwardedArguments: BuiltinForwardedArgumentBehavior[] = [];
+    if (!isOmittedPromiseHandlerArgument(expression.arguments[0])) {
+      forwardedArguments.push({ argumentIndex: 0, failureBoundary: 'reject' });
+    }
+    if (!isOmittedPromiseHandlerArgument(expression.arguments[1])) {
+      forwardedArguments.push({ argumentIndex: 1, failureBoundary: 'reject' });
+    }
     return {
-      directMask: 0,
-      forwardedArgumentIndexes: expression.arguments.length > 0 ? [0] : [],
+      directMask: INTERNAL_EFFECT_MASKS.suspend,
+      forwardedArguments,
+    };
+  }
+
+  if (memberName === 'catch') {
+    return {
+      directMask: INTERNAL_EFFECT_MASKS.suspend,
+      forwardedArguments: isOmittedPromiseHandlerArgument(expression.arguments[0])
+        ? []
+        : [{ argumentIndex: 0, failureBoundary: 'reject' }],
+    };
+  }
+
+  if (memberName === 'finally') {
+    return {
+      directMask: INTERNAL_EFFECT_MASKS.suspend,
+      forwardedArguments: isOmittedPromiseHandlerArgument(expression.arguments[0])
+        ? []
+        : [{ argumentIndex: 0, failureBoundary: 'reject' }],
     };
   }
 
@@ -501,7 +703,7 @@ function getSummaryForCallableExpression(
     const summary = getEffectSummaryForDeclaration(context, expression);
     return {
       mask: summary.directMask,
-      unknown: summary.hasUnknownDirectEffects || summary.forwardedParameterIndexes.length > 0,
+      unknown: summary.hasUnknownDirectEffects || summary.forwardedParameters.length > 0,
     };
   }
 
@@ -523,7 +725,7 @@ function getSummaryForCallableExpression(
     }
     const summary = getEffectSummaryForDeclaration(context, declaration);
     mask |= summary.directMask;
-    if (summary.hasUnknownDirectEffects || summary.forwardedParameterIndexes.length > 0) {
+    if (summary.hasUnknownDirectEffects || summary.forwardedParameters.length > 0) {
       unknown = true;
     }
   }
@@ -535,7 +737,8 @@ function summarizeForwardedArgumentInBody(
   context: AnalysisContext,
   parameters: readonly ts.ParameterDeclaration[],
   argument: ts.Expression | undefined,
-  forwardedParameterIndexes: Set<number>,
+  forwardedParameters: Map<string, EffectForwardedParameterFact>,
+  failureBoundary: EffectFailureBoundary,
 ): EffectComposition {
   if (!argument) {
     return { mask: 0, unknown: true };
@@ -543,11 +746,15 @@ function summarizeForwardedArgumentInBody(
 
   const parameterIndex = getCurrentFunctionParameterIndex(context, parameters, argument);
   if (parameterIndex !== undefined) {
-    forwardedParameterIndexes.add(parameterIndex);
+    addForwardedParameter(forwardedParameters, parameterIndex, failureBoundary);
     return { mask: 0, unknown: false };
   }
 
-  return getSummaryForCallableExpression(context, argument) ?? { mask: 0, unknown: true };
+  const summary = getSummaryForCallableExpression(context, argument) ?? { mask: 0, unknown: true };
+  return {
+    mask: applyForwardedFailureBoundary(summary.mask, failureBoundary),
+    unknown: summary.unknown,
+  };
 }
 
 function hasAsyncBoundary(declaration: EffectCallableDeclaration): boolean {
@@ -574,7 +781,7 @@ function buildDeclarationSummary(
 
   if (parsedEffects && typeof parsedEffects !== 'string') {
     summary.forbidMask = parsedEffects.forbidMask;
-    summary.forwardedParameterIndexes = resolveViaParameterIndexes(parameters, parsedEffects.viaNames);
+    summary.forwardedParameters = resolveViaParameters(parameters, parsedEffects.viaNames);
   }
 
   if (!isCallableBodyDeclaration(declaration)) {
@@ -601,7 +808,15 @@ function buildDeclarationSummary(
   }
 
   const localBindingSymbolIds = collectLocalBindingSymbolIds(context, declaration);
-  const forwardedParameterIndexes = new Set(summary.forwardedParameterIndexes);
+  const forwardedParameters = new Map<string, EffectForwardedParameterFact>(
+    summary.forwardedParameters.map((forwardedParameter) => [
+      createForwardedParameterKey(
+        forwardedParameter.parameterIndex,
+        forwardedParameter.failureBoundary,
+      ),
+      forwardedParameter,
+    ]),
+  );
   inProgressSummaries.set(declaration, summary);
 
   const visit = (node: ts.Node): void => {
@@ -624,17 +839,18 @@ function buildDeclarationSummary(
       } else {
         const directParameterIndex = getCurrentFunctionParameterIndex(context, parameters, node.expression);
         if (directParameterIndex !== undefined) {
-          forwardedParameterIndexes.add(directParameterIndex);
+          addForwardedParameter(forwardedParameters, directParameterIndex, 'preserve');
         } else {
           const builtin = getKnownBuiltinCallBehavior(context, node);
           if (builtin) {
             summary.directMask |= builtin.directMask;
-            for (const forwardedArgumentIndex of builtin.forwardedArgumentIndexes) {
+            for (const forwardedArgument of builtin.forwardedArguments) {
               const forwarded = summarizeForwardedArgumentInBody(
                 context,
                 parameters,
-                node.arguments[forwardedArgumentIndex],
-                forwardedParameterIndexes,
+                node.arguments[forwardedArgument.argumentIndex],
+                forwardedParameters,
+                forwardedArgument.failureBoundary,
               );
               summary.directMask |= applyContainingCallableBoundary(forwarded.mask, asyncBoundary);
               summary.hasUnknownDirectEffects ||= forwarded.unknown;
@@ -671,7 +887,10 @@ function buildDeclarationSummary(
   };
   visit(body);
 
-  summary.forwardedParameterIndexes = [...forwardedParameterIndexes].sort((left, right) => left - right);
+  summary.forwardedParameters = [...forwardedParameters.values()].sort((left, right) =>
+    left.parameterIndex - right.parameterIndex ||
+    left.failureBoundary.localeCompare(right.failureBoundary)
+  );
   inProgressSummaries.delete(declaration);
   return summary;
 }
@@ -710,13 +929,16 @@ export function getEffectCompositionForCallLike(
   if (builtin) {
     let mask = builtin.directMask;
     let unknown = false;
-    for (const argumentIndex of builtin.forwardedArgumentIndexes) {
-      const forwarded = getSummaryForCallableExpression(context, expression.arguments?.[argumentIndex]!);
+    for (const forwardedArgument of builtin.forwardedArguments) {
+      const forwarded = getSummaryForCallableExpression(
+        context,
+        expression.arguments?.[forwardedArgument.argumentIndex]!,
+      );
       if (!forwarded) {
         unknown = true;
         continue;
       }
-      mask |= forwarded.mask;
+      mask |= applyForwardedFailureBoundary(forwarded.mask, forwardedArgument.failureBoundary);
       unknown ||= forwarded.unknown;
     }
     return { mask, unknown };
@@ -732,13 +954,16 @@ export function getEffectCompositionForCallLike(
 
   let mask = summary.directMask;
   let unknown = summary.hasUnknownDirectEffects;
-  for (const parameterIndex of summary.forwardedParameterIndexes) {
-    const forwarded = getSummaryForCallableExpression(context, expression.arguments?.[parameterIndex]!);
+  for (const forwardedParameter of summary.forwardedParameters) {
+    const forwarded = getSummaryForCallableExpression(
+      context,
+      expression.arguments?.[forwardedParameter.parameterIndex]!,
+    );
     if (!forwarded) {
       unknown = true;
       continue;
     }
-    mask |= forwarded.mask;
+    mask |= applyForwardedFailureBoundary(forwarded.mask, forwardedParameter.failureBoundary);
     unknown ||= forwarded.unknown;
   }
 

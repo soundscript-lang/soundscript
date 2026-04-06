@@ -75,10 +75,17 @@ export interface EffectParameterContractFact {
   parameterIndex: number;
 }
 
+export type EffectFailureBoundary = 'preserve' | 'reject';
+
+export interface EffectForwardedParameterFact {
+  failureBoundary: EffectFailureBoundary;
+  parameterIndex: number;
+}
+
 export interface EffectSummaryFact {
   directMask: number;
   forbidMask: number;
-  forwardedParameterIndexes: readonly number[];
+  forwardedParameters: readonly EffectForwardedParameterFact[];
   hasUnknownDirectEffects: boolean;
   nodeId: number;
   parameterContracts: readonly EffectParameterContractFact[];
