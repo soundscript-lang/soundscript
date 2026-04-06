@@ -14,7 +14,8 @@ experimental.
 
 For the fastest orientation on the builtin surface and the recommended coding patterns, see
 [docs/reference/builtin-modules.md](docs/reference/builtin-modules.md) and
-[docs/guides/idiomatic-soundscript.md](docs/guides/idiomatic-soundscript.md).
+[docs/guides/idiomatic-soundscript.md](docs/guides/idiomatic-soundscript.md) and
+[docs/guides/common-rewrites.md](docs/guides/common-rewrites.md).
 
 It adds a second file type, `.sts`, for code checked under a stricter rule set. Ordinary `.ts` files
 keep normal TypeScript behavior. The goal is incremental adoption: move the parts of a codebase you

@@ -1,8 +1,10 @@
 import { assert, assertEquals, assertNotEquals, assertStringIncludes } from '@std/assert';
 import { dirname, join, toFileUrl } from '@std/path';
 
+import type { MergedDiagnostic } from '../checker/diagnostics.ts';
 import {
   analyzeOpenDocument,
+  codeActionsOpenDocument,
   getPreparedProjectForTest,
   referencesOpenDocument,
 } from './project_service.ts';
@@ -17,6 +19,74 @@ async function createTempProject(files: Record<string, string>): Promise<string>
   }
 
   return tempDirectory;
+}
+
+function openSessionDocument(uri: string, text: string): SessionState {
+  const session = new SessionState();
+  session.open({
+    uri,
+    languageId: 'soundscript',
+    version: 1,
+    text,
+  });
+  return session;
+}
+
+function toCodeActionDiagnostics(
+  diagnostics: readonly MergedDiagnostic[],
+): Array<{
+  code: string;
+  data?: {
+    hint?: string;
+    metadata?: MergedDiagnostic['metadata'];
+    notes?: string[];
+  };
+  message: string;
+  range: {
+    end: { character: number; line: number };
+    start: { character: number; line: number };
+  };
+}> {
+  return diagnostics.map((diagnostic) => {
+    const startLine = Math.max((diagnostic.line ?? 1) - 1, 0);
+    const startCharacter = Math.max((diagnostic.column ?? 1) - 1, 0);
+    const endLine = Math.max((diagnostic.endLine ?? diagnostic.line ?? 1) - 1, startLine);
+    const rawEndCharacter = diagnostic.endColumn !== undefined
+      ? Math.max(diagnostic.endColumn - 1, 0)
+      : endLine === startLine
+      ? startCharacter + 1
+      : 0;
+    const details: string[] = [];
+    for (const note of diagnostic.notes ?? []) {
+      details.push(`Note: ${note}`);
+    }
+    if (diagnostic.hint) {
+      details.push(`Hint: ${diagnostic.hint}`);
+    }
+
+    return {
+      code: diagnostic.code,
+      data: diagnostic.notes || diagnostic.hint
+        ? {
+          notes: diagnostic.notes,
+          hint: diagnostic.hint,
+          metadata: diagnostic.metadata,
+        }
+        : diagnostic.metadata
+        ? { metadata: diagnostic.metadata }
+        : undefined,
+      message: [diagnostic.message, ...details].join('\n\n'),
+      range: {
+        start: { line: startLine, character: startCharacter },
+        end: {
+          line: endLine,
+          character: endLine === startLine
+            ? Math.max(rawEndCharacter, startCharacter + 1)
+            : rawEndCharacter,
+        },
+      },
+    };
+  });
 }
 
 Deno.test('project service reuses prepared sts-local analysis state across open-document version changes', async () => {
@@ -198,6 +268,549 @@ Deno.test('project service diagnostics ignore commented-out macro code', async (
 
   const analyzed = analyzeOpenDocument(uri, session);
   assertEquals(analyzed.diagnostics, []);
+});
+
+Deno.test('project service offers a SOUND1020 quick fix to capture narrowed members before call boundaries', async () => {
+  const text = [
+    '// #[extern]',
+    'declare function mutate(box: { value: string | null }): void;',
+    '',
+    'function use(box: { value: string | null }) {',
+    '  if (box.value !== null) {',
+    '    mutate(box);',
+    '    const value: string = box.value;',
+    '    return value;',
+    '  }',
+    '  return "";',
+    '}',
+    '',
+  ].join('\n');
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/demo.sts': text,
+  });
+
+  const uri = toFileUrl(join(tempDirectory, 'src/demo.sts')).href;
+  const session = openSessionDocument(uri, text);
+  const analyzed = analyzeOpenDocument(uri, session);
+
+  assertEquals(analyzed.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1020']);
+  assertEquals(analyzed.diagnostics[0]?.metadata?.primarySymbol, 'box.value');
+  assertEquals(analyzed.diagnostics[0]?.metadata?.secondarySymbol, 'call');
+
+  const actions = codeActionsOpenDocument(uri, toCodeActionDiagnostics(analyzed.diagnostics), session);
+  const action = actions?.find((entry) =>
+    entry.title === 'Capture `box.value` into `boxValue` before the call boundary'
+  );
+  assert(action);
+  assertEquals(action.edit?.changes?.[uri], [
+    {
+      newText: '  const boxValue = box.value;\n',
+      range: {
+        start: { line: 4, character: 0 },
+        end: { line: 4, character: 0 },
+      },
+    },
+    {
+      newText: 'boxValue',
+      range: {
+        start: { line: 4, character: 6 },
+        end: { line: 4, character: 15 },
+      },
+    },
+    {
+      newText: 'boxValue',
+      range: {
+        start: { line: 6, character: 26 },
+        end: { line: 6, character: 35 },
+      },
+    },
+  ]);
+});
+
+Deno.test('project service offers a SOUND1020 quick fix to capture narrowed members before await boundaries', async () => {
+  const text = [
+    '// #[extern]',
+    'declare function refresh(): Promise<void>;',
+    '',
+    'async function use(box: { value: string | null }) {',
+    '  if (box.value !== null) {',
+    '    await refresh();',
+    '    return box.value.length;',
+    '  }',
+    '  return 0;',
+    '}',
+    '',
+  ].join('\n');
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/demo.sts': text,
+  });
+
+  const uri = toFileUrl(join(tempDirectory, 'src/demo.sts')).href;
+  const session = openSessionDocument(uri, text);
+  const analyzed = analyzeOpenDocument(uri, session);
+
+  assertEquals(analyzed.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1020']);
+  assertEquals(analyzed.diagnostics[0]?.metadata?.secondarySymbol, 'suspension');
+
+  const actions = codeActionsOpenDocument(uri, toCodeActionDiagnostics(analyzed.diagnostics), session);
+  const action = actions?.find((entry) =>
+    entry.title === 'Capture `box.value` into `boxValue` before the await boundary'
+  );
+  assert(action);
+  assertEquals(action.edit?.changes?.[uri], [
+    {
+      newText: '  const boxValue = box.value;\n',
+      range: {
+        start: { line: 4, character: 0 },
+        end: { line: 4, character: 0 },
+      },
+    },
+    {
+      newText: 'boxValue',
+      range: {
+        start: { line: 4, character: 6 },
+        end: { line: 4, character: 15 },
+      },
+    },
+    {
+      newText: 'boxValue',
+      range: {
+        start: { line: 6, character: 11 },
+        end: { line: 6, character: 20 },
+      },
+    },
+  ]);
+});
+
+Deno.test('project service offers a SOUND1020 quick fix to capture narrowed members before callback boundaries', async () => {
+  const text = [
+    'function use(box: { value: string | null }, items: readonly number[]) {',
+    '  if (box.value !== null) {',
+    '    items.forEach(() => {',
+    '      const value: string = box.value;',
+    '      void value;',
+    '    });',
+    '  }',
+    '}',
+    '',
+  ].join('\n');
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/demo.sts': text,
+  });
+
+  const uri = toFileUrl(join(tempDirectory, 'src/demo.sts')).href;
+  const session = openSessionDocument(uri, text);
+  const actions = codeActionsOpenDocument(
+    uri,
+    [{
+      code: 'SOUND1020',
+      data: {
+        metadata: {
+          primarySymbol: 'box.value',
+          secondarySymbol: 'callback',
+        },
+      },
+      message: 'Narrowing was invalidated',
+      range: {
+        start: { line: 2, character: 4 },
+        end: { line: 2, character: 24 },
+      },
+    }],
+    session,
+  );
+  const action = actions?.find((entry) =>
+    entry.title === 'Capture `box.value` into `boxValue` before the callback boundary'
+  );
+  assert(action);
+  assertEquals(action.edit?.changes?.[uri], [
+    {
+      newText: '  const boxValue = box.value;\n',
+      range: {
+        start: { line: 1, character: 0 },
+        end: { line: 1, character: 0 },
+      },
+    },
+    {
+      newText: 'boxValue',
+      range: {
+        start: { line: 1, character: 6 },
+        end: { line: 1, character: 15 },
+      },
+    },
+    {
+      newText: 'boxValue',
+      range: {
+        start: { line: 3, character: 28 },
+        end: { line: 3, character: 37 },
+      },
+    },
+  ]);
+});
+
+Deno.test('project service skips SOUND1020 capture quick fixes for non-literal computed paths', async () => {
+  const text = [
+    '// #[extern]',
+    'declare function mutate(box: Record<string, string | null>): void;',
+    '',
+    'function use(box: Record<string, string | null>, key: string) {',
+    '  if (box[key] !== null) {',
+    '    mutate(box);',
+    '    const value: string = box[key];',
+    '    return value;',
+    '  }',
+    '  return "";',
+    '}',
+    '',
+  ].join('\n');
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/demo.sts': text,
+  });
+
+  const uri = toFileUrl(join(tempDirectory, 'src/demo.sts')).href;
+  const session = openSessionDocument(uri, text);
+  const actions = codeActionsOpenDocument(
+    uri,
+    [{
+      code: 'SOUND1020',
+      data: {
+        metadata: {
+          primarySymbol: 'box[key]',
+          secondarySymbol: 'call',
+        },
+      },
+      message: 'Narrowing was invalidated',
+      range: {
+        start: { line: 5, character: 4 },
+        end: { line: 5, character: 15 },
+      },
+    }],
+    session,
+  );
+  const captureAction = actions?.find((entry) => entry.title.includes('Capture `box[key]`'));
+  assertEquals(captureAction, undefined);
+});
+
+Deno.test('project service suffixes captured SOUND1020 locals when the preferred name is already taken', async () => {
+  const text = [
+    '// #[extern]',
+    'declare function mutate(box: { value: string | null }): void;',
+    '',
+    'function use(box: { value: string | null }) {',
+    '  const boxValue = "taken";',
+    '  if (box.value !== null) {',
+    '    mutate(box);',
+    '    const value: string = box.value;',
+    '    return value + boxValue;',
+    '  }',
+    '  return boxValue;',
+    '}',
+    '',
+  ].join('\n');
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/demo.sts': text,
+  });
+
+  const uri = toFileUrl(join(tempDirectory, 'src/demo.sts')).href;
+  const session = openSessionDocument(uri, text);
+  const analyzed = analyzeOpenDocument(uri, session);
+
+  const actions = codeActionsOpenDocument(uri, toCodeActionDiagnostics(analyzed.diagnostics), session);
+  const action = actions?.find((entry) =>
+    entry.title === 'Capture `box.value` into `boxValue2` before the call boundary'
+  );
+  assert(action);
+  assertEquals(action.edit?.changes?.[uri]?.[0], {
+    newText: '  const boxValue2 = box.value;\n',
+    range: {
+      start: { line: 5, character: 0 },
+      end: { line: 5, character: 0 },
+    },
+  });
+});
+
+Deno.test('project service offers a SOUND1019 quick fix to make widened array types readonly', async () => {
+  const text = [
+    'interface Animal {',
+    '  name: string;',
+    '}',
+    '',
+    'interface Dog extends Animal {',
+    '  breed: string;',
+    '}',
+    '',
+    'const dogs: Dog[] = [{ name: "Rex", breed: "Lab" }];',
+    'const animals: Animal[] = dogs;',
+    '',
+  ].join('\n');
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/demo.sts': text,
+  });
+
+  const uri = toFileUrl(join(tempDirectory, 'src/demo.sts')).href;
+  const session = openSessionDocument(uri, text);
+  const analyzed = analyzeOpenDocument(uri, session);
+
+  assertEquals(analyzed.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1019']);
+  const actions = codeActionsOpenDocument(uri, toCodeActionDiagnostics(analyzed.diagnostics), session);
+  const action = actions?.find((entry) => entry.title === 'Make array type readonly');
+  assert(action);
+  assertEquals(action.edit?.changes?.[uri]?.[0], {
+    newText: 'readonly Animal[]',
+    range: {
+      start: { line: 9, character: 15 },
+      end: { line: 9, character: 23 },
+    },
+  });
+});
+
+Deno.test('project service offers a SOUND1019 quick fix to rewrite Array<T> as ReadonlyArray<T>', async () => {
+  const text = [
+    'interface Animal {',
+    '  name: string;',
+    '}',
+    '',
+    'interface Dog extends Animal {',
+    '  breed: string;',
+    '}',
+    '',
+    'const dogs: Array<Dog> = [{ name: "Rex", breed: "Lab" }];',
+    'const animals: Array<Animal> = dogs;',
+    '',
+  ].join('\n');
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/demo.sts': text,
+  });
+
+  const uri = toFileUrl(join(tempDirectory, 'src/demo.sts')).href;
+  const session = openSessionDocument(uri, text);
+  const analyzed = analyzeOpenDocument(uri, session);
+
+  const actions = codeActionsOpenDocument(uri, toCodeActionDiagnostics(analyzed.diagnostics), session);
+  const action = actions?.find((entry) => entry.title === 'Make array type readonly');
+  assert(action);
+  assertEquals(action.edit?.changes?.[uri]?.[0], {
+    newText: 'ReadonlyArray<Animal>',
+    range: {
+      start: { line: 9, character: 15 },
+      end: { line: 9, character: 28 },
+    },
+  });
+});
+
+Deno.test('project service offers a SOUND1019 quick fix to make writable target properties readonly', async () => {
+  const text = [
+    'interface Animal { name: string; }',
+    'interface Dog extends Animal { breed: string; }',
+    'interface Kennel {',
+    '  animals: Animal[];',
+    '}',
+    'const dogs: Dog[] = [];',
+    'const kennel: Kennel = { animals: dogs };',
+    '',
+  ].join('\n');
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/demo.sts': text,
+  });
+
+  const uri = toFileUrl(join(tempDirectory, 'src/demo.sts')).href;
+  const session = openSessionDocument(uri, text);
+  const analyzed = analyzeOpenDocument(uri, session);
+
+  assertEquals(analyzed.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1019']);
+  assertEquals(analyzed.diagnostics[0]?.message, "Writable property 'animals' is invariant in soundscript.");
+  const actions = codeActionsOpenDocument(uri, toCodeActionDiagnostics(analyzed.diagnostics), session);
+  const action = actions?.find((entry) => entry.title === "Make 'animals' readonly");
+  assert(action);
+  assertEquals(action.edit?.changes?.[uri]?.[0], {
+    newText: 'readonly ',
+    range: {
+      start: { line: 3, character: 2 },
+      end: { line: 3, character: 2 },
+    },
+  });
+});
+
+Deno.test('project service offers a SOUND1019 quick fix to make writable class fields readonly', async () => {
+  const text = [
+    'interface KennelLike {',
+    '  animals: Animal[];',
+    '}',
+    'class DogKennel implements KennelLike {',
+    '  animals: Dog[] = [];',
+    '}',
+    '',
+  ].join('\n');
+  const uri = 'file:///virtual/demo.sts';
+  const session = openSessionDocument(uri, text);
+  const actions = codeActionsOpenDocument(
+    uri,
+    [{
+      code: 'SOUND1019',
+      message: "Writable property 'animals' is invariant in soundscript.",
+      range: {
+        start: { line: 4, character: 2 },
+        end: { line: 4, character: 19 },
+      },
+    }],
+    session,
+  );
+  const action = actions?.find((entry) => entry.title === "Make 'animals' readonly");
+  assert(action);
+  assertEquals(action.edit?.changes?.[uri]?.[0], {
+    newText: 'readonly ',
+    range: {
+      start: { line: 4, character: 2 },
+      end: { line: 4, character: 2 },
+    },
+  });
+});
+
+Deno.test('project service skips SOUND1019 readonly quick fixes when the mutable edge lives in another file', async () => {
+  const text = [
+    'import type { Dog, Kennel } from "./types";',
+    '',
+    'const dogs: Dog[] = [];',
+    'const kennel: Kennel = { animals: dogs };',
+    'void kennel;',
+    '',
+  ].join('\n');
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/types.sts': [
+      'export interface Animal { name: string; }',
+      'export interface Dog extends Animal { breed: string; }',
+      'export interface Kennel {',
+      '  animals: Animal[];',
+      '}',
+      '',
+    ].join('\n'),
+    'src/demo.sts': text,
+  });
+
+  const uri = toFileUrl(join(tempDirectory, 'src/demo.sts')).href;
+  const session = openSessionDocument(uri, text);
+  const analyzed = analyzeOpenDocument(uri, session);
+
+  assertEquals(analyzed.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1019']);
+  const actions = codeActionsOpenDocument(uri, toCodeActionDiagnostics(analyzed.diagnostics), session);
+  const action = actions?.find((entry) => entry.title === "Make 'animals' readonly");
+  assertEquals(action, undefined);
 });
 
 Deno.test('project service logs macro cache reuse for incremental macro-backed rebuilds', async () => {

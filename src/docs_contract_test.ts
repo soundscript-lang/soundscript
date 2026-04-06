@@ -37,13 +37,25 @@ Deno.test('builtin module reference stays aligned with exported runtime modules'
 Deno.test('README and idiomatic guide keep the new orientation links and sections visible', () => {
   const readmeText = readRepoText('README.md');
   const guideText = readRepoText('docs/guides/idiomatic-soundscript.md');
+  const rewritesText = readRepoText('docs/guides/common-rewrites.md');
 
   assertStringIncludes(readmeText, '[docs/reference/builtin-modules.md]');
   assertStringIncludes(readmeText, '[docs/guides/idiomatic-soundscript.md]');
+  assertStringIncludes(readmeText, '[docs/guides/common-rewrites.md]');
 
   assertStringIncludes(guideText, '## Readonly First');
   assertStringIncludes(guideText, '## Capture Before `await`');
   assertStringIncludes(guideText, '## Validate At The Boundary');
   assertStringIncludes(guideText, '## `Try` Versus `isErr`');
   assertStringIncludes(guideText, '## JSON Boundaries');
+  assertStringIncludes(guideText, '## Escape Hatches');
+  assertStringIncludes(guideText, '## Decoder Patterns');
+  assertStringIncludes(guideText, '[Common Rewrites](./common-rewrites.md)');
+
+  assertStringIncludes(rewritesText, '# Common Rewrites');
+  assertStringIncludes(rewritesText, '## Capture Before `await`');
+  assertStringIncludes(rewritesText, '## Capture Before Helper Calls');
+  assertStringIncludes(rewritesText, '## Capture Before Callback Boundaries');
+  assertStringIncludes(rewritesText, '## Make Mutable Edges Readonly');
+  assertStringIncludes(rewritesText, '## `Try(...)` Return Shapes');
 });

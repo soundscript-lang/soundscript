@@ -63,6 +63,7 @@ body so each overload path returns the result type it promised.
 An assignment depends on an assignability relation that soundscript treats as unsound. Common
 examples include mutable array variance, callable parameter variance, and widening a value to an
 unrelated class target that only matches structurally.
+For the most common before/after fixes, see the `Common Rewrites` guide.
 
 ## SOUND1020
 
@@ -71,6 +72,7 @@ the value after the invalidating boundary instead of carrying the earlier proof 
 value is already a stable primitive or immutable snapshot, copy it into a fresh local before the
 boundary and use that local afterward instead. The structured metadata for this diagnostic names the
 narrowed value, boundary kind, invalidating expression, and earlier proof site.
+For the most common before/after fixes, see the `Common Rewrites` guide.
 
 ## SOUND1021
 

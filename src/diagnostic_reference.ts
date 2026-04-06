@@ -331,6 +331,7 @@ const DIAGNOSTIC_REFERENCES = {
     details: [
       'Common examples include mutable array variance, callable parameter variance, and class-to-class widening that only matches structurally.',
       'When the mismatch comes from a writable property or index signature, the mutable edge is the thing to fix first: make it readonly, copy into a fresh object, or preserve the exact property/value type.',
+      'See the `Common Rewrites` guide for the canonical readonly and fresh-copy before/after patterns.',
     ],
     examples: [
       {
@@ -377,6 +378,7 @@ const DIAGNOSTIC_REFERENCES = {
       'The diagnostic metadata names the narrowed value, the boundary kind, the exact invalidating expression, and the earlier proof site so tooling can explain the hazard concretely.',
       'Re-establish the narrowing after the boundary instead of assuming the earlier proof still holds.',
       'In async code this usually means either `const captured = value.path; await ...; use(captured);` when the captured value is already stable, or `await ...; if (value.path !== null) { ... }` when it is not.',
+      'See the `Common Rewrites` guide for the canonical capture-before-boundary and re-check-after-boundary patterns.',
     ],
     examples: [
       {

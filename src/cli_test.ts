@@ -3272,6 +3272,7 @@ Deno.test('runCli explain renders repair recipes for flow invalidation diagnosti
 
   assertEquals(result.exitCode, 0);
   assertStringIncludes(result.output, 'Repair heuristic:');
+  assertStringIncludes(result.output, 'Common Rewrites');
   assertStringIncludes(result.output, 'Re-establish the proof after the invalidating boundary');
   assertStringIncludes(result.output, 'mutate(box);');
   assertStringIncludes(result.output, 'const value = box.value;');

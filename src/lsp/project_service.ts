@@ -3245,6 +3245,636 @@ function createReceiverSensitiveBindCodeAction(
   };
 }
 
+function findAncestorNode<T extends ts.Node>(
+  node: ts.Node | undefined,
+  predicate: (current: ts.Node) => current is T,
+): T | undefined {
+  let current = node;
+  while (current) {
+    if (predicate(current)) {
+      return current;
+    }
+    current = current.parent;
+  }
+  return undefined;
+}
+
+function propertyNameText(name: ts.PropertyName): string | undefined {
+  if (
+    ts.isIdentifier(name) ||
+    ts.isStringLiteral(name) ||
+    ts.isNumericLiteral(name) ||
+    ts.isNoSubstitutionTemplateLiteral(name)
+  ) {
+    return name.text;
+  }
+  return undefined;
+}
+
+function parseSound1019WritablePropertyName(diagnostic: CodeActionDiagnosticInput): string | undefined {
+  const primaryMessage = diagnostic.message?.split('\n\n')[0];
+  const match = primaryMessage?.match(/^Writable property '([^']+)' is invariant in soundscript\.$/u);
+  return match?.[1];
+}
+
+function isSupportedReadonlyArrayTypeNode(node: ts.TypeNode): boolean {
+  return ts.isArrayTypeNode(node) ||
+    (
+      ts.isTypeReferenceNode(node) &&
+      ts.isIdentifier(node.typeName) &&
+      node.typeName.text === 'Array' &&
+      node.typeArguments?.length === 1
+    );
+}
+
+function rewriteReadonlyArrayTypeText(node: ts.TypeNode, text: string): string | undefined {
+  if (ts.isArrayTypeNode(node)) {
+    return `readonly ${text.slice(node.elementType.getStart(), node.elementType.getEnd())}[]`;
+  }
+  if (
+    ts.isTypeReferenceNode(node) &&
+    ts.isIdentifier(node.typeName) &&
+    node.typeName.text === 'Array' &&
+    node.typeArguments?.length === 1
+  ) {
+    const typeArgument = node.typeArguments[0];
+    return `ReadonlyArray<${text.slice(typeArgument.getStart(), typeArgument.getEnd())}>`;
+  }
+  return undefined;
+}
+
+function findTypedDeclarationAncestor(
+  node: ts.Node | undefined,
+):
+  | ts.ParameterDeclaration
+  | ts.PropertyDeclaration
+  | ts.PropertySignature
+  | ts.VariableDeclaration
+  | undefined {
+  return findAncestorNode(
+    node,
+    (
+      current,
+    ): current is ts.ParameterDeclaration | ts.PropertyDeclaration | ts.PropertySignature |
+      ts.VariableDeclaration =>
+      (
+        ts.isVariableDeclaration(current) ||
+        ts.isParameter(current) ||
+        ts.isPropertyDeclaration(current) ||
+        ts.isPropertySignature(current)
+      ) &&
+      current.type !== undefined,
+  );
+}
+
+function rangeOverlapsOffsets(
+  leftStart: number,
+  leftEnd: number,
+  rightStart: number,
+  rightEnd: number,
+): boolean {
+  return leftStart < rightEnd && rightStart < leftEnd;
+}
+
+function diagnosticRangeOffsets(
+  diagnostic: CodeActionDiagnosticInput,
+  text: string,
+): { end: number; start: number } | undefined {
+  const start = diagnostic.range?.start;
+  const end = diagnostic.range?.end;
+  if (!start || !end) {
+    return undefined;
+  }
+  return {
+    start: getPositionOfLineAndCharacter(text, start.line, start.character),
+    end: getPositionOfLineAndCharacter(text, end.line, end.character),
+  };
+}
+
+function findBestTypedDeclarationForRange(
+  sourceFile: ts.SourceFile,
+  start: number,
+  end: number,
+):
+  | ts.ParameterDeclaration
+  | ts.PropertyDeclaration
+  | ts.PropertySignature
+  | ts.VariableDeclaration
+  | undefined {
+  let bestMatch:
+    | ts.ParameterDeclaration
+    | ts.PropertyDeclaration
+    | ts.PropertySignature
+    | ts.VariableDeclaration
+    | undefined;
+  forEachNodeChild(sourceFile, (child) => {
+    if (
+      (
+        ts.isVariableDeclaration(child) ||
+        ts.isParameter(child) ||
+        ts.isPropertyDeclaration(child) ||
+        ts.isPropertySignature(child)
+      ) &&
+      child.type &&
+      rangeOverlapsOffsets(child.getStart(sourceFile), child.getEnd(), start, end) &&
+      (!bestMatch || child.getWidth(sourceFile) < bestMatch.getWidth(sourceFile))
+    ) {
+      bestMatch = child;
+    }
+  });
+  return bestMatch;
+}
+
+function findLocalNamedDeclaration(
+  sourceFile: ts.SourceFile,
+  name: string,
+): ts.ClassDeclaration | ts.InterfaceDeclaration | ts.TypeAliasDeclaration | undefined {
+  for (const statement of sourceFile.statements) {
+    if (
+      (
+        ts.isInterfaceDeclaration(statement) ||
+        ts.isClassDeclaration(statement) ||
+        ts.isTypeAliasDeclaration(statement)
+      ) &&
+      statement.name?.text === name
+    ) {
+      return statement;
+    }
+  }
+  return undefined;
+}
+
+function findLocalWritablePropertyDeclarationInMembers(
+  members: readonly ts.TypeElement[] | ts.NodeArray<ts.ClassElement>,
+  propertyName: string,
+): ts.PropertyDeclaration | ts.PropertySignature | undefined {
+  for (const member of members) {
+    if (
+      (
+        ts.isPropertySignature(member) ||
+        ts.isPropertyDeclaration(member)
+      ) &&
+      propertyNameText(member.name) === propertyName &&
+      !member.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ReadonlyKeyword)
+    ) {
+      return member;
+    }
+  }
+  return undefined;
+}
+
+function resolveLocalWritablePropertyDeclaration(
+  sourceFile: ts.SourceFile,
+  typeNode: ts.TypeNode,
+  propertyName: string,
+  seenTypeNames = new Set<string>(),
+): ts.PropertyDeclaration | ts.PropertySignature | undefined {
+  if (ts.isTypeLiteralNode(typeNode)) {
+    return findLocalWritablePropertyDeclarationInMembers(typeNode.members, propertyName);
+  }
+
+  if (ts.isTypeReferenceNode(typeNode) && ts.isIdentifier(typeNode.typeName)) {
+    const typeName = typeNode.typeName.text;
+    if (seenTypeNames.has(typeName)) {
+      return undefined;
+    }
+    seenTypeNames.add(typeName);
+    const declaration = findLocalNamedDeclaration(sourceFile, typeName);
+    if (!declaration) {
+      return undefined;
+    }
+    if (ts.isInterfaceDeclaration(declaration) || ts.isClassDeclaration(declaration)) {
+      return findLocalWritablePropertyDeclarationInMembers(declaration.members, propertyName);
+    }
+    if (ts.isTypeAliasDeclaration(declaration)) {
+      return resolveLocalWritablePropertyDeclaration(
+        sourceFile,
+        declaration.type,
+        propertyName,
+        seenTypeNames,
+      );
+    }
+  }
+
+  return undefined;
+}
+
+function captureExpressionText(
+  node: ts.ElementAccessExpression | ts.PropertyAccessExpression,
+  sourceFile: ts.SourceFile,
+  text: string,
+): string {
+  return text.slice(node.getStart(sourceFile), node.getEnd());
+}
+
+function simpleFlowCaptureExpression(
+  node: ts.Node | undefined,
+  sourceFile: ts.SourceFile,
+  text: string,
+  expectedText: string,
+): ts.ElementAccessExpression | ts.PropertyAccessExpression | undefined {
+  let current = node;
+  while (current) {
+    if (ts.isPropertyAccessExpression(current)) {
+      if (
+        !ts.isPropertyAccessChain(current) &&
+        captureExpressionText(current, sourceFile, text) === expectedText
+      ) {
+        return current;
+      }
+    } else if (ts.isElementAccessExpression(current)) {
+      if (
+        !ts.isElementAccessChain(current) &&
+        (
+          ts.isStringLiteral(current.argumentExpression) ||
+          ts.isNoSubstitutionTemplateLiteral(current.argumentExpression)
+        ) &&
+        captureExpressionText(current, sourceFile, text) === expectedText
+      ) {
+        return current;
+      }
+    }
+    current = current.parent;
+  }
+  return undefined;
+}
+
+function forEachNodeChild(
+  node: ts.Node | undefined,
+  callback: (child: ts.Node) => void,
+): void {
+  if (!node) {
+    return;
+  }
+  node.forEachChild((child) => {
+    callback(child);
+    forEachNodeChild(child, callback);
+  });
+}
+
+function collectMatchingFlowCaptureExpressions(
+  root: ts.Node | undefined,
+  sourceFile: ts.SourceFile,
+  text: string,
+  expectedText: string,
+): Array<ts.ElementAccessExpression | ts.PropertyAccessExpression> {
+  const matches: Array<ts.ElementAccessExpression | ts.PropertyAccessExpression> = [];
+  forEachNodeChild(root, (child) => {
+    if (
+      ts.isPropertyAccessExpression(child) &&
+      !ts.isPropertyAccessChain(child) &&
+      captureExpressionText(child, sourceFile, text) === expectedText
+    ) {
+      matches.push(child);
+      return;
+    }
+    if (
+      ts.isElementAccessExpression(child) &&
+      !ts.isElementAccessChain(child) &&
+      (
+        ts.isStringLiteral(child.argumentExpression) ||
+        ts.isNoSubstitutionTemplateLiteral(child.argumentExpression)
+      ) &&
+      captureExpressionText(child, sourceFile, text) === expectedText
+    ) {
+      matches.push(child);
+    }
+  });
+  return matches;
+}
+
+function lastCaptureNameSegmentForExpression(
+  expression: ts.Expression,
+): string | undefined {
+  if (ts.isIdentifier(expression)) {
+    return expression.text;
+  }
+  if (ts.isPropertyAccessExpression(expression)) {
+    return expression.name.text;
+  }
+  if (
+    ts.isElementAccessExpression(expression) &&
+    (
+      ts.isStringLiteral(expression.argumentExpression) ||
+      ts.isNoSubstitutionTemplateLiteral(expression.argumentExpression)
+    )
+  ) {
+    return expression.argumentExpression.text;
+  }
+  return undefined;
+}
+
+function toSafeIdentifierSegment(segment: string): string | undefined {
+  const words = segment
+    .replace(/[^A-Za-z0-9_$]+/gu, ' ')
+    .trim()
+    .split(/\s+/u)
+    .filter((word) => word.length > 0);
+  if (words.length === 0) {
+    return undefined;
+  }
+  const [firstWord, ...restWords] = words;
+  const first = firstWord.replace(/^[^A-Za-z_$]+/u, '');
+  if (!first) {
+    return undefined;
+  }
+  return [
+    first[0]!.toLowerCase() + first.slice(1),
+    ...restWords.map((word) => word[0]!.toUpperCase() + word.slice(1)),
+  ].join('');
+}
+
+function preferredFlowCaptureName(
+  expression: ts.ElementAccessExpression | ts.PropertyAccessExpression,
+): string {
+  const elementPropertySegment = ts.isElementAccessExpression(expression) &&
+      (
+        ts.isStringLiteral(expression.argumentExpression) ||
+        ts.isNoSubstitutionTemplateLiteral(expression.argumentExpression)
+      )
+    ? toSafeIdentifierSegment(expression.argumentExpression.text)
+    : undefined;
+  const receiverSegment = toSafeIdentifierSegment(
+    lastCaptureNameSegmentForExpression(expression.expression) ?? '',
+  );
+  const propertySegment = ts.isPropertyAccessExpression(expression)
+    ? toSafeIdentifierSegment(expression.name.text)
+    : elementPropertySegment;
+  if (receiverSegment && propertySegment) {
+    return receiverSegment + propertySegment[0]!.toUpperCase() + propertySegment.slice(1);
+  }
+  return propertySegment ?? receiverSegment ?? 'capturedValue';
+}
+
+function collectUsedIdentifierNames(sourceFile: ts.SourceFile): Set<string> {
+  const names = new Set<string>();
+  forEachNodeChild(sourceFile, (child) => {
+    if (ts.isIdentifier(child)) {
+      names.add(child.text);
+    }
+  });
+  return names;
+}
+
+function uniqueFlowCaptureName(
+  sourceFile: ts.SourceFile,
+  preferredName: string,
+): string {
+  const usedNames = collectUsedIdentifierNames(sourceFile);
+  if (!usedNames.has(preferredName)) {
+    return preferredName;
+  }
+  for (let suffix = 2; suffix < 10_000; suffix += 1) {
+    const candidate = `${preferredName}${suffix}`;
+    if (!usedNames.has(candidate)) {
+      return candidate;
+    }
+  }
+  return 'capturedValue';
+}
+
+function flowCaptureBoundaryLabel(boundaryKind: string | undefined): string {
+  switch (boundaryKind) {
+    case 'call':
+      return 'call';
+    case 'callback':
+      return 'callback';
+    case 'mutation':
+      return 'mutation';
+    case 'alias_or_escape':
+      return 'escape';
+    case 'suspension':
+      return 'await';
+    default:
+      return 'boundary';
+  }
+}
+
+function createFlowCaptureLocalCodeAction(
+  uri: string,
+  filePath: string,
+  diagnostic: CodeActionDiagnosticInput,
+  text: string,
+): CodeAction | undefined {
+  if (diagnostic.code !== 'SOUND1020') {
+    return undefined;
+  }
+
+  const narrowedValue = diagnostic.data?.metadata?.primarySymbol;
+  const start = diagnostic.range?.start;
+  if (!narrowedValue || !start) {
+    return undefined;
+  }
+
+  const sourceFile = ts.createSourceFile(
+    filePath,
+    text,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS,
+  );
+  const position = getPositionOfLineAndCharacter(text, start.line, start.character);
+  const current = findCompletionNode(sourceFile, position) ??
+    findDeepestNodeContainingPosition(sourceFile, position);
+  const ifStatement = findAncestorNode(current, ts.isIfStatement);
+  if (!ifStatement) {
+    return undefined;
+  }
+
+  const conditionMatches = collectMatchingFlowCaptureExpressions(
+    ifStatement.expression,
+    sourceFile,
+    text,
+    narrowedValue,
+  );
+  if (conditionMatches.length === 0) {
+    return undefined;
+  }
+
+  const bodyMatches = [
+    ...collectMatchingFlowCaptureExpressions(ifStatement.thenStatement, sourceFile, text, narrowedValue),
+    ...collectMatchingFlowCaptureExpressions(ifStatement.elseStatement, sourceFile, text, narrowedValue),
+  ];
+  if (bodyMatches.length === 0) {
+    return undefined;
+  }
+
+  const captureTargets = [...conditionMatches, ...bodyMatches];
+  const uniqueTargets = captureTargets.filter((node, index, nodes) =>
+    nodes.findIndex((candidate) =>
+      candidate.getStart(sourceFile) === node.getStart(sourceFile) &&
+      candidate.getEnd() === node.getEnd()
+    ) === index
+  );
+  if (uniqueTargets.length < 2) {
+    return undefined;
+  }
+
+  const preferredName = preferredFlowCaptureName(conditionMatches[0]!);
+  const captureName = uniqueFlowCaptureName(sourceFile, preferredName);
+  const ifLine = sourceFile.getLineAndCharacterOfPosition(ifStatement.getStart(sourceFile)).line;
+  const lines = documentLineTexts(text);
+  const indentation = lineIndentation(lines[ifLine] ?? '');
+  const boundaryLabel = flowCaptureBoundaryLabel(diagnostic.data?.metadata?.secondarySymbol);
+  const edits: TextEdit[] = [
+    {
+      newText: `${indentation}const ${captureName} = ${narrowedValue};\n`,
+      range: {
+        start: { line: ifLine, character: 0 },
+        end: { line: ifLine, character: 0 },
+      },
+    },
+    ...uniqueTargets
+      .sort((left, right) => left.getStart(sourceFile) - right.getStart(sourceFile))
+      .map((node) => ({
+        newText: captureName,
+        range: createRangeFromOffsets(node.getStart(sourceFile), node.getEnd(), text),
+      })),
+  ];
+
+  return {
+    title: `Capture \`${narrowedValue}\` into \`${captureName}\` before the ${boundaryLabel} boundary`,
+    kind: 'quickfix',
+    edit: {
+      changes: {
+        [uri]: edits,
+      },
+    },
+  };
+}
+
+function createReadonlyArrayTypeCodeAction(
+  uri: string,
+  filePath: string,
+  diagnostic: CodeActionDiagnosticInput,
+  text: string,
+): CodeAction | undefined {
+  if (
+    diagnostic.code !== 'SOUND1019' ||
+    diagnostic.message?.split('\n\n')[0] !== 'Mutable arrays are invariant in soundscript.'
+  ) {
+    return undefined;
+  }
+
+  const start = diagnostic.range?.start;
+  if (!start) {
+    return undefined;
+  }
+
+  const sourceFile = ts.createSourceFile(
+    filePath,
+    text,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS,
+  );
+  const position = getPositionOfLineAndCharacter(text, start.line, start.character);
+  const current = findCompletionNode(sourceFile, position) ??
+    findDeepestNodeContainingPosition(sourceFile, position);
+  const diagnosticOffsets = diagnosticRangeOffsets(diagnostic, text);
+  const declaration = findTypedDeclarationAncestor(current) ??
+    (
+      diagnosticOffsets
+        ? findBestTypedDeclarationForRange(sourceFile, diagnosticOffsets.start, diagnosticOffsets.end)
+        : undefined
+    );
+  if (!declaration?.type || !isSupportedReadonlyArrayTypeNode(declaration.type)) {
+    return undefined;
+  }
+
+  const newText = rewriteReadonlyArrayTypeText(declaration.type, text);
+  if (!newText) {
+    return undefined;
+  }
+
+  return {
+    title: 'Make array type readonly',
+    kind: 'quickfix',
+    edit: {
+      changes: {
+        [uri]: [{
+          newText,
+          range: createRangeFromOffsets(
+            declaration.type.getStart(sourceFile),
+            declaration.type.getEnd(),
+            text,
+          ),
+        }],
+      },
+    },
+  };
+}
+
+function createReadonlyWritablePropertyCodeAction(
+  uri: string,
+  filePath: string,
+  diagnostic: CodeActionDiagnosticInput,
+  text: string,
+): CodeAction | undefined {
+  if (diagnostic.code !== 'SOUND1019') {
+    return undefined;
+  }
+
+  const propertyName = parseSound1019WritablePropertyName(diagnostic);
+  const start = diagnostic.range?.start;
+  if (!propertyName || !start) {
+    return undefined;
+  }
+
+  const sourceFile = ts.createSourceFile(
+    filePath,
+    text,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS,
+  );
+  const position = getPositionOfLineAndCharacter(text, start.line, start.character);
+  const current = findCompletionNode(sourceFile, position) ??
+    findDeepestNodeContainingPosition(sourceFile, position);
+  const diagnosticOffsets = diagnosticRangeOffsets(diagnostic, text);
+  const directPropertyDeclaration = findAncestorNode(
+    current,
+    (node): node is ts.PropertyDeclaration | ts.PropertySignature =>
+      (
+        ts.isPropertyDeclaration(node) ||
+        ts.isPropertySignature(node)
+      ) &&
+      propertyNameText(node.name) === propertyName &&
+      !node.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ReadonlyKeyword),
+  );
+  const targetDeclaration = directPropertyDeclaration ??
+    (() => {
+      const typedDeclaration = findTypedDeclarationAncestor(current) ??
+        (
+          diagnosticOffsets
+            ? findBestTypedDeclarationForRange(sourceFile, diagnosticOffsets.start, diagnosticOffsets.end)
+            : undefined
+        );
+      if (!typedDeclaration?.type) {
+        return undefined;
+      }
+      return resolveLocalWritablePropertyDeclaration(sourceFile, typedDeclaration.type, propertyName);
+    })();
+
+  if (!targetDeclaration || targetDeclaration.getSourceFile().fileName !== sourceFile.fileName) {
+    return undefined;
+  }
+
+  const insertionOffset = targetDeclaration.name.getStart(sourceFile);
+  return {
+    title: `Make '${propertyName}' readonly`,
+    kind: 'quickfix',
+    edit: {
+      changes: {
+        [uri]: [{
+          newText: 'readonly ',
+          range: createRangeFromOffsets(insertionOffset, insertionOffset, text),
+        }],
+      },
+    },
+  };
+}
+
 function createRemoveMalformedAnnotationCodeAction(
   uri: string,
   diagnostic: CodeActionDiagnosticInput,
@@ -6983,6 +7613,31 @@ export function codeActionsOpenDocument(
       );
       if (receiverSensitiveAction) {
         actions.push(receiverSensitiveAction);
+      }
+
+      const flowCaptureAction = createFlowCaptureLocalCodeAction(uri, filePath, diagnostic, text);
+      if (flowCaptureAction) {
+        actions.push(flowCaptureAction);
+      }
+
+      const readonlyArrayAction = createReadonlyArrayTypeCodeAction(
+        uri,
+        filePath,
+        diagnostic,
+        text,
+      );
+      if (readonlyArrayAction) {
+        actions.push(readonlyArrayAction);
+      }
+
+      const readonlyPropertyAction = createReadonlyWritablePropertyCodeAction(
+        uri,
+        filePath,
+        diagnostic,
+        text,
+      );
+      if (readonlyPropertyAction) {
+        actions.push(readonlyPropertyAction);
       }
 
       const invalidAnnotationTargetAction = createRemoveInvalidAnnotationTargetCodeAction(
