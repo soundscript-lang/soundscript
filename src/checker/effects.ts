@@ -414,12 +414,22 @@ function normalizeFailuresForAsyncBoundary(mask: number): number {
   return hasFailure ? withoutFailures | INTERNAL_EFFECT_MASKS.failsRejects : withoutFailures;
 }
 
+function captureFailures(mask: number): number {
+  return mask & ~PUBLIC_EFFECT_MASKS.fails;
+}
+
 function applyContainingCallableBoundary(mask: number, isAsyncBoundary: boolean): number {
   return isAsyncBoundary ? normalizeFailuresForAsyncBoundary(mask) : mask;
 }
 
 function applyForwardedFailureBoundary(mask: number, failureBoundary: EffectFailureBoundary): number {
-  return failureBoundary === 'reject' ? normalizeFailuresForAsyncBoundary(mask) : mask;
+  if (failureBoundary === 'reject') {
+    return normalizeFailuresForAsyncBoundary(mask);
+  }
+  if (failureBoundary === 'capture') {
+    return captureFailures(mask);
+  }
+  return mask;
 }
 
 function createForwardedParameterKey(
@@ -777,6 +787,42 @@ function getKnownConsoleBehavior(
   return undefined;
 }
 
+function getKnownStdlibDebugBehavior(
+  declarationName: string | undefined,
+): BuiltinCallBehavior | undefined {
+  if (declarationName === 'log') {
+    return {
+      directMask: INTERNAL_EFFECT_MASKS.hostInterop,
+      forwardedArguments: [],
+    };
+  }
+
+  if (declarationName === 'assert') {
+    return {
+      directMask: INTERNAL_EFFECT_MASKS.failsThrows,
+      forwardedArguments: [],
+    };
+  }
+
+  return undefined;
+}
+
+function getKnownStdlibJsonBehavior(
+  declarationName: string | undefined,
+): BuiltinCallBehavior | undefined {
+  if (
+    declarationName === 'parseJson' || declarationName === 'stringifyJson' ||
+    declarationName === 'parseJsonLike' || declarationName === 'stringifyJsonLike'
+  ) {
+    return {
+      directMask: 0,
+      forwardedArguments: [],
+    };
+  }
+
+  return undefined;
+}
+
 function resolveAliasedSymbol(checker: ts.TypeChecker, symbol: ts.Symbol): ts.Symbol {
   let current = symbol;
   while ((current.flags & ts.SymbolFlags.Alias) !== 0) {
@@ -1014,7 +1060,8 @@ function getKnownStdlibBehavior(
   context: AnalysisContext,
   expression: ts.CallExpression | ts.NewExpression,
 ): BuiltinCallBehavior | undefined {
-  const declaration = context.checker.getResolvedSignature(expression)?.getDeclaration();
+  const signature = context.checker.getResolvedSignature(expression);
+  const declaration = signature?.getDeclaration();
   const declarationName = getDeclarationName(declaration);
   const ownerName = declaration ? getDeclarationOwnerName(declaration) : undefined;
   const sourceFileName = declaration?.getSourceFile().fileName;
@@ -1053,6 +1100,43 @@ function getKnownStdlibBehavior(
     const urlAndTextBehavior = getKnownUrlAndTextBehavior(ownerName, declarationName, expression);
     if (urlAndTextBehavior) {
       return urlAndTextBehavior;
+    }
+  }
+
+  if (
+    ts.isCallExpression(expression) &&
+    declarationName === 'resultOf' &&
+    sourceFileName &&
+    isTrustedSoundStdlibModuleFile(sourceFileName, 'result')
+  ) {
+    const isAsyncResultOf = signature ? isPromiseType(context, signature.getReturnType()) : false;
+    const forwardedArguments: BuiltinForwardedArgumentBehavior[] = [];
+    if (expression.arguments.length > 0 && isCallableExpression(context, expression.arguments[0])) {
+      forwardedArguments.push({ argumentIndex: 0, failureBoundary: 'capture' });
+    }
+    if (expression.arguments.length > 1 && isCallableExpression(context, expression.arguments[1])) {
+      forwardedArguments.push({
+        argumentIndex: 1,
+        failureBoundary: isAsyncResultOf ? 'reject' : 'preserve',
+      });
+    }
+    return {
+      directMask: isAsyncResultOf ? INTERNAL_EFFECT_MASKS.suspend : 0,
+      forwardedArguments,
+    };
+  }
+
+  if (sourceFileName && isTrustedSoundStdlibModuleFile(sourceFileName, 'json')) {
+    const jsonBehavior = getKnownStdlibJsonBehavior(declarationName);
+    if (jsonBehavior) {
+      return jsonBehavior;
+    }
+  }
+
+  if (sourceFileName && isTrustedSoundStdlibModuleFile(sourceFileName, 'debug')) {
+    const debugBehavior = getKnownStdlibDebugBehavior(declarationName);
+    if (debugBehavior) {
+      return debugBehavior;
     }
   }
 

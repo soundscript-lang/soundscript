@@ -75,7 +75,7 @@ export interface EffectParameterContractFact {
   parameterIndex: number;
 }
 
-export type EffectFailureBoundary = 'preserve' | 'reject';
+export type EffectFailureBoundary = 'preserve' | 'reject' | 'capture';
 
 export interface EffectForwardedParameterFact {
   failureBoundary: EffectFailureBoundary;

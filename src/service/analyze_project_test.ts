@@ -5131,6 +5131,102 @@ Deno.test('analyzeProject tracks JSON and console builtins under effect contract
   ]);
 });
 
+Deno.test('analyzeProject tracks result, json, and debug stdlib helpers under effect contracts', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/index.sts': [
+      'import { resultOf } from "sts:result";',
+      'import { parseJson, stringifyJson, parseJsonLike, stringifyJsonLike } from "sts:json";',
+      'import { assert, log } from "sts:experimental/debug";',
+      '',
+      '// #[effects(forbid: [fails, suspend, mut, host])]',
+      'function safeCaptureJson(text: string) {',
+      '  return resultOf(() => JSON.parse(text));',
+      '}',
+      '',
+      '// #[effects(forbid: [host])]',
+      'function captureHost(value: unknown) {',
+      '  return resultOf(() => console.log(value));',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function mapErrorThrows(text: string) {',
+      '  return resultOf(() => JSON.parse(text), (_error) => {',
+      '    throw new Error("boom");',
+      '  });',
+      '}',
+      '',
+      '// #[effects(forbid: [suspend])]',
+      'function captureAsync() {',
+      '  return resultOf(async () => 1);',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function stdParseJson(text: string) {',
+      '  return parseJson(text);',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function stdStringifyJson() {',
+      '  return stringifyJson({ ok: true });',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function stdParseJsonLike(text: string) {',
+      '  return parseJsonLike(text);',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function stdStringifyJsonLike() {',
+      '  return stringifyJsonLike({ ok: true, maybe: undefined });',
+      '}',
+      '',
+      '// #[effects(forbid: [host])]',
+      'function debugLogValue(value: unknown) {',
+      '  return log(value);',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function debugAssertValue(condition: boolean): void {',
+      '  assert(condition);',
+      '}',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), [
+    'SOUND1040',
+    'SOUND1040',
+    'SOUND1040',
+    'SOUND1040',
+    'SOUND1040',
+  ]);
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.metadata?.primarySymbol), [
+    'captureHost',
+    'mapErrorThrows',
+    'captureAsync',
+    'debugLogValue',
+    'debugAssertValue',
+  ]);
+});
+
 Deno.test('analyzeProject enforces callback forbid contracts against failful arguments', async () => {
   const tempDirectory = await createTempProject({
     'tsconfig.json': JSON.stringify(

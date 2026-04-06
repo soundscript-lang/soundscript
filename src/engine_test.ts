@@ -1226,3 +1226,170 @@ Deno.test('createAnalysisContext summarizes JSON and console builtins precisely'
   );
   assertEquals(getEffectSummaryForDeclaration(context, logValue).hasUnknownDirectEffects, false);
 });
+
+Deno.test('createAnalysisContext summarizes result, json, and debug stdlib helpers precisely', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+          },
+          include: ['src/**/*.ts', 'src/**/*.d.ts'],
+        },
+        null,
+        2,
+      ),
+    },
+    {
+      path: 'src/stdlib/result.d.ts',
+      contents: [
+        'export declare function resultOf<T>(fn: () => Promise<T>): Promise<T | Error>;',
+        'export declare function resultOf<T, E>(fn: () => Promise<T>, mapError: (error: Error) => E): Promise<T | E>;',
+        'export declare function resultOf<T>(fn: () => T): T | Error;',
+        'export declare function resultOf<T, E>(fn: () => T, mapError: (error: Error) => E): T | E;',
+        '',
+      ].join('\n'),
+    },
+    {
+      path: 'src/stdlib/json.d.ts',
+      contents: [
+        'export declare function parseJson(text: string): unknown;',
+        'export declare function stringifyJson(value: unknown): unknown;',
+        'export declare function parseJsonLike(text: string): unknown;',
+        'export declare function stringifyJsonLike(value: unknown): unknown;',
+        '',
+      ].join('\n'),
+    },
+    {
+      path: 'src/stdlib/debug.d.ts',
+      contents: [
+        'export declare function assert(condition: unknown, message?: string): asserts condition;',
+        'export declare function log<T>(value: T): T;',
+        '',
+      ].join('\n'),
+    },
+    {
+      path: 'src/index.ts',
+      contents: [
+        'import { resultOf } from "./stdlib/result";',
+        'import { parseJson, stringifyJson, parseJsonLike, stringifyJsonLike } from "./stdlib/json";',
+        'import { assert, log } from "./stdlib/debug";',
+        '',
+        'export function captureJsonFailure(text: string) {',
+        '  return resultOf(() => JSON.parse(text));',
+        '}',
+        '',
+        'export function captureHost(value: unknown) {',
+        '  return resultOf(() => console.log(value));',
+        '}',
+        '',
+        'export function mapErrorThrows(text: string) {',
+        '  return resultOf(() => JSON.parse(text), (_error) => {',
+        '    throw new Error("boom");',
+        '  });',
+        '}',
+        '',
+        'export function captureAsync() {',
+        '  return resultOf(async () => 1);',
+        '}',
+        '',
+        'export function parseStdJson(text: string) {',
+        '  return parseJson(text);',
+        '}',
+        '',
+        'export function stringifyStdJson(value: unknown) {',
+        '  return stringifyJson(value);',
+        '}',
+        '',
+        'export function parseStdJsonLike(text: string) {',
+        '  return parseJsonLike(text);',
+        '}',
+        '',
+        'export function stringifyStdJsonLike(value: unknown) {',
+        '  return stringifyJsonLike(value);',
+        '}',
+        '',
+        'export function debugLogValue(value: unknown) {',
+        '  return log(value);',
+        '}',
+        '',
+        'export function debugAssertValue(condition: unknown): void {',
+        '  assert(condition);',
+        '}',
+        '',
+      ].join('\n'),
+    },
+  ]);
+  const projectPath = join(tempDirectory, 'tsconfig.json');
+  const program = loadProgram(projectPath);
+  const context = createAnalysisContext({ program, workingDirectory: tempDirectory });
+  const sourceFile = context.getSourceFiles().find((file) => file.fileName.endsWith('/src/index.ts'));
+
+  assertExists(sourceFile);
+
+  const declarationsByName = new Map(
+    sourceFile.statements
+      .filter(ts.isFunctionDeclaration)
+      .filter((declaration): declaration is ts.FunctionDeclaration & { name: ts.Identifier } =>
+        declaration.name !== undefined
+      )
+      .map((declaration) => [declaration.name.text, declaration]),
+  );
+
+  const captureJsonFailure = declarationsByName.get('captureJsonFailure');
+  const captureHost = declarationsByName.get('captureHost');
+  const mapErrorThrows = declarationsByName.get('mapErrorThrows');
+  const captureAsync = declarationsByName.get('captureAsync');
+  const parseStdJson = declarationsByName.get('parseStdJson');
+  const stringifyStdJson = declarationsByName.get('stringifyStdJson');
+  const parseStdJsonLike = declarationsByName.get('parseStdJsonLike');
+  const stringifyStdJsonLike = declarationsByName.get('stringifyStdJsonLike');
+  const debugLogValue = declarationsByName.get('debugLogValue');
+  const debugAssertValue = declarationsByName.get('debugAssertValue');
+
+  assertExists(captureJsonFailure);
+  assertExists(captureHost);
+  assertExists(mapErrorThrows);
+  assertExists(captureAsync);
+  assertExists(parseStdJson);
+  assertExists(stringifyStdJson);
+  assertExists(parseStdJsonLike);
+  assertExists(stringifyStdJsonLike);
+  assertExists(debugLogValue);
+  assertExists(debugAssertValue);
+
+  assertEquals(getEffectSummaryForDeclaration(context, captureJsonFailure).directMask, 0);
+  assertEquals(
+    getEffectSummaryForDeclaration(context, captureHost).directMask,
+    INTERNAL_EFFECT_MASKS.hostInterop,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, mapErrorThrows).directMask,
+    INTERNAL_EFFECT_MASKS.failsThrows,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, captureAsync).directMask,
+    INTERNAL_EFFECT_MASKS.suspend,
+  );
+  assertEquals(getEffectSummaryForDeclaration(context, parseStdJson).directMask, 0);
+  assertEquals(getEffectSummaryForDeclaration(context, stringifyStdJson).directMask, 0);
+  assertEquals(getEffectSummaryForDeclaration(context, parseStdJsonLike).directMask, 0);
+  assertEquals(getEffectSummaryForDeclaration(context, stringifyStdJsonLike).directMask, 0);
+  assertEquals(
+    getEffectSummaryForDeclaration(context, debugLogValue).directMask,
+    INTERNAL_EFFECT_MASKS.hostInterop,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, debugAssertValue).directMask,
+    INTERNAL_EFFECT_MASKS.failsThrows,
+  );
+  assertEquals(getEffectSummaryForDeclaration(context, captureJsonFailure).hasUnknownDirectEffects, false);
+  assertEquals(getEffectSummaryForDeclaration(context, captureAsync).hasUnknownDirectEffects, false);
+  assertEquals(getEffectSummaryForDeclaration(context, parseStdJson).hasUnknownDirectEffects, false);
+  assertEquals(getEffectSummaryForDeclaration(context, debugLogValue).hasUnknownDirectEffects, false);
+});
