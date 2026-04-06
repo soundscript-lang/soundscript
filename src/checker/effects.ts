@@ -611,6 +611,115 @@ function getDeclarationName(declaration: ts.Declaration | undefined): string | u
   return name && ts.isIdentifier(name) ? name.text : undefined;
 }
 
+function getDeclarationOwnerName(
+  declaration: ts.SignatureDeclarationBase | undefined,
+): string | undefined {
+  let current: ts.Node | undefined = declaration?.parent;
+
+  while (current) {
+    if (
+      ts.isInterfaceDeclaration(current) || ts.isClassDeclaration(current) ||
+      ts.isModuleDeclaration(current)
+    ) {
+      return getDeclarationName(current);
+    }
+
+    if (ts.isVariableDeclaration(current) && ts.isIdentifier(current.name)) {
+      return current.name.text;
+    }
+
+    current = current.parent;
+  }
+
+  return undefined;
+}
+
+function getKnownPortableBuiltinBehavior(
+  context: AnalysisContext,
+  expression: ts.CallExpression | ts.NewExpression,
+): BuiltinCallBehavior | undefined {
+  const declaration = context.checker.getResolvedSignature(expression)?.getDeclaration();
+  const memberName = declaration ? getDeclarationName(declaration) : undefined;
+  const ownerName = declaration ? getDeclarationOwnerName(declaration) : undefined;
+
+  if (memberName === 'random' && ownerName === 'Math') {
+    return {
+      directMask: INTERNAL_EFFECT_MASKS.hostRandom,
+      forwardedArguments: [],
+    };
+  }
+
+  if (memberName === 'now' && ownerName === 'DateConstructor') {
+    return {
+      directMask: INTERNAL_EFFECT_MASKS.hostTime,
+      forwardedArguments: [],
+    };
+  }
+
+  if (
+    ts.isNewExpression(expression) &&
+    (ownerName === 'MapConstructor' || ownerName === 'SetConstructor' ||
+      ownerName === 'WeakMapConstructor' || ownerName === 'WeakSetConstructor')
+  ) {
+    return {
+      directMask: 0,
+      forwardedArguments: [],
+    };
+  }
+
+  if (memberName === 'forEach' && ts.isCallExpression(expression) && expression.arguments.length > 0) {
+    if (
+      ownerName === 'Map' || ownerName === 'ReadonlyMap' || ownerName === 'Set' ||
+      ownerName === 'ReadonlySet'
+    ) {
+      return {
+        directMask: 0,
+        forwardedArguments: [{ argumentIndex: 0, failureBoundary: 'preserve' }],
+      };
+    }
+  }
+
+  if (
+    ownerName === 'Map' || ownerName === 'ReadonlyMap' || ownerName === 'WeakMap'
+  ) {
+    if (memberName === 'get' || memberName === 'has') {
+      return {
+        directMask: 0,
+        forwardedArguments: [],
+      };
+    }
+    if (ownerName === 'Map' || ownerName === 'WeakMap') {
+      if (memberName === 'set' || memberName === 'delete' || memberName === 'clear') {
+        return {
+          directMask: INTERNAL_EFFECT_MASKS.mut,
+          forwardedArguments: [],
+        };
+      }
+    }
+  }
+
+  if (
+    ownerName === 'Set' || ownerName === 'ReadonlySet' || ownerName === 'WeakSet'
+  ) {
+    if (memberName === 'has') {
+      return {
+        directMask: 0,
+        forwardedArguments: [],
+      };
+    }
+    if (ownerName === 'Set' || ownerName === 'WeakSet') {
+      if (memberName === 'add' || memberName === 'delete' || memberName === 'clear') {
+        return {
+          directMask: INTERNAL_EFFECT_MASKS.mut,
+          forwardedArguments: [],
+        };
+      }
+    }
+  }
+
+  return undefined;
+}
+
 function getKnownStdlibCallBehavior(
   context: AnalysisContext,
   expression: ts.CallExpression,
@@ -639,6 +748,11 @@ function getKnownBuiltinCallBehavior(
   const stdlib = getKnownStdlibCallBehavior(context, expression);
   if (stdlib) {
     return stdlib;
+  }
+
+  const portableBuiltin = getKnownPortableBuiltinBehavior(context, expression);
+  if (portableBuiltin) {
+    return portableBuiltin;
   }
 
   if (!ts.isPropertyAccessExpression(expression.expression)) {
@@ -925,7 +1039,9 @@ export function getEffectCompositionForCallLike(
   context: AnalysisContext,
   expression: ts.CallExpression | ts.NewExpression,
 ): EffectComposition {
-  const builtin = ts.isCallExpression(expression) ? getKnownBuiltinCallBehavior(context, expression) : undefined;
+  const builtin = ts.isCallExpression(expression)
+    ? getKnownBuiltinCallBehavior(context, expression)
+    : getKnownPortableBuiltinBehavior(context, expression);
   if (builtin) {
     let mask = builtin.directMask;
     let unknown = false;

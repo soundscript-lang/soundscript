@@ -555,3 +555,147 @@ Deno.test('createAnalysisContext summarizes Promise continuation builtins with p
   }]);
   assertEquals(finishSummary.hasUnknownDirectEffects, false);
 });
+
+Deno.test('createAnalysisContext summarizes portable globals and collection builtins precisely', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+          },
+          include: ['src/**/*.ts'],
+        },
+        null,
+        2,
+      ),
+    },
+    {
+      path: 'src/index.ts',
+      contents: [
+        'export function sampleRandom(): number {',
+        '  return Math.random();',
+        '}',
+        '',
+        'export function sampleTime(): number {',
+        '  return Date.now();',
+        '}',
+        '',
+        'export function createMap(): Map<string, number> {',
+        '  return new Map<string, number>();',
+        '}',
+        '',
+        'export function readMap(map: ReadonlyMap<string, number>): boolean {',
+        '  return map.has("count");',
+        '}',
+        '',
+        'export function visitMap(',
+        '  map: ReadonlyMap<string, number>,',
+        '  callback: (value: number, key: string) => void,',
+        '): void {',
+        '  map.forEach(callback);',
+        '}',
+        '',
+        'export function mutateMap(map: Map<string, number>): void {',
+        '  map.set("count", 1);',
+        '}',
+        '',
+        'export function createSet(): Set<number> {',
+        '  return new Set<number>();',
+        '}',
+        '',
+        'export function visitSet(',
+        '  set: ReadonlySet<number>,',
+        '  callback: (value: number) => void,',
+        '): void {',
+        '  set.forEach(callback);',
+        '}',
+        '',
+        'export function mutateSet(set: Set<number>): void {',
+        '  set.add(1);',
+        '}',
+        '',
+      ].join('\n'),
+    },
+  ]);
+  const projectPath = join(tempDirectory, 'tsconfig.json');
+  const program = loadProgram(projectPath);
+  const context = createAnalysisContext({ program, workingDirectory: tempDirectory });
+  const sourceFile = context.getSourceFiles().find((file) => file.fileName.endsWith('/src/index.ts'));
+
+  assertExists(sourceFile);
+
+  const declarationsByName = new Map(
+    sourceFile.statements
+      .filter(ts.isFunctionDeclaration)
+      .filter((declaration): declaration is ts.FunctionDeclaration & { name: ts.Identifier } =>
+        declaration.name !== undefined
+      )
+      .map((declaration) => [declaration.name.text, declaration]),
+  );
+
+  const sampleRandom = declarationsByName.get('sampleRandom');
+  const sampleTime = declarationsByName.get('sampleTime');
+  const createMap = declarationsByName.get('createMap');
+  const readMap = declarationsByName.get('readMap');
+  const visitMap = declarationsByName.get('visitMap');
+  const mutateMap = declarationsByName.get('mutateMap');
+  const createSet = declarationsByName.get('createSet');
+  const visitSet = declarationsByName.get('visitSet');
+  const mutateSet = declarationsByName.get('mutateSet');
+
+  assertExists(sampleRandom);
+  assertExists(sampleTime);
+  assertExists(createMap);
+  assertExists(readMap);
+  assertExists(visitMap);
+  assertExists(mutateMap);
+  assertExists(createSet);
+  assertExists(visitSet);
+  assertExists(mutateSet);
+
+  assertEquals(
+    getEffectSummaryForDeclaration(context, sampleRandom).directMask,
+    INTERNAL_EFFECT_MASKS.hostRandom,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, sampleTime).directMask,
+    INTERNAL_EFFECT_MASKS.hostTime,
+  );
+
+  const createMapSummary = getEffectSummaryForDeclaration(context, createMap);
+  const readMapSummary = getEffectSummaryForDeclaration(context, readMap);
+  const visitMapSummary = getEffectSummaryForDeclaration(context, visitMap);
+  const mutateMapSummary = getEffectSummaryForDeclaration(context, mutateMap);
+  const createSetSummary = getEffectSummaryForDeclaration(context, createSet);
+  const visitSetSummary = getEffectSummaryForDeclaration(context, visitSet);
+  const mutateSetSummary = getEffectSummaryForDeclaration(context, mutateSet);
+
+  assertEquals(createMapSummary.directMask, 0);
+  assertEquals(createMapSummary.hasUnknownDirectEffects, false);
+  assertEquals(readMapSummary.directMask, 0);
+  assertEquals(readMapSummary.hasUnknownDirectEffects, false);
+  assertEquals(visitMapSummary.directMask, 0);
+  assertEquals(visitMapSummary.forwardedParameters, [{
+    failureBoundary: 'preserve',
+    parameterIndex: 1,
+  }]);
+  assertEquals(visitMapSummary.hasUnknownDirectEffects, false);
+  assertEquals(mutateMapSummary.directMask, INTERNAL_EFFECT_MASKS.mut);
+  assertEquals(mutateMapSummary.hasUnknownDirectEffects, false);
+
+  assertEquals(createSetSummary.directMask, 0);
+  assertEquals(createSetSummary.hasUnknownDirectEffects, false);
+  assertEquals(visitSetSummary.directMask, 0);
+  assertEquals(visitSetSummary.forwardedParameters, [{
+    failureBoundary: 'preserve',
+    parameterIndex: 1,
+  }]);
+  assertEquals(visitSetSummary.hasUnknownDirectEffects, false);
+  assertEquals(mutateSetSummary.directMask, INTERNAL_EFFECT_MASKS.mut);
+  assertEquals(mutateSetSummary.hasUnknownDirectEffects, false);
+});

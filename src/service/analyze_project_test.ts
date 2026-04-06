@@ -4683,6 +4683,80 @@ Deno.test('analyzeProject accepts sts:async task constructors under forbid contr
   assertEquals(result.diagnostics, []);
 });
 
+Deno.test('analyzeProject accepts builtin collection readers and constructors under forbid contracts', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/index.sts': [
+      '// #[effects(forbid: [fails, suspend, mut, host])]',
+      'function build(): number {',
+      '  const map = new Map<string, number>();',
+      '  const set = new Set<number>();',
+      '  return (map.has("x") ? 1 : 0) + (set.has(1) ? 1 : 0);',
+      '}',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics, []);
+});
+
+Deno.test('analyzeProject tracks builtin host and mut effects under forbid contracts', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/index.sts': [
+      '// #[effects(forbid: [host])]',
+      'function sample(): number {',
+      '  return Math.random() + Date.now();',
+      '}',
+      '',
+      '// #[effects(forbid: [mut])]',
+      'function update(map: Map<string, number>, set: Set<number>): void {',
+      '  map.set("x", 1);',
+      '  set.add(1);',
+      '}',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1040', 'SOUND1040']);
+  assertEquals(result.diagnostics[0]?.metadata?.primarySymbol, 'sample');
+  assertEquals(result.diagnostics[1]?.metadata?.primarySymbol, 'update');
+});
+
 Deno.test('analyzeProject enforces callback forbid contracts against failful arguments', async () => {
   const tempDirectory = await createTempProject({
     'tsconfig.json': JSON.stringify(
@@ -7043,6 +7117,42 @@ Deno.test('analyzeProject preserves narrowing across sts:async task constructor 
       '  if (box.value !== null) {',
       '    const mapped = async.map(task, (value: number) => value + 1);',
       '    void mapped;',
+      '    const value: string = box.value;',
+      '    return value;',
+      '  }',
+      '  return "";',
+      '}',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics, []);
+});
+
+Deno.test('analyzeProject preserves narrowing across pure builtin collection helpers', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/index.sts': [
+      'function use(box: { value: string | null }, map: ReadonlyMap<string, number>): string {',
+      '  if (box.value !== null) {',
+      '    map.forEach(() => {});',
       '    const value: string = box.value;',
       '    return value;',
       '  }',
