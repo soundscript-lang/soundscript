@@ -5,6 +5,7 @@ import type {
   FlowInvalidationCandidateFact,
   FlowInvalidationStructureFact,
 } from '../engine/types.ts';
+import { getEffectCompositionForCallLike, PUBLIC_EFFECT_MASKS } from '../effects.ts';
 
 import type { FlowFactEnvironment } from './flow_facts.ts';
 
@@ -1440,6 +1441,10 @@ function functionLikeAffectsNarrow(
           return true;
         }
 
+        if (callPreservesNarrowing(context, candidate.node)) {
+          continue;
+        }
+
         const boundMemberDeclaration = getFunctionLikeFromBoundMemberCall(
           context,
           candidate.node.expression,
@@ -1584,6 +1589,15 @@ function functionLikeAffectsNarrow(
   } finally {
     activeDeclarations.delete(declaration);
   }
+}
+
+function callPreservesNarrowing(
+  context: AnalysisContext,
+  node: ts.CallExpression | ts.NewExpression,
+): boolean {
+  const effects = getEffectCompositionForCallLike(context, node);
+  return !effects.unknown &&
+    (effects.mask & (PUBLIC_EFFECT_MASKS.mut | PUBLIC_EFFECT_MASKS.suspend)) === 0;
 }
 
 function classInstanceMethodsAffectNarrow(
@@ -2177,6 +2191,10 @@ export function statementAffectsNarrow(
         )
       ) {
         return candidate.node;
+      }
+
+      if (callPreservesNarrowing(context, candidate.node)) {
+        continue;
       }
 
       if (

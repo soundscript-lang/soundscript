@@ -6897,6 +6897,46 @@ Deno.test('analyzeProject preserves narrowing across calls proven free of mut an
   assertEquals(result.diagnostics, []);
 });
 
+Deno.test('analyzeProject preserves narrowing across declaration-only calls proven free of mut and suspend', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/index.sts': [
+      '// #[extern]',
+      '// #[effects(add: [])]',
+      'declare function observe(box: { value: string | null }): void;',
+      '',
+      'function use(box: { value: string | null }): string {',
+      '  if (box.value !== null) {',
+      '    observe(box);',
+      '    const value: string = box.value;',
+      '    return value;',
+      '  }',
+      '  return "";',
+      '}',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics, []);
+});
+
 Deno.test('analyzeProject keeps guarded Error Match arms free of generated-code diagnostics', async () => {
   const tempDirectory = await createTempProject({
     'tsconfig.json': JSON.stringify(
