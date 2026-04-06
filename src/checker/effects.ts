@@ -557,6 +557,10 @@ function isTrustedSoundStdlibModuleFile(fileName: string, moduleName: string): b
     isLocalSoundStdlibModuleFile(fileName, moduleName);
 }
 
+function isBundledDomDeclarationFile(fileName: string): boolean {
+  return normalizeFileName(fileName).endsWith('/lib.dom.d.ts');
+}
+
 function resolveAliasedSymbol(checker: ts.TypeChecker, symbol: ts.Symbol): ts.Symbol {
   let current = symbol;
   while ((current.flags & ts.SymbolFlags.Alias) !== 0) {
@@ -641,6 +645,7 @@ function getKnownPortableBuiltinBehavior(
   const declaration = context.checker.getResolvedSignature(expression)?.getDeclaration();
   const memberName = declaration ? getDeclarationName(declaration) : undefined;
   const ownerName = declaration ? getDeclarationOwnerName(declaration) : undefined;
+  const sourceFileName = declaration?.getSourceFile().fileName;
 
   if (memberName === 'random' && ownerName === 'Math') {
     return {
@@ -654,6 +659,32 @@ function getKnownPortableBuiltinBehavior(
       directMask: INTERNAL_EFFECT_MASKS.hostTime,
       forwardedArguments: [],
     };
+  }
+
+  if (sourceFileName && isBundledDomDeclarationFile(sourceFileName)) {
+    if (
+      memberName === 'fetch' &&
+      (ownerName === undefined || ownerName === 'WindowOrWorkerGlobalScope')
+    ) {
+      return {
+        directMask: INTERNAL_EFFECT_MASKS.hostIo | INTERNAL_EFFECT_MASKS.suspend,
+        forwardedArguments: [],
+      };
+    }
+
+    if (memberName === 'randomUUID' && ownerName === 'Crypto') {
+      return {
+        directMask: INTERNAL_EFFECT_MASKS.hostRandom,
+        forwardedArguments: [],
+      };
+    }
+
+    if (memberName === 'getRandomValues' && ownerName === 'Crypto') {
+      return {
+        directMask: INTERNAL_EFFECT_MASKS.hostRandom | INTERNAL_EFFECT_MASKS.mut,
+        forwardedArguments: [],
+      };
+    }
   }
 
   if (
@@ -726,6 +757,7 @@ function getKnownStdlibCallBehavior(
 ): BuiltinCallBehavior | undefined {
   const declaration = context.checker.getResolvedSignature(expression)?.getDeclaration();
   const declarationName = getDeclarationName(declaration);
+  const sourceFileName = declaration?.getSourceFile().fileName;
   if (
     declarationName &&
     ASYNC_TASK_CONSTRUCTOR_FUNCTIONS.has(declarationName) &&
@@ -734,6 +766,24 @@ function getKnownStdlibCallBehavior(
   ) {
     return {
       directMask: 0,
+      forwardedArguments: [],
+    };
+  }
+
+  if (declarationName === 'fetch' && sourceFileName && isTrustedSoundStdlibModuleFile(sourceFileName, 'fetch')) {
+    return {
+      directMask: INTERNAL_EFFECT_MASKS.hostIo | INTERNAL_EFFECT_MASKS.suspend,
+      forwardedArguments: [],
+    };
+  }
+
+  if (
+    declarationName === 'getRandomValues' &&
+    sourceFileName &&
+    isTrustedSoundStdlibModuleFile(sourceFileName, 'random')
+  ) {
+    return {
+      directMask: INTERNAL_EFFECT_MASKS.hostRandom | INTERNAL_EFFECT_MASKS.mut,
       forwardedArguments: [],
     };
   }

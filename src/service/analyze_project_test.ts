@@ -4757,6 +4757,67 @@ Deno.test('analyzeProject tracks builtin host and mut effects under forbid contr
   assertEquals(result.diagnostics[1]?.metadata?.primarySymbol, 'update');
 });
 
+Deno.test('analyzeProject tracks host-backed globals and stdlib wrappers under forbid contracts', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/index.sts': [
+      'import { fetch as stdFetch } from "sts:fetch";',
+      'import { getRandomValues } from "sts:random";',
+      '',
+      '// #[effects(forbid: [host, suspend])]',
+      'function load() {',
+      '  return fetch("https://example.com");',
+      '}',
+      '',
+      '// #[effects(forbid: [host])]',
+      'function uuid(): string {',
+      '  return crypto.randomUUID();',
+      '}',
+      '',
+      '// #[effects(forbid: [host, mut])]',
+      'function fill(bytes: Uint8Array): Uint8Array {',
+      '  return getRandomValues(bytes);',
+      '}',
+      '',
+      '// #[effects(forbid: [host, suspend])]',
+      'function loadStd() {',
+      '  return stdFetch("https://example.com");',
+      '}',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), [
+    'SOUND1040',
+    'SOUND1040',
+    'SOUND1040',
+    'SOUND1040',
+  ]);
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.metadata?.primarySymbol), [
+    'load',
+    'uuid',
+    'fill',
+    'loadStd',
+  ]);
+});
+
 Deno.test('analyzeProject enforces callback forbid contracts against failful arguments', async () => {
   const tempDirectory = await createTempProject({
     'tsconfig.json': JSON.stringify(

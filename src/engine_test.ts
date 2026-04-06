@@ -699,3 +699,83 @@ Deno.test('createAnalysisContext summarizes portable globals and collection buil
   assertEquals(mutateSetSummary.directMask, INTERNAL_EFFECT_MASKS.mut);
   assertEquals(mutateSetSummary.hasUnknownDirectEffects, false);
 });
+
+Deno.test('createAnalysisContext summarizes host-backed globals precisely', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+          },
+          include: ['src/**/*.ts'],
+        },
+        null,
+        2,
+      ),
+    },
+    {
+      path: 'src/index.ts',
+      contents: [
+        'export function load(): Promise<Response> {',
+        '  return fetch("https://example.com");',
+        '}',
+        '',
+        'export function uuid(): string {',
+        '  return crypto.randomUUID();',
+        '}',
+        '',
+        'export function fill(bytes: Uint8Array): Uint8Array {',
+        '  return crypto.getRandomValues(bytes);',
+        '}',
+        '',
+      ].join('\n'),
+    },
+  ]);
+  const projectPath = join(tempDirectory, 'tsconfig.json');
+  const program = loadProgram(projectPath);
+  const context = createAnalysisContext({ program, workingDirectory: tempDirectory });
+  const sourceFile = context.getSourceFiles().find((file) => file.fileName.endsWith('/src/index.ts'));
+
+  assertExists(sourceFile);
+
+  const declarationsByName = new Map(
+    sourceFile.statements
+      .filter(ts.isFunctionDeclaration)
+      .filter((declaration): declaration is ts.FunctionDeclaration & { name: ts.Identifier } =>
+        declaration.name !== undefined
+      )
+      .map((declaration) => [declaration.name.text, declaration]),
+  );
+
+  const load = declarationsByName.get('load');
+  const uuid = declarationsByName.get('uuid');
+  const fill = declarationsByName.get('fill');
+
+  assertExists(load);
+  assertExists(uuid);
+  assertExists(fill);
+
+  const loadSummary = getEffectSummaryForDeclaration(context, load);
+  const uuidSummary = getEffectSummaryForDeclaration(context, uuid);
+  const fillSummary = getEffectSummaryForDeclaration(context, fill);
+
+  assertEquals(
+    loadSummary.directMask,
+    INTERNAL_EFFECT_MASKS.hostIo | INTERNAL_EFFECT_MASKS.suspend,
+  );
+  assertEquals(loadSummary.hasUnknownDirectEffects, false);
+
+  assertEquals(uuidSummary.directMask, INTERNAL_EFFECT_MASKS.hostRandom);
+  assertEquals(uuidSummary.hasUnknownDirectEffects, false);
+
+  assertEquals(
+    fillSummary.directMask,
+    INTERNAL_EFFECT_MASKS.hostRandom | INTERNAL_EFFECT_MASKS.mut,
+  );
+  assertEquals(fillSummary.hasUnknownDirectEffects, false);
+});
