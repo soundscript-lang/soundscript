@@ -32,6 +32,14 @@ jobs:
           node-version: 22
           registry-url: https://registry.npmjs.org
 
+      - name: Install supported npm for trusted publishing
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install --global "npm@^11.5.1"
+          node --version
+          npm --version
+
       - uses: denoland/setup-deno@v2
         with:
           deno-version: v2.x

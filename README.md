@@ -150,8 +150,41 @@ For a normal public release, bump `VERSION` there, push `main`, then run the
 
 The workflow is set up for npm trusted publishing from GitHub Actions. npm must
 be configured to trust the `publish-release.yml` workflow file in this
-repository. The workflow also needs GitHub's `id-token: write` permission,
-which is already configured in the workflow file.
+repository for every package in the release set:
+
+- `@soundscript/cli-darwin-arm64`
+- `@soundscript/cli-darwin-x64`
+- `@soundscript/cli-linux-arm64`
+- `@soundscript/cli-linux-x64`
+- `@soundscript/cli-win32-x64`
+- `@soundscript/soundscript`
+- `soundscript`
+
+If npm returns a `404` during `npm publish`, the usual cause is that the
+package's trusted-publisher settings have not been added yet. The workflow also
+needs GitHub's `id-token: write` permission, which is already configured in the
+workflow file.
+
+You can bulk-configure the package set from a shell after logging in to npm with
+an account that has write access to all seven packages:
+
+```bash
+for package in \
+  @soundscript/cli-darwin-arm64 \
+  @soundscript/cli-darwin-x64 \
+  @soundscript/cli-linux-arm64 \
+  @soundscript/cli-linux-x64 \
+  @soundscript/cli-win32-x64 \
+  @soundscript/soundscript \
+  soundscript
+do
+  npm trust github "$package" \
+    --repo soundscript-lang/soundscript \
+    --file publish-release.yml \
+    --yes
+  sleep 2
+done
+```
 
 If you need to reattach CLI archives to an existing release, use the separate
 `Backfill CLI Assets` workflow.

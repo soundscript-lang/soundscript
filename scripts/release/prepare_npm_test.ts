@@ -330,7 +330,7 @@ Deno.test('prepare_npm --stdlib-only emits canonical package source maps and .st
   assertEquals(packageJson.files.includes('index.js.map'), true);
   assertEquals(packageJson.files.includes('experimental/**'), true);
   assertEquals(packageJson.dependencies?.typescript, '5.9.3');
-  assertEquals(packageJson.repository?.url, 'https://github.com/soundscript-lang/soundscript.git');
+  assertEquals(packageJson.repository?.url, 'git+https://github.com/soundscript-lang/soundscript.git');
   assertEquals(packageJson.homepage, 'https://github.com/soundscript-lang/soundscript');
   assertEquals(packageJson.bugs?.url, 'https://github.com/soundscript-lang/soundscript/issues');
   assertStringIncludes(
@@ -403,7 +403,7 @@ Deno.test('prepare_npm emits shim package metadata for the soundscript shim pack
   assertEquals(packageJson.exports?.['./experimental/sql'], undefined);
   assertEquals(
     packageJson.repository?.url,
-    'https://github.com/soundscript-lang/soundscript.git',
+    'git+https://github.com/soundscript-lang/soundscript.git',
   );
   assertEquals(packageJson.homepage, 'https://github.com/soundscript-lang/soundscript');
   assertEquals(packageJson.bugs?.url, 'https://github.com/soundscript-lang/soundscript/issues');
@@ -432,7 +432,7 @@ Deno.test('prepare_npm emits cli target package metadata with bundled declaratio
   assertEquals(packageJson.files?.includes('src/stdlib/**'), true);
   assertEquals(
     packageJson.repository?.url,
-    'https://github.com/soundscript-lang/soundscript.git',
+    'git+https://github.com/soundscript-lang/soundscript.git',
   );
   assertEquals(packageJson.homepage, 'https://github.com/soundscript-lang/soundscript');
   assertEquals(packageJson.bugs?.url, 'https://github.com/soundscript-lang/soundscript/issues');

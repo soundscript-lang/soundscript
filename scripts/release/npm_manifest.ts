@@ -19,7 +19,7 @@ export const STDLIB_SOURCE = join(ROOT, 'src', 'stdlib');
 export const CLI_ENTRY = join(ROOT, 'src', 'main.ts');
 export const LICENSE_SOURCE = join(ROOT, 'LICENSE');
 export const CANONICAL_PACKAGE_NAME = '@soundscript/soundscript';
-export const SOUNDSCRIPT_REPOSITORY_URL = 'https://github.com/soundscript-lang/soundscript.git';
+export const SOUNDSCRIPT_REPOSITORY_URL = 'git+https://github.com/soundscript-lang/soundscript.git';
 export const SOUNDSCRIPT_HOMEPAGE_URL = 'https://github.com/soundscript-lang/soundscript';
 export const SOUNDSCRIPT_ISSUES_URL = 'https://github.com/soundscript-lang/soundscript/issues';
 
