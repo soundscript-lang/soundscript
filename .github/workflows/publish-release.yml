@@ -32,11 +32,19 @@ jobs:
           node-version: 22
           registry-url: https://registry.npmjs.org
 
-      - name: Install supported npm for trusted publishing
+      - name: Use supported npm for trusted publishing
         shell: bash
         run: |
           set -euo pipefail
-          npm install --global "npm@^11.5.1"
+          SYSTEM_NPX="$(command -v npx)"
+          mkdir -p "$RUNNER_TEMP/npm-bin"
+          cat > "$RUNNER_TEMP/npm-bin/npm" <<EOF
+          #!/usr/bin/env bash
+          exec "$SYSTEM_NPX" --yes npm@^11.5.1 "\$@"
+          EOF
+          chmod +x "$RUNNER_TEMP/npm-bin/npm"
+          export PATH="$RUNNER_TEMP/npm-bin:$PATH"
+          echo "$RUNNER_TEMP/npm-bin" >> "$GITHUB_PATH"
           node --version
           npm --version
 
