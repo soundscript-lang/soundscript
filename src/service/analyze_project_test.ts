@@ -5225,6 +5225,67 @@ Deno.test('analyzeProject tracks DOM listener and object URL builtins under effe
   ]);
 });
 
+Deno.test('analyzeProject tracks DOM mutation and dispatch builtins under effect contracts', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/index.sts': [
+      '// #[effects(forbid: [fails, suspend, mut, host])]',
+      'function buildEvent(): Event {',
+      '  return new Event("ping");',
+      '}',
+      '',
+      '// #[effects(forbid: [fails, suspend, mut, host])]',
+      'function buildTarget(): EventTarget {',
+      '  return new EventTarget();',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function dispatchOnTarget(target: EventTarget): boolean {',
+      '  return target.dispatchEvent(new Event("ping"));',
+      '}',
+      '',
+      '// #[effects(forbid: [mut])]',
+      'function setDomAttribute(element: Element): void {',
+      '  element.setAttribute("data-id", "1");',
+      '}',
+      '',
+      '// #[effects(forbid: [host])]',
+      'function appendDomChild(parent: Element, child: Element): Element {',
+      '  return parent.appendChild(child);',
+      '}',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), [
+    'SOUND1040',
+    'SOUND1040',
+    'SOUND1040',
+  ]);
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.metadata?.primarySymbol), [
+    'dispatchOnTarget',
+    'setDomAttribute',
+    'appendDomChild',
+  ]);
+});
+
 Deno.test('analyzeProject tracks JSON and console builtins under effect contracts', async () => {
   const tempDirectory = await createTempProject({
     'tsconfig.json': JSON.stringify(

@@ -1185,6 +1185,111 @@ Deno.test('createAnalysisContext summarizes DOM listener and object URL builtins
   assertEquals(getEffectSummaryForDeclaration(context, revokeObjectUrl).hasUnknownDirectEffects, false);
 });
 
+Deno.test('createAnalysisContext summarizes DOM mutation and dispatch builtins precisely', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+          },
+          include: ['src/**/*.ts'],
+        },
+        null,
+        2,
+      ),
+    },
+    {
+      path: 'src/index.ts',
+      contents: [
+        'export function buildEvent(): Event {',
+        '  return new Event("ping");',
+        '}',
+        '',
+        'export function buildTarget(): EventTarget {',
+        '  return new EventTarget();',
+        '}',
+        '',
+        'export function dispatchOnTarget(target: EventTarget): boolean {',
+        '  return target.dispatchEvent(new Event("ping"));',
+        '}',
+        '',
+        'export function createDomElement(): HTMLElement {',
+        '  return document.createElement("div");',
+        '}',
+        '',
+        'export function setDomAttribute(element: Element): void {',
+        '  element.setAttribute("data-id", "1");',
+        '}',
+        '',
+        'export function appendDomChild(parent: Element, child: Element): Element {',
+        '  return parent.appendChild(child);',
+        '}',
+        '',
+      ].join('\n'),
+    },
+  ]);
+  const projectPath = join(tempDirectory, 'tsconfig.json');
+  const program = loadProgram(projectPath);
+  const context = createAnalysisContext({ program, workingDirectory: tempDirectory });
+  const sourceFile = context.getSourceFiles().find((file) => file.fileName.endsWith('/src/index.ts'));
+
+  assertExists(sourceFile);
+
+  const declarationsByName = new Map(
+    sourceFile.statements
+      .filter(ts.isFunctionDeclaration)
+      .filter((declaration): declaration is ts.FunctionDeclaration & { name: ts.Identifier } =>
+        declaration.name !== undefined
+      )
+      .map((declaration) => [declaration.name.text, declaration]),
+  );
+
+  const buildEvent = declarationsByName.get('buildEvent');
+  const buildTarget = declarationsByName.get('buildTarget');
+  const dispatchOnTarget = declarationsByName.get('dispatchOnTarget');
+  const createDomElement = declarationsByName.get('createDomElement');
+  const setDomAttribute = declarationsByName.get('setDomAttribute');
+  const appendDomChild = declarationsByName.get('appendDomChild');
+
+  assertExists(buildEvent);
+  assertExists(buildTarget);
+  assertExists(dispatchOnTarget);
+  assertExists(createDomElement);
+  assertExists(setDomAttribute);
+  assertExists(appendDomChild);
+
+  assertEquals(getEffectSummaryForDeclaration(context, buildEvent).directMask, 0);
+  assertEquals(getEffectSummaryForDeclaration(context, buildTarget).directMask, 0);
+
+  const dispatchSummary = getEffectSummaryForDeclaration(context, dispatchOnTarget);
+  assertEquals(dispatchSummary.directMask, INTERNAL_EFFECT_MASKS.hostDom);
+  assertEquals(dispatchSummary.hasUnknownDirectEffects, true);
+
+  assertEquals(
+    getEffectSummaryForDeclaration(context, createDomElement).directMask,
+    INTERNAL_EFFECT_MASKS.hostDom,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, setDomAttribute).directMask,
+    INTERNAL_EFFECT_MASKS.hostDom | INTERNAL_EFFECT_MASKS.mut,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, appendDomChild).directMask,
+    INTERNAL_EFFECT_MASKS.hostDom | INTERNAL_EFFECT_MASKS.mut,
+  );
+
+  assertEquals(getEffectSummaryForDeclaration(context, buildEvent).hasUnknownDirectEffects, false);
+  assertEquals(getEffectSummaryForDeclaration(context, buildTarget).hasUnknownDirectEffects, false);
+  assertEquals(getEffectSummaryForDeclaration(context, createDomElement).hasUnknownDirectEffects, false);
+  assertEquals(getEffectSummaryForDeclaration(context, setDomAttribute).hasUnknownDirectEffects, false);
+  assertEquals(getEffectSummaryForDeclaration(context, appendDomChild).hasUnknownDirectEffects, false);
+});
+
 Deno.test('createAnalysisContext summarizes fetch host-object families precisely', async () => {
   const tempDirectory = await createTempProject([
     {

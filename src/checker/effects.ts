@@ -90,6 +90,7 @@ interface BuiltinForwardedArgumentBehavior {
 interface BuiltinCallBehavior {
   directMask: number;
   forwardedArguments: readonly BuiltinForwardedArgumentBehavior[];
+  hasUnknownDirectEffects?: boolean;
 }
 
 type PromiseLikeChecker = ts.TypeChecker & {
@@ -847,6 +848,53 @@ function getKnownAbortAndCloneBehavior(
   return undefined;
 }
 
+function getKnownDomMutationAndEventBehavior(
+  ownerName: string | undefined,
+  memberName: string | undefined,
+  expression: ts.CallExpression | ts.NewExpression,
+): BuiltinCallBehavior | undefined {
+  if (ts.isNewExpression(expression) && (ownerName === 'Event' || ownerName === 'EventTarget')) {
+    return {
+      directMask: 0,
+      forwardedArguments: [],
+    };
+  }
+
+  if (ownerName === 'Document' && memberName === 'createElement') {
+    return {
+      directMask: INTERNAL_EFFECT_MASKS.hostDom,
+      forwardedArguments: [],
+    };
+  }
+
+  if (ownerName === 'Element' && memberName === 'setAttribute') {
+    return {
+      directMask: INTERNAL_EFFECT_MASKS.hostDom | INTERNAL_EFFECT_MASKS.mut,
+      forwardedArguments: [],
+    };
+  }
+
+  if (ownerName === 'Node' && memberName === 'appendChild') {
+    return {
+      directMask: INTERNAL_EFFECT_MASKS.hostDom | INTERNAL_EFFECT_MASKS.mut,
+      forwardedArguments: [],
+    };
+  }
+
+  if (
+    memberName === 'dispatchEvent' &&
+    (ownerName === 'EventTarget' || ownerName === undefined || ownerName === 'Window')
+  ) {
+    return {
+      directMask: INTERNAL_EFFECT_MASKS.hostDom,
+      forwardedArguments: [],
+      hasUnknownDirectEffects: true,
+    };
+  }
+
+  return undefined;
+}
+
 function isCallableExpression(context: AnalysisContext, expression: ts.Expression | undefined): boolean {
   if (!expression) {
     return false;
@@ -1093,6 +1141,15 @@ function getKnownPortableBuiltinBehavior(
         directMask: INTERNAL_EFFECT_MASKS.hostDom,
         forwardedArguments: [],
       };
+    }
+
+    const domMutationAndEventBehavior = getKnownDomMutationAndEventBehavior(
+      ownerName,
+      memberName,
+      expression,
+    );
+    if (domMutationAndEventBehavior) {
+      return domMutationAndEventBehavior;
     }
 
     const consoleBehavior = getKnownConsoleBehavior(ownerName, memberName);
@@ -1648,6 +1705,7 @@ function buildDeclarationSummary(
           const builtin = getKnownBuiltinCallBehavior(context, node);
           if (builtin) {
             summary.directMask |= builtin.directMask;
+            summary.hasUnknownDirectEffects ||= builtin.hasUnknownDirectEffects === true;
             for (const forwardedArgument of builtin.forwardedArguments) {
               const forwarded = summarizeForwardedArgumentInBody(
                 context,
@@ -1737,7 +1795,7 @@ export function getEffectCompositionForCallLike(
       : getKnownPortableBuiltinBehavior(context, expression));
   if (builtin) {
     let mask = builtin.directMask;
-    let unknown = false;
+    let unknown = builtin.hasUnknownDirectEffects === true;
     for (const forwardedArgument of builtin.forwardedArguments) {
       const forwarded = forwardedArgument.memberName
         ? getSummaryForCallableMember(
