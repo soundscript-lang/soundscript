@@ -703,7 +703,10 @@ function getKnownUrlAndTextBehavior(
     }
   }
 
-  if ((ownerName === 'URL' || ownerName === 'URLConstructor') && memberName === 'canParse') {
+  if (
+    (ownerName === 'URL' || ownerName === 'URLConstructor') &&
+    (memberName === 'canParse' || memberName === 'parse')
+  ) {
     return {
       directMask: 0,
       forwardedArguments: [],
@@ -763,6 +766,61 @@ function getKnownUrlAndTextBehavior(
   }
 
   if (ownerName === 'TextDecoder' && memberName === 'decode') {
+    return {
+      directMask: INTERNAL_EFFECT_MASKS.failsThrows,
+      forwardedArguments: [],
+    };
+  }
+
+  return undefined;
+}
+
+function getKnownAbortAndCloneBehavior(
+  ownerName: string | undefined,
+  memberName: string | undefined,
+  expression: ts.CallExpression | ts.NewExpression,
+): BuiltinCallBehavior | undefined {
+  if (ts.isNewExpression(expression) && ownerName === 'AbortController') {
+    return {
+      directMask: INTERNAL_EFFECT_MASKS.hostInterop,
+      forwardedArguments: [],
+    };
+  }
+
+  if (ownerName === 'AbortController' && memberName === 'abort') {
+    return {
+      directMask: INTERNAL_EFFECT_MASKS.hostInterop | INTERNAL_EFFECT_MASKS.mut,
+      forwardedArguments: [],
+    };
+  }
+
+  if (ownerName === 'AbortSignal') {
+    if (memberName === 'abort' || memberName === 'any') {
+      return {
+        directMask: INTERNAL_EFFECT_MASKS.hostInterop,
+        forwardedArguments: [],
+      };
+    }
+
+    if (memberName === 'timeout') {
+      return {
+        directMask: INTERNAL_EFFECT_MASKS.hostTime,
+        forwardedArguments: [],
+      };
+    }
+
+    if (memberName === 'throwIfAborted') {
+      return {
+        directMask: INTERNAL_EFFECT_MASKS.failsThrows,
+        forwardedArguments: [],
+      };
+    }
+  }
+
+  if (
+    memberName === 'structuredClone' &&
+    (ownerName === undefined || ownerName === 'WindowOrWorkerGlobalScope')
+  ) {
     return {
       directMask: INTERNAL_EFFECT_MASKS.failsThrows,
       forwardedArguments: [],
@@ -1021,6 +1079,11 @@ function getKnownPortableBuiltinBehavior(
     const urlAndTextBehavior = getKnownUrlAndTextBehavior(ownerName, memberName, expression);
     if (urlAndTextBehavior) {
       return urlAndTextBehavior;
+    }
+
+    const abortAndCloneBehavior = getKnownAbortAndCloneBehavior(ownerName, memberName, expression);
+    if (abortAndCloneBehavior) {
+      return abortAndCloneBehavior;
     }
 
     const fetchObjectBehavior = getKnownFetchObjectFamilyBehavior(ownerName, memberName, expression);

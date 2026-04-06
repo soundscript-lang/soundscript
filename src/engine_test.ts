@@ -893,6 +893,141 @@ Deno.test('createAnalysisContext summarizes deferred host schedulers without imm
   assertEquals(cancelSummary.hasUnknownDirectEffects, false);
 });
 
+Deno.test('createAnalysisContext summarizes abort and cloning builtins precisely', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+          },
+          include: ['src/**/*.ts'],
+        },
+        null,
+        2,
+      ),
+    },
+    {
+      path: 'src/index.ts',
+      contents: [
+        'export function buildController(): AbortController {',
+        '  return new AbortController();',
+        '}',
+        '',
+        'export function abortController(controller: AbortController): void {',
+        '  controller.abort();',
+        '}',
+        '',
+        'export function makeAbortedSignal(): AbortSignal {',
+        '  return AbortSignal.abort("boom");',
+        '}',
+        '',
+        'export function combineSignals(',
+        '  left: AbortSignal,',
+        '  right: AbortSignal,',
+        '): AbortSignal {',
+        '  return AbortSignal.any([left, right]);',
+        '}',
+        '',
+        'export function timeoutSignal(): AbortSignal {',
+        '  return AbortSignal.timeout(10);',
+        '}',
+        '',
+        'export function ensureNotAborted(signal: AbortSignal): void {',
+        '  signal.throwIfAborted();',
+        '}',
+        '',
+        'export function cloneValue<T>(value: T): T {',
+        '  return structuredClone(value);',
+        '}',
+        '',
+        'export function parseUrl(value: string): URL | null {',
+        '  return URL.parse(value);',
+        '}',
+        '',
+      ].join('\n'),
+    },
+  ]);
+  const projectPath = join(tempDirectory, 'tsconfig.json');
+  const program = loadProgram(projectPath);
+  const context = createAnalysisContext({ program, workingDirectory: tempDirectory });
+  const sourceFile = context.getSourceFiles().find((file) => file.fileName.endsWith('/src/index.ts'));
+
+  assertExists(sourceFile);
+
+  const declarationsByName = new Map(
+    sourceFile.statements
+      .filter(ts.isFunctionDeclaration)
+      .filter((declaration): declaration is ts.FunctionDeclaration & { name: ts.Identifier } =>
+        declaration.name !== undefined
+      )
+      .map((declaration) => [declaration.name.text, declaration]),
+  );
+
+  const buildController = declarationsByName.get('buildController');
+  const abortController = declarationsByName.get('abortController');
+  const makeAbortedSignal = declarationsByName.get('makeAbortedSignal');
+  const combineSignals = declarationsByName.get('combineSignals');
+  const timeoutSignal = declarationsByName.get('timeoutSignal');
+  const ensureNotAborted = declarationsByName.get('ensureNotAborted');
+  const cloneValue = declarationsByName.get('cloneValue');
+  const parseUrl = declarationsByName.get('parseUrl');
+
+  assertExists(buildController);
+  assertExists(abortController);
+  assertExists(makeAbortedSignal);
+  assertExists(combineSignals);
+  assertExists(timeoutSignal);
+  assertExists(ensureNotAborted);
+  assertExists(cloneValue);
+  assertExists(parseUrl);
+
+  assertEquals(
+    getEffectSummaryForDeclaration(context, buildController).directMask,
+    INTERNAL_EFFECT_MASKS.hostInterop,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, abortController).directMask,
+    INTERNAL_EFFECT_MASKS.hostInterop | INTERNAL_EFFECT_MASKS.mut,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, makeAbortedSignal).directMask,
+    INTERNAL_EFFECT_MASKS.hostInterop,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, combineSignals).directMask,
+    INTERNAL_EFFECT_MASKS.hostInterop,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, timeoutSignal).directMask,
+    INTERNAL_EFFECT_MASKS.hostTime,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, ensureNotAborted).directMask,
+    INTERNAL_EFFECT_MASKS.failsThrows,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, cloneValue).directMask,
+    INTERNAL_EFFECT_MASKS.failsThrows,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, parseUrl).directMask,
+    0,
+  );
+  assertEquals(getEffectSummaryForDeclaration(context, buildController).hasUnknownDirectEffects, false);
+  assertEquals(getEffectSummaryForDeclaration(context, abortController).hasUnknownDirectEffects, false);
+  assertEquals(getEffectSummaryForDeclaration(context, makeAbortedSignal).hasUnknownDirectEffects, false);
+  assertEquals(getEffectSummaryForDeclaration(context, combineSignals).hasUnknownDirectEffects, false);
+  assertEquals(getEffectSummaryForDeclaration(context, timeoutSignal).hasUnknownDirectEffects, false);
+  assertEquals(getEffectSummaryForDeclaration(context, ensureNotAborted).hasUnknownDirectEffects, false);
+  assertEquals(getEffectSummaryForDeclaration(context, cloneValue).hasUnknownDirectEffects, false);
+  assertEquals(getEffectSummaryForDeclaration(context, parseUrl).hasUnknownDirectEffects, false);
+});
+
 Deno.test('createAnalysisContext summarizes fetch host-object families precisely', async () => {
   const tempDirectory = await createTempProject([
     {
