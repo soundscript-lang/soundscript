@@ -152,10 +152,11 @@ export type CompilerRuntimeFallbackStringRepresentationRefIR = CompilerRuntimeRe
   'fallback_string_representation'
 >;
 
-export type CompilerRuntimeSpecializedStringRepresentationRefIR = CompilerRuntimeRepresentationRefIR<
-  'string',
-  'string_representation'
->;
+export type CompilerRuntimeSpecializedStringRepresentationRefIR =
+  CompilerRuntimeRepresentationRefIR<
+    'string',
+    'string_representation'
+  >;
 
 export interface CompilerRuntimeFallbackObjectRepresentationIR<
   TRuntimeState extends CompilerRuntimeFallbackObjectRuntimeStateIR =
@@ -218,6 +219,7 @@ export interface CompilerRuntimeSpecializedObjectFieldIR {
   };
   closureSignatureId?: number;
   classTagId?: number;
+  promiseBridge?: boolean;
   heapRepresentationName?: string;
   heapArrayRepresentationName?: string;
   methodClosureFunctionIds?: number[];
@@ -348,8 +350,7 @@ export interface CompilerRuntimeOrdinaryObjectPrototypeMembershipIR {
   readonly inheritedPropertyKeys: readonly string[];
 }
 
-export function createCompilerRuntimeOrdinaryObjectPrototypeMembership():
-  CompilerRuntimeOrdinaryObjectPrototypeMembershipIR {
+export function createCompilerRuntimeOrdinaryObjectPrototypeMembership(): CompilerRuntimeOrdinaryObjectPrototypeMembershipIR {
   return {
     kind: 'ordinary_object_prototype_membership',
     inheritedPropertyKeys: COMPILER_RUNTIME_ORDINARY_OBJECT_PROTOTYPE_OWN_PROPERTY_KEYS,

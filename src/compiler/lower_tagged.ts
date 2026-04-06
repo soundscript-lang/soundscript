@@ -396,6 +396,9 @@ export function getCompilerValueTypeForType(type: ts.Type, node: ts.Node): Compi
   if (isStringLikeType(type)) {
     return 'string_ref';
   }
+  if ((type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0) {
+    return 'tagged_ref';
+  }
   if (isUndefinedType(type) || isNullType(type)) {
     return 'tagged_ref';
   }

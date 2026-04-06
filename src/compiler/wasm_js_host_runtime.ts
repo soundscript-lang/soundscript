@@ -92,6 +92,11 @@ function createJsHostImports(
 ): WebAssembly.Imports {
   const heapIdentityCache = new WeakMap<object, unknown>();
   const hostParamIdentityCache = new WeakMap<object, Map<string, unknown>>();
+  const closureToHostCache = new WeakMap<object, Map<string, Function>>();
+  const closureToHostSyncCache = new WeakMap<
+    object,
+    Map<string, Function | WeakMap<object, Function>>
+  >();
   const hostPromiseToInternalCache = new WeakMap<object, object>();
   const internalPromiseToHostCache = new WeakMap<object, Promise<unknown>>();
   const classConstructorWrappers = new Map<number, Function>();
@@ -128,6 +133,40 @@ function createJsHostImports(
       throw new TypeError('Expected wasm heap reference for host identity cache.');
     }
     return value;
+  };
+
+  const getHostIdentityKey = (value: unknown): object | undefined => {
+    if (
+      (typeof value !== 'object' && typeof value !== 'function') ||
+      value === null
+    ) {
+      return undefined;
+    }
+    return value;
+  };
+
+  const getOrCreateClosureToHostCache = (closure: unknown): Map<string, Function> => {
+    const closureKey = expectHeapIdentityKey(closure);
+    const existing = closureToHostCache.get(closureKey);
+    if (existing) {
+      return existing;
+    }
+    const created = new Map<string, Function>();
+    closureToHostCache.set(closureKey, created);
+    return created;
+  };
+
+  const getOrCreateClosureToHostSyncCache = (
+    closure: unknown,
+  ): Map<string, Function | WeakMap<object, Function>> => {
+    const closureKey = expectHeapIdentityKey(closure);
+    const existing = closureToHostSyncCache.get(closureKey);
+    if (existing) {
+      return existing;
+    }
+    const created = new Map<string, Function | WeakMap<object, Function>>();
+    closureToHostSyncCache.set(closureKey, created);
+    return created;
   };
 
   const getOrCreateHostClassConstructor = (tag: number): Function => {
@@ -198,6 +237,56 @@ function createJsHostImports(
       syncClassPrototype(value);
     }
     return value;
+  };
+
+  const builtinErrorConstructors = new Map<string, ErrorConstructor>([
+    ['Error', Error],
+    ['EvalError', EvalError],
+    ['RangeError', RangeError],
+    ['ReferenceError', ReferenceError],
+    ['SyntaxError', SyntaxError],
+    ['TypeError', TypeError],
+    ['URIError', URIError],
+  ]);
+
+  const normalizeThrownHostValue = (value: unknown): unknown => {
+    if (value instanceof Error) {
+      return value;
+    }
+    if ((typeof value !== 'object' && typeof value !== 'function') || value === null) {
+      return value;
+    }
+    const objectRecord = value as Record<string, unknown>;
+    const name = typeof objectRecord.name === 'string' ? objectRecord.name : undefined;
+    if (name === undefined) {
+      return value;
+    }
+    const constructor = builtinErrorConstructors.get(name);
+    const message = objectRecord.message;
+    if (!constructor || (message !== undefined && typeof message !== 'string')) {
+      return value;
+    }
+    const hasCause = Object.prototype.hasOwnProperty.call(objectRecord, 'cause');
+    const errorMessage = typeof message === 'string' ? message : '';
+    let normalized: Error;
+    try {
+      normalized = hasCause
+        ? new constructor(errorMessage, { cause: objectRecord.cause })
+        : new constructor(errorMessage);
+    } catch {
+      normalized = new constructor(errorMessage);
+      if (hasCause) {
+        (normalized as Error & { cause?: unknown }).cause = objectRecord.cause;
+      }
+    }
+    normalized.name = name;
+    for (const key of Object.keys(objectRecord)) {
+      if (key === 'name' || key === 'message' || key === 'cause') {
+        continue;
+      }
+      (normalized as unknown as Record<string, unknown>)[key] = objectRecord[key];
+    }
+    return normalized;
   };
 
   const wrapHostMethodIfNeeded = (
@@ -327,6 +416,9 @@ function createJsHostImports(
         }
         if (property === 'empty') {
           return () => ({});
+        }
+        if (property === 'is_builtin_error') {
+          return (value: unknown) => Number(value instanceof Error);
         }
         if (property === 'lookup_cached') {
           return (value: unknown) => heapIdentityCache.get(expectHeapIdentityKey(value)) ?? null;
@@ -598,6 +690,23 @@ function createJsHostImports(
           const signatureId = Number(toHostSyncMatch[1]);
           const syncExportName = decodeURIComponent(toHostSyncMatch[2] ?? '');
           return (target: unknown, closure: unknown) => {
+            const cacheKey = `sync:${signatureId}:${syncExportName}`;
+            const syncCache = getOrCreateClosureToHostSyncCache(closure);
+            const targetKey = getHostIdentityKey(target);
+            if (targetKey) {
+              const existingBucket = syncCache.get(cacheKey);
+              if (existingBucket instanceof WeakMap) {
+                const existing = existingBucket.get(targetKey);
+                if (existing) {
+                  return existing;
+                }
+              }
+            } else {
+              const existing = syncCache.get(`${cacheKey}:primitive`);
+              if (typeof existing === 'function') {
+                return existing;
+              }
+            }
             const wrapped = (...args: unknown[]) => {
               const instance = instanceCell.instance;
               if (!instance) {
@@ -645,6 +754,18 @@ function createJsHostImports(
               value: true,
               writable: false,
             });
+            if (targetKey) {
+              const existingBucket = syncCache.get(cacheKey);
+              const targetCache = existingBucket instanceof WeakMap
+                ? existingBucket
+                : new WeakMap<object, Function>();
+              targetCache.set(targetKey, wrapped);
+              if (!(existingBucket instanceof WeakMap)) {
+                syncCache.set(cacheKey, targetCache);
+              }
+            } else {
+              syncCache.set(`${cacheKey}:primitive`, wrapped);
+            }
             return wrapped;
           };
         }
@@ -652,6 +773,12 @@ function createJsHostImports(
         if (toHostMatch) {
           const signatureId = Number(toHostMatch[1]);
           return (closure: unknown) => {
+            const cacheKey = `plain:${signatureId}`;
+            const closureCache = getOrCreateClosureToHostCache(closure);
+            const existing = closureCache.get(cacheKey);
+            if (existing) {
+              return existing;
+            }
             const wrapped = (...args: unknown[]) => {
               const instance = instanceCell.instance;
               if (!instance) {
@@ -669,6 +796,7 @@ function createJsHostImports(
               value: closure,
               writable: false,
             });
+            closureCache.set(cacheKey, wrapped);
             return wrapped;
           };
         }
@@ -721,7 +849,11 @@ function createJsHostImports(
           throw new Error('Missing exported Promise host attachment helper.');
         }
         const created = new Promise<unknown>((resolve, reject) => {
-          attach(internalPromise, resolve, reject);
+          attach(
+            internalPromise,
+            resolve,
+            (error: unknown) => reject(normalizeThrownHostValue(error)),
+          );
         });
         internalPromiseToHostCache.set(internalPromise, created);
         return created;
@@ -734,13 +866,19 @@ function createJsHostImports(
         }
         return {
           next(value?: unknown) {
-            return Promise.resolve(step(0, value));
+            return Promise.resolve(step(0, value)).catch((error) => {
+              throw normalizeThrownHostValue(error);
+            });
           },
           return(value?: unknown) {
-            return Promise.resolve(step(1, value));
+            return Promise.resolve(step(1, value)).catch((error) => {
+              throw normalizeThrownHostValue(error);
+            });
           },
           throw(value?: unknown) {
-            return Promise.resolve(step(2, value));
+            return Promise.resolve(step(2, value)).catch((error) => {
+              throw normalizeThrownHostValue(error);
+            });
           },
         };
       },
@@ -835,20 +973,32 @@ function createJsHostImports(
         }
         return {
           next(value?: unknown) {
-            return step(0, value);
+            try {
+              return step(0, value);
+            } catch (error) {
+              throw normalizeThrownHostValue(error);
+            }
           },
           return(value?: unknown) {
-            return step(1, value);
+            try {
+              return step(1, value);
+            } catch (error) {
+              throw normalizeThrownHostValue(error);
+            }
           },
           throw(value?: unknown) {
-            return step(2, value);
+            try {
+              return step(2, value);
+            } catch (error) {
+              throw normalizeThrownHostValue(error);
+            }
           },
         };
       },
     },
     soundscript_throw: {
       throw: (value: unknown) => {
-        throw value;
+        throw normalizeThrownHostValue(value);
       },
       try_tagged: (callback: unknown) => {
         if (typeof callback !== 'function') {

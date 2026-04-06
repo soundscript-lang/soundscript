@@ -1510,6 +1510,7 @@ export interface CompilerFunctionHostDynamicCollectionParamIR {
 export interface CompilerModuleIR {
   closureSignatures?: readonly CompilerClosureSignatureIR[];
   syncTryCatchClosureSignatureId?: number;
+  syncTryCatchHostObjectPropertyNames?: readonly string[];
   functions: CompilerFunctionIR[];
   jsHostImports?: readonly CompilerJsHostImportIR[];
   stringLiterals?: readonly string[];

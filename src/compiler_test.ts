@@ -118,6 +118,32 @@ function createUserDefinedTwiceMacroText(): string {
   ].join('\n');
 }
 
+const BUILTIN_ERROR_CONSTRUCTORS = new Map<string, ErrorConstructor>([
+  ['Error', Error],
+  ['EvalError', EvalError],
+  ['RangeError', RangeError],
+  ['ReferenceError', ReferenceError],
+  ['SyntaxError', SyntaxError],
+  ['TypeError', TypeError],
+  ['URIError', URIError],
+]);
+
+function assertThrownBuiltinError(
+  error: unknown,
+  expectedName: string,
+  expectedMessage: string,
+  expectedCause?: unknown,
+): void {
+  const constructor = BUILTIN_ERROR_CONSTRUCTORS.get(expectedName);
+  if (!constructor) {
+    throw new Error(`Missing builtin Error constructor for "${expectedName}".`);
+  }
+  assert(error instanceof constructor);
+  assertEquals(error.name, expectedName);
+  assertEquals(error.message, expectedMessage);
+  assertEquals((error as Error & { cause?: unknown }).cause, expectedCause);
+}
+
 compilerIntegrationTest(
   'compileProject rethrows uncaught sync builtin Error throws to host',
   async () => {
@@ -143,7 +169,100 @@ compilerIntegrationTest(
       exported();
     } catch (error) {
       threw = true;
-      assertEquals(error, { name: 'Error', message: 'boom' });
+      assertThrownBuiltinError(error, 'Error', 'boom');
+    }
+    assertEquals(threw, true);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject rethrows uncaught sync builtin Error causes to host',
+  async () => {
+    const tempDirectory = await createCompilerTestProject([
+      'export function main(): number {',
+      '  throw new Error("boom", { cause: 7 });',
+      '}',
+      '',
+    ].join('\n'));
+
+    const result = compileTempProject(tempDirectory);
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    const instance = await instantiateCompiledModuleInJs(tempDirectory);
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instance.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+    let threw = false;
+    try {
+      exported();
+    } catch (error) {
+      threw = true;
+      assertThrownBuiltinError(error, 'Error', 'boom', 7);
+    }
+    assertEquals(threw, true);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject rethrows uncaught sync builtin TypeError causes to host',
+  async () => {
+    const tempDirectory = await createCompilerTestProject([
+      'export function main(): number {',
+      '  throw new TypeError("boom", { cause: 7 });',
+      '}',
+      '',
+    ].join('\n'));
+
+    const result = compileTempProject(tempDirectory);
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    const instance = await instantiateCompiledModuleInJs(tempDirectory);
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instance.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+    let threw = false;
+    try {
+      exported();
+    } catch (error) {
+      threw = true;
+      assertThrownBuiltinError(error, 'TypeError', 'boom', 7);
+    }
+    assertEquals(threw, true);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject rejects uncaught async builtin TypeError causes to host',
+  async () => {
+    const tempDirectory = await createCompilerTestProject([
+      'export async function main(): Promise<number> {',
+      '  throw new TypeError("boom", { cause: 7 });',
+      '}',
+      '',
+    ].join('\n'));
+
+    const result = compileTempProject(tempDirectory);
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    const instance = await instantiateCompiledModuleInJs(tempDirectory);
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instance.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+    let threw = false;
+    try {
+      await exported();
+    } catch (error) {
+      threw = true;
+      assertThrownBuiltinError(error, 'TypeError', 'boom', 7);
     }
     assertEquals(threw, true);
   },
@@ -868,7 +987,7 @@ compilerIntegrationTest(
       exported();
     } catch (error) {
       threw = true;
-      assertEquals(error, { name: 'Error', message: 'boom' });
+      assertThrownBuiltinError(error, 'Error', 'boom');
     }
     assertEquals(threw, true);
   },
@@ -2464,6 +2583,68 @@ compilerIntegrationTest(
 );
 
 compilerIntegrationTest(
+  'compileProject rethrows uncaught soundscript builtin Error throws through wasm-node wrappers',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts'],
+            soundscript: {
+              target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          'export function main(): number {',
+          '  throw new Error("boom");',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate();
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+    let threw = false;
+    try {
+      exported();
+    } catch (error) {
+      threw = true;
+      assertThrownBuiltinError(error, 'Error', 'boom');
+    }
+    assertEquals(threw, true);
+  },
+);
+
+compilerIntegrationTest(
   'compileProject lowers #[interop] declaration imports to wasm host functions',
   async () => {
     const tempDirectory = await createTempProject([
@@ -2608,6 +2789,80 @@ compilerIntegrationTest(
 );
 
 compilerIntegrationTest(
+  'compileProject auto-loads #[interop] relative host modules in wasm-browser wrappers',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts'],
+            soundscript: {
+              target: 'wasm-browser',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/host.d.ts',
+        contents: [
+          'export declare function fetchNumber(input: Promise<number>): Promise<number>;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/host.js',
+        contents: [
+          'export async function fetchNumber(input) {',
+          '  return (await input) + 2;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          '// #[interop]',
+          "import { fetchNumber } from './host.js';",
+          '',
+          'export async function main(): Promise<number> {',
+          '  return await fetchNumber(Promise.resolve(20));',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate();
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+    assertEquals(await exported(), 22);
+  },
+);
+
+compilerIntegrationTest(
   'compileProject auto-loads #[interop] default host function imports in wasm-node wrappers',
   async () => {
     const tempDirectory = await createTempProject([
@@ -2624,6 +2879,80 @@ compilerIntegrationTest(
             include: ['src/**/*.ts'],
             soundscript: {
               target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/host-default.d.ts',
+        contents: [
+          'export default function fetchNumber(input: Promise<number>): Promise<number>;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/host-default.js',
+        contents: [
+          'export default async function fetchNumber(input) {',
+          '  return (await input) + 3;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          '// #[interop]',
+          "import fetchNumber from './host-default.js';",
+          '',
+          'export async function main(): Promise<number> {',
+          '  return await fetchNumber(Promise.resolve(20));',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate();
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+    assertEquals(await exported(), 23);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject auto-loads #[interop] default host function imports in wasm-browser wrappers',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts'],
+            soundscript: {
+              target: 'wasm-browser',
             },
           },
           null,
@@ -2766,6 +3095,90 @@ compilerIntegrationTest(
 );
 
 compilerIntegrationTest(
+  'compileProject accepts bare #[interop] host imports with wrapper module overrides in wasm-browser wrappers',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+            },
+            include: ['src/**/*.ts'],
+            soundscript: {
+              target: 'wasm-browser',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'node_modules/hostpkg/package.json',
+        contents: JSON.stringify(
+          {
+            name: 'hostpkg',
+            type: 'module',
+            types: './index.d.ts',
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'node_modules/hostpkg/index.d.ts',
+        contents: [
+          'export declare function fetchNumber(input: Promise<number>): Promise<number>;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          '// #[interop]',
+          "import { fetchNumber } from 'hostpkg';",
+          '',
+          'export async function main(): Promise<number> {',
+          '  return await fetchNumber(Promise.resolve(20));',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate({
+      modules: {
+        hostpkg: {
+          fetchNumber: async (input: Promise<number>) => (await input) + 4,
+        },
+      },
+    });
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+    assertEquals(await exported(), 24);
+  },
+);
+
+compilerIntegrationTest(
   'compileProject passes callback params through #[interop] host functions',
   async () => {
     const tempDirectory = await createTempProject([
@@ -2840,6 +3253,493 @@ compilerIntegrationTest(
 );
 
 compilerIntegrationTest(
+  'compileProject retains callback params after the original #[interop] host call returns',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts'],
+            soundscript: {
+              target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/retained-callback-host.d.ts',
+        contents: [
+          'export declare function retain(callback: (value: number) => number): number;',
+          'export declare function invokeRetained(value: number): number;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/retained-callback-host.js',
+        contents: [
+          'let retained = null;',
+          '',
+          'export function retain(callback) {',
+          '  retained = callback;',
+          '  return 0;',
+          '}',
+          '',
+          'export function invokeRetained(value) {',
+          '  if (typeof retained !== "function") {',
+          '    throw new Error("expected retained callback");',
+          '  }',
+          '  return retained(value);',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          '// #[interop]',
+          "import { retain, invokeRetained } from './retained-callback-host.js';",
+          '',
+          'export function main(): number {',
+          '  const stored = retain((value) => value + 2);',
+          '  return stored + invokeRetained(20);',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate();
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+    assertEquals(await exported(), 22);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject retains callback params after the original #[interop] host call returns in wasm-browser wrappers',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts'],
+            soundscript: {
+              target: 'wasm-browser',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/retained-callback-host.d.ts',
+        contents: [
+          'export declare function retain(callback: (value: number) => number): number;',
+          'export declare function invokeRetained(value: number): number;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/retained-callback-host.js',
+        contents: [
+          'let retained = null;',
+          '',
+          'export function retain(callback) {',
+          '  retained = callback;',
+          '  return 0;',
+          '}',
+          '',
+          'export function invokeRetained(value) {',
+          '  if (typeof retained !== "function") {',
+          '    throw new Error("expected retained callback");',
+          '  }',
+          '  return retained(value);',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          '// #[interop]',
+          "import { retain, invokeRetained } from './retained-callback-host.js';",
+          '',
+          'export function main(): number {',
+          '  const stored = retain((value) => value + 2);',
+          '  return stored + invokeRetained(20);',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate();
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+    assertEquals(await exported(), 22);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject preserves callback identity across repeated #[interop] host param crossings',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts'],
+            soundscript: {
+              target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/callback-identity-host.d.ts',
+        contents: [
+          'export declare function remember(callback: (value: number) => number): number;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/callback-identity-host.js',
+        contents: [
+          'const remembered = new Set();',
+          '',
+          'export function remember(callback) {',
+          '  remembered.add(callback);',
+          '  return remembered.size;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          '// #[interop]',
+          "import { remember } from './callback-identity-host.js';",
+          '',
+          'export function main(): number {',
+          '  const callback = (value: number) => value + 1;',
+          '  return remember(callback) * 10 + remember(callback);',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate();
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+    assertEquals(await exported(), 11);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject preserves callback identity across repeated #[interop] host param crossings in wasm-browser wrappers',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts'],
+            soundscript: {
+              target: 'wasm-browser',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/callback-identity-host.d.ts',
+        contents: [
+          'export declare function remember(callback: (value: number) => number): number;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/callback-identity-host.js',
+        contents: [
+          'const remembered = new Set();',
+          '',
+          'export function remember(callback) {',
+          '  remembered.add(callback);',
+          '  return remembered.size;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          '// #[interop]',
+          "import { remember } from './callback-identity-host.js';",
+          '',
+          'export function main(): number {',
+          '  const callback = (value: number) => value + 1;',
+          '  return remember(callback) * 10 + remember(callback);',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate();
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+    assertEquals(await exported(), 11);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject preserves callback identity across repeated exported JS callback param crossings',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts'],
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/callback-identity-host.d.ts',
+        contents: [
+          'export declare function same(',
+          '  left: (value: number) => number,',
+          '  right: (value: number) => number,',
+          '): boolean;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/callback-identity-host.js',
+        contents: [
+          'export function same(left, right) {',
+          '  return left === right;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          '// #[interop]',
+          "import { same } from './callback-identity-host.js';",
+          '',
+          'export function compare(',
+          '  left: (value: number) => number,',
+          '  right: (value: number) => number,',
+          '): number {',
+          '  return same(left, right) ? 1 : 2;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+
+    const instance = await instantiateCompiledModuleInJs(tempDirectory, {
+      hostFunctions: {
+        'src/callback-identity-host.d.ts:same': (left: unknown, right: unknown) => left === right,
+      },
+    });
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'compare');
+    const exported = instance.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+    const callback = (value: number) => value + 1;
+    assertEquals(exported(callback, callback), 1);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject preserves callback identity across repeated exported JS callback param crossings in wasm-browser wrappers',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts'],
+            soundscript: {
+              target: 'wasm-browser',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/callback-identity-host.d.ts',
+        contents: [
+          'export declare function same(',
+          '  left: (value: number) => number,',
+          '  right: (value: number) => number,',
+          '): boolean;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/callback-identity-host.js',
+        contents: [
+          'export function same(left, right) {',
+          '  return left === right;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          '// #[interop]',
+          "import { same } from './callback-identity-host.js';",
+          '',
+          'export function compare(',
+          '  left: (value: number) => number,',
+          '  right: (value: number) => number,',
+          '): number {',
+          '  return same(left, right) ? 1 : 2;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate();
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'compare');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+    const callback = (value: number) => value + 1;
+    assertEquals(exported(callback, callback), 1);
+  },
+);
+
+compilerIntegrationTest(
   'compileProject passes callback results through #[interop] host functions',
   async () => {
     const tempDirectory = await createTempProject([
@@ -2910,6 +3810,947 @@ compilerIntegrationTest(
       throw new Error(`Expected exported function "${exportName}".`);
     }
     assertEquals(await exported(), 5);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject passes callback results through #[interop] host functions in wasm-browser wrappers',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts'],
+            soundscript: {
+              target: 'wasm-browser',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/callback-result-host.d.ts',
+        contents: [
+          'export declare function makeAdder(left: number): (right: number) => number;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/callback-result-host.js',
+        contents: [
+          'export function makeAdder(left) {',
+          '  return (right) => left + right;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          '// #[interop]',
+          "import { makeAdder } from './callback-result-host.js';",
+          '',
+          'export function main(): number {',
+          '  return makeAdder(2)(3);',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate();
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+    assertEquals(await exported(), 5);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject catches thrown #[interop] host errors inside soundscript',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts'],
+            soundscript: {
+              target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/throw-host.d.ts',
+        contents: [
+          'export declare function explode(): number;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/throw-host.js',
+        contents: [
+          'export function explode() {',
+          '  throw new Error("boom");',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          '// #[interop]',
+          "import { explode } from './throw-host.js';",
+          '',
+          'export function main(): number {',
+          '  try {',
+          '    return explode();',
+          '  } catch (error: unknown) {',
+          '    if (error instanceof Error) {',
+          '      return error.message.length;',
+          '    }',
+          '    return 0;',
+          '  }',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate();
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+    assertEquals(await exported(), 4);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject does not treat thrown #[interop] host plain objects as Error inside soundscript',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts'],
+            soundscript: {
+              target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/throw-host.d.ts',
+        contents: [
+          'export declare function explode(): number;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/throw-host.js',
+        contents: [
+          'export function explode() {',
+          '  throw { message: "boom", value: 7 };',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          '// #[interop]',
+          "import { explode } from './throw-host.js';",
+          '',
+          'export function main(): number {',
+          '  try {',
+          '    return explode();',
+          '  } catch (error: unknown) {',
+          '    return error instanceof Error ? 1 : 2;',
+          '  }',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate();
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+    assertEquals(await exported(), 2);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject reads primitive payloads from thrown #[interop] host plain objects inside soundscript',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts'],
+            soundscript: {
+              target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/throw-host.d.ts',
+        contents: [
+          'export declare function explode(): number;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/throw-host.js',
+        contents: [
+          'export function explode() {',
+          '  throw { message: "boom", value: 7 };',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          '// #[interop]',
+          "import { explode } from './throw-host.js';",
+          '',
+          'export function main(): number {',
+          '  try {',
+          '    return explode();',
+          '  } catch (error: unknown) {',
+          '    if (typeof error === "object" && error !== null && "value" in error) {',
+          '      const value = error.value;',
+          '      if (typeof value === "number") {',
+          '        return value;',
+          '      }',
+          '    }',
+          '    return 0;',
+          '  }',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate();
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+    assertEquals(await exported(), 7);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject does not treat rejected #[interop] host plain objects as Error inside soundscript',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts'],
+            soundscript: {
+              target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/throw-host.d.ts',
+        contents: [
+          'export declare function explodeAsync(): Promise<number>;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/throw-host.js',
+        contents: [
+          'export async function explodeAsync() {',
+          '  throw { message: "boom", value: 7 };',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          '// #[interop]',
+          "import { explodeAsync } from './throw-host.js';",
+          '',
+          'export async function main(): Promise<number> {',
+          '  try {',
+          '    return await explodeAsync();',
+          '  } catch (error: unknown) {',
+          '    return error instanceof Error ? 1 : 2;',
+          '  }',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate();
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+    assertEquals(await exported(), 2);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject keeps sync try/catch host plain-object payload imports pay-for-play',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts'],
+            soundscript: {
+              target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/throw-host.d.ts',
+        contents: [
+          'export declare function explode(): number;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/throw-host.js',
+        contents: [
+          'export function explode() {',
+          '  throw { message: "boom", value: 7 };',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          '// #[interop]',
+          "import { explode } from './throw-host.js';",
+          '',
+          'export function main(): number {',
+          '  try {',
+          '    return explode();',
+          '  } catch (error: unknown) {',
+          '    return error instanceof Error ? 1 : 2;',
+          '  }',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+
+    const watOutput = await readWatArtifactForProject(tempDirectory);
+    assertEquals(
+      watOutput.includes(
+        `(import "soundscript_object" "get_tagged:value"`,
+      ),
+      false,
+    );
+    assertEquals(
+      watOutput.includes(
+        `(import "soundscript_object" "has:value"`,
+      ),
+      false,
+    );
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject rethrows uncaught soundscript builtin Error causes through wasm-node wrappers',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts'],
+            soundscript: {
+              target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          'export function main(): number {',
+          '  throw new Error("boom", { cause: 7 });',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate();
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+    let threw = false;
+    try {
+      await exported();
+    } catch (error) {
+      threw = true;
+      assertThrownBuiltinError(error, 'Error', 'boom', 7);
+    }
+    assertEquals(threw, true);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject rethrows uncaught soundscript builtin TypeError causes through wasm-node wrappers',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts'],
+            soundscript: {
+              target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          'export function main(): number {',
+          '  throw new TypeError("boom", { cause: 7 });',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate();
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+    let threw = false;
+    try {
+      await exported();
+    } catch (error) {
+      threw = true;
+      assertThrownBuiltinError(error, 'TypeError', 'boom', 7);
+    }
+    assertEquals(threw, true);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject rethrows uncaught soundscript builtin TypeError causes through wasm-browser wrappers',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts'],
+            soundscript: {
+              target: 'wasm-browser',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          'export function main(): number {',
+          '  throw new TypeError("boom", { cause: 7 });',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate();
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+    let threw = false;
+    try {
+      await exported();
+    } catch (error) {
+      threw = true;
+      assertThrownBuiltinError(error, 'TypeError', 'boom', 7);
+    }
+    assertEquals(threw, true);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject rejects uncaught async soundscript builtin TypeError causes through wasm-node wrappers',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts'],
+            soundscript: {
+              target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          'export async function main(): Promise<number> {',
+          '  throw new TypeError("boom", { cause: 7 });',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate();
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+    let threw = false;
+    try {
+      await exported();
+    } catch (error) {
+      threw = true;
+      assertThrownBuiltinError(error, 'TypeError', 'boom', 7);
+    }
+    assertEquals(threw, true);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject rejects uncaught async soundscript builtin TypeError causes through wasm-browser wrappers',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts'],
+            soundscript: {
+              target: 'wasm-browser',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          'export async function main(): Promise<number> {',
+          '  throw new TypeError("boom", { cause: 7 });',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate();
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+    let threw = false;
+    try {
+      await exported();
+    } catch (error) {
+      threw = true;
+      assertThrownBuiltinError(error, 'TypeError', 'boom', 7);
+    }
+    assertEquals(threw, true);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject awaits Promise-valued properties on #[interop] host object results',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts'],
+            soundscript: {
+              target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/promise-field-host.d.ts',
+        contents: [
+          'export interface Box {',
+          '  value: Promise<number>;',
+          '}',
+          '',
+          'export declare function makeBox(input: number): Box;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/promise-field-host.js',
+        contents: [
+          'export function makeBox(input) {',
+          '  return { value: Promise.resolve(input + 2) };',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          '// #[interop]',
+          "import { makeBox } from './promise-field-host.js';",
+          '',
+          'export async function main(): Promise<number> {',
+          '  return await makeBox(20).value;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate();
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+    assertEquals(await exported(), 22);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject awaits Promise-valued properties on #[interop] host object results in wasm-browser wrappers',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts'],
+            soundscript: {
+              target: 'wasm-browser',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/promise-field-host.d.ts',
+        contents: [
+          'export interface Box {',
+          '  value: Promise<number>;',
+          '}',
+          '',
+          'export declare function makeBox(input: number): Box;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/promise-field-host.js',
+        contents: [
+          'export function makeBox(input) {',
+          '  return { value: Promise.resolve(input + 2) };',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          '// #[interop]',
+          "import { makeBox } from './promise-field-host.js';",
+          '',
+          'export async function main(): Promise<number> {',
+          '  return await makeBox(20).value;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate();
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+    assertEquals(await exported(), 22);
   },
 );
 
@@ -3402,6 +5243,89 @@ compilerIntegrationTest(
 );
 
 compilerIntegrationTest(
+  'compileProject constructs #[interop] host class imports in wasm-browser wrappers',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts'],
+            soundscript: {
+              target: 'wasm-browser',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/class-host.d.ts',
+        contents: [
+          'export declare class Counter {',
+          '  constructor(start: number);',
+          '  value(): number;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/class-host.js',
+        contents: [
+          'export class Counter {',
+          '  constructor(start) {',
+          '    this.current = start;',
+          '  }',
+          '',
+          '  value() {',
+          '    return this.current;',
+          '  }',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          '// #[interop]',
+          "import { Counter } from './class-host.js';",
+          '',
+          'export function main(): number {',
+          '  return new Counter(7).value();',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate();
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+    assertEquals(await exported(), 7);
+  },
+);
+
+compilerIntegrationTest(
   'compileProject calls static methods on #[interop] host class imports',
   async () => {
     const tempDirectory = await createTempProject([
@@ -3418,6 +5342,94 @@ compilerIntegrationTest(
             include: ['src/**/*.ts'],
             soundscript: {
               target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/class-static-host.d.ts',
+        contents: [
+          'export declare class Counter {',
+          '  constructor(start: number);',
+          '  static from(start: number): Counter;',
+          '  value(): number;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/class-static-host.js',
+        contents: [
+          'export class Counter {',
+          '  constructor(start) {',
+          '    this.current = start;',
+          '  }',
+          '',
+          '  static from(start) {',
+          '    return new Counter(start + 1);',
+          '  }',
+          '',
+          '  value() {',
+          '    return this.current;',
+          '  }',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          '// #[interop]',
+          "import { Counter } from './class-static-host.js';",
+          '',
+          'export function main(): number {',
+          '  return Counter.from(7).value();',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate();
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+    assertEquals(await exported(), 8);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject calls static methods on #[interop] host class imports in wasm-browser wrappers',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts'],
+            soundscript: {
+              target: 'wasm-browser',
             },
           },
           null,
@@ -3578,6 +5590,94 @@ compilerIntegrationTest(
 );
 
 compilerIntegrationTest(
+  'compileProject extracts static methods from #[interop] host class imports in wasm-browser wrappers',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts', 'src/**/*.d.ts'],
+            soundscript: {
+              target: 'wasm-browser',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/class-static-alias-host.d.ts',
+        contents: [
+          'export declare class Counter {',
+          '  static from(start: number): Counter;',
+          '  value(): number;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/class-static-alias-host.js',
+        contents: [
+          'export class Counter {',
+          '  constructor(start) {',
+          '    this.current = start;',
+          '  }',
+          '',
+          '  static from(start) {',
+          '    return new Counter(start + 4);',
+          '  }',
+          '',
+          '  value() {',
+          '    return this.current;',
+          '  }',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          '// #[interop]',
+          "import { Counter } from './class-static-alias-host.js';",
+          '',
+          'export function main(): number {',
+          '  const from = Counter.from;',
+          '  return from(7).value();',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate();
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+    assertEquals(await exported(), 11);
+  },
+);
+
+compilerIntegrationTest(
   'compileProject passes imported owner methods as callbacks',
   async () => {
     const tempDirectory = await createTempProject([
@@ -3660,6 +5760,88 @@ compilerIntegrationTest(
 );
 
 compilerIntegrationTest(
+  'compileProject passes imported owner methods as callbacks in wasm-browser wrappers',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts', 'src/**/*.d.ts'],
+            soundscript: {
+              target: 'wasm-browser',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/class-static-callback-host.d.ts',
+        contents: [
+          'export declare class Counter {',
+          '  static bump(start: number): number;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/class-static-callback-host.js',
+        contents: [
+          'export class Counter {',
+          '  static bump(start) {',
+          '    return start + 5;',
+          '  }',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          '// #[interop]',
+          "import { Counter } from './class-static-callback-host.js';",
+          '',
+          'function apply(fn: (value: number) => number): number {',
+          '  return fn(7);',
+          '}',
+          '',
+          'export function main(): number {',
+          '  return apply(Counter.bump);',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate();
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+    assertEquals(await exported(), 12);
+  },
+);
+
+compilerIntegrationTest(
   'compileProject passes imported owner methods through #[interop] host callback params',
   async () => {
     const tempDirectory = await createTempProject([
@@ -3676,6 +5858,102 @@ compilerIntegrationTest(
             include: ['src/**/*.ts', 'src/**/*.d.ts'],
             soundscript: {
               target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/class-static-host-callback.d.ts',
+        contents: [
+          'export declare class Counter {',
+          '  static bump(start: number): number;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/class-static-host-callback.js',
+        contents: [
+          'export class Counter {',
+          '  static bump(start) {',
+          '    return start + 6;',
+          '  }',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/host-callback.d.ts',
+        contents: [
+          'export declare function apply(fn: (value: number) => number): number;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/host-callback.js',
+        contents: [
+          'export function apply(fn) {',
+          '  return fn(7);',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          '// #[interop]',
+          "import { Counter } from './class-static-host-callback.js';",
+          '// #[interop]',
+          "import { apply } from './host-callback.js';",
+          '',
+          'export function main(): number {',
+          '  return apply(Counter.bump);',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate();
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+    assertEquals(await exported(), 13);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject passes imported owner methods through #[interop] host callback params in wasm-browser wrappers',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts', 'src/**/*.d.ts'],
+            soundscript: {
+              target: 'wasm-browser',
             },
           },
           null,
@@ -3854,6 +6132,104 @@ compilerIntegrationTest(
 );
 
 compilerIntegrationTest(
+  'compileProject calls namespace methods on callable #[interop] default imports in wasm-browser wrappers',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts', 'src/**/*.d.ts'],
+            soundscript: {
+              target: 'wasm-browser',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/callable-host.d.ts',
+        contents: [
+          'export declare class Counter {',
+          '  value(): number;',
+          '}',
+          '',
+          'declare function makeCounter(start: number): Counter;',
+          '',
+          'declare namespace makeCounter {',
+          '  export function from(start: number): Counter;',
+          '}',
+          '',
+          'export default makeCounter;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/callable-host.js',
+        contents: [
+          'class Counter {',
+          '  constructor(start) {',
+          '    this.current = start;',
+          '  }',
+          '',
+          '  value() {',
+          '    return this.current;',
+          '  }',
+          '}',
+          '',
+          'function makeCounter(start) {',
+          '  return new Counter(start);',
+          '}',
+          '',
+          'makeCounter.from = (start) => new Counter(start + 2);',
+          '',
+          'export default makeCounter;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          '// #[interop]',
+          "import makeCounter from './callable-host.js';",
+          '',
+          'export function main(): number {',
+          '  return makeCounter.from(7).value();',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate();
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+    assertEquals(await exported(), 9);
+  },
+);
+
+compilerIntegrationTest(
   'compileProject reads value properties from callable #[interop] default imports',
   async () => {
     const tempDirectory = await createTempProject([
@@ -3870,6 +6246,104 @@ compilerIntegrationTest(
             include: ['src/**/*.ts', 'src/**/*.d.ts'],
             soundscript: {
               target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/callable-property-host.d.ts',
+        contents: [
+          'export declare class Counter {',
+          '  value(): number;',
+          '}',
+          '',
+          'declare function makeCounter(start: number): Counter;',
+          '',
+          'declare namespace makeCounter {',
+          '  export const preset: Counter;',
+          '}',
+          '',
+          'export default makeCounter;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/callable-property-host.js',
+        contents: [
+          'class Counter {',
+          '  constructor(start) {',
+          '    this.current = start;',
+          '  }',
+          '',
+          '  value() {',
+          '    return this.current;',
+          '  }',
+          '}',
+          '',
+          'function makeCounter(start) {',
+          '  return new Counter(start);',
+          '}',
+          '',
+          'makeCounter.preset = new Counter(11);',
+          '',
+          'export default makeCounter;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          '// #[interop]',
+          "import makeCounter from './callable-property-host.js';",
+          '',
+          'export function main(): number {',
+          '  return makeCounter.preset.value();',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate();
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+    assertEquals(await exported(), 11);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject reads value properties from callable #[interop] default imports in wasm-browser wrappers',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts', 'src/**/*.d.ts'],
+            soundscript: {
+              target: 'wasm-browser',
             },
           },
           null,
@@ -4051,6 +6525,105 @@ compilerIntegrationTest(
 );
 
 compilerIntegrationTest(
+  'compileProject extracts value properties from callable #[interop] default imports in wasm-browser wrappers',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts', 'src/**/*.d.ts'],
+            soundscript: {
+              target: 'wasm-browser',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/callable-property-alias-host.d.ts',
+        contents: [
+          'export declare class Counter {',
+          '  value(): number;',
+          '}',
+          '',
+          'declare function makeCounter(start: number): Counter;',
+          '',
+          'declare namespace makeCounter {',
+          '  export const preset: Counter;',
+          '}',
+          '',
+          'export default makeCounter;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/callable-property-alias-host.js',
+        contents: [
+          'class Counter {',
+          '  constructor(start) {',
+          '    this.current = start;',
+          '  }',
+          '',
+          '  value() {',
+          '    return this.current;',
+          '  }',
+          '}',
+          '',
+          'function makeCounter(start) {',
+          '  return new Counter(start);',
+          '}',
+          '',
+          'makeCounter.preset = new Counter(19);',
+          '',
+          'export default makeCounter;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          '// #[interop]',
+          "import makeCounter from './callable-property-alias-host.js';",
+          '',
+          'export function main(): number {',
+          '  const preset = makeCounter.preset;',
+          '  return preset.value();',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate();
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+    assertEquals(await exported(), 19);
+  },
+);
+
+compilerIntegrationTest(
   'compileProject reads static value properties from #[interop] host class imports',
   async () => {
     const tempDirectory = await createTempProject([
@@ -4136,6 +6709,91 @@ compilerIntegrationTest(
 );
 
 compilerIntegrationTest(
+  'compileProject reads static value properties from #[interop] host class imports in wasm-browser wrappers',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts', 'src/**/*.d.ts'],
+            soundscript: {
+              target: 'wasm-browser',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/class-property-host.d.ts',
+        contents: [
+          'export declare class Counter {',
+          '  static preset: Counter;',
+          '  value(): number;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/class-property-host.js',
+        contents: [
+          'export class Counter {',
+          '  constructor(start) {',
+          '    this.current = start;',
+          '  }',
+          '',
+          '  value() {',
+          '    return this.current;',
+          '  }',
+          '}',
+          '',
+          'Counter.preset = new Counter(13);',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          '// #[interop]',
+          "import { Counter } from './class-property-host.js';",
+          '',
+          'export function main(): number {',
+          '  return Counter.preset.value();',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate();
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+    assertEquals(await exported(), 13);
+  },
+);
+
+compilerIntegrationTest(
   'compileProject extracts static value properties from #[interop] host class imports',
   async () => {
     const tempDirectory = await createTempProject([
@@ -4152,6 +6810,92 @@ compilerIntegrationTest(
             include: ['src/**/*.ts', 'src/**/*.d.ts'],
             soundscript: {
               target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/class-property-alias-host.d.ts',
+        contents: [
+          'export declare class Counter {',
+          '  static preset: Counter;',
+          '  value(): number;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/class-property-alias-host.js',
+        contents: [
+          'export class Counter {',
+          '  constructor(start) {',
+          '    this.current = start;',
+          '  }',
+          '',
+          '  value() {',
+          '    return this.current;',
+          '  }',
+          '}',
+          '',
+          'Counter.preset = new Counter(17);',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          '// #[interop]',
+          "import { Counter } from './class-property-alias-host.js';",
+          '',
+          'export function main(): number {',
+          '  const preset = Counter.preset;',
+          '  return preset.value();',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate();
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+    assertEquals(await exported(), 17);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject extracts static value properties from #[interop] host class imports in wasm-browser wrappers',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts', 'src/**/*.d.ts'],
+            soundscript: {
+              target: 'wasm-browser',
             },
           },
           null,
@@ -5127,7 +7871,9 @@ compilerIntegrationTest(
 
 for (const route of VALUE_ROUTES) {
   compilerIntegrationTest(
-    `compileProject rejects invalid deep #[value] routes through ${getValueRouteSlug(route)} before the JS-only gate`,
+    `compileProject rejects invalid deep #[value] routes through ${
+      getValueRouteSlug(route)
+    } before the JS-only gate`,
     async () => {
       const program = prefixValueMatrixProgram(createInvalidDeepValueRouteProgram(route), 'src');
       const tempDirectory = await createSoundscriptCompilerProject(program.files);
@@ -5541,6 +8287,83 @@ compilerIntegrationTest(
 );
 
 compilerIntegrationTest(
+  'compileProject supports #[interop] namespace member access for declaration-backed host modules in wasm-browser wrappers',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts', 'src/**/*.d.ts'],
+            soundscript: {
+              target: 'wasm-browser',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/reactish.d.ts',
+        contents: [
+          'export declare function createElement(tag: string): number;',
+          'export declare const version: number;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/reactish.js',
+        contents: [
+          'export function createElement(tag) {',
+          '  return tag.length + 10;',
+          '}',
+          '',
+          'export const version = 4;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          '// #[interop]',
+          "import * as React from './reactish.js';",
+          '',
+          'export function main(): number {',
+          "  return React.createElement('div') + React.version;",
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate();
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+    assertEquals(await exported(), 17);
+  },
+);
+
+compilerIntegrationTest(
   'compileProject supports named #[interop] host value imports from declaration-backed modules',
   async () => {
     const tempDirectory = await createTempProject([
@@ -5624,6 +8447,89 @@ compilerIntegrationTest(
 );
 
 compilerIntegrationTest(
+  'compileProject supports named #[interop] host value imports from declaration-backed modules in wasm-browser wrappers',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts', 'src/**/*.d.ts'],
+            soundscript: {
+              target: 'wasm-browser',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/reactish-values.d.ts',
+        contents: [
+          'export interface ChildrenApi {',
+          '  count(tag: string): number;',
+          '}',
+          '',
+          'export declare const Children: ChildrenApi;',
+          'export declare const version: number;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/reactish-values.js',
+        contents: [
+          'export const Children = {',
+          '  count(tag) {',
+          '    return tag.length + 3;',
+          '  },',
+          '};',
+          '',
+          'export const version = 5;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          '// #[interop]',
+          "import { Children, version } from './reactish-values.js';",
+          '',
+          'export function main(): number {',
+          "  return Children.count('div') + version;",
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate();
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+    assertEquals(await exported(), 11);
+  },
+);
+
+compilerIntegrationTest(
   'compileProject supports default #[interop] host value imports from declaration-backed modules',
   async () => {
     const tempDirectory = await createTempProject([
@@ -5640,6 +8546,96 @@ compilerIntegrationTest(
             include: ['src/**/*.ts', 'src/**/*.d.ts'],
             soundscript: {
               target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/reactish-default.d.ts',
+        contents: [
+          'export interface ChildrenApi {',
+          '  count(tag: string): number;',
+          '}',
+          '',
+          'declare const Reactish: {',
+          '  Children: ChildrenApi;',
+          '  version: number;',
+          '};',
+          '',
+          'export default Reactish;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/reactish-default.js',
+        contents: [
+          'const Reactish = {',
+          '  Children: {',
+          '    count(tag) {',
+          '      return tag.length + 4;',
+          '    },',
+          '  },',
+          '  version: 6,',
+          '};',
+          '',
+          'export default Reactish;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          '// #[interop]',
+          "import Reactish from './reactish-default.js';",
+          '',
+          'export function main(): number {',
+          "  return Reactish.Children.count('div') + Reactish.version;",
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate();
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+    assertEquals(await exported(), 13);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject supports default #[interop] host value imports from declaration-backed modules in wasm-browser wrappers',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts', 'src/**/*.d.ts'],
+            soundscript: {
+              target: 'wasm-browser',
             },
           },
           null,
@@ -7774,6 +10770,116 @@ compilerIntegrationTest(
       throw new Error(`Expected exported function "${exportName}".`);
     }
     assertEquals(exported(1, 2), { left: 1, right: 2 });
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject adapts exported Promise-valued fixed-layout object results through JS object boundaries',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts'],
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          'type Box = { value: Promise<number> };',
+          '',
+          'export function make(input: number): Box {',
+          '  const value = Promise.resolve(input + 1);',
+          '  return { value };',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+
+    const instance = await instantiateCompiledModuleInJs(tempDirectory);
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'make');
+    const exported = instance.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+    const box = exported(5);
+    if (
+      typeof box !== 'object' ||
+      box === null ||
+      !('value' in box) ||
+      !(box.value instanceof Promise)
+    ) {
+      throw new Error('Expected exported object to expose a Promise-valued "value" property.');
+    }
+    assertEquals(await box.value, 6);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject adapts exported Promise-valued fixed-layout object params through JS object boundaries',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts'],
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          'type Box = { value: Promise<number> };',
+          '',
+          'export async function read(box: Box): Promise<number> {',
+          '  return await box.value;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+
+    const instance = await instantiateCompiledModuleInJs(tempDirectory);
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'read');
+    const exported = instance.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+    assertEquals(await exported({ value: Promise.resolve(7) }), 7);
   },
 );
 
