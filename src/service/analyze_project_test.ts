@@ -4818,6 +4818,48 @@ Deno.test('analyzeProject tracks host-backed globals and stdlib wrappers under f
   ]);
 });
 
+Deno.test('analyzeProject treats deferred host schedulers as host effects without immediate callback forwarding', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/index.sts': [
+      '// #[effects(forbid: [host])]',
+      'function schedule(): void {',
+      '  queueMicrotask(() => {});',
+      '  setTimeout(() => {}, 0);',
+      '  setInterval(() => {}, 10);',
+      '}',
+      '',
+      '// #[effects(forbid: [mut])]',
+      'function deferMutation(map: Map<string, number>): void {',
+      '  setTimeout(() => {',
+      '    map.set("x", 1);',
+      '  }, 0);',
+      '}',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1040']);
+  assertEquals(result.diagnostics[0]?.metadata?.primarySymbol, 'schedule');
+});
+
 Deno.test('analyzeProject enforces callback forbid contracts against failful arguments', async () => {
   const tempDirectory = await createTempProject({
     'tsconfig.json': JSON.stringify(
@@ -7214,6 +7256,47 @@ Deno.test('analyzeProject preserves narrowing across pure builtin collection hel
       'function use(box: { value: string | null }, map: ReadonlyMap<string, number>): string {',
       '  if (box.value !== null) {',
       '    map.forEach(() => {});',
+      '    const value: string = box.value;',
+      '    return value;',
+      '  }',
+      '  return "";',
+      '}',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics, []);
+});
+
+Deno.test('analyzeProject preserves narrowing across deferred host schedulers', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/index.sts': [
+      'function use(box: { value: string | null }): string {',
+      '  if (box.value !== null) {',
+      '    queueMicrotask(() => {',
+      '      void box.value;',
+      '    });',
+      '    setTimeout(() => {',
+      '      void box.value;',
+      '    }, 0);',
       '    const value: string = box.value;',
       '    return value;',
       '  }',

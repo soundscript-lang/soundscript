@@ -663,6 +663,27 @@ function getKnownPortableBuiltinBehavior(
 
   if (sourceFileName && isBundledDomDeclarationFile(sourceFileName)) {
     if (
+      memberName === 'queueMicrotask' &&
+      (ownerName === undefined || ownerName === 'WindowOrWorkerGlobalScope')
+    ) {
+      return {
+        directMask: INTERNAL_EFFECT_MASKS.hostInterop,
+        forwardedArguments: [],
+      };
+    }
+
+    if (
+      (memberName === 'setTimeout' || memberName === 'setInterval' ||
+        memberName === 'clearTimeout' || memberName === 'clearInterval') &&
+      (ownerName === undefined || ownerName === 'WindowOrWorkerGlobalScope')
+    ) {
+      return {
+        directMask: INTERNAL_EFFECT_MASKS.hostTime,
+        forwardedArguments: [],
+      };
+    }
+
+    if (
       memberName === 'fetch' &&
       (ownerName === undefined || ownerName === 'WindowOrWorkerGlobalScope')
     ) {

@@ -779,3 +779,91 @@ Deno.test('createAnalysisContext summarizes host-backed globals precisely', asyn
   );
   assertEquals(fillSummary.hasUnknownDirectEffects, false);
 });
+
+Deno.test('createAnalysisContext summarizes deferred host schedulers without immediate callback forwarding', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+          },
+          include: ['src/**/*.ts'],
+        },
+        null,
+        2,
+      ),
+    },
+    {
+      path: 'src/index.ts',
+      contents: [
+        'export function scheduleMicrotask(callback: () => void): void {',
+        '  queueMicrotask(callback);',
+        '}',
+        '',
+        'export function scheduleTimeout(callback: () => void): number {',
+        '  return setTimeout(callback, 0);',
+        '}',
+        '',
+        'export function scheduleInterval(callback: () => void): number {',
+        '  return setInterval(callback, 10);',
+        '}',
+        '',
+        'export function cancelTimeout(timerId: number): void {',
+        '  clearTimeout(timerId);',
+        '}',
+        '',
+      ].join('\n'),
+    },
+  ]);
+  const projectPath = join(tempDirectory, 'tsconfig.json');
+  const program = loadProgram(projectPath);
+  const context = createAnalysisContext({ program, workingDirectory: tempDirectory });
+  const sourceFile = context.getSourceFiles().find((file) => file.fileName.endsWith('/src/index.ts'));
+
+  assertExists(sourceFile);
+
+  const declarationsByName = new Map(
+    sourceFile.statements
+      .filter(ts.isFunctionDeclaration)
+      .filter((declaration): declaration is ts.FunctionDeclaration & { name: ts.Identifier } =>
+        declaration.name !== undefined
+      )
+      .map((declaration) => [declaration.name.text, declaration]),
+  );
+
+  const scheduleMicrotask = declarationsByName.get('scheduleMicrotask');
+  const scheduleTimeout = declarationsByName.get('scheduleTimeout');
+  const scheduleInterval = declarationsByName.get('scheduleInterval');
+  const cancelTimeout = declarationsByName.get('cancelTimeout');
+
+  assertExists(scheduleMicrotask);
+  assertExists(scheduleTimeout);
+  assertExists(scheduleInterval);
+  assertExists(cancelTimeout);
+
+  const microtaskSummary = getEffectSummaryForDeclaration(context, scheduleMicrotask);
+  const timeoutSummary = getEffectSummaryForDeclaration(context, scheduleTimeout);
+  const intervalSummary = getEffectSummaryForDeclaration(context, scheduleInterval);
+  const cancelSummary = getEffectSummaryForDeclaration(context, cancelTimeout);
+
+  assertEquals(microtaskSummary.directMask, INTERNAL_EFFECT_MASKS.hostInterop);
+  assertEquals(microtaskSummary.forwardedParameters, []);
+  assertEquals(microtaskSummary.hasUnknownDirectEffects, false);
+
+  assertEquals(timeoutSummary.directMask, INTERNAL_EFFECT_MASKS.hostTime);
+  assertEquals(timeoutSummary.forwardedParameters, []);
+  assertEquals(timeoutSummary.hasUnknownDirectEffects, false);
+
+  assertEquals(intervalSummary.directMask, INTERNAL_EFFECT_MASKS.hostTime);
+  assertEquals(intervalSummary.forwardedParameters, []);
+  assertEquals(intervalSummary.hasUnknownDirectEffects, false);
+
+  assertEquals(cancelSummary.directMask, INTERNAL_EFFECT_MASKS.hostTime);
+  assertEquals(cancelSummary.forwardedParameters, []);
+  assertEquals(cancelSummary.hasUnknownDirectEffects, false);
+});
