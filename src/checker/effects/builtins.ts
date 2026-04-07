@@ -115,6 +115,10 @@ function isBundledDenoExternDeclarationFile(fileName: string): boolean {
   return normalizeFileName(fileName).endsWith('/__soundscript_externs__/deno.global.d.ts');
 }
 
+function isBundledNodeBufferDeclarationFile(fileName: string): boolean {
+  return normalizeFileName(fileName).endsWith('/__soundscript_externs__/node.buffer.d.ts');
+}
+
 function isBundledNodeCryptoDeclarationFile(fileName: string): boolean {
   return normalizeFileName(fileName).endsWith('/__soundscript_externs__/node.crypto.d.ts');
 }
@@ -245,6 +249,13 @@ function getKnownBundledNodeGlobalBehavior(
       return {
         directMask: INTERNAL_EFFECT_MASKS.hostInterop | INTERNAL_EFFECT_MASKS.failsThrows |
           INTERNAL_EFFECT_MASKS.mut,
+        forwardedArguments: [],
+      };
+    }
+
+    if (memberName === 'exit') {
+      return {
+        directMask: INTERNAL_EFFECT_MASKS.hostInterop,
         forwardedArguments: [],
       };
     }
@@ -1123,6 +1134,13 @@ export function getKnownPortableBuiltinBehavior(
     const nodeGlobalBehavior = getKnownBundledNodeGlobalBehavior(ownerName, memberName);
     if (nodeGlobalBehavior) {
       return nodeGlobalBehavior;
+    }
+  }
+
+  if (sourceFileName && isBundledNodeBufferDeclarationFile(sourceFileName)) {
+    const nodeBufferBehavior = getKnownBundledNodeGlobalBehavior(ownerName, memberName);
+    if (nodeBufferBehavior) {
+      return nodeBufferBehavior;
     }
   }
 

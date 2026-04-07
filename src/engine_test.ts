@@ -2167,6 +2167,7 @@ Deno.test('createAnalysisContext summarizes bundled node builtins precisely', as
         '  readonly env: ProcessEnv;',
         '  chdir(directory: string): void;',
         '  cwd(): string;',
+        '  exit(code?: number): never;',
         '}',
         '',
         'declare const process: Process;',
@@ -2229,6 +2230,22 @@ Deno.test('createAnalysisContext summarizes bundled node builtins precisely', as
       ].join('\n'),
     },
     {
+      path: '__soundscript_externs__/node.buffer.d.ts',
+      contents: [
+        'declare module "node:buffer" {',
+        '  export interface Buffer extends Uint8Array<ArrayBufferLike> {',
+        '    toString(encoding?: string): string;',
+        '  }',
+        '  export const Buffer: {',
+        '    alloc(size: number): Buffer;',
+        '    from(data: string | ArrayLike<number> | ArrayBufferLike | ArrayBufferView<ArrayBufferLike>): Buffer;',
+        '    concat(list: readonly ArrayBufferView<ArrayBufferLike>[]): Buffer;',
+        '  };',
+        '}',
+        '',
+      ].join('\n'),
+    },
+    {
       path: '__soundscript_externs__/node.crypto.d.ts',
       contents: [
         'declare module "node:crypto" {',
@@ -2276,6 +2293,7 @@ Deno.test('createAnalysisContext summarizes bundled node builtins precisely', as
       path: 'src/index.ts',
       contents: [
         'import { getRandomValues, randomBytes, randomFill, randomFillSync, randomInt, randomUUID } from "node:crypto";',
+        'import { Buffer as ModuleBuffer } from "node:buffer";',
         'import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";',
         'import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";',
         'import { dirname, join } from "node:path";',
@@ -2288,6 +2306,10 @@ Deno.test('createAnalysisContext summarizes bundled node builtins precisely', as
         '',
         'export function changeDirectory(path: string): void {',
         '  process.chdir(path);',
+        '}',
+        '',
+        'export function exitProcess(code: number): never {',
+        '  return process.exit(code);',
         '}',
         '',
         'export function scheduleImmediate(callback: () => void): Immediate {',
@@ -2312,6 +2334,10 @@ Deno.test('createAnalysisContext summarizes bundled node builtins precisely', as
         '',
         'export function stringifyBuffer(value: Buffer): string {',
         '  return value.toString();',
+        '}',
+        '',
+        'export function makeModuleBuffer(value: string): Buffer {',
+        '  return ModuleBuffer.from(value);',
         '}',
         '',
         'export function joinPath(left: string, right: string): string {',
@@ -2443,12 +2469,14 @@ Deno.test('createAnalysisContext summarizes bundled node builtins precisely', as
 
   const currentWorkingDirectory = declarationsByName.get('currentWorkingDirectory');
   const changeDirectory = declarationsByName.get('changeDirectory');
+  const exitProcess = declarationsByName.get('exitProcess');
   const scheduleImmediate = declarationsByName.get('scheduleImmediate');
   const cancelImmediate = declarationsByName.get('cancelImmediate');
   const makeBuffer = declarationsByName.get('makeBuffer');
   const allocateBuffer = declarationsByName.get('allocateBuffer');
   const concatBuffers = declarationsByName.get('concatBuffers');
   const stringifyBuffer = declarationsByName.get('stringifyBuffer');
+  const makeModuleBuffer = declarationsByName.get('makeModuleBuffer');
   const joinPath = declarationsByName.get('joinPath');
   const makeUuid = declarationsByName.get('makeUuid');
   const makeRandomInt = declarationsByName.get('makeRandomInt');
@@ -2479,12 +2507,14 @@ Deno.test('createAnalysisContext summarizes bundled node builtins precisely', as
 
   assertExists(currentWorkingDirectory);
   assertExists(changeDirectory);
+  assertExists(exitProcess);
   assertExists(scheduleImmediate);
   assertExists(cancelImmediate);
   assertExists(makeBuffer);
   assertExists(allocateBuffer);
   assertExists(concatBuffers);
   assertExists(stringifyBuffer);
+  assertExists(makeModuleBuffer);
   assertExists(joinPath);
   assertExists(makeUuid);
   assertExists(makeRandomInt);
@@ -2523,6 +2553,10 @@ Deno.test('createAnalysisContext summarizes bundled node builtins precisely', as
       INTERNAL_EFFECT_MASKS.mut,
   );
   assertEquals(
+    getEffectSummaryForDeclaration(context, exitProcess).directMask,
+    INTERNAL_EFFECT_MASKS.hostInterop,
+  );
+  assertEquals(
     getEffectSummaryForDeclaration(context, scheduleImmediate).directMask,
     INTERNAL_EFFECT_MASKS.hostInterop,
   );
@@ -2534,6 +2568,7 @@ Deno.test('createAnalysisContext summarizes bundled node builtins precisely', as
   assertEquals(getEffectSummaryForDeclaration(context, allocateBuffer).directMask, 0);
   assertEquals(getEffectSummaryForDeclaration(context, concatBuffers).directMask, 0);
   assertEquals(getEffectSummaryForDeclaration(context, stringifyBuffer).directMask, 0);
+  assertEquals(getEffectSummaryForDeclaration(context, makeModuleBuffer).directMask, 0);
   assertEquals(getEffectSummaryForDeclaration(context, joinPath).directMask, 0);
   assertEquals(
     getEffectSummaryForDeclaration(context, makeUuid).directMask,
@@ -2645,12 +2680,14 @@ Deno.test('createAnalysisContext summarizes bundled node builtins precisely', as
     const declaration of [
       currentWorkingDirectory,
       changeDirectory,
+      exitProcess,
       scheduleImmediate,
       cancelImmediate,
       makeBuffer,
       allocateBuffer,
       concatBuffers,
       stringifyBuffer,
+      makeModuleBuffer,
       joinPath,
     makeUuid,
     makeRandomInt,
