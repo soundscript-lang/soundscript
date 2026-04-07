@@ -382,7 +382,7 @@ function isFailureAssertedEntry(
 function isModuleAssertedEntry(
   entry: Test262AssertedEntry,
 ): entry is Test262ModuleCompletionAssertedEntry | Test262ModuleFailureAssertedEntry {
-  return entry.execution === 'module';
+  return 'execution' in entry && entry.execution === 'module';
 }
 
 function parseManifestEntry(value: unknown): Test262ManifestEntry {

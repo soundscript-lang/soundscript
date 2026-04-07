@@ -1,6 +1,6 @@
+import { type DecodeIssue, type DecodeMode, type Decoder, type DecodeOutput } from 'sts:decode';
+import { type EncodeIssue, type EncodeMode, type EncodeOutput, type Encoder } from 'sts:encode';
 import { Failure } from 'sts:failures';
-import type { Decoder } from 'sts:decode';
-import type { Encoder } from 'sts:encode';
 import type { Result } from 'sts:result';
 import type { Numeric } from 'sts:numerics';
 
@@ -99,29 +99,38 @@ export function stringifyJson(
   value: JsonValue | LosslessJsonValue | MachineJsonLikeValue,
   options?: JsonStringifyOptions,
 ): Result<string, JsonStringifyFailure>;
-export function parseAndDecode<T, E>(
+export function parseAndDecode<T, E, M extends DecodeMode>(
   text: string,
-  decoder: Decoder<T, E>,
-): Result<T, JsonParseFailure | E>;
-export function encodeAndStringify<T, E>(
+  decoder: Decoder<T, E, M>,
+): DecodeOutput<T, JsonParseFailure | E, M>;
+export function validateDecodeJson<T, M extends DecodeMode>(
+  text: string,
+  decoder: Decoder<T, unknown, M>,
+): DecodeOutput<T, readonly DecodeIssue[] | JsonParseFailure, M>;
+export function encodeAndStringify<T, E, M extends EncodeMode>(
   value: T,
-  encoder: Encoder<T, JsonValue, E>,
-): Result<string, E | JsonStringifyFailure>;
+  encoder: Encoder<T, JsonValue, E, M>,
+): EncodeOutput<string, E | JsonStringifyFailure, M>;
+export function validateEncodeJson<T, M extends EncodeMode>(
+  value: T,
+  encoder: Encoder<T, JsonLikeValue, unknown, M>,
+  options?: JsonStringifyOptions,
+): EncodeOutput<string, readonly EncodeIssue[] | JsonStringifyFailure, M>;
 export function isJsonValue(value: unknown): value is JsonValue;
 export function parseJsonLike(text: string): Result<JsonLikeValue, JsonParseFailure>;
 export function stringifyJsonLike(
   value: JsonLikeValue,
   options?: JsonStringifyOptions,
 ): Result<string, JsonStringifyFailure>;
-export function decodeJson<T, E>(
+export function decodeJson<T, E, M extends DecodeMode>(
   text: string,
-  decoder: Decoder<T, E>,
-): Result<T, E | JsonParseFailure>;
-export function encodeJson<T, E>(
+  decoder: Decoder<T, E, M>,
+): DecodeOutput<T, E | JsonParseFailure, M>;
+export function encodeJson<T, E, M extends EncodeMode>(
   value: T,
-  encoder: Encoder<T, JsonLikeValue, E>,
+  encoder: Encoder<T, JsonLikeValue, E, M>,
   options?: JsonStringifyOptions,
-): Result<string, E | JsonStringifyFailure>;
+): EncodeOutput<string, E | JsonStringifyFailure, M>;
 export function isJsonLikeValue(value: unknown): value is JsonLikeValue;
 export function isJsonObject(value: unknown): value is JsonObject;
 export function emptyJsonRecord(): JsonObject;

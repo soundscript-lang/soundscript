@@ -1,12 +1,13 @@
 import { assertEquals } from '@std/assert';
 
-import { isErr, isOk } from '@soundscript/soundscript/result';
+import { err, isErr, isOk, ok } from '@soundscript/soundscript/result';
 
 import {
   array,
   bigint,
   defaulted,
   DecodeFailure,
+  type DecodeIssue,
   field,
   lazy,
   literal,
@@ -22,6 +23,8 @@ import {
   string,
   tuple,
   union,
+  undefinedValue,
+  undefinedable,
 } from './decode.ts';
 
 function toTaggedPlain(value: unknown): unknown {
@@ -116,6 +119,13 @@ Deno.test('decode field and optionalField read object members directly', () => {
   assertEquals(missing.error.path, ['name']);
 });
 
+Deno.test('decode defaulted supports promise-returning fallback helpers', async () => {
+  const Nickname = defaulted(optional(string), async () => 'anon');
+
+  assertTaggedEquals(await Nickname.decode(undefined), { tag: 'ok', value: 'anon' });
+  assertTaggedEquals(await Nickname.validateDecode(undefined), { tag: 'ok', value: 'anon' });
+});
+
 Deno.test('decode union and refine reject unmatched values with DecodeFailure', () => {
   const Status = union(literal('ok'), literal('err'));
   const PositiveInt = refine(
@@ -141,6 +151,77 @@ Deno.test('decode union and refine reject unmatched values with DecodeFailure', 
   }
   assertEquals(badNumber.error instanceof DecodeFailure, true);
   assertEquals(badNumber.error.message, 'Expected a positive integer.');
+});
+
+Deno.test('decode validateDecode prefers issues from the best-matching union branch', () => {
+  const Payload = union(
+    object({
+      tag: literal('user'),
+      id: string,
+    }),
+    object({
+      tag: literal('group'),
+      members: array(string),
+    }),
+  );
+
+  const decoded = Payload.validateDecode({
+    tag: 'user',
+    id: 123,
+  });
+
+  assertEquals(isErr(decoded), true);
+  if (isOk(decoded)) {
+    throw new Error('expected validateDecode to fail');
+  }
+
+  assertEquals(decoded.error, [{
+    code: 'decode_failure',
+    input: 123,
+    message: 'Expected string.',
+    path: ['id'],
+  }] satisfies readonly DecodeIssue[]);
+});
+
+Deno.test('decode async validateDecode prefers issues from the best-matching union branch', async () => {
+  const AsyncUser = {
+    async decode(value: unknown) {
+      return object({
+        tag: literal('user'),
+        id: string,
+      }).decode(value);
+    },
+    async validateDecode(value: unknown) {
+      return object({
+        tag: literal('user'),
+        id: string,
+      }).validateDecode(value);
+    },
+  };
+  const Payload = union(
+    AsyncUser,
+    object({
+      tag: literal('group'),
+      members: array(string),
+    }),
+  );
+
+  const decoded = await Payload.validateDecode({
+    tag: 'user',
+    id: 123,
+  });
+
+  assertEquals(isErr(decoded), true);
+  if (isOk(decoded)) {
+    throw new Error('expected async validateDecode to fail');
+  }
+
+  assertEquals(decoded.error, [{
+    code: 'decode_failure',
+    input: 123,
+    message: 'Expected string.',
+    path: ['id'],
+  }] satisfies readonly DecodeIssue[]);
 });
 
 Deno.test('decode nullable accepts null and readonlyRecord decodes record values with key paths', () => {
@@ -222,4 +303,242 @@ Deno.test('decode tuple decodes fixed heterogeneous arrays', () => {
     throw new Error('expected tuple length failure');
   }
   assertEquals(badLength.error instanceof DecodeFailure, true);
+});
+
+Deno.test('decode validateDecode accumulates nested object and array issues', () => {
+  const UserDecoder = object({
+    id: string,
+    tags: array(string),
+  });
+
+  const decoded = UserDecoder.validateDecode({
+    id: 123,
+    tags: ['ok', 456, false],
+  });
+
+  assertEquals(isErr(decoded), true);
+  if (isOk(decoded)) {
+    throw new Error('expected validateDecode to fail');
+  }
+
+  assertEquals(decoded.error, [
+    {
+      code: 'decode_failure',
+      input: 123,
+      message: 'Expected string.',
+      path: ['id'],
+    },
+    {
+      code: 'decode_failure',
+      input: 456,
+      message: 'Expected string.',
+      path: ['tags', 1],
+    },
+    {
+      code: 'decode_failure',
+      input: false,
+      message: 'Expected string.',
+      path: ['tags', 2],
+    },
+  ] satisfies readonly DecodeIssue[]);
+});
+
+Deno.test('decode refine supports promise-returning predicates and promotes decode to async', async () => {
+  const AsyncPositiveInt = refine(
+    number,
+    async (value: number): Promise<boolean> => value > 0,
+    'Expected a positive integer.',
+  );
+
+  assertTaggedEquals(await AsyncPositiveInt.decode(12), { tag: 'ok', value: 12 });
+
+  const badValue = await AsyncPositiveInt.decode(-1);
+  assertEquals(isErr(badValue), true);
+  if (isOk(badValue)) {
+    throw new Error('expected async refine decode to fail');
+  }
+  assertEquals(badValue.error instanceof DecodeFailure, true);
+  assertEquals(badValue.error.message, 'Expected a positive integer.');
+});
+
+Deno.test('decode refine supports string and issue-returning predicate failures', () => {
+  const SlugDecoder = refine(
+    string,
+    (value: string) =>
+      value === value.toLowerCase()
+        ? true
+        : {
+          code: 'custom_slug',
+          input: value,
+          message: 'Expected lowercase slug.',
+          path: [],
+        },
+    'Expected lowercase slug.',
+  );
+
+  const badValue = SlugDecoder.decode('Hello');
+  assertEquals(isErr(badValue), true);
+  if (isOk(badValue)) {
+    throw new Error('expected issue-returning refine decode to fail');
+  }
+  assertEquals(badValue.error instanceof DecodeFailure, true);
+  assertEquals(badValue.error.message, 'Expected lowercase slug.');
+
+  const validated = SlugDecoder.validateDecode('Hello');
+  assertEquals(isErr(validated), true);
+  if (isOk(validated)) {
+    throw new Error('expected issue-returning refine validateDecode to fail');
+  }
+  assertEquals(validated.error, [{
+    code: 'custom_slug',
+    input: 'Hello',
+    message: 'Expected lowercase slug.',
+    path: [],
+  }] satisfies readonly DecodeIssue[]);
+});
+
+Deno.test('decode object becomes async when a nested child decoder is async', async () => {
+  const AsyncStringDecoder = {
+    async decode(value: unknown) {
+      return typeof value === 'string'
+        ? ok(value.toUpperCase())
+        : err(new DecodeFailure('Expected string.', { cause: value }));
+    },
+    async validateDecode(value: unknown) {
+      return typeof value === 'string'
+        ? ok(value.toUpperCase())
+        : err([{
+          code: 'decode_failure',
+          input: value,
+          message: 'Expected string.',
+          path: [],
+        }] satisfies readonly DecodeIssue[]);
+    },
+  };
+
+  const UserDecoder = object({
+    id: AsyncStringDecoder,
+    nickname: optional(string),
+  });
+
+  assertTaggedEquals(
+    await UserDecoder.decode({ id: 'user-1' }),
+    {
+      tag: 'ok',
+      value: {
+        id: 'USER-1',
+        nickname: undefined,
+      },
+    },
+  );
+});
+
+Deno.test('decode async container helpers reuse the first pending child result', async () => {
+  const makeAsyncStringDecoder = () => {
+    let decodeCalls = 0;
+    let validateCalls = 0;
+    const helper = {
+      async decode(value: unknown) {
+        decodeCalls += 1;
+        return typeof value === 'string'
+          ? ok(value.toUpperCase())
+          : err(new DecodeFailure('Expected string.', { cause: value }));
+      },
+      async validateDecode(value: unknown) {
+        validateCalls += 1;
+        return typeof value === 'string'
+          ? ok(value.toUpperCase())
+          : err([{
+            code: 'decode_failure',
+            input: value,
+            message: 'Expected string.',
+            path: [],
+          }] satisfies readonly DecodeIssue[]);
+      },
+      get counts() {
+        return { decodeCalls, validateCalls };
+      },
+    };
+    return helper;
+  };
+
+  const arrayItem = makeAsyncStringDecoder();
+  assertTaggedEquals(await array(arrayItem).decode(['a', 'b']), {
+    tag: 'ok',
+    value: ['A', 'B'],
+  });
+  assertEquals(arrayItem.counts, { decodeCalls: 2, validateCalls: 0 });
+
+  const tupleItem = makeAsyncStringDecoder();
+  assertTaggedEquals(await tuple(tupleItem, string).decode(['a', 'b']), {
+    tag: 'ok',
+    value: ['A', 'b'],
+  });
+  assertEquals(tupleItem.counts, { decodeCalls: 1, validateCalls: 0 });
+
+  const objectField = makeAsyncStringDecoder();
+  assertTaggedEquals(await object({ id: objectField, tag: string }).decode({ id: 'a', tag: 'b' }), {
+    tag: 'ok',
+    value: { id: 'A', tag: 'b' },
+  });
+  assertEquals(objectField.counts, { decodeCalls: 1, validateCalls: 0 });
+
+  const recordValue = makeAsyncStringDecoder();
+  assertTaggedEquals(await readonlyRecord(recordValue).decode({ first: 'a', second: 'b' }), {
+    tag: 'ok',
+    value: { first: 'A', second: 'B' },
+  });
+  assertEquals(recordValue.counts, { decodeCalls: 2, validateCalls: 0 });
+
+  const validateArrayItem = makeAsyncStringDecoder();
+  assertTaggedEquals(await array(validateArrayItem).validateDecode(['a', 'b']), {
+    tag: 'ok',
+    value: ['A', 'B'],
+  });
+  assertEquals(validateArrayItem.counts, { decodeCalls: 0, validateCalls: 2 });
+
+  const validateTupleItem = makeAsyncStringDecoder();
+  assertTaggedEquals(await tuple(validateTupleItem, string).validateDecode(['a', 'b']), {
+    tag: 'ok',
+    value: ['A', 'b'],
+  });
+  assertEquals(validateTupleItem.counts, { decodeCalls: 0, validateCalls: 1 });
+
+  const validateObjectField = makeAsyncStringDecoder();
+  assertTaggedEquals(
+    await object({ id: validateObjectField, tag: string }).validateDecode({ id: 'a', tag: 'b' }),
+    {
+      tag: 'ok',
+      value: { id: 'A', tag: 'b' },
+    },
+  );
+  assertEquals(validateObjectField.counts, { decodeCalls: 0, validateCalls: 1 });
+
+  const validateRecordValue = makeAsyncStringDecoder();
+  assertTaggedEquals(await readonlyRecord(validateRecordValue).validateDecode({ first: 'a', second: 'b' }), {
+    tag: 'ok',
+    value: { first: 'A', second: 'B' },
+  });
+  assertEquals(validateRecordValue.counts, { decodeCalls: 0, validateCalls: 2 });
+});
+
+Deno.test('decode undefinedValue and undefinedable distinguish missing from explicit undefined', () => {
+  assertTaggedEquals(undefinedValue.decode(undefined), { tag: 'ok', value: undefined });
+
+  const ExplicitMaybeDecoder = object({
+    maybe: undefinedable(string),
+  });
+
+  assertTaggedEquals(ExplicitMaybeDecoder.decode({ maybe: undefined }), {
+    tag: 'ok',
+    value: { maybe: undefined },
+  });
+
+  const missing = ExplicitMaybeDecoder.decode({});
+  assertEquals(isErr(missing), true);
+  if (isOk(missing)) {
+    throw new Error('expected required undefinedable field to reject missing key');
+  }
+  assertEquals(missing.error instanceof DecodeFailure, true);
+  assertEquals(missing.error.message, 'Missing field "maybe".');
 });

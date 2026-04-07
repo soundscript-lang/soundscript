@@ -424,6 +424,29 @@ export function createAdvancedMacroContext(
       : null;
   }
 
+  function buildRecordShapeFromTypeLiteral(node: ts.TypeLiteralNode): MacroReflectedTypeShape | null {
+    if (node.members.length !== 1) {
+      return null;
+    }
+
+    const [member] = node.members;
+    if (!member || !ts.isIndexSignatureDeclaration(member) || member.parameters.length !== 1) {
+      return null;
+    }
+
+    const [parameter] = member.parameters;
+    if (!parameter?.type || !member.type) {
+      return null;
+    }
+
+    return {
+      key: buildTypeShapeFromTypeNode(parameter.type),
+      kind: 'record',
+      text: reflectedTypeText(node),
+      value: buildTypeShapeFromTypeNode(member.type),
+    };
+  }
+
   function buildTypeShapeFromTypeNode(node: ts.TypeNode): MacroReflectedTypeShape {
     if (ts.isParenthesizedTypeNode(node)) {
       return buildTypeShapeFromTypeNode(node.type);
@@ -467,6 +490,10 @@ export function createAdvancedMacroContext(
     }
 
     if (ts.isTypeLiteralNode(node)) {
+      const recordShape = buildRecordShapeFromTypeLiteral(node);
+      if (recordShape) {
+        return recordShape;
+      }
       const fields = buildObjectFieldShapesFromTypeLiteral(node);
       return fields
         ? {
@@ -485,7 +512,21 @@ export function createAdvancedMacroContext(
       };
     }
 
+    if (ts.isIntersectionTypeNode(node)) {
+      return {
+        kind: 'intersection',
+        members: node.types.map((member) => buildTypeShapeFromTypeNode(member)),
+        text: reflectedTypeText(node),
+      };
+    }
+
     if (ts.isLiteralTypeNode(node)) {
+      if (node.literal.kind === ts.SyntaxKind.NullKeyword) {
+        return {
+          kind: 'null',
+          text: reflectedTypeText(node),
+        };
+      }
       if (ts.isStringLiteral(node.literal)) {
         return {
           kind: 'literal',
@@ -546,6 +587,11 @@ export function createAdvancedMacroContext(
           primitiveKind: 'bigint',
           text: reflectedTypeText(node),
         };
+      case ts.SyntaxKind.UndefinedKeyword:
+        return {
+          kind: 'undefined',
+          text: reflectedTypeText(node),
+        };
     }
 
     if (ts.isTypeReferenceNode(node)) {
@@ -583,6 +629,14 @@ export function createAdvancedMacroContext(
           kind: 'array',
           readonly: true,
           text: reflectedTypeText(node),
+        };
+      }
+      if (simpleName === 'Record' && typeArguments.length === 2) {
+        return {
+          key: typeArguments[0]!,
+          kind: 'record',
+          text: reflectedTypeText(node),
+          value: typeArguments[1]!,
         };
       }
       return {
@@ -941,6 +995,37 @@ export function createAdvancedMacroContext(
         return hostSemantics.isAssignable(from, to);
       },
 
+      localDeclaration(name, node) {
+        const hostNode = node
+          ? findOriginalNodeForSyntaxNode(node) ??
+            getHostNode(node)?.getSourceFile() ??
+            resolved.callExpression
+          : resolved.callExpression;
+        if (!hostNode) {
+          return null;
+        }
+
+        const sourceFile = originalSourceFileForNode(hostNode);
+        for (const statement of sourceFile.statements) {
+          if (
+            (
+              ts.isClassDeclaration(statement) ||
+              ts.isFunctionDeclaration(statement) ||
+              ts.isInterfaceDeclaration(statement) ||
+              ts.isTypeAliasDeclaration(statement)
+            ) &&
+            statement.name?.text === name
+          ) {
+            return createDeclSyntaxFromNode(statement, sourceFile, {
+              fileName: sourceFile.fileName,
+              start: statement.getStart(sourceFile, false),
+              end: statement.end,
+            });
+          }
+        }
+        return null;
+      },
+
       localDeclarationHasAnnotation(name, annotationName, node) {
         const hostNode = node
           ? findOriginalNodeForSyntaxNode(node) ??
@@ -1073,19 +1158,71 @@ export function createAdvancedMacroContext(
         return hostSemantics.undefinedType();
       },
 
-      valueBindingCallableInScope(name, node) {
+      valueBindingPromiseLikeInScope(name, node) {
+        const directHostNode = node ? getHostNode(node) : null;
+        const directHostSourceFile = directHostNode?.getSourceFile() ?? null;
+        const originalNode = node ? findOriginalNodeForSyntaxNode(node) : null;
         const hostNode = node
-          ? findOriginalNodeForSyntaxNode(node) ??
-            getHostNode(node)?.getSourceFile() ??
+          ? originalNode ??
+            directHostNode ??
+            directHostSourceFile ??
+            resolved.callExpression.getSourceFile() ??
+            resolved.callExpression
+          : resolved.callExpression;
+        return hostNode ? hostSemantics.valueBindingPromiseLikeInScope(name, hostNode) : false;
+      },
+
+      valueBindingCallableInScope(name, node) {
+        const directHostNode = node ? getHostNode(node) : null;
+        const directHostSourceFile = directHostNode?.getSourceFile() ?? null;
+        const originalNode = node ? findOriginalNodeForSyntaxNode(node) : null;
+        const hostNode = node
+          ? originalNode ??
+            directHostNode ??
+            directHostSourceFile ??
+            resolved.callExpression.getSourceFile() ??
             resolved.callExpression
           : resolved.callExpression;
         return hostNode ? hostSemantics.valueBindingCallableInScope(name, hostNode) : false;
       },
 
-      valueBindingInScope(name, node) {
+      valueBindingHelperModeInScope(name, direction, node) {
+        const directHostNode = node ? getHostNode(node) : null;
+        const directHostSourceFile = directHostNode?.getSourceFile() ?? null;
+        const originalNode = node ? findOriginalNodeForSyntaxNode(node) : null;
         const hostNode = node
-          ? findOriginalNodeForSyntaxNode(node) ??
-            getHostNode(node)?.getSourceFile() ??
+          ? originalNode ??
+            directHostNode ??
+            directHostSourceFile ??
+            resolved.callExpression.getSourceFile() ??
+            resolved.callExpression
+          : resolved.callExpression;
+        return hostNode ? hostSemantics.valueBindingHelperModeInScope(name, direction, hostNode) : null;
+      },
+
+      valueBindingTypeInScope(name, node) {
+        const directHostNode = node ? getHostNode(node) : null;
+        const directHostSourceFile = directHostNode?.getSourceFile() ?? null;
+        const originalNode = node ? findOriginalNodeForSyntaxNode(node) : null;
+        const hostNode = node
+          ? originalNode ??
+            directHostNode ??
+            directHostSourceFile ??
+            resolved.callExpression.getSourceFile() ??
+            resolved.callExpression
+          : resolved.callExpression;
+        return hostNode ? hostSemantics.valueBindingTypeInScope(name, hostNode) : null;
+      },
+
+      valueBindingInScope(name, node) {
+        const directHostNode = node ? getHostNode(node) : null;
+        const directHostSourceFile = directHostNode?.getSourceFile() ?? null;
+        const originalNode = node ? findOriginalNodeForSyntaxNode(node) : null;
+        const hostNode = node
+          ? originalNode ??
+            directHostNode ??
+            directHostSourceFile ??
+            resolved.callExpression.getSourceFile() ??
             resolved.callExpression
           : resolved.callExpression;
         return hostNode ? hostSemantics.valueBindingInScope(name, hostNode) : false;

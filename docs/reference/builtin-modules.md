@@ -44,10 +44,11 @@ The stable `sts:*` surface stays focused and composable.
 - `sts:failures` owns `Failure`, `ErrorFrame`, and `normalizeThrown(...)`.
 - `sts:json` owns JSON boundary helpers for parsing, stringifying, and plain JSON validation, plus
   small record helpers such as `isJsonObject`, `emptyJsonRecord`, `copyJsonRecord`, and
-  `mergeJsonRecords`.
+  `mergeJsonRecords`, plus bridge helpers such as `decodeJson`, `encodeJson`,
+  `validateDecodeJson`, and `validateEncodeJson`.
 - `sts:decode` owns decoder contracts and structural decode helpers such as `literal`,
-  `nullable`, `defaulted`, and `readonlyRecord`.
-- `sts:encode` owns encoder contracts and basic encode combinators.
+  `nullable`, `defaulted`, `readonlyRecord`, and `validateDecode(...)`.
+- `sts:encode` owns encoder contracts, structural encode combinators, and `validateEncode(...)`.
 - `sts:codec` owns codec contracts and adapter helpers.
 - `sts:async` owns `Task<T, E>` and result-first async helpers.
 - `sts:compare` owns `Eq`, `Order`, and comparator composition helpers.
@@ -84,7 +85,8 @@ For most application code, start with this order:
 
 - `sts:prelude` for small result/option/control-flow helpers
 - `sts:json` for JSON boundaries
-- `sts:decode` and `sts:encode` for schema-driven validation and serialization
+- `sts:decode` and `sts:encode` for schema-driven validation, issue accumulation, and
+  serialization
 - `sts:failures` when you need to normalize foreign throws or attach structured failure data
 
 ## See Also

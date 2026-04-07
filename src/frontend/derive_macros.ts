@@ -75,6 +75,7 @@ interface TaggedVariant {
 }
 
 interface DecodedField {
+  readonly defaultText: string | null;
   readonly decoderText: string;
   readonly localName: string;
   readonly optional: boolean;
@@ -89,6 +90,8 @@ interface EncodedField {
 }
 
 interface CodecField {
+  readonly decodeDefaultText: string | null;
+  readonly decodeOptional: boolean;
   readonly decodeText: string;
   readonly encodeText: string;
   readonly localName: string;
@@ -117,6 +120,21 @@ function findAnnotation(
   return annotations.find((annotation) => annotation.name === name) ?? null;
 }
 
+function declarationAnnotations(
+  declaration: MacroClassDeclSyntax | MacroInterfaceDeclSyntax | MacroTypeAliasDeclSyntax,
+): readonly MacroAnnotation[] {
+  const hostDeclaration = getHostDeclaration(declaration);
+  return createAnnotationLookup(hostDeclaration.getSourceFile()).getAttachedAnnotations(hostDeclaration);
+}
+
+function resolvedDeclarationAnnotations(
+  ctx: DeriveContext,
+  declaration: MacroClassDeclSyntax | MacroInterfaceDeclSyntax | MacroTypeAliasDeclSyntax,
+): readonly MacroAnnotation[] {
+  const syntaxAnnotations = ctx.syntax.annotations(declaration);
+  return syntaxAnnotations.length > 0 ? syntaxAnnotations : declarationAnnotations(declaration);
+}
+
 function annotationIdentifierArgument(annotation: MacroAnnotation): string | null {
   const [firstArgument] = annotation.arguments ?? [];
   return firstArgument?.value.kind === 'identifier' ? firstArgument.value.name : null;
@@ -125,6 +143,11 @@ function annotationIdentifierArgument(annotation: MacroAnnotation): string | nul
 function annotationStringArgument(annotation: MacroAnnotation): string | null {
   const [firstArgument] = annotation.arguments ?? [];
   return firstArgument?.value.kind === 'string' ? firstArgument.value.value : null;
+}
+
+function annotationValueText(annotation: MacroAnnotation): string | null {
+  const [firstArgument] = annotation.arguments ?? [];
+  return firstArgument?.value.text ?? null;
 }
 
 function annotationDiagnosticNode(
@@ -150,6 +173,23 @@ function annotationDiagnosticNode(
   };
 }
 
+function declarationAnnotationDiagnosticNode(
+  declaration: MacroClassDeclSyntax | MacroInterfaceDeclSyntax | MacroTypeAliasDeclSyntax,
+  annotation: MacroAnnotation,
+): MacroSyntaxNode {
+  return declaration.declarationKind === 'class'
+    ? annotationDiagnosticNode(declaration, annotation) ?? declaration
+    : declaration;
+}
+
+function asMacroDeclarationNode(
+  node: MacroSyntaxNode,
+): MacroClassDeclSyntax | MacroInterfaceDeclSyntax | MacroTypeAliasDeclSyntax | undefined {
+  return 'declarationKind' in node
+    ? node as MacroClassDeclSyntax | MacroInterfaceDeclSyntax | MacroTypeAliasDeclSyntax
+    : undefined;
+}
+
 function propertyAccessText(receiverName: string, propertyName: string): string {
   const receiver = /^[A-Za-z_$][A-Za-z0-9_$]*$/u.test(receiverName.trim())
     ? receiverName.trim()
@@ -163,6 +203,10 @@ function propertyKeyText(propertyName: string): string {
   return /^[A-Za-z_$][A-Za-z0-9_$]*$/u.test(propertyName)
     ? propertyName
     : JSON.stringify(propertyName);
+}
+
+function decodeDefaultProjectionText(accessText: string, defaultText: string | null): string {
+  return defaultText === null ? accessText : `${accessText} === undefined ? (${defaultText}) : ${accessText}`;
 }
 
 function primitiveKindForTypeText(typeText: string): PrimitiveFieldKind | null {
@@ -491,8 +535,12 @@ function supportedDerivedTypeFromShape(
       return ok && err ? { kind: 'result', ok, err } : null;
     }
     case 'object':
+    case 'intersection':
     case 'literal':
+    case 'null':
+    case 'record':
     case 'union':
+    case 'undefined':
     case 'unsupported':
       return null;
   }
@@ -508,6 +556,848 @@ function objectLikeDeclarationShape(
     return shape;
   }
   ctx.error(`${macroName} currently only supports object-like declarations in v1.`, declaration);
+}
+
+function annotationNamesIncludeAny(
+  annotations: readonly MacroAnnotation[],
+  names: readonly string[],
+): boolean {
+  return annotations.some((annotation) => names.includes(annotation.name));
+}
+
+function shapeContainsNamedReference(
+  shape: MacroReflectedTypeShape,
+  typeName: string,
+): boolean {
+  switch (shape.kind) {
+    case 'named':
+      return shape.name === typeName;
+    case 'array':
+      return shapeContainsNamedReference(shape.element, typeName);
+    case 'tuple':
+      return shape.elements.some((element) => shapeContainsNamedReference(element, typeName));
+    case 'option':
+      return shapeContainsNamedReference(shape.value, typeName);
+    case 'result':
+      return shapeContainsNamedReference(shape.ok, typeName) ||
+        shapeContainsNamedReference(shape.err, typeName);
+    case 'record':
+      return shapeContainsNamedReference(shape.key, typeName) ||
+        shapeContainsNamedReference(shape.value, typeName);
+    case 'object':
+      return shape.fields.some((field) => field.type && shapeContainsNamedReference(field.type, typeName));
+    case 'intersection':
+    case 'union':
+      return shape.members.some((member) => shapeContainsNamedReference(member, typeName));
+    case 'primitive':
+    case 'literal':
+    case 'null':
+    case 'undefined':
+    case 'unsupported':
+      return false;
+  }
+}
+
+function localNamedReferenceNeedsTypedRecursivePath(
+  ctx: DeriveContext,
+  name: string,
+  ownerTypeName: string,
+  macroName: 'decode' | 'encode' | 'codec',
+  scopeNode: MacroSyntaxNode,
+): boolean {
+  if (name === ownerTypeName) {
+    return true;
+  }
+  switch (macroName) {
+    case 'decode':
+      return ctx.semantics.localDeclarationHasAnnotation(name, 'decode', scopeNode) &&
+        !ctx.semantics.valueBindingInScope(expectedCompanionName(name, 'decode'));
+    case 'encode':
+      return ctx.semantics.localDeclarationHasAnnotation(name, 'encode', scopeNode) &&
+        !ctx.semantics.valueBindingInScope(expectedCompanionName(name, 'encode'));
+    case 'codec': {
+      const codecCompanionName = expectedCompanionName(name, 'codec');
+      if (
+        ctx.semantics.localDeclarationHasAnnotation(name, 'codec', scopeNode) &&
+        !ctx.semantics.valueBindingInScope(codecCompanionName)
+      ) {
+        return true;
+      }
+      const decodeCompanionName = expectedCompanionName(name, 'decode');
+      const encodeCompanionName = expectedCompanionName(name, 'encode');
+      return ctx.semantics.localDeclarationHasAnnotation(name, 'decode', scopeNode) &&
+        ctx.semantics.localDeclarationHasAnnotation(name, 'encode', scopeNode) &&
+        (
+          !ctx.semantics.valueBindingInScope(decodeCompanionName) ||
+          !ctx.semantics.valueBindingInScope(encodeCompanionName)
+        );
+    }
+  }
+}
+
+function localNamedReferenceParticipatesInMacro(
+  ctx: DeriveContext,
+  name: string,
+  macroName: 'decode' | 'encode' | 'codec',
+  scopeNode: MacroSyntaxNode,
+): boolean {
+  switch (macroName) {
+    case 'decode':
+      return ctx.semantics.localDeclarationHasAnnotation(name, 'decode', scopeNode);
+    case 'encode':
+      return ctx.semantics.localDeclarationHasAnnotation(name, 'encode', scopeNode);
+    case 'codec':
+      return ctx.semantics.localDeclarationHasAnnotation(name, 'codec', scopeNode) ||
+        (
+          ctx.semantics.localDeclarationHasAnnotation(name, 'decode', scopeNode) &&
+          ctx.semantics.localDeclarationHasAnnotation(name, 'encode', scopeNode)
+        );
+  }
+}
+
+function shapeContainsPlainRecursiveLocalReference(
+  ctx: DeriveContext,
+  shape: MacroReflectedTypeShape,
+  ownerTypeName: string,
+  macroName: 'decode' | 'encode' | 'codec',
+  scopeNode: MacroSyntaxNode,
+): boolean {
+  switch (shape.kind) {
+    case 'named':
+      return localNamedReferenceNeedsTypedRecursivePath(
+        ctx,
+        shape.name,
+        ownerTypeName,
+        macroName,
+        scopeNode,
+      );
+    case 'array':
+      return shapeContainsPlainRecursiveLocalReference(
+        ctx,
+        shape.element,
+        ownerTypeName,
+        macroName,
+        scopeNode,
+      );
+    case 'tuple':
+      return shape.elements.some((element) =>
+        shapeContainsPlainRecursiveLocalReference(ctx, element, ownerTypeName, macroName, scopeNode)
+      );
+    case 'option':
+      return shapeContainsPlainRecursiveLocalReference(
+        ctx,
+        shape.value,
+        ownerTypeName,
+        macroName,
+        scopeNode,
+      );
+    case 'result':
+      return shapeContainsPlainRecursiveLocalReference(
+          ctx,
+          shape.ok,
+          ownerTypeName,
+          macroName,
+          scopeNode,
+        ) ||
+        shapeContainsPlainRecursiveLocalReference(
+          ctx,
+          shape.err,
+          ownerTypeName,
+          macroName,
+          scopeNode,
+        );
+    case 'record':
+      return shapeContainsPlainRecursiveLocalReference(
+          ctx,
+          shape.key,
+          ownerTypeName,
+          macroName,
+          scopeNode,
+        ) ||
+        shapeContainsPlainRecursiveLocalReference(
+          ctx,
+          shape.value,
+          ownerTypeName,
+          macroName,
+          scopeNode,
+        );
+    case 'object':
+      return shape.fields.some((field) =>
+        field.type &&
+        shapeContainsPlainRecursiveLocalReference(
+          ctx,
+          field.type,
+          ownerTypeName,
+          macroName,
+          scopeNode,
+        )
+      );
+    case 'intersection':
+    case 'union':
+      return shape.members.some((member) =>
+        shapeContainsPlainRecursiveLocalReference(
+          ctx,
+          member,
+          ownerTypeName,
+          macroName,
+          scopeNode,
+        )
+      );
+    case 'primitive':
+    case 'literal':
+    case 'null':
+    case 'undefined':
+    case 'unsupported':
+      return false;
+  }
+}
+
+function isPlainStructuralRecursiveDeclaration(
+  ctx: DeriveContext,
+  declaration: MacroClassDeclSyntax | MacroInterfaceDeclSyntax | MacroTypeAliasDeclSyntax,
+  typeName: string,
+  macroName: 'decode' | 'encode' | 'codec',
+): boolean {
+  const shape = objectLikeDeclarationShape(ctx, declaration, 'codec');
+  return shape.fields.some((field) =>
+    field.type &&
+    shapeContainsPlainRecursiveLocalReference(
+      ctx,
+      field.type,
+      typeName,
+      macroName,
+      field.node,
+    )
+  );
+}
+
+function declarationTypeName(
+  declaration: MacroClassDeclSyntax | MacroInterfaceDeclSyntax | MacroTypeAliasDeclSyntax,
+): string {
+  const hostDeclaration = getHostDeclaration(declaration);
+  if (!hostDeclaration.name) {
+    throw new Error('Expected named declaration for derive macro.');
+  }
+  return hostDeclaration.name.text;
+}
+
+function findLocalDeclarationByName(
+  ctx: DeriveContext,
+  declaration: MacroClassDeclSyntax | MacroInterfaceDeclSyntax | MacroTypeAliasDeclSyntax,
+  name: string,
+): MacroClassDeclSyntax | MacroInterfaceDeclSyntax | MacroTypeAliasDeclSyntax | null {
+  const localDeclaration = ctx.semantics.localDeclaration(name, declaration);
+  return localDeclaration?.asClass() ?? localDeclaration?.asInterface() ?? localDeclaration?.asTypeAlias() ??
+    null;
+}
+
+function collectTypedRecursiveLocalReferenceNames(
+  ctx: DeriveContext,
+  shape: MacroReflectedTypeShape,
+  ownerTypeName: string,
+  macroName: 'decode' | 'encode' | 'codec',
+  scopeNode: MacroSyntaxNode,
+  names: Set<string> = new Set(),
+): readonly string[] {
+  switch (shape.kind) {
+    case 'named':
+      if (
+        shape.name !== ownerTypeName &&
+        localNamedReferenceParticipatesInMacro(
+          ctx,
+          shape.name,
+          macroName,
+          scopeNode,
+        )
+      ) {
+        names.add(shape.name);
+      }
+      break;
+    case 'array':
+      collectTypedRecursiveLocalReferenceNames(
+        ctx,
+        shape.element,
+        ownerTypeName,
+        macroName,
+        scopeNode,
+        names,
+      );
+      break;
+    case 'tuple':
+      for (const element of shape.elements) {
+        collectTypedRecursiveLocalReferenceNames(
+          ctx,
+          element,
+          ownerTypeName,
+          macroName,
+          scopeNode,
+          names,
+        );
+      }
+      break;
+    case 'option':
+      collectTypedRecursiveLocalReferenceNames(
+        ctx,
+        shape.value,
+        ownerTypeName,
+        macroName,
+        scopeNode,
+        names,
+      );
+      break;
+    case 'result':
+      collectTypedRecursiveLocalReferenceNames(
+        ctx,
+        shape.ok,
+        ownerTypeName,
+        macroName,
+        scopeNode,
+        names,
+      );
+      collectTypedRecursiveLocalReferenceNames(
+        ctx,
+        shape.err,
+        ownerTypeName,
+        macroName,
+        scopeNode,
+        names,
+      );
+      break;
+    case 'record':
+      collectTypedRecursiveLocalReferenceNames(
+        ctx,
+        shape.key,
+        ownerTypeName,
+        macroName,
+        scopeNode,
+        names,
+      );
+      collectTypedRecursiveLocalReferenceNames(
+        ctx,
+        shape.value,
+        ownerTypeName,
+        macroName,
+        scopeNode,
+        names,
+      );
+      break;
+    case 'object':
+      for (const field of shape.fields) {
+        if (field.type) {
+          collectTypedRecursiveLocalReferenceNames(
+            ctx,
+            field.type,
+            ownerTypeName,
+            macroName,
+            scopeNode,
+            names,
+          );
+        }
+      }
+      break;
+    case 'intersection':
+    case 'union':
+      for (const member of shape.members) {
+        collectTypedRecursiveLocalReferenceNames(
+          ctx,
+          member,
+          ownerTypeName,
+          macroName,
+          scopeNode,
+          names,
+        );
+      }
+      break;
+    case 'primitive':
+    case 'literal':
+    case 'null':
+    case 'undefined':
+    case 'unsupported':
+      break;
+  }
+  return [...names];
+}
+
+function annotationIdentifierMayResolveAsync(
+  ctx: DeriveContext,
+  annotation: MacroAnnotation | null,
+  scopeNode: MacroSyntaxNode,
+): boolean {
+  const helperIdentifier = annotation ? annotationIdentifierArgument(annotation) : null;
+  return helperIdentifier !== null &&
+    (
+      ctx.semantics.valueBindingPromiseLikeInScope(helperIdentifier, scopeNode) ||
+      ctx.semantics.valueBindingPromiseLikeInScope(helperIdentifier)
+    );
+}
+
+function annotationIdentifierUsesAsyncHelperMode(
+  ctx: DeriveContext,
+  annotation: MacroAnnotation | null,
+  scopeNode: MacroSyntaxNode,
+  direction: 'decode' | 'encode',
+): boolean {
+  const helperIdentifier = annotation ? annotationIdentifierArgument(annotation) : null;
+  if (!helperIdentifier) {
+    return false;
+  }
+  return ctx.semantics.valueBindingHelperModeInScope(helperIdentifier, direction, scopeNode) === 'async' ||
+    ctx.semantics.valueBindingHelperModeInScope(helperIdentifier, direction) === 'async';
+}
+
+function decodeAnnotationsMayResolveAsync(
+  ctx: DeriveContext,
+  annotations: readonly MacroAnnotation[],
+  scopeNode: MacroSyntaxNode,
+): boolean {
+  return annotationIdentifierMayResolveAsync(ctx, findAnnotation(annotations, 'decode.default'), scopeNode) ||
+    annotationIdentifierMayResolveAsync(ctx, findAnnotation(annotations, 'decode.transform'), scopeNode) ||
+    annotationIdentifierMayResolveAsync(ctx, findAnnotation(annotations, 'decode.refine'), scopeNode);
+}
+
+function encodeAnnotationsMayResolveAsync(
+  ctx: DeriveContext,
+  annotations: readonly MacroAnnotation[],
+  scopeNode: MacroSyntaxNode,
+): boolean {
+  return annotationIdentifierMayResolveAsync(ctx, findAnnotation(annotations, 'encode.transform'), scopeNode) ||
+    annotationIdentifierMayResolveAsync(ctx, findAnnotation(annotations, 'encode.refine'), scopeNode);
+}
+
+function fieldDecodeViaMayResolveAsync(
+  ctx: DeriveContext,
+  annotations: readonly MacroAnnotation[],
+  scopeNode: MacroSyntaxNode,
+  macroName: 'codec' | 'decode',
+): boolean {
+  const annotationName = macroName === 'codec' ? 'codec.via' : 'decode.via';
+  return annotationIdentifierUsesAsyncHelperMode(
+    ctx,
+    findAnnotation(annotations, annotationName),
+    scopeNode,
+    'decode',
+  );
+}
+
+function fieldEncodeViaMayResolveAsync(
+  ctx: DeriveContext,
+  annotations: readonly MacroAnnotation[],
+  scopeNode: MacroSyntaxNode,
+  macroName: 'codec' | 'encode',
+): boolean {
+  const annotationName = macroName === 'codec' ? 'codec.via' : 'encode.via';
+  return annotationIdentifierUsesAsyncHelperMode(
+    ctx,
+    findAnnotation(annotations, annotationName),
+    scopeNode,
+    'encode',
+  );
+}
+
+function declarationFactoryMayResolveAsync(
+  ctx: DeriveContext,
+  declaration: MacroClassDeclSyntax | MacroInterfaceDeclSyntax | MacroTypeAliasDeclSyntax,
+  macroName: 'codec' | 'decode',
+): boolean {
+  const factoryAnnotation = findAnnotation(resolvedDeclarationAnnotations(ctx, declaration), `${macroName}.factory`);
+  if (!factoryAnnotation) {
+    return false;
+  }
+  if (declaration.declarationKind === 'class') {
+    const hostDeclaration = getHostDeclaration(declaration);
+    const typeName = hostDeclaration.name?.text;
+    const factoryIdentifier = annotationIdentifierArgument(factoryAnnotation);
+    if (typeName && factoryIdentifier) {
+      const selfStaticAsync = selfStaticHelperMayResolveAsync(
+        declaration,
+        typeName,
+        factoryIdentifier,
+      );
+      if (selfStaticAsync !== null) {
+        return selfStaticAsync;
+      }
+    }
+  }
+  return annotationIdentifierMayResolveAsync(ctx, factoryAnnotation, declaration);
+}
+
+function declarationOwnDecodeMode(
+  ctx: DeriveContext,
+  declaration: MacroClassDeclSyntax | MacroInterfaceDeclSyntax | MacroTypeAliasDeclSyntax,
+  macroName: 'codec' | 'decode',
+): 'async' | 'sync' {
+  if (decodeAnnotationsMayResolveAsync(ctx, resolvedDeclarationAnnotations(ctx, declaration), declaration)) {
+    return 'async';
+  }
+  if (declaration.declarationKind === 'class' && declarationFactoryMayResolveAsync(ctx, declaration, macroName)) {
+    return 'async';
+  }
+  return objectLikeDeclarationShape(ctx, declaration, macroName).fields.some((field) =>
+      decodeAnnotationsMayResolveAsync(ctx, field.annotations, field.node) ||
+      fieldDecodeViaMayResolveAsync(ctx, field.annotations, field.node, macroName)
+    )
+    ? 'async'
+    : 'sync';
+}
+
+function declarationOwnEncodeMode(
+  ctx: DeriveContext,
+  declaration: MacroClassDeclSyntax | MacroInterfaceDeclSyntax | MacroTypeAliasDeclSyntax,
+  macroName: 'codec' | 'encode',
+): 'async' | 'sync' {
+  if (encodeAnnotationsMayResolveAsync(ctx, resolvedDeclarationAnnotations(ctx, declaration), declaration)) {
+    return 'async';
+  }
+  return objectLikeDeclarationShape(ctx, declaration, macroName === 'codec' ? 'codec' : 'encode').fields.some((field) =>
+      encodeAnnotationsMayResolveAsync(ctx, field.annotations, field.node) ||
+      fieldEncodeViaMayResolveAsync(ctx, field.annotations, field.node, macroName)
+    )
+    ? 'async'
+    : 'sync';
+}
+
+function recursiveDeclarationDecodeModeInternal(
+  ctx: DeriveContext,
+  declaration: MacroClassDeclSyntax | MacroInterfaceDeclSyntax | MacroTypeAliasDeclSyntax,
+  macroName: 'codec' | 'decode',
+  memo: Map<string, 'async' | 'sync'>,
+  visiting: Set<string>,
+): 'async' | 'sync' {
+  const typeName = declarationTypeName(declaration);
+  const cacheKey = `${macroName}:decode:${typeName}`;
+  const cached = memo.get(cacheKey);
+  if (cached) {
+    return cached;
+  }
+
+  const ownMode = declarationOwnDecodeMode(ctx, declaration, macroName);
+  if (ownMode === 'async') {
+    memo.set(cacheKey, 'async');
+    return 'async';
+  }
+
+  if (visiting.has(cacheKey)) {
+    return 'sync';
+  }
+  visiting.add(cacheKey);
+
+  const shape = objectLikeDeclarationShape(ctx, declaration, macroName);
+  const referencedNames = collectTypedRecursiveLocalReferenceNames(
+    ctx,
+    {
+      kind: 'object',
+      fields: shape.fields,
+      text: shape.text,
+    } satisfies MacroReflectedTypeShape,
+    typeName,
+    macroName,
+    declaration,
+  );
+  for (const referencedName of referencedNames) {
+    const localDeclaration = findLocalDeclarationByName(ctx, declaration, referencedName);
+    if (!localDeclaration) {
+      continue;
+    }
+    if (recursiveDeclarationDecodeModeInternal(
+      ctx,
+      localDeclaration,
+      macroName,
+      memo,
+      visiting,
+    ) === 'async') {
+      visiting.delete(cacheKey);
+      memo.set(cacheKey, 'async');
+      return 'async';
+    }
+  }
+
+  visiting.delete(cacheKey);
+  memo.set(cacheKey, 'sync');
+  return 'sync';
+}
+
+function recursiveDeclarationEncodeModeInternal(
+  ctx: DeriveContext,
+  declaration: MacroClassDeclSyntax | MacroInterfaceDeclSyntax | MacroTypeAliasDeclSyntax,
+  macroName: 'codec' | 'encode',
+  memo: Map<string, 'async' | 'sync'>,
+  visiting: Set<string>,
+): 'async' | 'sync' {
+  const typeName = declarationTypeName(declaration);
+  const cacheKey = `${macroName}:encode:${typeName}`;
+  const cached = memo.get(cacheKey);
+  if (cached) {
+    return cached;
+  }
+
+  const ownMode = declarationOwnEncodeMode(ctx, declaration, macroName);
+  if (ownMode === 'async') {
+    memo.set(cacheKey, 'async');
+    return 'async';
+  }
+
+  if (visiting.has(cacheKey)) {
+    return 'sync';
+  }
+  visiting.add(cacheKey);
+
+  const shape = objectLikeDeclarationShape(ctx, declaration, macroName === 'codec' ? 'codec' : 'encode');
+  for (const referencedName of collectTypedRecursiveLocalReferenceNames(
+    ctx,
+    {
+      kind: 'object',
+      fields: shape.fields,
+      text: shape.text,
+    } satisfies MacroReflectedTypeShape,
+    typeName,
+    macroName,
+    declaration,
+  )) {
+    const localDeclaration = findLocalDeclarationByName(ctx, declaration, referencedName);
+    if (!localDeclaration) {
+      continue;
+    }
+    if (recursiveDeclarationEncodeModeInternal(
+      ctx,
+      localDeclaration,
+      macroName,
+      memo,
+      visiting,
+    ) === 'async') {
+      visiting.delete(cacheKey);
+      memo.set(cacheKey, 'async');
+      return 'async';
+    }
+  }
+
+  visiting.delete(cacheKey);
+  memo.set(cacheKey, 'sync');
+  return 'sync';
+}
+
+function recursiveDeclarationDecodeMode(
+  ctx: DeriveContext,
+  declaration: MacroClassDeclSyntax | MacroInterfaceDeclSyntax | MacroTypeAliasDeclSyntax,
+  macroName: 'codec' | 'decode',
+): 'async' | 'sync' {
+  return recursiveDeclarationDecodeModeInternal(ctx, declaration, macroName, new Map(), new Set());
+}
+
+function recursiveDeclarationEncodeMode(
+  ctx: DeriveContext,
+  declaration: MacroClassDeclSyntax | MacroInterfaceDeclSyntax | MacroTypeAliasDeclSyntax,
+  macroName: 'codec' | 'encode' = 'encode',
+): 'async' | 'sync' {
+  return recursiveDeclarationEncodeModeInternal(ctx, declaration, macroName, new Map(), new Set());
+}
+
+function localDeclarationForNamedReference(
+  ctx: DeriveContext,
+  scopeNode: MacroSyntaxNode,
+  name: string,
+): MacroClassDeclSyntax | MacroInterfaceDeclSyntax | MacroTypeAliasDeclSyntax | null {
+  const declaration = asMacroDeclarationNode(scopeNode);
+  return declaration ? findLocalDeclarationByName(ctx, declaration, name) : null;
+}
+
+function localNamedDecodeCallbackTypeText(
+  ctx: DeriveContext,
+  name: string,
+  ownerTypeName: string,
+  scopeNode: MacroSyntaxNode,
+  macroName: 'codec' | 'decode',
+): string | null {
+  if (!localNamedReferenceNeedsTypedRecursivePath(ctx, name, ownerTypeName, macroName, scopeNode)) {
+    return null;
+  }
+  const localDeclaration = localDeclarationForNamedReference(ctx, scopeNode, name);
+  if (!localDeclaration) {
+    return null;
+  }
+  if (ctx.reflect.declarationShape(localDeclaration).kind !== 'objectLike') {
+    return null;
+  }
+  const mode = recursiveDeclarationDecodeMode(ctx, localDeclaration, macroName);
+  return mode === 'async'
+    ? `import('sts:decode').Decoder<${name}, unknown, "async">`
+    : null;
+}
+
+function localNamedEncodeCallbackTypeText(
+  ctx: DeriveContext,
+  name: string,
+  ownerTypeName: string,
+  scopeNode: MacroSyntaxNode,
+  macroName: 'codec' | 'encode',
+): string | null {
+  if (!localNamedReferenceNeedsTypedRecursivePath(ctx, name, ownerTypeName, macroName, scopeNode)) {
+    return null;
+  }
+  const localDeclaration = localDeclarationForNamedReference(ctx, scopeNode, name);
+  if (!localDeclaration) {
+    return null;
+  }
+  if (ctx.reflect.declarationShape(localDeclaration).kind !== 'objectLike') {
+    return null;
+  }
+  const mode = recursiveDeclarationEncodeMode(ctx, localDeclaration, macroName);
+  return mode === 'async'
+    ? `import('sts:encode').Encoder<${name}, import('sts:json').JsonLikeValue, unknown, "async">`
+    : null;
+}
+
+function recursiveEncodedFieldWireName(
+  field: MacroReflectedFieldShape,
+  macroName: 'encode' | 'codec',
+): string {
+  const renameAnnotation = findAnnotation(field.annotations, `${macroName}.rename`);
+  return renameAnnotation ? annotationStringArgument(renameAnnotation) ?? field.name : field.name;
+}
+
+function recursiveEncodedTypeTextFromShape(
+  shape: MacroReflectedTypeShape,
+  ownerTypeName: string,
+  selfAliasName: string,
+): string | null {
+  switch (shape.kind) {
+    case 'primitive':
+      return shape.primitiveKind;
+    case 'literal':
+      return JSON.stringify(shape.value);
+    case 'null':
+      return 'null';
+    case 'undefined':
+      return 'undefined';
+    case 'named':
+      return shape.name === ownerTypeName ? selfAliasName : 'any';
+    case 'array': {
+      const element = recursiveEncodedTypeTextFromShape(shape.element, ownerTypeName, selfAliasName);
+      return element ? `${shape.readonly ? 'readonly ' : ''}${element}[]` : null;
+    }
+    case 'tuple': {
+      const elements = shape.elements.map((element) =>
+        recursiveEncodedTypeTextFromShape(element, ownerTypeName, selfAliasName)
+      );
+      return elements.every((element) => element !== null)
+        ? `${shape.readonly ? 'readonly ' : ''}[${(elements as readonly string[]).join(', ')}]`
+        : null;
+    }
+    case 'option': {
+      const value = recursiveEncodedTypeTextFromShape(shape.value, ownerTypeName, selfAliasName);
+      return value
+        ? `{ readonly tag: "none" } | { readonly tag: "some"; readonly value: ${value} }`
+        : null;
+    }
+    case 'result': {
+      const ok = recursiveEncodedTypeTextFromShape(shape.ok, ownerTypeName, selfAliasName);
+      const err = recursiveEncodedTypeTextFromShape(shape.err, ownerTypeName, selfAliasName);
+      return ok && err
+        ? `{ readonly tag: "ok"; readonly value: ${ok} } | { readonly tag: "err"; readonly error: ${err} }`
+        : null;
+    }
+    case 'record': {
+      if (shape.key.kind !== 'primitive' || shape.key.primitiveKind !== 'string') {
+        return null;
+      }
+      const value = recursiveEncodedTypeTextFromShape(shape.value, ownerTypeName, selfAliasName);
+      return value ? `Readonly<Record<string, ${value}>>` : null;
+    }
+    case 'object':
+    case 'intersection': {
+      const fields = flattenObjectLikeTypeFields(shape);
+      if (!fields) {
+        return null;
+      }
+      const fieldTexts = fields.map((field) => {
+        if (!field.type) {
+          return null;
+        }
+        const fieldType = recursiveEncodedTypeTextFromShape(field.type, ownerTypeName, selfAliasName);
+        if (!fieldType) {
+          return null;
+        }
+        return `${propertyKeyText(field.name)}${field.optional ? '?' : ''}: ${fieldType}`;
+      });
+      return fieldTexts.every((fieldText) => fieldText !== null)
+        ? `{ readonly ${(fieldTexts as readonly string[]).join('; readonly ')} }`
+        : null;
+    }
+    case 'union': {
+      const nullishUnion = decomposeNullishUnion(shape);
+      if (!nullishUnion) {
+        return null;
+      }
+      let text = nullishUnion.base
+        ? recursiveEncodedTypeTextFromShape(nullishUnion.base, ownerTypeName, selfAliasName)
+        : nullishUnion.includesNull ? 'null' : 'undefined';
+      if (!text) {
+        return null;
+      }
+      if (nullishUnion.includesNull && nullishUnion.base) {
+        text = `${text} | null`;
+      }
+      if (nullishUnion.includesUndefined) {
+        text = `${text} | undefined`;
+      }
+      return text;
+    }
+    case 'unsupported':
+      return null;
+  }
+}
+
+function recursiveEncodedObjectTypeAliasText(
+  ctx: DeriveContext,
+  declaration: MacroClassDeclSyntax | MacroInterfaceDeclSyntax | MacroTypeAliasDeclSyntax,
+  typeName: string,
+  macroName: 'encode' | 'codec',
+  aliasName: string,
+): string | null {
+  const shape = objectLikeDeclarationShape(ctx, declaration, macroName);
+  const fieldTexts = shape.fields.map((field) => {
+    if (!field.type) {
+      return null;
+    }
+    const fieldType = recursiveEncodedTypeTextFromShape(field.type, typeName, aliasName);
+    if (!fieldType) {
+      return null;
+    }
+    const wireName = recursiveEncodedFieldWireName(field, macroName);
+    return `${propertyKeyText(wireName)}${field.optional ? '?' : ''}: ${fieldType}`;
+  });
+  return fieldTexts.every((fieldText) => fieldText !== null)
+    ? `{ readonly ${(fieldTexts as readonly string[]).join('; readonly ')} }`
+    : null;
+}
+
+function rewriteRecursiveSelfReference(
+  text: string,
+  searchText: string,
+  replacementText: string,
+): string {
+  return text.includes(searchText) ? text.replaceAll(searchText, replacementText) : text;
+}
+
+function escapeRegExpText(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function rewriteRecursiveLazyInvocation(
+  text: string,
+  callbackTypeText: string,
+  callbackValueText: string,
+  lazyTypeArgumentsText: string,
+): string {
+  const pattern = new RegExp(
+    `([A-Za-z_$][A-Za-z0-9_$]*)\\(\\(\\): ${escapeRegExpText(callbackTypeText)} => ${
+      escapeRegExpText(callbackValueText)
+    }\\)`,
+    'g',
+  );
+  return text.replace(
+    pattern,
+    `$1<${lazyTypeArgumentsText}>(() => ${callbackValueText})`,
+  );
 }
 
 function discriminatedUnionDeclarationShape(
@@ -755,6 +1645,753 @@ function codecHelperTextsForType(
   }
 }
 
+function flattenObjectLikeTypeFields(
+  shape: MacroReflectedTypeShape,
+): readonly MacroReflectedFieldShape[] | null {
+  switch (shape.kind) {
+    case 'object':
+      return shape.fields;
+    case 'intersection': {
+      const fields: MacroReflectedFieldShape[] = [];
+      for (const member of shape.members) {
+        const memberFields = flattenObjectLikeTypeFields(member);
+        if (!memberFields) {
+          return null;
+        }
+        fields.push(...memberFields);
+      }
+      return fields;
+    }
+    default:
+      return null;
+  }
+}
+
+function decomposeNullishUnion(
+  shape: MacroReflectedTypeShape,
+): {
+  readonly base: MacroReflectedTypeShape | null;
+  readonly includesNull: boolean;
+  readonly includesUndefined: boolean;
+} | null {
+  if (shape.kind !== 'union') {
+    return null;
+  }
+
+  let includesNull = false;
+  let includesUndefined = false;
+  const baseMembers: MacroReflectedTypeShape[] = [];
+
+  for (const member of shape.members) {
+    if (member.kind === 'null') {
+      includesNull = true;
+      continue;
+    }
+    if (member.kind === 'undefined') {
+      includesUndefined = true;
+      continue;
+    }
+    baseMembers.push(member);
+  }
+
+  if ((!includesNull && !includesUndefined) || baseMembers.length > 1) {
+    return null;
+  }
+
+  return {
+    base: baseMembers[0] ?? null,
+    includesNull,
+    includesUndefined,
+  };
+}
+
+function decodeHelperTextFromShape(
+  ctx: DeriveContext,
+  shape: MacroReflectedTypeShape,
+  ownerTypeName: string,
+  scopeNode: MacroSyntaxNode,
+  errorNode: MacroSyntaxNode,
+): string | null {
+  switch (shape.kind) {
+    case 'primitive':
+      return ctx.runtime.named('sts:decode', decodeHelperName(shape.primitiveKind)).text();
+    case 'literal':
+      return `${ctx.runtime.named('sts:decode', 'literal').text()}(${JSON.stringify(shape.value)})`;
+    case 'null':
+      return `${ctx.runtime.named('sts:decode', 'literal').text()}(null)`;
+    case 'undefined':
+      return ctx.runtime.named('sts:decode', 'undefinedValue').text();
+    case 'named': {
+      if (shape.typeArguments.length > 0 || !/^[A-Za-z_$][A-Za-z0-9_$]*$/u.test(shape.name)) {
+        return null;
+      }
+      assertNamedDerivedCompanionsInScope(
+        ctx,
+        'decode',
+        ownerTypeName,
+        scopeNode,
+        errorNode,
+        { kind: 'named', typeName: shape.name },
+      );
+      if (shape.name === ownerTypeName) {
+        return `${ctx.runtime.named('sts:decode', 'lazy').text()}((): import('sts:decode').Decoder<${shape.name}> => ${shape.name}Decoder)`;
+      }
+      const localCallbackTypeText = localNamedDecodeCallbackTypeText(
+        ctx,
+        shape.name,
+        ownerTypeName,
+        scopeNode,
+        'decode',
+      );
+      return localCallbackTypeText
+        ? `${ctx.runtime.named('sts:decode', 'lazy').text()}((): ${localCallbackTypeText} => ${shape.name}Decoder)`
+        : `${ctx.runtime.named('sts:decode', 'lazy').text()}(() => ${shape.name}Decoder)`;
+    }
+    case 'array': {
+      const element = decodeHelperTextFromShape(ctx, shape.element, ownerTypeName, scopeNode, errorNode);
+      return element ? `${ctx.runtime.named('sts:decode', 'array').text()}(${element})` : null;
+    }
+    case 'tuple': {
+      const elements = shape.elements.map((element) =>
+        decodeHelperTextFromShape(ctx, element, ownerTypeName, scopeNode, errorNode)
+      );
+      return elements.every((element) => element !== null)
+        ? `${ctx.runtime.named('sts:decode', 'tuple').text()}(${
+          (elements as readonly string[]).join(', ')
+        })`
+        : null;
+    }
+    case 'option': {
+      const value = decodeHelperTextFromShape(ctx, shape.value, ownerTypeName, scopeNode, errorNode);
+      return value ? `${ctx.runtime.named('sts:decode', 'option').text()}(${value})` : null;
+    }
+    case 'result': {
+      const okType = decodeHelperTextFromShape(ctx, shape.ok, ownerTypeName, scopeNode, errorNode);
+      const errType = decodeHelperTextFromShape(ctx, shape.err, ownerTypeName, scopeNode, errorNode);
+      return okType && errType
+        ? `${ctx.runtime.named('sts:decode', 'result').text()}(${okType}, ${errType})`
+        : null;
+    }
+    case 'record': {
+      if (shape.key.kind !== 'primitive' || shape.key.primitiveKind !== 'string') {
+        return null;
+      }
+      const value = decodeHelperTextFromShape(ctx, shape.value, ownerTypeName, scopeNode, errorNode);
+      return value ? `${ctx.runtime.named('sts:decode', 'readonlyRecord').text()}(${value})` : null;
+    }
+    case 'object':
+    case 'intersection': {
+      const fields = flattenObjectLikeTypeFields(shape);
+      return fields ? nestedDecodeHelperTextFromFields(ctx, ownerTypeName, scopeNode, fields) : null;
+    }
+    case 'union': {
+      const nullishUnion = decomposeNullishUnion(shape);
+      if (!nullishUnion) {
+        return null;
+      }
+      let text = nullishUnion.base
+        ? decodeHelperTextFromShape(ctx, nullishUnion.base, ownerTypeName, scopeNode, errorNode)
+        : nullishUnion.includesNull
+        ? `${ctx.runtime.named('sts:decode', 'literal').text()}(null)`
+        : ctx.runtime.named('sts:decode', 'undefinedValue').text();
+      if (!text) {
+        return null;
+      }
+      if (nullishUnion.includesNull && nullishUnion.base) {
+        text = `${ctx.runtime.named('sts:decode', 'nullable').text()}(${text})`;
+      }
+      if (nullishUnion.includesUndefined) {
+        text = `${ctx.runtime.named('sts:decode', 'undefinedable').text()}(${text})`;
+      }
+      return text;
+    }
+    case 'unsupported':
+      return null;
+  }
+}
+
+function encodeHelperTextFromShape(
+  ctx: DeriveContext,
+  shape: MacroReflectedTypeShape,
+  ownerTypeName: string,
+  scopeNode: MacroSyntaxNode,
+  errorNode: MacroSyntaxNode,
+): string | null {
+  switch (shape.kind) {
+    case 'primitive':
+      return ctx.runtime.named('sts:encode', encodeHelperName(shape.primitiveKind)).text();
+    case 'literal':
+      return `${ctx.runtime.named('sts:encode', 'literal').text()}(${JSON.stringify(shape.value)})`;
+    case 'null':
+      return `${ctx.runtime.named('sts:encode', 'literal').text()}(null)`;
+    case 'undefined':
+      return ctx.runtime.named('sts:encode', 'undefinedEncoder').text();
+    case 'named': {
+      if (shape.typeArguments.length > 0 || !/^[A-Za-z_$][A-Za-z0-9_$]*$/u.test(shape.name)) {
+        return null;
+      }
+      assertNamedDerivedCompanionsInScope(
+        ctx,
+        'encode',
+        ownerTypeName,
+        scopeNode,
+        errorNode,
+        { kind: 'named', typeName: shape.name },
+      );
+      if (shape.name === ownerTypeName) {
+        return `${ctx.runtime.named('sts:encode', 'lazy').text()}((): import('sts:encode').Encoder<${shape.name}, import('sts:json').JsonLikeValue> => ${shape.name}Encoder)`;
+      }
+      const localCallbackTypeText = localNamedEncodeCallbackTypeText(
+        ctx,
+        shape.name,
+        ownerTypeName,
+        scopeNode,
+        'encode',
+      );
+      return localCallbackTypeText
+        ? `${ctx.runtime.named('sts:encode', 'lazy').text()}((): ${localCallbackTypeText} => ${shape.name}Encoder)`
+        : `${ctx.runtime.named('sts:encode', 'lazy').text()}(() => ${shape.name}Encoder)`;
+    }
+    case 'array': {
+      const element = encodeHelperTextFromShape(ctx, shape.element, ownerTypeName, scopeNode, errorNode);
+      return element ? `${ctx.runtime.named('sts:encode', 'array').text()}(${element})` : null;
+    }
+    case 'tuple': {
+      const elements = shape.elements.map((element) =>
+        encodeHelperTextFromShape(ctx, element, ownerTypeName, scopeNode, errorNode)
+      );
+      return elements.every((element) => element !== null)
+        ? `${ctx.runtime.named('sts:encode', 'tuple').text()}(${
+          (elements as readonly string[]).join(', ')
+        })`
+        : null;
+    }
+    case 'option': {
+      const value = encodeHelperTextFromShape(ctx, shape.value, ownerTypeName, scopeNode, errorNode);
+      return value ? `${ctx.runtime.named('sts:encode', 'option').text()}(${value})` : null;
+    }
+    case 'result': {
+      const okType = encodeHelperTextFromShape(ctx, shape.ok, ownerTypeName, scopeNode, errorNode);
+      const errType = encodeHelperTextFromShape(ctx, shape.err, ownerTypeName, scopeNode, errorNode);
+      return okType && errType
+        ? `${ctx.runtime.named('sts:encode', 'result').text()}(${okType}, ${errType})`
+        : null;
+    }
+    case 'record': {
+      if (shape.key.kind !== 'primitive' || shape.key.primitiveKind !== 'string') {
+        return null;
+      }
+      const value = encodeHelperTextFromShape(ctx, shape.value, ownerTypeName, scopeNode, errorNode);
+      return value ? `${ctx.runtime.named('sts:encode', 'record').text()}(${value})` : null;
+    }
+    case 'object':
+    case 'intersection': {
+      const fields = flattenObjectLikeTypeFields(shape);
+      return fields ? nestedEncodeHelperTextFromFields(ctx, ownerTypeName, scopeNode, fields) : null;
+    }
+    case 'union': {
+      const nullishUnion = decomposeNullishUnion(shape);
+      if (!nullishUnion) {
+        return null;
+      }
+      let text = nullishUnion.base
+        ? encodeHelperTextFromShape(ctx, nullishUnion.base, ownerTypeName, scopeNode, errorNode)
+        : nullishUnion.includesNull
+        ? `${ctx.runtime.named('sts:encode', 'literal').text()}(null)`
+        : ctx.runtime.named('sts:encode', 'undefinedEncoder').text();
+      if (!text) {
+        return null;
+      }
+      if (nullishUnion.includesNull && nullishUnion.base) {
+        text = `${ctx.runtime.named('sts:encode', 'nullable').text()}(${text})`;
+      }
+      if (nullishUnion.includesUndefined) {
+        text = `${ctx.runtime.named('sts:encode', 'undefinedable').text()}(${text})`;
+      }
+      return text;
+    }
+    case 'unsupported':
+      return null;
+  }
+}
+
+function codecHelperTextsFromShape(
+  ctx: DeriveContext,
+  shape: MacroReflectedTypeShape,
+  ownerTypeName: string,
+  scopeNode: MacroSyntaxNode,
+  errorNode: MacroSyntaxNode,
+): { readonly decodeText: string; readonly encodeText: string } | null {
+  switch (shape.kind) {
+    case 'primitive':
+      return {
+        decodeText: ctx.runtime.named('sts:decode', decodeHelperName(shape.primitiveKind)).text(),
+        encodeText: ctx.runtime.named('sts:encode', encodeHelperName(shape.primitiveKind)).text(),
+      };
+    case 'literal':
+      return {
+        decodeText: `${ctx.runtime.named('sts:decode', 'literal').text()}(${JSON.stringify(shape.value)})`,
+        encodeText: `${ctx.runtime.named('sts:encode', 'literal').text()}(${JSON.stringify(shape.value)})`,
+      };
+    case 'null':
+      return {
+        decodeText: `${ctx.runtime.named('sts:decode', 'literal').text()}(null)`,
+        encodeText: `${ctx.runtime.named('sts:encode', 'literal').text()}(null)`,
+      };
+    case 'undefined':
+      return {
+        decodeText: ctx.runtime.named('sts:decode', 'undefinedValue').text(),
+        encodeText: ctx.runtime.named('sts:encode', 'undefinedEncoder').text(),
+      };
+    case 'named': {
+      if (shape.typeArguments.length > 0 || !/^[A-Za-z_$][A-Za-z0-9_$]*$/u.test(shape.name)) {
+        return null;
+      }
+      assertNamedDerivedCompanionsInScope(
+        ctx,
+        'codec',
+        ownerTypeName,
+        scopeNode,
+        errorNode,
+        { kind: 'named', typeName: shape.name },
+      );
+      const sideCompanions = codecNamedSideCompanions(ctx, shape.name, ownerTypeName, scopeNode);
+      if (sideCompanions) {
+        const localDecodeCallbackTypeText = localNamedDecodeCallbackTypeText(
+          ctx,
+          shape.name,
+          ownerTypeName,
+          scopeNode,
+          'decode',
+        );
+        const localEncodeCallbackTypeText = localNamedEncodeCallbackTypeText(
+          ctx,
+          shape.name,
+          ownerTypeName,
+          scopeNode,
+          'encode',
+        );
+        return {
+          decodeText: shape.name === ownerTypeName
+            ? `${ctx.runtime.named('sts:decode', 'lazy').text()}((): import('sts:decode').Decoder<${shape.name}> => ${sideCompanions.decodeCompanionName})`
+            : localDecodeCallbackTypeText
+            ? `${ctx.runtime.named('sts:decode', 'lazy').text()}((): ${localDecodeCallbackTypeText} => ${sideCompanions.decodeCompanionName})`
+            : `${ctx.runtime.named('sts:decode', 'lazy').text()}(() => ${sideCompanions.decodeCompanionName})`,
+          encodeText: shape.name === ownerTypeName
+            ? `${ctx.runtime.named('sts:encode', 'lazy').text()}((): import('sts:encode').Encoder<${shape.name}, import('sts:json').JsonLikeValue> => ${sideCompanions.encodeCompanionName})`
+            : localEncodeCallbackTypeText
+            ? `${ctx.runtime.named('sts:encode', 'lazy').text()}((): ${localEncodeCallbackTypeText} => ${sideCompanions.encodeCompanionName})`
+            : `${ctx.runtime.named('sts:encode', 'lazy').text()}(() => ${sideCompanions.encodeCompanionName})`,
+        };
+      }
+      const localDecodeCallbackTypeText = localNamedDecodeCallbackTypeText(
+        ctx,
+        shape.name,
+        ownerTypeName,
+        scopeNode,
+        'codec',
+      );
+      const localEncodeCallbackTypeText = localNamedEncodeCallbackTypeText(
+        ctx,
+        shape.name,
+        ownerTypeName,
+        scopeNode,
+        'codec',
+      );
+      return {
+        decodeText: shape.name === ownerTypeName
+          ? `${ctx.runtime.named('sts:decode', 'lazy').text()}((): import('sts:decode').Decoder<${shape.name}> => ${shape.name}Codec)`
+          : localDecodeCallbackTypeText
+          ? `${ctx.runtime.named('sts:decode', 'lazy').text()}((): ${localDecodeCallbackTypeText} => ${shape.name}Codec)`
+          : `${ctx.runtime.named('sts:decode', 'lazy').text()}(() => ${shape.name}Codec)`,
+        encodeText: shape.name === ownerTypeName
+          ? `${ctx.runtime.named('sts:encode', 'lazy').text()}((): import('sts:encode').Encoder<${shape.name}, import('sts:json').JsonLikeValue> => ${shape.name}Codec)`
+          : localEncodeCallbackTypeText
+          ? `${ctx.runtime.named('sts:encode', 'lazy').text()}((): ${localEncodeCallbackTypeText} => ${shape.name}Codec)`
+          : `${ctx.runtime.named('sts:encode', 'lazy').text()}(() => ${shape.name}Codec)`,
+      };
+    }
+    case 'array': {
+      const element = codecHelperTextsFromShape(ctx, shape.element, ownerTypeName, scopeNode, errorNode);
+      return element
+        ? {
+          decodeText: `${ctx.runtime.named('sts:decode', 'array').text()}(${element.decodeText})`,
+          encodeText: `${ctx.runtime.named('sts:encode', 'array').text()}(${element.encodeText})`,
+        }
+        : null;
+    }
+    case 'tuple': {
+      const elements = shape.elements.map((element) =>
+        codecHelperTextsFromShape(ctx, element, ownerTypeName, scopeNode, errorNode)
+      );
+      if (!elements.every((element) => element !== null)) {
+        return null;
+      }
+      const resolved = elements as readonly { readonly decodeText: string; readonly encodeText: string }[];
+      return {
+        decodeText: `${ctx.runtime.named('sts:decode', 'tuple').text()}(${
+          resolved.map((element) => element.decodeText).join(', ')
+        })`,
+        encodeText: `${ctx.runtime.named('sts:encode', 'tuple').text()}(${
+          resolved.map((element) => element.encodeText).join(', ')
+        })`,
+      };
+    }
+    case 'option': {
+      const value = codecHelperTextsFromShape(ctx, shape.value, ownerTypeName, scopeNode, errorNode);
+      return value
+        ? {
+          decodeText: `${ctx.runtime.named('sts:decode', 'option').text()}(${value.decodeText})`,
+          encodeText: `${ctx.runtime.named('sts:encode', 'option').text()}(${value.encodeText})`,
+        }
+        : null;
+    }
+    case 'result': {
+      const okType = codecHelperTextsFromShape(ctx, shape.ok, ownerTypeName, scopeNode, errorNode);
+      const errType = codecHelperTextsFromShape(ctx, shape.err, ownerTypeName, scopeNode, errorNode);
+      return okType && errType
+        ? {
+          decodeText: `${ctx.runtime.named('sts:decode', 'result').text()}(${okType.decodeText}, ${errType.decodeText})`,
+          encodeText: `${ctx.runtime.named('sts:encode', 'result').text()}(${okType.encodeText}, ${errType.encodeText})`,
+        }
+        : null;
+    }
+    case 'record': {
+      if (shape.key.kind !== 'primitive' || shape.key.primitiveKind !== 'string') {
+        return null;
+      }
+      const value = codecHelperTextsFromShape(ctx, shape.value, ownerTypeName, scopeNode, errorNode);
+      return value
+        ? {
+          decodeText: `${ctx.runtime.named('sts:decode', 'readonlyRecord').text()}(${value.decodeText})`,
+          encodeText: `${ctx.runtime.named('sts:encode', 'record').text()}(${value.encodeText})`,
+        }
+        : null;
+    }
+    case 'object':
+    case 'intersection': {
+      const fields = flattenObjectLikeTypeFields(shape);
+      return fields ? nestedCodecHelperTextsFromFields(ctx, ownerTypeName, scopeNode, fields) : null;
+    }
+    case 'union': {
+      const nullishUnion = decomposeNullishUnion(shape);
+      if (!nullishUnion) {
+        return null;
+      }
+      let texts = nullishUnion.base
+        ? codecHelperTextsFromShape(ctx, nullishUnion.base, ownerTypeName, scopeNode, errorNode)
+        : nullishUnion.includesNull
+        ? {
+          decodeText: `${ctx.runtime.named('sts:decode', 'literal').text()}(null)`,
+          encodeText: `${ctx.runtime.named('sts:encode', 'literal').text()}(null)`,
+        }
+        : {
+          decodeText: ctx.runtime.named('sts:decode', 'undefinedValue').text(),
+          encodeText: ctx.runtime.named('sts:encode', 'undefinedEncoder').text(),
+        };
+      if (!texts) {
+        return null;
+      }
+      if (nullishUnion.includesNull && nullishUnion.base) {
+        texts = {
+          decodeText: `${ctx.runtime.named('sts:decode', 'nullable').text()}(${texts.decodeText})`,
+          encodeText: `${ctx.runtime.named('sts:encode', 'nullable').text()}(${texts.encodeText})`,
+        };
+      }
+      if (nullishUnion.includesUndefined) {
+        texts = {
+          decodeText: `${ctx.runtime.named('sts:decode', 'undefinedable').text()}(${texts.decodeText})`,
+          encodeText: `${ctx.runtime.named('sts:encode', 'undefinedable').text()}(${texts.encodeText})`,
+        };
+      }
+      return texts;
+    }
+    case 'unsupported':
+      return null;
+  }
+}
+
+function decodeDefaultExpressionText(
+  ctx: DeriveContext,
+  annotations: readonly MacroAnnotation[],
+  node: MacroSyntaxNode,
+): string | null {
+  const defaultAnnotation = findAnnotation(annotations, 'decode.default');
+  if (!defaultAnnotation) {
+    return null;
+  }
+  const valueText = annotationValueText(defaultAnnotation);
+  if (!valueText) {
+    ctx.error('decode.default(...) requires a value or helper expression.', node);
+  }
+  return valueText;
+}
+
+function wrapDecodeDefaultFieldText(
+  ctx: DeriveContext,
+  baseText: string,
+  defaultText: string | null,
+): string {
+  if (defaultText === null) {
+    return baseText;
+  }
+  const decodeDefaulted = ctx.runtime.named('sts:decode', 'defaulted').text();
+  const decodeOptional = ctx.runtime.named('sts:decode', 'optional').text();
+  return `${decodeDefaulted}(${decodeOptional}(${baseText}), ${defaultText})`;
+}
+
+function wrapDecodeFieldText(
+  ctx: DeriveContext,
+  baseText: string,
+  annotations: readonly MacroAnnotation[],
+  node: MacroSyntaxNode,
+  localName: string,
+  ownerDeclaration?: MacroClassDeclSyntax | MacroInterfaceDeclSyntax | MacroTypeAliasDeclSyntax,
+  ownerTypeName?: string,
+): string {
+  const transformAnnotation = findAnnotation(annotations, 'decode.transform');
+  const transformIdentifier = transformAnnotation ? annotationIdentifierArgument(transformAnnotation) : null;
+  if (transformAnnotation && !transformIdentifier) {
+    ctx.error('decode.transform(...) requires a helper identifier.', node);
+  }
+  if (transformAnnotation && transformIdentifier) {
+    assertAnnotationHelperCallableInScope(
+      ctx,
+      node,
+      ownerDeclaration,
+      ownerTypeName,
+      transformIdentifier,
+      'decode.transform',
+    );
+  }
+
+  const refineAnnotation = findAnnotation(annotations, 'decode.refine');
+  const refineIdentifier = refineAnnotation ? annotationIdentifierArgument(refineAnnotation) : null;
+  if (refineAnnotation && !refineIdentifier) {
+    ctx.error('decode.refine(...) requires a helper identifier.', node);
+  }
+  if (refineAnnotation && refineIdentifier) {
+    assertAnnotationHelperCallableInScope(
+      ctx,
+      node,
+      ownerDeclaration,
+      ownerTypeName,
+      refineIdentifier,
+      'decode.refine',
+    );
+  }
+
+  const decodeMap = ctx.runtime.named('sts:decode', 'map').text();
+  const decodeRefine = ctx.runtime.named('sts:decode', 'refine').text();
+  let text = baseText;
+  if (transformIdentifier) {
+    text = `${decodeMap}(${text}, ${transformIdentifier})`;
+  }
+  if (refineIdentifier) {
+    text = `${decodeRefine}(${
+      text
+    }, ${refineIdentifier}, ${JSON.stringify(`Expected field "${localName}" to satisfy decode.refine(...).`)})`;
+  }
+  return text;
+}
+
+function wrapEncodeFieldText(
+  ctx: DeriveContext,
+  baseText: string,
+  annotations: readonly MacroAnnotation[],
+  node: MacroSyntaxNode,
+  localName: string,
+  ownerDeclaration?: MacroClassDeclSyntax | MacroInterfaceDeclSyntax | MacroTypeAliasDeclSyntax,
+  ownerTypeName?: string,
+): string {
+  const transformAnnotation = findAnnotation(annotations, 'encode.transform');
+  const transformIdentifier = transformAnnotation ? annotationIdentifierArgument(transformAnnotation) : null;
+  if (transformAnnotation && !transformIdentifier) {
+    ctx.error('encode.transform(...) requires a helper identifier.', node);
+  }
+  if (transformAnnotation && transformIdentifier) {
+    assertAnnotationHelperCallableInScope(
+      ctx,
+      node,
+      ownerDeclaration,
+      ownerTypeName,
+      transformIdentifier,
+      'encode.transform',
+    );
+  }
+
+  const refineAnnotation = findAnnotation(annotations, 'encode.refine');
+  const refineIdentifier = refineAnnotation ? annotationIdentifierArgument(refineAnnotation) : null;
+  if (refineAnnotation && !refineIdentifier) {
+    ctx.error('encode.refine(...) requires a helper identifier.', node);
+  }
+  if (refineAnnotation && refineIdentifier) {
+    assertAnnotationHelperCallableInScope(
+      ctx,
+      node,
+      ownerDeclaration,
+      ownerTypeName,
+      refineIdentifier,
+      'encode.refine',
+    );
+  }
+
+  const encodeContramap = ctx.runtime.named('sts:encode', 'contramap').text();
+  const encodeRefine = ctx.runtime.named('sts:encode', 'refine').text();
+  let text = baseText;
+  if (transformIdentifier) {
+    text = `${encodeContramap}(${text}, ${transformIdentifier})`;
+  }
+  if (refineIdentifier) {
+    text = `${encodeRefine}(${
+      text
+    }, ${refineIdentifier}, ${JSON.stringify(`Expected field "${localName}" to satisfy encode.refine(...).`)})`;
+  }
+  return text;
+}
+
+function assertAnnotationHelperCallableInScope(
+  ctx: DeriveContext,
+  diagnosticNode: MacroSyntaxNode,
+  declaration: MacroClassDeclSyntax | MacroInterfaceDeclSyntax | MacroTypeAliasDeclSyntax | undefined,
+  typeName: string | undefined,
+  helperIdentifier: string,
+  annotationName: 'decode.refine' | 'decode.transform' | 'encode.refine' | 'encode.transform',
+): void {
+  if (declaration?.declarationKind === 'class' && typeName) {
+    const selfHelperClassification = classifySelfStaticHelper(
+      declaration,
+      typeName,
+      helperIdentifier,
+    );
+    if (selfHelperClassification === 'callable') {
+      return;
+    }
+    if (selfHelperClassification === 'non-callable') {
+      ctx.error(
+        `${annotationName}(...) requires "${helperIdentifier}" to be callable.`,
+        diagnosticNode,
+      );
+    }
+  }
+  if (!ctx.semantics.valueBindingInScope(helperIdentifier)) {
+    ctx.error(
+      `${annotationName}(...) requires the helper value "${helperIdentifier}" to be in scope.`,
+      diagnosticNode,
+    );
+  }
+  if (!ctx.semantics.valueBindingCallableInScope(helperIdentifier)) {
+    ctx.error(
+      `${annotationName}(...) requires "${helperIdentifier}" to be callable.`,
+      diagnosticNode,
+    );
+  }
+}
+
+function wrapDecodeDeclarationText(
+  ctx: DeriveContext,
+  baseText: string,
+  annotations: readonly MacroAnnotation[],
+  node: MacroClassDeclSyntax | MacroInterfaceDeclSyntax | MacroTypeAliasDeclSyntax,
+  typeName: string,
+): string {
+  const transformAnnotation = findAnnotation(annotations, 'decode.transform');
+  const transformIdentifier = transformAnnotation ? annotationIdentifierArgument(transformAnnotation) : null;
+  if (transformAnnotation && !transformIdentifier) {
+    ctx.error('decode.transform(...) requires a helper identifier.', node);
+  }
+  if (transformAnnotation && transformIdentifier) {
+    assertAnnotationHelperCallableInScope(
+      ctx,
+      declarationAnnotationDiagnosticNode(node, transformAnnotation),
+      node,
+      typeName,
+      transformIdentifier,
+      'decode.transform',
+    );
+  }
+
+  const refineAnnotation = findAnnotation(annotations, 'decode.refine');
+  const refineIdentifier = refineAnnotation ? annotationIdentifierArgument(refineAnnotation) : null;
+  if (refineAnnotation && !refineIdentifier) {
+    ctx.error('decode.refine(...) requires a helper identifier.', node);
+  }
+  if (refineAnnotation && refineIdentifier) {
+    assertAnnotationHelperCallableInScope(
+      ctx,
+      declarationAnnotationDiagnosticNode(node, refineAnnotation),
+      node,
+      typeName,
+      refineIdentifier,
+      'decode.refine',
+    );
+  }
+  const decodeMap = ctx.runtime.named('sts:decode', 'map').text();
+  const decodeRefine = ctx.runtime.named('sts:decode', 'refine').text();
+  let text = baseText;
+  if (transformIdentifier) {
+    text = `${decodeMap}(${text}, ${transformIdentifier})`;
+  }
+  if (refineIdentifier) {
+    text = `${decodeRefine}(${
+      text
+    }, ${refineIdentifier}, ${JSON.stringify(`Expected ${typeName} to satisfy decode.refine(...).`)})`;
+  }
+  return text;
+}
+
+function wrapEncodeDeclarationText(
+  ctx: DeriveContext,
+  baseText: string,
+  annotations: readonly MacroAnnotation[],
+  node: MacroClassDeclSyntax | MacroInterfaceDeclSyntax | MacroTypeAliasDeclSyntax,
+  typeName: string,
+): string {
+  const transformAnnotation = findAnnotation(annotations, 'encode.transform');
+  const transformIdentifier = transformAnnotation ? annotationIdentifierArgument(transformAnnotation) : null;
+  if (transformAnnotation && !transformIdentifier) {
+    ctx.error('encode.transform(...) requires a helper identifier.', node);
+  }
+  if (transformAnnotation && transformIdentifier) {
+    assertAnnotationHelperCallableInScope(
+      ctx,
+      declarationAnnotationDiagnosticNode(node, transformAnnotation),
+      node,
+      typeName,
+      transformIdentifier,
+      'encode.transform',
+    );
+  }
+
+  const refineAnnotation = findAnnotation(annotations, 'encode.refine');
+  const refineIdentifier = refineAnnotation ? annotationIdentifierArgument(refineAnnotation) : null;
+  if (refineAnnotation && !refineIdentifier) {
+    ctx.error('encode.refine(...) requires a helper identifier.', node);
+  }
+  if (refineAnnotation && refineIdentifier) {
+    assertAnnotationHelperCallableInScope(
+      ctx,
+      declarationAnnotationDiagnosticNode(node, refineAnnotation),
+      node,
+      typeName,
+      refineIdentifier,
+      'encode.refine',
+    );
+  }
+  const encodeContramap = ctx.runtime.named('sts:encode', 'contramap').text();
+  const encodeRefine = ctx.runtime.named('sts:encode', 'refine').text();
+  let text = baseText;
+  if (transformIdentifier) {
+    text = `${encodeContramap}(${text}, ${transformIdentifier})`;
+  }
+  if (refineIdentifier) {
+    text = `${encodeRefine}(${
+      text
+    }, ${refineIdentifier}, ${JSON.stringify(`Expected ${typeName} to satisfy encode.refine(...).`)})`;
+  }
+  return text;
+}
+
 function expectedCompanionName(typeName: string, macroName: DerivedMacroName): string {
   switch (macroName) {
     case 'eq':
@@ -864,6 +2501,36 @@ function assertNamedDerivedCompanionsInScope(
   }
 }
 
+function declarationHasDeriveAnnotation(
+  ctx: DeriveContext,
+  node: MacroSyntaxNode,
+  macroName: DerivedMacroName,
+): boolean {
+  return findAnnotation(ctx.syntax.annotations(node), macroName) !== null;
+}
+
+function codecNamedSideCompanions(
+  ctx: DeriveContext,
+  typeName: string,
+  ownerTypeName: string,
+  scopeNode: MacroSyntaxNode,
+): { readonly decodeCompanionName: string; readonly encodeCompanionName: string } | null {
+  const decodeCompanionName = expectedCompanionName(typeName, 'decode');
+  const encodeCompanionName = expectedCompanionName(typeName, 'encode');
+  const hasDecodeCompanion = typeName === ownerTypeName
+    ? declarationHasDeriveAnnotation(ctx, scopeNode, 'decode')
+    : ctx.semantics.valueBindingInScope(decodeCompanionName) ||
+      ctx.semantics.localDeclarationHasAnnotation(typeName, 'decode');
+  const hasEncodeCompanion = typeName === ownerTypeName
+    ? declarationHasDeriveAnnotation(ctx, scopeNode, 'encode')
+    : ctx.semantics.valueBindingInScope(encodeCompanionName) ||
+      ctx.semantics.localDeclarationHasAnnotation(typeName, 'encode');
+
+  return hasDecodeCompanion && hasEncodeCompanion
+    ? { decodeCompanionName, encodeCompanionName }
+    : null;
+}
+
 function eqHashFieldFromReflectedShape(
   ctx: DeriveContext,
   field: MacroReflectedFieldShape,
@@ -955,28 +2622,34 @@ function decodeFieldFromReflectedShape(
     if (viaIdentifier) {
       return viaIdentifier;
     }
-    if (field.type.kind === 'object') {
-      return nestedDecodeHelperTextFromFields(ctx, ownerTypeName, scopeNode, field.type.fields);
-    }
-    const fieldType = supportedDerivedTypeFromShape(field.type);
-    if (!fieldType) {
-      ctx.error(decodeLikeUnsupportedFieldMessage('decode'), field.node);
-    }
-    assertNamedDerivedCompanionsInScope(
+    const helperText = decodeHelperTextFromShape(
       ctx,
-      'decode',
+      field.type,
       ownerTypeName,
       scopeNode,
       field.node,
-      fieldType,
     );
-    return decodeHelperTextForType(ctx, fieldType);
+    if (!helperText) {
+      ctx.error(decodeLikeUnsupportedFieldMessage('decode'), field.node);
+    }
+    return helperText;
   })();
+  const defaultText = decodeDefaultExpressionText(ctx, field.annotations, field.node);
+  const fieldDecoderText = wrapDecodeFieldText(
+    ctx,
+    decoderText,
+    field.annotations,
+    field.node,
+    field.name,
+    asMacroDeclarationNode(scopeNode),
+    ownerTypeName,
+  );
 
   return {
-    decoderText,
+    decoderText: wrapDecodeDefaultFieldText(ctx, fieldDecoderText, defaultText),
+    defaultText: null,
     localName: field.name,
-    optional: field.optional,
+    optional: field.optional && defaultText === null,
     wireName: renamedWireName ?? field.name,
   };
 }
@@ -1007,26 +2680,29 @@ function encodeFieldFromReflectedShape(
     if (viaIdentifier) {
       return viaIdentifier;
     }
-    if (field.type.kind === 'object') {
-      return nestedEncodeHelperTextFromFields(ctx, ownerTypeName, scopeNode, field.type.fields);
-    }
-    const fieldType = supportedDerivedTypeFromShape(field.type);
-    if (!fieldType) {
-      ctx.error(decodeLikeUnsupportedFieldMessage('encode'), field.node);
-    }
-    assertNamedDerivedCompanionsInScope(
+    const helperText = encodeHelperTextFromShape(
       ctx,
-      'encode',
+      field.type,
       ownerTypeName,
       scopeNode,
       field.node,
-      fieldType,
     );
-    return encodeHelperTextForType(ctx, fieldType);
+    if (!helperText) {
+      ctx.error(decodeLikeUnsupportedFieldMessage('encode'), field.node);
+    }
+    return helperText;
   })();
 
   return {
-    encoderText,
+    encoderText: wrapEncodeFieldText(
+      ctx,
+      encoderText,
+      field.annotations,
+      field.node,
+      field.name,
+      asMacroDeclarationNode(scopeNode),
+      ownerTypeName,
+    ),
     localName: field.name,
     optional: field.optional,
     wireName: renamedWireName ?? field.name,
@@ -1059,27 +2735,42 @@ function codecFieldFromReflectedShape(
     if (viaIdentifier) {
       return { decodeText: viaIdentifier, encodeText: viaIdentifier };
     }
-    if (field.type.kind === 'object') {
-      return nestedCodecHelperTextsFromFields(ctx, ownerTypeName, scopeNode, field.type.fields);
-    }
-    const fieldType = supportedDerivedTypeFromShape(field.type);
-    if (!fieldType) {
-      ctx.error(decodeLikeUnsupportedFieldMessage('codec'), field.node);
-    }
-    assertNamedDerivedCompanionsInScope(
+    const helperTexts = codecHelperTextsFromShape(
       ctx,
-      'codec',
+      field.type,
       ownerTypeName,
       scopeNode,
       field.node,
-      fieldType,
     );
-    return codecHelperTextsForType(ctx, fieldType);
+    if (!helperTexts) {
+      ctx.error(decodeLikeUnsupportedFieldMessage('codec'), field.node);
+    }
+    return helperTexts;
   })();
+  const decodeDefaultText = decodeDefaultExpressionText(ctx, field.annotations, field.node);
+  const decodeFieldText = wrapDecodeFieldText(
+    ctx,
+    helperTexts.decodeText,
+    field.annotations,
+    field.node,
+    field.name,
+    asMacroDeclarationNode(scopeNode),
+    ownerTypeName,
+  );
 
   return {
-    decodeText: helperTexts.decodeText,
-    encodeText: helperTexts.encodeText,
+    decodeDefaultText: null,
+    decodeOptional: field.optional && decodeDefaultText === null,
+    decodeText: wrapDecodeDefaultFieldText(ctx, decodeFieldText, decodeDefaultText),
+    encodeText: wrapEncodeFieldText(
+      ctx,
+      helperTexts.encodeText,
+      field.annotations,
+      field.node,
+      field.name,
+      asMacroDeclarationNode(scopeNode),
+      ownerTypeName,
+    ),
     localName: field.name,
     optional: field.optional,
     wireName: renamedWireName ?? field.name,
@@ -1313,14 +3004,18 @@ function nestedDecodeHelperTextFromFields(
     ).join(',\n')
   }
       }`;
-  const isIdentityProjection = decodedFields.every((field) => field.localName === field.wireName);
+  const isIdentityProjection = decodedFields.every((field) =>
+    field.localName === field.wireName && field.defaultText === null
+  );
   if (isIdentityProjection) {
     return `${decodeObject}(${shapeText})`;
   }
   const projectionText = decodedFields.length === 0 ? '{}' : `({
         ${
     decodedFields.map((field) =>
-      `${propertyKeyText(field.localName)}: ${propertyAccessText('value', field.wireName)}`
+      `${propertyKeyText(field.localName)}: ${
+        decodeDefaultProjectionText(propertyAccessText('value', field.wireName), field.defaultText)
+      }`
     ).join(',\n')
   }
       })`;
@@ -1387,13 +3082,13 @@ function nestedCodecHelperTextsFromFields(
         ${
     codecFields.map((field) =>
       `${propertyKeyText(field.wireName)}: ${
-        field.optional ? `${decodeOptional}(${field.decodeText})` : field.decodeText
+        field.decodeOptional ? `${decodeOptional}(${field.decodeText})` : field.decodeText
       }`
     ).join(',\n')
   }
       }`;
   const hasIdentityDecodeProjection = codecFields.every((field) =>
-    field.localName === field.wireName
+    field.localName === field.wireName && field.decodeDefaultText === null
   );
   const encodeShapeText = codecFields.length === 0 ? '{}' : `{
         ${
@@ -1413,7 +3108,12 @@ function nestedCodecHelperTextsFromFields(
       (value) => ({
         ${
       codecFields.map((field) =>
-        `${propertyKeyText(field.localName)}: ${propertyAccessText('value', field.wireName)}`
+        `${propertyKeyText(field.localName)}: ${
+          decodeDefaultProjectionText(
+            propertyAccessText('value', field.wireName),
+            field.decodeDefaultText,
+          )
+        }`
       ).join(',\n')
     }
       }),
@@ -1502,14 +3202,18 @@ function nestedDecodeHelperText(
     ).join(',\n')
   }
       }`;
-  const isIdentityProjection = fields.every((field) => field.localName === field.wireName);
+  const isIdentityProjection = fields.every((field) =>
+    field.localName === field.wireName && field.defaultText === null
+  );
   if (isIdentityProjection) {
     return `${decodeObject}(${shapeText})`;
   }
   const projectionText = fields.length === 0 ? '{}' : `({
         ${
     fields.map((field) =>
-      `${propertyKeyText(field.localName)}: ${propertyAccessText('value', field.wireName)}`
+      `${propertyKeyText(field.localName)}: ${
+        decodeDefaultProjectionText(propertyAccessText('value', field.wireName), field.defaultText)
+      }`
     ).join(',\n')
   }
       })`;
@@ -1709,24 +3413,36 @@ function fieldFromDecodeMember(
       return viaIdentifier;
     }
 
-    const objectType = explicitType.asObjectLiteral();
-    if (objectType) {
-      return nestedDecodeHelperText(ctx, ownerTypeName, scopeNode, objectType);
-    }
-
-    const fieldType = parseSupportedDerivedType(explicitType.text());
-    if (!fieldType) {
+    const reflectedType = ctx.reflect.typeShape(explicitType);
+    const helperText = decodeHelperTextFromShape(
+      ctx,
+      reflectedType,
+      ownerTypeName,
+      scopeNode,
+      member,
+    );
+    if (!helperText) {
       ctx.error(decodeLikeUnsupportedFieldMessage('decode'), member);
     }
-    assertNamedDerivedCompanionsInScope(ctx, 'decode', ownerTypeName, scopeNode, member, fieldType);
-
-    return decodeHelperTextForType(ctx, fieldType);
+    return helperText;
   })();
+  const annotations = ctx.syntax.annotations(member);
+  const defaultText = decodeDefaultExpressionText(ctx, annotations, member);
+  const fieldDecoderText = wrapDecodeFieldText(
+    ctx,
+    decoderText,
+    annotations,
+    member,
+    member.name,
+    asMacroDeclarationNode(scopeNode),
+    ownerTypeName,
+  );
 
   return {
-    decoderText,
+    decoderText: wrapDecodeDefaultFieldText(ctx, fieldDecoderText, defaultText),
+    defaultText: null,
     localName: member.name,
-    optional: member.isOptional(),
+    optional: member.isOptional() && defaultText === null,
     wireName: renamedWireName ?? member.name,
   };
 }
@@ -1766,24 +3482,36 @@ function fieldFromDecodeClassField(
       return viaIdentifier;
     }
 
-    const objectType = explicitType.asObjectLiteral();
-    if (objectType) {
-      return nestedDecodeHelperText(ctx, ownerTypeName, scopeNode, objectType);
-    }
-
-    const fieldType = parseSupportedDerivedType(explicitType.text());
-    if (!fieldType) {
+    const reflectedType = ctx.reflect.typeShape(explicitType);
+    const helperText = decodeHelperTextFromShape(
+      ctx,
+      reflectedType,
+      ownerTypeName,
+      scopeNode,
+      field,
+    );
+    if (!helperText) {
       ctx.error(decodeLikeUnsupportedFieldMessage('decode'), field);
     }
-    assertNamedDerivedCompanionsInScope(ctx, 'decode', ownerTypeName, scopeNode, field, fieldType);
-
-    return decodeHelperTextForType(ctx, fieldType);
+    return helperText;
   })();
+  const annotations = ctx.syntax.annotations(field);
+  const defaultText = decodeDefaultExpressionText(ctx, annotations, field);
+  const fieldDecoderText = wrapDecodeFieldText(
+    ctx,
+    decoderText,
+    annotations,
+    field,
+    field.name,
+    asMacroDeclarationNode(scopeNode),
+    ownerTypeName,
+  );
 
   return {
-    decoderText,
+    decoderText: wrapDecodeDefaultFieldText(ctx, fieldDecoderText, defaultText),
+    defaultText: null,
     localName: field.name,
-    optional: field.isOptional(),
+    optional: field.isOptional() && defaultText === null,
     wireName: renamedWireName ?? field.name,
   };
 }
@@ -1794,7 +3522,7 @@ function classHasConstructorParameters(declaration: MacroClassDeclSyntax): boole
   );
 }
 
-function classifySelfFactoryHelper(
+function classifySelfStaticHelper(
   declaration: MacroClassDeclSyntax,
   typeName: string,
   factoryIdentifier: string,
@@ -1812,6 +3540,60 @@ function classifySelfFactoryHelper(
   }
 
   return member.memberKind === 'method' ? 'callable' : 'non-callable';
+}
+
+function hostDeclarationNameText(name: ts.PropertyName | ts.DeclarationName | undefined): string | null {
+  if (!name) {
+    return null;
+  }
+  if (ts.isIdentifier(name) || ts.isStringLiteralLike(name) || ts.isNumericLiteral(name)) {
+    return name.text;
+  }
+  return null;
+}
+
+function hostTypeNodeMayResolveAsync(typeNode: ts.TypeNode | undefined): boolean {
+  if (!typeNode || !ts.isTypeReferenceNode(typeNode)) {
+    return false;
+  }
+  const typeName = ts.isIdentifier(typeNode.typeName)
+    ? typeNode.typeName.text
+    : ts.isQualifiedName(typeNode.typeName)
+    ? typeNode.typeName.right.text
+    : null;
+  return typeName === 'Promise' || typeName === 'PromiseLike';
+}
+
+function selfStaticHelperMayResolveAsync(
+  declaration: MacroClassDeclSyntax,
+  typeName: string,
+  factoryIdentifier: string,
+): boolean | null {
+  const segments = factoryIdentifier.split('.').map((segment) => segment.trim()).filter((segment) =>
+    segment.length > 0
+  );
+  if (segments.length !== 2 || segments[0] !== typeName) {
+    return null;
+  }
+
+  const hostDeclaration = getHostDeclaration(declaration);
+  if (!ts.isClassDeclaration(hostDeclaration)) {
+    return false;
+  }
+  const hostMember = hostDeclaration.members.find((member) =>
+    ts.canHaveModifiers(member) &&
+    ts.getModifiers(member)?.some((modifier) => modifier.kind === ts.SyntaxKind.StaticKeyword) === true &&
+    hostDeclarationNameText(member.name) === segments[1]
+  );
+  if (!hostMember) {
+    return false;
+  }
+  if (ts.isMethodDeclaration(hostMember)) {
+    return hostTypeNodeMayResolveAsync(hostMember.type) ||
+      (ts.canHaveModifiers(hostMember) &&
+        ts.getModifiers(hostMember)?.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword) === true);
+  }
+  return false;
 }
 
 function classDecodeInstantiateText(
@@ -1832,7 +3614,7 @@ function classDecodeInstantiateText(
         annotationDiagnosticNode(declaration, factoryAnnotation) ?? declaration,
       );
     }
-    const selfFactoryClassification = classifySelfFactoryHelper(
+    const selfFactoryClassification = classifySelfStaticHelper(
       declaration,
       typeName,
       factoryIdentifier,
@@ -1935,22 +3717,31 @@ function fieldFromEncodeMember(
       return viaIdentifier;
     }
 
-    const objectType = explicitType.asObjectLiteral();
-    if (objectType) {
-      return nestedEncodeHelperText(ctx, ownerTypeName, scopeNode, objectType);
-    }
-
-    const fieldType = parseSupportedDerivedType(explicitType.text());
-    if (!fieldType) {
+    const reflectedType = ctx.reflect.typeShape(explicitType);
+    const helperText = encodeHelperTextFromShape(
+      ctx,
+      reflectedType,
+      ownerTypeName,
+      scopeNode,
+      member,
+    );
+    if (!helperText) {
       ctx.error(decodeLikeUnsupportedFieldMessage('encode'), member);
     }
-    assertNamedDerivedCompanionsInScope(ctx, 'encode', ownerTypeName, scopeNode, member, fieldType);
-
-    return encodeHelperTextForType(ctx, fieldType);
+    return helperText;
   })();
+  const annotations = ctx.syntax.annotations(member);
 
   return {
-    encoderText,
+    encoderText: wrapEncodeFieldText(
+      ctx,
+      encoderText,
+      annotations,
+      member,
+      member.name,
+      asMacroDeclarationNode(scopeNode),
+      ownerTypeName,
+    ),
     localName: member.name,
     optional: member.isOptional(),
     wireName: renamedWireName ?? member.name,
@@ -1992,22 +3783,31 @@ function fieldFromEncodeClassField(
       return viaIdentifier;
     }
 
-    const objectType = explicitType.asObjectLiteral();
-    if (objectType) {
-      return nestedEncodeHelperText(ctx, ownerTypeName, scopeNode, objectType);
-    }
-
-    const fieldType = parseSupportedDerivedType(explicitType.text());
-    if (!fieldType) {
+    const reflectedType = ctx.reflect.typeShape(explicitType);
+    const helperText = encodeHelperTextFromShape(
+      ctx,
+      reflectedType,
+      ownerTypeName,
+      scopeNode,
+      field,
+    );
+    if (!helperText) {
       ctx.error(decodeLikeUnsupportedFieldMessage('encode'), field);
     }
-    assertNamedDerivedCompanionsInScope(ctx, 'encode', ownerTypeName, scopeNode, field, fieldType);
-
-    return encodeHelperTextForType(ctx, fieldType);
+    return helperText;
   })();
+  const annotations = ctx.syntax.annotations(field);
 
   return {
-    encoderText,
+    encoderText: wrapEncodeFieldText(
+      ctx,
+      encoderText,
+      annotations,
+      field,
+      field.name,
+      asMacroDeclarationNode(scopeNode),
+      ownerTypeName,
+    ),
     localName: field.name,
     optional: field.isOptional(),
     wireName: renamedWireName ?? field.name,
@@ -2065,23 +3865,44 @@ function fieldFromCodecMember(
       return { decodeText: viaIdentifier, encodeText: viaIdentifier };
     }
 
-    const objectType = explicitType.asObjectLiteral();
-    if (objectType) {
-      return nestedCodecHelperTexts(ctx, ownerTypeName, scopeNode, objectType);
-    }
-
-    const fieldType = parseSupportedDerivedType(explicitType.text());
-    if (!fieldType) {
+    const reflectedType = ctx.reflect.typeShape(explicitType);
+    const helperTexts = codecHelperTextsFromShape(
+      ctx,
+      reflectedType,
+      ownerTypeName,
+      scopeNode,
+      member,
+    );
+    if (!helperTexts) {
       ctx.error(decodeLikeUnsupportedFieldMessage('codec'), member);
     }
-    assertNamedDerivedCompanionsInScope(ctx, 'codec', ownerTypeName, scopeNode, member, fieldType);
-
-    return codecHelperTextsForType(ctx, fieldType);
+    return helperTexts;
   })();
+  const annotations = ctx.syntax.annotations(member);
+  const decodeDefaultText = decodeDefaultExpressionText(ctx, annotations, member);
+  const decodeFieldText = wrapDecodeFieldText(
+    ctx,
+    helperTexts.decodeText,
+    annotations,
+    member,
+    member.name,
+    asMacroDeclarationNode(scopeNode),
+    ownerTypeName,
+  );
 
   return {
-    decodeText: helperTexts.decodeText,
-    encodeText: helperTexts.encodeText,
+    decodeDefaultText: null,
+    decodeOptional: member.isOptional() && decodeDefaultText === null,
+    decodeText: wrapDecodeDefaultFieldText(ctx, decodeFieldText, decodeDefaultText),
+    encodeText: wrapEncodeFieldText(
+      ctx,
+      helperTexts.encodeText,
+      annotations,
+      member,
+      member.name,
+      asMacroDeclarationNode(scopeNode),
+      ownerTypeName,
+    ),
     localName: member.name,
     optional: member.isOptional(),
     wireName: renamedWireName ?? member.name,
@@ -2123,23 +3944,44 @@ function fieldFromCodecClassField(
       return { decodeText: viaIdentifier, encodeText: viaIdentifier };
     }
 
-    const objectType = explicitType.asObjectLiteral();
-    if (objectType) {
-      return nestedCodecHelperTexts(ctx, ownerTypeName, scopeNode, objectType);
-    }
-
-    const fieldType = parseSupportedDerivedType(explicitType.text());
-    if (!fieldType) {
+    const reflectedType = ctx.reflect.typeShape(explicitType);
+    const helperTexts = codecHelperTextsFromShape(
+      ctx,
+      reflectedType,
+      ownerTypeName,
+      scopeNode,
+      field,
+    );
+    if (!helperTexts) {
       ctx.error(decodeLikeUnsupportedFieldMessage('codec'), field);
     }
-    assertNamedDerivedCompanionsInScope(ctx, 'codec', ownerTypeName, scopeNode, field, fieldType);
-
-    return codecHelperTextsForType(ctx, fieldType);
+    return helperTexts;
   })();
+  const annotations = ctx.syntax.annotations(field);
+  const decodeDefaultText = decodeDefaultExpressionText(ctx, annotations, field);
+  const decodeFieldText = wrapDecodeFieldText(
+    ctx,
+    helperTexts.decodeText,
+    annotations,
+    field,
+    field.name,
+    asMacroDeclarationNode(scopeNode),
+    ownerTypeName,
+  );
 
   return {
-    decodeText: helperTexts.decodeText,
-    encodeText: helperTexts.encodeText,
+    decodeDefaultText: null,
+    decodeOptional: field.isOptional() && decodeDefaultText === null,
+    decodeText: wrapDecodeDefaultFieldText(ctx, decodeFieldText, decodeDefaultText),
+    encodeText: wrapEncodeFieldText(
+      ctx,
+      helperTexts.encodeText,
+      annotations,
+      field,
+      field.name,
+      asMacroDeclarationNode(scopeNode),
+      ownerTypeName,
+    ),
     localName: field.name,
     optional: field.isOptional(),
     wireName: renamedWireName ?? field.name,
@@ -2891,6 +4733,7 @@ export function decode(): MacroDefinition<typeof DECODE_SIGNATURE> {
     declarationKinds: ['class', 'interface', 'typeAlias'],
     expansionMode: 'augment',
     expand(ctx, decoded) {
+      const declarationAnnotations = ctx.syntax.annotations(decoded.args.target);
       if (decoded.caseName === 'typeAlias') {
         const declaration = decoded.args.target as MacroTypeAliasDeclSyntax;
         if (!declaration.type.asObjectLiteral() && declaration.type.asUnion()) {
@@ -2916,10 +4759,17 @@ export function decode(): MacroDefinition<typeof DECODE_SIGNATURE> {
               decodeOptional,
             )
           );
-          const unionText = foldUnionText(decodeUnion, variantDecoders);
+          const unionText = wrapDecodeDeclarationText(
+            ctx,
+            foldUnionText(decodeUnion, variantDecoders),
+            declarationAnnotations,
+            declaration,
+            typeName,
+          );
+          const companionName = `${typeName}Decoder`;
           return ctx.output.stmt(
             ctx.quote.stmt`
-              export const ${`${typeName}Decoder`} = ${unionText};
+              export const ${companionName} = ${unionText};
             `,
           );
         }
@@ -2942,7 +4792,12 @@ export function decode(): MacroDefinition<typeof DECODE_SIGNATURE> {
       const projectionText = fields.length === 0 ? '{}' : `({
             ${
         fields.map((field) =>
-          `${propertyKeyText(field.localName)}: ${propertyAccessText('value', field.wireName)}`
+          `${propertyKeyText(field.localName)}: ${
+            decodeDefaultProjectionText(
+              propertyAccessText('value', field.wireName),
+              field.defaultText,
+            )
+          }`
         ).join(',\n')
       }
           })`;
@@ -2950,12 +4805,64 @@ export function decode(): MacroDefinition<typeof DECODE_SIGNATURE> {
         ? projectionText
         : `(${instantiateText.replace(CLASS_DECODE_VALUE_PLACEHOLDER, projectionText)})`;
 
-      return ctx.output.stmt(
-        ctx.quote.stmt`
-          export const ${`${typeName}Decoder`} = ${map}(
+      const decoderText = wrapDecodeDeclarationText(
+        ctx,
+        `${map}(
             ${object}(${shapeText}),
             (value) => ${finalProjectionText},
+          )`,
+        declarationAnnotations,
+        decoded.args.target,
+        typeName,
+      );
+      const companionName = `${typeName}Decoder`;
+      const recursiveDecoderTypeAliasName = `__sts_${typeName}DecoderType`;
+      const useRecursiveStructuralTyping = isPlainStructuralRecursiveDeclaration(
+        ctx,
+        decoded.args.target,
+        typeName,
+        'decode',
+      );
+      if (useRecursiveStructuralTyping) {
+        const decodeMode = recursiveDeclarationDecodeMode(ctx, decoded.args.target, 'decode');
+        const selfName = '__sts_self';
+        const recursiveDecoderTypeAliasText = decodeMode === 'sync'
+          ? `type ${recursiveDecoderTypeAliasName} = import('sts:decode').Decoder<${typeName}>;`
+          : `type ${recursiveDecoderTypeAliasName} = import('sts:decode').Decoder<${typeName}, unknown, "async">;`;
+        let recursiveDecoderText = rewriteRecursiveSelfReference(
+          decoderText,
+          `(): import('sts:decode').Decoder<${typeName}> => ${companionName}`,
+          `(): ${recursiveDecoderTypeAliasName} => ${selfName}`,
+        );
+        recursiveDecoderText = rewriteRecursiveLazyInvocation(
+          recursiveDecoderText,
+          recursiveDecoderTypeAliasName,
+          selfName,
+          decodeMode === 'sync'
+            ? `${typeName}, import('sts:decode').DecodeFailure, "sync"`
+            : `${typeName}, unknown, "async"`,
+        );
+        if (decoded.caseName !== 'class') {
+          recursiveDecoderText = rewriteRecursiveSelfReference(
+            recursiveDecoderText,
+            '(value) =>',
+            `(value): ${typeName} =>`,
           );
+        }
+        return ctx.output.stmts(
+          ctx.quote.stmts`
+            ${recursiveDecoderTypeAliasText}
+            export const ${companionName}: ${recursiveDecoderTypeAliasName} = (() => {
+              let ${selfName}!: ${recursiveDecoderTypeAliasName};
+              ${selfName} = ${recursiveDecoderText} as unknown as ${recursiveDecoderTypeAliasName};
+              return ${selfName};
+            })();
+          `,
+        );
+      }
+      return ctx.output.stmt(
+        ctx.quote.stmt`
+          export const ${companionName} = ${decoderText};
         `,
       );
     },
@@ -2970,6 +4877,7 @@ export function encode(): MacroDefinition<typeof DECODE_SIGNATURE> {
     declarationKinds: ['class', 'interface', 'typeAlias'],
     expansionMode: 'augment',
     expand(ctx, decoded) {
+      const declarationAnnotations = ctx.syntax.annotations(decoded.args.target);
       if (decoded.caseName === 'typeAlias') {
         const declaration = decoded.args.target as MacroTypeAliasDeclSyntax;
         if (!declaration.type.asObjectLiteral() && declaration.type.asUnion()) {
@@ -3000,15 +4908,23 @@ export function encode(): MacroDefinition<typeof DECODE_SIGNATURE> {
             return `case '${variant.tag}':
               return ${encodeObject}(${shapeText}).encode(${projectionText});`;
           }).join('\n');
-          return ctx.output.stmt(
-            ctx.quote.stmt`
-              export const ${`${typeName}Encoder`} = ${encodeFromEncode}((value: ${typeName}) => {
+          const encoderText = wrapEncodeDeclarationText(
+            ctx,
+            `${encodeFromEncode}((value: ${typeName}) => {
                 switch (${propertyAccessText('value', discriminantName)}) {
                   ${switchCases}
                   default:
                     throw new Error('unreachable tagged union encoder case');
                 }
-              });
+              })`,
+            declarationAnnotations,
+            declaration,
+            typeName,
+          );
+          const companionName = `${typeName}Encoder`;
+          return ctx.output.stmt(
+            ctx.quote.stmt`
+              export const ${companionName} = ${encoderText};
             `,
           );
         }
@@ -3036,12 +4952,74 @@ export function encode(): MacroDefinition<typeof DECODE_SIGNATURE> {
       }
           })`;
 
-      return ctx.output.stmt(
-        ctx.quote.stmt`
-          export const ${`${typeName}Encoder`} = ${contramap}(
+      const encoderText = wrapEncodeDeclarationText(
+        ctx,
+        `${contramap}(
             ${object}(${shapeText}),
             (value: ${typeName}) => ${projectionText},
+          )`,
+        declarationAnnotations,
+        decoded.args.target,
+        typeName,
+      );
+      const companionName = `${typeName}Encoder`;
+      const recursiveEncodedAliasName = `__sts_${typeName}EncodedForEncode`;
+      const recursiveEncoderTypeAliasName = `__sts_${typeName}EncoderType`;
+      const recursiveEncodedAliasText = isPlainStructuralRecursiveDeclaration(
+          ctx,
+          decoded.args.target,
+          typeName,
+          'encode',
+        )
+        ? recursiveEncodedObjectTypeAliasText(
+          ctx,
+          decoded.args.target,
+          typeName,
+          'encode',
+          recursiveEncodedAliasName,
+        )
+        : null;
+      if (recursiveEncodedAliasText) {
+        const encodeMode = recursiveDeclarationEncodeMode(ctx, decoded.args.target, 'encode');
+        const selfName = '__sts_self';
+        const recursiveEncoderTypeAliasText = encodeMode === 'sync'
+          ? `type ${recursiveEncoderTypeAliasName} = import('sts:encode').Encoder<${typeName}, ${recursiveEncodedAliasName}>;`
+          : `type ${recursiveEncoderTypeAliasName} = import('sts:encode').Encoder<${typeName}, ${recursiveEncodedAliasName}, unknown, "async">;`;
+        let recursiveEncoderText = rewriteRecursiveSelfReference(
+          encoderText,
+          `(): import('sts:encode').Encoder<${typeName}, import('sts:json').JsonLikeValue> => ${companionName}`,
+          `(): ${recursiveEncoderTypeAliasName} => ${selfName}`,
+        );
+        recursiveEncoderText = rewriteRecursiveLazyInvocation(
+          recursiveEncoderText,
+          recursiveEncoderTypeAliasName,
+          selfName,
+          encodeMode === 'sync'
+            ? `${typeName}, ${recursiveEncodedAliasName}, import('sts:encode').EncodeFailure, "sync"`
+            : `${typeName}, ${recursiveEncodedAliasName}, unknown, "async"`,
+        );
+        if (decoded.caseName !== 'class') {
+          recursiveEncoderText = rewriteRecursiveSelfReference(
+            recursiveEncoderText,
+            `(value: ${typeName}) =>`,
+            `(value: ${typeName}): ${typeName} =>`,
           );
+        }
+        return ctx.output.stmts(
+          ctx.quote.stmts`
+            type ${recursiveEncodedAliasName} = ${recursiveEncodedAliasText};
+            ${recursiveEncoderTypeAliasText}
+            export const ${companionName}: ${recursiveEncoderTypeAliasName} = (() => {
+              let ${selfName}!: ${recursiveEncoderTypeAliasName};
+              ${selfName} = ${recursiveEncoderText} as unknown as ${recursiveEncoderTypeAliasName};
+              return ${selfName};
+            })();
+          `,
+        );
+      }
+      return ctx.output.stmt(
+        ctx.quote.stmt`
+          export const ${companionName} = ${encoderText};
         `,
       );
     },
@@ -3056,6 +5034,7 @@ export function codec(): MacroDefinition<typeof DECODE_SIGNATURE> {
     declarationKinds: ['class', 'interface', 'typeAlias'],
     expansionMode: 'augment',
     expand(ctx, decoded) {
+      const declarationAnnotations = ctx.syntax.annotations(decoded.args.target);
       if (decoded.caseName === 'typeAlias') {
         const declaration = decoded.args.target as MacroTypeAliasDeclSyntax;
         if (!declaration.type.asObjectLiteral() && declaration.type.asUnion()) {
@@ -3086,7 +5065,13 @@ export function codec(): MacroDefinition<typeof DECODE_SIGNATURE> {
               decodeOptional,
             )
           );
-          const unionText = foldUnionText(decodeUnion, variantDecoders);
+          const unionText = wrapDecodeDeclarationText(
+            ctx,
+            foldUnionText(decodeUnion, variantDecoders),
+            declarationAnnotations,
+            declaration,
+            typeName,
+          );
           const switchCases = variants.map((variant) => {
             const variantType = taggedVariantTypeText(typeName, discriminantName, variant.tag);
             const shapeText = taggedCodecEncodeVariantShapeText(
@@ -3103,17 +5088,25 @@ export function codec(): MacroDefinition<typeof DECODE_SIGNATURE> {
             return `case '${variant.tag}':
               return ${encodeObject}(${shapeText}).encode(${projectionText});`;
           }).join('\n');
-          return ctx.output.stmt(
-            ctx.quote.stmt`
-              export const ${`${typeName}Codec`} = ${createCodec}(
-                ${unionText},
-                ${encodeFromEncode}((value: ${typeName}) => {
+          const encoderText = wrapEncodeDeclarationText(
+            ctx,
+            `${encodeFromEncode}((value: ${typeName}) => {
                   switch (${propertyAccessText('value', discriminantName)}) {
                     ${switchCases}
                     default:
                       throw new Error('unreachable tagged union codec case');
                   }
-                }),
+                })`,
+            declarationAnnotations,
+            declaration,
+            typeName,
+          );
+          const companionName = `${typeName}Codec`;
+          return ctx.output.stmt(
+            ctx.quote.stmt`
+              export const ${companionName} = ${createCodec}(
+                ${unionText},
+                ${encoderText},
               );
             `,
           );
@@ -3132,7 +5125,7 @@ export function codec(): MacroDefinition<typeof DECODE_SIGNATURE> {
             ${
         fields.map((field) =>
           `${propertyKeyText(field.wireName)}: ${
-            field.optional ? `${decodeOptional}(${field.decodeText})` : field.decodeText
+            field.decodeOptional ? `${decodeOptional}(${field.decodeText})` : field.decodeText
           }`
         ).join(',\n')
       }
@@ -3141,7 +5134,12 @@ export function codec(): MacroDefinition<typeof DECODE_SIGNATURE> {
       const decodeProjectionText = fields.length === 0 ? '{}' : `({
             ${
         fields.map((field) =>
-          `${propertyKeyText(field.localName)}: ${propertyAccessText('value', field.wireName)}`
+          `${propertyKeyText(field.localName)}: ${
+            decodeDefaultProjectionText(
+              propertyAccessText('value', field.wireName),
+              field.decodeDefaultText,
+            )
+          }`
         ).join(',\n')
       }
           })`;
@@ -3167,17 +5165,124 @@ export function codec(): MacroDefinition<typeof DECODE_SIGNATURE> {
       }
           })`;
 
-      return ctx.output.stmt(
-        ctx.quote.stmt`
-          export const ${`${typeName}Codec`} = ${codec}(
-            ${decodeMap}(
+      const decoderText = wrapDecodeDeclarationText(
+        ctx,
+        `${decodeMap}(
               ${decodeObject}(${decodeShapeText}),
               (value) => ${finalDecodeProjectionText},
-            ),
-            ${encodeContramap}(
+            )`,
+        declarationAnnotations,
+        decoded.args.target,
+        typeName,
+      );
+      const encoderText = wrapEncodeDeclarationText(
+        ctx,
+        `${encodeContramap}(
               ${encodeObject}(${encodeShapeText}),
               (value: ${typeName}) => ${encodeProjectionText},
-            ),
+            )`,
+        declarationAnnotations,
+        decoded.args.target,
+        typeName,
+      );
+      const companionName = `${typeName}Codec`;
+      const recursiveEncodedAliasName = `__sts_${typeName}EncodedForCodec`;
+      const recursiveCodecTypeAliasName = `__sts_${typeName}CodecType`;
+      const recursiveEncodedAliasText = isPlainStructuralRecursiveDeclaration(
+          ctx,
+          decoded.args.target,
+          typeName,
+          'codec',
+        )
+        ? recursiveEncodedObjectTypeAliasText(
+          ctx,
+          decoded.args.target,
+          typeName,
+          'codec',
+          recursiveEncodedAliasName,
+        )
+        : null;
+      if (recursiveEncodedAliasText) {
+        const decodeMode = recursiveDeclarationDecodeMode(ctx, decoded.args.target, 'codec');
+        const encodeMode = recursiveDeclarationEncodeMode(ctx, decoded.args.target, 'codec');
+        const selfName = '__sts_self';
+        const recursiveCodecDecodeCallbackTypeText = decodeMode === 'sync'
+          ? `import('sts:decode').Decoder<${typeName}>`
+          : `import('sts:decode').Decoder<${typeName}, unknown, "async">`;
+        const recursiveCodecEncodeCallbackTypeText = encodeMode === 'sync'
+          ? `import('sts:encode').Encoder<${typeName}, import('sts:json').JsonLikeValue>`
+          : `import('sts:encode').Encoder<${typeName}, import('sts:json').JsonLikeValue, unknown, "async">`;
+        const recursiveCodecDecodeErrorTypeText = decodeMode === 'sync'
+          ? `import('sts:decode').DecodeFailure`
+          : 'unknown';
+        const recursiveCodecEncodeErrorTypeText = encodeMode === 'sync'
+          ? `import('sts:encode').EncodeFailure`
+          : 'unknown';
+        const recursiveCodecTypeAliasText = decodeMode === 'sync' && encodeMode === 'sync'
+          ? `type ${recursiveCodecTypeAliasName} = import('sts:codec').Codec<${typeName}, ${recursiveEncodedAliasName}>;`
+          : `type ${recursiveCodecTypeAliasName} = import('sts:codec').Codec<${typeName}, ${recursiveEncodedAliasName}, ${recursiveCodecDecodeErrorTypeText}, ${recursiveCodecEncodeErrorTypeText}, "${decodeMode}", "${encodeMode}">;`;
+        const recursiveCodecText = rewriteRecursiveSelfReference(
+          `${codec}(
+              ${decoderText},
+              ${encoderText},
+            )`,
+          `(): import('sts:decode').Decoder<${typeName}> => ${companionName}`,
+          `(): ${recursiveCodecDecodeCallbackTypeText} => ${selfName}`,
+        );
+        let recursiveCodecTextWithEncode = rewriteRecursiveSelfReference(
+          recursiveCodecText,
+          `(): import('sts:encode').Encoder<${typeName}, import('sts:json').JsonLikeValue> => ${companionName}`,
+          `(): ${recursiveCodecEncodeCallbackTypeText} => ${selfName}`,
+        );
+        recursiveCodecTextWithEncode = rewriteRecursiveLazyInvocation(
+          recursiveCodecTextWithEncode,
+          recursiveCodecDecodeCallbackTypeText,
+          selfName,
+          decodeMode === 'sync'
+            ? `${typeName}, import('sts:decode').DecodeFailure, "sync"`
+            : `${typeName}, unknown, "async"`,
+        );
+        recursiveCodecTextWithEncode = rewriteRecursiveLazyInvocation(
+          recursiveCodecTextWithEncode,
+          recursiveCodecEncodeCallbackTypeText,
+          selfName,
+          encodeMode === 'sync'
+            ? `${typeName}, import('sts:json').JsonLikeValue, import('sts:encode').EncodeFailure, "sync"`
+            : `${typeName}, import('sts:json').JsonLikeValue, unknown, "async"`,
+        );
+        recursiveCodecTextWithEncode = rewriteRecursiveLazyInvocation(
+          recursiveCodecTextWithEncode,
+          `import('sts:decode').Decoder<${typeName}>`,
+          `${typeName}Decoder`,
+          decodeMode === 'sync'
+            ? `${typeName}, import('sts:decode').DecodeFailure, "sync"`
+            : `${typeName}, unknown, "async"`,
+        );
+        recursiveCodecTextWithEncode = rewriteRecursiveLazyInvocation(
+          recursiveCodecTextWithEncode,
+          `import('sts:encode').Encoder<${typeName}, import('sts:json').JsonLikeValue>`,
+          `${typeName}Encoder`,
+          encodeMode === 'sync'
+            ? `${typeName}, import('sts:json').JsonLikeValue, import('sts:encode').EncodeFailure, "sync"`
+            : `${typeName}, import('sts:json').JsonLikeValue, unknown, "async"`,
+        );
+        return ctx.output.stmts(
+          ctx.quote.stmts`
+            type ${recursiveEncodedAliasName} = ${recursiveEncodedAliasText};
+            ${recursiveCodecTypeAliasText}
+            export const ${companionName}: ${recursiveCodecTypeAliasName} = (() => {
+              let ${selfName}!: ${recursiveCodecTypeAliasName};
+              ${selfName} = ${recursiveCodecTextWithEncode} as unknown as ${recursiveCodecTypeAliasName};
+              return ${selfName};
+            })();
+          `,
+        );
+      }
+      return ctx.output.stmt(
+        ctx.quote.stmt`
+          export const ${companionName} = ${codec}(
+            ${decoderText},
+            ${encoderText},
           );
         `,
       );

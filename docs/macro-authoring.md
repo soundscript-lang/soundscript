@@ -295,9 +295,14 @@ Supported member-level annotation forms currently include:
 - `#[hash.via(...)]`
 - `#[decode.rename(...)]`
 - `#[decode.via(...)]`
+- `#[decode.default(...)]`
+- `#[decode.transform(...)]`
+- `#[decode.refine(...)]`
 - `#[decode.factory(...)]` on class declarations
 - `#[encode.rename(...)]`
 - `#[encode.via(...)]`
+- `#[encode.transform(...)]`
+- `#[encode.refine(...)]`
 - `#[codec.rename(...)]`
 - `#[codec.via(...)]`
 - `#[codec.factory(...)]` on class declarations

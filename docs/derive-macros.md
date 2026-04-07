@@ -52,8 +52,13 @@ Supported member-level configuration currently includes:
 - `#[hash.via(helper)]`
 - `#[decode.rename('wire_name')]`
 - `#[decode.via(customDecoder)]`
+- `#[decode.default(valueOrHelper)]`
+- `#[decode.transform(helper)]` on fields or declarations
+- `#[decode.refine(helper)]` on fields or declarations
 - `#[encode.rename('wire_name')]`
 - `#[encode.via(customEncoder)]`
+- `#[encode.transform(helper)]` on fields or declarations
+- `#[encode.refine(helper)]` on fields or declarations
 - `#[codec.rename('wire_name')]`
 - `#[codec.via(customCodec)]`
 - `#[decode.factory(Helper)]` on class declarations
@@ -67,13 +72,17 @@ declaration.
 Without a `via(...)` override, the current derive helpers support:
 
 - primitive fields: `string`, `number`, `boolean`, `bigint`
+- `null`
+- `undefined`
 - fixed tuples of supported field types: `[string, bigint]`, `readonly [boolean, User]`
 - arrays of supported field types: `User[]`, `readonly User[]`, `Array<User>`,
   `ReadonlyArray<User>`
+- string-keyed records and index signatures: `Record<string, User>`, `{ [key: string]: User }`
+- object-like intersections: `{ id: string } & { total: bigint }`
 - nested object literals whose members are themselves supported
 - `Option<T>` where `T` is itself supported
 - `Result<T, E>` where both `T` and `E` are themselves supported
-- named derived references such as `User`
+- named derived references such as `User`, including recursive and mutually recursive references
 
 Named derived references assume the corresponding companion is available in scope:
 
@@ -86,6 +95,72 @@ Named derived references assume the corresponding companion is available in scop
 This works naturally when those companions are generated in the same module or otherwise imported as
 values. More complex shapes such as open unions or custom containers still require `via(...)` in
 v1.
+
+## Decode / Encode Runtime Behavior
+
+Derived `decode`, `encode`, and `codec` companions are generated on top of the `sts:decode`,
+`sts:encode`, and `sts:codec` runtime contracts.
+
+The key runtime behavior is:
+
+- `decode(...)` stays fail-fast
+- `encode(...)` stays fail-fast
+- `validateDecode(...)` accumulates structured inbound issues
+- `validateEncode(...)` accumulates structured outbound issues
+- if any nested helper, refine hook, transform hook, or class factory returns `Promise`, the
+  generated method for that direction becomes async automatically
+
+That means a derived helper may expose either sync or async `decode(...)` / `encode(...)`
+depending on the declaration and any nested helpers it references.
+
+## Decode / Encode Hook Order
+
+For decode-side field annotations, the generated pipeline is:
+
+1. structural decode
+2. field-local `#[decode.transform(...)]`
+3. field-local `#[decode.refine(...)]`
+4. `#[decode.default(...)]` as the outer fallback for missing / `undefined` values
+
+Defaults therefore bypass field-local transforms and refinements when the fallback is used.
+
+For encode-side field annotations, the generated pipeline is:
+
+1. field-local `#[encode.refine(...)]`
+2. field-local `#[encode.transform(...)]`
+3. structural encode
+
+Declaration-level hooks wrap the whole declaration value rather than individual fields:
+
+- `#[decode.transform(...)]` runs after structural decode and any class construction, before
+  declaration-level `#[decode.refine(...)]`
+- `#[encode.refine(...)]` runs before declaration-level `#[encode.transform(...)]`, matching the
+  field-level outbound ordering
+- `#[encode.transform(...)]` runs before structural encode of the whole declaration value
+
+## Recursive Types
+
+Recursive named declarations are a required supported case for `#[decode]`, `#[encode]`, and
+`#[codec]`.
+
+Current behavior:
+
+- recursive and mutually recursive named references lower through lazy companion references
+- recursive tree-like values decode and encode normally
+- encode-side helpers reject cyclic runtime object graphs that cannot be serialized finitely
+
+Example:
+
+```ts
+import { codec } from 'sts:derive';
+
+// #[codec]
+interface Expr {
+  tag: 'lit' | 'add';
+  left?: Expr;
+  right?: Expr;
+}
+```
 
 ## `#[tagged]`
 

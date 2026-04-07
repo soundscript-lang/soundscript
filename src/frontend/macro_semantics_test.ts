@@ -197,6 +197,179 @@ Deno.test('createMacroSemantics can query dotted value helpers and callability i
   assertEquals(semantics.valueBindingCallableInScope('User.missing', group), false);
 });
 
+Deno.test('createMacroSemantics can detect promise-like value helpers in scope', () => {
+  const fileName = '/virtual/index.ts';
+  const preparedProgram = createPreparedProgramForMacroTest({
+    [fileName]: [
+      'declare function normalizeUser(value: User): Promise<User>;',
+      'declare function normalizeSync(value: User): User;',
+      'declare const promisedLabel: Promise<string>;',
+      'class User {',
+      '  static async fromJson(value: { id: string }): Promise<User> {',
+      '    return new User();',
+      '  }',
+      '  static label = "user";',
+      '}',
+      'type Group = { owner: User };',
+      '',
+    ].join('\n'),
+  });
+
+  const sourceFile = preparedProgram.program.getSourceFile(fileName);
+  assert(sourceFile);
+
+  const semantics = createMacroSemantics(preparedProgram.program);
+  const group = findTypeAliasDeclaration(sourceFile, 'Group');
+
+  assertEquals(semantics.valueBindingPromiseLikeInScope('normalizeUser', group), true);
+  assertEquals(semantics.valueBindingPromiseLikeInScope('normalizeSync', group), false);
+  assertEquals(semantics.valueBindingPromiseLikeInScope('promisedLabel', group), true);
+  assertEquals(semantics.valueBindingPromiseLikeInScope('User.fromJson', group), true);
+  assertEquals(semantics.valueBindingPromiseLikeInScope('User.label', group), false);
+  assertEquals(semantics.valueBindingPromiseLikeInScope('User.missing', group), false);
+});
+
+Deno.test('createMacroSemantics can query value binding types in scope', () => {
+  const fileName = '/virtual/index.ts';
+  const preparedProgram = createPreparedProgramForMacroTest({
+    [fileName]: [
+      "import { lazy as decodeLazy, string } from 'sts:decode';",
+      'const StringDecoderRef = decodeLazy(() => string);',
+      'type Wrapper = { value: string };',
+      '',
+    ].join('\n'),
+  });
+
+  const sourceFile = preparedProgram.program.getSourceFile(fileName);
+  assert(sourceFile);
+
+  const semantics = createMacroSemantics(preparedProgram.program);
+  const wrapper = findTypeAliasDeclaration(sourceFile, 'Wrapper');
+  const helperType = semantics.valueBindingTypeInScope('StringDecoderRef', wrapper);
+
+  assert(helperType);
+  assert(helperType.displayText.length > 0);
+});
+
+Deno.test('createMacroSemantics can infer async helper mode from unannotated recursive helper initializers', () => {
+  const fileName = '/virtual/index.ts';
+  const preparedProgram = createPreparedProgramForMacroTest({
+    [fileName]: [
+      "import { lazy as decodeLazy, map as decodeMap } from 'sts:decode';",
+      "import { lazy as encodeLazy, contramap as encodeContramap } from 'sts:encode';",
+      "import { codec as createCodec } from 'sts:codec';",
+      '',
+      'declare function normalizeNode(value: Node): Promise<Node>;',
+      '',
+      'const NodeDecoderRef = decodeMap(decodeLazy(() => NodeDecoder), normalizeNode);',
+      'const NodeEncoderRef = encodeContramap(encodeLazy(() => NodeEncoder), normalizeNode);',
+      'const NodeCodecRef = createCodec(NodeDecoderRef, NodeEncoderRef);',
+      '',
+      'type Node = {',
+      '  id: string;',
+      '  next: Node | undefined;',
+      '};',
+      '',
+    ].join('\n'),
+  });
+
+  const sourceFile = preparedProgram.program.getSourceFile(fileName);
+  assert(sourceFile);
+
+  const semantics = createMacroSemantics(preparedProgram.program);
+  const node = findTypeAliasDeclaration(sourceFile, 'Node');
+
+  assertEquals(semantics.valueBindingHelperModeInScope('NodeDecoderRef', 'decode', node), 'async');
+  assertEquals(semantics.valueBindingHelperModeInScope('NodeEncoderRef', 'encode', node), 'async');
+  assertEquals(semantics.valueBindingHelperModeInScope('NodeCodecRef', 'decode', node), 'async');
+  assertEquals(semantics.valueBindingHelperModeInScope('NodeCodecRef', 'encode', node), 'async');
+});
+
+Deno.test('createMacroSemantics can infer async helper mode through local wrapper callables', () => {
+  const fileName = '/virtual/index.ts';
+  const preparedProgram = createPreparedProgramForMacroTest({
+    [fileName]: [
+      "import { map as decodeMap, string } from 'sts:decode';",
+      "import { contramap as encodeContramap, stringEncoder } from 'sts:encode';",
+      "import { codec as createCodec } from 'sts:codec';",
+      '',
+      'declare function normalizeString(value: string): Promise<string>;',
+      '',
+      'function makeStringDecoder(base: import("sts:decode").Decoder<string>) {',
+      '  return decodeMap(base, normalizeString);',
+      '}',
+      '',
+      'const makeStringEncoder = (base: import("sts:encode").Encoder<string>) =>',
+      '  encodeContramap(base, normalizeString);',
+      '',
+      'function makeStringCodec(',
+      '  decoder: import("sts:decode").Decoder<string>,',
+      '  encoder: import("sts:encode").Encoder<string>,',
+      ') {',
+      '  return createCodec(decoder, encoder);',
+      '}',
+      '',
+      'class Helpers {',
+      '  static makeStringDecoder(base: import("sts:decode").Decoder<string>) {',
+      '    return decodeMap(base, normalizeString);',
+      '  }',
+      '}',
+      '',
+      'const WrappedDecoder = makeStringDecoder(string);',
+      'const WrappedEncoder = makeStringEncoder(stringEncoder);',
+      'const WrappedCodec = makeStringCodec(WrappedDecoder, WrappedEncoder);',
+      'const StaticWrappedDecoder = Helpers.makeStringDecoder(string);',
+      '',
+      'type Wrapper = { value: string };',
+      '',
+    ].join('\n'),
+  });
+
+  const sourceFile = preparedProgram.program.getSourceFile(fileName);
+  assert(sourceFile);
+
+  const semantics = createMacroSemantics(preparedProgram.program);
+  const wrapper = findTypeAliasDeclaration(sourceFile, 'Wrapper');
+
+  assertEquals(semantics.valueBindingHelperModeInScope('WrappedDecoder', 'decode', wrapper), 'async');
+  assertEquals(semantics.valueBindingHelperModeInScope('WrappedEncoder', 'encode', wrapper), 'async');
+  assertEquals(semantics.valueBindingHelperModeInScope('WrappedCodec', 'decode', wrapper), 'async');
+  assertEquals(semantics.valueBindingHelperModeInScope('WrappedCodec', 'encode', wrapper), 'async');
+  assertEquals(
+    semantics.valueBindingHelperModeInScope('StaticWrappedDecoder', 'decode', wrapper),
+    'async',
+  );
+});
+
+Deno.test('createMacroSemantics can infer helper mode through aliased helper types', () => {
+  const fileName = '/virtual/index.ts';
+  const preparedProgram = createPreparedProgramForMacroTest({
+    [fileName]: [
+      'type AsyncStringDecoder = import("sts:decode").Decoder<string, unknown, "async">;',
+      'type AsyncStringEncoder = import("sts:encode").Encoder<string, string, unknown, "async">;',
+      'type AsyncStringCodec = import("sts:codec").Codec<string, string, unknown, unknown, "async", "async">;',
+      '',
+      'declare const AsyncDecoder: AsyncStringDecoder;',
+      'declare const AsyncEncoder: AsyncStringEncoder;',
+      'declare const AsyncCodec: AsyncStringCodec;',
+      '',
+      'type Wrapper = { value: string };',
+      '',
+    ].join('\n'),
+  });
+
+  const sourceFile = preparedProgram.program.getSourceFile(fileName);
+  assert(sourceFile);
+
+  const semantics = createMacroSemantics(preparedProgram.program);
+  const wrapper = findTypeAliasDeclaration(sourceFile, 'Wrapper');
+
+  assertEquals(semantics.valueBindingHelperModeInScope('AsyncDecoder', 'decode', wrapper), 'async');
+  assertEquals(semantics.valueBindingHelperModeInScope('AsyncEncoder', 'encode', wrapper), 'async');
+  assertEquals(semantics.valueBindingHelperModeInScope('AsyncCodec', 'decode', wrapper), 'async');
+  assertEquals(semantics.valueBindingHelperModeInScope('AsyncCodec', 'encode', wrapper), 'async');
+});
+
 Deno.test('createMacroSemantics prefers runtime-kind finite cases for primitive and function unions', () => {
   const fileName = '/virtual/index.ts';
   const preparedProgram = createPreparedProgramForMacroTest({

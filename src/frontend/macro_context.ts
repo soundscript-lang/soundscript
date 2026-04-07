@@ -1049,6 +1049,9 @@ export function createSyntaxOnlyMacroContext(
       isAssignable() {
         return unsupported('semantics.isAssignable');
       },
+      localDeclaration() {
+        return unsupported('semantics.localDeclaration');
+      },
       localDeclarationHasAnnotation() {
         return unsupported('semantics.localDeclarationHasAnnotation');
       },
@@ -1091,8 +1094,17 @@ export function createSyntaxOnlyMacroContext(
       undefinedType() {
         return unsupported('semantics.undefinedType');
       },
+      valueBindingPromiseLikeInScope() {
+        return unsupported('semantics.valueBindingPromiseLikeInScope');
+      },
       valueBindingCallableInScope() {
         return unsupported('semantics.valueBindingCallableInScope');
+      },
+      valueBindingHelperModeInScope() {
+        return unsupported('semantics.valueBindingHelperModeInScope');
+      },
+      valueBindingTypeInScope() {
+        return unsupported('semantics.valueBindingTypeInScope');
       },
       valueBindingInScope() {
         return unsupported('semantics.valueBindingInScope');

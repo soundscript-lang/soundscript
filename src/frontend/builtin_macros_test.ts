@@ -1,4 +1,6 @@
 import { assert, assertEquals, assertRejects, assertStringIncludes } from '@std/assert';
+import { dirname } from '@std/path';
+import ts from 'typescript';
 
 import { createInstalledStdlibPackageFiles } from '../test_installed_stdlib.ts';
 import {
@@ -15,6 +17,8 @@ import {
   Try,
   unreachable as unreachableMacro,
 } from './builtin_macros.ts';
+import { installBuiltinExpandedProgramTestCleanup } from './builtin_expanded_program_test_cleanup.ts';
+import { createBuiltinExpandedProgram as createBuiltinExpandedProgramRaw } from './builtin_macro_support.ts';
 import { expandPreparedProgramWithBuiltins } from './builtin_macro_support.ts';
 import {
   expandPreparedProgramWithImportScopedModules,
@@ -25,6 +29,10 @@ import {
   createPreparedProgramForMacroTest,
   printSourceFileForMacroTest,
 } from './macro_test_helpers.ts';
+
+const createBuiltinExpandedProgram = installBuiltinExpandedProgramTestCleanup(
+  createBuiltinExpandedProgramRaw,
+);
 
 async function expandWithBuiltins(
   source: string,
@@ -162,6 +170,96 @@ function captureStdlibBuiltinMacroError(source: string): MacroError {
   }
 
   throw new Error('Expected stdlib builtin macro expansion to fail.');
+}
+
+function createBaseHost(files: ReadonlyMap<string, string>): ts.CompilerHost {
+  const baseHost = ts.createCompilerHost({
+    target: ts.ScriptTarget.ES2022,
+    module: ts.ModuleKind.ESNext,
+    moduleResolution: ts.ModuleResolutionKind.Bundler,
+    noEmit: true,
+  });
+  const knownDirectories = new Set<string>();
+  for (const fileName of files.keys()) {
+    let current = dirname(fileName);
+    while (current !== dirname(current)) {
+      knownDirectories.add(current);
+      current = dirname(current);
+    }
+    knownDirectories.add(current);
+  }
+
+  return {
+    ...baseHost,
+    directoryExists(directoryName: string): boolean {
+      return knownDirectories.has(directoryName) ||
+        baseHost.directoryExists?.(directoryName) === true;
+    },
+    fileExists(fileName: string): boolean {
+      return files.has(fileName) || baseHost.fileExists(fileName);
+    },
+    getCurrentDirectory(): string {
+      return '/virtual';
+    },
+    getDirectories(path: string): string[] {
+      const entries = new Set<string>(baseHost.getDirectories?.(path) ?? []);
+      for (const directory of knownDirectories) {
+        if (dirname(directory) === path) {
+          entries.add(directory.slice(path.endsWith('/') ? path.length : path.length + 1));
+        }
+      }
+      return [...entries];
+    },
+    readFile(fileName: string): string | undefined {
+      return files.get(fileName) ?? baseHost.readFile(fileName);
+    },
+  };
+}
+
+function formatDiagnostics(
+  program: ts.Program,
+  fileNames: ReadonlySet<string>,
+): readonly string[] {
+  return [
+    ...program.getOptionsDiagnostics(),
+    ...program.getSyntacticDiagnostics(),
+    ...program.getSemanticDiagnostics(),
+  ]
+    .filter((diagnostic) => !diagnostic.file || fileNames.has(diagnostic.file.fileName))
+    .map((diagnostic) => {
+      const location = diagnostic.file && diagnostic.start !== undefined
+        ? ts.getLineAndCharacterOfPosition(diagnostic.file, diagnostic.start)
+        : null;
+      const prefix = diagnostic.file
+        ? `${diagnostic.file.fileName}:${(location?.line ?? 0) + 1}:${
+          (location?.character ?? 0) + 1
+        }: `
+        : '';
+      return `${prefix}${ts.flattenDiagnosticMessageText(diagnostic.messageText, '\n')}`;
+    });
+}
+
+function expandAndTypecheckBuiltins(
+  files: ReadonlyMap<string, string>,
+  rootNames: readonly string[],
+) {
+  const expanded = createBuiltinExpandedProgram({
+    baseHost: createBaseHost(files),
+    options: {
+      target: ts.ScriptTarget.ES2022,
+      module: ts.ModuleKind.ESNext,
+      moduleResolution: ts.ModuleResolutionKind.Bundler,
+      noEmit: true,
+    },
+    rootNames: [...rootNames],
+  });
+
+  assertEquals(expanded.frontendDiagnostics(), []);
+  const expandedRootNames = new Set(
+    rootNames.map((fileName) => expanded.preparedProgram.toProgramFileName(fileName)),
+  );
+  assertEquals(formatDiagnostics(expanded.program, expandedRootNames), []);
+  return expanded;
 }
 
 Deno.test('eq macro generates companion declarations for object-like type aliases', () => {
@@ -534,7 +632,7 @@ Deno.test('decode macro generates companion decoders for object-like interfaces 
   assertStringIncludes(printed, 'total: value.total');
 });
 
-Deno.test('decode macro rejects unsupported field types without a via override', () => {
+Deno.test('decode macro rejects nullable named references when the companion is not in scope', () => {
   const error = captureStdlibBuiltinMacroError([
     "import { decode } from 'sts:derive';",
     '',
@@ -547,8 +645,32 @@ Deno.test('decode macro rejects unsupported field types without a via override',
 
   assertEquals(
     error.message,
-    'decode only supports fields with explicit primitive, nested object literal, tuple, array, Option/Result, or named derived types in v1. Add // #[decode.via(...)] to supply a custom decoder.',
+    'decode requires the companion value "DateDecoder" to be in scope for named derived types. Add an import or use // #[decode.via(...)] to supply a custom decoder.',
   );
+});
+
+Deno.test('decode macro supports nullish unions records intersections and undefined fields', () => {
+  const { printed } = expandWithStdlibBuiltins([
+    "import { decode } from 'sts:derive';",
+    '',
+    '// #[decode]',
+    'type User = {',
+    '  maybe: string | null | undefined;',
+    '  extras: Record<string, number>;',
+    '  combined: { id: string } & { total: bigint };',
+    '  absent: undefined;',
+    '};',
+    '',
+  ].join('\n'));
+
+  assertStringIncludes(printed, 'nullable as __sts_runtime_named_nullable_');
+  assertStringIncludes(printed, 'undefinedable as __sts_runtime_named_undefinedable_');
+  assertStringIncludes(printed, 'readonlyRecord as __sts_runtime_named_readonlyRecord_');
+  assertStringIncludes(printed, 'undefinedValue as __sts_runtime_named_undefinedValue_');
+  assertStringIncludes(printed, 'maybe: __sts_runtime_named_undefinedable_');
+  assertStringIncludes(printed, 'extras: __sts_runtime_named_readonlyRecord_');
+  assertStringIncludes(printed, 'combined: __sts_runtime_named_object_');
+  assertStringIncludes(printed, 'absent: __sts_runtime_named_undefinedValue_');
 });
 
 Deno.test('decode macro supports named derived references and arrays', () => {
@@ -568,7 +690,8 @@ Deno.test('decode macro supports named derived references and arrays', () => {
     '',
   ].join('\n'));
 
-  assertStringIncludes(printed, 'export const GroupDecoder = ');
+  assertStringIncludes(printed, 'type __sts_GroupDecoderType = import("sts:decode").Decoder<Group>;');
+  assertStringIncludes(printed, 'export const GroupDecoder: __sts_GroupDecoderType = ');
   assertStringIncludes(printed, 'lazy as __sts_runtime_named_lazy_');
   assertStringIncludes(printed, 'array as __sts_runtime_named_array_');
   assertStringIncludes(printed, 'owner: __sts_runtime_named_lazy_');
@@ -611,8 +734,6 @@ Deno.test('decode, encode, and codec macros support Option and Result field shap
   assertStringIncludes(printed, '() => FailureInfoDecoder');
   assertStringIncludes(printed, '() => UserEncoder');
   assertStringIncludes(printed, '() => FailureInfoEncoder');
-  assertStringIncludes(printed, '() => UserCodec');
-  assertStringIncludes(printed, '() => FailureInfoCodec');
 });
 
 Deno.test('decode, encode, and codec macros support tuple field shapes', () => {
@@ -706,6 +827,126 @@ Deno.test('decode macro supports class factory annotations', () => {
   assertStringIncludes(printed, 'total: __sts_runtime_named_bigint_');
 });
 
+Deno.test('decode macro supports field defaults transforms and refinements', () => {
+  const { printed } = expandWithStdlibBuiltins([
+    "import { decode } from 'sts:derive';",
+    'declare function normalizeName(value: string): string;',
+    'declare function nonEmptyName(value: string): boolean;',
+    '',
+    '// #[decode]',
+    'interface User {',
+    '  // #[decode.default("guest")]',
+    '  // #[decode.transform(normalizeName)]',
+    '  // #[decode.refine(nonEmptyName)]',
+    '  name: string;',
+    '}',
+    '',
+  ].join('\n'));
+
+  assertStringIncludes(printed, 'defaulted as __sts_runtime_named_defaulted_');
+  assertStringIncludes(printed, 'refine as __sts_runtime_named_refine_');
+  assertStringIncludes(printed, '__sts_runtime_named_defaulted_');
+  assertStringIncludes(printed, 'optional as __sts_runtime_named_optional_');
+  assertStringIncludes(printed, 'normalizeName), nonEmptyName');
+  assertStringIncludes(printed, 'decode.refine(...).")), "guest")');
+  assertStringIncludes(printed, 'decode.refine(...).');
+  assert(!printed.includes('value.name === undefined ? ("guest") : value.name'));
+});
+
+Deno.test('decode macro supports class-local static field helpers', () => {
+  const { printed } = expandWithStdlibBuiltins([
+    "import { decode } from 'sts:derive';",
+    '',
+    '// #[decode]',
+    'class User {',
+    '  // #[decode.transform(User.normalizeName)]',
+    '  // #[decode.refine(User.nonEmptyName)]',
+    '  name: string = "";',
+    '',
+    '  static normalizeName(value: string): string {',
+    '    return value.trim();',
+    '  }',
+    '',
+    '  static nonEmptyName(value: string): boolean {',
+    '    return value.length > 0;',
+    '  }',
+    '}',
+    '',
+  ].join('\n'));
+
+  assertStringIncludes(printed, 'User.normalizeName');
+  assertStringIncludes(printed, 'User.nonEmptyName');
+});
+
+Deno.test('decode macro rejects field-level decode.transform helpers that are not in scope', () => {
+  const error = captureStdlibBuiltinMacroError([
+    "import { decode } from 'sts:derive';",
+    '',
+    '// #[decode]',
+    'interface User {',
+    '  // #[decode.transform(normalizeName)]',
+    '  name: string;',
+    '}',
+    '',
+  ].join('\n'));
+
+  assertEquals(
+    error.message,
+    'decode.transform(...) requires the helper value "normalizeName" to be in scope.',
+  );
+});
+
+Deno.test('decode macro rejects field-level decode.refine helpers that are not callable', () => {
+  const error = captureStdlibBuiltinMacroError([
+    "import { decode } from 'sts:derive';",
+    '',
+    'const nonEmptyName = "not callable";',
+    '',
+    '// #[decode]',
+    'interface User {',
+    '  // #[decode.refine(nonEmptyName)]',
+    '  name: string;',
+    '}',
+    '',
+  ].join('\n'));
+
+  assertEquals(error.message, 'decode.refine(...) requires "nonEmptyName" to be callable.');
+});
+
+Deno.test('decode macro supports declaration-level refinements', () => {
+  const { printed } = expandWithStdlibBuiltins([
+    "import { decode } from 'sts:derive';",
+    'declare function isValidUser(value: User): boolean;',
+    '',
+    '// #[decode]',
+    '// #[decode.refine(isValidUser)]',
+    'interface User {',
+    '  id: string;',
+    '}',
+    '',
+  ].join('\n'));
+
+  assertStringIncludes(printed, 'refine as __sts_runtime_named_refine_');
+  assertStringIncludes(printed, 'Expected User to satisfy decode.refine(...).');
+});
+
+Deno.test('decode macro supports declaration-level transforms', () => {
+  const { printed } = expandWithStdlibBuiltins([
+    "import { decode } from 'sts:derive';",
+    'declare function normalizeUser(value: User): User;',
+    '',
+    '// #[decode]',
+    '// #[decode.transform(normalizeUser)]',
+    'interface User {',
+    '  id: string;',
+    '}',
+    '',
+  ].join('\n'));
+
+  assertStringIncludes(printed, 'map as __sts_runtime_named_map_');
+  assertStringIncludes(printed, 'normalizeUser');
+});
+
 Deno.test('decode macro rejects class constructors with parameters in v1', () => {
   const error = captureStdlibBuiltinMacroError([
     "import { decode } from 'sts:derive';",
@@ -737,6 +978,56 @@ Deno.test('decode macro rejects decode.factory without an identifier helper', ()
   ].join('\n'));
 
   assertEquals(error.message, 'decode.factory(...) requires a helper identifier.');
+});
+
+Deno.test('decode macro rejects declaration-level decode.transform without an identifier helper', () => {
+  const error = captureStdlibBuiltinMacroError([
+    "import { decode } from 'sts:derive';",
+    '',
+    '// #[decode]',
+    '// #[decode.transform("normalizeUser")]',
+    'interface User {',
+    '  id: string;',
+    '}',
+    '',
+  ].join('\n'));
+
+  assertEquals(error.message, 'decode.transform(...) requires a helper identifier.');
+});
+
+Deno.test('decode macro rejects declaration-level decode.transform helpers that are not in scope', () => {
+  const error = captureStdlibBuiltinMacroError([
+    "import { decode } from 'sts:derive';",
+    '',
+    '// #[decode]',
+    '// #[decode.transform(normalizeUser)]',
+    'interface User {',
+    '  id: string;',
+    '}',
+    '',
+  ].join('\n'));
+
+  assertEquals(
+    error.message,
+    'decode.transform(...) requires the helper value "normalizeUser" to be in scope.',
+  );
+});
+
+Deno.test('decode macro rejects declaration-level decode.refine helpers that are not callable', () => {
+  const error = captureStdlibBuiltinMacroError([
+    "import { decode } from 'sts:derive';",
+    '',
+    'const isValidUser = "not callable";',
+    '',
+    '// #[decode]',
+    '// #[decode.refine(isValidUser)]',
+    'interface User {',
+    '  id: string;',
+    '}',
+    '',
+  ].join('\n'));
+
+  assertEquals(error.message, 'decode.refine(...) requires "isValidUser" to be callable.');
 });
 
 Deno.test('decode macro rejects decode.factory helpers that are not in scope', () => {
@@ -789,7 +1080,7 @@ Deno.test('encode macro generates companion encoders for object-like interfaces 
   assertStringIncludes(printed, 'total: value.total');
 });
 
-Deno.test('encode macro rejects unsupported field types without a via override', () => {
+Deno.test('encode macro rejects nullable named references when the companion is not in scope', () => {
   const error = captureStdlibBuiltinMacroError([
     "import { encode } from 'sts:derive';",
     '',
@@ -802,8 +1093,32 @@ Deno.test('encode macro rejects unsupported field types without a via override',
 
   assertEquals(
     error.message,
-    'encode only supports fields with explicit primitive, nested object literal, tuple, array, Option/Result, or named derived types in v1. Add // #[encode.via(...)] to supply a custom encoder.',
+    'encode requires the companion value "DateEncoder" to be in scope for named derived types. Add an import or use // #[encode.via(...)] to supply a custom encoder.',
   );
+});
+
+Deno.test('encode macro supports nullish unions records intersections and undefined fields', () => {
+  const { printed } = expandWithStdlibBuiltins([
+    "import { encode } from 'sts:derive';",
+    '',
+    '// #[encode]',
+    'type User = {',
+    '  maybe: string | null | undefined;',
+    '  extras: Record<string, number>;',
+    '  combined: { id: string } & { total: bigint };',
+    '  absent: undefined;',
+    '};',
+    '',
+  ].join('\n'));
+
+  assertStringIncludes(printed, 'nullable as __sts_runtime_named_nullable_');
+  assertStringIncludes(printed, 'undefinedable as __sts_runtime_named_undefinedable_');
+  assertStringIncludes(printed, 'record as __sts_runtime_named_record_');
+  assertStringIncludes(printed, 'undefinedEncoder as __sts_runtime_named_undefinedEncoder_');
+  assertStringIncludes(printed, 'maybe: __sts_runtime_named_undefinedable_');
+  assertStringIncludes(printed, 'extras: __sts_runtime_named_record_');
+  assertStringIncludes(printed, 'combined: __sts_runtime_named_object_');
+  assertStringIncludes(printed, 'absent: __sts_runtime_named_undefinedEncoder_');
 });
 
 Deno.test('encode macro supports named derived references and arrays', () => {
@@ -823,7 +1138,11 @@ Deno.test('encode macro supports named derived references and arrays', () => {
     '',
   ].join('\n'));
 
-  assertStringIncludes(printed, 'export const GroupEncoder = ');
+  assertStringIncludes(
+    printed,
+    'type __sts_GroupEncoderType = import("sts:encode").Encoder<Group, __sts_GroupEncodedForEncode>;',
+  );
+  assertStringIncludes(printed, 'export const GroupEncoder: __sts_GroupEncoderType = ');
   assertStringIncludes(printed, 'lazy as __sts_runtime_named_lazy_');
   assertStringIncludes(printed, 'array as __sts_runtime_named_array_');
   assertStringIncludes(printed, 'owner: __sts_runtime_named_lazy_');
@@ -848,6 +1167,170 @@ Deno.test('encode macro supports classes via public instance fields', () => {
   assertStringIncludes(printed, 'id: value.id');
   assertStringIncludes(printed, 'total: value.total');
   assert(!printed.includes('secret: value.secret'));
+});
+
+Deno.test('encode macro supports field transforms and refinements', () => {
+  const { printed } = expandWithStdlibBuiltins([
+    "import { encode } from 'sts:derive';",
+    'declare function normalizeName(value: string): string;',
+    'declare function nonEmptyName(value: string): boolean;',
+    '',
+    '// #[encode]',
+    'interface User {',
+    '  // #[encode.transform(normalizeName)]',
+    '  // #[encode.refine(nonEmptyName)]',
+    '  name: string;',
+    '}',
+    '',
+  ].join('\n'));
+
+  assertStringIncludes(printed, 'refine as __sts_runtime_named_refine_');
+  assertStringIncludes(printed, 'normalizeName), nonEmptyName');
+  assertStringIncludes(printed, 'encode.refine(...).');
+});
+
+Deno.test('encode macro supports class-local static field helpers', () => {
+  const { printed } = expandWithStdlibBuiltins([
+    "import { encode } from 'sts:derive';",
+    '',
+    '// #[encode]',
+    'class User {',
+    '  // #[encode.transform(User.normalizeName)]',
+    '  // #[encode.refine(User.nonEmptyName)]',
+    '  name: string = "";',
+    '',
+    '  static normalizeName(value: string): string {',
+    '    return value.trim();',
+    '  }',
+    '',
+    '  static nonEmptyName(value: string): boolean {',
+    '    return value.length > 0;',
+    '  }',
+    '}',
+    '',
+  ].join('\n'));
+
+  assertStringIncludes(printed, 'User.normalizeName');
+  assertStringIncludes(printed, 'User.nonEmptyName');
+});
+
+Deno.test('encode macro rejects field-level encode.transform helpers that are not in scope', () => {
+  const error = captureStdlibBuiltinMacroError([
+    "import { encode } from 'sts:derive';",
+    '',
+    '// #[encode]',
+    'interface User {',
+    '  // #[encode.transform(normalizeName)]',
+    '  name: string;',
+    '}',
+    '',
+  ].join('\n'));
+
+  assertEquals(
+    error.message,
+    'encode.transform(...) requires the helper value "normalizeName" to be in scope.',
+  );
+});
+
+Deno.test('encode macro rejects field-level encode.refine helpers that are not callable', () => {
+  const error = captureStdlibBuiltinMacroError([
+    "import { encode } from 'sts:derive';",
+    '',
+    'const nonEmptyName = "not callable";',
+    '',
+    '// #[encode]',
+    'interface User {',
+    '  // #[encode.refine(nonEmptyName)]',
+    '  name: string;',
+    '}',
+    '',
+  ].join('\n'));
+
+  assertEquals(error.message, 'encode.refine(...) requires "nonEmptyName" to be callable.');
+});
+
+Deno.test('encode macro supports declaration-level refinements', () => {
+  const { printed } = expandWithStdlibBuiltins([
+    "import { encode } from 'sts:derive';",
+    'declare function isValidUser(value: User): boolean;',
+    '',
+    '// #[encode]',
+    '// #[encode.refine(isValidUser)]',
+    'interface User {',
+    '  id: string;',
+    '}',
+    '',
+  ].join('\n'));
+
+  assertStringIncludes(printed, 'refine as __sts_runtime_named_refine_');
+  assertStringIncludes(printed, 'Expected User to satisfy encode.refine(...).');
+});
+
+Deno.test('encode macro supports declaration-level transforms', () => {
+  const { printed } = expandWithStdlibBuiltins([
+    "import { encode } from 'sts:derive';",
+    'declare function normalizeUser(value: User): User;',
+    '',
+    '// #[encode]',
+    '// #[encode.transform(normalizeUser)]',
+    'interface User {',
+    '  id: string;',
+    '}',
+    '',
+  ].join('\n'));
+
+  assertStringIncludes(printed, 'contramap as __sts_runtime_named_contramap_');
+  assertStringIncludes(printed, 'normalizeUser');
+});
+
+Deno.test('encode macro rejects declaration-level encode.transform without an identifier helper', () => {
+  const error = captureStdlibBuiltinMacroError([
+    "import { encode } from 'sts:derive';",
+    '',
+    '// #[encode]',
+    '// #[encode.transform("normalizeUser")]',
+    'interface User {',
+    '  id: string;',
+    '}',
+    '',
+  ].join('\n'));
+
+  assertEquals(error.message, 'encode.transform(...) requires a helper identifier.');
+});
+
+Deno.test('encode macro rejects declaration-level encode.transform helpers that are not in scope', () => {
+  const error = captureStdlibBuiltinMacroError([
+    "import { encode } from 'sts:derive';",
+    '',
+    '// #[encode]',
+    '// #[encode.transform(normalizeUser)]',
+    'interface User {',
+    '  id: string;',
+    '}',
+    '',
+  ].join('\n'));
+
+  assertEquals(
+    error.message,
+    'encode.transform(...) requires the helper value "normalizeUser" to be in scope.',
+  );
+});
+
+Deno.test('encode macro rejects declaration-level encode.refine helpers that are not callable', () => {
+  const error = captureStdlibBuiltinMacroError([
+    "import { encode } from 'sts:derive';",
+    '',
+    'const isValidUser = "not callable";',
+    '',
+    '// #[encode]',
+    '// #[encode.refine(isValidUser)]',
+    'interface User {',
+    '  id: string;',
+    '}',
+    '',
+  ].join('\n'));
+
+  assertEquals(error.message, 'encode.refine(...) requires "isValidUser" to be callable.');
 });
 
 Deno.test('codec macro generates companion codecs for object-like interfaces and type aliases', () => {
@@ -880,7 +1363,7 @@ Deno.test('codec macro generates companion codecs for object-like interfaces and
   assertStringIncludes(printed, 'user_id: value.id');
 });
 
-Deno.test('codec macro rejects unsupported field types without a via override', () => {
+Deno.test('codec macro rejects nullable named references when the companion is not in scope', () => {
   const error = captureStdlibBuiltinMacroError([
     "import { codec } from 'sts:derive';",
     '',
@@ -893,8 +1376,34 @@ Deno.test('codec macro rejects unsupported field types without a via override', 
 
   assertEquals(
     error.message,
-    'codec only supports fields with explicit primitive, nested object literal, tuple, array, Option/Result, or named derived types in v1. Add // #[codec.via(...)] to supply a custom codec.',
+    'codec requires the companion value "DateCodec" to be in scope for named derived types. Add an import or use // #[codec.via(...)] to supply a custom codec.',
   );
+});
+
+Deno.test('codec macro supports nullish unions records intersections and undefined fields', () => {
+  const { printed } = expandWithStdlibBuiltins([
+    "import { codec } from 'sts:derive';",
+    '',
+    '// #[codec]',
+    'type User = {',
+    '  maybe: string | null | undefined;',
+    '  extras: Record<string, number>;',
+    '  combined: { id: string } & { total: bigint };',
+    '  absent: undefined;',
+    '};',
+    '',
+  ].join('\n'));
+
+  assertStringIncludes(printed, 'nullable as __sts_runtime_named_nullable_');
+  assertStringIncludes(printed, 'undefinedable as __sts_runtime_named_undefinedable_');
+  assertStringIncludes(printed, 'readonlyRecord as __sts_runtime_named_readonlyRecord_');
+  assertStringIncludes(printed, 'record as __sts_runtime_named_record_');
+  assertStringIncludes(printed, 'undefinedValue as __sts_runtime_named_undefinedValue_');
+  assertStringIncludes(printed, 'undefinedEncoder as __sts_runtime_named_undefinedEncoder_');
+  assertStringIncludes(printed, 'maybe: __sts_runtime_named_undefinedable_');
+  assertStringIncludes(printed, 'extras: __sts_runtime_named_readonlyRecord_');
+  assertStringIncludes(printed, 'combined: __sts_runtime_named_object_');
+  assertStringIncludes(printed, 'absent: __sts_runtime_named_undefinedValue_');
 });
 
 Deno.test('codec macro supports named derived references and arrays', () => {
@@ -914,7 +1423,11 @@ Deno.test('codec macro supports named derived references and arrays', () => {
     '',
   ].join('\n'));
 
-  assertStringIncludes(printed, 'export const GroupCodec = ');
+  assertStringIncludes(
+    printed,
+    'type __sts_GroupCodecType = import("sts:codec").Codec<Group, __sts_GroupEncodedForCodec>;',
+  );
+  assertStringIncludes(printed, 'export const GroupCodec: __sts_GroupCodecType = ');
   assertStringIncludes(printed, 'lazy as __sts_runtime_named_lazy_');
   assertStringIncludes(printed, 'array as __sts_runtime_named_array_');
   assertStringIncludes(printed, 'owner: __sts_runtime_named_lazy_');
@@ -988,6 +1501,124 @@ Deno.test('codec macro supports class factory annotations', () => {
   assertStringIncludes(printed, 'User.fromJson(({');
   assertStringIncludes(printed, 'id: value.id');
   assertStringIncludes(printed, 'total: value.total');
+});
+
+Deno.test('codec macro supports decode defaults and encode transforms on fields', () => {
+  const { printed } = expandWithStdlibBuiltins([
+    "import { codec } from 'sts:derive';",
+    'declare function normalizeName(value: string): string;',
+    '',
+    '// #[codec]',
+    'interface User {',
+    '  // #[decode.default("guest")]',
+    '  // #[encode.transform(normalizeName)]',
+    '  name: string;',
+    '}',
+    '',
+  ].join('\n'));
+
+  assertStringIncludes(printed, 'defaulted as __sts_runtime_named_defaulted_');
+  assertStringIncludes(printed, '__sts_runtime_named_defaulted_');
+  assertStringIncludes(printed, 'normalizeName)');
+});
+
+Deno.test('codec macro supports class-local static field helpers', () => {
+  const { printed } = expandWithStdlibBuiltins([
+    "import { codec } from 'sts:derive';",
+    '',
+    '// #[codec]',
+    'class User {',
+    '  // #[decode.transform(User.normalizeDecodedName)]',
+    '  // #[decode.refine(User.nonEmptyDecodedName)]',
+    '  // #[encode.transform(User.normalizeEncodedName)]',
+    '  // #[encode.refine(User.nonEmptyEncodedName)]',
+    '  name: string = "";',
+    '',
+    '  static normalizeDecodedName(value: string): string {',
+    '    return value.trim();',
+    '  }',
+    '',
+    '  static nonEmptyDecodedName(value: string): boolean {',
+    '    return value.length > 0;',
+    '  }',
+    '',
+    '  static normalizeEncodedName(value: string): string {',
+    '    return value.trim();',
+    '  }',
+    '',
+    '  static nonEmptyEncodedName(value: string): boolean {',
+    '    return value.length > 0;',
+    '  }',
+    '}',
+    '',
+  ].join('\n'));
+
+  assertStringIncludes(printed, 'User.normalizeDecodedName');
+  assertStringIncludes(printed, 'User.nonEmptyDecodedName');
+  assertStringIncludes(printed, 'User.normalizeEncodedName');
+  assertStringIncludes(printed, 'User.nonEmptyEncodedName');
+});
+
+Deno.test('codec macro applies decode defaults after decode transforms and refinements', () => {
+  const { printed } = expandWithStdlibBuiltins([
+    "import { codec } from 'sts:derive';",
+    'declare function normalizeName(value: string): string;',
+    'declare function nonEmptyName(value: string): boolean;',
+    '',
+    '// #[codec]',
+    'interface User {',
+    '  // #[decode.default("guest")]',
+    '  // #[decode.transform(normalizeName)]',
+    '  // #[decode.refine(nonEmptyName)]',
+    '  name: string;',
+    '}',
+    '',
+  ].join('\n'));
+
+  assertStringIncludes(printed, 'defaulted as __sts_runtime_named_defaulted_');
+  assertStringIncludes(printed, 'optional as __sts_runtime_named_optional_');
+  assertStringIncludes(printed, 'normalizeName), nonEmptyName');
+  assertStringIncludes(printed, 'decode.refine(...).")), "guest")');
+});
+
+Deno.test('codec macro supports declaration-level decode and encode refinements', () => {
+  const { printed } = expandWithStdlibBuiltins([
+    "import { codec } from 'sts:derive';",
+    'declare function isValidDecodedUser(value: User): boolean;',
+    'declare function isValidEncodedUser(value: User): boolean;',
+    '',
+    '// #[codec]',
+    '// #[decode.refine(isValidDecodedUser)]',
+    '// #[encode.refine(isValidEncodedUser)]',
+    'interface User {',
+    '  id: string;',
+    '}',
+    '',
+  ].join('\n'));
+
+  assertStringIncludes(printed, 'Expected User to satisfy decode.refine(...).');
+  assertStringIncludes(printed, 'Expected User to satisfy encode.refine(...).');
+});
+
+Deno.test('codec macro supports declaration-level decode and encode transforms', () => {
+  const { printed } = expandWithStdlibBuiltins([
+    "import { codec } from 'sts:derive';",
+    'declare function normalizeDecodedUser(value: User): User;',
+    'declare function normalizeEncodedUser(value: User): User;',
+    '',
+    '// #[codec]',
+    '// #[decode.transform(normalizeDecodedUser)]',
+    '// #[encode.transform(normalizeEncodedUser)]',
+    'interface User {',
+    '  id: string;',
+    '}',
+    '',
+  ].join('\n'));
+
+  assertStringIncludes(printed, 'map as __sts_runtime_named_map_');
+  assertStringIncludes(printed, 'contramap as __sts_runtime_named_contramap_');
+  assertStringIncludes(printed, 'normalizeDecodedUser');
+  assertStringIncludes(printed, 'normalizeEncodedUser');
 });
 
 Deno.test('codec macro rejects class constructors with parameters in v1', () => {
@@ -1080,6 +1711,956 @@ Deno.test('decode macro supports imported factory helpers', () => {
 
   assertStringIncludes(printed, 'buildUser(({');
   assertStringIncludes(printed, "import { buildUser } from './helpers.ts';");
+});
+
+Deno.test('decode and codec macros typecheck promise-returning class factories', () => {
+  const fileName = '/virtual/index.sts';
+  const files = new Map<string, string>([
+    ...createInstalledStdlibPackageFiles('/virtual').entries(),
+    [
+      fileName,
+      [
+        "import { codec, decode } from 'sts:derive';",
+        "import type { Result } from 'sts:result';",
+        '',
+        '// #[decode]',
+        '// #[decode.factory(User.fromJson)]',
+        '// #[codec]',
+        '// #[codec.factory(User.fromJson)]',
+        'class User {',
+        "  id: string = '';",
+        '  static async fromJson(value: { id: string }): Promise<User> {',
+        '    const user = new User();',
+        '    user.id = value.id;',
+        '    return user;',
+        '  }',
+        '}',
+        '',
+        "const decoded: Promise<Result<User, unknown>> = UserDecoder.decode({ id: 'user-1' });",
+        "const validated: Promise<Result<User, readonly unknown[]>> = UserDecoder.validateDecode({ id: 'user-1' });",
+        "const codecDecoded: Promise<Result<User, unknown>> = UserCodec.decode({ id: 'user-1' });",
+        "const codecValidatedDecode: Promise<Result<User, readonly unknown[]>> = UserCodec.validateDecode({ id: 'user-1' });",
+        'const codecEncoded: Result<{ readonly id: string }, unknown> = UserCodec.encode(new User());',
+        'const codecValidatedEncode: Result<{ readonly id: string }, readonly unknown[]> = UserCodec.validateEncode(new User());',
+        'void decoded;',
+        'void validated;',
+        'void codecDecoded;',
+        'void codecValidatedDecode;',
+        'void codecEncoded;',
+        'void codecValidatedEncode;',
+        '',
+      ].join('\n'),
+    ],
+  ]);
+
+  const expanded = expandAndTypecheckBuiltins(files, [fileName]);
+  const expandedFileName = expanded.preparedProgram.toProgramFileName(fileName);
+  const sourceFile = expanded.program.getSourceFile(expandedFileName);
+  assert(sourceFile);
+
+  const printed = printSourceFileForMacroTest(sourceFile);
+  assertStringIncludes(printed, 'export const UserDecoder = ');
+  assertStringIncludes(printed, 'export const UserCodec = ');
+  assertStringIncludes(printed, 'User.fromJson(({');
+});
+
+Deno.test('decode and codec macros typecheck promise-returning declaration transforms', () => {
+  const fileName = '/virtual/index.sts';
+  const files = new Map<string, string>([
+    ...createInstalledStdlibPackageFiles('/virtual').entries(),
+    [
+      fileName,
+      [
+        "import { codec, decode } from 'sts:derive';",
+        "import type { Result } from 'sts:result';",
+        '',
+        'declare function normalizeDecoded(value: User): Promise<User>;',
+        'declare function normalizeEncoded(value: User): Promise<User>;',
+        '',
+        '// #[decode]',
+        '// #[decode.transform(normalizeDecoded)]',
+        '// #[codec]',
+        '// #[decode.transform(normalizeDecoded)]',
+        '// #[encode.transform(normalizeEncoded)]',
+        'interface User {',
+        '  id: string;',
+        '}',
+        '',
+        "const decoded: Promise<Result<User, unknown>> = UserDecoder.decode({ id: 'user-1' });",
+        "const validated: Promise<Result<User, readonly unknown[]>> = UserDecoder.validateDecode({ id: 'user-1' });",
+        "const codecDecoded: Promise<Result<User, unknown>> = UserCodec.decode({ id: 'user-1' });",
+        "const codecValidatedDecode: Promise<Result<User, readonly unknown[]>> = UserCodec.validateDecode({ id: 'user-1' });",
+        "const codecEncoded: Promise<Result<{ readonly id: string }, unknown>> = UserCodec.encode({ id: 'user-1' });",
+        "const codecValidatedEncode: Promise<Result<{ readonly id: string }, readonly unknown[]>> = UserCodec.validateEncode({ id: 'user-1' });",
+        'void decoded;',
+        'void validated;',
+        'void codecDecoded;',
+        'void codecValidatedDecode;',
+        'void codecEncoded;',
+        'void codecValidatedEncode;',
+        '',
+      ].join('\n'),
+    ],
+  ]);
+
+  const expanded = expandAndTypecheckBuiltins(files, [fileName]);
+  const expandedFileName = expanded.preparedProgram.toProgramFileName(fileName);
+  const sourceFile = expanded.program.getSourceFile(expandedFileName);
+  assert(sourceFile);
+
+  const printed = printSourceFileForMacroTest(sourceFile);
+  assertStringIncludes(printed, 'export const UserDecoder = ');
+  assertStringIncludes(printed, 'export const UserCodec = ');
+  assertStringIncludes(printed, 'map as __sts_runtime_named_map_');
+  assertStringIncludes(printed, 'contramap as __sts_runtime_named_contramap_');
+  assertStringIncludes(printed, 'normalizeDecoded');
+  assertStringIncludes(printed, 'normalizeEncoded');
+});
+
+Deno.test('recursive derived companions expand across decode encode codec and json bridge usage', () => {
+  const { printed } = expandWithInstalledRuntimeStdlibBuiltins([
+    "import { codec, decode, encode } from 'sts:derive';",
+    "import { decodeJson, encodeJson } from 'sts:json';",
+    "import type { Result } from 'sts:result';",
+    '',
+    '// #[decode]',
+    '// #[encode]',
+    '// #[codec]',
+    'type Node = {',
+    '  id: string;',
+    '  next?: Node;',
+    '};',
+    '',
+    "const decoded: Result<Node, unknown> = NodeDecoder.decode({ id: 'root', next: { id: 'child' } });",
+    "const validated: Result<Node, readonly unknown[]> = NodeDecoder.validateDecode({ id: 'root', next: { id: 'child' } });",
+    "const encoded: Result<{ readonly id: string; readonly next?: unknown }, unknown> = NodeEncoder.encode({ id: 'root', next: { id: 'child' } });",
+    "const codecDecoded: Result<Node, unknown> = NodeCodec.decode({ id: 'root', next: { id: 'child' } });",
+    "const codecEncoded: Result<{ readonly id: string; readonly next?: unknown }, unknown> = NodeCodec.encode({ id: 'root', next: { id: 'child' } });",
+    "const jsonDecoded: Result<Node, unknown> = decodeJson('{\"id\":\"root\",\"next\":{\"id\":\"child\"}}', NodeCodec);",
+    "const jsonEncoded: Result<string, unknown> = encodeJson({ id: 'root', next: { id: 'child' } }, NodeCodec);",
+    'if (decoded.tag === "ok") {',
+    '  decoded.value.next?.next?.id;',
+    '}',
+    'if (encoded.tag === "ok") {',
+    '  encoded.value.next;',
+    '}',
+    'void validated;',
+    'void codecDecoded;',
+    'void codecEncoded;',
+    'void jsonDecoded;',
+    'void jsonEncoded;',
+    '',
+  ].join('\n'));
+
+  assertStringIncludes(printed, 'lazy as __sts_runtime_named_lazy_');
+  assertStringIncludes(printed, 'type __sts_NodeDecoderType = import("sts:decode").Decoder<Node>;');
+  assertStringIncludes(printed, 'type __sts_NodeEncoderType = import("sts:encode").Encoder<Node, __sts_NodeEncodedForEncode>;');
+  assertStringIncludes(printed, 'as unknown as __sts_NodeCodecType');
+  assertStringIncludes(printed, `const jsonDecoded: Result<Node, unknown> = decodeJson('{"id":"root","next":{"id":"child"}}', NodeCodec);`);
+  assertStringIncludes(printed, "const jsonEncoded: Result<string, unknown> = encodeJson({ id: 'root', next: { id: 'child' } }, NodeCodec);");
+});
+
+Deno.test('recursive derived companions typecheck for decode encode codec and json bridge usage', () => {
+  const fileName = '/virtual/index.sts';
+  const files = new Map<string, string>([
+    ...createInstalledStdlibPackageFiles('/virtual').entries(),
+    [
+      fileName,
+      [
+        "import { codec, decode, encode } from 'sts:derive';",
+        "import { decodeJson, encodeJson } from 'sts:json';",
+        "import type { Result } from 'sts:result';",
+        '',
+        '// #[decode]',
+        '// #[encode]',
+        '// #[codec]',
+        'type Node = {',
+        '  id: string;',
+        '  next?: Node;',
+        '};',
+        '',
+        "const decoded: Result<Node, unknown> = NodeDecoder.decode({ id: 'root', next: { id: 'child' } });",
+        "const validated: Result<Node, readonly unknown[]> = NodeDecoder.validateDecode({ id: 'root', next: { id: 'child' } });",
+        "const encoded: Result<{ readonly id: string; readonly next?: unknown }, unknown> = NodeEncoder.encode({ id: 'root', next: { id: 'child' } });",
+        "const validatedEncode: Result<{ readonly id: string; readonly next?: unknown }, readonly unknown[]> = NodeEncoder.validateEncode({ id: 'root', next: { id: 'child' } });",
+        "const codecDecoded: Result<Node, unknown> = NodeCodec.decode({ id: 'root', next: { id: 'child' } });",
+        "const codecEncoded: Result<{ readonly id: string; readonly next?: unknown }, unknown> = NodeCodec.encode({ id: 'root', next: { id: 'child' } });",
+        "const jsonDecoded = decodeJson('{\"id\":\"root\",\"next\":{\"id\":\"child\"}}', NodeCodec);",
+        "const jsonEncoded = encodeJson({ id: 'root', next: { id: 'child' } }, NodeCodec);",
+        'void decoded;',
+        'void validated;',
+        'void encoded;',
+        'void validatedEncode;',
+        'void codecDecoded;',
+        'void codecEncoded;',
+        'void jsonDecoded;',
+        'void jsonEncoded;',
+        '',
+      ].join('\n'),
+    ],
+  ]);
+
+  const expanded = expandAndTypecheckBuiltins(files, [fileName]);
+  const expandedFileName = expanded.preparedProgram.toProgramFileName(fileName);
+  const sourceFile = expanded.program.getSourceFile(expandedFileName);
+  assert(sourceFile);
+
+  const printed = printSourceFileForMacroTest(sourceFile);
+  assertStringIncludes(printed, 'type __sts_NodeDecoderType = import("sts:decode").Decoder<Node>;');
+  assertStringIncludes(printed, 'type __sts_NodeEncoderType = import("sts:encode").Encoder<Node, __sts_NodeEncodedForEncode>;');
+  assertStringIncludes(printed, 'let __sts_self!: __sts_NodeCodecType;');
+  assertStringIncludes(printed, 'export const NodeCodec: __sts_NodeCodecType = ');
+});
+
+Deno.test('mutually recursive derived companions typecheck for decode encode and codec usage', () => {
+  const fileName = '/virtual/index.sts';
+  const files = new Map<string, string>([
+    ...createInstalledStdlibPackageFiles('/virtual').entries(),
+    [
+      fileName,
+      [
+        "import { codec, decode, encode } from 'sts:derive';",
+        "import type { Result } from 'sts:result';",
+        '',
+        '// #[decode]',
+        '// #[encode]',
+        '// #[codec]',
+        'type Parent = {',
+        '  id: string;',
+        '  child?: Child;',
+        '};',
+        '',
+        '// #[decode]',
+        '// #[encode]',
+        '// #[codec]',
+        'type Child = {',
+        '  id: string;',
+        '  parent?: Parent;',
+        '};',
+        '',
+        "const decodedParent: Result<Parent, unknown> = ParentDecoder.decode({ id: 'p1', child: { id: 'c1' } });",
+        "const encodedParent: Result<{ readonly id: string; readonly child?: unknown }, unknown> = ParentEncoder.encode({ id: 'p1', child: { id: 'c1' } });",
+        "const codecParent: Result<Parent, unknown> = ParentCodec.decode({ id: 'p1', child: { id: 'c1' } });",
+        "const decodedChild: Result<Child, unknown> = ChildDecoder.decode({ id: 'c1', parent: { id: 'p1' } });",
+        "const encodedChild: Result<{ readonly id: string; readonly parent?: unknown }, unknown> = ChildEncoder.encode({ id: 'c1', parent: { id: 'p1' } });",
+        "const codecChild: Result<Child, unknown> = ChildCodec.decode({ id: 'c1', parent: { id: 'p1' } });",
+        'void decodedParent;',
+        'void encodedParent;',
+        'void codecParent;',
+        'void decodedChild;',
+        'void encodedChild;',
+        'void codecChild;',
+        '',
+      ].join('\n'),
+    ],
+  ]);
+
+  const expanded = expandAndTypecheckBuiltins(files, [fileName]);
+  const expandedFileName = expanded.preparedProgram.toProgramFileName(fileName);
+  const sourceFile = expanded.program.getSourceFile(expandedFileName);
+  assert(sourceFile);
+
+  const printed = printSourceFileForMacroTest(sourceFile);
+  assertStringIncludes(printed, 'type __sts_ParentDecoderType = import("sts:decode").Decoder<Parent>;');
+  assertStringIncludes(printed, 'type __sts_ChildDecoderType = import("sts:decode").Decoder<Child>;');
+  assertStringIncludes(
+    printed,
+    'type __sts_ParentEncoderType = import("sts:encode").Encoder<Parent, __sts_ParentEncodedForEncode>;',
+  );
+  assertStringIncludes(
+    printed,
+    'type __sts_ChildEncoderType = import("sts:encode").Encoder<Child, __sts_ChildEncodedForEncode>;',
+  );
+  assertStringIncludes(printed, 'type __sts_ParentCodecType = import("sts:codec").Codec<Parent, __sts_ParentEncodedForCodec>;');
+  assertStringIncludes(printed, 'type __sts_ChildCodecType = import("sts:codec").Codec<Child, __sts_ChildEncodedForCodec>;');
+  assertStringIncludes(printed, 'export const ParentDecoder');
+  assertStringIncludes(printed, 'export const ChildDecoder');
+  assertStringIncludes(printed, 'export const ParentCodec');
+  assertStringIncludes(printed, 'export const ChildCodec');
+});
+
+Deno.test('mutually recursive derived companions typecheck with async propagation through local companions', () => {
+  const fileName = '/virtual/index.sts';
+  const files = new Map<string, string>([
+    ...createInstalledStdlibPackageFiles('/virtual').entries(),
+    [
+      fileName,
+      [
+        "import { codec, decode, encode } from 'sts:derive';",
+        "import type { Result } from 'sts:result';",
+        '',
+        'declare function normalizeParent(value: Parent): Promise<Parent>;',
+        'declare function validParent(value: Parent): Promise<boolean>;',
+        '',
+        '// #[decode]',
+        '// #[decode.transform(normalizeParent)]',
+        '// #[decode.refine(validParent)]',
+        '// #[encode]',
+        '// #[encode.transform(normalizeParent)]',
+        '// #[encode.refine(validParent)]',
+        '// #[codec]',
+        '// #[decode.transform(normalizeParent)]',
+        '// #[decode.refine(validParent)]',
+        '// #[encode.transform(normalizeParent)]',
+        '// #[encode.refine(validParent)]',
+        'type Parent = {',
+        '  id: string;',
+        '  child?: Child;',
+        '};',
+        '',
+        '// #[decode]',
+        '// #[encode]',
+        '// #[codec]',
+        'type Child = {',
+        '  id: string;',
+        '  parent?: Parent;',
+        '};',
+        '',
+        "const decodedParent: Promise<Result<Parent, unknown>> = ParentDecoder.decode({ id: 'p1', child: { id: 'c1' } });",
+        "const encodedParent: Promise<Result<{ readonly id: string; readonly child?: unknown }, unknown>> = ParentEncoder.encode({ id: 'p1', child: { id: 'c1' } });",
+        "const codecParent: Promise<Result<Parent, unknown>> = ParentCodec.decode({ id: 'p1', child: { id: 'c1' } });",
+        "const decodedChild: Promise<Result<Child, unknown>> = ChildDecoder.decode({ id: 'c1', parent: { id: 'p1' } });",
+        "const encodedChild: Promise<Result<{ readonly id: string; readonly parent?: unknown }, unknown>> = ChildEncoder.encode({ id: 'c1', parent: { id: 'p1' } });",
+        "const codecChild: Promise<Result<Child, unknown>> = ChildCodec.decode({ id: 'c1', parent: { id: 'p1' } });",
+        'void decodedParent;',
+        'void encodedParent;',
+        'void codecParent;',
+        'void decodedChild;',
+        'void encodedChild;',
+        'void codecChild;',
+        '',
+      ].join('\n'),
+    ],
+  ]);
+
+  const expanded = expandAndTypecheckBuiltins(files, [fileName]);
+  const expandedFileName = expanded.preparedProgram.toProgramFileName(fileName);
+  const sourceFile = expanded.program.getSourceFile(expandedFileName);
+  assert(sourceFile);
+
+  const printed = printSourceFileForMacroTest(sourceFile);
+  assertStringIncludes(
+    printed,
+    'type __sts_ParentDecoderType = import("sts:decode").Decoder<Parent, unknown, "async">;',
+  );
+  assertStringIncludes(
+    printed,
+    'type __sts_ChildDecoderType = import("sts:decode").Decoder<Child, unknown, "async">;',
+  );
+  assertStringIncludes(
+    printed,
+    'type __sts_ParentEncoderType = import("sts:encode").Encoder<Parent, __sts_ParentEncodedForEncode, unknown, "async">;',
+  );
+  assertStringIncludes(
+    printed,
+    'type __sts_ChildEncoderType = import("sts:encode").Encoder<Child, __sts_ChildEncodedForEncode, unknown, "async">;',
+  );
+  assertStringIncludes(
+    printed,
+    'type __sts_ParentCodecType = import("sts:codec").Codec<Parent, __sts_ParentEncodedForCodec, unknown, unknown, "async", "async">;',
+  );
+  assertStringIncludes(
+    printed,
+    'type __sts_ChildCodecType = import("sts:codec").Codec<Child, __sts_ChildEncodedForCodec, unknown, unknown, "async", "async">;',
+  );
+  assertStringIncludes(printed, 'normalizeParent');
+  assertStringIncludes(printed, 'validParent');
+});
+
+Deno.test('recursive derived companions typecheck with sync defaults transforms and refinements', () => {
+  const fileName = '/virtual/index.sts';
+  const files = new Map<string, string>([
+    ...createInstalledStdlibPackageFiles('/virtual').entries(),
+    [
+      fileName,
+      [
+        "import { codec, decode, encode } from 'sts:derive';",
+        "import type { Result } from 'sts:result';",
+        '',
+        'declare function normalizeNode(node: Node): Node;',
+        'declare function normalizeLabel(value: string): string;',
+        'declare function nonEmptyLabel(value: string): boolean;',
+        'declare function validNode(node: Node): boolean;',
+        '',
+        '// #[decode]',
+        '// #[decode.transform(normalizeNode)]',
+        '// #[decode.refine(validNode)]',
+        '// #[encode]',
+        '// #[encode.transform(normalizeNode)]',
+        '// #[encode.refine(validNode)]',
+        '// #[codec]',
+        '// #[decode.transform(normalizeNode)]',
+        '// #[decode.refine(validNode)]',
+        '// #[encode.transform(normalizeNode)]',
+        '// #[encode.refine(validNode)]',
+        'type Node = {',
+        '  // #[decode.default("root")]',
+        '  // #[decode.transform(normalizeLabel)]',
+        '  // #[decode.refine(nonEmptyLabel)]',
+        '  // #[encode.transform(normalizeLabel)]',
+        '  // #[encode.refine(nonEmptyLabel)]',
+        '  label?: string;',
+        '  next?: Node;',
+        '};',
+        '',
+        "const decoded: Result<Node, unknown> = NodeDecoder.decode({ next: { label: 'child' } });",
+        "const validated: Result<Node, readonly unknown[]> = NodeDecoder.validateDecode({ next: { label: 'child' } });",
+        "const encoded: Result<{ readonly label?: unknown; readonly next?: unknown }, unknown> = NodeEncoder.encode({ next: { label: 'child' } });",
+        "const validatedEncode: Result<{ readonly label?: unknown; readonly next?: unknown }, readonly unknown[]> = NodeEncoder.validateEncode({ next: { label: 'child' } });",
+        "const codecDecoded: Result<Node, unknown> = NodeCodec.decode({ next: { label: 'child' } });",
+        "const codecEncoded: Result<{ readonly label?: unknown; readonly next?: unknown }, unknown> = NodeCodec.encode({ next: { label: 'child' } });",
+        'void decoded;',
+        'void validated;',
+        'void encoded;',
+        'void validatedEncode;',
+        'void codecDecoded;',
+        'void codecEncoded;',
+        '',
+      ].join('\n'),
+    ],
+  ]);
+
+  const expanded = expandAndTypecheckBuiltins(files, [fileName]);
+  const expandedFileName = expanded.preparedProgram.toProgramFileName(fileName);
+  const sourceFile = expanded.program.getSourceFile(expandedFileName);
+  assert(sourceFile);
+
+  const printed = printSourceFileForMacroTest(sourceFile);
+  assertStringIncludes(printed, 'type __sts_NodeDecoderType = import("sts:decode").Decoder<Node>;');
+  assertStringIncludes(printed, 'type __sts_NodeEncoderType = import("sts:encode").Encoder<Node, __sts_NodeEncodedForEncode>;');
+  assertStringIncludes(printed, 'type __sts_NodeCodecType = import("sts:codec").Codec<Node, __sts_NodeEncodedForCodec>;');
+  assertStringIncludes(printed, 'normalizeNode');
+  assertStringIncludes(printed, 'normalizeLabel');
+  assertStringIncludes(printed, 'nonEmptyLabel');
+  assertStringIncludes(printed, 'validNode');
+});
+
+Deno.test('recursive derived companions typecheck with via helpers on recursive edges', () => {
+  const fileName = '/virtual/index.sts';
+  const files = new Map<string, string>([
+    ...createInstalledStdlibPackageFiles('/virtual').entries(),
+    [
+      fileName,
+      [
+        "import { codec, decode, encode } from 'sts:derive';",
+        "import { lazy as decodeLazy } from 'sts:decode';",
+        "import { lazy as encodeLazy } from 'sts:encode';",
+        "import { codec as createCodec } from 'sts:codec';",
+        "import type { Result } from 'sts:result';",
+        '',
+        'const NodeDecoderRef = decodeLazy(() => NodeDecoder);',
+        'const NodeEncoderRef = encodeLazy(() => NodeEncoder);',
+        'const NodeCodecRef = createCodec(NodeDecoderRef, NodeEncoderRef);',
+        '',
+        '// #[decode]',
+        '// #[encode]',
+        '// #[codec]',
+        'type Node = {',
+        '  id: string;',
+        '  // #[decode.via(NodeDecoderRef)]',
+        '  // #[encode.via(NodeEncoderRef)]',
+        '  // #[codec.via(NodeCodecRef)]',
+        '  next: Node | undefined;',
+        '};',
+        '',
+        "const decoded: Result<Node, unknown> = NodeDecoder.decode({ id: 'root', next: { id: 'child', next: undefined } });",
+        "const encoded: Result<{ readonly id: string; readonly next: unknown }, unknown> = NodeEncoder.encode({ id: 'root', next: { id: 'child', next: undefined } });",
+        "const codecDecoded: Result<Node, unknown> = NodeCodec.decode({ id: 'root', next: { id: 'child', next: undefined } });",
+        "const codecEncoded: Result<{ readonly id: string; readonly next: unknown }, unknown> = NodeCodec.encode({ id: 'root', next: { id: 'child', next: undefined } });",
+        'void decoded;',
+        'void encoded;',
+        'void codecDecoded;',
+        'void codecEncoded;',
+        '',
+      ].join('\n'),
+    ],
+  ]);
+
+  const expanded = expandAndTypecheckBuiltins(files, [fileName]);
+  const expandedFileName = expanded.preparedProgram.toProgramFileName(fileName);
+  const sourceFile = expanded.program.getSourceFile(expandedFileName);
+  assert(sourceFile);
+
+  const printed = printSourceFileForMacroTest(sourceFile);
+  assertStringIncludes(printed, 'type __sts_NodeDecoderType = import("sts:decode").Decoder<Node>;');
+  assertStringIncludes(
+    printed,
+    'type __sts_NodeEncoderType = import("sts:encode").Encoder<Node, __sts_NodeEncodedForEncode>;',
+  );
+  assertStringIncludes(
+    printed,
+    'type __sts_NodeCodecType = import("sts:codec").Codec<Node, __sts_NodeEncodedForCodec>;',
+  );
+  assertStringIncludes(printed, 'NodeDecoderRef');
+  assertStringIncludes(printed, 'NodeEncoderRef');
+  assertStringIncludes(printed, 'NodeCodecRef');
+});
+
+Deno.test('recursive derived companions typecheck with async via helpers on recursive edges', () => {
+  const fileName = '/virtual/index.sts';
+  const files = new Map<string, string>([
+    ...createInstalledStdlibPackageFiles('/virtual').entries(),
+    [
+      fileName,
+      [
+        "import { codec, decode, encode } from 'sts:derive';",
+        "import { lazy as decodeLazy, map as decodeMap } from 'sts:decode';",
+        "import { lazy as encodeLazy, contramap as encodeContramap } from 'sts:encode';",
+        "import { codec as createCodec } from 'sts:codec';",
+        "import type { Result } from 'sts:result';",
+        '',
+        'declare function normalizeNode(value: Node): Promise<Node>;',
+        '',
+        'const NodeDecoderRef = decodeMap(decodeLazy(() => NodeDecoder), normalizeNode);',
+        'const NodeEncoderRef = encodeContramap(encodeLazy(() => NodeEncoder), normalizeNode);',
+        'const NodeCodecRef = createCodec(NodeDecoderRef, NodeEncoderRef);',
+        '',
+        '// #[decode]',
+        '// #[encode]',
+        '// #[codec]',
+        'type Node = {',
+        '  id: string;',
+        '  // #[decode.via(NodeDecoderRef)]',
+        '  // #[encode.via(NodeEncoderRef)]',
+        '  // #[codec.via(NodeCodecRef)]',
+        '  next: Node | undefined;',
+        '};',
+        '',
+        "const decoded: Promise<Result<Node, unknown>> = NodeDecoder.decode({ id: 'root', next: { id: 'child', next: undefined } });",
+        "const encoded: Promise<Result<{ readonly id: string; readonly next: unknown }, unknown>> = NodeEncoder.encode({ id: 'root', next: { id: 'child', next: undefined } });",
+        "const codecDecoded: Promise<Result<Node, unknown>> = NodeCodec.decode({ id: 'root', next: { id: 'child', next: undefined } });",
+        "const codecEncoded: Promise<Result<{ readonly id: string; readonly next: unknown }, unknown>> = NodeCodec.encode({ id: 'root', next: { id: 'child', next: undefined } });",
+        'void decoded;',
+        'void encoded;',
+        'void codecDecoded;',
+        'void codecEncoded;',
+        '',
+      ].join('\n'),
+    ],
+  ]);
+
+  const expanded = expandAndTypecheckBuiltins(files, [fileName]);
+  const expandedFileName = expanded.preparedProgram.toProgramFileName(fileName);
+  const sourceFile = expanded.program.getSourceFile(expandedFileName);
+  assert(sourceFile);
+
+  const printed = printSourceFileForMacroTest(sourceFile);
+  assertStringIncludes(
+    printed,
+    'type __sts_NodeDecoderType = import("sts:decode").Decoder<Node, unknown, "async">;',
+  );
+  assertStringIncludes(
+    printed,
+    'type __sts_NodeEncoderType = import("sts:encode").Encoder<Node, __sts_NodeEncodedForEncode, unknown, "async">;',
+  );
+  assertStringIncludes(
+    printed,
+    'type __sts_NodeCodecType = import("sts:codec").Codec<Node, __sts_NodeEncodedForCodec, unknown, unknown, "async", "async">;',
+  );
+  assertStringIncludes(printed, 'normalizeNode');
+});
+
+Deno.test('recursive derived companions typecheck with async via wrapper helpers on recursive edges', () => {
+  const fileName = '/virtual/index.sts';
+  const files = new Map<string, string>([
+    ...createInstalledStdlibPackageFiles('/virtual').entries(),
+    [
+      fileName,
+      [
+        "import { codec, decode, encode } from 'sts:derive';",
+        "import { lazy as decodeLazy, map as decodeMap } from 'sts:decode';",
+        "import { lazy as encodeLazy, contramap as encodeContramap } from 'sts:encode';",
+        "import { codec as createCodec } from 'sts:codec';",
+        "import type { Result } from 'sts:result';",
+        '',
+        'declare function normalizeNode(value: Node): Promise<Node>;',
+        '',
+        'function makeNodeDecoder(',
+        '  getBase: () => import("sts:decode").Decoder<Node, unknown, import("sts:decode").DecodeMode>,',
+        ') {',
+        '  return decodeMap(decodeLazy(getBase), normalizeNode);',
+        '}',
+        '',
+        'const makeNodeEncoder = (',
+        '  getBase: () => import("sts:encode").Encoder<Node, unknown, unknown, import("sts:encode").EncodeMode>,',
+        ') => encodeContramap(encodeLazy(getBase), normalizeNode);',
+        '',
+        'function makeNodeCodec(',
+        '  getDecoder: () => import("sts:decode").Decoder<Node, unknown, import("sts:decode").DecodeMode>,',
+        '  getEncoder: () => import("sts:encode").Encoder<Node, unknown, unknown, import("sts:encode").EncodeMode>,',
+        ') {',
+        '  return createCodec(decodeLazy(getDecoder), encodeLazy(getEncoder));',
+        '}',
+        '',
+        'const NodeDecoderRef = makeNodeDecoder(() => NodeDecoder);',
+        'const NodeEncoderRef = makeNodeEncoder(() => NodeEncoder);',
+        'const NodeCodecRef = makeNodeCodec(() => NodeDecoderRef, () => NodeEncoderRef);',
+        '',
+        '// #[decode]',
+        '// #[encode]',
+        '// #[codec]',
+        'type Node = {',
+        '  id: string;',
+        '  // #[decode.via(NodeDecoderRef)]',
+        '  // #[encode.via(NodeEncoderRef)]',
+        '  // #[codec.via(NodeCodecRef)]',
+        '  next: Node | undefined;',
+        '};',
+        '',
+        "const decoded: Promise<Result<Node, unknown>> = NodeDecoder.decode({ id: 'root', next: { id: 'child', next: undefined } });",
+        "const encoded: Promise<Result<{ readonly id: string; readonly next: unknown }, unknown>> = NodeEncoder.encode({ id: 'root', next: { id: 'child', next: undefined } });",
+        "const codecDecoded: Promise<Result<Node, unknown>> = NodeCodec.decode({ id: 'root', next: { id: 'child', next: undefined } });",
+        "const codecEncoded: Promise<Result<{ readonly id: string; readonly next: unknown }, unknown>> = NodeCodec.encode({ id: 'root', next: { id: 'child', next: undefined } });",
+        'void decoded;',
+        'void encoded;',
+        'void codecDecoded;',
+        'void codecEncoded;',
+        '',
+      ].join('\n'),
+    ],
+  ]);
+
+  const expanded = expandAndTypecheckBuiltins(files, [fileName]);
+  const expandedFileName = expanded.preparedProgram.toProgramFileName(fileName);
+  const sourceFile = expanded.program.getSourceFile(expandedFileName);
+  assert(sourceFile);
+
+  const printed = printSourceFileForMacroTest(sourceFile);
+  assertStringIncludes(
+    printed,
+    'type __sts_NodeDecoderType = import("sts:decode").Decoder<Node, unknown, "async">;',
+  );
+  assertStringIncludes(
+    printed,
+    'type __sts_NodeEncoderType = import("sts:encode").Encoder<Node, __sts_NodeEncodedForEncode, unknown, "async">;',
+  );
+  assertStringIncludes(
+    printed,
+    'type __sts_NodeCodecType = import("sts:codec").Codec<Node, __sts_NodeEncodedForCodec, unknown, unknown, "async", "async">;',
+  );
+  assertStringIncludes(printed, 'makeNodeDecoder');
+  assertStringIncludes(printed, 'makeNodeEncoder');
+  assertStringIncludes(printed, 'makeNodeCodec');
+});
+
+Deno.test('mutually recursive derived companions typecheck with async via wrapper helpers', () => {
+  const fileName = '/virtual/index.sts';
+  const files = new Map<string, string>([
+    ...createInstalledStdlibPackageFiles('/virtual').entries(),
+    [
+      fileName,
+      [
+        "import { codec, decode, encode } from 'sts:derive';",
+        "import { lazy as decodeLazy, map as decodeMap } from 'sts:decode';",
+        "import { lazy as encodeLazy, contramap as encodeContramap } from 'sts:encode';",
+        "import { codec as createCodec } from 'sts:codec';",
+        "import type { Result } from 'sts:result';",
+        '',
+        'declare function normalizeLeft(value: Left): Promise<Left>;',
+        'declare function normalizeRight(value: Right): Promise<Right>;',
+        '',
+        'function makeLeftDecoder(',
+        '  getBase: () => import("sts:decode").Decoder<Left, unknown, import("sts:decode").DecodeMode>,',
+        ') {',
+        '  return decodeMap(decodeLazy(getBase), normalizeLeft);',
+        '}',
+        'function makeRightDecoder(',
+        '  getBase: () => import("sts:decode").Decoder<Right, unknown, import("sts:decode").DecodeMode>,',
+        ') {',
+        '  return decodeMap(decodeLazy(getBase), normalizeRight);',
+        '}',
+        '',
+        'const makeLeftEncoder = (',
+        '  getBase: () => import("sts:encode").Encoder<Left, unknown, unknown, import("sts:encode").EncodeMode>,',
+        ') => encodeContramap(encodeLazy(getBase), normalizeLeft);',
+        'const makeRightEncoder = (',
+        '  getBase: () => import("sts:encode").Encoder<Right, unknown, unknown, import("sts:encode").EncodeMode>,',
+        ') => encodeContramap(encodeLazy(getBase), normalizeRight);',
+        '',
+        'function makeLeftCodec(',
+        '  getDecoder: () => import("sts:decode").Decoder<Left, unknown, import("sts:decode").DecodeMode>,',
+        '  getEncoder: () => import("sts:encode").Encoder<Left, unknown, unknown, import("sts:encode").EncodeMode>,',
+        ') {',
+        '  return createCodec(decodeLazy(getDecoder), encodeLazy(getEncoder));',
+        '}',
+        'function makeRightCodec(',
+        '  getDecoder: () => import("sts:decode").Decoder<Right, unknown, import("sts:decode").DecodeMode>,',
+        '  getEncoder: () => import("sts:encode").Encoder<Right, unknown, unknown, import("sts:encode").EncodeMode>,',
+        ') {',
+        '  return createCodec(decodeLazy(getDecoder), encodeLazy(getEncoder));',
+        '}',
+        '',
+        'const LeftDecoderRef = makeLeftDecoder(() => LeftDecoder);',
+        'const RightDecoderRef = makeRightDecoder(() => RightDecoder);',
+        'const LeftEncoderRef = makeLeftEncoder(() => LeftEncoder);',
+        'const RightEncoderRef = makeRightEncoder(() => RightEncoder);',
+        'const LeftCodecRef = makeLeftCodec(() => LeftDecoderRef, () => LeftEncoderRef);',
+        'const RightCodecRef = makeRightCodec(() => RightDecoderRef, () => RightEncoderRef);',
+        '',
+        '// #[decode]',
+        '// #[encode]',
+        '// #[codec]',
+        'type Left = {',
+        '  label: string;',
+        '  // #[decode.via(RightDecoderRef)]',
+        '  // #[encode.via(RightEncoderRef)]',
+        '  // #[codec.via(RightCodecRef)]',
+        '  right?: Right;',
+        '};',
+        '',
+        '// #[decode]',
+        '// #[encode]',
+        '// #[codec]',
+        'type Right = {',
+        '  label: string;',
+        '  // #[decode.via(LeftDecoderRef)]',
+        '  // #[encode.via(LeftEncoderRef)]',
+        '  // #[codec.via(LeftCodecRef)]',
+        '  left?: Left;',
+        '};',
+        '',
+        "const decoded: Promise<Result<Left, unknown>> = LeftDecoder.decode({ label: 'left', right: { label: 'right' } });",
+        "const encoded: Promise<Result<{ readonly label: string; readonly right?: unknown }, unknown>> = LeftEncoder.encode({ label: 'left', right: { label: 'right' } });",
+        "const codecDecoded: Promise<Result<Right, unknown>> = RightCodec.decode({ label: 'right', left: { label: 'left' } });",
+        "const codecEncoded: Promise<Result<{ readonly label: string; readonly left?: unknown }, unknown>> = RightCodec.encode({ label: 'right', left: { label: 'left' } });",
+        'void decoded;',
+        'void encoded;',
+        'void codecDecoded;',
+        'void codecEncoded;',
+        '',
+      ].join('\n'),
+    ],
+  ]);
+
+  const expanded = expandAndTypecheckBuiltins(files, [fileName]);
+  const expandedFileName = expanded.preparedProgram.toProgramFileName(fileName);
+  const sourceFile = expanded.program.getSourceFile(expandedFileName);
+  assert(sourceFile);
+
+  const printed = printSourceFileForMacroTest(sourceFile);
+  assertStringIncludes(
+    printed,
+    'type __sts_LeftDecoderType = import("sts:decode").Decoder<Left, unknown, "async">;',
+  );
+  assertStringIncludes(
+    printed,
+    'type __sts_RightEncoderType = import("sts:encode").Encoder<Right, __sts_RightEncodedForEncode, unknown, "async">;',
+  );
+  assertStringIncludes(
+    printed,
+    'type __sts_LeftCodecType = import("sts:codec").Codec<Left, __sts_LeftEncodedForCodec, unknown, unknown, "async", "async">;',
+  );
+  assertStringIncludes(printed, 'makeLeftDecoder');
+  assertStringIncludes(printed, 'makeRightEncoder');
+  assertStringIncludes(printed, 'makeLeftCodec');
+});
+
+Deno.test('recursive derived companions keep fallback behavior for opaque declaration-only via wrappers', () => {
+  const helperFileName = '/virtual/helpers.d.ts';
+  const fileName = '/virtual/index.sts';
+  const files = new Map<string, string>([
+    ...createInstalledStdlibPackageFiles('/virtual').entries(),
+    [
+      helperFileName,
+      [
+        'import type { Codec } from "sts:codec";',
+        'import type { Decoder } from "sts:decode";',
+        'import type { Encoder } from "sts:encode";',
+        '',
+        'export declare function makeNodeDecoder<T>(',
+        '  getBase: () => Decoder<T>,',
+        '): Decoder<T>;',
+        'export declare function makeNodeEncoder<T>(',
+        '  getBase: () => Encoder<T>,',
+        '): Encoder<T>;',
+        'export declare function makeNodeCodec<T>(',
+        '  getDecoder: () => Decoder<T>,',
+        '  getEncoder: () => Encoder<T>,',
+        '): Codec<T>;',
+        '',
+      ].join('\n'),
+    ],
+    [
+      fileName,
+      [
+        "import { codec, decode, encode } from 'sts:derive';",
+        "import { makeNodeCodec, makeNodeDecoder, makeNodeEncoder } from './helpers';",
+        "import type { Result } from 'sts:result';",
+        '',
+        'const NodeDecoderRef = makeNodeDecoder(() => NodeDecoder);',
+        'const NodeEncoderRef = makeNodeEncoder(() => NodeEncoder);',
+        'const NodeCodecRef = makeNodeCodec(() => NodeDecoderRef, () => NodeEncoderRef);',
+        '',
+        '// #[decode]',
+        '// #[encode]',
+        '// #[codec]',
+        'type Node = {',
+        '  id: string;',
+        '  // #[decode.via(NodeDecoderRef)]',
+        '  // #[encode.via(NodeEncoderRef)]',
+        '  // #[codec.via(NodeCodecRef)]',
+        '  next: Node | undefined;',
+        '};',
+        '',
+        "const decoded: Result<Node, unknown> = NodeDecoder.decode({ id: 'root', next: { id: 'child', next: undefined } });",
+        "const encoded: Result<{ readonly id: string; readonly next: unknown }, unknown> = NodeEncoder.encode({ id: 'root', next: { id: 'child', next: undefined } });",
+        "const codecDecoded: Result<Node, unknown> = NodeCodec.decode({ id: 'root', next: { id: 'child', next: undefined } });",
+        "const codecEncoded: Result<{ readonly id: string; readonly next: unknown }, unknown> = NodeCodec.encode({ id: 'root', next: { id: 'child', next: undefined } });",
+        'void decoded;',
+        'void encoded;',
+        'void codecDecoded;',
+        'void codecEncoded;',
+        '',
+      ].join('\n'),
+    ],
+  ]);
+
+  const expanded = expandAndTypecheckBuiltins(files, [fileName, helperFileName]);
+  const expandedFileName = expanded.preparedProgram.toProgramFileName(fileName);
+  const sourceFile = expanded.program.getSourceFile(expandedFileName);
+  assert(sourceFile);
+
+  const printed = printSourceFileForMacroTest(sourceFile);
+  assertStringIncludes(printed, 'type __sts_NodeDecoderType = import("sts:decode").Decoder<Node>;');
+  assertStringIncludes(
+    printed,
+    'type __sts_NodeEncoderType = import("sts:encode").Encoder<Node, __sts_NodeEncodedForEncode>;',
+  );
+  assertStringIncludes(
+    printed,
+    'type __sts_NodeCodecType = import("sts:codec").Codec<Node, __sts_NodeEncodedForCodec>;',
+  );
+  assertStringIncludes(printed, 'makeNodeDecoder');
+  assertStringIncludes(printed, 'makeNodeEncoder');
+  assertStringIncludes(printed, 'makeNodeCodec');
+});
+
+Deno.test('recursive derived companions typecheck with async defaults transforms and refinements', () => {
+  const fileName = '/virtual/index.sts';
+  const files = new Map<string, string>([
+    ...createInstalledStdlibPackageFiles('/virtual').entries(),
+    [
+      fileName,
+      [
+        "import { codec, decode, encode } from 'sts:derive';",
+        "import type { Result } from 'sts:result';",
+        '',
+        'declare function normalizeNode(node: Node): Promise<Node>;',
+        'declare function normalizeLabel(value: string): Promise<string>;',
+        'declare function nonEmptyLabel(value: string): Promise<boolean>;',
+        'declare function validNode(node: Node): Promise<boolean>;',
+        'declare function defaultLabel(): Promise<string>;',
+        '',
+        '// #[decode]',
+        '// #[decode.transform(normalizeNode)]',
+        '// #[decode.refine(validNode)]',
+        '// #[encode]',
+        '// #[encode.transform(normalizeNode)]',
+        '// #[encode.refine(validNode)]',
+        '// #[codec]',
+        '// #[decode.transform(normalizeNode)]',
+        '// #[decode.refine(validNode)]',
+        '// #[encode.transform(normalizeNode)]',
+        '// #[encode.refine(validNode)]',
+        'type Node = {',
+        '  // #[decode.default(defaultLabel)]',
+        '  // #[decode.transform(normalizeLabel)]',
+        '  // #[decode.refine(nonEmptyLabel)]',
+        '  // #[encode.transform(normalizeLabel)]',
+        '  // #[encode.refine(nonEmptyLabel)]',
+        '  label?: string;',
+        '  next?: Node;',
+        '};',
+        '',
+        "const decoded: Promise<Result<Node, unknown>> = NodeDecoder.decode({ next: { label: 'child' } });",
+        "const validated: Promise<Result<Node, readonly unknown[]>> = NodeDecoder.validateDecode({ next: { label: 'child' } });",
+        "const encoded: Promise<Result<{ readonly label?: unknown; readonly next?: unknown }, unknown>> = NodeEncoder.encode({ next: { label: 'child' } });",
+        "const validatedEncode: Promise<Result<{ readonly label?: unknown; readonly next?: unknown }, readonly unknown[]>> = NodeEncoder.validateEncode({ next: { label: 'child' } });",
+        "const codecDecoded: Promise<Result<Node, unknown>> = NodeCodec.decode({ next: { label: 'child' } });",
+        "const codecEncoded: Promise<Result<{ readonly label?: unknown; readonly next?: unknown }, unknown>> = NodeCodec.encode({ next: { label: 'child' } });",
+        'void decoded;',
+        'void validated;',
+        'void encoded;',
+        'void validatedEncode;',
+        'void codecDecoded;',
+        'void codecEncoded;',
+        '',
+      ].join('\n'),
+    ],
+  ]);
+
+  const expanded = expandAndTypecheckBuiltins(files, [fileName]);
+  const expandedFileName = expanded.preparedProgram.toProgramFileName(fileName);
+  const sourceFile = expanded.program.getSourceFile(expandedFileName);
+  assert(sourceFile);
+
+  const printed = printSourceFileForMacroTest(sourceFile);
+  assertStringIncludes(printed, 'type __sts_NodeDecoderType = import("sts:decode").Decoder<Node, unknown, "async">;');
+  assertStringIncludes(
+    printed,
+    'type __sts_NodeEncoderType = import("sts:encode").Encoder<Node, __sts_NodeEncodedForEncode, unknown, "async">;',
+  );
+  assertStringIncludes(
+    printed,
+    'type __sts_NodeCodecType = import("sts:codec").Codec<Node, __sts_NodeEncodedForCodec, unknown, unknown, "async", "async">;',
+  );
+  assertStringIncludes(printed, 'defaultLabel');
+  assertStringIncludes(printed, 'normalizeNode');
+  assertStringIncludes(printed, 'normalizeLabel');
+  assertStringIncludes(printed, 'nonEmptyLabel');
+  assertStringIncludes(printed, 'validNode');
+});
+
+Deno.test('recursive class companions typecheck with async decode factories', () => {
+  const fileName = '/virtual/index.sts';
+  const files = new Map<string, string>([
+    ...createInstalledStdlibPackageFiles('/virtual').entries(),
+    [
+      fileName,
+      [
+        "import { codec, decode } from 'sts:derive';",
+        "import type { Result } from 'sts:result';",
+        '',
+        '// #[decode]',
+        '// #[decode.factory(Node.fromWire)]',
+        '// #[codec]',
+        '// #[codec.factory(Node.fromWire)]',
+        'class Node {',
+        '  next?: Node;',
+        '  static async fromWire(value: { next?: Node }): Promise<Node> {',
+        '    const node = new Node();',
+        '    node.next = value.next;',
+        '    return node;',
+        '  }',
+        '}',
+        '',
+        "const decoded: Promise<Result<Node, unknown>> = NodeDecoder.decode({ next: {} });",
+        "const validated: Promise<Result<Node, readonly unknown[]>> = NodeDecoder.validateDecode({ next: {} });",
+        "const codecDecoded: Promise<Result<Node, unknown>> = NodeCodec.decode({ next: {} });",
+        "const codecValidated: Promise<Result<Node, readonly unknown[]>> = NodeCodec.validateDecode({ next: {} });",
+        "const codecEncoded: Result<{ readonly next?: unknown }, unknown> = NodeCodec.encode({ next: new Node() });",
+        'void decoded;',
+        'void validated;',
+        'void codecDecoded;',
+        'void codecValidated;',
+        'void codecEncoded;',
+        '',
+      ].join('\n'),
+    ],
+  ]);
+
+  const expanded = expandAndTypecheckBuiltins(files, [fileName]);
+  const expandedFileName = expanded.preparedProgram.toProgramFileName(fileName);
+  const sourceFile = expanded.program.getSourceFile(expandedFileName);
+  assert(sourceFile);
+
+  const printed = printSourceFileForMacroTest(sourceFile);
+  assertStringIncludes(printed, 'type __sts_NodeDecoderType = import("sts:decode").Decoder<Node, unknown, "async">;');
+  assertStringIncludes(
+    printed,
+    'type __sts_NodeCodecType = import("sts:codec").Codec<Node, __sts_NodeEncodedForCodec, unknown, import("sts:encode").EncodeFailure, "async", "sync">;',
+  );
+  assertStringIncludes(printed, 'Node.fromWire');
 });
 
 Deno.test('codec macro class factories compose with sts:json bridge calls', () => {

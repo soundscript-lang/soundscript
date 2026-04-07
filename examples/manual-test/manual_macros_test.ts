@@ -41,7 +41,7 @@ async function stageExampleProject(): Promise<string> {
   return workspace;
 }
 
-Deno.test('manual macro example expands and runs attempt and match under Deno', async () => {
+Deno.test('manual macro example expands and runs Try under Deno', async () => {
   const outDir = await Deno.makeTempDir({ prefix: 'soundscript-manual-macros-' });
   const workspace = await stageExampleProject();
 
@@ -56,13 +56,10 @@ Deno.test('manual macro example expands and runs attempt and match under Deno', 
 
   const emittedModule = await import(toFileUrl(join(outDir, 'src/macro_demo.ts')).href);
 
-  assertEquals(emittedModule.safeDivide(12, 3), { tag: 'ok', value: 4 });
-  assertEquals(emittedModule.safeDivide(12, 0), { tag: 'err', error: 'divide_by_zero' });
-  assertEquals(emittedModule.divideThreeWays(24, 3, 2), { tag: 'ok', value: 4 });
-  assertEquals(
-    emittedModule.divideThreeWays(24, 0, 2),
-    { tag: 'err', error: 'divide_by_zero' },
-  );
+  assertEquals(emittedModule.safeDivide(12, 3), 4);
+  assertEquals(emittedModule.safeDivide(12, 0), null);
+  assertEquals(emittedModule.divideThreeWays(24, 3, 2), 4);
+  assertEquals(emittedModule.divideThreeWays(24, 0, 2), null);
   assertEquals(emittedModule.describeDivision(12, 3), 'ok:4');
   assertEquals(emittedModule.describeDivision(12, 0), 'err:divide_by_zero');
   assertEquals(emittedModule.describeDivision(9, 3), 'ok');

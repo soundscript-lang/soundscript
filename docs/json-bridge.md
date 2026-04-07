@@ -55,6 +55,13 @@ import {
 
 These operate on `JsonLikeValue`.
 
+The bridge wrappers mirror the helper they wrap:
+
+- sync decoders/encoders stay sync through `decodeJson(...)`, `encodeJson(...)`,
+  `parseAndDecode(...)`, and `encodeAndStringify(...)`
+- async decoders/encoders return `Promise<Result<...>>` through those same wrappers
+- `validateDecodeJson(...)` and `validateEncodeJson(...)` expose accumulation-mode bridge helpers
+
 ## Bigint Encoding Modes
 
 Text encoding uses a per-call bigint policy:
@@ -97,7 +104,7 @@ For `Option<T>` and `Result<T, E>` fields, the bridge uses the result-family tag
 
 - `ok(value)` / `some(value)` -> `{ "tag": "ok", "value": ... }`
 - `err(error)` -> `{ "tag": "err", "error": ... }`
-- `none()` -> `{ "tag": "err" }`
+- `none()` -> `{ "tag": "none" }`
 
 That means the natural text boundary helpers are:
 
@@ -114,6 +121,17 @@ interface User {
 const text = encodeJson(user, UserCodec, { bigint: 'string' });
 const decoded = decodeJson(text.value, UserCodec);
 ```
+
+Accumulation helpers are available when you want the processed value plus structured issue lists:
+
+```ts
+import { validateDecodeJson, validateEncodeJson } from 'sts:json';
+
+const decoded = validateDecodeJson('{"id":1}', UserDecoder);
+const encoded = validateEncodeJson(user, UserEncoder, { bigint: 'string' });
+```
+
+Those helpers preserve the sync/async mode of the wrapped decoder or encoder.
 
 ## Portability Contract
 

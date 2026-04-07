@@ -922,6 +922,31 @@ Deno.test('createAdvancedMacroContext reflects object-like declaration shapes wi
   }
 });
 
+Deno.test('createAdvancedMacroContext resolves sibling local declarations from original source', () => {
+  const { context } = createAdvancedContext(
+    [
+      'type Parent = {',
+      '  id: string;',
+      '};',
+      '',
+      '// #[codec]',
+      'type Child = {',
+      '  parent?: Parent;',
+      '};',
+      '',
+    ].join('\n'),
+    'codec',
+  );
+
+  const declaration = context.syntax.declaration();
+  const localDeclaration = context.semantics.localDeclaration('Parent', declaration);
+
+  assert(localDeclaration);
+  assertEquals(localDeclaration.name, 'Parent');
+  assert(localDeclaration.asTypeAlias());
+  assert(localDeclaration.text().includes('type Parent = {'));
+});
+
 Deno.test('createAdvancedMacroContext reflects discriminated union declaration shapes', () => {
   const { context } = createAdvancedContext(
     [
@@ -973,6 +998,45 @@ Deno.test('createAdvancedMacroContext reflects member annotations on normalized 
   assertEquals(shape.fields[0]?.annotations.map((annotation) => annotation.name), ['codec.rename']);
   assertEquals(shape.fields[1]?.annotations.map((annotation) => annotation.name), ['codec.via']);
   assertEquals(shape.fields[1]?.type?.kind, 'object');
+});
+
+Deno.test('createAdvancedMacroContext reflects null undefined record and intersection type shapes', () => {
+  const { context } = createAdvancedContext(
+    [
+      '// #[codec]',
+      'export type User = {',
+      '  maybe: string | null | undefined;',
+      '  extras: Record<string, number>;',
+      '  flags: { [key: string]: boolean };',
+      '  combined: { id: string } & { total: bigint };',
+      '};',
+      '',
+    ].join('\n'),
+    'codec',
+  );
+
+  const declaration = context.syntax.declaration();
+  const shape = context.reflect.declarationShape(declaration);
+  assertEquals(shape.kind, 'objectLike');
+  if (shape.kind !== 'objectLike') {
+    return;
+  }
+
+  assertEquals(shape.fields[0]?.type?.kind, 'union');
+  if (shape.fields[0]?.type?.kind === 'union') {
+    assertEquals(shape.fields[0].type.members.map((member) => member.kind), [
+      'primitive',
+      'null',
+      'undefined',
+    ]);
+  }
+
+  assertEquals(shape.fields[1]?.type?.kind, 'record');
+  assertEquals(shape.fields[2]?.type?.kind, 'record');
+  assertEquals(shape.fields[3]?.type?.kind, 'intersection');
+  if (shape.fields[3]?.type?.kind === 'intersection') {
+    assertEquals(shape.fields[3].type.members.map((member) => member.kind), ['object', 'object']);
+  }
 });
 
 Deno.test('createMacroContext throws helpful errors for unavailable syntax accessors', () => {

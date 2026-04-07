@@ -4,7 +4,7 @@ This directory now serves two purposes:
 
 - `src/index.ts` and `src/mod.ts` remain the compiler-focused object-layout example used by
   checked-in compiler tests.
-- `src/macro_demo.sts` is the runnable stdlib macro example for `Try(...)` and `Match(...)`.
+- `src/macro_demo.sts` is the runnable stdlib macro example for `Try(...)`.
 - `src/user_macro_module.macro.sts` and `src/user_macro_demo.sts` are the runnable user-defined macro
   example for `sts:macros`.
 
@@ -13,21 +13,13 @@ This directory now serves two purposes:
 The macro example uses the real stdlib imports:
 
 ```ts
-import {
-  Match,
-  Try,
-  err,
-  ok,
-  type Result,
-  where,
-} from '@soundscript/soundscript/runtime';
+import { Try } from 'sts:prelude';
 ```
 
 and demonstrates:
 
-- `Try(...)` for early-return propagation from `Result`
-- `Match(value, [ ... ])` for expression-form pattern matching with array arms
-- `where(arm, predicate)` for guarded `Match(...)` arms under the current stdlib typing
+- `Try(...)` for early-return propagation from nullish carriers
+- ordinary expanded TypeScript output for a `.sts` module rooted through an adjacent `.ts` entrypoint
 
 The example is rooted through `src/macro_entry.ts` so the current expand pipeline can pull the
 `.sts` module into the program.
@@ -77,7 +69,7 @@ That test:
 1. expands `src/macro_demo.sts` through the real Soundscript frontend
 2. expands the user-defined `Twice(...)` example through the public `sts:macros` builtin
 3. imports the emitted TypeScript under Deno
-4. asserts the runtime behavior of both the stdlib macro example and the user-defined macro example
+4. asserts the runtime behavior of both the nullish-`Try(...)` stdlib macro example and the user-defined macro example
 
 ## Notes
 

@@ -2,6 +2,7 @@ import { type Bind, type TypeLambda } from 'sts:hkt';
 import {
   boolean as booleanDecoder,
   DecodeFailure,
+  type DecodeMode,
   type Decoder,
   number as numberDecoder,
   string as stringDecoder,
@@ -11,6 +12,7 @@ import {
   contramap as contramapEncoder,
   type EncodeFailure,
   type Encoder,
+  type EncodeMode,
   numberEncoder as numberEncoderValue,
   stringEncoder as stringEncoderValue,
 } from 'sts:encode';
@@ -25,41 +27,82 @@ export {
   stringEncoderValue as stringEncoder,
 };
 
-// #[variance(T: inout, TEncoded: out, DE: out, EE: out)]
-export type Codec<T, TEncoded = unknown, DE = DecodeFailure, EE = EncodeFailure> =
-  Decoder<T, DE> & Encoder<T, TEncoded, EE>;
+// #[variance(T: inout, TEncoded: out, DE: out, EE: out, DM: out, EM: out)]
+export type Codec<
+  T,
+  TEncoded = unknown,
+  DE = DecodeFailure,
+  EE = EncodeFailure,
+  DM extends DecodeMode = 'sync',
+  EM extends EncodeMode = 'sync',
+> = Decoder<T, DE, DM> & Encoder<T, TEncoded, EE, EM>;
 
 export interface CodecF extends TypeLambda {
   readonly type: Codec<this['Args'][3], this['Args'][2], this['Args'][1], this['Args'][0]>;
 }
 
-export function codec<T, TEncoded, DE, EE>(
-  decoder: Decoder<T, DE>,
-  encoder: Encoder<T, TEncoded, EE>,
-): Codec<T, TEncoded, DE, EE> {
+export function codec<
+  T,
+  TEncoded,
+  DE,
+  EE,
+  DM extends DecodeMode = 'sync',
+  EM extends EncodeMode = 'sync',
+>(
+  decoder: Decoder<T, DE, DM>,
+  encoder: Encoder<T, TEncoded, EE, EM>,
+): Codec<T, TEncoded, DE, EE, DM, EM> {
   return {
-    decode(value): Result<T, DE> {
+    decode(value) {
       return decoder.decode(value);
     },
-    encode(value): Result<TEncoded, EE> {
+    validateDecode(value) {
+      return decoder.validateDecode(value);
+    },
+    encode(value) {
       return encoder.encode(value);
+    },
+    validateEncode(value) {
+      return encoder.validateEncode(value);
     },
   };
 }
 
-export function imap<A, B, TEncoded, DE, EE>(
-  base: Codec<A, TEncoded, DE, EE>,
+export function imap<
+  A,
+  B,
+  TEncoded,
+  DE,
+  EE,
+  DM extends DecodeMode = 'sync',
+  EM extends EncodeMode = 'sync',
+>(
+  base: Codec<A, TEncoded, DE, EE, DM, EM>,
   decodeMap: (value: A) => B,
   encodeMap: (value: B) => A,
-): Codec<B, TEncoded, DE, EE> {
+): Codec<B, TEncoded, DE, EE, DM, EM> {
   return codec(
     {
-      decode(value): Result<B, DE> {
+      decode(value) {
         const decoded = base.decode(value);
-        return isErr(decoded) ? decoded : ok(decodeMap(decoded.value));
+        return (decoded instanceof Promise
+          ? decoded.then((resolved) => isErr(resolved) ? resolved : ok(decodeMap(resolved.value)))
+          : isErr(decoded)
+          ? decoded
+          : ok(decodeMap(decoded.value))) as Result<B, DE> | Promise<Result<B, DE>>;
       },
-    },
-    contramapEncoder(base, encodeMap),
+      validateDecode(value) {
+        const decoded = base.validateDecode(value);
+        return (decoded instanceof Promise
+          ? decoded.then((resolved) => isErr(resolved) ? resolved : ok(decodeMap(resolved.value)))
+          : isErr(decoded)
+          ? decoded
+          : ok(decodeMap(decoded.value))) as
+          | Result<B, readonly import('sts:decode').DecodeIssue[]>
+          | Promise<Result<B, readonly import('sts:decode').DecodeIssue[]>>;
+      },
+    } as Decoder<B, DE, DM>,
+    contramapEncoder(base, encodeMap) as Encoder<B, TEncoded, EE, EM>,
   );
 }
 

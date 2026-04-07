@@ -1,7 +1,13 @@
 import ts from 'typescript';
 
 import { ERROR_STDLIB_DECLARATION_FILE } from './error_stdlib_support.ts';
-import { RESULT_STDLIB_DECLARATION_FILE, STDLIB_DECLARATION_FILE } from './std_package_support.ts';
+import {
+  CODEC_STDLIB_DECLARATION_FILE,
+  DECODE_STDLIB_DECLARATION_FILE,
+  ENCODE_STDLIB_DECLARATION_FILE,
+  RESULT_STDLIB_DECLARATION_FILE,
+  STDLIB_DECLARATION_FILE,
+} from './std_package_support.ts';
 import { toSourceFileName } from './project_frontend.ts';
 import type {
   CanonicalFailureInfo,
@@ -75,7 +81,14 @@ export interface MacroSemantics {
   readSetOfNode(node: ts.Node): MacroDependencySet;
   typeOfNode(node: ts.Node): MacroType;
   undefinedType(): MacroType;
+  valueBindingPromiseLikeInScope(name: string, node: ts.Node): boolean;
   valueBindingCallableInScope(name: string, node: ts.Node): boolean;
+  valueBindingHelperModeInScope(
+    name: string,
+    direction: 'decode' | 'encode',
+    node: ts.Node,
+  ): 'async' | 'sync' | null;
+  valueBindingTypeInScope(name: string, node: ts.Node): MacroType | null;
   valueBindingInScope(name: string, node: ts.Node): boolean;
   writeSetOfNode(node: ts.Node): MacroDependencySet;
 }
@@ -198,6 +211,78 @@ function symbolHasValueMeaning(checker: ts.TypeChecker, symbol: ts.Symbol): bool
   return (resolveAliasedSymbol(checker, symbol).flags & ts.SymbolFlags.Value) !== 0;
 }
 
+function findNamedValueSymbolInTable(
+  checker: ts.TypeChecker,
+  table: ts.SymbolTable | undefined,
+  name: string,
+): ts.Symbol | undefined {
+  if (!table) {
+    return undefined;
+  }
+  for (const symbol of table.values()) {
+    if (symbol.getName() === name && symbolHasValueMeaning(checker, symbol)) {
+      return symbol;
+    }
+  }
+  return undefined;
+}
+
+function getLexicallyScopedValueSymbol(
+  checker: ts.TypeChecker,
+  node: ts.Node,
+  name: string,
+): ts.Symbol | undefined {
+  let current: (ts.Node & { locals?: ts.SymbolTable }) | undefined =
+    node as ts.Node & { locals?: ts.SymbolTable };
+  while (current) {
+    const symbol = findNamedValueSymbolInTable(checker, current.locals, name);
+    if (symbol) {
+      return symbol;
+    }
+    current = current.parent as (ts.Node & { locals?: ts.SymbolTable }) | undefined;
+  }
+
+  const sourceFile = node.getSourceFile() as ts.SourceFile & {
+    locals?: ts.SymbolTable;
+    symbol?: ts.Symbol & { exports?: ts.SymbolTable };
+  };
+  return findNamedValueSymbolInTable(checker, sourceFile.locals, name) ??
+    findNamedValueSymbolInTable(checker, sourceFile.symbol?.exports, name);
+}
+
+function getSafeValueLookupAnchor(
+  checker: ts.TypeChecker,
+  node: ts.Node,
+): ts.Node {
+  let current: ts.Node | undefined = node;
+  let lastError: unknown = undefined;
+  while (current) {
+    try {
+      checker.getSymbolsInScope(current, ts.SymbolFlags.Value | ts.SymbolFlags.Alias);
+      return current;
+    } catch (error) {
+      lastError = error;
+      current = current.parent;
+    }
+  }
+
+  const sourceFile = node.getSourceFile();
+  if (sourceFile !== node) {
+    try {
+      checker.getSymbolsInScope(sourceFile, ts.SymbolFlags.Value | ts.SymbolFlags.Alias);
+      return sourceFile;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  if (lastError !== undefined) {
+    throw lastError;
+  }
+
+  return node;
+}
+
 function getValuePathBindingInScope(
   checker: ts.TypeChecker,
   node: ts.Node,
@@ -211,14 +296,25 @@ function getValuePathBindingInScope(
     return null;
   }
 
-  const rootSymbol = checker.getSymbolsInScope(node, ts.SymbolFlags.Value | ts.SymbolFlags.Alias)
-    .find((symbol) => symbol.getName() === root && symbolHasValueMeaning(checker, symbol));
+  const sourceFile = node.getSourceFile();
+  const rootSymbol = getLexicallyScopedValueSymbol(checker, node, root) ?? (() => {
+    try {
+      const lookupAnchor = getSafeValueLookupAnchor(checker, node);
+      return checker.getSymbolsInScope(lookupAnchor, ts.SymbolFlags.Value | ts.SymbolFlags.Alias)
+        .find((symbol) => symbol.getName() === root && symbolHasValueMeaning(checker, symbol));
+    } catch {
+      return undefined;
+    }
+  })();
   if (!rootSymbol) {
     return null;
   }
 
   const fromAlias = (rootSymbol.flags & ts.SymbolFlags.Alias) !== 0;
-  let currentType = checker.getTypeOfSymbolAtLocation(rootSymbol, node);
+  let currentType = checker.getTypeOfSymbolAtLocation(
+    rootSymbol,
+    rootSymbol.valueDeclaration ?? rootSymbol.declarations?.[0] ?? sourceFile,
+  );
   let currentSymbol = resolveAliasedSymbol(checker, rootSymbol);
   for (const segment of rest) {
     const property = checker.getPropertyOfType(currentType, segment);
@@ -226,13 +322,569 @@ function getValuePathBindingInScope(
       return null;
     }
     currentSymbol = property;
-    currentType = checker.getTypeOfSymbolAtLocation(property, node);
+    currentType = checker.getTypeOfSymbolAtLocation(
+      property,
+      property.valueDeclaration ?? property.declarations?.[0] ?? sourceFile,
+    );
   }
 
   return {
     fromAlias,
     symbol: resolveAliasedSymbol(checker, currentSymbol),
     type: currentType,
+  };
+}
+
+type MacroHelperDirection = 'decode' | 'encode';
+type MacroHelperMode = 'async' | 'sync';
+type StdlibHelperModule = 'codec' | 'decode' | 'encode';
+type HelperInferenceState = {
+  readonly parameterBindings?: ReadonlyMap<ts.Symbol, ts.Expression>;
+  readonly seenSymbols: Set<ts.Symbol>;
+};
+type HelperModeResolver = {
+  inferFromBinding(
+    binding: { readonly symbol: ts.Symbol; readonly type: ts.Type },
+    direction: MacroHelperDirection,
+  ): MacroHelperMode | null;
+};
+const HELPER_MODE_MARKER_NAMES: Record<MacroHelperDirection, string> = {
+  decode: '__decodeMode',
+  encode: '__encodeMode',
+};
+
+function helperModeFromModeType(type: ts.Type): MacroHelperMode | null {
+  const candidateTypes = (type.flags & ts.TypeFlags.Union) !== 0
+    ? (type as ts.UnionType).types
+    : [type];
+  const concreteTypes = candidateTypes.filter((candidateType) =>
+    (candidateType.flags & ts.TypeFlags.Undefined) === 0
+  );
+  if (concreteTypes.length !== 1) {
+    return null;
+  }
+  const [candidateType] = concreteTypes;
+  if (!candidateType) {
+    return null;
+  }
+  if ((candidateType.flags & ts.TypeFlags.StringLiteral) === 0) {
+    return null;
+  }
+  const value = (candidateType as ts.StringLiteralType).value;
+  return value === 'async' || value === 'sync' ? value : null;
+}
+
+function helperModeFromMarkerProperty(
+  checker: ts.TypeChecker,
+  type: ts.Type,
+  markerName: string,
+  location: ts.Node,
+): MacroHelperMode | null {
+  const property = checker.getPropertyOfType(type, markerName);
+  if (!property) {
+    return null;
+  }
+  const propertyType = checker.getTypeOfSymbolAtLocation(property, location);
+  return helperModeFromModeType(propertyType);
+}
+
+function helperModeFromTypeDisplayText(
+  typeText: string,
+  direction: MacroHelperDirection,
+): MacroHelperMode | null {
+  if (direction === 'decode') {
+    if (
+      /(?:^|[<(])Decoder<[\s\S]*"async"\s*>$/u.test(typeText) ||
+      /(?:^|[<(])Codec<[\s\S]*"async"\s*,\s*"(?:sync|async)"\s*>$/u.test(typeText)
+    ) {
+      return 'async';
+    }
+    return /(?:^|[<(])Decoder</u.test(typeText) || /(?:^|[<(])Codec</u.test(typeText)
+      ? 'sync'
+      : null;
+  }
+
+  if (
+    /(?:^|[<(])Encoder<[\s\S]*"async"\s*>$/u.test(typeText) ||
+    /(?:^|[<(])Codec<[\s\S]*"(?:sync|async)"\s*,\s*"async"\s*>$/u.test(typeText)
+  ) {
+    return 'async';
+  }
+  return /(?:^|[<(])Encoder</u.test(typeText) || /(?:^|[<(])Codec</u.test(typeText)
+    ? 'sync'
+    : null;
+}
+
+function helperModeFromType(
+  checker: ts.TypeChecker,
+  type: ts.Type,
+  direction: MacroHelperDirection,
+  location: ts.Node,
+): MacroHelperMode | null {
+  const markerMode = helperModeFromMarkerProperty(
+    checker,
+    type,
+    HELPER_MODE_MARKER_NAMES[direction],
+    location,
+  );
+  if (markerMode) {
+    return markerMode;
+  }
+  return helperModeFromTypeDisplayText(checker.typeToString(type), direction);
+}
+
+function combineHelperModes(
+  modes: readonly (MacroHelperMode | null)[],
+): MacroHelperMode | null {
+  let sawUnknown = false;
+  for (const mode of modes) {
+    if (mode === 'async') {
+      return 'async';
+    }
+    if (mode === null) {
+      sawUnknown = true;
+    }
+  }
+  return sawUnknown ? null : 'sync';
+}
+
+function callableExpressionReturnsPromiseLike(
+  checker: ts.TypeChecker,
+  expression: ts.Expression,
+): boolean {
+  const type = getNodeType(checker, expression);
+  return checker.getSignaturesOfType(type, ts.SignatureKind.Call).some((signature) =>
+    typeIsPromiseLike(checker, checker.getReturnTypeOfSignature(signature))
+  );
+}
+
+function stdlibModuleForDeclarationFile(fileName: string): StdlibHelperModule | null {
+  const normalized = normalizeFileNameForComparison(fileName);
+  if (
+    normalized === normalizeFileNameForComparison(DECODE_STDLIB_DECLARATION_FILE) ||
+    /(?:^|\/)decode(?:\.d)?\.ts$/u.test(normalized)
+  ) {
+    return 'decode';
+  }
+  if (
+    normalized === normalizeFileNameForComparison(ENCODE_STDLIB_DECLARATION_FILE) ||
+    /(?:^|\/)encode(?:\.d)?\.ts$/u.test(normalized)
+  ) {
+    return 'encode';
+  }
+  if (
+    normalized === normalizeFileNameForComparison(CODEC_STDLIB_DECLARATION_FILE) ||
+    /(?:^|\/)codec(?:\.d)?\.ts$/u.test(normalized)
+  ) {
+    return 'codec';
+  }
+  return null;
+}
+
+function stdlibHelperIdentityForCallee(
+  checker: ts.TypeChecker,
+  callee: ts.LeftHandSideExpression,
+): { readonly module: StdlibHelperModule; readonly name: string } | null {
+  const symbolTarget = ts.isPropertyAccessExpression(callee) ? callee.name : callee;
+  const symbol = checker.getSymbolAtLocation(symbolTarget);
+  if (!symbol) {
+    return null;
+  }
+  const resolved = resolveAliasedSymbol(checker, symbol);
+  const module = (resolved.declarations ?? [])
+    .map((declaration) => stdlibModuleForDeclarationFile(declaration.getSourceFile().fileName))
+    .find((value) => value !== null) ?? null;
+  if (!module) {
+    return null;
+  }
+  return {
+    module,
+    name: resolved.getName(),
+  };
+}
+
+function initializerExpressionForBindingDeclaration(
+  declaration: ts.Declaration,
+): ts.Expression | null {
+  if (
+    ts.isVariableDeclaration(declaration) ||
+    ts.isPropertyDeclaration(declaration) ||
+    ts.isPropertyAssignment(declaration)
+  ) {
+    return declaration.initializer ?? null;
+  }
+  if (ts.isShorthandPropertyAssignment(declaration)) {
+    return declaration.objectAssignmentInitializer ?? declaration.name;
+  }
+  return null;
+}
+
+function callableImplementationForDeclaration(
+  declaration: ts.Declaration,
+): { readonly body: ts.ConciseBody; readonly parameters: readonly ts.ParameterDeclaration[] } | null {
+  if (
+    (ts.isFunctionDeclaration(declaration) || ts.isMethodDeclaration(declaration)) &&
+    declaration.body
+  ) {
+    return {
+      body: declaration.body,
+      parameters: declaration.parameters,
+    };
+  }
+
+  const initializer = initializerExpressionForBindingDeclaration(declaration);
+  if (
+    initializer &&
+    (ts.isArrowFunction(initializer) || ts.isFunctionExpression(initializer))
+  ) {
+    return {
+      body: initializer.body,
+      parameters: initializer.parameters,
+    };
+  }
+
+  return null;
+}
+
+function bindCallableParameters(
+  checker: ts.TypeChecker,
+  parameters: readonly ts.ParameterDeclaration[],
+  argumentsList: readonly ts.Expression[],
+  state: HelperInferenceState,
+): ReadonlyMap<ts.Symbol, ts.Expression> | undefined {
+  let bindings: Map<ts.Symbol, ts.Expression> | undefined = state.parameterBindings
+    ? new Map(state.parameterBindings)
+    : undefined;
+
+  for (let index = 0; index < parameters.length; index += 1) {
+    const parameter = parameters[index];
+    if (!parameter || !ts.isIdentifier(parameter.name)) {
+      continue;
+    }
+    const argument = argumentsList[index] ?? parameter.initializer;
+    if (!argument) {
+      continue;
+    }
+    const symbol = checker.getSymbolAtLocation(parameter.name);
+    if (!symbol) {
+      continue;
+    }
+    if (!bindings) {
+      bindings = new Map();
+    }
+    bindings.set(resolveAliasedSymbol(checker, symbol), argument);
+  }
+
+  return bindings;
+}
+
+function combineFunctionReturnModes(
+  checker: ts.TypeChecker,
+  body: ts.ConciseBody,
+  direction: MacroHelperDirection,
+  state: HelperInferenceState,
+): MacroHelperMode | null {
+  if (!ts.isBlock(body)) {
+    return inferHelperModeFromExpression(checker, body, direction, state);
+  }
+
+  const modes: (MacroHelperMode | null)[] = [];
+  function visit(node: ts.Node) {
+    if (ts.isReturnStatement(node)) {
+      modes.push(
+        node.expression ? inferHelperModeFromExpression(checker, node.expression, direction, state) : null,
+      );
+      return;
+    }
+    if (
+      ts.isFunctionDeclaration(node) ||
+      ts.isFunctionExpression(node) ||
+      ts.isArrowFunction(node) ||
+      ts.isMethodDeclaration(node)
+    ) {
+      return;
+    }
+    ts.forEachChild(node, visit);
+  }
+  ts.forEachChild(body, visit);
+  return modes.length > 0 ? combineHelperModes(modes) : null;
+}
+
+function helperModeFromShapeLiteral(
+  checker: ts.TypeChecker,
+  expression: ts.Expression | undefined,
+  direction: MacroHelperDirection,
+  state: HelperInferenceState,
+): MacroHelperMode | null {
+  if (!expression || !ts.isObjectLiteralExpression(expression)) {
+    return null;
+  }
+  const modes: (MacroHelperMode | null)[] = [];
+  for (const property of expression.properties) {
+    if (ts.isSpreadAssignment(property)) {
+      return null;
+    }
+    if (ts.isPropertyAssignment(property)) {
+      modes.push(inferHelperModeFromExpression(checker, property.initializer, direction, state));
+      continue;
+    }
+    if (ts.isShorthandPropertyAssignment(property)) {
+      modes.push(inferHelperModeFromExpression(checker, property.name, direction, state));
+      continue;
+    }
+    return null;
+  }
+  return combineHelperModes(modes);
+}
+
+function inferHelperModeFromLocalCallable(
+  checker: ts.TypeChecker,
+  callExpression: ts.CallExpression,
+  direction: MacroHelperDirection,
+  state: HelperInferenceState,
+): MacroHelperMode | null {
+  const symbolTarget = ts.isPropertyAccessExpression(callExpression.expression)
+    ? callExpression.expression.name
+    : callExpression.expression;
+  const symbol = checker.getSymbolAtLocation(symbolTarget);
+  if (!symbol) {
+    return null;
+  }
+
+  const resolvedSymbol = resolveAliasedSymbol(checker, symbol);
+  if (state.seenSymbols.has(resolvedSymbol)) {
+    return null;
+  }
+
+  state.seenSymbols.add(resolvedSymbol);
+  try {
+    const declarationModes = (resolvedSymbol.declarations ?? [])
+      .map((declaration) => {
+        const implementation = callableImplementationForDeclaration(declaration);
+        if (!implementation) {
+          return null;
+        }
+        return combineFunctionReturnModes(checker, implementation.body, direction, {
+          parameterBindings: bindCallableParameters(
+            checker,
+            implementation.parameters,
+            callExpression.arguments,
+            state,
+          ),
+          seenSymbols: state.seenSymbols,
+        });
+      });
+    return declarationModes.length > 0 ? combineHelperModes(declarationModes) : null;
+  } finally {
+    state.seenSymbols.delete(resolvedSymbol);
+  }
+}
+
+function inferHelperModeFromCallExpression(
+  checker: ts.TypeChecker,
+  callExpression: ts.CallExpression,
+  direction: MacroHelperDirection,
+  state: HelperInferenceState,
+): MacroHelperMode | null {
+  const helper = stdlibHelperIdentityForCallee(checker, callExpression.expression);
+  if (!helper) {
+    return inferHelperModeFromLocalCallable(checker, callExpression, direction, state);
+  }
+
+  const inferArgMode = (index: number): MacroHelperMode | null =>
+    index < callExpression.arguments.length
+      ? inferHelperModeFromExpression(checker, callExpression.arguments[index]!, direction, state)
+      : null;
+  const inferThunkMode = (index: number): MacroHelperMode | null => {
+    const argument = callExpression.arguments[index];
+    if (!argument) {
+      return null;
+    }
+    if (ts.isArrowFunction(argument) || ts.isFunctionExpression(argument)) {
+      return combineFunctionReturnModes(checker, argument.body, direction, state);
+    }
+    return inferHelperModeFromExpression(checker, argument, direction, state);
+  };
+
+  switch (helper.module) {
+    case 'decode': {
+      switch (helper.name) {
+        case 'array':
+        case 'nullable':
+        case 'optional':
+        case 'option':
+        case 'readonlyRecord':
+        case 'undefinedable':
+          return inferArgMode(0);
+        case 'defaulted':
+          return combineHelperModes([
+            inferArgMode(0),
+            callableExpressionReturnsPromiseLike(checker, callExpression.arguments[1]!) ? 'async' : 'sync',
+          ]);
+        case 'lazy':
+          return inferThunkMode(0);
+        case 'map':
+        case 'refine':
+          return combineHelperModes([
+            inferArgMode(0),
+            callableExpressionReturnsPromiseLike(checker, callExpression.arguments[1]!) ? 'async' : 'sync',
+          ]);
+        case 'object':
+          return helperModeFromShapeLiteral(checker, callExpression.arguments[0], direction, state);
+        case 'result':
+        case 'union':
+          return combineHelperModes([inferArgMode(0), inferArgMode(1)]);
+        case 'tuple':
+          return combineHelperModes(
+            callExpression.arguments.map((argument) =>
+              inferHelperModeFromExpression(checker, argument, direction, state)
+            ),
+          );
+        default:
+          return null;
+      }
+    }
+    case 'encode': {
+      switch (helper.name) {
+        case 'array':
+        case 'nullable':
+        case 'optional':
+        case 'option':
+        case 'record':
+        case 'undefinedable':
+          return inferArgMode(0);
+        case 'contramap':
+        case 'refine':
+          return combineHelperModes([
+            inferArgMode(0),
+            callableExpressionReturnsPromiseLike(checker, callExpression.arguments[1]!) ? 'async' : 'sync',
+          ]);
+        case 'lazy':
+          return inferThunkMode(0);
+        case 'object':
+          return helperModeFromShapeLiteral(checker, callExpression.arguments[0], direction, state);
+        case 'result':
+          return combineHelperModes([inferArgMode(0), inferArgMode(1)]);
+        case 'tuple':
+          return combineHelperModes(
+            callExpression.arguments.map((argument) =>
+              inferHelperModeFromExpression(checker, argument, direction, state)
+            ),
+          );
+        default:
+          return null;
+      }
+    }
+    case 'codec': {
+      switch (helper.name) {
+        case 'codec':
+          return direction === 'decode' ? inferArgMode(0) : inferArgMode(1);
+        case 'imap':
+          return inferArgMode(0);
+        default:
+          return null;
+      }
+    }
+  }
+}
+
+function inferHelperModeFromBinding(
+  checker: ts.TypeChecker,
+  binding: { readonly symbol: ts.Symbol; readonly type: ts.Type },
+  direction: MacroHelperDirection,
+  state: HelperInferenceState,
+): MacroHelperMode | null {
+  const resolvedSymbol = resolveAliasedSymbol(checker, binding.symbol);
+  if (state.seenSymbols.has(resolvedSymbol)) {
+    return null;
+  }
+
+  const bindingLocation = binding.symbol.valueDeclaration ?? binding.symbol.declarations?.[0];
+  const typeMode = bindingLocation ? helperModeFromType(checker, binding.type, direction, bindingLocation) : null;
+  if (typeMode === 'async') {
+    return 'async';
+  }
+
+  state.seenSymbols.add(resolvedSymbol);
+  try {
+    const declarationModes = (resolvedSymbol.declarations ?? [])
+      .map((declaration) => {
+        const implementation = callableImplementationForDeclaration(declaration);
+        if (implementation) {
+          return combineFunctionReturnModes(checker, implementation.body, direction, state);
+        }
+        const expression = initializerExpressionForBindingDeclaration(declaration);
+        return expression ? inferHelperModeFromExpression(checker, expression, direction, state) : null;
+      });
+    const declarationMode = declarationModes.length > 0 ? combineHelperModes(declarationModes) : null;
+    return declarationMode ?? typeMode;
+  } finally {
+    state.seenSymbols.delete(resolvedSymbol);
+  }
+}
+
+function inferHelperModeFromExpression(
+  checker: ts.TypeChecker,
+  expression: ts.Expression,
+  direction: MacroHelperDirection,
+  state: HelperInferenceState,
+): MacroHelperMode | null {
+  if (
+    ts.isParenthesizedExpression(expression) ||
+    ts.isAsExpression(expression) ||
+    ts.isSatisfiesExpression(expression) ||
+    ts.isNonNullExpression(expression) ||
+    ts.isPartiallyEmittedExpression(expression) ||
+    ts.isTypeAssertionExpression(expression)
+  ) {
+    return inferHelperModeFromExpression(checker, expression.expression, direction, state);
+  }
+
+  if (ts.isIdentifier(expression)) {
+    const symbol = checker.getSymbolAtLocation(expression);
+    if (symbol) {
+      const overrideExpression = state.parameterBindings?.get(resolveAliasedSymbol(checker, symbol));
+      if (overrideExpression) {
+        return inferHelperModeFromExpression(checker, overrideExpression, direction, state);
+      }
+    }
+    const binding = getValuePathBindingInScope(checker, expression, expression.text);
+    return binding ? inferHelperModeFromBinding(checker, binding, direction, state) : null;
+  }
+
+  if (ts.isPropertyAccessExpression(expression)) {
+    const binding = getValuePathBindingInScope(checker, expression, expression.getText());
+    return binding ? inferHelperModeFromBinding(checker, binding, direction, state) : null;
+  }
+
+  if (ts.isCallExpression(expression)) {
+    return inferHelperModeFromCallExpression(checker, expression, direction, state);
+  }
+
+  if (ts.isArrowFunction(expression) || ts.isFunctionExpression(expression)) {
+    return combineFunctionReturnModes(checker, expression.body, direction, state);
+  }
+
+  if (ts.isConditionalExpression(expression)) {
+    return combineHelperModes([
+      inferHelperModeFromExpression(checker, expression.whenTrue, direction, state),
+      inferHelperModeFromExpression(checker, expression.whenFalse, direction, state),
+    ]);
+  }
+
+  return null;
+}
+
+function createHelperModeResolver(checker: ts.TypeChecker): HelperModeResolver {
+  return {
+    inferFromBinding(
+      binding: { readonly symbol: ts.Symbol; readonly type: ts.Type },
+      direction: MacroHelperDirection,
+    ): MacroHelperMode | null {
+      return inferHelperModeFromBinding(checker, binding, direction, {
+        seenSymbols: new Set(),
+      });
+    },
   };
 }
 
@@ -245,6 +897,14 @@ function declarationIsCallable(declaration: ts.Declaration): boolean {
       declaration.initializer !== undefined &&
       (ts.isArrowFunction(declaration.initializer) ||
         ts.isFunctionExpression(declaration.initializer)));
+}
+
+function typeIsPromiseLike(
+  checker: ts.TypeChecker,
+  type: ts.Type,
+): boolean {
+  const awaitedType = checker.getAwaitedType(type);
+  return awaitedType !== undefined && awaitedType !== type;
 }
 
 function unwrapDependencyNode(node: ts.Node): ts.Node {
@@ -1343,6 +2003,7 @@ function classifyTryCarrierTsType(
 
 export function createMacroSemantics(program: ts.Program): MacroSemantics {
   const checker = program.getTypeChecker();
+  const helperModeResolver = createHelperModeResolver(checker);
 
   return {
     awaitedType(type: MacroType): MacroType {
@@ -1481,6 +2142,19 @@ export function createMacroSemantics(program: ts.Program): MacroSemantics {
       return createMacroType(checker, checker.getUndefinedType());
     },
 
+    valueBindingPromiseLikeInScope(name: string, node: ts.Node): boolean {
+      const binding = getValuePathBindingInScope(checker, node, name);
+      if (!binding) {
+        return false;
+      }
+      if (typeIsPromiseLike(checker, binding.type)) {
+        return true;
+      }
+      return checker.getSignaturesOfType(binding.type, ts.SignatureKind.Call).some((signature) =>
+        typeIsPromiseLike(checker, checker.getReturnTypeOfSignature(signature))
+      );
+    },
+
     valueBindingCallableInScope(name: string, node: ts.Node): boolean {
       const binding = getValuePathBindingInScope(checker, node, name);
       if (!binding) {
@@ -1489,6 +2163,20 @@ export function createMacroSemantics(program: ts.Program): MacroSemantics {
       return checker.getSignaturesOfType(binding.type, ts.SignatureKind.Call).length > 0 ||
         (binding.fromAlias && (binding.type.flags & ts.TypeFlags.Any) !== 0) ||
         (binding.symbol.declarations ?? []).some(declarationIsCallable);
+    },
+
+    valueBindingHelperModeInScope(
+      name: string,
+      direction: 'decode' | 'encode',
+      node: ts.Node,
+    ): 'async' | 'sync' | null {
+      const binding = getValuePathBindingInScope(checker, node, name);
+      return binding ? helperModeResolver.inferFromBinding(binding, direction) : null;
+    },
+
+    valueBindingTypeInScope(name: string, node: ts.Node): MacroType | null {
+      const binding = getValuePathBindingInScope(checker, node, name);
+      return binding ? createMacroType(checker, binding.type) : null;
     },
 
     valueBindingInScope(name: string, node: ts.Node): boolean {

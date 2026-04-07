@@ -330,6 +330,11 @@ function createUnsupportedAdvancedContext(
           'This macro requires semantic queries, but no prepared program was available.',
         );
       },
+      localDeclaration() {
+        throw new Error(
+          'This macro requires semantic queries, but no prepared program was available.',
+        );
+      },
       localDeclarationHasAnnotation() {
         throw new Error(
           'This macro requires semantic queries, but no prepared program was available.',
@@ -401,6 +406,21 @@ function createUnsupportedAdvancedContext(
         );
       },
       valueBindingCallableInScope() {
+        throw new Error(
+          'This macro requires semantic queries, but no prepared program was available.',
+        );
+      },
+      valueBindingHelperModeInScope() {
+        throw new Error(
+          'This macro requires semantic queries, but no prepared program was available.',
+        );
+      },
+      valueBindingPromiseLikeInScope() {
+        throw new Error(
+          'This macro requires semantic queries, but no prepared program was available.',
+        );
+      },
+      valueBindingTypeInScope() {
         throw new Error(
           'This macro requires semantic queries, but no prepared program was available.',
         );

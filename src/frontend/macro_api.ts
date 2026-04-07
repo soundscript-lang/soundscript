@@ -788,6 +788,11 @@ export type MacroReflectedTypeShape =
     readonly text: string;
   }
   | {
+    readonly kind: 'intersection';
+    readonly members: readonly MacroReflectedTypeShape[];
+    readonly text: string;
+  }
+  | {
     readonly fields: readonly MacroReflectedFieldShape[];
     readonly kind: 'object';
     readonly text: string;
@@ -815,10 +820,20 @@ export type MacroReflectedTypeShape =
     readonly value: boolean | number | string;
   }
   | {
+    readonly kind: 'null';
+    readonly text: string;
+  }
+  | {
     readonly kind: 'named';
     readonly name: string;
     readonly text: string;
     readonly typeArguments: readonly MacroReflectedTypeShape[];
+  }
+  | {
+    readonly key: MacroReflectedTypeShape;
+    readonly kind: 'record';
+    readonly text: string;
+    readonly value: MacroReflectedTypeShape;
   }
   | {
     readonly elements: readonly MacroReflectedTypeShape[];
@@ -829,6 +844,10 @@ export type MacroReflectedTypeShape =
   | {
     readonly kind: 'union';
     readonly members: readonly MacroReflectedTypeShape[];
+    readonly text: string;
+  }
+  | {
+    readonly kind: 'undefined';
     readonly text: string;
   }
   | {
@@ -925,6 +944,7 @@ export interface MacroSemanticsView {
   enclosingFunctionCanonicalResult(): CanonicalResultInfo | null;
   finiteCases(type: MacroType): readonly MacroFiniteCase[] | null;
   isAssignable(from: MacroType, to: MacroType): boolean;
+  localDeclaration(name: string, node?: MacroSyntaxNode): DeclSyntax | null;
   localDeclarationHasAnnotation(
     name: string,
     annotationName: string,
@@ -943,7 +963,14 @@ export interface MacroSemanticsView {
   primaryExprType(): MacroType | null;
   readSet(node: ExprSyntax | BlockSyntax): MacroDependencySet;
   undefinedType(): MacroType;
+  valueBindingPromiseLikeInScope(name: string, node?: MacroSyntaxNode): boolean;
   valueBindingCallableInScope(name: string, node?: MacroSyntaxNode): boolean;
+  valueBindingHelperModeInScope(
+    name: string,
+    direction: 'decode' | 'encode',
+    node?: MacroSyntaxNode,
+  ): 'async' | 'sync' | null;
+  valueBindingTypeInScope(name: string, node?: MacroSyntaxNode): MacroType | null;
   valueBindingInScope(name: string, node?: MacroSyntaxNode): boolean;
   writeSet(node: ExprSyntax | BlockSyntax): MacroDependencySet;
 }
