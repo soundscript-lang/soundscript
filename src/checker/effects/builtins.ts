@@ -312,8 +312,16 @@ function getKnownBundledNodeFsBehavior(
 }
 
 function getKnownBundledNodeCryptoBehavior(
+  ownerName: string | undefined,
   declarationName: string | undefined,
 ): BuiltinCallBehavior | undefined {
+  if (declarationName === 'createHash') {
+    return {
+      directMask: INTERNAL_EFFECT_MASKS.failsThrows,
+      forwardedArguments: [],
+    };
+  }
+
   if (
     declarationName === 'randomUUID' || declarationName === 'randomBytes' ||
     declarationName === 'randomInt'
@@ -337,6 +345,22 @@ function getKnownBundledNodeCryptoBehavior(
         INTERNAL_EFFECT_MASKS.suspend,
       forwardedArguments: [],
     };
+  }
+
+  if (ownerName === 'Hash') {
+    if (declarationName === 'update') {
+      return {
+        directMask: INTERNAL_EFFECT_MASKS.failsThrows | INTERNAL_EFFECT_MASKS.mut,
+        forwardedArguments: [],
+      };
+    }
+
+    if (declarationName === 'digest') {
+      return {
+        directMask: INTERNAL_EFFECT_MASKS.failsThrows,
+        forwardedArguments: [],
+      };
+    }
   }
 
   return undefined;
@@ -1145,7 +1169,7 @@ export function getKnownPortableBuiltinBehavior(
   }
 
   if (sourceFileName && isBundledNodeCryptoDeclarationFile(sourceFileName)) {
-    const nodeCryptoBehavior = getKnownBundledNodeCryptoBehavior(memberName);
+    const nodeCryptoBehavior = getKnownBundledNodeCryptoBehavior(ownerName, memberName);
     if (nodeCryptoBehavior) {
       return nodeCryptoBehavior;
     }

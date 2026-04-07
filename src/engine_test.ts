@@ -2249,6 +2249,12 @@ Deno.test('createAnalysisContext summarizes bundled node builtins precisely', as
       path: '__soundscript_externs__/node.crypto.d.ts',
       contents: [
         'declare module "node:crypto" {',
+        '  export interface Hash {',
+        '    update(data: string | Uint8Array<ArrayBufferLike>): Hash;',
+        '    digest(): Buffer;',
+        '    digest(encoding: string): string;',
+        '  }',
+        '  export function createHash(algorithm: string): Hash;',
         '  export function randomInt(max: number): number;',
         '  export function randomUUID(): string;',
         '  export function randomBytes(size: number): Buffer;',
@@ -2292,7 +2298,7 @@ Deno.test('createAnalysisContext summarizes bundled node builtins precisely', as
     {
       path: 'src/index.ts',
       contents: [
-        'import { getRandomValues, randomBytes, randomFill, randomFillSync, randomInt, randomUUID } from "node:crypto";',
+        'import { createHash, getRandomValues, randomBytes, randomFill, randomFillSync, randomInt, randomUUID } from "node:crypto";',
         'import { Buffer as ModuleBuffer } from "node:buffer";',
         'import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";',
         'import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";',
@@ -2348,6 +2354,10 @@ Deno.test('createAnalysisContext summarizes bundled node builtins precisely', as
         '  return randomUUID();',
         '}',
         '',
+        'export function makeHasher() {',
+        '  return createHash("sha256");',
+        '}',
+        '',
         'export function makeRandomInt(max: number): number {',
         '  return randomInt(max);',
         '}',
@@ -2366,6 +2376,18 @@ Deno.test('createAnalysisContext summarizes bundled node builtins precisely', as
         '',
         'export function fillRandomAsync(bytes: Uint8Array<ArrayBufferLike>): Promise<Uint8Array<ArrayBufferLike>> {',
         '  return randomFill(bytes);',
+        '}',
+        '',
+        'export function hashText(value: string): Buffer {',
+        '  const hash = createHash("sha256");',
+        '  hash.update(value);',
+        '  return hash.digest();',
+        '}',
+        '',
+        'export function hashTextHex(value: string): string {',
+        '  const hash = createHash("sha256");',
+        '  hash.update(value);',
+        '  return hash.digest("hex");',
         '}',
         '',
         'export function scheduleModuleImmediate(callback: () => void): Immediate {',
@@ -2479,11 +2501,14 @@ Deno.test('createAnalysisContext summarizes bundled node builtins precisely', as
   const makeModuleBuffer = declarationsByName.get('makeModuleBuffer');
   const joinPath = declarationsByName.get('joinPath');
   const makeUuid = declarationsByName.get('makeUuid');
+  const makeHasher = declarationsByName.get('makeHasher');
   const makeRandomInt = declarationsByName.get('makeRandomInt');
   const makeRandomBytes = declarationsByName.get('makeRandomBytes');
   const fillRandom = declarationsByName.get('fillRandom');
   const fillRandomSync = declarationsByName.get('fillRandomSync');
   const fillRandomAsync = declarationsByName.get('fillRandomAsync');
+  const hashText = declarationsByName.get('hashText');
+  const hashTextHex = declarationsByName.get('hashTextHex');
   const scheduleModuleImmediate = declarationsByName.get('scheduleModuleImmediate');
   const cancelModuleImmediate = declarationsByName.get('cancelModuleImmediate');
   const scheduleTimeout = declarationsByName.get('scheduleTimeout');
@@ -2517,11 +2542,14 @@ Deno.test('createAnalysisContext summarizes bundled node builtins precisely', as
   assertExists(makeModuleBuffer);
   assertExists(joinPath);
   assertExists(makeUuid);
+  assertExists(makeHasher);
   assertExists(makeRandomInt);
   assertExists(makeRandomBytes);
   assertExists(fillRandom);
   assertExists(fillRandomSync);
   assertExists(fillRandomAsync);
+  assertExists(hashText);
+  assertExists(hashTextHex);
   assertExists(scheduleModuleImmediate);
   assertExists(cancelModuleImmediate);
   assertExists(scheduleTimeout);
@@ -2575,6 +2603,10 @@ Deno.test('createAnalysisContext summarizes bundled node builtins precisely', as
     INTERNAL_EFFECT_MASKS.hostRandom,
   );
   assertEquals(
+    getEffectSummaryForDeclaration(context, makeHasher).directMask,
+    INTERNAL_EFFECT_MASKS.failsThrows,
+  );
+  assertEquals(
     getEffectSummaryForDeclaration(context, makeRandomInt).directMask,
     INTERNAL_EFFECT_MASKS.hostRandom,
   );
@@ -2594,6 +2626,14 @@ Deno.test('createAnalysisContext summarizes bundled node builtins precisely', as
     getEffectSummaryForDeclaration(context, fillRandomAsync).directMask,
     INTERNAL_EFFECT_MASKS.hostRandom | INTERNAL_EFFECT_MASKS.mut |
       INTERNAL_EFFECT_MASKS.suspend,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, hashText).directMask,
+    INTERNAL_EFFECT_MASKS.failsThrows | INTERNAL_EFFECT_MASKS.mut,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, hashTextHex).directMask,
+    INTERNAL_EFFECT_MASKS.failsThrows | INTERNAL_EFFECT_MASKS.mut,
   );
   assertEquals(
     getEffectSummaryForDeclaration(context, scheduleModuleImmediate).directMask,
@@ -2687,14 +2727,17 @@ Deno.test('createAnalysisContext summarizes bundled node builtins precisely', as
       allocateBuffer,
       concatBuffers,
       stringifyBuffer,
-      makeModuleBuffer,
-      joinPath,
+    makeModuleBuffer,
+    joinPath,
     makeUuid,
+    makeHasher,
     makeRandomInt,
     makeRandomBytes,
     fillRandom,
     fillRandomSync,
     fillRandomAsync,
+    hashText,
+    hashTextHex,
     scheduleModuleImmediate,
     cancelModuleImmediate,
     scheduleTimeout,
