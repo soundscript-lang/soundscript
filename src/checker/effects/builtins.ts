@@ -290,7 +290,10 @@ function getKnownBundledNodeGlobalBehavior(
 function getKnownBundledNodeFsBehavior(
   declarationName: string | undefined,
 ): BuiltinCallBehavior | undefined {
-  if (declarationName === 'readFileSync' || declarationName === 'readdirSync') {
+  if (
+    declarationName === 'accessSync' || declarationName === 'readFileSync' ||
+    declarationName === 'readdirSync' || declarationName === 'statSync'
+  ) {
     return {
       directMask: INTERNAL_EFFECT_MASKS.hostIo | INTERNAL_EFFECT_MASKS.failsThrows,
       forwardedArguments: [],
@@ -298,6 +301,7 @@ function getKnownBundledNodeFsBehavior(
   }
 
   if (
+    declarationName === 'copyFileSync' || declarationName === 'renameSync' ||
     declarationName === 'writeFileSync' || declarationName === 'mkdirSync' ||
     declarationName === 'rmSync'
   ) {
@@ -369,14 +373,20 @@ function getKnownBundledNodeCryptoBehavior(
 function getKnownBundledNodeFsPromisesBehavior(
   declarationName: string | undefined,
 ): BuiltinCallBehavior | undefined {
-  if (declarationName === 'readFile' || declarationName === 'readdir') {
+  if (
+    declarationName === 'access' || declarationName === 'readFile' ||
+    declarationName === 'readdir' || declarationName === 'stat'
+  ) {
     return {
       directMask: INTERNAL_EFFECT_MASKS.hostIo | INTERNAL_EFFECT_MASKS.suspend,
       forwardedArguments: [],
     };
   }
 
-  if (declarationName === 'writeFile' || declarationName === 'mkdir' || declarationName === 'rm') {
+  if (
+    declarationName === 'copyFile' || declarationName === 'rename' ||
+    declarationName === 'writeFile' || declarationName === 'mkdir' || declarationName === 'rm'
+  ) {
     return {
       directMask: INTERNAL_EFFECT_MASKS.hostIo | INTERNAL_EFFECT_MASKS.suspend |
         INTERNAL_EFFECT_MASKS.mut,
