@@ -4839,6 +4839,7 @@ Deno.test('analyzeProject treats deferred host schedulers as host effects withou
       '  queueMicrotask(() => {});',
       '  setTimeout(() => {}, 0);',
       '  setInterval(() => {}, 10);',
+      '  requestIdleCallback(() => {});',
       '}',
       '',
       '// #[effects(forbid: [mut])]',
@@ -4846,6 +4847,13 @@ Deno.test('analyzeProject treats deferred host schedulers as host effects withou
       '  setTimeout(() => {',
       '    map.set("x", 1);',
       '  }, 0);',
+      '}',
+      '',
+      '// #[effects(forbid: [mut])]',
+      'function deferIdleMutation(map: Map<string, number>): void {',
+      '  requestIdleCallback(() => {',
+      '    map.set("x", 1);',
+      '  });',
       '}',
       '',
     ].join('\n'),
@@ -5267,6 +5275,11 @@ Deno.test('analyzeProject tracks DOM mutation and dispatch builtins under effect
       '}',
       '',
       '// #[effects(forbid: [mut])]',
+      'function removeDomAttributeNs(element: Element): void {',
+      '  element.removeAttributeNS(null, "data-id");',
+      '}',
+      '',
+      '// #[effects(forbid: [mut])]',
       'function removeDomAttribute(element: Element): void {',
       '  element.removeAttribute("data-id");',
       '}',
@@ -5286,6 +5299,16 @@ Deno.test('analyzeProject tracks DOM mutation and dispatch builtins under effect
       '  return parent.insertBefore(child, nextChild);',
       '}',
       '',
+      '// #[effects(forbid: [host])]',
+      'function removeDomNode(child: Element): void {',
+      '  child.remove();',
+      '}',
+      '',
+      '// #[effects(forbid: [host])]',
+      'function replaceDomNode(child: Element, sibling: Element): void {',
+      '  child.replaceWith("prefix", sibling);',
+      '}',
+      '',
     ].join('\n'),
   });
 
@@ -5302,15 +5325,79 @@ Deno.test('analyzeProject tracks DOM mutation and dispatch builtins under effect
     'SOUND1040',
     'SOUND1040',
     'SOUND1040',
+    'SOUND1040',
+    'SOUND1040',
+    'SOUND1040',
   ]);
   assertEquals(result.diagnostics.map((diagnostic) => diagnostic.metadata?.primarySymbol), [
     'dispatchOnTarget',
     'createDomElement',
     'setDomAttribute',
+    'removeDomAttributeNs',
     'removeDomAttribute',
     'appendDomChild',
     'removeDomChild',
     'insertDomChild',
+    'removeDomNode',
+    'replaceDomNode',
+  ]);
+});
+
+Deno.test('analyzeProject tracks browser messaging builtins under effect contracts', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/index.sts': [
+      '// #[effects(forbid: [fails])]',
+      'function sendWindowMessage(targetOrigin: string): void {',
+      '  postMessage({ ok: true }, targetOrigin);',
+      '}',
+      '',
+      '// #[effects(forbid: [host])]',
+      'function openChannel(name: string): BroadcastChannel {',
+      '  return new BroadcastChannel(name);',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function sendChannelMessage(channel: BroadcastChannel): void {',
+      '  channel.postMessage({ ok: true });',
+      '}',
+      '',
+      '// #[effects(forbid: [host])]',
+      'function closeChannel(channel: BroadcastChannel): void {',
+      '  channel.close();',
+      '}',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), [
+    'SOUND1040',
+    'SOUND1040',
+    'SOUND1040',
+    'SOUND1040',
+  ]);
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.metadata?.primarySymbol), [
+    'sendWindowMessage',
+    'openChannel',
+    'sendChannelMessage',
+    'closeChannel',
   ]);
 });
 
@@ -8106,6 +8193,9 @@ Deno.test('analyzeProject preserves narrowing across deferred host schedulers', 
       '    setTimeout(() => {',
       '      void box.value;',
       '    }, 0);',
+      '    requestIdleCallback(() => {',
+      '      void box.value;',
+      '    });',
       '    const value: string = box.value;',
       '    return value;',
       '  }',

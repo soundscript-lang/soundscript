@@ -838,8 +838,16 @@ Deno.test('createAnalysisContext summarizes deferred host schedulers without imm
         '  return setInterval(callback, 10);',
         '}',
         '',
+        'export function scheduleIdle(callback: IdleRequestCallback): number {',
+        '  return requestIdleCallback(callback);',
+        '}',
+        '',
         'export function cancelTimeout(timerId: number): void {',
         '  clearTimeout(timerId);',
+        '}',
+        '',
+        'export function cancelIdle(handle: number): void {',
+        '  cancelIdleCallback(handle);',
         '}',
         '',
       ].join('\n'),
@@ -864,17 +872,23 @@ Deno.test('createAnalysisContext summarizes deferred host schedulers without imm
   const scheduleMicrotask = declarationsByName.get('scheduleMicrotask');
   const scheduleTimeout = declarationsByName.get('scheduleTimeout');
   const scheduleInterval = declarationsByName.get('scheduleInterval');
+  const scheduleIdle = declarationsByName.get('scheduleIdle');
   const cancelTimeout = declarationsByName.get('cancelTimeout');
+  const cancelIdle = declarationsByName.get('cancelIdle');
 
   assertExists(scheduleMicrotask);
   assertExists(scheduleTimeout);
   assertExists(scheduleInterval);
+  assertExists(scheduleIdle);
   assertExists(cancelTimeout);
+  assertExists(cancelIdle);
 
   const microtaskSummary = getEffectSummaryForDeclaration(context, scheduleMicrotask);
   const timeoutSummary = getEffectSummaryForDeclaration(context, scheduleTimeout);
   const intervalSummary = getEffectSummaryForDeclaration(context, scheduleInterval);
+  const idleSummary = getEffectSummaryForDeclaration(context, scheduleIdle);
   const cancelSummary = getEffectSummaryForDeclaration(context, cancelTimeout);
+  const cancelIdleSummary = getEffectSummaryForDeclaration(context, cancelIdle);
 
   assertEquals(microtaskSummary.directMask, INTERNAL_EFFECT_MASKS.hostInterop);
   assertEquals(normalizeForwardedParameters(microtaskSummary.forwardedParameters), []);
@@ -888,9 +902,17 @@ Deno.test('createAnalysisContext summarizes deferred host schedulers without imm
   assertEquals(normalizeForwardedParameters(intervalSummary.forwardedParameters), []);
   assertEquals(intervalSummary.hasUnknownDirectEffects, false);
 
+  assertEquals(idleSummary.directMask, INTERNAL_EFFECT_MASKS.hostInterop);
+  assertEquals(normalizeForwardedParameters(idleSummary.forwardedParameters), []);
+  assertEquals(idleSummary.hasUnknownDirectEffects, false);
+
   assertEquals(cancelSummary.directMask, INTERNAL_EFFECT_MASKS.hostTime);
   assertEquals(normalizeForwardedParameters(cancelSummary.forwardedParameters), []);
   assertEquals(cancelSummary.hasUnknownDirectEffects, false);
+
+  assertEquals(cancelIdleSummary.directMask, INTERNAL_EFFECT_MASKS.hostInterop);
+  assertEquals(normalizeForwardedParameters(cancelIdleSummary.forwardedParameters), []);
+  assertEquals(cancelIdleSummary.hasUnknownDirectEffects, false);
 });
 
 Deno.test('createAnalysisContext summarizes abort and cloning builtins precisely', async () => {
@@ -1234,6 +1256,10 @@ Deno.test('createAnalysisContext summarizes DOM mutation and dispatch builtins p
         '  element.removeAttribute("data-id");',
         '}',
         '',
+        'export function removeDomAttributeNs(element: Element): void {',
+        '  element.removeAttributeNS(null, "data-id");',
+        '}',
+        '',
         'export function removeDomChild(parent: Element, child: Element): Element {',
         '  return parent.removeChild(child);',
         '}',
@@ -1262,6 +1288,14 @@ Deno.test('createAnalysisContext summarizes DOM mutation and dispatch builtins p
         '  child.after(sibling, "suffix");',
         '}',
         '',
+        'export function removeDomNode(child: Element): void {',
+        '  child.remove();',
+        '}',
+        '',
+        'export function replaceDomNode(child: Element, sibling: Element): void {',
+        '  child.replaceWith("prefix", sibling);',
+        '}',
+        '',
       ].join('\n'),
     },
   ]);
@@ -1288,6 +1322,7 @@ Deno.test('createAnalysisContext summarizes DOM mutation and dispatch builtins p
   const setDomAttribute = declarationsByName.get('setDomAttribute');
   const appendDomChild = declarationsByName.get('appendDomChild');
   const removeDomAttribute = declarationsByName.get('removeDomAttribute');
+  const removeDomAttributeNs = declarationsByName.get('removeDomAttributeNs');
   const removeDomChild = declarationsByName.get('removeDomChild');
   const replaceDomChild = declarationsByName.get('replaceDomChild');
   const insertDomChild = declarationsByName.get('insertDomChild');
@@ -1295,6 +1330,8 @@ Deno.test('createAnalysisContext summarizes DOM mutation and dispatch builtins p
   const prependDomNodes = declarationsByName.get('prependDomNodes');
   const placeNodeBefore = declarationsByName.get('placeNodeBefore');
   const placeNodeAfter = declarationsByName.get('placeNodeAfter');
+  const removeDomNode = declarationsByName.get('removeDomNode');
+  const replaceDomNode = declarationsByName.get('replaceDomNode');
 
   assertExists(buildEvent);
   assertExists(buildTarget);
@@ -1303,6 +1340,7 @@ Deno.test('createAnalysisContext summarizes DOM mutation and dispatch builtins p
   assertExists(setDomAttribute);
   assertExists(appendDomChild);
   assertExists(removeDomAttribute);
+  assertExists(removeDomAttributeNs);
   assertExists(removeDomChild);
   assertExists(replaceDomChild);
   assertExists(insertDomChild);
@@ -1310,6 +1348,8 @@ Deno.test('createAnalysisContext summarizes DOM mutation and dispatch builtins p
   assertExists(prependDomNodes);
   assertExists(placeNodeBefore);
   assertExists(placeNodeAfter);
+  assertExists(removeDomNode);
+  assertExists(replaceDomNode);
 
   assertEquals(getEffectSummaryForDeclaration(context, buildEvent).directMask, 0);
   assertEquals(getEffectSummaryForDeclaration(context, buildTarget).directMask, 0);
@@ -1332,6 +1372,10 @@ Deno.test('createAnalysisContext summarizes DOM mutation and dispatch builtins p
   );
   assertEquals(
     getEffectSummaryForDeclaration(context, removeDomAttribute).directMask,
+    INTERNAL_EFFECT_MASKS.hostDom | INTERNAL_EFFECT_MASKS.mut,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, removeDomAttributeNs).directMask,
     INTERNAL_EFFECT_MASKS.hostDom | INTERNAL_EFFECT_MASKS.mut,
   );
   assertEquals(
@@ -1362,6 +1406,14 @@ Deno.test('createAnalysisContext summarizes DOM mutation and dispatch builtins p
     getEffectSummaryForDeclaration(context, placeNodeAfter).directMask,
     INTERNAL_EFFECT_MASKS.hostDom | INTERNAL_EFFECT_MASKS.mut,
   );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, removeDomNode).directMask,
+    INTERNAL_EFFECT_MASKS.hostDom | INTERNAL_EFFECT_MASKS.mut,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, replaceDomNode).directMask,
+    INTERNAL_EFFECT_MASKS.hostDom | INTERNAL_EFFECT_MASKS.mut,
+  );
 
   assertEquals(getEffectSummaryForDeclaration(context, buildEvent).hasUnknownDirectEffects, false);
   assertEquals(getEffectSummaryForDeclaration(context, buildTarget).hasUnknownDirectEffects, false);
@@ -1369,6 +1421,7 @@ Deno.test('createAnalysisContext summarizes DOM mutation and dispatch builtins p
   assertEquals(getEffectSummaryForDeclaration(context, setDomAttribute).hasUnknownDirectEffects, false);
   assertEquals(getEffectSummaryForDeclaration(context, appendDomChild).hasUnknownDirectEffects, false);
   assertEquals(getEffectSummaryForDeclaration(context, removeDomAttribute).hasUnknownDirectEffects, false);
+  assertEquals(getEffectSummaryForDeclaration(context, removeDomAttributeNs).hasUnknownDirectEffects, false);
   assertEquals(getEffectSummaryForDeclaration(context, removeDomChild).hasUnknownDirectEffects, false);
   assertEquals(getEffectSummaryForDeclaration(context, replaceDomChild).hasUnknownDirectEffects, false);
   assertEquals(getEffectSummaryForDeclaration(context, insertDomChild).hasUnknownDirectEffects, false);
@@ -1376,6 +1429,97 @@ Deno.test('createAnalysisContext summarizes DOM mutation and dispatch builtins p
   assertEquals(getEffectSummaryForDeclaration(context, prependDomNodes).hasUnknownDirectEffects, false);
   assertEquals(getEffectSummaryForDeclaration(context, placeNodeBefore).hasUnknownDirectEffects, false);
   assertEquals(getEffectSummaryForDeclaration(context, placeNodeAfter).hasUnknownDirectEffects, false);
+  assertEquals(getEffectSummaryForDeclaration(context, removeDomNode).hasUnknownDirectEffects, false);
+  assertEquals(getEffectSummaryForDeclaration(context, replaceDomNode).hasUnknownDirectEffects, false);
+});
+
+Deno.test('createAnalysisContext summarizes browser messaging builtins precisely', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+          },
+          include: ['src/**/*.ts'],
+        },
+        null,
+        2,
+      ),
+    },
+    {
+      path: 'src/index.ts',
+      contents: [
+        'export function sendWindowMessage(targetOrigin: string): void {',
+        '  postMessage({ ok: true }, targetOrigin);',
+        '}',
+        '',
+        'export function openChannel(name: string): BroadcastChannel {',
+        '  return new BroadcastChannel(name);',
+        '}',
+        '',
+        'export function sendChannelMessage(channel: BroadcastChannel): void {',
+        '  channel.postMessage({ ok: true });',
+        '}',
+        '',
+        'export function closeChannel(channel: BroadcastChannel): void {',
+        '  channel.close();',
+        '}',
+        '',
+      ].join('\n'),
+    },
+  ]);
+  const projectPath = join(tempDirectory, 'tsconfig.json');
+  const program = loadProgram(projectPath);
+  const context = createAnalysisContext({ program, workingDirectory: tempDirectory });
+  const sourceFile = context.getSourceFiles().find((file) => file.fileName.endsWith('/src/index.ts'));
+
+  assertExists(sourceFile);
+
+  const declarationsByName = new Map(
+    sourceFile.statements
+      .filter(ts.isFunctionDeclaration)
+      .filter((declaration): declaration is ts.FunctionDeclaration & { name: ts.Identifier } =>
+        declaration.name !== undefined
+      )
+      .map((declaration) => [declaration.name.text, declaration]),
+  );
+
+  const sendWindowMessage = declarationsByName.get('sendWindowMessage');
+  const openChannel = declarationsByName.get('openChannel');
+  const sendChannelMessage = declarationsByName.get('sendChannelMessage');
+  const closeChannel = declarationsByName.get('closeChannel');
+
+  assertExists(sendWindowMessage);
+  assertExists(openChannel);
+  assertExists(sendChannelMessage);
+  assertExists(closeChannel);
+
+  assertEquals(
+    getEffectSummaryForDeclaration(context, sendWindowMessage).directMask,
+    INTERNAL_EFFECT_MASKS.hostInterop | INTERNAL_EFFECT_MASKS.failsThrows,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, openChannel).directMask,
+    INTERNAL_EFFECT_MASKS.hostInterop,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, sendChannelMessage).directMask,
+    INTERNAL_EFFECT_MASKS.hostInterop | INTERNAL_EFFECT_MASKS.failsThrows,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, closeChannel).directMask,
+    INTERNAL_EFFECT_MASKS.hostInterop,
+  );
+
+  assertEquals(getEffectSummaryForDeclaration(context, sendWindowMessage).hasUnknownDirectEffects, false);
+  assertEquals(getEffectSummaryForDeclaration(context, openChannel).hasUnknownDirectEffects, false);
+  assertEquals(getEffectSummaryForDeclaration(context, sendChannelMessage).hasUnknownDirectEffects, false);
+  assertEquals(getEffectSummaryForDeclaration(context, closeChannel).hasUnknownDirectEffects, false);
 });
 
 Deno.test('createAnalysisContext summarizes browser storage and navigation builtins precisely', async () => {

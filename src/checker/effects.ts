@@ -881,6 +881,13 @@ function getKnownDomMutationAndEventBehavior(
     };
   }
 
+  if (ownerName === 'Element' && memberName === 'removeAttributeNS') {
+    return {
+      directMask: INTERNAL_EFFECT_MASKS.hostDom | INTERNAL_EFFECT_MASKS.mut,
+      forwardedArguments: [],
+    };
+  }
+
   if (
     ownerName === 'Node' &&
     (
@@ -902,6 +909,13 @@ function getKnownDomMutationAndEventBehavior(
   }
 
   if (ownerName === 'ChildNode' && (memberName === 'before' || memberName === 'after')) {
+    return {
+      directMask: INTERNAL_EFFECT_MASKS.hostDom | INTERNAL_EFFECT_MASKS.mut,
+      forwardedArguments: [],
+    };
+  }
+
+  if (ownerName === 'ChildNode' && (memberName === 'remove' || memberName === 'replaceWith')) {
     return {
       directMask: INTERNAL_EFFECT_MASKS.hostDom | INTERNAL_EFFECT_MASKS.mut,
       forwardedArguments: [],
@@ -1210,6 +1224,16 @@ function getKnownPortableBuiltinBehavior(
     }
 
     if (
+      (memberName === 'requestIdleCallback' || memberName === 'cancelIdleCallback') &&
+      (ownerName === undefined || ownerName === 'WindowOrWorkerGlobalScope')
+    ) {
+      return {
+        directMask: INTERNAL_EFFECT_MASKS.hostInterop,
+        forwardedArguments: [],
+      };
+    }
+
+    if (
       (memberName === 'setTimeout' || memberName === 'setInterval' ||
         memberName === 'clearTimeout' || memberName === 'clearInterval') &&
       (ownerName === undefined || ownerName === 'WindowOrWorkerGlobalScope')
@@ -1276,6 +1300,13 @@ function getKnownPortableBuiltinBehavior(
       };
     }
 
+    if (memberName === 'postMessage') {
+      return {
+        directMask: INTERNAL_EFFECT_MASKS.hostInterop | INTERNAL_EFFECT_MASKS.failsThrows,
+        forwardedArguments: [],
+      };
+    }
+
     if (memberName === 'randomUUID' && ownerName === 'Crypto') {
       return {
         directMask: INTERNAL_EFFECT_MASKS.hostRandom,
@@ -1298,6 +1329,13 @@ function getKnownPortableBuiltinBehavior(
   ) {
     return {
       directMask: 0,
+      forwardedArguments: [],
+    };
+  }
+
+  if (ts.isNewExpression(expression) && ownerName === 'BroadcastChannel') {
+    return {
+      directMask: INTERNAL_EFFECT_MASKS.hostInterop,
       forwardedArguments: [],
     };
   }
@@ -1350,6 +1388,13 @@ function getKnownPortableBuiltinBehavior(
         };
       }
     }
+  }
+
+  if (ownerName === 'BroadcastChannel' && memberName === 'close') {
+    return {
+      directMask: INTERNAL_EFFECT_MASKS.hostInterop,
+      forwardedArguments: [],
+    };
   }
 
   return undefined;
