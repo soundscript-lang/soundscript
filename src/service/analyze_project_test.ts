@@ -8796,6 +8796,64 @@ Deno.test('analyzeProject preserves narrowing across pure builtin collection hel
   assertEquals(result.diagnostics, []);
 });
 
+Deno.test('analyzeProject preserves narrowing across collection callbacks that use bound receiver parameters', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/index.sts': [
+      'function useArray(values: readonly number[], box: { value: string | null }): string {',
+      '  if (box.value !== null) {',
+      '    values.map((_value, _index, array) => array.length);',
+      '    const value: string = box.value;',
+      '    return value;',
+      '  }',
+      '  return "";',
+      '}',
+      '',
+      'function useSet(values: ReadonlySet<number>, box: { value: string | null }): string {',
+      '  if (box.value !== null) {',
+      '    values.forEach((_value, _again, set) => {',
+      '      void set.size;',
+      '    });',
+      '    const value: string = box.value;',
+      '    return value;',
+      '  }',
+      '  return "";',
+      '}',
+      '',
+      'function useMap(values: ReadonlyMap<string, number>, box: { value: string | null }): string {',
+      '  if (box.value !== null) {',
+      '    values.forEach((_value, _key, map) => {',
+      '      void map.size;',
+      '    });',
+      '    const value: string = box.value;',
+      '    return value;',
+      '  }',
+      '  return "";',
+      '}',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics, []);
+});
+
 Deno.test('analyzeProject preserves narrowing across deferred host schedulers', async () => {
   const tempDirectory = await createTempProject({
     'tsconfig.json': JSON.stringify(
