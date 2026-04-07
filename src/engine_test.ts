@@ -1522,6 +1522,183 @@ Deno.test('createAnalysisContext summarizes browser messaging builtins precisely
   assertEquals(getEffectSummaryForDeclaration(context, closeChannel).hasUnknownDirectEffects, false);
 });
 
+Deno.test('createAnalysisContext summarizes worker and socket builtins precisely', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+          },
+          include: ['src/**/*.ts'],
+        },
+        null,
+        2,
+      ),
+    },
+    {
+      path: 'src/index.ts',
+      contents: [
+        'export function openWorker(scriptUrl: string): Worker {',
+        '  return new Worker(scriptUrl, { type: "module" });',
+        '}',
+        '',
+        'export function postWorkerMessage(worker: Worker): void {',
+        '  worker.postMessage({ ok: true });',
+        '}',
+        '',
+        'export function terminateWorker(worker: Worker): void {',
+        '  worker.terminate();',
+        '}',
+        '',
+        'export function openMessageChannel(): MessageChannel {',
+        '  return new MessageChannel();',
+        '}',
+        '',
+        'export function postPortMessage(port: MessagePort): void {',
+        '  port.postMessage({ ok: true });',
+        '}',
+        '',
+        'export function startPort(port: MessagePort): void {',
+        '  port.start();',
+        '}',
+        '',
+        'export function closePort(port: MessagePort): void {',
+        '  port.close();',
+        '}',
+        '',
+        'export function openSocket(url: string): WebSocket {',
+        '  return new WebSocket(url);',
+        '}',
+        '',
+        'export function sendSocketMessage(socket: WebSocket): void {',
+        '  socket.send("ok");',
+        '}',
+        '',
+        'export function closeSocket(socket: WebSocket): void {',
+        '  socket.close();',
+        '}',
+        '',
+        'export function openEventStream(url: string): EventSource {',
+        '  return new EventSource(url);',
+        '}',
+        '',
+        'export function closeEventStream(stream: EventSource): void {',
+        '  stream.close();',
+        '}',
+        '',
+      ].join('\n'),
+    },
+  ]);
+  const projectPath = join(tempDirectory, 'tsconfig.json');
+  const program = loadProgram(projectPath);
+  const context = createAnalysisContext({ program, workingDirectory: tempDirectory });
+  const sourceFile = context.getSourceFiles().find((file) => file.fileName.endsWith('/src/index.ts'));
+
+  assertExists(sourceFile);
+
+  const declarationsByName = new Map(
+    sourceFile.statements
+      .filter(ts.isFunctionDeclaration)
+      .filter((declaration): declaration is ts.FunctionDeclaration & { name: ts.Identifier } =>
+        declaration.name !== undefined
+      )
+      .map((declaration) => [declaration.name.text, declaration]),
+  );
+
+  const openWorker = declarationsByName.get('openWorker');
+  const postWorkerMessage = declarationsByName.get('postWorkerMessage');
+  const terminateWorker = declarationsByName.get('terminateWorker');
+  const openMessageChannel = declarationsByName.get('openMessageChannel');
+  const postPortMessage = declarationsByName.get('postPortMessage');
+  const startPort = declarationsByName.get('startPort');
+  const closePort = declarationsByName.get('closePort');
+  const openSocket = declarationsByName.get('openSocket');
+  const sendSocketMessage = declarationsByName.get('sendSocketMessage');
+  const closeSocket = declarationsByName.get('closeSocket');
+  const openEventStream = declarationsByName.get('openEventStream');
+  const closeEventStream = declarationsByName.get('closeEventStream');
+
+  assertExists(openWorker);
+  assertExists(postWorkerMessage);
+  assertExists(terminateWorker);
+  assertExists(openMessageChannel);
+  assertExists(postPortMessage);
+  assertExists(startPort);
+  assertExists(closePort);
+  assertExists(openSocket);
+  assertExists(sendSocketMessage);
+  assertExists(closeSocket);
+  assertExists(openEventStream);
+  assertExists(closeEventStream);
+
+  assertEquals(
+    getEffectSummaryForDeclaration(context, openWorker).directMask,
+    INTERNAL_EFFECT_MASKS.hostInterop | INTERNAL_EFFECT_MASKS.failsThrows,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, postWorkerMessage).directMask,
+    INTERNAL_EFFECT_MASKS.hostInterop | INTERNAL_EFFECT_MASKS.failsThrows,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, terminateWorker).directMask,
+    INTERNAL_EFFECT_MASKS.hostInterop,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, openMessageChannel).directMask,
+    INTERNAL_EFFECT_MASKS.hostInterop,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, postPortMessage).directMask,
+    INTERNAL_EFFECT_MASKS.hostInterop | INTERNAL_EFFECT_MASKS.failsThrows,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, startPort).directMask,
+    INTERNAL_EFFECT_MASKS.hostInterop,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, closePort).directMask,
+    INTERNAL_EFFECT_MASKS.hostInterop,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, openSocket).directMask,
+    INTERNAL_EFFECT_MASKS.hostIo | INTERNAL_EFFECT_MASKS.failsThrows,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, sendSocketMessage).directMask,
+    INTERNAL_EFFECT_MASKS.hostIo | INTERNAL_EFFECT_MASKS.failsThrows,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, closeSocket).directMask,
+    INTERNAL_EFFECT_MASKS.hostIo | INTERNAL_EFFECT_MASKS.failsThrows,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, openEventStream).directMask,
+    INTERNAL_EFFECT_MASKS.hostIo | INTERNAL_EFFECT_MASKS.failsThrows,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, closeEventStream).directMask,
+    INTERNAL_EFFECT_MASKS.hostIo,
+  );
+
+  assertEquals(getEffectSummaryForDeclaration(context, openWorker).hasUnknownDirectEffects, false);
+  assertEquals(getEffectSummaryForDeclaration(context, postWorkerMessage).hasUnknownDirectEffects, false);
+  assertEquals(getEffectSummaryForDeclaration(context, terminateWorker).hasUnknownDirectEffects, false);
+  assertEquals(getEffectSummaryForDeclaration(context, openMessageChannel).hasUnknownDirectEffects, false);
+  assertEquals(getEffectSummaryForDeclaration(context, postPortMessage).hasUnknownDirectEffects, false);
+  assertEquals(getEffectSummaryForDeclaration(context, startPort).hasUnknownDirectEffects, false);
+  assertEquals(getEffectSummaryForDeclaration(context, closePort).hasUnknownDirectEffects, false);
+  assertEquals(getEffectSummaryForDeclaration(context, openSocket).hasUnknownDirectEffects, false);
+  assertEquals(getEffectSummaryForDeclaration(context, sendSocketMessage).hasUnknownDirectEffects, false);
+  assertEquals(getEffectSummaryForDeclaration(context, closeSocket).hasUnknownDirectEffects, false);
+  assertEquals(getEffectSummaryForDeclaration(context, openEventStream).hasUnknownDirectEffects, false);
+  assertEquals(getEffectSummaryForDeclaration(context, closeEventStream).hasUnknownDirectEffects, false);
+});
+
 Deno.test('createAnalysisContext summarizes browser storage and navigation builtins precisely', async () => {
   const tempDirectory = await createTempProject([
     {

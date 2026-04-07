@@ -5401,6 +5401,120 @@ Deno.test('analyzeProject tracks browser messaging builtins under effect contrac
   ]);
 });
 
+Deno.test('analyzeProject tracks worker and socket builtins under effect contracts', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/index.sts': [
+      '// #[effects(forbid: [fails])]',
+      'function openWorker(scriptUrl: string): Worker {',
+      '  return new Worker(scriptUrl, { type: "module" });',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function postWorkerMessage(worker: Worker): void {',
+      '  worker.postMessage({ ok: true });',
+      '}',
+      '',
+      '// #[effects(forbid: [host])]',
+      'function terminateWorker(worker: Worker): void {',
+      '  worker.terminate();',
+      '}',
+      '',
+      '// #[effects(forbid: [host])]',
+      'function openMessageChannel(): MessageChannel {',
+      '  return new MessageChannel();',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function postPortMessage(port: MessagePort): void {',
+      '  port.postMessage({ ok: true });',
+      '}',
+      '',
+      '// #[effects(forbid: [host])]',
+      'function startPort(port: MessagePort): void {',
+      '  port.start();',
+      '}',
+      '',
+      '// #[effects(forbid: [host])]',
+      'function closePort(port: MessagePort): void {',
+      '  port.close();',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function openSocket(url: string): WebSocket {',
+      '  return new WebSocket(url);',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function sendSocketMessage(socket: WebSocket): void {',
+      '  socket.send("ok");',
+      '}',
+      '',
+      '// #[effects(forbid: [host])]',
+      'function closeSocket(socket: WebSocket): void {',
+      '  socket.close();',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function openEventStream(url: string): EventSource {',
+      '  return new EventSource(url);',
+      '}',
+      '',
+      '// #[effects(forbid: [host])]',
+      'function closeEventStream(stream: EventSource): void {',
+      '  stream.close();',
+      '}',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), [
+    'SOUND1040',
+    'SOUND1040',
+    'SOUND1040',
+    'SOUND1040',
+    'SOUND1040',
+    'SOUND1040',
+    'SOUND1040',
+    'SOUND1040',
+    'SOUND1040',
+    'SOUND1040',
+    'SOUND1040',
+    'SOUND1040',
+  ]);
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.metadata?.primarySymbol), [
+    'openWorker',
+    'postWorkerMessage',
+    'terminateWorker',
+    'openMessageChannel',
+    'postPortMessage',
+    'startPort',
+    'closePort',
+    'openSocket',
+    'sendSocketMessage',
+    'closeSocket',
+    'openEventStream',
+    'closeEventStream',
+  ]);
+});
+
 Deno.test('analyzeProject tracks browser storage and navigation builtins under effect contracts', async () => {
   const tempDirectory = await createTempProject({
     'tsconfig.json': JSON.stringify(

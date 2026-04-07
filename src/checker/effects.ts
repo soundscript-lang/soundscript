@@ -936,6 +936,65 @@ function getKnownDomMutationAndEventBehavior(
   return undefined;
 }
 
+function getKnownWorkerAndSocketBehavior(
+  ownerName: string | undefined,
+  memberName: string | undefined,
+  expression: ts.CallExpression | ts.NewExpression,
+): BuiltinCallBehavior | undefined {
+  if (ts.isNewExpression(expression)) {
+    if (ownerName === 'Worker') {
+      return {
+        directMask: INTERNAL_EFFECT_MASKS.hostInterop | INTERNAL_EFFECT_MASKS.failsThrows,
+        forwardedArguments: [],
+      };
+    }
+
+    if (ownerName === 'MessageChannel') {
+      return {
+        directMask: INTERNAL_EFFECT_MASKS.hostInterop,
+        forwardedArguments: [],
+      };
+    }
+
+    if (ownerName === 'WebSocket' || ownerName === 'EventSource') {
+      return {
+        directMask: INTERNAL_EFFECT_MASKS.hostIo | INTERNAL_EFFECT_MASKS.failsThrows,
+        forwardedArguments: [],
+      };
+    }
+  }
+
+  if (ownerName === 'Worker' && memberName === 'terminate') {
+    return {
+      directMask: INTERNAL_EFFECT_MASKS.hostInterop,
+      forwardedArguments: [],
+    };
+  }
+
+  if (ownerName === 'MessagePort' && (memberName === 'start' || memberName === 'close')) {
+    return {
+      directMask: INTERNAL_EFFECT_MASKS.hostInterop,
+      forwardedArguments: [],
+    };
+  }
+
+  if (ownerName === 'WebSocket' && (memberName === 'send' || memberName === 'close')) {
+    return {
+      directMask: INTERNAL_EFFECT_MASKS.hostIo | INTERNAL_EFFECT_MASKS.failsThrows,
+      forwardedArguments: [],
+    };
+  }
+
+  if (ownerName === 'EventSource' && memberName === 'close') {
+    return {
+      directMask: INTERNAL_EFFECT_MASKS.hostIo,
+      forwardedArguments: [],
+    };
+  }
+
+  return undefined;
+}
+
 function isCallableExpression(context: AnalysisContext, expression: ts.Expression | undefined): boolean {
   if (!expression) {
     return false;
@@ -1211,6 +1270,11 @@ function getKnownPortableBuiltinBehavior(
     const fetchObjectBehavior = getKnownFetchObjectFamilyBehavior(ownerName, memberName, expression);
     if (fetchObjectBehavior) {
       return fetchObjectBehavior;
+    }
+
+    const workerAndSocketBehavior = getKnownWorkerAndSocketBehavior(ownerName, memberName, expression);
+    if (workerAndSocketBehavior) {
+      return workerAndSocketBehavior;
     }
 
     if (
