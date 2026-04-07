@@ -120,6 +120,14 @@ function getKnownBundledDenoExternBehavior(
   memberName: string | undefined,
 ): BuiltinCallBehavior | undefined {
   if (ownerName === 'Deno') {
+    if (memberName === 'chdir') {
+      return {
+        directMask: INTERNAL_EFFECT_MASKS.hostInterop | INTERNAL_EFFECT_MASKS.failsThrows |
+          INTERNAL_EFFECT_MASKS.mut,
+        forwardedArguments: [],
+      };
+    }
+
     if (memberName === 'cwd') {
       return {
         directMask: INTERNAL_EFFECT_MASKS.hostInterop,
@@ -134,9 +142,25 @@ function getKnownBundledDenoExternBehavior(
       };
     }
 
-    if (memberName === 'readTextFileSync') {
+    if (memberName === 'readFileSync' || memberName === 'readTextFileSync') {
       return {
         directMask: INTERNAL_EFFECT_MASKS.hostIo | INTERNAL_EFFECT_MASKS.failsThrows,
+        forwardedArguments: [],
+      };
+    }
+
+    if (memberName === 'mkdir' || memberName === 'remove') {
+      return {
+        directMask: INTERNAL_EFFECT_MASKS.hostIo | INTERNAL_EFFECT_MASKS.suspend |
+          INTERNAL_EFFECT_MASKS.mut,
+        forwardedArguments: [],
+      };
+    }
+
+    if (memberName === 'mkdirSync' || memberName === 'removeSync') {
+      return {
+        directMask: INTERNAL_EFFECT_MASKS.hostIo | INTERNAL_EFFECT_MASKS.failsThrows |
+          INTERNAL_EFFECT_MASKS.mut,
         forwardedArguments: [],
       };
     }
@@ -144,6 +168,14 @@ function getKnownBundledDenoExternBehavior(
     if (memberName === 'writeTextFile') {
       return {
         directMask: INTERNAL_EFFECT_MASKS.hostIo | INTERNAL_EFFECT_MASKS.suspend |
+          INTERNAL_EFFECT_MASKS.mut,
+        forwardedArguments: [],
+      };
+    }
+
+    if (memberName === 'writeTextFileSync') {
+      return {
+        directMask: INTERNAL_EFFECT_MASKS.hostIo | INTERNAL_EFFECT_MASKS.failsThrows |
           INTERNAL_EFFECT_MASKS.mut,
         forwardedArguments: [],
       };

@@ -1907,11 +1907,18 @@ Deno.test('createAnalysisContext summarizes bundled deno extern builtins precise
         'declare const Deno: {',
         '  readonly args: readonly string[];',
         '  readonly env: Deno.Env;',
+        '  chdir(directory: string | URL): void;',
         '  cwd(): string;',
         '  readFile(path: string | URL): Promise<Uint8Array<ArrayBufferLike>>;',
+        '  readFileSync(path: string | URL): Uint8Array<ArrayBufferLike>;',
         '  readTextFile(path: string | URL): Promise<string>;',
         '  readTextFileSync(path: string | URL): string;',
+        '  mkdir(path: string | URL): Promise<void>;',
+        '  mkdirSync(path: string | URL): void;',
+        '  remove(path: string | URL): Promise<void>;',
+        '  removeSync(path: string | URL): void;',
         '  writeTextFile(path: string | URL, data: string): Promise<void>;',
+        '  writeTextFileSync(path: string | URL, data: string): void;',
         '};',
         '',
       ].join('\n'),
@@ -1947,6 +1954,10 @@ Deno.test('createAnalysisContext summarizes bundled deno extern builtins precise
         '  return Deno.readFile(path);',
         '}',
         '',
+        'export function readBinarySync(path: string): Uint8Array<ArrayBufferLike> {',
+        '  return Deno.readFileSync(path);',
+        '}',
+        '',
         'export function readText(path: string): Promise<string> {',
         '  return Deno.readTextFile(path);',
         '}',
@@ -1955,8 +1966,32 @@ Deno.test('createAnalysisContext summarizes bundled deno extern builtins precise
         '  return Deno.readTextFileSync(path);',
         '}',
         '',
+        'export function makeDirectory(path: string): Promise<void> {',
+        '  return Deno.mkdir(path);',
+        '}',
+        '',
+        'export function makeDirectorySync(path: string): void {',
+        '  Deno.mkdirSync(path);',
+        '}',
+        '',
+        'export function removePath(path: string): Promise<void> {',
+        '  return Deno.remove(path);',
+        '}',
+        '',
+        'export function removePathSync(path: string): void {',
+        '  Deno.removeSync(path);',
+        '}',
+        '',
         'export function writeText(path: string, data: string): Promise<void> {',
         '  return Deno.writeTextFile(path, data);',
+        '}',
+        '',
+        'export function writeTextSync(path: string, data: string): void {',
+        '  Deno.writeTextFileSync(path, data);',
+        '}',
+        '',
+        'export function changeDirectory(path: string): void {',
+        '  Deno.chdir(path);',
         '}',
         '',
       ].join('\n'),
@@ -1985,9 +2020,16 @@ Deno.test('createAnalysisContext summarizes bundled deno extern builtins precise
   const setEnvValue = declarationsByName.get('setEnvValue');
   const deleteEnvValue = declarationsByName.get('deleteEnvValue');
   const readBinary = declarationsByName.get('readBinary');
+  const readBinarySync = declarationsByName.get('readBinarySync');
   const readText = declarationsByName.get('readText');
   const readTextSync = declarationsByName.get('readTextSync');
+  const makeDirectory = declarationsByName.get('makeDirectory');
+  const makeDirectorySync = declarationsByName.get('makeDirectorySync');
+  const removePath = declarationsByName.get('removePath');
+  const removePathSync = declarationsByName.get('removePathSync');
   const writeText = declarationsByName.get('writeText');
+  const writeTextSync = declarationsByName.get('writeTextSync');
+  const changeDirectory = declarationsByName.get('changeDirectory');
 
   assertExists(readCurrentDirectory);
   assertExists(readEnvValue);
@@ -1996,9 +2038,16 @@ Deno.test('createAnalysisContext summarizes bundled deno extern builtins precise
   assertExists(setEnvValue);
   assertExists(deleteEnvValue);
   assertExists(readBinary);
+  assertExists(readBinarySync);
   assertExists(readText);
   assertExists(readTextSync);
+  assertExists(makeDirectory);
+  assertExists(makeDirectorySync);
+  assertExists(removePath);
+  assertExists(removePathSync);
   assertExists(writeText);
+  assertExists(writeTextSync);
+  assertExists(changeDirectory);
 
   assertEquals(
     getEffectSummaryForDeclaration(context, readCurrentDirectory).directMask,
@@ -2029,6 +2078,10 @@ Deno.test('createAnalysisContext summarizes bundled deno extern builtins precise
     INTERNAL_EFFECT_MASKS.hostIo | INTERNAL_EFFECT_MASKS.suspend,
   );
   assertEquals(
+    getEffectSummaryForDeclaration(context, readBinarySync).directMask,
+    INTERNAL_EFFECT_MASKS.hostIo | INTERNAL_EFFECT_MASKS.failsThrows,
+  );
+  assertEquals(
     getEffectSummaryForDeclaration(context, readText).directMask,
     INTERNAL_EFFECT_MASKS.hostIo | INTERNAL_EFFECT_MASKS.suspend,
   );
@@ -2037,8 +2090,32 @@ Deno.test('createAnalysisContext summarizes bundled deno extern builtins precise
     INTERNAL_EFFECT_MASKS.hostIo | INTERNAL_EFFECT_MASKS.failsThrows,
   );
   assertEquals(
+    getEffectSummaryForDeclaration(context, makeDirectory).directMask,
+    INTERNAL_EFFECT_MASKS.hostIo | INTERNAL_EFFECT_MASKS.suspend | INTERNAL_EFFECT_MASKS.mut,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, makeDirectorySync).directMask,
+    INTERNAL_EFFECT_MASKS.hostIo | INTERNAL_EFFECT_MASKS.failsThrows | INTERNAL_EFFECT_MASKS.mut,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, removePath).directMask,
+    INTERNAL_EFFECT_MASKS.hostIo | INTERNAL_EFFECT_MASKS.suspend | INTERNAL_EFFECT_MASKS.mut,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, removePathSync).directMask,
+    INTERNAL_EFFECT_MASKS.hostIo | INTERNAL_EFFECT_MASKS.failsThrows | INTERNAL_EFFECT_MASKS.mut,
+  );
+  assertEquals(
     getEffectSummaryForDeclaration(context, writeText).directMask,
     INTERNAL_EFFECT_MASKS.hostIo | INTERNAL_EFFECT_MASKS.suspend | INTERNAL_EFFECT_MASKS.mut,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, writeTextSync).directMask,
+    INTERNAL_EFFECT_MASKS.hostIo | INTERNAL_EFFECT_MASKS.failsThrows | INTERNAL_EFFECT_MASKS.mut,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, changeDirectory).directMask,
+    INTERNAL_EFFECT_MASKS.hostInterop | INTERNAL_EFFECT_MASKS.failsThrows | INTERNAL_EFFECT_MASKS.mut,
   );
 
   assertEquals(getEffectSummaryForDeclaration(context, readCurrentDirectory).hasUnknownDirectEffects, false);
@@ -2048,9 +2125,16 @@ Deno.test('createAnalysisContext summarizes bundled deno extern builtins precise
   assertEquals(getEffectSummaryForDeclaration(context, setEnvValue).hasUnknownDirectEffects, false);
   assertEquals(getEffectSummaryForDeclaration(context, deleteEnvValue).hasUnknownDirectEffects, false);
   assertEquals(getEffectSummaryForDeclaration(context, readBinary).hasUnknownDirectEffects, false);
+  assertEquals(getEffectSummaryForDeclaration(context, readBinarySync).hasUnknownDirectEffects, false);
   assertEquals(getEffectSummaryForDeclaration(context, readText).hasUnknownDirectEffects, false);
   assertEquals(getEffectSummaryForDeclaration(context, readTextSync).hasUnknownDirectEffects, false);
+  assertEquals(getEffectSummaryForDeclaration(context, makeDirectory).hasUnknownDirectEffects, false);
+  assertEquals(getEffectSummaryForDeclaration(context, makeDirectorySync).hasUnknownDirectEffects, false);
+  assertEquals(getEffectSummaryForDeclaration(context, removePath).hasUnknownDirectEffects, false);
+  assertEquals(getEffectSummaryForDeclaration(context, removePathSync).hasUnknownDirectEffects, false);
   assertEquals(getEffectSummaryForDeclaration(context, writeText).hasUnknownDirectEffects, false);
+  assertEquals(getEffectSummaryForDeclaration(context, writeTextSync).hasUnknownDirectEffects, false);
+  assertEquals(getEffectSummaryForDeclaration(context, changeDirectory).hasUnknownDirectEffects, false);
 });
 
 Deno.test('createAnalysisContext reaches a fixpoint for recursive effect summaries', async () => {
