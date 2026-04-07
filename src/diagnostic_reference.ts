@@ -766,26 +766,26 @@ const DIAGNOSTIC_REFERENCES = {
     code: 'SOUND1039',
     title: 'Effects annotations must use the supported v0.2.0 contract shape',
     summary:
-      'soundscript only accepts `#[effects(...)]` with the public `fails`, `suspend`, `mut`, and `host` names, and only on supported callable or callback-parameter sites.',
+      'soundscript only accepts `#[effects(...)]` on supported callable or callback-parameter sites, using the `add`, `forbid`, and `forward` contract shape with parameter-rooted forwarding references.',
     repairHeuristic:
-      'Rewrite the annotation to use only `add`, `forbid`, and `via` with the public effect names, and move it to a supported callable declaration, signature, or function-valued parameter.',
+      'Rewrite the annotation to use only `add`, `forbid`, and `forward` (or temporary compatibility `via`) and move it to a supported callable declaration, signature, or function-valued parameter.',
     details: [
-      'Bodyful callable declarations infer direct effects and only support `forbid` and `via`.',
-      'Declaration-only callable surfaces support `add` and `via`.',
+      'Bodyful callable declarations infer direct effects and only support `forbid` and `forward`.',
+      'Declaration-only callable surfaces support `add` and `forward`.',
       'Function-valued parameters only support `forbid`.',
     ],
     examples: [
       {
-        bad: '// #[effects(forbid: [fails.throws, throws])]',
-        good: '// #[effects(forbid: [fails])]',
+        bad: '// #[effects(add: [fails], forbid: [fails], forward: [{ from: missing }])]',
+        good: '// #[effects(forbid: [fails.throws])]',
       },
     ],
     suggestions: [
       {
         applicability: 'manual',
-        title: 'Use the public effect names',
+        title: 'Use supported effect fields and forwarding references',
         message:
-          'Replace internal or legacy names such as `throws` or `fails.throws` with the public `fails`, `suspend`, `mut`, and `host` umbrellas.',
+          'Use `forward` entries rooted at real parameters, and keep `add` off bodyful local callables. Open dotted effect names such as `fails.rejects` or `host.node.fs` are allowed.',
       },
     ],
   },

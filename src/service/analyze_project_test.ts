@@ -5251,7 +5251,7 @@ Deno.test('analyzeProject accepts builtin effects annotations on local functions
   assertEquals(result.diagnostics, []);
 });
 
-Deno.test('analyzeProject rejects invalid public effects annotation names', async () => {
+Deno.test('analyzeProject accepts open dotted effects and forward transforms', async () => {
   const tempDirectory = await createTempProject({
     'tsconfig.json': JSON.stringify(
       {
@@ -5267,9 +5267,22 @@ Deno.test('analyzeProject rejects invalid public effects annotation names', asyn
       2,
     ),
     'src/index.sts': [
-      '// #[effects(forbid: [fails.throws, throws])]',
-      'function main(): number {',
-      '  return 1;',
+      '// #[extern]',
+      '// #[effects(add: [suspend.await], forward: [{ from: callback, rewrite: [{ from: fails, to: fails.rejects }] }])]',
+      'declare function toPromise<T>(callback: () => T): Promise<T>;',
+      '',
+      '// #[extern]',
+      '// #[effects(add: [], forward: [{ from: callback, handle: [fails] }])]',
+      'declare function resultOfLike<T>(callback: () => T): T | Error;',
+      '',
+      '// #[effects(forbid: [fails.throws])]',
+      'function wrapThrowsAsRejects(): Promise<unknown> {',
+      '  return toPromise(() => JSON.parse("1"));',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function captureFailures(text: string): unknown {',
+      '  return resultOfLike(() => JSON.parse(text));',
       '}',
       '',
     ].join('\n'),
@@ -5280,9 +5293,43 @@ Deno.test('analyzeProject rejects invalid public effects annotation names', asyn
     workingDirectory: tempDirectory,
   });
 
-  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1039']);
-  assertEquals(result.diagnostics[0]?.metadata?.rule, 'invalid_effect_annotation');
-  assertEquals(result.diagnostics[0]?.metadata?.primarySymbol, '#[effects(...)]');
+  assertEquals(result.diagnostics, []);
+});
+
+Deno.test('analyzeProject discharges local failures handled by try catch', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/index.sts': [
+      '// #[effects(forbid: [fails])]',
+      'function parseSafely(text: string): unknown {',
+      '  try {',
+      '    return JSON.parse(text);',
+      '  } catch (_error) {',
+      '    return null;',
+      '  }',
+      '}',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics, []);
 });
 
 Deno.test('analyzeProject enforces local forbid fails contracts against inferred throw behavior', async () => {

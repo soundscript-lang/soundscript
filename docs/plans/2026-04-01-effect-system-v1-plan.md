@@ -16,33 +16,51 @@ The design should stay lightweight:
 
 ## V1 Scope
 
-V1 tracks exactly four runtime effects:
+V1 now uses open dotted effect names with prefix containment instead of a closed four-name public
+surface.
+
+The standardized semantic core is:
 
 - `fails`
+- `fails.throws`
+- `fails.rejects`
 - `suspend`
+- `suspend.await`
+- `suspend.yield`
 - `mut`
 - `host`
+- `host.io`
+- `host.random`
+- `host.time`
+- `host.system`
+- `host.ffi`
 
-V1 deliberately does not include:
+Platform and library declarations may introduce more specific dotted names directly, for example
+`host.node.fs`, `host.node.process`, `host.browser.dom`, and `host.browser.message`.
+
+V1 deliberately still does not include:
 
 - `pure`
 - algebraic effects or handlers
-- general user-facing effect variables
-
-The internal implementation should still be hierarchical from day 1, with subeffects such as
-`fails.throws`, `fails.rejects`, `host.dom`, `host.io`, `host.random`, `host.time`, `host.interop`,
-and reserved future `mut.*` families. Those subeffects are implementation detail in v1; the public
-annotation surface stays coarse.
+- general effect variables or row polymorphism
 
 ## Public Surface
 
 V1 uses one builtin annotation:
 
 ```ts
-// #[effects(add: [host], forbid: [suspend], via: [callback])]
+// #[effects(
+//   add: [host.io, host.node.fs, suspend.await],
+//   forbid: [fails.throws],
+//   forward: [
+//     callback,
+//     { from: onRejected, rewrite: [{ from: fails, to: fails.rejects }] },
+//     { from: action, handle: [fails] },
+//   ],
+// )]
 ```
 
-There are no shorthand aliases in v1.
+`via` remains accepted as temporary compatibility sugar for unchanged forwarding entries.
 
 ### Fields
 
@@ -50,16 +68,17 @@ There are no shorthand aliases in v1.
 
 - `add`
 - `forbid`
-- `via`
+- `forward`
 
 Validation rules:
 
 - each field may appear at most once
 - `add` and `forbid` must be arrays of effect identifiers
-- `via` must be an array of parameter names
-- accepted v1 effect identifiers are exactly `fails`, `suspend`, `mut`, and `host`
-- reject positional arguments, unknown effects, duplicate effects inside a field, duplicate
-  fields, and unknown or repeated `via` parameter names
+- `forward` must be an array of parameter-rooted callable references or `{ from, rewrite?, handle? }`
+  objects
+- effect identifiers are open dotted names with identifier-like segments
+- reject positional arguments, duplicate effects inside a field, duplicate fields, and invalid or
+  repeated `forward` / `via` references
 
 ### Attachment Targets
 
@@ -83,19 +102,19 @@ annotations as out of scope.
 On bodyful local callables:
 
 - `forbid` is allowed and enforced against the inferred summary
-- `via` is allowed and describes effect forwarding from named callback parameters
+- `forward` is allowed and describes effect forwarding from parameter-rooted callback references
 - `add` is rejected in v1 to avoid manual effect overrides on code the checker can inspect
 
 On declaration-only callable surfaces:
 
 - `add` is the explicit direct-effect summary
-- `via` declares forwarded callback parameters
+- `forward` declares forwarded callback parameters and transforms
 - callable-site `forbid` is rejected in v1
 
 On parameters:
 
 - only `forbid` is valid in v1
-- parameter-site `add` and `via` are rejected
+- parameter-site `add` and `forward` are rejected
 
 ## Core Semantics
 
@@ -148,13 +167,11 @@ For optimization safety, treat nondeterministic ambient sources as `host` in v1:
 Each callable summary should model:
 
 - direct effects it adds
-- which callback parameters it forwards through `via`
+- which callback parameters it forwards through `forward`
 - whether any relevant effect remains unknown
 
-The internal representation should be future-ready for named hierarchical effects even though the
-public v1 validation set is flat. Do not hardcode checker architecture around a one-bit-per-effect
-model; `fails.throws` and `fails.rejects` should remain distinguishable internally even though the
-public contract only exposes `fails`.
+The internal representation should be generic over named hierarchical effects and prefix
+relationships. Do not hardcode checker architecture around a one-bit-per-effect model.
 
 ## Inference
 
@@ -168,19 +185,19 @@ Use a cached SCC/fixpoint pass so recursion and mutually recursive helpers conve
 
 Declaration-only callables cannot be inferred from bodies, so their summaries come from:
 
-- explicit `#[effects(add: ..., via: ...)]`
+- explicit `#[effects(add: ..., forward: ...)]`
 - family defaults where a whole declaration family is obviously `host`
 - conservative unknown status when no summary is available
 
 Unknown effects are acceptable in ordinary code but never satisfy a `forbid` contract and never
 count as optimization proof.
 
-## Higher-Order Functions And `via`
+## Higher-Order Functions And `forward`
 
-The key higher-order feature in v1 is callback effect forwarding:
+The key higher-order feature in v1 is callback effect forwarding and transformation:
 
 ```ts
-// #[effects(via: [callback])]
+// #[effects(forward: [callback])]
 function map<T, U>(
   values: readonly T[],
   callback: (value: T, index: number) => U,
@@ -195,7 +212,7 @@ This means:
 Callback restrictions live on the parameter:
 
 ```ts
-// #[effects(via: [predicate])]
+// #[effects(forward: [predicate])]
 function findIndex<T>(
   values: readonly T[],
   // #[effects(forbid: [fails, suspend, mut])]
@@ -208,12 +225,26 @@ This means:
 - `findIndex` forwards the predicate's effects
 - the predicate itself may not suspend or observably mutate
 
+Forward entries may also rewrite or discharge effects:
+
+```ts
+// #[effects(
+//   add: [suspend.await],
+//   forward: [{ from: onFulfilled, rewrite: [{ from: fails, to: fails.rejects }] }],
+// )]
+```
+
+```ts
+// #[effects(forward: [{ from: action, handle: [fails] }])]
+```
+
 ### Call-Site Rule
 
 At a call site, the effective summary is:
 
 - callee direct `add`
-- plus effects from each passed callback argument named in `via`
+- plus effects from each passed callback argument named in `forward`, after applying rewrites in
+  order and then discharging any handled effects
 
 If a forwarded callback argument is unknown or violates the parameter contract, the call site is
 diagnostic under any enclosing relevant `forbid`.
@@ -222,11 +253,12 @@ diagnostic under any enclosing relevant `forbid`.
 
 V1 should support two sources of forwarding knowledge:
 
-- explicit `via` on declaration-only or builtin surfaces
+- explicit `forward` on declaration-only or builtin surfaces
 - limited inference for local bodyful callables that directly invoke a function-valued parameter or
   pass it to a known forwarding callee
 
-If forwarding cannot be proven for a local higher-order callable and no explicit `via` is present,
+If forwarding cannot be proven for a local higher-order callable and no explicit `forward` is
+present,
 the relevant effects remain unknown.
 
 ## Checker Behavior
@@ -244,7 +276,7 @@ A bodyful local callable annotated with:
 must be rejected if its computed summary:
 
 - directly adds a forbidden effect
-- forwards a forbidden effect through any `via` parameter
+- forwards a forbidden effect through any `forward` parameter
 - remains unknown for a forbidden effect
 
 Unknown never counts as proof.
@@ -339,7 +371,7 @@ Callable compatibility should be:
 1. existing parameter-type relation rules
 2. existing return-type relation rules
 3. callback-parameter `forbid` compatibility
-4. outer callable effect compatibility using `add`, `via`, and parameter contracts
+4. outer callable effect compatibility using `add`, `forward`, and parameter contracts
 
 The intended variance split is:
 
@@ -352,16 +384,15 @@ contracts.
 
 ## Future Extension Path
 
-The public v1 names are intentionally coarse, but the internal model should support later
-decomposition.
+The public v1 names are already hierarchical, but the model should still support later
+decomposition and additional families.
 
 Likely future names include:
 
-- `host.dom`
-- `host.io`
-- `host.time`
-- `host.random`
-- `host.interop`
+- `host.browser.dom`
+- `host.browser.message`
+- `host.time.clock`
+- `host.time.schedule`
 - `mut.global`
 - `mut.capture`
 - `mut.this`
@@ -380,17 +411,17 @@ This lets old contracts continue to work while new contracts become more precise
 The implementation should carry tests in five groups.
 
 1. annotation parsing and validation
-   - valid `add` / `forbid` / `via`
-   - invalid field names, invalid targets, duplicate fields, duplicate effects, bad `via`
+   - valid `add` / `forbid` / `forward`
+   - invalid field names, invalid targets, duplicate fields, duplicate effects, bad `forward`
      references
-   - parameter-site rejection of `add` and `via`
+   - parameter-site rejection of `add` and `forward`
 2. direct effect inference
    - direct syntax cases for `suspend`, `mut`, and `host`
    - transitive propagation through local call graphs
    - recursion and SCC convergence
    - fresh-local versus observable/shared mutation
 3. higher-order forwarding
-   - declaration-only `via` summaries
+   - declaration-only `forward` summaries
    - local callback-invocation inference
    - callback parameter `forbid` enforcement
    - conservative unknown behavior where forwarding cannot be proven

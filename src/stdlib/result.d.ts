@@ -40,21 +40,30 @@ export interface ResultF extends TypeLambda {
 export type OptionKind<T> = Kind<OptionF, T>;
 export type ResultKind<E, T> = Kind2<ResultF, E, T>;
 
+// #[effects(add: [])]
 export function ok<T>(value: T): Result<T, never>;
+// #[effects(add: [])]
 export function err(): Result<never, void>;
+// #[effects(add: [])]
 export function err<E>(error: E): Result<never, E>;
+// #[effects(add: [])]
 export function some<T>(value: T): Option<T>;
+// #[effects(add: [])]
 export function none(): Option<never>;
 export function isOk<T, E>(value: Result<T, E>): value is Ok<T>;
 export function isErr<T, E>(value: Result<T, E>): value is Err<E>;
 export function isSome<T>(value: Option<T>): value is Some<T>;
 export function isNone<T>(value: Option<T>): value is None;
+// #[effects(add: [suspend.await], forward: [{ from: fn, handle: [fails] }])]
 export function resultOf<T>(fn: () => Promise<T>): Promise<Result<T, Error>>;
+// #[effects(add: [suspend.await], forward: [{ from: fn, handle: [fails] }, { from: mapError, rewrite: [{ from: fails, to: fails.rejects }] }])]
 export function resultOf<T, E>(
   fn: () => Promise<T>,
   mapError: (error: Error) => E,
 ): Promise<Result<T, E>>;
+// #[effects(forward: [{ from: fn, handle: [fails] }])]
 export function resultOf<T>(fn: () => T): Result<T, Error>;
+// #[effects(forward: [{ from: fn, handle: [fails] }, { from: mapError }])]
 export function resultOf<T, E>(fn: () => T, mapError: (error: Error) => E): Result<T, E>;
 export function mapErr<T, E1, E2>(
   value: Result<T, E1>,

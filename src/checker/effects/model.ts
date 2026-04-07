@@ -1,6 +1,7 @@
 import ts from 'typescript';
 
 export interface EffectComposition {
+  effects: readonly import('../engine/types.ts').EffectNameFact[];
   mask: number;
   unknown: boolean;
   unknownReasons: readonly import('../engine/types.ts').EffectUnknownReasonFact[];
@@ -8,11 +9,15 @@ export interface EffectComposition {
 
 export interface BuiltinForwardedArgumentBehavior {
   argumentIndex: number;
+  handledEffects?: readonly import('../engine/types.ts').EffectNameFact[];
   failureBoundary: import('../engine/types.ts').EffectFailureBoundary;
+  memberPath?: readonly string[];
   memberName?: string;
+  rewrites?: readonly import('../engine/types.ts').EffectRewriteFact[];
 }
 
 export interface BuiltinCallBehavior {
+  directEffects?: readonly import('../engine/types.ts').EffectNameFact[];
   directMask: number;
   forwardedArguments: readonly BuiltinForwardedArgumentBehavior[];
   unknownDirectReasons?: readonly import('../engine/types.ts').EffectUnknownReasonFact[];

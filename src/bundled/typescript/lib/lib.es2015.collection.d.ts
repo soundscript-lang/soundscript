@@ -17,27 +17,33 @@ and limitations under the License.
 /// <reference no-default-lib="true"/>
 
 interface Map<K, V> extends ReadonlyMap<K, V> {
+    // #[effects(add: [mut])]
     clear(): void;
     /**
      * @returns true if an element in the Map existed and has been removed, or false if the element does not exist.
      */
+    // #[effects(add: [mut])]
     delete(key: K): boolean;
     /**
      * Executes a provided function once per each key/value pair in the Map, in insertion order.
      */
+    // #[effects(add: [], forward: [callbackfn])]
     forEach(callbackfn: (value: V, key: K, map: ReadonlyMap<K, V>) => void, thisArg?: unknown): void;
     /**
      * Returns a specified element from the Map object. If the value that is associated to the provided key is an object, then you will get a reference to that object and any change made to that object will effectively modify it inside the Map.
      * @returns Returns the element associated with the specified key. If no element is associated with the specified key, undefined is returned.
      */
+    // #[effects(add: [])]
     get(key: unknown): V | undefined;
     /**
      * @returns boolean indicating whether an element with the specified key exists or not.
      */
+    // #[effects(add: [])]
     has(key: unknown): boolean;
     /**
      * Adds a new element with a specified key and value to the Map. If an element with the same key already exists, the element will be updated.
      */
+    // #[effects(add: [mut])]
     set(key: K, value: V): this;
     /**
      * @returns the number of elements in the Map.
@@ -54,8 +60,11 @@ declare var Map: MapConstructor;
 
 // #[variance(K: out, V: out)]
 interface ReadonlyMap<K, V> {
+    // #[effects(add: [], forward: [callbackfn])]
     forEach(callbackfn: (value: V, key: K, map: ReadonlyMap<K, V>) => void, thisArg?: unknown): void;
+    // #[effects(add: [])]
     get(key: unknown): V | undefined;
+    // #[effects(add: [])]
     has(key: unknown): boolean;
     readonly size: number;
 }
@@ -91,21 +100,26 @@ interface Set<T> extends ReadonlySet<T> {
     /**
      * Appends a new element with a specified value to the end of the Set.
      */
+    // #[effects(add: [mut])]
     add(value: T): this;
 
+    // #[effects(add: [mut])]
     clear(): void;
     /**
      * Removes a specified value from the Set.
      * @returns Returns true if an element in the Set existed and has been removed, or false if the element does not exist.
      */
+    // #[effects(add: [mut])]
     delete(value: T): boolean;
     /**
      * Executes a provided function once per each value in the Set object, in insertion order.
      */
+    // #[effects(add: [], forward: [callbackfn])]
     forEach(callbackfn: (value: T, value2: T, set: ReadonlySet<T>) => void, thisArg?: unknown): void;
     /**
      * @returns a boolean indicating whether an element with the specified value exists in the Set or not.
      */
+    // #[effects(add: [])]
     has(value: unknown): boolean;
     /**
      * @returns the number of (unique) elements in Set.
@@ -121,7 +135,9 @@ declare var Set: SetConstructor;
 
 // #[variance(T: out)]
 interface ReadonlySet<T> {
+    // #[effects(add: [], forward: [callbackfn])]
     forEach(callbackfn: (value: T, value2: T, set: ReadonlySet<T>) => void, thisArg?: unknown): void;
+    // #[effects(add: [])]
     has(value: unknown): boolean;
     readonly size: number;
 }

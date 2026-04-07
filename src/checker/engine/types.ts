@@ -68,9 +68,17 @@ export interface AliasRelationshipFact {
   kind: AliasRelationshipKind;
 }
 
-export type PublicEffectName = 'fails' | 'host' | 'mut' | 'suspend';
+export type PublicEffectName = string;
+
+export type EffectNameFact = string;
+
+export interface EffectRewriteFact {
+  from: EffectNameFact;
+  to: EffectNameFact;
+}
 
 export interface EffectParameterContractFact {
+  forbidEffects: readonly EffectNameFact[];
   forbidMask: number;
   parameterIndex: number;
 }
@@ -89,13 +97,18 @@ export interface EffectUnknownReasonFact {
 }
 
 export interface EffectForwardedParameterFact {
+  handledEffects: readonly EffectNameFact[];
   failureBoundary: EffectFailureBoundary;
+  memberPath: readonly string[];
   memberName?: string;
   parameterIndex: number;
+  rewrites: readonly EffectRewriteFact[];
 }
 
 export interface EffectSummaryFact {
+  directEffects: readonly EffectNameFact[];
   directMask: number;
+  forbidEffects: readonly EffectNameFact[];
   forbidMask: number;
   forwardedParameters: readonly EffectForwardedParameterFact[];
   hasUnknownDirectEffects: boolean;

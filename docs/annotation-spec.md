@@ -144,7 +144,15 @@ Using a known annotation on the wrong target is an error.
 Current supported surface:
 
 ```ts
-// #[effects(add: [host], forbid: [fails, suspend], via: [callback])]
+// #[effects(
+//   add: [host.io, host.node.fs, suspend.await],
+//   forbid: [fails.throws],
+//   forward: [
+//     callback,
+//     { from: onRejected, rewrite: [{ from: fails, to: fails.rejects }] },
+//     { from: decoder.decode, handle: [fails] },
+//   ],
+// )]
 function map<T, U>(values: readonly T[], callback: (value: T) => U): readonly U[] {
   return values.map(callback);
 }
@@ -152,19 +160,23 @@ function map<T, U>(values: readonly T[], callback: (value: T) => U): readonly U[
 
 Current validation rules:
 
-- `add`, `forbid`, and `via` are the only supported fields
+- `add`, `forbid`, and `forward` are the canonical supported fields
+- `via` remains accepted as a temporary compatibility alias for unchanged forwarding entries
 - `add` and `forbid` must be arrays
-- `via` must be an array of parameter names
-- accepted public effect names are `fails`, `suspend`, `mut`, and `host`
-- dotted subeffects are internal implementation details only and are not public annotation names in v0.2.0
-- duplicate fields, duplicate effect names, unknown field names, and invalid `via` references are errors
+- `forward` must be an array of parameter-rooted callable references or `{ from, rewrite?, handle? }` objects
+- effect names are open dotted identifiers with prefix containment, for example `fails.rejects`, `host.io`, `host.node.fs`, and `host.browser.dom`
+- `from` must start at a parameter name and may continue through callable members such as `decoder.decode`
+- `rewrite` must be an array of `{ from: effect, to: effect }` objects
+- `handle` must be an array of effect identifiers discharged after rewrites are applied
+- duplicate fields, duplicate effect names, unknown field names, and invalid `forward` / `via` references are errors
 
 Current semantic direction:
 
-- bodyful local callables may use `forbid` and `via`
-- declaration-only callable surfaces may use `add` and `via`
+- bodyful local callables may use `forbid` and `forward`
+- declaration-only callable surfaces may use `add` and `forward`
 - function-valued parameters may use `forbid` only
-- the internal effect model may track hierarchical subeffects such as `fails.throws`, `fails.rejects`, and `host.random`, but those remain hidden behind the public umbrellas in v0.2.0
+- the standard semantic core currently includes `fails`, `fails.throws`, `fails.rejects`, `suspend`, `suspend.await`, `suspend.yield`, `mut`, `host`, `host.io`, `host.random`, `host.time`, `host.system`, and `host.ffi`
+- platform and library tags such as `host.node.fs`, `host.node.process`, `host.browser.dom`, and `host.browser.message` are user-space representable and may appear directly in declaration annotations
 
 ## Directive Notes
 

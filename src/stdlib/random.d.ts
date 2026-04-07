@@ -12,8 +12,10 @@ export type RandomBufferView =
   | Float64Array<ArrayBufferLike>;
 
 export interface Crypto {
+  // #[effects(add: [host.random, mut])]
   getRandomValues<T extends DataView<ArrayBufferLike> | RandomBufferView>(array: T): T;
 }
 
 export declare const crypto: Crypto;
-export declare const getRandomValues: Crypto['getRandomValues'];
+// #[effects(add: [host.random, mut])]
+export declare function getRandomValues<T extends DataView<ArrayBufferLike> | RandomBufferView>(array: T): T;

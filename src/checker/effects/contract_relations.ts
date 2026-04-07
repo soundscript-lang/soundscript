@@ -1,10 +1,10 @@
 import ts from 'typescript';
 
-import type { EffectSummaryFact, EffectUnknownReasonFact, PublicEffectName } from '../engine/types.ts';
-import { effectMaskToPublicNames } from './masks.ts';
+import type { EffectNameFact, EffectSummaryFact, EffectUnknownReasonFact, PublicEffectName } from '../engine/types.ts';
+import { subtractEffectSet, effectSetsOverlap } from './names.ts';
 
 export interface CallableEffectContractMismatch {
-  forbiddenEffects: readonly PublicEffectName[];
+  forbiddenEffects: readonly EffectNameFact[];
   kind: 'outer' | 'parameter';
   unknownReasons?: readonly EffectUnknownReasonFact[];
   parameterName?: string;
@@ -16,15 +16,15 @@ export function classifyCallableEffectContractMismatch(
   sourceSignature: ts.Signature,
   targetSignature: ts.Signature,
 ): CallableEffectContractMismatch | undefined {
-  const targetForbidMask = targetSummary?.forbidMask ?? 0;
+  const targetForbidEffects = targetSummary?.forbidEffects ?? [];
   if (
-    targetForbidMask !== 0 &&
+    targetForbidEffects.length !== 0 &&
     (!sourceSummary ||
       sourceSummary.hasUnknownDirectEffects ||
-      (sourceSummary.directMask & targetForbidMask) !== 0)
+      effectSetsOverlap(sourceSummary.directEffects, targetForbidEffects))
   ) {
     return {
-      forbiddenEffects: effectMaskToPublicNames(targetForbidMask),
+      forbiddenEffects: targetForbidEffects,
       kind: 'outer',
       unknownReasons: sourceSummary?.hasUnknownDirectEffects ? sourceSummary.unknownDirectReasons : undefined,
     };
@@ -38,13 +38,14 @@ export function classifyCallableEffectContractMismatch(
   );
   const parameterCount = Math.max(sourceSignature.getParameters().length, targetSignature.getParameters().length);
   for (let index = 0; index < parameterCount; index += 1) {
-    const sourceForbidMask = sourceParameterContracts.get(index)?.forbidMask ?? 0;
-    const targetForbidMask = targetParameterContracts.get(index)?.forbidMask ?? 0;
-    if ((sourceForbidMask & ~targetForbidMask) === 0) {
+    const sourceForbidEffects = sourceParameterContracts.get(index)?.forbidEffects ?? [];
+    const targetForbidEffects = targetParameterContracts.get(index)?.forbidEffects ?? [];
+    const missingEffects = subtractEffectSet(sourceForbidEffects, targetForbidEffects);
+    if (missingEffects.length === 0) {
       continue;
     }
     return {
-      forbiddenEffects: effectMaskToPublicNames(sourceForbidMask & ~targetForbidMask),
+      forbiddenEffects: missingEffects,
       kind: 'parameter',
       parameterName: targetSignature.getParameters()[index]?.getName() ??
         sourceSignature.getParameters()[index]?.getName(),

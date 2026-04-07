@@ -32,47 +32,65 @@ export class TimeoutFailure extends Failure {
   constructor(ms: number, cause?: unknown);
 }
 
+// #[effects(add: [])]
 export function succeed<T>(value: T): Task<T, never>;
+// #[effects(add: [])]
 export function fail<E>(error: E): Task<never, E>;
+// #[effects(add: [])]
 export function fromResult<T, E>(result: Result<T, E>): Task<T, E>;
+// #[effects(add: [])]
 export function fromPromise<T>(fn: (signal?: AbortSignalLike) => Promise<T>): Task<T, Error>;
+// #[effects(add: [])]
 export function fromPromise<T, E>(
   fn: (signal?: AbortSignalLike) => Promise<T>,
   mapError: (error: Error) => E,
 ): Task<T, E>;
+// #[effects(add: [])]
 export function map<A, B, E>(
   task: Task<A, E>,
   project: (value: A) => B,
 ): Task<B, E>;
+// #[effects(add: [])]
 export function mapError<A, E1, E2>(
   task: Task<A, E1>,
   project: (error: E1) => E2,
 ): Task<A, E2 | Error>;
+// #[effects(add: [])]
 export function flatMap<A, B, E1, E2>(
   task: Task<A, E1>,
   project: (value: A) => Task<B, E2>,
 ): Task<B, E1 | E2>;
+// #[effects(add: [])]
 export function recover<A, B, E>(
   task: Task<A, E>,
   project: (error: E) => B | Promise<B>,
 ): Task<A | B, Error>;
+// #[effects(add: [])]
 export function tap<A, E>(
   task: Task<A, E>,
   effect: (value: A) => unknown | Promise<unknown>,
 ): Task<A, E | Error>;
+// #[effects(add: [])]
 export function tapError<A, E>(
   task: Task<A, E>,
   effect: (error: E) => unknown | Promise<unknown>,
 ): Task<A, E | Error>;
+// #[effects(add: [])]
 export function parallel<T, E>(tasks: readonly Task<T, E>[]): Task<readonly T[], E>;
+// #[effects(add: [])]
 export function race<T, E>(
   tasks: readonly [Task<T, E>, ...Task<T, E>[]],
 ): Task<T, E>;
+// #[effects(add: [])]
 export function timeout<T, E>(task: Task<T, E>, ms: number): Task<T, E | TimeoutFailure>;
 
+// #[effects(add: [])]
 export function taskFunctor<E>(): Functor<Bind<TaskF, [E]>>;
+// #[effects(add: [])]
 export function taskApplicative<E>(): Applicative<Bind<TaskF, [E]>>;
+// #[effects(add: [])]
 export function taskMonad<E>(): Monad<Bind<TaskF, [E]>>;
+// #[effects(add: [])]
 export function taskAsyncMonad<E>(): AsyncMonad<Bind<TaskF, [E]>>;
 
 export const promiseFunctor: Functor<PromiseF>;

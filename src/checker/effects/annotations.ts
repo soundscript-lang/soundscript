@@ -1,17 +1,31 @@
 import ts from 'typescript';
 
 import type { ParsedAnnotation, ParsedAnnotationValue } from '../../annotation_syntax.ts';
-import type { AnalysisContext } from '../engine/types.ts';
+import type {
+  AnalysisContext,
+  EffectNameFact,
+  EffectRewriteFact,
+} from '../engine/types.ts';
 import { effectMaskFromPublicName, isPublicEffectName } from './masks.ts';
+import { effectNamesToMask, normalizeEffectNames } from './names.ts';
 import {
   type EffectCallableDeclaration,
   isCallableBodyDeclaration,
   isCallableDeclarationNode,
 } from './model.ts';
 
+export interface ParsedEffectsForwardEntry {
+  fromPath: readonly string[];
+  handleEffects: readonly EffectNameFact[];
+  rewrites: readonly EffectRewriteFact[];
+}
+
 export interface ParsedEffectsAnnotationContract {
+  addEffects: readonly EffectNameFact[];
   addMask: number;
+  forbidEffects: readonly EffectNameFact[];
   forbidMask: number;
+  forwardEntries: readonly ParsedEffectsForwardEntry[];
   viaNames: readonly string[];
 }
 
@@ -85,62 +99,196 @@ export function getEffectsAnnotation(
 function parseEffectIdentifierList(
   value: ParsedAnnotationValue,
   fieldName: 'add' | 'forbid',
-): number | string {
+): readonly EffectNameFact[] | string {
   if (value.kind !== 'array') {
-    return `Effects annotation field \`${fieldName}\` must use an array literal such as \`[fails]\`.`;
+    return `Effects annotation field \`${fieldName}\` must use an array literal such as \`[fails.throws]\`.`;
   }
 
-  let mask = 0;
+  const effects: EffectNameFact[] = [];
   const seen = new Set<string>();
   for (const element of value.elements) {
     if (element.kind !== 'identifier') {
-      return `Effects annotation field \`${fieldName}\` must list bare public effect identifiers.`;
+      return `Effects annotation field \`${fieldName}\` must list bare effect identifiers.`;
     }
     if (!isPublicEffectName(element.name)) {
-      return `Public effect names in v0.2.0 are \`fails\`, \`suspend\`, \`mut\`, and \`host\`; found \`${element.name}\`.`;
+      return `Effects annotation field \`${fieldName}\` must use dotted identifier names such as \`host.node.fs\`; found \`${element.name}\`.`;
     }
     if (seen.has(element.name)) {
       return `Effects annotation field \`${fieldName}\` mentions \`${element.name}\` more than once.`;
     }
     seen.add(element.name);
-    mask |= effectMaskFromPublicName(element.name);
+    effects.push(element.name);
   }
 
-  return mask;
+  return normalizeEffectNames(effects);
 }
 
-function parseViaIdentifierList(value: ParsedAnnotationValue): readonly string[] | string {
+function splitForwardPath(text: string): readonly string[] {
+  return text.split('.');
+}
+
+function parseForwardPathList(
+  value: ParsedAnnotationValue,
+  fieldName: 'forward' | 'via',
+): readonly ParsedEffectsForwardEntry[] | string {
   if (value.kind !== 'array') {
-    return 'Effects annotation field `via` must use an array literal such as `[callback]`.';
+    return `Effects annotation field \`${fieldName}\` must use an array literal such as \`[callback]\`.`;
   }
 
-  const names: string[] = [];
+  const entries: ParsedEffectsForwardEntry[] = [];
   const seen = new Set<string>();
   for (const element of value.elements) {
     if (element.kind !== 'identifier') {
-      return 'Effects annotation field `via` must list bare parameter names.';
+      return `Effects annotation field \`${fieldName}\` must list parameter-rooted callable references.`;
     }
     if (seen.has(element.name)) {
-      return `Effects annotation field \`via\` mentions \`${element.name}\` more than once.`;
+      return `Effects annotation field \`${fieldName}\` mentions \`${element.name}\` more than once.`;
     }
     seen.add(element.name);
-    names.push(element.name);
+    entries.push({
+      fromPath: splitForwardPath(element.name),
+      handleEffects: [],
+      rewrites: [],
+    });
   }
 
-  return names;
+  return entries;
+}
+
+function getObjectProperty(
+  value: ParsedAnnotationValue,
+  propertyName: string,
+): ParsedAnnotationValue | undefined {
+  if (value.kind !== 'object') {
+    return undefined;
+  }
+  return value.properties.find((property) => property.name === propertyName)?.value;
+}
+
+function parseRewriteList(value: ParsedAnnotationValue): readonly EffectRewriteFact[] | string {
+  if (value.kind !== 'array') {
+    return 'Effects annotation `rewrite` must use an array literal.';
+  }
+
+  const rewrites: EffectRewriteFact[] = [];
+  const seen = new Set<string>();
+  for (const element of value.elements) {
+    if (element.kind !== 'object') {
+      return 'Effects annotation `rewrite` entries must use `{ from: effect, to: effect }` objects.';
+    }
+    const propertyNames = new Set(element.properties.map((property) => property.name));
+    if (!propertyNames.has('from') || !propertyNames.has('to')) {
+      return 'Effects annotation `rewrite` entries must include both `from` and `to`.';
+    }
+    if (propertyNames.size !== 2) {
+      return 'Effects annotation `rewrite` entries only support `from` and `to`.';
+    }
+    const fromValue = getObjectProperty(element, 'from');
+    const toValue = getObjectProperty(element, 'to');
+    if (fromValue?.kind !== 'identifier' || toValue?.kind !== 'identifier') {
+      return 'Effects annotation `rewrite` entries must use dotted identifier effect names.';
+    }
+    const key = `${fromValue.name}->${toValue.name}`;
+    if (seen.has(key)) {
+      return `Effects annotation \`rewrite\` mentions \`${key}\` more than once.`;
+    }
+    seen.add(key);
+    rewrites.push({
+      from: fromValue.name,
+      to: toValue.name,
+    });
+  }
+
+  return rewrites;
+}
+
+function parseForwardEntry(value: ParsedAnnotationValue): ParsedEffectsForwardEntry | string {
+  if (value.kind === 'identifier') {
+    return {
+      fromPath: splitForwardPath(value.name),
+      handleEffects: [],
+      rewrites: [],
+    };
+  }
+
+  if (value.kind !== 'object') {
+    return 'Effects annotation `forward` entries must use a parameter path or an object literal.';
+  }
+
+  const properties = new Map<string, ParsedAnnotationValue>();
+  for (const property of value.properties) {
+    if (properties.has(property.name)) {
+      return `Effects annotation \`forward\` entry field \`${property.name}\` appears more than once.`;
+    }
+    properties.set(property.name, property.value);
+  }
+
+  const fromValue = properties.get('from');
+  if (!fromValue || fromValue.kind !== 'identifier') {
+    return 'Effects annotation `forward` entries require `from: parameterOrMemberPath`.';
+  }
+  for (const propertyName of properties.keys()) {
+    if (propertyName !== 'from' && propertyName !== 'handle' && propertyName !== 'rewrite') {
+      return `Unknown effects annotation forward field \`${propertyName}\`. Use only \`from\`, \`rewrite\`, and \`handle\`.`;
+    }
+  }
+
+  const rewritesValue = properties.get('rewrite');
+  const rewrites = rewritesValue ? parseRewriteList(rewritesValue) : [];
+  if (typeof rewrites === 'string') {
+    return rewrites;
+  }
+  const handleValue = properties.get('handle');
+  const handleEffects = handleValue ? parseEffectIdentifierList(handleValue, 'forbid') : [];
+  if (typeof handleEffects === 'string') {
+    return handleEffects.replace('field `forbid`', 'field `handle`');
+  }
+
+  return {
+    fromPath: splitForwardPath(fromValue.name),
+    handleEffects,
+    rewrites,
+  };
+}
+
+function parseForwardEntryList(
+  value: ParsedAnnotationValue,
+): readonly ParsedEffectsForwardEntry[] | string {
+  if (value.kind !== 'array') {
+    return 'Effects annotation field `forward` must use an array literal such as `[callback]`.';
+  }
+
+  const entries: ParsedEffectsForwardEntry[] = [];
+  const seen = new Set<string>();
+  for (const element of value.elements) {
+    const entry = parseForwardEntry(element);
+    if (typeof entry === 'string') {
+      return entry;
+    }
+    const key = `${entry.fromPath.join('.')}|rewrite:${
+      entry.rewrites.map((rewrite) => `${rewrite.from}->${rewrite.to}`).join(',')
+    }|handle:${entry.handleEffects.join(',')}`;
+    if (seen.has(key)) {
+      return `Effects annotation field \`forward\` mentions \`${entry.fromPath.join('.')}\` more than once.`;
+    }
+    seen.add(key);
+    entries.push(entry);
+  }
+
+  return entries;
 }
 
 export function parseEffectsAnnotationContract(
   annotation: ParsedAnnotation,
 ): ParsedEffectsAnnotationContract | string {
   const args = annotation.arguments ?? [];
-  const fieldValues = new Map<'add' | 'forbid' | 'via', ParsedAnnotationValue>();
+  const fieldValues = new Map<'add' | 'forbid' | 'forward' | 'via', ParsedAnnotationValue>();
   for (const arg of args) {
     if (arg.kind !== 'named') {
-      return 'Effects annotations only accept named fields: `add`, `forbid`, and `via`.';
+      return 'Effects annotations only accept named fields: `add`, `forbid`, `forward`, and `via`.';
     }
-    if (arg.name !== 'add' && arg.name !== 'forbid' && arg.name !== 'via') {
-      return `Unknown effects annotation field \`${arg.name}\`. Use only \`add\`, \`forbid\`, and \`via\`.`;
+    if (arg.name !== 'add' && arg.name !== 'forbid' && arg.name !== 'forward' && arg.name !== 'via') {
+      return `Unknown effects annotation field \`${arg.name}\`. Use only \`add\`, \`forbid\`, \`forward\`, and \`via\`.`;
     }
     if (fieldValues.has(arg.name)) {
       return `Effects annotation field \`${arg.name}\` appears more than once.`;
@@ -151,24 +299,89 @@ export function parseEffectsAnnotationContract(
   const addValue = fieldValues.get('add');
   const forbidValue = fieldValues.get('forbid');
   const viaValue = fieldValues.get('via');
-  const addMask = addValue ? parseEffectIdentifierList(addValue, 'add') : 0;
-  if (typeof addMask === 'string') {
-    return addMask;
+  const forwardValue = fieldValues.get('forward');
+  const addEffects = addValue ? parseEffectIdentifierList(addValue, 'add') : [];
+  if (typeof addEffects === 'string') {
+    return addEffects;
   }
-  const forbidMask = forbidValue ? parseEffectIdentifierList(forbidValue, 'forbid') : 0;
-  if (typeof forbidMask === 'string') {
-    return forbidMask;
+  const forbidEffects = forbidValue ? parseEffectIdentifierList(forbidValue, 'forbid') : [];
+  if (typeof forbidEffects === 'string') {
+    return forbidEffects;
   }
-  const viaNames = viaValue ? parseViaIdentifierList(viaValue) : [];
+  const viaEntries = viaValue ? parseForwardPathList(viaValue, 'via') : [];
+  if (typeof viaEntries === 'string') {
+    return viaEntries;
+  }
+  const forwardEntries = forwardValue ? parseForwardEntryList(forwardValue) : [];
+  if (typeof forwardEntries === 'string') {
+    return forwardEntries;
+  }
+  const viaNames = viaEntries.map((entry) => entry.fromPath.join('.'));
+  const allForwardEntries = [...viaEntries, ...forwardEntries];
   if (typeof viaNames === 'string') {
     return viaNames;
   }
 
   return {
-    addMask,
-    forbidMask,
+    addEffects,
+    addMask: effectNamesToMask(addEffects),
+    forbidEffects,
+    forbidMask: effectNamesToMask(forbidEffects),
+    forwardEntries: allForwardEntries,
     viaNames,
   };
+}
+
+function getParameterType(
+  context: AnalysisContext,
+  parameter: ts.ParameterDeclaration,
+): ts.Type {
+  return parameter.type
+    ? context.checker.getTypeFromTypeNode(parameter.type)
+    : context.checker.getTypeAtLocation(parameter.name);
+}
+
+function hasCallableSignatures(context: AnalysisContext, type: ts.Type): boolean {
+  return context.checker.getSignaturesOfType(type, ts.SignatureKind.Call).length > 0 ||
+    context.checker.getSignaturesOfType(type, ts.SignatureKind.Construct).length > 0;
+}
+
+function validateForwardTarget(
+  context: AnalysisContext,
+  parameters: ReadonlyMap<string, ts.ParameterDeclaration>,
+  entry: ParsedEffectsForwardEntry,
+  fieldName: 'forward' | 'via',
+): string | undefined {
+  const [rootName, ...memberPath] = entry.fromPath;
+  if (!rootName) {
+    return `Effects annotation field \`${fieldName}\` requires a parameter-rooted callable reference.`;
+  }
+  const parameter = parameters.get(rootName);
+  if (!parameter) {
+    return `Effects annotation field \`${fieldName}\` references unknown parameter \`${rootName}\`.`;
+  }
+
+  let currentType = getParameterType(context, parameter);
+  if (memberPath.length === 0) {
+    if (!hasCallableType(context, parameter)) {
+      return `Effects annotation field \`${fieldName}\` may only reference function-valued parameters; \`${rootName}\` is not callable.`;
+    }
+    return undefined;
+  }
+
+  for (const [index, segment] of memberPath.entries()) {
+    const property = currentType.getProperty(segment);
+    if (!property) {
+      return `Effects annotation field \`${fieldName}\` references unknown member \`${entry.fromPath.slice(0, index + 2).join('.')}\`.`;
+    }
+    currentType = context.checker.getTypeOfSymbolAtLocation(property, parameter);
+  }
+
+  if (!hasCallableSignatures(context, currentType)) {
+    return `Effects annotation field \`${fieldName}\` may only reference callable members; \`${entry.fromPath.join('.')}\` is not callable.`;
+  }
+
+  return undefined;
 }
 
 export function validateEffectsAnnotation(
@@ -187,21 +400,21 @@ export function validateEffectsAnnotation(
   }
 
   if (classification.kind === 'parameter') {
-    if (parsed.addMask !== 0 || parsed.viaNames.length > 0) {
-      return 'Function-valued parameters only support `#[effects(forbid: [...])]` in v0.2.0.';
+    if (parsed.addEffects.length > 0 || parsed.forwardEntries.length > 0) {
+      return 'Function-valued parameters only support `#[effects(forbid: [...])]`.';
     }
     return undefined;
   }
 
-  if (classification.kind === 'callable_body' && parsed.addMask !== 0) {
-    return 'Bodyful callable declarations infer direct effects from their implementation; use `forbid` and `via`, not `add`.';
+  if (classification.kind === 'callable_body' && parsed.addEffects.length > 0) {
+    return 'Bodyful callable declarations infer direct effects from their implementation; use `forbid` and `forward`, not `add`.';
   }
 
-  if (classification.kind === 'callable_declaration' && parsed.forbidMask !== 0) {
-    return 'Declaration-only callable surfaces use `add` and `via`; `forbid` is only supported on bodyful callables and function-valued parameters.';
+  if (classification.kind === 'callable_declaration' && parsed.forbidEffects.length > 0) {
+    return 'Declaration-only callable surfaces use `add` and `forward`; `forbid` is only supported on bodyful callables and function-valued parameters.';
   }
 
-  if (parsed.viaNames.length === 0) {
+  if (parsed.forwardEntries.length === 0) {
     return undefined;
   }
 
@@ -212,13 +425,14 @@ export function validateEffectsAnnotation(
     }
   }
 
-  for (const viaName of parsed.viaNames) {
-    const parameter = parameterNames.get(viaName);
-    if (!parameter) {
-      return `Effects annotation field \`via\` references unknown parameter \`${viaName}\`.`;
-    }
-    if (!hasCallableType(context, parameter)) {
-      return `Effects annotation field \`via\` may only reference function-valued parameters; \`${viaName}\` is not callable.`;
+  for (const entry of parsed.forwardEntries) {
+    const fieldName = parsed.viaNames.includes(entry.fromPath.join('.')) && entry.rewrites.length === 0 &&
+        entry.handleEffects.length === 0
+      ? 'via'
+      : 'forward';
+    const error = validateForwardTarget(context, parameterNames, entry, fieldName);
+    if (error) {
+      return error;
     }
   }
 

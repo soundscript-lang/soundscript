@@ -15,6 +15,22 @@ export const INTERNAL_EFFECT_MASKS = {
 export const PUBLIC_EFFECT_NAMES = ['fails', 'host', 'mut', 'suspend'] as const satisfies
   readonly PublicEffectName[];
 
+export const STANDARD_EFFECT_NAMES = [
+  'fails',
+  'fails.throws',
+  'fails.rejects',
+  'suspend',
+  'suspend.await',
+  'suspend.yield',
+  'mut',
+  'host',
+  'host.io',
+  'host.random',
+  'host.time',
+  'host.system',
+  'host.ffi',
+] as const satisfies readonly string[];
+
 export const PUBLIC_EFFECT_MASKS: Readonly<Record<PublicEffectName, number>> = {
   fails: INTERNAL_EFFECT_MASKS.failsRejects | INTERNAL_EFFECT_MASKS.failsThrows,
   host: INTERNAL_EFFECT_MASKS.hostDom | INTERNAL_EFFECT_MASKS.hostInterop |
@@ -24,7 +40,8 @@ export const PUBLIC_EFFECT_MASKS: Readonly<Record<PublicEffectName, number>> = {
 };
 
 export function isPublicEffectName(name: string): name is PublicEffectName {
-  return PUBLIC_EFFECT_NAMES.includes(name as PublicEffectName);
+  return /^[\p{ID_Start}_$][\p{ID_Continue}_$\u200C\u200D-]*(?:\.[\p{ID_Start}_$][\p{ID_Continue}_$\u200C\u200D-]*)*$/u
+    .test(name);
 }
 
 export function effectMaskFromPublicName(name: PublicEffectName): number {

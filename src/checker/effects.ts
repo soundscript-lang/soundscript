@@ -2,9 +2,11 @@ import ts from 'typescript';
 
 import type {
   AnalysisContext,
+  EffectNameFact,
   EffectFailureBoundary,
   EffectForwardedParameterFact,
   EffectParameterContractFact,
+  EffectRewriteFact,
   EffectSummaryFact,
   EffectUnknownReasonFact,
 } from './engine/types.ts';
@@ -18,7 +20,6 @@ import {
 import {
   getKnownBuiltinCallBehavior,
   getKnownPortableBuiltinBehavior,
-  getKnownStdlibBehavior,
 } from './effects/builtins.ts';
 import {
   classifyCallableEffectContractMismatch,
@@ -30,6 +31,14 @@ import {
   PUBLIC_EFFECT_NAMES,
   effectMaskToPublicNames,
 } from './effects/masks.ts';
+import {
+  applyEffectRewrites,
+  effectNamesToMask,
+  effectSetsOverlap,
+  maskToStandardEffectNames,
+  normalizeEffectNames,
+  subtractEffectSet,
+} from './effects/names.ts';
 import type { EffectComposition, EffectCallableDeclaration } from './effects/model.ts';
 import { isCallableBodyDeclaration, isCallableDeclarationNode } from './effects/model.ts';
 import {
@@ -65,14 +74,79 @@ interface ActiveEffectSolveState {
 const activeEffectSolveStates = new WeakMap<AnalysisContext, ActiveEffectSolveState>();
 
 function createEffectComposition(
+  effects: readonly EffectNameFact[] = [],
   mask = 0,
   unknownReasons: readonly EffectUnknownReasonFact[] = [],
 ): EffectComposition {
+  const normalizedEffects = normalizeEffectNames(effects);
   return {
-    mask,
+    effects: normalizedEffects,
+    mask: mask === 0 ? effectNamesToMask(normalizedEffects) : mask,
     unknown: hasUnknownEffectReasons(unknownReasons),
     unknownReasons,
   };
+}
+
+function setSummaryDirectEffects(
+  summary: EffectSummaryFact,
+  directEffects: readonly EffectNameFact[],
+): void {
+  summary.directEffects = normalizeEffectNames(directEffects);
+  summary.directMask = effectNamesToMask(summary.directEffects);
+}
+
+function appendSummaryDirectEffects(
+  summary: EffectSummaryFact,
+  ...groups: readonly (readonly EffectNameFact[] | undefined)[]
+): void {
+  setSummaryDirectEffects(summary, [...summary.directEffects, ...groups.flatMap((group) => group ?? [])]);
+}
+
+function setSummaryForbidEffects(
+  summary: EffectSummaryFact,
+  forbidEffects: readonly EffectNameFact[],
+): void {
+  summary.forbidEffects = normalizeEffectNames(forbidEffects);
+  summary.forbidMask = effectNamesToMask(summary.forbidEffects);
+}
+
+function failureBoundaryToForwardTransform(
+  failureBoundary: EffectFailureBoundary,
+): { handledEffects: readonly EffectNameFact[]; rewrites: readonly EffectRewriteFact[] } {
+  if (failureBoundary === 'reject') {
+    return {
+      handledEffects: [],
+      rewrites: [{ from: 'fails', to: 'fails.rejects' }],
+    };
+  }
+  if (failureBoundary === 'capture') {
+    return {
+      handledEffects: ['fails'],
+      rewrites: [],
+    };
+  }
+  return {
+    handledEffects: [],
+    rewrites: [],
+  };
+}
+
+function inferFailureBoundary(
+  rewrites: readonly EffectRewriteFact[],
+  handledEffects: readonly EffectNameFact[],
+): EffectFailureBoundary {
+  if (handledEffects.length === 1 && handledEffects[0] === 'fails' && rewrites.length === 0) {
+    return 'capture';
+  }
+  if (
+    handledEffects.length === 0 &&
+    rewrites.length === 1 &&
+    rewrites[0]?.from === 'fails' &&
+    rewrites[0]?.to === 'fails.rejects'
+  ) {
+    return 'reject';
+  }
+  return 'preserve';
 }
 
 function setSummaryUnknownDirectReasons(
@@ -105,20 +179,42 @@ function getParameterName(parameter: ts.ParameterDeclaration, index: number): st
   return ts.isIdentifier(parameter.name) ? parameter.name.text : `<param ${index + 1}>`;
 }
 
-function resolveViaParameters(
+function createForwardedParameterFact(
+  parameterIndex: number,
+  memberPath: readonly string[],
+  rewrites: readonly EffectRewriteFact[],
+  handledEffects: readonly EffectNameFact[],
+): readonly EffectForwardedParameterFact[] {
+  const memberName = memberPath.length === 1 ? memberPath[0] : undefined;
+  return [{
+    handledEffects: normalizeEffectNames(handledEffects),
+    failureBoundary: inferFailureBoundary(rewrites, handledEffects),
+    memberName,
+    memberPath,
+    parameterIndex,
+    rewrites,
+  }];
+}
+
+function resolveForwardParameters(
   parameters: readonly ts.ParameterDeclaration[],
-  viaNames: readonly string[],
+  parsedEffects: ParsedEffectsAnnotationContract,
 ): readonly EffectForwardedParameterFact[] {
   const forwardedParameters: EffectForwardedParameterFact[] = [];
-  for (const viaName of viaNames) {
+  for (const entry of parsedEffects.forwardEntries) {
+    const [parameterName, ...memberPath] = entry.fromPath;
     const parameterIndex = parameters.findIndex((parameter) =>
-      ts.isIdentifier(parameter.name) && parameter.name.text === viaName
+      ts.isIdentifier(parameter.name) && parameter.name.text === parameterName
     );
     if (parameterIndex >= 0) {
-      forwardedParameters.push({
-        failureBoundary: 'preserve',
-        parameterIndex,
-      });
+      forwardedParameters.push(
+        ...createForwardedParameterFact(
+          parameterIndex,
+          memberPath,
+          entry.rewrites,
+          entry.handleEffects,
+        ),
+      );
     }
   }
   return forwardedParameters;
@@ -135,10 +231,11 @@ function getParameterContracts(
       continue;
     }
     const parsed = parseEffectsAnnotationContract(annotation);
-    if (typeof parsed === 'string' || parsed.forbidMask === 0) {
+    if (typeof parsed === 'string' || parsed.forbidEffects.length === 0) {
       continue;
     }
     contracts.push({
+      forbidEffects: parsed.forbidEffects,
       forbidMask: parsed.forbidMask,
       parameterIndex: index,
     });
@@ -148,7 +245,9 @@ function getParameterContracts(
 
 function emptySummary(nodeId: number): EffectSummaryFact {
   return {
+    directEffects: [],
     directMask: 0,
+    forbidEffects: [],
     forbidMask: 0,
     forwardedParameters: [],
     hasUnknownDirectEffects: false,
@@ -168,8 +267,8 @@ function createInitialSolveSummary(
   summary.parameterContracts = getParameterContracts(context, declaration.parameters);
 
   if (parsedEffects && typeof parsedEffects !== 'string') {
-    summary.forbidMask = parsedEffects.forbidMask;
-    summary.forwardedParameters = resolveViaParameters(declaration.parameters, parsedEffects.viaNames);
+    setSummaryForbidEffects(summary, parsedEffects.forbidEffects);
+    summary.forwardedParameters = resolveForwardParameters(declaration.parameters, parsedEffects);
   }
 
   return summary;
@@ -177,7 +276,9 @@ function createInitialSolveSummary(
 
 function effectSummaryEquals(left: EffectSummaryFact, right: EffectSummaryFact): boolean {
   if (
+    left.directEffects.length !== right.directEffects.length ||
     left.directMask !== right.directMask ||
+    left.forbidEffects.length !== right.forbidEffects.length ||
     left.forbidMask !== right.forbidMask ||
     left.hasUnknownDirectEffects !== right.hasUnknownDirectEffects ||
     left.nodeId !== right.nodeId ||
@@ -188,15 +289,47 @@ function effectSummaryEquals(left: EffectSummaryFact, right: EffectSummaryFact):
     return false;
   }
 
+  for (let index = 0; index < left.directEffects.length; index += 1) {
+    if (left.directEffects[index] !== right.directEffects[index]) {
+      return false;
+    }
+  }
+
+  for (let index = 0; index < left.forbidEffects.length; index += 1) {
+    if (left.forbidEffects[index] !== right.forbidEffects[index]) {
+      return false;
+    }
+  }
+
   for (let index = 0; index < left.forwardedParameters.length; index += 1) {
     const leftForwarded = left.forwardedParameters[index]!;
     const rightForwarded = right.forwardedParameters[index]!;
     if (
       leftForwarded.parameterIndex !== rightForwarded.parameterIndex ||
       leftForwarded.failureBoundary !== rightForwarded.failureBoundary ||
-      leftForwarded.memberName !== rightForwarded.memberName
+      leftForwarded.memberName !== rightForwarded.memberName ||
+      leftForwarded.memberPath.length !== rightForwarded.memberPath.length ||
+      leftForwarded.rewrites.length !== rightForwarded.rewrites.length ||
+      leftForwarded.handledEffects.length !== rightForwarded.handledEffects.length
     ) {
       return false;
+    }
+    for (let pathIndex = 0; pathIndex < leftForwarded.memberPath.length; pathIndex += 1) {
+      if (leftForwarded.memberPath[pathIndex] !== rightForwarded.memberPath[pathIndex]) {
+        return false;
+      }
+    }
+    for (let rewriteIndex = 0; rewriteIndex < leftForwarded.rewrites.length; rewriteIndex += 1) {
+      const leftRewrite = leftForwarded.rewrites[rewriteIndex]!;
+      const rightRewrite = rightForwarded.rewrites[rewriteIndex]!;
+      if (leftRewrite.from !== rightRewrite.from || leftRewrite.to !== rightRewrite.to) {
+        return false;
+      }
+    }
+    for (let handledIndex = 0; handledIndex < leftForwarded.handledEffects.length; handledIndex += 1) {
+      if (leftForwarded.handledEffects[handledIndex] !== rightForwarded.handledEffects[handledIndex]) {
+        return false;
+      }
     }
   }
 
@@ -205,9 +338,15 @@ function effectSummaryEquals(left: EffectSummaryFact, right: EffectSummaryFact):
     const rightContract = right.parameterContracts[index]!;
     if (
       leftContract.parameterIndex !== rightContract.parameterIndex ||
-      leftContract.forbidMask !== rightContract.forbidMask
+      leftContract.forbidMask !== rightContract.forbidMask ||
+      leftContract.forbidEffects.length !== rightContract.forbidEffects.length
     ) {
       return false;
+    }
+    for (let effectIndex = 0; effectIndex < leftContract.forbidEffects.length; effectIndex += 1) {
+      if (leftContract.forbidEffects[effectIndex] !== rightContract.forbidEffects[effectIndex]) {
+        return false;
+      }
     }
   }
 
@@ -235,8 +374,25 @@ function captureFailures(mask: number): number {
   return mask & ~PUBLIC_EFFECT_MASKS.fails;
 }
 
+function normalizeFailureEffectsForAsyncBoundary(
+  effects: readonly EffectNameFact[],
+): readonly EffectNameFact[] {
+  return applyEffectRewrites(effects, [{ from: 'fails', to: 'fails.rejects' }], []);
+}
+
+function captureFailureEffects(effects: readonly EffectNameFact[]): readonly EffectNameFact[] {
+  return applyEffectRewrites(effects, [], ['fails']);
+}
+
 function applyContainingCallableBoundary(mask: number, isAsyncBoundary: boolean): number {
   return isAsyncBoundary ? normalizeFailuresForAsyncBoundary(mask) : mask;
+}
+
+function applyContainingCallableBoundaryToEffects(
+  effects: readonly EffectNameFact[],
+  isAsyncBoundary: boolean,
+): readonly EffectNameFact[] {
+  return isAsyncBoundary ? normalizeFailureEffectsForAsyncBoundary(effects) : effects;
 }
 
 function applyForwardedFailureBoundary(mask: number, failureBoundary: EffectFailureBoundary): number {
@@ -249,28 +405,64 @@ function applyForwardedFailureBoundary(mask: number, failureBoundary: EffectFail
   return mask;
 }
 
+function applyForwardedTransform(
+  effects: readonly EffectNameFact[],
+  rewrites: readonly EffectRewriteFact[],
+  handledEffects: readonly EffectNameFact[],
+): readonly EffectNameFact[] {
+  return applyEffectRewrites(effects, rewrites, handledEffects);
+}
+
 function createForwardedParameterKey(
   parameterIndex: number,
-  failureBoundary: EffectFailureBoundary,
-  memberName?: string,
+  memberPath: readonly string[],
+  rewrites: readonly EffectRewriteFact[],
+  handledEffects: readonly EffectNameFact[],
 ): string {
-  return `${parameterIndex}:${failureBoundary}:${memberName ?? ''}`;
+  return `${parameterIndex}:${memberPath.join('.')}:${
+    rewrites.map((rewrite) => `${rewrite.from}->${rewrite.to}`).join(',')
+  }:${handledEffects.join(',')}`;
 }
 
 function addForwardedParameter(
   forwardedParameters: Map<string, EffectForwardedParameterFact>,
   parameterIndex: number,
-  failureBoundary: EffectFailureBoundary,
-  memberName?: string,
+  rewrites: readonly EffectRewriteFact[],
+  handledEffects: readonly EffectNameFact[],
+  memberPath: readonly string[] = [],
 ): void {
+  const memberName = memberPath.length === 1 ? memberPath[0] : undefined;
   forwardedParameters.set(
-    createForwardedParameterKey(parameterIndex, failureBoundary, memberName),
+    createForwardedParameterKey(parameterIndex, memberPath, rewrites, handledEffects),
     {
-      failureBoundary,
+      handledEffects: normalizeEffectNames(handledEffects),
+      failureBoundary: inferFailureBoundary(rewrites, handledEffects),
       memberName,
+      memberPath,
       parameterIndex,
+      rewrites,
     },
   );
+}
+
+function transformForwardedParameterFact(
+  forwardedParameter: EffectForwardedParameterFact,
+  rewrites: readonly EffectRewriteFact[],
+  handledEffects: readonly EffectNameFact[],
+): EffectForwardedParameterFact {
+  const nextRewrites = [...forwardedParameter.rewrites, ...rewrites];
+  const nextHandledEffects = normalizeEffectNames([
+    ...forwardedParameter.handledEffects,
+    ...handledEffects,
+  ]);
+  return {
+    handledEffects: nextHandledEffects,
+    failureBoundary: inferFailureBoundary(nextRewrites, nextHandledEffects),
+    memberName: forwardedParameter.memberName,
+    memberPath: forwardedParameter.memberPath,
+    parameterIndex: forwardedParameter.parameterIndex,
+    rewrites: nextRewrites,
+  };
 }
 
 function collectLocalBindingSymbolIds(
@@ -403,6 +595,7 @@ function getSummaryForSignatures(
     return undefined;
   }
 
+  let effects: readonly EffectNameFact[] = [];
   let mask = 0;
   let unknownReasons: readonly EffectUnknownReasonFact[] = [];
   for (const signature of signatures) {
@@ -415,6 +608,7 @@ function getSummaryForSignatures(
       continue;
     }
     const summary = getEffectSummaryForDeclaration(context, declaration);
+    effects = normalizeEffectNames([...effects, ...summary.directEffects]);
     mask |= summary.directMask;
     unknownReasons = mergeEffectUnknownReasons(
       unknownReasons,
@@ -423,7 +617,7 @@ function getSummaryForSignatures(
     );
   }
 
-  return createEffectComposition(mask, unknownReasons);
+  return createEffectComposition(effects, mask, unknownReasons);
 }
 
 function getSummaryForCallableExpression(
@@ -433,6 +627,7 @@ function getSummaryForCallableExpression(
   if (ts.isArrowFunction(expression) || ts.isFunctionExpression(expression)) {
     const summary = getEffectSummaryForDeclaration(context, expression);
     return createEffectComposition(
+      summary.directEffects,
       summary.directMask,
       mergeEffectUnknownReasons(
         summary.unknownDirectReasons,
@@ -446,6 +641,7 @@ function getSummaryForCallableExpression(
   const constructSignatures = context.checker.getSignaturesOfType(type, ts.SignatureKind.Construct);
   if (callSignatures.length === 0 && constructSignatures.length === 0) {
     return createEffectComposition(
+      [],
       0,
       [createEffectUnknownReason('opaqueCallableExpression')],
     );
@@ -470,6 +666,7 @@ function getSummaryForObjectLiteralMember(
       if (property.name && getObjectLiteralPropertyName(property.name) === memberName) {
         const summary = getEffectSummaryForDeclaration(context, property);
         return createEffectComposition(
+          summary.directEffects,
           summary.directMask,
           mergeEffectUnknownReasons(
             summary.unknownDirectReasons,
@@ -564,40 +761,74 @@ function getSummaryForCallableMember(
   return getSummaryForSignatures(context, [...callSignatures, ...constructSignatures]);
 }
 
+function getSummaryForCallablePath(
+  context: AnalysisContext,
+  expression: ts.Expression,
+  memberPath: readonly string[],
+): EffectComposition | undefined {
+  if (memberPath.length === 0) {
+    return getSummaryForCallableExpression(context, expression);
+  }
+  if (memberPath.length === 1) {
+    return getSummaryForCallableMember(context, expression, memberPath[0]!);
+  }
+
+  let currentType = context.checker.getTypeAtLocation(expression);
+  for (let index = 0; index < memberPath.length - 1; index += 1) {
+    const property = currentType.getProperty(memberPath[index]!);
+    if (!property) {
+      return undefined;
+    }
+    currentType = context.checker.getTypeOfSymbolAtLocation(property, expression);
+  }
+
+  const memberSymbol = currentType.getProperty(memberPath[memberPath.length - 1]!);
+  if (!memberSymbol) {
+    return undefined;
+  }
+  const memberType = context.checker.getTypeOfSymbolAtLocation(memberSymbol, expression);
+  const callSignatures = context.checker.getSignaturesOfType(memberType, ts.SignatureKind.Call);
+  const constructSignatures = context.checker.getSignaturesOfType(memberType, ts.SignatureKind.Construct);
+  return getSummaryForSignatures(context, [...callSignatures, ...constructSignatures]);
+}
+
 function summarizeForwardedArgumentInBody(
   context: AnalysisContext,
   parameters: readonly ts.ParameterDeclaration[],
   argument: ts.Expression | undefined,
   forwardedParameters: Map<string, EffectForwardedParameterFact>,
-  failureBoundary: EffectFailureBoundary,
-  memberName?: string,
+  rewrites: readonly EffectRewriteFact[],
+  handledEffects: readonly EffectNameFact[],
+  memberPath: readonly string[],
 ): EffectComposition {
   if (!argument) {
     return createEffectComposition(
+      [],
       0,
       [createEffectUnknownReason('unresolvedForwardedCallback')],
     );
   }
 
+  const memberName = memberPath.length === 1 ? memberPath[0] : undefined;
   const parameterIndex = memberName
     ? getCurrentFunctionMemberParameterIndex(context, parameters, argument, memberName)
     : getCurrentFunctionParameterIndex(context, parameters, argument);
   if (parameterIndex !== undefined) {
-    addForwardedParameter(forwardedParameters, parameterIndex, failureBoundary, memberName);
+    addForwardedParameter(forwardedParameters, parameterIndex, rewrites, handledEffects, memberPath);
     return createEffectComposition();
   }
 
-  const summary = memberName
-    ? getSummaryForCallableMember(context, argument, memberName)
-    : getSummaryForCallableExpression(context, argument);
+  const summary = getSummaryForCallablePath(context, argument, memberPath);
   if (!summary) {
     return createEffectComposition(
+      [],
       0,
       [createEffectUnknownReason('unresolvedForwardedCallback')],
     );
   }
   return createEffectComposition(
-    applyForwardedFailureBoundary(summary.mask, failureBoundary),
+    applyForwardedTransform(summary.effects, rewrites, handledEffects),
+    effectNamesToMask(applyForwardedTransform(summary.effects, rewrites, handledEffects)),
     summary.unknownReasons,
   );
 }
@@ -625,13 +856,13 @@ function buildDeclarationOnlySummary(
   summary.parameterContracts = parameterContracts;
 
   if (parsedEffects && typeof parsedEffects !== 'string') {
-    summary.forbidMask = parsedEffects.forbidMask;
-    summary.forwardedParameters = resolveViaParameters(parameters, parsedEffects.viaNames);
+    setSummaryForbidEffects(summary, parsedEffects.forbidEffects);
+    summary.forwardedParameters = resolveForwardParameters(parameters, parsedEffects);
   }
 
   if (!isCallableBodyDeclaration(declaration)) {
     if (parsedEffects && typeof parsedEffects !== 'string') {
-      summary.directMask |= parsedEffects.addMask;
+      setSummaryDirectEffects(summary, parsedEffects.addEffects);
     } else {
       setSummaryUnknownDirectReasons(
         summary,
@@ -639,7 +870,7 @@ function buildDeclarationOnlySummary(
       );
     }
     if (hasHostBoundaryAnnotation(context, declaration)) {
-      summary.directMask |= INTERNAL_EFFECT_MASKS.hostInterop;
+      appendSummaryDirectEffects(summary, ['host.ffi']);
     }
     return summary;
   }
@@ -663,7 +894,7 @@ function recomputeBodyDeclarationSummary(
   }
   const asyncBoundary = hasAsyncBoundary(declaration);
   if (asyncBoundary) {
-    summary.directMask |= INTERNAL_EFFECT_MASKS.suspend;
+    appendSummaryDirectEffects(summary, ['suspend.await']);
   }
 
   const localBindingSymbolIds = collectLocalBindingSymbolIds(context, declaration);
@@ -671,87 +902,183 @@ function recomputeBodyDeclarationSummary(
     summary.forwardedParameters.map((forwardedParameter) => [
       createForwardedParameterKey(
         forwardedParameter.parameterIndex,
-        forwardedParameter.failureBoundary,
-        forwardedParameter.memberName,
+        forwardedParameter.memberPath,
+        forwardedParameter.rewrites,
+        forwardedParameter.handledEffects,
       ),
       forwardedParameter,
     ]),
   );
 
-  const visit = (node: ts.Node): void => {
+  const mergeRegionIntoSummary = (
+    targetSummary: EffectSummaryFact,
+    targetForwardedParameters: Map<string, EffectForwardedParameterFact>,
+    regionSummary: EffectSummaryFact,
+    regionForwardedParameters: Map<string, EffectForwardedParameterFact>,
+  ): void => {
+    appendSummaryDirectEffects(targetSummary, regionSummary.directEffects);
+    appendSummaryUnknownDirectReasons(targetSummary, regionSummary.unknownDirectReasons);
+    for (const [key, forwardedParameter] of regionForwardedParameters.entries()) {
+      targetForwardedParameters.set(key, forwardedParameter);
+    }
+  };
+
+  const visit = (
+    node: ts.Node,
+    targetSummary: EffectSummaryFact,
+    targetForwardedParameters: Map<string, EffectForwardedParameterFact>,
+  ): void => {
     if (node !== body && ts.isFunctionLike(node)) {
       return;
     }
 
+    if (ts.isTryStatement(node)) {
+      const trySummary = emptySummary(targetSummary.nodeId);
+      const tryForwardedParameters = new Map<string, EffectForwardedParameterFact>();
+      visit(node.tryBlock, trySummary, tryForwardedParameters);
+
+      if (node.catchClause) {
+        setSummaryDirectEffects(trySummary, subtractEffectSet(trySummary.directEffects, ['fails']));
+        for (const [key, forwardedParameter] of tryForwardedParameters.entries()) {
+          tryForwardedParameters.set(
+            key,
+            transformForwardedParameterFact(forwardedParameter, [], ['fails']),
+          );
+        }
+      }
+
+      mergeRegionIntoSummary(targetSummary, targetForwardedParameters, trySummary, tryForwardedParameters);
+
+      if (node.catchClause?.block) {
+        visit(node.catchClause.block, targetSummary, targetForwardedParameters);
+      }
+      if (node.finallyBlock) {
+        visit(node.finallyBlock, targetSummary, targetForwardedParameters);
+      }
+      return;
+    }
+
     if (ts.isThrowStatement(node)) {
-      summary.directMask |= asyncBoundary
-        ? INTERNAL_EFFECT_MASKS.failsRejects
-        : INTERNAL_EFFECT_MASKS.failsThrows;
+      appendSummaryDirectEffects(targetSummary, [asyncBoundary ? 'fails.rejects' : 'fails.throws']);
     } else if (
       ts.isAwaitExpression(node) || ts.isYieldExpression(node) ||
       (ts.isForOfStatement(node) && node.awaitModifier)
     ) {
-      summary.directMask |= INTERNAL_EFFECT_MASKS.suspend;
+      appendSummaryDirectEffects(
+        targetSummary,
+        [ts.isYieldExpression(node) ? 'suspend.yield' : 'suspend.await'],
+      );
     } else if (ts.isCallExpression(node)) {
       if (node.expression.kind === ts.SyntaxKind.ImportKeyword) {
-        summary.directMask |= INTERNAL_EFFECT_MASKS.hostInterop | INTERNAL_EFFECT_MASKS.suspend;
+        appendSummaryDirectEffects(targetSummary, ['host.system', 'suspend.await']);
       } else {
         const directParameterIndex = getCurrentFunctionParameterIndex(context, parameters, node.expression);
         if (directParameterIndex !== undefined) {
-          addForwardedParameter(forwardedParameters, directParameterIndex, 'preserve');
+          const boundaryTransform = asyncBoundary
+            ? failureBoundaryToForwardTransform('reject')
+            : failureBoundaryToForwardTransform('preserve');
+          addForwardedParameter(
+            targetForwardedParameters,
+            directParameterIndex,
+            boundaryTransform.rewrites,
+            boundaryTransform.handledEffects,
+          );
         } else {
           const builtin = getKnownBuiltinCallBehavior(context, node);
           if (builtin) {
-            summary.directMask |= builtin.directMask;
-            appendSummaryUnknownDirectReasons(summary, builtin.unknownDirectReasons);
+            appendSummaryDirectEffects(
+              targetSummary,
+              builtin.directEffects ?? maskToStandardEffectNames(builtin.directMask),
+            );
+            appendSummaryUnknownDirectReasons(targetSummary, builtin.unknownDirectReasons);
             for (const forwardedArgument of builtin.forwardedArguments) {
               const forwarded = summarizeForwardedArgumentInBody(
                 context,
                 parameters,
                 node.arguments[forwardedArgument.argumentIndex],
-                forwardedParameters,
-                forwardedArgument.failureBoundary,
-                forwardedArgument.memberName,
+                targetForwardedParameters,
+                forwardedArgument.rewrites ??
+                  failureBoundaryToForwardTransform(forwardedArgument.failureBoundary).rewrites,
+                forwardedArgument.handledEffects ??
+                  failureBoundaryToForwardTransform(forwardedArgument.failureBoundary).handledEffects,
+                forwardedArgument.memberPath ??
+                  (forwardedArgument.memberName ? [forwardedArgument.memberName] : []),
               );
-              summary.directMask |= applyContainingCallableBoundary(forwarded.mask, asyncBoundary);
-              appendSummaryUnknownDirectReasons(summary, forwarded.unknownReasons);
+              appendSummaryDirectEffects(
+                targetSummary,
+                applyContainingCallableBoundaryToEffects(forwarded.effects, asyncBoundary),
+              );
+              appendSummaryUnknownDirectReasons(targetSummary, forwarded.unknownReasons);
             }
           } else {
-            const calleeSummary = getEffectCompositionForCallLike(context, node);
-            summary.directMask |= applyContainingCallableBoundary(calleeSummary.mask, asyncBoundary);
-            appendSummaryUnknownDirectReasons(summary, calleeSummary.unknownReasons);
+            const resolvedSignature = context.checker.getResolvedSignature(node);
+            const resolvedDeclaration = resolvedSignature?.getDeclaration();
+            const signatureSummary = getEffectSummaryForSignature(context, resolvedSignature);
+            if (shouldUseDirectSignatureSummary(context, resolvedDeclaration, signatureSummary)) {
+              appendSummaryDirectEffects(
+                targetSummary,
+                applyContainingCallableBoundaryToEffects(signatureSummary.directEffects, asyncBoundary),
+              );
+              appendSummaryUnknownDirectReasons(targetSummary, signatureSummary.unknownDirectReasons);
+              for (const forwardedParameter of signatureSummary.forwardedParameters) {
+                const forwarded = summarizeForwardedArgumentInBody(
+                  context,
+                  parameters,
+                  node.arguments[forwardedParameter.parameterIndex],
+                  targetForwardedParameters,
+                  forwardedParameter.rewrites,
+                  forwardedParameter.handledEffects,
+                  forwardedParameter.memberPath,
+                );
+                appendSummaryDirectEffects(
+                  targetSummary,
+                  applyContainingCallableBoundaryToEffects(forwarded.effects, asyncBoundary),
+                );
+                appendSummaryUnknownDirectReasons(targetSummary, forwarded.unknownReasons);
+              }
+            } else {
+              const calleeSummary = getEffectCompositionForCallLike(context, node);
+              appendSummaryDirectEffects(
+                targetSummary,
+                applyContainingCallableBoundaryToEffects(calleeSummary.effects, asyncBoundary),
+              );
+              appendSummaryUnknownDirectReasons(targetSummary, calleeSummary.unknownReasons);
+            }
           }
         }
       }
     } else if (ts.isNewExpression(node)) {
       const calleeSummary = getEffectCompositionForCallLike(context, node);
-      summary.directMask |= applyContainingCallableBoundary(calleeSummary.mask, asyncBoundary);
-      appendSummaryUnknownDirectReasons(summary, calleeSummary.unknownReasons);
+      appendSummaryDirectEffects(
+        targetSummary,
+        applyContainingCallableBoundaryToEffects(calleeSummary.effects, asyncBoundary),
+      );
+      appendSummaryUnknownDirectReasons(targetSummary, calleeSummary.unknownReasons);
     } else if (
       ts.isBinaryExpression(node) &&
       node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
       node.operatorToken.kind <= ts.SyntaxKind.LastAssignment &&
       mutationTouchesObservableState(context, node.left, localBindingSymbolIds)
     ) {
-      summary.directMask |= INTERNAL_EFFECT_MASKS.mut;
+      appendSummaryDirectEffects(targetSummary, ['mut']);
     } else if (
       (ts.isPrefixUnaryExpression(node) || ts.isPostfixUnaryExpression(node)) &&
       (node.operator === ts.SyntaxKind.PlusPlusToken || node.operator === ts.SyntaxKind.MinusMinusToken) &&
       mutationTouchesObservableState(context, node.operand, localBindingSymbolIds)
     ) {
-      summary.directMask |= INTERNAL_EFFECT_MASKS.mut;
+      appendSummaryDirectEffects(targetSummary, ['mut']);
     } else if (ts.isDeleteExpression(node)) {
-      summary.directMask |= INTERNAL_EFFECT_MASKS.mut;
+      appendSummaryDirectEffects(targetSummary, ['mut']);
     }
 
-    ts.forEachChild(node, visit);
+    ts.forEachChild(node, (child) => visit(child, targetSummary, targetForwardedParameters));
   };
-  visit(body);
+  visit(body, summary, forwardedParameters);
 
   summary.forwardedParameters = [...forwardedParameters.values()].sort((left, right) =>
     left.parameterIndex - right.parameterIndex ||
     left.failureBoundary.localeCompare(right.failureBoundary) ||
-    (left.memberName ?? '').localeCompare(right.memberName ?? '')
+    left.memberPath.join('.').localeCompare(right.memberPath.join('.'))
   );
   return summary;
 }
@@ -863,65 +1190,98 @@ export function getEffectSummaryForSignature(
   return getEffectSummaryForDeclaration(context, declaration);
 }
 
+function shouldUseDirectSignatureSummary(
+  context: AnalysisContext,
+  declaration: ts.Declaration | undefined,
+  summary: EffectSummaryFact | undefined,
+): summary is EffectSummaryFact {
+  if (!summary) {
+    return false;
+  }
+  if (!declaration || !isCallableDeclarationNode(declaration)) {
+    return true;
+  }
+  if (isCallableBodyDeclaration(declaration) || getEffectsAnnotation(context, declaration)) {
+    return true;
+  }
+  return !(
+    summary.hasUnknownDirectEffects &&
+    summary.unknownDirectReasons.some((reason) => reason.kind === 'unsummarizedDeclarationFrontier')
+  );
+}
+
 export function getEffectCompositionForCallLike(
   context: AnalysisContext,
   expression: ts.CallExpression | ts.NewExpression,
 ): EffectComposition {
-  const builtin = getKnownStdlibBehavior(context, expression) ??
-    (ts.isCallExpression(expression)
+  const resolvedSignature = context.checker.getResolvedSignature(expression);
+  const resolvedDeclaration = resolvedSignature?.getDeclaration();
+  const summary = getEffectSummaryForSignature(context, resolvedSignature);
+  const shouldTryBuiltinFallback = !summary ||
+    (
+      resolvedDeclaration &&
+      isCallableDeclarationNode(resolvedDeclaration) &&
+      !isCallableBodyDeclaration(resolvedDeclaration) &&
+      !getEffectsAnnotation(context, resolvedDeclaration) &&
+      summary.hasUnknownDirectEffects &&
+      summary.unknownDirectReasons.some((reason) => reason.kind === 'unsummarizedDeclarationFrontier')
+    );
+
+  if (shouldTryBuiltinFallback) {
+    const builtin = ts.isCallExpression(expression)
       ? getKnownBuiltinCallBehavior(context, expression)
-      : getKnownPortableBuiltinBehavior(context, expression));
-  if (builtin) {
-    let mask = builtin.directMask;
-    let unknownReasons = builtin.unknownDirectReasons ?? [];
-    for (const forwardedArgument of builtin.forwardedArguments) {
-      const forwarded = forwardedArgument.memberName
-        ? getSummaryForCallableMember(
+      : getKnownPortableBuiltinBehavior(context, expression);
+    if (builtin) {
+      let effects = builtin.directEffects ?? maskToStandardEffectNames(builtin.directMask);
+      let mask = builtin.directMask;
+      let unknownReasons = builtin.unknownDirectReasons ?? [];
+      for (const forwardedArgument of builtin.forwardedArguments) {
+        const memberPath = forwardedArgument.memberPath ??
+          (forwardedArgument.memberName ? [forwardedArgument.memberName] : []);
+        const forwarded = getSummaryForCallablePath(
           context,
           expression.arguments?.[forwardedArgument.argumentIndex]!,
-          forwardedArgument.memberName,
-        )
-        : getSummaryForCallableExpression(
-          context,
-          expression.arguments?.[forwardedArgument.argumentIndex]!,
+          memberPath,
         );
-      if (!forwarded) {
-        unknownReasons = mergeEffectUnknownReasons(
-          unknownReasons,
-          [createEffectUnknownReason('unresolvedForwardedCallback')],
+        if (!forwarded) {
+          unknownReasons = mergeEffectUnknownReasons(
+            unknownReasons,
+            [createEffectUnknownReason('unresolvedForwardedCallback')],
+          );
+          continue;
+        }
+        const transformedEffects = applyForwardedTransform(
+          forwarded.effects,
+          forwardedArgument.rewrites ??
+            failureBoundaryToForwardTransform(forwardedArgument.failureBoundary).rewrites,
+          forwardedArgument.handledEffects ??
+            failureBoundaryToForwardTransform(forwardedArgument.failureBoundary).handledEffects,
         );
-        continue;
+        effects = normalizeEffectNames([...effects, ...transformedEffects]);
+        mask |= effectNamesToMask(transformedEffects);
+        unknownReasons = mergeEffectUnknownReasons(unknownReasons, forwarded.unknownReasons);
       }
-      mask |= applyForwardedFailureBoundary(forwarded.mask, forwardedArgument.failureBoundary);
-      unknownReasons = mergeEffectUnknownReasons(unknownReasons, forwarded.unknownReasons);
+      return createEffectComposition(effects, mask, unknownReasons);
     }
-    return createEffectComposition(mask, unknownReasons);
   }
 
-  const summary = getEffectSummaryForSignature(
-    context,
-    context.checker.getResolvedSignature(expression),
-  );
   if (!summary) {
     return createEffectComposition(
+      [],
       0,
       [createEffectUnknownReason('unsummarizedDeclarationFrontier')],
     );
   }
 
+  let effects = summary.directEffects;
   let mask = summary.directMask;
   let unknownReasons = summary.unknownDirectReasons;
   for (const forwardedParameter of summary.forwardedParameters) {
-    const forwarded = forwardedParameter.memberName
-      ? getSummaryForCallableMember(
-        context,
-        expression.arguments?.[forwardedParameter.parameterIndex]!,
-        forwardedParameter.memberName,
-      )
-      : getSummaryForCallableExpression(
-        context,
-        expression.arguments?.[forwardedParameter.parameterIndex]!,
-      );
+    const forwarded = getSummaryForCallablePath(
+      context,
+      expression.arguments?.[forwardedParameter.parameterIndex]!,
+      forwardedParameter.memberPath,
+    );
     if (!forwarded) {
       unknownReasons = mergeEffectUnknownReasons(
         unknownReasons,
@@ -929,11 +1289,17 @@ export function getEffectCompositionForCallLike(
       );
       continue;
     }
-    mask |= applyForwardedFailureBoundary(forwarded.mask, forwardedParameter.failureBoundary);
+    const transformedEffects = applyForwardedTransform(
+      forwarded.effects,
+      forwardedParameter.rewrites,
+      forwardedParameter.handledEffects,
+    );
+    effects = normalizeEffectNames([...effects, ...transformedEffects]);
+    mask |= effectNamesToMask(transformedEffects);
     unknownReasons = mergeEffectUnknownReasons(unknownReasons, forwarded.unknownReasons);
   }
 
-  return createEffectComposition(mask, unknownReasons);
+  return createEffectComposition(effects, mask, unknownReasons);
 }
 
 export function getCallableContractSummary(
@@ -948,17 +1314,18 @@ export function callableExpressionMayViolateForbidMask(
   context: AnalysisContext,
   expression: ts.Expression,
   forbidMask: number,
+  forbidEffects: readonly EffectNameFact[] = maskToStandardEffectNames(forbidMask),
 ): boolean {
   const summary = getSummaryForCallableExpression(context, expression);
   if (!summary) {
     return true;
   }
-  return summary.unknown || (summary.mask & forbidMask) !== 0;
+  return summary.unknown || effectSetsOverlap(summary.effects, forbidEffects);
 }
 
 export function declarationMayViolateOwnForbid(summary: EffectSummaryFact): boolean {
-  return summary.forbidMask !== 0 &&
-    (summary.hasUnknownDirectEffects || (summary.directMask & summary.forbidMask) !== 0);
+  return summary.forbidEffects.length !== 0 &&
+    (summary.hasUnknownDirectEffects || effectSetsOverlap(summary.directEffects, summary.forbidEffects));
 }
 
 export function isEffectFreeForCompiler(mask: number, unknown: boolean): boolean {

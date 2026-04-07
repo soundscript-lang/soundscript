@@ -1404,6 +1404,7 @@ interface ReadonlyArray<T> {
      * @param callbackfn A function that accepts up to three arguments. forEach calls the callbackfn function one time for each element in the array.
      * @param thisArg An object to which the this keyword can refer in the callbackfn function. If thisArg is omitted, undefined is used as the this value.
      */
+    // #[effects(add: [], forward: [callbackfn])]
     forEach(
         callbackfn: (
             value: T,
@@ -1417,6 +1418,7 @@ interface ReadonlyArray<T> {
      * @param callbackfn A function that accepts up to three arguments. The map method calls the callbackfn function one time for each element in the array.
      * @param thisArg An object to which the this keyword can refer in the callbackfn function. If thisArg is omitted, undefined is used as the this value.
      */
+    // #[effects(add: [], forward: [callbackfn])]
     map<U>(
         callbackfn: (
             value: T,
@@ -1707,6 +1709,7 @@ interface Array<T> {
      * @param callbackfn A function that accepts up to three arguments. forEach calls the callbackfn function one time for each element in the array.
      * @param thisArg An object to which the this keyword can refer in the callbackfn function. If thisArg is omitted, undefined is used as the this value.
      */
+    // #[effects(add: [], forward: [callbackfn])]
     forEach(
         callbackfn: (
             value: T,
@@ -1720,6 +1723,7 @@ interface Array<T> {
      * @param callbackfn A function that accepts up to three arguments. The map method calls the callbackfn function one time for each element in the array.
      * @param thisArg An object to which the this keyword can refer in the callbackfn function. If thisArg is omitted, undefined is used as the this value.
      */
+    // #[effects(add: [], forward: [callbackfn])]
     map<U>(
         callbackfn: (
             value: T,
@@ -1876,6 +1880,7 @@ interface Promise<T> extends PromiseLike<T> {
      * @param onrejected The callback to execute when the Promise is rejected.
      * @returns A Promise for the completion of which ever callback is executed.
      */
+    // #[effects(add: [suspend.await], forward: [{ from: onfulfilled, rewrite: [{ from: fails, to: fails.rejects }] }, { from: onrejected, rewrite: [{ from: fails, to: fails.rejects }] }])]
     then<TResult1 = T, TResult2 = never>(onfulfilled?: ((value: T) => TResult1 | Promise<TResult1>) | undefined | null, onrejected?: ((reason: unknown) => TResult2 | Promise<TResult2>) | undefined | null): Promise<TResult1 | TResult2>;
 
     /**
@@ -1883,6 +1888,7 @@ interface Promise<T> extends PromiseLike<T> {
      * @param onrejected The callback to execute when the Promise is rejected.
      * @returns A Promise for the completion of the callback.
      */
+    // #[effects(add: [suspend.await], forward: [{ from: onrejected, rewrite: [{ from: fails, to: fails.rejects }] }])]
     catch<TResult = never>(onrejected?: ((reason: unknown) => TResult | Promise<TResult>) | undefined | null): Promise<T | TResult>;
 }
 

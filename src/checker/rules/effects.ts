@@ -1,13 +1,12 @@
 import ts from 'typescript';
 
 import { SOUND_DIAGNOSTIC_CODES, SOUND_DIAGNOSTIC_MESSAGES } from '../engine/diagnostic_codes.ts';
-import type { AnalysisContext, EffectUnknownReasonFact, PublicEffectName } from '../engine/types.ts';
+import type { AnalysisContext, EffectNameFact, EffectUnknownReasonFact, PublicEffectName } from '../engine/types.ts';
 import { getNodeDiagnosticRange, type SoundDiagnostic } from '../diagnostics.ts';
 import {
   callableExpressionMayViolateForbidMask,
   classifyCallableEffectContractMismatch,
   declarationMayViolateOwnForbid,
-  effectMaskToPublicNames,
   getCallableContractSummary,
   getEffectCompositionForCallLike,
   getEffectContractName,
@@ -21,25 +20,25 @@ type EffectViolationContext =
   | {
     kind: 'call';
     primarySymbol: string;
-    forbiddenEffects: readonly PublicEffectName[];
+    forbiddenEffects: readonly EffectNameFact[];
     unknownReasons?: readonly EffectUnknownReasonFact[];
     relation: 'callee_forbid' | 'parameter_forbid';
   }
   | {
     kind: 'declaration';
     primarySymbol: string;
-    forbiddenEffects: readonly PublicEffectName[];
+    forbiddenEffects: readonly EffectNameFact[];
     unknownReasons?: readonly EffectUnknownReasonFact[];
   }
   | {
     kind: 'relation';
     primarySymbol?: string;
-    forbiddenEffects: readonly PublicEffectName[];
+    forbiddenEffects: readonly EffectNameFact[];
     unknownReasons?: readonly EffectUnknownReasonFact[];
     rule: 'callable_effect_covariance' | 'callable_effect_parameter_contravariance';
   };
 
-function formatPublicEffectList(effects: readonly PublicEffectName[]): string {
+function formatPublicEffectList(effects: readonly (PublicEffectName | EffectNameFact)[]): string {
   return effects.map((effect) => `\`${effect}\``).join(', ');
 }
 
@@ -211,7 +210,7 @@ export function runEffectRules(context: AnalysisContext): SoundDiagnostic[] {
             createEffectContractViolationDiagnostic(node, {
               kind: 'declaration',
               primarySymbol: getEffectContractName(node),
-              forbiddenEffects: effectMaskToPublicNames(summary.forbidMask),
+              forbiddenEffects: summary.forbidEffects,
               unknownReasons: summary.hasUnknownDirectEffects ? summary.unknownDirectReasons : undefined,
             }),
           );
@@ -223,7 +222,15 @@ export function runEffectRules(context: AnalysisContext): SoundDiagnostic[] {
         if (summary) {
           for (const contract of summary.parameterContracts) {
             const argument = node.arguments?.[contract.parameterIndex];
-            if (!argument || !callableExpressionMayViolateForbidMask(context, argument, contract.forbidMask)) {
+            if (
+              !argument ||
+              !callableExpressionMayViolateForbidMask(
+                context,
+                argument,
+                contract.forbidMask,
+                contract.forbidEffects,
+              )
+            ) {
               continue;
             }
             const declaration = context.checker.getResolvedSignature(node)?.getDeclaration();
@@ -234,22 +241,30 @@ export function runEffectRules(context: AnalysisContext): SoundDiagnostic[] {
               createEffectContractViolationDiagnostic(node, {
                 kind: 'call',
                 primarySymbol: parameterName,
-                forbiddenEffects: effectMaskToPublicNames(contract.forbidMask),
+                forbiddenEffects: contract.forbidEffects,
                 relation: 'parameter_forbid',
               }),
             );
           }
 
-          if (summary.forbidMask !== 0) {
+          if (summary.forbidEffects.length !== 0) {
             const composedEffects = getEffectCompositionForCallLike(context, node);
-            if (composedEffects.unknown || (composedEffects.mask & summary.forbidMask) !== 0) {
+            if (
+              composedEffects.unknown ||
+              composedEffects.effects.some((effect) =>
+                summary.forbidEffects.some((forbiddenEffect) =>
+                  effect === forbiddenEffect || effect.startsWith(`${forbiddenEffect}.`) ||
+                  forbiddenEffect.startsWith(`${effect}.`)
+                )
+              )
+            ) {
               diagnostics.push(
                 createEffectContractViolationDiagnostic(node, {
                   kind: 'call',
                   primarySymbol: getEffectContractName(
                     context.checker.getResolvedSignature(node)?.getDeclaration() ?? node.expression,
                   ),
-                  forbiddenEffects: effectMaskToPublicNames(summary.forbidMask),
+                  forbiddenEffects: summary.forbidEffects,
                   unknownReasons: composedEffects.unknown ? composedEffects.unknownReasons : undefined,
                   relation: 'callee_forbid',
                 }),

@@ -1,9 +1,6 @@
 import ts from 'typescript';
 
-import type {
-  AnalysisContext,
-  EffectFailureBoundary,
-} from '../engine/types.ts';
+import type { AnalysisContext } from '../engine/types.ts';
 import { INTERNAL_EFFECT_MASKS } from './masks.ts';
 import type { BuiltinCallBehavior } from './model.ts';
 import { createEffectUnknownReason } from './unknown.ts';
@@ -11,26 +8,6 @@ import { createEffectUnknownReason } from './unknown.ts';
 type PromiseLikeChecker = ts.TypeChecker & {
   getPromisedTypeOfPromise(type: ts.Type): ts.Type | undefined;
 };
-
-const ASYNC_TASK_CONSTRUCTOR_FUNCTIONS = new Set([
-  'fail',
-  'flatMap',
-  'fromPromise',
-  'fromResult',
-  'map',
-  'mapError',
-  'parallel',
-  'race',
-  'recover',
-  'succeed',
-  'tap',
-  'tapError',
-  'taskApplicative',
-  'taskAsyncMonad',
-  'taskFunctor',
-  'taskMonad',
-  'timeout',
-]);
 
 export const SYNCHRONOUS_ARRAY_CALLBACK_PARAMETER_BINDINGS = new Map<
   string,
@@ -81,26 +58,6 @@ function isArrayLikeType(context: AnalysisContext, type: ts.Type): boolean {
 
 function normalizeFileName(fileName: string): string {
   return fileName.replaceAll('\\', '/');
-}
-
-function isInstalledSoundStdlibModuleFile(fileName: string, moduleName: string): boolean {
-  const normalizedFileName = normalizeFileName(fileName);
-  return normalizedFileName.includes('/node_modules/@soundscript/soundscript/') &&
-    normalizedFileName.endsWith(`/${moduleName}.d.ts`);
-}
-
-function isLocalSoundStdlibModuleFile(fileName: string, moduleName: string): boolean {
-  const normalizedFileName = normalizeFileName(fileName);
-  return normalizedFileName.includes('/src/stdlib/') &&
-    (
-      normalizedFileName.endsWith(`/${moduleName}.d.ts`) ||
-      normalizedFileName.endsWith(`/${moduleName}.ts`)
-    );
-}
-
-function isTrustedSoundStdlibModuleFile(fileName: string, moduleName: string): boolean {
-  return isInstalledSoundStdlibModuleFile(fileName, moduleName) ||
-    isLocalSoundStdlibModuleFile(fileName, moduleName);
 }
 
 function isBundledDomDeclarationFile(fileName: string): boolean {
@@ -1483,130 +1440,10 @@ export function getKnownPortableBuiltinBehavior(
   return undefined;
 }
 
-export function getKnownStdlibBehavior(
-  context: AnalysisContext,
-  expression: ts.CallExpression | ts.NewExpression,
-): BuiltinCallBehavior | undefined {
-  const signature = context.checker.getResolvedSignature(expression);
-  const declaration = signature?.getDeclaration();
-  const declarationName = getDeclarationName(declaration);
-  const ownerName = declaration ? getDeclarationOwnerName(declaration) : undefined;
-  const sourceFileName = declaration?.getSourceFile().fileName;
-  if (
-    ts.isCallExpression(expression) &&
-    declarationName &&
-    ASYNC_TASK_CONSTRUCTOR_FUNCTIONS.has(declarationName) &&
-    declaration &&
-    isTrustedSoundStdlibModuleFile(declaration.getSourceFile().fileName, 'async')
-  ) {
-    return {
-      directMask: 0,
-      forwardedArguments: [],
-    };
-  }
-
-  if (sourceFileName && isTrustedSoundStdlibModuleFile(sourceFileName, 'fetch')) {
-    const fetchObjectBehavior = getKnownFetchObjectFamilyBehavior(ownerName, declarationName, expression);
-    if (fetchObjectBehavior) {
-      return fetchObjectBehavior;
-    }
-
-    if (declarationName === 'fetch') {
-      return {
-        directMask: INTERNAL_EFFECT_MASKS.hostIo | INTERNAL_EFFECT_MASKS.suspend,
-        forwardedArguments: [],
-      };
-    }
-  }
-
-  if (
-    sourceFileName &&
-    (isTrustedSoundStdlibModuleFile(sourceFileName, 'text') ||
-      isTrustedSoundStdlibModuleFile(sourceFileName, 'url'))
-  ) {
-    const urlAndTextBehavior = getKnownUrlAndTextBehavior(ownerName, declarationName, expression);
-    if (urlAndTextBehavior) {
-      return urlAndTextBehavior;
-    }
-  }
-
-  if (
-    ts.isCallExpression(expression) &&
-    declarationName === 'resultOf' &&
-    sourceFileName &&
-    isTrustedSoundStdlibModuleFile(sourceFileName, 'result')
-  ) {
-    const isAsyncResultOf = signature ? isPromiseType(context, signature.getReturnType()) : false;
-    const forwardedArguments: {
-      argumentIndex: number;
-      failureBoundary: EffectFailureBoundary;
-    }[] = [];
-    if (expression.arguments.length > 0 && isCallableExpression(context, expression.arguments[0])) {
-      forwardedArguments.push({ argumentIndex: 0, failureBoundary: 'capture' });
-    }
-    if (expression.arguments.length > 1 && isCallableExpression(context, expression.arguments[1])) {
-      forwardedArguments.push({
-        argumentIndex: 1,
-        failureBoundary: isAsyncResultOf ? 'reject' : 'preserve',
-      });
-    }
-    return {
-      directMask: isAsyncResultOf ? INTERNAL_EFFECT_MASKS.suspend : 0,
-      forwardedArguments,
-    };
-  }
-
-  if (
-    declarationName &&
-    sourceFileName &&
-    isTrustedSoundStdlibModuleFile(sourceFileName, 'result') &&
-    (declarationName === 'ok' || declarationName === 'err' || declarationName === 'some' ||
-      declarationName === 'none')
-  ) {
-    return {
-      directMask: 0,
-      forwardedArguments: [],
-    };
-  }
-
-  if (sourceFileName && isTrustedSoundStdlibModuleFile(sourceFileName, 'json')) {
-    const jsonBehavior = getKnownStdlibJsonBehavior(declarationName);
-    if (jsonBehavior) {
-      return jsonBehavior;
-    }
-  }
-
-  if (sourceFileName && isTrustedSoundStdlibModuleFile(sourceFileName, 'debug')) {
-    const debugBehavior = getKnownStdlibDebugBehavior(declarationName);
-    if (debugBehavior) {
-      return debugBehavior;
-    }
-  }
-
-  if (
-    declarationName === 'getRandomValues' &&
-    ownerName === 'Crypto' &&
-    sourceFileName &&
-    isTrustedSoundStdlibModuleFile(sourceFileName, 'random')
-  ) {
-    return {
-      directMask: INTERNAL_EFFECT_MASKS.hostRandom | INTERNAL_EFFECT_MASKS.mut,
-      forwardedArguments: [],
-    };
-  }
-
-  return undefined;
-}
-
 export function getKnownBuiltinCallBehavior(
   context: AnalysisContext,
   expression: ts.CallExpression,
 ): BuiltinCallBehavior | undefined {
-  const stdlib = getKnownStdlibBehavior(context, expression);
-  if (stdlib) {
-    return stdlib;
-  }
-
   const portableBuiltin = getKnownPortableBuiltinBehavior(context, expression);
   if (portableBuiltin) {
     return portableBuiltin;
@@ -1635,7 +1472,7 @@ export function getKnownBuiltinCallBehavior(
   if (memberName === 'then') {
     const forwardedArguments: {
       argumentIndex: number;
-      failureBoundary: EffectFailureBoundary;
+      failureBoundary: 'preserve' | 'reject' | 'capture';
     }[] = [];
     if (!isOmittedPromiseHandlerArgument(expression.arguments[0])) {
       forwardedArguments.push({ argumentIndex: 0, failureBoundary: 'reject' });

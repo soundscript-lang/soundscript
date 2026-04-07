@@ -7,13 +7,18 @@ export interface TextDecoderOptions {
   ignoreBOM?: boolean;
 }
 
-export declare class TextEncoder {
-  constructor();
+export interface TextEncoder {
+  // #[effects(add: [])]
   encode(input?: string): Uint8Array<ArrayBufferLike>;
 }
 
-export declare class TextDecoder {
-  constructor(label?: string, options?: TextDecoderOptions);
+export const TextEncoder: {
+  // #[effects(add: [])]
+  new(): TextEncoder;
+};
+
+export interface TextDecoder {
+  // #[effects(add: [fails.throws])]
   decode(
     input?: ArrayBuffer | DataView<ArrayBufferLike> | Uint8Array<ArrayBufferLike> | null,
     options?: TextDecodeOptions,
@@ -22,3 +27,8 @@ export declare class TextDecoder {
   readonly fatal: boolean;
   readonly ignoreBOM: boolean;
 }
+
+export const TextDecoder: {
+  // #[effects(add: [fails.throws])]
+  new(label?: string, options?: TextDecoderOptions): TextDecoder;
+};

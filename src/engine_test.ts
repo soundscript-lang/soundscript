@@ -46,25 +46,25 @@ function loadProgram(projectPath: string): ts.Program {
 function normalizeForwardedParameters(
   forwardedParameters: readonly {
     failureBoundary: string;
+    handledEffects?: readonly string[];
     memberName?: string;
     parameterIndex: number;
   }[],
 ): readonly {
   failureBoundary: string;
+  handledEffects?: readonly string[];
   memberName?: string;
   parameterIndex: number;
 }[] {
   return forwardedParameters.map((forwardedParameter) =>
-    forwardedParameter.memberName === undefined
-      ? {
-        failureBoundary: forwardedParameter.failureBoundary,
-        parameterIndex: forwardedParameter.parameterIndex,
-      }
-      : {
-        failureBoundary: forwardedParameter.failureBoundary,
-        memberName: forwardedParameter.memberName,
-        parameterIndex: forwardedParameter.parameterIndex,
-      }
+    ({
+      failureBoundary: forwardedParameter.failureBoundary,
+      ...(forwardedParameter.handledEffects && forwardedParameter.handledEffects.length > 0
+        ? { handledEffects: [...forwardedParameter.handledEffects] }
+        : {}),
+      ...(forwardedParameter.memberName === undefined ? {} : { memberName: forwardedParameter.memberName }),
+      parameterIndex: forwardedParameter.parameterIndex,
+    })
   );
 }
 
@@ -456,6 +456,84 @@ Deno.test('createAnalysisContext attaches effects annotations to function-valued
         name: 'effects',
       },
     ],
+  );
+});
+
+Deno.test('createAnalysisContext parses dotted effects and forward transforms on declarations', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+          },
+          include: ['src/**/*.ts', 'src/**/*.d.ts'],
+        },
+        null,
+        2,
+      ),
+    },
+    {
+      path: 'src/runtime.d.ts',
+      contents: [
+        '// #[effects(add: [suspend.await, host.node.fs, host.io], forward: [{ from: callback, rewrite: [{ from: fails, to: fails.rejects }] }])]',
+        'export declare function wrapAsync<T>(callback: () => T): Promise<T>;',
+        '',
+        '// #[effects(add: [], forward: [{ from: decoder.decode, handle: [fails] }])]',
+        'export declare function parseWith<T, E>(',
+        '  text: string,',
+        '  decoder: { decode(value: unknown): T | E },',
+        '): T | E;',
+        '',
+      ].join('\n'),
+    },
+  ]);
+  const projectPath = join(tempDirectory, 'tsconfig.json');
+  const program = loadProgram(projectPath);
+  const context = createAnalysisContext({ program, workingDirectory: tempDirectory });
+  const sourceFile = context.getSourceFiles().find((file) => file.fileName.endsWith('/src/runtime.d.ts'));
+
+  assertExists(sourceFile);
+
+  const declarationsByName = new Map(
+    sourceFile.statements
+      .filter((statement): statement is ts.FunctionDeclaration => ts.isFunctionDeclaration(statement))
+      .filter((declaration): declaration is ts.FunctionDeclaration & { name: ts.Identifier } =>
+        declaration.name !== undefined
+      )
+      .map((declaration) => [declaration.name.text, declaration]),
+  );
+
+  const wrapAsync = declarationsByName.get('wrapAsync');
+  const parseWith = declarationsByName.get('parseWith');
+
+  assertExists(wrapAsync);
+  assertExists(parseWith);
+
+  const wrapAsyncSummary = getEffectSummaryForDeclaration(context, wrapAsync);
+  assertEquals(wrapAsyncSummary.directEffects, ['host.io', 'host.node.fs', 'suspend.await']);
+  assertEquals(
+    normalizeForwardedParameters(wrapAsyncSummary.forwardedParameters),
+    [{
+      failureBoundary: 'reject',
+      parameterIndex: 0,
+    }],
+  );
+
+  const parseWithSummary = getEffectSummaryForDeclaration(context, parseWith);
+  assertEquals(parseWithSummary.directEffects, []);
+  assertEquals(
+    normalizeForwardedParameters(parseWithSummary.forwardedParameters),
+    [{
+      failureBoundary: 'capture',
+      handledEffects: ['fails'],
+      memberName: 'decode',
+      parameterIndex: 1,
+    }],
   );
 });
 
@@ -3345,6 +3423,7 @@ Deno.test('createAnalysisContext records structured effect unknown reasons', asy
       contents: [
         'import type { Decoder } from "./decode";',
         '',
+        '// #[effects(add: [], forward: [decoder.decode])]',
         'export declare function parseAndDecode<T, E>(text: string, decoder: Decoder<T, E>): T | E;',
         '',
       ].join('\n'),
@@ -3949,9 +4028,13 @@ Deno.test('createAnalysisContext summarizes result, json, and debug stdlib helpe
     {
       path: 'src/stdlib/result.d.ts',
       contents: [
+        '// #[effects(add: [suspend.await], forward: [{ from: fn, handle: [fails] }])]',
         'export declare function resultOf<T>(fn: () => Promise<T>): Promise<T | Error>;',
+        '// #[effects(add: [suspend.await], forward: [{ from: fn, handle: [fails] }, { from: mapError, rewrite: [{ from: fails, to: fails.rejects }] }])]',
         'export declare function resultOf<T, E>(fn: () => Promise<T>, mapError: (error: Error) => E): Promise<T | E>;',
+        '// #[effects(forward: [{ from: fn, handle: [fails] }])]',
         'export declare function resultOf<T>(fn: () => T): T | Error;',
+        '// #[effects(forward: [{ from: fn, handle: [fails] }, { from: mapError }])]',
         'export declare function resultOf<T, E>(fn: () => T, mapError: (error: Error) => E): T | E;',
         '',
       ].join('\n'),
@@ -3962,13 +4045,21 @@ Deno.test('createAnalysisContext summarizes result, json, and debug stdlib helpe
         'import type { Decoder } from "./decode";',
         'import type { Encoder } from "./encode";',
         '',
+        '// #[effects(add: [])]',
         'export declare function parseJson(text: string): unknown;',
+        '// #[effects(add: [])]',
         'export declare function stringifyJson(value: unknown): unknown;',
+        '// #[effects(add: [])]',
         'export declare function parseJsonLike(text: string): unknown;',
+        '// #[effects(add: [])]',
         'export declare function stringifyJsonLike(value: unknown): unknown;',
+        '// #[effects(add: [], forward: [decoder.decode])]',
         'export declare function parseAndDecode<T, E>(text: string, decoder: Decoder<T, E>): T | E;',
+        '// #[effects(add: [], forward: [encoder.encode])]',
         'export declare function encodeAndStringify<T, E>(value: T, encoder: Encoder<T, unknown, E>): unknown;',
+        '// #[effects(add: [], forward: [decoder.decode])]',
         'export declare function decodeJson<T, E>(text: string, decoder: Decoder<T, E>): T | E;',
+        '// #[effects(add: [], forward: [encoder.encode])]',
         'export declare function encodeJson<T, E>(value: T, encoder: Encoder<T, unknown, E>): unknown;',
         '',
       ].join('\n'),
@@ -3994,7 +4085,9 @@ Deno.test('createAnalysisContext summarizes result, json, and debug stdlib helpe
     {
       path: 'src/stdlib/debug.d.ts',
       contents: [
+        '// #[effects(add: [fails.throws])]',
         'export declare function assert(condition: unknown, message?: string): asserts condition;',
+        '// #[effects(add: [host.ffi])]',
         'export declare function log<T>(value: T): T;',
         '',
       ].join('\n'),
