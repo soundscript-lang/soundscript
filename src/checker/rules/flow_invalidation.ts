@@ -87,6 +87,36 @@ interface ReceiverBinding {
   readonly path: NormalizedPath | undefined;
 }
 
+function getConstructedClassLike(
+  declaration: ts.Declaration,
+): ts.ClassLikeDeclarationBase | undefined {
+  if (ts.isClassLike(declaration)) {
+    return declaration;
+  }
+
+  return ts.isClassLike(declaration.parent) ? declaration.parent : undefined;
+}
+
+function getResolvedConstructorBodyDeclaration(
+  declaration: ts.Declaration,
+): ts.ConstructorDeclaration | undefined {
+  if (ts.isConstructorDeclaration(declaration)) {
+    return declaration;
+  }
+
+  return getConstructedClassLike(declaration)?.members.find(ts.isConstructorDeclaration);
+}
+
+function getResolvedConstructorDeclaration(
+  context: AnalysisContext,
+  expression: ts.NewExpression,
+): ts.Declaration | undefined {
+  const declaration = context.checker.getResolvedSignature(expression)?.declaration;
+  return declaration
+    ? getResolvedConstructorBodyDeclaration(declaration) ?? declaration
+    : undefined;
+}
+
 function unwrapTransparentExpression(expression: ts.Expression): ts.Expression {
   while (
     ts.isParenthesizedExpression(expression) ||
@@ -174,16 +204,20 @@ function getConstructorAssignedReceiverMemberPaths(
   declaration: ts.Declaration,
   bindings: FunctionBodyBindings,
 ): ReadonlyMap<string, NormalizedPath> | undefined {
-  if (!ts.isConstructorDeclaration(declaration) || !declaration.body) {
+  const constructorDeclaration = getResolvedConstructorBodyDeclaration(declaration);
+  if (!constructorDeclaration?.body) {
     return undefined;
   }
 
   const memberPaths = new Map<string, NormalizedPath>();
-  recordFunctionBodyConstBindings(context, declaration.body, bindings);
+  recordFunctionBodyConstBindings(context, constructorDeclaration.body, bindings);
 
   for (
-    const candidate of getFlowInvalidationStructure(context, declaration.body, 'functionBody')
-      .candidates
+    const candidate of getFlowInvalidationStructure(
+      context,
+      constructorDeclaration.body,
+      'functionBody',
+    ).candidates
   ) {
     if (
       candidate.kind !== 'assignment' ||
@@ -279,7 +313,7 @@ function getStateConstructedReceiverBinding(
     return path ? { path, memberPaths: undefined } : undefined;
   }
 
-  const constructorDeclaration = context.checker.getResolvedSignature(expression)?.declaration;
+  const constructorDeclaration = getResolvedConstructorDeclaration(context, expression);
   return constructorDeclaration
     ? getConstructorReceiverBindingFromState(
       context,
@@ -334,7 +368,7 @@ function getFunctionConstructedReceiverBinding(
     return path ? { path, memberPaths: undefined } : undefined;
   }
 
-  const constructorDeclaration = context.checker.getResolvedSignature(expression)?.declaration;
+  const constructorDeclaration = getResolvedConstructorDeclaration(context, expression);
   return constructorDeclaration
     ? getConstructorReceiverBindingFromBindings(
       context,
@@ -1406,6 +1440,32 @@ function functionBodyCallAffectsNarrow(
     );
 }
 
+function functionBodyNewAffectsNarrow(
+  context: AnalysisContext,
+  node: ts.NewExpression,
+  bindings: FunctionBodyBindings,
+  narrowPath: NormalizedPath,
+  state: AnalysisState,
+  activeDeclarations: Set<ts.FunctionLikeDeclaration>,
+): boolean {
+  const constructorDeclaration = getResolvedConstructorDeclaration(context, node);
+  if (!constructorDeclaration || !isFunctionLikeWithBody(constructorDeclaration)) {
+    return false;
+  }
+
+  return functionLikeAffectsNarrow(
+    context,
+    constructorDeclaration,
+    node.arguments ?? [],
+    narrowPath,
+    state,
+    false,
+    undefined,
+    getNestedFunctionBindings(context, node.arguments ?? [], constructorDeclaration, bindings),
+    activeDeclarations,
+  );
+}
+
 function functionLikeAffectsNarrow(
   context: AnalysisContext,
   declaration: ts.FunctionLikeDeclaration,
@@ -1479,6 +1539,20 @@ function functionLikeAffectsNarrow(
       }
 
       if (
+        candidate.kind === 'new' &&
+        functionBodyNewAffectsNarrow(
+          context,
+          candidate.node,
+          bindings,
+          narrowPath,
+          state,
+          activeDeclarations,
+        )
+      ) {
+        return true;
+      }
+
+      if (
         allowCapturedRead &&
         getMutableBindingSymbol(narrowPath) &&
         candidate.kind === 'access'
@@ -1524,6 +1598,11 @@ interface StateCallNarrowingOptions {
   readonly includeCollectionCallbacks: boolean;
   readonly opaqueArgumentAffectsNarrow: (argument: ts.Expression) => boolean;
   readonly respectEffectPreservation: boolean;
+}
+
+interface NewExpressionNarrowingOptions {
+  readonly allowCapturedRead: boolean;
+  readonly includeInstanceMethods: boolean;
 }
 
 function stateCallAffectsNarrow(
@@ -1630,8 +1709,8 @@ function classInstanceMethodsAffectNarrow(
   state: AnalysisState,
   activeDeclarations: Set<ts.FunctionLikeDeclaration> = new Set(),
 ): boolean {
-  const classLike = constructorDeclaration.parent;
-  if (!ts.isClassLike(classLike)) {
+  const classLike = getConstructedClassLike(constructorDeclaration);
+  if (!classLike) {
     return false;
   }
 
@@ -1671,6 +1750,44 @@ function classInstanceMethodsAffectNarrow(
   return hasInstanceMethod &&
     argumentsList.some((argument) =>
       expressionPathEscapesNarrow(context, argument, narrowPath, state)
+    );
+}
+
+function newExpressionAffectsNarrow(
+  context: AnalysisContext,
+  node: ts.NewExpression,
+  narrowPath: NormalizedPath,
+  state: AnalysisState,
+  options: NewExpressionNarrowingOptions,
+): boolean {
+  const constructorDeclaration = getResolvedConstructorDeclaration(context, node);
+  if (!constructorDeclaration) {
+    return false;
+  }
+
+  if (
+    isFunctionLikeWithBody(constructorDeclaration) &&
+    functionLikeAffectsNarrow(
+      context,
+      constructorDeclaration,
+      node.arguments ?? [],
+      narrowPath,
+      state,
+      options.allowCapturedRead,
+      undefined,
+      undefined,
+    )
+  ) {
+    return true;
+  }
+
+  return options.includeInstanceMethods &&
+    classInstanceMethodsAffectNarrow(
+      context,
+      constructorDeclaration,
+      node.arguments ?? [],
+      narrowPath,
+      state,
     );
 }
 
@@ -1790,36 +1907,20 @@ function escapingExpressionAffectsNarrow(
       }
     }
 
-    if (candidate.kind === 'new') {
-      const constructorDeclaration = context.checker.getResolvedSignature(candidate.node)
-        ?.declaration;
-      if (
-        constructorDeclaration &&
-        (
-          (isFunctionLikeWithBody(constructorDeclaration) &&
-            functionLikeAffectsNarrow(
-              context,
-              constructorDeclaration,
-              candidate.node.arguments ?? [],
-              narrowPath,
-              state,
-              false,
-              undefined,
-              undefined,
-              activeDeclarations,
-            )) ||
-          classInstanceMethodsAffectNarrow(
-            context,
-            constructorDeclaration,
-            candidate.node.arguments ?? [],
-            narrowPath,
-            state,
-            activeDeclarations,
-          )
-        )
-      ) {
-        return true;
-      }
+    if (
+      candidate.kind === 'new' &&
+      newExpressionAffectsNarrow(
+        context,
+        candidate.node,
+        narrowPath,
+        state,
+        {
+          allowCapturedRead: false,
+          includeInstanceMethods: true,
+        },
+      )
+    ) {
+      return true;
     }
   }
 
@@ -2118,23 +2219,20 @@ export function statementAffectsNarrow(
       }
     }
 
-    if (candidate.kind === 'new') {
-      const constructorDeclaration = context.checker.getResolvedSignature(candidate.node)
-        ?.declaration;
-      if (
-        constructorDeclaration &&
-        isFunctionLikeWithBody(constructorDeclaration) &&
-        functionLikeAffectsNarrow(
-          context,
-          constructorDeclaration,
-          candidate.node.arguments ?? [],
-          narrowPath,
-          state,
-          true,
-        )
-      ) {
-        return candidate.node;
-      }
+    if (
+      candidate.kind === 'new' &&
+      newExpressionAffectsNarrow(
+        context,
+        candidate.node,
+        narrowPath,
+        state,
+        {
+          allowCapturedRead: true,
+          includeInstanceMethods: false,
+        },
+      )
+    ) {
+      return candidate.node;
     }
   }
 

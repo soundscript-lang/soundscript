@@ -8928,6 +8928,52 @@ Deno.test('analyzeProject preserves narrowing across local callback parameter ca
   assertEquals(result.diagnostics, []);
 });
 
+Deno.test('analyzeProject invalidates narrowing across local helper constructors that mutate', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/index.sts': [
+      'class ClearBox {',
+      '  constructor(box: { value: string | null }) {',
+      '    box.value = null;',
+      '  }',
+      '}',
+      '',
+      'function clear(box: { value: string | null }): void {',
+      '  new ClearBox(box);',
+      '}',
+      '',
+      'function use(box: { value: string | null }): string {',
+      '  if (box.value !== null) {',
+      '    clear(box);',
+      '    const value: string = box.value;',
+      '    return value;',
+      '  }',
+      '  return "";',
+      '}',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1020']);
+});
+
 Deno.test('analyzeProject preserves narrowing across deferred host schedulers', async () => {
   const tempDirectory = await createTempProject({
     'tsconfig.json': JSON.stringify(
