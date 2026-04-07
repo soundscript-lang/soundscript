@@ -2,7 +2,10 @@ import { assertEquals, assertExists, assertStrictEquals } from '@std/assert';
 import { dirname, join } from '@std/path';
 import ts from 'typescript';
 
-import { getEffectSummaryForDeclaration, INTERNAL_EFFECT_MASKS } from './checker/effects.ts';
+import {
+  getEffectSummaryForDeclaration,
+  INTERNAL_EFFECT_MASKS,
+} from './checker/effects.ts';
 import { createAnalysisContext } from './checker/engine/context.ts';
 
 interface TempProjectFile {
@@ -1987,6 +1990,222 @@ Deno.test('createAnalysisContext reaches a fixpoint for recursive effect summari
   assertEquals(getEffectSummaryForDeclaration(context, rightRecursive).hasUnknownDirectEffects, false);
   assertEquals(getEffectSummaryForDeclaration(context, asyncLeft).hasUnknownDirectEffects, false);
   assertEquals(getEffectSummaryForDeclaration(context, asyncRight).hasUnknownDirectEffects, false);
+});
+
+Deno.test('createAnalysisContext keeps effect summaries stable across repeated queries and query order', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+          },
+          include: ['src/**/*.ts'],
+        },
+        null,
+        2,
+      ),
+    },
+    {
+      path: 'src/index.ts',
+      contents: [
+        'declare const failure: Error;',
+        '',
+        'export function leftRecursive(flag: boolean): void {',
+        '  if (!flag) {',
+        '    rightRecursive(false);',
+        '    return;',
+        '  }',
+        '  rightRecursive(false);',
+        '}',
+        '',
+        'export function rightRecursive(flag: boolean): void {',
+        '  if (!flag) {',
+        '    throw failure;',
+        '  }',
+        '  leftRecursive(false);',
+        '}',
+        '',
+      ].join('\n'),
+    },
+  ]);
+  const projectPath = join(tempDirectory, 'tsconfig.json');
+  const program = loadProgram(projectPath);
+
+  const loadNamedDeclarations = (context: ReturnType<typeof createAnalysisContext>) => {
+    const sourceFile = context.getSourceFiles().find((file) => file.fileName.endsWith('/src/index.ts'));
+    assertExists(sourceFile);
+    const declarationsByName = new Map(
+      sourceFile.statements
+        .filter(ts.isFunctionDeclaration)
+        .filter((declaration): declaration is ts.FunctionDeclaration & { name: ts.Identifier } =>
+          declaration.name !== undefined
+        )
+        .map((declaration) => [declaration.name.text, declaration]),
+    );
+    return {
+      leftRecursive: declarationsByName.get('leftRecursive'),
+      rightRecursive: declarationsByName.get('rightRecursive'),
+    };
+  };
+
+  const serializeSummary = (summary: ReturnType<typeof getEffectSummaryForDeclaration>) => ({
+    directMask: summary.directMask,
+    forbidMask: summary.forbidMask,
+    forwardedParameters: normalizeForwardedParameters(summary.forwardedParameters),
+    hasUnknownDirectEffects: summary.hasUnknownDirectEffects,
+    parameterContracts: [...summary.parameterContracts],
+    unknownDirectReasons: summary.unknownDirectReasons.map((reason) => `${reason.kind}:${reason.detail ?? ''}`),
+  });
+
+  const leftFirstContext = createAnalysisContext({ program, workingDirectory: tempDirectory });
+  const leftFirstDeclarations = loadNamedDeclarations(leftFirstContext);
+  assertExists(leftFirstDeclarations.leftRecursive);
+  assertExists(leftFirstDeclarations.rightRecursive);
+  const leftFirstSummary = getEffectSummaryForDeclaration(
+    leftFirstContext,
+    leftFirstDeclarations.leftRecursive,
+  );
+  const leftRepeatSummary = getEffectSummaryForDeclaration(
+    leftFirstContext,
+    leftFirstDeclarations.leftRecursive,
+  );
+  const rightAfterLeftSummary = getEffectSummaryForDeclaration(
+    leftFirstContext,
+    leftFirstDeclarations.rightRecursive,
+  );
+
+  assertStrictEquals(leftRepeatSummary, leftFirstSummary);
+
+  const rightFirstContext = createAnalysisContext({ program, workingDirectory: tempDirectory });
+  const rightFirstDeclarations = loadNamedDeclarations(rightFirstContext);
+  assertExists(rightFirstDeclarations.leftRecursive);
+  assertExists(rightFirstDeclarations.rightRecursive);
+  const rightFirstSummary = getEffectSummaryForDeclaration(
+    rightFirstContext,
+    rightFirstDeclarations.rightRecursive,
+  );
+  const leftAfterRightSummary = getEffectSummaryForDeclaration(
+    rightFirstContext,
+    rightFirstDeclarations.leftRecursive,
+  );
+
+  assertEquals(serializeSummary(leftFirstSummary), serializeSummary(leftAfterRightSummary));
+  assertEquals(serializeSummary(rightAfterLeftSummary), serializeSummary(rightFirstSummary));
+});
+
+Deno.test('createAnalysisContext records structured effect unknown reasons', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+          },
+          include: ['src/**/*.ts'],
+        },
+        null,
+        2,
+      ),
+    },
+    {
+      path: 'src/stdlib/json.d.ts',
+      contents: [
+        'import type { Decoder } from "./decode";',
+        '',
+        'export declare function parseAndDecode<T, E>(text: string, decoder: Decoder<T, E>): T | E;',
+        '',
+      ].join('\n'),
+    },
+    {
+      path: 'src/stdlib/decode.d.ts',
+      contents: [
+        'export type Decoder<T, E> = {',
+        '  decode(value: unknown): T | E;',
+        '};',
+        '',
+      ].join('\n'),
+    },
+    {
+      path: 'src/index.ts',
+      contents: [
+        'import { parseAndDecode } from "./stdlib/json";',
+        '',
+        'declare function opaqueFrontier(): void;',
+        '',
+        '// #[effects(add: [], via: [callback])]',
+        'declare function forward<T>(callback: () => T): T;',
+        '',
+        'export function usesOpaqueFrontier(): void {',
+        '  opaqueFrontier();',
+        '}',
+        '',
+        'export function usesOpaqueCallback(): unknown {',
+        '  const unknownCallback: any = 0;',
+        '  return forward(unknownCallback);',
+        '}',
+        '',
+        'export function unresolvedDecoder(text: string): unknown {',
+        '  return parseAndDecode(text, {} as any);',
+        '}',
+        '',
+        'export function usesDispatch(target: EventTarget, event: Event): boolean {',
+        '  return target.dispatchEvent(event);',
+        '}',
+        '',
+      ].join('\n'),
+    },
+  ]);
+  const projectPath = join(tempDirectory, 'tsconfig.json');
+  const program = loadProgram(projectPath);
+  const context = createAnalysisContext({ program, workingDirectory: tempDirectory });
+  const sourceFile = context.getSourceFiles().find((file) => file.fileName.endsWith('/src/index.ts'));
+
+  assertExists(sourceFile);
+
+  const declarationsByName = new Map(
+    sourceFile.statements
+      .filter(ts.isFunctionDeclaration)
+      .filter((declaration): declaration is ts.FunctionDeclaration & { name: ts.Identifier } =>
+        declaration.name !== undefined
+      )
+      .map((declaration) => [declaration.name.text, declaration]),
+  );
+
+  const usesOpaqueFrontier = declarationsByName.get('usesOpaqueFrontier');
+  const usesOpaqueCallback = declarationsByName.get('usesOpaqueCallback');
+  const unresolvedDecoder = declarationsByName.get('unresolvedDecoder');
+  const usesDispatch = declarationsByName.get('usesDispatch');
+
+  assertExists(usesOpaqueFrontier);
+  assertExists(usesOpaqueCallback);
+  assertExists(unresolvedDecoder);
+  assertExists(usesDispatch);
+
+  assertEquals(
+    getEffectSummaryForDeclaration(context, usesOpaqueFrontier).unknownDirectReasons.map((reason) => reason.kind),
+    ['unsummarizedDeclarationFrontier'],
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, usesOpaqueCallback).unknownDirectReasons.map((reason) => reason.kind),
+    ['opaqueCallableExpression'],
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, unresolvedDecoder).unknownDirectReasons.map((reason) => reason.kind),
+    ['unresolvedForwardedCallback'],
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, usesDispatch).unknownDirectReasons.map((reason) => reason.kind),
+    ['builtinUnknownDirectEffect'],
+  );
 });
 
 Deno.test('createAnalysisContext summarizes browser storage and navigation builtins precisely', async () => {

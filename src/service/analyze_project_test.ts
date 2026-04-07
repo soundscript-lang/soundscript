@@ -6116,6 +6116,70 @@ Deno.test('analyzeProject checks callable assignability against callback forbid 
   assertEquals(result.diagnostics[0]?.metadata?.rule, 'callable_effect_parameter_contravariance');
 });
 
+Deno.test('analyzeProject reports the same forbidden effect set for direct and relation callback contract violations', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/index.sts': [
+      '// #[extern]',
+      'declare function runChecked(',
+      '  // #[effects(forbid: [fails])]',
+      '  callback: () => void,',
+      '): void;',
+      '',
+      'interface NeedsPureCallback {',
+      '  (',
+      '    // #[effects(forbid: [fails])]',
+      '    callback: () => void,',
+      '  ): void;',
+      '}',
+      '',
+      '// #[extern]',
+      'declare const needsPure: NeedsPureCallback;',
+      '',
+      'function bad(): void {',
+      '  throw new Error("boom");',
+      '}',
+      '',
+      'function main(): void {',
+      '  runChecked(bad);',
+      '}',
+      '',
+      'const general: (callback: () => void) => void = needsPure;',
+      'void general;',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1040', 'SOUND1019']);
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.metadata?.rule), [
+    'effect_contract_violation',
+    'callable_effect_parameter_contravariance',
+  ]);
+  assertEquals(
+    result.diagnostics.map((diagnostic) =>
+      diagnostic.metadata?.evidence?.find((entry) => entry.label === 'forbiddenEffects')?.value
+    ),
+    ['fails', 'fails'],
+  );
+});
+
 Deno.test('analyzeProject explains invalid variance contracts with concrete contract guidance', async () => {
   const tempDirectory = await createTempProject({
     'tsconfig.json': JSON.stringify(
@@ -8356,6 +8420,66 @@ Deno.test('analyzeProject preserves narrowing across declaration-only calls prov
       '  }',
       '  return "";',
       '}',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics, []);
+});
+
+Deno.test('analyzeProject preserves narrowing across shared collection callback metadata paths', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/index.sts': [
+      'function useArray(values: readonly number[], box: { value: string | null }): string {',
+      '  if (box.value !== null) {',
+      '    values.forEach((_value, _index, array) => {',
+      '      void array.length;',
+      '    });',
+      '    const value: string = box.value;',
+      '    return value;',
+      '  }',
+      '  return "";',
+      '}',
+      '',
+      'function useSet(values: ReadonlySet<number>, box: { value: string | null }): string {',
+      '  if (box.value !== null) {',
+      '    values.forEach((_value, _again, set) => {',
+      '      void set.size;',
+      '    });',
+      '    const value: string = box.value;',
+      '    return value;',
+      '  }',
+      '  return "";',
+      '}',
+      '',
+      'function useMap(values: ReadonlyMap<string, number>, box: { value: string | null }): string {',
+      '  if (box.value !== null) {',
+      '    values.forEach((_value, _key, map) => {',
+      '      void map.size;',
+      '    });',
+      '    const value: string = box.value;',
+      '    return value;',
+      '  }',
+      '  return "";',
+      '}',      
       '',
     ].join('\n'),
   });

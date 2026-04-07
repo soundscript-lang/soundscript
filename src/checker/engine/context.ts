@@ -113,8 +113,18 @@ export function createAnalysisContext(options: CreateAnalysisContextOptions): An
           compute,
         );
       },
+      peekEffectSummary(node: ts.Node) {
+        return factStore.get(
+          'effectSummary',
+          `node:${context.getNodeId(node)}`,
+        ) as import('./types.ts').EffectSummaryFact | undefined;
+      },
       getEffectSummary(node: ts.Node, compute) {
         return factStore.getOrCompute('effectSummary', `node:${context.getNodeId(node)}`, compute);
+      },
+      setEffectSummary(node: ts.Node, fact) {
+        factStore.set('effectSummary', `node:${context.getNodeId(node)}`, fact);
+        return fact;
       },
       getFlowBranchStructure(node: ts.Statement, compute) {
         return factStore.getOrCompute(

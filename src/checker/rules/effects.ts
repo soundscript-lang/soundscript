@@ -5,6 +5,7 @@ import type { AnalysisContext, PublicEffectName } from '../engine/types.ts';
 import { getNodeDiagnosticRange, type SoundDiagnostic } from '../diagnostics.ts';
 import {
   callableExpressionMayViolateForbidMask,
+  classifyCallableEffectContractMismatch,
   declarationMayViolateOwnForbid,
   effectMaskToPublicNames,
   getCallableContractSummary,
@@ -112,49 +113,25 @@ function classifyCallableRelationViolation(
       for (const sourceSignature of sourceSignatures) {
         const sourceSummary = getEffectSummaryForSignature(context, sourceSignature);
         const targetSummary = getEffectSummaryForSignature(context, targetSignature);
-        const targetForbidMask = targetSummary?.forbidMask ?? 0;
-        if (targetForbidMask !== 0 &&
-          (!sourceSummary ||
-            sourceSummary.hasUnknownDirectEffects ||
-            (sourceSummary.directMask & targetForbidMask) !== 0)
-        ) {
-          firstViolation ??= {
-            kind: 'relation',
-            forbiddenEffects: effectMaskToPublicNames(targetForbidMask),
-            rule: 'callable_effect_covariance',
-          };
-          continue;
-        }
-
-        const sourceParameterContracts = new Map(
-          (sourceSummary?.parameterContracts ?? []).map((contract) => [contract.parameterIndex, contract]),
+        const mismatch = classifyCallableEffectContractMismatch(
+          sourceSummary,
+          targetSummary,
+          sourceSignature,
+          targetSignature,
         );
-        const targetParameterContracts = new Map(
-          (targetSummary?.parameterContracts ?? []).map((contract) => [contract.parameterIndex, contract]),
-        );
-        let parameterViolation: EffectViolationContext | undefined;
-        const parameterCount = Math.max(
-          sourceSignature.getParameters().length,
-          targetSignature.getParameters().length,
-        );
-        for (let index = 0; index < parameterCount; index += 1) {
-          const sourceForbidMask = sourceParameterContracts.get(index)?.forbidMask ?? 0;
-          const targetForbidMask = targetParameterContracts.get(index)?.forbidMask ?? 0;
-          if ((sourceForbidMask & ~targetForbidMask) === 0) {
-            continue;
-          }
-          parameterViolation = {
-            kind: 'relation',
-            forbiddenEffects: effectMaskToPublicNames(sourceForbidMask & ~targetForbidMask),
-            primarySymbol: targetSignature.getParameters()[index]?.getName() ??
-              sourceSignature.getParameters()[index]?.getName(),
-            rule: 'callable_effect_parameter_contravariance',
-          };
-          break;
-        }
-
-        if (parameterViolation) {
-          firstViolation ??= parameterViolation;
+        if (mismatch) {
+          firstViolation ??= mismatch.kind === 'outer'
+            ? {
+              kind: 'relation',
+              forbiddenEffects: mismatch.forbiddenEffects,
+              rule: 'callable_effect_covariance',
+            }
+            : {
+              kind: 'relation',
+              forbiddenEffects: mismatch.forbiddenEffects,
+              primarySymbol: mismatch.parameterName,
+              rule: 'callable_effect_parameter_contravariance',
+            };
           continue;
         }
 

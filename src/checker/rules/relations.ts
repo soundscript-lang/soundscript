@@ -4,7 +4,10 @@ import type { ParsedAnnotationArgument } from '../../annotation_syntax.ts';
 import { SOUND_DIAGNOSTIC_CODES, SOUND_DIAGNOSTIC_MESSAGES } from '../engine/diagnostic_codes.ts';
 import type { AnalysisContext, ExportedNonOrdinaryFamily, ExportSummary } from '../engine/types.ts';
 import { getNodeDiagnosticRange, type SoundDiagnostic } from '../diagnostics.ts';
-import { effectMaskToPublicNames, getEffectSummaryForSignature } from '../effects.ts';
+import {
+  classifyCallableEffectContractMismatch,
+  getEffectSummaryForSignature,
+} from '../effects.ts';
 import {
   collectExportedSymbolsBySourceFile,
   getKnownRecoveredNonOrdinaryFamily,
@@ -382,45 +385,23 @@ function classifyUnsoundCallableEffectContractRelation(
 ): RelationMismatch | undefined {
   const sourceSummary = getEffectSummaryForSignature(context, sourceSignature);
   const targetSummary = getEffectSummaryForSignature(context, targetSignature);
-  const targetForbidMask = targetSummary?.forbidMask ?? 0;
-  if (targetForbidMask !== 0) {
-    if (!sourceSummary || sourceSummary.hasUnknownDirectEffects || (sourceSummary.directMask & targetForbidMask) !== 0) {
-      return createCallableEffectContractMismatch(
-        context,
-        sourceType,
-        targetType,
-        effectMaskToPublicNames(targetForbidMask),
-        'outer',
-      );
-    }
-  }
-
-  const sourceParameterContracts = new Map(
-    (sourceSummary?.parameterContracts ?? []).map((contract) => [contract.parameterIndex, contract]),
+  const mismatch = classifyCallableEffectContractMismatch(
+    sourceSummary,
+    targetSummary,
+    sourceSignature,
+    targetSignature,
   );
-  const targetParameterContracts = new Map(
-    (targetSummary?.parameterContracts ?? []).map((contract) => [contract.parameterIndex, contract]),
-  );
-  const parameterCount = Math.max(sourceSignature.getParameters().length, targetSignature.getParameters().length);
-  for (let index = 0; index < parameterCount; index += 1) {
-    const sourceForbidMask = sourceParameterContracts.get(index)?.forbidMask ?? 0;
-    const targetForbidMask = targetParameterContracts.get(index)?.forbidMask ?? 0;
-    if ((sourceForbidMask & ~targetForbidMask) === 0) {
-      continue;
-    }
-    const parameterName = targetSignature.getParameters()[index]?.getName() ??
-      sourceSignature.getParameters()[index]?.getName();
-    return createCallableEffectContractMismatch(
-      context,
-      sourceType,
-      targetType,
-      effectMaskToPublicNames(sourceForbidMask & ~targetForbidMask),
-      'parameter',
-      parameterName,
-    );
+  if (!mismatch) {
+    return undefined;
   }
-
-  return undefined;
+  return createCallableEffectContractMismatch(
+    context,
+    sourceType,
+    targetType,
+    mismatch.forbiddenEffects,
+    mismatch.kind,
+    mismatch.parameterName,
+  );
 }
 
 function createDiagnostic(node: ts.Node, details?: RelationDiagnosticDetails): SoundDiagnostic {

@@ -77,6 +77,17 @@ export interface EffectParameterContractFact {
 
 export type EffectFailureBoundary = 'preserve' | 'reject' | 'capture';
 
+export type EffectUnknownReasonKind =
+  | 'builtinUnknownDirectEffect'
+  | 'opaqueCallableExpression'
+  | 'unresolvedForwardedCallback'
+  | 'unsummarizedDeclarationFrontier';
+
+export interface EffectUnknownReasonFact {
+  detail?: string;
+  kind: EffectUnknownReasonKind;
+}
+
 export interface EffectForwardedParameterFact {
   failureBoundary: EffectFailureBoundary;
   memberName?: string;
@@ -89,6 +100,7 @@ export interface EffectSummaryFact {
   forwardedParameters: readonly EffectForwardedParameterFact[];
   hasUnknownDirectEffects: boolean;
   nodeId: number;
+  unknownDirectReasons: readonly EffectUnknownReasonFact[];
   parameterContracts: readonly EffectParameterContractFact[];
 }
 
@@ -401,7 +413,9 @@ export interface AnalysisFactQueries {
     target: ts.Node | ts.Symbol,
     compute: () => AliasRelationshipFact,
   ): AliasRelationshipFact;
+  peekEffectSummary(node: ts.Node): EffectSummaryFact | undefined;
   getEffectSummary(node: ts.Node, compute: () => EffectSummaryFact): EffectSummaryFact;
+  setEffectSummary(node: ts.Node, fact: EffectSummaryFact): EffectSummaryFact;
   getFlowBranchStructure(
     node: ts.Statement,
     compute: () => FlowBranchStructureFact,
