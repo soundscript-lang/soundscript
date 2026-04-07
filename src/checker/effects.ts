@@ -874,7 +874,34 @@ function getKnownDomMutationAndEventBehavior(
     };
   }
 
-  if (ownerName === 'Node' && memberName === 'appendChild') {
+  if (ownerName === 'Element' && memberName === 'removeAttribute') {
+    return {
+      directMask: INTERNAL_EFFECT_MASKS.hostDom | INTERNAL_EFFECT_MASKS.mut,
+      forwardedArguments: [],
+    };
+  }
+
+  if (
+    ownerName === 'Node' &&
+    (
+      memberName === 'appendChild' || memberName === 'removeChild' ||
+      memberName === 'replaceChild' || memberName === 'insertBefore'
+    )
+  ) {
+    return {
+      directMask: INTERNAL_EFFECT_MASKS.hostDom | INTERNAL_EFFECT_MASKS.mut,
+      forwardedArguments: [],
+    };
+  }
+
+  if (ownerName === 'ParentNode' && (memberName === 'append' || memberName === 'prepend')) {
+    return {
+      directMask: INTERNAL_EFFECT_MASKS.hostDom | INTERNAL_EFFECT_MASKS.mut,
+      forwardedArguments: [],
+    };
+  }
+
+  if (ownerName === 'ChildNode' && (memberName === 'before' || memberName === 'after')) {
     return {
       directMask: INTERNAL_EFFECT_MASKS.hostDom | INTERNAL_EFFECT_MASKS.mut,
       forwardedArguments: [],
@@ -1199,6 +1226,52 @@ function getKnownPortableBuiltinBehavior(
     ) {
       return {
         directMask: INTERNAL_EFFECT_MASKS.hostIo | INTERNAL_EFFECT_MASKS.suspend,
+        forwardedArguments: [],
+      };
+    }
+
+    if (ownerName === 'Storage') {
+      if (memberName === 'getItem' || memberName === 'key') {
+        return {
+          directMask: INTERNAL_EFFECT_MASKS.hostDom,
+          forwardedArguments: [],
+        };
+      }
+
+      if (memberName === 'setItem' || memberName === 'removeItem' || memberName === 'clear') {
+        return {
+          directMask: INTERNAL_EFFECT_MASKS.hostDom | INTERNAL_EFFECT_MASKS.mut,
+          forwardedArguments: [],
+        };
+      }
+    }
+
+    if (ownerName === 'History') {
+      if (memberName === 'pushState' || memberName === 'replaceState') {
+        return {
+          directMask: INTERNAL_EFFECT_MASKS.hostDom | INTERNAL_EFFECT_MASKS.mut,
+          forwardedArguments: [],
+        };
+      }
+
+      if (memberName === 'back' || memberName === 'forward' || memberName === 'go') {
+        return {
+          directMask: INTERNAL_EFFECT_MASKS.hostDom,
+          forwardedArguments: [],
+        };
+      }
+    }
+
+    if (ownerName === 'Location' && (memberName === 'assign' || memberName === 'reload' || memberName === 'replace')) {
+      return {
+        directMask: INTERNAL_EFFECT_MASKS.hostDom,
+        forwardedArguments: [],
+      };
+    }
+
+    if (ownerName === 'Navigator' && memberName === 'sendBeacon') {
+      return {
+        directMask: INTERNAL_EFFECT_MASKS.hostIo,
         forwardedArguments: [],
       };
     }

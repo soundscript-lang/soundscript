@@ -1230,6 +1230,38 @@ Deno.test('createAnalysisContext summarizes DOM mutation and dispatch builtins p
         '  return parent.appendChild(child);',
         '}',
         '',
+        'export function removeDomAttribute(element: Element): void {',
+        '  element.removeAttribute("data-id");',
+        '}',
+        '',
+        'export function removeDomChild(parent: Element, child: Element): Element {',
+        '  return parent.removeChild(child);',
+        '}',
+        '',
+        'export function replaceDomChild(parent: Element, child: Element, nextChild: Element): Element {',
+        '  return parent.replaceChild(nextChild, child);',
+        '}',
+        '',
+        'export function insertDomChild(parent: Element, child: Element, nextChild: Element | null): Element {',
+        '  return parent.insertBefore(child, nextChild);',
+        '}',
+        '',
+        'export function appendDomNodes(element: Element, child: Element): void {',
+        '  element.append("prefix", child);',
+        '}',
+        '',
+        'export function prependDomNodes(element: Element, child: Element): void {',
+        '  element.prepend(child, "suffix");',
+        '}',
+        '',
+        'export function placeNodeBefore(child: Element, sibling: Element): void {',
+        '  child.before("prefix", sibling);',
+        '}',
+        '',
+        'export function placeNodeAfter(child: Element, sibling: Element): void {',
+        '  child.after(sibling, "suffix");',
+        '}',
+        '',
       ].join('\n'),
     },
   ]);
@@ -1255,6 +1287,14 @@ Deno.test('createAnalysisContext summarizes DOM mutation and dispatch builtins p
   const createDomElement = declarationsByName.get('createDomElement');
   const setDomAttribute = declarationsByName.get('setDomAttribute');
   const appendDomChild = declarationsByName.get('appendDomChild');
+  const removeDomAttribute = declarationsByName.get('removeDomAttribute');
+  const removeDomChild = declarationsByName.get('removeDomChild');
+  const replaceDomChild = declarationsByName.get('replaceDomChild');
+  const insertDomChild = declarationsByName.get('insertDomChild');
+  const appendDomNodes = declarationsByName.get('appendDomNodes');
+  const prependDomNodes = declarationsByName.get('prependDomNodes');
+  const placeNodeBefore = declarationsByName.get('placeNodeBefore');
+  const placeNodeAfter = declarationsByName.get('placeNodeAfter');
 
   assertExists(buildEvent);
   assertExists(buildTarget);
@@ -1262,6 +1302,14 @@ Deno.test('createAnalysisContext summarizes DOM mutation and dispatch builtins p
   assertExists(createDomElement);
   assertExists(setDomAttribute);
   assertExists(appendDomChild);
+  assertExists(removeDomAttribute);
+  assertExists(removeDomChild);
+  assertExists(replaceDomChild);
+  assertExists(insertDomChild);
+  assertExists(appendDomNodes);
+  assertExists(prependDomNodes);
+  assertExists(placeNodeBefore);
+  assertExists(placeNodeAfter);
 
   assertEquals(getEffectSummaryForDeclaration(context, buildEvent).directMask, 0);
   assertEquals(getEffectSummaryForDeclaration(context, buildTarget).directMask, 0);
@@ -1282,12 +1330,185 @@ Deno.test('createAnalysisContext summarizes DOM mutation and dispatch builtins p
     getEffectSummaryForDeclaration(context, appendDomChild).directMask,
     INTERNAL_EFFECT_MASKS.hostDom | INTERNAL_EFFECT_MASKS.mut,
   );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, removeDomAttribute).directMask,
+    INTERNAL_EFFECT_MASKS.hostDom | INTERNAL_EFFECT_MASKS.mut,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, removeDomChild).directMask,
+    INTERNAL_EFFECT_MASKS.hostDom | INTERNAL_EFFECT_MASKS.mut,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, replaceDomChild).directMask,
+    INTERNAL_EFFECT_MASKS.hostDom | INTERNAL_EFFECT_MASKS.mut,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, insertDomChild).directMask,
+    INTERNAL_EFFECT_MASKS.hostDom | INTERNAL_EFFECT_MASKS.mut,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, appendDomNodes).directMask,
+    INTERNAL_EFFECT_MASKS.hostDom | INTERNAL_EFFECT_MASKS.mut,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, prependDomNodes).directMask,
+    INTERNAL_EFFECT_MASKS.hostDom | INTERNAL_EFFECT_MASKS.mut,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, placeNodeBefore).directMask,
+    INTERNAL_EFFECT_MASKS.hostDom | INTERNAL_EFFECT_MASKS.mut,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, placeNodeAfter).directMask,
+    INTERNAL_EFFECT_MASKS.hostDom | INTERNAL_EFFECT_MASKS.mut,
+  );
 
   assertEquals(getEffectSummaryForDeclaration(context, buildEvent).hasUnknownDirectEffects, false);
   assertEquals(getEffectSummaryForDeclaration(context, buildTarget).hasUnknownDirectEffects, false);
   assertEquals(getEffectSummaryForDeclaration(context, createDomElement).hasUnknownDirectEffects, false);
   assertEquals(getEffectSummaryForDeclaration(context, setDomAttribute).hasUnknownDirectEffects, false);
   assertEquals(getEffectSummaryForDeclaration(context, appendDomChild).hasUnknownDirectEffects, false);
+  assertEquals(getEffectSummaryForDeclaration(context, removeDomAttribute).hasUnknownDirectEffects, false);
+  assertEquals(getEffectSummaryForDeclaration(context, removeDomChild).hasUnknownDirectEffects, false);
+  assertEquals(getEffectSummaryForDeclaration(context, replaceDomChild).hasUnknownDirectEffects, false);
+  assertEquals(getEffectSummaryForDeclaration(context, insertDomChild).hasUnknownDirectEffects, false);
+  assertEquals(getEffectSummaryForDeclaration(context, appendDomNodes).hasUnknownDirectEffects, false);
+  assertEquals(getEffectSummaryForDeclaration(context, prependDomNodes).hasUnknownDirectEffects, false);
+  assertEquals(getEffectSummaryForDeclaration(context, placeNodeBefore).hasUnknownDirectEffects, false);
+  assertEquals(getEffectSummaryForDeclaration(context, placeNodeAfter).hasUnknownDirectEffects, false);
+});
+
+Deno.test('createAnalysisContext summarizes browser storage and navigation builtins precisely', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+          },
+          include: ['src/**/*.ts'],
+        },
+        null,
+        2,
+      ),
+    },
+    {
+      path: 'src/index.ts',
+      contents: [
+        'export function readStoredValue(): string | null {',
+        '  return localStorage.getItem("key");',
+        '}',
+        '',
+        'export function storeValue(): void {',
+        '  localStorage.setItem("key", "value");',
+        '}',
+        '',
+        'export function clearStoredValue(): void {',
+        '  sessionStorage.clear();',
+        '}',
+        '',
+        'export function pushHistoryState(url: string): void {',
+        '  history.pushState(null, "", url);',
+        '}',
+        '',
+        'export function navigateHistory(): void {',
+        '  history.back();',
+        '}',
+        '',
+        'export function assignLocation(url: string): void {',
+        '  location.assign(url);',
+        '}',
+        '',
+        'export function reloadLocation(): void {',
+        '  location.reload();',
+        '}',
+        '',
+        'export function sendBeaconNow(url: string): boolean {',
+        '  return navigator.sendBeacon(url, "ok");',
+        '}',
+        '',
+      ].join('\n'),
+    },
+  ]);
+  const projectPath = join(tempDirectory, 'tsconfig.json');
+  const program = loadProgram(projectPath);
+  const context = createAnalysisContext({ program, workingDirectory: tempDirectory });
+  const sourceFile = context.getSourceFiles().find((file) => file.fileName.endsWith('/src/index.ts'));
+
+  assertExists(sourceFile);
+
+  const declarationsByName = new Map(
+    sourceFile.statements
+      .filter(ts.isFunctionDeclaration)
+      .filter((declaration): declaration is ts.FunctionDeclaration & { name: ts.Identifier } =>
+        declaration.name !== undefined
+      )
+      .map((declaration) => [declaration.name.text, declaration]),
+  );
+
+  const readStoredValue = declarationsByName.get('readStoredValue');
+  const storeValue = declarationsByName.get('storeValue');
+  const clearStoredValue = declarationsByName.get('clearStoredValue');
+  const pushHistoryState = declarationsByName.get('pushHistoryState');
+  const navigateHistory = declarationsByName.get('navigateHistory');
+  const assignLocation = declarationsByName.get('assignLocation');
+  const reloadLocation = declarationsByName.get('reloadLocation');
+  const sendBeaconNow = declarationsByName.get('sendBeaconNow');
+
+  assertExists(readStoredValue);
+  assertExists(storeValue);
+  assertExists(clearStoredValue);
+  assertExists(pushHistoryState);
+  assertExists(navigateHistory);
+  assertExists(assignLocation);
+  assertExists(reloadLocation);
+  assertExists(sendBeaconNow);
+
+  assertEquals(
+    getEffectSummaryForDeclaration(context, readStoredValue).directMask,
+    INTERNAL_EFFECT_MASKS.hostDom,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, storeValue).directMask,
+    INTERNAL_EFFECT_MASKS.hostDom | INTERNAL_EFFECT_MASKS.mut,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, clearStoredValue).directMask,
+    INTERNAL_EFFECT_MASKS.hostDom | INTERNAL_EFFECT_MASKS.mut,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, pushHistoryState).directMask,
+    INTERNAL_EFFECT_MASKS.hostDom | INTERNAL_EFFECT_MASKS.mut,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, navigateHistory).directMask,
+    INTERNAL_EFFECT_MASKS.hostDom,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, assignLocation).directMask,
+    INTERNAL_EFFECT_MASKS.hostDom,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, reloadLocation).directMask,
+    INTERNAL_EFFECT_MASKS.hostDom,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, sendBeaconNow).directMask,
+    INTERNAL_EFFECT_MASKS.hostIo,
+  );
+
+  assertEquals(getEffectSummaryForDeclaration(context, readStoredValue).hasUnknownDirectEffects, false);
+  assertEquals(getEffectSummaryForDeclaration(context, storeValue).hasUnknownDirectEffects, false);
+  assertEquals(getEffectSummaryForDeclaration(context, clearStoredValue).hasUnknownDirectEffects, false);
+  assertEquals(getEffectSummaryForDeclaration(context, pushHistoryState).hasUnknownDirectEffects, false);
+  assertEquals(getEffectSummaryForDeclaration(context, navigateHistory).hasUnknownDirectEffects, false);
+  assertEquals(getEffectSummaryForDeclaration(context, assignLocation).hasUnknownDirectEffects, false);
+  assertEquals(getEffectSummaryForDeclaration(context, reloadLocation).hasUnknownDirectEffects, false);
+  assertEquals(getEffectSummaryForDeclaration(context, sendBeaconNow).hasUnknownDirectEffects, false);
 });
 
 Deno.test('createAnalysisContext summarizes fetch host-object families precisely', async () => {
