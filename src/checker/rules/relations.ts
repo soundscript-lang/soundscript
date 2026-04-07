@@ -7645,6 +7645,30 @@ function classifyUnsoundTypeNodeGenericAliasRelation(
   }
 
   if (isRelationReferenceTypeNode(unwrappedTargetTypeNode)) {
+    if ((unwrappedTargetTypeNode.typeArguments?.length ?? 0) === 0) {
+      const plainReferenceWrapperPayload = getTransparentRelationWrapperPayloadTypeNode(
+        context,
+        unwrappedTargetTypeNode,
+      );
+      const plainReferenceSymbol = getResolvedAliasSymbol(
+        context,
+        getRelationReferenceTypeNodeSymbol(context, unwrappedTargetTypeNode),
+      );
+      if (
+        !plainReferenceWrapperPayload &&
+        (
+          !plainReferenceSymbol ||
+          (
+            !isInferUtilityWrapperName(plainReferenceSymbol.getName()) &&
+            getGenericAliasVariancePolicy(context, plainReferenceSymbol) === undefined &&
+            getSymbolTypeParameterDeclarations(plainReferenceSymbol).length === 0
+          )
+        )
+      ) {
+        return undefined;
+      }
+    }
+
     const targetWrapperSymbol = getResolvedAliasSymbol(
       context,
       getRelationReferenceTypeNodeSymbol(context, unwrappedTargetTypeNode),
@@ -7678,6 +7702,7 @@ function classifyUnsoundTypeNodeGenericAliasRelation(
         visitedPairs,
       );
     }
+
   }
 
   const expandedTargetTypeNode = expandOrdinaryRelationCarrierTypeNode(context, targetTypeNode);

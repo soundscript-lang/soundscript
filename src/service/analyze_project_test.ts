@@ -5256,6 +5256,11 @@ Deno.test('analyzeProject tracks DOM mutation and dispatch builtins under effect
       '  return target.dispatchEvent(new Event("ping"));',
       '}',
       '',
+      '// #[effects(forbid: [host])]',
+      'function createDomElement(): HTMLElement {',
+      '  return document.createElement("div");',
+      '}',
+      '',
       '// #[effects(forbid: [mut])]',
       'function setDomAttribute(element: Element): void {',
       '  element.setAttribute("data-id", "1");',
@@ -5278,9 +5283,11 @@ Deno.test('analyzeProject tracks DOM mutation and dispatch builtins under effect
     'SOUND1040',
     'SOUND1040',
     'SOUND1040',
+    'SOUND1040',
   ]);
   assertEquals(result.diagnostics.map((diagnostic) => diagnostic.metadata?.primarySymbol), [
     'dispatchOnTarget',
+    'createDomElement',
     'setDomAttribute',
     'appendDomChild',
   ]);
