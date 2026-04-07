@@ -302,7 +302,7 @@ function getKnownBundledNodeFsBehavior(
   }
 
   if (
-    declarationName === 'copyFileSync' || declarationName === 'cpSync' ||
+    declarationName === 'appendFileSync' || declarationName === 'copyFileSync' || declarationName === 'cpSync' ||
     declarationName === 'mkdtempSync' || declarationName === 'renameSync' ||
     declarationName === 'symlinkSync' || declarationName === 'truncateSync' ||
     declarationName === 'unlinkSync' || declarationName === 'writeFileSync' ||
@@ -388,7 +388,7 @@ function getKnownBundledNodeFsPromisesBehavior(
   }
 
   if (
-    declarationName === 'copyFile' || declarationName === 'cp' ||
+    declarationName === 'appendFile' || declarationName === 'copyFile' || declarationName === 'cp' ||
     declarationName === 'mkdtemp' || declarationName === 'rename' ||
     declarationName === 'symlink' || declarationName === 'truncate' ||
     declarationName === 'unlink' || declarationName === 'writeFile' ||
