@@ -5599,6 +5599,83 @@ Deno.test('analyzeProject tracks request and file builtins under effect contract
   ]);
 });
 
+Deno.test('analyzeProject enforces forbid contracts across recursive call cycles', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/index.sts': [
+      '// #[extern]',
+      'declare const failure: Error;',
+      '',
+      'function left(flag: boolean): void {',
+      '  if (!flag) {',
+      '    right(false);',
+      '    return;',
+      '  }',
+      '  right(false);',
+      '}',
+      '',
+      'function right(flag: boolean): void {',
+      '  if (!flag) {',
+      '    throw failure;',
+      '  }',
+      '  left(false);',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function useLeft(flag: boolean): void {',
+      '  left(flag);',
+      '}',
+      '',
+      'async function asyncLeft(flag: boolean): Promise<void> {',
+      '  if (!flag) {',
+      '    await asyncRight(false);',
+      '    return;',
+      '  }',
+      '  await asyncRight(false);',
+      '}',
+      '',
+      'async function asyncRight(flag: boolean): Promise<void> {',
+      '  if (!flag) {',
+      '    throw failure;',
+      '  }',
+      '  await asyncLeft(false);',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'async function useAsyncLeft(flag: boolean): Promise<void> {',
+      '  await asyncLeft(flag);',
+      '}',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), [
+    'SOUND1040',
+    'SOUND1040',
+  ]);
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.metadata?.primarySymbol), [
+    'useLeft',
+    'useAsyncLeft',
+  ]);
+});
+
 Deno.test('analyzeProject tracks browser storage and navigation builtins under effect contracts', async () => {
   const tempDirectory = await createTempProject({
     'tsconfig.json': JSON.stringify(

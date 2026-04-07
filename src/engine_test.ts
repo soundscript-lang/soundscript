@@ -1870,6 +1870,125 @@ Deno.test('createAnalysisContext summarizes request and file builtins precisely'
   assertEquals(getEffectSummaryForDeclaration(context, abortXmlHttpRequest).hasUnknownDirectEffects, false);
 });
 
+Deno.test('createAnalysisContext reaches a fixpoint for recursive effect summaries', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+          },
+          include: ['src/**/*.ts'],
+        },
+        null,
+        2,
+      ),
+    },
+    {
+      path: 'src/index.ts',
+      contents: [
+        'declare const failure: Error;',
+        '',
+        'export function selfRecursive(flag: boolean): void {',
+        '  if (!flag) {',
+        '    throw failure;',
+        '  }',
+        '  selfRecursive(false);',
+        '}',
+        '',
+        'export function leftRecursive(flag: boolean): void {',
+        '  if (!flag) {',
+        '    rightRecursive(false);',
+        '    return;',
+        '  }',
+        '  rightRecursive(false);',
+        '}',
+        '',
+        'export function rightRecursive(flag: boolean): void {',
+        '  if (!flag) {',
+        '    throw failure;',
+        '  }',
+        '  leftRecursive(false);',
+        '}',
+        '',
+        'export async function asyncLeft(flag: boolean): Promise<void> {',
+        '  if (!flag) {',
+        '    await asyncRight(false);',
+        '    return;',
+        '  }',
+        '  await asyncRight(false);',
+        '}',
+        '',
+        'export async function asyncRight(flag: boolean): Promise<void> {',
+        '  if (!flag) {',
+        '    throw failure;',
+        '  }',
+        '  await asyncLeft(false);',
+        '}',
+        '',
+      ].join('\n'),
+    },
+  ]);
+  const projectPath = join(tempDirectory, 'tsconfig.json');
+  const program = loadProgram(projectPath);
+  const context = createAnalysisContext({ program, workingDirectory: tempDirectory });
+  const sourceFile = context.getSourceFiles().find((file) => file.fileName.endsWith('/src/index.ts'));
+
+  assertExists(sourceFile);
+
+  const declarationsByName = new Map(
+    sourceFile.statements
+      .filter(ts.isFunctionDeclaration)
+      .filter((declaration): declaration is ts.FunctionDeclaration & { name: ts.Identifier } =>
+        declaration.name !== undefined
+      )
+      .map((declaration) => [declaration.name.text, declaration]),
+  );
+
+  const selfRecursive = declarationsByName.get('selfRecursive');
+  const leftRecursive = declarationsByName.get('leftRecursive');
+  const rightRecursive = declarationsByName.get('rightRecursive');
+  const asyncLeft = declarationsByName.get('asyncLeft');
+  const asyncRight = declarationsByName.get('asyncRight');
+
+  assertExists(selfRecursive);
+  assertExists(leftRecursive);
+  assertExists(rightRecursive);
+  assertExists(asyncLeft);
+  assertExists(asyncRight);
+
+  assertEquals(
+    getEffectSummaryForDeclaration(context, selfRecursive).directMask,
+    INTERNAL_EFFECT_MASKS.failsThrows,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, leftRecursive).directMask,
+    INTERNAL_EFFECT_MASKS.failsThrows,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, rightRecursive).directMask,
+    INTERNAL_EFFECT_MASKS.failsThrows,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, asyncLeft).directMask,
+    INTERNAL_EFFECT_MASKS.suspend | INTERNAL_EFFECT_MASKS.failsRejects,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, asyncRight).directMask,
+    INTERNAL_EFFECT_MASKS.suspend | INTERNAL_EFFECT_MASKS.failsRejects,
+  );
+
+  assertEquals(getEffectSummaryForDeclaration(context, selfRecursive).hasUnknownDirectEffects, false);
+  assertEquals(getEffectSummaryForDeclaration(context, leftRecursive).hasUnknownDirectEffects, false);
+  assertEquals(getEffectSummaryForDeclaration(context, rightRecursive).hasUnknownDirectEffects, false);
+  assertEquals(getEffectSummaryForDeclaration(context, asyncLeft).hasUnknownDirectEffects, false);
+  assertEquals(getEffectSummaryForDeclaration(context, asyncRight).hasUnknownDirectEffects, false);
+});
+
 Deno.test('createAnalysisContext summarizes browser storage and navigation builtins precisely', async () => {
   const tempDirectory = await createTempProject([
     {

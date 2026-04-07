@@ -68,7 +68,17 @@ const ASYNC_TASK_CONSTRUCTOR_FUNCTIONS = new Set([
   'timeout',
 ]);
 
-const inProgressSummaries = new WeakMap<ts.Node, EffectSummaryFact>();
+interface ActiveEffectSolveState {
+  pending: EffectCallableDeclaration[];
+  pendingSet: Set<EffectCallableDeclaration>;
+  summaries: Map<EffectCallableDeclaration, EffectSummaryFact>;
+}
+
+const activeEffectSolveStates = new WeakMap<AnalysisContext, ActiveEffectSolveState>();
+const cachedEffectSummaries = new WeakMap<
+  AnalysisContext,
+  WeakMap<EffectCallableDeclaration, EffectSummaryFact>
+>();
 
 export interface ParsedEffectsAnnotationContract {
   addMask: number;
@@ -408,6 +418,99 @@ function emptySummary(nodeId: number): EffectSummaryFact {
     nodeId,
     parameterContracts: [],
   };
+}
+
+function getCachedEffectSummaryMap(
+  context: AnalysisContext,
+): WeakMap<EffectCallableDeclaration, EffectSummaryFact> {
+  let cache = cachedEffectSummaries.get(context);
+  if (!cache) {
+    cache = new WeakMap();
+    cachedEffectSummaries.set(context, cache);
+  }
+  return cache;
+}
+
+function getCachedEffectSummary(
+  context: AnalysisContext,
+  declaration: EffectCallableDeclaration,
+): EffectSummaryFact | undefined {
+  return getCachedEffectSummaryMap(context).get(declaration);
+}
+
+function setCachedEffectSummary(
+  context: AnalysisContext,
+  declaration: EffectCallableDeclaration,
+  summary: EffectSummaryFact,
+): EffectSummaryFact {
+  getCachedEffectSummaryMap(context).set(declaration, summary);
+  return summary;
+}
+
+function createInitialSolveSummary(
+  context: AnalysisContext,
+  declaration: EffectCallableDeclaration,
+): EffectSummaryFact {
+  const explicitEffects = getEffectsAnnotation(context, declaration);
+  const parsedEffects = explicitEffects ? parseEffectsAnnotationContract(explicitEffects) : undefined;
+  const summary = emptySummary(context.getNodeId(declaration));
+  summary.parameterContracts = getParameterContracts(context, declaration.parameters);
+
+  if (parsedEffects && typeof parsedEffects !== 'string') {
+    summary.forbidMask = parsedEffects.forbidMask;
+    summary.forwardedParameters = resolveViaParameters(declaration.parameters, parsedEffects.viaNames);
+  }
+
+  return summary;
+}
+
+function effectSummaryEquals(left: EffectSummaryFact, right: EffectSummaryFact): boolean {
+  if (
+    left.directMask !== right.directMask ||
+    left.forbidMask !== right.forbidMask ||
+    left.hasUnknownDirectEffects !== right.hasUnknownDirectEffects ||
+    left.nodeId !== right.nodeId ||
+    left.forwardedParameters.length !== right.forwardedParameters.length ||
+    left.parameterContracts.length !== right.parameterContracts.length
+  ) {
+    return false;
+  }
+
+  for (let index = 0; index < left.forwardedParameters.length; index += 1) {
+    const leftForwarded = left.forwardedParameters[index]!;
+    const rightForwarded = right.forwardedParameters[index]!;
+    if (
+      leftForwarded.parameterIndex !== rightForwarded.parameterIndex ||
+      leftForwarded.failureBoundary !== rightForwarded.failureBoundary ||
+      leftForwarded.memberName !== rightForwarded.memberName
+    ) {
+      return false;
+    }
+  }
+
+  for (let index = 0; index < left.parameterContracts.length; index += 1) {
+    const leftContract = left.parameterContracts[index]!;
+    const rightContract = right.parameterContracts[index]!;
+    if (
+      leftContract.parameterIndex !== rightContract.parameterIndex ||
+      leftContract.forbidMask !== rightContract.forbidMask
+    ) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+function enqueueActiveSolveDeclaration(
+  state: ActiveEffectSolveState,
+  declaration: EffectCallableDeclaration,
+): void {
+  if (state.pendingSet.has(declaration)) {
+    return;
+  }
+  state.pendingSet.add(declaration);
+  state.pending.push(declaration);
 }
 
 function normalizeFailuresForAsyncBoundary(mask: number): number {
@@ -1910,7 +2013,7 @@ function hasHostBoundaryAnnotation(context: AnalysisContext, node: ts.Node): boo
   return lookup.hasAttachedAnnotation(node, 'extern') || lookup.hasAttachedAnnotation(node, 'interop');
 }
 
-function buildDeclarationSummary(
+function buildDeclarationOnlySummary(
   context: AnalysisContext,
   declaration: EffectCallableDeclaration,
 ): EffectSummaryFact {
@@ -1939,9 +2042,21 @@ function buildDeclarationSummary(
     return summary;
   }
 
+  return summary;
+}
+
+function recomputeBodyDeclarationSummary(
+  context: AnalysisContext,
+  declaration: EffectCallableDeclaration,
+): EffectSummaryFact {
+  const summary = createInitialSolveSummary(context, declaration);
+  const parameters = declaration.parameters;
+  if (!isCallableBodyDeclaration(declaration)) {
+    return buildDeclarationOnlySummary(context, declaration);
+  }
+
   const body = declaration.body;
   if (!body) {
-    inProgressSummaries.delete(declaration);
     return summary;
   }
   const asyncBoundary = hasAsyncBoundary(declaration);
@@ -1960,7 +2075,6 @@ function buildDeclarationSummary(
       forwardedParameter,
     ]),
   );
-  inProgressSummaries.set(declaration, summary);
 
   const visit = (node: ts.Node): void => {
     if (node !== body && ts.isFunctionLike(node)) {
@@ -2037,23 +2151,92 @@ function buildDeclarationSummary(
     left.failureBoundary.localeCompare(right.failureBoundary) ||
     (left.memberName ?? '').localeCompare(right.memberName ?? '')
   );
-  inProgressSummaries.delete(declaration);
   return summary;
+}
+
+function solveEffectSummaryFixpoint(
+  context: AnalysisContext,
+  rootDeclaration: EffectCallableDeclaration,
+): EffectSummaryFact {
+  const existingSolveState = activeEffectSolveStates.get(context);
+  if (existingSolveState) {
+    const existingSummary = existingSolveState.summaries.get(rootDeclaration);
+    if (existingSummary) {
+      return existingSummary;
+    }
+  }
+
+  const state: ActiveEffectSolveState = {
+    pending: [],
+    pendingSet: new Set(),
+    summaries: new Map(),
+  };
+  activeEffectSolveStates.set(context, state);
+
+  const initializeDeclaration = (declaration: EffectCallableDeclaration): EffectSummaryFact => {
+    const cached = getCachedEffectSummary(context, declaration);
+    if (cached) {
+      state.summaries.set(declaration, cached);
+      return cached;
+    }
+
+    const initial = createInitialSolveSummary(context, declaration);
+    state.summaries.set(declaration, initial);
+    enqueueActiveSolveDeclaration(state, declaration);
+    return initial;
+  };
+
+  initializeDeclaration(rootDeclaration);
+
+  while (state.pending.length > 0) {
+    const declaration = state.pending.shift()!;
+    state.pendingSet.delete(declaration);
+    const current = state.summaries.get(declaration) ?? initializeDeclaration(declaration);
+    const next = recomputeBodyDeclarationSummary(context, declaration);
+    if (effectSummaryEquals(current, next)) {
+      continue;
+    }
+    state.summaries.set(declaration, next);
+    for (const knownDeclaration of state.summaries.keys()) {
+      enqueueActiveSolveDeclaration(state, knownDeclaration);
+    }
+  }
+
+  activeEffectSolveStates.delete(context);
+
+  for (const [declaration, summary] of state.summaries.entries()) {
+    setCachedEffectSummary(context, declaration, summary);
+  }
+
+  return state.summaries.get(rootDeclaration)!;
 }
 
 export function getEffectSummaryForDeclaration(
   context: AnalysisContext,
   declaration: EffectCallableDeclaration,
 ): EffectSummaryFact {
-  const inProgress = inProgressSummaries.get(declaration);
-  if (inProgress) {
-    return inProgress;
+  const cached = getCachedEffectSummary(context, declaration);
+  if (cached) {
+    return cached;
   }
 
-  return context.facts.getEffectSummary(
-    declaration,
-    () => buildDeclarationSummary(context, declaration),
-  );
+  if (!isCallableBodyDeclaration(declaration)) {
+    return setCachedEffectSummary(context, declaration, buildDeclarationOnlySummary(context, declaration));
+  }
+
+  const activeSolveState = activeEffectSolveStates.get(context);
+  if (activeSolveState) {
+    const activeSummary = activeSolveState.summaries.get(declaration);
+    if (activeSummary) {
+      return activeSummary;
+    }
+    const initial = createInitialSolveSummary(context, declaration);
+    activeSolveState.summaries.set(declaration, initial);
+    enqueueActiveSolveDeclaration(activeSolveState, declaration);
+    return initial;
+  }
+
+  return solveEffectSummaryFixpoint(context, declaration);
 }
 
 export function getEffectSummaryForSignature(
