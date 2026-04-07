@@ -111,6 +111,64 @@ function isBundledEcmascriptDeclarationFile(fileName: string): boolean {
   return /\/lib\.es[^/]*\.d\.ts$/.test(normalizeFileName(fileName));
 }
 
+function isBundledDenoExternDeclarationFile(fileName: string): boolean {
+  return normalizeFileName(fileName).endsWith('/__soundscript_externs__/deno.global.d.ts');
+}
+
+function getKnownBundledDenoExternBehavior(
+  ownerName: string | undefined,
+  memberName: string | undefined,
+): BuiltinCallBehavior | undefined {
+  if (ownerName === 'Deno') {
+    if (memberName === 'cwd') {
+      return {
+        directMask: INTERNAL_EFFECT_MASKS.hostInterop,
+        forwardedArguments: [],
+      };
+    }
+
+    if (memberName === 'readFile' || memberName === 'readTextFile') {
+      return {
+        directMask: INTERNAL_EFFECT_MASKS.hostIo | INTERNAL_EFFECT_MASKS.suspend,
+        forwardedArguments: [],
+      };
+    }
+
+    if (memberName === 'readTextFileSync') {
+      return {
+        directMask: INTERNAL_EFFECT_MASKS.hostIo | INTERNAL_EFFECT_MASKS.failsThrows,
+        forwardedArguments: [],
+      };
+    }
+
+    if (memberName === 'writeTextFile') {
+      return {
+        directMask: INTERNAL_EFFECT_MASKS.hostIo | INTERNAL_EFFECT_MASKS.suspend |
+          INTERNAL_EFFECT_MASKS.mut,
+        forwardedArguments: [],
+      };
+    }
+  }
+
+  if (ownerName === 'Env') {
+    if (memberName === 'get' || memberName === 'has' || memberName === 'toObject') {
+      return {
+        directMask: INTERNAL_EFFECT_MASKS.hostInterop,
+        forwardedArguments: [],
+      };
+    }
+
+    if (memberName === 'set' || memberName === 'delete') {
+      return {
+        directMask: INTERNAL_EFFECT_MASKS.hostInterop | INTERNAL_EFFECT_MASKS.mut,
+        forwardedArguments: [],
+      };
+    }
+  }
+
+  return undefined;
+}
+
 function getKnownFetchObjectFamilyBehavior(
   ownerName: string | undefined,
   memberName: string | undefined,
@@ -794,6 +852,13 @@ export function getKnownPortableBuiltinBehavior(
     const jsonBehavior = getKnownJsonBehavior(context, ownerName, memberName, expression);
     if (jsonBehavior) {
       return jsonBehavior;
+    }
+  }
+
+  if (sourceFileName && isBundledDenoExternDeclarationFile(sourceFileName)) {
+    const denoExternBehavior = getKnownBundledDenoExternBehavior(ownerName, memberName);
+    if (denoExternBehavior) {
+      return denoExternBehavior;
     }
   }
 

@@ -1873,6 +1873,186 @@ Deno.test('createAnalysisContext summarizes request and file builtins precisely'
   assertEquals(getEffectSummaryForDeclaration(context, abortXmlHttpRequest).hasUnknownDirectEffects, false);
 });
 
+Deno.test('createAnalysisContext summarizes bundled deno extern builtins precisely', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+          },
+          include: ['src/**/*.ts', '__soundscript_externs__/**/*.d.ts'],
+        },
+        null,
+        2,
+      ),
+    },
+    {
+      path: '__soundscript_externs__/deno.global.d.ts',
+      contents: [
+        'declare namespace Deno {',
+        '  interface Env {',
+        '    delete(key: string): void;',
+        '    get(key: string): string | undefined;',
+        '    has(key: string): boolean;',
+        '    set(key: string, value: string): void;',
+        '    toObject(): Record<string, string>;',
+        '  }',
+        '}',
+        '',
+        'declare const Deno: {',
+        '  readonly args: readonly string[];',
+        '  readonly env: Deno.Env;',
+        '  cwd(): string;',
+        '  readFile(path: string | URL): Promise<Uint8Array<ArrayBufferLike>>;',
+        '  readTextFile(path: string | URL): Promise<string>;',
+        '  readTextFileSync(path: string | URL): string;',
+        '  writeTextFile(path: string | URL, data: string): Promise<void>;',
+        '};',
+        '',
+      ].join('\n'),
+    },
+    {
+      path: 'src/index.ts',
+      contents: [
+        'export function readCurrentDirectory(): string {',
+        '  return Deno.cwd();',
+        '}',
+        '',
+        'export function readEnvValue(): string | undefined {',
+        '  return Deno.env.get("HOME");',
+        '}',
+        '',
+        'export function hasEnvValue(): boolean {',
+        '  return Deno.env.has("HOME");',
+        '}',
+        '',
+        'export function snapshotEnv(): Record<string, string> {',
+        '  return Deno.env.toObject();',
+        '}',
+        '',
+        'export function setEnvValue(value: string): void {',
+        '  Deno.env.set("HOME", value);',
+        '}',
+        '',
+        'export function deleteEnvValue(): void {',
+        '  Deno.env.delete("HOME");',
+        '}',
+        '',
+        'export function readBinary(path: string): Promise<Uint8Array<ArrayBufferLike>> {',
+        '  return Deno.readFile(path);',
+        '}',
+        '',
+        'export function readText(path: string): Promise<string> {',
+        '  return Deno.readTextFile(path);',
+        '}',
+        '',
+        'export function readTextSync(path: string): string {',
+        '  return Deno.readTextFileSync(path);',
+        '}',
+        '',
+        'export function writeText(path: string, data: string): Promise<void> {',
+        '  return Deno.writeTextFile(path, data);',
+        '}',
+        '',
+      ].join('\n'),
+    },
+  ]);
+  const projectPath = join(tempDirectory, 'tsconfig.json');
+  const program = loadProgram(projectPath);
+  const context = createAnalysisContext({ program, workingDirectory: tempDirectory });
+  const sourceFile = context.getSourceFiles().find((file) => file.fileName.endsWith('/src/index.ts'));
+
+  assertExists(sourceFile);
+
+  const declarationsByName = new Map(
+    sourceFile.statements
+      .filter(ts.isFunctionDeclaration)
+      .filter((declaration): declaration is ts.FunctionDeclaration & { name: ts.Identifier } =>
+        declaration.name !== undefined
+      )
+      .map((declaration) => [declaration.name.text, declaration]),
+  );
+
+  const readCurrentDirectory = declarationsByName.get('readCurrentDirectory');
+  const readEnvValue = declarationsByName.get('readEnvValue');
+  const hasEnvValue = declarationsByName.get('hasEnvValue');
+  const snapshotEnv = declarationsByName.get('snapshotEnv');
+  const setEnvValue = declarationsByName.get('setEnvValue');
+  const deleteEnvValue = declarationsByName.get('deleteEnvValue');
+  const readBinary = declarationsByName.get('readBinary');
+  const readText = declarationsByName.get('readText');
+  const readTextSync = declarationsByName.get('readTextSync');
+  const writeText = declarationsByName.get('writeText');
+
+  assertExists(readCurrentDirectory);
+  assertExists(readEnvValue);
+  assertExists(hasEnvValue);
+  assertExists(snapshotEnv);
+  assertExists(setEnvValue);
+  assertExists(deleteEnvValue);
+  assertExists(readBinary);
+  assertExists(readText);
+  assertExists(readTextSync);
+  assertExists(writeText);
+
+  assertEquals(
+    getEffectSummaryForDeclaration(context, readCurrentDirectory).directMask,
+    INTERNAL_EFFECT_MASKS.hostInterop,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, readEnvValue).directMask,
+    INTERNAL_EFFECT_MASKS.hostInterop,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, hasEnvValue).directMask,
+    INTERNAL_EFFECT_MASKS.hostInterop,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, snapshotEnv).directMask,
+    INTERNAL_EFFECT_MASKS.hostInterop,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, setEnvValue).directMask,
+    INTERNAL_EFFECT_MASKS.hostInterop | INTERNAL_EFFECT_MASKS.mut,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, deleteEnvValue).directMask,
+    INTERNAL_EFFECT_MASKS.hostInterop | INTERNAL_EFFECT_MASKS.mut,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, readBinary).directMask,
+    INTERNAL_EFFECT_MASKS.hostIo | INTERNAL_EFFECT_MASKS.suspend,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, readText).directMask,
+    INTERNAL_EFFECT_MASKS.hostIo | INTERNAL_EFFECT_MASKS.suspend,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, readTextSync).directMask,
+    INTERNAL_EFFECT_MASKS.hostIo | INTERNAL_EFFECT_MASKS.failsThrows,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, writeText).directMask,
+    INTERNAL_EFFECT_MASKS.hostIo | INTERNAL_EFFECT_MASKS.suspend | INTERNAL_EFFECT_MASKS.mut,
+  );
+
+  assertEquals(getEffectSummaryForDeclaration(context, readCurrentDirectory).hasUnknownDirectEffects, false);
+  assertEquals(getEffectSummaryForDeclaration(context, readEnvValue).hasUnknownDirectEffects, false);
+  assertEquals(getEffectSummaryForDeclaration(context, hasEnvValue).hasUnknownDirectEffects, false);
+  assertEquals(getEffectSummaryForDeclaration(context, snapshotEnv).hasUnknownDirectEffects, false);
+  assertEquals(getEffectSummaryForDeclaration(context, setEnvValue).hasUnknownDirectEffects, false);
+  assertEquals(getEffectSummaryForDeclaration(context, deleteEnvValue).hasUnknownDirectEffects, false);
+  assertEquals(getEffectSummaryForDeclaration(context, readBinary).hasUnknownDirectEffects, false);
+  assertEquals(getEffectSummaryForDeclaration(context, readText).hasUnknownDirectEffects, false);
+  assertEquals(getEffectSummaryForDeclaration(context, readTextSync).hasUnknownDirectEffects, false);
+  assertEquals(getEffectSummaryForDeclaration(context, writeText).hasUnknownDirectEffects, false);
+});
+
 Deno.test('createAnalysisContext reaches a fixpoint for recursive effect summaries', async () => {
   const tempDirectory = await createTempProject([
     {
