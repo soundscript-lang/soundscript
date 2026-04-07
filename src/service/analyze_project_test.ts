@@ -8888,6 +8888,46 @@ Deno.test('analyzeProject preserves narrowing when returning opaque calls with e
   assertEquals(result.diagnostics, []);
 });
 
+Deno.test('analyzeProject preserves narrowing across local callback parameter calls proven free of mut and suspend', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/index.sts': [
+      'function run(callback: (value: string) => void, value: string): void {',
+      '  callback(value);',
+      '}',
+      '',
+      'function use(box: { value: string | null }, callback: (value: string) => void): string {',
+      '  if (box.value !== null) {',
+      '    run(callback, box.value);',
+      '    const value: string = box.value;',
+      '    return value;',
+      '  }',
+      '  return "";',
+      '}',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics, []);
+});
+
 Deno.test('analyzeProject preserves narrowing across deferred host schedulers', async () => {
   const tempDirectory = await createTempProject({
     'tsconfig.json': JSON.stringify(

@@ -1241,6 +1241,171 @@ function mapCallbackExpressionAffectsNarrow(
   return collectionCallbackAffectsNarrow(context, resolved, narrowPath, state);
 }
 
+function functionBodyCallAffectsNarrow(
+  context: AnalysisContext,
+  node: ts.CallExpression,
+  bindings: FunctionBodyBindings,
+  narrowPath: NormalizedPath,
+  state: AnalysisState,
+  body: ts.ConciseBody,
+  activeDeclarations: Set<ts.FunctionLikeDeclaration>,
+): boolean {
+  const directCalleeDeclaration = getFunctionLikeFromCallExpression(context, node);
+  const directCalleeHasBody = directCalleeDeclaration &&
+    isFunctionLikeWithBody(directCalleeDeclaration);
+  const calledMember = getFunctionBodyCalledMember(
+    context,
+    node.expression,
+    bindings,
+  );
+  if (
+    calledMember &&
+    arrayMutationCallAffectsNarrow(
+      context,
+      calledMember.receiver,
+      normalizeFunctionBodyPath(context, calledMember.receiver, bindings),
+      calledMember.member,
+      calledMember.memberType,
+      narrowPath,
+    )
+  ) {
+    return true;
+  }
+
+  if (
+    calledMember &&
+    (
+      arrayCallbackArgumentAffectsNarrow(
+        context,
+        calledMember.receiver,
+        calledMember.member,
+        node,
+        bindings,
+        narrowPath,
+        state,
+      ) ||
+      setCallbackArgumentAffectsNarrow(
+        context,
+        calledMember.receiver,
+        calledMember.member,
+        node,
+        bindings,
+        narrowPath,
+        state,
+      ) ||
+      mapCallbackArgumentAffectsNarrow(
+        context,
+        calledMember.receiver,
+        calledMember.member,
+        node,
+        bindings,
+        narrowPath,
+        state,
+      )
+    )
+  ) {
+    return true;
+  }
+
+  if (callPreservesNarrowing(context, node)) {
+    return false;
+  }
+
+  const boundMemberDeclaration = getFunctionLikeFromBoundMemberCall(
+    context,
+    node.expression,
+    bindings,
+  );
+  const boundMemberHasBody = boundMemberDeclaration &&
+    isFunctionLikeWithBody(boundMemberDeclaration);
+  const receiverBinding = calledMember
+    ? getFunctionConstructedReceiverBinding(context, calledMember.receiver, bindings)
+    : undefined;
+  if (
+    boundMemberHasBody &&
+    functionLikeAffectsNarrow(
+      context,
+      boundMemberDeclaration,
+      node.arguments,
+      narrowPath,
+      state,
+      false,
+      receiverBinding,
+      undefined,
+      activeDeclarations,
+    )
+  ) {
+    return true;
+  }
+
+  if (
+    calledMember &&
+    receiverPathAffectsMemberNarrow(
+      normalizeFunctionBodyPath(context, calledMember.receiver, bindings),
+      narrowPath,
+    )
+  ) {
+    return true;
+  }
+
+  if (
+    directCalleeHasBody &&
+    functionLikeAffectsNarrow(
+      context,
+      directCalleeDeclaration,
+      node.arguments,
+      narrowPath,
+      state,
+      false,
+      receiverBinding,
+      undefined,
+      activeDeclarations,
+    )
+  ) {
+    return true;
+  }
+
+  if (ts.isIdentifier(node.expression)) {
+    const parameterSymbol = getExpressionSymbol(context, node.expression);
+    if (parameterSymbol) {
+      const boundValue = bindings.boundValues.get(getSymbolId(context, parameterSymbol));
+      const boundFunction = boundValue
+        ? getFunctionLikeFromBoundValue(context, boundValue)
+        : undefined;
+      const boundFunctionHasBody = boundFunction && isFunctionLikeWithBody(boundFunction);
+      if (
+        boundFunctionHasBody &&
+        functionLikeAffectsNarrow(
+          context,
+          boundFunction,
+          node.arguments,
+          narrowPath,
+          state,
+          false,
+          undefined,
+          undefined,
+          activeDeclarations,
+        )
+      ) {
+        return true;
+      }
+    }
+  }
+
+  return !directCalleeHasBody &&
+    !boundMemberHasBody &&
+    node.arguments.some((argument) =>
+      opaqueFunctionBodyArgumentExpressionAffectsNarrow(
+        context,
+        argument,
+        bindings,
+        narrowPath,
+        state,
+        body,
+      )
+    );
+}
+
 function functionLikeAffectsNarrow(
   context: AnalysisContext,
   declaration: ts.FunctionLikeDeclaration,
@@ -1298,173 +1463,15 @@ function functionLikeAffectsNarrow(
       }
 
       if (candidate.kind === 'call') {
-        const directCalleeDeclaration = getFunctionLikeFromCallExpression(context, candidate.node);
-        const directCalleeHasBody = directCalleeDeclaration &&
-          isFunctionLikeWithBody(directCalleeDeclaration);
-        const calledMember = getFunctionBodyCalledMember(
-          context,
-          candidate.node.expression,
-          bindings,
-        );
         if (
-          calledMember &&
-          arrayMutationCallAffectsNarrow(
+          functionBodyCallAffectsNarrow(
             context,
-            calledMember.receiver,
-            normalizeFunctionBodyPath(context, calledMember.receiver, bindings),
-            calledMember.member,
-            calledMember.memberType,
-            narrowPath,
-          )
-        ) {
-          return true;
-        }
-
-        if (
-          calledMember &&
-          arrayCallbackArgumentAffectsNarrow(
-            context,
-            calledMember.receiver,
-            calledMember.member,
             candidate.node,
             bindings,
             narrowPath,
             state,
-          )
-        ) {
-          return true;
-        }
-
-        if (
-          calledMember &&
-          setCallbackArgumentAffectsNarrow(
-            context,
-            calledMember.receiver,
-            calledMember.member,
-            candidate.node,
-            bindings,
-            narrowPath,
-            state,
-          )
-        ) {
-          return true;
-        }
-
-        if (
-          calledMember &&
-          mapCallbackArgumentAffectsNarrow(
-            context,
-            calledMember.receiver,
-            calledMember.member,
-            candidate.node,
-            bindings,
-            narrowPath,
-            state,
-          )
-        ) {
-          return true;
-        }
-
-        if (callPreservesNarrowing(context, candidate.node)) {
-          continue;
-        }
-
-        const boundMemberDeclaration = getFunctionLikeFromBoundMemberCall(
-          context,
-          candidate.node.expression,
-          bindings,
-        );
-        const boundMemberHasBody = boundMemberDeclaration &&
-          isFunctionLikeWithBody(boundMemberDeclaration);
-        const receiverBinding = calledMember
-          ? getFunctionConstructedReceiverBinding(context, calledMember.receiver, bindings)
-          : undefined;
-        if (
-          boundMemberHasBody &&
-          functionLikeAffectsNarrow(
-            context,
-            boundMemberDeclaration,
-            candidate.node.arguments,
-            narrowPath,
-            state,
-            false,
-            receiverBinding,
-            undefined,
+            body,
             activeDeclarations,
-          )
-        ) {
-          return true;
-        }
-
-        if (
-          calledMember &&
-          receiverPathAffectsMemberNarrow(
-            normalizeFunctionBodyPath(context, calledMember.receiver, bindings),
-            narrowPath,
-          )
-        ) {
-          return true;
-        }
-
-        if (
-          directCalleeHasBody &&
-          functionLikeAffectsNarrow(
-            context,
-            directCalleeDeclaration,
-            candidate.node.arguments,
-            narrowPath,
-            state,
-            false,
-            receiverBinding,
-            undefined,
-            activeDeclarations,
-          )
-        ) {
-          return true;
-        }
-
-        if (ts.isIdentifier(candidate.node.expression)) {
-          const parameterSymbol = getExpressionSymbol(context, candidate.node.expression);
-          if (parameterSymbol) {
-            const boundValue = bindings.boundValues.get(
-              getSymbolId(context, parameterSymbol),
-            );
-            const boundFunction = boundValue
-              ? getFunctionLikeFromBoundValue(context, boundValue)
-              : undefined;
-            const boundFunctionHasBody = boundFunction && isFunctionLikeWithBody(boundFunction);
-            if (
-              boundFunctionHasBody &&
-              functionLikeAffectsNarrow(
-                context,
-                boundFunction,
-                candidate.node.arguments,
-                narrowPath,
-                state,
-                false,
-                undefined,
-                undefined,
-                activeDeclarations,
-              )
-            ) {
-              return true;
-            }
-          }
-        }
-
-        if (
-          !directCalleeHasBody &&
-          !boundMemberHasBody &&
-          candidate.node.arguments.some((argument) =>
-            opaqueFunctionBodyArgumentExpressionAffectsNarrow(
-              context,
-              argument,
-              bindings,
-              narrowPath,
-              state,
-              body,
-              activeDeclarations,
-            )
           )
         ) {
           return true;
