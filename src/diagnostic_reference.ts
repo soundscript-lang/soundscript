@@ -799,6 +799,7 @@ const DIAGNOSTIC_REFERENCES = {
     details: [
       'Bodyful callable declarations are checked against their inferred direct effects.',
       'Function-valued parameters annotated with `#[effects(forbid: [...])]` reject callback arguments that may perform forbidden effects.',
+      'When proof fails because the effect surface stays unknown, the diagnostic metadata includes the unknown-effect reason categories so tooling can distinguish unsummarized frontiers from opaque callables or unresolved forwarding.',
     ],
     examples: [
       {

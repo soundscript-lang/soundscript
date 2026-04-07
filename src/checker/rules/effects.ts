@@ -1,7 +1,7 @@
 import ts from 'typescript';
 
 import { SOUND_DIAGNOSTIC_CODES, SOUND_DIAGNOSTIC_MESSAGES } from '../engine/diagnostic_codes.ts';
-import type { AnalysisContext, PublicEffectName } from '../engine/types.ts';
+import type { AnalysisContext, EffectUnknownReasonFact, PublicEffectName } from '../engine/types.ts';
 import { getNodeDiagnosticRange, type SoundDiagnostic } from '../diagnostics.ts';
 import {
   callableExpressionMayViolateForbidMask,
@@ -15,23 +15,27 @@ import {
   getEffectSummaryForSignature,
   getParameterContractName,
 } from '../effects.ts';
+import { formatEffectUnknownReasons } from '../effects/unknown.ts';
 
 type EffectViolationContext =
   | {
     kind: 'call';
     primarySymbol: string;
     forbiddenEffects: readonly PublicEffectName[];
+    unknownReasons?: readonly EffectUnknownReasonFact[];
     relation: 'callee_forbid' | 'parameter_forbid';
   }
   | {
     kind: 'declaration';
     primarySymbol: string;
     forbiddenEffects: readonly PublicEffectName[];
+    unknownReasons?: readonly EffectUnknownReasonFact[];
   }
   | {
     kind: 'relation';
     primarySymbol?: string;
     forbiddenEffects: readonly PublicEffectName[];
+    unknownReasons?: readonly EffectUnknownReasonFact[];
     rule: 'callable_effect_covariance' | 'callable_effect_parameter_contravariance';
   };
 
@@ -43,6 +47,9 @@ function createEffectContractViolationDiagnostic(
   node: ts.Node,
   context: EffectViolationContext,
 ): SoundDiagnostic {
+  const unknownReasonTexts = context.unknownReasons
+    ? formatEffectUnknownReasons(context.unknownReasons)
+    : [];
   const example = context.kind === 'declaration'
     ? `Rewrite \`${context.primarySymbol}\` so it stays within ${formatPublicEffectList(context.forbiddenEffects)}, or relax the \`#[effects(forbid: [...])]\` contract.`
     : context.kind === 'call' && context.relation === 'parameter_forbid'
@@ -80,6 +87,12 @@ function createEffectContractViolationDiagnostic(
           label: 'forbiddenEffects',
           value: context.forbiddenEffects.join(', '),
         },
+        ...(unknownReasonTexts.length > 0
+          ? [{
+            label: 'unknownEffectReasons',
+            value: unknownReasonTexts.join('; '),
+          }]
+          : []),
       ],
       counterexample:
         'A callable that performs or forwards forbidden effects can look effect-safe even though callers cannot rely on that contract.',
@@ -87,6 +100,9 @@ function createEffectContractViolationDiagnostic(
     },
     notes: [
       message.replace(`${SOUND_DIAGNOSTIC_MESSAGES.effectContractViolation} `, ''),
+      ...(unknownReasonTexts.length > 0
+        ? [`Proof blocked by unknown effect reasons: ${unknownReasonTexts.join(', ')}.`]
+        : []),
       `Example: ${example}`,
     ],
     hint:
@@ -124,6 +140,7 @@ function classifyCallableRelationViolation(
             ? {
               kind: 'relation',
               forbiddenEffects: mismatch.forbiddenEffects,
+              unknownReasons: mismatch.unknownReasons,
               rule: 'callable_effect_covariance',
             }
             : {
@@ -195,6 +212,7 @@ export function runEffectRules(context: AnalysisContext): SoundDiagnostic[] {
               kind: 'declaration',
               primarySymbol: getEffectContractName(node),
               forbiddenEffects: effectMaskToPublicNames(summary.forbidMask),
+              unknownReasons: summary.hasUnknownDirectEffects ? summary.unknownDirectReasons : undefined,
             }),
           );
         }
@@ -232,6 +250,7 @@ export function runEffectRules(context: AnalysisContext): SoundDiagnostic[] {
                     context.checker.getResolvedSignature(node)?.getDeclaration() ?? node.expression,
                   ),
                   forbiddenEffects: effectMaskToPublicNames(summary.forbidMask),
+                  unknownReasons: composedEffects.unknown ? composedEffects.unknownReasons : undefined,
                   relation: 'callee_forbid',
                 }),
               );

@@ -5848,6 +5848,62 @@ Deno.test('analyzeProject enforces forbid contracts across recursive call cycles
   ]);
 });
 
+Deno.test('analyzeProject reports unknown effect reason categories in forbid diagnostics', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/index.sts': [
+      '// #[extern]',
+      'declare function opaqueExtern(): number;',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function callOpaqueExtern(): number {',
+      '  return opaqueExtern();',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function dispatchUnknown(target: EventTarget, event: Event): boolean {',
+      '  return target.dispatchEvent(event);',
+      '}',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), [
+    'SOUND1040',
+    'SOUND1040',
+  ]);
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.metadata?.primarySymbol), [
+    'callOpaqueExtern',
+    'dispatchUnknown',
+  ]);
+  assertEquals(
+    result.diagnostics.map((diagnostic) =>
+      diagnostic.metadata?.evidence?.find((entry) => entry.label === 'unknownEffectReasons')?.value
+    ),
+    [
+      'unsummarized declaration frontier',
+      'builtin direct effect remains unknown (dispatchEvent)',
+    ],
+  );
+});
+
 Deno.test('analyzeProject tracks browser storage and navigation builtins under effect contracts', async () => {
   const tempDirectory = await createTempProject({
     'tsconfig.json': JSON.stringify(

@@ -47,3 +47,24 @@ export function effectUnknownReasonsEqual(
 
   return true;
 }
+
+export function formatEffectUnknownReason(reason: EffectUnknownReasonFact): string {
+  switch (reason.kind) {
+    case 'builtinUnknownDirectEffect':
+      return reason.detail === undefined
+        ? 'builtin direct effect remains unknown'
+        : `builtin direct effect remains unknown (${reason.detail})`;
+    case 'opaqueCallableExpression':
+      return 'opaque callable expression';
+    case 'unresolvedForwardedCallback':
+      return 'unresolved forwarded callback';
+    case 'unsummarizedDeclarationFrontier':
+      return 'unsummarized declaration frontier';
+  }
+}
+
+export function formatEffectUnknownReasons(
+  reasons: readonly EffectUnknownReasonFact[],
+): readonly string[] {
+  return reasons.map((reason) => formatEffectUnknownReason(reason));
+}

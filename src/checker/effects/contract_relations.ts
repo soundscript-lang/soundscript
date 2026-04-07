@@ -1,11 +1,12 @@
 import ts from 'typescript';
 
-import type { EffectSummaryFact, PublicEffectName } from '../engine/types.ts';
+import type { EffectSummaryFact, EffectUnknownReasonFact, PublicEffectName } from '../engine/types.ts';
 import { effectMaskToPublicNames } from './masks.ts';
 
 export interface CallableEffectContractMismatch {
   forbiddenEffects: readonly PublicEffectName[];
   kind: 'outer' | 'parameter';
+  unknownReasons?: readonly EffectUnknownReasonFact[];
   parameterName?: string;
 }
 
@@ -25,6 +26,7 @@ export function classifyCallableEffectContractMismatch(
     return {
       forbiddenEffects: effectMaskToPublicNames(targetForbidMask),
       kind: 'outer',
+      unknownReasons: sourceSummary?.hasUnknownDirectEffects ? sourceSummary.unknownDirectReasons : undefined,
     };
   }
 
