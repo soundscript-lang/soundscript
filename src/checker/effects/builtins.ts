@@ -292,7 +292,8 @@ function getKnownBundledNodeFsBehavior(
 ): BuiltinCallBehavior | undefined {
   if (
     declarationName === 'accessSync' || declarationName === 'readFileSync' ||
-    declarationName === 'readdirSync' || declarationName === 'statSync'
+    declarationName === 'readlinkSync' || declarationName === 'readdirSync' ||
+    declarationName === 'realpathSync' || declarationName === 'statSync'
   ) {
     return {
       directMask: INTERNAL_EFFECT_MASKS.hostIo | INTERNAL_EFFECT_MASKS.failsThrows,
@@ -302,6 +303,7 @@ function getKnownBundledNodeFsBehavior(
 
   if (
     declarationName === 'copyFileSync' || declarationName === 'renameSync' ||
+    declarationName === 'symlinkSync' || declarationName === 'unlinkSync' ||
     declarationName === 'writeFileSync' || declarationName === 'mkdirSync' ||
     declarationName === 'rmSync'
   ) {
@@ -375,7 +377,8 @@ function getKnownBundledNodeFsPromisesBehavior(
 ): BuiltinCallBehavior | undefined {
   if (
     declarationName === 'access' || declarationName === 'readFile' ||
-    declarationName === 'readdir' || declarationName === 'stat'
+    declarationName === 'readlink' || declarationName === 'readdir' ||
+    declarationName === 'realpath' || declarationName === 'stat'
   ) {
     return {
       directMask: INTERNAL_EFFECT_MASKS.hostIo | INTERNAL_EFFECT_MASKS.suspend,
@@ -385,6 +388,7 @@ function getKnownBundledNodeFsPromisesBehavior(
 
   if (
     declarationName === 'copyFile' || declarationName === 'rename' ||
+    declarationName === 'symlink' || declarationName === 'unlink' ||
     declarationName === 'writeFile' || declarationName === 'mkdir' || declarationName === 'rm'
   ) {
     return {

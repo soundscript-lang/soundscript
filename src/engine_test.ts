@@ -2198,10 +2198,14 @@ Deno.test('createAnalysisContext summarizes bundled node builtins precisely', as
         '  export interface Stats {}',
         '  export function accessSync(path: string): void;',
         '  export function copyFileSync(source: string, destination: string): void;',
+        '  export function readlinkSync(path: string): string;',
+        '  export function realpathSync(path: string): string;',
         '  export function renameSync(oldPath: string, newPath: string): void;',
         '  export function readFileSync(path: string): Uint8Array<ArrayBufferLike>;',
         '  export function readdirSync(path: string): string[];',
         '  export function statSync(path: string): Stats;',
+        '  export function symlinkSync(target: string, path: string): void;',
+        '  export function unlinkSync(path: string): void;',
         '  export function writeFileSync(path: string, data: string | Uint8Array<ArrayBufferLike>): void;',
         '  export function mkdirSync(path: string): void;',
         '  export function rmSync(path: string): void;',
@@ -2216,10 +2220,14 @@ Deno.test('createAnalysisContext summarizes bundled node builtins precisely', as
         '  export interface Stats {}',
         '  export function access(path: string): Promise<void>;',
         '  export function copyFile(source: string, destination: string): Promise<void>;',
+        '  export function readlink(path: string): Promise<string>;',
+        '  export function realpath(path: string): Promise<string>;',
         '  export function rename(oldPath: string, newPath: string): Promise<void>;',
         '  export function readFile(path: string): Promise<Uint8Array<ArrayBufferLike>>;',
         '  export function readdir(path: string): Promise<string[]>;',
         '  export function stat(path: string): Promise<Stats>;',
+        '  export function symlink(target: string, path: string): Promise<void>;',
+        '  export function unlink(path: string): Promise<void>;',
         '  export function writeFile(path: string, data: string | Uint8Array<ArrayBufferLike>): Promise<void>;',
         '  export function mkdir(path: string): Promise<void>;',
         '  export function rm(path: string): Promise<void>;',
@@ -2310,8 +2318,8 @@ Deno.test('createAnalysisContext summarizes bundled node builtins precisely', as
       contents: [
         'import { createHash, getRandomValues, randomBytes, randomFill, randomFillSync, randomInt, randomUUID } from "node:crypto";',
         'import { Buffer as ModuleBuffer } from "node:buffer";',
-        'import { access, copyFile, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";',
-        'import { accessSync, copyFileSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";',
+        'import { access, copyFile, mkdir, readFile, readlink, readdir, realpath, rename, rm, stat, symlink, unlink, writeFile } from "node:fs/promises";',
+        'import { accessSync, copyFileSync, mkdirSync, readFileSync, readlinkSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";',
         'import { dirname, join } from "node:path";',
         'import { clearImmediate as clearModuleImmediate, clearInterval, clearTimeout, setImmediate as setModuleImmediate, setInterval, setTimeout } from "node:timers";',
         'import { scheduler, setImmediate as waitImmediate, setTimeout as waitTimeout } from "node:timers/promises";',
@@ -2472,6 +2480,38 @@ Deno.test('createAnalysisContext summarizes bundled node builtins precisely', as
         '  copyFileSync(from, to);',
         '}',
         '',
+        'export function readLinkTarget(path: string): Promise<string> {',
+        '  return readlink(path);',
+        '}',
+        '',
+        'export function readLinkTargetSync(path: string): string {',
+        '  return readlinkSync(path);',
+        '}',
+        '',
+        'export function resolveRealPath(path: string): Promise<string> {',
+        '  return realpath(path);',
+        '}',
+        '',
+        'export function resolveRealPathSync(path: string): string {',
+        '  return realpathSync(path);',
+        '}',
+        '',
+        'export function createSymlink(target: string, path: string): Promise<void> {',
+        '  return symlink(target, path);',
+        '}',
+        '',
+        'export function createSymlinkSync(target: string, path: string): void {',
+        '  symlinkSync(target, path);',
+        '}',
+        '',
+        'export function unlinkPath(path: string): Promise<void> {',
+        '  return unlink(path);',
+        '}',
+        '',
+        'export function unlinkPathSync(path: string): void {',
+        '  unlinkSync(path);',
+        '}',
+        '',
         'export function readBinary(path: string): Promise<Uint8Array<ArrayBufferLike>> {',
         '  return readFile(path);',
         '}',
@@ -2569,6 +2609,14 @@ Deno.test('createAnalysisContext summarizes bundled node builtins precisely', as
   const renamePathSync = declarationsByName.get('renamePathSync');
   const copyPath = declarationsByName.get('copyPath');
   const copyPathSync = declarationsByName.get('copyPathSync');
+  const readLinkTarget = declarationsByName.get('readLinkTarget');
+  const readLinkTargetSync = declarationsByName.get('readLinkTargetSync');
+  const resolveRealPath = declarationsByName.get('resolveRealPath');
+  const resolveRealPathSync = declarationsByName.get('resolveRealPathSync');
+  const createSymlink = declarationsByName.get('createSymlink');
+  const createSymlinkSync = declarationsByName.get('createSymlinkSync');
+  const unlinkPath = declarationsByName.get('unlinkPath');
+  const unlinkPathSync = declarationsByName.get('unlinkPathSync');
   const readBinary = declarationsByName.get('readBinary');
   const readBinarySync = declarationsByName.get('readBinarySync');
   const readDirectory = declarationsByName.get('readDirectory');
@@ -2618,6 +2666,14 @@ Deno.test('createAnalysisContext summarizes bundled node builtins precisely', as
   assertExists(renamePathSync);
   assertExists(copyPath);
   assertExists(copyPathSync);
+  assertExists(readLinkTarget);
+  assertExists(readLinkTargetSync);
+  assertExists(resolveRealPath);
+  assertExists(resolveRealPathSync);
+  assertExists(createSymlink);
+  assertExists(createSymlinkSync);
+  assertExists(unlinkPath);
+  assertExists(unlinkPathSync);
   assertExists(readBinary);
   assertExists(readBinarySync);
   assertExists(readDirectory);
@@ -2766,6 +2822,38 @@ Deno.test('createAnalysisContext summarizes bundled node builtins precisely', as
     INTERNAL_EFFECT_MASKS.hostIo | INTERNAL_EFFECT_MASKS.failsThrows | INTERNAL_EFFECT_MASKS.mut,
   );
   assertEquals(
+    getEffectSummaryForDeclaration(context, readLinkTarget).directMask,
+    INTERNAL_EFFECT_MASKS.hostIo | INTERNAL_EFFECT_MASKS.suspend,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, readLinkTargetSync).directMask,
+    INTERNAL_EFFECT_MASKS.hostIo | INTERNAL_EFFECT_MASKS.failsThrows,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, resolveRealPath).directMask,
+    INTERNAL_EFFECT_MASKS.hostIo | INTERNAL_EFFECT_MASKS.suspend,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, resolveRealPathSync).directMask,
+    INTERNAL_EFFECT_MASKS.hostIo | INTERNAL_EFFECT_MASKS.failsThrows,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, createSymlink).directMask,
+    INTERNAL_EFFECT_MASKS.hostIo | INTERNAL_EFFECT_MASKS.suspend | INTERNAL_EFFECT_MASKS.mut,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, createSymlinkSync).directMask,
+    INTERNAL_EFFECT_MASKS.hostIo | INTERNAL_EFFECT_MASKS.failsThrows | INTERNAL_EFFECT_MASKS.mut,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, unlinkPath).directMask,
+    INTERNAL_EFFECT_MASKS.hostIo | INTERNAL_EFFECT_MASKS.suspend | INTERNAL_EFFECT_MASKS.mut,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, unlinkPathSync).directMask,
+    INTERNAL_EFFECT_MASKS.hostIo | INTERNAL_EFFECT_MASKS.failsThrows | INTERNAL_EFFECT_MASKS.mut,
+  );
+  assertEquals(
     getEffectSummaryForDeclaration(context, readBinary).directMask,
     INTERNAL_EFFECT_MASKS.hostIo | INTERNAL_EFFECT_MASKS.suspend,
   );
@@ -2846,6 +2934,14 @@ Deno.test('createAnalysisContext summarizes bundled node builtins precisely', as
     renamePathSync,
     copyPath,
     copyPathSync,
+    readLinkTarget,
+    readLinkTargetSync,
+    resolveRealPath,
+    resolveRealPathSync,
+    createSymlink,
+    createSymlinkSync,
+    unlinkPath,
+    unlinkPathSync,
     readBinary,
       readBinarySync,
       readDirectory,
