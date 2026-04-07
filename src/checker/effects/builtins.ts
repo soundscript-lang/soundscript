@@ -302,10 +302,11 @@ function getKnownBundledNodeFsBehavior(
   }
 
   if (
-    declarationName === 'copyFileSync' || declarationName === 'renameSync' ||
-    declarationName === 'symlinkSync' || declarationName === 'unlinkSync' ||
-    declarationName === 'writeFileSync' || declarationName === 'mkdirSync' ||
-    declarationName === 'rmSync'
+    declarationName === 'copyFileSync' || declarationName === 'cpSync' ||
+    declarationName === 'mkdtempSync' || declarationName === 'renameSync' ||
+    declarationName === 'symlinkSync' || declarationName === 'truncateSync' ||
+    declarationName === 'unlinkSync' || declarationName === 'writeFileSync' ||
+    declarationName === 'mkdirSync' || declarationName === 'rmSync'
   ) {
     return {
       directMask: INTERNAL_EFFECT_MASKS.hostIo | INTERNAL_EFFECT_MASKS.failsThrows |
@@ -387,9 +388,11 @@ function getKnownBundledNodeFsPromisesBehavior(
   }
 
   if (
-    declarationName === 'copyFile' || declarationName === 'rename' ||
-    declarationName === 'symlink' || declarationName === 'unlink' ||
-    declarationName === 'writeFile' || declarationName === 'mkdir' || declarationName === 'rm'
+    declarationName === 'copyFile' || declarationName === 'cp' ||
+    declarationName === 'mkdtemp' || declarationName === 'rename' ||
+    declarationName === 'symlink' || declarationName === 'truncate' ||
+    declarationName === 'unlink' || declarationName === 'writeFile' ||
+    declarationName === 'mkdir' || declarationName === 'rm'
   ) {
     return {
       directMask: INTERNAL_EFFECT_MASKS.hostIo | INTERNAL_EFFECT_MASKS.suspend |
