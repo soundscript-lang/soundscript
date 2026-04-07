@@ -139,6 +139,10 @@ function isBundledNodeTimersDeclarationFile(fileName: string): boolean {
   return normalizeFileName(fileName).endsWith('/__soundscript_externs__/node.timers.d.ts');
 }
 
+function isBundledNodeTimersPromisesDeclarationFile(fileName: string): boolean {
+  return normalizeFileName(fileName).endsWith('/__soundscript_externs__/node.timers.promises.d.ts');
+}
+
 function getKnownBundledDenoExternBehavior(
   ownerName: string | undefined,
   memberName: string | undefined,
@@ -299,16 +303,27 @@ function getKnownBundledNodeFsBehavior(
 function getKnownBundledNodeCryptoBehavior(
   declarationName: string | undefined,
 ): BuiltinCallBehavior | undefined {
-  if (declarationName === 'randomUUID' || declarationName === 'randomBytes') {
+  if (
+    declarationName === 'randomUUID' || declarationName === 'randomBytes' ||
+    declarationName === 'randomInt'
+  ) {
     return {
       directMask: INTERNAL_EFFECT_MASKS.hostRandom,
       forwardedArguments: [],
     };
   }
 
-  if (declarationName === 'getRandomValues') {
+  if (declarationName === 'getRandomValues' || declarationName === 'randomFillSync') {
     return {
       directMask: INTERNAL_EFFECT_MASKS.hostRandom | INTERNAL_EFFECT_MASKS.mut,
+      forwardedArguments: [],
+    };
+  }
+
+  if (declarationName === 'randomFill') {
+    return {
+      directMask: INTERNAL_EFFECT_MASKS.hostRandom | INTERNAL_EFFECT_MASKS.mut |
+        INTERNAL_EFFECT_MASKS.suspend,
       forwardedArguments: [],
     };
   }
@@ -369,6 +384,41 @@ function getKnownBundledNodeTimersBehavior(
   ) {
     return {
       directMask: INTERNAL_EFFECT_MASKS.hostTime,
+      forwardedArguments: [],
+    };
+  }
+
+  return undefined;
+}
+
+function getKnownBundledNodeTimersPromisesBehavior(
+  ownerName: string | undefined,
+  memberName: string | undefined,
+): BuiltinCallBehavior | undefined {
+  if (memberName === 'setImmediate' && ownerName === undefined) {
+    return {
+      directMask: INTERNAL_EFFECT_MASKS.hostInterop | INTERNAL_EFFECT_MASKS.suspend,
+      forwardedArguments: [],
+    };
+  }
+
+  if (memberName === 'setTimeout' && ownerName === undefined) {
+    return {
+      directMask: INTERNAL_EFFECT_MASKS.hostTime | INTERNAL_EFFECT_MASKS.suspend,
+      forwardedArguments: [],
+    };
+  }
+
+  if (ownerName === 'Scheduler' && memberName === 'wait') {
+    return {
+      directMask: INTERNAL_EFFECT_MASKS.hostTime | INTERNAL_EFFECT_MASKS.suspend,
+      forwardedArguments: [],
+    };
+  }
+
+  if (ownerName === 'Scheduler' && memberName === 'yield') {
+    return {
+      directMask: INTERNAL_EFFECT_MASKS.hostInterop | INTERNAL_EFFECT_MASKS.suspend,
       forwardedArguments: [],
     };
   }
@@ -1108,6 +1158,16 @@ export function getKnownPortableBuiltinBehavior(
     const nodeTimersBehavior = getKnownBundledNodeTimersBehavior(memberName);
     if (nodeTimersBehavior) {
       return nodeTimersBehavior;
+    }
+  }
+
+  if (sourceFileName && isBundledNodeTimersPromisesDeclarationFile(sourceFileName)) {
+    const nodeTimersPromisesBehavior = getKnownBundledNodeTimersPromisesBehavior(
+      ownerName,
+      memberName,
+    );
+    if (nodeTimersPromisesBehavior) {
+      return nodeTimersPromisesBehavior;
     }
   }
 

@@ -2232,8 +2232,11 @@ Deno.test('createAnalysisContext summarizes bundled node builtins precisely', as
       path: '__soundscript_externs__/node.crypto.d.ts',
       contents: [
         'declare module "node:crypto" {',
+        '  export function randomInt(max: number): number;',
         '  export function randomUUID(): string;',
         '  export function randomBytes(size: number): Buffer;',
+        '  export function randomFillSync<T extends Uint8Array<ArrayBufferLike>>(array: T): T;',
+        '  export function randomFill<T extends Uint8Array<ArrayBufferLike>>(array: T): Promise<T>;',
         '  export function getRandomValues<T extends DataView<ArrayBufferLike> | Uint8Array<ArrayBufferLike>>(array: T): T;',
         '}',
         '',
@@ -2255,13 +2258,29 @@ Deno.test('createAnalysisContext summarizes bundled node builtins precisely', as
       ].join('\n'),
     },
     {
+      path: '__soundscript_externs__/node.timers.promises.d.ts',
+      contents: [
+        'declare module "node:timers/promises" {',
+        '  export function setImmediate(): Promise<void>;',
+        '  export function setTimeout(delay?: number): Promise<void>;',
+        '  export interface Scheduler {',
+        '    wait(delay?: number): Promise<void>;',
+        '    yield(): Promise<void>;',
+        '  }',
+        '  export const scheduler: Scheduler;',
+        '}',
+        '',
+      ].join('\n'),
+    },
+    {
       path: 'src/index.ts',
       contents: [
-        'import { getRandomValues, randomBytes, randomUUID } from "node:crypto";',
+        'import { getRandomValues, randomBytes, randomFill, randomFillSync, randomInt, randomUUID } from "node:crypto";',
         'import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";',
         'import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";',
         'import { dirname, join } from "node:path";',
         'import { clearImmediate as clearModuleImmediate, clearInterval, clearTimeout, setImmediate as setModuleImmediate, setInterval, setTimeout } from "node:timers";',
+        'import { scheduler, setImmediate as waitImmediate, setTimeout as waitTimeout } from "node:timers/promises";',
         '',
         'export function currentWorkingDirectory(): string {',
         '  return process.cwd();',
@@ -2303,12 +2322,24 @@ Deno.test('createAnalysisContext summarizes bundled node builtins precisely', as
         '  return randomUUID();',
         '}',
         '',
+        'export function makeRandomInt(max: number): number {',
+        '  return randomInt(max);',
+        '}',
+        '',
         'export function makeRandomBytes(size: number): Buffer {',
         '  return randomBytes(size);',
         '}',
         '',
         'export function fillRandom(bytes: Uint8Array<ArrayBufferLike>): Uint8Array<ArrayBufferLike> {',
-        '  return getRandomValues(bytes);',
+          '  return getRandomValues(bytes);',
+        '}',
+        '',
+        'export function fillRandomSync(bytes: Uint8Array<ArrayBufferLike>): Uint8Array<ArrayBufferLike> {',
+        '  return randomFillSync(bytes);',
+        '}',
+        '',
+        'export function fillRandomAsync(bytes: Uint8Array<ArrayBufferLike>): Promise<Uint8Array<ArrayBufferLike>> {',
+        '  return randomFill(bytes);',
         '}',
         '',
         'export function scheduleModuleImmediate(callback: () => void): Immediate {',
@@ -2333,6 +2364,22 @@ Deno.test('createAnalysisContext summarizes bundled node builtins precisely', as
         '',
         'export function cancelInterval(handle: Timeout): void {',
         '  clearInterval(handle);',
+        '}',
+        '',
+        'export function awaitImmediate(): Promise<void> {',
+        '  return waitImmediate();',
+        '}',
+        '',
+        'export function awaitTimeout(): Promise<void> {',
+        '  return waitTimeout(10);',
+        '}',
+        '',
+        'export function waitOnScheduler(): Promise<void> {',
+        '  return scheduler.wait(10);',
+        '}',
+        '',
+        'export function yieldOnScheduler(): Promise<void> {',
+        '  return scheduler.yield();',
         '}',
         '',
         'export function readBinary(path: string): Promise<Uint8Array<ArrayBufferLike>> {',
@@ -2404,14 +2451,21 @@ Deno.test('createAnalysisContext summarizes bundled node builtins precisely', as
   const stringifyBuffer = declarationsByName.get('stringifyBuffer');
   const joinPath = declarationsByName.get('joinPath');
   const makeUuid = declarationsByName.get('makeUuid');
+  const makeRandomInt = declarationsByName.get('makeRandomInt');
   const makeRandomBytes = declarationsByName.get('makeRandomBytes');
   const fillRandom = declarationsByName.get('fillRandom');
+  const fillRandomSync = declarationsByName.get('fillRandomSync');
+  const fillRandomAsync = declarationsByName.get('fillRandomAsync');
   const scheduleModuleImmediate = declarationsByName.get('scheduleModuleImmediate');
   const cancelModuleImmediate = declarationsByName.get('cancelModuleImmediate');
   const scheduleTimeout = declarationsByName.get('scheduleTimeout');
   const cancelTimeout = declarationsByName.get('cancelTimeout');
   const scheduleInterval = declarationsByName.get('scheduleInterval');
   const cancelInterval = declarationsByName.get('cancelInterval');
+  const awaitImmediate = declarationsByName.get('awaitImmediate');
+  const awaitTimeout = declarationsByName.get('awaitTimeout');
+  const waitOnScheduler = declarationsByName.get('waitOnScheduler');
+  const yieldOnScheduler = declarationsByName.get('yieldOnScheduler');
   const readBinary = declarationsByName.get('readBinary');
   const readBinarySync = declarationsByName.get('readBinarySync');
   const readDirectory = declarationsByName.get('readDirectory');
@@ -2433,14 +2487,21 @@ Deno.test('createAnalysisContext summarizes bundled node builtins precisely', as
   assertExists(stringifyBuffer);
   assertExists(joinPath);
   assertExists(makeUuid);
+  assertExists(makeRandomInt);
   assertExists(makeRandomBytes);
   assertExists(fillRandom);
+  assertExists(fillRandomSync);
+  assertExists(fillRandomAsync);
   assertExists(scheduleModuleImmediate);
   assertExists(cancelModuleImmediate);
   assertExists(scheduleTimeout);
   assertExists(cancelTimeout);
   assertExists(scheduleInterval);
   assertExists(cancelInterval);
+  assertExists(awaitImmediate);
+  assertExists(awaitTimeout);
+  assertExists(waitOnScheduler);
+  assertExists(yieldOnScheduler);
   assertExists(readBinary);
   assertExists(readBinarySync);
   assertExists(readDirectory);
@@ -2479,12 +2540,25 @@ Deno.test('createAnalysisContext summarizes bundled node builtins precisely', as
     INTERNAL_EFFECT_MASKS.hostRandom,
   );
   assertEquals(
+    getEffectSummaryForDeclaration(context, makeRandomInt).directMask,
+    INTERNAL_EFFECT_MASKS.hostRandom,
+  );
+  assertEquals(
     getEffectSummaryForDeclaration(context, makeRandomBytes).directMask,
     INTERNAL_EFFECT_MASKS.hostRandom,
   );
   assertEquals(
     getEffectSummaryForDeclaration(context, fillRandom).directMask,
     INTERNAL_EFFECT_MASKS.hostRandom | INTERNAL_EFFECT_MASKS.mut,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, fillRandomSync).directMask,
+    INTERNAL_EFFECT_MASKS.hostRandom | INTERNAL_EFFECT_MASKS.mut,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, fillRandomAsync).directMask,
+    INTERNAL_EFFECT_MASKS.hostRandom | INTERNAL_EFFECT_MASKS.mut |
+      INTERNAL_EFFECT_MASKS.suspend,
   );
   assertEquals(
     getEffectSummaryForDeclaration(context, scheduleModuleImmediate).directMask,
@@ -2509,6 +2583,22 @@ Deno.test('createAnalysisContext summarizes bundled node builtins precisely', as
   assertEquals(
     getEffectSummaryForDeclaration(context, cancelInterval).directMask,
     INTERNAL_EFFECT_MASKS.hostTime,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, awaitImmediate).directMask,
+    INTERNAL_EFFECT_MASKS.hostInterop | INTERNAL_EFFECT_MASKS.suspend,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, awaitTimeout).directMask,
+    INTERNAL_EFFECT_MASKS.hostTime | INTERNAL_EFFECT_MASKS.suspend,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, waitOnScheduler).directMask,
+    INTERNAL_EFFECT_MASKS.hostTime | INTERNAL_EFFECT_MASKS.suspend,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, yieldOnScheduler).directMask,
+    INTERNAL_EFFECT_MASKS.hostInterop | INTERNAL_EFFECT_MASKS.suspend,
   );
   assertEquals(
     getEffectSummaryForDeclaration(context, readBinary).directMask,
@@ -2562,16 +2652,23 @@ Deno.test('createAnalysisContext summarizes bundled node builtins precisely', as
       concatBuffers,
       stringifyBuffer,
       joinPath,
-      makeUuid,
-      makeRandomBytes,
-      fillRandom,
-      scheduleModuleImmediate,
-      cancelModuleImmediate,
-      scheduleTimeout,
-      cancelTimeout,
-      scheduleInterval,
-      cancelInterval,
-      readBinary,
+    makeUuid,
+    makeRandomInt,
+    makeRandomBytes,
+    fillRandom,
+    fillRandomSync,
+    fillRandomAsync,
+    scheduleModuleImmediate,
+    cancelModuleImmediate,
+    scheduleTimeout,
+    cancelTimeout,
+    scheduleInterval,
+    cancelInterval,
+    awaitImmediate,
+    awaitTimeout,
+    waitOnScheduler,
+    yieldOnScheduler,
+    readBinary,
       readBinarySync,
       readDirectory,
       readDirectorySync,
