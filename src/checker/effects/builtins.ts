@@ -115,6 +115,22 @@ function isBundledDenoExternDeclarationFile(fileName: string): boolean {
   return normalizeFileName(fileName).endsWith('/__soundscript_externs__/deno.global.d.ts');
 }
 
+function isBundledNodeFsDeclarationFile(fileName: string): boolean {
+  return normalizeFileName(fileName).endsWith('/__soundscript_externs__/node.fs.d.ts');
+}
+
+function isBundledNodeFsPromisesDeclarationFile(fileName: string): boolean {
+  return normalizeFileName(fileName).endsWith('/__soundscript_externs__/node.fs.promises.d.ts');
+}
+
+function isBundledNodeGlobalDeclarationFile(fileName: string): boolean {
+  return normalizeFileName(fileName).endsWith('/__soundscript_externs__/node.global.d.ts');
+}
+
+function isBundledNodePathDeclarationFile(fileName: string): boolean {
+  return normalizeFileName(fileName).endsWith('/__soundscript_externs__/node.path.d.ts');
+}
+
 function getKnownBundledDenoExternBehavior(
   ownerName: string | undefined,
   memberName: string | undefined,
@@ -196,6 +212,114 @@ function getKnownBundledDenoExternBehavior(
         forwardedArguments: [],
       };
     }
+  }
+
+  return undefined;
+}
+
+function getKnownBundledNodeGlobalBehavior(
+  ownerName: string | undefined,
+  memberName: string | undefined,
+): BuiltinCallBehavior | undefined {
+  if (ownerName === 'Process') {
+    if (memberName === 'cwd') {
+      return {
+        directMask: INTERNAL_EFFECT_MASKS.hostInterop,
+        forwardedArguments: [],
+      };
+    }
+
+    if (memberName === 'chdir') {
+      return {
+        directMask: INTERNAL_EFFECT_MASKS.hostInterop | INTERNAL_EFFECT_MASKS.failsThrows |
+          INTERNAL_EFFECT_MASKS.mut,
+        forwardedArguments: [],
+      };
+    }
+  }
+
+  if (ownerName === 'Buffer') {
+    if (memberName === 'alloc' || memberName === 'concat' || memberName === 'from') {
+      return {
+        directMask: 0,
+        forwardedArguments: [],
+      };
+    }
+  }
+
+  if (memberName === 'setImmediate' || memberName === 'clearImmediate') {
+    return {
+      directMask: INTERNAL_EFFECT_MASKS.hostInterop,
+      forwardedArguments: [],
+    };
+  }
+
+  if (ownerName === 'Buffer' && memberName === 'toString') {
+    return {
+      directMask: 0,
+      forwardedArguments: [],
+    };
+  }
+
+  return undefined;
+}
+
+function getKnownBundledNodeFsBehavior(
+  declarationName: string | undefined,
+): BuiltinCallBehavior | undefined {
+  if (declarationName === 'readFileSync' || declarationName === 'readdirSync') {
+    return {
+      directMask: INTERNAL_EFFECT_MASKS.hostIo | INTERNAL_EFFECT_MASKS.failsThrows,
+      forwardedArguments: [],
+    };
+  }
+
+  if (
+    declarationName === 'writeFileSync' || declarationName === 'mkdirSync' ||
+    declarationName === 'rmSync'
+  ) {
+    return {
+      directMask: INTERNAL_EFFECT_MASKS.hostIo | INTERNAL_EFFECT_MASKS.failsThrows |
+        INTERNAL_EFFECT_MASKS.mut,
+      forwardedArguments: [],
+    };
+  }
+
+  return undefined;
+}
+
+function getKnownBundledNodeFsPromisesBehavior(
+  declarationName: string | undefined,
+): BuiltinCallBehavior | undefined {
+  if (declarationName === 'readFile' || declarationName === 'readdir') {
+    return {
+      directMask: INTERNAL_EFFECT_MASKS.hostIo | INTERNAL_EFFECT_MASKS.suspend,
+      forwardedArguments: [],
+    };
+  }
+
+  if (declarationName === 'writeFile' || declarationName === 'mkdir' || declarationName === 'rm') {
+    return {
+      directMask: INTERNAL_EFFECT_MASKS.hostIo | INTERNAL_EFFECT_MASKS.suspend |
+        INTERNAL_EFFECT_MASKS.mut,
+      forwardedArguments: [],
+    };
+  }
+
+  return undefined;
+}
+
+function getKnownBundledNodePathBehavior(
+  declarationName: string | undefined,
+): BuiltinCallBehavior | undefined {
+  if (
+    declarationName === 'basename' || declarationName === 'dirname' ||
+    declarationName === 'extname' || declarationName === 'join' || declarationName === 'resolve'
+  ) {
+    return {
+      directMask: 0,
+      forwardedArguments: [],
+    };
   }
 
   return undefined;
@@ -891,6 +1015,34 @@ export function getKnownPortableBuiltinBehavior(
     const denoExternBehavior = getKnownBundledDenoExternBehavior(ownerName, memberName);
     if (denoExternBehavior) {
       return denoExternBehavior;
+    }
+  }
+
+  if (sourceFileName && isBundledNodeGlobalDeclarationFile(sourceFileName)) {
+    const nodeGlobalBehavior = getKnownBundledNodeGlobalBehavior(ownerName, memberName);
+    if (nodeGlobalBehavior) {
+      return nodeGlobalBehavior;
+    }
+  }
+
+  if (sourceFileName && isBundledNodeFsDeclarationFile(sourceFileName)) {
+    const nodeFsBehavior = getKnownBundledNodeFsBehavior(memberName);
+    if (nodeFsBehavior) {
+      return nodeFsBehavior;
+    }
+  }
+
+  if (sourceFileName && isBundledNodeFsPromisesDeclarationFile(sourceFileName)) {
+    const nodeFsPromisesBehavior = getKnownBundledNodeFsPromisesBehavior(memberName);
+    if (nodeFsPromisesBehavior) {
+      return nodeFsPromisesBehavior;
+    }
+  }
+
+  if (sourceFileName && isBundledNodePathDeclarationFile(sourceFileName)) {
+    const nodePathBehavior = getKnownBundledNodePathBehavior(memberName);
+    if (nodePathBehavior) {
+      return nodePathBehavior;
     }
   }
 

@@ -2137,6 +2137,329 @@ Deno.test('createAnalysisContext summarizes bundled deno extern builtins precise
   assertEquals(getEffectSummaryForDeclaration(context, changeDirectory).hasUnknownDirectEffects, false);
 });
 
+Deno.test('createAnalysisContext summarizes bundled node builtins precisely', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+          },
+          include: ['src/**/*.ts', '__soundscript_externs__/**/*.d.ts'],
+        },
+        null,
+        2,
+      ),
+    },
+    {
+      path: '__soundscript_externs__/node.global.d.ts',
+      contents: [
+        'interface ProcessEnv {',
+        '  [key: string]: string | undefined;',
+        '}',
+        '',
+        'interface Process {',
+        '  readonly argv: readonly string[];',
+        '  readonly env: ProcessEnv;',
+        '  chdir(directory: string): void;',
+        '  cwd(): string;',
+        '}',
+        '',
+        'declare const process: Process;',
+        '',
+        'interface Immediate {}',
+        '',
+        'declare function setImmediate(callback: (...args: unknown[]) => void): Immediate;',
+        'declare function clearImmediate(handle: Immediate): void;',
+        '',
+        'interface Buffer extends Uint8Array<ArrayBufferLike> {',
+        '  toString(encoding?: string): string;',
+        '}',
+        '',
+        'declare const Buffer: {',
+        '  alloc(size: number): Buffer;',
+        '  from(',
+        '    data: string | ArrayLike<number> | ArrayBufferLike | ArrayBufferView<ArrayBufferLike>,',
+        '  ): Buffer;',
+        '  concat(list: readonly ArrayBufferView<ArrayBufferLike>[]): Buffer;',
+        '};',
+        '',
+      ].join('\n'),
+    },
+    {
+      path: '__soundscript_externs__/node.fs.d.ts',
+      contents: [
+        'declare module "node:fs" {',
+        '  export function readFileSync(path: string): Uint8Array<ArrayBufferLike>;',
+        '  export function readdirSync(path: string): string[];',
+        '  export function writeFileSync(path: string, data: string | Uint8Array<ArrayBufferLike>): void;',
+        '  export function mkdirSync(path: string): void;',
+        '  export function rmSync(path: string): void;',
+        '}',
+        '',
+      ].join('\n'),
+    },
+    {
+      path: '__soundscript_externs__/node.fs.promises.d.ts',
+      contents: [
+        'declare module "node:fs/promises" {',
+        '  export function readFile(path: string): Promise<Uint8Array<ArrayBufferLike>>;',
+        '  export function readdir(path: string): Promise<string[]>;',
+        '  export function writeFile(path: string, data: string | Uint8Array<ArrayBufferLike>): Promise<void>;',
+        '  export function mkdir(path: string): Promise<void>;',
+        '  export function rm(path: string): Promise<void>;',
+        '}',
+        '',
+      ].join('\n'),
+    },
+    {
+      path: '__soundscript_externs__/node.path.d.ts',
+      contents: [
+        'declare module "node:path" {',
+        '  export function basename(path: string): string;',
+        '  export function dirname(path: string): string;',
+        '  export function join(...paths: readonly string[]): string;',
+        '  export function resolve(...paths: readonly string[]): string;',
+        '}',
+        '',
+      ].join('\n'),
+    },
+    {
+      path: 'src/index.ts',
+      contents: [
+        'import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";',
+        'import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";',
+        'import { dirname, join } from "node:path";',
+        '',
+        'export function currentWorkingDirectory(): string {',
+        '  return process.cwd();',
+        '}',
+        '',
+        'export function changeDirectory(path: string): void {',
+        '  process.chdir(path);',
+        '}',
+        '',
+        'export function scheduleImmediate(callback: () => void): Immediate {',
+        '  return setImmediate(callback);',
+        '}',
+        '',
+        'export function cancelImmediate(handle: Immediate): void {',
+        '  clearImmediate(handle);',
+        '}',
+        '',
+        'export function makeBuffer(value: string): Buffer {',
+        '  return Buffer.from(value);',
+        '}',
+        '',
+        'export function allocateBuffer(size: number): Buffer {',
+        '  return Buffer.alloc(size);',
+        '}',
+        '',
+        'export function concatBuffers(a: Uint8Array<ArrayBufferLike>, b: Uint8Array<ArrayBufferLike>): Buffer {',
+        '  return Buffer.concat([a, b]);',
+        '}',
+        '',
+        'export function stringifyBuffer(value: Buffer): string {',
+        '  return value.toString();',
+        '}',
+        '',
+        'export function joinPath(left: string, right: string): string {',
+        '  return join(dirname(left), right);',
+        '}',
+        '',
+        'export function readBinary(path: string): Promise<Uint8Array<ArrayBufferLike>> {',
+        '  return readFile(path);',
+        '}',
+        '',
+        'export function readBinarySync(path: string): Uint8Array<ArrayBufferLike> {',
+        '  return readFileSync(path);',
+        '}',
+        '',
+        'export function readDirectory(path: string): Promise<string[]> {',
+        '  return readdir(path);',
+        '}',
+        '',
+        'export function readDirectorySync(path: string): string[] {',
+        '  return readdirSync(path);',
+        '}',
+        '',
+        'export function writeBinary(path: string, data: Uint8Array<ArrayBufferLike>): Promise<void> {',
+        '  return writeFile(path, data);',
+        '}',
+        '',
+        'export function writeBinarySync(path: string, data: Uint8Array<ArrayBufferLike>): void {',
+        '  writeFileSync(path, data);',
+        '}',
+        '',
+        'export function makeDirectory(path: string): Promise<void> {',
+        '  return mkdir(path);',
+        '}',
+        '',
+        'export function makeDirectorySync(path: string): void {',
+        '  mkdirSync(path);',
+        '}',
+        '',
+        'export function removePath(path: string): Promise<void> {',
+        '  return rm(path);',
+        '}',
+        '',
+        'export function removePathSync(path: string): void {',
+        '  rmSync(path);',
+        '}',
+        '',
+      ].join('\n'),
+    },
+  ]);
+  const projectPath = join(tempDirectory, 'tsconfig.json');
+  const program = loadProgram(projectPath);
+  const context = createAnalysisContext({ program, workingDirectory: tempDirectory });
+  const sourceFile = context.getSourceFiles().find((file) => file.fileName.endsWith('/src/index.ts'));
+
+  assertExists(sourceFile);
+
+  const declarationsByName = new Map(
+    sourceFile.statements
+      .filter(ts.isFunctionDeclaration)
+      .filter((declaration): declaration is ts.FunctionDeclaration & { name: ts.Identifier } =>
+        declaration.name !== undefined
+      )
+      .map((declaration) => [declaration.name.text, declaration]),
+  );
+
+  const currentWorkingDirectory = declarationsByName.get('currentWorkingDirectory');
+  const changeDirectory = declarationsByName.get('changeDirectory');
+  const scheduleImmediate = declarationsByName.get('scheduleImmediate');
+  const cancelImmediate = declarationsByName.get('cancelImmediate');
+  const makeBuffer = declarationsByName.get('makeBuffer');
+  const allocateBuffer = declarationsByName.get('allocateBuffer');
+  const concatBuffers = declarationsByName.get('concatBuffers');
+  const stringifyBuffer = declarationsByName.get('stringifyBuffer');
+  const joinPath = declarationsByName.get('joinPath');
+  const readBinary = declarationsByName.get('readBinary');
+  const readBinarySync = declarationsByName.get('readBinarySync');
+  const readDirectory = declarationsByName.get('readDirectory');
+  const readDirectorySync = declarationsByName.get('readDirectorySync');
+  const writeBinary = declarationsByName.get('writeBinary');
+  const writeBinarySync = declarationsByName.get('writeBinarySync');
+  const makeDirectory = declarationsByName.get('makeDirectory');
+  const makeDirectorySync = declarationsByName.get('makeDirectorySync');
+  const removePath = declarationsByName.get('removePath');
+  const removePathSync = declarationsByName.get('removePathSync');
+
+  assertExists(currentWorkingDirectory);
+  assertExists(changeDirectory);
+  assertExists(scheduleImmediate);
+  assertExists(cancelImmediate);
+  assertExists(makeBuffer);
+  assertExists(allocateBuffer);
+  assertExists(concatBuffers);
+  assertExists(stringifyBuffer);
+  assertExists(joinPath);
+  assertExists(readBinary);
+  assertExists(readBinarySync);
+  assertExists(readDirectory);
+  assertExists(readDirectorySync);
+  assertExists(writeBinary);
+  assertExists(writeBinarySync);
+  assertExists(makeDirectory);
+  assertExists(makeDirectorySync);
+  assertExists(removePath);
+  assertExists(removePathSync);
+
+  assertEquals(
+    getEffectSummaryForDeclaration(context, currentWorkingDirectory).directMask,
+    INTERNAL_EFFECT_MASKS.hostInterop,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, changeDirectory).directMask,
+    INTERNAL_EFFECT_MASKS.hostInterop | INTERNAL_EFFECT_MASKS.failsThrows |
+      INTERNAL_EFFECT_MASKS.mut,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, scheduleImmediate).directMask,
+    INTERNAL_EFFECT_MASKS.hostInterop,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, cancelImmediate).directMask,
+    INTERNAL_EFFECT_MASKS.hostInterop,
+  );
+  assertEquals(getEffectSummaryForDeclaration(context, makeBuffer).directMask, 0);
+  assertEquals(getEffectSummaryForDeclaration(context, allocateBuffer).directMask, 0);
+  assertEquals(getEffectSummaryForDeclaration(context, concatBuffers).directMask, 0);
+  assertEquals(getEffectSummaryForDeclaration(context, stringifyBuffer).directMask, 0);
+  assertEquals(getEffectSummaryForDeclaration(context, joinPath).directMask, 0);
+  assertEquals(
+    getEffectSummaryForDeclaration(context, readBinary).directMask,
+    INTERNAL_EFFECT_MASKS.hostIo | INTERNAL_EFFECT_MASKS.suspend,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, readBinarySync).directMask,
+    INTERNAL_EFFECT_MASKS.hostIo | INTERNAL_EFFECT_MASKS.failsThrows,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, readDirectory).directMask,
+    INTERNAL_EFFECT_MASKS.hostIo | INTERNAL_EFFECT_MASKS.suspend,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, readDirectorySync).directMask,
+    INTERNAL_EFFECT_MASKS.hostIo | INTERNAL_EFFECT_MASKS.failsThrows,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, writeBinary).directMask,
+    INTERNAL_EFFECT_MASKS.hostIo | INTERNAL_EFFECT_MASKS.suspend | INTERNAL_EFFECT_MASKS.mut,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, writeBinarySync).directMask,
+    INTERNAL_EFFECT_MASKS.hostIo | INTERNAL_EFFECT_MASKS.failsThrows | INTERNAL_EFFECT_MASKS.mut,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, makeDirectory).directMask,
+    INTERNAL_EFFECT_MASKS.hostIo | INTERNAL_EFFECT_MASKS.suspend | INTERNAL_EFFECT_MASKS.mut,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, makeDirectorySync).directMask,
+    INTERNAL_EFFECT_MASKS.hostIo | INTERNAL_EFFECT_MASKS.failsThrows | INTERNAL_EFFECT_MASKS.mut,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, removePath).directMask,
+    INTERNAL_EFFECT_MASKS.hostIo | INTERNAL_EFFECT_MASKS.suspend | INTERNAL_EFFECT_MASKS.mut,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, removePathSync).directMask,
+    INTERNAL_EFFECT_MASKS.hostIo | INTERNAL_EFFECT_MASKS.failsThrows | INTERNAL_EFFECT_MASKS.mut,
+  );
+
+  for (
+    const declaration of [
+      currentWorkingDirectory,
+      changeDirectory,
+      scheduleImmediate,
+      cancelImmediate,
+      makeBuffer,
+      allocateBuffer,
+      concatBuffers,
+      stringifyBuffer,
+      joinPath,
+      readBinary,
+      readBinarySync,
+      readDirectory,
+      readDirectorySync,
+      writeBinary,
+      writeBinarySync,
+      makeDirectory,
+      makeDirectorySync,
+      removePath,
+      removePathSync,
+    ]
+  ) {
+    assertEquals(getEffectSummaryForDeclaration(context, declaration).hasUnknownDirectEffects, false);
+  }
+});
+
 Deno.test('createAnalysisContext reaches a fixpoint for recursive effect summaries', async () => {
   const tempDirectory = await createTempProject([
     {
