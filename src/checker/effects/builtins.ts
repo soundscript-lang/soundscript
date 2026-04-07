@@ -322,7 +322,7 @@ function getKnownBundledNodeCryptoBehavior(
   ownerName: string | undefined,
   declarationName: string | undefined,
 ): BuiltinCallBehavior | undefined {
-  if (declarationName === 'createHash') {
+  if (declarationName === 'createHash' || declarationName === 'createHmac') {
     return {
       directMask: INTERNAL_EFFECT_MASKS.failsThrows,
       forwardedArguments: [],
@@ -354,7 +354,7 @@ function getKnownBundledNodeCryptoBehavior(
     };
   }
 
-  if (ownerName === 'Hash') {
+  if (ownerName === 'Hash' || ownerName === 'Hmac') {
     if (declarationName === 'update') {
       return {
         directMask: INTERNAL_EFFECT_MASKS.failsThrows | INTERNAL_EFFECT_MASKS.mut,

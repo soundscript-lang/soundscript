@@ -2280,7 +2280,13 @@ Deno.test('createAnalysisContext summarizes bundled node builtins precisely', as
         '    digest(): Buffer;',
         '    digest(encoding: string): string;',
         '  }',
+        '  export interface Hmac {',
+        '    update(data: string | Uint8Array<ArrayBufferLike>): Hmac;',
+        '    digest(): Buffer;',
+        '    digest(encoding: string): string;',
+        '  }',
         '  export function createHash(algorithm: string): Hash;',
+        '  export function createHmac(algorithm: string, key: string): Hmac;',
         '  export function randomInt(max: number): number;',
         '  export function randomUUID(): string;',
         '  export function randomBytes(size: number): Buffer;',
@@ -2324,7 +2330,7 @@ Deno.test('createAnalysisContext summarizes bundled node builtins precisely', as
     {
       path: 'src/index.ts',
       contents: [
-        'import { createHash, getRandomValues, randomBytes, randomFill, randomFillSync, randomInt, randomUUID } from "node:crypto";',
+        'import { createHash, createHmac, getRandomValues, randomBytes, randomFill, randomFillSync, randomInt, randomUUID } from "node:crypto";',
         'import { Buffer as ModuleBuffer } from "node:buffer";',
         'import { access, appendFile, cp, copyFile, mkdir, mkdtemp, readFile, readlink, readdir, realpath, rename, rm, stat, symlink, truncate, unlink, writeFile } from "node:fs/promises";',
         'import { accessSync, appendFileSync, cpSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, truncateSync, unlinkSync, writeFileSync } from "node:fs";',
@@ -2384,6 +2390,10 @@ Deno.test('createAnalysisContext summarizes bundled node builtins precisely', as
         '  return createHash("sha256");',
         '}',
         '',
+        'export function makeHmac() {',
+        '  return createHmac("sha256", "key");',
+        '}',
+        '',
         'export function makeRandomInt(max: number): number {',
         '  return randomInt(max);',
         '}',
@@ -2414,6 +2424,18 @@ Deno.test('createAnalysisContext summarizes bundled node builtins precisely', as
         '  const hash = createHash("sha256");',
         '  hash.update(value);',
         '  return hash.digest("hex");',
+        '}',
+        '',
+        'export function hmacText(value: string): Buffer {',
+        '  const hmac = createHmac("sha256", "key");',
+        '  hmac.update(value);',
+        '  return hmac.digest();',
+        '}',
+        '',
+        'export function hmacTextHex(value: string): string {',
+        '  const hmac = createHmac("sha256", "key");',
+        '  hmac.update(value);',
+        '  return hmac.digest("hex");',
         '}',
         '',
         'export function scheduleModuleImmediate(callback: () => void): Immediate {',
@@ -2624,6 +2646,7 @@ Deno.test('createAnalysisContext summarizes bundled node builtins precisely', as
   const joinPath = declarationsByName.get('joinPath');
   const makeUuid = declarationsByName.get('makeUuid');
   const makeHasher = declarationsByName.get('makeHasher');
+  const makeHmac = declarationsByName.get('makeHmac');
   const makeRandomInt = declarationsByName.get('makeRandomInt');
   const makeRandomBytes = declarationsByName.get('makeRandomBytes');
   const fillRandom = declarationsByName.get('fillRandom');
@@ -2631,6 +2654,8 @@ Deno.test('createAnalysisContext summarizes bundled node builtins precisely', as
   const fillRandomAsync = declarationsByName.get('fillRandomAsync');
   const hashText = declarationsByName.get('hashText');
   const hashTextHex = declarationsByName.get('hashTextHex');
+  const hmacText = declarationsByName.get('hmacText');
+  const hmacTextHex = declarationsByName.get('hmacTextHex');
   const scheduleModuleImmediate = declarationsByName.get('scheduleModuleImmediate');
   const cancelModuleImmediate = declarationsByName.get('cancelModuleImmediate');
   const scheduleTimeout = declarationsByName.get('scheduleTimeout');
@@ -2689,6 +2714,7 @@ Deno.test('createAnalysisContext summarizes bundled node builtins precisely', as
   assertExists(joinPath);
   assertExists(makeUuid);
   assertExists(makeHasher);
+  assertExists(makeHmac);
   assertExists(makeRandomInt);
   assertExists(makeRandomBytes);
   assertExists(fillRandom);
@@ -2696,6 +2722,8 @@ Deno.test('createAnalysisContext summarizes bundled node builtins precisely', as
   assertExists(fillRandomAsync);
   assertExists(hashText);
   assertExists(hashTextHex);
+  assertExists(hmacText);
+  assertExists(hmacTextHex);
   assertExists(scheduleModuleImmediate);
   assertExists(cancelModuleImmediate);
   assertExists(scheduleTimeout);
@@ -2777,6 +2805,10 @@ Deno.test('createAnalysisContext summarizes bundled node builtins precisely', as
     INTERNAL_EFFECT_MASKS.failsThrows,
   );
   assertEquals(
+    getEffectSummaryForDeclaration(context, makeHmac).directMask,
+    INTERNAL_EFFECT_MASKS.failsThrows,
+  );
+  assertEquals(
     getEffectSummaryForDeclaration(context, makeRandomInt).directMask,
     INTERNAL_EFFECT_MASKS.hostRandom,
   );
@@ -2803,6 +2835,14 @@ Deno.test('createAnalysisContext summarizes bundled node builtins precisely', as
   );
   assertEquals(
     getEffectSummaryForDeclaration(context, hashTextHex).directMask,
+    INTERNAL_EFFECT_MASKS.failsThrows | INTERNAL_EFFECT_MASKS.mut,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, hmacText).directMask,
+    INTERNAL_EFFECT_MASKS.failsThrows | INTERNAL_EFFECT_MASKS.mut,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, hmacTextHex).directMask,
     INTERNAL_EFFECT_MASKS.failsThrows | INTERNAL_EFFECT_MASKS.mut,
   );
   assertEquals(
@@ -2997,6 +3037,7 @@ Deno.test('createAnalysisContext summarizes bundled node builtins precisely', as
     joinPath,
     makeUuid,
     makeHasher,
+    makeHmac,
     makeRandomInt,
     makeRandomBytes,
     fillRandom,
@@ -3004,6 +3045,8 @@ Deno.test('createAnalysisContext summarizes bundled node builtins precisely', as
     fillRandomAsync,
     hashText,
     hashTextHex,
+    hmacText,
+    hmacTextHex,
     scheduleModuleImmediate,
     cancelModuleImmediate,
     scheduleTimeout,
