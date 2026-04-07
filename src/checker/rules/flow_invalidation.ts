@@ -16,12 +16,12 @@ import type { FlowFactEnvironment } from './flow_facts.ts';
 
 import {
   type AnalysisState,
-  type BoundValue,
   appendSegment,
   arrayMutationCallAffectsNarrow,
   assignmentAffectsNarrow,
   bindFunctionBindingName,
   bindFunctionReceiverPath,
+  type BoundValue,
   cloneState,
   type FunctionBodyBindings,
   getCalledMember,
@@ -840,9 +840,7 @@ function getFunctionBodyCollectionCallback<
   bindingMap: ReadonlyMap<string, Binding>,
   getCallbackArgumentIndex: (binding: Binding) => number,
 ): ResolvedCollectionCallback<Binding> | undefined {
-  const binding = member
-    ? bindingMap.get(member)
-    : undefined;
+  const binding = member ? bindingMap.get(member) : undefined;
   if (!binding) {
     return undefined;
   }
@@ -874,9 +872,7 @@ function getStateCollectionCallback<
   bindingMap: ReadonlyMap<string, Binding>,
   getCallbackArgumentIndex: (binding: Binding) => number,
 ): ResolvedCollectionCallback<Binding> | undefined {
-  const binding = member
-    ? bindingMap.get(member)
-    : undefined;
+  const binding = member ? bindingMap.get(member) : undefined;
   if (!binding) {
     return undefined;
   }
@@ -914,6 +910,16 @@ function collectionCallbackAffectsNarrow(
     undefined,
     resolved.callbackBindings,
   );
+}
+
+function receiverPathAffectsMemberNarrow(
+  receiverPath: NormalizedPath | undefined,
+  narrowPath: NormalizedPath,
+): boolean {
+  return !!receiverPath &&
+    receiverPath.baseSymbol === narrowPath.baseSymbol &&
+    receiverPath.segments.length === 0 &&
+    narrowPath.segments.length > 0;
 }
 
 function arrayCallbackArgumentAffectsNarrow(
@@ -1391,24 +1397,13 @@ function functionLikeAffectsNarrow(
         }
 
         if (
-          ts.isElementAccessExpression(candidate.node.expression) ||
-          candidate.node.questionDotToken !== undefined
+          calledMember &&
+          receiverPathAffectsMemberNarrow(
+            normalizeFunctionBodyPath(context, calledMember.receiver, bindings),
+            narrowPath,
+          )
         ) {
-          const receiver = ts.isPropertyAccessExpression(candidate.node.expression) ||
-              ts.isElementAccessExpression(candidate.node.expression)
-            ? candidate.node.expression.expression
-            : undefined;
-          if (receiver) {
-            const receiverPath = normalizeFunctionBodyPath(context, receiver, bindings);
-            if (
-              receiverPath &&
-              receiverPath.baseSymbol === narrowPath.baseSymbol &&
-              receiverPath.segments.length === 0 &&
-              narrowPath.segments.length > 0
-            ) {
-              return true;
-            }
-          }
+          return true;
         }
 
         if (
@@ -1516,6 +1511,108 @@ function callPreservesNarrowing(
   const effects = getEffectCompositionForCallLike(context, node);
   return !effects.unknown &&
     (effects.mask & (PUBLIC_EFFECT_MASKS.mut | PUBLIC_EFFECT_MASKS.suspend)) === 0;
+}
+
+interface StateCallNarrowingOptions {
+  readonly includeCollectionCallbacks: boolean;
+  readonly opaqueArgumentAffectsNarrow: (argument: ts.Expression) => boolean;
+  readonly respectEffectPreservation: boolean;
+}
+
+function stateCallAffectsNarrow(
+  context: AnalysisContext,
+  node: ts.CallExpression,
+  narrowPath: NormalizedPath,
+  state: AnalysisState,
+  options: StateCallNarrowingOptions,
+): boolean {
+  const calledMember = getCalledMember(context, node.expression);
+  const receiverBinding = calledMember
+    ? getStateConstructedReceiverBinding(
+      context,
+      calledMember.receiver,
+      state,
+      'mutation',
+    )
+    : undefined;
+
+  if (
+    calledMember &&
+    arrayMutationCallAffectsNarrow(
+      context,
+      calledMember.receiver,
+      receiverBinding?.path,
+      calledMember.member,
+      calledMember.memberType,
+      narrowPath,
+    )
+  ) {
+    return true;
+  }
+
+  if (options.includeCollectionCallbacks && calledMember) {
+    if (
+      arrayCallbackExpressionAffectsNarrow(
+        context,
+        calledMember.receiver,
+        calledMember.member,
+        node,
+        narrowPath,
+        state,
+      ) ||
+      setCallbackExpressionAffectsNarrow(
+        context,
+        calledMember.receiver,
+        calledMember.member,
+        node,
+        narrowPath,
+        state,
+      ) ||
+      mapCallbackExpressionAffectsNarrow(
+        context,
+        calledMember.receiver,
+        calledMember.member,
+        node,
+        narrowPath,
+        state,
+      )
+    ) {
+      return true;
+    }
+  }
+
+  if (options.respectEffectPreservation && callPreservesNarrowing(context, node)) {
+    return false;
+  }
+
+  if (
+    calledMember &&
+    receiverPathAffectsMemberNarrow(
+      normalizeExpressionPath(context, calledMember.receiver, state),
+      narrowPath,
+    )
+  ) {
+    return true;
+  }
+
+  const calleeDeclaration = getFunctionLikeFromCallExpression(context, node);
+  if (
+    calleeDeclaration &&
+    functionLikeAffectsNarrow(
+      context,
+      calleeDeclaration,
+      node.arguments,
+      narrowPath,
+      state,
+      true,
+      receiverBinding,
+    )
+  ) {
+    return true;
+  }
+
+  return !calleeDeclaration &&
+    node.arguments.some((argument) => options.opaqueArgumentAffectsNarrow(argument));
 }
 
 function classInstanceMethodsAffectNarrow(
@@ -1668,77 +1765,18 @@ function escapingExpressionAffectsNarrow(
     }
 
     if (candidate.kind === 'call') {
-      const calledMember = getCalledMember(context, candidate.node.expression);
       if (
-        calledMember &&
-        arrayMutationCallAffectsNarrow(
+        stateCallAffectsNarrow(
           context,
-          calledMember.receiver,
-          normalizeExpressionPath(context, calledMember.receiver, state),
-          calledMember.member,
-          calledMember.memberType,
-          narrowPath,
-        )
-      ) {
-        return true;
-      }
-
-      if (
-        ts.isElementAccessExpression(candidate.node.expression) ||
-        candidate.node.questionDotToken !== undefined
-      ) {
-        const receiver = ts.isPropertyAccessExpression(candidate.node.expression) ||
-            ts.isElementAccessExpression(candidate.node.expression)
-          ? candidate.node.expression.expression
-          : undefined;
-        if (receiver) {
-          const receiverPath = normalizeExpressionPath(context, receiver, state);
-          if (
-            receiverPath &&
-            receiverPath.baseSymbol === narrowPath.baseSymbol &&
-            receiverPath.segments.length === 0 &&
-            narrowPath.segments.length > 0
-          ) {
-            return true;
-          }
-        }
-      }
-
-      const calleeDeclaration = getFunctionLikeFromCallExpression(context, candidate.node);
-      if (
-        calleeDeclaration &&
-        functionLikeAffectsNarrow(
-          context,
-          calleeDeclaration,
-          candidate.node.arguments,
+          candidate.node,
           narrowPath,
           state,
-          true,
-          calledMember
-            ? getStateConstructedReceiverBinding(
-              context,
-              calledMember.receiver,
-              state,
-              'mutation',
-            )
-            : undefined,
-          undefined,
-          activeDeclarations,
-        )
-      ) {
-        return true;
-      }
-
-      if (
-        !calleeDeclaration &&
-        candidate.node.arguments.some((argument) =>
-          opaqueArgumentExpressionAffectsNarrow(
-            context,
-            argument,
-            narrowPath,
-            state,
-            activeDeclarations,
-          )
+          {
+            includeCollectionCallbacks: false,
+            opaqueArgumentAffectsNarrow: (argument) =>
+              opaqueArgumentExpressionAffectsNarrow(context, argument, narrowPath, state),
+            respectEffectPreservation: false,
+          },
         )
       ) {
         return true;
@@ -2046,126 +2084,28 @@ export function statementAffectsNarrow(
     }
 
     if (candidate.kind === 'call') {
-      const calledMember = getCalledMember(context, candidate.node.expression);
-      const receiverBinding = calledMember
-        ? getStateConstructedReceiverBinding(
-          context,
-          calledMember.receiver,
-          state,
-          'mutation',
-        )
-        : undefined;
       if (
-        calledMember &&
-        arrayMutationCallAffectsNarrow(
+        stateCallAffectsNarrow(
           context,
-          calledMember.receiver,
-          receiverBinding?.path,
-          calledMember.member,
-          calledMember.memberType,
-          narrowPath,
-        )
-      ) {
-        return candidate.node;
-      }
-
-      if (
-        calledMember &&
-        arrayCallbackExpressionAffectsNarrow(
-          context,
-          calledMember.receiver,
-          calledMember.member,
           candidate.node,
           narrowPath,
           state,
+          {
+            includeCollectionCallbacks: true,
+            opaqueArgumentAffectsNarrow: (argument) => {
+              if (!opaqueArgumentExpressionAffectsNarrow(context, argument, narrowPath, state)) {
+                return false;
+              }
+
+              if (!ts.isReturnStatement(statement)) {
+                return true;
+              }
+
+              return !isExtractedReadOnlyReturnArgument(context, argument, state);
+            },
+            respectEffectPreservation: true,
+          },
         )
-      ) {
-        return candidate.node;
-      }
-
-      if (
-        calledMember &&
-        setCallbackExpressionAffectsNarrow(
-          context,
-          calledMember.receiver,
-          calledMember.member,
-          candidate.node,
-          narrowPath,
-          state,
-        )
-      ) {
-        return candidate.node;
-      }
-
-      if (
-        calledMember &&
-        mapCallbackExpressionAffectsNarrow(
-          context,
-          calledMember.receiver,
-          calledMember.member,
-          candidate.node,
-          narrowPath,
-          state,
-        )
-      ) {
-        return candidate.node;
-      }
-
-      if (callPreservesNarrowing(context, candidate.node)) {
-        continue;
-      }
-
-      if (
-        ts.isElementAccessExpression(candidate.node.expression) ||
-        candidate.node.questionDotToken !== undefined
-      ) {
-        const receiver = ts.isPropertyAccessExpression(candidate.node.expression) ||
-            ts.isElementAccessExpression(candidate.node.expression)
-          ? candidate.node.expression.expression
-          : undefined;
-        if (!receiver) {
-          continue;
-        }
-        const receiverPath = normalizeExpressionPath(context, receiver, state);
-        if (
-          receiverPath &&
-          receiverPath.baseSymbol === narrowPath.baseSymbol &&
-          receiverPath.segments.length === 0 &&
-          narrowPath.segments.length > 0
-        ) {
-          return candidate.node;
-        }
-      }
-
-      const calleeDeclaration = getFunctionLikeFromCallExpression(context, candidate.node);
-      if (
-        calleeDeclaration &&
-        functionLikeAffectsNarrow(
-          context,
-          calleeDeclaration,
-          candidate.node.arguments,
-          narrowPath,
-          state,
-          true,
-          receiverBinding,
-        )
-      ) {
-        return candidate.node;
-      }
-
-      if (
-        !calleeDeclaration &&
-        candidate.node.arguments.some((argument) => {
-          if (!opaqueArgumentExpressionAffectsNarrow(context, argument, narrowPath, state)) {
-            return false;
-          }
-
-          if (!ts.isReturnStatement(statement)) {
-            return true;
-          }
-
-          return !isExtractedReadOnlyReturnArgument(context, argument, state);
-        })
       ) {
         return candidate.node;
       }

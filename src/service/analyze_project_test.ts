@@ -8854,6 +8854,40 @@ Deno.test('analyzeProject preserves narrowing across collection callbacks that u
   assertEquals(result.diagnostics, []);
 });
 
+Deno.test('analyzeProject preserves narrowing when returning opaque calls with extracted readonly arguments', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/index.sts': [
+      'function use(box: { value: string | null }, project: (value: string) => string): string {',
+      '  if (box.value !== null) {',
+      '    return project(box.value);',
+      '  }',
+      '  return "";',
+      '}',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics, []);
+});
+
 Deno.test('analyzeProject preserves narrowing across deferred host schedulers', async () => {
   const tempDirectory = await createTempProject({
     'tsconfig.json': JSON.stringify(
