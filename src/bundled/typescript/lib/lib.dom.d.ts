@@ -4445,6 +4445,7 @@ interface Blob {
 
 declare var Blob: {
     prototype: Blob;
+    // #[effects(add: [])]
     new(blobParts?: BlobPart[], options?: BlobPropertyBag): Blob;
 };
 
@@ -31950,11 +31951,13 @@ interface TextDecoder extends TextDecoderCommon {
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/TextDecoder/decode)
      */
+    // #[effects(add: [fails.throws])]
     decode(input?: AllowSharedBufferSource, options?: TextDecodeOptions): string;
 }
 
 declare var TextDecoder: {
     prototype: TextDecoder;
+    // #[effects(add: [fails.throws])]
     new(label?: string, options?: TextDecoderOptions): TextDecoder;
 };
 
@@ -32005,17 +32008,20 @@ interface TextEncoder extends TextEncoderCommon {
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/TextEncoder/encode)
      */
+    // #[effects(add: [])]
     encode(input?: string): Uint8Array<ArrayBuffer>;
     /**
      * The **`TextEncoder.encodeInto()`** method takes a string to encode and a destination Uint8Array to put resulting UTF-8 encoded text into, and returns a dictionary object indicating the progress of the encoding.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/TextEncoder/encodeInto)
      */
+    // #[effects(add: [mut])]
     encodeInto(source: string, destination: Uint8Array<ArrayBufferLike>): TextEncoderEncodeIntoResult;
 }
 
 declare var TextEncoder: {
     prototype: TextEncoder;
+    // #[effects(add: [])]
     new(): TextEncoder;
 };
 
@@ -32848,6 +32854,7 @@ interface URL {
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/URL/href)
      */
     href: string;
+    // #[effects(add: [])]
     toString(): string;
     /**
      * The **`origin`** read-only property of the URL interface returns a string containing the Unicode serialization of the origin of the represented URL.
@@ -32902,35 +32909,41 @@ interface URL {
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/URL/toJSON)
      */
+    // #[effects(add: [])]
     toJSON(): string;
 }
 
 declare var URL: {
     prototype: URL;
+    // #[effects(add: [fails.throws])]
     new(url: string | URL, base?: string | URL): URL;
     /**
      * The **`URL.canParse()`** static method of the URL interface returns a boolean indicating whether or not an absolute URL, or a relative URL combined with a base URL, are parsable and valid.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/URL/canParse_static)
      */
+    // #[effects(add: [])]
     canParse(url: string | URL, base?: string | URL): boolean;
     /**
      * The **`createObjectURL()`** static method of the URL interface creates a string containing a URL representing the object given in the parameter.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/URL/createObjectURL_static)
      */
+    // #[effects(add: [host.browser.dom])]
     createObjectURL(obj: Blob | MediaSource): string;
     /**
      * The **`URL.parse()`** static method of the URL interface returns a newly created URL object representing the URL defined by the parameters.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/URL/parse_static)
      */
+    // #[effects(add: [])]
     parse(url: string | URL, base?: string | URL): URL | null;
     /**
      * The **`revokeObjectURL()`** static method of the URL interface releases an existing object URL which was previously created by calling Call this method when you've finished using an object URL to let the browser know not to keep the reference to the file any longer.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/URL/revokeObjectURL_static)
      */
+    // #[effects(add: [host.browser.dom])]
     revokeObjectURL(url: string): void;
 };
 
@@ -32954,49 +32967,59 @@ interface URLSearchParams {
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/URLSearchParams/append)
      */
+    // #[effects(add: [mut])]
     append(name: string, value: string): void;
     /**
      * The **`delete()`** method of the URLSearchParams interface deletes specified parameters and their associated value(s) from the list of all search parameters.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/URLSearchParams/delete)
      */
+    // #[effects(add: [mut])]
     delete(name: string, value?: string): void;
     /**
      * The **`get()`** method of the URLSearchParams interface returns the first value associated to the given search parameter.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/URLSearchParams/get)
      */
+    // #[effects(add: [])]
     get(name: string): string | null;
     /**
      * The **`getAll()`** method of the URLSearchParams interface returns all the values associated with a given search parameter as an array.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/URLSearchParams/getAll)
      */
+    // #[effects(add: [])]
     getAll(name: string): string[];
     /**
      * The **`has()`** method of the URLSearchParams interface returns a boolean value that indicates whether the specified parameter is in the search parameters.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/URLSearchParams/has)
      */
+    // #[effects(add: [])]
     has(name: string, value?: string): boolean;
     /**
      * The **`set()`** method of the URLSearchParams interface sets the value associated with a given search parameter to the given value.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/URLSearchParams/set)
      */
+    // #[effects(add: [mut])]
     set(name: string, value: string): void;
     /**
      * The **`URLSearchParams.sort()`** method sorts all key/value pairs contained in this object in place and returns `undefined`.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/URLSearchParams/sort)
      */
+    // #[effects(add: [mut])]
     sort(): void;
+    // #[effects(add: [])]
     toString(): string;
+    // #[effects(add: [], forward: [callbackfn])]
     forEach(callbackfn: (value: string, key: string, parent: URLSearchParams) => void, thisArg?: unknown): void;
 }
 
 declare var URLSearchParams: {
     prototype: URLSearchParams;
+    // #[effects(add: [])]
     new(init?: string[][] | Record<string, string> | string | URLSearchParams): URLSearchParams;
 };
 
@@ -38028,115 +38051,135 @@ interface Console {
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/console/assert_static)
      */
+    // #[effects(add: [host.ffi])]
     assert(condition?: boolean, ...data: unknown[]): void;
     /**
      * The **`console.clear()`** static method clears the console if possible.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/console/clear_static)
      */
+    // #[effects(add: [host.ffi])]
     clear(): void;
     /**
      * The **`console.count()`** static method logs the number of times that this particular call to `count()` has been called.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/console/count_static)
      */
+    // #[effects(add: [host.ffi])]
     count(label?: string): void;
     /**
      * The **`console.countReset()`** static method resets counter used with console/count_static.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/console/countReset_static)
      */
+    // #[effects(add: [host.ffi])]
     countReset(label?: string): void;
     /**
      * The **`console.debug()`** static method outputs a message to the console at the 'debug' log level.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/console/debug_static)
      */
+    // #[effects(add: [host.ffi])]
     debug(...data: unknown[]): void;
     /**
      * The **`console.dir()`** static method displays a list of the properties of the specified JavaScript object.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/console/dir_static)
      */
+    // #[effects(add: [host.ffi])]
     dir(item?: unknown, options?: unknown): void;
     /**
      * The **`console.dirxml()`** static method displays an interactive tree of the descendant elements of the specified XML/HTML element.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/console/dirxml_static)
      */
+    // #[effects(add: [host.ffi])]
     dirxml(...data: unknown[]): void;
     /**
      * The **`console.error()`** static method outputs a message to the console at the 'error' log level.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/console/error_static)
      */
+    // #[effects(add: [host.ffi])]
     error(...data: unknown[]): void;
     /**
      * The **`console.group()`** static method creates a new inline group in the Web console log, causing any subsequent console messages to be indented by an additional level, until console/groupEnd_static is called.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/console/group_static)
      */
+    // #[effects(add: [host.ffi])]
     group(...data: unknown[]): void;
     /**
      * The **`console.groupCollapsed()`** static method creates a new inline group in the console.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/console/groupCollapsed_static)
      */
+    // #[effects(add: [host.ffi])]
     groupCollapsed(...data: unknown[]): void;
     /**
      * The **`console.groupEnd()`** static method exits the current inline group in the console.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/console/groupEnd_static)
      */
+    // #[effects(add: [host.ffi])]
     groupEnd(): void;
     /**
      * The **`console.info()`** static method outputs a message to the console at the 'info' log level.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/console/info_static)
      */
+    // #[effects(add: [host.ffi])]
     info(...data: unknown[]): void;
     /**
      * The **`console.log()`** static method outputs a message to the console.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/console/log_static)
      */
+    // #[effects(add: [host.ffi])]
     log(...data: unknown[]): void;
     /**
      * The **`console.table()`** static method displays tabular data as a table.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/console/table_static)
      */
+    // #[effects(add: [host.ffi])]
     table(tabularData?: unknown, properties?: string[]): void;
     /**
      * The **`console.time()`** static method starts a timer you can use to track how long an operation takes.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/console/time_static)
      */
+    // #[effects(add: [host.ffi])]
     time(label?: string): void;
     /**
      * The **`console.timeEnd()`** static method stops a timer that was previously started by calling console/time_static.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/console/timeEnd_static)
      */
+    // #[effects(add: [host.ffi])]
     timeEnd(label?: string): void;
     /**
      * The **`console.timeLog()`** static method logs the current value of a timer that was previously started by calling console/time_static.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/console/timeLog_static)
      */
+    // #[effects(add: [host.ffi])]
     timeLog(label?: string, ...data: unknown[]): void;
+    // #[effects(add: [host.ffi])]
     timeStamp(label?: string): void;
     /**
      * The **`console.trace()`** static method outputs a stack trace to the console.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/console/trace_static)
      */
+    // #[effects(add: [host.ffi])]
     trace(...data: unknown[]): void;
     /**
      * The **`console.warn()`** static method outputs a warning message to the console at the 'warning' log level.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/console/warn_static)
      */
+    // #[effects(add: [host.ffi])]
     warn(...data: unknown[]): void;
 }
 

@@ -802,11 +802,7 @@ function summarizeForwardedArgumentInBody(
   memberPath: readonly string[],
 ): EffectComposition {
   if (!argument) {
-    return createEffectComposition(
-      [],
-      0,
-      [createEffectUnknownReason('unresolvedForwardedCallback')],
-    );
+    return createEffectComposition();
   }
 
   const memberName = memberPath.length === 1 ? memberPath[0] : undefined;
@@ -984,25 +980,24 @@ function recomputeBodyDeclarationSummary(
             boundaryTransform.handledEffects,
           );
         } else {
-          const builtin = getKnownBuiltinCallBehavior(context, node);
-          if (builtin) {
+          const resolvedSignature = context.checker.getResolvedSignature(node);
+          const resolvedDeclaration = resolvedSignature?.getDeclaration();
+          const signatureSummary = getEffectSummaryForSignature(context, resolvedSignature);
+          if (shouldUseDirectSignatureSummary(context, resolvedDeclaration, signatureSummary)) {
             appendSummaryDirectEffects(
               targetSummary,
-              builtin.directEffects ?? maskToStandardEffectNames(builtin.directMask),
+              applyContainingCallableBoundaryToEffects(signatureSummary.directEffects, asyncBoundary),
             );
-            appendSummaryUnknownDirectReasons(targetSummary, builtin.unknownDirectReasons);
-            for (const forwardedArgument of builtin.forwardedArguments) {
+            appendSummaryUnknownDirectReasons(targetSummary, signatureSummary.unknownDirectReasons);
+            for (const forwardedParameter of signatureSummary.forwardedParameters) {
               const forwarded = summarizeForwardedArgumentInBody(
                 context,
                 parameters,
-                node.arguments[forwardedArgument.argumentIndex],
+                node.arguments[forwardedParameter.parameterIndex],
                 targetForwardedParameters,
-                forwardedArgument.rewrites ??
-                  failureBoundaryToForwardTransform(forwardedArgument.failureBoundary).rewrites,
-                forwardedArgument.handledEffects ??
-                  failureBoundaryToForwardTransform(forwardedArgument.failureBoundary).handledEffects,
-                forwardedArgument.memberPath ??
-                  (forwardedArgument.memberName ? [forwardedArgument.memberName] : []),
+                forwardedParameter.rewrites,
+                forwardedParameter.handledEffects,
+                forwardedParameter.memberPath,
               );
               appendSummaryDirectEffects(
                 targetSummary,
@@ -1011,24 +1006,26 @@ function recomputeBodyDeclarationSummary(
               appendSummaryUnknownDirectReasons(targetSummary, forwarded.unknownReasons);
             }
           } else {
-            const resolvedSignature = context.checker.getResolvedSignature(node);
-            const resolvedDeclaration = resolvedSignature?.getDeclaration();
-            const signatureSummary = getEffectSummaryForSignature(context, resolvedSignature);
-            if (shouldUseDirectSignatureSummary(context, resolvedDeclaration, signatureSummary)) {
+            const builtin = getKnownBuiltinCallBehavior(context, node);
+            if (builtin) {
               appendSummaryDirectEffects(
                 targetSummary,
-                applyContainingCallableBoundaryToEffects(signatureSummary.directEffects, asyncBoundary),
+                builtin.directEffects ?? maskToStandardEffectNames(builtin.directMask),
               );
-              appendSummaryUnknownDirectReasons(targetSummary, signatureSummary.unknownDirectReasons);
-              for (const forwardedParameter of signatureSummary.forwardedParameters) {
+              appendSummaryUnknownDirectReasons(targetSummary, builtin.unknownDirectReasons);
+              for (const forwardedArgument of builtin.forwardedArguments) {
                 const forwarded = summarizeForwardedArgumentInBody(
                   context,
                   parameters,
-                  node.arguments[forwardedParameter.parameterIndex],
+                  node.arguments[forwardedArgument.argumentIndex],
                   targetForwardedParameters,
-                  forwardedParameter.rewrites,
-                  forwardedParameter.handledEffects,
-                  forwardedParameter.memberPath,
+                  forwardedArgument.rewrites ??
+                    failureBoundaryToForwardTransform(forwardedArgument.failureBoundary).rewrites,
+                  forwardedArgument.handledEffects ??
+                    failureBoundaryToForwardTransform(forwardedArgument.failureBoundary)
+                      .handledEffects,
+                  forwardedArgument.memberPath ??
+                    (forwardedArgument.memberName ? [forwardedArgument.memberName] : []),
                 );
                 appendSummaryDirectEffects(
                   targetSummary,

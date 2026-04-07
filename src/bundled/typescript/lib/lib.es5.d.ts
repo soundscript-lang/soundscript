@@ -1270,7 +1270,9 @@ interface JSON {
      * If a member contains nested objects, the nested objects are transformed before the parent object is.
      * @throws {SyntaxError} If `text` is not valid JSON.
      */
+    // #[effects(add: [fails.throws])]
     parse(text: string): JsonValue;
+    // #[effects(add: [fails.throws], forward: [reviver])]
     parse(text: string, reviver: (this: unknown, key: string, value: unknown) => unknown): unknown;
     /**
      * Converts a JavaScript value to a JavaScript Object Notation (JSON) string.
@@ -1279,6 +1281,7 @@ interface JSON {
      * @param space Adds indentation, white space, and line break characters to the return-value JSON text to make it easier to read.
      * @throws {TypeError} If a circular reference or a BigInt value is found.
      */
+    // #[effects(add: [fails.throws], forward: [replacer])]
     stringify(value: unknown, replacer: (this: unknown, key: string, value: unknown) => unknown, space?: string | number): string | undefined;
     /**
      * Converts a JavaScript value to a JavaScript Object Notation (JSON) string.
@@ -1287,6 +1290,7 @@ interface JSON {
      * @param space Adds indentation, white space, and line break characters to the return-value JSON text to make it easier to read.
      * @throws {TypeError} If a circular reference or a BigInt value is found.
      */
+    // #[effects(add: [fails.throws])]
     stringify<T>(value: T, replacer?: readonly (number | string)[] | null, space?: string | number): JsonStringifyResult<T>;
 }
 
