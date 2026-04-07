@@ -1699,6 +1699,177 @@ Deno.test('createAnalysisContext summarizes worker and socket builtins precisely
   assertEquals(getEffectSummaryForDeclaration(context, closeEventStream).hasUnknownDirectEffects, false);
 });
 
+Deno.test('createAnalysisContext summarizes request and file builtins precisely', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+          },
+          include: ['src/**/*.ts'],
+        },
+        null,
+        2,
+      ),
+    },
+    {
+      path: 'src/index.ts',
+      contents: [
+        'export function buildEmptyFormData(): FormData {',
+        '  return new FormData();',
+        '}',
+        '',
+        'export function buildFormDataFromForm(form: HTMLFormElement): FormData {',
+        '  return new FormData(form);',
+        '}',
+        '',
+        'export function appendFormData(data: FormData, file: Blob): void {',
+        '  data.append("file", file);',
+        '}',
+        '',
+        'export function readFormData(data: FormData): FormDataEntryValue | null {',
+        '  return data.get("file");',
+        '}',
+        '',
+        'export function buildFileReader(): FileReader {',
+        '  return new FileReader();',
+        '}',
+        '',
+        'export function readFileText(reader: FileReader, blob: Blob): void {',
+        '  reader.readAsText(blob);',
+        '}',
+        '',
+        'export function abortFileRead(reader: FileReader): void {',
+        '  reader.abort();',
+        '}',
+        '',
+        'export function buildXmlHttpRequest(): XMLHttpRequest {',
+        '  return new XMLHttpRequest();',
+        '}',
+        '',
+        'export function openXmlHttpRequest(xhr: XMLHttpRequest, url: string): void {',
+        '  xhr.open("GET", url);',
+        '}',
+        '',
+        'export function setXmlHttpRequestHeader(xhr: XMLHttpRequest): void {',
+        '  xhr.setRequestHeader("x-test", "1");',
+        '}',
+        '',
+        'export function sendXmlHttpRequest(xhr: XMLHttpRequest): void {',
+        '  xhr.send();',
+        '}',
+        '',
+        'export function abortXmlHttpRequest(xhr: XMLHttpRequest): void {',
+        '  xhr.abort();',
+        '}',
+        '',
+      ].join('\n'),
+    },
+  ]);
+  const projectPath = join(tempDirectory, 'tsconfig.json');
+  const program = loadProgram(projectPath);
+  const context = createAnalysisContext({ program, workingDirectory: tempDirectory });
+  const sourceFile = context.getSourceFiles().find((file) => file.fileName.endsWith('/src/index.ts'));
+
+  assertExists(sourceFile);
+
+  const declarationsByName = new Map(
+    sourceFile.statements
+      .filter(ts.isFunctionDeclaration)
+      .filter((declaration): declaration is ts.FunctionDeclaration & { name: ts.Identifier } =>
+        declaration.name !== undefined
+      )
+      .map((declaration) => [declaration.name.text, declaration]),
+  );
+
+  const buildEmptyFormData = declarationsByName.get('buildEmptyFormData');
+  const buildFormDataFromForm = declarationsByName.get('buildFormDataFromForm');
+  const appendFormData = declarationsByName.get('appendFormData');
+  const readFormData = declarationsByName.get('readFormData');
+  const buildFileReader = declarationsByName.get('buildFileReader');
+  const readFileText = declarationsByName.get('readFileText');
+  const abortFileRead = declarationsByName.get('abortFileRead');
+  const buildXmlHttpRequest = declarationsByName.get('buildXmlHttpRequest');
+  const openXmlHttpRequest = declarationsByName.get('openXmlHttpRequest');
+  const setXmlHttpRequestHeader = declarationsByName.get('setXmlHttpRequestHeader');
+  const sendXmlHttpRequest = declarationsByName.get('sendXmlHttpRequest');
+  const abortXmlHttpRequest = declarationsByName.get('abortXmlHttpRequest');
+
+  assertExists(buildEmptyFormData);
+  assertExists(buildFormDataFromForm);
+  assertExists(appendFormData);
+  assertExists(readFormData);
+  assertExists(buildFileReader);
+  assertExists(readFileText);
+  assertExists(abortFileRead);
+  assertExists(buildXmlHttpRequest);
+  assertExists(openXmlHttpRequest);
+  assertExists(setXmlHttpRequestHeader);
+  assertExists(sendXmlHttpRequest);
+  assertExists(abortXmlHttpRequest);
+
+  assertEquals(getEffectSummaryForDeclaration(context, buildEmptyFormData).directMask, 0);
+  assertEquals(
+    getEffectSummaryForDeclaration(context, buildFormDataFromForm).directMask,
+    INTERNAL_EFFECT_MASKS.hostDom,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, appendFormData).directMask,
+    INTERNAL_EFFECT_MASKS.mut,
+  );
+  assertEquals(getEffectSummaryForDeclaration(context, readFormData).directMask, 0);
+  assertEquals(
+    getEffectSummaryForDeclaration(context, buildFileReader).directMask,
+    INTERNAL_EFFECT_MASKS.hostInterop,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, readFileText).directMask,
+    INTERNAL_EFFECT_MASKS.hostIo | INTERNAL_EFFECT_MASKS.failsThrows,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, abortFileRead).directMask,
+    INTERNAL_EFFECT_MASKS.hostInterop,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, buildXmlHttpRequest).directMask,
+    INTERNAL_EFFECT_MASKS.hostInterop,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, openXmlHttpRequest).directMask,
+    INTERNAL_EFFECT_MASKS.hostIo | INTERNAL_EFFECT_MASKS.failsThrows,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, setXmlHttpRequestHeader).directMask,
+    INTERNAL_EFFECT_MASKS.hostIo | INTERNAL_EFFECT_MASKS.failsThrows | INTERNAL_EFFECT_MASKS.mut,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, sendXmlHttpRequest).directMask,
+    INTERNAL_EFFECT_MASKS.hostIo | INTERNAL_EFFECT_MASKS.failsThrows,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, abortXmlHttpRequest).directMask,
+    INTERNAL_EFFECT_MASKS.hostIo,
+  );
+
+  assertEquals(getEffectSummaryForDeclaration(context, buildEmptyFormData).hasUnknownDirectEffects, false);
+  assertEquals(getEffectSummaryForDeclaration(context, buildFormDataFromForm).hasUnknownDirectEffects, false);
+  assertEquals(getEffectSummaryForDeclaration(context, appendFormData).hasUnknownDirectEffects, false);
+  assertEquals(getEffectSummaryForDeclaration(context, readFormData).hasUnknownDirectEffects, false);
+  assertEquals(getEffectSummaryForDeclaration(context, buildFileReader).hasUnknownDirectEffects, false);
+  assertEquals(getEffectSummaryForDeclaration(context, readFileText).hasUnknownDirectEffects, false);
+  assertEquals(getEffectSummaryForDeclaration(context, abortFileRead).hasUnknownDirectEffects, false);
+  assertEquals(getEffectSummaryForDeclaration(context, buildXmlHttpRequest).hasUnknownDirectEffects, false);
+  assertEquals(getEffectSummaryForDeclaration(context, openXmlHttpRequest).hasUnknownDirectEffects, false);
+  assertEquals(getEffectSummaryForDeclaration(context, setXmlHttpRequestHeader).hasUnknownDirectEffects, false);
+  assertEquals(getEffectSummaryForDeclaration(context, sendXmlHttpRequest).hasUnknownDirectEffects, false);
+  assertEquals(getEffectSummaryForDeclaration(context, abortXmlHttpRequest).hasUnknownDirectEffects, false);
+});
+
 Deno.test('createAnalysisContext summarizes browser storage and navigation builtins precisely', async () => {
   const tempDirectory = await createTempProject([
     {

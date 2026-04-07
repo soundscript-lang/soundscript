@@ -995,6 +995,101 @@ function getKnownWorkerAndSocketBehavior(
   return undefined;
 }
 
+function getKnownRequestAndFileBehavior(
+  ownerName: string | undefined,
+  memberName: string | undefined,
+  expression: ts.CallExpression | ts.NewExpression,
+): BuiltinCallBehavior | undefined {
+  if (ts.isNewExpression(expression)) {
+    if (ownerName === 'FormData') {
+      return {
+        directMask: expression.arguments && expression.arguments.length > 0
+          ? INTERNAL_EFFECT_MASKS.hostDom
+          : 0,
+        forwardedArguments: [],
+      };
+    }
+
+    if (ownerName === 'FileReader' || ownerName === 'XMLHttpRequest') {
+      return {
+        directMask: INTERNAL_EFFECT_MASKS.hostInterop,
+        forwardedArguments: [],
+      };
+    }
+  }
+
+  if (ownerName === 'FormData') {
+    if (memberName === 'append' || memberName === 'delete' || memberName === 'set') {
+      return {
+        directMask: INTERNAL_EFFECT_MASKS.mut,
+        forwardedArguments: [],
+      };
+    }
+
+    if (
+      memberName === 'entries' || memberName === 'get' || memberName === 'getAll' ||
+      memberName === 'has' || memberName === 'keys' || memberName === 'values'
+    ) {
+      return {
+        directMask: 0,
+        forwardedArguments: [],
+      };
+    }
+
+    if (memberName === 'forEach' && ts.isCallExpression(expression) && expression.arguments.length > 0) {
+      return {
+        directMask: 0,
+        forwardedArguments: [{ argumentIndex: 0, failureBoundary: 'preserve' }],
+      };
+    }
+  }
+
+  if (ownerName === 'FileReader') {
+    if (
+      memberName === 'readAsArrayBuffer' || memberName === 'readAsBinaryString' ||
+      memberName === 'readAsDataURL' || memberName === 'readAsText'
+    ) {
+      return {
+        directMask: INTERNAL_EFFECT_MASKS.hostIo | INTERNAL_EFFECT_MASKS.failsThrows,
+        forwardedArguments: [],
+      };
+    }
+
+    if (memberName === 'abort') {
+      return {
+        directMask: INTERNAL_EFFECT_MASKS.hostInterop,
+        forwardedArguments: [],
+      };
+    }
+  }
+
+  if (ownerName === 'XMLHttpRequest') {
+    if (memberName === 'open' || memberName === 'send') {
+      return {
+        directMask: INTERNAL_EFFECT_MASKS.hostIo | INTERNAL_EFFECT_MASKS.failsThrows,
+        forwardedArguments: [],
+      };
+    }
+
+    if (memberName === 'setRequestHeader') {
+      return {
+        directMask: INTERNAL_EFFECT_MASKS.hostIo | INTERNAL_EFFECT_MASKS.failsThrows |
+          INTERNAL_EFFECT_MASKS.mut,
+        forwardedArguments: [],
+      };
+    }
+
+    if (memberName === 'abort') {
+      return {
+        directMask: INTERNAL_EFFECT_MASKS.hostIo,
+        forwardedArguments: [],
+      };
+    }
+  }
+
+  return undefined;
+}
+
 function isCallableExpression(context: AnalysisContext, expression: ts.Expression | undefined): boolean {
   if (!expression) {
     return false;
@@ -1275,6 +1370,11 @@ function getKnownPortableBuiltinBehavior(
     const workerAndSocketBehavior = getKnownWorkerAndSocketBehavior(ownerName, memberName, expression);
     if (workerAndSocketBehavior) {
       return workerAndSocketBehavior;
+    }
+
+    const requestAndFileBehavior = getKnownRequestAndFileBehavior(ownerName, memberName, expression);
+    if (requestAndFileBehavior) {
+      return requestAndFileBehavior;
     }
 
     if (

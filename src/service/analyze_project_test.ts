@@ -5515,6 +5515,90 @@ Deno.test('analyzeProject tracks worker and socket builtins under effect contrac
   ]);
 });
 
+Deno.test('analyzeProject tracks request and file builtins under effect contracts', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/index.sts': [
+      '// #[effects(forbid: [fails, suspend, mut, host])]',
+      'function buildEmptyFormData(): FormData {',
+      '  return new FormData();',
+      '}',
+      '',
+      '// #[effects(forbid: [host])]',
+      'function buildFormDataFromForm(form: HTMLFormElement): FormData {',
+      '  return new FormData(form);',
+      '}',
+      '',
+      '// #[effects(forbid: [mut])]',
+      'function appendFormData(data: FormData, file: Blob): void {',
+      '  data.append("file", file);',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function readFileText(reader: FileReader, blob: Blob): void {',
+      '  reader.readAsText(blob);',
+      '}',
+      '',
+      '// #[effects(forbid: [host])]',
+      'function buildFileReader(): FileReader {',
+      '  return new FileReader();',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function openXmlHttpRequest(xhr: XMLHttpRequest, url: string): void {',
+      '  xhr.open("GET", url);',
+      '}',
+      '',
+      '// #[effects(forbid: [mut])]',
+      'function setXmlHttpRequestHeader(xhr: XMLHttpRequest): void {',
+      '  xhr.setRequestHeader("x-test", "1");',
+      '}',
+      '',
+      '// #[effects(forbid: [host])]',
+      'function sendXmlHttpRequest(xhr: XMLHttpRequest): void {',
+      '  xhr.send();',
+      '}',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), [
+    'SOUND1040',
+    'SOUND1040',
+    'SOUND1040',
+    'SOUND1040',
+    'SOUND1040',
+    'SOUND1040',
+    'SOUND1040',
+  ]);
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.metadata?.primarySymbol), [
+    'buildFormDataFromForm',
+    'appendFormData',
+    'readFileText',
+    'buildFileReader',
+    'openXmlHttpRequest',
+    'setXmlHttpRequestHeader',
+    'sendXmlHttpRequest',
+  ]);
+});
+
 Deno.test('analyzeProject tracks browser storage and navigation builtins under effect contracts', async () => {
   const tempDirectory = await createTempProject({
     'tsconfig.json': JSON.stringify(
