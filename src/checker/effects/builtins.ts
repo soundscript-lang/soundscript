@@ -115,6 +115,10 @@ function isBundledDenoExternDeclarationFile(fileName: string): boolean {
   return normalizeFileName(fileName).endsWith('/__soundscript_externs__/deno.global.d.ts');
 }
 
+function isBundledNodeCryptoDeclarationFile(fileName: string): boolean {
+  return normalizeFileName(fileName).endsWith('/__soundscript_externs__/node.crypto.d.ts');
+}
+
 function isBundledNodeFsDeclarationFile(fileName: string): boolean {
   return normalizeFileName(fileName).endsWith('/__soundscript_externs__/node.fs.d.ts');
 }
@@ -129,6 +133,10 @@ function isBundledNodeGlobalDeclarationFile(fileName: string): boolean {
 
 function isBundledNodePathDeclarationFile(fileName: string): boolean {
   return normalizeFileName(fileName).endsWith('/__soundscript_externs__/node.path.d.ts');
+}
+
+function isBundledNodeTimersDeclarationFile(fileName: string): boolean {
+  return normalizeFileName(fileName).endsWith('/__soundscript_externs__/node.timers.d.ts');
 }
 
 function getKnownBundledDenoExternBehavior(
@@ -288,6 +296,26 @@ function getKnownBundledNodeFsBehavior(
   return undefined;
 }
 
+function getKnownBundledNodeCryptoBehavior(
+  declarationName: string | undefined,
+): BuiltinCallBehavior | undefined {
+  if (declarationName === 'randomUUID' || declarationName === 'randomBytes') {
+    return {
+      directMask: INTERNAL_EFFECT_MASKS.hostRandom,
+      forwardedArguments: [],
+    };
+  }
+
+  if (declarationName === 'getRandomValues') {
+    return {
+      directMask: INTERNAL_EFFECT_MASKS.hostRandom | INTERNAL_EFFECT_MASKS.mut,
+      forwardedArguments: [],
+    };
+  }
+
+  return undefined;
+}
+
 function getKnownBundledNodeFsPromisesBehavior(
   declarationName: string | undefined,
 ): BuiltinCallBehavior | undefined {
@@ -318,6 +346,29 @@ function getKnownBundledNodePathBehavior(
   ) {
     return {
       directMask: 0,
+      forwardedArguments: [],
+    };
+  }
+
+  return undefined;
+}
+
+function getKnownBundledNodeTimersBehavior(
+  declarationName: string | undefined,
+): BuiltinCallBehavior | undefined {
+  if (declarationName === 'setImmediate' || declarationName === 'clearImmediate') {
+    return {
+      directMask: INTERNAL_EFFECT_MASKS.hostInterop,
+      forwardedArguments: [],
+    };
+  }
+
+  if (
+    declarationName === 'setTimeout' || declarationName === 'clearTimeout' ||
+    declarationName === 'setInterval' || declarationName === 'clearInterval'
+  ) {
+    return {
+      directMask: INTERNAL_EFFECT_MASKS.hostTime,
       forwardedArguments: [],
     };
   }
@@ -1025,6 +1076,13 @@ export function getKnownPortableBuiltinBehavior(
     }
   }
 
+  if (sourceFileName && isBundledNodeCryptoDeclarationFile(sourceFileName)) {
+    const nodeCryptoBehavior = getKnownBundledNodeCryptoBehavior(memberName);
+    if (nodeCryptoBehavior) {
+      return nodeCryptoBehavior;
+    }
+  }
+
   if (sourceFileName && isBundledNodeFsDeclarationFile(sourceFileName)) {
     const nodeFsBehavior = getKnownBundledNodeFsBehavior(memberName);
     if (nodeFsBehavior) {
@@ -1043,6 +1101,13 @@ export function getKnownPortableBuiltinBehavior(
     const nodePathBehavior = getKnownBundledNodePathBehavior(memberName);
     if (nodePathBehavior) {
       return nodePathBehavior;
+    }
+  }
+
+  if (sourceFileName && isBundledNodeTimersDeclarationFile(sourceFileName)) {
+    const nodeTimersBehavior = getKnownBundledNodeTimersBehavior(memberName);
+    if (nodeTimersBehavior) {
+      return nodeTimersBehavior;
     }
   }
 

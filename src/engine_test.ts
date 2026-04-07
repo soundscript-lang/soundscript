@@ -2229,11 +2229,39 @@ Deno.test('createAnalysisContext summarizes bundled node builtins precisely', as
       ].join('\n'),
     },
     {
+      path: '__soundscript_externs__/node.crypto.d.ts',
+      contents: [
+        'declare module "node:crypto" {',
+        '  export function randomUUID(): string;',
+        '  export function randomBytes(size: number): Buffer;',
+        '  export function getRandomValues<T extends DataView<ArrayBufferLike> | Uint8Array<ArrayBufferLike>>(array: T): T;',
+        '}',
+        '',
+      ].join('\n'),
+    },
+    {
+      path: '__soundscript_externs__/node.timers.d.ts',
+      contents: [
+        'declare module "node:timers" {',
+        '  export interface Timeout {}',
+        '  export function setImmediate(callback: (...args: unknown[]) => void): Immediate;',
+        '  export function clearImmediate(handle: Immediate): void;',
+        '  export function setTimeout(callback: (...args: unknown[]) => void, delay?: number): Timeout;',
+        '  export function clearTimeout(handle: Timeout): void;',
+        '  export function setInterval(callback: (...args: unknown[]) => void, delay?: number): Timeout;',
+        '  export function clearInterval(handle: Timeout): void;',
+        '}',
+        '',
+      ].join('\n'),
+    },
+    {
       path: 'src/index.ts',
       contents: [
+        'import { getRandomValues, randomBytes, randomUUID } from "node:crypto";',
         'import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";',
         'import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";',
         'import { dirname, join } from "node:path";',
+        'import { clearImmediate as clearModuleImmediate, clearInterval, clearTimeout, setImmediate as setModuleImmediate, setInterval, setTimeout } from "node:timers";',
         '',
         'export function currentWorkingDirectory(): string {',
         '  return process.cwd();',
@@ -2269,6 +2297,42 @@ Deno.test('createAnalysisContext summarizes bundled node builtins precisely', as
         '',
         'export function joinPath(left: string, right: string): string {',
         '  return join(dirname(left), right);',
+        '}',
+        '',
+        'export function makeUuid(): string {',
+        '  return randomUUID();',
+        '}',
+        '',
+        'export function makeRandomBytes(size: number): Buffer {',
+        '  return randomBytes(size);',
+        '}',
+        '',
+        'export function fillRandom(bytes: Uint8Array<ArrayBufferLike>): Uint8Array<ArrayBufferLike> {',
+        '  return getRandomValues(bytes);',
+        '}',
+        '',
+        'export function scheduleModuleImmediate(callback: () => void): Immediate {',
+        '  return setModuleImmediate(callback);',
+        '}',
+        '',
+        'export function cancelModuleImmediate(handle: Immediate): void {',
+        '  clearModuleImmediate(handle);',
+        '}',
+        '',
+        'export function scheduleTimeout(callback: () => void): Timeout {',
+        '  return setTimeout(callback, 10);',
+        '}',
+        '',
+        'export function cancelTimeout(handle: Timeout): void {',
+        '  clearTimeout(handle);',
+        '}',
+        '',
+        'export function scheduleInterval(callback: () => void): Timeout {',
+        '  return setInterval(callback, 10);',
+        '}',
+        '',
+        'export function cancelInterval(handle: Timeout): void {',
+        '  clearInterval(handle);',
         '}',
         '',
         'export function readBinary(path: string): Promise<Uint8Array<ArrayBufferLike>> {',
@@ -2339,6 +2403,15 @@ Deno.test('createAnalysisContext summarizes bundled node builtins precisely', as
   const concatBuffers = declarationsByName.get('concatBuffers');
   const stringifyBuffer = declarationsByName.get('stringifyBuffer');
   const joinPath = declarationsByName.get('joinPath');
+  const makeUuid = declarationsByName.get('makeUuid');
+  const makeRandomBytes = declarationsByName.get('makeRandomBytes');
+  const fillRandom = declarationsByName.get('fillRandom');
+  const scheduleModuleImmediate = declarationsByName.get('scheduleModuleImmediate');
+  const cancelModuleImmediate = declarationsByName.get('cancelModuleImmediate');
+  const scheduleTimeout = declarationsByName.get('scheduleTimeout');
+  const cancelTimeout = declarationsByName.get('cancelTimeout');
+  const scheduleInterval = declarationsByName.get('scheduleInterval');
+  const cancelInterval = declarationsByName.get('cancelInterval');
   const readBinary = declarationsByName.get('readBinary');
   const readBinarySync = declarationsByName.get('readBinarySync');
   const readDirectory = declarationsByName.get('readDirectory');
@@ -2359,6 +2432,15 @@ Deno.test('createAnalysisContext summarizes bundled node builtins precisely', as
   assertExists(concatBuffers);
   assertExists(stringifyBuffer);
   assertExists(joinPath);
+  assertExists(makeUuid);
+  assertExists(makeRandomBytes);
+  assertExists(fillRandom);
+  assertExists(scheduleModuleImmediate);
+  assertExists(cancelModuleImmediate);
+  assertExists(scheduleTimeout);
+  assertExists(cancelTimeout);
+  assertExists(scheduleInterval);
+  assertExists(cancelInterval);
   assertExists(readBinary);
   assertExists(readBinarySync);
   assertExists(readDirectory);
@@ -2392,6 +2474,42 @@ Deno.test('createAnalysisContext summarizes bundled node builtins precisely', as
   assertEquals(getEffectSummaryForDeclaration(context, concatBuffers).directMask, 0);
   assertEquals(getEffectSummaryForDeclaration(context, stringifyBuffer).directMask, 0);
   assertEquals(getEffectSummaryForDeclaration(context, joinPath).directMask, 0);
+  assertEquals(
+    getEffectSummaryForDeclaration(context, makeUuid).directMask,
+    INTERNAL_EFFECT_MASKS.hostRandom,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, makeRandomBytes).directMask,
+    INTERNAL_EFFECT_MASKS.hostRandom,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, fillRandom).directMask,
+    INTERNAL_EFFECT_MASKS.hostRandom | INTERNAL_EFFECT_MASKS.mut,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, scheduleModuleImmediate).directMask,
+    INTERNAL_EFFECT_MASKS.hostInterop,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, cancelModuleImmediate).directMask,
+    INTERNAL_EFFECT_MASKS.hostInterop,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, scheduleTimeout).directMask,
+    INTERNAL_EFFECT_MASKS.hostTime,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, cancelTimeout).directMask,
+    INTERNAL_EFFECT_MASKS.hostTime,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, scheduleInterval).directMask,
+    INTERNAL_EFFECT_MASKS.hostTime,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, cancelInterval).directMask,
+    INTERNAL_EFFECT_MASKS.hostTime,
+  );
   assertEquals(
     getEffectSummaryForDeclaration(context, readBinary).directMask,
     INTERNAL_EFFECT_MASKS.hostIo | INTERNAL_EFFECT_MASKS.suspend,
@@ -2444,6 +2562,15 @@ Deno.test('createAnalysisContext summarizes bundled node builtins precisely', as
       concatBuffers,
       stringifyBuffer,
       joinPath,
+      makeUuid,
+      makeRandomBytes,
+      fillRandom,
+      scheduleModuleImmediate,
+      cancelModuleImmediate,
+      scheduleTimeout,
+      cancelTimeout,
+      scheduleInterval,
+      cancelInterval,
       readBinary,
       readBinarySync,
       readDirectory,
