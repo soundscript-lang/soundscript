@@ -20968,7 +20968,7 @@ interface MessagePort extends EventTarget, MessageEventTarget<MessagePort> {
      * The **`postMessage()`** method of the transfers ownership of objects to other browsing contexts.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/MessagePort/postMessage)
-     */
+    */
     // #[effects(add: [host.browser.message, fails.throws])]
     postMessage(message: unknown, transfer: Transferable[]): void;
     postMessage(message: unknown, options?: StructuredSerializeOptions): void;

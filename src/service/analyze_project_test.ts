@@ -5299,43 +5299,41 @@ Deno.test('analyzeProject accepts open dotted effects and forward transforms', a
   assertEquals(result.diagnostics, []);
 });
 
-Deno.test('analyzeProject accepts the checked-in transaction policy example', async () => {
-  const exampleDirectory = join(Deno.cwd(), 'examples/effects-transaction-policy');
-  assert((await Deno.stat(join(exampleDirectory, 'tsconfig.json'))).isFile);
-  assert((await Deno.stat(join(exampleDirectory, 'src/index.sts'))).isFile);
+Deno.test('analyzeProject allows bodyful add alongside inferred effects', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': createSoundscriptOnlyTsconfig(),
+    'src/index.sts': [
+      '// #[extern]',
+      '// #[effects(add: [host.io, host.node.fs, suspend.await])]',
+      'declare function readRemote(path: string): Promise<string>;',
+      '',
+      '// #[effects(add: [host.db.query])]',
+      'export async function taggedRead(path: string): Promise<string> {',
+      '  return await readRemote(path);',
+      '}',
+      '',
+    ].join('\n'),
+  });
+
   const result = await analyzeProject({
-    projectPath: join(exampleDirectory, 'tsconfig.json'),
-    workingDirectory: exampleDirectory,
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
   });
 
   assertEquals(result.diagnostics, []);
 });
 
-Deno.test('analyzeProject rejects host io inside db transaction callbacks', async () => {
+Deno.test('analyzeProject keeps inferred conflicts under bodyful add contracts', async () => {
   const tempDirectory = await createTempProject({
     'tsconfig.json': createSoundscriptOnlyTsconfig(),
     'src/index.sts': [
       '// #[extern]',
-      '// #[effects(add: [host.db.query, suspend.await])]',
-      'declare function queryOne(sql: string): Promise<number>;',
-      '',
-      '// #[extern]',
       '// #[effects(add: [host.io, host.node.fs, suspend.await])]',
-      'declare function readTextFile(path: string): Promise<string>;',
+      'declare function readRemote(path: string): Promise<string>;',
       '',
-      '// #[extern]',
-      '// #[effects(add: [host.db.transaction, suspend.await], forward: [action])]',
-      'declare function inTransaction<T>(',
-      '  // #[effects(forbid: [host.io])]',
-      '  action: () => Promise<T>,',
-      '): Promise<T>;',
-      '',
-      'export async function invalidAuditRead(): Promise<number> {',
-      '  return await inTransaction(async () => {',
-      '    const value = await queryOne("select balance from accounts where id = 1");',
-      '    await readTextFile("audit-template.txt");',
-      '    return value;',
-      '  });',
+      '// #[effects(add: [host.db.query], forbid: [host.io])]',
+      'export async function invalidTaggedRead(path: string): Promise<string> {',
+      '  return await readRemote(path);',
       '}',
       '',
     ].join('\n'),
@@ -5348,7 +5346,57 @@ Deno.test('analyzeProject rejects host io inside db transaction callbacks', asyn
 
   assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1040']);
   assertEquals(result.diagnostics[0]?.metadata?.rule, 'effect_contract_violation');
-  assertEquals(result.diagnostics[0]?.metadata?.primarySymbol, 'action');
+  assertEquals(result.diagnostics[0]?.metadata?.primarySymbol, 'invalidTaggedRead');
+});
+
+Deno.test('analyzeProject rejects effects annotations on overload signatures with implementations', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': createSoundscriptOnlyTsconfig(),
+    'src/index.sts': [
+      '// #[effects(add: [host.io])]',
+      'export function parse(input: string): string;',
+      'export function parse(input: number): string;',
+      '// #[effects(add: [host.io])]',
+      'export function parse(input: string | number): string {',
+      '  return String(input);',
+      '}',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1039']);
+  assertEquals(result.diagnostics[0]?.metadata?.rule, 'invalid_effect_annotation');
+});
+
+Deno.test('analyzeProject rejects parameter effect annotations on overload signatures with implementations', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': createSoundscriptOnlyTsconfig(),
+    'src/index.sts': [
+      'export function wrap(',
+      '  // #[effects(forbid: [fails])]',
+      '  callback: () => number,',
+      '): number;',
+      'export function wrap(callback: () => number, label: string): number;',
+      '// #[effects(add: [])]',
+      'export function wrap(callback: () => number, _label?: string): number {',
+      '  return callback();',
+      '}',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1039']);
+  assertEquals(result.diagnostics[0]?.metadata?.rule, 'invalid_effect_annotation');
 });
 
 Deno.test('analyzeProject rejects deprecated via forwarding syntax', async () => {
@@ -6925,15 +6973,33 @@ Deno.test('analyzeProject tracks result, json, and debug stdlib helpers under ef
     'SOUND1040',
     'SOUND1040',
     'SOUND1040',
+    'SOUND1040',
+    'SOUND1040',
+    'SOUND1040',
+    'SOUND1040',
+    'SOUND1040',
+    'SOUND1040',
+    'SOUND1040',
+    'SOUND1040',
+    'SOUND1040',
   ]);
   assertEquals(result.diagnostics.map((diagnostic) => diagnostic.metadata?.primarySymbol), [
+    'safeCaptureJson',
     'captureHost',
     'mapErrorThrows',
     'captureAsync',
+    'stdParseJson',
+    'stdStringifyJson',
+    'stdParseJsonLike',
+    'stdStringifyJsonLike',
+    'safeParseAndDecode',
     'hostParseAndDecode',
     'failParseAndDecode',
+    'safeEncodeAndStringify',
     'hostEncodeAndStringify',
+    'safeDecodeJson',
     'hostDecodeJson',
+    'safeEncodeJson',
     'hostEncodeJson',
     'debugLogValue',
     'debugAssertValue',

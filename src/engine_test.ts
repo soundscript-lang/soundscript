@@ -551,6 +551,50 @@ Deno.test('createAnalysisContext parses dotted effects and forward transforms on
   );
 });
 
+Deno.test('createAnalysisContext unions explicit bodyful add effects with inferred effects', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+          },
+          include: ['src/**/*.ts'],
+        },
+        null,
+        2,
+      ),
+    },
+    {
+      path: 'src/index.ts',
+      contents: [
+        '// #[effects(add: [host.db.query])]',
+        'export async function taggedQuery(input: RequestInfo | URL): Promise<string> {',
+        '  const response = await fetch(input);',
+        '  return await response.text();',
+        '}',
+        '',
+      ].join('\n'),
+    },
+  ]);
+  const projectPath = join(tempDirectory, 'tsconfig.json');
+  const program = loadProgram(projectPath);
+  const context = createAnalysisContext({ program, workingDirectory: tempDirectory });
+  const sourceFile = context.getSourceFiles().find((file) => file.fileName.endsWith('/src/index.ts'));
+
+  assertExists(sourceFile);
+
+  const taggedQuery = sourceFile.statements.find(ts.isFunctionDeclaration);
+  assertExists(taggedQuery);
+
+  const summary = getEffectSummaryForDeclaration(context, taggedQuery);
+  assertEquals(summary.directEffects, ['host.db.query', 'host.io', 'suspend.await']);
+});
+
 Deno.test('createAnalysisContext summarizes Promise continuation builtins with precise forwarded effects', async () => {
   const tempDirectory = await createTempProject([
     {

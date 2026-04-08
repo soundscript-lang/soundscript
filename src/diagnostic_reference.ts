@@ -768,11 +768,12 @@ const DIAGNOSTIC_REFERENCES = {
     summary:
       'soundscript only accepts `#[effects(...)]` on supported callable or callback-parameter sites, using the `add`, `forbid`, and `forward` contract shape with parameter-rooted forwarding references.',
     repairHeuristic:
-      'Rewrite the annotation to use only `add`, `forbid`, and `forward` (or temporary compatibility `via`) and move it to a supported callable declaration, signature, or function-valued parameter.',
+      'Rewrite the annotation to use only `add`, `forbid`, and `forward` and move it to a supported callable declaration or function-valued parameter.',
     details: [
-      'Bodyful callable declarations infer direct effects and only support `forbid` and `forward`.',
+      'Bodyful callable declarations may use `add`, `forbid`, and `forward`; bodyful `add` unions with inference and never hides inferred effects.',
       'Declaration-only callable surfaces support `add` and `forward`.',
       'Function-valued parameters only support `forbid`.',
+      'Overload signatures with an implementation sibling must not carry `#[effects(...)]`; put the effect contract on the implementation declaration instead.',
     ],
     examples: [
       {
@@ -785,7 +786,7 @@ const DIAGNOSTIC_REFERENCES = {
         applicability: 'manual',
         title: 'Use supported effect fields and forwarding references',
         message:
-          'Use `forward` entries rooted at real parameters, and keep `add` off bodyful local callables. Open dotted effect names such as `fails.rejects` or `host.node.fs` are allowed.',
+          'Use `forward` entries rooted at real parameters, put overload-group effects on the implementation declaration, and use bodyful `add` only to widen the honest inferred surface. Open dotted effect names such as `fails.rejects` or `host.node.fs` are allowed.',
       },
     ],
   },

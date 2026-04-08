@@ -1,4 +1,4 @@
-import { assertEquals } from '@std/assert';
+import { assertEquals, assertStringIncludes } from '@std/assert';
 import ts from 'typescript';
 
 import {
@@ -28,7 +28,6 @@ Deno.test('error stdlib support resolves sts:failures to the virtual stdlib sour
   assertEquals(resolved?.resolvedFileName, ERROR_STDLIB_DECLARATION_FILE);
 });
 
-Deno.test('error stdlib support text stays in sync with the checked-in stdlib declaration file', async () => {
-  const fileText = await Deno.readTextFile(new URL('../stdlib/failures.d.ts', import.meta.url));
-  assertEquals(ERROR_STDLIB_DECLARATION_TEXT.trim(), fileText.trim());
+Deno.test('error stdlib support text is generated from stdlib sources', () => {
+  assertStringIncludes(ERROR_STDLIB_DECLARATION_TEXT, 'export declare class Failure');
 });

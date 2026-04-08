@@ -255,6 +255,7 @@ function createInitialSolveSummary(
   summary.parameterContracts = getParameterContracts(context, declaration.parameters);
 
   if (parsedEffects && typeof parsedEffects !== 'string') {
+    setSummaryDirectEffects(summary, parsedEffects.addEffects);
     setSummaryForbidEffects(summary, parsedEffects.forbidEffects);
     summary.forwardedParameters = resolveForwardParameters(declaration.parameters, parsedEffects);
   }
@@ -272,33 +273,6 @@ function getDeclarationMemberName(
   if (ts.isIdentifier(name) || ts.isStringLiteral(name) || ts.isNumericLiteral(name)) {
     return name.text;
   }
-  return undefined;
-}
-
-function findSiblingEffectsAnnotation(
-  context: AnalysisContext,
-  declaration: EffectCallableDeclaration,
-): ParsedAnnotation | undefined {
-  const name = (declaration as ts.NamedDeclaration).name;
-  if (!name) {
-    return undefined;
-  }
-
-  const symbol = context.checker.getSymbolAtLocation(name);
-  if (!symbol) {
-    return undefined;
-  }
-
-  for (const siblingDeclaration of symbol.declarations ?? []) {
-    if (siblingDeclaration === declaration || !isCallableDeclarationNode(siblingDeclaration)) {
-      continue;
-    }
-    const annotation = getEffectsAnnotation(context, siblingDeclaration);
-    if (annotation) {
-      return annotation;
-    }
-  }
-
   return undefined;
 }
 
@@ -350,10 +324,6 @@ function findInheritedEffectsAnnotation(
       if (directAnnotation) {
         return directAnnotation;
       }
-      const siblingAnnotation = findSiblingEffectsAnnotation(context, baseDeclaration);
-      if (siblingAnnotation) {
-        return siblingAnnotation;
-      }
       const inheritedAnnotation = findInheritedEffectsAnnotation(
         context,
         baseDeclaration,
@@ -377,8 +347,7 @@ function getEffectiveEffectsAnnotation(
     return directAnnotation;
   }
 
-  return findSiblingEffectsAnnotation(context, declaration) ??
-    findInheritedEffectsAnnotation(context, declaration);
+  return findInheritedEffectsAnnotation(context, declaration);
 }
 
 function effectSummaryEquals(left: EffectSummaryFact, right: EffectSummaryFact): boolean {

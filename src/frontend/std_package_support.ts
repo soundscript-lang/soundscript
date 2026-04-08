@@ -1,5 +1,6 @@
 import ts from 'typescript';
 
+import { createSoundStdlibCompilerHost } from '../bundled/sound_stdlib.ts';
 import {
   STS_ASYNC_MODULE_SPECIFIER,
   STS_CODEC_MODULE_SPECIFIER,
@@ -28,11 +29,25 @@ import {
   STS_TYPECLASSES_MODULE_SPECIFIER,
   STS_URL_MODULE_SPECIFIER,
   STS_VALUE_MODULE_SPECIFIER,
-  HOST_DOM_MODULE_SPECIFIER as HOST_DOM_SPECIFIER,
-  HOST_NODE_MODULE_SPECIFIER as HOST_NODE_SPECIFIER,
 } from '../soundscript_runtime_specifiers.ts';
+import { captureTypeScriptDeclarationOutputs } from './typescript_effect_declarations.ts';
+import {
+  HOST_DOM_DECLARATION_FILE,
+  HOST_DOM_MODULE_SPECIFIER,
+  HOST_NODE_DECLARATION_FILE,
+  HOST_NODE_MODULE_SPECIFIER,
+  resolveHostDeclarationFile,
+} from './host_declaration_resolution.ts';
 import { fileExistsSync, readTextFileSync, runtimeExecPath } from '../platform/host.ts';
 import { basename, dirname, fromFileUrl, join } from '../platform/path.ts';
+
+export {
+  HOST_DOM_DECLARATION_FILE,
+  HOST_DOM_MODULE_SPECIFIER,
+  HOST_NODE_DECLARATION_FILE,
+  HOST_NODE_MODULE_SPECIFIER,
+  resolveHostDeclarationFile,
+} from './host_declaration_resolution.ts';
 
 export const STDLIB_MODULE_SPECIFIER = STS_PRELUDE_MODULE_SPECIFIER;
 export const HKT_STDLIB_MODULE_SPECIFIER = STS_HKT_MODULE_SPECIFIER;
@@ -61,8 +76,6 @@ export const GRAPHQL_STDLIB_MODULE_SPECIFIER = STS_EXPERIMENTAL_GRAPHQL_MODULE_S
 export const COMPONENT_STDLIB_MODULE_SPECIFIER = STS_EXPERIMENTAL_COMPONENT_MODULE_SPECIFIER;
 export const DEBUG_STDLIB_MODULE_SPECIFIER = STS_EXPERIMENTAL_DEBUG_MODULE_SPECIFIER;
 export const NUMERICS_STDLIB_MODULE_SPECIFIER = STS_NUMERICS_MODULE_SPECIFIER;
-export const HOST_DOM_MODULE_SPECIFIER = HOST_DOM_SPECIFIER;
-export const HOST_NODE_MODULE_SPECIFIER = HOST_NODE_SPECIFIER;
 
 export const STDLIB_DECLARATION_FILE = fromFileUrl(
   new URL('../stdlib/index.d.ts', import.meta.url),
@@ -101,7 +114,7 @@ export const JSON_STDLIB_DECLARATION_FILE = fromFileUrl(
   new URL('../stdlib/json.d.ts', import.meta.url),
 );
 export const METADATA_STDLIB_DECLARATION_FILE = fromFileUrl(
-  new URL('../stdlib/metadata.ts', import.meta.url),
+  new URL('../stdlib/metadata.d.ts', import.meta.url),
 );
 export const COMPARE_STDLIB_DECLARATION_FILE = fromFileUrl(
   new URL('../stdlib/compare.d.ts', import.meta.url),
@@ -145,16 +158,14 @@ export const DEBUG_STDLIB_DECLARATION_FILE = fromFileUrl(
 export const NUMERICS_STDLIB_DECLARATION_FILE = fromFileUrl(
   new URL('../stdlib/numerics.d.ts', import.meta.url),
 );
-export const HOST_DOM_DECLARATION_FILE = fromFileUrl(
-  new URL('../stdlib/host/dom.d.ts', import.meta.url),
-);
-export const HOST_NODE_DECLARATION_FILE = fromFileUrl(
-  new URL('../stdlib/host/node.d.ts', import.meta.url),
-);
+
+const GENERATED_STDLIB_DECLARATION_OUT_DIR = '/__soundscript_stdlib_types__';
 
 interface MacroStdlibDeclarationGlobal {
   __STS_STDLIB_DECLARATION_TEXTS__?: Readonly<Record<string, string>>;
 }
+
+let generatedStdlibDeclarationTextsCache: ReadonlyMap<string, string> | undefined;
 
 function fileExists(path: string): boolean {
   return fileExistsSync(path);
@@ -183,6 +194,172 @@ export function resolveStdlibDeclarationRuntimePath(
   return sourceFilePath;
 }
 
+function toStdlibSourceFilePath(declarationFilePath: string): string {
+  return declarationFilePath.replace(/\.d\.ts$/u, '.ts');
+}
+
+function createStdlibSourceFileByDeclarationFile(): ReadonlyMap<string, string> {
+  const entries: [string, string][] = [];
+  const declarationFiles = [
+    STDLIB_DECLARATION_FILE,
+    HKT_STDLIB_DECLARATION_FILE,
+    TYPECLASSES_STDLIB_DECLARATION_FILE,
+    RESULT_STDLIB_DECLARATION_FILE,
+    VALUE_STDLIB_DECLARATION_FILE,
+    MATCH_STDLIB_DECLARATION_FILE,
+    FAILURES_STDLIB_DECLARATION_FILE,
+    URL_STDLIB_DECLARATION_FILE,
+    FETCH_STDLIB_DECLARATION_FILE,
+    TEXT_STDLIB_DECLARATION_FILE,
+    RANDOM_STDLIB_DECLARATION_FILE,
+    JSON_STDLIB_DECLARATION_FILE,
+    METADATA_STDLIB_DECLARATION_FILE,
+    COMPARE_STDLIB_DECLARATION_FILE,
+    HASH_STDLIB_DECLARATION_FILE,
+    DERIVE_STDLIB_DECLARATION_FILE,
+    DECODE_STDLIB_DECLARATION_FILE,
+    ENCODE_STDLIB_DECLARATION_FILE,
+    CODEC_STDLIB_DECLARATION_FILE,
+    ASYNC_STDLIB_DECLARATION_FILE,
+    THUNK_STDLIB_DECLARATION_FILE,
+    SQL_STDLIB_DECLARATION_FILE,
+    CSS_STDLIB_DECLARATION_FILE,
+    GRAPHQL_STDLIB_DECLARATION_FILE,
+    COMPONENT_STDLIB_DECLARATION_FILE,
+    DEBUG_STDLIB_DECLARATION_FILE,
+    NUMERICS_STDLIB_DECLARATION_FILE,
+  ];
+
+  for (const declarationFile of declarationFiles) {
+    const sourceFile = toStdlibSourceFilePath(declarationFile);
+    if (fileExists(sourceFile)) {
+      entries.push([declarationFile, sourceFile]);
+    }
+  }
+
+  return new Map(entries);
+}
+
+const STDLIB_SOURCE_FILE_BY_DECLARATION_FILE = createStdlibSourceFileByDeclarationFile();
+
+function getGeneratedStdlibDeclarationTexts(): ReadonlyMap<string, string> {
+  const cached = generatedStdlibDeclarationTextsCache;
+  if (cached) {
+    return cached;
+  }
+
+  const rootNames = [...new Set(STDLIB_SOURCE_FILE_BY_DECLARATION_FILE.values())];
+  const options: ts.CompilerOptions = {
+    declaration: true,
+    emitDeclarationOnly: true,
+    lib: ['lib.es2024.d.ts', 'lib.dom.d.ts', 'lib.dom.asynciterable.d.ts'],
+    module: ts.ModuleKind.ESNext,
+    moduleResolution: ts.ModuleResolutionKind.Bundler,
+    outDir: GENERATED_STDLIB_DECLARATION_OUT_DIR,
+    skipLibCheck: true,
+    strict: true,
+    target: ts.ScriptTarget.ES2022,
+  };
+  const baseHost = createSoundStdlibCompilerHost(options, dirname(STDLIB_DECLARATION_FILE));
+  const sourceFileBySpecifier = new Map<string, string>([
+    [STDLIB_MODULE_SPECIFIER, toStdlibSourceFilePath(STDLIB_DECLARATION_FILE)],
+    [HKT_STDLIB_MODULE_SPECIFIER, toStdlibSourceFilePath(HKT_STDLIB_DECLARATION_FILE)],
+    [TYPECLASSES_STDLIB_MODULE_SPECIFIER, toStdlibSourceFilePath(TYPECLASSES_STDLIB_DECLARATION_FILE)],
+    [RESULT_STDLIB_MODULE_SPECIFIER, toStdlibSourceFilePath(RESULT_STDLIB_DECLARATION_FILE)],
+    [VALUE_STDLIB_MODULE_SPECIFIER, toStdlibSourceFilePath(VALUE_STDLIB_DECLARATION_FILE)],
+    [MATCH_STDLIB_MODULE_SPECIFIER, toStdlibSourceFilePath(MATCH_STDLIB_DECLARATION_FILE)],
+    [FAILURES_STDLIB_MODULE_SPECIFIER, toStdlibSourceFilePath(FAILURES_STDLIB_DECLARATION_FILE)],
+    [URL_STDLIB_MODULE_SPECIFIER, toStdlibSourceFilePath(URL_STDLIB_DECLARATION_FILE)],
+    [FETCH_STDLIB_MODULE_SPECIFIER, toStdlibSourceFilePath(FETCH_STDLIB_DECLARATION_FILE)],
+    [TEXT_STDLIB_MODULE_SPECIFIER, toStdlibSourceFilePath(TEXT_STDLIB_DECLARATION_FILE)],
+    [RANDOM_STDLIB_MODULE_SPECIFIER, toStdlibSourceFilePath(RANDOM_STDLIB_DECLARATION_FILE)],
+    [JSON_STDLIB_MODULE_SPECIFIER, toStdlibSourceFilePath(JSON_STDLIB_DECLARATION_FILE)],
+    [METADATA_STDLIB_MODULE_SPECIFIER, toStdlibSourceFilePath(METADATA_STDLIB_DECLARATION_FILE)],
+    [COMPARE_STDLIB_MODULE_SPECIFIER, toStdlibSourceFilePath(COMPARE_STDLIB_DECLARATION_FILE)],
+    [HASH_STDLIB_MODULE_SPECIFIER, toStdlibSourceFilePath(HASH_STDLIB_DECLARATION_FILE)],
+    [DERIVE_STDLIB_MODULE_SPECIFIER, toStdlibSourceFilePath(DERIVE_STDLIB_DECLARATION_FILE)],
+    [DECODE_STDLIB_MODULE_SPECIFIER, toStdlibSourceFilePath(DECODE_STDLIB_DECLARATION_FILE)],
+    [ENCODE_STDLIB_MODULE_SPECIFIER, toStdlibSourceFilePath(ENCODE_STDLIB_DECLARATION_FILE)],
+    [CODEC_STDLIB_MODULE_SPECIFIER, toStdlibSourceFilePath(CODEC_STDLIB_DECLARATION_FILE)],
+    [ASYNC_STDLIB_MODULE_SPECIFIER, toStdlibSourceFilePath(ASYNC_STDLIB_DECLARATION_FILE)],
+    [THUNK_STDLIB_MODULE_SPECIFIER, toStdlibSourceFilePath(THUNK_STDLIB_DECLARATION_FILE)],
+    [SQL_STDLIB_MODULE_SPECIFIER, toStdlibSourceFilePath(SQL_STDLIB_DECLARATION_FILE)],
+    [CSS_STDLIB_MODULE_SPECIFIER, toStdlibSourceFilePath(CSS_STDLIB_DECLARATION_FILE)],
+    [GRAPHQL_STDLIB_MODULE_SPECIFIER, toStdlibSourceFilePath(GRAPHQL_STDLIB_DECLARATION_FILE)],
+    ...(
+      fileExists(toStdlibSourceFilePath(COMPONENT_STDLIB_DECLARATION_FILE))
+        ? [[
+          COMPONENT_STDLIB_MODULE_SPECIFIER,
+          toStdlibSourceFilePath(COMPONENT_STDLIB_DECLARATION_FILE),
+        ] as const]
+        : []
+    ),
+    [DEBUG_STDLIB_MODULE_SPECIFIER, toStdlibSourceFilePath(DEBUG_STDLIB_DECLARATION_FILE)],
+    [NUMERICS_STDLIB_MODULE_SPECIFIER, toStdlibSourceFilePath(NUMERICS_STDLIB_DECLARATION_FILE)],
+  ]);
+
+  const host: ts.CompilerHost = {
+    ...baseHost,
+    resolveModuleNames(
+      moduleNames,
+      containingFile,
+      reusedNames,
+      redirectedReference,
+      compilerOptions,
+    ) {
+      const delegated = baseHost.resolveModuleNames?.(
+        moduleNames,
+        containingFile,
+        reusedNames,
+        redirectedReference,
+        compilerOptions,
+      );
+      const fallbackHost = createModuleResolutionHost(baseHost);
+
+      return moduleNames.map((moduleName, index) => {
+        const sourceFile = sourceFileBySpecifier.get(moduleName);
+        if (sourceFile) {
+          return {
+            resolvedFileName: sourceFile,
+            extension: ts.Extension.Ts,
+            isExternalLibraryImport: true,
+          };
+        }
+        if (delegated?.[index]) {
+          return delegated[index];
+        }
+        return ts.resolveModuleName(
+          moduleName,
+          containingFile,
+          compilerOptions ?? options,
+          fallbackHost,
+          undefined,
+          redirectedReference,
+        ).resolvedModule;
+      });
+    },
+  };
+
+  const program = ts.createProgram(rootNames, options, host);
+  const emitted = captureTypeScriptDeclarationOutputs(program);
+  const texts = new Map<string, string>();
+
+  for (const [declarationFile, sourceFile] of STDLIB_SOURCE_FILE_BY_DECLARATION_FILE.entries()) {
+    const generatedPath = join(
+      GENERATED_STDLIB_DECLARATION_OUT_DIR,
+      basename(sourceFile).replace(/\.ts$/u, '.d.ts'),
+    );
+    const generatedText = emitted.get(generatedPath);
+    if (generatedText === undefined) {
+      throw new Error(`Missing generated stdlib declaration for ${sourceFile}.`);
+    }
+    texts.set(declarationFile, generatedText);
+  }
+
+  generatedStdlibDeclarationTextsCache = texts;
+  return texts;
+}
+
 function readStdlibDeclarationText(sourceFilePath: string): string {
   const resolvedPath = resolveStdlibDeclarationRuntimePath(sourceFilePath);
   const overrideTexts = (globalThis as typeof globalThis & MacroStdlibDeclarationGlobal)
@@ -193,6 +370,15 @@ function readStdlibDeclarationText(sourceFilePath: string): string {
   if (overrideText !== undefined) {
     return overrideText;
   }
+  if (fileExists(resolvedPath)) {
+    return readTextFileSync(resolvedPath);
+  }
+
+  const generatedText = getGeneratedStdlibDeclarationTexts().get(sourceFilePath);
+  if (generatedText !== undefined) {
+    return generatedText;
+  }
+
   return readTextFileSync(resolvedPath);
 }
 
@@ -297,6 +483,7 @@ const STDLIB_DECLARATION_FILES = new Map<string, string>([
   [DEBUG_STDLIB_MODULE_SPECIFIER, DEBUG_STDLIB_DECLARATION_FILE],
   [NUMERICS_STDLIB_MODULE_SPECIFIER, NUMERICS_STDLIB_DECLARATION_FILE],
 ]);
+const STDLIB_DECLARATION_FILE_SET = new Set(STDLIB_DECLARATION_FILES.values());
 const HOST_DECLARATION_FILES = new Map<string, string>([
   [HOST_DOM_MODULE_SPECIFIER, HOST_DOM_DECLARATION_FILE],
   [HOST_NODE_MODULE_SPECIFIER, HOST_NODE_DECLARATION_FILE],
@@ -340,6 +527,26 @@ const STDLIB_DECLARATION_TEXTS = new Map<string, string>([
   [HOST_DOM_DECLARATION_FILE, HOST_DOM_DECLARATION_TEXT],
   [HOST_NODE_DECLARATION_FILE, HOST_NODE_DECLARATION_TEXT],
 ]);
+
+function resolveRelativeStdlibDeclarationFile(
+  containingFile: string,
+  moduleName: string,
+): string | undefined {
+  if (
+    !STDLIB_DECLARATION_FILE_SET.has(containingFile) ||
+    !(moduleName.startsWith('./') || moduleName.startsWith('../'))
+  ) {
+    return undefined;
+  }
+
+  const declarationBasePath = join(dirname(containingFile), moduleName);
+  const candidateDeclarationFiles = [
+    declarationBasePath.endsWith('.d.ts') ? declarationBasePath : `${declarationBasePath}.d.ts`,
+    join(declarationBasePath, 'index.d.ts'),
+  ];
+  return candidateDeclarationFiles.find((candidate) => STDLIB_DECLARATION_FILE_SET.has(candidate));
+}
+
 const STDLIB_DECLARATION_ENTRIES_BY_SPECIFIER = new Map<
   string,
   { fileName: string; text: string }
@@ -359,29 +566,6 @@ export function getStdlibDeclarationEntriesBySpecifier(): ReadonlyMap<
   { fileName: string; text: string }
 > {
   return STDLIB_DECLARATION_ENTRIES_BY_SPECIFIER;
-}
-
-function hasDomLibSupport(options: ts.CompilerOptions): boolean {
-  return options.lib?.includes('lib.dom.d.ts') === true;
-}
-
-function hasNodeTypeSupport(options: ts.CompilerOptions): boolean {
-  return options.types?.includes('node') === true;
-}
-
-export function resolveHostDeclarationFile(
-  moduleName: string,
-  options: ts.CompilerOptions,
-): string | undefined {
-  if (moduleName === HOST_DOM_MODULE_SPECIFIER) {
-    return hasDomLibSupport(options) ? HOST_DOM_DECLARATION_FILE : undefined;
-  }
-
-  if (moduleName === HOST_NODE_MODULE_SPECIFIER) {
-    return hasNodeTypeSupport(options) ? HOST_NODE_DECLARATION_FILE : undefined;
-  }
-
-  return undefined;
 }
 
 function createModuleResolutionHost(baseHost: ts.CompilerHost): ts.ModuleResolutionHost {
@@ -444,8 +628,16 @@ export function withStdPackageModuleResolution(baseHost: ts.CompilerHost): ts.Co
           };
         }
 
-        if (delegated?.[index]) {
-          return delegated[index];
+        const relativeStdlibDeclarationFile = resolveRelativeStdlibDeclarationFile(
+          containingFile,
+          moduleName,
+        );
+        if (relativeStdlibDeclarationFile) {
+          return {
+            resolvedFileName: relativeStdlibDeclarationFile,
+            extension: ts.Extension.Dts,
+            isExternalLibraryImport: true,
+          };
         }
 
         const resolved = ts.resolveModuleName(
@@ -455,8 +647,16 @@ export function withStdPackageModuleResolution(baseHost: ts.CompilerHost): ts.Co
           fallbackHost,
           undefined,
           redirectedReference,
-        );
-        return resolved.resolvedModule;
+        ).resolvedModule;
+        if (resolved && STDLIB_DECLARATION_FILE_SET.has(resolved.resolvedFileName)) {
+          return resolved;
+        }
+
+        if (delegated?.[index]) {
+          return delegated[index];
+        }
+
+        return resolved;
       });
     },
   };

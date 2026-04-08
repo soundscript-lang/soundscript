@@ -84,6 +84,48 @@ function classifyEffectsTarget(
     };
 }
 
+function getNamedCallableSymbol(
+  context: AnalysisContext,
+  declaration: EffectCallableDeclaration,
+): ts.Symbol | undefined {
+  const name = (declaration as ts.NamedDeclaration).name;
+  return name ? context.checker.getSymbolAtLocation(name) : undefined;
+}
+
+function hasImplementationSibling(
+  context: AnalysisContext,
+  declaration: EffectCallableDeclaration,
+): boolean {
+  if (isCallableBodyDeclaration(declaration)) {
+    return false;
+  }
+
+  const name = (declaration as ts.NamedDeclaration).name;
+  if (!name) {
+    const parent = declaration.parent;
+    if (ts.isClassLike(parent)) {
+      return parent.members.some((member: ts.ClassElement) =>
+        member !== declaration as ts.Node &&
+        member.kind === declaration.kind &&
+        isCallableDeclarationNode(member) &&
+        isCallableBodyDeclaration(member)
+      );
+    }
+    return false;
+  }
+
+  const symbol = getNamedCallableSymbol(context, declaration);
+  if (!symbol) {
+    return false;
+  }
+
+  return (symbol.declarations ?? []).some((candidate) =>
+    candidate !== declaration &&
+    isCallableDeclarationNode(candidate) &&
+    isCallableBodyDeclaration(candidate)
+  );
+}
+
 export function getEffectsAnnotation(
   context: AnalysisContext,
   node: ts.Node,
@@ -420,6 +462,10 @@ export function validateEffectsAnnotation(
   }
 
   if (classification.kind === 'parameter') {
+    const parent = classification.target.parent;
+    if (isCallableDeclarationNode(parent) && hasImplementationSibling(context, parent)) {
+      return 'Overload signatures with an implementation sibling must declare effects on the implementation, not on overload parameters.';
+    }
     if (parsed.addEffects.length > 0 || parsed.forwardEntries.length > 0 || parsed.unknownDirect) {
       return 'Function-valued parameters only support `#[effects(forbid: [...])]`.';
     }
@@ -427,10 +473,17 @@ export function validateEffectsAnnotation(
   }
 
   if (
-    classification.kind === 'callable_body' &&
-    (parsed.addEffects.length > 0 || parsed.unknownDirect)
+    classification.kind === 'callable_declaration' &&
+    hasImplementationSibling(context, classification.target)
   ) {
-    return 'Bodyful callable declarations infer direct effects from their implementation; use `forbid` and `forward`, not `add` or `unknown`.';
+    return 'Overload signatures with an implementation sibling must declare effects on the implementation, not on overload signatures.';
+  }
+
+  if (
+    classification.kind === 'callable_body' &&
+    parsed.unknownDirect
+  ) {
+    return 'Bodyful callable declarations may add direct effects monotonically, but `unknown: [direct]` is only supported on declaration-only surfaces.';
   }
 
   if (classification.kind === 'callable_declaration' && parsed.forbidEffects.length > 0) {

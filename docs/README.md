@@ -13,7 +13,7 @@ For the current owned soundness scope and closure ledger, see `docs/soundness-ow
 
 For the current builtin annotation surface, see `docs/annotation-spec.md`.
 
-For advanced effect taxonomy, forwarding, and policy-boundary examples, see
+For advanced effect taxonomy, forwarding, and current policy-boundary limitations, see
 `docs/guides/advanced-effects.md`.
 
 For the supported public macro authoring surface, start with `docs/macro-authoring.md`.

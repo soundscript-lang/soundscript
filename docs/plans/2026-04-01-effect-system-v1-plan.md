@@ -102,15 +102,21 @@ annotations as out of scope.
 
 On bodyful local callables:
 
+- `add` is allowed but monotonic: it unions with inferred effects and never hides inferred
+  lower-level behavior
 - `forbid` is allowed and enforced against the inferred summary
 - `forward` is allowed and describes effect forwarding from parameter-rooted callback references
-- `add` is rejected in v1 to avoid manual effect overrides on code the checker can inspect
 
 On declaration-only callable surfaces:
 
 - `add` is the explicit direct-effect summary
 - `forward` declares forwarded callback parameters and transforms
 - callable-site `forbid` is rejected in v1
+
+On overload groups with an implementation:
+
+- callable-level and parameter-level `#[effects(...)]` must live on the implementation declaration
+- overload signatures themselves must stay effect-unannotated
 
 On parameters:
 

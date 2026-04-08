@@ -136,17 +136,14 @@ function isPromiseInstance<T>(value: unknown): value is Promise<T> {
   return value instanceof Promise;
 }
 
-// #[effects(add: [suspend.await], forward: [{ from: fn, handle: [fails] }])]
 export function resultOf<T>(fn: () => Promise<T>): Promise<Result<T, Error>>;
-// #[effects(add: [suspend.await], forward: [{ from: fn, handle: [fails] }, { from: mapError, rewrite: [{ from: fails, to: fails.rejects }] }])]
 export function resultOf<T, E>(
   fn: () => Promise<T>,
   mapError: (error: Error) => E,
 ): Promise<Result<T, E>>;
-// #[effects(forward: [{ from: fn, handle: [fails] }])]
 export function resultOf<T>(fn: () => T): Result<T, Error>;
-// #[effects(forward: [{ from: fn, handle: [fails] }, { from: mapError }])]
 export function resultOf<T, E>(fn: () => T, mapError: (error: Error) => E): Result<T, E>;
+// #[effects(forward: [{ from: fn, handle: [fails] }, { from: mapError }])]
 export function resultOf<T, E>(
   fn: () => T | Promise<T>,
   mapError?: (error: Error) => E,

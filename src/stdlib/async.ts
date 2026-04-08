@@ -48,13 +48,12 @@ export function fromResult<T, E>(result: Result<T, E>): Task<T, E> {
   return () => Promise.resolve(result);
 }
 
-// #[effects(add: [])]
 export function fromPromise<T>(fn: (signal?: AbortSignalLike) => Promise<T>): Task<T, Error>;
-// #[effects(add: [])]
 export function fromPromise<T, E>(
   fn: (signal?: AbortSignalLike) => Promise<T>,
   mapError: (error: Error) => E,
 ): Task<T, E>;
+// #[effects(add: [])]
 export function fromPromise<T, E>(
   fn: (signal?: AbortSignalLike) => Promise<T>,
   mapError?: (error: Error) => E,

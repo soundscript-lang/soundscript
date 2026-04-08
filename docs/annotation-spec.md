@@ -170,11 +170,16 @@ Current validation rules:
 
 Current semantic direction:
 
-- bodyful local callables may use `forbid` and `forward`
+- bodyful local callables may use `add`, `forbid`, and `forward`
+- bodyful `add` is monotonic: explicit `add` effects are unioned with inferred effects and never
+  hide inferred lower-level behavior
 - declaration-only callable surfaces may use `add` and `forward`
 - function-valued parameters may use `forbid` only
 - `unknown: [direct]` is valid only on declaration-only callable surfaces and marks the
   declaration's direct effect surface as intentionally unknown
+- overload signatures with an implementation sibling must not carry callable-level or parameter-level
+  `#[effects(...)]`; the implementation declaration is the single effect source of truth for the
+  overload group
 - the standard semantic core currently includes `fails`, `fails.throws`, `fails.rejects`, `suspend`,
   `suspend.await`, `suspend.yield`, `mut`, `host`, `host.io`, `host.random`, `host.time`,
   `host.system`, and `host.ffi`
@@ -189,8 +194,9 @@ Current effect-set semantics:
   redundant and may be dropped
 - overlap is by ancestor/descendant relation, so `forbid: [host]` conflicts with `host.io`,
   `host.node.fs`, `host.browser.dom`, and any other `host.*` effect
-- there is no allow-list or "all except ..." surface in `#[effects(...)]`; policies that need
-  exceptions must choose non-overlapping effect names
+- there is no allow-list or "all except ..." surface in `#[effects(...)]`
+- transitive effects stay honest, so policies like "allow database I/O but forbid other I/O" are
+  not representable today without a different abstraction model
 
 Current forwarding semantics:
 
