@@ -109,3 +109,90 @@ Deno.test(
     assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), []);
   },
 );
+
+Deno.test(
+  'analyzeProject does not overflow on recursive callbacks passed as opaque arguments',
+  async () => {
+    const tempDirectory = await createTempProject({
+      'tsconfig.json': JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+          },
+          include: ['src/**/*.sts'],
+        },
+        null,
+        2,
+      ),
+      'src/index.sts': [
+        'type Jsonish = string | Jsonish[];',
+        '',
+        'function normalize(value: Jsonish): Jsonish {',
+        '  if (Array.isArray(value)) {',
+        '    return value.map((nestedValue): Jsonish => normalize(nestedValue));',
+        '  }',
+        '  return value;',
+        '}',
+        '',
+        'const result = normalize(["ok", ["nested"]]);',
+        'void result;',
+        '',
+      ].join('\n'),
+    });
+
+    const result = await analyzeProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), []);
+  },
+);
+
+Deno.test(
+  'analyzeProject does not overflow on recursive callbacks with local aliasing',
+  async () => {
+    const tempDirectory = await createTempProject({
+      'tsconfig.json': JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+          },
+          include: ['src/**/*.sts'],
+        },
+        null,
+        2,
+      ),
+      'src/index.sts': [
+        'type Jsonish = string | Jsonish[];',
+        '',
+        'function normalize(value: Jsonish, scope: Record<string, unknown>): Jsonish {',
+        '  if (Array.isArray(value)) {',
+        '    return value.map((nestedValue): Jsonish => {',
+        '      const resolvedValue = normalize(nestedValue, scope);',
+        '      return resolvedValue;',
+        '    });',
+        '  }',
+        '  return value;',
+        '}',
+        '',
+        'const result = normalize(["ok", ["nested"]], {});',
+        'void result;',
+        '',
+      ].join('\n'),
+    });
+
+    const result = await analyzeProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), []);
+  },
+);

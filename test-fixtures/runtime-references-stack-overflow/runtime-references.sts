@@ -1,0 +1,331 @@
+type JsonValue =
+  | null
+  | boolean
+  | number
+  | string
+  | readonly JsonValue[]
+  | { readonly [key: string]: JsonValue };
+
+interface MissingReferenceValue {
+  readonly kind: 'missing_reference';
+}
+
+type ReferenceRecord = Readonly<Record<'$ref', string>>;
+
+export const MISSING_REFERENCE: MissingReferenceValue = {
+  kind: 'missing_reference',
+};
+
+function isRecord(
+  value: unknown,
+): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function hasOwn(
+  value: Record<string, unknown>,
+  key: string,
+): boolean {
+  return Object.prototype.hasOwnProperty.call(value, key);
+}
+
+function readQuotedPathSegment(
+  path: string,
+  index: number,
+  quote: '"' | "'",
+): {
+  readonly nextIndex: number;
+  readonly segment: string;
+} | null {
+  let cursor = index + 1;
+  let segment = '';
+
+  while (cursor < path.length) {
+    const character = path[cursor];
+
+    if (character === '\\') {
+      const escapedCharacter = path[cursor + 1];
+
+      if (escapedCharacter === undefined) {
+        return null;
+      }
+
+      segment += escapedCharacter;
+      cursor += 2;
+      continue;
+    }
+
+    if (character === quote) {
+      const closingBracket = path[cursor + 1];
+
+      if (closingBracket !== ']') {
+        return null;
+      }
+
+      return {
+        nextIndex: cursor + 2,
+        segment,
+      };
+    }
+
+    segment += character;
+    cursor += 1;
+  }
+
+  return null;
+}
+
+export function parseReferencePath(
+  path: string,
+): readonly string[] {
+  const segments: string[] = [];
+  let currentSegment = '';
+  let index = 0;
+
+  while (index < path.length) {
+    const character = path[index];
+
+    if (character === '.') {
+      if (currentSegment.length > 0) {
+        segments.push(currentSegment);
+        currentSegment = '';
+      }
+
+      index += 1;
+      continue;
+    }
+
+    if (character === '[') {
+      if (currentSegment.length > 0) {
+        segments.push(currentSegment);
+        currentSegment = '';
+      }
+
+      const nextCharacter = path[index + 1];
+
+      if (nextCharacter === '"' || nextCharacter === "'") {
+        const quotedSegment = readQuotedPathSegment(path, index + 1, nextCharacter);
+
+        if (quotedSegment === null) {
+          return [];
+        }
+
+        segments.push(quotedSegment.segment);
+        index = quotedSegment.nextIndex;
+        continue;
+      }
+
+      let cursor = index + 1;
+      let segment = '';
+
+      while (cursor < path.length && path[cursor] !== ']') {
+        segment += path[cursor];
+        cursor += 1;
+      }
+
+      if (cursor >= path.length || segment.trim().length === 0) {
+        return [];
+      }
+
+      segments.push(segment.trim());
+      index = cursor + 1;
+      continue;
+    }
+
+    currentSegment += character;
+    index += 1;
+  }
+
+  if (currentSegment.length > 0) {
+    segments.push(currentSegment);
+  }
+
+  return segments.filter((segment) => segment.length > 0);
+}
+
+function readPathSegment(
+  currentValue: unknown,
+  segment: string,
+): unknown | MissingReferenceValue {
+  if (Array.isArray(currentValue)) {
+    const numericSegment = Number(segment);
+
+    if (!Number.isInteger(numericSegment) || numericSegment < 0) {
+      return MISSING_REFERENCE;
+    }
+
+    return currentValue[numericSegment] ?? MISSING_REFERENCE;
+  }
+
+  if (!isRecord(currentValue)) {
+    return MISSING_REFERENCE;
+  }
+
+  if (!hasOwn(currentValue, segment)) {
+    return MISSING_REFERENCE;
+  }
+
+  return currentValue[segment] ?? null;
+}
+
+export function isMissingReferenceValue(
+  value: unknown,
+): value is MissingReferenceValue {
+  return value === MISSING_REFERENCE;
+}
+
+export function isReferenceValue(
+  value: unknown,
+): value is ReferenceRecord {
+  return isRecord(value) && typeof value['$ref'] === 'string';
+}
+
+export function createReferenceValue(
+  path: string,
+): ReferenceRecord {
+  return {
+    $ref: path,
+  };
+}
+
+export function normalizeLegacyReferencePath(
+  path: string,
+): string {
+  const knownRoots = [
+    'binding',
+    'context',
+    'error',
+    'event',
+    'input',
+    'loop',
+    'loops',
+    'parallel',
+    'steps',
+    'vars',
+  ];
+  const firstBracketIndex = path.indexOf('[');
+  const firstDotIndex = path.indexOf('.');
+  const rootBoundaryIndex = (
+    firstBracketIndex >= 0
+    && (firstDotIndex < 0 || firstBracketIndex < firstDotIndex)
+  )
+    ? firstBracketIndex
+    : firstDotIndex;
+  const root = rootBoundaryIndex >= 0
+    ? path.slice(0, rootBoundaryIndex)
+    : path;
+
+  if (knownRoots.includes(root)) {
+    return path;
+  }
+
+  return `context.${path}`;
+}
+
+export function normalizeLegacyResolvableJsonValue(
+  value: unknown,
+): JsonValue {
+  if (Array.isArray(value)) {
+    return value.map((nestedValue) => {
+      return normalizeLegacyResolvableJsonValue(nestedValue);
+    });
+  }
+
+  if (!isRecord(value)) {
+    return value as JsonValue;
+  }
+
+  if (isReferenceValue(value)) {
+    return {
+      $ref: value.$ref,
+    };
+  }
+
+  if (typeof value['valueFrom'] === 'string' && value['valueFrom'].length > 0) {
+    return createReferenceValue(
+      normalizeLegacyReferencePath(value['valueFrom']),
+    );
+  }
+
+  if (hasOwn(value, 'value') && Object.keys(value).length <= 2) {
+    return normalizeLegacyResolvableJsonValue(value['value']);
+  }
+
+  const normalizedRecord: Record<string, JsonValue> = {};
+
+  for (const [key, nestedValue] of Object.entries(value)) {
+    normalizedRecord[key] = normalizeLegacyResolvableJsonValue(nestedValue);
+  }
+
+  return normalizedRecord;
+}
+
+export function resolveReferencePath(
+  path: string,
+  scope: Record<string, unknown>,
+): unknown | MissingReferenceValue {
+  const segments = parseReferencePath(path);
+
+  if (segments.length === 0) {
+    return MISSING_REFERENCE;
+  }
+
+  let currentValue: unknown = scope;
+
+  for (const segment of segments) {
+    const nextValue = readPathSegment(currentValue, segment);
+
+    if (isMissingReferenceValue(nextValue)) {
+      return MISSING_REFERENCE;
+    }
+
+    currentValue = nextValue;
+  }
+
+  return currentValue;
+}
+
+export function resolveResolvableJsonValue(
+  value: unknown,
+  scope: Record<string, unknown>,
+): JsonValue | MissingReferenceValue {
+  if (isReferenceValue(value)) {
+    const resolvedValue = resolveReferencePath(value.$ref, scope);
+
+    if (isMissingReferenceValue(resolvedValue)) {
+      return MISSING_REFERENCE;
+    }
+
+    return resolvedValue as JsonValue;
+  }
+
+  if (Array.isArray(value)) {
+    return value.map((nestedValue) => {
+      const resolvedValue = resolveResolvableJsonValue(nestedValue, scope);
+
+      if (isMissingReferenceValue(resolvedValue)) {
+        return null;
+      }
+
+      return resolvedValue;
+    });
+  }
+
+  if (!isRecord(value)) {
+    return value as JsonValue;
+  }
+
+  const resolvedRecord: Record<string, JsonValue> = {};
+
+  for (const [key, nestedValue] of Object.entries(value)) {
+    const resolvedValue = resolveResolvableJsonValue(nestedValue, scope);
+
+    if (isMissingReferenceValue(resolvedValue)) {
+      continue;
+    }
+
+    resolvedRecord[key] = resolvedValue;
+  }
+
+  return resolvedRecord;
+}
