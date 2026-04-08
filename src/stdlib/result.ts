@@ -143,7 +143,6 @@ export function resultOf<T, E>(
 ): Promise<Result<T, E>>;
 export function resultOf<T>(fn: () => T): Result<T, Error>;
 export function resultOf<T, E>(fn: () => T, mapError: (error: Error) => E): Result<T, E>;
-// #[effects(forward: [{ from: fn, handle: [fails] }, { from: mapError }])]
 export function resultOf<T, E>(
   fn: () => T | Promise<T>,
   mapError?: (error: Error) => E,
