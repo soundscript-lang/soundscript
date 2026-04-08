@@ -2539,7 +2539,7 @@ Deno.test('mutually recursive derived companions typecheck with async via wrappe
   assertStringIncludes(printed, 'makeLeftCodec');
 });
 
-Deno.test('recursive derived companions keep fallback behavior for opaque declaration-only via wrappers', () => {
+Deno.test('recursive derived companions keep working with opaque declaration-only wrappers typed as stdlib helpers', () => {
   const helperFileName = '/virtual/helpers.d.ts';
   const fileName = '/virtual/index.sts';
   const files = new Map<string, string>([
@@ -2617,6 +2617,82 @@ Deno.test('recursive derived companions keep fallback behavior for opaque declar
   assertStringIncludes(printed, 'makeNodeDecoder');
   assertStringIncludes(printed, 'makeNodeEncoder');
   assertStringIncludes(printed, 'makeNodeCodec');
+});
+
+Deno.test('derive via helpers require explicit stdlib helper types when mode inference is otherwise opaque', () => {
+  const helperFileName = '/virtual/helpers.d.ts';
+  const fileName = '/virtual/index.sts';
+  const files = new Map<string, string>([
+    ...createInstalledStdlibPackageFiles('/virtual').entries(),
+    [
+      helperFileName,
+      [
+        'export interface Decoder<T, M extends "sync" | "async" = "sync"> {',
+        '  readonly mode: M;',
+        '  decode(value: unknown): M extends "async" ? Promise<T> : T;',
+        '}',
+        'export interface Encoder<T, M extends "sync" | "async" = "sync"> {',
+        '  readonly mode: M;',
+        '  encode(value: T): M extends "async" ? Promise<unknown> : unknown;',
+        '}',
+        'export interface Codec<T, DM extends "sync" | "async" = "sync", EM extends "sync" | "async" = "sync">',
+        '  extends Decoder<T, DM>, Encoder<T, EM> {}',
+        '',
+        'export declare function makeNodeDecoder<T>(',
+        '  getBase: () => Decoder<T>,',
+        '): Decoder<T, "async">;',
+        'export declare function makeNodeEncoder<T>(',
+        '  getBase: () => Encoder<T>,',
+        '): Encoder<T, "async">;',
+        'export declare function makeNodeCodec<T>(',
+        '  getDecoder: () => Decoder<T>,',
+        '  getEncoder: () => Encoder<T>,',
+        '): Codec<T, "async", "async">;',
+        '',
+      ].join('\n'),
+    ],
+    [
+      fileName,
+      [
+        "import { codec, decode, encode } from 'sts:derive';",
+        "import { makeNodeCodec, makeNodeDecoder, makeNodeEncoder } from './helpers';",
+        '',
+        'const NodeDecoderRef = makeNodeDecoder(() => NodeDecoder);',
+        'const NodeEncoderRef = makeNodeEncoder(() => NodeEncoder);',
+        'const NodeCodecRef = makeNodeCodec(() => NodeDecoderRef, () => NodeEncoderRef);',
+        '',
+        '// #[decode]',
+        '// #[encode]',
+        '// #[codec]',
+        'type Node = {',
+        '  id: string;',
+        '  // #[decode.via(NodeDecoderRef)]',
+        '  // #[encode.via(NodeEncoderRef)]',
+        '  // #[codec.via(NodeCodecRef)]',
+        '  next: Node | undefined;',
+        '};',
+        '',
+      ].join('\n'),
+    ],
+  ]);
+
+  const expanded = createBuiltinExpandedProgram({
+    baseHost: createBaseHost(files),
+    options: {
+      target: ts.ScriptTarget.ES2022,
+      module: ts.ModuleKind.ESNext,
+      moduleResolution: ts.ModuleResolutionKind.Bundler,
+      noEmit: true,
+    },
+    rootNames: [fileName, helperFileName],
+  });
+
+  assertEquals(
+    expanded.frontendDiagnostics().map((diagnostic) => diagnostic.message),
+    [
+      'decode.via(...) helper "NodeDecoderRef" must have an explicit stdlib helper type annotation such as import(\'sts:decode\').Decoder<...> or import(\'sts:codec\').Codec<...>, or a local implementation the macro can analyze, so its async/sync mode can be determined.',
+    ],
+  );
 });
 
 Deno.test('recursive derived companions typecheck with async defaults transforms and refinements', () => {

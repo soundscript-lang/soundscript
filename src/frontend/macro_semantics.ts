@@ -342,15 +342,16 @@ type HelperInferenceState = {
   readonly parameterBindings?: ReadonlyMap<ts.Symbol, ts.Expression>;
   readonly seenSymbols: Set<ts.Symbol>;
 };
+type HelperTypeAliasBindings = ReadonlyMap<ts.Symbol, ts.Type>;
+type HelperTypeInferenceState = {
+  readonly bindings?: HelperTypeAliasBindings;
+  readonly seenTypeAliasSymbols: Set<ts.Symbol>;
+};
 type HelperModeResolver = {
   inferFromBinding(
     binding: { readonly symbol: ts.Symbol; readonly type: ts.Type },
     direction: MacroHelperDirection,
   ): MacroHelperMode | null;
-};
-const HELPER_MODE_MARKER_NAMES: Record<MacroHelperDirection, string> = {
-  decode: '__decodeMode',
-  encode: '__encodeMode',
 };
 
 function helperModeFromModeType(type: ts.Type): MacroHelperMode | null {
@@ -374,45 +375,263 @@ function helperModeFromModeType(type: ts.Type): MacroHelperMode | null {
   return value === 'async' || value === 'sync' ? value : null;
 }
 
-function helperModeFromMarkerProperty(
+function stdlibHelperIdentityForSymbol(
   checker: ts.TypeChecker,
-  type: ts.Type,
-  markerName: string,
-  location: ts.Node,
-): MacroHelperMode | null {
-  const property = checker.getPropertyOfType(type, markerName);
-  if (!property) {
+  symbol: ts.Symbol,
+): { readonly module: StdlibHelperModule; readonly name: string } | null {
+  const resolved = resolveAliasedSymbol(checker, symbol);
+  const module = (resolved.declarations ?? [])
+    .map((declaration) => stdlibModuleForDeclarationFile(declaration.getSourceFile().fileName))
+    .find((value) => value !== null) ?? null;
+  if (!module) {
     return null;
   }
-  const propertyType = checker.getTypeOfSymbolAtLocation(property, location);
-  return helperModeFromModeType(propertyType);
+  return {
+    module,
+    name: resolved.getName(),
+  };
 }
 
-function helperModeFromTypeDisplayText(
-  typeText: string,
+function helperModeTypeArgumentIndex(
+  identity: { readonly module: StdlibHelperModule; readonly name: string },
+  direction: MacroHelperDirection,
+): number | null {
+  if (identity.module === 'decode' && identity.name === 'Decoder') {
+    return 2;
+  }
+  if (identity.module === 'encode' && identity.name === 'Encoder') {
+    return 3;
+  }
+  if (identity.module === 'codec' && identity.name === 'Codec') {
+    return direction === 'decode' ? 4 : 5;
+  }
+  return null;
+}
+
+function helperModeFromStdlibHelperTypeArguments(
+  identity: { readonly module: StdlibHelperModule; readonly name: string },
+  typeArguments: readonly ts.Type[] | undefined,
   direction: MacroHelperDirection,
 ): MacroHelperMode | null {
-  if (direction === 'decode') {
-    if (
-      /(?:^|[<(])Decoder<[\s\S]*"async"\s*>$/u.test(typeText) ||
-      /(?:^|[<(])Codec<[\s\S]*"async"\s*,\s*"(?:sync|async)"\s*>$/u.test(typeText)
-    ) {
-      return 'async';
+  const index = helperModeTypeArgumentIndex(identity, direction);
+  if (index === null) {
+    return null;
+  }
+  if (!typeArguments || index >= typeArguments.length) {
+    return 'sync';
+  }
+  const argumentType = typeArguments[index];
+  return argumentType ? helperModeFromModeType(argumentType) : null;
+}
+
+function typeArgumentsForTypeReference(
+  checker: ts.TypeChecker,
+  type: ts.Type,
+): readonly ts.Type[] | undefined {
+  if ((type.flags & ts.TypeFlags.Object) === 0) {
+    return undefined;
+  }
+  const objectType = type as ts.ObjectType;
+  if ((objectType.objectFlags & ts.ObjectFlags.Reference) === 0) {
+    return undefined;
+  }
+  try {
+    return checker.getTypeArguments(type as ts.TypeReference);
+  } catch {
+    return undefined;
+  }
+}
+
+function getTypeReferenceTargetSymbol(
+  checker: ts.TypeChecker,
+  node: ts.TypeNode,
+): ts.Symbol | null {
+  if (ts.isTypeReferenceNode(node)) {
+    return checker.getSymbolAtLocation(node.typeName) ?? null;
+  }
+  if (ts.isImportTypeNode(node) && node.qualifier) {
+    return checker.getSymbolAtLocation(node.qualifier) ?? null;
+  }
+  return null;
+}
+
+function getTypeReferenceArgumentNodes(node: ts.TypeNode): readonly ts.TypeNode[] | undefined {
+  if (ts.isTypeReferenceNode(node)) {
+    return node.typeArguments;
+  }
+  if (ts.isImportTypeNode(node)) {
+    return node.typeArguments;
+  }
+  return undefined;
+}
+
+function resolveBoundTypeFromTypeNode(
+  checker: ts.TypeChecker,
+  node: ts.TypeNode,
+  state: HelperTypeInferenceState,
+): ts.Type | null {
+  if (ts.isTypeReferenceNode(node) && ts.isIdentifier(node.typeName)) {
+    const symbol = checker.getSymbolAtLocation(node.typeName);
+    const resolved = symbol ? resolveAliasedSymbol(checker, symbol) : null;
+    if (resolved && (resolved.flags & ts.SymbolFlags.TypeParameter) !== 0) {
+      return state.bindings?.get(resolved) ?? null;
     }
-    return /(?:^|[<(])Decoder</u.test(typeText) || /(?:^|[<(])Codec</u.test(typeText)
-      ? 'sync'
-      : null;
+  }
+  return checker.getTypeFromTypeNode(node);
+}
+
+function createHelperTypeInferenceState(
+  seenTypeAliasSymbols?: ReadonlySet<ts.Symbol>,
+  bindings?: HelperTypeAliasBindings,
+): HelperTypeInferenceState {
+  return {
+    ...(bindings ? { bindings } : {}),
+    seenTypeAliasSymbols: new Set(seenTypeAliasSymbols ?? []),
+  };
+}
+
+function helperModeFromTypeNode(
+  checker: ts.TypeChecker,
+  node: ts.TypeNode,
+  direction: MacroHelperDirection,
+  state: HelperTypeInferenceState,
+): MacroHelperMode | null {
+  if (ts.isParenthesizedTypeNode(node)) {
+    return helperModeFromTypeNode(checker, node.type, direction, state);
+  }
+
+  if (ts.isIntersectionTypeNode(node)) {
+    return combineHelperModes(
+      node.types.map((member) => helperModeFromTypeNode(checker, member, direction, state)),
+    );
+  }
+
+  const symbol = getTypeReferenceTargetSymbol(checker, node);
+  if (!symbol) {
+    return null;
+  }
+  const resolved = resolveAliasedSymbol(checker, symbol);
+  const helperIdentity = stdlibHelperIdentityForSymbol(checker, resolved);
+  const typeArgumentNodes = getTypeReferenceArgumentNodes(node);
+  if (helperIdentity) {
+    const index = helperModeTypeArgumentIndex(helperIdentity, direction);
+    if (index === null) {
+      return null;
+    }
+    if (!typeArgumentNodes || index >= typeArgumentNodes.length) {
+      return 'sync';
+    }
+    const modeType = resolveBoundTypeFromTypeNode(checker, typeArgumentNodes[index]!, state);
+    return modeType ? helperModeFromModeType(modeType) : null;
   }
 
   if (
-    /(?:^|[<(])Encoder<[\s\S]*"async"\s*>$/u.test(typeText) ||
-    /(?:^|[<(])Codec<[\s\S]*"(?:sync|async)"\s*,\s*"async"\s*>$/u.test(typeText)
+    (resolved.flags & ts.SymbolFlags.TypeAlias) === 0 ||
+    state.seenTypeAliasSymbols.has(resolved)
   ) {
-    return 'async';
+    return null;
   }
-  return /(?:^|[<(])Encoder</u.test(typeText) || /(?:^|[<(])Codec</u.test(typeText)
-    ? 'sync'
-    : null;
+
+  const typeAliasDeclaration = resolved.declarations?.find(ts.isTypeAliasDeclaration);
+  if (!typeAliasDeclaration) {
+    return null;
+  }
+
+  const nextBindings = new Map(state.bindings ? Array.from(state.bindings.entries()) : []);
+  const typeParameters = typeAliasDeclaration.typeParameters ?? [];
+  for (const [index, parameter] of typeParameters.entries()) {
+    const parameterSymbol = checker.getSymbolAtLocation(parameter.name);
+    if (!parameterSymbol) {
+      continue;
+    }
+    const argumentNode = typeArgumentNodes?.[index];
+    const resolvedType = argumentNode
+      ? resolveBoundTypeFromTypeNode(checker, argumentNode, state)
+      : parameter.default
+      ? resolveBoundTypeFromTypeNode(checker, parameter.default, state)
+      : null;
+    if (resolvedType) {
+      nextBindings.set(resolveAliasedSymbol(checker, parameterSymbol), resolvedType);
+    }
+  }
+
+  const nextState = createHelperTypeInferenceState(state.seenTypeAliasSymbols, nextBindings);
+  nextState.seenTypeAliasSymbols.add(resolved);
+  return helperModeFromTypeNode(checker, typeAliasDeclaration.type, direction, nextState);
+}
+
+function helperModeFromTypeStructure(
+  checker: ts.TypeChecker,
+  type: ts.Type,
+  direction: MacroHelperDirection,
+): MacroHelperMode | null {
+  const anyType = type as ts.Type & {
+    aliasSymbol?: ts.Symbol;
+    aliasTypeArguments?: readonly ts.Type[];
+  };
+  const aliasSymbol = anyType.aliasSymbol ? resolveAliasedSymbol(checker, anyType.aliasSymbol) : null;
+  if (aliasSymbol) {
+    const helperIdentity = stdlibHelperIdentityForSymbol(checker, aliasSymbol);
+    if (helperIdentity) {
+      const direct = helperModeFromStdlibHelperTypeArguments(
+        helperIdentity,
+        anyType.aliasTypeArguments,
+        direction,
+      );
+      if (direct) {
+        return direct;
+      }
+    }
+
+    if ((aliasSymbol.flags & ts.SymbolFlags.TypeAlias) !== 0) {
+      const typeAliasDeclaration = aliasSymbol.declarations?.find(ts.isTypeAliasDeclaration);
+      if (typeAliasDeclaration) {
+        const aliasBindings = new Map<ts.Symbol, ts.Type>();
+        const typeParameters = typeAliasDeclaration.typeParameters ?? [];
+        for (const [index, parameter] of typeParameters.entries()) {
+          const parameterSymbol = checker.getSymbolAtLocation(parameter.name);
+          const argumentType = anyType.aliasTypeArguments?.[index];
+          if (parameterSymbol && argumentType) {
+            aliasBindings.set(resolveAliasedSymbol(checker, parameterSymbol), argumentType);
+          }
+        }
+        const aliasMode = helperModeFromTypeNode(
+          checker,
+          typeAliasDeclaration.type,
+          direction,
+          createHelperTypeInferenceState(undefined, aliasBindings),
+        );
+        if (aliasMode) {
+          return aliasMode;
+        }
+      }
+    }
+  }
+
+  const directSymbol = getTypeSymbol(type);
+  if (directSymbol) {
+    const helperIdentity = stdlibHelperIdentityForSymbol(checker, directSymbol);
+    if (helperIdentity) {
+      const direct = helperModeFromStdlibHelperTypeArguments(
+        helperIdentity,
+        typeArgumentsForTypeReference(checker, type),
+        direction,
+      );
+      if (direct) {
+        return direct;
+      }
+    }
+  }
+
+  if ((type.flags & ts.TypeFlags.Intersection) !== 0) {
+    return combineHelperModes(
+      (type as ts.IntersectionType).types.map((member) =>
+        helperModeFromTypeStructure(checker, member, direction)
+      ),
+    );
+  }
+
+  return null;
 }
 
 function helperModeFromType(
@@ -421,16 +640,9 @@ function helperModeFromType(
   direction: MacroHelperDirection,
   location: ts.Node,
 ): MacroHelperMode | null {
-  const markerMode = helperModeFromMarkerProperty(
-    checker,
-    type,
-    HELPER_MODE_MARKER_NAMES[direction],
-    location,
-  );
-  if (markerMode) {
-    return markerMode;
-  }
-  return helperModeFromTypeDisplayText(checker.typeToString(type), direction);
+  void checker;
+  void location;
+  return helperModeFromTypeStructure(checker, type, direction);
 }
 
 function combineHelperModes(
@@ -490,17 +702,7 @@ function stdlibHelperIdentityForCallee(
   if (!symbol) {
     return null;
   }
-  const resolved = resolveAliasedSymbol(checker, symbol);
-  const module = (resolved.declarations ?? [])
-    .map((declaration) => stdlibModuleForDeclarationFile(declaration.getSourceFile().fileName))
-    .find((value) => value !== null) ?? null;
-  if (!module) {
-    return null;
-  }
-  return {
-    module,
-    name: resolved.getName(),
-  };
+  return stdlibHelperIdentityForSymbol(checker, symbol);
 }
 
 function initializerExpressionForBindingDeclaration(

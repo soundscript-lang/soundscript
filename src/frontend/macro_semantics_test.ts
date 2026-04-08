@@ -370,6 +370,70 @@ Deno.test('createMacroSemantics can infer helper mode through aliased helper typ
   assertEquals(semantics.valueBindingHelperModeInScope('AsyncCodec', 'encode', wrapper), 'async');
 });
 
+Deno.test('createMacroSemantics can infer helper mode through generic helper alias wrappers', () => {
+  const fileName = '/virtual/index.ts';
+  const preparedProgram = createPreparedProgramForMacroTest({
+    [fileName]: [
+      'type DecoderAlias<M extends import("sts:decode").DecodeMode> = import("sts:decode").Decoder<string, unknown, M>;',
+      'type EncoderAlias<M extends import("sts:encode").EncodeMode> = import("sts:encode").Encoder<string, string, unknown, M>;',
+      'type CodecAlias<DM extends import("sts:decode").DecodeMode, EM extends import("sts:encode").EncodeMode> = import("sts:codec").Codec<string, string, unknown, unknown, DM, EM>;',
+      '',
+      'type AsyncStringDecoder = DecoderAlias<"async">;',
+      'type AsyncStringEncoder = EncoderAlias<"async">;',
+      'type MixedStringCodec = CodecAlias<"async", "sync">;',
+      '',
+      'declare const AsyncDecoder: AsyncStringDecoder;',
+      'declare const AsyncEncoder: AsyncStringEncoder;',
+      'declare const MixedCodec: MixedStringCodec;',
+      '',
+      'type Wrapper = { value: string };',
+      '',
+    ].join('\n'),
+  });
+
+  const sourceFile = preparedProgram.program.getSourceFile(fileName);
+  assert(sourceFile);
+
+  const semantics = createMacroSemantics(preparedProgram.program);
+  const wrapper = findTypeAliasDeclaration(sourceFile, 'Wrapper');
+
+  assertEquals(semantics.valueBindingHelperModeInScope('AsyncDecoder', 'decode', wrapper), 'async');
+  assertEquals(semantics.valueBindingHelperModeInScope('AsyncEncoder', 'encode', wrapper), 'async');
+  assertEquals(semantics.valueBindingHelperModeInScope('MixedCodec', 'decode', wrapper), 'async');
+  assertEquals(semantics.valueBindingHelperModeInScope('MixedCodec', 'encode', wrapper), 'sync');
+});
+
+Deno.test('createMacroSemantics does not infer helper mode from user-defined Decoder and Encoder names', () => {
+  const fileName = '/virtual/index.ts';
+  const preparedProgram = createPreparedProgramForMacroTest({
+    [fileName]: [
+      'type Decoder<T, M extends "sync" | "async" = "sync"> = {',
+      '  readonly mode: M;',
+      '  decode(value: unknown): M extends "async" ? Promise<T> : T;',
+      '};',
+      'type Encoder<T, M extends "sync" | "async" = "sync"> = {',
+      '  readonly mode: M;',
+      '  encode(value: T): M extends "async" ? Promise<unknown> : unknown;',
+      '};',
+      '',
+      'declare const AsyncDecoder: Decoder<string, "async">;',
+      'declare const AsyncEncoder: Encoder<string, "async">;',
+      '',
+      'type Wrapper = { value: string };',
+      '',
+    ].join('\n'),
+  });
+
+  const sourceFile = preparedProgram.program.getSourceFile(fileName);
+  assert(sourceFile);
+
+  const semantics = createMacroSemantics(preparedProgram.program);
+  const wrapper = findTypeAliasDeclaration(sourceFile, 'Wrapper');
+
+  assertEquals(semantics.valueBindingHelperModeInScope('AsyncDecoder', 'decode', wrapper), null);
+  assertEquals(semantics.valueBindingHelperModeInScope('AsyncEncoder', 'encode', wrapper), null);
+});
+
 Deno.test('createMacroSemantics prefers runtime-kind finite cases for primitive and function unions', () => {
   const fileName = '/virtual/index.ts';
   const preparedProgram = createPreparedProgramForMacroTest({

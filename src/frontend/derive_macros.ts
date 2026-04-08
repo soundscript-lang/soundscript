@@ -961,12 +961,45 @@ function annotationIdentifierUsesAsyncHelperMode(
   scopeNode: MacroSyntaxNode,
   direction: 'decode' | 'encode',
 ): boolean {
+  return annotationIdentifierHelperMode(ctx, annotation, scopeNode, direction) === 'async';
+}
+
+function annotationIdentifierHelperMode(
+  ctx: DeriveContext,
+  annotation: MacroAnnotation | null,
+  scopeNode: MacroSyntaxNode,
+  direction: 'decode' | 'encode',
+): 'async' | 'sync' | null {
   const helperIdentifier = annotation ? annotationIdentifierArgument(annotation) : null;
   if (!helperIdentifier) {
-    return false;
+    return null;
   }
-  return ctx.semantics.valueBindingHelperModeInScope(helperIdentifier, direction, scopeNode) === 'async' ||
-    ctx.semantics.valueBindingHelperModeInScope(helperIdentifier, direction) === 'async';
+  const annotationName = annotation?.name ?? `${direction}.via`;
+  const scopedMode = ctx.semantics.valueBindingHelperModeInScope(
+    helperIdentifier,
+    direction,
+    scopeNode,
+  );
+  if (scopedMode !== null) {
+    return scopedMode;
+  }
+  const fallbackMode = ctx.semantics.valueBindingHelperModeInScope(helperIdentifier, direction);
+  if (fallbackMode !== null) {
+    return fallbackMode;
+  }
+  if (
+    ctx.semantics.valueBindingInScope(helperIdentifier, scopeNode) ||
+    ctx.semantics.valueBindingInScope(helperIdentifier)
+  ) {
+    const helperTypeText = direction === 'decode'
+      ? `import('sts:decode').Decoder<...> or import('sts:codec').Codec<...>`
+      : `import('sts:encode').Encoder<...> or import('sts:codec').Codec<...>`;
+    ctx.error(
+      `${annotationName}(...) helper "${helperIdentifier}" must have an explicit stdlib helper type annotation such as ${helperTypeText}, or a local implementation the macro can analyze, so its async/sync mode can be determined.`,
+      scopeNode,
+    );
+  }
+  return null;
 }
 
 function decodeAnnotationsMayResolveAsync(

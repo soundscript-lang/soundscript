@@ -39,7 +39,6 @@ export class EncodeFailure extends Failure {
 
 // #[variance(T: in, TEncoded: out, E: out, M: out)]
 export type Encoder<T, TEncoded = unknown, E = EncodeFailure, M extends EncodeMode = 'sync'> = {
-  readonly __encodeMode?: M;
   encode(value: T): EncodeOutput<TEncoded, E, M>;
   validateEncode(value: T): EncodeOutput<TEncoded, readonly EncodeIssue[], M>;
 };

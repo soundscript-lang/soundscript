@@ -62,7 +62,6 @@ export class DecodeFailure extends Failure {
 
 // #[variance(T: out, E: out, M: out)]
 export type Decoder<T, E = DecodeFailure, M extends DecodeMode = 'sync'> = {
-  readonly __decodeMode?: M;
   decode(value: unknown): DecodeOutput<T, E, M>;
   validateDecode(value: unknown): DecodeOutput<T, readonly DecodeIssue[], M>;
 };
