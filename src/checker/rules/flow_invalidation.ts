@@ -10,7 +10,7 @@ import {
   SYNCHRONOUS_MAP_CALLBACK_PARAMETER_BINDINGS,
   SYNCHRONOUS_SET_CALLBACK_PARAMETER_BINDINGS,
 } from '../effects/builtins.ts';
-import { getEffectCompositionForCallLike, PUBLIC_EFFECT_MASKS } from '../effects.ts';
+import { compositionPreservesNarrowing, getEffectCompositionForCallLike } from '../effects.ts';
 
 import type { FlowFactEnvironment } from './flow_facts.ts';
 
@@ -1589,9 +1589,7 @@ function callPreservesNarrowing(
   context: AnalysisContext,
   node: ts.CallExpression | ts.NewExpression,
 ): boolean {
-  const effects = getEffectCompositionForCallLike(context, node);
-  return !effects.unknown &&
-    (effects.mask & (PUBLIC_EFFECT_MASKS.mut | PUBLIC_EFFECT_MASKS.suspend)) === 0;
+  return compositionPreservesNarrowing(getEffectCompositionForCallLike(context, node));
 }
 
 interface StateCallNarrowingOptions {

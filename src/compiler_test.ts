@@ -388,6 +388,34 @@ compilerIntegrationTest(
 );
 
 compilerIntegrationTest(
+  'compileProject rejects fixed-layout object literal helper calls with custom open host effects',
+  async () => {
+    const tempDirectory = await createCompilerTestProject([
+      '// #[effects(add: [host.custom.api])]',
+      'declare function readHostValue(value: number): number;',
+      '',
+      'export function main(input: number): number {',
+      '  const box = { value: readHostValue(input) };',
+      '  return box.value;',
+      '}',
+      '',
+    ].join('\n'));
+
+    const result = compileTempProject(tempDirectory);
+
+    assertEquals(result.exitCode, 1);
+    assertEquals(
+      result.diagnostics.map((diagnostic: { source: string }) => diagnostic.source),
+      ['compiler'],
+    );
+    assertEquals(
+      result.diagnostics.map((diagnostic: { code: string }) => diagnostic.code),
+      ['COMPILER2001'],
+    );
+  },
+);
+
+compilerIntegrationTest(
   'compileProject executes plain sync while break and continue control flow',
   async () => {
     const tempDirectory = await createCompilerTestProject([

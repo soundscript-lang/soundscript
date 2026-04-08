@@ -18014,7 +18014,7 @@ function isScalarSafeFixedLayoutObjectValueExpression(
       return false;
     }
     const effects = getEffectCompositionForCallLike(activeCompilerAnalysisContext, expression);
-    if (!isEffectFreeForCompiler(effects.mask, effects.unknown)) {
+    if (!isEffectFreeForCompiler(effects)) {
       return false;
     }
     return expression.arguments.every((argument) =>

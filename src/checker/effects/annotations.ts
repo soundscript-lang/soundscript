@@ -1,13 +1,9 @@
 import ts from 'typescript';
 
 import type { ParsedAnnotation, ParsedAnnotationValue } from '../../annotation_syntax.ts';
-import type {
-  AnalysisContext,
-  EffectNameFact,
-  EffectRewriteFact,
-} from '../engine/types.ts';
-import { effectMaskFromPublicName, isPublicEffectName } from './masks.ts';
-import { effectNamesToMask, normalizeEffectNames } from './names.ts';
+import type { AnalysisContext, EffectNameFact, EffectRewriteFact } from '../engine/types.ts';
+import { isPublicEffectName } from './masks.ts';
+import { normalizeEffectNames } from './names.ts';
 import {
   type EffectCallableDeclaration,
   isCallableBodyDeclaration,
@@ -22,9 +18,7 @@ export interface ParsedEffectsForwardEntry {
 
 export interface ParsedEffectsAnnotationContract {
   addEffects: readonly EffectNameFact[];
-  addMask: number;
   forbidEffects: readonly EffectNameFact[];
-  forbidMask: number;
   forwardEntries: readonly ParsedEffectsForwardEntry[];
   unknownDirect: boolean;
 }
@@ -48,7 +42,10 @@ type EffectsTargetClassification =
     kind: 'invalid';
   };
 
-export function hasCallableType(context: AnalysisContext, parameter: ts.ParameterDeclaration): boolean {
+export function hasCallableType(
+  context: AnalysisContext,
+  parameter: ts.ParameterDeclaration,
+): boolean {
   const type = parameter.type
     ? context.checker.getTypeFromTypeNode(parameter.type)
     : context.checker.getTypeAtLocation(parameter.name);
@@ -91,9 +88,9 @@ export function getEffectsAnnotation(
   context: AnalysisContext,
   node: ts.Node,
 ): ParsedAnnotation | undefined {
-  return context.getAnnotationLookup(node.getSourceFile()).getAttachedAnnotations(node).find((annotation) =>
-    annotation.name === 'effects'
-  );
+  return context.getAnnotationLookup(node.getSourceFile()).getAttachedAnnotations(node).find((
+    annotation,
+  ) => annotation.name === 'effects');
 }
 
 function parseEffectIdentifierList(
@@ -269,7 +266,9 @@ function parseForwardEntryList(
       entry.rewrites.map((rewrite) => `${rewrite.from}->${rewrite.to}`).join(',')
     }|handle:${entry.handleEffects.join(',')}`;
     if (seen.has(key)) {
-      return `Effects annotation field \`forward\` mentions \`${entry.fromPath.join('.')}\` more than once.`;
+      return `Effects annotation field \`forward\` mentions \`${
+        entry.fromPath.join('.')
+      }\` more than once.`;
     }
     seen.add(key);
     entries.push(entry);
@@ -310,7 +309,8 @@ export function parseEffectsAnnotationContract(
       return 'Effects annotations only accept named fields: `add`, `forbid`, `forward`, and `unknown`.';
     }
     if (
-      arg.name !== 'add' && arg.name !== 'forbid' && arg.name !== 'forward' && arg.name !== 'unknown'
+      arg.name !== 'add' && arg.name !== 'forbid' && arg.name !== 'forward' &&
+      arg.name !== 'unknown'
     ) {
       return `Unknown effects annotation field \`${arg.name}\`. Use only \`add\`, \`forbid\`, \`forward\`, and \`unknown\`.`;
     }
@@ -342,9 +342,7 @@ export function parseEffectsAnnotationContract(
   }
   return {
     addEffects,
-    addMask: effectNamesToMask(addEffects),
     forbidEffects,
-    forbidMask: effectNamesToMask(forbidEffects),
     forwardEntries,
     unknownDirect,
   };
@@ -390,13 +388,17 @@ function validateForwardTarget(
   for (const [index, segment] of memberPath.entries()) {
     const property = currentType.getProperty(segment);
     if (!property) {
-      return `Effects annotation field \`${fieldName}\` references unknown member \`${entry.fromPath.slice(0, index + 2).join('.')}\`.`;
+      return `Effects annotation field \`${fieldName}\` references unknown member \`${
+        entry.fromPath.slice(0, index + 2).join('.')
+      }\`.`;
     }
     currentType = context.checker.getTypeOfSymbolAtLocation(property, parameter);
   }
 
   if (!hasCallableSignatures(context, currentType)) {
-    return `Effects annotation field \`${fieldName}\` may only reference callable members; \`${entry.fromPath.join('.')}\` is not callable.`;
+    return `Effects annotation field \`${fieldName}\` may only reference callable members; \`${
+      entry.fromPath.join('.')
+    }\` is not callable.`;
   }
 
   return undefined;
@@ -424,7 +426,10 @@ export function validateEffectsAnnotation(
     return undefined;
   }
 
-  if (classification.kind === 'callable_body' && (parsed.addEffects.length > 0 || parsed.unknownDirect)) {
+  if (
+    classification.kind === 'callable_body' &&
+    (parsed.addEffects.length > 0 || parsed.unknownDirect)
+  ) {
     return 'Bodyful callable declarations infer direct effects from their implementation; use `forbid` and `forward`, not `add` or `unknown`.';
   }
 

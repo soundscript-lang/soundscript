@@ -1,10 +1,15 @@
 import ts from 'typescript';
 
 import { SOUND_DIAGNOSTIC_CODES, SOUND_DIAGNOSTIC_MESSAGES } from '../engine/diagnostic_codes.ts';
-import type { AnalysisContext, EffectNameFact, EffectUnknownReasonFact, PublicEffectName } from '../engine/types.ts';
+import type {
+  AnalysisContext,
+  EffectNameFact,
+  EffectUnknownReasonFact,
+  PublicEffectName,
+} from '../engine/types.ts';
 import { getNodeDiagnosticRange, type SoundDiagnostic } from '../diagnostics.ts';
 import {
-  callableExpressionMayViolateForbidMask,
+  callableExpressionMayViolateForbidEffects,
   classifyCallableEffectContractMismatch,
   declarationMayViolateOwnForbid,
   getCallableContractSummary,
@@ -50,22 +55,36 @@ function createEffectContractViolationDiagnostic(
     ? formatEffectUnknownReasons(context.unknownReasons)
     : [];
   const example = context.kind === 'declaration'
-    ? `Rewrite \`${context.primarySymbol}\` so it stays within ${formatPublicEffectList(context.forbiddenEffects)}, or relax the \`#[effects(forbid: [...])]\` contract.`
+    ? `Rewrite \`${context.primarySymbol}\` so it stays within ${
+      formatPublicEffectList(context.forbiddenEffects)
+    }, or relax the \`#[effects(forbid: [...])]\` contract.`
     : context.kind === 'call' && context.relation === 'parameter_forbid'
-    ? `Pass a callback that stays within ${formatPublicEffectList(context.forbiddenEffects)}, or relax the parameter contract.`
+    ? `Pass a callback that stays within ${
+      formatPublicEffectList(context.forbiddenEffects)
+    }, or relax the parameter contract.`
     : context.kind === 'relation'
-    ? `Align the callable assignment so it preserves ${formatPublicEffectList(context.forbiddenEffects)}.`
-    : `Pass arguments whose composed effects stay within ${formatPublicEffectList(context.forbiddenEffects)}, or relax the callee contract.`;
+    ? `Align the callable assignment so it preserves ${
+      formatPublicEffectList(context.forbiddenEffects)
+    }.`
+    : `Pass arguments whose composed effects stay within ${
+      formatPublicEffectList(context.forbiddenEffects)
+    }, or relax the callee contract.`;
 
   const message = context.kind === 'declaration'
-    ? `${SOUND_DIAGNOSTIC_MESSAGES.effectContractViolation} \`${context.primarySymbol}\` forbids ${formatPublicEffectList(context.forbiddenEffects)}, but its implementation may perform those effects.`
+    ? `${SOUND_DIAGNOSTIC_MESSAGES.effectContractViolation} \`${context.primarySymbol}\` forbids ${
+      formatPublicEffectList(context.forbiddenEffects)
+    }, but its implementation may perform those effects.`
     : context.kind === 'relation'
     ? context.rule === 'callable_effect_covariance'
       ? 'Callable effect contracts are covariant in soundscript.'
       : 'Higher-order callback effect contracts are contravariant in soundscript.'
     : context.relation === 'parameter_forbid'
-    ? `${SOUND_DIAGNOSTIC_MESSAGES.effectContractViolation} Argument passed to \`${context.primarySymbol}\` may perform forbidden effects: ${formatPublicEffectList(context.forbiddenEffects)}.`
-    : `${SOUND_DIAGNOSTIC_MESSAGES.effectContractViolation} Call to \`${context.primarySymbol}\` may violate its declared \`forbid\` contract with effects ${formatPublicEffectList(context.forbiddenEffects)}.`;
+    ? `${SOUND_DIAGNOSTIC_MESSAGES.effectContractViolation} Argument passed to \`${context.primarySymbol}\` may perform forbidden effects: ${
+      formatPublicEffectList(context.forbiddenEffects)
+    }.`
+    : `${SOUND_DIAGNOSTIC_MESSAGES.effectContractViolation} Call to \`${context.primarySymbol}\` may violate its declared \`forbid\` contract with effects ${
+      formatPublicEffectList(context.forbiddenEffects)
+    }.`;
 
   return {
     source: 'sound',
@@ -211,7 +230,9 @@ export function runEffectRules(context: AnalysisContext): SoundDiagnostic[] {
               kind: 'declaration',
               primarySymbol: getEffectContractName(node),
               forbiddenEffects: summary.forbidEffects,
-              unknownReasons: summary.hasUnknownDirectEffects ? summary.unknownDirectReasons : undefined,
+              unknownReasons: summary.hasUnknownDirectEffects
+                ? summary.unknownDirectReasons
+                : undefined,
             }),
           );
         }
@@ -224,10 +245,9 @@ export function runEffectRules(context: AnalysisContext): SoundDiagnostic[] {
             const argument = node.arguments?.[contract.parameterIndex];
             if (
               !argument ||
-              !callableExpressionMayViolateForbidMask(
+              !callableExpressionMayViolateForbidEffects(
                 context,
                 argument,
-                contract.forbidMask,
                 contract.forbidEffects,
               )
             ) {
@@ -265,7 +285,9 @@ export function runEffectRules(context: AnalysisContext): SoundDiagnostic[] {
                     context.checker.getResolvedSignature(node)?.getDeclaration() ?? node.expression,
                   ),
                   forbiddenEffects: summary.forbidEffects,
-                  unknownReasons: composedEffects.unknown ? composedEffects.unknownReasons : undefined,
+                  unknownReasons: composedEffects.unknown
+                    ? composedEffects.unknownReasons
+                    : undefined,
                   relation: 'callee_forbid',
                 }),
               );

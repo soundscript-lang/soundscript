@@ -79,7 +79,6 @@ export interface EffectRewriteFact {
 
 export interface EffectParameterContractFact {
   forbidEffects: readonly EffectNameFact[];
-  forbidMask: number;
   parameterIndex: number;
 }
 
