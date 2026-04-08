@@ -2418,6 +2418,11 @@ function moduleUsesHostFallbackObjectBoundary(module: CompilerModuleIR): boolean
   return collectHostBoundaryFallbackObjectUsageWithHostClosures(module) !== undefined;
 }
 
+function moduleUsesGenericFallbackObjectResultBoundary(module: CompilerModuleIR): boolean {
+  return collectHostBoundaryFallbackObjectUsageWithHostClosures(module)?.needsResultBoundary ===
+    true;
+}
+
 function moduleUsesObjectKeysArrayRuntime(module: CompilerModuleIR): boolean {
   return module.functions.some((func) =>
     func.params.some((param) => param.type === 'owned_array_ref') ||
@@ -4009,6 +4014,8 @@ function moduleUsesOwnedArrayHostResultBoundary(module: CompilerModuleIR): boole
   return module.functions.some((func) =>
     func.closureFunctionId === undefined && func.resultType === 'owned_array_ref'
   ) ||
+    (moduleUsesGenericFallbackObjectResultBoundary(module) &&
+      moduleUsesObjectKeysArrayRuntime(module)) ||
     module.functions.some((func) => {
       const fallbackProperties = getEffectiveFunctionHostFallbackObjectPropertyMetadata(func);
       return [...fallbackProperties.arrayProperties.values()].some((property) =>
@@ -4086,6 +4093,8 @@ function moduleUsesOwnedNumberArrayHostResultBoundary(module: CompilerModuleIR):
   return module.functions.some((func) =>
     func.closureFunctionId === undefined && func.resultType === 'owned_number_array_ref'
   ) ||
+    (moduleUsesGenericFallbackObjectResultBoundary(module) &&
+      moduleUsesOwnedNumberArrayRuntime(module)) ||
     module.functions.some((func) => {
       const fallbackProperties = getEffectiveFunctionHostFallbackObjectPropertyMetadata(func);
       return [...fallbackProperties.arrayProperties.values()].some((property) =>
@@ -4163,6 +4172,8 @@ function moduleUsesOwnedBooleanArrayHostResultBoundary(module: CompilerModuleIR)
   return module.functions.some((func) =>
     func.closureFunctionId === undefined && func.resultType === 'owned_boolean_array_ref'
   ) ||
+    (moduleUsesGenericFallbackObjectResultBoundary(module) &&
+      moduleUsesOwnedBooleanArrayRuntime(module)) ||
     module.functions.some((func) => {
       const fallbackProperties = getEffectiveFunctionHostFallbackObjectPropertyMetadata(func);
       return [...fallbackProperties.arrayProperties.values()].some((property) =>
@@ -4265,7 +4276,8 @@ function moduleUsesOwnedHeapArrayHostResultBoundary(module: CompilerModuleIR): b
     func.closureFunctionId === undefined &&
     func.resultType === 'owned_heap_array_ref' &&
     getEffectiveHostHeapArrayResultRepresentation(func) !== undefined
-  ) || module.functions.some((func) => {
+  ) || (moduleUsesGenericFallbackObjectResultBoundary(module) &&
+      moduleUsesOwnedHeapArrayRuntime(module)) || module.functions.some((func) => {
     const fallbackProperties = getEffectiveFunctionHostFallbackObjectPropertyMetadata(func);
     return fallbackProperties.heapArrayProperties.size > 0 &&
       (hasHostFallbackObjectResultBoundary(func) ||
@@ -4328,6 +4340,8 @@ function moduleUsesOwnedTaggedArrayHostResultBoundary(module: CompilerModuleIR):
       (hasHostFallbackObjectResultBoundary(func) ||
         hasHostTaggedHeapNullableFallbackResultBoundary(func));
   }) ||
+    (moduleUsesGenericFallbackObjectResultBoundary(module) &&
+      moduleUsesOwnedTaggedArrayRuntime(module)) ||
     module.runtime?.representations.some((representation) =>
       representation.kind === 'specialized_object_representation' &&
       representation.fields.some((field) => field.valueType === 'owned_tagged_array_ref') &&
@@ -9836,6 +9850,11 @@ function emitHostFallbackObjectBoundaryHelpers(
   const taggedArrayProperties = collectHostBoundaryFallbackTaggedArrayProperties(module);
   const heapProperties = collectHostBoundaryFallbackHeapProperties(module);
   const taggedHeapProperties = collectHostBoundaryFallbackTaggedHeapProperties(module);
+  const usesHeapArrayResultBoundary = moduleUsesOwnedHeapArrayHostResultBoundary(module);
+  const usesStringArrayResultBoundary = moduleUsesOwnedArrayHostResultBoundary(module);
+  const usesNumberArrayResultBoundary = moduleUsesOwnedNumberArrayHostResultBoundary(module);
+  const usesBooleanArrayResultBoundary = moduleUsesOwnedBooleanArrayHostResultBoundary(module);
+  const usesTaggedArrayResultBoundary = moduleUsesOwnedTaggedArrayHostResultBoundary(module);
   const closureFunctionById = new Map(
     module.functions
       .filter((func) => func.closureFunctionId !== undefined)
@@ -9847,20 +9866,41 @@ function emitHostFallbackObjectBoundaryHelpers(
     setterImportName: string,
     targetLocalName: string,
   ): string[] => {
-    const emitDispatch = (index: number): string[] => {
-      const candidateLayout = genericHeapResultLayouts[index];
-      if (candidateLayout) {
+    const emitArrayDispatch = (index: number): string[] => {
+      const arrayKinds = [
+        ...(usesHeapArrayResultBoundary
+          ? [{ kind: 'heap' as const, watTypeId: 'owned_heap_array' }]
+          : []),
+        ...(usesStringArrayResultBoundary
+          ? [{ kind: 'string' as const, watTypeId: 'owned_string_array' }]
+          : []),
+        ...(usesNumberArrayResultBoundary
+          ? [{ kind: 'number' as const, watTypeId: 'owned_number_array' }]
+          : []),
+        ...(usesBooleanArrayResultBoundary
+          ? [{ kind: 'boolean' as const, watTypeId: 'owned_boolean_array' }]
+          : []),
+        ...(usesTaggedArrayResultBoundary
+          ? [{ kind: 'tagged' as const, watTypeId: 'owned_tagged_array' }]
+          : []),
+      ];
+      const candidateKind = arrayKinds[index];
+      if (candidateKind) {
         return [
           `${indent(level)}local.get $entry_heap`,
-          `${indent(level)}ref.test (ref null $${candidateLayout.watTypeId})`,
+          `${indent(level)}ref.test (ref null $${candidateKind.watTypeId})`,
           `${indent(level)}if`,
           `${indent(level + 1)}local.get $${targetLocalName}`,
           `${indent(level + 1)}local.get $entry_heap`,
-          `${indent(level + 1)}ref.cast (ref null $${candidateLayout.watTypeId})`,
-          `${indent(level + 1)}call $${getSpecializedObjectToHostHelperName(candidateLayout)}`,
+          `${indent(level + 1)}ref.cast (ref null $${candidateKind.watTypeId})`,
+          `${indent(level + 1)}call $${
+            candidateKind.kind === 'heap'
+              ? 'generic_owned_heap_array_to_host_array'
+              : getOwnedArrayToHostHelperName(candidateKind.kind)
+          }`,
           `${indent(level + 1)}call $${setterImportName}`,
           `${indent(level)}else`,
-          ...emitDispatch(index + 1),
+          ...emitArrayDispatch(index + 1),
           `${indent(level)}end`,
         ];
       }
@@ -9878,6 +9918,25 @@ function emitHostFallbackObjectBoundaryHelpers(
         `${indent(level)}end`,
       ];
     };
+    const emitDispatch = (index: number): string[] => {
+      const candidateLayout = genericHeapResultLayouts[index];
+      if (candidateLayout) {
+        return [
+          `${indent(level)}local.get $entry_heap`,
+          `${indent(level)}ref.test (ref null $${candidateLayout.watTypeId})`,
+          `${indent(level)}if`,
+          `${indent(level + 1)}local.get $${targetLocalName}`,
+          `${indent(level + 1)}local.get $entry_heap`,
+          `${indent(level + 1)}ref.cast (ref null $${candidateLayout.watTypeId})`,
+          `${indent(level + 1)}call $${getSpecializedObjectToHostHelperName(candidateLayout)}`,
+          `${indent(level + 1)}call $${setterImportName}`,
+          `${indent(level)}else`,
+          ...emitDispatch(index + 1),
+          `${indent(level)}end`,
+        ];
+      }
+      return emitArrayDispatch(0);
+    };
 
     return emitDispatch(0);
   };
@@ -9891,6 +9950,54 @@ function emitHostFallbackObjectBoundaryHelpers(
     );
 
   if (usage.needsParamBoundary || usage.needsResultBoundary) {
+    if (usesHeapArrayResultBoundary) {
+      lines.push(
+        '(func $generic_owned_heap_array_to_host_array (param $value (ref null $owned_heap_array)) (result externref)',
+        `${indent(1)}(local $length i32)`,
+        `${indent(1)}(local $index i32)`,
+        `${indent(1)}(local $result externref)`,
+        `${indent(1)}(local $entry_heap (ref null eq))`,
+        `${indent(1)}(local $entry_value externref)`,
+        `${indent(1)}call $host_array_empty`,
+        `${indent(1)}local.set $result`,
+        `${indent(1)}local.get $value`,
+        `${indent(1)}struct.get $owned_heap_array 0`,
+        `${indent(1)}array.len`,
+        `${indent(1)}local.set $length`,
+        `${indent(1)}i32.const 0`,
+        `${indent(1)}local.set $index`,
+        `${indent(1)}(block $generic_owned_heap_array_done`,
+        `${indent(2)}(loop $generic_owned_heap_array_loop`,
+        `${indent(3)}local.get $index`,
+        `${indent(3)}local.get $length`,
+        `${indent(3)}i32.ge_u`,
+        `${indent(3)}br_if $generic_owned_heap_array_done`,
+        `${indent(3)}local.get $value`,
+        `${indent(3)}struct.get $owned_heap_array 0`,
+        `${indent(3)}local.get $index`,
+        `${indent(3)}array.get $owned_heap_array_data`,
+        `${indent(3)}local.tee $entry_heap`,
+        `${indent(3)}call $${getHostObjectLookupCachedImportFunctionName()}`,
+        `${indent(3)}local.tee $entry_value`,
+        `${indent(3)}ref.is_null`,
+        `${indent(3)}if`,
+        ...emitGenericHeapObjectToHostSet(4, 'host_array_push', 'result'),
+        `${indent(3)}else`,
+        `${indent(4)}local.get $result`,
+        `${indent(4)}local.get $entry_value`,
+        `${indent(4)}call $host_array_push`,
+        `${indent(3)}end`,
+        `${indent(3)}local.get $index`,
+        `${indent(3)}i32.const 1`,
+        `${indent(3)}i32.add`,
+        `${indent(3)}local.set $index`,
+        `${indent(3)}br $generic_owned_heap_array_loop`,
+        `${indent(2)})`,
+        `${indent(1)})`,
+        `${indent(1)}local.get $result`,
+        ')',
+      );
+    }
     lines.push(
       `(func $${getHostObjectToFallbackHelperName()} (param $value externref) (result (ref null $${layout.watTypeId}))`,
       `${indent(1)}(local $result (ref null $${layout.watTypeId}))`,

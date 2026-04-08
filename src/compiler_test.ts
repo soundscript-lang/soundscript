@@ -7396,6 +7396,242 @@ compilerIntegrationTest(
 );
 
 compilerIntegrationTest(
+  'compileProject supports real react-router-dom package declarations for browser routes',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              skipLibCheck: true,
+              target: 'ES2022',
+              lib: ['ES2022', 'DOM', 'DOM.Iterable'],
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+              allowSyntheticDefaultImports: true,
+            },
+            include: ['src/**/*.sts', 'src/**/*.d.ts'],
+            soundscript: {
+              target: 'wasm-browser',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/index.sts',
+        contents: [
+          '// #[interop]',
+          'import { jsx } from "react/jsx-runtime";',
+          '// #[interop]',
+          'import { HashRouter, Route, Routes } from "react-router-dom";',
+          '',
+          'function App() {',
+          '  return jsx(HashRouter, {',
+          '    children: jsx(Routes, {',
+          '      children: jsx(Route, {',
+          '        path: "/",',
+          '        element: jsx("main", { children: "ok" }),',
+          '      }),',
+          '    }),',
+          '  });',
+          '}',
+          '',
+          'export function main(): number {',
+          '  App();',
+          '  return 1;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    await linkTempProjectNodeModulesFromSource(
+      tempDirectory,
+      getExampleNodeModulesPath('examples/express-react-ssr-demo'),
+      [
+        'react',
+        'react-dom',
+        'react-router',
+        'react-router-dom',
+        '@types/react',
+        '@types/react-dom',
+        'csstype',
+      ],
+    );
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    function jsx(
+      type: string | ((props: Record<string, unknown>) => unknown),
+      props: Record<string, unknown>,
+      key?: string | number | bigint,
+    ) {
+      return { key: key === undefined ? null : String(key), props, type };
+    }
+
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate({
+      modules: {
+        'react/jsx-runtime': {
+          jsx,
+          jsxs: jsx,
+        },
+        'react-router-dom': {
+          HashRouter(props: Record<string, unknown>) {
+            return props;
+          },
+          Route(props: Record<string, unknown>) {
+            return props;
+          },
+          Routes(props: Record<string, unknown>) {
+            return props;
+          },
+        },
+      },
+    });
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+
+    assertEquals(await exported(), 1);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject supports real react-router-dom package declarations for browser route children arrays',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              skipLibCheck: true,
+              target: 'ES2022',
+              lib: ['ES2022', 'DOM', 'DOM.Iterable'],
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+              allowSyntheticDefaultImports: true,
+            },
+            include: ['src/**/*.sts', 'src/**/*.d.ts'],
+            soundscript: {
+              target: 'wasm-browser',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/index.sts',
+        contents: [
+          '// #[interop]',
+          'import { jsx, jsxs } from "react/jsx-runtime";',
+          '// #[interop]',
+          'import { HashRouter, Route, Routes } from "react-router-dom";',
+          '',
+          'function App() {',
+          '  return jsx(HashRouter, {',
+          '    children: jsxs(Routes, {',
+          '      children: [',
+          '        jsx(Route, {',
+          '          path: "/",',
+          '          element: jsx("main", { children: "ok" }),',
+          '        }),',
+          '      ],',
+          '    }),',
+          '  });',
+          '}',
+          '',
+          'export function main(): number {',
+          '  App();',
+          '  return 1;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    await linkTempProjectNodeModulesFromSource(
+      tempDirectory,
+      getExampleNodeModulesPath('examples/express-react-ssr-demo'),
+      [
+        'react',
+        'react-dom',
+        'react-router',
+        'react-router-dom',
+        '@types/react',
+        '@types/react-dom',
+        'csstype',
+      ],
+    );
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    function jsx(
+      type: string | ((props: Record<string, unknown>) => unknown),
+      props: Record<string, unknown>,
+      key?: string | number | bigint,
+    ) {
+      return { key: key === undefined ? null : String(key), props, type };
+    }
+
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate({
+      modules: {
+        'react/jsx-runtime': {
+          jsx,
+          jsxs: jsx,
+        },
+        'react-router-dom': {
+          HashRouter(props: Record<string, unknown>) {
+            return props;
+          },
+          Route(props: Record<string, unknown>) {
+            return props;
+          },
+          Routes(props: Record<string, unknown>) {
+            return props;
+          },
+        },
+      },
+    });
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+
+    assertEquals(await exported(), 1);
+  },
+);
+
+compilerIntegrationTest(
   'compileProject supports React-shaped bare package imports with jsx-runtime subpaths',
   async () => {
     const tempDirectory = await createTempProject([
