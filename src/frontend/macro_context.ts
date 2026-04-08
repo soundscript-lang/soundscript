@@ -1082,8 +1082,14 @@ export function createSyntaxOnlyMacroContext(
       declarationShape() {
         return unsupported('reflect.declarationShape');
       },
+      declarationShapeData() {
+        return unsupported('reflect.declarationShapeData');
+      },
       typeShape() {
         return unsupported('reflect.typeShape');
+      },
+      typeShapeData() {
+        return unsupported('reflect.typeShapeData');
       },
     },
     semantics: {

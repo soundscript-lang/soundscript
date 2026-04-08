@@ -258,7 +258,17 @@ function createUnsupportedAdvancedContext(
           'This macro requires declaration/type reflection, but no prepared program was available.',
         );
       },
+      declarationShapeData() {
+        throw new Error(
+          'This macro requires declaration/type reflection, but no prepared program was available.',
+        );
+      },
       typeShape() {
+        throw new Error(
+          'This macro requires declaration/type reflection, but no prepared program was available.',
+        );
+      },
+      typeShapeData() {
         throw new Error(
           'This macro requires declaration/type reflection, but no prepared program was available.',
         );

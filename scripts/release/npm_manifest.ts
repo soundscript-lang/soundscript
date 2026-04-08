@@ -35,6 +35,7 @@ export const STABLE_RUNTIME_MODULES = [
   'text',
   'random',
   'json',
+  'metadata',
   'compare',
   'hash',
   'derive',

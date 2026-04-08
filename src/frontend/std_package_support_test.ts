@@ -29,6 +29,9 @@ import {
   JSON_STDLIB_DECLARATION_FILE,
   JSON_STDLIB_DECLARATION_TEXT,
   JSON_STDLIB_MODULE_SPECIFIER,
+  METADATA_STDLIB_DECLARATION_FILE,
+  METADATA_STDLIB_DECLARATION_TEXT,
+  METADATA_STDLIB_MODULE_SPECIFIER,
   MATCH_STDLIB_DECLARATION_FILE,
   MATCH_STDLIB_DECLARATION_TEXT,
   MATCH_STDLIB_MODULE_SPECIFIER,
@@ -70,6 +73,7 @@ Deno.test('std package support resolves root and stdlib leaf specifiers to virtu
     textResolved,
     randomResolved,
     jsonResolved,
+    metadataResolved,
     compareResolved,
     hashResolved,
     decodeResolved,
@@ -89,6 +93,7 @@ Deno.test('std package support resolves root and stdlib leaf specifiers to virtu
         TEXT_STDLIB_MODULE_SPECIFIER,
         RANDOM_STDLIB_MODULE_SPECIFIER,
         JSON_STDLIB_MODULE_SPECIFIER,
+        METADATA_STDLIB_MODULE_SPECIFIER,
         COMPARE_STDLIB_MODULE_SPECIFIER,
         HASH_STDLIB_MODULE_SPECIFIER,
         DECODE_STDLIB_MODULE_SPECIFIER,
@@ -115,6 +120,7 @@ Deno.test('std package support resolves root and stdlib leaf specifiers to virtu
   assertEquals(textResolved?.resolvedFileName, TEXT_STDLIB_DECLARATION_FILE);
   assertEquals(randomResolved?.resolvedFileName, RANDOM_STDLIB_DECLARATION_FILE);
   assertEquals(jsonResolved?.resolvedFileName, JSON_STDLIB_DECLARATION_FILE);
+  assertEquals(metadataResolved?.resolvedFileName, METADATA_STDLIB_DECLARATION_FILE);
   assertEquals(compareResolved?.resolvedFileName, COMPARE_STDLIB_DECLARATION_FILE);
   assertEquals(hashResolved?.resolvedFileName, HASH_STDLIB_DECLARATION_FILE);
   assertEquals(decodeResolved?.resolvedFileName, DECODE_STDLIB_DECLARATION_FILE);
@@ -167,6 +173,11 @@ Deno.test('std package support random text stays in sync with the checked-in ran
 Deno.test('std package support json text stays in sync with the checked-in json stdlib declaration file', async () => {
   const fileText = await Deno.readTextFile(new URL('../stdlib/json.d.ts', import.meta.url));
   assertEquals(JSON_STDLIB_DECLARATION_TEXT.trim(), fileText.trim());
+});
+
+Deno.test('std package support metadata text stays in sync with the checked-in metadata stdlib declaration file', async () => {
+  const fileText = await Deno.readTextFile(new URL('../stdlib/metadata.d.ts', import.meta.url));
+  assertEquals(METADATA_STDLIB_DECLARATION_TEXT.trim(), fileText.trim());
 });
 
 Deno.test('std package support compare text stays in sync with the checked-in compare stdlib declaration file', async () => {

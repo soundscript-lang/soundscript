@@ -20,6 +20,10 @@ import type {
   MacroReflectedDiscriminant,
   MacroReflectedDiscriminatedUnionVariant,
   MacroReflectedFieldShape,
+  MacroSerializableDeclarationShape,
+  MacroSerializableDiscriminatedUnionVariant,
+  MacroSerializableFieldShape,
+  MacroSerializableTypeShape,
   MacroReflectedTypeShape,
   MacroSyntaxNode,
   MacroTypeAliasDeclSyntax,
@@ -678,6 +682,130 @@ export function createAdvancedMacroContext(
     return { kind: 'unsupported', text: type.text() };
   }
 
+  function serializeReflectedFieldShape(
+    field: MacroReflectedFieldShape,
+  ): MacroSerializableFieldShape {
+    return {
+      annotations: field.annotations,
+      name: field.name,
+      optional: field.optional,
+      originKind: field.originKind,
+      text: field.text,
+      type: field.type ? serializeReflectedTypeShape(field.type) : null,
+    };
+  }
+
+  function serializeReflectedTypeShape(
+    shape: MacroReflectedTypeShape,
+  ): MacroSerializableTypeShape {
+    switch (shape.kind) {
+      case 'array':
+        return {
+          element: serializeReflectedTypeShape(shape.element),
+          kind: 'array',
+          readonly: shape.readonly,
+          text: shape.text,
+        };
+      case 'intersection':
+        return {
+          kind: 'intersection',
+          members: shape.members.map((member) => serializeReflectedTypeShape(member)),
+          text: shape.text,
+        };
+      case 'object':
+        return {
+          fields: shape.fields.map((field) => serializeReflectedFieldShape(field)),
+          kind: 'object',
+          text: shape.text,
+        };
+      case 'result':
+        return {
+          err: serializeReflectedTypeShape(shape.err),
+          kind: 'result',
+          ok: serializeReflectedTypeShape(shape.ok),
+          text: shape.text,
+        };
+      case 'option':
+        return {
+          kind: 'option',
+          text: shape.text,
+          value: serializeReflectedTypeShape(shape.value),
+        };
+      case 'primitive':
+      case 'literal':
+      case 'null':
+      case 'undefined':
+      case 'unsupported':
+        return shape;
+      case 'named':
+        return {
+          kind: 'named',
+          name: shape.name,
+          text: shape.text,
+          typeArguments: shape.typeArguments.map((member) => serializeReflectedTypeShape(member)),
+        };
+      case 'record':
+        return {
+          key: serializeReflectedTypeShape(shape.key),
+          kind: 'record',
+          text: shape.text,
+          value: serializeReflectedTypeShape(shape.value),
+        };
+      case 'tuple':
+        return {
+          elements: shape.elements.map((member) => serializeReflectedTypeShape(member)),
+          kind: 'tuple',
+          readonly: shape.readonly,
+          text: shape.text,
+        };
+      case 'union':
+        return {
+          kind: 'union',
+          members: shape.members.map((member) => serializeReflectedTypeShape(member)),
+          text: shape.text,
+        };
+    }
+  }
+
+  function serializeDiscriminatedUnionVariant(
+    variant: MacroReflectedDiscriminatedUnionVariant,
+  ): MacroSerializableDiscriminatedUnionVariant {
+    return {
+      discriminants: variant.discriminants,
+      fields: variant.fields.map((field) => serializeReflectedFieldShape(field)),
+      text: variant.text,
+    };
+  }
+
+  function serializeReflectedDeclarationShape(
+    shape: MacroReflectedDeclarationShape,
+  ): MacroSerializableDeclarationShape {
+    switch (shape.kind) {
+      case 'objectLike':
+        return {
+          declarationKind: shape.declarationKind,
+          fields: shape.fields.map((field) => serializeReflectedFieldShape(field)),
+          kind: 'objectLike',
+          name: shape.name,
+          text: shape.text,
+        };
+      case 'discriminatedUnion':
+        return {
+          commonDiscriminantNames: shape.commonDiscriminantNames,
+          kind: 'discriminatedUnion',
+          name: shape.name,
+          text: shape.text,
+          variants: shape.variants.map((variant) => serializeDiscriminatedUnionVariant(variant)),
+        };
+      case 'unsupported':
+        return {
+          kind: 'unsupported',
+          reason: shape.reason,
+          text: shape.text,
+        };
+    }
+  }
+
   function reflectObjectLikeDeclarationShape(
     declaration: MacroClassDeclSyntax | MacroInterfaceDeclSyntax | MacroTypeAliasDeclSyntax,
   ): MacroReflectedDeclarationShape {
@@ -918,8 +1046,14 @@ export function createAdvancedMacroContext(
       declarationShape(declaration: DeclSyntax) {
         return reflectDeclarationShape(declaration);
       },
+      declarationShapeData(declaration: DeclSyntax) {
+        return serializeReflectedDeclarationShape(reflectDeclarationShape(declaration));
+      },
       typeShape(type: TypeSyntax) {
         return reflectTypeShape(type);
+      },
+      typeShapeData(type: TypeSyntax) {
+        return serializeReflectedTypeShape(reflectTypeShape(type));
       },
     },
     semantics: {

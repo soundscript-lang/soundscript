@@ -80,6 +80,7 @@ interface DecodedField {
   readonly defaultText: string | null;
   readonly decoderText: string;
   readonly localName: string;
+  readonly metadataEffectsText: string | null;
   readonly optional: boolean;
   readonly wireName: string;
 }
@@ -87,6 +88,7 @@ interface DecodedField {
 interface EncodedField {
   readonly encoderText: string;
   readonly localName: string;
+  readonly metadataEffectsText: string | null;
   readonly optional: boolean;
   readonly wireName: string;
 }
@@ -97,6 +99,7 @@ interface CodecField {
   readonly decodeText: string;
   readonly encodeText: string;
   readonly localName: string;
+  readonly metadataEffectsText: string | null;
   readonly optional: boolean;
   readonly wireName: string;
 }
@@ -972,6 +975,25 @@ function annotationIdentifierHelperMode(
   scopeNode: MacroSyntaxNode,
   direction: 'decode' | 'encode',
 ): 'async' | 'sync' | null {
+  return annotationIdentifierHelperModeInternal(ctx, annotation, scopeNode, direction, true);
+}
+
+function annotationIdentifierHelperModeWithoutDiagnostic(
+  ctx: DeriveContext,
+  annotation: MacroAnnotation | null,
+  scopeNode: MacroSyntaxNode,
+  direction: 'decode' | 'encode',
+): 'async' | 'sync' | null {
+  return annotationIdentifierHelperModeInternal(ctx, annotation, scopeNode, direction, false);
+}
+
+function annotationIdentifierHelperModeInternal(
+  ctx: DeriveContext,
+  annotation: MacroAnnotation | null,
+  scopeNode: MacroSyntaxNode,
+  direction: 'decode' | 'encode',
+  reportOpaqueError: boolean,
+): 'async' | 'sync' | null {
   const helperIdentifier = annotation ? annotationIdentifierArgument(annotation) : null;
   if (!helperIdentifier) {
     return null;
@@ -1004,8 +1026,11 @@ function annotationIdentifierHelperMode(
     }
   }
   if (
-    ctx.semantics.valueBindingInScope(helperIdentifier, scopeNode) ||
-    ctx.semantics.valueBindingInScope(helperIdentifier)
+    reportOpaqueError &&
+    (
+      ctx.semantics.valueBindingInScope(helperIdentifier, scopeNode) ||
+      ctx.semantics.valueBindingInScope(helperIdentifier)
+    )
   ) {
     const helperTypeText = direction === 'decode'
       ? `import('sts:decode').Decoder<...> or import('sts:codec').Codec<...>`
@@ -2632,6 +2657,266 @@ function wrapEncodeDeclarationText(
   return text;
 }
 
+function metadataHelperNameText(helperIdentifier: string): string | null {
+  const segments = helperIdentifier.split('.').map((segment) => segment.trim()).filter((segment) =>
+    segment.length > 0
+  );
+  return segments.at(-1) ?? null;
+}
+
+function metadataOpaqueEffectText(
+  effect: 'factory' | 'via',
+  helperIdentifier: string,
+  isAsync: boolean,
+  helperText: string = helperIdentifier,
+): string {
+  const helperName = metadataHelperNameText(helperIdentifier);
+  return `{
+    kind: 'opaque',
+    effect: '${effect}',
+    async: ${isAsync ? 'true' : 'false'},
+    ${helperName === null ? 'helperName: null,' : `helperName: ${JSON.stringify(helperName)},`}
+    helperText: ${JSON.stringify(helperText)},
+  }`;
+}
+
+function decodeFieldMetadataEffectsText(
+  ctx: DeriveContext,
+  annotations: readonly MacroAnnotation[],
+  scopeNode: MacroSyntaxNode,
+  macroName: 'codec' | 'decode',
+): string | null {
+  const annotationName = macroName === 'codec' ? 'codec.via' : 'decode.via';
+  const viaAnnotation = findAnnotation(annotations, annotationName);
+  const helperIdentifier = viaAnnotation ? annotationIdentifierArgument(viaAnnotation) : null;
+  if (!helperIdentifier) {
+    return null;
+  }
+  const mode = annotationIdentifierHelperModeWithoutDiagnostic(ctx, viaAnnotation, scopeNode, 'decode');
+  return `[${metadataOpaqueEffectText('via', helperIdentifier, mode === 'async')}]`;
+}
+
+function encodeFieldMetadataEffectsText(
+  ctx: DeriveContext,
+  annotations: readonly MacroAnnotation[],
+  scopeNode: MacroSyntaxNode,
+  macroName: 'codec' | 'encode',
+): string | null {
+  const annotationName = macroName === 'codec' ? 'codec.via' : 'encode.via';
+  const viaAnnotation = findAnnotation(annotations, annotationName);
+  const helperIdentifier = viaAnnotation ? annotationIdentifierArgument(viaAnnotation) : null;
+  if (!helperIdentifier) {
+    return null;
+  }
+  const mode = annotationIdentifierHelperModeWithoutDiagnostic(ctx, viaAnnotation, scopeNode, 'encode');
+  return `[${metadataOpaqueEffectText('via', helperIdentifier, mode === 'async')}]`;
+}
+
+function classFactoryMetadataEffectText(
+  ctx: DeriveContext,
+  declaration: MacroClassDeclSyntax,
+  macroName: 'codec' | 'decode',
+  typeName: string,
+): string {
+  const annotation = findAnnotation(resolvedDeclarationAnnotations(ctx, declaration), `${macroName}.factory`);
+  if (!annotation) {
+    return `{
+      kind: 'opaque',
+      effect: 'factory',
+      async: false,
+      helperName: ${JSON.stringify(typeName)},
+      helperText: ${JSON.stringify(`Object.assign(new ${typeName}(), value)`)},
+    }`;
+  }
+  const helperIdentifier = annotationIdentifierArgument(annotation);
+  if (!helperIdentifier) {
+    ctx.error(
+      `${macroName}.factory(...) requires a helper identifier.`,
+      declarationAnnotationDiagnosticNode(declaration, annotation),
+    );
+  }
+  return metadataOpaqueEffectText(
+    'factory',
+    helperIdentifier,
+    declarationFactoryMayResolveAsync(ctx, declaration, macroName),
+  );
+}
+
+function metadataDirectionFallbackText(mode: 'async' | 'sync'): string {
+  return `{
+    mode: ${JSON.stringify(mode)},
+    root: 'root',
+    nodes: {
+      root: { kind: 'opaque' },
+    },
+  }`;
+}
+
+function metadataFieldPatchArrayText(
+  rootName: string,
+  fields: readonly { readonly localName: string; readonly metadataEffectsText: string | null; readonly optional: boolean; readonly wireName: string }[],
+): string {
+  return `[
+    ${
+    fields.map((field, index) => `{
+      ...${rootName}.fields[${index}]!,
+      localName: ${JSON.stringify(field.localName)},
+      optional: ${field.optional ? 'true' : 'false'},
+      wireName: ${JSON.stringify(field.wireName)}${
+      field.metadataEffectsText ? `,
+      effects: ${field.metadataEffectsText}` : ''
+    },
+    }`).join(',\n')
+  }
+  ]`;
+}
+
+function stripAnonymousProjectionEffectText(rootName: string, extraEffectsTexts: readonly string[] = []): string {
+  return `(() => {
+    const effects = [...(${rootName}.effects ?? [])];
+    const anonymousProjectionIndex = effects.findIndex((effect) =>
+      effect.kind === 'opaque' &&
+      effect.effect === 'transform' &&
+      (effect.helperName ?? null) === null &&
+      (effect.helperText ?? null) === null
+    );
+    if (anonymousProjectionIndex >= 0) {
+      effects.splice(anonymousProjectionIndex, 1);
+    }
+    ${
+    extraEffectsTexts.map((effectText) => `effects.push(${effectText});`).join('\n')
+  }
+    return effects;
+  })()`;
+}
+
+function withDecodeObjectMetadataText(
+  ctx: DeriveContext,
+  baseText: string,
+  fields: readonly DecodedField[] | readonly CodecField[],
+  options: {
+    readonly factoryEffectText?: string;
+  } = {},
+): string {
+  const metadataOf = ctx.runtime.named('sts:metadata', 'metadataOf').text();
+  const attachMetadata = ctx.runtime.named('sts:metadata', 'attachMetadata').text();
+  const rootEffectsText = stripAnonymousProjectionEffectText(
+    '__sts_root',
+    options.factoryEffectText ? [options.factoryEffectText] : [],
+  );
+  const fieldArrayText = metadataFieldPatchArrayText('__sts_root', fields);
+  return `(() => {
+    const __sts_base = ${baseText};
+    const __sts_metadata = ${metadataOf}(__sts_base);
+    if (__sts_metadata === null || !__sts_metadata.decode) {
+      return __sts_base;
+    }
+    const __sts_decode = __sts_metadata.decode;
+    const __sts_root = __sts_decode.nodes[__sts_decode.root];
+    if (!__sts_root || __sts_root.kind !== 'object') {
+      return __sts_base;
+    }
+    const __sts_effects = ${rootEffectsText};
+    return ${attachMetadata}(__sts_base, {
+      ...__sts_metadata,
+      decode: {
+        ...__sts_decode,
+        nodes: {
+          ...__sts_decode.nodes,
+          [__sts_decode.root]: {
+            ...__sts_root,
+            ...(__sts_effects.length > 0 ? { effects: __sts_effects } : {}),
+            fields: ${fieldArrayText},
+          },
+        },
+      },
+    });
+  })()`;
+}
+
+function withEncodeObjectMetadataText(
+  ctx: DeriveContext,
+  baseText: string,
+  fields: readonly EncodedField[] | readonly CodecField[],
+): string {
+  const metadataOf = ctx.runtime.named('sts:metadata', 'metadataOf').text();
+  const attachMetadata = ctx.runtime.named('sts:metadata', 'attachMetadata').text();
+  const rootEffectsText = stripAnonymousProjectionEffectText('__sts_root');
+  const fieldArrayText = metadataFieldPatchArrayText('__sts_root', fields);
+  return `(() => {
+    const __sts_base = ${baseText};
+    const __sts_metadata = ${metadataOf}(__sts_base);
+    if (__sts_metadata === null || !__sts_metadata.encode) {
+      return __sts_base;
+    }
+    const __sts_encode = __sts_metadata.encode;
+    const __sts_root = __sts_encode.nodes[__sts_encode.root];
+    if (!__sts_root || __sts_root.kind !== 'object') {
+      return __sts_base;
+    }
+    const __sts_effects = ${rootEffectsText};
+    return ${attachMetadata}(__sts_base, {
+      ...__sts_metadata,
+      encode: {
+        ...__sts_encode,
+        nodes: {
+          ...__sts_encode.nodes,
+          [__sts_encode.root]: {
+            ...__sts_root,
+            ...(__sts_effects.length > 0 ? { effects: __sts_effects } : {}),
+            fields: ${fieldArrayText},
+          },
+        },
+      },
+    });
+  })()`;
+}
+
+function withNamedMetadataText(
+  ctx: DeriveContext,
+  baseText: string,
+  typeName: string,
+  modes: {
+    readonly decode?: 'async' | 'sync';
+    readonly encode?: 'async' | 'sync';
+  },
+): string {
+  const metadataOf = ctx.runtime.named('sts:metadata', 'metadataOf').text();
+  const attachMetadata = ctx.runtime.named('sts:metadata', 'attachMetadata').text();
+  const decodeFallbackText = modes.decode ? metadataDirectionFallbackText(modes.decode) : null;
+  const encodeFallbackText = modes.encode ? metadataDirectionFallbackText(modes.encode) : null;
+  return `(() => {
+    const __sts_base = ${baseText};
+    const __sts_metadata = ${metadataOf}(__sts_base);
+    return ${attachMetadata}(__sts_base, __sts_metadata === null ? {
+      name: ${JSON.stringify(typeName)}${
+    decodeFallbackText ? `,
+      decode: ${decodeFallbackText}` : ''
+  }${
+    encodeFallbackText ? `,
+      encode: ${encodeFallbackText}` : ''
+  }
+    } : {
+      ...__sts_metadata,
+      name: ${JSON.stringify(typeName)}${
+    modes.decode
+      ? `,
+      decode: __sts_metadata.decode
+        ? { ...__sts_metadata.decode, mode: ${JSON.stringify(modes.decode)} }
+        : ${decodeFallbackText}`
+      : ''
+  }${
+    modes.encode
+      ? `,
+      encode: __sts_metadata.encode
+        ? { ...__sts_metadata.encode, mode: ${JSON.stringify(modes.encode)} }
+        : ${encodeFallbackText}`
+      : ''
+  }
+    });
+  })()`;
+}
+
 function expectedCompanionName(typeName: string, macroName: DerivedMacroName): string {
   switch (macroName) {
     case 'eq':
@@ -2889,6 +3174,7 @@ function decodeFieldFromReflectedShape(
     decoderText: wrapDecodeDefaultFieldText(ctx, fieldDecoderText, defaultText),
     defaultText: null,
     localName: field.name,
+    metadataEffectsText: decodeFieldMetadataEffectsText(ctx, field.annotations, field.node, 'decode'),
     optional: field.optional && defaultText === null,
     wireName: renamedWireName ?? field.name,
   };
@@ -2944,6 +3230,7 @@ function encodeFieldFromReflectedShape(
       ownerTypeName,
     ),
     localName: field.name,
+    metadataEffectsText: encodeFieldMetadataEffectsText(ctx, field.annotations, field.node, 'encode'),
     optional: field.optional,
     wireName: renamedWireName ?? field.name,
   };
@@ -3012,6 +3299,7 @@ function codecFieldFromReflectedShape(
       ownerTypeName,
     ),
     localName: field.name,
+    metadataEffectsText: decodeFieldMetadataEffectsText(ctx, field.annotations, field.node, 'codec'),
     optional: field.optional,
     wireName: renamedWireName ?? field.name,
   };
@@ -3247,9 +3535,6 @@ function nestedDecodeHelperTextFromFields(
   const isIdentityProjection = decodedFields.every((field) =>
     field.localName === field.wireName && field.defaultText === null
   );
-  if (isIdentityProjection) {
-    return `${decodeObject}(${shapeText})`;
-  }
   const projectionText = decodedFields.length === 0 ? '{}' : `({
         ${
     decodedFields.map((field) =>
@@ -3259,10 +3544,13 @@ function nestedDecodeHelperTextFromFields(
     ).join(',\n')
   }
       })`;
-  return `${decodeMap}(
+  const helperText = isIdentityProjection
+    ? `${decodeObject}(${shapeText})`
+    : `${decodeMap}(
     ${decodeObject}(${shapeText}),
     (value) => ${projectionText},
   )`;
+  return withDecodeObjectMetadataText(ctx, helperText, decodedFields);
 }
 
 function nestedEncodeHelperTextFromFields(
@@ -3287,9 +3575,6 @@ function nestedEncodeHelperTextFromFields(
   }
       }`;
   const isIdentityProjection = encodedFields.every((field) => field.localName === field.wireName);
-  if (isIdentityProjection) {
-    return `${encodeObject}(${shapeText})`;
-  }
   const projectionText = encodedFields.length === 0 ? '({})' : `({
         ${
     encodedFields.map((field) =>
@@ -3297,10 +3582,13 @@ function nestedEncodeHelperTextFromFields(
     ).join(',\n')
   }
       })`;
-  return `${encodeContramap}(
+  const helperText = isIdentityProjection
+    ? `${encodeObject}(${shapeText})`
+    : `${encodeContramap}(
     ${encodeObject}(${shapeText}),
     (value) => ${projectionText},
   )`;
+  return withEncodeObjectMetadataText(ctx, helperText, encodedFields);
 }
 
 function nestedCodecHelperTextsFromFields(
@@ -3342,8 +3630,9 @@ function nestedCodecHelperTextsFromFields(
   const hasIdentityEncodeProjection = codecFields.every((field) =>
     field.localName === field.wireName
   );
-  return {
-    decodeText: hasIdentityDecodeProjection ? `${decodeObject}(${decodeShapeText})` : `${decodeMap}(
+  const decodeHelperText = hasIdentityDecodeProjection
+    ? `${decodeObject}(${decodeShapeText})`
+    : `${decodeMap}(
       ${decodeObject}(${decodeShapeText}),
       (value) => ({
         ${
@@ -3357,10 +3646,10 @@ function nestedCodecHelperTextsFromFields(
       ).join(',\n')
     }
       }),
-    )`,
-    encodeText: hasIdentityEncodeProjection
-      ? `${encodeObject}(${encodeShapeText})`
-      : `${encodeContramap}(
+    )`;
+  const encodeHelperText = hasIdentityEncodeProjection
+    ? `${encodeObject}(${encodeShapeText})`
+    : `${encodeContramap}(
       ${encodeObject}(${encodeShapeText}),
       (value) => ({
         ${
@@ -3369,7 +3658,10 @@ function nestedCodecHelperTextsFromFields(
         ).join(',\n')
       }
       }),
-    )`,
+    )`;
+  return {
+    decodeText: withDecodeObjectMetadataText(ctx, decodeHelperText, codecFields),
+    encodeText: withEncodeObjectMetadataText(ctx, encodeHelperText, codecFields),
   };
 }
 
@@ -3445,9 +3737,6 @@ function nestedDecodeHelperText(
   const isIdentityProjection = fields.every((field) =>
     field.localName === field.wireName && field.defaultText === null
   );
-  if (isIdentityProjection) {
-    return `${decodeObject}(${shapeText})`;
-  }
   const projectionText = fields.length === 0 ? '{}' : `({
         ${
     fields.map((field) =>
@@ -3457,10 +3746,11 @@ function nestedDecodeHelperText(
     ).join(',\n')
   }
       })`;
-  return `${decodeMap}(
+  const helperText = isIdentityProjection ? `${decodeObject}(${shapeText})` : `${decodeMap}(
     ${decodeObject}(${shapeText}),
     (value) => ${projectionText},
   )`;
+  return withDecodeObjectMetadataText(ctx, helperText, fields);
 }
 
 function nestedEncodeHelperText(
@@ -3485,9 +3775,6 @@ function nestedEncodeHelperText(
   }
       }`;
   const isIdentityProjection = fields.every((field) => field.localName === field.wireName);
-  if (isIdentityProjection) {
-    return `${encodeObject}(${shapeText})`;
-  }
   const projectionText = fields.length === 0 ? '({})' : `({
         ${
     fields.map((field) =>
@@ -3495,10 +3782,11 @@ function nestedEncodeHelperText(
     ).join(',\n')
   }
       })`;
-  return `${encodeContramap}(
+  const helperText = isIdentityProjection ? `${encodeObject}(${shapeText})` : `${encodeContramap}(
     ${encodeObject}(${shapeText}),
     (value) => ${projectionText},
   )`;
+  return withEncodeObjectMetadataText(ctx, helperText, fields);
 }
 
 function nestedCodecHelperTexts(
@@ -3536,8 +3824,9 @@ function nestedCodecHelperTexts(
   }
       }`;
   const hasIdentityEncodeProjection = fields.every((field) => field.localName === field.wireName);
-  return {
-    decodeText: hasIdentityDecodeProjection ? `${decodeObject}(${decodeShapeText})` : `${decodeMap}(
+  const decodeHelperText = hasIdentityDecodeProjection
+    ? `${decodeObject}(${decodeShapeText})`
+    : `${decodeMap}(
       ${decodeObject}(${decodeShapeText}),
       (value) => ({
         ${
@@ -3546,10 +3835,10 @@ function nestedCodecHelperTexts(
       ).join(',\n')
     }
       }),
-    )`,
-    encodeText: hasIdentityEncodeProjection
-      ? `${encodeObject}(${encodeShapeText})`
-      : `${encodeContramap}(
+    )`;
+  const encodeHelperText = hasIdentityEncodeProjection
+    ? `${encodeObject}(${encodeShapeText})`
+    : `${encodeContramap}(
       ${encodeObject}(${encodeShapeText}),
       (value) => ({
         ${
@@ -3558,7 +3847,10 @@ function nestedCodecHelperTexts(
         ).join(',\n')
       }
       }),
-    )`,
+    )`;
+  return {
+    decodeText: withDecodeObjectMetadataText(ctx, decodeHelperText, fields),
+    encodeText: withEncodeObjectMetadataText(ctx, encodeHelperText, fields),
   };
 }
 
@@ -3682,6 +3974,7 @@ function fieldFromDecodeMember(
     decoderText: wrapDecodeDefaultFieldText(ctx, fieldDecoderText, defaultText),
     defaultText: null,
     localName: member.name,
+    metadataEffectsText: decodeFieldMetadataEffectsText(ctx, annotations, member, 'decode'),
     optional: member.isOptional() && defaultText === null,
     wireName: renamedWireName ?? member.name,
   };
@@ -3751,6 +4044,7 @@ function fieldFromDecodeClassField(
     decoderText: wrapDecodeDefaultFieldText(ctx, fieldDecoderText, defaultText),
     defaultText: null,
     localName: field.name,
+    metadataEffectsText: decodeFieldMetadataEffectsText(ctx, annotations, field, 'decode'),
     optional: field.isOptional() && defaultText === null,
     wireName: renamedWireName ?? field.name,
   };
@@ -3983,6 +4277,7 @@ function fieldFromEncodeMember(
       ownerTypeName,
     ),
     localName: member.name,
+    metadataEffectsText: encodeFieldMetadataEffectsText(ctx, annotations, member, 'encode'),
     optional: member.isOptional(),
     wireName: renamedWireName ?? member.name,
   };
@@ -4049,6 +4344,7 @@ function fieldFromEncodeClassField(
       ownerTypeName,
     ),
     localName: field.name,
+    metadataEffectsText: encodeFieldMetadataEffectsText(ctx, annotations, field, 'encode'),
     optional: field.isOptional(),
     wireName: renamedWireName ?? field.name,
   };
@@ -4144,6 +4440,7 @@ function fieldFromCodecMember(
       ownerTypeName,
     ),
     localName: member.name,
+    metadataEffectsText: decodeFieldMetadataEffectsText(ctx, annotations, member, 'codec'),
     optional: member.isOptional(),
     wireName: renamedWireName ?? member.name,
   };
@@ -4223,6 +4520,7 @@ function fieldFromCodecClassField(
       ownerTypeName,
     ),
     localName: field.name,
+    metadataEffectsText: decodeFieldMetadataEffectsText(ctx, annotations, field, 'codec'),
     optional: field.isOptional(),
     wireName: renamedWireName ?? field.name,
   };
@@ -5009,7 +5307,9 @@ export function decode(): MacroDefinition<typeof DECODE_SIGNATURE> {
           const companionName = `${typeName}Decoder`;
           return ctx.output.stmt(
             ctx.quote.stmt`
-              export const ${companionName} = ${unionText};
+              export const ${companionName} = ${
+              withNamedMetadataText(ctx, unionText, typeName, {})
+            };
             `,
           );
         }
@@ -5052,18 +5352,34 @@ export function decode(): MacroDefinition<typeof DECODE_SIGNATURE> {
       const objectCallText = `${object}(${shapeText}${
         objectPolicyText ? `, { unknownKeys: ${objectPolicyText} }` : ''
       })`;
-
-      const decoderText = wrapDecodeDeclarationText(
+      const baseDecoderText = withDecodeObjectMetadataText(
         ctx,
         `${map}(
             ${objectCallText},
             (value) => ${finalProjectionText},
           )`,
+        fields,
+        decoded.caseName === 'class'
+          ? {
+            factoryEffectText: classFactoryMetadataEffectText(
+              ctx,
+              decoded.args.target as MacroClassDeclSyntax,
+              'decode',
+              typeName,
+            ),
+          }
+          : {},
+      );
+
+      const decoderText = wrapDecodeDeclarationText(
+        ctx,
+        baseDecoderText,
         declarationAnnotations,
         decoded.args.target,
         typeName,
       );
       const companionName = `${typeName}Decoder`;
+      const namedDecoderText = withNamedMetadataText(ctx, decoderText, typeName, {});
       const recursiveDecoderTypeAliasName = `__sts_${typeName}DecoderType`;
       const useRecursiveStructuralTyping = isPlainStructuralRecursiveDeclaration(
         ctx,
@@ -5078,7 +5394,7 @@ export function decode(): MacroDefinition<typeof DECODE_SIGNATURE> {
           ? `type ${recursiveDecoderTypeAliasName} = import('sts:decode').Decoder<${typeName}>;`
           : `type ${recursiveDecoderTypeAliasName} = import('sts:decode').Decoder<${typeName}, unknown, "async">;`;
         let recursiveDecoderText = rewriteRecursiveSelfReference(
-          decoderText,
+          namedDecoderText,
           `(): import('sts:decode').Decoder<${typeName}> => ${companionName}`,
           `(): ${recursiveDecoderTypeAliasName} => ${selfName}`,
         );
@@ -5110,7 +5426,7 @@ export function decode(): MacroDefinition<typeof DECODE_SIGNATURE> {
       }
       return ctx.output.stmt(
         ctx.quote.stmt`
-          export const ${companionName} = ${decoderText};
+          export const ${companionName} = ${namedDecoderText};
         `,
       );
     },
@@ -5172,7 +5488,9 @@ export function encode(): MacroDefinition<typeof DECODE_SIGNATURE> {
           const companionName = `${typeName}Encoder`;
           return ctx.output.stmt(
             ctx.quote.stmt`
-              export const ${companionName} = ${encoderText};
+              export const ${companionName} = ${
+              withNamedMetadataText(ctx, encoderText, typeName, {})
+            };
             `,
           );
         }
@@ -5199,18 +5517,24 @@ export function encode(): MacroDefinition<typeof DECODE_SIGNATURE> {
         ).join(',\n')
       }
           })`;
-
-      const encoderText = wrapEncodeDeclarationText(
+      const baseEncoderText = withEncodeObjectMetadataText(
         ctx,
         `${contramap}(
             ${object}(${shapeText}),
             (value: ${typeName}) => ${projectionText},
           )`,
+        fields,
+      );
+
+      const encoderText = wrapEncodeDeclarationText(
+        ctx,
+        baseEncoderText,
         declarationAnnotations,
         decoded.args.target,
         typeName,
       );
       const companionName = `${typeName}Encoder`;
+      const namedEncoderText = withNamedMetadataText(ctx, encoderText, typeName, {});
       const recursiveEncodedAliasName = `__sts_${typeName}EncodedForEncode`;
       const recursiveEncoderTypeAliasName = `__sts_${typeName}EncoderType`;
       const recursiveEncodedAliasText = isPlainStructuralRecursiveDeclaration(
@@ -5234,7 +5558,7 @@ export function encode(): MacroDefinition<typeof DECODE_SIGNATURE> {
           ? `type ${recursiveEncoderTypeAliasName} = import('sts:encode').Encoder<${typeName}, ${recursiveEncodedAliasName}>;`
           : `type ${recursiveEncoderTypeAliasName} = import('sts:encode').Encoder<${typeName}, ${recursiveEncodedAliasName}, unknown, "async">;`;
         let recursiveEncoderText = rewriteRecursiveSelfReference(
-          encoderText,
+          namedEncoderText,
           `(): import('sts:encode').Encoder<${typeName}, import('sts:json').JsonLikeValue> => ${companionName}`,
           `(): ${recursiveEncoderTypeAliasName} => ${selfName}`,
         );
@@ -5267,7 +5591,7 @@ export function encode(): MacroDefinition<typeof DECODE_SIGNATURE> {
       }
       return ctx.output.stmt(
         ctx.quote.stmt`
-          export const ${companionName} = ${encoderText};
+          export const ${companionName} = ${namedEncoderText};
         `,
       );
     },
@@ -5352,10 +5676,17 @@ export function codec(): MacroDefinition<typeof DECODE_SIGNATURE> {
           const companionName = `${typeName}Codec`;
           return ctx.output.stmt(
             ctx.quote.stmt`
-              export const ${companionName} = ${createCodec}(
-                ${unionText},
-                ${encoderText},
-              );
+              export const ${companionName} = ${
+              withNamedMetadataText(
+                ctx,
+                `${createCodec}(
+                  ${unionText},
+                  ${encoderText},
+                )`,
+                typeName,
+                {},
+              )
+            };
             `,
           );
         }
@@ -5423,28 +5754,57 @@ export function codec(): MacroDefinition<typeof DECODE_SIGNATURE> {
       const encodeObjectCallText = `${encodeObject}(${encodeShapeText}${
         objectPolicyText ? `, { unknownKeys: ${objectPolicyText} }` : ''
       })`;
-
-      const decoderText = wrapDecodeDeclarationText(
+      const baseDecoderText = withDecodeObjectMetadataText(
         ctx,
         `${decodeMap}(
               ${decodeObjectCallText},
               (value) => ${finalDecodeProjectionText},
             )`,
+        fields,
+        decoded.caseName === 'class'
+          ? {
+            factoryEffectText: classFactoryMetadataEffectText(
+              ctx,
+              decoded.args.target as MacroClassDeclSyntax,
+              'codec',
+              typeName,
+            ),
+          }
+          : {},
+      );
+      const baseEncoderText = withEncodeObjectMetadataText(
+        ctx,
+        `${encodeContramap}(
+              ${encodeObjectCallText},
+              (value: ${typeName}) => ${encodeProjectionText},
+            )`,
+        fields,
+      );
+
+      const decoderText = wrapDecodeDeclarationText(
+        ctx,
+        baseDecoderText,
         declarationAnnotations,
         decoded.args.target,
         typeName,
       );
       const encoderText = wrapEncodeDeclarationText(
         ctx,
-        `${encodeContramap}(
-              ${encodeObjectCallText},
-              (value: ${typeName}) => ${encodeProjectionText},
-            )`,
+        baseEncoderText,
         declarationAnnotations,
         decoded.args.target,
         typeName,
       );
       const companionName = `${typeName}Codec`;
+      const namedCodecText = withNamedMetadataText(
+        ctx,
+        `${codec}(
+            ${decoderText},
+            ${encoderText},
+          )`,
+        typeName,
+        {},
+      );
       const recursiveEncodedAliasName = `__sts_${typeName}EncodedForCodec`;
       const recursiveCodecTypeAliasName = `__sts_${typeName}CodecType`;
       const recursiveEncodedAliasText = isPlainStructuralRecursiveDeclaration(
@@ -5481,10 +5841,7 @@ export function codec(): MacroDefinition<typeof DECODE_SIGNATURE> {
           ? `type ${recursiveCodecTypeAliasName} = import('sts:codec').Codec<${typeName}, ${recursiveEncodedAliasName}>;`
           : `type ${recursiveCodecTypeAliasName} = import('sts:codec').Codec<${typeName}, ${recursiveEncodedAliasName}, ${recursiveCodecDecodeErrorTypeText}, ${recursiveCodecEncodeErrorTypeText}, "${decodeMode}", "${encodeMode}">;`;
         const recursiveCodecText = rewriteRecursiveSelfReference(
-          `${codec}(
-              ${decoderText},
-              ${encoderText},
-            )`,
+          namedCodecText,
           `(): import('sts:decode').Decoder<${typeName}> => ${companionName}`,
           `(): ${recursiveCodecDecodeCallbackTypeText} => ${selfName}`,
         );
@@ -5539,10 +5896,7 @@ export function codec(): MacroDefinition<typeof DECODE_SIGNATURE> {
       }
       return ctx.output.stmt(
         ctx.quote.stmt`
-          export const ${companionName} = ${codec}(
-            ${decoderText},
-            ${encoderText},
-          );
+          export const ${companionName} = ${namedCodecText};
         `,
       );
     },

@@ -2,6 +2,19 @@ import { type Bind, type Kind3, type TypeLambda } from 'sts:hkt';
 import { Failure } from 'sts:failures';
 import { err, isErr, isOk, isSome, ok, type Option, type Result } from 'sts:result';
 import type { Contravariant } from 'sts:typeclasses';
+import {
+  __attachEncodeMetadata,
+  __cloneNodeWithEffects,
+  __encodeDirectionOrOpaque,
+  __encodeModeOf,
+  __fieldMetadataOf,
+  __helperName,
+  __inferCallableMode,
+  __InternalMetadataNode,
+  __isAsyncCallable,
+  __setEncodeMode,
+  type MetadataEffect,
+} from './metadata.ts';
 
 export type EncodeMode = 'sync' | 'async';
 export type ObjectKeyPolicy = 'strip' | 'strict' | 'passthrough';
@@ -140,7 +153,8 @@ export function fromEncode<T, TEncoded, E, M extends EncodeMode = 'sync'>(
   encode: (value: T, state?: EncodeState) => MaybeEncodeOutput<TEncoded, E>,
   validateEncode?: (value: T, state?: EncodeState) => MaybeEncodeOutput<TEncoded, readonly EncodeIssue[]>,
 ): Encoder<T, TEncoded, E, M> {
-  return {
+  const inferredMode = __inferCallableMode(encode, validateEncode) as M;
+  const encoder = {
     [encodeWithStateSymbol]: encode as (value: T, state: EncodeState) => MaybeEncodeOutput<TEncoded, E>,
     [validateEncodeWithStateSymbol]: (validateEncode ??
       ((value: T, state?: EncodeState) => defaultValidateEncode(encode(value, state), value))) as
@@ -160,6 +174,39 @@ export function fromEncode<T, TEncoded, E, M extends EncodeMode = 'sync'>(
         createEncodeState(),
       )) as (value: T) => EncodeOutput<TEncoded, readonly EncodeIssue[], M>,
   } as StatefulEncoder<T, TEncoded, E, M>;
+  __setEncodeMode(encoder, inferredMode);
+  return __attachEncodeMetadata(encoder, {
+    mode: inferredMode,
+    root: { kind: 'opaque' },
+  });
+}
+
+function encodeModeOf(encoder: unknown): EncodeMode {
+  return __encodeModeOf(encoder) ?? 'sync';
+}
+
+function mergeEncodeRuntimeModes(...encoders: readonly unknown[]): EncodeMode {
+  return encoders.some((encoder) => encodeModeOf(encoder) === 'async') ? 'async' : 'sync';
+}
+
+function encodeDirectionOf(encoder: unknown) {
+  return __encodeDirectionOrOpaque(encoder);
+}
+
+function encodeNodeOf(encoder: unknown): __InternalMetadataNode {
+  return encodeDirectionOf(encoder).root;
+}
+
+function encodeOpaqueEffect(
+  effect: 'refine' | 'transform' | 'via',
+  helper: unknown,
+): MetadataEffect {
+  return {
+    async: __isAsyncCallable(helper),
+    effect,
+    helperName: __helperName(helper),
+    kind: 'opaque',
+  };
 }
 
 export function contramap<A, B, TEncoded, E>(
@@ -175,7 +222,7 @@ export function contramap<A, B, TEncoded, E, M extends EncodeMode, TProjected ex
   project: (value: B) => TProjected,
 ): Encoder<B, TEncoded, E, MergeEncodeModes<M | AsyncModeOf<TProjected>>> {
   type TMode = MergeEncodeModes<M | AsyncModeOf<TProjected>>;
-  return fromEncode<B, TEncoded, E, TMode>(
+  return __attachEncodeMetadata(fromEncode<B, TEncoded, E, TMode>(
     (value: B, state?: EncodeState) =>
       projectEncode((projected: A) => encodeWithState(encoder, projected, state), project(value) as A | Promise<A>) as EncodeOutput<
         TEncoded,
@@ -187,7 +234,10 @@ export function contramap<A, B, TEncoded, E, M extends EncodeMode, TProjected ex
         (projected: A) => validateEncodeWithState(encoder, projected, state),
         project(value) as A | Promise<A>,
       ) as EncodeOutput<TEncoded, readonly EncodeIssue[], TMode>,
-  );
+  ), {
+    mode: encodeModeOf(encoder) === 'async' || __isAsyncCallable(project) ? 'async' : 'sync',
+    root: __cloneNodeWithEffects(encodeNodeOf(encoder), [encodeOpaqueEffect('transform', project)]),
+  });
 }
 
 export function encoderContravariant<TEncoded, E = EncodeFailure>(): Contravariant<
@@ -198,21 +248,60 @@ export function encoderContravariant<TEncoded, E = EncodeFailure>(): Contravaria
   };
 }
 
-export const stringEncoder: Encoder<string, string> = fromEncode((value) => ok(value));
-export const numberEncoder: Encoder<number, number> = fromEncode((value) => ok(value));
-export const booleanEncoder: Encoder<boolean, boolean> = fromEncode((value) => ok(value));
-export const bigintEncoder: Encoder<bigint, bigint> = fromEncode((value) => ok(value));
-export const undefinedEncoder: Encoder<undefined, undefined> = fromEncode((value) =>
-  value === undefined
-    ? ok(undefined)
-    : err(new EncodeFailure('Expected undefined.', { cause: value }))
+export const stringEncoder: Encoder<string, string> = __attachEncodeMetadata(
+  fromEncode((value) => ok(value)),
+  { mode: 'sync', root: { kind: 'primitive', primitive: 'string' } },
 );
-export const url: Encoder<URL, string> = fromEncode((value) => ok(value.toString()));
-export const isoDate: Encoder<Date, string> = fromEncode((value) =>
+export const numberEncoder: Encoder<number, number> = __attachEncodeMetadata(
+  fromEncode((value) => ok(value)),
+  { mode: 'sync', root: { kind: 'primitive', primitive: 'number' } },
+);
+export const booleanEncoder: Encoder<boolean, boolean> = __attachEncodeMetadata(
+  fromEncode((value) => ok(value)),
+  { mode: 'sync', root: { kind: 'primitive', primitive: 'boolean' } },
+);
+export const bigintEncoder: Encoder<bigint, bigint> = __attachEncodeMetadata(
+  fromEncode((value) => ok(value)),
+  { mode: 'sync', root: { kind: 'primitive', primitive: 'bigint' } },
+);
+export const undefinedEncoder: Encoder<undefined, undefined> = __attachEncodeMetadata(
+  fromEncode((value) =>
+    value === undefined
+      ? ok(undefined)
+      : err(new EncodeFailure('Expected undefined.', { cause: value }))
+  ),
+  { mode: 'sync', root: { kind: 'undefined' } },
+);
+export const url: Encoder<URL, string> = __attachEncodeMetadata(fromEncode((value) => ok(value.toString())), {
+  mode: 'sync',
+  root: {
+    effects: [{
+      async: false,
+      effect: 'transform',
+      helperName: 'url',
+      kind: 'opaque',
+    }],
+    kind: 'primitive',
+    primitive: 'string',
+  },
+});
+export const isoDate: Encoder<Date, string> = __attachEncodeMetadata(fromEncode((value) =>
   Number.isNaN(value.getTime())
     ? err(new EncodeFailure('Expected valid Date.', { cause: value }))
     : ok(value.toISOString())
-);
+), {
+  mode: 'sync',
+  root: {
+    effects: [{
+      async: false,
+      effect: 'transform',
+      helperName: 'isoDate',
+      kind: 'opaque',
+    }],
+    kind: 'primitive',
+    primitive: 'string',
+  },
+});
 
 export function refine<T, TEncoded, E, M extends EncodeMode>(
   encoder: Encoder<T, TEncoded, E, M>,
@@ -242,7 +331,7 @@ export function refine<
   message: string,
 ): Encoder<T, TEncoded, E | EncodeFailure, MergeEncodeModes<M | AsyncModeOf<TResult>>> {
   type TMode = MergeEncodeModes<M | AsyncModeOf<TResult>>;
-  return fromEncode<T, TEncoded, E | EncodeFailure, TMode>(
+  return __attachEncodeMetadata(fromEncode<T, TEncoded, E | EncodeFailure, TMode>(
     (value: T, state?: EncodeState) => refineEncode(encodeWithState(encoder, value, state), predicate, message, value) as EncodeOutput<
       TEncoded,
       E | EncodeFailure,
@@ -255,7 +344,10 @@ export function refine<
         message,
         value,
       ) as EncodeOutput<TEncoded, readonly EncodeIssue[], TMode>,
-  );
+  ), {
+    mode: encodeModeOf(encoder) === 'async' || __isAsyncCallable(predicate) ? 'async' : 'sync',
+    root: __cloneNodeWithEffects(encodeNodeOf(encoder), [encodeOpaqueEffect('refine', predicate)]),
+  });
 }
 
 export function optional<TEncoder extends Encoder<unknown, unknown, unknown, EncodeMode>>(
@@ -311,7 +403,16 @@ export function optional<T, TEncoded, E, M extends EncodeMode>(
     },
   } as StatefulEncoder<T | undefined, TEncoded | undefined, E, M> &
     OptionalEncoder<Exclude<T, undefined>, Exclude<TEncoded, undefined>, E, M>;
-  return optionalEncoder;
+  return __attachEncodeMetadata(optionalEncoder, {
+    mode: encodeModeOf(encoder),
+    root: {
+      kind: 'union',
+      members: [
+        encodeNodeOf(encoder),
+        { kind: 'undefined' },
+      ],
+    },
+  });
 }
 
 export function undefinedable<T, TEncoded, E, M extends EncodeMode>(
@@ -356,7 +457,16 @@ export function undefinedable<T, TEncoded, E, M extends EncodeMode>(
     },
   } as StatefulEncoder<T | undefined, TEncoded | undefined, E, M> &
     UndefinedableEncoder<T, TEncoded, E, M>;
-  return undefinedableEncoder;
+  return __attachEncodeMetadata(undefinedableEncoder, {
+    mode: encodeModeOf(encoder),
+    root: {
+      kind: 'union',
+      members: [
+        encodeNodeOf(encoder),
+        { kind: 'undefined' },
+      ],
+    },
+  });
 }
 
 export function lazy<TEncoder extends Encoder<unknown, unknown, unknown, EncodeMode>>(
@@ -370,16 +480,22 @@ export function lazy<TEncoder extends Encoder<unknown, unknown, unknown, EncodeM
 export function lazy<T, TEncoded, E, M extends EncodeMode>(
   getEncoder: () => Encoder<T, TEncoded, E, M>,
 ): Encoder<T, TEncoded, E, M> {
-  return fromEncode(
+  return __attachEncodeMetadata(fromEncode(
     (value: T, state?: EncodeState) => encodeWithState(getEncoder(), value, state),
     (value: T, state?: EncodeState) => validateEncodeWithState(getEncoder(), value, state),
-  );
+  ), {
+    mode: () => encodeModeOf(getEncoder()),
+    root: {
+      kind: 'ref',
+      target: () => encodeNodeOf(getEncoder()),
+    },
+  });
 }
 
 export function nullable<T, TEncoded, E, M extends EncodeMode>(
   encoder: Encoder<T, TEncoded, E, M>,
 ): Encoder<T | null, TEncoded | null, E, M> {
-  return fromEncode(
+  return __attachEncodeMetadata(fromEncode(
     (value: T | null, state?: EncodeState) =>
       (value === null ? ok(null) : encodeWithState(encoder, value, state)) as MaybeEncodeOutput<TEncoded | null, E>,
     (value: T | null, state?: EncodeState) =>
@@ -387,21 +503,33 @@ export function nullable<T, TEncoded, E, M extends EncodeMode>(
         TEncoded | null,
         readonly EncodeIssue[]
       >,
-  );
+  ), {
+    mode: encodeModeOf(encoder),
+    root: {
+      kind: 'union',
+      members: [
+        encodeNodeOf(encoder),
+        { kind: 'null' },
+      ],
+    },
+  });
 }
 
 export function literal<const T extends string | number | boolean | null>(value: T): Encoder<T, T> {
-  return fromEncode((input) =>
+  return __attachEncodeMetadata(fromEncode((input) =>
     Object.is(input, value)
       ? ok(value)
       : err(new EncodeFailure(`Expected literal ${JSON.stringify(value)}.`, { cause: input }))
-  );
+  ), {
+    mode: 'sync',
+    root: value === null ? { kind: 'null' } : { kind: 'literal', value },
+  });
 }
 
 export function array<T, TEncoded, E, M extends EncodeMode>(
   item: Encoder<T, TEncoded, E, M>,
 ): Encoder<readonly T[], readonly TEncoded[], E | EncodeFailure, M> {
-  return fromEncode(
+  return __attachEncodeMetadata(fromEncode(
     (value: readonly T[], state?: EncodeState) => {
       return withEncodeCycleTracking(state, value, () =>
         err(new EncodeFailure('Cyclic value encountered during encode.', { cause: value })), () => {
@@ -441,13 +569,19 @@ export function array<T, TEncoded, E, M extends EncodeMode>(
           return issues.length > 0 ? err(issues) : ok(encodedValues);
         });
     },
-  );
+  ), {
+    mode: encodeModeOf(item),
+    root: {
+      element: encodeNodeOf(item),
+      kind: 'array',
+    },
+  });
 }
 
 export function record<T, TEncoded, E, M extends EncodeMode>(
   valueEncoder: Encoder<T, TEncoded, E, M>,
 ): Encoder<Readonly<Record<string, T>>, Readonly<Record<string, TEncoded>>, E | EncodeFailure, M> {
-  return fromEncode(
+  return __attachEncodeMetadata(fromEncode(
     (value: Readonly<Record<string, T>>, state?: EncodeState) => {
       if (!isPlainObject(value)) {
         return err(new EncodeFailure('Expected object record.', { cause: value }));
@@ -501,7 +635,14 @@ export function record<T, TEncoded, E, M extends EncodeMode>(
           return issues.length > 0 ? err(issues) : ok(encodedRecord);
         });
     },
-  );
+  ), {
+    mode: encodeModeOf(valueEncoder),
+    root: {
+      key: 'string',
+      kind: 'record',
+      value: encodeNodeOf(valueEncoder),
+    },
+  });
 }
 
 export function tuple<const TElements extends TupleShape>(
@@ -517,7 +658,7 @@ export function tuple<const TElements extends TupleShape>(
   type TError = EncoderError<TElements[number]>;
   type TMode = TupleEncodeMode<TElements>;
 
-  return fromEncode<TInput, TOutput, TError, TMode>(
+  return __attachEncodeMetadata(fromEncode<TInput, TOutput, TError, TMode>(
     (value: TInput, state?: EncodeState) => {
       const values = value as readonly unknown[];
       return withEncodeCycleTracking(state, values, () =>
@@ -594,7 +735,13 @@ export function tuple<const TElements extends TupleShape>(
           >;
         });
     },
-  );
+  ), {
+    mode: () => elements.some((element) => encodeModeOf(element) === 'async') ? 'async' : 'sync',
+    root: {
+      elements: elements.map((element) => encodeNodeOf(element)),
+      kind: 'tuple',
+    },
+  });
 }
 
 export function option<T, TEncoded, E, M extends EncodeMode>(
@@ -612,7 +759,7 @@ export function option<T, TEncoded, E, M extends EncodeMode>(
     readonly tag: 'some';
     readonly value: TEncoded;
   };
-  return fromEncode<Option<T>, TOptionEncoded, E, M>((value: Option<T>, state?: EncodeState) => {
+  return __attachEncodeMetadata(fromEncode<Option<T>, TOptionEncoded, E, M>((value: Option<T>, state?: EncodeState) => {
     if (isSome(value)) {
       const encoded = encodeWithState(item, value.value, state);
       return mapEncodeOutput(encoded, (resolved) =>
@@ -630,6 +777,43 @@ export function option<T, TEncoded, E, M extends EncodeMode>(
     }
 
     return ok({ tag: 'none' } as TOptionEncoded);
+  }), {
+    mode: encodeModeOf(item),
+    root: {
+      kind: 'union',
+      members: [
+        {
+          fields: [
+            {
+              localName: 'tag',
+              node: { kind: 'literal', value: 'none' },
+              optional: false,
+              wireName: 'tag',
+            },
+          ],
+          kind: 'object',
+          unknownKeys: 'strip',
+        },
+        {
+          fields: [
+            {
+              localName: 'tag',
+              node: { kind: 'literal', value: 'some' },
+              optional: false,
+              wireName: 'tag',
+            },
+            {
+              localName: 'value',
+              node: encodeNodeOf(item),
+              optional: false,
+              wireName: 'value',
+            },
+          ],
+          kind: 'object',
+          unknownKeys: 'strip',
+        },
+      ],
+    },
   });
 }
 
@@ -649,7 +833,7 @@ export function result<T, EValue, TEncoded, EEncoded, EOk, EErr, MOk extends Enc
     readonly error: EEncoded;
     readonly tag: 'err';
   };
-  return fromEncode<Result<T, EValue>, TResultEncoded, EOk | EErr, MergeEncodeModes<MOk | MErr>>((
+  return __attachEncodeMetadata(fromEncode<Result<T, EValue>, TResultEncoded, EOk | EErr, MergeEncodeModes<MOk | MErr>>((
     value: Result<T, EValue>,
     state?: EncodeState,
   ) => {
@@ -676,6 +860,49 @@ export function result<T, EValue, TEncoded, EEncoded, EOk, EErr, MOk extends Enc
     return mapEncodeOutput(encoded, (resolved) =>
       isErr(resolved) ? resolved : ok({ tag: 'err', error: resolved.value } as TResultEncoded)
     ) as MaybeEncodeOutput<TResultEncoded, readonly EncodeIssue[]>;
+  }), {
+    mode: () => mergeEncodeRuntimeModes(okEncoder, errEncoder),
+    root: {
+      kind: 'union',
+      members: [
+        {
+          fields: [
+            {
+              localName: 'tag',
+              node: { kind: 'literal', value: 'ok' },
+              optional: false,
+              wireName: 'tag',
+            },
+            {
+              localName: 'value',
+              node: encodeNodeOf(okEncoder),
+              optional: false,
+              wireName: 'value',
+            },
+          ],
+          kind: 'object',
+          unknownKeys: 'strip',
+        },
+        {
+          fields: [
+            {
+              localName: 'tag',
+              node: { kind: 'literal', value: 'err' },
+              optional: false,
+              wireName: 'tag',
+            },
+            {
+              localName: 'error',
+              node: encodeNodeOf(errEncoder),
+              optional: false,
+              wireName: 'error',
+            },
+          ],
+          kind: 'object',
+          unknownKeys: 'strip',
+        },
+      ],
+    },
   });
 }
 
@@ -696,7 +923,7 @@ export function object<TShape extends ObjectShape>(
   const keySet = new Set<string>(keys);
   const unknownKeys = options?.unknownKeys ?? 'strip';
 
-  return fromEncode<TInput, TOutput, TError, TMode>(
+  return __attachEncodeMetadata(fromEncode<TInput, TOutput, TError, TMode>(
     (value: TInput, state?: EncodeState) => {
       if (!isPlainObject(value)) {
         return err<TError>(new EncodeFailure('Expected object.', { cause: value })) as EncodeOutput<
@@ -865,7 +1092,24 @@ export function object<TShape extends ObjectShape>(
           >;
         });
     },
-  );
+  ), {
+    mode: () => keys.some((key) => encodeModeOf(shape[key]) === 'async') ? 'async' : 'sync',
+    root: {
+      fields: keys.map((key) => {
+        const encoder = shape[key]!;
+        const fieldMetadata = __fieldMetadataOf(encoder);
+        return {
+          ...(fieldMetadata?.effects ? { effects: fieldMetadata.effects } : {}),
+          localName: fieldMetadata?.localName ?? key,
+          node: encodeNodeOf(encoder),
+          optional: allowsMissingObjectField(encoder),
+          wireName: fieldMetadata?.wireName ?? key,
+        };
+      }),
+      kind: 'object',
+      unknownKeys,
+    },
+  });
 }
 
 export function strictObject<TShape extends ObjectShape>(

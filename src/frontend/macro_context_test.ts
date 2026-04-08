@@ -1151,6 +1151,74 @@ Deno.test('createAdvancedMacroContext reflects null undefined record and interse
   }
 });
 
+Deno.test('createAdvancedMacroContext exposes serializable declaration shape data without syntax nodes', () => {
+  const { context } = createAdvancedContext(
+    [
+      '// #[codec]',
+      'export interface User {',
+      "  // #[codec.rename('user_id')]",
+      '  id: string;',
+      '  profile?: {',
+      "    // #[custom.example('Ada')]",
+      '    name: string;',
+      '  };',
+      '}',
+      '',
+    ].join('\n'),
+    'codec',
+  );
+
+  const declaration = context.syntax.declaration();
+  const shape = context.reflect.declarationShapeData(declaration);
+  assertEquals(shape.kind, 'objectLike');
+  if (shape.kind !== 'objectLike') {
+    return;
+  }
+
+  assertEquals('node' in shape, false);
+  assertEquals(shape.fields[0]?.annotations.map((annotation) => annotation.name), ['codec.rename']);
+  assertEquals('node' in (shape.fields[0] ?? {}), false);
+  assertEquals(shape.fields[1]?.type?.kind, 'object');
+  if (shape.fields[1]?.type?.kind === 'object') {
+    assertEquals(shape.fields[1].type.fields[0]?.annotations.map((annotation) => annotation.name), [
+      'custom.example',
+    ]);
+    assertEquals('node' in (shape.fields[1].type.fields[0] ?? {}), false);
+  }
+});
+
+Deno.test('createAdvancedMacroContext exposes serializable type shape data for discriminated unions', () => {
+  const { context } = createAdvancedContext(
+    [
+      '// #[tagged]',
+      'export type Expr =',
+      '  | { tag: "lit"; value: number }',
+      '  | { tag: "add"; left: Expr; right: Expr };',
+      '',
+    ].join('\n'),
+    'tagged',
+  );
+
+  const declaration = context.syntax.declaration();
+  const declShape = context.reflect.declarationShapeData(declaration);
+  assertEquals(declShape.kind, 'discriminatedUnion');
+  if (declShape.kind !== 'discriminatedUnion') {
+    return;
+  }
+
+  assertEquals('node' in declShape, false);
+  assertEquals('node' in (declShape.variants[0] ?? {}), false);
+  assertEquals(declShape.variants[1]?.fields.map((field) => field.name), ['left', 'right']);
+
+  const typeAlias = declaration.asTypeAlias();
+  assert(typeAlias);
+  const typeShape = context.reflect.typeShapeData(typeAlias.type);
+  assertEquals(typeShape.kind, 'union');
+  if (typeShape.kind === 'union') {
+    assertEquals(typeShape.members.map((member) => member.kind), ['object', 'object']);
+  }
+});
+
 Deno.test('createMacroContext throws helpful errors for unavailable syntax accessors', () => {
   const { context: exprContext } = createContext('const value = Foo(bar);\n');
   const { context: declContext } = createContext(

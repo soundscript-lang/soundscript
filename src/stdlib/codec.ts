@@ -2,6 +2,7 @@ import { type Bind, type TypeLambda } from 'sts:hkt';
 import {
   boolean as booleanDecoder,
   DecodeFailure,
+  map as mapDecoder,
   type DecodeMode,
   type Decoder,
   isoDate as isoDateDecoder,
@@ -21,7 +22,12 @@ import {
   url as urlEncoder,
 } from 'sts:encode';
 import type { Invariant } from 'sts:typeclasses';
-import { isErr, ok, type Result } from 'sts:result';
+import {
+  __attachDecodeMetadata,
+  __attachEncodeMetadata,
+  __decodeDirectionOf,
+  __encodeDirectionOf,
+} from './metadata.ts';
 
 export type { EncodeFailure, Encoder } from 'sts:encode';
 export {
@@ -56,20 +62,29 @@ export function codec<
   decoder: Decoder<T, DE, DM>,
   encoder: Encoder<T, TEncoded, EE, EM>,
 ): Codec<T, TEncoded, DE, EE, DM, EM> {
-  return {
-    decode(value) {
+  const value = {
+    decode(value: unknown) {
       return decoder.decode(value);
     },
-    validateDecode(value) {
+    validateDecode(value: unknown) {
       return decoder.validateDecode(value);
     },
-    encode(value) {
+    encode(value: T) {
       return encoder.encode(value);
     },
-    validateEncode(value) {
+    validateEncode(value: T) {
       return encoder.validateEncode(value);
     },
   };
+  const decodeDirection = __decodeDirectionOf(decoder);
+  const encodeDirection = __encodeDirectionOf(encoder);
+  if (decodeDirection) {
+    __attachDecodeMetadata(value, decodeDirection);
+  }
+  if (encodeDirection) {
+    __attachEncodeMetadata(value, encodeDirection);
+  }
+  return value;
 }
 
 export function imap<
@@ -86,26 +101,7 @@ export function imap<
   encodeMap: (value: B) => A,
 ): Codec<B, TEncoded, DE, EE, DM, EM> {
   return codec(
-    {
-      decode(value) {
-        const decoded = base.decode(value);
-        return (decoded instanceof Promise
-          ? decoded.then((resolved) => isErr(resolved) ? resolved : ok(decodeMap(resolved.value)))
-          : isErr(decoded)
-          ? decoded
-          : ok(decodeMap(decoded.value))) as Result<B, DE> | Promise<Result<B, DE>>;
-      },
-      validateDecode(value) {
-        const decoded = base.validateDecode(value);
-        return (decoded instanceof Promise
-          ? decoded.then((resolved) => isErr(resolved) ? resolved : ok(decodeMap(resolved.value)))
-          : isErr(decoded)
-          ? decoded
-          : ok(decodeMap(decoded.value))) as
-          | Result<B, readonly import('sts:decode').DecodeIssue[]>
-          | Promise<Result<B, readonly import('sts:decode').DecodeIssue[]>>;
-      },
-    } as Decoder<B, DE, DM>,
+    mapDecoder(base, decodeMap) as Decoder<B, DE, DM>,
     contramapEncoder(base, encodeMap) as Encoder<B, TEncoded, EE, EM>,
   );
 }

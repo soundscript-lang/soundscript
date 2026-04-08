@@ -1,5 +1,20 @@
 import { type ErrorFrame, Failure } from 'sts:failures';
 import { err, isErr, none, ok, some, type Option, type Result } from 'sts:result';
+import {
+  __attachDecodeMetadata,
+  __cloneNodeWithEffects,
+  __decodeDirectionOrOpaque,
+  __decodeModeOf,
+  __fieldMetadataOf,
+  __helperName,
+  __inferCallableMode,
+  __InternalMetadataNode,
+  __isAsyncCallable,
+  __metadataValueOf,
+  __setDecodeMode,
+  type KnownConstraint,
+  type MetadataEffect,
+} from './metadata.ts';
 
 export type DecodeMode = 'sync' | 'async';
 export type DecodeFormat = 'email' | 'uuid' | 'url' | 'iso-datetime';
@@ -105,60 +120,131 @@ export function fromDecode<T, E, M extends DecodeMode = 'sync'>(
   decode: (value: unknown) => MaybeDecodeOutput<T, E>,
   validateDecode?: (value: unknown) => MaybeDecodeOutput<T, readonly DecodeIssue[]>,
 ): Decoder<T, E, M> {
-  return {
+  const inferredMode = __inferCallableMode(decode, validateDecode) as M;
+  const decoder = {
     decode: decode as (value: unknown) => DecodeOutput<T, E, M>,
     validateDecode: (validateDecode ?? ((value) => defaultValidateDecode(decode(value), value))) as
       (value: unknown) => DecodeOutput<T, readonly DecodeIssue[], M>,
   };
+  __setDecodeMode(decoder, inferredMode);
+  return __attachDecodeMetadata(decoder, {
+    mode: inferredMode,
+    root: { kind: 'opaque' },
+  });
 }
 
-export const string: Decoder<string> = fromDecode((value) =>
-  typeof value === 'string'
-    ? ok(value)
-    : err(new DecodeFailure('Expected string.', { cause: value }))
+function decodeModeOf(decoder: unknown): DecodeMode {
+  return __decodeModeOf(decoder) ?? 'sync';
+}
+
+function mergeDecodeRuntimeModes(...decoders: readonly unknown[]): DecodeMode {
+  return decoders.some((decoder) => decodeModeOf(decoder) === 'async') ? 'async' : 'sync';
+}
+
+function decodeDirectionOf(decoder: unknown) {
+  return __decodeDirectionOrOpaque(decoder);
+}
+
+function decodeNodeOf(decoder: unknown): __InternalMetadataNode {
+  return decodeDirectionOf(decoder).root;
+}
+
+function decodeOpaqueEffect(
+  effect: 'andThen' | 'preprocess' | 'refine' | 'transform' | 'via',
+  helper: unknown,
+): MetadataEffect {
+  return {
+    async: __isAsyncCallable(helper),
+    effect,
+    helperName: __helperName(helper),
+    kind: 'opaque',
+  };
+}
+
+function decodeConstraintEffect(constraint: KnownConstraint): MetadataEffect {
+  return {
+    constraint,
+    kind: 'constraint',
+  };
+}
+
+export const string: Decoder<string> = __attachDecodeMetadata(
+  fromDecode((value) =>
+    typeof value === 'string'
+      ? ok(value)
+      : err(new DecodeFailure('Expected string.', { cause: value }))
+  ),
+  {
+    mode: 'sync',
+    root: { kind: 'primitive', primitive: 'string' },
+  },
 );
 
-export const number: Decoder<number> = fromDecode((value) =>
-  typeof value === 'number'
-    ? ok(value)
-    : err(new DecodeFailure('Expected number.', { cause: value }))
+export const number: Decoder<number> = __attachDecodeMetadata(
+  fromDecode((value) =>
+    typeof value === 'number'
+      ? ok(value)
+      : err(new DecodeFailure('Expected number.', { cause: value }))
+  ),
+  {
+    mode: 'sync',
+    root: { kind: 'primitive', primitive: 'number' },
+  },
 );
 
-export const boolean: Decoder<boolean> = fromDecode((value) =>
-  typeof value === 'boolean'
-    ? ok(value)
-    : err(new DecodeFailure('Expected boolean.', { cause: value }))
+export const boolean: Decoder<boolean> = __attachDecodeMetadata(
+  fromDecode((value) =>
+    typeof value === 'boolean'
+      ? ok(value)
+      : err(new DecodeFailure('Expected boolean.', { cause: value }))
+  ),
+  {
+    mode: 'sync',
+    root: { kind: 'primitive', primitive: 'boolean' },
+  },
 );
 
-export const bigint: Decoder<bigint> = fromDecode((value) => {
-  if (typeof value === 'bigint') {
-    return ok(value);
-  }
-
-  if (typeof value === 'number') {
-    return Number.isInteger(value) && Number.isSafeInteger(value)
-      ? ok(BigInt(value))
-      : err(new DecodeFailure('Expected bigint.', { cause: value }));
-  }
-
-  if (typeof value === 'string') {
-    try {
-      return ok(BigInt(value));
-    } catch {
-      return err(new DecodeFailure('Expected bigint.', { cause: value }));
+export const bigint: Decoder<bigint> = __attachDecodeMetadata(
+  fromDecode((value) => {
+    if (typeof value === 'bigint') {
+      return ok(value);
     }
-  }
 
-  return err(new DecodeFailure('Expected bigint.', { cause: value }));
-});
+    if (typeof value === 'number') {
+      return Number.isInteger(value) && Number.isSafeInteger(value)
+        ? ok(BigInt(value))
+        : err(new DecodeFailure('Expected bigint.', { cause: value }));
+    }
 
-export const undefinedValue: Decoder<undefined> = fromDecode((value) =>
-  value === undefined
-    ? ok(undefined)
-    : err(new DecodeFailure('Expected undefined.', { cause: value }))
+    if (typeof value === 'string') {
+      try {
+        return ok(BigInt(value));
+      } catch {
+        return err(new DecodeFailure('Expected bigint.', { cause: value }));
+      }
+    }
+
+    return err(new DecodeFailure('Expected bigint.', { cause: value }));
+  }),
+  {
+    mode: 'sync',
+    root: { kind: 'primitive', primitive: 'bigint' },
+  },
 );
 
-export const url: Decoder<URL> = fromDecode((value) => {
+export const undefinedValue: Decoder<undefined> = __attachDecodeMetadata(
+  fromDecode((value) =>
+    value === undefined
+      ? ok(undefined)
+      : err(new DecodeFailure('Expected undefined.', { cause: value }))
+  ),
+  {
+    mode: 'sync',
+    root: { kind: 'undefined' },
+  },
+);
+
+export const url: Decoder<URL> = __attachDecodeMetadata(fromDecode((value) => {
   if (typeof value !== 'string') {
     return err(new DecodeFailure('Expected URL string.', { cause: value }));
   }
@@ -167,9 +253,21 @@ export const url: Decoder<URL> = fromDecode((value) => {
   } catch {
     return err(new DecodeFailure('Expected URL string.', { cause: value }));
   }
+}), {
+  mode: 'sync',
+  root: {
+    effects: [{
+      async: false,
+      effect: 'transform',
+      helperName: 'url',
+      kind: 'opaque',
+    }],
+    kind: 'primitive',
+    primitive: 'string',
+  },
 });
 
-export const isoDate: Decoder<Date> = fromDecode((value) => {
+export const isoDate: Decoder<Date> = __attachDecodeMetadata(fromDecode((value) => {
   if (typeof value !== 'string') {
     return err(new DecodeFailure('Expected ISO datetime string.', { cause: value }));
   }
@@ -180,6 +278,18 @@ export const isoDate: Decoder<Date> = fromDecode((value) => {
   return Number.isNaN(parsed.getTime())
     ? err(new DecodeFailure('Expected ISO datetime string.', { cause: value }))
     : ok(parsed);
+}), {
+  mode: 'sync',
+  root: {
+    effects: [{
+      async: false,
+      effect: 'transform',
+      helperName: 'isoDate',
+      kind: 'opaque',
+    }],
+    kind: 'primitive',
+    primitive: 'string',
+  },
 });
 
 export function lazy<TDecoder extends Decoder<unknown, unknown, DecodeMode>>(
@@ -188,10 +298,16 @@ export function lazy<TDecoder extends Decoder<unknown, unknown, DecodeMode>>(
 export function lazy<T, E, M extends DecodeMode>(
   getDecoder: () => Decoder<T, E, M>,
 ): Decoder<T, E, M> {
-  return fromDecode(
+  return __attachDecodeMetadata(fromDecode(
     (value) => getDecoder().decode(value),
     (value) => getDecoder().validateDecode(value),
-  );
+  ), {
+    mode: () => decodeModeOf(getDecoder()),
+    root: {
+      kind: 'ref',
+      target: () => decodeNodeOf(getDecoder()),
+    },
+  });
 }
 
 export function optional<TDecoder extends Decoder<unknown, unknown, DecodeMode>>(
@@ -203,7 +319,7 @@ export function optional<T, E, M extends DecodeMode>(
 export function optional<T, E, M extends DecodeMode>(
   decoder: Decoder<T, E, M>,
 ): OptionalDecoder<Exclude<T, undefined>, E, M> {
-  return {
+  return __attachDecodeMetadata({
     __soundscriptOptional: true,
     inner: decoder,
     decode(value) {
@@ -220,13 +336,22 @@ export function optional<T, E, M extends DecodeMode>(
         M
       >;
     },
-  } as OptionalDecoder<Exclude<T, undefined>, E, M>;
+  } as OptionalDecoder<Exclude<T, undefined>, E, M>, {
+    mode: decodeModeOf(decoder),
+    root: {
+      kind: 'union',
+      members: [
+        decodeNodeOf(decoder),
+        { kind: 'undefined' },
+      ],
+    },
+  });
 }
 
 export function undefinedable<T, E, M extends DecodeMode>(
   decoder: Decoder<T, E, M>,
 ): Decoder<T | undefined, E, M> {
-  return {
+  return __attachDecodeMetadata({
     __soundscriptUndefinedable: true,
     inner: decoder,
     decode(value) {
@@ -243,20 +368,38 @@ export function undefinedable<T, E, M extends DecodeMode>(
         M
       >;
     },
-  } as UndefinedableDecoder<T, E, M>;
+  } as UndefinedableDecoder<T, E, M>, {
+    mode: decodeModeOf(decoder),
+    root: {
+      kind: 'union',
+      members: [
+        decodeNodeOf(decoder),
+        { kind: 'undefined' },
+      ],
+    },
+  });
 }
 
 export function nullable<T, E, M extends DecodeMode>(
   decoder: Decoder<T, E, M>,
 ): Decoder<T | null, E, M> {
-  return fromDecode(
+  return __attachDecodeMetadata(fromDecode(
     (value) => (value === null ? ok(null) : decoder.decode(value)) as MaybeDecodeOutput<T | null, E>,
     (value) =>
       (value === null ? ok(null) : decoder.validateDecode(value)) as MaybeDecodeOutput<
         T | null,
         readonly DecodeIssue[]
       >,
-  );
+  ), {
+    mode: decodeModeOf(decoder),
+    root: {
+      kind: 'union',
+      members: [
+        decodeNodeOf(decoder),
+        { kind: 'null' },
+      ],
+    },
+  });
 }
 
 export function defaulted<T, E, M extends DecodeMode>(
@@ -277,7 +420,7 @@ export function defaulted<T, E, M extends DecodeMode, TFallback extends T | Prom
       ? (fallback as () => TFallback)()
       : fallback;
 
-  return {
+  return __attachDecodeMetadata({
     __soundscriptDefaulted: true,
     decode(value) {
       return mapDecodeOutput(decoder.decode(value), (decoded) =>
@@ -297,7 +440,24 @@ export function defaulted<T, E, M extends DecodeMode, TFallback extends T | Prom
           : ok(decoded.value)
       ) as DecodeOutput<T, readonly DecodeIssue[], TMode>;
     },
-  } as DefaultedDecoder<T, E, TMode>;
+  } as DefaultedDecoder<T, E, TMode>, {
+    mode: () => decodeModeOf(decoder) === 'async' || typeof fallback === 'function' && __isAsyncCallable(fallback)
+      ? 'async'
+      : 'sync',
+    root: __cloneNodeWithEffects(decodeNodeOf(decoder), [{
+      ...(typeof fallback === 'function'
+        ? {
+          async: __isAsyncCallable(fallback),
+          helperName: __helperName(fallback),
+          kind: 'default' as const,
+          opaque: true,
+        }
+        : {
+          kind: 'default' as const,
+          value: __metadataValueOf(fallback),
+        }),
+    }]),
+  });
 }
 
 export function preprocess<A, E, M extends DecodeMode, TPreprocessed>(
@@ -305,7 +465,7 @@ export function preprocess<A, E, M extends DecodeMode, TPreprocessed>(
   project: (value: unknown) => TPreprocessed,
 ): Decoder<A, E, MergeDecodeModes<M | AsyncModeOf<TPreprocessed>>> {
   type TMode = MergeDecodeModes<M | AsyncModeOf<TPreprocessed>>;
-  return fromDecode<A, E, TMode>(
+  return __attachDecodeMetadata(fromDecode<A, E, TMode>(
     (value) =>
       chainMaybeAsync(project(value), (projected) => decoder.decode(projected)) as DecodeOutput<
         A,
@@ -318,15 +478,21 @@ export function preprocess<A, E, M extends DecodeMode, TPreprocessed>(
         readonly DecodeIssue[],
         TMode
       >,
-  );
+  ), {
+    mode: decodeModeOf(decoder) === 'async' || __isAsyncCallable(project) ? 'async' : 'sync',
+    root: __cloneNodeWithEffects(decodeNodeOf(decoder), [decodeOpaqueEffect('preprocess', project)]),
+  });
 }
 
 export function literal<const T extends string | number | boolean | null>(value: T): Decoder<T> {
-  return fromDecode((input) =>
+  return __attachDecodeMetadata(fromDecode((input) =>
     Object.is(input, value)
       ? ok(value)
       : err(new DecodeFailure(`Expected literal ${JSON.stringify(value)}.`, { cause: input }))
-  );
+  ), {
+    mode: 'sync',
+    root: value === null ? { kind: 'null' } : { kind: 'literal', value },
+  });
 }
 
 export function min<T extends number | bigint, E, M extends DecodeMode>(
@@ -340,7 +506,7 @@ export function min<T extends number | bigint, E, M extends DecodeMode>(
       message: `Expected value >= ${String(minimum)}.`,
       path: [],
     }
-  );
+  , decodeConstraintEffect({ kind: 'min', value: minimum }));
 }
 
 export function max<T extends number | bigint, E, M extends DecodeMode>(
@@ -354,7 +520,7 @@ export function max<T extends number | bigint, E, M extends DecodeMode>(
       message: `Expected value <= ${String(maximum)}.`,
       path: [],
     }
-  );
+  , decodeConstraintEffect({ kind: 'max', value: maximum }));
 }
 
 export function minLength<T extends string | readonly unknown[], E, M extends DecodeMode>(
@@ -368,7 +534,7 @@ export function minLength<T extends string | readonly unknown[], E, M extends De
       message: `Expected length >= ${minimum}.`,
       path: [],
     }
-  );
+  , decodeConstraintEffect({ kind: 'minLength', value: minimum }));
 }
 
 export function maxLength<T extends string | readonly unknown[], E, M extends DecodeMode>(
@@ -382,7 +548,7 @@ export function maxLength<T extends string | readonly unknown[], E, M extends De
       message: `Expected length <= ${maximum}.`,
       path: [],
     }
-  );
+  , decodeConstraintEffect({ kind: 'maxLength', value: maximum }));
 }
 
 export function startsWith<E, M extends DecodeMode>(
@@ -396,7 +562,7 @@ export function startsWith<E, M extends DecodeMode>(
       message: `Expected string to start with ${JSON.stringify(prefix)}.`,
       path: [],
     }
-  );
+  , decodeConstraintEffect({ kind: 'startsWith', value: prefix }));
 }
 
 export function endsWith<E, M extends DecodeMode>(
@@ -410,7 +576,7 @@ export function endsWith<E, M extends DecodeMode>(
       message: `Expected string to end with ${JSON.stringify(suffix)}.`,
       path: [],
     }
-  );
+  , decodeConstraintEffect({ kind: 'endsWith', value: suffix }));
 }
 
 export function pattern<E, M extends DecodeMode>(
@@ -424,7 +590,7 @@ export function pattern<E, M extends DecodeMode>(
       message: `Expected string to match ${expression}.`,
       path: [],
     }
-  );
+  , decodeConstraintEffect({ flags: expression.flags, kind: 'pattern', source: expression.source }));
 }
 
 export function multipleOf<T extends number | bigint, E, M extends DecodeMode>(
@@ -462,7 +628,7 @@ export function multipleOf<T extends number | bigint, E, M extends DecodeMode>(
       message: `Expected value to be a multiple of ${String(factor)}.`,
       path: [],
     };
-  });
+  }, decodeConstraintEffect({ kind: 'multipleOf', value: factor }));
 }
 
 export function integer<E, M extends DecodeMode>(
@@ -475,7 +641,7 @@ export function integer<E, M extends DecodeMode>(
       message: 'Expected integer.',
       path: [],
     }
-  );
+  , decodeConstraintEffect({ kind: 'integer' }));
 }
 
 export function format<E, M extends DecodeMode>(
@@ -489,13 +655,13 @@ export function format<E, M extends DecodeMode>(
       message: `Expected string with format "${expectedFormat}".`,
       path: [],
     }
-  );
+  , decodeConstraintEffect({ kind: 'format', value: expectedFormat }));
 }
 
 export function array<T, E, M extends DecodeMode>(
   item: Decoder<T, E, M>,
 ): Decoder<readonly T[], E | DecodeFailure, M> {
-  return fromDecode(
+  return __attachDecodeMetadata(fromDecode(
     (value) => {
       if (!Array.isArray(value)) {
         return err(new DecodeFailure('Expected array.', { cause: value }));
@@ -536,13 +702,19 @@ export function array<T, E, M extends DecodeMode>(
 
       return issues.length > 0 ? err(issues) : ok(decodedValues);
     },
-  );
+  ), {
+    mode: decodeModeOf(item),
+    root: {
+      element: decodeNodeOf(item),
+      kind: 'array',
+    },
+  });
 }
 
 export function readonlyRecord<T, E, M extends DecodeMode>(
   valueDecoder: Decoder<T, E, M>,
 ): Decoder<Readonly<Record<string, T>>, E | DecodeFailure, M> {
-  return fromDecode(
+  return __attachDecodeMetadata(fromDecode(
     (value) => {
       if (!isPlainObject(value)) {
         return err(new DecodeFailure('Expected object record.', { cause: value }));
@@ -590,7 +762,14 @@ export function readonlyRecord<T, E, M extends DecodeMode>(
 
       return issues.length > 0 ? err(issues) : ok(decodedRecord);
     },
-  );
+  ), {
+    mode: decodeModeOf(valueDecoder),
+    root: {
+      key: 'string',
+      kind: 'record',
+      value: decodeNodeOf(valueDecoder),
+    },
+  });
 }
 
 export function tuple<const TElements extends TupleShape>(
@@ -604,7 +783,7 @@ export function tuple<const TElements extends TupleShape>(
   type TError = DecoderError<TElements[number]> | DecodeFailure;
   type TMode = TupleDecodeMode<TElements>;
 
-  return fromDecode<TValue, TError, TMode>(
+  return __attachDecodeMetadata(fromDecode<TValue, TError, TMode>(
     (value) => {
       if (!Array.isArray(value)) {
         return err(new DecodeFailure('Expected tuple.', { cause: value })) as DecodeOutput<
@@ -699,7 +878,13 @@ export function tuple<const TElements extends TupleShape>(
         TMode
       >;
     },
-  );
+  ), {
+    mode: () => elements.some((element) => decodeModeOf(element) === 'async') ? 'async' : 'sync',
+    root: {
+      elements: elements.map((element) => decodeNodeOf(element)),
+      kind: 'tuple',
+    },
+  });
 }
 
 export function option<T, E, M extends DecodeMode>(
@@ -763,7 +948,7 @@ export function object<TShape extends ObjectShape>(
   const keySet = new Set<string>(keys);
   const unknownKeys = options?.unknownKeys ?? 'strip';
 
-  return fromDecode<TValue, TError, TMode>(
+  return __attachDecodeMetadata(fromDecode<TValue, TError, TMode>(
     (value) => {
       if (!isPlainObject(value)) {
         return err(new DecodeFailure('Expected object.', { cause: value })) as DecodeOutput<
@@ -910,7 +1095,24 @@ export function object<TShape extends ObjectShape>(
         TMode
       >;
     },
-  );
+  ), {
+    mode: () => keys.some((key) => decodeModeOf(shape[key]) === 'async') ? 'async' : 'sync',
+    root: {
+      fields: keys.map((key) => {
+        const decoder = shape[key]!;
+        const fieldMetadata = __fieldMetadataOf(decoder);
+        return {
+          ...(fieldMetadata?.effects ? { effects: fieldMetadata.effects } : {}),
+          localName: fieldMetadata?.localName ?? key,
+          node: decodeNodeOf(decoder),
+          optional: allowsMissingObjectField(decoder),
+          wireName: fieldMetadata?.wireName ?? key,
+        };
+      }),
+      kind: 'object',
+      unknownKeys,
+    },
+  });
 }
 
 export function strictObject<TShape extends ObjectShape>(
@@ -958,7 +1160,7 @@ export function union<A, B, ELeft, ERight, MLeft extends DecodeMode, MRight exte
   type TValue = A | B;
   type TError = ELeft | ERight | DecodeFailure;
   type TMode = MergeDecodeModes<MLeft | MRight>;
-  return fromDecode<TValue, TError, TMode>(
+  return __attachDecodeMetadata(fromDecode<TValue, TError, TMode>(
     (value) => {
       const leftDecoded = left.decode(value) as MaybeDecodeOutput<A, ELeft>;
       if (isPromiseLike(leftDecoded)) {
@@ -1010,7 +1212,16 @@ export function union<A, B, ELeft, ERight, MLeft extends DecodeMode, MRight exte
         TMode
       >;
     },
-  );
+  ), {
+    mode: () => mergeDecodeRuntimeModes(left, right),
+    root: {
+      kind: 'union',
+      members: [
+        decodeNodeOf(left),
+        decodeNodeOf(right),
+      ],
+    },
+  });
 }
 
 export function map<A, B, E, M extends DecodeMode, TProjected>(
@@ -1020,14 +1231,17 @@ export function map<A, B, E, M extends DecodeMode, TProjected>(
   type TValue = Awaited<TProjected>;
   type TMode = MergeDecodeModes<M | AsyncModeOf<TProjected>>;
 
-  return fromDecode<TValue, E, TMode>(
+  return __attachDecodeMetadata(fromDecode<TValue, E, TMode>(
     (value) => projectDecode(decoder.decode(value), project) as DecodeOutput<TValue, E, TMode>,
     (value) => projectDecode(decoder.validateDecode(value), project) as DecodeOutput<
       TValue,
       readonly DecodeIssue[],
       TMode
     >,
-  );
+  ), {
+    mode: decodeModeOf(decoder) === 'async' || __isAsyncCallable(project) ? 'async' : 'sync',
+    root: __cloneNodeWithEffects(decodeNodeOf(decoder), [decodeOpaqueEffect('transform', project)]),
+  });
 }
 
 export function andThen<A, TNext extends Decoder<unknown, E, DecodeMode>, E, M extends DecodeMode>(
@@ -1041,14 +1255,17 @@ export function andThen<A, TNext extends Decoder<unknown, E, DecodeMode>, E, M e
   type TValue = DecoderValue<TNext>;
   type TMode = MergeDecodeModes<M | DecoderModeOf<TNext>>;
 
-  return fromDecode<TValue, E, TMode>(
+  return __attachDecodeMetadata(fromDecode<TValue, E, TMode>(
     (value) => chainDecode(decoder.decode(value), project) as DecodeOutput<TValue, E, TMode>,
     (value) => chainValidateDecode(decoder.validateDecode(value), project) as DecodeOutput<
       TValue,
       readonly DecodeIssue[],
       TMode
     >,
-  );
+  ), {
+    mode: decodeModeOf(decoder) === 'async' || __isAsyncCallable(project) ? 'async' : 'sync',
+    root: __cloneNodeWithEffects(decodeNodeOf(decoder), [decodeOpaqueEffect('andThen', project)]),
+  });
 }
 
 export function refine<A, B extends A, E, M extends DecodeMode>(
@@ -1078,7 +1295,7 @@ export function refine<
 ): Decoder<A, E | DecodeFailure, MergeDecodeModes<M | AsyncModeOf<TResult>>> {
   type TMode = MergeDecodeModes<M | AsyncModeOf<TResult>>;
 
-  return fromDecode<A, E | DecodeFailure, TMode>(
+  return __attachDecodeMetadata(fromDecode<A, E | DecodeFailure, TMode>(
     (value) => refineDecode(decoder.decode(value), predicate, message, value) as DecodeOutput<
       A,
       E | DecodeFailure,
@@ -1090,7 +1307,10 @@ export function refine<
         readonly DecodeIssue[],
         TMode
       >,
-  );
+  ), {
+    mode: decodeModeOf(decoder) === 'async' || __isAsyncCallable(predicate) ? 'async' : 'sync',
+    root: __cloneNodeWithEffects(decodeNodeOf(decoder), [decodeOpaqueEffect('refine', predicate)]),
+  });
 }
 
 function defaultValidateDecode<T, E>(
@@ -1169,8 +1389,9 @@ function prependIssuePaths(
 function constrain<A, E, M extends DecodeMode>(
   decoder: Decoder<A, E, M>,
   validate: (value: A) => DecodeIssue | null,
+  effect?: MetadataEffect,
 ): Decoder<A, E | DecodeFailure, M> {
-  return fromDecode<A, E | DecodeFailure, M>(
+  return __attachDecodeMetadata(fromDecode<A, E | DecodeFailure, M>(
     (value) => {
       const decoded = decoder.decode(value);
       if (isPromiseLike(decoded)) {
@@ -1215,7 +1436,10 @@ function constrain<A, E, M extends DecodeMode>(
       const issue = validate(decoded.value);
       return issue === null ? ok(decoded.value) : err([issue]);
     },
-  );
+  ), {
+    mode: decodeModeOf(decoder),
+    root: effect ? __cloneNodeWithEffects(decodeNodeOf(decoder), [effect]) : decodeNodeOf(decoder),
+  });
 }
 
 function collectUnknownObjectKeys(

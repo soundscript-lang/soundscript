@@ -669,7 +669,9 @@ Deno.test('decode macro supports nullish unions records intersections and undefi
   assertStringIncludes(printed, 'undefinedValue as __sts_runtime_named_undefinedValue_');
   assertStringIncludes(printed, 'maybe: __sts_runtime_named_undefinedable_');
   assertStringIncludes(printed, 'extras: __sts_runtime_named_readonlyRecord_');
-  assertStringIncludes(printed, 'combined: __sts_runtime_named_object_');
+  assertStringIncludes(printed, 'combined: (() => {');
+  assertStringIncludes(printed, 'metadataOf as __sts_runtime_named_metadataOf_');
+  assertStringIncludes(printed, 'attachMetadata as __sts_runtime_named_attachMetadata_');
   assertStringIncludes(printed, 'absent: __sts_runtime_named_undefinedValue_');
 });
 
@@ -774,7 +776,9 @@ Deno.test('decode, encode, and codec macros support nested object literal field 
   assertStringIncludes(printed, 'export const GroupDecoder = ');
   assertStringIncludes(printed, 'export const GroupEncoder = ');
   assertStringIncludes(printed, 'export const GroupCodec = ');
-  assertStringIncludes(printed, 'owner: __sts_runtime_named_object_');
+  assertStringIncludes(printed, 'owner: (() => {');
+  assertStringIncludes(printed, 'metadataOf as __sts_runtime_named_metadataOf_');
+  assertStringIncludes(printed, 'attachMetadata as __sts_runtime_named_attachMetadata_');
 });
 
 Deno.test('decode macro supports parameterless classes via public instance fields', () => {
@@ -1201,7 +1205,9 @@ Deno.test('encode macro supports nullish unions records intersections and undefi
   assertStringIncludes(printed, 'undefinedEncoder as __sts_runtime_named_undefinedEncoder_');
   assertStringIncludes(printed, 'maybe: __sts_runtime_named_undefinedable_');
   assertStringIncludes(printed, 'extras: __sts_runtime_named_record_');
-  assertStringIncludes(printed, 'combined: __sts_runtime_named_object_');
+  assertStringIncludes(printed, 'combined: (() => {');
+  assertStringIncludes(printed, 'metadataOf as __sts_runtime_named_metadataOf_');
+  assertStringIncludes(printed, 'attachMetadata as __sts_runtime_named_attachMetadata_');
   assertStringIncludes(printed, 'absent: __sts_runtime_named_undefinedEncoder_');
 });
 
@@ -1486,7 +1492,9 @@ Deno.test('codec macro supports nullish unions records intersections and undefin
   assertStringIncludes(printed, 'undefinedEncoder as __sts_runtime_named_undefinedEncoder_');
   assertStringIncludes(printed, 'maybe: __sts_runtime_named_undefinedable_');
   assertStringIncludes(printed, 'extras: __sts_runtime_named_readonlyRecord_');
-  assertStringIncludes(printed, 'combined: __sts_runtime_named_object_');
+  assertStringIncludes(printed, 'combined: (() => {');
+  assertStringIncludes(printed, 'metadataOf as __sts_runtime_named_metadataOf_');
+  assertStringIncludes(printed, 'attachMetadata as __sts_runtime_named_attachMetadata_');
   assertStringIncludes(printed, 'absent: __sts_runtime_named_undefinedValue_');
 });
 
