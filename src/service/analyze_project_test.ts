@@ -5127,7 +5127,10 @@ Deno.test('analyzeProject preserves unknown annotation namespaces and their nest
   assertEquals(result.diagnostics[0]?.metadata?.fixability, 'local_rewrite');
   assertEquals(
     result.diagnostics[0]?.metadata?.evidence?.map((fact) => `${fact.label}:${fact.value}`),
-    ['annotationName:eq', 'registeredBuiltins:effects, extern, interop, newtype, unsafe, value, variance'],
+    [
+      'annotationName:eq',
+      'registeredBuiltins:effects, extern, interop, newtype, unsafe, value, variance',
+    ],
   );
   assertEquals(
     result.diagnostics[0]?.metadata?.counterexample,
@@ -5294,6 +5297,58 @@ Deno.test('analyzeProject accepts open dotted effects and forward transforms', a
   });
 
   assertEquals(result.diagnostics, []);
+});
+
+Deno.test('analyzeProject accepts the checked-in transaction policy example', async () => {
+  const exampleDirectory = join(Deno.cwd(), 'examples/effects-transaction-policy');
+  assert((await Deno.stat(join(exampleDirectory, 'tsconfig.json'))).isFile);
+  assert((await Deno.stat(join(exampleDirectory, 'src/index.sts'))).isFile);
+  const result = await analyzeProject({
+    projectPath: join(exampleDirectory, 'tsconfig.json'),
+    workingDirectory: exampleDirectory,
+  });
+
+  assertEquals(result.diagnostics, []);
+});
+
+Deno.test('analyzeProject rejects host io inside db transaction callbacks', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': createSoundscriptOnlyTsconfig(),
+    'src/index.sts': [
+      '// #[extern]',
+      '// #[effects(add: [host.db.query, suspend.await])]',
+      'declare function queryOne(sql: string): Promise<number>;',
+      '',
+      '// #[extern]',
+      '// #[effects(add: [host.io, host.node.fs, suspend.await])]',
+      'declare function readTextFile(path: string): Promise<string>;',
+      '',
+      '// #[extern]',
+      '// #[effects(add: [host.db.transaction, suspend.await], forward: [action])]',
+      'declare function inTransaction<T>(',
+      '  // #[effects(forbid: [host.io])]',
+      '  action: () => Promise<T>,',
+      '): Promise<T>;',
+      '',
+      'export async function invalidAuditRead(): Promise<number> {',
+      '  return await inTransaction(async () => {',
+      '    const value = await queryOne("select balance from accounts where id = 1");',
+      '    await readTextFile("audit-template.txt");',
+      '    return value;',
+      '  });',
+      '}',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1040']);
+  assertEquals(result.diagnostics[0]?.metadata?.rule, 'effect_contract_violation');
+  assertEquals(result.diagnostics[0]?.metadata?.primarySymbol, 'action');
 });
 
 Deno.test('analyzeProject rejects deprecated via forwarding syntax', async () => {
@@ -9333,7 +9388,7 @@ Deno.test('analyzeProject preserves narrowing across shared collection callback 
       '    return value;',
       '  }',
       '  return "";',
-      '}',      
+      '}',
       '',
     ].join('\n'),
   });

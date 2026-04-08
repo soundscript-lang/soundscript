@@ -5,8 +5,7 @@
 Add a small effect system that improves two concrete parts of soundscript:
 
 - checker ergonomics, especially around higher-order helpers and flow-fact preservation
-- wasm lowering decisions where the compiler currently relies on narrow syntactic
-  side-effect checks
+- wasm lowering decisions where the compiler currently relies on narrow syntactic side-effect checks
 
 The design should stay lightweight:
 
@@ -60,25 +59,27 @@ V1 uses one builtin annotation:
 // )]
 ```
 
-`via` remains accepted as temporary compatibility sugar for unchanged forwarding entries.
+`via` is no longer accepted. Unchanged forwarding uses `forward: [callback]`.
 
 ### Fields
 
-`#[effects(...)]` accepts exactly three optional named fields:
+`#[effects(...)]` accepts these optional named fields:
 
 - `add`
 - `forbid`
 - `forward`
+- `unknown`
 
 Validation rules:
 
 - each field may appear at most once
 - `add` and `forbid` must be arrays of effect identifiers
-- `forward` must be an array of parameter-rooted callable references or `{ from, rewrite?, handle? }`
-  objects
+- `unknown` currently only supports `[direct]`
+- `forward` must be an array of parameter-rooted callable references or
+  `{ from, rewrite?, handle? }` objects
 - effect identifiers are open dotted names with identifier-like segments
 - reject positional arguments, duplicate effects inside a field, duplicate fields, and invalid or
-  repeated `forward` / `via` references
+  repeated `forward` references
 
 ### Attachment Targets
 
@@ -258,8 +259,7 @@ V1 should support two sources of forwarding knowledge:
   pass it to a known forwarding callee
 
 If forwarding cannot be proven for a local higher-order callable and no explicit `forward` is
-present,
-the relevant effects remain unknown.
+present, the relevant effects remain unknown.
 
 ## Checker Behavior
 
@@ -311,8 +311,8 @@ The right scope is the frontier that materially affects precision:
 - common container mutators and readers
 - DOM and portable-global declaration families
 
-Unsummarized declaration-only APIs remain usable in ordinary code, but they diagnose under
-relevant `forbid` contracts because their effects are unknown.
+Unsummarized declaration-only APIs remain usable in ordinary code, but they diagnose under relevant
+`forbid` contracts because their effects are unknown.
 
 ## Compiler And Wasm Benefits
 
@@ -384,8 +384,8 @@ contracts.
 
 ## Future Extension Path
 
-The public v1 names are already hierarchical, but the model should still support later
-decomposition and additional families.
+The public v1 names are already hierarchical, but the model should still support later decomposition
+and additional families.
 
 Likely future names include:
 
