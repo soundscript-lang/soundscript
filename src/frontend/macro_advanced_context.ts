@@ -34,6 +34,7 @@ import {
   resolvePrimaryExprOperand,
 } from './macro_operand_semantics.ts';
 import { createMacroSemantics } from './macro_semantics.ts';
+import { attachSemanticLookupNodeResolver } from './macro_context_internal.ts';
 import type { ResolvedMacroPlaceholder } from './macro_resolver.ts';
 import { createMacroScopeExitOutput, createMacroValueRewriteOutput } from './macro_output.ts';
 import { scanMacroCandidates } from './macro_scanner.ts';
@@ -318,6 +319,19 @@ export function createAdvancedMacroContext(
     return originalNode
       ? originalAnnotationLookupForNode(originalNode).getAttachedAnnotations(originalNode)
       : baseContext.syntax.annotations(node);
+  }
+
+  function semanticLookupNode(node?: MacroSyntaxNode): ts.Node | null {
+    const directHostNode = node ? getHostNode(node) : null;
+    const directHostSourceFile = directHostNode?.getSourceFile() ?? null;
+    const originalNode = node ? findOriginalNodeForSyntaxNode(node) : null;
+    return node
+      ? originalNode ??
+        directHostNode ??
+        directHostSourceFile ??
+        resolved.callExpression.getSourceFile() ??
+        resolved.callExpression
+      : resolved.callExpression;
   }
 
   function reflectedSyntaxNode(node: ts.Node, kind = 'reflected_syntax'): MacroSyntaxNode {
@@ -855,7 +869,7 @@ export function createAdvancedMacroContext(
     };
   }
 
-  return {
+  const context: MacroContext = {
     ...baseContext,
     controlFlow: {
       deferCleanup(cleanup) {
@@ -1159,72 +1173,22 @@ export function createAdvancedMacroContext(
       },
 
       valueBindingPromiseLikeInScope(name, node) {
-        const directHostNode = node ? getHostNode(node) : null;
-        const directHostSourceFile = directHostNode?.getSourceFile() ?? null;
-        const originalNode = node ? findOriginalNodeForSyntaxNode(node) : null;
-        const hostNode = node
-          ? originalNode ??
-            directHostNode ??
-            directHostSourceFile ??
-            resolved.callExpression.getSourceFile() ??
-            resolved.callExpression
-          : resolved.callExpression;
+        const hostNode = semanticLookupNode(node);
         return hostNode ? hostSemantics.valueBindingPromiseLikeInScope(name, hostNode) : false;
       },
 
       valueBindingCallableInScope(name, node) {
-        const directHostNode = node ? getHostNode(node) : null;
-        const directHostSourceFile = directHostNode?.getSourceFile() ?? null;
-        const originalNode = node ? findOriginalNodeForSyntaxNode(node) : null;
-        const hostNode = node
-          ? originalNode ??
-            directHostNode ??
-            directHostSourceFile ??
-            resolved.callExpression.getSourceFile() ??
-            resolved.callExpression
-          : resolved.callExpression;
+        const hostNode = semanticLookupNode(node);
         return hostNode ? hostSemantics.valueBindingCallableInScope(name, hostNode) : false;
       },
 
-      valueBindingHelperModeInScope(name, direction, node) {
-        const directHostNode = node ? getHostNode(node) : null;
-        const directHostSourceFile = directHostNode?.getSourceFile() ?? null;
-        const originalNode = node ? findOriginalNodeForSyntaxNode(node) : null;
-        const hostNode = node
-          ? originalNode ??
-            directHostNode ??
-            directHostSourceFile ??
-            resolved.callExpression.getSourceFile() ??
-            resolved.callExpression
-          : resolved.callExpression;
-        return hostNode ? hostSemantics.valueBindingHelperModeInScope(name, direction, hostNode) : null;
-      },
-
       valueBindingTypeInScope(name, node) {
-        const directHostNode = node ? getHostNode(node) : null;
-        const directHostSourceFile = directHostNode?.getSourceFile() ?? null;
-        const originalNode = node ? findOriginalNodeForSyntaxNode(node) : null;
-        const hostNode = node
-          ? originalNode ??
-            directHostNode ??
-            directHostSourceFile ??
-            resolved.callExpression.getSourceFile() ??
-            resolved.callExpression
-          : resolved.callExpression;
+        const hostNode = semanticLookupNode(node);
         return hostNode ? hostSemantics.valueBindingTypeInScope(name, hostNode) : null;
       },
 
       valueBindingInScope(name, node) {
-        const directHostNode = node ? getHostNode(node) : null;
-        const directHostSourceFile = directHostNode?.getSourceFile() ?? null;
-        const originalNode = node ? findOriginalNodeForSyntaxNode(node) : null;
-        const hostNode = node
-          ? originalNode ??
-            directHostNode ??
-            directHostSourceFile ??
-            resolved.callExpression.getSourceFile() ??
-            resolved.callExpression
-          : resolved.callExpression;
+        const hostNode = semanticLookupNode(node);
         return hostNode ? hostSemantics.valueBindingInScope(name, hostNode) : false;
       },
 
@@ -1236,4 +1200,6 @@ export function createAdvancedMacroContext(
       },
     },
   };
+
+  return attachSemanticLookupNodeResolver(context, semanticLookupNode);
 }

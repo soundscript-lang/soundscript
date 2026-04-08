@@ -1177,9 +1177,6 @@ export function createSyntaxOnlyMacroContext(
       valueBindingCallableInScope() {
         return unsupported('semantics.valueBindingCallableInScope');
       },
-      valueBindingHelperModeInScope() {
-        return unsupported('semantics.valueBindingHelperModeInScope');
-      },
       valueBindingTypeInScope() {
         return unsupported('semantics.valueBindingTypeInScope');
       },

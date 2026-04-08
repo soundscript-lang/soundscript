@@ -18,6 +18,8 @@ import type {
 } from './macro_api.ts';
 import { macroSignature } from './macro_api.ts';
 import { attachMacroFactoryMetadata } from './macro_api_internal.ts';
+import { inferDeriveHelperMode } from './derive_helper_mode.ts';
+import { semanticLookupNodeForContext } from './macro_context_internal.ts';
 import { getHostDeclaration, getHostNode } from './macro_syntax_internal.ts';
 
 const DERIVE_MACRO_FILE_NAME = fromFileUrl(import.meta.url);
@@ -975,17 +977,31 @@ function annotationIdentifierHelperMode(
     return null;
   }
   const annotationName = annotation?.name ?? `${direction}.via`;
-  const scopedMode = ctx.semantics.valueBindingHelperModeInScope(
-    helperIdentifier,
-    direction,
-    scopeNode,
-  );
-  if (scopedMode !== null) {
-    return scopedMode;
+  const scopedLookupNode = semanticLookupNodeForContext(ctx, scopeNode);
+  const scopedType = ctx.semantics.valueBindingTypeInScope(helperIdentifier, scopeNode);
+  if (scopedType) {
+    const scopedMode = inferDeriveHelperMode(
+      scopedType,
+      helperIdentifier,
+      direction,
+      scopedLookupNode,
+    );
+    if (scopedMode !== null) {
+      return scopedMode;
+    }
   }
-  const fallbackMode = ctx.semantics.valueBindingHelperModeInScope(helperIdentifier, direction);
-  if (fallbackMode !== null) {
-    return fallbackMode;
+  const fallbackLookupNode = semanticLookupNodeForContext(ctx);
+  const fallbackType = ctx.semantics.valueBindingTypeInScope(helperIdentifier);
+  if (fallbackType) {
+    const fallbackMode = inferDeriveHelperMode(
+      fallbackType,
+      helperIdentifier,
+      direction,
+      fallbackLookupNode,
+    );
+    if (fallbackMode !== null) {
+      return fallbackMode;
+    }
   }
   if (
     ctx.semantics.valueBindingInScope(helperIdentifier, scopeNode) ||

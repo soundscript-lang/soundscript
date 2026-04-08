@@ -990,11 +990,6 @@ export interface MacroSemanticsView {
   undefinedType(): MacroType;
   valueBindingPromiseLikeInScope(name: string, node?: MacroSyntaxNode): boolean;
   valueBindingCallableInScope(name: string, node?: MacroSyntaxNode): boolean;
-  valueBindingHelperModeInScope(
-    name: string,
-    direction: 'decode' | 'encode',
-    node?: MacroSyntaxNode,
-  ): 'async' | 'sync' | null;
   valueBindingTypeInScope(name: string, node?: MacroSyntaxNode): MacroType | null;
   valueBindingInScope(name: string, node?: MacroSyntaxNode): boolean;
   writeSet(node: ExprSyntax | BlockSyntax): MacroDependencySet;

@@ -410,11 +410,6 @@ function createUnsupportedAdvancedContext(
           'This macro requires semantic queries, but no prepared program was available.',
         );
       },
-      valueBindingHelperModeInScope() {
-        throw new Error(
-          'This macro requires semantic queries, but no prepared program was available.',
-        );
-      },
       valueBindingPromiseLikeInScope() {
         throw new Error(
           'This macro requires semantic queries, but no prepared program was available.',
