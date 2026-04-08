@@ -42,6 +42,7 @@ import {
   effectSummaryHasUnknown,
   effectUnknownReasonsEqual,
   getEffectSummaryUnknownReasons,
+  getEffectSummaryUnknownReasonsForSignature,
   hasUnknownEffectReasons,
   mergeEffectUnknownReasons,
 } from './effects/unknown.ts';
@@ -998,7 +999,7 @@ function getSummaryForSignatures(
     effects = normalizeEffectNames([...effects, ...summary.directEffects]);
     unknownReasons = mergeEffectUnknownReasons(
       unknownReasons,
-      getEffectSummaryUnknownReasons(summary),
+      getEffectSummaryUnknownReasonsForSignature(context, signature, summary),
     );
   }
 
@@ -1011,7 +1012,13 @@ function getSummaryForCallableExpression(
 ): EffectComposition | undefined {
   if (ts.isArrowFunction(expression) || ts.isFunctionExpression(expression)) {
     const summary = getEffectSummaryForDeclaration(context, expression);
-    return createEffectComposition(summary.directEffects, getEffectSummaryUnknownReasons(summary));
+    const signature = context.checker.getSignatureFromDeclaration(expression);
+    return createEffectComposition(
+      summary.directEffects,
+      signature
+        ? getEffectSummaryUnknownReasonsForSignature(context, signature, summary)
+        : getEffectSummaryUnknownReasons(summary),
+    );
   }
 
   const type = context.checker.getTypeAtLocation(expression);
@@ -1047,7 +1054,13 @@ function getSummaryForObjectLiteralMember(
     if (ts.isMethodDeclaration(property)) {
       if (property.name && getObjectLiteralPropertyName(property.name) === memberName) {
         const summary = getEffectSummaryForDeclaration(context, property);
-        return createEffectComposition(summary.directEffects, getEffectSummaryUnknownReasons(summary));
+        const signature = context.checker.getSignatureFromDeclaration(property);
+        return createEffectComposition(
+          summary.directEffects,
+          signature
+            ? getEffectSummaryUnknownReasonsForSignature(context, signature, summary)
+            : getEffectSummaryUnknownReasons(summary),
+        );
       }
       continue;
     }

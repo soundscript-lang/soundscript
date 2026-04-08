@@ -1,8 +1,14 @@
 import ts from 'typescript';
 
-import type { EffectNameFact, EffectSummaryFact, EffectUnknownReasonFact, PublicEffectName } from '../engine/types.ts';
+import type {
+  AnalysisContext,
+  EffectNameFact,
+  EffectSummaryFact,
+  EffectUnknownReasonFact,
+  PublicEffectName,
+} from '../engine/types.ts';
 import { subtractEffectSet, effectSetsOverlap } from './names.ts';
-import { effectSummaryHasUnknown, getEffectSummaryUnknownReasons } from './unknown.ts';
+import { effectSummaryHasUnknown, getEffectSummaryUnknownReasonsForSignature } from './unknown.ts';
 
 export interface CallableEffectContractMismatch {
   forbiddenEffects: readonly EffectNameFact[];
@@ -12,6 +18,7 @@ export interface CallableEffectContractMismatch {
 }
 
 export function classifyCallableEffectContractMismatch(
+  context: AnalysisContext,
   sourceSummary: EffectSummaryFact | undefined,
   targetSummary: EffectSummaryFact | undefined,
   sourceSignature: ts.Signature,
@@ -27,7 +34,9 @@ export function classifyCallableEffectContractMismatch(
     return {
       forbiddenEffects: targetForbidEffects,
       kind: 'outer',
-      unknownReasons: sourceSummary ? getEffectSummaryUnknownReasons(sourceSummary) : undefined,
+      unknownReasons: sourceSummary
+        ? getEffectSummaryUnknownReasonsForSignature(context, sourceSignature, sourceSummary)
+        : undefined,
     };
   }
 

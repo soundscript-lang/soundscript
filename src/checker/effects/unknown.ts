@@ -1,4 +1,7 @@
+import ts from 'typescript';
+
 import type {
+  AnalysisContext,
   EffectForwardedParameterFact,
   EffectSummaryFact,
   EffectUnknownReasonFact,
@@ -63,6 +66,63 @@ function formatForwardedParameterLabel(
     : `<param ${forwardedParameter.parameterIndex + 1}>`;
 }
 
+function getUnresolvedForwardedStepForType(
+  context: AnalysisContext,
+  location: ts.Node,
+  currentType: ts.Type,
+  memberPath: readonly string[],
+): string | undefined {
+  if (memberPath.length === 0) {
+    return undefined;
+  }
+
+  for (let index = 0; index < memberPath.length; index += 1) {
+    const step = memberPath[index]!;
+    const property = currentType.getProperty(step);
+    if (!property) {
+      return step;
+    }
+    const isOptionalProperty = (property.flags & ts.SymbolFlags.Optional) !== 0;
+    if (isOptionalProperty) {
+      return index === memberPath.length - 1 ? step : memberPath[index + 1]!;
+    }
+    const memberType = context.checker.getTypeOfSymbolAtLocation(property, location);
+    if (index === memberPath.length - 1) {
+      const callSignatures = context.checker.getSignaturesOfType(memberType, ts.SignatureKind.Call);
+      const constructSignatures = context.checker.getSignaturesOfType(
+        memberType,
+        ts.SignatureKind.Construct,
+      );
+      return callSignatures.length === 0 && constructSignatures.length === 0 ? step : undefined;
+    }
+    currentType = memberType;
+  }
+
+  return undefined;
+}
+
+function formatForwardedParameterDetailForSignature(
+  context: AnalysisContext,
+  signature: ts.Signature,
+  forwardedParameter: EffectForwardedParameterFact,
+): string | undefined {
+  const label = formatForwardedParameterLabel(forwardedParameter);
+  const parameterSymbol = signature.getParameters()[forwardedParameter.parameterIndex];
+  const location = parameterSymbol?.valueDeclaration ?? signature.getDeclaration();
+  if (!parameterSymbol || !location) {
+    return label;
+  }
+
+  const parameterType = context.checker.getTypeOfSymbolAtLocation(parameterSymbol, location);
+  const unresolvedStep = getUnresolvedForwardedStepForType(
+    context,
+    location,
+    parameterType,
+    forwardedParameter.memberPath,
+  );
+  return unresolvedStep && label ? `${label}; failed at ${unresolvedStep}` : label;
+}
+
 export function unknownReasonsForForwardedParameters(
   forwardedParameters: readonly EffectForwardedParameterFact[],
 ): readonly EffectUnknownReasonFact[] {
@@ -76,12 +136,38 @@ export function unknownReasonsForForwardedParameters(
     );
 }
 
+export function unknownReasonsForForwardedParametersAtSignature(
+  context: AnalysisContext,
+  signature: ts.Signature,
+  forwardedParameters: readonly EffectForwardedParameterFact[],
+): readonly EffectUnknownReasonFact[] {
+  return forwardedParameters.length === 0
+    ? []
+    : forwardedParameters.map((forwardedParameter) =>
+      createEffectUnknownReason(
+        'unresolvedForwardedCallback',
+        formatForwardedParameterDetailForSignature(context, signature, forwardedParameter),
+      )
+    );
+}
+
 export function getEffectSummaryUnknownReasons(
   summary: EffectSummaryFact,
 ): readonly EffectUnknownReasonFact[] {
   return mergeEffectUnknownReasons(
     summary.unknownDirectReasons,
     unknownReasonsForForwardedParameters(summary.forwardedParameters),
+  );
+}
+
+export function getEffectSummaryUnknownReasonsForSignature(
+  context: AnalysisContext,
+  signature: ts.Signature,
+  summary: EffectSummaryFact,
+): readonly EffectUnknownReasonFact[] {
+  return mergeEffectUnknownReasons(
+    summary.unknownDirectReasons,
+    unknownReasonsForForwardedParametersAtSignature(context, signature, summary.forwardedParameters),
   );
 }
 

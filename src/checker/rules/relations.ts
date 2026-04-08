@@ -386,6 +386,7 @@ function classifyUnsoundCallableEffectContractRelation(
   const sourceSummary = getEffectSummaryForSignature(context, sourceSignature);
   const targetSummary = getEffectSummaryForSignature(context, targetSignature);
   const mismatch = classifyCallableEffectContractMismatch(
+    context,
     sourceSummary,
     targetSummary,
     sourceSignature,

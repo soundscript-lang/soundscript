@@ -5291,6 +5291,51 @@ Deno.test('analyzeProject rejects bodyful forbid contracts with unresolved forwa
   );
 });
 
+Deno.test('analyzeProject reports failing forwarded member steps in bodyful forbid diagnostics', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/index.sts': [
+      'interface Decoder<T> {',
+      '  readonly decode: (value: number) => T;',
+      '}',
+      '',
+      'interface DecoderWithOptionalInner<T> extends Decoder<T> {',
+      '  readonly inner?: Decoder<T>;',
+      '}',
+      '',
+      '// #[effects(forbid: [fails], forward: [decoder.inner.decode])]',
+      'function use(decoder: DecoderWithOptionalInner<number>, value: number): number {',
+      '  return value;',
+      '}',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1040']);
+  assertEquals(result.diagnostics[0]?.metadata?.primarySymbol, 'use');
+  assertEquals(
+    result.diagnostics[0]?.metadata?.evidence?.find((entry) => entry.label === 'unknownEffectReasons')?.value,
+    'unresolved forwarded callback (decoder.inner.decode; failed at decode)',
+  );
+});
+
 Deno.test('analyzeProject accepts open dotted effects and forward transforms', async () => {
   const tempDirectory = await createTempProject({
     'tsconfig.json': JSON.stringify(
@@ -7483,7 +7528,7 @@ Deno.test('analyzeProject reports unknown forwarded effects in callable relation
   assertEquals(
     result.diagnostics[0]?.metadata?.evidence?.find((entry) => entry.label === 'unknownEffectReasons')
       ?.value,
-    'unresolved forwarded callback (decoder.inner.decode)',
+    'unresolved forwarded callback (decoder.inner.decode; failed at decode)',
   );
 });
 

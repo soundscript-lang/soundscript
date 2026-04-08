@@ -31,6 +31,7 @@ import {
   effectSummaryHasUnknown,
   formatEffectUnknownReasons,
   getEffectSummaryUnknownReasons,
+  getEffectSummaryUnknownReasonsForSignature,
 } from '../effects/unknown.ts';
 
 type EffectViolationContext =
@@ -233,6 +234,7 @@ function classifyCallableRelationViolation(
         const sourceSummary = getEffectSummaryForSignature(context, sourceSignature);
         const targetSummary = getEffectSummaryForSignature(context, targetSignature);
         const mismatch = classifyCallableEffectContractMismatch(
+          context,
           sourceSummary,
           targetSummary,
           sourceSignature,
@@ -323,7 +325,11 @@ export function runEffectRules(context: AnalysisContext): SoundDiagnostic[] {
               primarySymbol: getEffectContractName(node),
               forbiddenEffects: summary.forbidEffects,
               unknownReasons: effectSummaryHasUnknown(summary)
-                ? getEffectSummaryUnknownReasons(summary)
+                ? getEffectSummaryUnknownReasonsForSignature(
+                  context,
+                  context.checker.getSignatureFromDeclaration(node)!,
+                  summary,
+                )
                 : undefined,
             }),
           );
