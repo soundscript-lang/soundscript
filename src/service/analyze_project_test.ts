@@ -281,6 +281,849 @@ Deno.test('analyzeProject allows WeakMap and WeakSet on js-node but rejects them
   ]);
 });
 
+Deno.test('analyzeProject keeps bundled node typings explicit for js-node projects', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/index.sts': [
+      "import { join } from 'node:path';",
+      '',
+      'const cwd: string = process.cwd();',
+      "const path: string = join(cwd, 'dist');",
+      'void path;',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    target: 'js-node',
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['TS2307', 'TS2580']);
+});
+
+Deno.test('analyzeProject resolves bundled node typings when compilerOptions.types requests node', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+          types: ['node'],
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/index.sts': [
+      "import { join } from 'node:path';",
+      '',
+      'const cwd: string = process.cwd();',
+      "const path: string = join(cwd, 'dist');",
+      "const bytes: Uint8Array<ArrayBuffer> = Buffer.from('sound');",
+      'void path;',
+      'void bytes;',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    target: 'js-node',
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics, []);
+});
+
+Deno.test(
+  'analyzeProject resolves the explicit bundled node package across the supported core module slice',
+  async () => {
+    const tempDirectory = await createTempProject({
+      'tsconfig.json': JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+            types: ['node'],
+          },
+          include: ['src/**/*.sts'],
+        },
+        null,
+        2,
+      ),
+      'src/index.sts': [
+        "import { Buffer as NodeBuffer } from 'node:buffer';",
+        "import { spawn } from 'node:child_process';",
+        "import { readdirSync, statSync, watch } from 'node:fs';",
+        "import { readFile } from 'node:fs/promises';",
+        "import { createRequire } from 'node:module';",
+        "import { tmpdir } from 'node:os';",
+        "import nodeProcess from 'node:process';",
+        "import { Readable, Writable } from 'node:stream';",
+        "import { fileURLToPath, pathToFileURL } from 'node:url';",
+        "import { createContext, Script } from 'node:vm';",
+        '',
+        'const cwd: string = nodeProcess.cwd();',
+        'const entries = readdirSync(cwd, { withFileTypes: true });',
+        'const fileEntry = entries.find((entry) => entry.isFile()) ?? null;',
+        'void fileEntry;',
+        'const stats = statSync(cwd);',
+        'const isDirectory: boolean = stats.isDirectory();',
+        'void isDirectory;',
+        'const watcher = watch(cwd, (_eventType, fileName) => {',
+        "  if (typeof fileName === 'string') {",
+        '    const text: string = fileName;',
+        '    void text;',
+        '  }',
+        '});',
+        "watcher.on('error', (_error) => {});",
+        "const child = spawn(nodeProcess.execPath, [], { stdio: ['ignore', 'pipe', 'pipe'] });",
+        "child.stdout?.setEncoding('utf8');",
+        "child.stdout?.on('data', (chunk: unknown) => {",
+        "  if (typeof chunk === 'string') {",
+        '    const text: string = chunk;',
+        '    void text;',
+        '  }',
+        '});',
+        "child.on('close', (_code) => {});",
+        'const fileUrl = pathToFileURL(tmpdir());',
+        'const filePath: string = fileURLToPath(fileUrl);',
+        'const require = createRequire(pathToFileURL(filePath));',
+        "const resolved: string = require.resolve('node:path');",
+        'void resolved;',
+        'const bytes: Buffer = NodeBuffer.alloc(4);',
+        'void bytes;',
+        'const webReadable: ReadableStream<Uint8Array> = Readable.toWeb(nodeProcess.stdin);',
+        'const webWritable: WritableStream<Uint8Array> = Writable.toWeb(nodeProcess.stdout);',
+        'void webReadable;',
+        'void webWritable;',
+        'const context = createContext({ answer: 42 });',
+        "const scriptResult: unknown = new Script('globalThis.answer').runInContext(context);",
+        'void scriptResult;',
+        'async function loadText(): Promise<void> {',
+        "  const text: string = await readFile(filePath, 'utf8');",
+        '  const binary: Buffer = await readFile(fileUrl);',
+        '  void text;',
+        '  void binary;',
+        '}',
+        'void loadText;',
+        '',
+      ].join('\n'),
+    });
+
+    const result = await analyzeProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      target: 'js-node',
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.diagnostics, []);
+  },
+);
+
+Deno.test(
+  'analyzeProject resolves a common explicit node ecosystem slice',
+  async () => {
+    const tempDirectory = await createTempProject({
+      'tsconfig.json': JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+            types: ['node'],
+          },
+          include: ['src/**/*.sts'],
+        },
+        null,
+        2,
+      ),
+      'src/index.sts': [
+        "import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual, webcrypto } from 'node:crypto';",
+        "import { EventEmitter } from 'node:events';",
+        "import { clearImmediate, clearTimeout, setImmediate, setTimeout } from 'node:timers';",
+        "import { setImmediate as waitImmediate, setTimeout as waitTimeout } from 'node:timers/promises';",
+        "import { inspect, promisify } from 'node:util';",
+        '',
+        'type Events = {',
+        '  close: readonly [];',
+        '  data: readonly [Buffer];',
+        '};',
+        '',
+        'const emitter = new EventEmitter<Events>();',
+        'const onData = (...args: readonly unknown[]): void => {',
+        '  const [chunk] = args;',
+        '  if (Buffer.isBuffer(chunk)) {',
+        '    const bytes: Buffer = chunk;',
+        '    void bytes;',
+        '  }',
+        '};',
+        "emitter.on('data', onData);",
+        "const fired: boolean = emitter.emit('close');",
+        'void fired;',
+        'const payload: Buffer = randomBytes(16);',
+        'const id: string = randomUUID();',
+        "const hashHex: string = createHash('sha256').update(payload).digest('hex');",
+        "const macBytes: Buffer = createHmac('sha256', payload).update(id).digest();",
+        'const equal: boolean = timingSafeEqual(payload, randomBytes(16));',
+        'const inspected: string = inspect({ equal, hashHex, id }, { depth: 2 });',
+        'void macBytes;',
+        'void inspected;',
+        'const makePromise: typeof promisify = promisify;',
+        'void makePromise;',
+        '',
+        'async function run(): Promise<void> {',
+        '  const timer = setTimeout(() => {}, 1);',
+        '  clearTimeout(timer);',
+        '  const immediate = setImmediate(() => {});',
+        '  clearImmediate(immediate);',
+        "  const waited: string = await waitTimeout(1, 'sound');",
+        "  const immediateValue: string = await waitImmediate('ready');",
+        '  const subtle: typeof webcrypto.subtle = webcrypto.subtle;',
+        '  void waited;',
+        '  void immediateValue;',
+        '  void subtle;',
+        '}',
+        'void run;',
+        '',
+      ].join('\n'),
+    });
+
+    const result = await analyzeProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      target: 'js-node',
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.diagnostics, []);
+  },
+);
+
+Deno.test(
+  'analyzeProject resolves explicit node networking and assertion modules',
+  async () => {
+    const tempDirectory = await createTempProject({
+      'tsconfig.json': JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+            types: ['node'],
+          },
+          include: ['src/**/*.sts'],
+        },
+        null,
+        2,
+      ),
+      'src/index.sts': [
+        "import assert from 'node:assert/strict';",
+        "import { Readable, Writable } from 'node:stream';",
+        "import { finished, pipeline } from 'node:stream/promises';",
+        "import { createServer, get, request } from 'node:http';",
+        "import { Agent, get as httpsGet, request as httpsRequest } from 'node:https';",
+        '',
+        "assert.equal('sound', 'sound');",
+        'assert.ok(true);',
+        '',
+        'const readable = new Readable();',
+        'const writable = new Writable();',
+        'const pipePromise: Promise<void> = pipeline(readable, writable);',
+        'const finishPromise: Promise<void> = finished(writable);',
+        'void pipePromise;',
+        'void finishPromise;',
+        '',
+        'const server = createServer((req, res) => {',
+        '  const method: string | undefined = req.method;',
+        "  const host: string | undefined = req.headers['host'];",
+        '  void method;',
+        '  void host;',
+        '  res.statusCode = 200;',
+        "  res.setHeader('content-type', 'text/plain');",
+        "  res.end('ok');",
+        '});',
+        'server.listen(8080);',
+        'server.close();',
+        '',
+        "const req = request('http://example.com', (res) => {",
+        '  const statusCode: number | undefined = res.statusCode;',
+        '  void statusCode;',
+        "  res.on('data', (chunk: unknown) => {",
+        '    void chunk;',
+        '  });',
+        '});',
+        "req.setHeader('accept', 'text/plain');",
+        'req.end();',
+        '',
+        "get('http://example.com', (_res) => {});",
+        '',
+        'const agent = new Agent({ keepAlive: true });',
+        "const secureReq = httpsRequest('https://example.com', { agent }, (_res) => {});",
+        'secureReq.end();',
+        "httpsGet('https://example.com', { agent }, (_res) => {});",
+        '',
+      ].join('\n'),
+    });
+
+    const result = await analyzeProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      target: 'js-node',
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.diagnostics, []);
+  },
+);
+
+Deno.test(
+  'analyzeProject resolves explicit node stream fs and net modules',
+  async () => {
+    const tempDirectory = await createTempProject({
+      'tsconfig.json': JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+            types: ['node'],
+          },
+          include: ['src/**/*.sts'],
+        },
+        null,
+        2,
+      ),
+      'src/index.sts': [
+        "import { createReadStream, createWriteStream } from 'node:fs';",
+        "import { connect, createServer } from 'node:net';",
+        "import { tmpdir } from 'node:os';",
+        "import { join } from 'node:path';",
+        "import { ReadableStream as WebReadableStream, TransformStream as WebTransformStream, WritableStream as WebWritableStream } from 'node:stream/web';",
+        "import { createGunzip, createGzip, gzipSync } from 'node:zlib';",
+        '',
+        "const sourcePath = join(tmpdir(), 'input.txt');",
+        "const targetPath = join(tmpdir(), 'output.txt');",
+        'const reader = createReadStream(sourcePath);',
+        "reader.setEncoding('utf8');",
+        'const onFileData = (chunk: string | Buffer): void => {',
+        '  if (typeof chunk === "string") {',
+        '    const text: string = chunk;',
+        '    void text;',
+        '  }',
+        '};',
+        "reader.on('data', onFileData);",
+        'const writer = createWriteStream(targetPath);',
+        "writer.write('sound');",
+        'writer.end();',
+        '',
+        'const netServer = createServer((socket) => {',
+        "  socket.write('ok');",
+        '  socket.end();',
+        '});',
+        'netServer.listen(8082);',
+        'netServer.close();',
+        "const client = connect(8082, 'localhost');",
+        "client.setEncoding('utf8');",
+        'const onSocketData = (chunk: string | Buffer): void => {',
+        '  if (typeof chunk === "string") {',
+        '    const text: string = chunk;',
+        '    void text;',
+        '  }',
+        '};',
+        "client.on('data', onSocketData);",
+        "client.write('ping');",
+        'client.end();',
+        '',
+        'const gzip = createGzip();',
+        "gzip.write(Buffer.from('sound'));",
+        'gzip.end();',
+        'const gunzip = createGunzip();',
+        "gunzip.write(gzipSync(Buffer.from('sound')));",
+        'gunzip.end();',
+        '',
+        'const webReadable = new WebReadableStream<string>();',
+        'const webWritable = new WebWritableStream<string>();',
+        'const webTransform = new WebTransformStream<string, string>();',
+        'void webReadable;',
+        'void webWritable;',
+        'void webTransform;',
+        '',
+      ].join('\n'),
+    });
+
+    const result = await analyzeProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      target: 'js-node',
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.diagnostics, []);
+  },
+);
+
+Deno.test(
+  'analyzeProject resolves explicit node cli and utility modules',
+  async () => {
+    const tempDirectory = await createTempProject({
+      'tsconfig.json': JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+            types: ['node'],
+          },
+          include: ['src/**/*.sts'],
+        },
+        null,
+        2,
+      ),
+      'src/index.sts': [
+        "import { Console } from 'node:console';",
+        "import { lookup } from 'node:dns/promises';",
+        "import { performance } from 'node:perf_hooks';",
+        "import process from 'node:process';",
+        "import { createInterface } from 'node:readline/promises';",
+        "import { isatty } from 'node:tty';",
+        '',
+        'const logger = new Console({ stdout: process.stdout, stderr: process.stderr });',
+        "logger.log('sound');",
+        '',
+        'const started: number = performance.now();',
+        'void started;',
+        'const ttyState: boolean = isatty(1);',
+        'void ttyState;',
+        '',
+        'const lookupPromise = lookup("localhost");',
+        'const onLookup = (result: unknown): void => {',
+        '  void result;',
+        '};',
+        'void lookupPromise.then(onLookup);',
+        '',
+        'const prompt = createInterface({ input: process.stdin, output: process.stdout });',
+        'const questionPromise: Promise<string> = prompt.question("> ");',
+        'void questionPromise;',
+        'prompt.close();',
+        '',
+      ].join('\n'),
+    });
+
+    const result = await analyzeProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      target: 'js-node',
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.diagnostics, []);
+  },
+);
+
+Deno.test(
+  'analyzeProject resolves explicit node worker and query utility modules',
+  async () => {
+    const tempDirectory = await createTempProject({
+      'tsconfig.json': JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+            types: ['node'],
+          },
+          include: ['src/**/*.sts'],
+        },
+        null,
+        2,
+      ),
+      'src/index.sts': [
+        "import { parse, stringify } from 'node:querystring';",
+        "import { StringDecoder } from 'node:string_decoder';",
+        "import { isArrayBufferView, isDate, isPromise } from 'node:util/types';",
+        "import { Worker, isMainThread, parentPort, threadId } from 'node:worker_threads';",
+        '',
+        "const query = stringify({ first: 'sound', second: ['one', 'two'] });",
+        'const parsed = parse(query);',
+        'const first = parsed["first"];',
+        'void first;',
+        '',
+        "const decoder = new StringDecoder('utf8');",
+        "const decoded: string = decoder.write(Buffer.from('sound'));",
+        'void decoded;',
+        '',
+        'const bufferViewState: boolean = isArrayBufferView(new Uint8Array());',
+        'const dateState: boolean = isDate(new Date());',
+        'const promiseState: boolean = isPromise(Promise.resolve(1));',
+        'void bufferViewState;',
+        'void dateState;',
+        'void promiseState;',
+        '',
+        "const worker = new Worker(new URL('file:///tmp/worker.js'));",
+        "worker.postMessage({ kind: 'sound' });",
+        'const workerId: number = worker.threadId;',
+        'void workerId;',
+        'const terminatePromise: Promise<number> = worker.terminate();',
+        'void terminatePromise;',
+        'const mainThreadState: boolean = isMainThread;',
+        'void mainThreadState;',
+        'void parentPort;',
+        'const currentThreadId: number = threadId;',
+        'void currentThreadId;',
+        '',
+      ].join('\n'),
+    });
+
+    const result = await analyzeProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      target: 'js-node',
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.diagnostics, []);
+  },
+);
+
+Deno.test(
+  'analyzeProject resolves explicit node async hooks and secure transport modules',
+  async () => {
+    const tempDirectory = await createTempProject({
+      'tsconfig.json': JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+            types: ['node'],
+          },
+          include: ['src/**/*.sts'],
+        },
+        null,
+        2,
+      ),
+      'src/index.sts': [
+        "import { AsyncLocalStorage } from 'node:async_hooks';",
+        "import { connect as connectHttp2, constants, createServer as createHttp2Server } from 'node:http2';",
+        "import { connect as connectTls, createServer as createTlsServer } from 'node:tls';",
+        '',
+        'const storage = new AsyncLocalStorage<{ readonly requestId: string }>();',
+        "storage.run({ requestId: 'req-1' }, () => {",
+        '  const store = storage.getStore();',
+        '  void store;',
+        '});',
+        "storage.enterWith({ requestId: 'req-2' });",
+        'storage.disable();',
+        '',
+        "const tlsServer = createTlsServer({ ALPNProtocols: ['h2'] }, (socket) => {",
+        "  socket.setEncoding('utf8');",
+        "  socket.write('ok');",
+        '  socket.end();',
+        '});',
+        'tlsServer.listen(8443);',
+        'tlsServer.close();',
+        "const tlsSocket = connectTls({ host: 'localhost', port: 8443 });",
+        "tlsSocket.setEncoding('utf8');",
+        "tlsSocket.write('ping');",
+        'tlsSocket.end();',
+        '',
+        'const h2Server = createHttp2Server();',
+        "h2Server.on('stream', (stream, headers) => {",
+        "  const method = headers[':method'];",
+        '  void method;',
+        "  stream.respond({ ':status': 200, 'content-type': 'text/plain' });",
+        "  stream.end('ok');",
+        '});',
+        'h2Server.listen(8444);',
+        'h2Server.close();',
+        "const h2Session = connectHttp2('https://example.com');",
+        "const h2Request = h2Session.request({ ':path': '/' });",
+        'h2Request.end();',
+        'h2Session.close();',
+        'const okStatus: number = constants.HTTP_STATUS_OK;',
+        'void okStatus;',
+        '',
+      ].join('\n'),
+    });
+
+    const result = await analyzeProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      target: 'js-node',
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.diagnostics, []);
+  },
+);
+
+Deno.test(
+  'analyzeProject resolves explicit node test and assert modules',
+  async () => {
+    const tempDirectory = await createTempProject({
+      'tsconfig.json': JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+            types: ['node'],
+          },
+          include: ['src/**/*.sts'],
+        },
+        null,
+        2,
+      ),
+      'src/index.sts': [
+        "import assert from 'node:assert';",
+        "import { after, afterEach, before, beforeEach, describe, it, test } from 'node:test';",
+        '',
+        'let counter = 0;',
+        'before(() => {',
+        '  counter = 1;',
+        '});',
+        'beforeEach(() => {',
+        '  counter += 1;',
+        '});',
+        'afterEach(() => {',
+        '  counter -= 1;',
+        '});',
+        'after(() => {',
+        '  counter = 0;',
+        '});',
+        '',
+        "const rootTest: Promise<void> = test('root', (t) => {",
+        '  const name: string = t.name;',
+        '  void name;',
+        '  assert.ok(counter >= 0);',
+        "  assert.strict.equal('sound', 'sound');",
+        '});',
+        'void rootTest;',
+        '',
+        "const suite: Promise<void> = describe('suite', () => {",
+        "  return it('case', (t) => {",
+        '    const name: string = t.name;',
+        '    void name;',
+        '    assert.strictEqual(counter >= 0, true);',
+        '  });',
+        '});',
+        'void suite;',
+        '',
+      ].join('\n'),
+    });
+
+    const result = await analyzeProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      target: 'js-node',
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.diagnostics, []);
+  },
+);
+
+Deno.test(
+  'analyzeProject resolves explicit node path stream-consumer and reporter modules',
+  async () => {
+    const tempDirectory = await createTempProject({
+      'tsconfig.json': JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+            types: ['node'],
+          },
+          include: ['src/**/*.sts'],
+        },
+        null,
+        2,
+      ),
+      'src/index.sts': [
+        "import { join as joinPosix } from 'node:path/posix';",
+        "import { join as joinWin32 } from 'node:path/win32';",
+        "import { text } from 'node:stream/consumers';",
+        "import { spec, tap } from 'node:test/reporters';",
+        "import { Readable } from 'node:stream';",
+        '',
+        "const posixPath: string = joinPosix('/tmp', 'sound');",
+        "const winPath: string = joinWin32('C:\\\\', 'sound');",
+        'void posixPath;',
+        'void winPath;',
+        '',
+        'const readable = new Readable();',
+        'const textPromise: Promise<string> = text(readable);',
+        'void textPromise;',
+        '',
+        'const specReporter = spec();',
+        'const tapReporter = tap((async function* (): AsyncGenerator<import("node:test/reporters").TestEvent, void> {})());',
+        'void specReporter;',
+        'void tapReporter;',
+        '',
+      ].join('\n'),
+    });
+
+    const result = await analyzeProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      target: 'js-node',
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.diagnostics, []);
+  },
+);
+
+Deno.test(
+  'analyzeProject resolves explicit node runtime and tracing modules',
+  async () => {
+    const tempDirectory = await createTempProject({
+      'tsconfig.json': JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+            types: ['node'],
+          },
+          include: ['src/**/*.sts'],
+        },
+        null,
+        2,
+      ),
+      'src/index.sts': [
+        "import * as constants from 'node:constants';",
+        "import cluster from 'node:cluster';",
+        "import { channel } from 'node:diagnostics_channel';",
+        "import { createSocket } from 'node:dgram';",
+        "import { createTracing } from 'node:trace_events';",
+        '',
+        'const e2big: number = constants.E2BIG;',
+        'void e2big;',
+        "cluster.setupPrimary({ exec: 'worker.js' });",
+        'const primaryState: boolean = cluster.isPrimary;',
+        'void primaryState;',
+        '',
+        "const diagnosticsChannel = channel('soundscript');",
+        "diagnosticsChannel.publish({ kind: 'sound' });",
+        '',
+        "const socket = createSocket('udp4');",
+        "socket.send(Buffer.from('sound'), 8080, '127.0.0.1');",
+        'socket.close();',
+        '',
+        "const tracing = createTracing({ categories: ['node'] });",
+        'tracing.enable();',
+        'tracing.disable();',
+        '',
+      ].join('\n'),
+    });
+
+    const result = await analyzeProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      target: 'js-node',
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.diagnostics, []);
+  },
+);
+
+Deno.test(
+  'analyzeProject resolves explicit node introspection and specialized modules',
+  async () => {
+    const tempDirectory = await createTempProject({
+      'tsconfig.json': JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+            types: ['node'],
+          },
+          include: ['src/**/*.sts'],
+        },
+        null,
+        2,
+      ),
+      'src/index.sts': [
+        "import { create } from 'node:domain';",
+        "import * as inspector from 'node:inspector';",
+        "import { Session as InspectorSession } from 'node:inspector/promises';",
+        "import { toASCII, toUnicode } from 'node:punycode';",
+        "import { start as startRepl } from 'node:repl';",
+        "import { getAssetKeys, isSea } from 'node:sea';",
+        "import { DatabaseSync } from 'node:sqlite';",
+        "import { getHeapStatistics } from 'node:v8';",
+        "import { WASI } from 'node:wasi';",
+        '',
+        'const domain = create();',
+        'domain.run(() => {});',
+        '',
+        'const session = new inspector.Session();',
+        'session.connect();',
+        'session.disconnect();',
+        'const promiseSession = new InspectorSession();',
+        'void promiseSession;',
+        '',
+        "const ascii: string = toASCII('mañana.com');",
+        "const unicode: string = toUnicode('xn--maana-pta.com');",
+        'void ascii;',
+        'void unicode;',
+        '',
+        "const replServer = startRepl({ prompt: '> ' });",
+        'replServer.close();',
+        '',
+        'const seaState: boolean = isSea();',
+        'const assetKeys: string[] = getAssetKeys();',
+        'void seaState;',
+        'void assetKeys;',
+        '',
+        "const database = new DatabaseSync(':memory:');",
+        "database.exec('CREATE TABLE sound (id INTEGER)');",
+        'database.close();',
+        '',
+        'const heapStats = getHeapStatistics();',
+        'void heapStats;',
+        '',
+        "const wasi = new WASI({ version: 'preview1' });",
+        'void wasi;',
+        '',
+      ].join('\n'),
+    });
+
+    const result = await analyzeProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      target: 'js-node',
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.diagnostics, []);
+  },
+);
+
 Deno.test('analyzeProject rejects authored PromiseLike carriers in sound source', async () => {
   const tempDirectory = await createTempProject({
     'tsconfig.json': JSON.stringify(
@@ -350,7 +1193,9 @@ Deno.test('analyzeProject reports actionable guidance for unsupported async surf
 
   const diagnostic = result.diagnostics.find((entry) =>
     entry.code === 'SOUND1034' &&
-    entry.metadata?.evidence?.some((fact) => fact.label === 'surfaceText' && fact.value === 'Thenable<number>')
+    entry.metadata?.evidence?.some((fact) =>
+      fact.label === 'surfaceText' && fact.value === 'Thenable<number>'
+    )
   );
   assertEquals(diagnostic?.code, 'SOUND1034');
   assertEquals(diagnostic?.metadata?.rule, 'unsupported_async_surface');
@@ -970,7 +1815,7 @@ Deno.test('analyzeProject accepts installed stdlib json package subpath imports'
     'src/index.sts': [
       "import { parseJson, stringifyJson } from '@soundscript/soundscript/json';",
       '',
-      "const parsed = parseJson('{\"ok\": true}');",
+      'const parsed = parseJson(\'{"ok": true}\');',
       'const text = stringifyJson({ ok: true });',
       'void parsed;',
       'void text;',
@@ -1691,7 +2536,11 @@ Deno.test('analyzeProject reports actionable guidance for invalid extern annotat
   assertEquals(result.diagnostics[0]?.metadata?.fixability, 'local_rewrite');
   assertEquals(
     result.diagnostics[0]?.metadata?.evidence?.map((fact) => `${fact.label}:${fact.value}`),
-    ['annotationName:extern', 'expectedTarget:local ambient runtime declaration', 'actualTarget:variable declaration'],
+    [
+      'annotationName:extern',
+      'expectedTarget:local ambient runtime declaration',
+      'actualTarget:variable declaration',
+    ],
   );
   assertEquals(
     result.diagnostics[0]?.metadata?.counterexample,
@@ -1852,7 +2701,10 @@ Deno.test('analyzeProject reports actionable guidance for unsupported annotation
   assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1028']);
   assertEquals(result.diagnostics[0]?.metadata?.rule, 'annotation_arguments_not_supported');
   assertEquals(result.diagnostics[0]?.metadata?.primarySymbol, '#[extern]');
-  assertEquals(result.diagnostics[0]?.metadata?.replacementFamily, 'supported_annotation_arguments');
+  assertEquals(
+    result.diagnostics[0]?.metadata?.replacementFamily,
+    'supported_annotation_arguments',
+  );
   assertEquals(result.diagnostics[0]?.metadata?.fixability, 'local_rewrite');
   assertEquals(
     result.diagnostics[0]?.metadata?.evidence?.map((fact) => `${fact.label}:${fact.value}`),
@@ -2939,12 +3791,12 @@ Deno.test(
         2,
       ),
       'src/index.sts': [
-      'type Step =',
-      '  | { key: string; output: Record<string, string>; type: "noop" }',
-      '  | { config: Record<string, string>; key: string; type: "node" };',
-      '',
-      '// #[extern]',
-      'declare function readRecord(): Record<string, string> | undefined;',
+        'type Step =',
+        '  | { key: string; output: Record<string, string>; type: "noop" }',
+        '  | { config: Record<string, string>; key: string; type: "node" };',
+        '',
+        '// #[extern]',
+        'declare function readRecord(): Record<string, string> | undefined;',
         '',
         'function buildStep(kind: "node" | "noop", key: string): Step {',
         '  if (kind === "noop") {',
@@ -2994,19 +3846,19 @@ Deno.test(
         2,
       ),
       'src/index.sts': [
-      'type LocalJsonValue =',
-      '  | null',
-      '  | string',
-      '  | { [key: string]: LocalJsonValue };',
-      '',
-      '// #[extern]',
-      'declare function readMetadata(): Record<string, LocalJsonValue> | undefined;',
-      '',
-      'function buildStep(): Record<string, LocalJsonValue> {',
-      '  return {',
+        'type LocalJsonValue =',
+        '  | null',
+        '  | string',
+        '  | { [key: string]: LocalJsonValue };',
+        '',
+        '// #[extern]',
+        'declare function readMetadata(): Record<string, LocalJsonValue> | undefined;',
+        '',
+        'function buildStep(): Record<string, LocalJsonValue> {',
+        '  return {',
         '    metadata: readMetadata() ?? {},',
         '    type: "noop",',
-      '  };',
+        '  };',
         '}',
         '',
         'void buildStep;',
@@ -3360,7 +4212,36 @@ Deno.test('analyzeProject preserves unknown annotation namespaces and their nest
     workingDirectory: tempDirectory,
   });
 
-  assertEquals(result.diagnostics, []);
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1007']);
+  assertEquals(
+    result.diagnostics[0]?.message,
+    'Unknown soundscript annotation. `#[eq]` is not registered.',
+  );
+  assertEquals(result.diagnostics[0]?.metadata?.rule, 'unknown_annotation');
+  assertEquals(result.diagnostics[0]?.metadata?.primarySymbol, '#[eq]');
+  assertEquals(result.diagnostics[0]?.metadata?.replacementFamily, 'registered_annotation_name');
+  assertEquals(result.diagnostics[0]?.metadata?.fixability, 'local_rewrite');
+  assertEquals(
+    result.diagnostics[0]?.metadata?.evidence?.map((fact) => `${fact.label}:${fact.value}`),
+    ['annotationName:eq', 'registeredBuiltins:extern, interop, newtype, unsafe, value, variance'],
+  );
+  assertEquals(
+    result.diagnostics[0]?.metadata?.counterexample,
+    'An unknown annotation can look like a checked contract even though soundscript gives it no semantics.',
+  );
+  assertEquals(
+    result.diagnostics[0]?.metadata?.example,
+    'Replace `#[eq]` with a registered builtin annotation such as `#[extern]`, or remove it until that directive exists.',
+  );
+  assertEquals(result.diagnostics[0]?.notes, [
+    '`#[eq]` is not a registered builtin soundscript annotation.',
+    'Registered builtin annotations in v1 are `#[extern]`, `#[interop]`, `#[newtype]`, `#[unsafe]`, `#[value]`, and `#[variance(...)]`.',
+    'Example: Replace `#[eq]` with a registered builtin annotation such as `#[extern]`, or remove it until that directive exists.',
+  ]);
+  assertEquals(
+    result.diagnostics[0]?.hint,
+    'Rename the annotation to a registered builtin, or remove it until that directive exists.',
+  );
 });
 
 Deno.test('analyzeProject gives structured guidance for duplicate annotations in one block', async () => {
@@ -3478,7 +4359,10 @@ Deno.test('analyzeProject explains invalid variance contracts with concrete cont
     result.diagnostics[0]?.metadata?.example,
     'Start with a total contract such as `// #[variance(T: inout, U: inout)]`, then tighten each direction only when the declaration surface proves it.',
   );
-  assertEquals(result.diagnostics[0]?.metadata?.secondarySymbol, '// #[variance(T: inout, U: inout)]');
+  assertEquals(
+    result.diagnostics[0]?.metadata?.secondarySymbol,
+    '// #[variance(T: inout, U: inout)]',
+  );
   assertEquals(result.diagnostics[0]?.notes, [
     '`#[variance(...)]` on `Pair` must mention every type parameter exactly once in a checked total contract.',
     'Contract issue: Variance annotation must mention every type parameter exactly once. Missing: `U`.',
@@ -5157,7 +6041,8 @@ Deno.test(
     const wholePreparedResult = analyzePreparedProject(prepared);
     const fileScopedResult = analyzePreparedProjectForFile(prepared, filePath);
     const sortedFileScopedDiagnostics = [...fileScopedResult.diagnostics].sort((left, right) =>
-      left.code.localeCompare(right.code) || (left.filePath ?? '').localeCompare(right.filePath ?? '')
+      left.code.localeCompare(right.code) ||
+      (left.filePath ?? '').localeCompare(right.filePath ?? '')
     );
 
     const directCodes = directResult.diagnostics.map((diagnostic) => diagnostic.code);
@@ -5794,7 +6679,10 @@ Deno.test('analyzeProject reports nominal class assignment errors on the source 
   assertEquals(result.diagnostics[0]?.message, 'Class instance types are nominal in soundscript.');
   assertEquals(result.diagnostics[0]?.metadata?.rule, 'nominal_class_relation');
   assertEquals(result.diagnostics[0]?.metadata?.primarySymbol, 'C');
-  assertEquals(result.diagnostics[0]?.metadata?.replacementFamily, 'structural_interface_projection');
+  assertEquals(
+    result.diagnostics[0]?.metadata?.replacementFamily,
+    'structural_interface_projection',
+  );
   assertEquals(result.diagnostics[0]?.metadata?.fixability, 'local_rewrite');
   assertEquals(
     result.diagnostics[0]?.metadata?.evidence?.map((fact) => `${fact.label}:${fact.value}`),
@@ -6691,7 +7579,9 @@ Deno.test(
 for (const mode of VALUE_MODES) {
   for (const route of VALUE_ROUTES) {
     Deno.test(
-      `analyzeProject accepts valid ${getValueModeSlug(mode)} #[value] routes through ${getValueRouteSlug(route)}`,
+      `analyzeProject accepts valid ${getValueModeSlug(mode)} #[value] routes through ${
+        getValueRouteSlug(route)
+      }`,
       async () => {
         const program = prefixValueMatrixProgram(createValueRouteProgram(mode, route), 'src');
         const tempDirectory = await createValueAnalysisProject(program.files);

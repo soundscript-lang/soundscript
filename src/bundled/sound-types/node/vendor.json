@@ -1,0 +1,12 @@
+{
+  "nodeMajor": 24,
+  "nodeTypesVersion": "24.12.2",
+  "undiciTypesVersion": "7.16.0",
+  "source": {
+    "nodeTypes": "@types/node@24.12.2",
+    "undiciTypes": "undici-types@7.16.0"
+  },
+  "excludedModules": [
+    "node:sys"
+  ]
+}

@@ -15,6 +15,7 @@ export const DIST_ROOT = Deno.env.get('SOUNDSCRIPT_RELEASE_DIST_ROOT') ??
 export const CANONICAL_DIST = join(DIST_ROOT, 'soundscript-canonical');
 export const SHIM_DIST = join(DIST_ROOT, 'soundscript-shim');
 export const SOUND_LIBS_SOURCE = join(ROOT, 'src', 'bundled', 'sound-libs');
+export const SOUND_TYPES_SOURCE = join(ROOT, 'src', 'bundled', 'sound-types');
 export const STDLIB_SOURCE = join(ROOT, 'src', 'stdlib');
 export const CLI_ENTRY = join(ROOT, 'src', 'main.ts');
 export const LICENSE_SOURCE = join(ROOT, 'LICENSE');

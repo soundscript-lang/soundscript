@@ -14,6 +14,7 @@ import {
   ROOT,
   SHIM_DIST,
   SOUND_LIBS_SOURCE,
+  SOUND_TYPES_SOURCE,
   SOUNDSCRIPT_HOMEPAGE_URL,
   SOUNDSCRIPT_ISSUES_URL,
   SOUNDSCRIPT_REPOSITORY_URL,
@@ -62,6 +63,7 @@ function verifyReleaseInputs(): void {
   requireFile(CLI_ENTRY, 'CLI entrypoint');
   requireFile(LICENSE_SOURCE, 'LICENSE');
   requireDirectory(SOUND_LIBS_SOURCE, 'bundled sound libraries');
+  requireDirectory(SOUND_TYPES_SOURCE, 'bundled sound type packages');
   requireDirectory(STDLIB_SOURCE, 'stdlib declarations');
 }
 
@@ -97,6 +99,10 @@ export async function copyCliRuntimeSupportFiles(destinationRoot: string): Promi
   await copyDirectory(
     SOUND_LIBS_SOURCE,
     join(destinationRoot, 'src', 'bundled', 'sound-libs'),
+  );
+  await copyDirectory(
+    SOUND_TYPES_SOURCE,
+    join(destinationRoot, 'src', 'bundled', 'sound-types'),
   );
   const bundledDestination = join(destinationRoot, 'src', 'bundled');
   await Deno.mkdir(bundledDestination, { recursive: true });
@@ -746,6 +752,7 @@ export function createCliTargetPackageManifest(version: string, target: CliTarge
       'bin/**',
       'src/bundled/*.d.ts',
       'src/bundled/sound-libs/**',
+      'src/bundled/sound-types/**',
       'src/stdlib/**',
     ],
     repository: {

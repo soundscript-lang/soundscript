@@ -1,8 +1,9 @@
 import { assertEquals, assertMatch } from '@std/assert';
 import { dirname, fromFileUrl, join } from '@std/path';
+import { builtinModules } from 'node:module';
 import ts from 'typescript';
 
-import { resolveOverrideDirectory } from './sound_stdlib.ts';
+import { resolveBundledTypesDirectory, resolveOverrideDirectory } from './sound_stdlib.ts';
 
 type AnyTokenOccurrence = {
   fileName: string;
@@ -40,21 +41,102 @@ function collectAnyKeywordOccurrencesInFile(filePath: string): AnyTokenOccurrenc
   return occurrences;
 }
 
-Deno.test('vendored sound stdlib declarations contain no any keywords', () => {
-  const bundledLibDirectory = join(dirname(fromFileUrl(import.meta.url)), 'sound-libs');
-  const occurrences: AnyTokenOccurrence[] = [];
+function collectDeclarationFilePaths(directoryPath: string): string[] {
+  const filePaths: string[] = [];
 
-  for (const entry of Deno.readDirSync(bundledLibDirectory)) {
-    if (!entry.isFile || !entry.name.endsWith('.d.ts')) {
+  for (const entry of Deno.readDirSync(directoryPath)) {
+    const entryPath = join(directoryPath, entry.name);
+    if (entry.isDirectory) {
+      filePaths.push(...collectDeclarationFilePaths(entryPath));
       continue;
     }
+    if (entry.isFile && entry.name.endsWith('.d.ts')) {
+      filePaths.push(entryPath);
+    }
+  }
 
-    occurrences.push(
-      ...collectAnyKeywordOccurrencesInFile(join(bundledLibDirectory, entry.name)),
-    );
+  return filePaths;
+}
+
+function collectDeclaredModulesInDirectory(directoryPath: string): string[] {
+  const modules = new Set<string>();
+
+  for (const filePath of collectDeclarationFilePaths(directoryPath)) {
+    const sourceText = Deno.readTextFileSync(filePath);
+    const sourceFile = ts.createSourceFile(filePath, sourceText, ts.ScriptTarget.Latest, true);
+
+    function visit(node: ts.Node): void {
+      if (ts.isModuleDeclaration(node) && ts.isStringLiteral(node.name)) {
+        modules.add(node.name.text);
+      }
+      ts.forEachChild(node, visit);
+    }
+
+    visit(sourceFile);
+  }
+
+  return [...modules].sort();
+}
+
+Deno.test('vendored sound stdlib declarations contain no any keywords', () => {
+  const bundledLibDirectory = join(dirname(fromFileUrl(import.meta.url)), 'sound-libs');
+  const bundledTypesDirectory = join(dirname(fromFileUrl(import.meta.url)), 'sound-types');
+  const occurrences: AnyTokenOccurrence[] = [];
+
+  for (
+    const filePath of [
+      ...collectDeclarationFilePaths(bundledLibDirectory),
+      ...collectDeclarationFilePaths(bundledTypesDirectory),
+    ]
+  ) {
+    occurrences.push(...collectAnyKeywordOccurrencesInFile(filePath));
   }
 
   assertEquals(occurrences, []);
+});
+
+Deno.test('vendored sound node package records pinned upstream metadata', () => {
+  const bundledTypesDirectory = join(dirname(fromFileUrl(import.meta.url)), 'sound-types');
+  const vendorMetadata = JSON.parse(
+    Deno.readTextFileSync(join(bundledTypesDirectory, 'node', 'vendor.json')),
+  ) as {
+    excludedModules?: string[];
+    nodeMajor?: number;
+    nodeTypesVersion?: string;
+    undiciTypesVersion?: string;
+  };
+
+  assertEquals(vendorMetadata.nodeMajor, 24);
+  assertEquals(vendorMetadata.nodeTypesVersion, '24.12.2');
+  assertEquals(vendorMetadata.undiciTypesVersion, '7.16.0');
+  assertEquals(vendorMetadata.excludedModules?.includes('node:sys'), true);
+});
+
+Deno.test('vendored sound node package covers the public node 24 builtin module surface', () => {
+  const bundledTypesDirectory = join(dirname(fromFileUrl(import.meta.url)), 'sound-types');
+  const declaredModules = collectDeclaredModulesInDirectory(join(bundledTypesDirectory, 'node'));
+  const declaredNodeModules = declaredModules.filter((moduleName) =>
+    moduleName.startsWith('node:')
+  );
+  const normalizedBuiltinModules = [
+    ...new Set(
+      builtinModules
+        .map((moduleName) => moduleName.startsWith('node:') ? moduleName : `node:${moduleName}`)
+        .map((moduleName) => moduleName === 'node:traceEvents' ? 'node:trace_events' : moduleName),
+    ),
+  ].sort();
+  const expectedPublicModules = normalizedBuiltinModules.filter((moduleName) =>
+    !moduleName.startsWith('node:_') &&
+    !moduleName.startsWith('node:internal/') &&
+    moduleName !== 'node:sys'
+  );
+
+  assertEquals(
+    expectedPublicModules.every((moduleName) => declaredNodeModules.includes(moduleName)),
+    true,
+  );
+  assertEquals(declaredNodeModules.includes('node:sys'), false);
+  assertEquals(declaredNodeModules.some((moduleName) => moduleName.startsWith('node:_')), false);
 });
 
 Deno.test('vendored sound stdlib Date declarations use plain number numerics', () => {
@@ -346,7 +428,11 @@ Deno.test('vendored sound stdlib DOM dynamic boundary declarations use unknown i
   );
   assertEquals(domText.includes('interface Transformer<I = unknown, O = unknown> {'), true);
   assertEquals(domText.includes('interface TransformStream<I = unknown, O = unknown> {'), true);
-  assertEquals(domText.includes('toJSON(): unknown;'), true);
+  assertEquals(
+    domText.includes('interface ReportBody {\n') &&
+      domText.includes('    toJSON(): unknown;\n}\n\ndeclare var ReportBody: {'),
+    true,
+  );
   assertEquals(
     domText.includes(
       'new(worker: Worker, options?: unknown, transfer?: unknown[]): RTCRtpScriptTransform;',
@@ -434,6 +520,12 @@ Deno.test('vendored sound stdlib DOM stream and event generics carry variance an
   );
   assertEquals(
     domText.includes(
+      '// #[variance(I: in, O: out)]\ninterface Transformer<I = unknown, O = unknown> {',
+    ),
+    true,
+  );
+  assertEquals(
+    domText.includes(
       '// #[variance(O: in)]\ninterface TransformStreamDefaultController<O = unknown> {',
     ),
     true,
@@ -447,6 +539,24 @@ Deno.test('vendored sound stdlib DOM stream and event generics carry variance an
   assertEquals(
     domText.includes(
       '// #[variance(I: in, O: out)]\ninterface TransformerTransformCallback<I, O> {',
+    ),
+    true,
+  );
+  assertEquals(
+    domText.includes(
+      '// #[variance(R: out)]\ninterface UnderlyingDefaultSource<R = unknown> {',
+    ),
+    true,
+  );
+  assertEquals(
+    domText.includes(
+      '// #[variance(W: in)]\ninterface UnderlyingSink<W = unknown> {',
+    ),
+    true,
+  );
+  assertEquals(
+    domText.includes(
+      '// #[variance(R: out)]\ninterface UnderlyingSource<R = unknown> {',
     ),
     true,
   );
@@ -477,6 +587,24 @@ Deno.test('vendored sound stdlib DOM stream and event generics carry variance an
   assertEquals(
     domText.includes(
       '// #[variance(T: out)]\ninterface LockGrantedCallback<T> {',
+    ),
+    true,
+  );
+  assertEquals(
+    domText.includes(
+      '// #[variance(T: out)]\ninterface HTMLCollectionOf<T extends Element> extends HTMLCollectionBase {',
+    ),
+    true,
+  );
+  assertEquals(
+    domText.includes(
+      '// #[variance(T: in)]\ninterface MessageEventTarget<T> {',
+    ),
+    true,
+  );
+  assertEquals(
+    domText.includes(
+      '// #[variance(TNode: out)]\ninterface NodeListOf<TNode extends Node> extends NodeList {',
     ),
     true,
   );
@@ -516,7 +644,7 @@ Deno.test('vendored sound stdlib DOM serializer declarations use exact object sh
     domText.includes(
       'interface DOMPointReadOnly {\n' +
         '    /**\n' +
-        '     * The **`DOMPointReadOnly`** interface\'s **`w`** property',
+        "     * The **`DOMPointReadOnly`** interface's **`w`** property",
     ),
     true,
   );
@@ -532,7 +660,7 @@ Deno.test('vendored sound stdlib DOM serializer declarations use exact object sh
     domText.includes(
       'interface DOMQuad {\n' +
         '    /**\n' +
-        '     * The **`DOMQuad`** interface\'s **`p1`** property',
+        "     * The **`DOMQuad`** interface's **`p1`** property",
     ),
     true,
   );
@@ -599,6 +727,158 @@ Deno.test('vendored sound stdlib DOM serializer declarations use exact object sh
   assertEquals(
     domText.includes(
       'interface MediaDeviceInfoJSON {\n    deviceId: string;\n    groupId: string;\n    kind: MediaDeviceKind;\n    label: string;\n}',
+    ),
+    true,
+  );
+  assertEquals(
+    domText.includes(
+      'interface CSPViolationReportBodyJSON {\n    blockedURL: string | null;\n    columnNumber: number | null;\n    disposition: SecurityPolicyViolationEventDisposition;\n    documentURL: string;\n    effectiveDirective: string;\n    lineNumber: number | null;\n    originalPolicy: string;\n    referrer: string | null;\n    sample: string | null;\n    sourceFile: string | null;\n    statusCode: number;\n}',
+    ),
+    true,
+  );
+  assertEquals(
+    domText.includes(
+      '    toJSON(): CSPViolationReportBodyJSON;\n}\n\ndeclare var CSPViolationReportBody: {',
+    ),
+    true,
+  );
+  assertEquals(
+    domText.includes(
+      'interface LargestContentfulPaintJSON extends PerformanceEntryJSON {\n    id: string;\n    loadTime: DOMHighResTimeStamp;\n    renderTime: DOMHighResTimeStamp;\n    size: number;\n    url: string;\n}',
+    ),
+    true,
+  );
+  assertEquals(
+    domText.includes(
+      '    toJSON(): LargestContentfulPaintJSON;\n}\n\ndeclare var LargestContentfulPaint: {',
+    ),
+    true,
+  );
+  assertEquals(
+    domText.includes(
+      'interface PaymentAddressJSON {\n    addressLine: ReadonlyArray<string>;\n    city: string;\n    country: string;\n    dependentLocality: string;\n    organization: string;\n    phone: string;\n    postalCode: string;\n    recipient: string;\n    region: string;\n    sortingCode: string;\n}',
+    ),
+    true,
+  );
+  assertEquals(
+    domText.includes(
+      '    toJSON(): PaymentAddressJSON;\n}\n\ndeclare var PaymentAddress: {',
+    ),
+    true,
+  );
+  assertEquals(
+    domText.includes(
+      'interface PaymentResponseJSON {\n    details: unknown;\n    methodName: string;\n    payerEmail: string | null;\n    payerName: string | null;\n    payerPhone: string | null;\n    requestId: string;\n    shippingAddress: PaymentAddressJSON | null;\n    shippingOption: string | null;\n}',
+    ),
+    true,
+  );
+  assertEquals(
+    domText.includes(
+      '    toJSON(): PaymentResponseJSON;\n    addEventListener<K extends keyof PaymentResponseEventMap>(',
+    ),
+    true,
+  );
+  assertEquals(
+    domText.includes(
+      'interface PerformanceJSON {\n    navigation: PerformanceNavigationJSON;\n    timeOrigin: DOMHighResTimeStamp;\n    timing: PerformanceTimingJSON;\n}',
+    ),
+    true,
+  );
+  assertEquals(
+    domText.includes(
+      'interface PerformanceEntryJSON {\n    duration: DOMHighResTimeStamp;\n    entryType: string;\n    name: string;\n    startTime: DOMHighResTimeStamp;\n}',
+    ),
+    true,
+  );
+  assertEquals(
+    domText.includes(
+      'interface PerformanceEventTimingJSON extends PerformanceEntryJSON {\n    cancelable: boolean;\n    processingEnd: DOMHighResTimeStamp;\n    processingStart: DOMHighResTimeStamp;\n}',
+    ),
+    true,
+  );
+  assertEquals(
+    domText.includes(
+      'interface PerformanceNavigationJSON {\n    redirectCount: number;\n    type: number;\n}',
+    ),
+    true,
+  );
+  assertEquals(
+    domText.includes(
+      'interface PerformanceNavigationTimingJSON extends PerformanceResourceTimingJSON {\n    domComplete: DOMHighResTimeStamp;\n    domContentLoadedEventEnd: DOMHighResTimeStamp;\n    domContentLoadedEventStart: DOMHighResTimeStamp;\n    domInteractive: DOMHighResTimeStamp;\n    loadEventEnd: DOMHighResTimeStamp;\n    loadEventStart: DOMHighResTimeStamp;\n    redirectCount: number;\n    type: NavigationTimingType;\n    unloadEventEnd: DOMHighResTimeStamp;\n    unloadEventStart: DOMHighResTimeStamp;\n}',
+    ),
+    true,
+  );
+  assertEquals(
+    domText.includes(
+      'interface PerformanceResourceTimingJSON extends PerformanceEntryJSON {\n    connectEnd: DOMHighResTimeStamp;\n    connectStart: DOMHighResTimeStamp;\n    decodedBodySize: number;\n    domainLookupEnd: DOMHighResTimeStamp;\n    domainLookupStart: DOMHighResTimeStamp;\n    encodedBodySize: number;\n    fetchStart: DOMHighResTimeStamp;\n    initiatorType: string;\n    nextHopProtocol: string;\n    redirectEnd: DOMHighResTimeStamp;\n    redirectStart: DOMHighResTimeStamp;\n    requestStart: DOMHighResTimeStamp;\n    responseEnd: DOMHighResTimeStamp;\n    responseStart: DOMHighResTimeStamp;\n    responseStatus: number;\n    secureConnectionStart: DOMHighResTimeStamp;\n    serverTiming: ReadonlyArray<PerformanceServerTimingJSON>;\n    transferSize: number;\n    workerStart: DOMHighResTimeStamp;\n}',
+    ),
+    true,
+  );
+  assertEquals(
+    domText.includes(
+      'interface PerformanceServerTimingJSON {\n    description: string;\n    duration: DOMHighResTimeStamp;\n    name: string;\n}',
+    ),
+    true,
+  );
+  assertEquals(
+    domText.includes(
+      'interface PerformanceTimingJSON {\n    connectEnd: number;\n    connectStart: number;\n    domComplete: number;\n    domContentLoadedEventEnd: number;\n    domContentLoadedEventStart: number;\n    domInteractive: number;\n    domLoading: number;\n    domainLookupEnd: number;\n    domainLookupStart: number;\n    fetchStart: number;\n    loadEventEnd: number;\n    loadEventStart: number;\n    navigationStart: number;\n    redirectEnd: number;\n    redirectStart: number;\n    requestStart: number;\n    responseEnd: number;\n    responseStart: number;\n    secureConnectionStart: number;\n    unloadEventEnd: number;\n    unloadEventStart: number;\n}',
+    ),
+    true,
+  );
+  assertEquals(
+    domText.includes(
+      '    toJSON(): PerformanceJSON;\n    addEventListener<K extends keyof PerformanceEventMap>(',
+    ),
+    true,
+  );
+  assertEquals(
+    domText.includes('    toJSON(): PerformanceEntryJSON;\n}\n\ndeclare var PerformanceEntry: {'),
+    true,
+  );
+  assertEquals(
+    domText.includes(
+      '    toJSON(): PerformanceEventTimingJSON;\n}\n\ndeclare var PerformanceEventTiming: {',
+    ),
+    true,
+  );
+  assertEquals(
+    domText.includes('    toJSON(): PerformanceNavigationJSON;\n    readonly TYPE_NAVIGATE: 0;'),
+    true,
+  );
+  assertEquals(
+    domText.includes(
+      '    toJSON(): PerformanceNavigationTimingJSON;\n}\n\ndeclare var PerformanceNavigationTiming: {',
+    ),
+    true,
+  );
+  assertEquals(
+    domText.includes(
+      '    toJSON(): PerformanceResourceTimingJSON;\n}\n\ndeclare var PerformanceResourceTiming: {',
+    ),
+    true,
+  );
+  assertEquals(
+    domText.includes(
+      '    toJSON(): PerformanceServerTimingJSON;\n}\n\ndeclare var PerformanceServerTiming: {',
+    ),
+    true,
+  );
+  assertEquals(
+    domText.includes(
+      '    toJSON(): PerformanceTimingJSON;\n}\n\n/** @deprecated */\ndeclare var PerformanceTiming: {',
+    ),
+    true,
+  );
+  assertEquals(
+    domText.includes(
+      'interface ReportJSON {\n    body: unknown | null;\n    type: string;\n    url: string;\n}',
+    ),
+    true,
+  );
+  assertEquals(
+    domText.includes(
+      '    toJSON(): ReportJSON;\n}\n\ndeclare var Report: {',
     ),
     true,
   );
@@ -944,4 +1224,22 @@ Deno.test('resolveOverrideDirectory falls back to repository sound-libs next to 
   });
 
   assertEquals(resolved, bundledLibDirectory);
+});
+
+Deno.test('resolveBundledTypesDirectory falls back to repository sound-types next to compiled binary', async () => {
+  const tempDirectory = await Deno.makeTempDir({ prefix: 'sound-bundled-types-dir-' });
+  const runtimeDirectory = join(tempDirectory, 'runtime', 'src', 'bundled');
+  const binaryDirectory = join(tempDirectory, 'repo', 'bin');
+  const bundledTypesDirectory = join(tempDirectory, 'repo', 'src', 'bundled', 'sound-types');
+
+  Deno.mkdirSync(runtimeDirectory, { recursive: true });
+  Deno.mkdirSync(binaryDirectory, { recursive: true });
+  Deno.mkdirSync(bundledTypesDirectory, { recursive: true });
+
+  const resolved = resolveBundledTypesDirectory({
+    importMetaUrl: `file://${join(runtimeDirectory, 'sound_stdlib.ts')}`,
+    execPath: join(binaryDirectory, 'soundscript'),
+  });
+
+  assertEquals(resolved, bundledTypesDirectory);
 });

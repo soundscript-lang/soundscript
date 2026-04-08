@@ -1,6 +1,11 @@
 import ts from 'typescript';
 
-import { directoryExistsSync, readTextFileSync, runtimeExecPath } from '../platform/host.ts';
+import {
+  directoryExistsSync,
+  fileExistsSync,
+  readTextFileSync,
+  runtimeExecPath,
+} from '../platform/host.ts';
 import { basename, dirname, fromFileUrl, join, normalize } from '../platform/path.ts';
 
 // These overrides vendor the builtin-only ES2024 lib closure for the currently pinned
@@ -70,6 +75,10 @@ const SOUND_STDLIB_FILE_NAMES = [
   'lib.es2024.string.d.ts',
 ] as const;
 
+const BUNDLED_TYPE_DIRECTIVE_ENTRY_POINTS = new Map<string, string>([
+  ['node', join('node', 'index.d.ts')],
+]);
+
 const cachedOverrideContentsByDirectory = new Map<string, ReadonlyMap<string, string>>();
 
 function normalizePathForComparison(path: string): string {
@@ -93,6 +102,29 @@ export function resolveOverrideDirectory(
   const candidateDirectories = [
     join(dirname(fromFileUrl(importMetaUrl)), 'sound-libs'),
     join(dirname(execPath), '..', 'src', 'bundled', 'sound-libs'),
+  ];
+
+  for (const candidateDirectory of candidateDirectories) {
+    if (directoryExists(candidateDirectory)) {
+      return candidateDirectory;
+    }
+  }
+
+  return candidateDirectories[0];
+}
+
+export function resolveBundledTypesDirectory(
+  {
+    importMetaUrl = import.meta.url,
+    execPath = runtimeExecPath(),
+  }: {
+    importMetaUrl?: string;
+    execPath?: string;
+  } = {},
+): string {
+  const candidateDirectories = [
+    join(dirname(fromFileUrl(importMetaUrl)), 'sound-types'),
+    join(dirname(execPath), '..', 'src', 'bundled', 'sound-types'),
   ];
 
   for (const candidateDirectory of candidateDirectories) {
@@ -140,6 +172,35 @@ function shouldUseOverride(
   return overrideText;
 }
 
+function getTypeDirectiveName(typeDirectiveName: string | ts.FileReference): string {
+  return typeof typeDirectiveName === 'string' ? typeDirectiveName : typeDirectiveName.fileName;
+}
+
+function resolveBundledTypeReferenceDirective(
+  typeDirectiveName: string,
+): ts.ResolvedTypeReferenceDirective | undefined {
+  const relativeEntryPoint = BUNDLED_TYPE_DIRECTIVE_ENTRY_POINTS.get(typeDirectiveName);
+  if (!relativeEntryPoint) {
+    return undefined;
+  }
+
+  const resolvedFileName = join(resolveBundledTypesDirectory(), relativeEntryPoint);
+  if (!fileExistsSync(resolvedFileName)) {
+    return undefined;
+  }
+
+  return {
+    isExternalLibraryImport: true,
+    packageId: {
+      name: typeDirectiveName,
+      subModuleName: '',
+      version: 'sound-bundled',
+    },
+    primary: true,
+    resolvedFileName,
+  };
+}
+
 export function createSoundStdlibCompilerHost(
   options: ts.CompilerOptions,
   currentDirectory?: string,
@@ -150,7 +211,7 @@ export function createSoundStdlibCompilerHost(
     dirname(ts.getDefaultLibFilePath(options)),
   );
 
-  return {
+  const host: ts.CompilerHost = {
     ...baseHost,
     fileExists(fileName) {
       return shouldUseOverride(fileName, normalizedDefaultLibDirectory, overrideContents) !==
@@ -176,5 +237,33 @@ export function createSoundStdlibCompilerHost(
       return shouldUseOverride(fileName, normalizedDefaultLibDirectory, overrideContents) ??
         baseHost.readFile(fileName);
     },
+    resolveTypeReferenceDirectives(
+      typeReferenceDirectiveNames,
+      containingFile,
+      redirectedReference,
+      compilerOptions,
+      containingFileMode,
+    ) {
+      return typeReferenceDirectiveNames.map((typeReferenceDirectiveName) => {
+        const bundledResolution = resolveBundledTypeReferenceDirective(
+          getTypeDirectiveName(typeReferenceDirectiveName),
+        );
+        if (bundledResolution) {
+          return bundledResolution;
+        }
+
+        return ts.resolveTypeReferenceDirective(
+          getTypeDirectiveName(typeReferenceDirectiveName),
+          containingFile,
+          compilerOptions,
+          host,
+          redirectedReference,
+          undefined,
+          containingFileMode,
+        ).resolvedTypeReferenceDirective;
+      });
+    },
   };
+
+  return host;
 }

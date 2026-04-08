@@ -331,7 +331,10 @@ Deno.test('prepare_npm --stdlib-only emits canonical package source maps and .st
   assertEquals(packageJson.files.includes('index.js.map'), true);
   assertEquals(packageJson.files.includes('experimental/**'), true);
   assertEquals(packageJson.dependencies?.typescript, '5.9.3');
-  assertEquals(packageJson.repository?.url, 'git+https://github.com/soundscript-lang/soundscript.git');
+  assertEquals(
+    packageJson.repository?.url,
+    'git+https://github.com/soundscript-lang/soundscript.git',
+  );
   assertEquals(packageJson.homepage, 'https://github.com/soundscript-lang/soundscript');
   assertEquals(packageJson.bugs?.url, 'https://github.com/soundscript-lang/soundscript/issues');
   assertStringIncludes(
@@ -374,6 +377,28 @@ Deno.test('prepare_npm copies stdlib declarations for compiled cli runtime packa
     const bundledLibText = await Deno.readTextFile(
       join(distRoot, 'src', 'bundled', 'sound-libs', 'lib.es5.d.ts'),
     );
+    const bundledNodeTypesText = await Deno.readTextFile(
+      join(distRoot, 'src', 'bundled', 'sound-types', 'node', 'index.d.ts'),
+    );
+    const bundledNodeHttpTypesText = await Deno.readTextFile(
+      join(distRoot, 'src', 'bundled', 'sound-types', 'node', 'http.d.ts'),
+    );
+    const bundledUndiciTypesText = await Deno.readTextFile(
+      join(
+        distRoot,
+        'src',
+        'bundled',
+        'sound-types',
+        'node_modules',
+        'undici-types',
+        'index.d.ts',
+      ),
+    );
+    const bundledNodeVendorMetadata = JSON.parse(
+      await Deno.readTextFile(
+        join(distRoot, 'src', 'bundled', 'sound-types', 'node', 'vendor.json'),
+      ),
+    ) as { nodeTypesVersion?: string };
     const portableWebGlobalsDeclarations = await Deno.readTextFile(
       join(distRoot, 'src', 'bundled', 'portable-web-globals.d.ts'),
     );
@@ -381,6 +406,10 @@ Deno.test('prepare_npm copies stdlib declarations for compiled cli runtime packa
     assertStringIncludes(indexDeclarations, 'export type');
     assertStringIncludes(numericsDeclarations, 'f64');
     assertStringIncludes(bundledLibText, 'declare');
+    assertStringIncludes(bundledNodeTypesText, 'reference path="http.d.ts"');
+    assertStringIncludes(bundledNodeHttpTypesText, 'declare module "node:http"');
+    assertStringIncludes(bundledUndiciTypesText, "export * from './fetch'");
+    assertEquals(bundledNodeVendorMetadata.nodeTypesVersion, '24.12.2');
     assertStringIncludes(portableWebGlobalsDeclarations, 'AbortController');
   } finally {
     await Deno.remove(distRoot, { recursive: true }).catch(() => undefined);
@@ -429,6 +458,7 @@ Deno.test('prepare_npm emits cli target package metadata with bundled declaratio
   assertEquals(packageJson.os, ['linux']);
   assertEquals(packageJson.cpu, ['x64']);
   assertEquals(packageJson.files?.includes('src/bundled/sound-libs/**'), true);
+  assertEquals(packageJson.files?.includes('src/bundled/sound-types/**'), true);
   assertEquals(packageJson.files?.includes('src/bundled/*.d.ts'), true);
   assertEquals(packageJson.files?.includes('src/stdlib/**'), true);
   assertEquals(
