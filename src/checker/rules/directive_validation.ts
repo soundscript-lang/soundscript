@@ -475,7 +475,7 @@ function createDuplicateAnnotationDiagnostic(
 
 function createUnexpectedArgumentsMessage(annotation: ParsedAnnotation): string {
   if (annotation.name === 'effects') {
-    return `${SOUND_DIAGNOSTIC_MESSAGES.annotationArgumentsNotSupported} \`#[effects(...)]\` only supports named \`add\`, \`forbid\`, and \`via\` fields.`;
+    return `${SOUND_DIAGNOSTIC_MESSAGES.annotationArgumentsNotSupported} \`#[effects(...)]\` only supports named \`add\`, \`forbid\`, \`forward\`, and \`unknown\` fields.`;
   }
   if (annotation.name === 'value') {
     return `${SOUND_DIAGNOSTIC_MESSAGES.annotationArgumentsNotSupported} \`#[value]\` only supports the bare form or \`#[value(deep: true)]\`.`;
@@ -485,7 +485,7 @@ function createUnexpectedArgumentsMessage(annotation: ParsedAnnotation): string 
 
 function describeSupportedAnnotationArguments(annotationName: string): string {
   return annotationName === 'effects'
-    ? 'named `add`, `forbid`, and `via` fields'
+    ? 'named `add`, `forbid`, `forward`, and `unknown` fields'
     : annotationName === 'value'
     ? 'bare form or `#[value(deep: true)]`'
     : 'bare form only';
@@ -500,7 +500,7 @@ function createAnnotationArgumentsNotSupportedDiagnostic(
   const argumentsText = annotation.argumentsText !== undefined ? `(${annotation.argumentsText})` : '()';
   const supportedForm = describeSupportedAnnotationArguments(annotation.name);
   const example = annotation.name === 'effects'
-    ? 'Use `#[effects(forbid: [fails])]` on a bodyful callable, `#[effects(add: [host])]` on a declaration-only callable, or `#[effects(forbid: [fails])]` on a function-valued parameter.'
+    ? 'Use `#[effects(forbid: [fails])]` on a bodyful callable, `#[effects(add: [host.io], forward: [callback])]` on a declaration-only callable, or `#[effects(forbid: [fails])]` on a function-valued parameter.'
     : annotation.name === 'value'
     ? 'Use bare `#[value]` or `#[value(deep: true)]`.'
     : `Remove the arguments from \`#[${annotation.text}]\`.`;
@@ -781,7 +781,7 @@ function createInvalidEffectAnnotationDiagnostic(
   message: string,
 ): SoundDiagnostic {
   const example =
-    'Use `#[effects(forbid: [fails])]` on a bodyful callable, `#[effects(add: [host], via: [callback])]` on a declaration-only callable, and `#[effects(forbid: [fails])]` on function-valued parameters.';
+    'Use `#[effects(forbid: [fails])]` on a bodyful callable, `#[effects(add: [host.io], forward: [callback])]` on a declaration-only callable, and `#[effects(forbid: [fails])]` on function-valued parameters.';
 
   return createDiagnostic(
     filePath,
@@ -810,7 +810,7 @@ function createInvalidEffectAnnotationDiagnostic(
         `Example: ${example}`,
       ],
       hint:
-        'Rewrite the effects annotation to use only `fails`, `suspend`, `mut`, and `host` with target-appropriate fields.',
+        'Rewrite the effects annotation to use target-appropriate `add`, `forbid`, `forward`, and `unknown` fields with open dotted effect names.',
     },
   );
 }

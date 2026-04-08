@@ -19,10 +19,6 @@ import {
   validateEffectsAnnotation,
 } from './effects/annotations.ts';
 import {
-  getKnownBuiltinCallBehavior,
-  getKnownPortableBuiltinBehavior,
-} from './effects/builtins.ts';
-import {
   classifyCallableEffectContractMismatch,
   type CallableEffectContractMismatch,
 } from './effects/contract_relations.ts';
@@ -1107,9 +1103,8 @@ function recomputeBodyDeclarationSummary(
           );
         } else {
           const resolvedSignature = context.checker.getResolvedSignature(node);
-          const resolvedDeclaration = resolvedSignature?.getDeclaration();
           const signatureSummary = getEffectSummaryForSignature(context, resolvedSignature);
-          if (shouldUseDirectSignatureSummary(context, resolvedDeclaration, signatureSummary)) {
+          if (signatureSummary) {
             appendSummaryDirectEffects(
               targetSummary,
               applyContainingCallableBoundaryToEffects(signatureSummary.directEffects, asyncBoundary),
@@ -1132,41 +1127,12 @@ function recomputeBodyDeclarationSummary(
               appendSummaryUnknownDirectReasons(targetSummary, forwarded.unknownReasons);
             }
           } else {
-            const builtin = getKnownBuiltinCallBehavior(context, node);
-            if (builtin) {
-              appendSummaryDirectEffects(
-                targetSummary,
-                builtin.directEffects ?? maskToStandardEffectNames(builtin.directMask),
-              );
-              appendSummaryUnknownDirectReasons(targetSummary, builtin.unknownDirectReasons);
-              for (const forwardedArgument of builtin.forwardedArguments) {
-                const forwarded = summarizeForwardedArgumentInBody(
-                  context,
-                  parameters,
-                  node.arguments[forwardedArgument.argumentIndex],
-                  targetForwardedParameters,
-                  forwardedArgument.rewrites ??
-                    failureBoundaryToForwardTransform(forwardedArgument.failureBoundary).rewrites,
-                  forwardedArgument.handledEffects ??
-                    failureBoundaryToForwardTransform(forwardedArgument.failureBoundary)
-                      .handledEffects,
-                  forwardedArgument.memberPath ??
-                    (forwardedArgument.memberName ? [forwardedArgument.memberName] : []),
-                );
-                appendSummaryDirectEffects(
-                  targetSummary,
-                  applyContainingCallableBoundaryToEffects(forwarded.effects, asyncBoundary),
-                );
-                appendSummaryUnknownDirectReasons(targetSummary, forwarded.unknownReasons);
-              }
-            } else {
-              const calleeSummary = getEffectCompositionForCallLike(context, node);
-              appendSummaryDirectEffects(
-                targetSummary,
-                applyContainingCallableBoundaryToEffects(calleeSummary.effects, asyncBoundary),
-              );
-              appendSummaryUnknownDirectReasons(targetSummary, calleeSummary.unknownReasons);
-            }
+            const calleeSummary = getEffectCompositionForCallLike(context, node);
+            appendSummaryDirectEffects(
+              targetSummary,
+              applyContainingCallableBoundaryToEffects(calleeSummary.effects, asyncBoundary),
+            );
+            appendSummaryUnknownDirectReasons(targetSummary, calleeSummary.unknownReasons);
           }
         }
       }
@@ -1313,80 +1279,12 @@ export function getEffectSummaryForSignature(
   return getEffectSummaryForDeclaration(context, declaration);
 }
 
-function shouldUseDirectSignatureSummary(
-  context: AnalysisContext,
-  declaration: ts.Declaration | undefined,
-  summary: EffectSummaryFact | undefined,
-): summary is EffectSummaryFact {
-  if (!summary) {
-    return false;
-  }
-  if (!declaration || !isCallableDeclarationNode(declaration)) {
-    return true;
-  }
-  if (isCallableBodyDeclaration(declaration) || getEffectiveEffectsAnnotation(context, declaration)) {
-    return true;
-  }
-  return !(
-    summary.hasUnknownDirectEffects &&
-    summary.unknownDirectReasons.some((reason) => reason.kind === 'unsummarizedDeclarationFrontier')
-  );
-}
-
 export function getEffectCompositionForCallLike(
   context: AnalysisContext,
   expression: ts.CallExpression | ts.NewExpression,
 ): EffectComposition {
   const resolvedSignature = context.checker.getResolvedSignature(expression);
-  const resolvedDeclaration = resolvedSignature?.getDeclaration();
   const summary = getEffectSummaryForSignature(context, resolvedSignature);
-  const shouldTryBuiltinFallback = !summary ||
-    (
-      resolvedDeclaration &&
-      isCallableDeclarationNode(resolvedDeclaration) &&
-      !isCallableBodyDeclaration(resolvedDeclaration) &&
-      !getEffectiveEffectsAnnotation(context, resolvedDeclaration) &&
-      summary.hasUnknownDirectEffects &&
-      summary.unknownDirectReasons.some((reason) => reason.kind === 'unsummarizedDeclarationFrontier')
-    );
-
-  if (shouldTryBuiltinFallback) {
-    const builtin = ts.isCallExpression(expression)
-      ? getKnownBuiltinCallBehavior(context, expression)
-      : getKnownPortableBuiltinBehavior(context, expression);
-    if (builtin) {
-      let effects = builtin.directEffects ?? maskToStandardEffectNames(builtin.directMask);
-      let mask = builtin.directMask;
-      let unknownReasons = builtin.unknownDirectReasons ?? [];
-      for (const forwardedArgument of builtin.forwardedArguments) {
-        const memberPath = forwardedArgument.memberPath ??
-          (forwardedArgument.memberName ? [forwardedArgument.memberName] : []);
-        const forwarded = getSummaryForCallablePath(
-          context,
-          expression.arguments?.[forwardedArgument.argumentIndex]!,
-          memberPath,
-        );
-        if (!forwarded) {
-          unknownReasons = mergeEffectUnknownReasons(
-            unknownReasons,
-            [createEffectUnknownReason('unresolvedForwardedCallback')],
-          );
-          continue;
-        }
-        const transformedEffects = applyForwardedTransform(
-          forwarded.effects,
-          forwardedArgument.rewrites ??
-            failureBoundaryToForwardTransform(forwardedArgument.failureBoundary).rewrites,
-          forwardedArgument.handledEffects ??
-            failureBoundaryToForwardTransform(forwardedArgument.failureBoundary).handledEffects,
-        );
-        effects = normalizeEffectNames([...effects, ...transformedEffects]);
-        mask |= effectNamesToMask(transformedEffects);
-        unknownReasons = mergeEffectUnknownReasons(unknownReasons, forwarded.unknownReasons);
-      }
-      return createEffectComposition(effects, mask, unknownReasons);
-    }
-  }
 
   if (!summary) {
     return createEffectComposition(

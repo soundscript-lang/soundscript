@@ -54,10 +54,6 @@ export function formatEffectUnknownReason(reason: EffectUnknownReasonFact): stri
       return reason.detail === undefined
         ? 'annotation declares unknown direct effects'
         : `annotation declares unknown direct effects (${reason.detail})`;
-    case 'builtinUnknownDirectEffect':
-      return reason.detail === undefined
-        ? 'builtin direct effect remains unknown'
-        : `builtin direct effect remains unknown (${reason.detail})`;
     case 'opaqueCallableExpression':
       return 'opaque callable expression';
     case 'unresolvedForwardedCallback':

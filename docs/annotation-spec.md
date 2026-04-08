@@ -160,15 +160,15 @@ function map<T, U>(values: readonly T[], callback: (value: T) => U): readonly U[
 
 Current validation rules:
 
-- `add`, `forbid`, and `forward` are the canonical supported fields
-- `via` remains accepted as a temporary compatibility alias for unchanged forwarding entries
+- `add`, `forbid`, `forward`, and `unknown` are the supported fields
+- `via` is no longer supported; unchanged forwarding uses `forward: [callback]`
 - `add` and `forbid` must be arrays
 - `forward` must be an array of parameter-rooted callable references or `{ from, rewrite?, handle? }` objects
 - effect names are open dotted identifiers with prefix containment, for example `fails.rejects`, `host.io`, `host.node.fs`, and `host.browser.dom`
 - `from` must start at a parameter name and may continue through callable members such as `decoder.decode`
 - `rewrite` must be an array of `{ from: effect, to: effect }` objects
 - `handle` must be an array of effect identifiers discharged after rewrites are applied
-- duplicate fields, duplicate effect names, unknown field names, and invalid `forward` / `via` references are errors
+- duplicate fields, duplicate effect names, unknown field names, and invalid `forward` references are errors
 
 Current semantic direction:
 

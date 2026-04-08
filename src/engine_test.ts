@@ -3550,7 +3550,7 @@ Deno.test('createAnalysisContext records structured effect unknown reasons', asy
         '',
         'declare function opaqueFrontier(): void;',
         '',
-        '// #[effects(add: [], via: [callback])]',
+        '// #[effects(add: [], forward: [callback])]',
         'declare function forward<T>(callback: () => T): T;',
         '',
         'export function usesOpaqueFrontier(): void {',

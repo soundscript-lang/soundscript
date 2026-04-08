@@ -1,8 +1,3 @@
-import ts from 'typescript';
-
-import type { AnalysisContext } from '../engine/types.ts';
-import type { BuiltinCallBehavior } from './model.ts';
-
 export const SYNCHRONOUS_ARRAY_CALLBACK_PARAMETER_BINDINGS = new Map<
   string,
   { readonly arrayParameterIndex?: number; readonly callbackArgumentIndex: number; readonly elementParameterIndex: number }
@@ -43,20 +38,3 @@ export const SYNCHRONOUS_MAP_CALLBACK_PARAMETER_BINDINGS = new Map<
 >([
   ['forEach', { callbackArgumentIndex: 0, valueParameterIndex: 0, keyParameterIndex: 1, receiverParameterIndex: 2 }],
 ]);
-
-// Declaration-first migration drained the portable builtin registry. The checker
-// still consults these hooks, but builtins are now expected to carry their own
-// effect annotations in vendored declaration files or runtime extern packs.
-export function getKnownPortableBuiltinBehavior(
-  _context: AnalysisContext,
-  _expression: ts.CallExpression | ts.NewExpression,
-): BuiltinCallBehavior | undefined {
-  return undefined;
-}
-
-export function getKnownBuiltinCallBehavior(
-  _context: AnalysisContext,
-  _expression: ts.CallExpression,
-): BuiltinCallBehavior | undefined {
-  return undefined;
-}

@@ -5233,7 +5233,7 @@ Deno.test('analyzeProject accepts builtin effects annotations on local functions
       '  }',
       '}',
       '',
-      '// #[effects(forbid: [fails, suspend, mut, host], via: [callback])]',
+      '// #[effects(forbid: [fails, suspend, mut, host], forward: [callback])]',
       'function runOnce(callback: () => void): void {',
       '  callback();',
       '}',
@@ -5294,6 +5294,38 @@ Deno.test('analyzeProject accepts open dotted effects and forward transforms', a
   });
 
   assertEquals(result.diagnostics, []);
+});
+
+Deno.test('analyzeProject rejects deprecated via forwarding syntax', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/index.sts': [
+      '// #[extern]',
+      '// #[effects(add: [], via: [callback])]',
+      'declare function wrap<T>(callback: () => T): T;',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1039']);
+  assertEquals(result.diagnostics[0]?.metadata?.rule, 'invalid_effect_annotation');
 });
 
 Deno.test('analyzeProject discharges local failures handled by try catch', async () => {
@@ -5387,7 +5419,7 @@ Deno.test('analyzeProject accepts pure Promise continuations under forbid fails 
       '  return source.then((value) => value + 1);',
       '}',
       '',
-      '// #[effects(forbid: [fails], via: [project])]',
+      '// #[effects(forbid: [fails], forward: [project])]',
       'function forwardThen(',
       '  source: Promise<number>,',
       '  project: (value: number) => number,',

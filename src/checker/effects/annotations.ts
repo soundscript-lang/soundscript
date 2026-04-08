@@ -27,7 +27,6 @@ export interface ParsedEffectsAnnotationContract {
   forbidMask: number;
   forwardEntries: readonly ParsedEffectsForwardEntry[];
   unknownDirect: boolean;
-  viaNames: readonly string[];
 }
 
 type EffectsTargetClassification =
@@ -130,7 +129,7 @@ function splitForwardPath(text: string): readonly string[] {
 
 function parseForwardPathList(
   value: ParsedAnnotationValue,
-  fieldName: 'forward' | 'via',
+  fieldName: 'forward',
 ): readonly ParsedEffectsForwardEntry[] | string {
   if (value.kind !== 'array') {
     return `Effects annotation field \`${fieldName}\` must use an array literal such as \`[callback]\`.`;
@@ -305,16 +304,15 @@ export function parseEffectsAnnotationContract(
   annotation: ParsedAnnotation,
 ): ParsedEffectsAnnotationContract | string {
   const args = annotation.arguments ?? [];
-  const fieldValues = new Map<'add' | 'forbid' | 'forward' | 'unknown' | 'via', ParsedAnnotationValue>();
+  const fieldValues = new Map<'add' | 'forbid' | 'forward' | 'unknown', ParsedAnnotationValue>();
   for (const arg of args) {
     if (arg.kind !== 'named') {
-      return 'Effects annotations only accept named fields: `add`, `forbid`, `forward`, `unknown`, and `via`.';
+      return 'Effects annotations only accept named fields: `add`, `forbid`, `forward`, and `unknown`.';
     }
     if (
-      arg.name !== 'add' && arg.name !== 'forbid' && arg.name !== 'forward' && arg.name !== 'unknown' &&
-      arg.name !== 'via'
+      arg.name !== 'add' && arg.name !== 'forbid' && arg.name !== 'forward' && arg.name !== 'unknown'
     ) {
-      return `Unknown effects annotation field \`${arg.name}\`. Use only \`add\`, \`forbid\`, \`forward\`, \`unknown\`, and \`via\`.`;
+      return `Unknown effects annotation field \`${arg.name}\`. Use only \`add\`, \`forbid\`, \`forward\`, and \`unknown\`.`;
     }
     if (fieldValues.has(arg.name)) {
       return `Effects annotation field \`${arg.name}\` appears more than once.`;
@@ -324,7 +322,6 @@ export function parseEffectsAnnotationContract(
 
   const addValue = fieldValues.get('add');
   const forbidValue = fieldValues.get('forbid');
-  const viaValue = fieldValues.get('via');
   const forwardValue = fieldValues.get('forward');
   const unknownValue = fieldValues.get('unknown');
   const addEffects = addValue ? parseEffectIdentifierList(addValue, 'add') : [];
@@ -335,10 +332,6 @@ export function parseEffectsAnnotationContract(
   if (typeof forbidEffects === 'string') {
     return forbidEffects;
   }
-  const viaEntries = viaValue ? parseForwardPathList(viaValue, 'via') : [];
-  if (typeof viaEntries === 'string') {
-    return viaEntries;
-  }
   const forwardEntries = forwardValue ? parseForwardEntryList(forwardValue) : [];
   if (typeof forwardEntries === 'string') {
     return forwardEntries;
@@ -347,20 +340,13 @@ export function parseEffectsAnnotationContract(
   if (typeof unknownDirect === 'string') {
     return unknownDirect;
   }
-  const viaNames = viaEntries.map((entry) => entry.fromPath.join('.'));
-  const allForwardEntries = [...viaEntries, ...forwardEntries];
-  if (typeof viaNames === 'string') {
-    return viaNames;
-  }
-
   return {
     addEffects,
     addMask: effectNamesToMask(addEffects),
     forbidEffects,
     forbidMask: effectNamesToMask(forbidEffects),
-    forwardEntries: allForwardEntries,
+    forwardEntries,
     unknownDirect,
-    viaNames,
   };
 }
 
@@ -382,7 +368,7 @@ function validateForwardTarget(
   context: AnalysisContext,
   parameters: ReadonlyMap<string, ts.ParameterDeclaration>,
   entry: ParsedEffectsForwardEntry,
-  fieldName: 'forward' | 'via',
+  fieldName: 'forward',
 ): string | undefined {
   const [rootName, ...memberPath] = entry.fromPath;
   if (!rootName) {
@@ -458,11 +444,7 @@ export function validateEffectsAnnotation(
   }
 
   for (const entry of parsed.forwardEntries) {
-    const fieldName = parsed.viaNames.includes(entry.fromPath.join('.')) && entry.rewrites.length === 0 &&
-        entry.handleEffects.length === 0
-      ? 'via'
-      : 'forward';
-    const error = validateForwardTarget(context, parameterNames, entry, fieldName);
+    const error = validateForwardTarget(context, parameterNames, entry, 'forward');
     if (error) {
       return error;
     }
