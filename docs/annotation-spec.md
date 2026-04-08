@@ -173,6 +173,8 @@ Current semantic direction:
 - bodyful local callables may use `add`, `forbid`, and `forward`
 - bodyful `add` is monotonic: explicit `add` effects are unioned with inferred effects and never
   hide inferred lower-level behavior
+- ordinary bodyful wrappers should usually rely on inference alone; use callable-level `add` or
+  `forward` only when you are intentionally widening or classifying the honest inferred surface
 - declaration-only callable surfaces may use `add` and `forward`
 - function-valued parameters may use `forbid` only
 - `unknown: [direct]` is valid only on declaration-only callable surfaces and marks the
@@ -225,6 +227,14 @@ Current failure-discharge rule:
 
 - local `try/catch` discharges `fails` effects originating inside the protected region unless the
   failure is rethrown
+
+Current declaration-projection note:
+
+- soundscript package declarations, including the shipped `sts:*` stdlib surface, are generated
+  from source and project the checker summary onto the emitted declaration text
+- that means most bodyful library code should not need hand-authored declaration-only effect
+  summaries; the remaining explicit stdlib annotations are primarily host-frontier facades over
+  ambient globals
 
 ## Directive Notes
 

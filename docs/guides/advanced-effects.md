@@ -47,6 +47,28 @@ include:
 The core names are about broad semantics. The dotted tags are where you encode platform or
 application-specific policy boundaries.
 
+## When You Should Actually Write Effect Annotations
+
+Most ordinary bodyful soundscript code should not need them.
+
+In the current model, start from this default:
+
+- bodyful functions should rely on inference
+- generated declarations should project that inferred summary outward
+- explicit effect annotations are mainly for real declaration frontiers and intentionally
+  effect-transforming higher-order surfaces
+
+That means:
+
+- a normal bodyful wrapper over other soundscript code usually needs no annotation
+- a facade over ambient globals or foreign declarations usually does need an explicit declaration
+  summary
+- a higher-order wrapper only needs explicit `forward` / `rewrite` / `handle` when inference does
+  not already recover the intended public summary
+
+The current `sts:*` stdlib now follows that rule. Its remaining explicit effects are on host
+facades such as `sts:fetch`, `sts:text`, and `sts:url`, not on ordinary bodyful helper code.
+
 ## Prefix Containment Matters
 
 Containment is by prefix, not by broad "same family" intuition.
@@ -130,10 +152,10 @@ So the practical naming rule is:
 - Use the standard core for broad semantics.
 - Add dotted library tags for platform or subsystem ownership.
 - Put stable declaration-frontier summaries directly on declarations.
-- Use bodyful `add` only to classify or widen a callable honestly; it unions with inference and
-  never hides inferred effects.
+- Prefer inference first for bodyful code; add callable-level `add` only to classify or widen a
+  callable honestly, never to restate what inference already knows.
 - Reserve `unknown: [direct]` for boundaries that are intentionally opaque today.
-- Use `forward` for higher-order wrappers instead of checker-only special cases.
+- Use `forward` only when the body/summary really needs help expressing a higher-order boundary.
 - Do not rely on effects alone for purpose-based authority policies such as transaction-only DB
   access.
 

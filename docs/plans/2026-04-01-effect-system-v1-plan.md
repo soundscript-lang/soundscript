@@ -193,7 +193,8 @@ Use a cached SCC/fixpoint pass so recursion and mutually recursive helpers conve
 Declaration-only callables cannot be inferred from bodies, so their summaries come from:
 
 - explicit `#[effects(add: ..., forward: ...)]`
-- family defaults where a whole declaration family is obviously `host`
+- generated declaration projection from bodyful source when the declaration is emitted from
+  soundscript code
 - conservative unknown status when no summary is available
 
 Unknown effects are acceptable in ordinary code but never satisfy a `forbid` contract and never
