@@ -1,4 +1,14 @@
 import type { CompilerModuleIR, CompilerTaggedPrimitiveBoundaryKindsIR } from './ir.ts';
+import {
+  getEffectiveHostClosureParamsByName,
+  getEffectiveHostClosureResultSignatureId,
+  getEffectiveHostTaggedHeapNullableParamsByName,
+  getEffectiveHostTaggedHeapNullableResultBoundary,
+  getEffectiveHostTaggedPrimitiveParamsByName,
+  getEffectiveHostTaggedPrimitiveResultKinds,
+  visitFunctionHostParamBoundaries,
+  visitFunctionHostResultBoundary,
+} from './host_boundary.ts';
 
 export interface TaggedHostBoundaryUsage {
   usesHostBoundary: boolean;
@@ -27,33 +37,34 @@ export function getTaggedHostBoundaryUsage(module: CompilerModuleIR): TaggedHost
       .filter((representation) => representation.kind === 'specialized_object_representation')
       .map((representation) => [representation.name, representation]),
   );
-  const getSpecializedFieldKinds = (representationName: string): CompilerTaggedPrimitiveBoundaryKindsIR[] =>
+  const getSpecializedFieldKinds = (
+    representationName: string,
+  ): CompilerTaggedPrimitiveBoundaryKindsIR[] =>
     specializedRepresentationByName.get(representationName)?.fields
       .flatMap((field) => field.taggedPrimitiveKinds ? [field.taggedPrimitiveKinds] : []) ?? [];
-  const specializedParamFieldKinds = module.functions.flatMap((func) =>
-    [
-      ...(func.heapParamRepresentations ?? []).flatMap((boundary) =>
-        boundary.representation.kind === 'specialized_object_representation'
-          ? getSpecializedFieldKinds(boundary.representation.name)
-          : []
-      ),
-      ...(func.hostTaggedHeapNullableParams ?? []).flatMap((boundary) =>
-        boundary.representation.kind === 'specialized_object_representation'
-          ? getSpecializedFieldKinds(boundary.representation.name)
-          : []
-      ),
-    ]
-  );
-  const specializedResultFieldKinds = module.functions.flatMap((func) =>
-    [
-      ...(func.heapResultRepresentation?.kind === 'specialized_object_representation'
-        ? getSpecializedFieldKinds(func.heapResultRepresentation.name)
-        : []),
-      ...(func.hostTaggedHeapNullableResult?.representation.kind === 'specialized_object_representation'
-        ? getSpecializedFieldKinds(func.hostTaggedHeapNullableResult.representation.name)
-        : []),
-    ]
-  );
+  const specializedParamFieldKinds = module.functions.flatMap((func) => [
+    ...(func.heapParamRepresentations ?? []).flatMap((boundary) =>
+      boundary.representation.kind === 'specialized_object_representation'
+        ? getSpecializedFieldKinds(boundary.representation.name)
+        : []
+    ),
+    ...[...getEffectiveHostTaggedHeapNullableParamsByName(func).values()].flatMap((boundary) =>
+      boundary.representation.kind === 'specialized_object_representation'
+        ? getSpecializedFieldKinds(boundary.representation.name)
+        : []
+    ),
+  ]);
+  const specializedResultFieldKinds = module.functions.flatMap((func) => [
+    ...(func.heapResultRepresentation?.kind === 'specialized_object_representation'
+      ? getSpecializedFieldKinds(func.heapResultRepresentation.name)
+      : []),
+    ...(getEffectiveHostTaggedHeapNullableResultBoundary(func)?.representation.kind ===
+        'specialized_object_representation'
+      ? getSpecializedFieldKinds(
+        getEffectiveHostTaggedHeapNullableResultBoundary(func)!.representation.name,
+      )
+      : []),
+  ]);
   const fallbackTaggedHeapFieldKinds = module.functions.flatMap((func) =>
     (func.hostFallbackTaggedHeapProperties ?? []).map((property) => ({
       includesBoolean: property.includesBoolean,
@@ -63,8 +74,15 @@ export function getTaggedHostBoundaryUsage(module: CompilerModuleIR): TaggedHost
       includesUndefined: property.includesUndefined,
     }))
   );
-  const signatureById = new Map((module.closureSignatures ?? []).map((signature) => [signature.id, signature]));
-  const closureUsageById = new Map<number, { needsParamBoundary: boolean; needsResultBoundary: boolean }>();
+  const signatureById = new Map(
+    (module.closureSignatures ?? []).map((signature) => [signature.id, signature]),
+  );
+  const closureUsageById = new Map<
+    number,
+    { needsParamBoundary: boolean; needsResultBoundary: boolean }
+  >();
+  const recursiveParamTaggedKinds: CompilerTaggedPrimitiveBoundaryKindsIR[] = [];
+  const recursiveResultTaggedKinds: CompilerTaggedPrimitiveBoundaryKindsIR[] = [];
   const markClosureUsage = (
     signatureId: number,
     flags: { needsParamBoundary?: boolean; needsResultBoundary?: boolean },
@@ -84,12 +102,110 @@ export function getTaggedHostBoundaryUsage(module: CompilerModuleIR): TaggedHost
     }
     return changed;
   };
-  for (const func of module.functions) {
-    for (const param of func.hostClosureParams ?? []) {
-      markClosureUsage(param.signatureId, { needsParamBoundary: true, needsResultBoundary: true });
+  const markSpecializedClosureUsage = (
+    representationName: string,
+    flags: { needsParamBoundary?: boolean; needsResultBoundary?: boolean },
+    visitedRepresentationNames: Set<string> = new Set(),
+  ): void => {
+    if (visitedRepresentationNames.has(representationName)) {
+      return;
     }
-    if (func.hostClosureResultSignatureId !== undefined) {
-      markClosureUsage(func.hostClosureResultSignatureId, {
+    visitedRepresentationNames.add(representationName);
+    const representation = specializedRepresentationByName.get(representationName);
+    if (!representation) {
+      return;
+    }
+    if (flags.needsParamBoundary || flags.needsResultBoundary) {
+      for (const field of representation.fields) {
+        if (field.closureSignatureId !== undefined) {
+          markClosureUsage(field.closureSignatureId, {
+            needsParamBoundary: true,
+            needsResultBoundary: true,
+          });
+        }
+      }
+    }
+    if (flags.needsResultBoundary) {
+      for (const method of representation.hostMethods ?? []) {
+        markClosureUsage(method.closureSignatureId, {
+          needsParamBoundary: true,
+          needsResultBoundary: true,
+        });
+      }
+    }
+    for (const field of representation.fields) {
+      const nestedRepresentationName = field.heapRepresentationName ??
+        field.heapArrayRepresentationName;
+      if (!nestedRepresentationName) {
+        continue;
+      }
+      markSpecializedClosureUsage(
+        nestedRepresentationName,
+        flags,
+        visitedRepresentationNames,
+      );
+    }
+  };
+  for (const func of module.functions) {
+    visitFunctionHostParamBoundaries(func, (boundary) => {
+      if (boundary.kind === 'tagged') {
+        recursiveParamTaggedKinds.push(boundary);
+      }
+      if (boundary.kind === 'closure') {
+        markClosureUsage(boundary.signatureId, {
+          needsParamBoundary: true,
+          needsResultBoundary: true,
+        });
+      }
+    });
+    visitFunctionHostResultBoundary(func, (boundary) => {
+      if (boundary.kind === 'tagged') {
+        recursiveResultTaggedKinds.push(boundary);
+      }
+      if (boundary.kind === 'closure') {
+        markClosureUsage(boundary.signatureId, {
+          needsParamBoundary: true,
+          needsResultBoundary: true,
+        });
+      }
+    });
+    for (const signatureId of getEffectiveHostClosureParamsByName(func).values()) {
+      markClosureUsage(signatureId, { needsParamBoundary: true, needsResultBoundary: true });
+    }
+    const hostClosureResultSignatureId = getEffectiveHostClosureResultSignatureId(func);
+    if (hostClosureResultSignatureId !== undefined) {
+      markClosureUsage(hostClosureResultSignatureId, {
+        needsParamBoundary: true,
+        needsResultBoundary: true,
+      });
+    }
+    for (const boundary of func.heapParamRepresentations ?? []) {
+      if (boundary.representation.kind === 'specialized_object_representation') {
+        markSpecializedClosureUsage(boundary.representation.name, {
+          needsParamBoundary: true,
+        });
+      }
+    }
+    for (const boundary of getEffectiveHostTaggedHeapNullableParamsByName(func).values()) {
+      if (boundary.representation.kind === 'specialized_object_representation') {
+        markSpecializedClosureUsage(boundary.representation.name, {
+          needsParamBoundary: true,
+        });
+      }
+    }
+    if (func.heapResultRepresentation?.kind === 'specialized_object_representation') {
+      markSpecializedClosureUsage(func.heapResultRepresentation.name, {
+        needsResultBoundary: true,
+      });
+    }
+    const hostTaggedHeapNullableResult = getEffectiveHostTaggedHeapNullableResultBoundary(func);
+    if (hostTaggedHeapNullableResult?.representation.kind === 'specialized_object_representation') {
+      markSpecializedClosureUsage(hostTaggedHeapNullableResult.representation.name, {
+        needsResultBoundary: true,
+      });
+    }
+    for (const property of func.hostFallbackClosureProperties ?? []) {
+      markClosureUsage(property.signatureId, {
         needsParamBoundary: true,
         needsResultBoundary: true,
       });
@@ -131,163 +247,257 @@ export function getTaggedHostBoundaryUsage(module: CompilerModuleIR): TaggedHost
     }
   }
 
-  const usesParamBoundary = module.functions.some((func) => (func.hostTaggedPrimitiveParams?.length ?? 0) > 0);
-  const usesResultBoundary = module.functions.some((func) => func.hostTaggedPrimitiveResultKinds !== undefined);
-  const usesParamStringBoundary = module.functions.some((func) =>
-    func.hostTaggedPrimitiveParams?.some((param) => param.includesString === true) === true
-  );
-  const usesResultStringBoundary = module.functions.some((func) =>
-    func.hostTaggedPrimitiveResultKinds?.includesString === true
-  );
-  const usesParamNumberBoundary = module.functions.some((func) =>
-    func.hostTaggedPrimitiveParams?.some((param) => param.includesNumber === true) === true
-  );
-  const usesResultNumberBoundary = module.functions.some((func) =>
-    func.hostTaggedPrimitiveResultKinds?.includesNumber === true
-  );
-  const usesParamBooleanBoundary = module.functions.some((func) =>
-    func.hostTaggedPrimitiveParams?.some((param) => param.includesBoolean === true) === true
-  );
-  const usesResultBooleanBoundary = module.functions.some((func) =>
-    func.hostTaggedPrimitiveResultKinds?.includesBoolean === true
-  );
-  const usesParamUndefinedBoundary = module.functions.some((func) =>
-    func.hostTaggedPrimitiveParams?.some((param) => param.includesUndefined === true) === true ||
-    func.hostTaggedHeapNullableParams?.some((param) => param.includesUndefined === true) === true
-  );
-  const usesResultUndefinedBoundary = module.functions.some((func) =>
-    func.hostTaggedPrimitiveResultKinds?.includesUndefined === true ||
-    func.hostTaggedHeapNullableResult?.includesUndefined === true
-  );
-  const usesParamNullBoundary = module.functions.some((func) =>
-    func.hostTaggedPrimitiveParams?.some((param) => param.includesNull === true) === true ||
-    func.hostTaggedHeapNullableParams?.some((param) => param.includesNull === true) === true
-  );
-  const usesResultNullBoundary = module.functions.some((func) =>
-    func.hostTaggedPrimitiveResultKinds?.includesNull === true ||
-    func.hostTaggedHeapNullableResult?.includesNull === true
-  );
-  const closureUsesParamStringBoundary = [...closureUsageById.entries()].some(([signatureId, usage]) =>
+  const usesParamBoundary = recursiveParamTaggedKinds.length > 0 ||
+    module.functions.some((func) => getEffectiveHostTaggedPrimitiveParamsByName(func).size > 0);
+  const usesResultBoundary = recursiveResultTaggedKinds.length > 0 ||
+    module.functions.some((func) => getEffectiveHostTaggedPrimitiveResultKinds(func) !== undefined);
+  const usesParamStringBoundary =
+    module.functions.some((func) =>
+      [...getEffectiveHostTaggedPrimitiveParamsByName(func).values()].some((param) =>
+        param.includesString === true
+      )
+    ) || recursiveParamTaggedKinds.some((kinds) => kinds.includesString === true);
+  const usesResultStringBoundary =
+    module.functions.some((func) =>
+      getEffectiveHostTaggedPrimitiveResultKinds(func)?.includesString === true
+    ) ||
+    recursiveResultTaggedKinds.some((kinds) => kinds.includesString === true);
+  const usesParamNumberBoundary =
+    module.functions.some((func) =>
+      [...getEffectiveHostTaggedPrimitiveParamsByName(func).values()].some((param) =>
+        param.includesNumber === true
+      )
+    ) || recursiveParamTaggedKinds.some((kinds) => kinds.includesNumber === true);
+  const usesResultNumberBoundary =
+    module.functions.some((func) =>
+      getEffectiveHostTaggedPrimitiveResultKinds(func)?.includesNumber === true
+    ) ||
+    recursiveResultTaggedKinds.some((kinds) => kinds.includesNumber === true);
+  const usesParamBooleanBoundary =
+    module.functions.some((func) =>
+      [...getEffectiveHostTaggedPrimitiveParamsByName(func).values()].some((param) =>
+        param.includesBoolean === true
+      )
+    ) || recursiveParamTaggedKinds.some((kinds) => kinds.includesBoolean === true);
+  const usesResultBooleanBoundary =
+    module.functions.some((func) =>
+      getEffectiveHostTaggedPrimitiveResultKinds(func)?.includesBoolean === true
+    ) || recursiveResultTaggedKinds.some((kinds) => kinds.includesBoolean === true);
+  const usesParamUndefinedBoundary =
+    module.functions.some((func) =>
+      [...getEffectiveHostTaggedPrimitiveParamsByName(func).values()].some((param) =>
+        param.includesUndefined === true
+      ) ||
+      [...getEffectiveHostTaggedHeapNullableParamsByName(func).values()].some((param) =>
+        param.includesUndefined === true
+      )
+    ) || recursiveParamTaggedKinds.some((kinds) => kinds.includesUndefined === true);
+  const usesResultUndefinedBoundary =
+    module.functions.some((func) =>
+      getEffectiveHostTaggedPrimitiveResultKinds(func)?.includesUndefined === true ||
+      getEffectiveHostTaggedHeapNullableResultBoundary(func)?.includesUndefined === true
+    ) || recursiveResultTaggedKinds.some((kinds) => kinds.includesUndefined === true);
+  const usesParamNullBoundary =
+    module.functions.some((func) =>
+      [...getEffectiveHostTaggedPrimitiveParamsByName(func).values()].some((param) =>
+        param.includesNull === true
+      ) ||
+      [...getEffectiveHostTaggedHeapNullableParamsByName(func).values()].some((param) =>
+        param.includesNull === true
+      )
+    ) || recursiveParamTaggedKinds.some((kinds) => kinds.includesNull === true);
+  const usesResultNullBoundary =
+    module.functions.some((func) =>
+      getEffectiveHostTaggedPrimitiveResultKinds(func)?.includesNull === true ||
+      getEffectiveHostTaggedHeapNullableResultBoundary(func)?.includesNull === true
+    ) || recursiveResultTaggedKinds.some((kinds) => kinds.includesNull === true);
+  const closureUsesParamStringBoundary = [...closureUsageById.entries()].some((
+    [signatureId, usage],
+  ) =>
     usage.needsParamBoundary &&
-    signatureById.get(signatureId)?.paramTaggedPrimitiveKinds?.some((kinds) => kinds?.includesString === true) === true
+    signatureById.get(signatureId)?.paramTaggedPrimitiveKinds?.some((kinds) =>
+        kinds?.includesString === true
+      ) === true
   );
-  const closureUsesResultStringBoundary = [...closureUsageById.entries()].some(([signatureId, usage]) =>
-    usage.needsResultBoundary && signatureById.get(signatureId)?.resultTaggedPrimitiveKinds?.includesString === true
+  const closureUsesResultStringBoundary = [...closureUsageById.entries()].some((
+    [signatureId, usage],
+  ) =>
+    usage.needsResultBoundary &&
+    signatureById.get(signatureId)?.resultTaggedPrimitiveKinds?.includesString === true
   );
-  const closureUsesParamNumberBoundary = [...closureUsageById.entries()].some(([signatureId, usage]) =>
+  const closureUsesParamNumberBoundary = [...closureUsageById.entries()].some((
+    [signatureId, usage],
+  ) =>
     usage.needsParamBoundary &&
-    signatureById.get(signatureId)?.paramTaggedPrimitiveKinds?.some((kinds) => kinds?.includesNumber === true) === true
+    signatureById.get(signatureId)?.paramTaggedPrimitiveKinds?.some((kinds) =>
+        kinds?.includesNumber === true
+      ) === true
   );
-  const closureUsesResultNumberBoundary = [...closureUsageById.entries()].some(([signatureId, usage]) =>
-    usage.needsResultBoundary && signatureById.get(signatureId)?.resultTaggedPrimitiveKinds?.includesNumber === true
+  const closureUsesResultNumberBoundary = [...closureUsageById.entries()].some((
+    [signatureId, usage],
+  ) =>
+    usage.needsResultBoundary &&
+    signatureById.get(signatureId)?.resultTaggedPrimitiveKinds?.includesNumber === true
   );
-  const closureUsesParamBooleanBoundary = [...closureUsageById.entries()].some(([signatureId, usage]) =>
+  const closureUsesParamBooleanBoundary = [...closureUsageById.entries()].some((
+    [signatureId, usage],
+  ) =>
     usage.needsParamBoundary &&
-    signatureById.get(signatureId)?.paramTaggedPrimitiveKinds?.some((kinds) => kinds?.includesBoolean === true) === true
+    signatureById.get(signatureId)?.paramTaggedPrimitiveKinds?.some((kinds) =>
+        kinds?.includesBoolean === true
+      ) === true
   );
-  const closureUsesResultBooleanBoundary = [...closureUsageById.entries()].some(([signatureId, usage]) =>
-    usage.needsResultBoundary && signatureById.get(signatureId)?.resultTaggedPrimitiveKinds?.includesBoolean === true
+  const closureUsesResultBooleanBoundary = [...closureUsageById.entries()].some((
+    [signatureId, usage],
+  ) =>
+    usage.needsResultBoundary &&
+    signatureById.get(signatureId)?.resultTaggedPrimitiveKinds?.includesBoolean === true
   );
-  const closureUsesParamUndefinedBoundary = [...closureUsageById.entries()].some(([signatureId, usage]) =>
+  const closureUsesParamUndefinedBoundary = [...closureUsageById.entries()].some((
+    [signatureId, usage],
+  ) =>
     usage.needsParamBoundary &&
-    signatureById.get(signatureId)?.paramTaggedPrimitiveKinds?.some((kinds) => kinds?.includesUndefined === true) === true
+    signatureById.get(signatureId)?.paramTaggedPrimitiveKinds?.some((kinds) =>
+        kinds?.includesUndefined === true
+      ) === true
   );
-  const closureUsesResultUndefinedBoundary = [...closureUsageById.entries()].some(([signatureId, usage]) =>
-    usage.needsResultBoundary && signatureById.get(signatureId)?.resultTaggedPrimitiveKinds?.includesUndefined === true
+  const closureUsesResultUndefinedBoundary = [...closureUsageById.entries()].some((
+    [signatureId, usage],
+  ) =>
+    usage.needsResultBoundary &&
+    signatureById.get(signatureId)?.resultTaggedPrimitiveKinds?.includesUndefined === true
   );
-  const closureUsesParamNullBoundary = [...closureUsageById.entries()].some(([signatureId, usage]) =>
+  const closureUsesParamNullBoundary = [...closureUsageById.entries()].some((
+    [signatureId, usage],
+  ) =>
     usage.needsParamBoundary &&
-    signatureById.get(signatureId)?.paramTaggedPrimitiveKinds?.some((kinds) => kinds?.includesNull === true) === true
+    signatureById.get(signatureId)?.paramTaggedPrimitiveKinds?.some((kinds) =>
+        kinds?.includesNull === true
+      ) === true
   );
-  const closureUsesResultNullBoundary = [...closureUsageById.entries()].some(([signatureId, usage]) =>
-    usage.needsResultBoundary && signatureById.get(signatureId)?.resultTaggedPrimitiveKinds?.includesNull === true
+  const closureUsesResultNullBoundary = [...closureUsageById.entries()].some((
+    [signatureId, usage],
+  ) =>
+    usage.needsResultBoundary &&
+    signatureById.get(signatureId)?.resultTaggedPrimitiveKinds?.includesNull === true
   );
-  const usesSpecializedParamStringBoundary = specializedParamFieldKinds.some((kinds) => kinds.includesString === true);
-  const usesSpecializedResultStringBoundary = specializedResultFieldKinds.some((kinds) => kinds.includesString === true);
-  const usesFallbackTaggedStringBoundary = fallbackTaggedHeapFieldKinds.some((kinds) => kinds.includesString === true);
-  const usesSpecializedParamNumberBoundary = specializedParamFieldKinds.some((kinds) => kinds.includesNumber === true);
-  const usesSpecializedResultNumberBoundary = specializedResultFieldKinds.some((kinds) => kinds.includesNumber === true);
-  const usesFallbackTaggedNumberBoundary = fallbackTaggedHeapFieldKinds.some((kinds) => kinds.includesNumber === true);
-  const usesSpecializedParamBooleanBoundary = specializedParamFieldKinds.some((kinds) => kinds.includesBoolean === true);
-  const usesSpecializedResultBooleanBoundary = specializedResultFieldKinds.some((kinds) => kinds.includesBoolean === true);
-  const usesFallbackTaggedBooleanBoundary = fallbackTaggedHeapFieldKinds.some((kinds) => kinds.includesBoolean === true);
-  const usesSpecializedParamUndefinedBoundary = specializedParamFieldKinds.some((kinds) => kinds.includesUndefined === true);
-  const usesSpecializedResultUndefinedBoundary = specializedResultFieldKinds.some((kinds) => kinds.includesUndefined === true);
-  const usesFallbackTaggedUndefinedBoundary = fallbackTaggedHeapFieldKinds.some((kinds) => kinds.includesUndefined === true);
-  const usesSpecializedParamNullBoundary = specializedParamFieldKinds.some((kinds) => kinds.includesNull === true);
-  const usesSpecializedResultNullBoundary = specializedResultFieldKinds.some((kinds) => kinds.includesNull === true);
-  const usesFallbackTaggedNullBoundary = fallbackTaggedHeapFieldKinds.some((kinds) => kinds.includesNull === true);
+  const usesSpecializedParamStringBoundary = specializedParamFieldKinds.some((kinds) =>
+    kinds.includesString === true
+  );
+  const usesSpecializedResultStringBoundary = specializedResultFieldKinds.some((kinds) =>
+    kinds.includesString === true
+  );
+  const usesFallbackTaggedStringBoundary = fallbackTaggedHeapFieldKinds.some((kinds) =>
+    kinds.includesString === true
+  );
+  const usesSpecializedParamNumberBoundary = specializedParamFieldKinds.some((kinds) =>
+    kinds.includesNumber === true
+  );
+  const usesSpecializedResultNumberBoundary = specializedResultFieldKinds.some((kinds) =>
+    kinds.includesNumber === true
+  );
+  const usesFallbackTaggedNumberBoundary = fallbackTaggedHeapFieldKinds.some((kinds) =>
+    kinds.includesNumber === true
+  );
+  const usesSpecializedParamBooleanBoundary = specializedParamFieldKinds.some((kinds) =>
+    kinds.includesBoolean === true
+  );
+  const usesSpecializedResultBooleanBoundary = specializedResultFieldKinds.some((kinds) =>
+    kinds.includesBoolean === true
+  );
+  const usesFallbackTaggedBooleanBoundary = fallbackTaggedHeapFieldKinds.some((kinds) =>
+    kinds.includesBoolean === true
+  );
+  const usesSpecializedParamUndefinedBoundary = specializedParamFieldKinds.some((kinds) =>
+    kinds.includesUndefined === true
+  );
+  const usesSpecializedResultUndefinedBoundary = specializedResultFieldKinds.some((kinds) =>
+    kinds.includesUndefined === true
+  );
+  const usesFallbackTaggedUndefinedBoundary = fallbackTaggedHeapFieldKinds.some((kinds) =>
+    kinds.includesUndefined === true
+  );
+  const usesSpecializedParamNullBoundary = specializedParamFieldKinds.some((kinds) =>
+    kinds.includesNull === true
+  );
+  const usesSpecializedResultNullBoundary = specializedResultFieldKinds.some((kinds) =>
+    kinds.includesNull === true
+  );
+  const usesFallbackTaggedNullBoundary = fallbackTaggedHeapFieldKinds.some((kinds) =>
+    kinds.includesNull === true
+  );
 
   return {
-    usesHostBoundary:
-      usesParamBoundary ||
+    usesHostBoundary: usesParamBoundary ||
       usesResultBoundary ||
       specializedParamFieldKinds.length > 0 ||
       specializedResultFieldKinds.length > 0 ||
       fallbackTaggedHeapFieldKinds.length > 0 ||
-      module.functions.some((func) => (func.hostTaggedHeapNullableParams?.length ?? 0) > 0) ||
-      module.functions.some((func) => func.hostTaggedHeapNullableResult !== undefined) ||
+      module.functions.some((func) => getEffectiveHostTaggedHeapNullableParamsByName(func).size > 0) ||
+      module.functions.some((func) =>
+        getEffectiveHostTaggedHeapNullableResultBoundary(func) !== undefined
+      ) ||
       closureUsageById.size > 0,
-    usesParamBoundary:
-      usesParamBoundary ||
+    usesParamBoundary: usesParamBoundary ||
       specializedParamFieldKinds.length > 0 ||
       fallbackTaggedHeapFieldKinds.length > 0 ||
-      module.functions.some((func) => (func.hostTaggedHeapNullableParams?.length ?? 0) > 0) ||
+      module.functions.some((func) => getEffectiveHostTaggedHeapNullableParamsByName(func).size > 0) ||
       [...closureUsageById.values()].some((usage) => usage.needsParamBoundary),
-    usesResultBoundary:
-      usesResultBoundary ||
+    usesResultBoundary: usesResultBoundary ||
       specializedResultFieldKinds.length > 0 ||
       fallbackTaggedHeapFieldKinds.length > 0 ||
-      module.functions.some((func) => func.hostTaggedHeapNullableResult !== undefined) ||
+      module.functions.some((func) =>
+        getEffectiveHostTaggedHeapNullableResultBoundary(func) !== undefined
+      ) ||
       [...closureUsageById.values()].some((usage) => usage.needsResultBoundary),
-    usesParamStringBoundary:
-      usesParamStringBoundary || usesSpecializedParamStringBoundary || usesFallbackTaggedStringBoundary ||
+    usesParamStringBoundary: usesParamStringBoundary || usesSpecializedParamStringBoundary ||
+      usesFallbackTaggedStringBoundary ||
       closureUsesParamStringBoundary,
-    usesResultStringBoundary:
-      usesResultStringBoundary || usesSpecializedResultStringBoundary || usesFallbackTaggedStringBoundary ||
+    usesResultStringBoundary: usesResultStringBoundary || usesSpecializedResultStringBoundary ||
+      usesFallbackTaggedStringBoundary ||
       closureUsesResultStringBoundary,
-    usesStringBoundary:
-      usesParamStringBoundary || usesResultStringBoundary || usesSpecializedParamStringBoundary ||
+    usesStringBoundary: usesParamStringBoundary || usesResultStringBoundary ||
+      usesSpecializedParamStringBoundary ||
       usesSpecializedResultStringBoundary || usesFallbackTaggedStringBoundary ||
       closureUsesParamStringBoundary || closureUsesResultStringBoundary,
-    usesParamNumberBoundary:
-      usesParamNumberBoundary || usesSpecializedParamNumberBoundary || usesFallbackTaggedNumberBoundary ||
+    usesParamNumberBoundary: usesParamNumberBoundary || usesSpecializedParamNumberBoundary ||
+      usesFallbackTaggedNumberBoundary ||
       closureUsesParamNumberBoundary,
-    usesResultNumberBoundary:
-      usesResultNumberBoundary || usesSpecializedResultNumberBoundary || usesFallbackTaggedNumberBoundary ||
+    usesResultNumberBoundary: usesResultNumberBoundary || usesSpecializedResultNumberBoundary ||
+      usesFallbackTaggedNumberBoundary ||
       closureUsesResultNumberBoundary,
-    usesNumberBoundary:
-      usesParamNumberBoundary || usesResultNumberBoundary || usesSpecializedParamNumberBoundary ||
+    usesNumberBoundary: usesParamNumberBoundary || usesResultNumberBoundary ||
+      usesSpecializedParamNumberBoundary ||
       usesSpecializedResultNumberBoundary || usesFallbackTaggedNumberBoundary ||
       closureUsesParamNumberBoundary || closureUsesResultNumberBoundary,
-    usesParamBooleanBoundary:
-      usesParamBooleanBoundary || usesSpecializedParamBooleanBoundary || usesFallbackTaggedBooleanBoundary ||
+    usesParamBooleanBoundary: usesParamBooleanBoundary || usesSpecializedParamBooleanBoundary ||
+      usesFallbackTaggedBooleanBoundary ||
       closureUsesParamBooleanBoundary,
-    usesResultBooleanBoundary:
-      usesResultBooleanBoundary || usesSpecializedResultBooleanBoundary || usesFallbackTaggedBooleanBoundary ||
+    usesResultBooleanBoundary: usesResultBooleanBoundary || usesSpecializedResultBooleanBoundary ||
+      usesFallbackTaggedBooleanBoundary ||
       closureUsesResultBooleanBoundary,
-    usesBooleanBoundary:
-      usesParamBooleanBoundary || usesResultBooleanBoundary || usesSpecializedParamBooleanBoundary ||
+    usesBooleanBoundary: usesParamBooleanBoundary || usesResultBooleanBoundary ||
+      usesSpecializedParamBooleanBoundary ||
       usesSpecializedResultBooleanBoundary || usesFallbackTaggedBooleanBoundary ||
       closureUsesParamBooleanBoundary || closureUsesResultBooleanBoundary,
-    usesParamUndefinedBoundary:
-      usesParamUndefinedBoundary || usesSpecializedParamUndefinedBoundary ||
+    usesParamUndefinedBoundary: usesParamUndefinedBoundary ||
+      usesSpecializedParamUndefinedBoundary ||
       usesFallbackTaggedUndefinedBoundary || closureUsesParamUndefinedBoundary,
-    usesResultUndefinedBoundary:
-      usesResultUndefinedBoundary || usesSpecializedResultUndefinedBoundary ||
+    usesResultUndefinedBoundary: usesResultUndefinedBoundary ||
+      usesSpecializedResultUndefinedBoundary ||
       usesFallbackTaggedUndefinedBoundary || closureUsesResultUndefinedBoundary,
-    usesUndefinedBoundary:
-      usesParamUndefinedBoundary || usesResultUndefinedBoundary || usesSpecializedParamUndefinedBoundary ||
+    usesUndefinedBoundary: usesParamUndefinedBoundary || usesResultUndefinedBoundary ||
+      usesSpecializedParamUndefinedBoundary ||
       usesSpecializedResultUndefinedBoundary || usesFallbackTaggedUndefinedBoundary ||
       closureUsesParamUndefinedBoundary || closureUsesResultUndefinedBoundary,
-    usesParamNullBoundary:
-      usesParamNullBoundary || usesSpecializedParamNullBoundary || usesFallbackTaggedNullBoundary ||
+    usesParamNullBoundary: usesParamNullBoundary || usesSpecializedParamNullBoundary ||
+      usesFallbackTaggedNullBoundary ||
       closureUsesParamNullBoundary,
-    usesResultNullBoundary:
-      usesResultNullBoundary || usesSpecializedResultNullBoundary || usesFallbackTaggedNullBoundary ||
+    usesResultNullBoundary: usesResultNullBoundary || usesSpecializedResultNullBoundary ||
+      usesFallbackTaggedNullBoundary ||
       closureUsesResultNullBoundary,
-    usesNullBoundary:
-      usesParamNullBoundary || usesResultNullBoundary || usesSpecializedParamNullBoundary ||
+    usesNullBoundary: usesParamNullBoundary || usesResultNullBoundary ||
+      usesSpecializedParamNullBoundary ||
       usesSpecializedResultNullBoundary || usesFallbackTaggedNullBoundary ||
       closureUsesParamNullBoundary || closureUsesResultNullBoundary,
   };

@@ -8,6 +8,13 @@ import {
   emitHostTaggedPrimitiveExternrefToTagged,
   emitTaggedPrimitiveToHostExternref,
 } from './wat_tagged.ts';
+import {
+  getEffectiveHostTaggedArrayParamsByName,
+  getEffectiveHostTaggedArrayResultKinds,
+  getTaggedArrayBoundaryFromHostBoundary,
+  visitFunctionHostParamBoundaries,
+  visitFunctionHostResultBoundary,
+} from './host_boundary.ts';
 
 export interface BackendStringRuntimeLayoutLike {
   fallbackCodeUnitArrayWatTypeId: string;
@@ -159,11 +166,15 @@ export function emitArrayRuntimeImports(usage: ArrayRuntimeImportUsage): string[
     return [];
   }
 
-  const usesAnyParamBoundary = usesHeapParamBoundary || usesStringParamBoundary || usesNumberParamBoundary ||
+  const usesAnyParamBoundary = usesHeapParamBoundary || usesStringParamBoundary ||
+    usesNumberParamBoundary ||
     usesBooleanParamBoundary || usesTaggedParamBoundary;
-  const usesAnyHeapBoundary = usesHeapParamBoundary || usesHeapParamCopyBack || usesHeapResultBoundary;
-  const usesAnyParamCopyBack = usesHeapParamCopyBack || usesStringParamCopyBack || usesNumberParamCopyBack ||
-    usesBooleanParamCopyBack || usesTaggedParamCopyBack || usesTaggedResultBoundary || usesAnyParamBoundary;
+  const usesAnyHeapBoundary = usesHeapParamBoundary || usesHeapParamCopyBack ||
+    usesHeapResultBoundary;
+  const usesAnyParamCopyBack = usesHeapParamCopyBack || usesStringParamCopyBack ||
+    usesNumberParamCopyBack ||
+    usesBooleanParamCopyBack || usesTaggedParamCopyBack || usesTaggedResultBoundary ||
+    usesAnyParamBoundary;
 
   return [
     ...(usesAnyParamBoundary || usesAnyHeapBoundary
@@ -177,7 +188,8 @@ export function emitArrayRuntimeImports(usage: ArrayRuntimeImportUsage): string[
         '(import "soundscript_array" "get" (func $host_array_get (param externref) (param i32) (result externref)))',
       ]
       : []),
-    ...(usesHeapResultBoundary || usesHeapParamCopyBack || usesStringParamBoundary || usesStringResultBoundary ||
+    ...(usesHeapResultBoundary || usesHeapParamCopyBack || usesStringParamBoundary ||
+        usesStringResultBoundary ||
         usesTaggedParamBoundary || usesTaggedParamCopyBack || usesTaggedResultBoundary
       ? [
         '(import "soundscript_array" "push" (func $host_array_push (param externref) (param externref)))',
@@ -223,7 +235,9 @@ export function emitArrayRuntimeImports(usage: ArrayRuntimeImportUsage): string[
   ];
 }
 
-function getOwnedArrayDataWatTypeName(kind: 'heap' | 'string' | 'number' | 'boolean' | 'tagged'): string {
+function getOwnedArrayDataWatTypeName(
+  kind: 'heap' | 'string' | 'number' | 'boolean' | 'tagged',
+): string {
   switch (kind) {
     case 'heap':
       return 'owned_heap_array_data';
@@ -238,7 +252,9 @@ function getOwnedArrayDataWatTypeName(kind: 'heap' | 'string' | 'number' | 'bool
   }
 }
 
-function getOwnedArrayWatTypeName(kind: 'heap' | 'string' | 'number' | 'boolean' | 'tagged'): string {
+function getOwnedArrayWatTypeName(
+  kind: 'heap' | 'string' | 'number' | 'boolean' | 'tagged',
+): string {
   switch (kind) {
     case 'heap':
       return 'owned_heap_array';
@@ -288,7 +304,9 @@ export function emitOwnedArrayTypes(usage: OwnedArrayTypeUsage): string[] {
   return lines;
 }
 
-export function getOwnedArrayToHostHelperName(kind: 'string' | 'number' | 'boolean' | 'tagged'): string {
+export function getOwnedArrayToHostHelperName(
+  kind: 'string' | 'number' | 'boolean' | 'tagged',
+): string {
   switch (kind) {
     case 'string':
       return 'owned_string_array_to_host_array';
@@ -378,7 +396,9 @@ function getOwnedArrayUnshiftHelperName(kind: 'string' | 'number' | 'boolean' | 
   }
 }
 
-function getOwnedArrayPopHelperName(kind: 'heap' | 'string' | 'number' | 'boolean' | 'tagged'): string {
+function getOwnedArrayPopHelperName(
+  kind: 'heap' | 'string' | 'number' | 'boolean' | 'tagged',
+): string {
   switch (kind) {
     case 'heap':
       return 'owned_heap_array_pop';
@@ -393,7 +413,9 @@ function getOwnedArrayPopHelperName(kind: 'heap' | 'string' | 'number' | 'boolea
   }
 }
 
-function getOwnedArrayShiftHelperName(kind: 'heap' | 'string' | 'number' | 'boolean' | 'tagged'): string {
+function getOwnedArrayShiftHelperName(
+  kind: 'heap' | 'string' | 'number' | 'boolean' | 'tagged',
+): string {
   switch (kind) {
     case 'heap':
       return 'owned_heap_array_shift';
@@ -408,7 +430,9 @@ function getOwnedArrayShiftHelperName(kind: 'heap' | 'string' | 'number' | 'bool
   }
 }
 
-function getOwnedArrayAtHelperName(kind: 'heap' | 'string' | 'number' | 'boolean' | 'tagged'): string {
+function getOwnedArrayAtHelperName(
+  kind: 'heap' | 'string' | 'number' | 'boolean' | 'tagged',
+): string {
   switch (kind) {
     case 'heap':
       return 'owned_heap_array_at';
@@ -583,7 +607,9 @@ function getOwnedArrayLastIndexOfHelperName(
   }
 }
 
-function getOwnedArrayBoundaryLabelPrefix(kind: 'string' | 'number' | 'boolean' | 'tagged'): string {
+function getOwnedArrayBoundaryLabelPrefix(
+  kind: 'string' | 'number' | 'boolean' | 'tagged',
+): string {
   switch (kind) {
     case 'string':
       return 'array';
@@ -687,16 +713,19 @@ function emitHostArrayElementToOwnedBackingLines(
       ];
     }
     if (!createUnsupportedHeapRuntimeBackendError) {
-      throw new Error('Tagged heap-array host-to-owned helpers require backend error construction.');
+      throw new Error(
+        'Tagged heap-array host-to-owned helpers require backend error construction.',
+      );
     }
-    const specializedWatTypeId = taggedKinds.representation.kind === 'specialized_object_representation'
-      ? layoutsByRepresentationName?.get(taggedKinds.representation.name)?.watTypeId ??
-        (() => {
-          throw createUnsupportedHeapRuntimeBackendError(
-            `Missing specialized object layout for tagged array boundary ${taggedKinds.representation.name}.`,
-          );
-        })()
-      : undefined;
+    const specializedWatTypeId =
+      taggedKinds.representation.kind === 'specialized_object_representation'
+        ? layoutsByRepresentationName?.get(taggedKinds.representation.name)?.watTypeId ??
+          (() => {
+            throw createUnsupportedHeapRuntimeBackendError(
+              `Missing specialized object layout for tagged array boundary ${taggedKinds.representation.name}.`,
+            );
+          })()
+        : undefined;
     return [
       `${indent(3)}local.get $${sourceLocalName}`,
       `${indent(3)}local.get $${indexLocalName}`,
@@ -853,16 +882,19 @@ function emitOwnedBackingElementToHostArrayLines(
       ];
     }
     if (!createUnsupportedHeapRuntimeBackendError) {
-      throw new Error('Tagged heap-array owned-to-host helpers require backend error construction.');
+      throw new Error(
+        'Tagged heap-array owned-to-host helpers require backend error construction.',
+      );
     }
-    const specializedWatTypeId = taggedKinds.representation.kind === 'specialized_object_representation'
-      ? layoutsByRepresentationName?.get(taggedKinds.representation.name)?.watTypeId ??
-        (() => {
-          throw createUnsupportedHeapRuntimeBackendError(
-            `Missing specialized object layout for tagged array boundary ${taggedKinds.representation.name}.`,
-          );
-        })()
-      : undefined;
+    const specializedWatTypeId =
+      taggedKinds.representation.kind === 'specialized_object_representation'
+        ? layoutsByRepresentationName?.get(taggedKinds.representation.name)?.watTypeId ??
+          (() => {
+            throw createUnsupportedHeapRuntimeBackendError(
+              `Missing specialized object layout for tagged array boundary ${taggedKinds.representation.name}.`,
+            );
+          })()
+        : undefined;
     const fallbackWatTypeId = taggedKinds.representation.kind === 'fallback_object_representation'
       ? fallbackObjectWatTypeId ??
         (() => {
@@ -948,7 +980,7 @@ function emitOwnedBackingElementToHostArrayLines(
           `${indent(4)}(if`,
           `${indent(5)}(then`,
           `${indent(6)}local.get $element_tagged`,
-          `${indent(6)}call $untag_string`,
+          `${indent(6)}call $untag_owned_string`,
           `${indent(6)}ref.cast (ref null $${stringRuntimeLayout!.runtimeWatTypeId})`,
           `${indent(6)}call $owned_string_to_host`,
           `${indent(6)}local.set $element_host`,
@@ -1073,16 +1105,19 @@ function emitCopyOwnedArrayToHostArrayHelper(
   const copyElementLines = kind === 'tagged' && taggedKinds?.representation
     ? (() => {
       if (!createUnsupportedHeapRuntimeBackendError) {
-        throw new Error('Tagged heap-array owned-to-host copy helpers require backend error construction.');
+        throw new Error(
+          'Tagged heap-array owned-to-host copy helpers require backend error construction.',
+        );
       }
-      const specializedWatTypeId = taggedKinds.representation.kind === 'specialized_object_representation'
-        ? layoutsByRepresentationName?.get(taggedKinds.representation.name)?.watTypeId ??
-          (() => {
-            throw createUnsupportedHeapRuntimeBackendError(
-              `Missing specialized object layout for tagged array boundary ${taggedKinds.representation.name}.`,
-            );
-          })()
-        : undefined;
+      const specializedWatTypeId =
+        taggedKinds.representation.kind === 'specialized_object_representation'
+          ? layoutsByRepresentationName?.get(taggedKinds.representation.name)?.watTypeId ??
+            (() => {
+              throw createUnsupportedHeapRuntimeBackendError(
+                `Missing specialized object layout for tagged array boundary ${taggedKinds.representation.name}.`,
+              );
+            })()
+          : undefined;
       const fallbackWatTypeId = taggedKinds.representation.kind === 'fallback_object_representation'
         ? fallbackObjectWatTypeId ??
           (() => {
@@ -1168,7 +1203,7 @@ function emitCopyOwnedArrayToHostArrayHelper(
             `${indent(4)}(if`,
             `${indent(5)}(then`,
             `${indent(6)}local.get $element_tagged`,
-            `${indent(6)}call $untag_string`,
+            `${indent(6)}call $untag_owned_string`,
             `${indent(6)}ref.cast (ref null $${stringRuntimeLayout!.runtimeWatTypeId})`,
             `${indent(6)}call $owned_string_to_host`,
             `${indent(6)}local.set $element_host`,
@@ -1193,7 +1228,9 @@ function emitCopyOwnedArrayToHostArrayHelper(
             `${indent(7)}local.get $element_tagged`,
             `${indent(7)}call $untag_heap_object`,
             `${indent(7)}ref.cast (ref null $${specializedWatTypeId!})`,
-            `${indent(7)}call $${getTaggedArraySpecializedObjectToHostHelperName(specializedWatTypeId!)}`,
+            `${indent(7)}call $${
+              getTaggedArraySpecializedObjectToHostHelperName(specializedWatTypeId!)
+            }`,
             `${indent(7)}local.set $element_host`,
           ]
           : [
@@ -1210,7 +1247,9 @@ function emitCopyOwnedArrayToHostArrayHelper(
             `${indent(7)}local.get $element_tagged`,
             `${indent(7)}call $untag_heap_object`,
             `${indent(7)}ref.cast (ref null $${specializedWatTypeId!})`,
-            `${indent(7)}call $${getTaggedArrayCopySpecializedObjectToHostHelperName(specializedWatTypeId!)}`,
+            `${indent(7)}call $${
+              getTaggedArrayCopySpecializedObjectToHostHelperName(specializedWatTypeId!)
+            }`,
           ]
           : [
             `${indent(7)}local.get $element_host`,
@@ -1295,14 +1334,16 @@ function emitHostArrayToOwnedTaggedArrayHelper(
     layoutsByRepresentationName,
     createUnsupportedHeapRuntimeBackendError,
   );
-  lines[0] =
-    `(func $${getHostArrayToOwnedTaggedArrayHelperName(kinds)} (param $value externref) (result (ref null $owned_tagged_array))`;
+  lines[0] = `(func $${
+    getHostArrayToOwnedTaggedArrayHelperName(kinds)
+  } (param $value externref) (result (ref null $owned_tagged_array))`;
   return lines;
 }
 
 function emitCopyOwnedTaggedArrayToHostArrayHelper(
   kinds: CompilerFunctionHostTaggedArrayBoundaryIR,
   indent: (level: number) => string,
+  stringRuntimeLayout?: BackendStringRuntimeLayoutLike,
   layoutsByRepresentationName?: ReadonlyMap<string, { watTypeId: string }>,
   fallbackObjectWatTypeId?: string,
   createUnsupportedHeapRuntimeBackendError?: (message: string) => CompilerUnsupportedError,
@@ -1310,14 +1351,15 @@ function emitCopyOwnedTaggedArrayToHostArrayHelper(
   const lines = emitCopyOwnedArrayToHostArrayHelper(
     'tagged',
     indent,
-    undefined,
+    stringRuntimeLayout,
     kinds,
     layoutsByRepresentationName,
     fallbackObjectWatTypeId,
     createUnsupportedHeapRuntimeBackendError,
   );
-  lines[0] =
-    `(func $${getCopyOwnedTaggedArrayToHostHelperName(kinds)} (param $target externref) (param $value (ref null $owned_tagged_array))`;
+  lines[0] = `(func $${
+    getCopyOwnedTaggedArrayToHostHelperName(kinds)
+  } (param $target externref) (param $value (ref null $owned_tagged_array))`;
   return lines;
 }
 
@@ -1338,8 +1380,9 @@ function emitOwnedTaggedArrayToHostArrayHelper(
     fallbackObjectWatTypeId,
     createUnsupportedHeapRuntimeBackendError,
   );
-  lines[0] =
-    `(func $${getOwnedTaggedArrayToHostHelperName(kinds)} (param $value (ref null $owned_tagged_array)) (result externref)`;
+  lines[0] = `(func $${
+    getOwnedTaggedArrayToHostHelperName(kinds)
+  } (param $value (ref null $owned_tagged_array)) (result externref)`;
   return lines;
 }
 
@@ -1355,11 +1398,27 @@ function collectTaggedArrayBoundaryKindSets(
 ): readonly CompilerFunctionHostTaggedArrayBoundaryIR[] {
   const sets = new Map<string, CompilerFunctionHostTaggedArrayBoundaryIR>();
   for (const func of module.functions) {
-    for (const param of func.hostTaggedArrayParams ?? []) {
+    visitFunctionHostParamBoundaries(func, (boundary) => {
+      const taggedArrayBoundary = getTaggedArrayBoundaryFromHostBoundary(boundary);
+      if (taggedArrayBoundary) {
+        sets.set(getTaggedArrayKindsSuffix(taggedArrayBoundary), taggedArrayBoundary);
+      }
+    });
+    visitFunctionHostResultBoundary(func, (boundary) => {
+      const taggedArrayBoundary = getTaggedArrayBoundaryFromHostBoundary(boundary);
+      if (taggedArrayBoundary) {
+        sets.set(getTaggedArrayKindsSuffix(taggedArrayBoundary), taggedArrayBoundary);
+      }
+    });
+    for (const param of getEffectiveHostTaggedArrayParamsByName(func).values()) {
       sets.set(getTaggedArrayKindsSuffix(param), param);
     }
-    if (func.hostTaggedArrayResultKinds) {
-      sets.set(getTaggedArrayKindsSuffix(func.hostTaggedArrayResultKinds), func.hostTaggedArrayResultKinds);
+    const hostTaggedArrayResultKinds = getEffectiveHostTaggedArrayResultKinds(func);
+    if (hostTaggedArrayResultKinds) {
+      sets.set(
+        getTaggedArrayKindsSuffix(hostTaggedArrayResultKinds),
+        hostTaggedArrayResultKinds,
+      );
     }
     for (const property of func.hostFallbackTaggedArrayProperties ?? []) {
       sets.set(getTaggedArrayKindsSuffix(property), property);
@@ -1407,7 +1466,9 @@ function emitOwnedArrayToHostArrayHelper(
   const dataTypeName = getOwnedArrayDataWatTypeName(kind);
   const labelPrefix = getOwnedArrayBoundaryLabelPrefix(kind);
   return [
-    `(func $${getOwnedArrayToHostHelperName(kind)} (param $value (ref null $${wrapperTypeName})) (result externref)`,
+    `(func $${
+      getOwnedArrayToHostHelperName(kind)
+    } (param $value (ref null $${wrapperTypeName})) (result externref)`,
     `${indent(1)}(local $length i32)`,
     `${indent(1)}(local $index i32)`,
     `${indent(1)}(local $result externref)`,
@@ -1466,7 +1527,9 @@ function emitOwnedArrayPushHelper(
   const wrapperTypeName = getOwnedArrayWatTypeName(kind);
   const dataTypeName = getOwnedArrayDataWatTypeName(kind);
   return [
-    `(func $${getOwnedArrayPushHelperName(kind)} (param $array (ref null $${wrapperTypeName})) (param $value ${
+    `(func $${
+      getOwnedArrayPushHelperName(kind)
+    } (param $array (ref null $${wrapperTypeName})) (param $value ${
       getOwnedArrayPushValueWatType(kind)
     }) (result f64)`,
     `${indent(1)}(local $old_backing (ref null $${dataTypeName}))`,
@@ -1527,7 +1590,9 @@ function emitOwnedArrayUnshiftHelper(
   const wrapperTypeName = getOwnedArrayWatTypeName(kind);
   const dataTypeName = getOwnedArrayDataWatTypeName(kind);
   return [
-    `(func $${getOwnedArrayUnshiftHelperName(kind)} (param $array (ref null $${wrapperTypeName})) (param $value ${
+    `(func $${
+      getOwnedArrayUnshiftHelperName(kind)
+    } (param $array (ref null $${wrapperTypeName})) (param $value ${
       getOwnedArrayPushValueWatType(kind)
     }) (result f64)`,
     `${indent(1)}(local $old_backing (ref null $${dataTypeName}))`,
@@ -2445,7 +2510,9 @@ function emitOwnedArraySliceHelper(
     `${indent(1)}local.get $has_end`,
     `${indent(1)}(if`,
     `${indent(2)}(then`,
-    ...emitNormalizeSliceIndexLines('end', 'normalized_end', indent).map((line) => `${indent(1)}${line.slice(indent(1).length)}`),
+    ...emitNormalizeSliceIndexLines('end', 'normalized_end', indent).map((line) =>
+      `${indent(1)}${line.slice(indent(1).length)}`
+    ),
     `${indent(2)})`,
     `${indent(2)}(else`,
     `${indent(3)}local.get $length`,
@@ -3052,16 +3119,15 @@ function emitOwnedArrayIncludesHelper(
       stringRuntimeLayout,
     )
     : undefined;
-  const candidateLocal =
-    kind === 'heap'
-      ? '(local $candidate (ref null eq))'
-      : kind === 'string'
-      ? `(local $candidate (ref null $${stringRuntimeLayout!.runtimeWatTypeId}))`
-      : kind === 'number'
-      ? '(local $candidate f64)'
-      : kind === 'boolean'
-      ? '(local $candidate i32)'
-      : '(local $candidate (ref null $tagged_value))';
+  const candidateLocal = kind === 'heap'
+    ? '(local $candidate (ref null eq))'
+    : kind === 'string'
+    ? `(local $candidate (ref null $${stringRuntimeLayout!.runtimeWatTypeId}))`
+    : kind === 'number'
+    ? '(local $candidate f64)'
+    : kind === 'boolean'
+    ? '(local $candidate i32)'
+    : '(local $candidate (ref null $tagged_value))';
   const equalityLines = kind === 'heap'
     ? [
       `${indent(3)}local.get $candidate`,
@@ -3219,16 +3285,15 @@ function emitOwnedArrayIndexOfHelper(
       stringRuntimeLayout,
     )
     : undefined;
-  const candidateLocal =
-    kind === 'heap'
-      ? '(local $candidate (ref null eq))'
-      : kind === 'string'
-      ? `(local $candidate (ref null $${stringRuntimeLayout!.runtimeWatTypeId}))`
-      : kind === 'number'
-      ? '(local $candidate f64)'
-      : kind === 'boolean'
-      ? '(local $candidate i32)'
-      : '(local $candidate (ref null $tagged_value))';
+  const candidateLocal = kind === 'heap'
+    ? '(local $candidate (ref null eq))'
+    : kind === 'string'
+    ? `(local $candidate (ref null $${stringRuntimeLayout!.runtimeWatTypeId}))`
+    : kind === 'number'
+    ? '(local $candidate f64)'
+    : kind === 'boolean'
+    ? '(local $candidate i32)'
+    : '(local $candidate (ref null $tagged_value))';
   const equalityLines = kind === 'heap'
     ? [
       `${indent(3)}local.get $candidate`,
@@ -3369,16 +3434,15 @@ function emitOwnedArrayLastIndexOfHelper(
       stringRuntimeLayout,
     )
     : undefined;
-  const candidateLocal =
-    kind === 'heap'
-      ? '(local $candidate (ref null eq))'
-      : kind === 'string'
-      ? `(local $candidate (ref null $${stringRuntimeLayout!.runtimeWatTypeId}))`
-      : kind === 'number'
-      ? '(local $candidate f64)'
-      : kind === 'boolean'
-      ? '(local $candidate i32)'
-      : '(local $candidate (ref null $tagged_value))';
+  const candidateLocal = kind === 'heap'
+    ? '(local $candidate (ref null eq))'
+    : kind === 'string'
+    ? `(local $candidate (ref null $${stringRuntimeLayout!.runtimeWatTypeId}))`
+    : kind === 'number'
+    ? '(local $candidate f64)'
+    : kind === 'boolean'
+    ? '(local $candidate i32)'
+    : '(local $candidate (ref null $tagged_value))';
   const equalityLines = kind === 'heap'
     ? [
       `${indent(3)}local.get $candidate`,
@@ -3548,18 +3612,21 @@ export function emitOwnedArrayBoundaryHelpers(
   ) {
     return [];
   }
-  if ((usesStringParamBoundary || usesStringParamCopyBack || usesStringResultBoundary) &&
-    !stringRuntimeLayout) {
+  if (
+    (usesStringParamBoundary || usesStringParamCopyBack || usesStringResultBoundary) &&
+    !stringRuntimeLayout
+  ) {
     throw createUnsupportedHeapRuntimeBackendError(
       'Owned string-array host boundaries require the owned string runtime.',
     );
   }
-  const taggedKindSets = usesTaggedParamBoundary || usesTaggedParamCopyBack || usesTaggedResultBoundary
-    ? [
-      ...collectTaggedArrayBoundaryKindSets(module, layoutsByRepresentationName),
-      ...(options.extraTaggedKindSets ?? []),
-    ]
-    : [];
+  const taggedKindSets =
+    usesTaggedParamBoundary || usesTaggedParamCopyBack || usesTaggedResultBoundary
+      ? [
+        ...collectTaggedArrayBoundaryKindSets(module, layoutsByRepresentationName),
+        ...(options.extraTaggedKindSets ?? []),
+      ]
+      : [];
 
   return [
     ...(usesStringParamBoundary ? emitHostArrayToOwnedArrayHelper('string', indent) : []),
@@ -3586,17 +3653,20 @@ export function emitOwnedArrayBoundaryHelpers(
           indent,
           layoutsByRepresentationName,
           createUnsupportedHeapRuntimeBackendError,
-        ))
+        )
+      )
       : []),
     ...(usesTaggedParamCopyBack || usesTaggedResultBoundary
       ? taggedKindSets.flatMap((kinds) =>
         emitCopyOwnedTaggedArrayToHostArrayHelper(
           kinds,
           indent,
+          stringRuntimeLayout,
           layoutsByRepresentationName,
           fallbackObjectWatTypeId,
           createUnsupportedHeapRuntimeBackendError,
-        ))
+        )
+      )
       : []),
     ...(usesTaggedParamCopyBack || usesTaggedResultBoundary
       ? taggedKindSets.flatMap((kinds) =>
@@ -3607,7 +3677,8 @@ export function emitOwnedArrayBoundaryHelpers(
           layoutsByRepresentationName,
           fallbackObjectWatTypeId,
           createUnsupportedHeapRuntimeBackendError,
-        ))
+        )
+      )
       : []),
   ];
 }
@@ -3704,7 +3775,9 @@ export function emitOwnedArrayNativeHelpers(
     ...(usesOwnedBooleanPop ? emitOwnedArrayPopHelper('boolean', indent) : []),
     ...(usesOwnedTaggedPop ? emitOwnedArrayPopHelper('tagged', indent) : []),
     ...(usesOwnedHeapShift ? emitOwnedArrayShiftHelper('heap', indent) : []),
-    ...(usesOwnedStringShift ? emitOwnedArrayShiftHelper('string', indent, stringRuntimeLayout) : []),
+    ...(usesOwnedStringShift
+      ? emitOwnedArrayShiftHelper('string', indent, stringRuntimeLayout)
+      : []),
     ...(usesOwnedNumberShift ? emitOwnedArrayShiftHelper('number', indent) : []),
     ...(usesOwnedBooleanShift ? emitOwnedArrayShiftHelper('boolean', indent) : []),
     ...(usesOwnedTaggedShift ? emitOwnedArrayShiftHelper('tagged', indent) : []),
@@ -3715,7 +3788,9 @@ export function emitOwnedArrayNativeHelpers(
     ...(usesOwnedTaggedAt ? emitOwnedArrayAtHelper('tagged', indent) : []),
     ...(usesOwnedStringJoin ? emitOwnedArrayJoinHelper('string', indent, stringRuntimeLayout) : []),
     ...(usesOwnedNumberJoin ? emitOwnedArrayJoinHelper('number', indent, stringRuntimeLayout) : []),
-    ...(usesOwnedBooleanJoin ? emitOwnedArrayJoinHelper('boolean', indent, stringRuntimeLayout) : []),
+    ...(usesOwnedBooleanJoin
+      ? emitOwnedArrayJoinHelper('boolean', indent, stringRuntimeLayout)
+      : []),
     ...(usesOwnedHeapReverse ? emitOwnedArrayReverseHelper('heap', indent) : []),
     ...(usesOwnedStringReverse ? emitOwnedArrayReverseHelper('string', indent) : []),
     ...(usesOwnedNumberReverse ? emitOwnedArrayReverseHelper('number', indent) : []),
@@ -3751,14 +3826,18 @@ export function emitOwnedArrayNativeHelpers(
       : []),
     ...(usesOwnedNumberIncludes ? emitOwnedArrayIncludesHelper('number', indent) : []),
     ...(usesOwnedBooleanIncludes ? emitOwnedArrayIncludesHelper('boolean', indent) : []),
-    ...(usesOwnedTaggedIncludes ? emitOwnedArrayIncludesHelper('tagged', indent, stringRuntimeLayout) : []),
+    ...(usesOwnedTaggedIncludes
+      ? emitOwnedArrayIncludesHelper('tagged', indent, stringRuntimeLayout)
+      : []),
     ...(usesOwnedHeapIndexOf ? emitOwnedArrayIndexOfHelper('heap', indent) : []),
     ...(usesOwnedStringIndexOf
       ? emitOwnedArrayIndexOfHelper('string', indent, stringRuntimeLayout)
       : []),
     ...(usesOwnedNumberIndexOf ? emitOwnedArrayIndexOfHelper('number', indent) : []),
     ...(usesOwnedBooleanIndexOf ? emitOwnedArrayIndexOfHelper('boolean', indent) : []),
-    ...(usesOwnedTaggedIndexOf ? emitOwnedArrayIndexOfHelper('tagged', indent, stringRuntimeLayout) : []),
+    ...(usesOwnedTaggedIndexOf
+      ? emitOwnedArrayIndexOfHelper('tagged', indent, stringRuntimeLayout)
+      : []),
     ...(usesOwnedHeapLastIndexOf ? emitOwnedArrayLastIndexOfHelper('heap', indent) : []),
     ...(usesOwnedStringLastIndexOf
       ? emitOwnedArrayLastIndexOfHelper('string', indent, stringRuntimeLayout)

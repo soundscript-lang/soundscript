@@ -555,7 +555,7 @@ function createJsHostImports(
         switch (kind) {
           case 'has':
             return (value: unknown) =>
-              Number(Object.prototype.hasOwnProperty.call(expectObjectRecord(value), propertyName));
+              Number(Reflect.has(expectObjectRecord(value), propertyName));
           case 'get_number':
             return (value: unknown) => Number(expectObjectRecord(value)[propertyName]);
           case 'get_boolean':

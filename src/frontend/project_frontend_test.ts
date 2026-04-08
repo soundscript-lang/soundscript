@@ -263,6 +263,32 @@ void value;
   assert(!prepared.rewrittenText.includes('const lib: unknown = __sts_projected_type_'));
 });
 
+Deno.test('createPreparedCompilerHost lowers JSX syntax in .sts files to react/jsx-runtime helper calls', () => {
+  const fileName = '/virtual/index.sts';
+  const host = createPreparedCompilerHost(
+    createBaseHost(
+      new Map([
+        [
+          fileName,
+          [
+            'export function main(count: number) {',
+            "  return <button>{count === 0 ? 'hello' : 'goodbye'}</button>;",
+            '}',
+            '',
+          ].join('\n'),
+        ],
+      ]),
+    ),
+  );
+
+  const prepared = host.getPreparedSourceFile(fileName);
+
+  assert(prepared);
+  assertStringIncludes(prepared.rewrittenText, "from 'react/jsx-runtime';");
+  assertStringIncludes(prepared.rewrittenText, '__ss_jsx(');
+  assertEquals(prepared.rewrittenText.includes('<button>'), false);
+});
+
 Deno.test('createPreparedCompilerHost preserves malformed-file structure and diagnostics', () => {
   const fileName = '/virtual/broken.sts';
   const host = createPreparedCompilerHost(

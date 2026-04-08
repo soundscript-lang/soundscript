@@ -41,6 +41,15 @@ function createUserDefinedTwiceMacroText(): string {
   ].join('\n');
 }
 
+async function loadRuntimeReferencesStackOverflowFixture(): Promise<string> {
+  return await Deno.readTextFile(
+    new URL(
+      '../test-fixtures/runtime-references-stack-overflow/runtime-references.sts',
+      import.meta.url,
+    ),
+  );
+}
+
 function normalizeLegacyCliFixture(file: TempProjectFile): TempProjectFile {
   if (file.path === 'tsconfig.json') {
     return {
@@ -2609,6 +2618,87 @@ Deno.test('runCli build emits package artifacts and machine-readable output', as
     await Deno.readTextFile(join(outDir, 'esm/src/index.js.map')),
     '/src/index.sts',
   );
+});
+
+Deno.test('runCli check and build avoid internal errors for recursive runtime reference helpers', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'package.json',
+      contents: JSON.stringify(
+        {
+          name: 'sound-pkg',
+          version: '1.0.0',
+          soundscript: {
+            version: 1,
+            toolchain: '^0.1.0',
+            exports: {
+              '.': { source: './src/runtime-references.sts' },
+            },
+          },
+        },
+        null,
+        2,
+      ),
+    },
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+            moduleResolution: 'Bundler',
+            rootDir: '.',
+          },
+          include: ['src/runtime-references.sts'],
+        },
+        null,
+        2,
+      ),
+    },
+    {
+      path: 'src/runtime-references.sts',
+      contents: await loadRuntimeReferencesStackOverflowFixture(),
+    },
+  ], { legacySoundMode: false });
+
+  const checkResult = await runCli(
+    ['check', '--project', join(tempDirectory, 'tsconfig.json'), '--format', 'json'],
+  );
+  const checkPayload = JSON.parse(checkResult.output) as {
+    diagnostics: Array<{ code: string }>;
+    exitCode: number;
+  };
+  const buildResult = await runCli(
+    [
+      'build',
+      '--project',
+      join(tempDirectory, 'tsconfig.json'),
+      '--out-dir',
+      join(tempDirectory, 'dist'),
+      '--format',
+      'json',
+    ],
+  );
+  const buildPayload = JSON.parse(buildResult.output) as {
+    diagnostics: Array<{ code: string }>;
+    exitCode: number;
+  };
+
+  assert(
+    checkPayload.diagnostics.every((diagnostic) =>
+      diagnostic.code !== 'SOUNDSCRIPT_INTERNAL_ERROR'
+    ),
+  );
+  assert(
+    buildPayload.diagnostics.every((diagnostic) =>
+      diagnostic.code !== 'SOUNDSCRIPT_INTERNAL_ERROR'
+    ),
+  );
+  assert(checkPayload.exitCode !== 2);
+  assert(buildPayload.exitCode !== 2);
 });
 
 Deno.test('runCli build --watch rebuilds when the watcher reports file changes', async () => {

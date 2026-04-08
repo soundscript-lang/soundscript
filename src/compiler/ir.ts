@@ -72,6 +72,12 @@ export interface CompilerLocalGetIR {
   type: CompilerValueType;
 }
 
+export interface CompilerGlobalGetIR {
+  kind: 'global_get';
+  globalName: string;
+  type: CompilerValueType;
+}
+
 export interface CompilerClassStaticFieldGetIR {
   kind: 'class_static_field_get';
   globalName: string;
@@ -1241,6 +1247,7 @@ export type CompilerExpressionIR =
   | CompilerClassInstanceOfIR
   | CompilerBuiltinErrorInstanceOfIR
   | CompilerLocalGetIR
+  | CompilerGlobalGetIR
   | CompilerClassStaticFieldGetIR
   | CompilerBinaryExpressionIR
   | CompilerCallExpressionIR
@@ -1254,6 +1261,12 @@ export type CompilerExpressionIR =
 export interface CompilerLocalSetStatementIR {
   kind: 'local_set';
   name: string;
+  value: CompilerExpressionIR;
+}
+
+export interface CompilerGlobalSetStatementIR {
+  kind: 'global_set';
+  globalName: string;
   value: CompilerExpressionIR;
 }
 
@@ -1348,6 +1361,7 @@ export interface CompilerThrowTaggedStatementIR {
 
 export type CompilerStatementIR =
   | CompilerLocalSetStatementIR
+  | CompilerGlobalSetStatementIR
   | CompilerReturnStatementIR
   | CompilerExpressionStatementIR
   | CompilerOwnedStringArraySetStatementIR
@@ -1369,6 +1383,75 @@ export interface CompilerTaggedPrimitiveBoundaryKindsIR {
   includesNumber?: boolean;
   includesString?: boolean;
   includesUndefined?: boolean;
+}
+
+export interface CompilerHostBoundaryScalarIR {
+  kind: 'scalar';
+  valueType: 'f64' | 'i32';
+}
+
+export interface CompilerHostBoundaryStringIR {
+  kind: 'string';
+  owned?: boolean;
+}
+
+export interface CompilerHostBoundaryClosureIR {
+  kind: 'closure';
+  signatureId: number;
+}
+
+export interface CompilerHostBoundaryClassConstructorIR {
+  kind: 'class_constructor';
+  classTagId: number;
+}
+
+export interface CompilerHostBoundaryObjectIR {
+  kind: 'object';
+  representation: CompilerRuntimeRepresentationRefIR<'object'>;
+  fields?: readonly CompilerHostBoundaryFieldIR[];
+}
+
+export interface CompilerHostBoundaryTaggedIR extends CompilerTaggedPrimitiveBoundaryKindsIR {
+  kind: 'tagged';
+  heapBoundary?: CompilerHostBoundaryObjectIR;
+}
+
+export interface CompilerHostBoundaryPromiseIR {
+  kind: 'promise';
+  representation: CompilerRuntimeRepresentationRefIR<'object'>;
+  valueBoundary?: CompilerHostBoundaryIR;
+}
+
+export interface CompilerHostBoundaryArrayIR {
+  kind: 'array';
+  carrierType:
+    | 'owned_array_ref'
+    | 'owned_number_array_ref'
+    | 'owned_boolean_array_ref'
+    | 'owned_heap_array_ref'
+    | 'owned_tagged_array_ref';
+  elementBoundary: CompilerHostBoundaryIR;
+}
+
+export type CompilerHostBoundaryIR =
+  | CompilerHostBoundaryScalarIR
+  | CompilerHostBoundaryStringIR
+  | CompilerHostBoundaryClosureIR
+  | CompilerHostBoundaryClassConstructorIR
+  | CompilerHostBoundaryObjectIR
+  | CompilerHostBoundaryTaggedIR
+  | CompilerHostBoundaryPromiseIR
+  | CompilerHostBoundaryArrayIR;
+
+export interface CompilerHostBoundaryFieldIR {
+  name: string;
+  optional: boolean;
+  boundary: CompilerHostBoundaryIR;
+}
+
+export interface CompilerHostParamBoundaryIR {
+  name: string;
+  boundary: CompilerHostBoundaryIR;
 }
 
 export interface CompilerFunctionHostTaggedPrimitiveParamIR
@@ -1487,8 +1570,10 @@ export interface CompilerFunctionIR {
   hostTaggedArrayResultKinds?: CompilerFunctionHostTaggedArrayBoundaryIR;
   hostTaggedHeapNullableParams?: readonly CompilerFunctionHostTaggedHeapNullableParamIR[];
   hostTaggedHeapNullableResult?: CompilerFunctionHostTaggedHeapNullableBoundaryIR;
+  hostParamBoundaries?: readonly CompilerHostParamBoundaryIR[];
   hostTaggedPrimitiveParams?: readonly CompilerFunctionHostTaggedPrimitiveParamIR[];
   hostTaggedPrimitiveResultKinds?: CompilerTaggedPrimitiveBoundaryKindsIR;
+  hostResultBoundary?: CompilerHostBoundaryIR;
   locals: CompilerLocalIR[];
   name: string;
   params: CompilerLocalIR[];
@@ -1507,15 +1592,46 @@ export interface CompilerFunctionHostDynamicCollectionParamIR {
   valueKind: 'number' | 'boolean' | 'string';
 }
 
+export type CompilerModuleGlobalIR =
+  | {
+    name: string;
+    globalName: string;
+    type: 'f64';
+    initialValue: number;
+  }
+  | {
+    name: string;
+    globalName: string;
+    type: 'i32';
+    initialValue: boolean;
+  }
+  | {
+    name: string;
+    globalName: string;
+    type: 'tagged_ref';
+    initialValue: 'undefined' | 'null';
+  };
+
 export interface CompilerModuleIR {
   closureSignatures?: readonly CompilerClosureSignatureIR[];
   syncTryCatchClosureSignatureId?: number;
+  syncTryCatchHostObjectBoundary?: CompilerHostBoundaryObjectIR;
   syncTryCatchHostObjectPropertyNames?: readonly string[];
+  syncTryCatchHostObjectNestedPropertyNames?: readonly CompilerHostObjectNestedPropertyNamesIR[];
+  hostPromiseRejectObjectBoundary?: CompilerHostBoundaryObjectIR;
+  hostPromiseRejectObjectPropertyNames?: readonly string[];
+  hostPromiseRejectObjectNestedPropertyNames?: readonly CompilerHostObjectNestedPropertyNamesIR[];
   functions: CompilerFunctionIR[];
   jsHostImports?: readonly CompilerJsHostImportIR[];
+  moduleGlobals?: readonly CompilerModuleGlobalIR[];
   stringLiterals?: readonly string[];
   stringLiteralCodeUnits?: readonly (readonly number[])[];
   runtime?: CompilerRuntimeIR;
+}
+
+export interface CompilerHostObjectNestedPropertyNamesIR {
+  propertyPath: readonly string[];
+  nestedPropertyNames: readonly string[];
 }
 
 export interface CompilerJsHostImportIR {
@@ -1535,7 +1651,8 @@ export interface CompilerClosureSignatureIR {
   paramClosureSignatureIds?: readonly (number | undefined)[];
   paramTaggedPrimitiveKinds?: readonly (CompilerTaggedPrimitiveBoundaryKindsIR | undefined)[];
   paramHeapRepresentations?: readonly (CompilerRuntimeRepresentationRefIR<'object'> | undefined)[];
-  paramHeapArrayRepresentations?: readonly (CompilerRuntimeRepresentationRefIR<'object'> | undefined)[];
+  paramHeapArrayRepresentations?:
+    readonly (CompilerRuntimeRepresentationRefIR<'object'> | undefined)[];
   resultType: CompilerValueType;
   resultClassConstructorTagId?: number;
   resultClosureSignatureId?: number;

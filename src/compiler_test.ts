@@ -2627,7 +2627,15 @@ compilerIntegrationTest(
     assert(result.artifacts.wrapperPath);
 
     const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
-    const instantiated = await wrapperModule.instantiate();
+    const instantiated = await wrapperModule.instantiate({
+      modules: {
+        'react/jsx-runtime': {
+          jsx: (type: string, props: { children: string }, key?: string | number | bigint) => ({
+            score: type.length + props.children.length + (key === undefined ? 1 : 0),
+          }),
+        },
+      },
+    });
     const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
     const exported = instantiated.exports[exportName];
     if (typeof exported !== 'function') {
@@ -2778,7 +2786,15 @@ compilerIntegrationTest(
     assert(result.artifacts.wrapperPath);
 
     const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
-    const instantiated = await wrapperModule.instantiate();
+    const instantiated = await wrapperModule.instantiate({
+      modules: {
+        'react/jsx-runtime': {
+          jsx: (type: string, props: { children: string }, key?: string | number | bigint) => ({
+            score: type.length + props.children.length + (key === undefined ? 1 : 0),
+          }),
+        },
+      },
+    });
     const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
     const exported = instantiated.exports[exportName];
     if (typeof exported !== 'function') {
@@ -2852,7 +2868,15 @@ compilerIntegrationTest(
     assert(result.artifacts.wrapperPath);
 
     const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
-    const instantiated = await wrapperModule.instantiate();
+    const instantiated = await wrapperModule.instantiate({
+      modules: {
+        'react/jsx-runtime': {
+          jsx: (type: string, props: { children: string }, key?: string | number | bigint) => ({
+            score: type.length + props.children.length + (key === undefined ? 1 : 0),
+          }),
+        },
+      },
+    });
     const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
     const exported = instantiated.exports[exportName];
     if (typeof exported !== 'function') {
@@ -2926,7 +2950,15 @@ compilerIntegrationTest(
     assert(result.artifacts.wrapperPath);
 
     const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
-    const instantiated = await wrapperModule.instantiate();
+    const instantiated = await wrapperModule.instantiate({
+      modules: {
+        'react/jsx-runtime': {
+          jsx: (type: string, props: { children: string }, key?: string | number | bigint) => ({
+            score: type.length + props.children.length + (key === undefined ? 1 : 0),
+          }),
+        },
+      },
+    });
     const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
     const exported = instantiated.exports[exportName];
     if (typeof exported !== 'function') {
@@ -3175,6 +3207,4431 @@ compilerIntegrationTest(
       throw new Error(`Expected exported function "${exportName}".`);
     }
     assertEquals(await exported(), 24);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject supports react/jsx-runtime package imports from .sts sources',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+            },
+            include: ['src/**/*.sts'],
+            soundscript: {
+              target: 'wasm-browser',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'node_modules/react/package.json',
+        contents: JSON.stringify(
+          {
+            name: 'react',
+            type: 'module',
+            exports: {
+              './jsx-runtime': {
+                types: './jsx-runtime.d.ts',
+                default: './jsx-runtime.js',
+              },
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'node_modules/react/jsx-runtime.d.ts',
+        contents: [
+          'export interface JsxProps {',
+          '  children: string;',
+          '}',
+          '',
+          'export interface JsxElement {',
+          '  props: JsxProps;',
+          '}',
+          '',
+          'export declare function jsx(tag: string, props: JsxProps): JsxElement;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'node_modules/react/jsx-runtime.js',
+        contents: [
+          'export function jsx(tag, props) {',
+          '  return { props: { children: props.children } };',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.sts',
+        contents: [
+          '// #[interop]',
+          "import { jsx } from 'react/jsx-runtime';",
+          '',
+          'export function main(): number {',
+          "  jsx('button', { children: 'ok' });",
+          '  return 1;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+    assertStringIncludes(result.output, 'Wrapper: soundscript-out/module.js');
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject supports React JSX syntax in .sts sources',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+            },
+            include: ['src/**/*.sts'],
+            soundscript: {
+              target: 'wasm-browser',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'node_modules/react/package.json',
+        contents: JSON.stringify(
+          {
+            name: 'react',
+            type: 'module',
+            exports: {
+              './jsx-runtime': {
+                types: './jsx-runtime.d.ts',
+                default: './jsx-runtime.js',
+              },
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'node_modules/react/jsx-runtime.d.ts',
+        contents: [
+          'export namespace JSX {',
+          '  export interface IntrinsicElements {',
+          '    button: { children?: string };',
+          '  }',
+          '}',
+          '',
+          'export type Key = string | number | bigint;',
+          'export type ElementType = string | ((props: any) => unknown);',
+          '',
+          'export interface ReactElement<',
+          '  P = any,',
+          '  T extends string | ((props: any) => unknown) = string | ((props: any) => unknown),',
+          '> {',
+          '  type: T;',
+          '  props: P;',
+          '  key: string | null;',
+          '}',
+          '',
+          'export declare function jsx(',
+          '  type: ElementType,',
+          '  props: unknown,',
+          '  key?: Key,',
+          '): ReactElement;',
+          '',
+          'export declare const Fragment: unique symbol;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.sts',
+        contents: [
+          'export function click(count: number): number {',
+          '  return count + 1;',
+          '}',
+          '',
+          'export function main(clickCount: number) {',
+          "  return <button>{clickCount === 0 ? 'Click the Wasm button' : 'Clicked 1 time'}</button>;",
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate({
+      modules: {
+        'react/jsx-runtime': {
+          jsx: (type: string, props: { children: string }) => ({ key: null, props, type }),
+        },
+      },
+    });
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const clickExportName = await resolveQualifiedExportName(tempDirectory, 'click');
+    const mainExport = instantiated.exports[exportName];
+    const clickExport = instantiated.exports[clickExportName];
+    if (typeof mainExport !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+    if (typeof clickExport !== 'function') {
+      throw new Error(`Expected exported function "${clickExportName}".`);
+    }
+
+    const initial = mainExport(0) as {
+      key: string | null;
+      props: { children: string };
+      type: string;
+    };
+    assertEquals(initial.type, 'button');
+    assertEquals(initial.key, null);
+    assertEquals(initial.props.children, 'Click the Wasm button');
+    assertEquals(clickExport(0), 1);
+    const afterOneClick = mainExport(1) as {
+      key: string | null;
+      props: { children: string };
+      type: string;
+    };
+    assertEquals(afterOneClick.props.children, 'Clicked 1 time');
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject supports React JSX callback props with host rerender imports from .sts sources',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+            },
+            include: ['src/**/*.sts'],
+            soundscript: {
+              target: 'wasm-browser',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'node_modules/react/package.json',
+        contents: JSON.stringify(
+          {
+            name: 'react',
+            type: 'module',
+            exports: {
+              './jsx-runtime': {
+                types: './jsx-runtime.d.ts',
+                default: './jsx-runtime.js',
+              },
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'node_modules/react/jsx-runtime.d.ts',
+        contents: [
+          'export namespace JSX {',
+          '  export interface IntrinsicElements {',
+          '    button: { children?: string; onClick?: () => number };',
+          '  }',
+          '}',
+          '',
+          'export type Key = string | number | bigint;',
+          'export type ElementType = string | ((props: any) => unknown);',
+          '',
+          'export interface ReactElement<',
+          '  P = any,',
+          '  T extends string | ((props: any) => unknown) = string | ((props: any) => unknown),',
+          '> {',
+          '  type: T;',
+          '  props: P;',
+          '  key: string | null;',
+          '}',
+          '',
+          'export declare function jsx(',
+          '  type: ElementType,',
+          '  props: unknown,',
+          '  key?: Key,',
+          '): ReactElement;',
+          '',
+          'export declare const Fragment: unique symbol;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/render-host.d.ts',
+        contents: [
+          'export declare function requestRender(nextCount: number): number;',
+          'export declare function readRenderedCount(): number;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/render-host.js',
+        contents: [
+          'let renderedCount = -1;',
+          '',
+          'export function requestRender(nextCount) {',
+          '  renderedCount = nextCount;',
+          '  return nextCount;',
+          '}',
+          '',
+          'export function readRenderedCount() {',
+          '  return renderedCount;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.sts',
+        contents: [
+          '// #[interop]',
+          "import { requestRender } from './render-host.js';",
+          '',
+          'function click(count: number): number {',
+          '  return count + 1;',
+          '}',
+          '',
+          'export function main(clickCount: number) {',
+          '  return <button onClick={() => requestRender(click(clickCount))}>{',
+          "    clickCount === 0 ? 'Click the Wasm button' : 'Clicked 1 time'",
+          '  }</button>;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate({
+      modules: {
+        'react/jsx-runtime': {
+          jsx: (
+            type: string,
+            props: { children: string; onClick?: () => number },
+          ) => ({ key: null, props, type }),
+        },
+      },
+    });
+    const hostModule = await import(`file://${join(tempDirectory, 'src/render-host.js')}`);
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+
+    const element = exported(0) as {
+      key: string | null;
+      props: { children: string; onClick: () => number };
+      type: string;
+    };
+    assertEquals(element.type, 'button');
+    assertEquals(element.key, null);
+    assertEquals(element.props.children, 'Click the Wasm button');
+    assertEquals(hostModule.readRenderedCount(), -1);
+    assertEquals(element.props.onClick(), 1);
+    assertEquals(hostModule.readRenderedCount(), 1);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject supports Wasm-owned top-level mutable React click state in .sts sources',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+            },
+            include: ['src/**/*.sts'],
+            soundscript: {
+              target: 'wasm-browser',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'node_modules/react/package.json',
+        contents: JSON.stringify(
+          {
+            name: 'react',
+            type: 'module',
+            exports: {
+              './jsx-runtime': {
+                types: './jsx-runtime.d.ts',
+                default: './jsx-runtime.js',
+              },
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'node_modules/react/jsx-runtime.d.ts',
+        contents: [
+          'export namespace JSX {',
+          '  export interface IntrinsicElements {',
+          '    button: { children?: string; onClick?: () => void };',
+          '  }',
+          '}',
+          '',
+          'export type Key = string | number | bigint;',
+          'export type ElementType = string | ((props: any) => unknown);',
+          '',
+          'export interface ReactElement<',
+          '  P = any,',
+          '  T extends string | ((props: any) => unknown) = string | ((props: any) => unknown),',
+          '> {',
+          '  type: T;',
+          '  props: P;',
+          '  key: string | null;',
+          '}',
+          '',
+          'export declare function jsx(',
+          '  type: ElementType,',
+          '  props: unknown,',
+          '  key?: Key,',
+          '): ReactElement;',
+          '',
+          'export declare const Fragment: unique symbol;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/render-host.d.ts',
+        contents: [
+          'export declare function requestRender(): void;',
+          'export declare function readRenderedCount(): number;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/render-host.js',
+        contents: [
+          'let renderedCount = -1;',
+          '',
+          'export function requestRender() {',
+          '  renderedCount += 1;',
+          '}',
+          '',
+          'export function readRenderedCount() {',
+          '  return renderedCount;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.sts',
+        contents: [
+          '// #[interop]',
+          "import { requestRender } from './render-host.js';",
+          '',
+          'let clickCount = 0;',
+          '',
+          'function label(): string {',
+          "  return clickCount === 0 ? 'Click the Wasm button' : 'Clicked 1 time';",
+          '}',
+          '',
+          'export function main() {',
+          '  return <button onClick={() => {',
+          '    clickCount = clickCount + 1;',
+          '    requestRender();',
+          '  }}>{label()}</button>;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate({
+      modules: {
+        'react/jsx-runtime': {
+          jsx: (
+            type: string,
+            props: { children: string; onClick?: () => void },
+          ) => ({ key: null, props, type }),
+        },
+      },
+    });
+    const hostModule = await import(`file://${join(tempDirectory, 'src/render-host.js')}`);
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+
+    const initialElement = exported() as {
+      key: string | null;
+      props: { children: string; onClick: () => void };
+      type: string;
+    };
+    assertEquals(initialElement.props.children, 'Click the Wasm button');
+    initialElement.props.onClick();
+    assertEquals(hostModule.readRenderedCount(), 0);
+    const updatedElement = exported() as {
+      key: string | null;
+      props: { children: string; onClick: () => void };
+      type: string;
+    };
+    assertEquals(updatedElement.props.children, 'Clicked 1 time');
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject supports local void helper functions in .sts sources',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.sts'],
+            soundscript: {
+              target: 'wasm-browser',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/index.sts',
+        contents: [
+          'let count = 0;',
+          '',
+          'function bump(): void {',
+          '  count = count + 1;',
+          '}',
+          '',
+          'export function main(): number {',
+          '  bump();',
+          '  return count;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate();
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+
+    assertEquals(exported(), 1);
+    assertEquals(exported(), 2);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject exports void results through wasm-browser wrappers',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.sts'],
+            soundscript: {
+              target: 'wasm-browser',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/index.sts',
+        contents: [
+          'let started = 0;',
+          '',
+          'export function start(): void {',
+          '  started = started + 1;',
+          '}',
+          '',
+          'export function read(): number {',
+          '  return started;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate();
+    const startExportName = await resolveQualifiedExportName(tempDirectory, 'start');
+    const readExportName = await resolveQualifiedExportName(tempDirectory, 'read');
+    const start = instantiated.exports[startExportName];
+    const read = instantiated.exports[readExportName];
+    if (typeof start !== 'function') {
+      throw new Error(`Expected exported function "${startExportName}".`);
+    }
+    if (typeof read !== 'function') {
+      throw new Error(`Expected exported function "${readExportName}".`);
+    }
+
+    assertEquals(start(), undefined);
+    assertEquals(read(), 1);
+    assertEquals(start(), undefined);
+    assertEquals(read(), 2);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject supports top-level mutable tagged module globals initialized to undefined',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.sts'],
+            soundscript: {
+              target: 'wasm-browser',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/index.sts',
+        contents: [
+          'let value: number | undefined = undefined;',
+          '',
+          'export function write(nextValue: number): void {',
+          '  value = nextValue;',
+          '}',
+          '',
+          'export function read(): number {',
+          '  return value ?? 0;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate();
+    const writeExportName = await resolveQualifiedExportName(tempDirectory, 'write');
+    const readExportName = await resolveQualifiedExportName(tempDirectory, 'read');
+    const write = instantiated.exports[writeExportName];
+    const read = instantiated.exports[readExportName];
+    if (typeof write !== 'function') {
+      throw new Error(`Expected exported function "${writeExportName}".`);
+    }
+    if (typeof read !== 'function') {
+      throw new Error(`Expected exported function "${readExportName}".`);
+    }
+
+    assertEquals(read(), 0);
+    assertEquals(write(7), undefined);
+    assertEquals(read(), 7);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject keeps top-level mutable module globals pay-for-play',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.sts'],
+            soundscript: {
+              target: 'wasm-browser',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/index.sts',
+        contents: [
+          'export function main(): number {',
+          '  const value = 1;',
+          '  return value + 1;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    const watOutput = await readWatArtifact(tempDirectory);
+    assertEquals(watOutput.includes('module_global_'), false);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject supports react/jsx-runtime-style unknown props and broad key params from .sts sources',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+            },
+            include: ['src/**/*.sts'],
+            soundscript: {
+              target: 'wasm-browser',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'node_modules/react/package.json',
+        contents: JSON.stringify(
+          {
+            name: 'react',
+            type: 'module',
+            exports: {
+              './jsx-runtime': {
+                types: './jsx-runtime.d.ts',
+                default: './jsx-runtime.js',
+              },
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'node_modules/react/jsx-runtime.d.ts',
+        contents: [
+          'export type Key = string | number | bigint;',
+          '',
+          'export interface JsxElement {',
+          '  score: number;',
+          '}',
+          '',
+          'export declare function jsx(type: string, props: unknown, key?: Key): JsxElement;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'node_modules/react/jsx-runtime.js',
+        contents: [
+          'export function jsx(type, props, key) {',
+          '  return {',
+          '    score: type.length + props.children.length + (key === undefined ? 1 : 0),',
+          '  };',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.sts',
+        contents: [
+          '// #[interop]',
+          "import { jsx } from 'react/jsx-runtime';",
+          '',
+          'export function main(): number {',
+          "  return jsx('button', { children: 'ok' }).score;",
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate({
+      modules: {
+        'react/jsx-runtime': {
+          jsx: (type: string, props: { children: string }, key?: string | number | bigint) => ({
+            score: type.length + props.children.length + (key === undefined ? 1 : 0),
+          }),
+        },
+      },
+    });
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+    assertEquals(await exported(), 9);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject supports react/jsx-runtime-style broad element type params from .sts sources',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+            },
+            include: ['src/**/*.sts'],
+            soundscript: {
+              target: 'wasm-browser',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'node_modules/react/package.json',
+        contents: JSON.stringify(
+          {
+            name: 'react',
+            type: 'module',
+            exports: {
+              './jsx-runtime': {
+                types: './jsx-runtime.d.ts',
+                default: './jsx-runtime.js',
+              },
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'node_modules/react/jsx-runtime.d.ts',
+        contents: [
+          'export type Key = string | number | bigint;',
+          'export type ElementType = string | ((props: unknown) => unknown);',
+          '',
+          'export interface JsxElement {',
+          '  score: number;',
+          '}',
+          '',
+          'export declare function jsx(type: ElementType, props: unknown, key?: Key): JsxElement;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.sts',
+        contents: [
+          '// #[interop]',
+          "import { jsx } from 'react/jsx-runtime';",
+          '',
+          'export function main(): number {',
+          "  return jsx('button', { children: 'ok' }).score;",
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate({
+      modules: {
+        'react/jsx-runtime': {
+          jsx: (type: string, props: { children: string }, key?: string | number | bigint) => ({
+            score: type.length + props.children.length + (key === undefined ? 1 : 0),
+          }),
+        },
+      },
+    });
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+    assertEquals(await exported(), 9);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject supports react/jsx-runtime-style ReactElement results from .sts sources',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+            },
+            include: ['src/**/*.sts'],
+            soundscript: {
+              target: 'wasm-browser',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'node_modules/react/package.json',
+        contents: JSON.stringify(
+          {
+            name: 'react',
+            type: 'module',
+            exports: {
+              './jsx-runtime': {
+                types: './jsx-runtime.d.ts',
+                default: './jsx-runtime.js',
+              },
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'node_modules/react/jsx-runtime.d.ts',
+        contents: [
+          'export namespace JSX {',
+          '  export interface IntrinsicElements {',
+          '    button: { children?: string };',
+          '  }',
+          '}',
+          '',
+          'export type Key = string | number | bigint;',
+          'export type ElementType = string | ((props: any) => unknown);',
+          '',
+          'export interface ReactElement<',
+          '  P = any,',
+          '  T extends string | ((props: any) => unknown) = string | ((props: any) => unknown),',
+          '> {',
+          '  type: T;',
+          '  props: P;',
+          '  key: string | null;',
+          '}',
+          '',
+          'export declare function jsx(',
+          '  type: ElementType,',
+          '  props: unknown,',
+          '  key?: Key,',
+          '): ReactElement;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.sts',
+        contents: [
+          '// #[interop]',
+          "import { jsx } from 'react/jsx-runtime';",
+          '',
+          'export function main(): number {',
+          "  jsx('button', { children: 'ok' });",
+          '  return 1;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate({
+      modules: {
+        'react/jsx-runtime': {
+          jsx: (type: string, props: { children: string }, key?: string | number | bigint) => ({
+            key: key === undefined ? null : String(key),
+            props,
+            type,
+          }),
+        },
+      },
+    });
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+    assertEquals(await exported(), 1);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject supports react-dom/client-style render calls from .sts sources',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+            },
+            include: ['src/**/*.sts'],
+            soundscript: {
+              target: 'wasm-browser',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'node_modules/react/package.json',
+        contents: JSON.stringify(
+          {
+            name: 'react',
+            type: 'module',
+            exports: {
+              './jsx-runtime': {
+                types: './jsx-runtime.d.ts',
+                default: './jsx-runtime.js',
+              },
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'node_modules/react/jsx-runtime.d.ts',
+        contents: [
+          'export type Key = string | number | bigint;',
+          'export type ElementType = string | ((props: any) => unknown);',
+          '',
+          'export interface ReactElement<',
+          '  P = any,',
+          '  T extends string | ((props: any) => unknown) = string | ((props: any) => unknown),',
+          '> {',
+          '  type: T;',
+          '  props: P;',
+          '  key: string | null;',
+          '}',
+          '',
+          'export declare function jsx(',
+          '  type: ElementType,',
+          '  props: unknown,',
+          '  key?: Key,',
+          '): ReactElement;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'node_modules/react-dom/package.json',
+        contents: JSON.stringify(
+          {
+            name: 'react-dom',
+            type: 'module',
+            exports: {
+              './client': {
+                types: './client.d.ts',
+                default: './client.js',
+              },
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'node_modules/react-dom/client.d.ts',
+        contents: [
+          "import type { ReactElement } from 'react/jsx-runtime';",
+          '',
+          'export type ReactNode =',
+          '  | ReactElement',
+          '  | string',
+          '  | number',
+          '  | Iterable<ReactNode>',
+          '  | ReactPortal',
+          '  | boolean',
+          '  | null',
+          '  | undefined;',
+          '',
+          'export interface ReactPortal {',
+          '  children: ReactNode;',
+          '  key: string | null;',
+          '}',
+          '',
+          'export interface Container {',
+          '  nodeType: number;',
+          '}',
+          '',
+          'export interface Root {',
+          '  render(children: ReactNode): void;',
+          '  unmount(): void;',
+          '}',
+          '',
+          'export declare function createRoot(container: Container): Root;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.sts',
+        contents: [
+          '// #[interop]',
+          "import { jsx } from 'react/jsx-runtime';",
+          '// #[interop]',
+          "import { createRoot } from 'react-dom/client';",
+          '',
+          'export function main(): number {',
+          '  const root = createRoot({ nodeType: 1 });',
+          "  root.render(jsx('button', { children: 'ok' }));",
+          '  return 1;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const events: unknown[] = [];
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate({
+      modules: {
+        'react/jsx-runtime': {
+          jsx: (type: string, props: { children: string }, key?: string | number | bigint) => ({
+            key: key === undefined ? null : String(key),
+            props,
+            type,
+          }),
+        },
+        'react-dom/client': {
+          createRoot: (container: { nodeType: number }) => ({
+            render: (children: unknown) => {
+              events.push(container, children);
+            },
+            unmount: () => {
+              events.push('unmount');
+            },
+          }),
+        },
+      },
+    });
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+    assertEquals(await exported(), 1);
+    assertEquals(events.length, 2);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject supports ambient DOM container host imports for react-dom/client roots',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+            },
+            include: ['src/**/*.sts'],
+            soundscript: {
+              target: 'wasm-browser',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'node_modules/react-dom/package.json',
+        contents: JSON.stringify(
+          {
+            name: 'react-dom',
+            type: 'module',
+            exports: {
+              './client': {
+                types: './client.d.ts',
+                default: './client.js',
+              },
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'node_modules/react-dom/client.d.ts',
+        contents: [
+          'export interface Root {',
+          '  unmount(): void;',
+          '}',
+          '',
+          'export type Container = Element | DocumentFragment | Document;',
+          '',
+          'export declare function createRoot(container: Container): Root;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/dom-host.d.ts',
+        contents: 'export declare function getAppContainer(): Element;\n',
+      },
+      {
+        path: 'src/index.sts',
+        contents: [
+          '// #[interop]',
+          "import { createRoot } from 'react-dom/client';",
+          '// #[interop]',
+          "import { getAppContainer } from './dom-host.js';",
+          '',
+          'let root: ReturnType<typeof createRoot> | undefined = undefined;',
+          '',
+          'export function start(): void {',
+          '  const currentRoot = root ?? createRoot(getAppContainer());',
+          '  root = currentRoot;',
+          '  currentRoot.unmount();',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const container = { children: { length: 0 }, nodeType: 1, tagName: 'DIV' };
+    let createRootCalls = 0;
+    let unmountCalls = 0;
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate({
+      modules: {
+        './dom-host.js': {
+          getAppContainer: () => container,
+        },
+        'react-dom/client': {
+          createRoot: (receivedContainer: unknown) => {
+            createRootCalls += 1;
+            assertStrictEquals(receivedContainer, container);
+            return {
+              unmount() {
+                unmountCalls += 1;
+              },
+            };
+          },
+        },
+      },
+    });
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'start');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+
+    assertEquals(exported(), undefined);
+    assertEquals(exported(), undefined);
+    assertEquals(createRootCalls, 1);
+    assertEquals(unmountCalls, 2);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject passes broad host callback handles with prototype methods despite unrelated fallback object props',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+            },
+            include: ['src/**/*.sts'],
+            soundscript: {
+              target: 'wasm-browser',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/ui-host.d.ts',
+        contents: [
+          'export declare function consumeFallback(props: unknown): void;',
+          'export declare function registerHandleCallback(handler: (handle: Element) => void): void;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.sts',
+        contents: [
+          '// #[interop]',
+          "import { consumeFallback, registerHandleCallback } from './ui-host.js';",
+          '',
+          'export function start(): void {',
+          "  consumeFallback({ children: 'unused', onClick: () => {} });",
+          '  registerHandleCallback((handle: Element) => {',
+          '    handle.remove();',
+          '  });',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    let removeCalls = 0;
+    class HostElementHandle {
+      children = { length: 0 };
+      remove() {
+        removeCalls += 1;
+      }
+    }
+    const handle = new HostElementHandle();
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate({
+      modules: {
+        './ui-host.js': {
+          consumeFallback: (_props: unknown) => {
+          },
+          registerHandleCallback: (handler: (handle: HostElementHandle) => void) => {
+            handler(handle);
+          },
+        },
+      },
+    });
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'start');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+
+    assertEquals(exported(), undefined);
+    assertEquals(removeCalls, 1);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject supports imported host callbacks with unknown params',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+            },
+            include: ['src/**/*.sts'],
+            soundscript: {
+              target: 'wasm-browser',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/ui-host.d.ts',
+        contents: [
+          'export declare function registerHandleCallback(handler: (handle: unknown) => void): void;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.sts',
+        contents: [
+          '// #[interop]',
+          "import { registerHandleCallback } from './ui-host.js';",
+          '',
+          'export function start(): void {',
+          '  registerHandleCallback((_handle) => {',
+          '  });',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject forwards unknown callback values into direct ambient host imports',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+            },
+            include: ['src/**/*.sts'],
+            soundscript: {
+              target: 'wasm-browser',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/ui-host.d.ts',
+        contents: [
+          'export declare function recordValue(value: unknown): void;',
+          'export declare function registerValueCallback(handler: (value: unknown) => void): void;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.sts',
+        contents: [
+          '// #[interop]',
+          "import { recordValue, registerValueCallback } from './ui-host.js';",
+          '',
+          'export function start(): void {',
+          '  registerValueCallback((value) => {',
+          '    recordValue(value);',
+          '  });',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    class HostValue {
+      kind = 'host';
+    }
+    const objectValue = new HostValue();
+    const seenValues: unknown[] = [];
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate({
+      modules: {
+        './ui-host.js': {
+          recordValue: (value: unknown) => {
+            seenValues.push(value);
+          },
+          registerValueCallback: (handler: (value: unknown) => void) => {
+            handler(undefined);
+            handler(null);
+            handler(true);
+            handler(42);
+            handler('hello');
+            handler(objectValue);
+          },
+        },
+      },
+    });
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'start');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+
+    assertEquals(exported(), undefined);
+    assertEquals(seenValues.slice(0, 5), [undefined, null, true, 42, 'hello']);
+    assertStrictEquals(seenValues[5], objectValue);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject forwards unknown ambient host results into direct ambient host imports',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+            },
+            include: ['src/**/*.sts'],
+            soundscript: {
+              target: 'wasm-browser',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/ui-host.d.ts',
+        contents: [
+          'export declare function readValue(): unknown;',
+          'export declare function recordValue(value: unknown): void;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.sts',
+        contents: [
+          '// #[interop]',
+          "import { readValue, recordValue } from './ui-host.js';",
+          '',
+          'export function start(): void {',
+          '  recordValue(readValue());',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    class HostValue {
+      kind = 'host';
+    }
+    const objectValue = new HostValue();
+    const suppliedValues: unknown[] = [undefined, null, true, 42, 'hello', objectValue];
+    const seenValues: unknown[] = [];
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate({
+      modules: {
+        './ui-host.js': {
+          readValue: () => suppliedValues.shift(),
+          recordValue: (value: unknown) => {
+            seenValues.push(value);
+          },
+        },
+      },
+    });
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'start');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+
+    for (let index = 0; index < 6; index += 1) {
+      assertEquals(exported(), undefined);
+    }
+    assertEquals(seenValues.slice(0, 5), [undefined, null, true, 42, 'hello']);
+    assertStrictEquals(seenValues[5], objectValue);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject forwards unknown declaration-backed host value imports into direct ambient host imports',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts', 'src/**/*.d.ts'],
+            soundscript: {
+              target: 'wasm-browser',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/value-host.d.ts',
+        contents: [
+          'export declare const current: unknown;',
+          'export declare function recordValue(value: unknown): void;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          '// #[interop]',
+          "import { current, recordValue } from './value-host.js';",
+          '',
+          'export function start(): void {',
+          '  recordValue(current);',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    class HostValue {
+      kind = 'host';
+    }
+    const currentValue = new HostValue();
+    const seenValues: unknown[] = [];
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate({
+      modules: {
+        './value-host.js': {
+          current: currentValue,
+          recordValue: (value: unknown) => {
+            seenValues.push(value);
+          },
+        },
+      },
+    });
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'start');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+
+    assertEquals(exported(), undefined);
+    assertStrictEquals(seenValues[0], currentValue);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject forwards unknown host class static method values into direct ambient host imports',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts', 'src/**/*.d.ts'],
+            soundscript: {
+              target: 'wasm-browser',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/class-host.d.ts',
+        contents: [
+          'export declare class ValueBox {',
+          '  static current(): unknown;',
+          '  static recordValue(value: unknown): void;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          '// #[interop]',
+          "import { ValueBox } from './class-host.js';",
+          '',
+          'export function start(): void {',
+          '  ValueBox.recordValue(ValueBox.current());',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    class HostValue {
+      kind = 'host';
+    }
+    const currentValue = new HostValue();
+    const seenValues: unknown[] = [];
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate({
+      modules: {
+        './class-host.js': {
+          ValueBox: class ValueBox {
+            static current() {
+              return currentValue;
+            }
+            static recordValue(value: unknown) {
+              seenValues.push(value);
+            }
+          },
+        },
+      },
+    });
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'start');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+
+    assertEquals(exported(), undefined);
+    assertStrictEquals(seenValues[0], currentValue);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject forwards unknown values through #[interop] host class constructors',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts', 'src/**/*.d.ts'],
+            soundscript: {
+              target: 'wasm-browser',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/class-host.d.ts',
+        contents: [
+          'export declare const current: unknown;',
+          'export declare class ValueBox {',
+          '  constructor(value: unknown);',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          '// #[interop]',
+          "import { current, ValueBox } from './class-host.js';",
+          '',
+          'export function start(): number {',
+          '  const box = new ValueBox(current);',
+          '  return 0;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    class HostValue {
+      kind = 'host';
+    }
+    const currentValue = new HostValue();
+    class ValueBox {
+      static seen: unknown[] = [];
+      constructor(value: unknown) {
+        ValueBox.seen.push(value);
+      }
+    }
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate({
+      modules: {
+        './class-host.js': {
+          current: currentValue,
+          ValueBox,
+        },
+      },
+    });
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'start');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+
+    assertEquals(exported(), 0);
+    assertStrictEquals(ValueBox.seen[0], currentValue);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject forwards unknown values through #[interop] host class instance methods',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts', 'src/**/*.d.ts'],
+            soundscript: {
+              target: 'wasm-browser',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/class-host.d.ts',
+        contents: [
+          'export declare const current: unknown;',
+          'export declare function recordValue(value: unknown): void;',
+          'export declare class ValueBox {',
+          '  constructor();',
+          '  read(): unknown;',
+          '  write(value: unknown): void;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          '// #[interop]',
+          "import { current, recordValue, ValueBox } from './class-host.js';",
+          '',
+          'export function start(): number {',
+          '  const box = new ValueBox();',
+          '  box.write(current);',
+          '  recordValue(box.read());',
+          '  return 0;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    class HostValue {
+      kind = 'host';
+    }
+    const currentValue = new HostValue();
+    const seenValues: unknown[] = [];
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate({
+      modules: {
+        './class-host.js': {
+          current: currentValue,
+          recordValue: (value: unknown) => {
+            seenValues.push(value);
+          },
+          ValueBox: class ValueBox {
+            current: unknown;
+
+            read() {
+              return this.current;
+            }
+
+            write(value: unknown) {
+              this.current = value;
+            }
+          },
+        },
+      },
+    });
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'start');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+
+    assertEquals(exported(), 0);
+    assertStrictEquals(seenValues[0], currentValue);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject passes imported host class instance methods with unknown signatures as callbacks',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts', 'src/**/*.d.ts'],
+            soundscript: {
+              target: 'wasm-browser',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/class-host.d.ts',
+        contents: [
+          'export declare const current: unknown;',
+          'export declare function recordValue(value: unknown): void;',
+          'export declare class ValueBox {',
+          '  constructor();',
+          '  read(): unknown;',
+          '  write(value: unknown): void;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          '// #[interop]',
+          "import { current, recordValue, ValueBox } from './class-host.js';",
+          '',
+          'function applyWriter(fn: (value: unknown) => void): void {',
+          '  fn(current);',
+          '}',
+          '',
+          'function applyReader(fn: () => unknown): void {',
+          '  recordValue(fn());',
+          '}',
+          '',
+          'export function start(): number {',
+          '  const box = new ValueBox();',
+          '  applyWriter(box.write);',
+          '  applyReader(box.read);',
+          '  return 0;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    class HostValue {
+      kind = 'host';
+    }
+    const currentValue = new HostValue();
+    const seenValues: unknown[] = [];
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate({
+      modules: {
+        './class-host.js': {
+          current: currentValue,
+          recordValue: (value: unknown) => {
+            seenValues.push(value);
+          },
+          ValueBox: class ValueBox {
+            current: unknown;
+
+            read() {
+              return this.current;
+            }
+
+            write(value: unknown) {
+              this.current = value;
+            }
+          },
+        },
+      },
+    });
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'start');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+
+    assertEquals(exported(), 0);
+    assertStrictEquals(seenValues[0], currentValue);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject passes imported host class instance methods with unknown signatures through #[interop] host callback params',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts', 'src/**/*.d.ts'],
+            soundscript: {
+              target: 'wasm-browser',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/class-host.d.ts',
+        contents: [
+          'export declare const current: unknown;',
+          'export declare function recordValue(value: unknown): void;',
+          'export declare class ValueBox {',
+          '  constructor();',
+          '  read(): unknown;',
+          '  write(value: unknown): void;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/host-callback.d.ts',
+        contents: [
+          'export declare function applyWriter(fn: (value: unknown) => void, value: unknown): void;',
+          'export declare function applyReader(fn: () => unknown): unknown;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          '// #[interop]',
+          "import { current, recordValue, ValueBox } from './class-host.js';",
+          '// #[interop]',
+          "import { applyReader, applyWriter } from './host-callback.js';",
+          '',
+          'export function start(): number {',
+          '  const box = new ValueBox();',
+          '  applyWriter(box.write, current);',
+          '  recordValue(applyReader(box.read));',
+          '  return 0;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    class HostValue {
+      kind = 'host';
+    }
+    const currentValue = new HostValue();
+    const seenValues: unknown[] = [];
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate({
+      modules: {
+        './class-host.js': {
+          current: currentValue,
+          recordValue: (value: unknown) => {
+            seenValues.push(value);
+          },
+          ValueBox: class ValueBox {
+            current: unknown;
+
+            read() {
+              return this.current;
+            }
+
+            write(value: unknown) {
+              this.current = value;
+            }
+          },
+        },
+        './host-callback.js': {
+          applyWriter: (fn: (value: unknown) => void, value: unknown) => {
+            fn(value);
+          },
+          applyReader: (fn: () => unknown) => fn(),
+        },
+      },
+    });
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'start');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+
+    assertEquals(exported(), 0);
+    assertStrictEquals(seenValues[0], currentValue);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject reads and writes unknown instance properties on #[interop] host class imports',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts', 'src/**/*.d.ts'],
+            soundscript: {
+              target: 'wasm-browser',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/class-host.d.ts',
+        contents: [
+          'export declare const current: unknown;',
+          'export declare function recordValue(value: unknown): void;',
+          'export declare class ValueBox {',
+          '  constructor();',
+          '  value: unknown;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          '// #[interop]',
+          "import { current, recordValue, ValueBox } from './class-host.js';",
+          '',
+          'export function start(): number {',
+          '  const box = new ValueBox();',
+          '  box.value = current;',
+          '  recordValue(box.value);',
+          '  return 0;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    class HostValue {
+      kind = 'host';
+    }
+    const currentValue = new HostValue();
+    const seenValues: unknown[] = [];
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate({
+      modules: {
+        './class-host.js': {
+          current: currentValue,
+          recordValue: (value: unknown) => {
+            seenValues.push(value);
+          },
+          ValueBox: class ValueBox {
+            value: unknown;
+          },
+        },
+      },
+    });
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'start');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+
+    assertEquals(exported(), 0);
+    assertStrictEquals(seenValues[0], currentValue);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject writes nested unknown object literals into #[interop] host class instance properties',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts', 'src/**/*.d.ts'],
+            soundscript: {
+              target: 'wasm-browser',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/class-host.d.ts',
+        contents: [
+          'export interface NestedValue {',
+          '  leaf: unknown;',
+          '}',
+          '',
+          'export declare const current: unknown;',
+          'export declare function recordValue(value: unknown): void;',
+          'export declare class ValueBox {',
+          '  constructor();',
+          '  value: NestedValue;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          '// #[interop]',
+          "import { current, recordValue, ValueBox } from './class-host.js';",
+          '',
+          'export function start(): number {',
+          '  const box = new ValueBox();',
+          '  box.value = { leaf: current };',
+          '  recordValue(box.value.leaf);',
+          '  return 0;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    class HostValue {
+      kind = 'host';
+    }
+    const currentValue = new HostValue();
+    const seenValues: unknown[] = [];
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate({
+      modules: {
+        './class-host.js': {
+          current: currentValue,
+          recordValue: (value: unknown) => {
+            seenValues.push(value);
+          },
+          ValueBox: class ValueBox {
+            value = { leaf: undefined as unknown };
+          },
+        },
+      },
+    });
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'start');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+
+    assertEquals(exported(), 0);
+    assertStrictEquals(seenValues[0], currentValue);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject reads and writes unknown array instance properties on #[interop] host class imports',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts', 'src/**/*.d.ts'],
+            soundscript: {
+              target: 'wasm-browser',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/class-host.d.ts',
+        contents: [
+          'export declare const current: unknown;',
+          'export declare function recordValue(value: unknown): void;',
+          'export declare class ValueBox {',
+          '  constructor();',
+          '  values: unknown[];',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          '// #[interop]',
+          "import { current, recordValue, ValueBox } from './class-host.js';",
+          '',
+          'export function start(): number {',
+          '  const box = new ValueBox();',
+          '  box.values = [current];',
+          '  recordValue(box.values[0]);',
+          '  return 0;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    class HostValue {
+      kind = 'host';
+    }
+    const currentValue = new HostValue();
+    const seenValues: unknown[] = [];
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate({
+      modules: {
+        './class-host.js': {
+          current: currentValue,
+          recordValue: (value: unknown) => {
+            seenValues.push(value);
+          },
+          ValueBox: class ValueBox {
+            values: unknown[] = [];
+          },
+        },
+      },
+    });
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'start');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+
+    assertEquals(exported(), 0);
+    assertStrictEquals(seenValues[0], currentValue);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject supports react-dom/client DOM container unions with declaration-file builtin augmentations',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+            },
+            include: ['src/**/*.sts'],
+            soundscript: {
+              target: 'wasm-browser',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'node_modules/react/package.json',
+        contents: JSON.stringify(
+          {
+            name: 'react',
+            exports: {
+              '.': {
+                types: './index.d.ts',
+                default: './index.js',
+              },
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'node_modules/react/index.d.ts',
+        contents: [
+          '/// <reference path="./global.d.ts" />',
+          '',
+          'declare namespace React {',
+          '  type ReactNode = string | number | boolean | null | undefined;',
+          '}',
+          '',
+          'export = React;',
+          'export as namespace React;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'node_modules/react/global.d.ts',
+        contents: [
+          'interface Element {}',
+          'interface DocumentFragment {}',
+          'interface Document {}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'node_modules/react-dom/package.json',
+        contents: JSON.stringify(
+          {
+            name: 'react-dom',
+            type: 'module',
+            exports: {
+              './client': {
+                types: './client.d.ts',
+                default: './client.js',
+              },
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'node_modules/react-dom/client.d.ts',
+        contents: [
+          'import React = require("react");',
+          '',
+          'export interface RootOptions {',
+          '  identifierPrefix?: string;',
+          '  onRecoverableError?: (error: unknown) => void;',
+          '}',
+          '',
+          'export interface Root {',
+          '  render(children: React.ReactNode): void;',
+          '  unmount(): void;',
+          '}',
+          '',
+          'export interface DO_NOT_USE_OR_YOU_WILL_BE_FIRED_EXPERIMENTAL_CREATE_ROOT_CONTAINERS {}',
+          '',
+          'export type Container =',
+          '  | Element',
+          '  | DocumentFragment',
+          '  | Document',
+          '  | DO_NOT_USE_OR_YOU_WILL_BE_FIRED_EXPERIMENTAL_CREATE_ROOT_CONTAINERS[',
+          '      keyof DO_NOT_USE_OR_YOU_WILL_BE_FIRED_EXPERIMENTAL_CREATE_ROOT_CONTAINERS',
+          '    ];',
+          '',
+          'export declare function createRoot(container: Container, options?: RootOptions): Root;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/dom-host.d.ts',
+        contents: 'export declare function getAppContainer(): Element;\n',
+      },
+      {
+        path: 'src/index.sts',
+        contents: [
+          '// #[interop]',
+          "import { createRoot } from 'react-dom/client';",
+          '// #[interop]',
+          "import { getAppContainer } from './dom-host.js';",
+          '',
+          'let root: ReturnType<typeof createRoot> | undefined = undefined;',
+          '',
+          'export function start(): void {',
+          '  const currentRoot = root ?? createRoot(getAppContainer());',
+          '  root = currentRoot;',
+          '  currentRoot.unmount();',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const container = { nodeType: 1, tagName: 'DIV' };
+    let createRootCalls = 0;
+    let unmountCalls = 0;
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate({
+      modules: {
+        './dom-host.js': {
+          getAppContainer: () => container,
+        },
+        'react-dom/client': {
+          createRoot: (receivedContainer: unknown) => {
+            createRootCalls += 1;
+            assertStrictEquals(receivedContainer, container);
+            return {
+              render() {
+              },
+              unmount() {
+                unmountCalls += 1;
+              },
+            };
+          },
+        },
+      },
+    });
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'start');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+
+    assertEquals(exported(), undefined);
+    assertEquals(exported(), undefined);
+    assertEquals(createRootCalls, 1);
+    assertEquals(unmountCalls, 2);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject supports Wasm-owned react-dom/client roots across exported start callbacks',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+            },
+            include: ['src/**/*.sts'],
+            soundscript: {
+              target: 'wasm-browser',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'node_modules/react/package.json',
+        contents: JSON.stringify(
+          {
+            name: 'react',
+            type: 'module',
+            exports: {
+              './jsx-runtime': {
+                types: './jsx-runtime.d.ts',
+                default: './jsx-runtime.js',
+              },
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'node_modules/react/jsx-runtime.d.ts',
+        contents: [
+          'export namespace JSX {',
+          '  export interface IntrinsicElements {',
+          '    button: { children?: string; onClick?: () => void };',
+          '  }',
+          '}',
+          '',
+          'export type Key = string | number | bigint;',
+          'export type ElementType = string | ((props: any) => unknown);',
+          '',
+          'export interface ReactElement<',
+          '  P = any,',
+          '  T extends string | ((props: any) => unknown) = string | ((props: any) => unknown),',
+          '> {',
+          '  type: T;',
+          '  props: P;',
+          '  key: string | null;',
+          '}',
+          '',
+          'export declare function jsx(',
+          '  type: ElementType,',
+          '  props: unknown,',
+          '  key?: Key,',
+          '): ReactElement;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'node_modules/react-dom/package.json',
+        contents: JSON.stringify(
+          {
+            name: 'react-dom',
+            type: 'module',
+            exports: {
+              './client': {
+                types: './client.d.ts',
+                default: './client.js',
+              },
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'node_modules/react-dom/client.d.ts',
+        contents: [
+          "import type { ReactElement } from 'react/jsx-runtime';",
+          '',
+          'type AwaitedReactNode =',
+          '  | ReactElement',
+          '  | string',
+          '  | number',
+          '  | bigint',
+          '  | Iterable<ReactNode>',
+          '  | ReactPortal',
+          '  | boolean',
+          '  | null',
+          '  | undefined;',
+          '',
+          'export type ReactNode = AwaitedReactNode | Promise<AwaitedReactNode>;',
+          '',
+          'export interface ReactPortal {',
+          '  children: ReactNode;',
+          '  key: string | null;',
+          '}',
+          '',
+          'export interface Container {',
+          '  nodeType: number;',
+          '}',
+          '',
+          'export interface Root {',
+          '  render(children: ReactNode): void;',
+          '  unmount(): void;',
+          '}',
+          '',
+          'export declare function createRoot(container: Container): Root;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/dom-host.d.ts',
+        contents: [
+          "import type { Container } from 'react-dom/client';",
+          '',
+          'export declare function getAppContainer(): Container;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.sts',
+        contents: [
+          '// #[interop]',
+          "import { createRoot } from 'react-dom/client';",
+          '// #[interop]',
+          "import { getAppContainer } from './dom-host.js';",
+          '',
+          'type AppRoot = ReturnType<typeof createRoot>;',
+          '',
+          'let root: AppRoot | undefined = undefined;',
+          'let clickCount = 0;',
+          '',
+          'function label(): string {',
+          "  return clickCount === 0 ? 'Click the Wasm button' : 'Clicked 1 time';",
+          '}',
+          '',
+          'function view() {',
+          '  return <button onClick={() => {',
+          '    clickCount = clickCount + 1;',
+          '    start();',
+          '  }}>{label()}</button>;',
+          '}',
+          '',
+          'export function start(): void {',
+          '  const currentRoot = root ?? createRoot(getAppContainer());',
+          '  root = currentRoot;',
+          '  currentRoot.render(view());',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    let createRootCalls = 0;
+    const container = { children: { length: 0 }, nodeType: 1, tagName: 'DIV' };
+    let lastRendered:
+      | { key: string | null; props: { children: string; onClick?: () => void }; type: string }
+      | undefined;
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate({
+      modules: {
+        './dom-host.js': {
+          getAppContainer: () => container,
+        },
+        'react/jsx-runtime': {
+          jsx: (
+            type: string,
+            props: { children: string; onClick?: () => void },
+          ) => ({ key: null, props, type }),
+        },
+        'react-dom/client': {
+          createRoot: (
+            receivedContainer: { children: { length: number }; nodeType: number; tagName: string },
+          ) => {
+            createRootCalls += 1;
+            assertStrictEquals(receivedContainer, container);
+            class Root {
+              render(children: {
+                key: string | null;
+                props: { children: string; onClick?: () => void };
+                type: string;
+              }) {
+                lastRendered = children;
+              }
+
+              unmount() {
+              }
+            }
+            return new Root();
+          },
+        },
+      },
+    });
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'start');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+
+    assertEquals(exported(), undefined);
+    assertEquals(createRootCalls, 1);
+    assert(lastRendered);
+    assertEquals(lastRendered.props.children, 'Click the Wasm button');
+    assert(lastRendered.props.onClick);
+    lastRendered.props.onClick();
+    assertEquals(createRootCalls, 1);
+    assert(lastRendered);
+    assertEquals(lastRendered.props.children, 'Clicked 1 time');
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject supports React-shaped browser mains rerendering from Wasm click handlers in .sts sources',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+            },
+            include: ['src/**/*.sts'],
+            soundscript: {
+              target: 'wasm-browser',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'node_modules/react/package.json',
+        contents: JSON.stringify(
+          {
+            name: 'react',
+            type: 'module',
+            exports: {
+              './jsx-runtime': {
+                types: './jsx-runtime.d.ts',
+                default: './jsx-runtime.js',
+              },
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'node_modules/react/jsx-runtime.d.ts',
+        contents: [
+          'export type Key = string | number | bigint;',
+          'export type ElementType = string | ((props: any) => unknown);',
+          '',
+          'export interface ReactElement<',
+          '  P = any,',
+          '  T extends string | ((props: any) => unknown) = string | ((props: any) => unknown),',
+          '> {',
+          '  type: T;',
+          '  props: P;',
+          '  key: string | null;',
+          '}',
+          '',
+          'export declare function jsx(',
+          '  type: ElementType,',
+          '  props: unknown,',
+          '  key?: Key,',
+          '): ReactElement;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.sts',
+        contents: [
+          '// #[interop]',
+          "import { jsx } from 'react/jsx-runtime';",
+          '',
+          'export function click(count: number): number {',
+          '  return count + 1;',
+          '}',
+          '',
+          'export function main(clickCount: number) {',
+          "  return jsx('button', {",
+          '    children: clickCount === 0',
+          "      ? 'Click the Wasm button'",
+          "      : (clickCount === 1 ? 'Clicked 1 time' : 'Clicked many times'),",
+          '  });',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate({
+      modules: {
+        'react/jsx-runtime': {
+          jsx: (type: string, props: { children: string }) => ({ key: null, props, type }),
+        },
+      },
+    });
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const clickExportName = await resolveQualifiedExportName(tempDirectory, 'click');
+    const mainExport = instantiated.exports[exportName];
+    const clickExport = instantiated.exports[clickExportName];
+    if (typeof mainExport !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+    if (typeof clickExport !== 'function') {
+      throw new Error(`Expected exported function "${clickExportName}".`);
+    }
+
+    const initial = mainExport(0) as {
+      key: string | null;
+      props: { children: string };
+      type: string;
+    };
+    assertEquals(initial.type, 'button');
+    assertEquals(initial.key, null);
+    assertEquals(initial.props.children, 'Click the Wasm button');
+    assertEquals(clickExport(0), 1);
+    const afterOneClick = mainExport(1) as {
+      key: string | null;
+      props: { children: string };
+      type: string;
+    };
+    assertEquals(afterOneClick.props.children, 'Clicked 1 time');
+    assertEquals(clickExport(1), 2);
+    const afterTwoClicks = mainExport(2) as {
+      key: string | null;
+      props: { children: string };
+      type: string;
+    };
+    assertEquals(afterTwoClicks.props.children, 'Clicked many times');
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject compiles the checked-in react-browser-demo example',
+  async () => {
+    const { result } = compileCheckedInProject('examples/react-browser-demo');
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject executes the checked-in react-browser-demo example through Wasm-owned React roots',
+  async () => {
+    const { projectDirectory, result } = compileCheckedInProject('examples/react-browser-demo');
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    let createRootCalls = 0;
+    const container = { children: { length: 0 }, nodeType: 1, tagName: 'DIV' };
+    let lastRendered:
+      | { key: string | null; props: { children: string; onClick?: () => void }; type: string }
+      | undefined;
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate({
+      modules: {
+        './dom-host.js': {
+          getAppContainer: () => container,
+        },
+        'react/jsx-runtime': {
+          jsx: (
+            type: string,
+            props: { children: string; onClick?: () => void },
+            key?: string | number | bigint,
+          ) => ({ key: key === undefined ? null : String(key), props, type }),
+        },
+        'react-dom/client': {
+          createRoot: (
+            receivedContainer: { children: { length: number }; nodeType: number; tagName: string },
+          ) => {
+            createRootCalls += 1;
+            assertStrictEquals(receivedContainer, container);
+            class Root {
+              render(children: {
+                key: string | null;
+                props: { children: string; onClick?: () => void };
+                type: string;
+              }) {
+                lastRendered = children;
+              }
+
+              unmount() {
+              }
+            }
+            return new Root();
+          },
+        },
+      },
+    });
+    const exportName = await resolveQualifiedExportName(projectDirectory, 'start');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+
+    assertEquals(exported(), undefined);
+    assertEquals(createRootCalls, 1);
+    assert(lastRendered);
+    assertEquals(lastRendered.type, 'button');
+    assertEquals(lastRendered.props.children, 'Click the Wasm button');
+    assert(lastRendered.props.onClick);
+
+    lastRendered.props.onClick();
+    assertEquals(createRootCalls, 1);
+    assert(lastRendered);
+    assertEquals(lastRendered.props.children, 'Clicked 1 time');
+    assert(lastRendered.props.onClick);
+
+    lastRendered.props.onClick();
+    assertEquals(createRootCalls, 1);
+    assert(lastRendered);
+    assertEquals(lastRendered.props.children, 'Clicked many times');
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject supports React-shaped bare package imports with jsx-runtime subpaths',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+            },
+            include: ['src/**/*.ts'],
+            soundscript: {
+              target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'node_modules/react/package.json',
+        contents: JSON.stringify(
+          {
+            name: 'react',
+            type: 'module',
+            exports: {
+              '.': {
+                types: './index.d.ts',
+                default: './index.js',
+              },
+              './jsx-runtime': {
+                types: './jsx-runtime.d.ts',
+                default: './jsx-runtime.js',
+              },
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'node_modules/react/index.d.ts',
+        contents: [
+          'export interface ChildrenApi {',
+          '  count(children: string): number;',
+          '}',
+          '',
+          'export declare const Children: ChildrenApi;',
+          'export declare const version: string;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'node_modules/react/index.js',
+        contents: [
+          'export const Children = {',
+          '  count(children) {',
+          '    return children == null ? 0 : 1;',
+          '  },',
+          '};',
+          '',
+          "export const version = '18.3.0';",
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'node_modules/react/jsx-runtime.d.ts',
+        contents: [
+          'export interface JsxProps {',
+          '  children: string;',
+          '}',
+          '',
+          'export interface JsxElement {',
+          '  children: string;',
+          '}',
+          '',
+          'export declare function jsx(tag: string, props: JsxProps): JsxElement;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'node_modules/react/jsx-runtime.js',
+        contents: [
+          'export function jsx(tag, props) {',
+          '  return { children: props.children };',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          '// #[interop]',
+          "import { Children, version } from 'react';",
+          '// #[interop]',
+          "import { jsx } from 'react/jsx-runtime';",
+          '',
+          'export function main(): number {',
+          "  const element = jsx('button', { children: 'ok' });",
+          '  return Children.count(element.children) + version.length;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate({
+      modules: {
+        react: {
+          Children: {
+            count: (children: string | null | undefined) => children == null ? 0 : 1,
+          },
+          version: '18.3.0',
+        },
+        'react/jsx-runtime': {
+          jsx: (_tag: string, props: { children: string }) => ({ children: props.children }),
+        },
+      },
+    });
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+    assertEquals(await exported(), 7);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject supports React-shaped nested host result properties from jsx-runtime subpaths',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+            },
+            include: ['src/**/*.ts'],
+            soundscript: {
+              target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'node_modules/react/package.json',
+        contents: JSON.stringify(
+          {
+            name: 'react',
+            type: 'module',
+            exports: {
+              '.': {
+                types: './index.d.ts',
+                default: './index.js',
+              },
+              './jsx-runtime': {
+                types: './jsx-runtime.d.ts',
+                default: './jsx-runtime.js',
+              },
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'node_modules/react/index.d.ts',
+        contents: [
+          'export interface ChildrenApi {',
+          '  count(children: string): number;',
+          '}',
+          '',
+          'export declare const Children: ChildrenApi;',
+          'export declare const version: string;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'node_modules/react/index.js',
+        contents: [
+          'export const Children = {',
+          '  count(children) {',
+          '    return children == null ? 0 : 1;',
+          '  },',
+          '};',
+          '',
+          "export const version = '18.3.0';",
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'node_modules/react/jsx-runtime.d.ts',
+        contents: [
+          'export interface JsxProps {',
+          '  children: string;',
+          '}',
+          '',
+          'export interface JsxElementProps {',
+          '  children: string;',
+          '}',
+          '',
+          'export interface JsxElement {',
+          '  props: JsxElementProps;',
+          '}',
+          '',
+          'export declare function jsx(tag: string, props: JsxProps): JsxElement;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'node_modules/react/jsx-runtime.js',
+        contents: [
+          'export function jsx(tag, props) {',
+          '  return { props: { children: props.children } };',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          '// #[interop]',
+          "import { Children, version } from 'react';",
+          '// #[interop]',
+          "import { jsx } from 'react/jsx-runtime';",
+          '',
+          'export function main(): number {',
+          "  const element = jsx('button', { children: 'ok' });",
+          '  return Children.count(element.props.children) + version.length;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate({
+      modules: {
+        react: {
+          Children: {
+            count: (children: string | null | undefined) => children == null ? 0 : 1,
+          },
+          version: '18.3.0',
+        },
+        'react/jsx-runtime': {
+          jsx: (_tag: string, props: { children: string }) => ({
+            props: { children: props.children },
+          }),
+        },
+      },
+    });
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+    assertEquals(await exported(), 7);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject supports React-shaped nested host result properties from jsx-runtime subpaths in wasm-browser wrappers',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+            },
+            include: ['src/**/*.ts'],
+            soundscript: {
+              target: 'wasm-browser',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'node_modules/react/package.json',
+        contents: JSON.stringify(
+          {
+            name: 'react',
+            type: 'module',
+            exports: {
+              '.': {
+                types: './index.d.ts',
+                default: './index.js',
+              },
+              './jsx-runtime': {
+                types: './jsx-runtime.d.ts',
+                default: './jsx-runtime.js',
+              },
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'node_modules/react/index.d.ts',
+        contents: [
+          'export interface ChildrenApi {',
+          '  count(children: string): number;',
+          '}',
+          '',
+          'export declare const Children: ChildrenApi;',
+          'export declare const version: string;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'node_modules/react/index.js',
+        contents: [
+          'export const Children = {',
+          '  count(children) {',
+          '    return children == null ? 0 : 1;',
+          '  },',
+          '};',
+          '',
+          "export const version = '18.3.0';",
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'node_modules/react/jsx-runtime.d.ts',
+        contents: [
+          'export interface JsxProps {',
+          '  children: string;',
+          '}',
+          '',
+          'export interface JsxElementProps {',
+          '  children: string;',
+          '}',
+          '',
+          'export interface JsxElement {',
+          '  props: JsxElementProps;',
+          '}',
+          '',
+          'export declare function jsx(tag: string, props: JsxProps): JsxElement;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'node_modules/react/jsx-runtime.js',
+        contents: [
+          'export function jsx(tag, props) {',
+          '  return { props: { children: props.children } };',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          '// #[interop]',
+          "import { Children, version } from 'react';",
+          '// #[interop]',
+          "import { jsx } from 'react/jsx-runtime';",
+          '',
+          'export function main(): number {',
+          "  const element = jsx('button', { children: 'ok' });",
+          '  return Children.count(element.props.children) + version.length;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate({
+      modules: {
+        react: {
+          Children: {
+            count: (children: string | null | undefined) => children == null ? 0 : 1,
+          },
+          version: '18.3.0',
+        },
+        'react/jsx-runtime': {
+          jsx: (_tag: string, props: { children: string }) => ({
+            props: { children: props.children },
+          }),
+        },
+      },
+    });
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+    assertEquals(await exported(), 7);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject supports React-shaped callback props as host-owned values',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+            },
+            include: ['src/**/*.ts'],
+            soundscript: {
+              target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'node_modules/react/package.json',
+        contents: JSON.stringify(
+          {
+            name: 'react',
+            type: 'module',
+            exports: {
+              './jsx-runtime': {
+                types: './jsx-runtime.d.ts',
+                default: './jsx-runtime.js',
+              },
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'node_modules/react/jsx-runtime.d.ts',
+        contents: [
+          'export interface JsxProps {',
+          '  children: string;',
+          '  onClick: () => number;',
+          '}',
+          '',
+          'export interface JsxElement {',
+          '  props: JsxProps;',
+          '}',
+          '',
+          'export declare function jsx(tag: string, props: JsxProps): JsxElement;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'node_modules/react/jsx-runtime.js',
+        contents: [
+          'export function jsx(tag, props) {',
+          '  return { props: { children: props.children, onClick: props.onClick } };',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/callback-props-host.d.ts',
+        contents: [
+          'export interface ClickProps {',
+          '  children: string;',
+          '  onClick: () => number;',
+          '}',
+          '',
+          'export interface ClickElement {',
+          '  props: ClickProps;',
+          '}',
+          '',
+          'export declare function invokeClick(element: ClickElement): number;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/callback-props-host.js',
+        contents: [
+          'export function invokeClick(element) {',
+          '  return element.props.onClick();',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          '// #[interop]',
+          "import { jsx } from 'react/jsx-runtime';",
+          '// #[interop]',
+          "import { invokeClick } from './callback-props-host.js';",
+          '',
+          'export function main(): number {',
+          "  const element = jsx('button', {",
+          "    children: 'ok',",
+          '    onClick: () => 7,',
+          '  });',
+          '  return invokeClick(element);',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate({
+      modules: {
+        'react/jsx-runtime': {
+          jsx: (_tag: string, props: { children: string; onClick: () => number }) => ({
+            props: { children: props.children, onClick: props.onClick },
+          }),
+        },
+      },
+    });
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+    assertEquals(await exported(), 7);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject supports React-shaped callback props as host-owned values in wasm-browser wrappers',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+            },
+            include: ['src/**/*.ts'],
+            soundscript: {
+              target: 'wasm-browser',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'node_modules/react/package.json',
+        contents: JSON.stringify(
+          {
+            name: 'react',
+            type: 'module',
+            exports: {
+              './jsx-runtime': {
+                types: './jsx-runtime.d.ts',
+                default: './jsx-runtime.js',
+              },
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'node_modules/react/jsx-runtime.d.ts',
+        contents: [
+          'export interface JsxProps {',
+          '  children: string;',
+          '  onClick: () => number;',
+          '}',
+          '',
+          'export interface JsxElement {',
+          '  props: JsxProps;',
+          '}',
+          '',
+          'export declare function jsx(tag: string, props: JsxProps): JsxElement;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'node_modules/react/jsx-runtime.js',
+        contents: [
+          'export function jsx(tag, props) {',
+          '  return { props: { children: props.children, onClick: props.onClick } };',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/callback-props-host.d.ts',
+        contents: [
+          'export interface ClickProps {',
+          '  children: string;',
+          '  onClick: () => number;',
+          '}',
+          '',
+          'export interface ClickElement {',
+          '  props: ClickProps;',
+          '}',
+          '',
+          'export declare function invokeClick(element: ClickElement): number;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/callback-props-host.js',
+        contents: [
+          'export function invokeClick(element) {',
+          '  return element.props.onClick();',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          '// #[interop]',
+          "import { jsx } from 'react/jsx-runtime';",
+          '// #[interop]',
+          "import { invokeClick } from './callback-props-host.js';",
+          '',
+          'export function main(): number {',
+          "  const element = jsx('button', {",
+          "    children: 'ok',",
+          '    onClick: () => 7,',
+          '  });',
+          '  return invokeClick(element);',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate({
+      modules: {
+        'react/jsx-runtime': {
+          jsx: (_tag: string, props: { children: string; onClick: () => number }) => ({
+            props: { children: props.children, onClick: props.onClick },
+          }),
+        },
+      },
+    });
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+    assertEquals(await exported(), 7);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject exports React-shaped callback props on returned elements in wasm-node wrappers',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+            },
+            include: ['src/**/*.ts'],
+            soundscript: {
+              target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'node_modules/react/package.json',
+        contents: JSON.stringify(
+          {
+            name: 'react',
+            type: 'module',
+            exports: {
+              './jsx-runtime': {
+                types: './jsx-runtime.d.ts',
+                default: './jsx-runtime.js',
+              },
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'node_modules/react/jsx-runtime.d.ts',
+        contents: [
+          'export interface JsxProps {',
+          '  children: string;',
+          '  onClick: () => number;',
+          '}',
+          '',
+          'export interface JsxElement {',
+          '  props: JsxProps;',
+          '}',
+          '',
+          'export declare function jsx(tag: string, props: JsxProps): JsxElement;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'node_modules/react/jsx-runtime.js',
+        contents: [
+          'export function jsx(tag, props) {',
+          '  return { props: { children: props.children, onClick: props.onClick } };',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          '// #[interop]',
+          "import { jsx } from 'react/jsx-runtime';",
+          '',
+          'export function main() {',
+          "  return jsx('button', {",
+          "    children: 'ok',",
+          '    onClick: () => 7,',
+          '  });',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate({
+      modules: {
+        'react/jsx-runtime': {
+          jsx: (_tag: string, props: { children: string; onClick: () => number }) => ({
+            props: { children: props.children, onClick: props.onClick },
+          }),
+        },
+      },
+    });
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+    const element = await exported();
+    assertEquals(typeof element.props.onClick, 'function');
+    assertEquals(element.props.onClick(), 7);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject exports React-shaped callback props on returned elements in wasm-browser wrappers',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+            },
+            include: ['src/**/*.ts'],
+            soundscript: {
+              target: 'wasm-browser',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'node_modules/react/package.json',
+        contents: JSON.stringify(
+          {
+            name: 'react',
+            type: 'module',
+            exports: {
+              './jsx-runtime': {
+                types: './jsx-runtime.d.ts',
+                default: './jsx-runtime.js',
+              },
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'node_modules/react/jsx-runtime.d.ts',
+        contents: [
+          'export interface JsxProps {',
+          '  children: string;',
+          '  onClick: () => number;',
+          '}',
+          '',
+          'export interface JsxElement {',
+          '  props: JsxProps;',
+          '}',
+          '',
+          'export declare function jsx(tag: string, props: JsxProps): JsxElement;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'node_modules/react/jsx-runtime.js',
+        contents: [
+          'export function jsx(tag, props) {',
+          '  return { props: { children: props.children, onClick: props.onClick } };',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          '// #[interop]',
+          "import { jsx } from 'react/jsx-runtime';",
+          '',
+          'export function main() {',
+          "  return jsx('button', {",
+          "    children: 'ok',",
+          '    onClick: () => 7,',
+          '  });',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate({
+      modules: {
+        'react/jsx-runtime': {
+          jsx: (_tag: string, props: { children: string; onClick: () => number }) => ({
+            props: { children: props.children, onClick: props.onClick },
+          }),
+        },
+      },
+    });
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+    const element = await exported();
+    assertEquals(typeof element.props.onClick, 'function');
+    assertEquals(element.props.onClick(), 7);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject supports React-shaped bare package namespace member access',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+            },
+            include: ['src/**/*.ts'],
+            soundscript: {
+              target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'node_modules/react/package.json',
+        contents: JSON.stringify(
+          {
+            name: 'react',
+            type: 'module',
+            types: './index.d.ts',
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'node_modules/react/index.d.ts',
+        contents: [
+          'export interface ChildrenApi {',
+          '  count(children: string): number;',
+          '}',
+          '',
+          'export declare const Children: ChildrenApi;',
+          'export declare const version: string;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'node_modules/react/index.js',
+        contents: [
+          'export const Children = {',
+          '  count(children) {',
+          '    return children == null ? 0 : 1;',
+          '  },',
+          '};',
+          '',
+          "export const version = '18.3.0';",
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          '// #[interop]',
+          "import * as React from 'react';",
+          '',
+          'export function main(): number {',
+          "  return React.Children.count('ok') + React.version.length;",
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate({
+      modules: {
+        react: {
+          Children: {
+            count: (children: string | null | undefined) => children == null ? 0 : 1,
+          },
+          version: '18.3.0',
+        },
+      },
+    });
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+    assertEquals(await exported(), 7);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject supports React-shaped bare package default object imports',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+            },
+            include: ['src/**/*.ts'],
+            soundscript: {
+              target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'node_modules/react/package.json',
+        contents: JSON.stringify(
+          {
+            name: 'react',
+            type: 'module',
+            types: './index.d.ts',
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'node_modules/react/index.d.ts',
+        contents: [
+          'export interface ChildrenApi {',
+          '  count(children: string): number;',
+          '}',
+          '',
+          'declare const ReactDefault: {',
+          '  Children: ChildrenApi;',
+          '  version: string;',
+          '};',
+          '',
+          'export default ReactDefault;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'node_modules/react/index.js',
+        contents: [
+          'const ReactDefault = {',
+          '  Children: {',
+          '    count(children) {',
+          '      return children == null ? 0 : 1;',
+          '    },',
+          '  },',
+          "  version: '18.3.0',",
+          '};',
+          '',
+          'export default ReactDefault;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          '// #[interop]',
+          "import React from 'react';",
+          '',
+          'export function main(): number {',
+          "  return React.Children.count('ok') + React.version.length;",
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate({
+      modules: {
+        react: {
+          default: {
+            Children: {
+              count: (children: string | null | undefined) => children == null ? 0 : 1,
+            },
+            version: '18.3.0',
+          },
+        },
+      },
+    });
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+    assertEquals(await exported(), 7);
   },
 );
 
@@ -4131,7 +8588,523 @@ compilerIntegrationTest(
 );
 
 compilerIntegrationTest(
+  'compileProject reads nested payloads from thrown #[interop] host plain objects inside soundscript',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts'],
+            soundscript: {
+              target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/throw-host.d.ts',
+        contents: [
+          'export declare function explode(): number;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/throw-host.js',
+        contents: [
+          'export function explode() {',
+          '  throw { value: { nested: 7 } };',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          '// #[interop]',
+          "import { explode } from './throw-host.js';",
+          '',
+          'export function main(): number {',
+          '  try {',
+          '    return explode();',
+          '  } catch (error: unknown) {',
+          '    if (typeof error === "object" && error !== null && "value" in error) {',
+          '      const value = error.value;',
+          '      if (typeof value === "object" && value !== null && "nested" in value) {',
+          '        const nested = value.nested;',
+          '        if (typeof nested === "number") {',
+          '          return nested;',
+          '        }',
+          '      }',
+          '    }',
+          '    return 0;',
+          '  }',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate();
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+    assertEquals(await exported(), 7);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject reads deeply nested payloads from thrown #[interop] host plain objects inside soundscript',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts'],
+            soundscript: {
+              target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/throw-host.d.ts',
+        contents: [
+          'export declare function explode(): number;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/throw-host.js',
+        contents: [
+          'export function explode() {',
+          '  throw { value: { nested: { leaf: 7 } } };',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          '// #[interop]',
+          "import { explode } from './throw-host.js';",
+          '',
+          'export function main(): number {',
+          '  try {',
+          '    return explode();',
+          '  } catch (error: unknown) {',
+          '    if (typeof error === "object" && error !== null && "value" in error) {',
+          '      const value = error.value;',
+          '      if (typeof value === "object" && value !== null && "nested" in value) {',
+          '        const nested = value.nested;',
+          '        if (typeof nested === "object" && nested !== null && "leaf" in nested) {',
+          '          const leaf = nested.leaf;',
+          '          if (typeof leaf === "number") {',
+          '            return leaf;',
+          '          }',
+          '        }',
+          '      }',
+          '    }',
+          '    return 0;',
+          '  }',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate();
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+    assertEquals(await exported(), 7);
+  },
+);
+
+compilerIntegrationTest(
   'compileProject does not treat rejected #[interop] host plain objects as Error inside soundscript',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts'],
+            soundscript: {
+              target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/throw-host.d.ts',
+        contents: [
+          'export declare function explodeAsync(): Promise<number>;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/throw-host.js',
+        contents: [
+          'export async function explodeAsync() {',
+          '  throw { value: 7 };',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          '// #[interop]',
+          "import { explodeAsync } from './throw-host.js';",
+          '',
+          'export async function main(): Promise<number> {',
+          '  try {',
+          '    return await explodeAsync();',
+          '  } catch (error: unknown) {',
+          '    return error instanceof Error ? 1 : 2;',
+          '  }',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate();
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+    assertEquals(await exported(), 2);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject reads primitive payloads from rejected #[interop] host plain objects inside soundscript',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts'],
+            soundscript: {
+              target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/throw-host.d.ts',
+        contents: [
+          'export declare function explodeAsync(): Promise<number>;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/throw-host.js',
+        contents: [
+          'export async function explodeAsync() {',
+          '  throw { value: 7 };',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          '// #[interop]',
+          "import { explodeAsync } from './throw-host.js';",
+          '',
+          'export async function main(): Promise<number> {',
+          '  try {',
+          '    return await explodeAsync();',
+          '  } catch (error: unknown) {',
+          '    if (typeof error === "object" && error !== null && "value" in error) {',
+          '      const value = error.value;',
+          '      if (typeof value === "number") {',
+          '        return value;',
+          '      }',
+          '    }',
+          '    return 0;',
+          '  }',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate();
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+    assertEquals(await exported(), 7);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject reads nested payloads from rejected #[interop] host plain objects inside soundscript',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts'],
+            soundscript: {
+              target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/throw-host.d.ts',
+        contents: [
+          'export declare function explodeAsync(): Promise<number>;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/throw-host.js',
+        contents: [
+          'export async function explodeAsync() {',
+          '  throw { value: { nested: 7 } };',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          '// #[interop]',
+          "import { explodeAsync } from './throw-host.js';",
+          '',
+          'export async function main(): Promise<number> {',
+          '  try {',
+          '    return await explodeAsync();',
+          '  } catch (error: unknown) {',
+          '    if (typeof error === "object" && error !== null && "value" in error) {',
+          '      const value = error.value;',
+          '      if (typeof value === "object" && value !== null && "nested" in value) {',
+          '        const nested = value.nested;',
+          '        if (typeof nested === "number") {',
+          '          return nested;',
+          '        }',
+          '      }',
+          '    }',
+          '    return 0;',
+          '  }',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate();
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+    assertEquals(await exported(), 7);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject reads deeply nested payloads from rejected #[interop] host plain objects inside soundscript',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts'],
+            soundscript: {
+              target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/throw-host.d.ts',
+        contents: [
+          'export declare function explodeAsync(): Promise<number>;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/throw-host.js',
+        contents: [
+          'export async function explodeAsync() {',
+          '  throw { value: { nested: { leaf: 7 } } };',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          '// #[interop]',
+          "import { explodeAsync } from './throw-host.js';",
+          '',
+          'export async function main(): Promise<number> {',
+          '  try {',
+          '    return await explodeAsync();',
+          '  } catch (error: unknown) {',
+          '    if (typeof error === "object" && error !== null && "value" in error) {',
+          '      const value = error.value;',
+          '      if (typeof value === "object" && value !== null && "nested" in value) {',
+          '        const nested = value.nested;',
+          '        if (typeof nested === "object" && nested !== null && "leaf" in nested) {',
+          '          const leaf = nested.leaf;',
+          '          if (typeof leaf === "number") {',
+          '            return leaf;',
+          '          }',
+          '        }',
+          '      }',
+          '    }',
+          '    return 0;',
+          '  }',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate();
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+    assertEquals(await exported(), 7);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject keeps async rejected host plain-object payload imports pay-for-play',
   async () => {
     const tempDirectory = await createTempProject([
       {
@@ -4191,20 +9164,22 @@ compilerIntegrationTest(
       projectPath: join(tempDirectory, 'tsconfig.json'),
       workingDirectory: tempDirectory,
     });
-
     assertEquals(result.exitCode, 0);
     assertEquals(result.diagnostics, []);
-    assert(result.artifacts);
-    assert(result.artifacts.wrapperPath);
 
-    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
-    const instantiated = await wrapperModule.instantiate();
-    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
-    const exported = instantiated.exports[exportName];
-    if (typeof exported !== 'function') {
-      throw new Error(`Expected exported function "${exportName}".`);
-    }
-    assertEquals(await exported(), 2);
+    const watOutput = await readWatArtifactForProject(tempDirectory);
+    assertEquals(
+      watOutput.includes(
+        `(import "soundscript_object" "get_tagged:value"`,
+      ),
+      false,
+    );
+    assertEquals(
+      watOutput.includes(
+        `(import "soundscript_object" "has:value"`,
+      ),
+      false,
+    );
   },
 );
 
@@ -4884,6 +9859,106 @@ compilerIntegrationTest(
           'export function main(): number {',
           '  const pair = makePair(2, 5);',
           '  return pair.left + pair.right;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate();
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+    assertEquals(await exported(), 7);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject reads arbitrarily nested properties from #[interop] host object results',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts'],
+            soundscript: {
+              target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/object-nested-property-host.d.ts',
+        contents: [
+          'export interface Leaf {',
+          '  value: number;',
+          '}',
+          '',
+          'export interface LevelThree {',
+          '  leaf: Leaf;',
+          '}',
+          '',
+          'export interface LevelTwo {',
+          '  levelThree: LevelThree;',
+          '}',
+          '',
+          'export interface LevelOne {',
+          '  levelTwo: LevelTwo;',
+          '}',
+          '',
+          'export declare function makeLevelOne(value: number): LevelOne;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/object-nested-property-host.js',
+        contents: [
+          'export function makeLevelOne(value) {',
+          '  return {',
+          '    levelTwo: {',
+          '      levelThree: {',
+          '        leaf: { value },',
+          '      },',
+          '    },',
+          '  };',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          '// #[interop]',
+          "import { makeLevelOne } from './object-nested-property-host.js';",
+          '',
+          'export function main(): number {',
+          '  const levelOne = makeLevelOne(7);',
+          '  const levelTwo = levelOne.levelTwo;',
+          '  const levelThree = levelTwo.levelThree;',
+          '  const leaf = levelThree.leaf;',
+          '  return leaf.value;',
           '}',
           '',
         ].join('\n'),

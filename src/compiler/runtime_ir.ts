@@ -1,3 +1,5 @@
+import type { CompilerHostBoundaryIR, CompilerTaggedPrimitiveBoundaryKindsIR } from './ir.ts';
+
 export type CompilerRuntimeRepresentationFamily = 'array' | 'object' | 'string';
 
 export type CompilerRuntimeRepresentationKind =
@@ -209,21 +211,31 @@ export function createCompilerRuntimeOrderedFallbackObjectRepresentationRef(
 
 export interface CompilerRuntimeSpecializedObjectFieldIR {
   name: string;
+  optional: boolean;
+  valueType: CompilerRuntimeSpecializedObjectFieldValueType;
   valueRepresentation: 'tagged_value';
-  taggedPrimitiveKinds?: {
-    includesBoolean?: boolean;
-    includesNull?: boolean;
-    includesNumber?: boolean;
-    includesString?: boolean;
-    includesUndefined?: boolean;
-  };
+  taggedPrimitiveKinds?: CompilerTaggedPrimitiveBoundaryKindsIR;
   closureSignatureId?: number;
   classTagId?: number;
   promiseBridge?: boolean;
   heapRepresentationName?: string;
   heapArrayRepresentationName?: string;
   methodClosureFunctionIds?: number[];
+  boundary?: CompilerHostBoundaryIR;
 }
+
+export type CompilerRuntimeSpecializedObjectFieldValueType =
+  | 'f64'
+  | 'i32'
+  | 'class_constructor_ref'
+  | 'closure_ref'
+  | 'heap_ref'
+  | 'tagged_ref'
+  | 'owned_heap_array_ref'
+  | 'owned_array_ref'
+  | 'owned_number_array_ref'
+  | 'owned_boolean_array_ref'
+  | 'owned_tagged_array_ref';
 
 export interface CompilerRuntimeSpecializedObjectHostMethodIR {
   name: string;

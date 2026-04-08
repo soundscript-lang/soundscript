@@ -2,6 +2,15 @@ import { assertEquals, assertStringIncludes } from '@std/assert';
 import { join } from '@std/path';
 
 import { compileProject } from './compiler/compile_project.ts';
+import { CompilerUnsupportedError } from './compiler/errors.ts';
+import { getEffectiveHostFallbackObjectPropertyMetadata } from './compiler/host_boundary.ts';
+import {
+  emitOwnedArrayBoundaryHelpers,
+  getHostArrayToOwnedTaggedArrayHelperName,
+  getOwnedTaggedArrayToHostHelperName,
+} from './compiler/wat_arrays.ts';
+import { emitCompilerModuleToWat } from './compiler/wat_emitter.ts';
+import { getTaggedHostBoundaryUsage } from './compiler/wat_tagged.ts';
 import {
   createIsolatedTestRegistrar,
   createTempProject,
@@ -150,6 +159,27 @@ compilerTaggedTest(
 
     assertEquals(main.params[0]?.type, 'tagged_ref');
     assertEquals(main.resultType, 'tagged_ref');
+    assertEquals(main.hostParamBoundaries, [{
+      name: 'value',
+      boundary: {
+        kind: 'tagged',
+        includesBoolean: undefined,
+        includesNull: true,
+        includesNumber: undefined,
+        includesString: true,
+        includesUndefined: true,
+        heapBoundary: undefined,
+      },
+    }]);
+    assertEquals(main.hostResultBoundary, {
+      kind: 'tagged',
+      includesBoolean: undefined,
+      includesNull: true,
+      includesNumber: undefined,
+      includesString: true,
+      includesUndefined: true,
+      heapBoundary: undefined,
+    });
     assertEquals(main.hostTaggedPrimitiveParams, [{
       name: 'value',
       includesBoolean: undefined,
@@ -217,6 +247,1382 @@ compilerTaggedTest(
     assertEquals(watOutput.includes('call $tagged_boolean_value'), false);
     assertEquals(watOutput.includes('call $tagged_from_number'), false);
     assertEquals(watOutput.includes('call $tagged_from_boolean'), false);
+  },
+);
+
+compilerTaggedTest(
+  'lowerProgramToCompilerIR derives recursive unknown host import boundaries',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts'],
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/host.d.ts',
+        contents: [
+          'export function roundTrip(value: unknown): unknown;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          '// #[interop]',
+          "import { roundTrip } from './host';",
+          '',
+          'export function main(): number {',
+          '  roundTrip(undefined);',
+          '  return 1;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const roundTrip = lowerTempProjectToCompilerIR(tempDirectory).functions.find((func) =>
+      func.hostImport?.name.includes('roundTrip')
+    );
+
+    assertEquals(roundTrip?.hostParamBoundaries, [{
+      name: 'value',
+      boundary: {
+        kind: 'tagged',
+        includesBoolean: true,
+        includesNull: true,
+        includesNumber: true,
+        includesString: true,
+        includesUndefined: true,
+        heapBoundary: {
+          kind: 'object',
+          representation: {
+            family: 'object',
+            kind: 'fallback_object_representation',
+            name: 'object.fallback',
+          },
+          fields: undefined,
+        },
+      },
+    }]);
+    assertEquals(roundTrip?.hostResultBoundary, {
+      kind: 'tagged',
+      includesBoolean: true,
+      includesNull: true,
+      includesNumber: true,
+      includesString: true,
+      includesUndefined: true,
+      heapBoundary: {
+        kind: 'object',
+        representation: {
+          family: 'object',
+          kind: 'fallback_object_representation',
+          name: 'object.fallback',
+        },
+        fields: undefined,
+      },
+    });
+  },
+);
+
+compilerTaggedTest(
+  'lowerProgramToCompilerIR lifts fallback object property metadata into recursive host boundaries',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts'],
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          'interface Bag {',
+          '  [key: string]: unknown;',
+          '  onClick: () => void;',
+          '  items: unknown[];',
+          '}',
+          '',
+          'export function main(value: Bag): Bag {',
+          '  return value;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const [main] = lowerTempProjectToCompilerIR(tempDirectory).functions;
+
+    assertEquals(main.hostParamBoundaries, [{
+      name: 'value',
+      boundary: {
+        kind: 'object',
+        representation: {
+          family: 'object',
+          kind: 'fallback_object_representation',
+          name: 'object.fallback',
+        },
+        fields: [
+          {
+            name: 'items',
+            optional: false,
+            boundary: {
+              kind: 'array',
+              carrierType: 'owned_tagged_array_ref',
+              elementBoundary: {
+                kind: 'tagged',
+                includesBoolean: true,
+                includesNull: true,
+                includesNumber: true,
+                includesString: true,
+                includesUndefined: true,
+                heapBoundary: {
+                  kind: 'object',
+                  representation: {
+                    family: 'object',
+                    kind: 'fallback_object_representation',
+                    name: 'object.fallback',
+                  },
+                  fields: undefined,
+                },
+              },
+            },
+          },
+          {
+            name: 'onClick',
+            optional: false,
+            boundary: {
+              kind: 'closure',
+              signatureId: 0,
+            },
+          },
+        ],
+      },
+    }]);
+    assertEquals(main.hostResultBoundary, {
+      kind: 'object',
+      representation: {
+        family: 'object',
+        kind: 'fallback_object_representation',
+        name: 'object.fallback',
+      },
+      fields: [
+        {
+          name: 'items',
+          optional: false,
+          boundary: {
+            kind: 'array',
+            carrierType: 'owned_tagged_array_ref',
+            elementBoundary: {
+              kind: 'tagged',
+              includesBoolean: true,
+              includesNull: true,
+              includesNumber: true,
+              includesString: true,
+              includesUndefined: true,
+              heapBoundary: {
+                kind: 'object',
+                representation: {
+                  family: 'object',
+                  kind: 'fallback_object_representation',
+                  name: 'object.fallback',
+                },
+                fields: undefined,
+              },
+            },
+          },
+        },
+        {
+          name: 'onClick',
+          optional: false,
+          boundary: {
+            kind: 'closure',
+            signatureId: 0,
+          },
+        },
+      ],
+    });
+  },
+);
+
+compilerTaggedTest(
+  'WAT emission consumes recursive fallback object host boundaries after legacy metadata is cleared',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts'],
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          'interface Bag {',
+          '  [key: string]: unknown;',
+          '  onClick: () => void;',
+          '}',
+          '',
+          'export function main(value: Bag): Bag {',
+          '  return value;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const moduleIR = lowerTempProjectToCompilerIR(tempDirectory);
+    const [main] = moduleIR.functions;
+    main.hostFallbackClosureProperties = undefined;
+
+    const watOutput = emitCompilerModuleToWat(moduleIR);
+
+    assertStringIncludes(watOutput, '"has:onClick"');
+    assertStringIncludes(watOutput, '"get_closure:onClick"');
+    assertStringIncludes(watOutput, '"set_closure:onClick"');
+  },
+);
+
+compilerTaggedTest(
+  'WAT emission exports fallback object params and results from recursive host boundaries after top-level legacy metadata is cleared',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts'],
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          'interface Bag {',
+          '  [key: string]: unknown;',
+          '  onClick: () => void;',
+          '}',
+          '',
+          'export function main(value: Bag): Bag {',
+          '  return value;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const moduleIR = lowerTempProjectToCompilerIR(tempDirectory);
+    const [main] = moduleIR.functions;
+    main.heapParamRepresentations = undefined;
+    main.heapResultRepresentation = undefined;
+
+    const watOutput = emitCompilerModuleToWat(moduleIR);
+
+    assertStringIncludes(
+      watOutput,
+      '(func $main (export "src/index.ts:main") (param $value (ref null $object_fallback)) (result (ref null $object_fallback))',
+    );
+    assertStringIncludes(watOutput, '(func $host_object_to_fallback_object');
+    assertStringIncludes(watOutput, '(func $fallback_object_to_host_object');
+  },
+);
+
+compilerTaggedTest(
+  'effective fallback object property metadata comes from recursive host boundaries after legacy side tables are cleared',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts'],
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          'class Example {}',
+          '',
+          'interface Child {',
+          '  value: number;',
+          '}',
+          '',
+          'interface Bag {',
+          '  [key: string]: unknown;',
+          '  onClick: () => void;',
+          '  ctor: typeof Example;',
+          '  numbers: number[];',
+          '  items: Child[];',
+          '  mixed: Array<string | number>;',
+          '  child: Child;',
+          '  maybeChild: Child | null;',
+          '}',
+          '',
+          'export function main(value: Bag): Bag {',
+          '  return value;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const moduleIR = lowerTempProjectToCompilerIR(tempDirectory);
+    const [main] = moduleIR.functions;
+    main.hostFallbackClosureProperties = undefined;
+    main.hostFallbackClassConstructorProperties = undefined;
+    main.hostFallbackArrayProperties = undefined;
+    main.hostFallbackHeapArrayProperties = undefined;
+    main.hostFallbackTaggedArrayProperties = undefined;
+    main.hostFallbackHeapProperties = undefined;
+    main.hostFallbackTaggedHeapProperties = undefined;
+
+    const metadata = getEffectiveHostFallbackObjectPropertyMetadata(moduleIR);
+
+    assertEquals(metadata.propertyNames, [
+      'child',
+      'ctor',
+      'items',
+      'maybeChild',
+      'mixed',
+      'numbers',
+      'onClick',
+    ]);
+    if (!metadata.closureProperties.has('onClick')) {
+      throw new Error('Expected recursive fallback closure property metadata.');
+    }
+    if (!metadata.classConstructorProperties.has('ctor')) {
+      throw new Error('Expected recursive fallback class-constructor property metadata.');
+    }
+    assertEquals(metadata.arrayProperties.get('numbers'), 'owned_number_array_ref');
+    assertEquals(metadata.heapArrayProperties.get('items')?.kind, 'specialized_object_representation');
+    assertEquals(metadata.taggedArrayProperties.get('mixed'), {
+      name: 'mixed',
+      representation: undefined,
+      includesBoolean: undefined,
+      includesNull: undefined,
+      includesNumber: true,
+      includesString: true,
+      includesUndefined: undefined,
+    });
+    assertEquals(metadata.heapProperties.get('child')?.kind, 'specialized_object_representation');
+    const maybeChild = metadata.taggedHeapProperties.get('maybeChild');
+    if (!maybeChild) {
+      throw new Error('Expected recursive fallback tagged heap property metadata.');
+    }
+    assertEquals(maybeChild.representation.kind, 'specialized_object_representation');
+    assertEquals(maybeChild.taggedPrimitiveKinds, {
+      includesBoolean: false,
+      includesNull: true,
+      includesNumber: false,
+      includesString: false,
+      includesUndefined: false,
+    });
+  },
+);
+
+compilerTaggedTest(
+  'WAT emission keeps mixed fallback object property helpers after legacy side tables are cleared',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts'],
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          'class Example {}',
+          '',
+          'interface Child {',
+          '  value: number;',
+          '}',
+          '',
+          'interface Bag {',
+          '  [key: string]: unknown;',
+          '  onClick: () => void;',
+          '  ctor: typeof Example;',
+          '  numbers: number[];',
+          '  items: Child[];',
+          '  mixed: Array<string | number>;',
+          '  child: Child;',
+          '  maybeChild: Child | null;',
+          '}',
+          '',
+          'export function main(value: Bag): Bag {',
+          '  return value;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const moduleIR = lowerTempProjectToCompilerIR(tempDirectory);
+    const [main] = moduleIR.functions;
+    main.hostFallbackClosureProperties = undefined;
+    main.hostFallbackClassConstructorProperties = undefined;
+    main.hostFallbackArrayProperties = undefined;
+    main.hostFallbackHeapArrayProperties = undefined;
+    main.hostFallbackTaggedArrayProperties = undefined;
+    main.hostFallbackHeapProperties = undefined;
+    main.hostFallbackTaggedHeapProperties = undefined;
+
+    const watOutput = emitCompilerModuleToWat(moduleIR);
+
+    assertStringIncludes(watOutput, '"get_closure:onClick"');
+    assertStringIncludes(watOutput, 'call $host_object_get_class_tag');
+    assertStringIncludes(watOutput, 'call $host_array_to_owned_number_array');
+    assertStringIncludes(watOutput, 'call $owned_number_array_to_host_array');
+    assertStringIncludes(watOutput, 'call $host_array_to_owned_heap_array__');
+    assertStringIncludes(watOutput, 'call $owned_heap_array_to_host_array__');
+    assertStringIncludes(
+      watOutput,
+      `call $${getHostArrayToOwnedTaggedArrayHelperName({
+        includesBoolean: undefined,
+        includesNull: undefined,
+        includesNumber: true,
+        includesString: true,
+        includesUndefined: undefined,
+        representation: undefined,
+      })}`,
+    );
+    assertStringIncludes(
+      watOutput,
+      `call $${getOwnedTaggedArrayToHostHelperName({
+        includesBoolean: undefined,
+        includesNull: undefined,
+        includesNumber: true,
+        includesString: true,
+        includesUndefined: undefined,
+        representation: undefined,
+      })}`,
+    );
+  },
+);
+
+compilerTaggedTest(
+  'lowerProgramToCompilerIR lifts sync try catch host object payloads into recursive module boundaries',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts'],
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/throw-host.d.ts',
+        contents: [
+          'export declare function explode(): number;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          '// #[interop]',
+          "import { explode } from './throw-host';",
+          '',
+          'export function main(): number {',
+          '  try {',
+          '    return explode();',
+          '  } catch (error: unknown) {',
+          '    if (typeof error === "object" && error !== null && "value" in error) {',
+          '      const value = error.value;',
+          '      if (typeof value === "object" && value !== null && "nested" in value) {',
+          '        const nested = value.nested;',
+          '        if (typeof nested === "number") {',
+          '          return nested;',
+          '        }',
+          '      }',
+          '    }',
+          '    return 0;',
+          '  }',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const moduleIR = lowerTempProjectToCompilerIR(tempDirectory);
+
+    assertEquals(moduleIR.syncTryCatchHostObjectBoundary, {
+      kind: 'object',
+      representation: {
+        family: 'object',
+        kind: 'dynamic_object_representation',
+        name: 'object.dynamic',
+      },
+      fields: [
+        {
+          name: 'value',
+          optional: true,
+          boundary: {
+            kind: 'tagged',
+            includesBoolean: true,
+            includesNull: true,
+            includesNumber: true,
+            includesString: true,
+            includesUndefined: true,
+            heapBoundary: {
+              kind: 'object',
+              representation: {
+                family: 'object',
+                kind: 'dynamic_object_representation',
+                name: 'object.dynamic',
+              },
+              fields: [
+                {
+                  name: 'nested',
+                  optional: true,
+                  boundary: {
+                    kind: 'tagged',
+                    includesBoolean: true,
+                    includesNull: true,
+                    includesNumber: true,
+                    includesString: true,
+                    includesUndefined: true,
+                    heapBoundary: undefined,
+                  },
+                },
+              ],
+            },
+          },
+        },
+      ],
+    });
+  },
+);
+
+compilerTaggedTest(
+  'WAT emission consumes recursive sync try catch host object boundaries after legacy metadata is cleared',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts'],
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/throw-host.d.ts',
+        contents: [
+          'export declare function explode(): number;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          '// #[interop]',
+          "import { explode } from './throw-host';",
+          '',
+          'export function main(): number {',
+          '  try {',
+          '    return explode();',
+          '  } catch (error: unknown) {',
+          '    if (typeof error === "object" && error !== null && "value" in error) {',
+          '      const value = error.value;',
+          '      if (typeof value === "object" && value !== null && "nested" in value) {',
+          '        const nested = value.nested;',
+          '        if (typeof nested === "number") {',
+          '          return nested;',
+          '        }',
+          '      }',
+          '    }',
+          '    return 0;',
+          '  }',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const moduleIR = lowerTempProjectToCompilerIR(tempDirectory);
+    moduleIR.syncTryCatchHostObjectPropertyNames = undefined;
+    moduleIR.syncTryCatchHostObjectNestedPropertyNames = undefined;
+
+    const watOutput = emitCompilerModuleToWat(moduleIR);
+
+    assertStringIncludes(watOutput, '"has:value"');
+    assertStringIncludes(watOutput, '"has:nested"');
+    assertStringIncludes(watOutput, '__soundscript_sync_try_host_object_property_0_to_dynamic');
+  },
+);
+
+compilerTaggedTest(
+  'WAT emission consumes recursive rejected host object boundaries after legacy metadata is cleared',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts'],
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/throw-host.d.ts',
+        contents: [
+          'export declare function explodeAsync(): Promise<number>;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          '// #[interop]',
+          "import { explodeAsync } from './throw-host';",
+          '',
+          'export async function main(): Promise<number> {',
+          '  try {',
+          '    return await explodeAsync();',
+          '  } catch (error: unknown) {',
+          '    if (typeof error === "object" && error !== null && "value" in error) {',
+          '      const value = error.value;',
+          '      if (typeof value === "object" && value !== null && "nested" in value) {',
+          '        const nested = value.nested;',
+          '        if (typeof nested === "number") {',
+          '          return nested;',
+          '        }',
+          '      }',
+          '    }',
+          '    return 0;',
+          '  }',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const moduleIR = lowerTempProjectToCompilerIR(tempDirectory);
+    moduleIR.hostPromiseRejectObjectPropertyNames = undefined;
+    moduleIR.hostPromiseRejectObjectNestedPropertyNames = undefined;
+
+    const watOutput = emitCompilerModuleToWat(moduleIR);
+
+    assertStringIncludes(watOutput, '"has:value"');
+    assertStringIncludes(watOutput, '"has:nested"');
+    assertStringIncludes(watOutput, '__soundscript_host_promise_reject_object_property_0_to_dynamic');
+  },
+);
+
+compilerTaggedTest(
+  'getTaggedHostBoundaryUsage consumes recursive tagged boundaries after legacy metadata is cleared',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts'],
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          'export function main(value: string | null | undefined): string | null | undefined {',
+          '  return value;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const moduleIR = lowerTempProjectToCompilerIR(tempDirectory);
+    const [main] = moduleIR.functions;
+    main.hostTaggedPrimitiveParams = undefined;
+    main.hostTaggedPrimitiveResultKinds = undefined;
+
+    const usage = getTaggedHostBoundaryUsage(moduleIR);
+
+    assertEquals(usage.usesParamBoundary, true);
+    assertEquals(usage.usesResultBoundary, true);
+    assertEquals(usage.usesParamStringBoundary, true);
+    assertEquals(usage.usesResultStringBoundary, true);
+    assertEquals(usage.usesParamNullBoundary, true);
+    assertEquals(usage.usesResultNullBoundary, true);
+    assertEquals(usage.usesParamUndefinedBoundary, true);
+    assertEquals(usage.usesResultUndefinedBoundary, true);
+  },
+);
+
+compilerTaggedTest(
+  'emitOwnedArrayBoundaryHelpers consumes recursive tagged array boundaries after legacy metadata is cleared',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts'],
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          'export function main(values: Array<string | number>): Array<string | number> {',
+          '  return values;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const moduleIR = lowerTempProjectToCompilerIR(tempDirectory);
+    const [main] = moduleIR.functions;
+    main.hostTaggedArrayParams = undefined;
+    main.hostTaggedArrayResultKinds = undefined;
+
+    const expectedKinds = {
+      includesBoolean: undefined,
+      includesNull: undefined,
+      includesNumber: true,
+      includesString: true,
+      includesUndefined: undefined,
+      representation: undefined,
+    };
+    const helperOutput = emitOwnedArrayBoundaryHelpers(moduleIR, {
+      usesHeapParamBoundary: false,
+      usesHeapParamCopyBack: false,
+      usesHeapResultBoundary: false,
+      usesStringParamBoundary: false,
+      usesStringParamCopyBack: false,
+      usesStringResultBoundary: false,
+      usesNumberParamBoundary: false,
+      usesNumberParamCopyBack: false,
+      usesNumberResultBoundary: false,
+      usesBooleanParamBoundary: false,
+      usesBooleanParamCopyBack: false,
+      usesBooleanResultBoundary: false,
+      usesTaggedParamBoundary: true,
+      usesTaggedParamCopyBack: false,
+      usesTaggedResultBoundary: true,
+      indent: (level) => '  '.repeat(level),
+      createUnsupportedHeapRuntimeBackendError: (message) => new CompilerUnsupportedError(message),
+    }).join('\n');
+
+    assertStringIncludes(
+      helperOutput,
+      `(func $${getHostArrayToOwnedTaggedArrayHelperName(expectedKinds)}`,
+    );
+    assertStringIncludes(
+      helperOutput,
+      `(func $${getOwnedTaggedArrayToHostHelperName(expectedKinds)}`,
+    );
+  },
+);
+
+compilerTaggedTest(
+  'emitCompilerModuleToWat exports tagged array params and results from recursive host boundaries after legacy metadata is cleared',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts'],
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          'export function main(values: Array<string | number>): Array<string | number> {',
+          '  return values;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const moduleIR = lowerTempProjectToCompilerIR(tempDirectory);
+    const [main] = moduleIR.functions;
+    main.hostTaggedArrayParams = undefined;
+    main.hostTaggedArrayResultKinds = undefined;
+
+    const expectedKinds = {
+      includesBoolean: undefined,
+      includesNull: undefined,
+      includesNumber: true,
+      includesString: true,
+      includesUndefined: undefined,
+      representation: undefined,
+    };
+    const watOutput = emitCompilerModuleToWat(moduleIR);
+
+    assertStringIncludes(watOutput, '(func $main__export (export "src/index.ts:main")');
+    assertStringIncludes(watOutput, '(param $values externref)');
+    assertStringIncludes(
+      watOutput,
+      `call $${getHostArrayToOwnedTaggedArrayHelperName(expectedKinds)}`,
+    );
+    assertStringIncludes(
+      watOutput,
+      `call $${getOwnedTaggedArrayToHostHelperName(expectedKinds)}`,
+    );
+  },
+);
+
+compilerTaggedTest(
+  'emitCompilerModuleToWat exports heap array params and results from recursive host boundaries after legacy metadata is cleared',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts'],
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          'export function main(values: Array<{ value: number }>): Array<{ value: number }> {',
+          '  return values;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const moduleIR = lowerTempProjectToCompilerIR(tempDirectory);
+    const [main] = moduleIR.functions;
+    main.hostHeapArrayParams = undefined;
+    main.hostHeapArrayResultRepresentation = undefined;
+
+    const watOutput = emitCompilerModuleToWat(moduleIR);
+
+    assertStringIncludes(watOutput, '(func $main__export (export "src/index.ts:main")');
+    assertStringIncludes(watOutput, '(param $values externref)');
+    assertStringIncludes(watOutput, 'call $host_array_to_owned_heap_array__');
+    assertStringIncludes(watOutput, 'call $owned_heap_array_to_host_array__');
+  },
+);
+
+compilerTaggedTest(
+  'emitCompilerModuleToWat keeps promise runtime when exported promise params only remain in recursive host boundaries',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts'],
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          'export function main(value: Promise<number>): number {',
+          '  return 1;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const moduleIR = lowerTempProjectToCompilerIR(tempDirectory);
+    const [main] = moduleIR.functions;
+    main.hostPromiseParams = undefined;
+
+    const watOutput = emitCompilerModuleToWat(moduleIR);
+
+    assertStringIncludes(watOutput, '(func $__soundscript_promise_new_pending');
+    assertStringIncludes(watOutput, '(param $value externref)');
+    assertStringIncludes(watOutput, 'call $host_promise_to_internal');
+  },
+);
+
+compilerTaggedTest(
+  'emitCompilerModuleToWat exports promise results from recursive host boundaries after legacy metadata is cleared',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts'],
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          'export function main(): Promise<number> {',
+          '  return Promise.resolve(1);',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const moduleIR = lowerTempProjectToCompilerIR(tempDirectory);
+    const [main] = moduleIR.functions;
+    main.hostPromiseResult = undefined;
+
+    const watOutput = emitCompilerModuleToWat(moduleIR);
+
+    assertStringIncludes(watOutput, '(result externref)');
+    assertStringIncludes(watOutput, 'call $host_promise_to_host');
+  },
+);
+
+compilerTaggedTest(
+  'emitCompilerModuleToWat keeps promise runtime when imported promise params only remain in recursive host boundaries',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts'],
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/host.d.ts',
+        contents: [
+          'export function sendValue(value: number): void;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          'export function seed(value: Promise<number>): number {',
+          '  return 0;',
+          '}',
+          '',
+          '// #[interop]',
+          "import { sendValue } from './host';",
+          '',
+          'export function main(): number {',
+          '  sendValue(1);',
+          '  return 1;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const moduleIR = lowerTempProjectToCompilerIR(tempDirectory);
+    const seedIndex = moduleIR.functions.findIndex((func) => func.exportName.endsWith(':seed'));
+    if (seedIndex >= 0) {
+      moduleIR.functions.splice(seedIndex, 1);
+    }
+    const sendValue = moduleIR.functions.find((func) =>
+      func.hostImport?.name.includes('sendValue')
+    );
+    if (!sendValue) {
+      throw new Error('Expected imported host function "sendValue".');
+    }
+    const dynamicObjectRepresentation = moduleIR.runtime?.representations?.find((representation) =>
+      representation.kind === 'dynamic_object_representation' &&
+      representation.name === 'object.dynamic'
+    );
+    if (!dynamicObjectRepresentation) {
+      throw new Error('Expected dynamic object runtime representation.');
+    }
+    sendValue.params[0] = { name: 'value', type: 'heap_ref' };
+    sendValue.heapParamRepresentations = [{
+      name: 'value',
+      representation: {
+        family: 'object',
+        kind: 'dynamic_object_representation',
+        name: dynamicObjectRepresentation.name,
+      },
+    }];
+    sendValue.hostParamBoundaries = [{
+      name: 'value',
+      boundary: {
+        kind: 'promise',
+        representation: {
+          family: 'object',
+          kind: 'dynamic_object_representation',
+          name: dynamicObjectRepresentation.name,
+        },
+      },
+    }];
+    sendValue.hostImportPromiseParams = undefined;
+    const main = moduleIR.functions.find((func) => func.exportName.endsWith(':main'));
+    if (!main) {
+      throw new Error('Expected exported function "main".');
+    }
+    main.body = main.body.filter((statement) => statement.kind === 'return');
+
+    const watOutput = emitCompilerModuleToWat(moduleIR);
+
+    assertStringIncludes(watOutput, '(func $__soundscript_promise_new_pending');
+    assertStringIncludes(watOutput, '(param $value externref)');
+    assertStringIncludes(watOutput, 'call $host_promise_to_host');
+  },
+);
+
+compilerTaggedTest(
+  'emitCompilerModuleToWat imports tagged params from recursive host boundaries after legacy metadata is cleared',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts'],
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/host.d.ts',
+        contents: [
+          'export function transform(value: string | number): string;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          '// #[interop]',
+          "import { transform } from './host';",
+          '',
+          'export function main(value: string | number): number {',
+          '  transform(value);',
+          '  return 1;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const moduleIR = lowerTempProjectToCompilerIR(tempDirectory);
+    const transform = moduleIR.functions.find((func) =>
+      func.hostImport?.name.includes('transform')
+    );
+    if (!transform) {
+      throw new Error('Expected imported host function "transform".');
+    }
+    transform.hostTaggedPrimitiveParams = undefined;
+
+    const watOutput = emitCompilerModuleToWat(moduleIR);
+
+    assertStringIncludes(watOutput, '(local $value__host_tag i32)');
+  },
+);
+
+compilerTaggedTest(
+  'emitCompilerModuleToWat exports tagged params and results from recursive host boundaries after legacy metadata is cleared',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts'],
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          'export function main(value: number | string | boolean | null | undefined): number | string | boolean | null | undefined {',
+          '  return value;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const moduleIR = lowerTempProjectToCompilerIR(tempDirectory);
+    const [main] = moduleIR.functions;
+    main.hostTaggedPrimitiveParams = undefined;
+    main.hostTaggedPrimitiveResultKinds = undefined;
+
+    const watOutput = emitCompilerModuleToWat(moduleIR);
+
+    assertStringIncludes(watOutput, '(local $value__host_tag i32)');
+    assertStringIncludes(watOutput, '(local $result__host_tag i32)');
+    assertStringIncludes(watOutput, '(func $string_to_owned');
+    assertStringIncludes(watOutput, '(func $owned_string_to_host');
+    assertStringIncludes(watOutput, '(func $tag_null');
+  },
+);
+
+compilerTaggedTest(
+  'emitCompilerModuleToWat exports closure params and results from recursive host boundaries after legacy metadata is cleared',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts'],
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          'function identity(value: number): number {',
+          '  return value;',
+          '}',
+          '',
+          'export function invoke(callback: (value: number) => number, value: number): number {',
+          '  return callback(value);',
+          '}',
+          '',
+          'export function getCallback(): (value: number) => number {',
+          '  return identity;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const moduleIR = lowerTempProjectToCompilerIR(tempDirectory);
+    const invoke = moduleIR.functions.find((func) => func.exportName.endsWith(':invoke'));
+    const getCallback = moduleIR.functions.find((func) => func.exportName.endsWith(':getCallback'));
+    if (!invoke || !getCallback) {
+      throw new Error('Expected exported closure boundary test functions.');
+    }
+    invoke.hostClosureParams = undefined;
+    getCallback.hostClosureResultSignatureId = undefined;
+
+    const watOutput = emitCompilerModuleToWat(moduleIR);
+
+    assertStringIncludes(watOutput, 'call $host_externref_to_closure_');
+    assertStringIncludes(watOutput, 'call $host_closure_to_host_');
+    assertStringIncludes(watOutput, '(import "soundscript_closure" "to_host_');
+    assertStringIncludes(watOutput, '(func $host_externref_to_closure_');
+  },
+);
+
+compilerTaggedTest(
+  'emitCompilerModuleToWat exports class constructor params and results from recursive host boundaries after legacy metadata is cleared',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts'],
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          'class Example {}',
+          '',
+          'export function accept(constructor: typeof Example): number {',
+          '  return 1;',
+          '}',
+          '',
+          'export function provide(): typeof Example {',
+          '  return Example;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const moduleIR = lowerTempProjectToCompilerIR(tempDirectory);
+    const accept = moduleIR.functions.find((func) => func.exportName.endsWith(':accept'));
+    const provide = moduleIR.functions.find((func) => func.exportName.endsWith(':provide'));
+    if (!accept || !provide) {
+      throw new Error('Expected exported class-constructor boundary test functions.');
+    }
+    accept.hostClassConstructorParams = undefined;
+    provide.hostClassConstructorResultTagId = undefined;
+
+    const watOutput = emitCompilerModuleToWat(moduleIR);
+
+    assertStringIncludes(watOutput, 'call $host_object_get_class_tag');
+    assertStringIncludes(watOutput, 'call $host_class_constructor_1');
+    assertStringIncludes(watOutput, '(import "soundscript_object" "get_class_tag"');
+    assertStringIncludes(
+      watOutput,
+      '(import "soundscript_object" "class_constructor_from_tag"',
+    );
   },
 );
 

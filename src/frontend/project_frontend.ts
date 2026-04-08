@@ -262,7 +262,7 @@ function injectPreludeImports(
     true,
     ts.ScriptKind.TSX,
   );
-  const topLevelBindingNames = collectTopLevelBindingNames(sourceFile);
+  const topLevelBindingNames = new Set(collectTopLevelBindingNames(sourceFile));
   const filteredTypeNames = typeNames
     .filter(({ name }) => !topLevelBindingNames.has(name))
     .map(({ name }) => name);
@@ -286,6 +286,335 @@ function injectPreludeImports(
   lines.push('');
   const { prefix, suffix } = splitLeadingNonAnnotationTrivia(rewrittenText);
   return `${prefix}${lines.join('\n')}${suffix}`;
+}
+
+function createUniqueGeneratedBindingName(
+  baseName: string,
+  bindingNames: Set<string>,
+): string {
+  if (!bindingNames.has(baseName)) {
+    bindingNames.add(baseName);
+    return baseName;
+  }
+
+  let suffix = 2;
+  while (bindingNames.has(`${baseName}${suffix}`)) {
+    suffix += 1;
+  }
+
+  const uniqueName = `${baseName}${suffix}`;
+  bindingNames.add(uniqueName);
+  return uniqueName;
+}
+
+function lowerJsxSyntaxToRuntimeCalls(
+  fileName: string,
+  rewrittenText: string,
+): string {
+  if (
+    !isSoundscriptSourceFile(fileName) ||
+    !rewrittenText.includes('<')
+  ) {
+    return rewrittenText;
+  }
+
+  const sourceFile = ts.createSourceFile(
+    fileName,
+    rewrittenText,
+    ts.ScriptTarget.Latest,
+    true,
+    scriptKindForSourceFileName(fileName),
+  );
+  let containsJsx = false;
+
+  const markIfJsx = (node: ts.Node): void => {
+    if (containsJsx) {
+      return;
+    }
+    if (ts.isJsxElement(node) || ts.isJsxSelfClosingElement(node) || ts.isJsxFragment(node)) {
+      containsJsx = true;
+      return;
+    }
+    ts.forEachChild(node, markIfJsx);
+  };
+
+  ts.forEachChild(sourceFile, markIfJsx);
+  if (!containsJsx) {
+    return rewrittenText;
+  }
+
+  const topLevelBindingNames = new Set(collectTopLevelBindingNames(sourceFile));
+  const jsxHelperName = createUniqueGeneratedBindingName('__ss_jsx', topLevelBindingNames);
+  const fragmentHelperName = createUniqueGeneratedBindingName(
+    '__ss_Fragment',
+    topLevelBindingNames,
+  );
+  let usesFragment = false;
+  const printer = ts.createPrinter({ newLine: ts.NewLineKind.LineFeed });
+
+  function lowerEmbeddedNode<T extends ts.Node>(node: T): T {
+    const transformed = ts.transform(node, [(context) => {
+      const visit: ts.Visitor = (current) => {
+        if (ts.isJsxElement(current)) {
+          return lowerJsxElementNode(current);
+        }
+        if (ts.isJsxSelfClosingElement(current)) {
+          return lowerJsxSelfClosingElementNode(current);
+        }
+        if (ts.isJsxFragment(current)) {
+          return lowerJsxFragmentNode(current);
+        }
+
+        return ts.visitEachChild(current, visit, context);
+      };
+
+      return (current) => ts.visitNode(current, visit) as T;
+    }]);
+    try {
+      return transformed.transformed[0] as T;
+    } finally {
+      transformed.dispose();
+    }
+  }
+
+  function createAttributePropertyName(
+    name: ts.JsxAttributeName,
+  ): ts.PropertyName {
+    if (ts.isIdentifier(name) && isIdentifierTextValue(name.text)) {
+      return ts.factory.createIdentifier(name.text);
+    }
+
+    return ts.factory.createStringLiteral(name.getText(sourceFile));
+  }
+
+  function lowerTagName(tagName: ts.JsxTagNameExpression): ts.Expression {
+    if (ts.isIdentifier(tagName)) {
+      return /^[a-z]/u.test(tagName.text)
+        ? ts.factory.createStringLiteral(tagName.text)
+        : ts.factory.createIdentifier(tagName.text);
+    }
+    if (ts.isPropertyAccessExpression(tagName) || ts.isElementAccessExpression(tagName)) {
+      return lowerEmbeddedNode(tagName) as ts.Expression;
+    }
+    if (tagName.kind === ts.SyntaxKind.ThisKeyword) {
+      return tagName as ts.ThisExpression;
+    }
+
+    return ts.factory.createStringLiteral(tagName.getText(sourceFile));
+  }
+
+  function lowerChildNodes(children: readonly ts.JsxChild[]): readonly ts.Expression[] {
+    const expressions: ts.Expression[] = [];
+    for (const child of children) {
+      if (ts.isJsxText(child)) {
+        if (child.containsOnlyTriviaWhiteSpaces || child.text.length === 0) {
+          continue;
+        }
+        expressions.push(ts.factory.createStringLiteral(child.text));
+        continue;
+      }
+
+      if (ts.isJsxExpression(child)) {
+        if (child.expression) {
+          expressions.push(lowerEmbeddedNode(child.expression) as ts.Expression);
+        }
+        continue;
+      }
+
+      if (ts.isJsxElement(child)) {
+        expressions.push(lowerJsxElementNode(child));
+        continue;
+      }
+      if (ts.isJsxSelfClosingElement(child)) {
+        expressions.push(lowerJsxSelfClosingElementNode(child));
+        continue;
+      }
+      if (ts.isJsxFragment(child)) {
+        expressions.push(lowerJsxFragmentNode(child));
+      }
+    }
+    return expressions;
+  }
+
+  function lowerAttributeValue(
+    value: ts.JsxAttributeValue | undefined,
+  ): ts.Expression {
+    if (value === undefined) {
+      return ts.factory.createTrue();
+    }
+    if (ts.isStringLiteral(value)) {
+      return ts.factory.createStringLiteral(value.text);
+    }
+    if (ts.isJsxExpression(value)) {
+      return value.expression
+        ? lowerEmbeddedNode(value.expression) as ts.Expression
+        : ts.factory.createTrue();
+    }
+    if (ts.isJsxElement(value)) {
+      return lowerJsxElementNode(value);
+    }
+    if (ts.isJsxSelfClosingElement(value)) {
+      return lowerJsxSelfClosingElementNode(value);
+    }
+    return lowerJsxFragmentNode(value);
+  }
+
+  function buildPropsObject(
+    attributes: ts.JsxAttributes,
+    children: readonly ts.JsxChild[],
+  ): { keyArgument?: ts.Expression; propsArgument: ts.Expression } {
+    const properties: ts.ObjectLiteralElementLike[] = [];
+    let keyArgument: ts.Expression | undefined;
+
+    for (const property of attributes.properties) {
+      if (ts.isJsxSpreadAttribute(property)) {
+        properties.push(
+          ts.factory.createSpreadAssignment(
+            lowerEmbeddedNode(property.expression) as ts.Expression,
+          ),
+        );
+        continue;
+      }
+
+      const loweredValue = lowerAttributeValue(property.initializer);
+      const propertyNameText = ts.isIdentifier(property.name)
+        ? property.name.text
+        : property.name.getText(sourceFile);
+      if (propertyNameText === 'key') {
+        keyArgument = loweredValue;
+        continue;
+      }
+
+      properties.push(
+        ts.factory.createPropertyAssignment(
+          createAttributePropertyName(property.name),
+          loweredValue,
+        ),
+      );
+    }
+
+    const loweredChildren = lowerChildNodes(children);
+    if (loweredChildren.length === 1) {
+      properties.push(
+        ts.factory.createPropertyAssignment('children', loweredChildren[0]),
+      );
+    } else if (loweredChildren.length > 1) {
+      properties.push(
+        ts.factory.createPropertyAssignment(
+          'children',
+          ts.factory.createArrayLiteralExpression(loweredChildren, loweredChildren.length > 1),
+        ),
+      );
+    }
+
+    return {
+      keyArgument,
+      propsArgument: ts.factory.createObjectLiteralExpression(properties, properties.length > 1),
+    };
+  }
+
+  function createJsxRuntimeCall(
+    typeExpression: ts.Expression,
+    propsArgument: ts.Expression,
+    keyArgument?: ts.Expression,
+  ): ts.Expression {
+    const argumentsList = keyArgument
+      ? [typeExpression, propsArgument, keyArgument]
+      : [typeExpression, propsArgument];
+    return ts.factory.createCallExpression(
+      ts.factory.createIdentifier(jsxHelperName),
+      undefined,
+      argumentsList,
+    );
+  }
+
+  function lowerJsxElementNode(node: ts.JsxElement): ts.Expression {
+    const { keyArgument, propsArgument } = buildPropsObject(
+      node.openingElement.attributes,
+      node.children,
+    );
+    return createJsxRuntimeCall(
+      lowerTagName(node.openingElement.tagName),
+      propsArgument,
+      keyArgument,
+    );
+  }
+
+  function lowerJsxSelfClosingElementNode(node: ts.JsxSelfClosingElement): ts.Expression {
+    const { keyArgument, propsArgument } = buildPropsObject(node.attributes, []);
+    return createJsxRuntimeCall(lowerTagName(node.tagName), propsArgument, keyArgument);
+  }
+
+  function lowerJsxFragmentNode(node: ts.JsxFragment): ts.Expression {
+    usesFragment = true;
+    const propsArgument = buildPropsObject(
+      ts.factory.createJsxAttributes([]),
+      node.children,
+    ).propsArgument;
+    return createJsxRuntimeCall(
+      ts.factory.createIdentifier(fragmentHelperName),
+      propsArgument,
+    );
+  }
+
+  const replacements: Array<{ end: number; start: number; text: string }> = [];
+  const collectReplacements = (node: ts.Node): void => {
+    if (ts.isJsxElement(node)) {
+      replacements.push({
+        end: node.getEnd(),
+        start: node.getStart(sourceFile),
+        text: printer.printNode(ts.EmitHint.Expression, lowerJsxElementNode(node), sourceFile),
+      });
+      return;
+    }
+    if (ts.isJsxSelfClosingElement(node)) {
+      replacements.push({
+        end: node.getEnd(),
+        start: node.getStart(sourceFile),
+        text: printer.printNode(
+          ts.EmitHint.Expression,
+          lowerJsxSelfClosingElementNode(node),
+          sourceFile,
+        ),
+      });
+      return;
+    }
+    if (ts.isJsxFragment(node)) {
+      replacements.push({
+        end: node.getEnd(),
+        start: node.getStart(sourceFile),
+        text: printer.printNode(ts.EmitHint.Expression, lowerJsxFragmentNode(node), sourceFile),
+      });
+      return;
+    }
+
+    ts.forEachChild(node, collectReplacements);
+  };
+
+  ts.forEachChild(sourceFile, collectReplacements);
+  if (replacements.length === 0) {
+    return rewrittenText;
+  }
+
+  let loweredText = rewrittenText;
+  for (const replacement of replacements.sort((left, right) => right.start - left.start)) {
+    loweredText = `${loweredText.slice(0, replacement.start)}${replacement.text}${
+      loweredText.slice(replacement.end)
+    }`;
+  }
+
+    const helperSpecifiers = [`jsx as ${jsxHelperName}`];
+    if (usesFragment) {
+      helperSpecifiers.push(`Fragment as ${fragmentHelperName}`);
+    }
+    const importBlock = [
+      '// #[interop]',
+      `import { ${helperSpecifiers.join(', ')} } from 'react/jsx-runtime';`,
+      '',
+    ].join('\n');
+    const { prefix, suffix } = splitLeadingNonAnnotationTrivia(loweredText);
+    const finalText = `${prefix}${importBlock}${suffix}`;
+    return rewrittenText.endsWith('\n') && !finalText.endsWith('\n') ? `${finalText}\n` : finalText;
 }
 
 function splitLeadingNonAnnotationTrivia(text: string): { prefix: string; suffix: string } {
@@ -374,6 +703,20 @@ function isIdentifierStart(character: string | undefined): boolean {
 
 function isIdentifierPart(character: string | undefined): boolean {
   return character !== undefined && /[\p{ID_Continue}_$\u200C\u200D]/u.test(character);
+}
+
+function isIdentifierTextValue(text: string): boolean {
+  if (text.length === 0 || !isIdentifierStart(text[0])) {
+    return false;
+  }
+
+  for (let index = 1; index < text.length; index += 1) {
+    if (!isIdentifierPart(text[index])) {
+      return false;
+    }
+  }
+
+  return true;
 }
 
 export interface PreparedSourceFile {
@@ -856,7 +1199,13 @@ function rewriteForeignTypeImportsToUnknown(
     return sourceText;
   }
 
-  const sourceFile = ts.createSourceFile(fileName, sourceText, ts.ScriptTarget.Latest, true);
+  const sourceFile = ts.createSourceFile(
+    fileName,
+    sourceText,
+    ts.ScriptTarget.Latest,
+    true,
+    scriptKindForSourceFileName(fileName),
+  );
   const printer = ts.createPrinter({ newLine: ts.NewLineKind.LineFeed });
   const replacements: Array<{ end: number; start: number; text: string }> = [];
   let hiddenCounter = 0;
@@ -870,6 +1219,10 @@ function rewriteForeignTypeImportsToUnknown(
       !statement.importClause ||
       !ts.isStringLiteral(statement.moduleSpecifier)
     ) {
+      continue;
+    }
+
+    if (hasDirectAnnotationComment(sourceFile, statement, 'interop')) {
       continue;
     }
 
@@ -3011,7 +3364,10 @@ export function prepareSourceFile(
     : rewriteResult.rewrittenText;
 
   const finalRewrittenText = diagnostics.length === 0
-    ? injectPreludeImports(fileName, text, rewrittenText)
+    ? lowerJsxSyntaxToRuntimeCalls(
+      fileName,
+      injectPreludeImports(fileName, text, rewrittenText),
+    )
     : rewrittenText;
 
   return {
