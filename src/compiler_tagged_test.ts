@@ -3,7 +3,11 @@ import { join } from '@std/path';
 
 import { compileProject } from './compiler/compile_project.ts';
 import { CompilerUnsupportedError } from './compiler/errors.ts';
-import { getEffectiveHostFallbackObjectPropertyMetadata } from './compiler/host_boundary.ts';
+import type { CompilerFunctionIR } from './compiler/ir.ts';
+import {
+  getEffectiveFunctionHostFallbackObjectPropertyMetadata,
+  getEffectiveHostFallbackObjectPropertyMetadata,
+} from './compiler/host_boundary.ts';
 import {
   emitOwnedArrayBoundaryHelpers,
   getHostArrayToOwnedTaggedArrayHelperName,
@@ -114,10 +118,8 @@ compilerTaggedTest(
     const [main] = lowerTempProjectToCompilerIR(tempDirectory).functions;
 
     assertEquals(main.resultType, 'tagged_ref');
-    assertEquals(main.hostTaggedPrimitiveResultKinds, {
-      includesBoolean: undefined,
-      includesNull: undefined,
-      includesNumber: undefined,
+    assertEquals(JSON.parse(JSON.stringify(main.hostResultBoundary)), {
+      kind: 'tagged',
       includesString: true,
       includesUndefined: true,
     });
@@ -180,21 +182,164 @@ compilerTaggedTest(
       includesUndefined: true,
       heapBoundary: undefined,
     });
-    assertEquals(main.hostTaggedPrimitiveParams, [{
-      name: 'value',
-      includesBoolean: undefined,
-      includesNull: true,
-      includesNumber: undefined,
-      includesString: true,
-      includesUndefined: true,
-    }]);
-    assertEquals(main.hostTaggedPrimitiveResultKinds, {
-      includesBoolean: undefined,
-      includesNull: true,
-      includesNumber: undefined,
-      includesString: true,
-      includesUndefined: true,
+  },
+);
+
+compilerTaggedTest(
+  'lowerProgramToCompilerIR keeps callable fallback fields on ambient host function result boundaries',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+            },
+            include: ['src/**/*.ts'],
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/react-dom-client.d.ts',
+        contents: [
+          'export interface Container {',
+          '  nodeType: number;',
+          '}',
+          '',
+          'export interface Root {',
+          '  render(children: string): void;',
+          '  unmount(): void;',
+          '}',
+          '',
+          'export declare function createRoot(container: Container): Root;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          '// #[interop]',
+          "import { createRoot } from './react-dom-client.js';",
+          '',
+          'export function main(): number {',
+          '  const root = createRoot({ nodeType: 1 });',
+          "  root.render('ok');",
+          '  return 1;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const createRoot = lowerTempProjectToCompilerIR(tempDirectory).functions.find((func) =>
+      func.name === 'createRoot'
+    );
+    assertEquals(createRoot?.hostResultBoundary?.kind, 'object');
+    assertEquals(
+      createRoot?.hostResultBoundary?.kind === 'object'
+        ? createRoot.hostResultBoundary.fields?.map((field) => ({
+          name: field.name,
+          kind: field.boundary.kind,
+        }))
+        : undefined,
+      [
+        { name: 'render', kind: 'closure' },
+        { name: 'unmount', kind: 'closure' },
+      ],
+    );
+  },
+);
+
+compilerTaggedTest(
+  'compileProject executes later callable fallback result properties with module-wide fallback key ids',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts'],
+            soundscript: {
+              target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/host.d.ts',
+        contents: [
+          'export interface Box {',
+          '  a(value: string): void;',
+          '  b(): void;',
+          '}',
+          '',
+          'export declare function getBox(): Box;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          '// #[interop]',
+          "import { getBox } from './host.js';",
+          '',
+          'export function main(): number {',
+          '  const box = getBox();',
+          '  box.b();',
+          '  return 1;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
     });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assertEquals(result.artifacts?.wrapperPath !== undefined, true);
+
+    let callCount = 0;
+    const wrapperModule = await import(`file://${result.artifacts!.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate({
+      modules: {
+        './host.js': {
+          getBox: () => ({
+            a(_value: string) {
+            },
+            b() {
+              callCount += 1;
+            },
+          }),
+        },
+      },
+    });
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+
+    assertEquals(await exported(), 1);
+    assertEquals(callCount, 1);
   },
 );
 
@@ -375,7 +520,7 @@ compilerTaggedTest(
 
     const [main] = lowerTempProjectToCompilerIR(tempDirectory).functions;
 
-    assertEquals(main.hostParamBoundaries, [{
+    assertEquals(JSON.parse(JSON.stringify(main.hostParamBoundaries)), [{
       name: 'value',
       boundary: {
         kind: 'object',
@@ -405,7 +550,6 @@ compilerTaggedTest(
                     kind: 'fallback_object_representation',
                     name: 'object.fallback',
                   },
-                  fields: undefined,
                 },
               },
             },
@@ -421,7 +565,7 @@ compilerTaggedTest(
         ],
       },
     }]);
-    assertEquals(main.hostResultBoundary, {
+    assertEquals(JSON.parse(JSON.stringify(main.hostResultBoundary)), {
       kind: 'object',
       representation: {
         family: 'object',
@@ -449,7 +593,6 @@ compilerTaggedTest(
                   kind: 'fallback_object_representation',
                   name: 'object.fallback',
                 },
-                fields: undefined,
               },
             },
           },
@@ -504,9 +647,6 @@ compilerTaggedTest(
     ]);
 
     const moduleIR = lowerTempProjectToCompilerIR(tempDirectory);
-    const [main] = moduleIR.functions;
-    main.hostFallbackClosureProperties = undefined;
-
     const watOutput = emitCompilerModuleToWat(moduleIR);
 
     assertStringIncludes(watOutput, '"has:onClick"');
@@ -558,9 +698,10 @@ compilerTaggedTest(
 
     const watOutput = emitCompilerModuleToWat(moduleIR);
 
+    assertStringIncludes(watOutput, '(func $main__export (export "src/index.ts:main")');
     assertStringIncludes(
       watOutput,
-      '(func $main (export "src/index.ts:main") (param $value (ref null $object_fallback)) (result (ref null $object_fallback))',
+      '(func $main (param $value (ref null $object_fallback)) (result (ref null $object_fallback))',
     );
     assertStringIncludes(watOutput, '(func $host_object_to_fallback_object');
     assertStringIncludes(watOutput, '(func $fallback_object_to_host_object');
@@ -616,15 +757,6 @@ compilerTaggedTest(
     ]);
 
     const moduleIR = lowerTempProjectToCompilerIR(tempDirectory);
-    const [main] = moduleIR.functions;
-    main.hostFallbackClosureProperties = undefined;
-    main.hostFallbackClassConstructorProperties = undefined;
-    main.hostFallbackArrayProperties = undefined;
-    main.hostFallbackHeapArrayProperties = undefined;
-    main.hostFallbackTaggedArrayProperties = undefined;
-    main.hostFallbackHeapProperties = undefined;
-    main.hostFallbackTaggedHeapProperties = undefined;
-
     const metadata = getEffectiveHostFallbackObjectPropertyMetadata(moduleIR);
 
     assertEquals(metadata.propertyNames, [
@@ -666,6 +798,36 @@ compilerTaggedTest(
       includesString: false,
       includesUndefined: false,
     });
+  },
+);
+
+compilerTaggedTest(
+  'effective fallback object property metadata keeps method closure function ids on recursive host boundaries',
+  async () => {
+    const metadata = getEffectiveFunctionHostFallbackObjectPropertyMetadata({
+      hostResultBoundary: {
+        kind: 'object',
+        representation: {
+          family: 'object',
+          kind: 'fallback_object_representation',
+          name: 'object.fallback',
+        },
+        fields: [
+          {
+            name: 'onClick',
+            optional: false,
+            boundary: {
+              kind: 'closure',
+              signatureId: 4,
+            },
+            methodClosureFunctionIds: [7, 9, 11],
+          },
+        ],
+      },
+    } as unknown as CompilerFunctionIR);
+
+    assertEquals(metadata.closureProperties.get('onClick'), 4);
+    assertEquals(metadata.closureMethodFunctionIds.get('onClick'), [7, 9, 11]);
   },
 );
 
@@ -718,15 +880,6 @@ compilerTaggedTest(
     ]);
 
     const moduleIR = lowerTempProjectToCompilerIR(tempDirectory);
-    const [main] = moduleIR.functions;
-    main.hostFallbackClosureProperties = undefined;
-    main.hostFallbackClassConstructorProperties = undefined;
-    main.hostFallbackArrayProperties = undefined;
-    main.hostFallbackHeapArrayProperties = undefined;
-    main.hostFallbackTaggedArrayProperties = undefined;
-    main.hostFallbackHeapProperties = undefined;
-    main.hostFallbackTaggedHeapProperties = undefined;
-
     const watOutput = emitCompilerModuleToWat(moduleIR);
 
     assertStringIncludes(watOutput, '"get_closure:onClick"');
@@ -1028,10 +1181,6 @@ compilerTaggedTest(
     ]);
 
     const moduleIR = lowerTempProjectToCompilerIR(tempDirectory);
-    const [main] = moduleIR.functions;
-    main.hostTaggedPrimitiveParams = undefined;
-    main.hostTaggedPrimitiveResultKinds = undefined;
-
     const usage = getTaggedHostBoundaryUsage(moduleIR);
 
     assertEquals(usage.usesParamBoundary, true);
@@ -1042,6 +1191,57 @@ compilerTaggedTest(
     assertEquals(usage.usesResultNullBoundary, true);
     assertEquals(usage.usesParamUndefinedBoundary, true);
     assertEquals(usage.usesResultUndefinedBoundary, true);
+  },
+);
+
+compilerTaggedTest(
+  'getTaggedHostBoundaryUsage consumes recursive specialized object boundaries after top-level heap metadata is cleared',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts'],
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          'interface Box {',
+          '  value: string | null;',
+          '}',
+          '',
+          'export function main(value: Box): Box {',
+          '  return value;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const moduleIR = lowerTempProjectToCompilerIR(tempDirectory);
+    const [main] = moduleIR.functions;
+    main.heapParamRepresentations = undefined;
+    main.heapResultRepresentation = undefined;
+
+    const usage = getTaggedHostBoundaryUsage(moduleIR);
+
+    assertEquals(usage.usesParamBoundary, true);
+    assertEquals(usage.usesResultBoundary, true);
+    assertEquals(usage.usesParamStringBoundary, true);
+    assertEquals(usage.usesResultStringBoundary, true);
+    assertEquals(usage.usesParamNullBoundary, true);
+    assertEquals(usage.usesResultNullBoundary, true);
   },
 );
 
@@ -1077,10 +1277,6 @@ compilerTaggedTest(
     ]);
 
     const moduleIR = lowerTempProjectToCompilerIR(tempDirectory);
-    const [main] = moduleIR.functions;
-    main.hostTaggedArrayParams = undefined;
-    main.hostTaggedArrayResultKinds = undefined;
-
     const expectedKinds = {
       includesBoolean: undefined,
       includesNull: undefined,
@@ -1152,10 +1348,6 @@ compilerTaggedTest(
     ]);
 
     const moduleIR = lowerTempProjectToCompilerIR(tempDirectory);
-    const [main] = moduleIR.functions;
-    main.hostTaggedArrayParams = undefined;
-    main.hostTaggedArrayResultKinds = undefined;
-
     const expectedKinds = {
       includesBoolean: undefined,
       includesNull: undefined,
@@ -1175,6 +1367,64 @@ compilerTaggedTest(
     assertStringIncludes(
       watOutput,
       `call $${getOwnedTaggedArrayToHostHelperName(expectedKinds)}`,
+    );
+  },
+);
+
+compilerTaggedTest(
+  'emitCompilerModuleToWat defines fallback tagged array helpers from recursive property metadata after legacy side tables are cleared',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts'],
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          'interface Bag {',
+          '  [key: string]: unknown;',
+          '  mixed: Array<string | number>;',
+          '}',
+          '',
+          'export function main(value: Bag): Bag {',
+          '  return value;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const moduleIR = lowerTempProjectToCompilerIR(tempDirectory);
+    const expectedKinds = {
+      includesBoolean: undefined,
+      includesNull: undefined,
+      includesNumber: true,
+      includesString: true,
+      includesUndefined: undefined,
+      representation: undefined,
+    };
+    const watOutput = emitCompilerModuleToWat(moduleIR);
+
+    assertStringIncludes(
+      watOutput,
+      `(func $${getHostArrayToOwnedTaggedArrayHelperName(expectedKinds)}`,
+    );
+    assertStringIncludes(
+      watOutput,
+      `(func $${getOwnedTaggedArrayToHostHelperName(expectedKinds)}`,
     );
   },
 );
@@ -1211,10 +1461,6 @@ compilerTaggedTest(
     ]);
 
     const moduleIR = lowerTempProjectToCompilerIR(tempDirectory);
-    const [main] = moduleIR.functions;
-    main.hostHeapArrayParams = undefined;
-    main.hostHeapArrayResultRepresentation = undefined;
-
     const watOutput = emitCompilerModuleToWat(moduleIR);
 
     assertStringIncludes(watOutput, '(func $main__export (export "src/index.ts:main")');
@@ -1256,14 +1502,55 @@ compilerTaggedTest(
     ]);
 
     const moduleIR = lowerTempProjectToCompilerIR(tempDirectory);
-    const [main] = moduleIR.functions;
-    main.hostPromiseParams = undefined;
-
     const watOutput = emitCompilerModuleToWat(moduleIR);
 
     assertStringIncludes(watOutput, '(func $__soundscript_promise_new_pending');
     assertStringIncludes(watOutput, '(param $value externref)');
     assertStringIncludes(watOutput, 'call $host_promise_to_internal');
+  },
+);
+
+compilerTaggedTest(
+  'emitCompilerModuleToWat keeps promise runtime when top-level heap metadata is cleared from recursive promise boundaries',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts'],
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          'export function main(value: Promise<number>): Promise<number> {',
+          '  return value;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const moduleIR = lowerTempProjectToCompilerIR(tempDirectory);
+    const [main] = moduleIR.functions;
+    main.heapParamRepresentations = undefined;
+    main.heapResultRepresentation = undefined;
+
+    const watOutput = emitCompilerModuleToWat(moduleIR);
+
+    assertStringIncludes(watOutput, '(func $__soundscript_promise_new_pending');
+    assertStringIncludes(watOutput, 'call $host_promise_to_host');
+    assertStringIncludes(watOutput, '(export "src/index.ts:main")');
   },
 );
 
@@ -1299,9 +1586,6 @@ compilerTaggedTest(
     ]);
 
     const moduleIR = lowerTempProjectToCompilerIR(tempDirectory);
-    const [main] = moduleIR.functions;
-    main.hostPromiseResult = undefined;
-
     const watOutput = emitCompilerModuleToWat(moduleIR);
 
     assertStringIncludes(watOutput, '(result externref)');
@@ -1457,8 +1741,6 @@ compilerTaggedTest(
     if (!transform) {
       throw new Error('Expected imported host function "transform".');
     }
-    transform.hostTaggedPrimitiveParams = undefined;
-
     const watOutput = emitCompilerModuleToWat(moduleIR);
 
     assertStringIncludes(watOutput, '(local $value__host_tag i32)');
@@ -1497,10 +1779,6 @@ compilerTaggedTest(
     ]);
 
     const moduleIR = lowerTempProjectToCompilerIR(tempDirectory);
-    const [main] = moduleIR.functions;
-    main.hostTaggedPrimitiveParams = undefined;
-    main.hostTaggedPrimitiveResultKinds = undefined;
-
     const watOutput = emitCompilerModuleToWat(moduleIR);
 
     assertStringIncludes(watOutput, '(local $value__host_tag i32)');
@@ -1556,9 +1834,6 @@ compilerTaggedTest(
     if (!invoke || !getCallback) {
       throw new Error('Expected exported closure boundary test functions.');
     }
-    invoke.hostClosureParams = undefined;
-    getCallback.hostClosureResultSignatureId = undefined;
-
     const watOutput = emitCompilerModuleToWat(moduleIR);
 
     assertStringIncludes(watOutput, 'call $host_externref_to_closure_');
@@ -1611,9 +1886,6 @@ compilerTaggedTest(
     if (!accept || !provide) {
       throw new Error('Expected exported class-constructor boundary test functions.');
     }
-    accept.hostClassConstructorParams = undefined;
-    provide.hostClassConstructorResultTagId = undefined;
-
     const watOutput = emitCompilerModuleToWat(moduleIR);
 
     assertStringIncludes(watOutput, 'call $host_object_get_class_tag');
@@ -1835,20 +2107,26 @@ compilerTaggedTest(
     const main = moduleIR.functions.find((func) => func.name === 'main');
     assertEquals(helper?.params[0]?.type, 'tagged_ref');
     assertEquals(helper?.resultType, 'tagged_ref');
-    assertEquals(main?.hostTaggedPrimitiveParams, [{
+    assertEquals(main?.hostParamBoundaries, [{
       name: 'value',
-      includesBoolean: true,
-      includesNull: true,
-      includesNumber: true,
-      includesString: true,
-      includesUndefined: true,
+      boundary: {
+        kind: 'tagged',
+        includesBoolean: true,
+        includesNull: true,
+        includesNumber: true,
+        includesString: true,
+        includesUndefined: true,
+        heapBoundary: undefined,
+      },
     }]);
-    assertEquals(main?.hostTaggedPrimitiveResultKinds, {
+    assertEquals(main?.hostResultBoundary, {
+      kind: 'tagged',
       includesBoolean: true,
       includesNull: true,
       includesNumber: true,
       includesString: true,
       includesUndefined: true,
+      heapBoundary: undefined,
     });
     const watOutput = await readWatArtifact(tempDirectory);
     assertStringIncludes(watOutput, 'call $tagged_type_tag');
@@ -1933,22 +2211,27 @@ compilerTaggedTest(
     assertEquals(result.diagnostics, []);
     assertEquals(helper?.params[0]?.type, 'tagged_ref');
     assertEquals(helper?.resultType, 'tagged_ref');
-    assertEquals(main?.hostTaggedPrimitiveParams, [{
+    assertEquals(main?.hostParamBoundaries, [{
       name: 'value',
-      includesBoolean: true,
-      includesNull: true,
-      includesNumber: undefined,
-      includesString: undefined,
-      includesUndefined: true,
+      boundary: {
+        kind: 'tagged',
+        includesBoolean: true,
+        includesNull: true,
+        includesNumber: undefined,
+        includesString: undefined,
+        includesUndefined: true,
+        heapBoundary: undefined,
+      },
     }]);
-    assertEquals(main?.hostTaggedPrimitiveResultKinds, {
+    assertEquals(main?.hostResultBoundary, {
+      kind: 'tagged',
       includesBoolean: true,
       includesNull: true,
       includesNumber: undefined,
       includesString: undefined,
       includesUndefined: true,
+      heapBoundary: undefined,
     });
-
     const instance = await instantiateCompiledModuleInJs(tempDirectory);
     const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
     const exported = instance.exports[exportName];

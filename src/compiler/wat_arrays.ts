@@ -9,6 +9,7 @@ import {
   emitTaggedPrimitiveToHostExternref,
 } from './wat_tagged.ts';
 import {
+  getEffectiveFunctionHostFallbackObjectPropertyMetadata,
   getEffectiveHostTaggedArrayParamsByName,
   getEffectiveHostTaggedArrayResultKinds,
   getTaggedArrayBoundaryFromHostBoundary,
@@ -1420,7 +1421,10 @@ function collectTaggedArrayBoundaryKindSets(
         hostTaggedArrayResultKinds,
       );
     }
-    for (const property of func.hostFallbackTaggedArrayProperties ?? []) {
+    for (
+      const property of getEffectiveFunctionHostFallbackObjectPropertyMetadata(func)
+        .taggedArrayProperties.values()
+    ) {
       sets.set(getTaggedArrayKindsSuffix(property), property);
     }
   }

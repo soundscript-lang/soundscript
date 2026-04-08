@@ -185,6 +185,18 @@ export function getHostPromiseBoundary(
   return boundary?.kind === 'promise' ? boundary : undefined;
 }
 
+export function getHeapRepresentationFromHostBoundary(
+  boundary: CompilerHostBoundaryIR | undefined,
+): CompilerRuntimeRepresentationRefIR<'object'> | undefined {
+  switch (boundary?.kind) {
+    case 'object':
+    case 'promise':
+      return boundary.representation;
+    default:
+      return undefined;
+  }
+}
+
 export function getHostClosureBoundary(
   boundary: CompilerHostBoundaryIR | undefined,
 ): CompilerHostBoundaryClosureIR | undefined {
@@ -238,12 +250,10 @@ export function getHostTaggedHeapNullableBoundary(
 export function getEffectiveHostClassConstructorParamsByName(
   func: CompilerFunctionIR,
 ): Map<string, number> {
-  const paramsByName = new Map(
-    (func.hostClassConstructorParams ?? []).map((param) => [param.name, param.classTagId] as const),
-  );
+  const paramsByName = new Map<string, number>();
   for (const boundary of func.hostParamBoundaries ?? []) {
     const classConstructorBoundary = getHostClassConstructorBoundary(boundary.boundary);
-    if (classConstructorBoundary && !paramsByName.has(boundary.name)) {
+    if (classConstructorBoundary) {
       paramsByName.set(boundary.name, classConstructorBoundary.classTagId);
     }
   }
@@ -253,12 +263,10 @@ export function getEffectiveHostClassConstructorParamsByName(
 export function getEffectiveHostClosureParamsByName(
   func: CompilerFunctionIR,
 ): Map<string, number> {
-  const paramsByName = new Map(
-    (func.hostClosureParams ?? []).map((param) => [param.name, param.signatureId] as const),
-  );
+  const paramsByName = new Map<string, number>();
   for (const boundary of func.hostParamBoundaries ?? []) {
     const closureBoundary = getHostClosureBoundary(boundary.boundary);
-    if (closureBoundary && !paramsByName.has(boundary.name)) {
+    if (closureBoundary) {
       paramsByName.set(boundary.name, closureBoundary.signatureId);
     }
   }
@@ -268,12 +276,10 @@ export function getEffectiveHostClosureParamsByName(
 export function getEffectiveHostTaggedPrimitiveParamsByName(
   func: CompilerFunctionIR,
 ): Map<string, CompilerTaggedPrimitiveBoundaryKindsIR> {
-  const paramsByName = new Map<string, CompilerTaggedPrimitiveBoundaryKindsIR>(
-    (func.hostTaggedPrimitiveParams ?? []).map((param) => [param.name, param] as const),
-  );
+  const paramsByName = new Map<string, CompilerTaggedPrimitiveBoundaryKindsIR>();
   for (const boundary of func.hostParamBoundaries ?? []) {
     const taggedKinds = getHostTaggedPrimitiveKinds(boundary.boundary);
-    if (taggedKinds && !paramsByName.has(boundary.name)) {
+    if (taggedKinds) {
       paramsByName.set(boundary.name, taggedKinds);
     }
   }
@@ -283,12 +289,10 @@ export function getEffectiveHostTaggedPrimitiveParamsByName(
 export function getEffectiveHostTaggedHeapNullableParamsByName(
   func: CompilerFunctionIR,
 ): Map<string, CompilerFunctionHostTaggedHeapNullableParamIR> {
-  const paramsByName = new Map<string, CompilerFunctionHostTaggedHeapNullableParamIR>(
-    (func.hostTaggedHeapNullableParams ?? []).map((param) => [param.name, param] as const),
-  );
+  const paramsByName = new Map<string, CompilerFunctionHostTaggedHeapNullableParamIR>();
   for (const boundary of func.hostParamBoundaries ?? []) {
     const taggedHeapBoundary = getHostTaggedHeapNullableBoundary(boundary.boundary);
-    if (taggedHeapBoundary && !paramsByName.has(boundary.name)) {
+    if (taggedHeapBoundary) {
       paramsByName.set(boundary.name, { name: boundary.name, ...taggedHeapBoundary });
     }
   }
@@ -298,27 +302,54 @@ export function getEffectiveHostTaggedHeapNullableParamsByName(
 export function getEffectiveHostClassConstructorResultTagId(
   func: CompilerFunctionIR,
 ): number | undefined {
-  return func.hostClassConstructorResultTagId ??
-    getHostClassConstructorBoundary(func.hostResultBoundary)?.classTagId;
+  return getHostClassConstructorBoundary(func.hostResultBoundary)?.classTagId;
 }
 
 export function getEffectiveHostClosureResultSignatureId(
   func: CompilerFunctionIR,
 ): number | undefined {
-  return func.hostClosureResultSignatureId ??
-    getHostClosureBoundary(func.hostResultBoundary)?.signatureId;
+  return getHostClosureBoundary(func.hostResultBoundary)?.signatureId;
 }
 
 export function getEffectiveHostTaggedPrimitiveResultKinds(
   func: CompilerFunctionIR,
 ): CompilerTaggedPrimitiveBoundaryKindsIR | undefined {
-  return func.hostTaggedPrimitiveResultKinds ?? getHostTaggedPrimitiveKinds(func.hostResultBoundary);
+  return getHostTaggedPrimitiveKinds(func.hostResultBoundary);
 }
 
 export function getEffectiveHostTaggedHeapNullableResultBoundary(
   func: CompilerFunctionIR,
 ): CompilerFunctionHostTaggedHeapNullableBoundaryIR | undefined {
-  return func.hostTaggedHeapNullableResult ?? getHostTaggedHeapNullableBoundary(func.hostResultBoundary);
+  return getHostTaggedHeapNullableBoundary(func.hostResultBoundary);
+}
+
+export function getEffectiveFunctionHeapParamRepresentation(
+  func: CompilerFunctionIR,
+  name: string,
+): CompilerRuntimeRepresentationRefIR<'object'> | undefined {
+  return func.heapParamRepresentations?.find((boundary) => boundary.name === name)?.representation ??
+    getHeapRepresentationFromHostBoundary(getFunctionHostParamBoundary(func, name));
+}
+
+export function getEffectiveFunctionHeapParamRepresentationsByName(
+  func: CompilerFunctionIR,
+): Map<string, CompilerRuntimeRepresentationRefIR<'object'>> {
+  const representationsByName = new Map<string, CompilerRuntimeRepresentationRefIR<'object'>>(
+    (func.heapParamRepresentations ?? []).map((boundary) => [boundary.name, boundary.representation] as const),
+  );
+  for (const boundary of func.hostParamBoundaries ?? []) {
+    const representation = getHeapRepresentationFromHostBoundary(boundary.boundary);
+    if (representation && !representationsByName.has(boundary.name)) {
+      representationsByName.set(boundary.name, representation);
+    }
+  }
+  return representationsByName;
+}
+
+export function getEffectiveFunctionHeapResultRepresentation(
+  func: CompilerFunctionIR,
+): CompilerRuntimeRepresentationRefIR<'object'> | undefined {
+  return func.heapResultRepresentation ?? getHeapRepresentationFromHostBoundary(func.hostResultBoundary);
 }
 
 export function getEffectiveHostFallbackObjectParamBoundaryNames(func: CompilerFunctionIR): string[] {
@@ -372,12 +403,10 @@ export function hasEffectiveHostFallbackObjectResultBoundary(func: CompilerFunct
 export function getEffectiveHostTaggedArrayParamsByName(
   func: CompilerFunctionIR,
 ): Map<string, CompilerFunctionHostTaggedArrayBoundaryIR> {
-  const paramsByName = new Map<string, CompilerFunctionHostTaggedArrayBoundaryIR>(
-    (func.hostTaggedArrayParams ?? []).map((param) => [param.name, param] as const),
-  );
+  const paramsByName = new Map<string, CompilerFunctionHostTaggedArrayBoundaryIR>();
   for (const boundary of func.hostParamBoundaries ?? []) {
     const taggedArrayBoundary = getTaggedArrayBoundaryFromHostBoundary(boundary.boundary);
-    if (taggedArrayBoundary && !paramsByName.has(boundary.name)) {
+    if (taggedArrayBoundary) {
       paramsByName.set(boundary.name, taggedArrayBoundary);
     }
   }
@@ -387,8 +416,7 @@ export function getEffectiveHostTaggedArrayParamsByName(
 export function getEffectiveHostTaggedArrayResultKinds(
   func: CompilerFunctionIR,
 ): CompilerFunctionHostTaggedArrayBoundaryIR | undefined {
-  return func.hostTaggedArrayResultKinds ??
-    (func.hostResultBoundary ? getTaggedArrayBoundaryFromHostBoundary(func.hostResultBoundary) : undefined);
+  return func.hostResultBoundary ? getTaggedArrayBoundaryFromHostBoundary(func.hostResultBoundary) : undefined;
 }
 
 export function getEffectiveHostImportPromiseParamNames(
@@ -404,7 +432,7 @@ export function getEffectiveHostImportPromiseParamNames(
 export function getEffectiveHostExportPromiseParamNames(
   func: CompilerFunctionIR,
 ): Set<string> {
-  const paramNames = new Set(func.hostPromiseParams ?? []);
+  const paramNames = new Set<string>();
   for (const name of getHostPromiseParamBoundaryNames(func)) {
     paramNames.add(name);
   }
@@ -416,7 +444,7 @@ export function hasEffectiveHostImportPromiseResult(func: CompilerFunctionIR): b
 }
 
 export function hasEffectiveHostExportPromiseResult(func: CompilerFunctionIR): boolean {
-  return func.hostPromiseResult === true || getHostPromiseBoundary(func.hostResultBoundary) !== undefined;
+  return getHostPromiseBoundary(func.hostResultBoundary) !== undefined;
 }
 
 export function boundaryUsesPromiseBridge(boundary: CompilerHostBoundaryIR): boolean {
@@ -479,12 +507,10 @@ export function getHeapArrayRepresentationFromHostBoundary(
 export function getEffectiveHostHeapArrayParamsByName(
   func: CompilerFunctionIR,
 ): Map<string, CompilerFunctionHeapBoundaryIR['representation']> {
-  const paramsByName = new Map(
-    (func.hostHeapArrayParams ?? []).map((param) => [param.name, param.representation] as const),
-  );
+  const paramsByName = new Map<string, CompilerFunctionHeapBoundaryIR['representation']>();
   for (const boundary of func.hostParamBoundaries ?? []) {
     const heapArrayRepresentation = getHeapArrayRepresentationFromHostBoundary(boundary.boundary);
-    if (heapArrayRepresentation && !paramsByName.has(boundary.name)) {
+    if (heapArrayRepresentation) {
       paramsByName.set(boundary.name, heapArrayRepresentation);
     }
   }
@@ -494,8 +520,7 @@ export function getEffectiveHostHeapArrayParamsByName(
 export function getEffectiveHostHeapArrayResultRepresentation(
   func: CompilerFunctionIR,
 ): CompilerFunctionHeapBoundaryIR['representation'] | undefined {
-  return func.hostHeapArrayResultRepresentation ??
-    (func.hostResultBoundary ? getHeapArrayRepresentationFromHostBoundary(func.hostResultBoundary) : undefined);
+  return func.hostResultBoundary ? getHeapArrayRepresentationFromHostBoundary(func.hostResultBoundary) : undefined;
 }
 
 function runtimeRepresentationsEqual(
@@ -542,6 +567,7 @@ function mergeNamedMetadata<T>(
 export interface CompilerHostFallbackObjectPropertyMetadataIR {
   propertyNames: readonly string[];
   closureProperties: ReadonlyMap<string, number>;
+  closureMethodFunctionIds: ReadonlyMap<string, readonly number[]>;
   classConstructorProperties: ReadonlyMap<string, number>;
   arrayProperties: ReadonlyMap<
     string,
@@ -564,6 +590,7 @@ export function getEffectiveFunctionHostFallbackObjectPropertyMetadata(
 ): CompilerHostFallbackObjectPropertyMetadataIR {
   const propertyNames = new Set<string>();
   const closureProperties = new Map<string, number>();
+  const closureMethodFunctionIds = new Map<string, number[]>();
   const classConstructorProperties = new Map<string, number>();
   const arrayProperties = new Map<
     string,
@@ -592,6 +619,15 @@ export function getEffectiveFunctionHostFallbackObjectPropertyMetadata(
           (propertyName) =>
             `Conflicting host fallback closure signatures for property ${propertyName}.`,
         );
+        if ((field.methodClosureFunctionIds?.length ?? 0) > 0) {
+          const existingFunctionIds = closureMethodFunctionIds.get(field.name) ?? [];
+          for (const functionId of field.methodClosureFunctionIds ?? []) {
+            if (!existingFunctionIds.includes(functionId)) {
+              existingFunctionIds.push(functionId);
+            }
+          }
+          closureMethodFunctionIds.set(field.name, existingFunctionIds);
+        }
         break;
       case 'class_constructor':
         mergeNamedMetadata(
@@ -689,96 +725,10 @@ export function getEffectiveFunctionHostFallbackObjectPropertyMetadata(
     }
   });
 
-  for (const property of func.hostFallbackClosureProperties ?? []) {
-    propertyNames.add(property.name);
-    mergeNamedMetadata(
-      closureProperties,
-      property.name,
-      property.signatureId,
-      (left, right) => left === right,
-      (propertyName) => `Conflicting host fallback closure signatures for property ${propertyName}.`,
-    );
-  }
-  for (const property of func.hostFallbackClassConstructorProperties ?? []) {
-    propertyNames.add(property.name);
-    mergeNamedMetadata(
-      classConstructorProperties,
-      property.name,
-      property.classTagId,
-      (left, right) => left === right,
-      (propertyName) =>
-        `Conflicting host fallback class-constructor property types for property ${propertyName}.`,
-    );
-  }
-  for (const property of func.hostFallbackArrayProperties ?? []) {
-    propertyNames.add(property.name);
-    mergeNamedMetadata(
-      arrayProperties,
-      property.name,
-      property.valueType,
-      (left, right) => left === right,
-      (propertyName) => `Conflicting host fallback array property types for property ${propertyName}.`,
-    );
-  }
-  for (const property of func.hostFallbackHeapArrayProperties ?? []) {
-    propertyNames.add(property.name);
-    mergeNamedMetadata(
-      heapArrayProperties,
-      property.name,
-      property.representation,
-      runtimeRepresentationsEqual,
-      (propertyName) =>
-        `Conflicting host fallback heap-array property representations for property ${propertyName}.`,
-    );
-  }
-  for (const property of func.hostFallbackTaggedArrayProperties ?? []) {
-    propertyNames.add(property.name);
-    mergeNamedMetadata(
-      taggedArrayProperties,
-      property.name,
-      property,
-      taggedArrayBoundaryEqual,
-      (propertyName) =>
-        `Conflicting host fallback tagged-array property metadata for property ${propertyName}.`,
-    );
-  }
-  for (const property of func.hostFallbackHeapProperties ?? []) {
-    propertyNames.add(property.name);
-    mergeNamedMetadata(
-      heapProperties,
-      property.name,
-      property.representation,
-      runtimeRepresentationsEqual,
-      (propertyName) =>
-        `Conflicting host fallback heap property representations for property ${propertyName}.`,
-    );
-  }
-  for (const property of func.hostFallbackTaggedHeapProperties ?? []) {
-    propertyNames.add(property.name);
-    mergeNamedMetadata(
-      taggedHeapProperties,
-      property.name,
-      {
-        representation: property.representation,
-        taggedPrimitiveKinds: {
-          includesBoolean: property.includesBoolean,
-          includesNull: property.includesNull,
-          includesNumber: property.includesNumber,
-          includesString: property.includesString,
-          includesUndefined: property.includesUndefined,
-        },
-      },
-      (left, right) =>
-        runtimeRepresentationsEqual(left.representation, right.representation) &&
-        taggedBoundaryKindsEqual(left.taggedPrimitiveKinds, right.taggedPrimitiveKinds),
-      (propertyName) =>
-        `Conflicting host fallback tagged heap property metadata for property ${propertyName}.`,
-    );
-  }
-
   return {
     propertyNames: [...propertyNames].sort((left, right) => left.localeCompare(right)),
     closureProperties,
+    closureMethodFunctionIds,
     classConstructorProperties,
     arrayProperties,
     heapArrayProperties,
@@ -793,6 +743,7 @@ export function getEffectiveHostFallbackObjectPropertyMetadata(
 ): CompilerHostFallbackObjectPropertyMetadataIR {
   const propertyNames = new Set<string>();
   const closureProperties = new Map<string, number>();
+  const closureMethodFunctionIds = new Map<string, number[]>();
   const classConstructorProperties = new Map<string, number>();
   const arrayProperties = new Map<
     string,
@@ -822,6 +773,17 @@ export function getEffectiveHostFallbackObjectPropertyMetadata(
         (left, right) => left === right,
         (candidate) => `Conflicting host fallback closure signatures for property ${candidate}.`,
       );
+    }
+    for (const [propertyName, functionIds] of metadata.closureMethodFunctionIds) {
+      const existingFunctionIds = closureMethodFunctionIds.get(propertyName) ?? [];
+      for (const functionId of functionIds) {
+        if (!existingFunctionIds.includes(functionId)) {
+          existingFunctionIds.push(functionId);
+        }
+      }
+      if (existingFunctionIds.length > 0) {
+        closureMethodFunctionIds.set(propertyName, existingFunctionIds);
+      }
     }
     for (const [propertyName, classTagId] of metadata.classConstructorProperties) {
       mergeNamedMetadata(
@@ -889,6 +851,7 @@ export function getEffectiveHostFallbackObjectPropertyMetadata(
   return {
     propertyNames: [...propertyNames].sort((left, right) => left.localeCompare(right)),
     closureProperties,
+    closureMethodFunctionIds,
     classConstructorProperties,
     arrayProperties,
     heapArrayProperties,

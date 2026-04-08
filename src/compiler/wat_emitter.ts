@@ -28,6 +28,9 @@ import {
   getEffectiveHostExportPromiseParamNames,
   getEffectiveHostFallbackObjectParamBoundaryNames,
   hasEffectiveHostFallbackObjectResultBoundary,
+  getEffectiveFunctionHeapParamRepresentation,
+  getEffectiveFunctionHeapParamRepresentationsByName,
+  getEffectiveFunctionHeapResultRepresentation,
   getEffectiveHostFallbackObjectPropertyMetadata,
   getEffectiveFunctionHostFallbackObjectPropertyMetadata,
   getEffectiveHostHeapArrayParamsByName,
@@ -2077,10 +2080,10 @@ function moduleUsesHostPromiseParamBridge(module: CompilerModuleIR): boolean {
     (
       (func.hostImport !== undefined || func.exportName.length > 0) &&
       (
-        (func.heapParamRepresentations ?? []).some((boundary) =>
-          moduleRepresentationUsesPromiseBridge(module, boundary.representation)
+        [...getEffectiveFunctionHeapParamRepresentationsByName(func).values()].some((representation) =>
+          moduleRepresentationUsesPromiseBridge(module, representation)
         ) ||
-        moduleRepresentationUsesPromiseBridge(module, func.heapResultRepresentation)
+        moduleRepresentationUsesPromiseBridge(module, getEffectiveFunctionHeapResultRepresentation(func))
       )
     )
   );
@@ -2093,10 +2096,10 @@ function moduleUsesHostPromiseResultBridge(module: CompilerModuleIR): boolean {
     (
       (func.hostImport !== undefined || func.exportName.length > 0) &&
       (
-        (func.heapParamRepresentations ?? []).some((boundary) =>
-          moduleRepresentationUsesPromiseBridge(module, boundary.representation)
+        [...getEffectiveFunctionHeapParamRepresentationsByName(func).values()].some((representation) =>
+          moduleRepresentationUsesPromiseBridge(module, representation)
         ) ||
-        moduleRepresentationUsesPromiseBridge(module, func.heapResultRepresentation)
+        moduleRepresentationUsesPromiseBridge(module, getEffectiveFunctionHeapResultRepresentation(func))
       )
     )
   );
@@ -3444,9 +3447,8 @@ function moduleUsesHostObjectClosureTaggedStringBoundary(module: CompilerModuleI
     )
   ) ?? false) ||
     module.functions.some((func) =>
-      func.hostFallbackClosureProperties?.some((property) =>
-        signatureUsesString(property.signatureId)
-      )
+      [...getEffectiveFunctionHostFallbackObjectPropertyMetadata(func).closureProperties.values()]
+        .some((signatureId) => signatureUsesString(signatureId))
     );
 }
 
@@ -3799,9 +3801,7 @@ function moduleUsesFallbackHostMethodArrayPropertySyncBoundary(
     const fallbackProperties = getEffectiveFunctionHostFallbackObjectPropertyMetadata(func);
     return hasHostFallbackObjectResultBoundary(func) &&
       [...fallbackProperties.arrayProperties.values()].some((property) => property === valueType) &&
-      (func.hostFallbackClosureProperties?.some((property) =>
-        (property.methodClosureFunctionIds?.length ?? 0) > 0
-      ) ?? false);
+      fallbackProperties.closureMethodFunctionIds.size > 0;
   });
 }
 
@@ -4180,11 +4180,7 @@ function moduleUsesOwnedHeapArrayHostParamCopyBack(module: CompilerModuleIR): bo
   const usesFallbackMethodSyncCopyBack = module.functions.some((func) =>
     hasHostFallbackObjectResultBoundary(func) &&
     getEffectiveFunctionHostFallbackObjectPropertyMetadata(func).heapArrayProperties.size > 0 &&
-    (
-      func.hostFallbackClosureProperties?.some((property) =>
-        (property.methodClosureFunctionIds?.length ?? 0) > 0
-      ) ?? false
-    )
+    getEffectiveFunctionHostFallbackObjectPropertyMetadata(func).closureMethodFunctionIds.size > 0
   );
   return moduleUsesOwnedHeapArrayHostParamBoundary(module) ||
     usesSpecializedMethodSyncCopyBack ||
@@ -4929,15 +4925,14 @@ function getHostAdaptableSpecializedObjectParamBoundaries(
     name: string;
     representation: CompilerRuntimeSpecializedObjectRepresentationRefIR;
   }> = [];
-  for (const boundary of func.heapParamRepresentations ?? []) {
-    if (hostLengthViewParamNames.has(boundary.name)) {
+  for (const [name, representation] of getEffectiveFunctionHeapParamRepresentationsByName(func)) {
+    if (hostLengthViewParamNames.has(name)) {
       continue;
     }
-    const param = func.params.find((candidate) => candidate.name === boundary.name);
+    const param = func.params.find((candidate) => candidate.name === name);
     if (param?.type !== 'heap_ref') {
       continue;
     }
-    const representation = boundary.representation;
     if (representation.kind !== 'specialized_object_representation') {
       continue;
     }
@@ -4949,7 +4944,7 @@ function getHostAdaptableSpecializedObjectParamBoundaries(
       continue;
     }
     boundaries.push({
-      name: boundary.name,
+      name,
       representation: representation as CompilerRuntimeSpecializedObjectRepresentationRefIR,
     });
   }
@@ -4963,15 +4958,14 @@ function getHostAdaptableSpecializedObjectResultRepresentation(
   if (func.hostLengthViewResult || func.resultType !== 'heap_ref') {
     return undefined;
   }
-  if (func.heapResultRepresentation?.kind !== 'specialized_object_representation') {
+  const representation = getEffectiveFunctionHeapResultRepresentation(func);
+  if (representation?.kind !== 'specialized_object_representation') {
     return undefined;
   }
-  const representation = func
-    .heapResultRepresentation as CompilerRuntimeSpecializedObjectRepresentationRefIR;
   return isHostAdaptableSpecializedObjectLayout(
       getLayoutForRepresentationName(representation.name, layoutsByRepresentationName),
     )
-    ? representation
+    ? representation as CompilerRuntimeSpecializedObjectRepresentationRefIR
     : undefined;
 }
 
@@ -5758,22 +5752,7 @@ function collectHostBoundaryFallbackClosureProperties(
 function collectHostBoundaryFallbackMethodClosureFunctionIds(
   module: CompilerModuleIR,
 ): ReadonlyMap<string, readonly number[]> {
-  const functionIdsByName = new Map<string, number[]>();
-  for (const func of module.functions) {
-    for (const property of func.hostFallbackClosureProperties ?? []) {
-      if ((property.methodClosureFunctionIds?.length ?? 0) === 0) {
-        continue;
-      }
-      const existing = functionIdsByName.get(property.name) ?? [];
-      for (const functionId of property.methodClosureFunctionIds ?? []) {
-        if (!existing.includes(functionId)) {
-          existing.push(functionId);
-        }
-      }
-      functionIdsByName.set(property.name, existing);
-    }
-  }
-  return functionIdsByName;
+  return getEffectiveHostFallbackObjectMetadata(module).closureMethodFunctionIds;
 }
 
 function collectHostBoundaryFallbackArrayProperties(
@@ -11278,11 +11257,7 @@ function emitOwnedHeapArrayBoundaryHelpers(
       hasHostTaggedHeapNullableFallbackResultBoundary(func);
     const needsFallbackMethodSyncCopyBack = hasFallbackResultBoundary &&
       fallbackProperties.heapArrayProperties.size > 0 &&
-      (
-        func.hostFallbackClosureProperties?.some((property) =>
-          (property.methodClosureFunctionIds?.length ?? 0) > 0
-        ) ?? false
-      );
+      fallbackProperties.closureMethodFunctionIds.size > 0;
     for (const [propertyName, representation] of fallbackProperties.heapArrayProperties) {
       if (hasFallbackParamBoundary) {
         emitParamBoundaryHelper(
@@ -17695,33 +17670,16 @@ function inferHeapLocalRepresentations(
     ...func.locals.filter((local) => local.type === 'heap_ref').map((local) => local.name),
   ]);
   const heapLocalRepresentations = new Map<string, BackendHeapRepresentation>();
-  for (const boundary of func.heapParamRepresentations ?? []) {
+  for (const [name, representation] of getEffectiveFunctionHeapParamRepresentationsByName(func)) {
     heapLocalRepresentations.set(
-      boundary.name,
+      name,
       getHeapRepresentationForBoundary(
-        boundary.representation,
+        representation,
         layoutsByRepresentationName,
         fallbackObjectLayout,
         dynamicObjectLayout,
       ),
     );
-  }
-  for (const boundary of func.hostParamBoundaries ?? []) {
-    if (
-      heapLocalNames.has(boundary.name) &&
-      !heapLocalRepresentations.has(boundary.name) &&
-      boundary.boundary.kind === 'object'
-    ) {
-      heapLocalRepresentations.set(
-        boundary.name,
-        getHeapRepresentationForBoundary(
-          boundary.boundary.representation,
-          layoutsByRepresentationName,
-          fallbackObjectLayout,
-          dynamicObjectLayout,
-        ),
-      );
-    }
   }
   for (const boundary of func.heapLocalRepresentations ?? []) {
     heapLocalRepresentations.set(
@@ -18040,10 +17998,9 @@ function inferHeapLocalRepresentations(
             break;
           }
           const callee = functionsByName.get(statement.value.callee);
-          const resultRepresentation = callee?.heapResultRepresentation ??
-            (callee?.hostResultBoundary?.kind === 'object'
-              ? callee.hostResultBoundary.representation
-              : undefined);
+          const resultRepresentation = callee
+            ? getEffectiveFunctionHeapResultRepresentation(callee)
+            : undefined;
           if (!resultRepresentation) {
             throw createUnsupportedHeapRuntimeBackendError(
               `Heap local ${statement.name} was assigned from call ${statement.value.callee} without heap result metadata.`,
@@ -18149,12 +18106,12 @@ function functionUsesFallbackRuntime(
   func: CompilerFunctionIR,
   operations: readonly CompilerRuntimeFunctionIR['operations'][number][],
 ): boolean {
-  if (func.heapResultRepresentation?.kind === 'fallback_object_representation') {
+  if (getEffectiveFunctionHeapResultRepresentation(func)?.kind === 'fallback_object_representation') {
     return true;
   }
   if (
-    (func.heapParamRepresentations ?? []).some((boundary) =>
-      boundary.representation.kind === 'fallback_object_representation'
+    [...getEffectiveFunctionHeapParamRepresentationsByName(func).values()].some((representation) =>
+      representation.kind === 'fallback_object_representation'
     )
   ) {
     return true;
@@ -18178,7 +18135,7 @@ function expressionCallsFallbackReturningFunction(
   switch (expression.kind) {
     case 'call': {
       const callee = functionsByName.get(expression.callee);
-      if (callee?.heapResultRepresentation?.kind === 'fallback_object_representation') {
+      if (callee && getEffectiveFunctionHeapResultRepresentation(callee)?.kind === 'fallback_object_representation') {
         return true;
       }
       return expression.args.some((argument: CompilerExpressionIR) =>
@@ -18496,6 +18453,7 @@ function createFunctionBackendRuntimeContext(
   functionsByName: ReadonlyMap<string, CompilerFunctionIR>,
   runtime: CompilerRuntimeIR | undefined,
   layoutsByRepresentationName: ReadonlyMap<string, BackendSpecializedObjectLayout>,
+  fallbackPropertyKeyIdsByKey: ReadonlyMap<string, number>,
   stringLiteralIdsByText: ReadonlyMap<string, number>,
   stringRuntimeLayout?: BackendStringRuntimeLayout,
 ): FunctionBackendRuntimeContext {
@@ -18525,13 +18483,13 @@ function createFunctionBackendRuntimeContext(
         operation.kind === 'list_dynamic_object_values' ||
         operation.kind === 'set_dynamic_object_property'
       ) ||
-      (func.heapParamRepresentations ?? []).some((boundary) =>
-        boundary.representation.kind === 'dynamic_object_representation'
+      [...getEffectiveFunctionHeapParamRepresentationsByName(func).values()].some((representation) =>
+        representation.kind === 'dynamic_object_representation'
       ) ||
       (func.heapLocalRepresentations ?? []).some((boundary) =>
         boundary.representation.kind === 'dynamic_object_representation'
       ) ||
-      func.heapResultRepresentation?.kind === 'dynamic_object_representation' ||
+      getEffectiveFunctionHeapResultRepresentation(func)?.kind === 'dynamic_object_representation' ||
       statementsUseStringHelper(func.body, isPromiseRuntimeHelperCall)
     )
     ? getDynamicObjectLayout(runtime)
@@ -18643,8 +18601,10 @@ function createFunctionBackendRuntimeContext(
             statement.value.type === 'heap_ref' &&
             heapLocalRepresentations.get(statement.name)?.kind === 'fallback'
           ) {
-            const resultRepresentation = functionsByName.get(statement.value.callee)
-              ?.heapResultRepresentation;
+            const callee = functionsByName.get(statement.value.callee);
+            const resultRepresentation = callee
+              ? getEffectiveFunctionHeapResultRepresentation(callee)
+              : undefined;
             if (resultRepresentation?.kind === 'specialized_object_representation') {
               ensureSpecializedFallbackGeneralizationScratchLocal(resultRepresentation.name);
             }
@@ -18691,7 +18651,7 @@ function createFunctionBackendRuntimeContext(
     fallbackObjectLayout,
     fallbackObjectKeyListingOpsByResult: collectFallbackObjectKeyListingOpsByResult(operations),
     fallbackPropertyHasOpsByResult: collectFallbackPropertyHasOpsByResult(operations),
-    fallbackPropertyKeyIdsByKey: createFallbackPropertyKeyIds(runtime, [func]),
+    fallbackPropertyKeyIdsByKey,
     fallbackScratchLocalName: fallbackObjectLayout ? '__fallback_tmp' : undefined,
     fallbackPropertyReadOpsByResult: collectFallbackPropertyReadOpsByResult(operations),
     fieldReadOpsByResult: collectFieldReadOpsByResult(operations, layoutsByRepresentationName),
@@ -20951,8 +20911,7 @@ function emitExpression(
         ...expression.args.flatMap((argument: CompilerExpressionIR, index: number) => {
           const paramName = callee?.params[index]?.name;
           const paramRepresentation = paramName
-            ? callee?.heapParamRepresentations?.find((boundary) => boundary.name === paramName)
-              ?.representation
+            ? getEffectiveFunctionHeapParamRepresentation(callee, paramName)
             : undefined;
           if (
             argument.kind === 'local_get' &&
@@ -21269,7 +21228,9 @@ function emitStatement(
             }
             if (targetRepresentation.kind === 'fallback') {
               const callee = runtime.functionsByName.get(statement.value.callee);
-              const resultRepresentation = callee?.heapResultRepresentation;
+              const resultRepresentation = callee
+                ? getEffectiveFunctionHeapResultRepresentation(callee)
+                : undefined;
               if (resultRepresentation?.kind === 'specialized_object_representation') {
                 const scratchLocalName = runtime
                   .specializedCallResultScratchLocalsByRepresentationName.get(
@@ -21552,12 +21513,7 @@ function assertFunctionIsBackendLowerable(func: CompilerFunctionIR): void {
     param.name
   );
   const heapParamRepresentationNames = new Set(
-    [
-      ...(func.heapParamRepresentations ?? []).map((boundary) => boundary.name),
-      ...(func.hostParamBoundaries ?? [])
-        .filter((boundary) => boundary.boundary.kind === 'object')
-        .map((boundary) => boundary.name),
-    ],
+    getEffectiveFunctionHeapParamRepresentationsByName(func).keys(),
   );
   for (const heapParamName of heapParamNames) {
     if (!heapParamRepresentationNames.has(heapParamName)) {
@@ -21566,8 +21522,7 @@ function assertFunctionIsBackendLowerable(func: CompilerFunctionIR): void {
   }
   if (
     func.resultType === 'heap_ref' &&
-    !func.heapResultRepresentation &&
-    func.hostResultBoundary?.kind !== 'object'
+    !getEffectiveFunctionHeapResultRepresentation(func)
   ) {
     throw createUnloweredHeapRuntimeBackendError();
   }
@@ -21619,10 +21574,7 @@ function getFunctionResultWatType(
 ): string {
   return func.resultType === 'heap_ref'
     ? getHeapBoundaryWatType(
-      func.heapResultRepresentation?.name ??
-        (func.hostResultBoundary?.kind === 'object'
-          ? func.hostResultBoundary.representation.name
-          : undefined) ??
+      getEffectiveFunctionHeapResultRepresentation(func)?.name ??
         (() => {
           throw createUnloweredHeapRuntimeBackendError();
         })(),
@@ -21641,11 +21593,8 @@ function emitHostImportedFunctionWrapper(
   }
   const hostClosureParamsByName = getEffectiveHostClosureParamsByName(func);
   const hostTaggedPrimitiveParamsByName = getEffectiveHostTaggedPrimitiveParamsByName(func);
-  const heapParamRepresentationsByName = new Map(
-    (func.heapParamRepresentations ?? []).map((
-      boundary,
-    ) => [boundary.name, boundary.representation]),
-  );
+  const heapParamRepresentationsByName = getEffectiveFunctionHeapParamRepresentationsByName(func);
+  const heapResultRepresentation = getEffectiveFunctionHeapResultRepresentation(func);
   const hostImportPromiseParamNames = getEffectiveHostImportPromiseParamNames(func);
   const hostTaggedPrimitiveResultKinds = getEffectiveHostTaggedPrimitiveResultKinds(func);
   const hostClosureResultSignatureId = getEffectiveHostClosureResultSignatureId(func);
@@ -21719,7 +21668,7 @@ function emitHostImportedFunctionWrapper(
         undefined,
         undefined,
         hostTaggedPrimitiveResultKinds,
-        func.heapResultRepresentation,
+        heapResultRepresentation,
         undefined,
         1,
         runtime.layoutsByRepresentationName,
@@ -21730,7 +21679,7 @@ function emitHostImportedFunctionWrapper(
         undefined,
         hostClosureResultSignatureId,
         undefined,
-        func.heapResultRepresentation,
+        heapResultRepresentation,
         undefined,
         1,
         runtime.layoutsByRepresentationName,
@@ -21741,7 +21690,7 @@ function emitHostImportedFunctionWrapper(
         undefined,
         undefined,
         undefined,
-        func.heapResultRepresentation,
+        heapResultRepresentation,
         undefined,
         1,
         runtime.layoutsByRepresentationName,
@@ -21775,16 +21724,7 @@ function getFunctionParamWatType(
 ): string {
   return param.type === 'heap_ref'
     ? getHeapBoundaryWatType(
-      func.heapParamRepresentations?.find((boundary) => boundary.name === param.name)
-        ?.representation.name ??
-        (() => {
-          const hostBoundary = func.hostParamBoundaries?.find((boundary) =>
-            boundary.name === param.name && boundary.boundary.kind === 'object'
-          );
-          return hostBoundary?.boundary.kind === 'object'
-            ? hostBoundary.boundary.representation.name
-            : undefined;
-        })() ??
+      getEffectiveFunctionHeapParamRepresentation(func, param.name)?.name ??
         (() => {
           throw createUnloweredHeapRuntimeBackendError();
         })(),
@@ -22588,24 +22528,26 @@ function functionNeedsHostExportWrapper(
     return false;
   }
   const hostLengthViewParamNames = new Set(func.hostLengthViewParams ?? []);
+  const effectiveHeapParamRepresentationsByName = getEffectiveFunctionHeapParamRepresentationsByName(func);
   const hostObjectParamBoundaryCount =
-    (func.heapParamRepresentations ?? []).filter((boundary) =>
-      !hostLengthViewParamNames.has(boundary.name) &&
-      func.params.some((param) => param.name === boundary.name && param.type === 'heap_ref') &&
-      boundary.representation.kind === 'specialized_object_representation'
+    [...effectiveHeapParamRepresentationsByName.entries()].filter(([name, representation]) =>
+      !hostLengthViewParamNames.has(name) &&
+      func.params.some((param) => param.name === name && param.type === 'heap_ref') &&
+      representation.kind === 'specialized_object_representation'
     ).length;
   const hostFallbackObjectParamBoundaryCount =
-    (func.heapParamRepresentations ?? []).filter((boundary) =>
-      !hostLengthViewParamNames.has(boundary.name) &&
-      func.params.some((param) => param.name === boundary.name && param.type === 'heap_ref') &&
-      boundary.representation.kind === 'fallback_object_representation'
+    [...effectiveHeapParamRepresentationsByName.entries()].filter(([name, representation]) =>
+      !hostLengthViewParamNames.has(name) &&
+      func.params.some((param) => param.name === name && param.type === 'heap_ref') &&
+      representation.kind === 'fallback_object_representation'
     ).length;
+  const effectiveHeapResultRepresentation = getEffectiveFunctionHeapResultRepresentation(func);
   const hasHostObjectResultBoundary = func.hostLengthViewResult !== true &&
     func.resultType === 'heap_ref' &&
-    func.heapResultRepresentation?.kind === 'specialized_object_representation';
+    effectiveHeapResultRepresentation?.kind === 'specialized_object_representation';
   const hasHostFallbackObjectResultBoundary = func.hostLengthViewResult !== true &&
     func.resultType === 'heap_ref' &&
-    func.heapResultRepresentation?.kind === 'fallback_object_representation';
+    effectiveHeapResultRepresentation?.kind === 'fallback_object_representation';
   const hostHeapArrayParamsByName = getEffectiveHostHeapArrayParamsByName(func);
   const hostHeapArrayResultRepresentation = getEffectiveHostHeapArrayResultRepresentation(func);
   const hostClassConstructorParamsByName = getEffectiveHostClassConstructorParamsByName(func);
@@ -22674,7 +22616,7 @@ function getHostWrapperRawResultWatType(
   }
   if (func.resultType === 'heap_ref') {
     return getHeapBoundaryWatType(
-      func.heapResultRepresentation?.name ??
+      getEffectiveFunctionHeapResultRepresentation(func)?.name ??
         (() => {
           throw createUnloweredHeapRuntimeBackendError();
         })(),
@@ -23710,7 +23652,7 @@ function emitHostExportWrapper(
         ? 'externref'
         : func.resultType === 'heap_ref'
         ? getHeapBoundaryWatType(
-          func.heapResultRepresentation?.name ??
+          getEffectiveFunctionHeapResultRepresentation(func)?.name ??
             (() => {
               throw createUnloweredHeapRuntimeBackendError();
             })(),
@@ -24418,15 +24360,13 @@ function emitClosureCallHelpers(
     if (param.type !== 'heap_ref') {
       return [`${indent(level)}local.get $arg_${argIndex}`];
     }
-    const boundary = func.heapParamRepresentations?.find((candidate) =>
-      candidate.name === param.name
-    );
-    if (!boundary) {
+    const representation = getEffectiveFunctionHeapParamRepresentation(func, param.name);
+    if (!representation) {
       throw createUnloweredHeapRuntimeBackendError();
     }
     return [
       `${indent(level)}local.get $arg_${argIndex}`,
-      `${indent(level)}ref.cast ${getClosureHeapBoundaryWatType(boundary.representation.name)}`,
+      `${indent(level)}ref.cast ${getClosureHeapBoundaryWatType(representation.name)}`,
     ];
   };
   return signatures.flatMap((signature) => {
@@ -25223,6 +25163,7 @@ function emitFunction(
   functionsByName: ReadonlyMap<string, CompilerFunctionIR>,
   runtimeIR: CompilerRuntimeIR | undefined,
   layoutsByRepresentationName: ReadonlyMap<string, BackendSpecializedObjectLayout>,
+  fallbackPropertyKeyIdsByKey: ReadonlyMap<string, number>,
   stringRuntimeLayout?: BackendStringRuntimeLayout,
 ): string[] {
   const runtime = createFunctionBackendRuntimeContext(
@@ -25230,6 +25171,7 @@ function emitFunction(
     functionsByName,
     runtimeIR,
     layoutsByRepresentationName,
+    fallbackPropertyKeyIdsByKey,
     createStringLiteralIds(module),
     stringRuntimeLayout,
   );
@@ -25693,6 +25635,7 @@ export function emitCompilerModuleToWat(module: CompilerModuleIR): string {
         functionsByName,
         module.runtime,
         layoutsByRepresentationName,
+        fallbackPropertyKeyIdsByKey,
         stringRuntimeLayout,
       ).map((line) => `${indent(1)}${line}`)
     ),

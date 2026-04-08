@@ -1447,6 +1447,7 @@ export interface CompilerHostBoundaryFieldIR {
   name: string;
   optional: boolean;
   boundary: CompilerHostBoundaryIR;
+  methodClosureFunctionIds?: readonly number[];
 }
 
 export interface CompilerHostParamBoundaryIR {
@@ -1462,37 +1463,6 @@ export interface CompilerFunctionHostTaggedPrimitiveParamIR
 export interface CompilerFunctionHostTaggedArrayBoundaryIR
   extends CompilerTaggedPrimitiveBoundaryKindsIR {
   representation?: CompilerRuntimeRepresentationRefIR<'object'>;
-}
-
-export interface CompilerFunctionHostClosureParamIR {
-  name: string;
-  signatureId: number;
-}
-
-export interface CompilerFunctionHostClassConstructorParamIR {
-  name: string;
-  classTagId: number;
-}
-
-export interface CompilerFunctionHostFallbackClosurePropertyIR {
-  name: string;
-  signatureId: number;
-  methodClosureFunctionIds?: readonly number[];
-}
-
-export interface CompilerFunctionHostFallbackClassConstructorPropertyIR {
-  name: string;
-  classTagId: number;
-}
-
-export interface CompilerFunctionHostFallbackArrayPropertyIR {
-  name: string;
-  valueType: 'owned_array_ref' | 'owned_number_array_ref' | 'owned_boolean_array_ref';
-}
-
-export interface CompilerFunctionHostFallbackHeapArrayPropertyIR {
-  name: string;
-  representation: CompilerRuntimeRepresentationRefIR<'object'>;
 }
 
 export interface CompilerFunctionHostFallbackTaggedArrayPropertyIR
@@ -1516,17 +1486,6 @@ export interface CompilerFunctionHostTaggedHeapNullableParamIR
   name: string;
 }
 
-export interface CompilerFunctionHostFallbackHeapPropertyIR {
-  name: string;
-  representation: CompilerRuntimeRepresentationRefIR<'object'>;
-}
-
-export interface CompilerFunctionHostFallbackTaggedHeapPropertyIR
-  extends CompilerTaggedPrimitiveBoundaryKindsIR {
-  name: string;
-  representation: CompilerRuntimeRepresentationRefIR<'object'>;
-}
-
 export interface CompilerFunctionIR {
   exportName: string;
   closureCaptureCount?: number;
@@ -1539,40 +1498,18 @@ export interface CompilerFunctionIR {
     construct?: boolean;
     promiseResult?: boolean;
   };
-  hostClassConstructorParams?: readonly CompilerFunctionHostClassConstructorParamIR[];
-  hostClassConstructorResultTagId?: number;
   heapLocalRepresentations?: CompilerFunctionHeapBoundaryIR[];
   heapParamRepresentations?: CompilerFunctionHeapBoundaryIR[];
   heapResultRepresentation?: CompilerRuntimeRepresentationRefIR<'object'>;
-  hostClosureParams?: readonly CompilerFunctionHostClosureParamIR[];
   hostExportParamOrder?: readonly string[];
-  hostClosureResultSignatureId?: number;
   hostDynamicCollectionParams?: readonly CompilerFunctionHostDynamicCollectionParamIR[];
-  hostPromiseParams?: readonly string[];
-  hostPromiseResult?: boolean;
   hostGeneratorResult?: boolean;
   hostAsyncGeneratorResult?: boolean;
   usesAsyncGeneratorHostStepBridge?: boolean;
-  hostFallbackClosureProperties?: readonly CompilerFunctionHostFallbackClosurePropertyIR[];
-  hostFallbackClassConstructorProperties?:
-    readonly CompilerFunctionHostFallbackClassConstructorPropertyIR[];
-  hostFallbackArrayProperties?: readonly CompilerFunctionHostFallbackArrayPropertyIR[];
-  hostFallbackHeapArrayProperties?: readonly CompilerFunctionHostFallbackHeapArrayPropertyIR[];
-  hostFallbackTaggedArrayProperties?: readonly CompilerFunctionHostFallbackTaggedArrayPropertyIR[];
-  hostFallbackHeapProperties?: readonly CompilerFunctionHostFallbackHeapPropertyIR[];
-  hostFallbackTaggedHeapProperties?: readonly CompilerFunctionHostFallbackTaggedHeapPropertyIR[];
   hostImportPromiseParams?: readonly string[];
-  hostHeapArrayParams?: readonly CompilerFunctionHeapBoundaryIR[];
-  hostHeapArrayResultRepresentation?: CompilerRuntimeRepresentationRefIR<'object'>;
   hostLengthViewParams?: readonly string[];
   hostLengthViewResult?: boolean;
-  hostTaggedArrayParams?: readonly CompilerFunctionHostTaggedArrayParamIR[];
-  hostTaggedArrayResultKinds?: CompilerFunctionHostTaggedArrayBoundaryIR;
-  hostTaggedHeapNullableParams?: readonly CompilerFunctionHostTaggedHeapNullableParamIR[];
-  hostTaggedHeapNullableResult?: CompilerFunctionHostTaggedHeapNullableBoundaryIR;
   hostParamBoundaries?: readonly CompilerHostParamBoundaryIR[];
-  hostTaggedPrimitiveParams?: readonly CompilerFunctionHostTaggedPrimitiveParamIR[];
-  hostTaggedPrimitiveResultKinds?: CompilerTaggedPrimitiveBoundaryKindsIR;
   hostResultBoundary?: CompilerHostBoundaryIR;
   locals: CompilerLocalIR[];
   name: string;

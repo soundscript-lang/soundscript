@@ -2,6 +2,7 @@ import type { CompilerModuleIR, CompilerTaggedPrimitiveBoundaryKindsIR } from '.
 import {
   getEffectiveHostClosureParamsByName,
   getEffectiveHostClosureResultSignatureId,
+  getEffectiveFunctionHostFallbackObjectPropertyMetadata,
   getEffectiveHostTaggedHeapNullableParamsByName,
   getEffectiveHostTaggedHeapNullableResultBoundary,
   getEffectiveHostTaggedPrimitiveParamsByName,
@@ -42,38 +43,9 @@ export function getTaggedHostBoundaryUsage(module: CompilerModuleIR): TaggedHost
   ): CompilerTaggedPrimitiveBoundaryKindsIR[] =>
     specializedRepresentationByName.get(representationName)?.fields
       .flatMap((field) => field.taggedPrimitiveKinds ? [field.taggedPrimitiveKinds] : []) ?? [];
-  const specializedParamFieldKinds = module.functions.flatMap((func) => [
-    ...(func.heapParamRepresentations ?? []).flatMap((boundary) =>
-      boundary.representation.kind === 'specialized_object_representation'
-        ? getSpecializedFieldKinds(boundary.representation.name)
-        : []
-    ),
-    ...[...getEffectiveHostTaggedHeapNullableParamsByName(func).values()].flatMap((boundary) =>
-      boundary.representation.kind === 'specialized_object_representation'
-        ? getSpecializedFieldKinds(boundary.representation.name)
-        : []
-    ),
-  ]);
-  const specializedResultFieldKinds = module.functions.flatMap((func) => [
-    ...(func.heapResultRepresentation?.kind === 'specialized_object_representation'
-      ? getSpecializedFieldKinds(func.heapResultRepresentation.name)
-      : []),
-    ...(getEffectiveHostTaggedHeapNullableResultBoundary(func)?.representation.kind ===
-        'specialized_object_representation'
-      ? getSpecializedFieldKinds(
-        getEffectiveHostTaggedHeapNullableResultBoundary(func)!.representation.name,
-      )
-      : []),
-  ]);
-  const fallbackTaggedHeapFieldKinds = module.functions.flatMap((func) =>
-    (func.hostFallbackTaggedHeapProperties ?? []).map((property) => ({
-      includesBoolean: property.includesBoolean,
-      includesNull: property.includesNull,
-      includesNumber: property.includesNumber,
-      includesString: property.includesString,
-      includesUndefined: property.includesUndefined,
-    }))
-  );
+  const specializedParamFieldKinds: CompilerTaggedPrimitiveBoundaryKindsIR[] = [];
+  const specializedResultFieldKinds: CompilerTaggedPrimitiveBoundaryKindsIR[] = [];
+  const fallbackTaggedHeapFieldKinds: CompilerTaggedPrimitiveBoundaryKindsIR[] = [];
   const signatureById = new Map(
     (module.closureSignatures ?? []).map((signature) => [signature.id, signature]),
   );
@@ -151,6 +123,12 @@ export function getTaggedHostBoundaryUsage(module: CompilerModuleIR): TaggedHost
       if (boundary.kind === 'tagged') {
         recursiveParamTaggedKinds.push(boundary);
       }
+      if (boundary.kind === 'object' && boundary.representation.kind === 'specialized_object_representation') {
+        specializedParamFieldKinds.push(...getSpecializedFieldKinds(boundary.representation.name));
+        markSpecializedClosureUsage(boundary.representation.name, {
+          needsParamBoundary: true,
+        });
+      }
       if (boundary.kind === 'closure') {
         markClosureUsage(boundary.signatureId, {
           needsParamBoundary: true,
@@ -161,6 +139,12 @@ export function getTaggedHostBoundaryUsage(module: CompilerModuleIR): TaggedHost
     visitFunctionHostResultBoundary(func, (boundary) => {
       if (boundary.kind === 'tagged') {
         recursiveResultTaggedKinds.push(boundary);
+      }
+      if (boundary.kind === 'object' && boundary.representation.kind === 'specialized_object_representation') {
+        specializedResultFieldKinds.push(...getSpecializedFieldKinds(boundary.representation.name));
+        markSpecializedClosureUsage(boundary.representation.name, {
+          needsResultBoundary: true,
+        });
       }
       if (boundary.kind === 'closure') {
         markClosureUsage(boundary.signatureId, {
@@ -179,33 +163,27 @@ export function getTaggedHostBoundaryUsage(module: CompilerModuleIR): TaggedHost
         needsResultBoundary: true,
       });
     }
-    for (const boundary of func.heapParamRepresentations ?? []) {
-      if (boundary.representation.kind === 'specialized_object_representation') {
-        markSpecializedClosureUsage(boundary.representation.name, {
-          needsParamBoundary: true,
-        });
-      }
-    }
     for (const boundary of getEffectiveHostTaggedHeapNullableParamsByName(func).values()) {
       if (boundary.representation.kind === 'specialized_object_representation') {
+        specializedParamFieldKinds.push(...getSpecializedFieldKinds(boundary.representation.name));
         markSpecializedClosureUsage(boundary.representation.name, {
           needsParamBoundary: true,
         });
       }
-    }
-    if (func.heapResultRepresentation?.kind === 'specialized_object_representation') {
-      markSpecializedClosureUsage(func.heapResultRepresentation.name, {
-        needsResultBoundary: true,
-      });
     }
     const hostTaggedHeapNullableResult = getEffectiveHostTaggedHeapNullableResultBoundary(func);
     if (hostTaggedHeapNullableResult?.representation.kind === 'specialized_object_representation') {
+      specializedResultFieldKinds.push(...getSpecializedFieldKinds(hostTaggedHeapNullableResult.representation.name));
       markSpecializedClosureUsage(hostTaggedHeapNullableResult.representation.name, {
         needsResultBoundary: true,
       });
     }
-    for (const property of func.hostFallbackClosureProperties ?? []) {
-      markClosureUsage(property.signatureId, {
+    const fallbackProperties = getEffectiveFunctionHostFallbackObjectPropertyMetadata(func);
+    for (const taggedKinds of fallbackProperties.taggedHeapProperties.values()) {
+      fallbackTaggedHeapFieldKinds.push(taggedKinds.taggedPrimitiveKinds);
+    }
+    for (const signatureId of fallbackProperties.closureProperties.values()) {
+      markClosureUsage(signatureId, {
         needsParamBoundary: true,
         needsResultBoundary: true,
       });
