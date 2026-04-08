@@ -121,13 +121,13 @@ Deno.test('vendored sound stdlib ArrayBuffer and DataView declarations use plain
   assertEquals(es5Text.includes('readonly byteOffset: number;'), true);
   assertEquals(
     es5Text.includes(
-      'getUint8(byteOffset: number): __soundscript_numerics.u8;',
+      'getUint8(byteOffset: number): number;',
     ),
     true,
   );
   assertEquals(
     es5Text.includes(
-      'setUint8(byteOffset: number, value: __soundscript_numerics.u8): void;',
+      'setUint8(byteOffset: number, value: number): void;',
     ),
     true,
   );
@@ -149,7 +149,7 @@ Deno.test('vendored sound stdlib typed array declarations use plain number numer
   );
   assertEquals(
     es5Text.includes(
-      'findIndex(predicate: (value: __soundscript_numerics.u8, index: number, obj: this) => boolean, thisArg?: unknown): number;',
+      'findIndex(predicate: (value: number, index: number, obj: this) => boolean, thisArg?: unknown): number;',
     ),
     true,
   );
@@ -157,20 +157,20 @@ Deno.test('vendored sound stdlib typed array declarations use plain number numer
   assertEquals(es5Text.includes('new (length: number): Uint8Array<ArrayBuffer>;'), true);
   assertEquals(
     es5Text.includes(
-      'from<T>(arrayLike: ArrayLike<T>, mapfn: (v: T, k: number) => __soundscript_numerics.u8, thisArg?: unknown): Uint8Array<ArrayBuffer>;',
+      'from<T>(arrayLike: ArrayLike<T>, mapfn: (v: T, k: number) => number, thisArg?: unknown): Uint8Array<ArrayBuffer>;',
     ),
     true,
   );
 
   assertEquals(
     es2020BigIntText.includes(
-      'entries(): ArrayIterator<[number, __soundscript_numerics.i64]>;',
+      'entries(): ArrayIterator<[number, bigint]>;',
     ),
     true,
   );
   assertEquals(
     es2020BigIntText.includes(
-      'findIndex(predicate: (value: __soundscript_numerics.i64, index: number, array: BigInt64Array<TArrayBuffer>) => boolean, thisArg?: unknown): number;',
+      'findIndex(predicate: (value: bigint, index: number, array: BigInt64Array<TArrayBuffer>) => boolean, thisArg?: unknown): number;',
     ),
     true,
   );
@@ -184,13 +184,13 @@ Deno.test('vendored sound stdlib typed array declarations use plain number numer
   );
   assertEquals(
     es2020BigIntText.includes(
-      'from<U>(arrayLike: ArrayLike<U>, mapfn: (v: U, k: number) => __soundscript_numerics.i64, thisArg?: unknown): BigInt64Array<ArrayBuffer>;',
+      'from<U>(arrayLike: ArrayLike<U>, mapfn: (v: U, k: number) => bigint, thisArg?: unknown): BigInt64Array<ArrayBuffer>;',
     ),
     true,
   );
   assertEquals(
     es2020BigIntText.includes(
-      'getBigInt64(byteOffset: number, littleEndian?: boolean): __soundscript_numerics.i64;',
+      'getBigInt64(byteOffset: number, littleEndian?: boolean): bigint;',
     ),
     true,
   );
@@ -210,7 +210,7 @@ Deno.test('vendored sound stdlib typed array iterable and helper declarations us
 
   assertEquals(
     es2015IterableText.includes(
-      'entries(): ArrayIterator<[number, __soundscript_numerics.u8]>;',
+      'entries(): ArrayIterator<[number, number]>;',
     ),
     true,
   );
@@ -220,25 +220,25 @@ Deno.test('vendored sound stdlib typed array iterable and helper declarations us
   );
   assertEquals(
     es2015IterableText.includes(
-      'from<T>(elements: Iterable<T>, mapfn?: (v: T, k: number) => __soundscript_numerics.u8, thisArg?: unknown): Uint8Array<ArrayBuffer>;',
+      'from<T>(elements: Iterable<T>, mapfn?: (v: T, k: number) => number, thisArg?: unknown): Uint8Array<ArrayBuffer>;',
     ),
     true,
   );
   assertEquals(
     es2016ArrayIncludeText.includes(
-      'includes(searchElement: __soundscript_numerics.u8, fromIndex?: number): boolean;',
+      'includes(searchElement: number, fromIndex?: number): boolean;',
     ),
     true,
   );
   assertEquals(
     es2022ArrayText.includes(
-      'at(index: number): __soundscript_numerics.u8 | undefined;',
+      'at(index: number): number | undefined;',
     ),
     true,
   );
   assertEquals(
     es2022ArrayText.includes(
-      'at(index: number): __soundscript_numerics.i64 | undefined;',
+      'at(index: number): bigint | undefined;',
     ),
     true,
   );
@@ -259,19 +259,19 @@ Deno.test('vendored sound stdlib modern array and arraybuffer declarations use p
   );
   assertEquals(
     es2023ArrayText.includes(
-      'toSorted(compareFn?: (a: __soundscript_numerics.u8, b: __soundscript_numerics.u8) => number): Uint8Array<ArrayBuffer>;',
+      'toSorted(compareFn?: (a: number, b: number) => number): Uint8Array<ArrayBuffer>;',
     ),
     true,
   );
   assertEquals(
     es2023ArrayText.includes(
-      'toSorted(compareFn?: (a: __soundscript_numerics.i64, b: __soundscript_numerics.i64) => number): BigInt64Array<ArrayBuffer>;',
+      'toSorted(compareFn?: (a: bigint, b: bigint) => number): BigInt64Array<ArrayBuffer>;',
     ),
     true,
   );
   assertEquals(
     es2023ArrayText.includes(
-      'with(index: number, value: __soundscript_numerics.i64): BigInt64Array<ArrayBuffer>;',
+      'with(index: number, value: bigint): BigInt64Array<ArrayBuffer>;',
     ),
     true,
   );
@@ -332,6 +332,278 @@ Deno.test('vendored sound stdlib DOM binary and media declarations use plain num
   assertEquals(domText.includes('written: number;'), true);
 });
 
+Deno.test('vendored sound stdlib DOM dynamic boundary declarations use unknown instead of any', () => {
+  const bundledLibDirectory = join(dirname(fromFileUrl(import.meta.url)), 'sound-libs');
+  const domText = Deno.readTextFileSync(join(bundledLibDirectory, 'lib.dom.d.ts'));
+  const domAsyncIterableText = Deno.readTextFileSync(
+    join(bundledLibDirectory, 'lib.dom.asynciterable.d.ts'),
+  );
+
+  assertEquals(domText.includes('processorOptions?: unknown;'), true);
+  assertEquals(
+    domText.includes('interface ReadableWritablePair<R = unknown, W = unknown> {'),
+    true,
+  );
+  assertEquals(domText.includes('interface Transformer<I = unknown, O = unknown> {'), true);
+  assertEquals(domText.includes('interface TransformStream<I = unknown, O = unknown> {'), true);
+  assertEquals(domText.includes('toJSON(): unknown;'), true);
+  assertEquals(
+    domText.includes(
+      'new(worker: Worker, options?: unknown, transfer?: unknown[]): RTCRtpScriptTransform;',
+    ),
+    true,
+  );
+  assertEquals(
+    domText.includes('postMessage(message: unknown, options?: StructuredSerializeOptions): void;'),
+    true,
+  );
+  assertEquals(domText.includes('reportError(e: unknown): void;'), true);
+  assertEquals(
+    domText.includes(
+      'structuredClone<T = unknown>(value: T, options?: StructuredSerializeOptions): T;',
+    ),
+    true,
+  );
+  assertEquals(domText.includes('onbeforeunload: OnBeforeUnloadEventHandler;'), true);
+  assertEquals(
+    domText.includes(
+      'interface TransformerStartCallback<O> {\n    (controller: TransformStreamDefaultController<O>): void | PromiseLike<void>;\n}',
+    ),
+    true,
+  );
+  assertEquals(
+    domText.includes(
+      'interface UnderlyingSinkStartCallback {\n    (controller: WritableStreamDefaultController): void | PromiseLike<void>;\n}',
+    ),
+    true,
+  );
+  assertEquals(
+    domText.includes(
+      'interface UnderlyingSourceStartCallback<R> {\n    (controller: ReadableStreamController<R>): void | PromiseLike<void>;\n}',
+    ),
+    true,
+  );
+  assertEquals(
+    domText.includes(
+      'interface ViewTransitionUpdateCallback {\n    (): void | PromiseLike<void>;\n}',
+    ),
+    true,
+  );
+  assertEquals(
+    domText.includes(
+      'setInterval(handler: TimerHandler, timeout?: number, ...arguments: unknown[]): number;',
+    ),
+    true,
+  );
+  assertEquals(
+    domText.includes(
+      'addEventListener(type: string, listener: (this: EventSource, event: MessageEvent) => void, options?: boolean | AddEventListenerOptions): void;',
+    ),
+    true,
+  );
+  assertEquals(domAsyncIterableText.includes('interface ReadableStream<R = unknown> {'), true);
+});
+
+Deno.test('vendored sound stdlib DOM stream and event generics carry variance annotations', () => {
+  const bundledLibDirectory = join(dirname(fromFileUrl(import.meta.url)), 'sound-libs');
+  const domText = Deno.readTextFileSync(join(bundledLibDirectory, 'lib.dom.d.ts'));
+
+  assertEquals(
+    domText.includes(
+      '// #[variance(T: in)]\ninterface QueuingStrategy<T = unknown> {',
+    ),
+    true,
+  );
+  assertEquals(
+    domText.includes(
+      '// #[variance(R: out, W: in)]\ninterface ReadableWritablePair<R = unknown, W = unknown> {',
+    ),
+    true,
+  );
+  assertEquals(
+    domText.includes(
+      '// #[variance(R: in)]\ninterface ReadableStreamDefaultController<R = unknown> {',
+    ),
+    true,
+  );
+  assertEquals(
+    domText.includes(
+      '// #[variance(I: in, O: out)]\ninterface TransformStream<I = unknown, O = unknown> {',
+    ),
+    true,
+  );
+  assertEquals(
+    domText.includes(
+      '// #[variance(O: in)]\ninterface TransformStreamDefaultController<O = unknown> {',
+    ),
+    true,
+  );
+  assertEquals(
+    domText.includes(
+      '// #[variance(O: out)]\ninterface TransformerFlushCallback<O> {',
+    ),
+    true,
+  );
+  assertEquals(
+    domText.includes(
+      '// #[variance(I: in, O: out)]\ninterface TransformerTransformCallback<I, O> {',
+    ),
+    true,
+  );
+  assertEquals(
+    domText.includes(
+      '// #[variance(W: in)]\ninterface UnderlyingSinkWriteCallback<W> {',
+    ),
+    true,
+  );
+  assertEquals(
+    domText.includes(
+      '// #[variance(R: out)]\ninterface UnderlyingSourcePullCallback<R> {',
+    ),
+    true,
+  );
+  assertEquals(
+    domText.includes(
+      '// #[variance(T: out)]\ninterface MessageEvent<T = unknown> extends Event {',
+    ),
+    true,
+  );
+  assertEquals(
+    domText.includes(
+      '// #[variance(T: out)]\ninterface ProgressEvent<T extends EventTarget = EventTarget> extends Event {',
+    ),
+    true,
+  );
+  assertEquals(
+    domText.includes(
+      '// #[variance(T: out)]\ninterface LockGrantedCallback<T> {',
+    ),
+    true,
+  );
+  assertEquals(
+    domText.includes(
+      '// #[variance(T: in)]\ntype ReadableStreamController<T> = ReadableStreamDefaultController<T> | ReadableByteStreamController;',
+    ),
+    true,
+  );
+  assertEquals(
+    domText.includes(
+      '// #[variance(T: inout)]\ninterface CustomEventInit<T = unknown> extends EventInit {',
+    ),
+    true,
+  );
+  assertEquals(
+    domText.includes(
+      '// #[variance(T: inout)]\ninterface MessageEventInit<T = unknown> extends EventInit {',
+    ),
+    true,
+  );
+});
+
+Deno.test('vendored sound stdlib DOM serializer declarations use exact object shapes when obvious', () => {
+  const bundledLibDirectory = join(dirname(fromFileUrl(import.meta.url)), 'sound-libs');
+  const domText = Deno.readTextFileSync(join(bundledLibDirectory, 'lib.dom.d.ts'));
+
+  assertEquals(
+    domText.includes(
+      '    toJSON(): DOMMatrixInit;\n' +
+        '    /**\n' +
+        '     * The **`transformPoint`** method',
+    ),
+    true,
+  );
+  assertEquals(
+    domText.includes(
+      'interface DOMPointReadOnly {\n' +
+        '    /**\n' +
+        '     * The **`DOMPointReadOnly`** interface\'s **`w`** property',
+    ),
+    true,
+  );
+  assertEquals(
+    domText.includes(
+      '    toJSON(): DOMPointInit;\n' +
+        '}\n\n' +
+        'declare var DOMPointReadOnly: {',
+    ),
+    true,
+  );
+  assertEquals(
+    domText.includes(
+      'interface DOMQuad {\n' +
+        '    /**\n' +
+        '     * The **`DOMQuad`** interface\'s **`p1`** property',
+    ),
+    true,
+  );
+  assertEquals(
+    domText.includes(
+      '    toJSON(): DOMQuadInit;\n' +
+        '}\n\n' +
+        'declare var DOMQuad: {',
+    ),
+    true,
+  );
+  assertEquals(
+    domText.includes(
+      'interface DOMRectReadOnly {\n' +
+        '    /**\n' +
+        '     * The **`bottom`** read-only property',
+    ),
+    true,
+  );
+  assertEquals(
+    domText.includes(
+      '    toJSON(): DOMRectInit;\n' +
+        '}\n\n' +
+        'declare var DOMRectReadOnly: {',
+    ),
+    true,
+  );
+  assertEquals(
+    domText.includes(
+      '    toJSON(): GeolocationCoordinatesJSON;\n' +
+        '}\n\n' +
+        'declare var GeolocationCoordinates: {',
+    ),
+    true,
+  );
+  assertEquals(
+    domText.includes(
+      '    toJSON(): GeolocationPositionJSON;\n' +
+        '}\n\n' +
+        'declare var GeolocationPosition: {',
+    ),
+    true,
+  );
+  assertEquals(
+    domText.includes(
+      '    toJSON(): MediaDeviceInfoJSON;\n' +
+        '}\n\n' +
+        'declare var MediaDeviceInfo: {',
+    ),
+    true,
+  );
+  assertEquals(
+    domText.includes(
+      'interface GeolocationCoordinatesJSON {\n    accuracy: number;\n    altitude: number | null;\n    altitudeAccuracy: number | null;\n    heading: number | null;\n    latitude: number;\n    longitude: number;\n    speed: number | null;\n}',
+    ),
+    true,
+  );
+  assertEquals(
+    domText.includes(
+      'interface GeolocationPositionJSON {\n    coords: GeolocationCoordinatesJSON;\n    timestamp: EpochTimeStamp;\n}',
+    ),
+    true,
+  );
+  assertEquals(
+    domText.includes(
+      'interface MediaDeviceInfoJSON {\n    deviceId: string;\n    groupId: string;\n    kind: MediaDeviceKind;\n    label: string;\n}',
+    ),
+    true,
+  );
+});
+
 Deno.test('vendored sound stdlib DOM timestamp declarations use plain number numerics', () => {
   const bundledLibDirectory = join(dirname(fromFileUrl(import.meta.url)), 'sound-libs');
   const domText = Deno.readTextFileSync(join(bundledLibDirectory, 'lib.dom.d.ts'));
@@ -367,10 +639,15 @@ Deno.test('vendored sound stdlib WebGL declarations use plain number numerics', 
   assertEquals(domText.includes('type GLuint64 = number;'), true);
   assertEquals(domText.includes('clear(mask: GLbitfield): void;'), true);
   assertEquals(
-    domText.includes('clearColor(red: GLclampf, green: GLclampf, blue: GLclampf, alpha: GLclampf): void;'),
+    domText.includes(
+      'clearColor(red: GLclampf, green: GLclampf, blue: GLclampf, alpha: GLclampf): void;',
+    ),
     true,
   );
-  assertEquals(domText.includes('drawArrays(mode: GLenum, first: GLint, count: GLsizei): void;'), true);
+  assertEquals(
+    domText.includes('drawArrays(mode: GLenum, first: GLint, count: GLsizei): void;'),
+    true,
+  );
   assertEquals(
     domText.includes('uniform1f(location: WebGLUniformLocation | null, x: GLfloat): void;'),
     true,
