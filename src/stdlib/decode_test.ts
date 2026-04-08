@@ -8,18 +8,31 @@ import {
   defaulted,
   DecodeFailure,
   type DecodeIssue,
+  endsWith,
   field,
+  format,
+  integer,
   lazy,
   literal,
+  max,
+  maxLength,
+  min,
+  minLength,
+  multipleOf,
   nullable,
   number,
   object,
   option as decodeOption,
   optional,
   optionalField,
+  passthroughObject,
+  pattern,
+  preprocess,
   refine,
   readonlyRecord,
   result as decodeResult,
+  startsWith,
+  strictObject,
   string,
   tuple,
   union,
@@ -124,6 +137,116 @@ Deno.test('decode defaulted supports promise-returning fallback helpers', async 
 
   assertTaggedEquals(await Nickname.decode(undefined), { tag: 'ok', value: 'anon' });
   assertTaggedEquals(await Nickname.validateDecode(undefined), { tag: 'ok', value: 'anon' });
+});
+
+Deno.test('decode preprocess runs before structural decode and supports async helpers', async () => {
+  const Stringified = preprocess(string, (value) => String(value));
+  const Uppercased = preprocess(string, async (value) => String(value).toUpperCase());
+
+  assertTaggedEquals(Stringified.decode(42), { tag: 'ok', value: '42' });
+  assertTaggedEquals(await Uppercased.decode('hello'), { tag: 'ok', value: 'HELLO' });
+  assertTaggedEquals(await Uppercased.validateDecode('hello'), { tag: 'ok', value: 'HELLO' });
+});
+
+Deno.test('decode scalar constraint helpers validate numbers, lengths, patterns, and formats', () => {
+  const PositiveInteger = min(integer(number), 1);
+  const Username = maxLength(minLength(pattern(string, /^[a-z]+$/u), 3), 8);
+  const Email = format(string, 'email');
+  const PrefixedEmail = endsWith(startsWith(string, 'user:'), '@example.com');
+  const BatchSize = multipleOf(number, 8);
+  const BigChunk = multipleOf(bigint, 16n);
+
+  assertTaggedEquals(PositiveInteger.decode(4), { tag: 'ok', value: 4 });
+  assertTaggedEquals(Username.decode('alice'), { tag: 'ok', value: 'alice' });
+  assertTaggedEquals(Email.decode('alice@example.com'), { tag: 'ok', value: 'alice@example.com' });
+  assertTaggedEquals(PrefixedEmail.decode('user:alice@example.com'), {
+    tag: 'ok',
+    value: 'user:alice@example.com',
+  });
+  assertTaggedEquals(BatchSize.decode(16), { tag: 'ok', value: 16 });
+  assertTaggedEquals(BigChunk.decode(32n), { tag: 'ok', value: 32n });
+
+  const badPositiveInteger = PositiveInteger.validateDecode(1.5);
+  const badUsername = Username.validateDecode('Al');
+  const badEmail = Email.validateDecode('alice');
+  const badPrefixedEmail = PrefixedEmail.validateDecode('guest:alice@example.com');
+  const badBatchSize = BatchSize.validateDecode(10);
+  const badBigChunk = BigChunk.validateDecode(18n);
+
+  assertEquals(isErr(badPositiveInteger), true);
+  if (isOk(badPositiveInteger)) {
+    throw new Error('expected integer constraint failure');
+  }
+  assertEquals(badPositiveInteger.error[0]?.code, 'decode_integer');
+
+  assertEquals(isErr(badUsername), true);
+  if (isOk(badUsername)) {
+    throw new Error('expected username constraint failure');
+  }
+  assertEquals(badUsername.error[0]?.code, 'decode_pattern');
+
+  assertEquals(isErr(badEmail), true);
+  if (isOk(badEmail)) {
+    throw new Error('expected email constraint failure');
+  }
+  assertEquals(badEmail.error[0]?.code, 'decode_format');
+
+  assertEquals(isErr(badPrefixedEmail), true);
+  if (isOk(badPrefixedEmail)) {
+    throw new Error('expected startsWith constraint failure');
+  }
+  assertEquals(badPrefixedEmail.error[0]?.code, 'decode_starts_with');
+
+  assertEquals(isErr(badBatchSize), true);
+  if (isOk(badBatchSize)) {
+    throw new Error('expected multipleOf constraint failure');
+  }
+  assertEquals(badBatchSize.error[0]?.code, 'decode_multiple_of');
+
+  assertEquals(isErr(badBigChunk), true);
+  if (isOk(badBigChunk)) {
+    throw new Error('expected bigint multipleOf constraint failure');
+  }
+  assertEquals(badBigChunk.error[0]?.code, 'decode_multiple_of');
+});
+
+Deno.test('decode object key policy strips by default, rejects in strict mode, and preserves in passthrough mode', () => {
+  const StrippingUser = object({
+    id: string,
+  });
+  const StrictUser = strictObject({
+    id: string,
+  });
+  const PassthroughUser = passthroughObject({
+    id: string,
+  });
+
+  assertTaggedEquals(StrippingUser.decode({ extra: true, id: 'user-1' }), {
+    tag: 'ok',
+    value: {
+      id: 'user-1',
+    },
+  });
+
+  const strictDecoded = StrictUser.validateDecode({ extra: true, id: 'user-1' });
+  assertEquals(isErr(strictDecoded), true);
+  if (isOk(strictDecoded)) {
+    throw new Error('expected strict object decode to reject unknown key');
+  }
+  assertEquals(strictDecoded.error[0], {
+    code: 'decode_unknown_key',
+    input: true,
+    message: 'Unknown field "extra".',
+    path: ['extra'],
+  });
+
+  assertTaggedEquals(PassthroughUser.decode({ extra: true, id: 'user-1' }), {
+    tag: 'ok',
+    value: {
+      extra: true,
+      id: 'user-1',
+    },
+  });
 });
 
 Deno.test('decode union and refine reject unmatched values with DecodeFailure', () => {

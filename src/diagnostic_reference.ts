@@ -217,25 +217,25 @@ const DIAGNOSTIC_REFERENCES = {
   SOUND1007: {
     code: 'SOUND1007',
     title: 'Unknown annotation',
-    summary: 'The parsed annotation name is not registered in the current language version.',
+    summary: 'Legacy diagnostic code reserved for older unknown-annotation handling.',
     repairHeuristic:
-      'Rename the annotation to a registered builtin if you intended checked semantics; otherwise delete the annotation comment and keep the declaration ordinary checked code.',
+      'Current builds preserve unknown annotation namespaces for user-space tooling instead of reporting them as errors.',
     details: [
-      'Builtin v1 annotations are `unsafe`, `interop`, `extern`, `newtype`, `value`, and `variance`.',
-      'Unknown annotations do not carry any checked semantics, even if they look like directives from another tool or an older experiment.',
+      'Ordinary unknown annotations are now ignored by core soundscript behavior and remain available through macro reflection.',
+      'This code remains reserved so older diagnostics and editor integrations can still classify historical reports.',
     ],
     examples: [
       {
         bad: '// #[trusted]',
-        good: '// #[extern]',
+        good: '// #[trusted] // preserved for user-space tooling',
       },
     ],
     suggestions: [
       {
         applicability: 'manual',
-        title: 'Use a registered annotation',
+        title: 'Refresh diagnostics from a current build',
         message:
-          'Replace the annotation with a registered builtin such as `#[extern]`, or remove it until that annotation exists.',
+          'Modern soundscript versions no longer error on unknown annotation namespaces, so refresh generated diagnostics before rewriting source.',
       },
     ],
   },

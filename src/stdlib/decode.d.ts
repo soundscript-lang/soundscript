@@ -2,6 +2,11 @@ import { type ErrorFrame, Failure } from 'sts:failures';
 import type { Option, Result } from 'sts:result';
 
 export type DecodeMode = 'sync' | 'async';
+export type DecodeFormat = 'email' | 'uuid' | 'url' | 'iso-datetime';
+export type ObjectKeyPolicy = 'strip' | 'strict' | 'passthrough';
+export type DecodeObjectOptions = {
+  readonly unknownKeys?: ObjectKeyPolicy;
+};
 export type DecodePathSegment = string | number;
 export type DecodePath = readonly DecodePathSegment[];
 export type DecodeIssue = {
@@ -75,6 +80,8 @@ export const number: Decoder<number>;
 export const boolean: Decoder<boolean>;
 export const bigint: Decoder<bigint>;
 export const undefinedValue: Decoder<undefined>;
+export const url: Decoder<URL>;
+export const isoDate: Decoder<Date>;
 export function lazy<TDecoder extends Decoder<unknown, unknown, DecodeMode>>(
   getDecoder: () => TDecoder,
 ): Decoder<DecoderValue<TDecoder>, DecoderError<TDecoder>, DecoderModeOf<TDecoder>>;
@@ -101,7 +108,50 @@ export function defaulted<T, E, M extends DecodeMode, TFallback extends T | Prom
   decoder: Decoder<T | undefined, E, M>,
   fallback: () => TFallback,
 ): Decoder<T, E, MergeDecodeModes<M | (TFallback extends Promise<unknown> ? 'async' : 'sync')>>;
+export function preprocess<A, E, M extends DecodeMode, TPreprocessed>(
+  decoder: Decoder<A, E, M>,
+  project: (value: unknown) => TPreprocessed,
+): Decoder<A, E, MergeDecodeModes<M | (TPreprocessed extends Promise<unknown> ? 'async' : 'sync')>>;
 export function literal<const T extends string | number | boolean | null>(value: T): Decoder<T>;
+export function min<T extends number | bigint, E, M extends DecodeMode>(
+  decoder: Decoder<T, E, M>,
+  minimum: T,
+): Decoder<T, E | DecodeFailure, M>;
+export function max<T extends number | bigint, E, M extends DecodeMode>(
+  decoder: Decoder<T, E, M>,
+  maximum: T,
+): Decoder<T, E | DecodeFailure, M>;
+export function minLength<T extends string | readonly unknown[], E, M extends DecodeMode>(
+  decoder: Decoder<T, E, M>,
+  minimum: number,
+): Decoder<T, E | DecodeFailure, M>;
+export function maxLength<T extends string | readonly unknown[], E, M extends DecodeMode>(
+  decoder: Decoder<T, E, M>,
+  maximum: number,
+): Decoder<T, E | DecodeFailure, M>;
+export function startsWith<E, M extends DecodeMode>(
+  decoder: Decoder<string, E, M>,
+  prefix: string,
+): Decoder<string, E | DecodeFailure, M>;
+export function endsWith<E, M extends DecodeMode>(
+  decoder: Decoder<string, E, M>,
+  suffix: string,
+): Decoder<string, E | DecodeFailure, M>;
+export function pattern<E, M extends DecodeMode>(
+  decoder: Decoder<string, E, M>,
+  expression: RegExp,
+): Decoder<string, E | DecodeFailure, M>;
+export function multipleOf<T extends number | bigint, E, M extends DecodeMode>(
+  decoder: Decoder<T, E, M>,
+  factor: T,
+): Decoder<T, E | DecodeFailure, M>;
+export function integer<E, M extends DecodeMode>(
+  decoder: Decoder<number, E, M>,
+): Decoder<number, E | DecodeFailure, M>;
+export function format<E, M extends DecodeMode>(
+  decoder: Decoder<string, E, M>,
+  expectedFormat: DecodeFormat,
+): Decoder<string, E | DecodeFailure, M>;
 export function array<T, E, M extends DecodeMode>(
   item: Decoder<T, E, M>,
 ): Decoder<readonly T[], E | DecodeFailure, M>;
@@ -123,6 +173,21 @@ export function result<T, EValue, EDecodeValue, EDecodeError, MOk extends Decode
   errDecoder: Decoder<EValue, EDecodeError, MErr>,
 ): Decoder<Result<T, EValue>, EDecodeValue | EDecodeError | DecodeFailure, MergeDecodeModes<MOk | MErr>>;
 export function object<TShape extends ObjectShape>(
+  shape: TShape,
+  options?: DecodeObjectOptions,
+): Decoder<
+  { readonly [K in keyof TShape]: DecoderValue<TShape[K]> },
+  DecoderError<TShape[keyof TShape]> | DecodeFailure,
+  ShapeDecodeMode<TShape>
+>;
+export function strictObject<TShape extends ObjectShape>(
+  shape: TShape,
+): Decoder<
+  { readonly [K in keyof TShape]: DecoderValue<TShape[K]> },
+  DecoderError<TShape[keyof TShape]> | DecodeFailure,
+  ShapeDecodeMode<TShape>
+>;
+export function passthroughObject<TShape extends ObjectShape>(
   shape: TShape,
 ): Decoder<
   { readonly [K in keyof TShape]: DecoderValue<TShape[K]> },

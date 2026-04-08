@@ -16,6 +16,9 @@ For the current builtin annotation surface, see `docs/annotation-spec.md`.
 
 For the supported public macro authoring surface, start with `docs/macro-authoring.md`.
 
+For a concrete guide to building user-space libraries on top of declaration reflection and raw
+annotation metadata, see `docs/guides/building-annotation-driven-libraries.md`.
+
 For the detailed macro execution and sandbox model behind that surface, see
 `docs/reference/2026-03-31-macro-execution-model.md`.
 

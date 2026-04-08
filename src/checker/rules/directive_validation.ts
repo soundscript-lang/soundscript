@@ -813,13 +813,6 @@ function validateAnnotationBlock(
     }
 
     if (!isKnownAnnotation(annotation.name)) {
-      diagnostics.push(
-        createUnknownAnnotationDiagnostic(
-          filePath,
-          block.startLine,
-          annotation,
-        ),
-      );
       continue;
     }
 

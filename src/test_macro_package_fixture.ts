@@ -32,6 +32,10 @@ const TEST_MACRO_PACKAGE_FALLBACK_FILES = new Map<string, string>([
       "  throw new Error('@soundscript/test-macro-package macros must be expanded before runtime.');",
       '}',
       '',
+      'export function reflectAnnotations() {',
+      "  throw new Error('@soundscript/test-macro-package macros must be expanded before runtime.');",
+      '}',
+      '',
     ].join('\n'),
   ],
   [
@@ -39,6 +43,7 @@ const TEST_MACRO_PACKAGE_FALLBACK_FILES = new Map<string, string>([
     [
       'export declare function twice(value: unknown): never;',
       'export declare function register(): never;',
+      'export declare function reflectAnnotations(): never;',
       '',
     ].join('\n'),
   ],

@@ -4,8 +4,10 @@ import {
   DecodeFailure,
   type DecodeMode,
   type Decoder,
+  isoDate as isoDateDecoder,
   number as numberDecoder,
   string as stringDecoder,
+  url as urlDecoder,
 } from 'sts:decode';
 import {
   booleanEncoder as booleanEncoderValue,
@@ -13,8 +15,10 @@ import {
   type EncodeFailure,
   type Encoder,
   type EncodeMode,
+  isoDate as isoDateEncoder,
   numberEncoder as numberEncoderValue,
   stringEncoder as stringEncoderValue,
+  url as urlEncoder,
 } from 'sts:encode';
 import type { Invariant } from 'sts:typeclasses';
 import { isErr, ok, type Result } from 'sts:result';
@@ -117,3 +121,5 @@ export function codecInvariant<TEncoded, DE = DecodeFailure, EE = EncodeFailure>
 export const stringCodec: Codec<string, string> = codec(stringDecoder, stringEncoderValue);
 export const numberCodec: Codec<number, number> = codec(numberDecoder, numberEncoderValue);
 export const booleanCodec: Codec<boolean, boolean> = codec(booleanDecoder, booleanEncoderValue);
+export const url: Codec<URL, string> = codec(urlDecoder, urlEncoder);
+export const isoDate: Codec<Date, string> = codec(isoDateDecoder, isoDateEncoder);

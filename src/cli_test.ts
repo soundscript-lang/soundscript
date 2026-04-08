@@ -1683,7 +1683,7 @@ Deno.test('runCli check --format json includes structured malformed-annotation m
   ]);
 });
 
-Deno.test('runCli check --format json includes structured unknown-annotation metadata', async () => {
+Deno.test('runCli check --format json preserves unknown annotations without diagnostics', async () => {
   const tempDirectory = await createTempProject([
     {
       path: 'tsconfig.json',
@@ -1730,29 +1730,8 @@ Deno.test('runCli check --format json includes structured unknown-annotation met
     }>;
   };
 
-  assertEquals(result.exitCode, 1);
-  assertEquals(payload.diagnostics[0]?.code, 'SOUND1007');
-  assertEquals(payload.diagnostics[0]?.metadata?.rule, 'unknown_annotation');
-  assertEquals(payload.diagnostics[0]?.metadata?.primarySymbol, '#[eq]');
-  assertEquals(payload.diagnostics[0]?.metadata?.replacementFamily, 'registered_annotation_name');
-  assertEquals(payload.diagnostics[0]?.metadata?.fixability, 'local_rewrite');
-  assertEquals(
-    payload.diagnostics[0]?.metadata?.evidence?.map((fact) => `${fact.label}:${fact.value}`),
-    ['annotationName:eq', 'registeredBuiltins:extern, interop, newtype, unsafe, value, variance'],
-  );
-  assertEquals(
-    payload.diagnostics[0]?.metadata?.counterexample,
-    'An unknown annotation can look like a checked contract even though soundscript gives it no semantics.',
-  );
-  assertEquals(
-    payload.diagnostics[0]?.metadata?.example,
-    'Replace `#[eq]` with a registered builtin annotation such as `#[extern]`, or remove it until that directive exists.',
-  );
-  assertEquals(payload.diagnostics[0]?.notes, [
-    '`#[eq]` is not a registered builtin soundscript annotation.',
-    'Registered builtin annotations in v1 are `#[extern]`, `#[interop]`, `#[newtype]`, `#[unsafe]`, `#[value]`, and `#[variance(...)]`.',
-    'Example: Replace `#[eq]` with a registered builtin annotation such as `#[extern]`, or remove it until that directive exists.',
-  ]);
+  assertEquals(result.exitCode, 0, result.output);
+  assertEquals(payload.diagnostics, []);
 });
 
 Deno.test('runCli check --format json includes structured duplicate-annotation metadata', async () => {
@@ -6805,6 +6784,74 @@ Deno.test('runCli check expand and node support a package-authored macro surface
   );
   assertEquals(nodeResult.exitCode, 0);
   assertStringIncludes(nodeResult.output, '42');
+});
+
+Deno.test('runCli expand lets package-authored macros consume built-in and custom annotations through public reflection', async () => {
+  const macroPackageFiles = await loadTestMacroPackageFiles();
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+            moduleResolution: 'Bundler',
+          },
+          include: ['src/**/*.sts', 'src/**/*.ts'],
+        },
+        null,
+        2,
+      ),
+    },
+    ...macroPackageFiles,
+    {
+      path: 'src/index.sts',
+      contents: [
+        `import { reflectAnnotations } from '${TEST_MACRO_PACKAGE_NAME}';`,
+        "import { decode } from 'sts:derive';",
+        '',
+        '// #[decode]',
+        "// #[decode.unknownKeys('strict')]",
+        '// #[reflectAnnotations()]',
+        '// #[openapi.example({ route: Routes.users.show, matcher: /^users\\/[a-z]+$/i })]',
+        'export interface User {',
+        '  // #[decode.minLength(3)]',
+        '  // #[custom.meta(null, Routes.users.index, /users/u)]',
+        '  name: string;',
+        '}',
+        '',
+        'void UserAnnotationSummary;',
+        '',
+      ].join('\n'),
+    },
+  ], { legacySoundMode: false });
+
+  const checkResult = await runCli([
+    'check',
+    '--project',
+    join(tempDirectory, 'tsconfig.json'),
+  ]);
+  assertEquals(checkResult.exitCode, 0, checkResult.output);
+  assertEquals(checkResult.diagnostics, []);
+
+  const expandResult = await runCli([
+    'expand',
+    '--project',
+    join(tempDirectory, 'tsconfig.json'),
+    '--file',
+    join(tempDirectory, 'src/index.sts'),
+  ]);
+  assertEquals(expandResult.exitCode, 0, expandResult.output);
+  assertStringIncludes(expandResult.output, 'export const UserAnnotationSummary = ');
+  assertStringIncludes(expandResult.output, '"path": ["decode", "unknownKeys"]');
+  assertStringIncludes(expandResult.output, '"path": ["openapi", "example"]');
+  assertStringIncludes(expandResult.output, '"path": ["decode", "minLength"]');
+  assertStringIncludes(expandResult.output, '"path": ["custom", "meta"]');
+  assertStringIncludes(expandResult.output, '"kind": "member"');
+  assertStringIncludes(expandResult.output, '"kind": "regexp"');
 });
 
 Deno.test('runCli compile prints stable artifact summary for supported checker-valid projects', async () => {

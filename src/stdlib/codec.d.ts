@@ -51,3 +51,5 @@ export function codecInvariant<TEncoded, DE = DecodeFailure, EE = EncodeFailure>
 export const stringCodec: Codec<string, string>;
 export const numberCodec: Codec<number, number>;
 export const booleanCodec: Codec<boolean, boolean>;
+export const url: Codec<URL, string>;
+export const isoDate: Codec<Date, string>;

@@ -10,7 +10,7 @@ import { createPreparedProgramForMacroTest } from './macro_test_helpers.ts';
 const TEST_IMPORTS = [
   "import { Foo, Bar, Baz, component, derive } from 'macros/test';",
   "import { hkt } from 'macros/test';",
-  "import { codec, eq, hash, tagged } from 'sts:derive';",
+  "import { codec, decode, encode, eq, hash, tagged } from 'sts:derive';",
   "import { Match, where } from 'sts:match';",
   "import { sql } from 'sts:experimental/sql';",
   '',
@@ -31,6 +31,8 @@ const TEST_USER_MACRO_SITE_KINDS = new Map([
   [
     'sts:derive',
     new Map([
+      ['decode', 'annotation' as const],
+      ['encode', 'annotation' as const],
       ['eq', 'annotation' as const],
       ['hash', 'annotation' as const],
       ['codec', 'annotation' as const],
@@ -273,6 +275,116 @@ Deno.test('createMacroContext exposes attached member annotations through syntax
     context.syntax.annotations(objectType.members[1]!).map((annotation) => annotation.name),
     ['eq.skip'],
   );
+});
+
+Deno.test('createMacroContext exposes generic annotation paths and rich normalized argument values', () => {
+  const { context } = createContext(
+    [
+      '// #[decode]',
+      '// #[openapi.example({ route: Routes.users.show, matcher: /^users\\/[a-z]+$/i, value: null, tags: [Source.alpha, "beta"], "x-grpc-id": 3n, fallback: undefined })]',
+      'export interface User {',
+      '  // #[decode.minLength(3)]',
+      '  // #[custom.meta(null, Routes.users.index, /users/u)]',
+      '  name: string;',
+      '}',
+      '',
+    ].join('\n'),
+    'decode',
+  );
+
+  const declaration = context.syntax.declaration().asInterface();
+  assert(declaration);
+
+  const declarationAnnotations = context.syntax.annotations(declaration);
+  assertEquals(
+    declarationAnnotations.map((annotation) => annotation.path),
+    [
+      ['decode'],
+      ['openapi', 'example'],
+    ],
+  );
+
+  const openApiAnnotation = declarationAnnotations[1]!;
+  const [openApiArgument] = openApiAnnotation.arguments ?? [];
+  assertEquals(openApiArgument?.kind, 'positional');
+  if (!openApiArgument || openApiArgument.kind !== 'positional' || openApiArgument.value.kind !== 'object') {
+    throw new Error('expected normalized object annotation value');
+  }
+
+  const routeProperty = openApiArgument.value.properties.find((property) => property.name === 'route');
+  const matcherProperty = openApiArgument.value.properties.find((property) => property.name === 'matcher');
+  const valueProperty = openApiArgument.value.properties.find((property) => property.name === 'value');
+  const tagsProperty = openApiArgument.value.properties.find((property) => property.name === 'tags');
+  const grpcIdProperty = openApiArgument.value.properties.find((property) => property.name === 'x-grpc-id');
+  const fallbackProperty = openApiArgument.value.properties.find((property) => property.name === 'fallback');
+
+  assertEquals(routeProperty?.value, {
+    kind: 'member',
+    path: ['Routes', 'users', 'show'],
+    text: 'Routes.users.show',
+  });
+  assertEquals(matcherProperty?.value, {
+    flags: 'i',
+    kind: 'regexp',
+    pattern: '^users\\/[a-z]+$',
+    text: '/^users\\/[a-z]+$/i',
+  });
+  assertEquals(valueProperty?.value, {
+    kind: 'null',
+    text: 'null',
+  });
+  assertEquals(tagsProperty?.value.kind, 'array');
+  if (!tagsProperty || tagsProperty.value.kind !== 'array') {
+    throw new Error('expected tags array');
+  }
+  assertEquals(tagsProperty.value.elements[0], {
+    kind: 'member',
+    path: ['Source', 'alpha'],
+    text: 'Source.alpha',
+  });
+  assertEquals(tagsProperty.value.elements[1], {
+    kind: 'string',
+    text: '"beta"',
+    value: 'beta',
+  });
+  assertEquals(grpcIdProperty?.value, {
+    kind: 'bigint',
+    text: '3n',
+    value: '3',
+  });
+  assertEquals(fallbackProperty?.value, {
+    kind: 'undefined',
+    text: 'undefined',
+  });
+
+  const memberAnnotations = context.syntax.annotations(declaration.members[0]!);
+  assertEquals(
+    memberAnnotations.map((annotation) => annotation.path),
+    [
+      ['decode', 'minLength'],
+      ['custom', 'meta'],
+    ],
+  );
+  assertEquals(memberAnnotations[0]?.arguments?.[0]?.value, {
+    kind: 'number',
+    text: '3',
+    value: 3,
+  });
+  assertEquals(memberAnnotations[1]?.arguments?.[0]?.value, {
+    kind: 'null',
+    text: 'null',
+  });
+  assertEquals(memberAnnotations[1]?.arguments?.[1]?.value, {
+    kind: 'member',
+    path: ['Routes', 'users', 'index'],
+    text: 'Routes.users.index',
+  });
+  assertEquals(memberAnnotations[1]?.arguments?.[2]?.value, {
+    flags: 'u',
+    kind: 'regexp',
+    pattern: 'users',
+    text: '/users/u',
+  });
 });
 
 Deno.test('createMacroContext exposes interface declaration wrappers for annotation macros', () => {

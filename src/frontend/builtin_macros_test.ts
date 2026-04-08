@@ -853,6 +853,74 @@ Deno.test('decode macro supports field defaults transforms and refinements', () 
   assert(!printed.includes('value.name === undefined ? ("guest") : value.name'));
 });
 
+Deno.test('decode macro supports preprocess constraints and unknown key policy', () => {
+  const { printed } = expandWithStdlibBuiltins([
+    "import { decode } from 'sts:derive';",
+    'declare function trimString(value: unknown): string;',
+    '',
+    '// #[decode]',
+    "// #[decode.unknownKeys('strict')]",
+    'interface User {',
+    '  // #[decode.preprocess(trimString)]',
+    '  // #[decode.minLength(3)]',
+    '  // #[decode.maxLength(64)]',
+    "  // #[decode.startsWith('user:')]",
+    "  // #[decode.endsWith('@example.com')]",
+    '  // #[decode.pattern(/^[^@]+@[^@]+$/u)]',
+    "  // #[decode.format('email')]",
+    '  email: string;',
+    '  // #[decode.multipleOf(8)]',
+    '  retries: number;',
+    '  // #[decode.min(0n)]',
+    '  // #[decode.max(1024n)]',
+    '  // #[decode.multipleOf(16n)]',
+    '  chunkSize: bigint;',
+    '}',
+    '',
+  ].join('\n'));
+
+  assertStringIncludes(printed, 'preprocess as __sts_runtime_named_preprocess_');
+  assertStringIncludes(printed, 'minLength as __sts_runtime_named_minLength_');
+  assertStringIncludes(printed, 'maxLength as __sts_runtime_named_maxLength_');
+  assertStringIncludes(printed, 'startsWith as __sts_runtime_named_startsWith_');
+  assertStringIncludes(printed, 'endsWith as __sts_runtime_named_endsWith_');
+  assertStringIncludes(printed, 'pattern as __sts_runtime_named_pattern_');
+  assertStringIncludes(printed, 'multipleOf as __sts_runtime_named_multipleOf_');
+  assertStringIncludes(printed, 'format as __sts_runtime_named_format_');
+  assertStringIncludes(printed, 'unknownKeys: "strict"');
+  assertStringIncludes(printed, 'trimString');
+  assertStringIncludes(printed, '/^[^@]+@[^@]+$/u');
+  assertStringIncludes(printed, '"user:"');
+  assertStringIncludes(printed, '"@example.com"');
+  assertStringIncludes(printed, '8');
+  assertStringIncludes(printed, '0n');
+  assertStringIncludes(printed, '1024n');
+  assertStringIncludes(printed, '16n');
+});
+
+Deno.test('decode macro supports declaration-level preprocess before decode transforms and refinements', () => {
+  const { printed } = expandWithStdlibBuiltins([
+    "import { decode } from 'sts:derive';",
+    'declare function normalizeUser(value: unknown): unknown;',
+    'declare function finalizeUser(value: User): User;',
+    'declare function validateUser(value: User): boolean;',
+    '',
+    '// #[decode]',
+    '// #[decode.preprocess(normalizeUser)]',
+    '// #[decode.transform(finalizeUser)]',
+    '// #[decode.refine(validateUser)]',
+    'interface User {',
+    '  id: string;',
+    '}',
+    '',
+  ].join('\n'));
+
+  assertStringIncludes(printed, 'preprocess as __sts_runtime_named_preprocess_');
+  assertStringIncludes(printed, 'normalizeUser');
+  assertStringIncludes(printed, 'finalizeUser');
+  assertStringIncludes(printed, 'validateUser');
+});
+
 Deno.test('decode macro supports class-local static field helpers', () => {
   const { printed } = expandWithStdlibBuiltins([
     "import { decode } from 'sts:derive';",
@@ -993,6 +1061,22 @@ Deno.test('decode macro rejects declaration-level decode.transform without an id
   ].join('\n'));
 
   assertEquals(error.message, 'decode.transform(...) requires a helper identifier.');
+});
+
+Deno.test('decode macro rejects decode.preprocess helpers that are not callable', () => {
+  const error = captureStdlibBuiltinMacroError([
+    "import { decode } from 'sts:derive';",
+    'const trimString = "not callable";',
+    '',
+    '// #[decode]',
+    'interface User {',
+    '  // #[decode.preprocess(trimString)]',
+    '  name: string;',
+    '}',
+    '',
+  ].join('\n'));
+
+  assertEquals(error.message, 'decode.preprocess(...) requires "trimString" to be callable.');
 });
 
 Deno.test('decode macro rejects declaration-level decode.transform helpers that are not in scope', () => {

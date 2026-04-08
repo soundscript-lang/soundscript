@@ -4,6 +4,10 @@ import type { Option, Result } from 'sts:result';
 import type { Contravariant } from 'sts:typeclasses';
 
 export type EncodeMode = 'sync' | 'async';
+export type ObjectKeyPolicy = 'strip' | 'strict' | 'passthrough';
+export type EncodeObjectOptions = {
+  readonly unknownKeys?: ObjectKeyPolicy;
+};
 export type EncodePathSegment = string | number;
 export type EncodePath = readonly EncodePathSegment[];
 export type EncodeIssue = {
@@ -129,6 +133,8 @@ export const numberEncoder: Encoder<number, number>;
 export const booleanEncoder: Encoder<boolean, boolean>;
 export const bigintEncoder: Encoder<bigint, bigint>;
 export const undefinedEncoder: Encoder<undefined, undefined>;
+export const url: Encoder<URL, string>;
+export const isoDate: Encoder<Date, string>;
 export function refine<T, TEncoded, E, M extends EncodeMode>(
   encoder: Encoder<T, TEncoded, E, M>,
   predicate: (value: T, ctx: EncodeRefinementContext) => value is T,
@@ -227,6 +233,23 @@ export function result<
   MergeEncodeModes<MOk | MErr>
 >;
 export function object<TShape extends ObjectShape>(
+  shape: TShape,
+  options?: EncodeObjectOptions,
+): Encoder<
+  ObjectInputOfShape<TShape>,
+  ObjectOutputOfShape<TShape>,
+  EncoderError<TShape[keyof TShape]> | EncodeFailure,
+  ShapeEncodeMode<TShape>
+>;
+export function strictObject<TShape extends ObjectShape>(
+  shape: TShape,
+): Encoder<
+  ObjectInputOfShape<TShape>,
+  ObjectOutputOfShape<TShape>,
+  EncoderError<TShape[keyof TShape]> | EncodeFailure,
+  ShapeEncodeMode<TShape>
+>;
+export function passthroughObject<TShape extends ObjectShape>(
   shape: TShape,
 ): Encoder<
   ObjectInputOfShape<TShape>,

@@ -20,9 +20,11 @@ import {
   object,
   option as encodeOption,
   optional,
+  passthroughObject,
   record,
   refine,
   result as encodeResult,
+  strictObject,
   stringEncoder,
   tuple,
   undefinedEncoder,
@@ -114,6 +116,45 @@ Deno.test('encode object encodes nested shapes and optional properties', () => {
       },
     },
   );
+});
+
+Deno.test('encode object key policy strips by default, rejects in strict mode, and preserves in passthrough mode', () => {
+  const StrippingUser = object({
+    id: stringEncoder,
+  });
+  const StrictUser = strictObject({
+    id: stringEncoder,
+  });
+  const PassthroughUser = passthroughObject({
+    id: stringEncoder,
+  });
+
+  assertTaggedEquals(StrippingUser.encode({ extra: true, id: 'user-1' } as never), {
+    tag: 'ok',
+    value: {
+      id: 'user-1',
+    },
+  });
+
+  const strictEncoded = StrictUser.validateEncode({ extra: true, id: 'user-1' } as never);
+  assertEquals(isErr(strictEncoded), true);
+  if (isOk(strictEncoded)) {
+    throw new Error('expected strict object encode to reject unknown key');
+  }
+  assertEquals(strictEncoded.error[0], {
+    code: 'encode_unknown_key',
+    input: true,
+    message: 'Unknown field "extra".',
+    path: ['extra'],
+  });
+
+  assertTaggedEquals(PassthroughUser.encode({ extra: true, id: 'user-1' } as never), {
+    tag: 'ok',
+    value: {
+      extra: true,
+      id: 'user-1',
+    },
+  });
 });
 
 Deno.test('encode literal rejects mismatched values with EncodeFailure', () => {

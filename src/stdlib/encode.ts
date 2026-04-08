@@ -4,6 +4,10 @@ import { err, isErr, isOk, isSome, ok, type Option, type Result } from 'sts:resu
 import type { Contravariant } from 'sts:typeclasses';
 
 export type EncodeMode = 'sync' | 'async';
+export type ObjectKeyPolicy = 'strip' | 'strict' | 'passthrough';
+export type EncodeObjectOptions = {
+  readonly unknownKeys?: ObjectKeyPolicy;
+};
 export type EncodePathSegment = string | number;
 export type EncodePath = readonly EncodePathSegment[];
 export type EncodeIssue = {
@@ -203,6 +207,12 @@ export const undefinedEncoder: Encoder<undefined, undefined> = fromEncode((value
   value === undefined
     ? ok(undefined)
     : err(new EncodeFailure('Expected undefined.', { cause: value }))
+);
+export const url: Encoder<URL, string> = fromEncode((value) => ok(value.toString()));
+export const isoDate: Encoder<Date, string> = fromEncode((value) =>
+  Number.isNaN(value.getTime())
+    ? err(new EncodeFailure('Expected valid Date.', { cause: value }))
+    : ok(value.toISOString())
 );
 
 export function refine<T, TEncoded, E, M extends EncodeMode>(
@@ -672,6 +682,7 @@ export function result<T, EValue, TEncoded, EEncoded, EOk, EErr, MOk extends Enc
 
 export function object<TShape extends ObjectShape>(
   shape: TShape,
+  options?: EncodeObjectOptions,
 ): Encoder<
   ObjectInputOfShape<TShape>,
   ObjectOutputOfShape<TShape>,
@@ -683,6 +694,8 @@ export function object<TShape extends ObjectShape>(
   type TError = EncoderError<TShape[keyof TShape]> | EncodeFailure;
   type TMode = ShapeEncodeMode<TShape>;
   const keys = Object.keys(shape) as readonly (keyof TShape & string)[];
+  const keySet = new Set<string>(keys);
+  const unknownKeys = options?.unknownKeys ?? 'strip';
 
   return fromEncode<TInput, TOutput, TError, TMode>(
     (value: TInput, state?: EncodeState) => {
@@ -701,7 +714,15 @@ export function object<TShape extends ObjectShape>(
           TMode
         >, () => {
           const record = value as Record<string, unknown>;
-          const encodedObject: Record<string, unknown> = {};
+          const extraKeys = collectUnknownObjectKeys(record, keySet);
+          if (unknownKeys === 'strict' && extraKeys.length > 0) {
+            return err<TError>(unknownEncodeKeyFailure(extraKeys[0]!, record[extraKeys[0]!])) as EncodeOutput<
+              TOutput,
+              TError,
+              TMode
+            >;
+          }
+          const encodedObject: Record<string, unknown> = unknownKeys === 'passthrough' ? { ...record } : {};
 
           for (let index = 0; index < keys.length; index += 1) {
             const key = keys[index]!;
@@ -774,8 +795,18 @@ export function object<TShape extends ObjectShape>(
           TMode
         >, () => {
           const record = value as Record<string, unknown>;
-          const encodedObject: Record<string, unknown> = {};
+          const encodedObject: Record<string, unknown> = unknownKeys === 'passthrough' ? { ...record } : {};
           const issues: EncodeIssue[] = [];
+          if (unknownKeys === 'strict') {
+            for (const extraKey of collectUnknownObjectKeys(record, keySet)) {
+              issues.push({
+                code: 'encode_unknown_key',
+                input: record[extraKey],
+                message: `Unknown field "${extraKey}".`,
+                path: [extraKey],
+              });
+            }
+          }
 
           for (let index = 0; index < keys.length; index += 1) {
             const key = keys[index]!;
@@ -836,6 +867,28 @@ export function object<TShape extends ObjectShape>(
         });
     },
   );
+}
+
+export function strictObject<TShape extends ObjectShape>(
+  shape: TShape,
+): Encoder<
+  ObjectInputOfShape<TShape>,
+  ObjectOutputOfShape<TShape>,
+  EncoderError<TShape[keyof TShape]> | EncodeFailure,
+  ShapeEncodeMode<TShape>
+> {
+  return object(shape, { unknownKeys: 'strict' });
+}
+
+export function passthroughObject<TShape extends ObjectShape>(
+  shape: TShape,
+): Encoder<
+  ObjectInputOfShape<TShape>,
+  ObjectOutputOfShape<TShape>,
+  EncoderError<TShape[keyof TShape]> | EncodeFailure,
+  ShapeEncodeMode<TShape>
+> {
+  return object(shape, { unknownKeys: 'passthrough' });
 }
 
 function defaultValidateEncode<TEncoded, E>(
@@ -909,6 +962,23 @@ function prependIssuePaths(
     ...issue,
     path: [segment, ...issue.path],
   }));
+}
+
+function collectUnknownObjectKeys(
+  record: Readonly<Record<string, unknown>>,
+  keySet: ReadonlySet<string>,
+): readonly string[] {
+  return Object.keys(record).filter((key) => !keySet.has(key));
+}
+
+function unknownEncodeKeyFailure(
+  key: string,
+  value: unknown,
+): EncodeFailure {
+  return new EncodeFailure(`Unknown field "${key}".`, {
+    cause: value,
+    path: [key],
+  });
 }
 
 function isEncodeIssue(value: unknown): value is EncodeIssue {

@@ -146,6 +146,9 @@ Normalized fields include their source origin kind, optionality, explicit type s
 annotations. This is the supported way to build declaration-shape-driven macros without walking
 TypeScript syntax directly.
 
+For a practical library-building walkthrough using `ctx.reflect` plus raw annotation reflection, see
+[Building Annotation-Driven Libraries](./guides/building-annotation-driven-libraries.md).
+
 ## Minimal Example
 
 ```ts

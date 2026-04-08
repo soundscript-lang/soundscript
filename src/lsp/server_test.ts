@@ -10232,7 +10232,7 @@ Deno.test('LSP server offers a quick fix to remove duplicate annotations in a bl
   await shutdownServer(client, startPromise);
 });
 
-Deno.test('LSP server offers a quick fix to remove unknown annotation comments', async () => {
+Deno.test('LSP server does not publish diagnostics for unknown annotation namespaces', async () => {
   const workspace = await createWorkspace();
   await writeWorkspaceFiles(workspace, {
     'src/index.sts': [
@@ -10260,7 +10260,7 @@ Deno.test('LSP server offers a quick fix to remove unknown annotation comments',
   const notification = await withTimeout(
     client.readNotification('textDocument/publishDiagnostics'),
     250,
-    'Timed out waiting for unknown-annotation diagnostics before codeAction.',
+    'Timed out waiting for diagnostics after opening a file with unknown annotations.',
   );
   const params = notification.params as {
     diagnostics: Array<{
@@ -10278,28 +10278,7 @@ Deno.test('LSP server offers a quick fix to remove unknown annotation comments',
     uri: string;
   };
 
-  assertEquals(params.diagnostics[0]?.code, 'SOUND1007');
-  assertEquals(params.diagnostics[0]?.data?.metadata?.rule, 'unknown_annotation');
-
-  const codeActionResult = await requestCodeActions(
-    client,
-    uri,
-    params.diagnostics,
-    'Timed out waiting for unknown-annotation codeAction response.',
-  );
-
-  assertEquals(codeActionResult?.[0]?.title, 'Remove unknown annotation comment');
-  assertEquals(codeActionResult?.[0]?.kind, 'quickfix');
-  assertEquals(
-    codeActionResult?.[0]?.edit?.changes?.[uri]?.[0],
-    {
-      newText: '',
-      range: {
-        start: { line: 0, character: 0 },
-        end: { line: 1, character: 0 },
-      },
-    },
-  );
+  assertEquals(params.diagnostics, []);
 
   await shutdownServer(client, startPromise);
 });

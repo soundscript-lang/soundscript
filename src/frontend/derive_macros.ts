@@ -137,12 +137,36 @@ function resolvedDeclarationAnnotations(
 
 function annotationIdentifierArgument(annotation: MacroAnnotation): string | null {
   const [firstArgument] = annotation.arguments ?? [];
-  return firstArgument?.value.kind === 'identifier' ? firstArgument.value.name : null;
+  if (!firstArgument) {
+    return null;
+  }
+  return firstArgument.value.kind === 'identifier'
+    ? firstArgument.value.name
+    : firstArgument.value.kind === 'member'
+    ? firstArgument.value.text
+    : null;
 }
 
 function annotationStringArgument(annotation: MacroAnnotation): string | null {
   const [firstArgument] = annotation.arguments ?? [];
   return firstArgument?.value.kind === 'string' ? firstArgument.value.value : null;
+}
+
+function annotationNumberArgument(annotation: MacroAnnotation): number | null {
+  const [firstArgument] = annotation.arguments ?? [];
+  return firstArgument?.value.kind === 'number' ? firstArgument.value.value : null;
+}
+
+function annotationNumberishTextArgument(annotation: MacroAnnotation): string | null {
+  const [firstArgument] = annotation.arguments ?? [];
+  return firstArgument?.value.kind === 'number' || firstArgument?.value.kind === 'bigint'
+    ? firstArgument.value.text
+    : null;
+}
+
+function annotationRegexpArgument(annotation: MacroAnnotation): string | null {
+  const [firstArgument] = annotation.arguments ?? [];
+  return firstArgument?.value.kind === 'regexp' ? firstArgument.value.text : null;
 }
 
 function annotationValueText(annotation: MacroAnnotation): string | null {
@@ -951,6 +975,7 @@ function decodeAnnotationsMayResolveAsync(
   scopeNode: MacroSyntaxNode,
 ): boolean {
   return annotationIdentifierMayResolveAsync(ctx, findAnnotation(annotations, 'decode.default'), scopeNode) ||
+    annotationIdentifierMayResolveAsync(ctx, findAnnotation(annotations, 'decode.preprocess'), scopeNode) ||
     annotationIdentifierMayResolveAsync(ctx, findAnnotation(annotations, 'decode.transform'), scopeNode) ||
     annotationIdentifierMayResolveAsync(ctx, findAnnotation(annotations, 'decode.refine'), scopeNode);
 }
@@ -2127,6 +2152,121 @@ function decodeDefaultExpressionText(
   return valueText;
 }
 
+function decodeUnknownKeysPolicyText(
+  ctx: DeriveContext,
+  annotations: readonly MacroAnnotation[],
+  node: MacroSyntaxNode,
+): '"passthrough"' | '"strict"' | null {
+  const unknownKeysAnnotation = findAnnotation(annotations, 'decode.unknownKeys');
+  if (!unknownKeysAnnotation) {
+    return null;
+  }
+  const policy = annotationStringArgument(unknownKeysAnnotation);
+  if (policy !== 'strip' && policy !== 'strict' && policy !== 'passthrough') {
+    ctx.error(`decode.unknownKeys(...) requires "strip", "strict", or "passthrough".`, node);
+  }
+  return policy === 'strip' ? null : JSON.stringify(policy) as '"passthrough"' | '"strict"';
+}
+
+function wrapDecodeConstraintText(
+  ctx: DeriveContext,
+  baseText: string,
+  annotations: readonly MacroAnnotation[],
+  node: MacroSyntaxNode,
+): string {
+  let text = baseText;
+
+  const minAnnotation = findAnnotation(annotations, 'decode.min');
+  if (minAnnotation) {
+    const minimum = annotationNumberishTextArgument(minAnnotation);
+    if (minimum === null) {
+      ctx.error('decode.min(...) requires a numeric or bigint literal.', node);
+    }
+    text = `${ctx.runtime.named('sts:decode', 'min').text()}(${text}, ${minimum})`;
+  }
+
+  const maxAnnotation = findAnnotation(annotations, 'decode.max');
+  if (maxAnnotation) {
+    const maximum = annotationNumberishTextArgument(maxAnnotation);
+    if (maximum === null) {
+      ctx.error('decode.max(...) requires a numeric or bigint literal.', node);
+    }
+    text = `${ctx.runtime.named('sts:decode', 'max').text()}(${text}, ${maximum})`;
+  }
+
+  const minLengthAnnotation = findAnnotation(annotations, 'decode.minLength');
+  if (minLengthAnnotation) {
+    const minimum = annotationNumberArgument(minLengthAnnotation);
+    if (minimum === null) {
+      ctx.error('decode.minLength(...) requires a numeric literal.', node);
+    }
+    text = `${ctx.runtime.named('sts:decode', 'minLength').text()}(${text}, ${minimum})`;
+  }
+
+  const maxLengthAnnotation = findAnnotation(annotations, 'decode.maxLength');
+  if (maxLengthAnnotation) {
+    const maximum = annotationNumberArgument(maxLengthAnnotation);
+    if (maximum === null) {
+      ctx.error('decode.maxLength(...) requires a numeric literal.', node);
+    }
+    text = `${ctx.runtime.named('sts:decode', 'maxLength').text()}(${text}, ${maximum})`;
+  }
+
+  const startsWithAnnotation = findAnnotation(annotations, 'decode.startsWith');
+  if (startsWithAnnotation) {
+    const prefix = annotationStringArgument(startsWithAnnotation);
+    if (prefix === null) {
+      ctx.error('decode.startsWith(...) requires a string literal.', node);
+    }
+    text = `${ctx.runtime.named('sts:decode', 'startsWith').text()}(${text}, ${JSON.stringify(prefix)})`;
+  }
+
+  const endsWithAnnotation = findAnnotation(annotations, 'decode.endsWith');
+  if (endsWithAnnotation) {
+    const suffix = annotationStringArgument(endsWithAnnotation);
+    if (suffix === null) {
+      ctx.error('decode.endsWith(...) requires a string literal.', node);
+    }
+    text = `${ctx.runtime.named('sts:decode', 'endsWith').text()}(${text}, ${JSON.stringify(suffix)})`;
+  }
+
+  const patternAnnotation = findAnnotation(annotations, 'decode.pattern');
+  if (patternAnnotation) {
+    const patternText = annotationRegexpArgument(patternAnnotation);
+    if (patternText === null) {
+      ctx.error('decode.pattern(...) requires a regular expression literal.', node);
+    }
+    text = `${ctx.runtime.named('sts:decode', 'pattern').text()}(${text}, ${patternText})`;
+  }
+
+  const multipleOfAnnotation = findAnnotation(annotations, 'decode.multipleOf');
+  if (multipleOfAnnotation) {
+    const factor = annotationNumberishTextArgument(multipleOfAnnotation);
+    if (factor === null) {
+      ctx.error('decode.multipleOf(...) requires a numeric or bigint literal.', node);
+    }
+    text = `${ctx.runtime.named('sts:decode', 'multipleOf').text()}(${text}, ${factor})`;
+  }
+
+  if (findAnnotation(annotations, 'decode.integer')) {
+    text = `${ctx.runtime.named('sts:decode', 'integer').text()}(${text})`;
+  }
+
+  const formatAnnotation = findAnnotation(annotations, 'decode.format');
+  if (formatAnnotation) {
+    const formatName = annotationStringArgument(formatAnnotation);
+    if (
+      formatName !== 'email' && formatName !== 'uuid' && formatName !== 'url' &&
+      formatName !== 'iso-datetime'
+    ) {
+      ctx.error(`decode.format(...) requires "email", "uuid", "url", or "iso-datetime".`, node);
+    }
+    text = `${ctx.runtime.named('sts:decode', 'format').text()}(${text}, ${JSON.stringify(formatName)})`;
+  }
+
+  return text;
+}
+
 function wrapDecodeDefaultFieldText(
   ctx: DeriveContext,
   baseText: string,
@@ -2149,6 +2289,24 @@ function wrapDecodeFieldText(
   ownerDeclaration?: MacroClassDeclSyntax | MacroInterfaceDeclSyntax | MacroTypeAliasDeclSyntax,
   ownerTypeName?: string,
 ): string {
+  const preprocessAnnotation = findAnnotation(annotations, 'decode.preprocess');
+  const preprocessIdentifier = preprocessAnnotation
+    ? annotationIdentifierArgument(preprocessAnnotation)
+    : null;
+  if (preprocessAnnotation && !preprocessIdentifier) {
+    ctx.error('decode.preprocess(...) requires a helper identifier.', node);
+  }
+  if (preprocessAnnotation && preprocessIdentifier) {
+    assertAnnotationHelperCallableInScope(
+      ctx,
+      node,
+      ownerDeclaration,
+      ownerTypeName,
+      preprocessIdentifier,
+      'decode.preprocess',
+    );
+  }
+
   const transformAnnotation = findAnnotation(annotations, 'decode.transform');
   const transformIdentifier = transformAnnotation ? annotationIdentifierArgument(transformAnnotation) : null;
   if (transformAnnotation && !transformIdentifier) {
@@ -2182,8 +2340,13 @@ function wrapDecodeFieldText(
   }
 
   const decodeMap = ctx.runtime.named('sts:decode', 'map').text();
+  const decodePreprocess = ctx.runtime.named('sts:decode', 'preprocess').text();
   const decodeRefine = ctx.runtime.named('sts:decode', 'refine').text();
   let text = baseText;
+  if (preprocessIdentifier) {
+    text = `${decodePreprocess}(${text}, ${preprocessIdentifier})`;
+  }
+  text = wrapDecodeConstraintText(ctx, text, annotations, node);
   if (transformIdentifier) {
     text = `${decodeMap}(${text}, ${transformIdentifier})`;
   }
@@ -2256,7 +2419,12 @@ function assertAnnotationHelperCallableInScope(
   declaration: MacroClassDeclSyntax | MacroInterfaceDeclSyntax | MacroTypeAliasDeclSyntax | undefined,
   typeName: string | undefined,
   helperIdentifier: string,
-  annotationName: 'decode.refine' | 'decode.transform' | 'encode.refine' | 'encode.transform',
+  annotationName:
+    | 'decode.preprocess'
+    | 'decode.refine'
+    | 'decode.transform'
+    | 'encode.refine'
+    | 'encode.transform',
 ): void {
   if (declaration?.declarationKind === 'class' && typeName) {
     const selfHelperClassification = classifySelfStaticHelper(
@@ -2295,6 +2463,24 @@ function wrapDecodeDeclarationText(
   node: MacroClassDeclSyntax | MacroInterfaceDeclSyntax | MacroTypeAliasDeclSyntax,
   typeName: string,
 ): string {
+  const preprocessAnnotation = findAnnotation(annotations, 'decode.preprocess');
+  const preprocessIdentifier = preprocessAnnotation
+    ? annotationIdentifierArgument(preprocessAnnotation)
+    : null;
+  if (preprocessAnnotation && !preprocessIdentifier) {
+    ctx.error('decode.preprocess(...) requires a helper identifier.', node);
+  }
+  if (preprocessAnnotation && preprocessIdentifier) {
+    assertAnnotationHelperCallableInScope(
+      ctx,
+      declarationAnnotationDiagnosticNode(node, preprocessAnnotation),
+      node,
+      typeName,
+      preprocessIdentifier,
+      'decode.preprocess',
+    );
+  }
+
   const transformAnnotation = findAnnotation(annotations, 'decode.transform');
   const transformIdentifier = transformAnnotation ? annotationIdentifierArgument(transformAnnotation) : null;
   if (transformAnnotation && !transformIdentifier) {
@@ -2327,8 +2513,13 @@ function wrapDecodeDeclarationText(
     );
   }
   const decodeMap = ctx.runtime.named('sts:decode', 'map').text();
+  const decodePreprocess = ctx.runtime.named('sts:decode', 'preprocess').text();
   const decodeRefine = ctx.runtime.named('sts:decode', 'refine').text();
   let text = baseText;
+  if (preprocessIdentifier) {
+    text = `${decodePreprocess}(${text}, ${preprocessIdentifier})`;
+  }
+  text = wrapDecodeConstraintText(ctx, text, annotations, node);
   if (transformIdentifier) {
     text = `${decodeMap}(${text}, ${transformIdentifier})`;
   }
@@ -4779,6 +4970,11 @@ export function decode(): MacroDefinition<typeof DECODE_SIGNATURE> {
       const object = ctx.runtime.named('sts:decode', 'object').text();
       const map = ctx.runtime.named('sts:decode', 'map').text();
       const optional = ctx.runtime.named('sts:decode', 'optional').text();
+      const objectPolicyText = decodeUnknownKeysPolicyText(
+        ctx,
+        declarationAnnotations,
+        decoded.args.target,
+      );
       const shapeText = fields.length === 0 ? '{}' : `{
             ${
         fields.map((field) =>
@@ -4804,11 +5000,14 @@ export function decode(): MacroDefinition<typeof DECODE_SIGNATURE> {
       const finalProjectionText = instantiateText === null
         ? projectionText
         : `(${instantiateText.replace(CLASS_DECODE_VALUE_PLACEHOLDER, projectionText)})`;
+      const objectCallText = `${object}(${shapeText}${
+        objectPolicyText ? `, { unknownKeys: ${objectPolicyText} }` : ''
+      })`;
 
       const decoderText = wrapDecodeDeclarationText(
         ctx,
         `${map}(
-            ${object}(${shapeText}),
+            ${objectCallText},
             (value) => ${finalProjectionText},
           )`,
         declarationAnnotations,
@@ -5121,6 +5320,11 @@ export function codec(): MacroDefinition<typeof DECODE_SIGNATURE> {
       const encodeContramap = ctx.runtime.named('sts:encode', 'contramap').text();
       const encodeObject = ctx.runtime.named('sts:encode', 'object').text();
       const encodeOptional = ctx.runtime.named('sts:encode', 'optional').text();
+      const objectPolicyText = decodeUnknownKeysPolicyText(
+        ctx,
+        declarationAnnotations,
+        decoded.args.target,
+      );
       const decodeShapeText = fields.length === 0 ? '{}' : `{
             ${
         fields.map((field) =>
@@ -5164,11 +5368,17 @@ export function codec(): MacroDefinition<typeof DECODE_SIGNATURE> {
         ).join(',\n')
       }
           })`;
+      const decodeObjectCallText = `${decodeObject}(${decodeShapeText}${
+        objectPolicyText ? `, { unknownKeys: ${objectPolicyText} }` : ''
+      })`;
+      const encodeObjectCallText = `${encodeObject}(${encodeShapeText}${
+        objectPolicyText ? `, { unknownKeys: ${objectPolicyText} }` : ''
+      })`;
 
       const decoderText = wrapDecodeDeclarationText(
         ctx,
         `${decodeMap}(
-              ${decodeObject}(${decodeShapeText}),
+              ${decodeObjectCallText},
               (value) => ${finalDecodeProjectionText},
             )`,
         declarationAnnotations,
@@ -5178,7 +5388,7 @@ export function codec(): MacroDefinition<typeof DECODE_SIGNATURE> {
       const encoderText = wrapEncodeDeclarationText(
         ctx,
         `${encodeContramap}(
-              ${encodeObject}(${encodeShapeText}),
+              ${encodeObjectCallText},
               (value: ${typeName}) => ${encodeProjectionText},
             )`,
         declarationAnnotations,

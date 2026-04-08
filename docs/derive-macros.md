@@ -53,6 +53,18 @@ Supported member-level configuration currently includes:
 - `#[decode.rename('wire_name')]`
 - `#[decode.via(customDecoder)]`
 - `#[decode.default(valueOrHelper)]`
+- `#[decode.preprocess(helper)]` on fields or declarations
+- `#[decode.min(n)]`
+- `#[decode.max(n)]`
+- `#[decode.minLength(n)]`
+- `#[decode.maxLength(n)]`
+- `#[decode.startsWith(prefix)]`
+- `#[decode.endsWith(suffix)]`
+- `#[decode.multipleOf(n)]`
+- `#[decode.pattern(re)]`
+- `#[decode.integer]`
+- `#[decode.format('email' | 'uuid' | 'url' | 'iso-datetime')]`
+- `#[decode.unknownKeys('strip' | 'strict' | 'passthrough')]` on object-like declarations
 - `#[decode.transform(helper)]` on fields or declarations
 - `#[decode.refine(helper)]` on fields or declarations
 - `#[encode.rename('wire_name')]`
@@ -113,16 +125,25 @@ The key runtime behavior is:
 That means a derived helper may expose either sync or async `decode(...)` / `encode(...)`
 depending on the declaration and any nested helpers it references.
 
+The decode/encode runtimes also expose a small set of explicit conversion helpers intended to pair
+with `via(...)`, including:
+
+- `decode.isoDate` / `encode.isoDate` / `codec.isoDate`
+- `decode.url` / `encode.url` / `codec.url`
+
 ## Decode / Encode Hook Order
 
 For decode-side field annotations, the generated pipeline is:
 
-1. structural decode
-2. field-local `#[decode.transform(...)]`
-3. field-local `#[decode.refine(...)]`
-4. `#[decode.default(...)]` as the outer fallback for missing / `undefined` values
+1. `#[decode.default(...)]` as the outer fallback for missing / `undefined` values
+2. field-local `#[decode.preprocess(...)]`
+3. structural decode
+4. built-in decode constraints such as `minLength`, `startsWith`, `pattern`, or `format`
+5. field-local `#[decode.transform(...)]`
+6. field-local `#[decode.refine(...)]`
 
-Defaults therefore bypass field-local transforms and refinements when the fallback is used.
+Defaults therefore bypass field-local preprocess, structural decode, constraints, transforms, and
+refinements when the fallback is used.
 
 For encode-side field annotations, the generated pipeline is:
 
@@ -132,8 +153,12 @@ For encode-side field annotations, the generated pipeline is:
 
 Declaration-level hooks wrap the whole declaration value rather than individual fields:
 
-- `#[decode.transform(...)]` runs after structural decode and any class construction, before
-  declaration-level `#[decode.refine(...)]`
+- `#[decode.preprocess(...)]` runs on the raw inbound declaration value before structural decode
+- class construction / `factory(...)` happens as part of the structural decode projection
+- declaration-level `#[decode.transform(...)]` and `#[decode.refine(...)]` then wrap the whole
+  decoded declaration value
+- `#[decode.unknownKeys(...)]` selects whether extra object keys are stripped, rejected, or
+  preserved on object-like derives
 - `#[encode.refine(...)]` runs before declaration-level `#[encode.transform(...)]`, matching the
   field-level outbound ordering
 - `#[encode.transform(...)]` runs before structural encode of the whole declaration value

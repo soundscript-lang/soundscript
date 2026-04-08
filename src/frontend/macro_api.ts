@@ -118,6 +118,11 @@ export type MacroAnnotationValue =
     readonly elements: readonly MacroAnnotationValue[];
   }
   | {
+    readonly kind: 'bigint';
+    readonly text: string;
+    readonly value: string;
+  }
+  | {
     readonly kind: 'boolean';
     readonly text: string;
     readonly value: boolean;
@@ -126,6 +131,15 @@ export type MacroAnnotationValue =
     readonly kind: 'identifier';
     readonly text: string;
     readonly name: string;
+  }
+  | {
+    readonly kind: 'member';
+    readonly path: readonly string[];
+    readonly text: string;
+  }
+  | {
+    readonly kind: 'null';
+    readonly text: string;
   }
   | {
     readonly kind: 'number';
@@ -142,9 +156,19 @@ export type MacroAnnotationValue =
     }[];
   }
   | {
+    readonly flags: string;
+    readonly kind: 'regexp';
+    readonly pattern: string;
+    readonly text: string;
+  }
+  | {
     readonly kind: 'string';
     readonly text: string;
     readonly value: string;
+  }
+  | {
+    readonly kind: 'undefined';
+    readonly text: string;
   };
 
 export type MacroAnnotationArgument =
@@ -164,6 +188,7 @@ export interface MacroAnnotation {
   readonly arguments?: readonly MacroAnnotationArgument[];
   readonly argumentsText?: string;
   readonly name: string;
+  readonly path: readonly string[];
   readonly text: string;
 }
 

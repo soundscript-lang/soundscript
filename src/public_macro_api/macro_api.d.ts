@@ -88,6 +88,10 @@ export type MacroAnnotationValue = {
   readonly text: string;
   readonly elements: readonly MacroAnnotationValue[];
 } | {
+  readonly kind: 'bigint';
+  readonly text: string;
+  readonly value: string;
+} | {
   readonly kind: 'boolean';
   readonly text: string;
   readonly value: boolean;
@@ -95,6 +99,13 @@ export type MacroAnnotationValue = {
   readonly kind: 'identifier';
   readonly text: string;
   readonly name: string;
+} | {
+  readonly kind: 'member';
+  readonly path: readonly string[];
+  readonly text: string;
+} | {
+  readonly kind: 'null';
+  readonly text: string;
 } | {
   readonly kind: 'number';
   readonly text: string;
@@ -105,12 +116,20 @@ export type MacroAnnotationValue = {
   readonly properties: readonly {
     readonly name: string;
     readonly text: string;
-    readonly value: MacroAnnotationValue;
+  readonly value: MacroAnnotationValue;
   }[];
+} | {
+  readonly flags: string;
+  readonly kind: 'regexp';
+  readonly pattern: string;
+  readonly text: string;
 } | {
   readonly kind: 'string';
   readonly text: string;
   readonly value: string;
+} | {
+  readonly kind: 'undefined';
+  readonly text: string;
 };
 export type MacroAnnotationArgument = {
   readonly kind: 'named';
@@ -126,6 +145,7 @@ export interface MacroAnnotation {
   readonly arguments?: readonly MacroAnnotationArgument[];
   readonly argumentsText?: string;
   readonly name: string;
+  readonly path: readonly string[];
   readonly text: string;
 }
 export interface ExprSyntax extends MacroSyntaxNode {

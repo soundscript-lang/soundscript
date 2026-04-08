@@ -47,9 +47,12 @@ The stable `sts:*` surface stays focused and composable.
   `mergeJsonRecords`, plus bridge helpers such as `decodeJson`, `encodeJson`,
   `validateDecodeJson`, and `validateEncodeJson`.
 - `sts:decode` owns decoder contracts and structural decode helpers such as `literal`,
-  `nullable`, `defaulted`, `readonlyRecord`, and `validateDecode(...)`.
-- `sts:encode` owns encoder contracts, structural encode combinators, and `validateEncode(...)`.
-- `sts:codec` owns codec contracts and adapter helpers.
+  `nullable`, `defaulted`, `preprocess`, `minLength`, `startsWith`, `multipleOf`, `pattern`,
+  `format`, object key policy helpers, and `validateDecode(...)`.
+- `sts:encode` owns encoder contracts, structural encode combinators, object key policy helpers,
+  and `validateEncode(...)`.
+- `sts:codec` owns codec contracts and adapter helpers, including explicit conversion helpers such
+  as `codec.isoDate` and `codec.url`.
 - `sts:async` owns `Task<T, E>` and result-first async helpers.
 - `sts:compare` owns `Eq`, `Order`, and comparator composition helpers.
 - `sts:hash` owns hashing and equality-key protocols.

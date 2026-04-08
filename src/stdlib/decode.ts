@@ -2,6 +2,11 @@ import { type ErrorFrame, Failure } from 'sts:failures';
 import { err, isErr, none, ok, some, type Option, type Result } from 'sts:result';
 
 export type DecodeMode = 'sync' | 'async';
+export type DecodeFormat = 'email' | 'uuid' | 'url' | 'iso-datetime';
+export type ObjectKeyPolicy = 'strip' | 'strict' | 'passthrough';
+export type DecodeObjectOptions = {
+  readonly unknownKeys?: ObjectKeyPolicy;
+};
 export type DecodePathSegment = string | number;
 export type DecodePath = readonly DecodePathSegment[];
 export type DecodeIssue = {
@@ -154,6 +159,30 @@ export const undefinedValue: Decoder<undefined> = fromDecode((value) =>
     : err(new DecodeFailure('Expected undefined.', { cause: value }))
 );
 
+export const url: Decoder<URL> = fromDecode((value) => {
+  if (typeof value !== 'string') {
+    return err(new DecodeFailure('Expected URL string.', { cause: value }));
+  }
+  try {
+    return ok(new URL(value));
+  } catch {
+    return err(new DecodeFailure('Expected URL string.', { cause: value }));
+  }
+});
+
+export const isoDate: Decoder<Date> = fromDecode((value) => {
+  if (typeof value !== 'string') {
+    return err(new DecodeFailure('Expected ISO datetime string.', { cause: value }));
+  }
+  if (!isIsoDatetimeString(value)) {
+    return err(new DecodeFailure('Expected ISO datetime string.', { cause: value }));
+  }
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime())
+    ? err(new DecodeFailure('Expected ISO datetime string.', { cause: value }))
+    : ok(parsed);
+});
+
 export function lazy<TDecoder extends Decoder<unknown, unknown, DecodeMode>>(
   getDecoder: () => TDecoder,
 ): Decoder<DecoderValue<TDecoder>, DecoderError<TDecoder>, DecoderModeOf<TDecoder>>;
@@ -272,11 +301,195 @@ export function defaulted<T, E, M extends DecodeMode, TFallback extends T | Prom
   } as DefaultedDecoder<T, E, TMode>;
 }
 
+export function preprocess<A, E, M extends DecodeMode, TPreprocessed>(
+  decoder: Decoder<A, E, M>,
+  project: (value: unknown) => TPreprocessed,
+): Decoder<A, E, MergeDecodeModes<M | AsyncModeOf<TPreprocessed>>> {
+  type TMode = MergeDecodeModes<M | AsyncModeOf<TPreprocessed>>;
+  return fromDecode<A, E, TMode>(
+    (value) =>
+      chainMaybeAsync(project(value), (projected) => decoder.decode(projected)) as DecodeOutput<
+        A,
+        E,
+        TMode
+      >,
+    (value) =>
+      chainMaybeAsync(project(value), (projected) => decoder.validateDecode(projected)) as DecodeOutput<
+        A,
+        readonly DecodeIssue[],
+        TMode
+      >,
+  );
+}
+
 export function literal<const T extends string | number | boolean | null>(value: T): Decoder<T> {
   return fromDecode((input) =>
     Object.is(input, value)
       ? ok(value)
       : err(new DecodeFailure(`Expected literal ${JSON.stringify(value)}.`, { cause: input }))
+  );
+}
+
+export function min<T extends number | bigint, E, M extends DecodeMode>(
+  decoder: Decoder<T, E, M>,
+  minimum: T,
+): Decoder<T, E | DecodeFailure, M> {
+  return constrain(decoder, (value) =>
+    value >= minimum ? null : {
+      code: 'decode_min',
+      input: value,
+      message: `Expected value >= ${String(minimum)}.`,
+      path: [],
+    }
+  );
+}
+
+export function max<T extends number | bigint, E, M extends DecodeMode>(
+  decoder: Decoder<T, E, M>,
+  maximum: T,
+): Decoder<T, E | DecodeFailure, M> {
+  return constrain(decoder, (value) =>
+    value <= maximum ? null : {
+      code: 'decode_max',
+      input: value,
+      message: `Expected value <= ${String(maximum)}.`,
+      path: [],
+    }
+  );
+}
+
+export function minLength<T extends string | readonly unknown[], E, M extends DecodeMode>(
+  decoder: Decoder<T, E, M>,
+  minimum: number,
+): Decoder<T, E | DecodeFailure, M> {
+  return constrain(decoder, (value) =>
+    value.length >= minimum ? null : {
+      code: 'decode_min_length',
+      input: value,
+      message: `Expected length >= ${minimum}.`,
+      path: [],
+    }
+  );
+}
+
+export function maxLength<T extends string | readonly unknown[], E, M extends DecodeMode>(
+  decoder: Decoder<T, E, M>,
+  maximum: number,
+): Decoder<T, E | DecodeFailure, M> {
+  return constrain(decoder, (value) =>
+    value.length <= maximum ? null : {
+      code: 'decode_max_length',
+      input: value,
+      message: `Expected length <= ${maximum}.`,
+      path: [],
+    }
+  );
+}
+
+export function startsWith<E, M extends DecodeMode>(
+  decoder: Decoder<string, E, M>,
+  prefix: string,
+): Decoder<string, E | DecodeFailure, M> {
+  return constrain(decoder, (value) =>
+    value.startsWith(prefix) ? null : {
+      code: 'decode_starts_with',
+      input: value,
+      message: `Expected string to start with ${JSON.stringify(prefix)}.`,
+      path: [],
+    }
+  );
+}
+
+export function endsWith<E, M extends DecodeMode>(
+  decoder: Decoder<string, E, M>,
+  suffix: string,
+): Decoder<string, E | DecodeFailure, M> {
+  return constrain(decoder, (value) =>
+    value.endsWith(suffix) ? null : {
+      code: 'decode_ends_with',
+      input: value,
+      message: `Expected string to end with ${JSON.stringify(suffix)}.`,
+      path: [],
+    }
+  );
+}
+
+export function pattern<E, M extends DecodeMode>(
+  decoder: Decoder<string, E, M>,
+  expression: RegExp,
+): Decoder<string, E | DecodeFailure, M> {
+  return constrain(decoder, (value) =>
+    expression.test(value) ? null : {
+      code: 'decode_pattern',
+      input: value,
+      message: `Expected string to match ${expression}.`,
+      path: [],
+    }
+  );
+}
+
+export function multipleOf<T extends number | bigint, E, M extends DecodeMode>(
+  decoder: Decoder<T, E, M>,
+  factor: T,
+): Decoder<T, E | DecodeFailure, M> {
+  return constrain(decoder, (value) => {
+    if ((typeof factor === 'number' && factor === 0) || (typeof factor === 'bigint' && factor === 0n)) {
+      return {
+        code: 'decode_multiple_of',
+        input: value,
+        message: 'Expected multipleOf factor to be non-zero.',
+        path: [],
+      };
+    }
+    if (typeof value === 'bigint' && typeof factor === 'bigint') {
+      return value % factor === 0n ? null : {
+        code: 'decode_multiple_of',
+        input: value,
+        message: `Expected value to be a multiple of ${String(factor)}.`,
+        path: [],
+      };
+    }
+    if (typeof value === 'number' && typeof factor === 'number') {
+      return value % factor === 0 ? null : {
+        code: 'decode_multiple_of',
+        input: value,
+        message: `Expected value to be a multiple of ${String(factor)}.`,
+        path: [],
+      };
+    }
+    return {
+      code: 'decode_multiple_of',
+      input: value,
+      message: `Expected value to be a multiple of ${String(factor)}.`,
+      path: [],
+    };
+  });
+}
+
+export function integer<E, M extends DecodeMode>(
+  decoder: Decoder<number, E, M>,
+): Decoder<number, E | DecodeFailure, M> {
+  return constrain(decoder, (value) =>
+    Number.isInteger(value) ? null : {
+      code: 'decode_integer',
+      input: value,
+      message: 'Expected integer.',
+      path: [],
+    }
+  );
+}
+
+export function format<E, M extends DecodeMode>(
+  decoder: Decoder<string, E, M>,
+  expectedFormat: DecodeFormat,
+): Decoder<string, E | DecodeFailure, M> {
+  return constrain(decoder, (value) =>
+    stringMatchesFormat(value, expectedFormat) ? null : {
+      code: 'decode_format',
+      input: value,
+      message: `Expected string with format "${expectedFormat}".`,
+      path: [],
+    }
   );
 }
 
@@ -538,6 +751,7 @@ export function result<T, EValue, EDecodeValue, EDecodeError, MOk extends Decode
 
 export function object<TShape extends ObjectShape>(
   shape: TShape,
+  options?: DecodeObjectOptions,
 ): Decoder<
   { readonly [K in keyof TShape]: DecoderValue<TShape[K]> },
   DecoderError<TShape[keyof TShape]> | DecodeFailure,
@@ -547,6 +761,8 @@ export function object<TShape extends ObjectShape>(
   type TError = DecoderError<TShape[keyof TShape]> | DecodeFailure;
   type TMode = ShapeDecodeMode<TShape>;
   const keys = Object.keys(shape) as readonly (keyof TShape & string)[];
+  const keySet = new Set<string>(keys);
+  const unknownKeys = options?.unknownKeys ?? 'strip';
 
   return fromDecode<TValue, TError, TMode>(
     (value) => {
@@ -559,7 +775,15 @@ export function object<TShape extends ObjectShape>(
       }
 
       const record = value as Record<string, unknown>;
-      const decodedObject: Record<string, unknown> = {};
+      const extraKeys = collectUnknownObjectKeys(record, keySet);
+      if (unknownKeys === 'strict' && extraKeys.length > 0) {
+        return err(unknownDecodeKeyFailure(extraKeys[0]!, record[extraKeys[0]!])) as DecodeOutput<
+          TValue,
+          TError,
+          TMode
+        >;
+      }
+      const decodedObject: Record<string, unknown> = unknownKeys === 'passthrough' ? { ...record } : {};
 
       for (let index = 0; index < keys.length; index += 1) {
         const key = keys[index]!;
@@ -622,8 +846,18 @@ export function object<TShape extends ObjectShape>(
       }
 
       const record = value as Record<string, unknown>;
-      const decodedObject: Record<string, unknown> = {};
+      const decodedObject: Record<string, unknown> = unknownKeys === 'passthrough' ? { ...record } : {};
       const issues: DecodeIssue[] = [];
+      if (unknownKeys === 'strict') {
+        for (const extraKey of collectUnknownObjectKeys(record, keySet)) {
+          issues.push({
+            code: 'decode_unknown_key',
+            input: record[extraKey],
+            message: `Unknown field "${extraKey}".`,
+            path: [extraKey],
+          });
+        }
+      }
 
       for (let index = 0; index < keys.length; index += 1) {
         const key = keys[index]!;
@@ -678,6 +912,26 @@ export function object<TShape extends ObjectShape>(
       >;
     },
   );
+}
+
+export function strictObject<TShape extends ObjectShape>(
+  shape: TShape,
+): Decoder<
+  { readonly [K in keyof TShape]: DecoderValue<TShape[K]> },
+  DecoderError<TShape[keyof TShape]> | DecodeFailure,
+  ShapeDecodeMode<TShape>
+> {
+  return object(shape, { unknownKeys: 'strict' });
+}
+
+export function passthroughObject<TShape extends ObjectShape>(
+  shape: TShape,
+): Decoder<
+  { readonly [K in keyof TShape]: DecoderValue<TShape[K]> },
+  DecoderError<TShape[keyof TShape]> | DecodeFailure,
+  ShapeDecodeMode<TShape>
+> {
+  return object(shape, { unknownKeys: 'passthrough' });
 }
 
 export function field<K extends string, T, E, M extends DecodeMode>(
@@ -913,6 +1167,75 @@ function prependIssuePaths(
   }));
 }
 
+function constrain<A, E, M extends DecodeMode>(
+  decoder: Decoder<A, E, M>,
+  validate: (value: A) => DecodeIssue | null,
+): Decoder<A, E | DecodeFailure, M> {
+  return fromDecode<A, E | DecodeFailure, M>(
+    (value) => {
+      const decoded = decoder.decode(value);
+      if (isPromiseLike(decoded)) {
+        return decoded.then((resolved) => {
+          if (isErr(resolved)) {
+            return resolved as Result<A, E | DecodeFailure>;
+          }
+          const issue = validate(resolved.value);
+          return issue === null
+            ? ok(resolved.value)
+            : err(new DecodeFailure(issue.message, {
+              cause: issue.input,
+              path: issue.path,
+            }));
+        });
+      }
+      if (isErr(decoded)) {
+        return decoded as Result<A, E | DecodeFailure>;
+      }
+      const issue = validate(decoded.value);
+      return issue === null
+        ? ok(decoded.value)
+        : err(new DecodeFailure(issue.message, {
+          cause: issue.input,
+          path: issue.path,
+        }));
+    },
+    (value) => {
+      const decoded = decoder.validateDecode(value);
+      if (isPromiseLike(decoded)) {
+        return decoded.then((resolved) => {
+          if (isErr(resolved)) {
+            return resolved;
+          }
+          const issue = validate(resolved.value);
+          return issue === null ? ok(resolved.value) : err([issue]);
+        });
+      }
+      if (isErr(decoded)) {
+        return decoded;
+      }
+      const issue = validate(decoded.value);
+      return issue === null ? ok(decoded.value) : err([issue]);
+    },
+  );
+}
+
+function collectUnknownObjectKeys(
+  record: Readonly<Record<string, unknown>>,
+  keySet: ReadonlySet<string>,
+): readonly string[] {
+  return Object.keys(record).filter((key) => !keySet.has(key));
+}
+
+function unknownDecodeKeyFailure(
+  key: string,
+  value: unknown,
+): DecodeFailure {
+  return new DecodeFailure(`Unknown field "${key}".`, {
+    cause: value,
+    path: [key],
+  });
+}
+
 function isDecodeIssue(value: unknown): value is DecodeIssue {
   return typeof value === 'object' && value !== null &&
     typeof (value as { code?: unknown }).code === 'string' &&
@@ -958,6 +1281,13 @@ function isPromiseLike<T>(value: MaybePromise<T>): value is Promise<T> {
   return value instanceof Promise;
 }
 
+function chainMaybeAsync<A, B>(
+  value: MaybePromise<A>,
+  project: (value: A) => MaybePromise<B>,
+): MaybePromise<B> {
+  return isPromiseLike(value) ? value.then((resolved) => project(resolved)) : project(value);
+}
+
 function mapDecodeOutput<A, B, E>(
   value: MaybeDecodeOutput<A, E>,
   project: (value: Result<A, E>) => MaybeDecodeOutput<B, E>,
@@ -970,6 +1300,28 @@ function mapMaybeAsync<A, B>(
   project: (value: A) => B,
 ): MaybePromise<B> {
   return isPromiseLike(value) ? value.then((resolved) => project(resolved)) : project(value);
+}
+
+function isIsoDatetimeString(value: string): boolean {
+  return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?(?:Z|[+-]\d{2}:\d{2})$/u.test(value);
+}
+
+function stringMatchesFormat(value: string, expectedFormat: DecodeFormat): boolean {
+  switch (expectedFormat) {
+    case 'email':
+      return /^[^\s@]+@[^\s@]+\.[^\s@]+$/u.test(value);
+    case 'uuid':
+      return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(value);
+    case 'url':
+      try {
+        new URL(value);
+        return true;
+      } catch {
+        return false;
+      }
+    case 'iso-datetime':
+      return isIsoDatetimeString(value) && !Number.isNaN(new Date(value).getTime());
+  }
 }
 
 function projectDecode<A, B>(
