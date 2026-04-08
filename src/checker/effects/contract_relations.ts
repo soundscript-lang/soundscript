@@ -2,6 +2,7 @@ import ts from 'typescript';
 
 import type { EffectNameFact, EffectSummaryFact, EffectUnknownReasonFact, PublicEffectName } from '../engine/types.ts';
 import { subtractEffectSet, effectSetsOverlap } from './names.ts';
+import { effectSummaryHasUnknown, getEffectSummaryUnknownReasons } from './unknown.ts';
 
 export interface CallableEffectContractMismatch {
   forbiddenEffects: readonly EffectNameFact[];
@@ -20,13 +21,13 @@ export function classifyCallableEffectContractMismatch(
   if (
     targetForbidEffects.length !== 0 &&
     (!sourceSummary ||
-      sourceSummary.hasUnknownDirectEffects ||
+      effectSummaryHasUnknown(sourceSummary) ||
       effectSetsOverlap(sourceSummary.directEffects, targetForbidEffects))
   ) {
     return {
       forbiddenEffects: targetForbidEffects,
       kind: 'outer',
-      unknownReasons: sourceSummary?.hasUnknownDirectEffects ? sourceSummary.unknownDirectReasons : undefined,
+      unknownReasons: sourceSummary ? getEffectSummaryUnknownReasons(sourceSummary) : undefined,
     };
   }
 

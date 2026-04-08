@@ -39,7 +39,9 @@ import type { EffectCallableDeclaration, EffectComposition } from './effects/mod
 import { isCallableBodyDeclaration, isCallableDeclarationNode } from './effects/model.ts';
 import {
   createEffectUnknownReason,
+  effectSummaryHasUnknown,
   effectUnknownReasonsEqual,
+  getEffectSummaryUnknownReasons,
   hasUnknownEffectReasons,
   mergeEffectUnknownReasons,
 } from './effects/unknown.ts';
@@ -158,23 +160,6 @@ function appendSummaryUnknownDirectReasons(
     summary,
     mergeEffectUnknownReasons(summary.unknownDirectReasons, ...groups),
   );
-}
-
-function unknownReasonsForForwardedParameters(
-  forwardedParameters: readonly EffectForwardedParameterFact[],
-): readonly EffectUnknownReasonFact[] {
-  return forwardedParameters.length === 0
-    ? []
-    : forwardedParameters.map((forwardedParameter) =>
-      createEffectUnknownReason(
-        'unresolvedForwardedCallback',
-        forwardedParameter.parameterName
-          ? [forwardedParameter.parameterName, ...forwardedParameter.memberPath].join('.')
-          : forwardedParameter.memberPath.length > 0
-          ? `<param ${forwardedParameter.parameterIndex + 1}>.${forwardedParameter.memberPath.join('.')}`
-          : `<param ${forwardedParameter.parameterIndex + 1}>`,
-      )
-    );
 }
 
 function getParameterName(parameter: ts.ParameterDeclaration, index: number): string {
@@ -1013,8 +998,7 @@ function getSummaryForSignatures(
     effects = normalizeEffectNames([...effects, ...summary.directEffects]);
     unknownReasons = mergeEffectUnknownReasons(
       unknownReasons,
-      summary.unknownDirectReasons,
-      unknownReasonsForForwardedParameters(summary.forwardedParameters),
+      getEffectSummaryUnknownReasons(summary),
     );
   }
 
@@ -1027,13 +1011,7 @@ function getSummaryForCallableExpression(
 ): EffectComposition | undefined {
   if (ts.isArrowFunction(expression) || ts.isFunctionExpression(expression)) {
     const summary = getEffectSummaryForDeclaration(context, expression);
-    return createEffectComposition(
-      summary.directEffects,
-      mergeEffectUnknownReasons(
-        summary.unknownDirectReasons,
-        unknownReasonsForForwardedParameters(summary.forwardedParameters),
-      ),
-    );
+    return createEffectComposition(summary.directEffects, getEffectSummaryUnknownReasons(summary));
   }
 
   const type = context.checker.getTypeAtLocation(expression);
@@ -1069,13 +1047,7 @@ function getSummaryForObjectLiteralMember(
     if (ts.isMethodDeclaration(property)) {
       if (property.name && getObjectLiteralPropertyName(property.name) === memberName) {
         const summary = getEffectSummaryForDeclaration(context, property);
-        return createEffectComposition(
-          summary.directEffects,
-          mergeEffectUnknownReasons(
-            summary.unknownDirectReasons,
-            unknownReasonsForForwardedParameters(summary.forwardedParameters),
-          ),
-        );
+        return createEffectComposition(summary.directEffects, getEffectSummaryUnknownReasons(summary));
       }
       continue;
     }
@@ -1773,7 +1745,7 @@ export function getEffectCompositionForCallableExpression(
 
 export function declarationMayViolateOwnForbid(summary: EffectSummaryFact): boolean {
   return summary.forbidEffects.length !== 0 &&
-    (summary.hasUnknownDirectEffects ||
+    (effectSummaryHasUnknown(summary) ||
       effectSetsOverlap(summary.directEffects, summary.forbidEffects));
 }
 

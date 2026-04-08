@@ -1,4 +1,9 @@
-import type { EffectUnknownReasonFact, EffectUnknownReasonKind } from '../engine/types.ts';
+import type {
+  EffectForwardedParameterFact,
+  EffectSummaryFact,
+  EffectUnknownReasonFact,
+  EffectUnknownReasonKind,
+} from '../engine/types.ts';
 
 export function createEffectUnknownReason(
   kind: EffectUnknownReasonKind,
@@ -46,6 +51,42 @@ export function effectUnknownReasonsEqual(
   }
 
   return true;
+}
+
+function formatForwardedParameterLabel(
+  forwardedParameter: EffectForwardedParameterFact,
+): string | undefined {
+  return forwardedParameter.parameterName
+    ? [forwardedParameter.parameterName, ...forwardedParameter.memberPath].join('.')
+    : forwardedParameter.memberPath.length > 0
+    ? `<param ${forwardedParameter.parameterIndex + 1}>.${forwardedParameter.memberPath.join('.')}`
+    : `<param ${forwardedParameter.parameterIndex + 1}>`;
+}
+
+export function unknownReasonsForForwardedParameters(
+  forwardedParameters: readonly EffectForwardedParameterFact[],
+): readonly EffectUnknownReasonFact[] {
+  return forwardedParameters.length === 0
+    ? []
+    : forwardedParameters.map((forwardedParameter) =>
+      createEffectUnknownReason(
+        'unresolvedForwardedCallback',
+        formatForwardedParameterLabel(forwardedParameter),
+      )
+    );
+}
+
+export function getEffectSummaryUnknownReasons(
+  summary: EffectSummaryFact,
+): readonly EffectUnknownReasonFact[] {
+  return mergeEffectUnknownReasons(
+    summary.unknownDirectReasons,
+    unknownReasonsForForwardedParameters(summary.forwardedParameters),
+  );
+}
+
+export function effectSummaryHasUnknown(summary: EffectSummaryFact): boolean {
+  return hasUnknownEffectReasons(getEffectSummaryUnknownReasons(summary));
 }
 
 export function formatEffectUnknownReason(reason: EffectUnknownReasonFact): string {

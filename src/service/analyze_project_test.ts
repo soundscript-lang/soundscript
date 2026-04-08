@@ -5210,7 +5210,7 @@ Deno.test('analyzeProject gives structured guidance for duplicate annotations in
   );
 });
 
-Deno.test('analyzeProject accepts builtin effects annotations on local functions and callback parameters', async () => {
+Deno.test('analyzeProject accepts local forwarding annotations and callback parameter contracts', async () => {
   const tempDirectory = await createTempProject({
     'tsconfig.json': JSON.stringify(
       {
@@ -5236,7 +5236,7 @@ Deno.test('analyzeProject accepts builtin effects annotations on local functions
       '  }',
       '}',
       '',
-      '// #[effects(forbid: [fails, suspend, mut, host], forward: [callback])]',
+      '// #[effects(forward: [callback])]',
       'function runOnce(callback: () => void): void {',
       '  callback();',
       '}',
@@ -5252,6 +5252,43 @@ Deno.test('analyzeProject accepts builtin effects annotations on local functions
   });
 
   assertEquals(result.diagnostics, []);
+});
+
+Deno.test('analyzeProject rejects bodyful forbid contracts with unresolved forwarded callbacks', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/index.sts': [
+      '// #[effects(forbid: [fails], forward: [callback])]',
+      'function runOnce(callback: () => void): void {',
+      '  callback();',
+      '}',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1040']);
+  assertEquals(result.diagnostics[0]?.metadata?.primarySymbol, 'runOnce');
+  assertEquals(
+    result.diagnostics[0]?.metadata?.evidence?.find((entry) => entry.label === 'unknownEffectReasons')?.value,
+    'unresolved forwarded callback (callback)',
+  );
 });
 
 Deno.test('analyzeProject accepts open dotted effects and forward transforms', async () => {
@@ -5522,9 +5559,9 @@ Deno.test('analyzeProject accepts pure Promise continuations under forbid fails 
       '  return source.then((value) => value + 1);',
       '}',
       '',
-      '// #[effects(forbid: [fails], forward: [project])]',
       'function forwardThen(',
       '  source: Promise<number>,',
+      '  // #[effects(forbid: [fails])]',
       '  project: (value: number) => number,',
       '): Promise<number> {',
       '  return source.then(project);',
@@ -6921,7 +6958,6 @@ Deno.test('analyzeProject includes forwarded path detail in unknown effect reaso
       'function runTop(decoder: Decoder<number>): number {',
       '  return use(decoder);',
       '}',
-      '',
     ].join('\n'),
   });
 
@@ -6930,11 +6966,12 @@ Deno.test('analyzeProject includes forwarded path detail in unknown effect reaso
     workingDirectory: tempDirectory,
   });
 
-  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1040']);
-  assertEquals(result.diagnostics[0]?.metadata?.primarySymbol, 'use');
-  assertEquals(
-    result.diagnostics[0]?.metadata?.evidence?.find((entry) => entry.label === 'unknownEffectReasons')?.value,
-    'unresolved forwarded callback (decoder.inner.decode; failed at inner)',
+  assert(result.diagnostics.every((diagnostic) => diagnostic.code === 'SOUND1040'));
+  assert(
+    result.diagnostics.some((diagnostic) =>
+      diagnostic.metadata?.evidence?.find((entry) => entry.label === 'unknownEffectReasons')?.value ===
+        'unresolved forwarded callback (decoder.inner.decode; failed at inner)'
+    ),
   );
 });
 
@@ -7394,6 +7431,60 @@ Deno.test('analyzeProject checks callable assignability against callback forbid 
 
   assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1019']);
   assertEquals(result.diagnostics[0]?.metadata?.rule, 'callable_effect_parameter_contravariance');
+});
+
+Deno.test('analyzeProject reports unknown forwarded effects in callable relation checks', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/index.sts': [
+      'interface Decoder<T> {',
+      '  readonly decode: (value: number) => T;',
+      '}',
+      '',
+      'interface DecoderWithOptionalInner<T> extends Decoder<T> {',
+      '  readonly inner?: Decoder<T>;',
+      '}',
+      '',
+      '// #[extern]',
+      '// #[effects(forward: [decoder.inner.decode])]',
+      'declare function wrapNumber(decoder: DecoderWithOptionalInner<number>, value: number): number;',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function pureWrap(decoder: DecoderWithOptionalInner<number>, value: number): number {',
+      '  void decoder;',
+      '  return value;',
+      '}',
+      '',
+      'const assigned: typeof pureWrap = wrapNumber;',
+      'void assigned;',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1019']);
+  assertEquals(result.diagnostics[0]?.metadata?.rule, 'callable_effect_covariance');
+  assertEquals(
+    result.diagnostics[0]?.metadata?.evidence?.find((entry) => entry.label === 'unknownEffectReasons')
+      ?.value,
+    'unresolved forwarded callback (decoder.inner.decode)',
+  );
 });
 
 Deno.test('analyzeProject reports the same forbidden effect set for direct and relation callback contract violations', async () => {

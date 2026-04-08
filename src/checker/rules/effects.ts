@@ -27,7 +27,11 @@ import {
   getFreshLocalMutatingCall,
 } from '../effects/fresh_locals.ts';
 import { effectNamesOverlap, normalizeEffectNames } from '../effects/names.ts';
-import { formatEffectUnknownReasons } from '../effects/unknown.ts';
+import {
+  effectSummaryHasUnknown,
+  formatEffectUnknownReasons,
+  getEffectSummaryUnknownReasons,
+} from '../effects/unknown.ts';
 
 type EffectViolationContext =
   | {
@@ -318,8 +322,8 @@ export function runEffectRules(context: AnalysisContext): SoundDiagnostic[] {
               ),
               primarySymbol: getEffectContractName(node),
               forbiddenEffects: summary.forbidEffects,
-              unknownReasons: summary.hasUnknownDirectEffects
-                ? summary.unknownDirectReasons
+              unknownReasons: effectSummaryHasUnknown(summary)
+                ? getEffectSummaryUnknownReasons(summary)
                 : undefined,
             }),
           );
