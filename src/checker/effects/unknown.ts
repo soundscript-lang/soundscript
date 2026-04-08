@@ -57,7 +57,9 @@ export function formatEffectUnknownReason(reason: EffectUnknownReasonFact): stri
     case 'opaqueCallableExpression':
       return 'opaque callable expression';
     case 'unresolvedForwardedCallback':
-      return 'unresolved forwarded callback';
+      return reason.detail === undefined
+        ? 'unresolved forwarded callback'
+        : `unresolved forwarded callback (${reason.detail})`;
     case 'unsummarizedDeclarationFrontier':
       return 'unsummarized declaration frontier';
   }

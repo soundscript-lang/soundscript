@@ -159,7 +159,16 @@ function unknownReasonsForForwardedParameters(
 ): readonly EffectUnknownReasonFact[] {
   return forwardedParameters.length === 0
     ? []
-    : [createEffectUnknownReason('unresolvedForwardedCallback')];
+    : forwardedParameters.map((forwardedParameter) =>
+      createEffectUnknownReason(
+        'unresolvedForwardedCallback',
+        forwardedParameter.parameterName
+          ? [forwardedParameter.parameterName, ...forwardedParameter.memberPath].join('.')
+          : forwardedParameter.memberPath.length > 0
+          ? `<param ${forwardedParameter.parameterIndex + 1}>.${forwardedParameter.memberPath.join('.')}`
+          : `<param ${forwardedParameter.parameterIndex + 1}>`,
+      )
+    );
 }
 
 function getParameterName(parameter: ts.ParameterDeclaration, index: number): string {
@@ -167,6 +176,7 @@ function getParameterName(parameter: ts.ParameterDeclaration, index: number): st
 }
 
 function createForwardedParameterFact(
+  parameterName: string | undefined,
   parameterIndex: number,
   memberPath: readonly string[],
   rewrites: readonly EffectRewriteFact[],
@@ -178,6 +188,7 @@ function createForwardedParameterFact(
     failureBoundary: inferFailureBoundary(rewrites, handledEffects),
     memberName,
     memberPath,
+    parameterName,
     parameterIndex,
     rewrites,
   }];
@@ -196,6 +207,7 @@ function resolveForwardParameters(
     if (parameterIndex >= 0) {
       forwardedParameters.push(
         ...createForwardedParameterFact(
+          parameterName,
           parameterIndex,
           memberPath,
           entry.rewrites,
@@ -481,6 +493,7 @@ function createForwardedParameterKey(
 
 function addForwardedParameter(
   forwardedParameters: Map<string, EffectForwardedParameterFact>,
+  parameterName: string | undefined,
   parameterIndex: number,
   rewrites: readonly EffectRewriteFact[],
   handledEffects: readonly EffectNameFact[],
@@ -494,6 +507,7 @@ function addForwardedParameter(
       failureBoundary: inferFailureBoundary(rewrites, handledEffects),
       memberName,
       memberPath,
+      parameterName,
       parameterIndex,
       rewrites,
     },
@@ -515,6 +529,7 @@ function transformForwardedParameterFact(
     failureBoundary: inferFailureBoundary(nextRewrites, nextHandledEffects),
     memberName: forwardedParameter.memberName,
     memberPath: forwardedParameter.memberPath,
+    parameterName: forwardedParameter.parameterName,
     parameterIndex: forwardedParameter.parameterIndex,
     rewrites: nextRewrites,
   };
@@ -1049,6 +1064,7 @@ function summarizeForwardedArgumentInBody(
   if (aliasTarget !== undefined) {
     addForwardedParameter(
       forwardedParameters,
+      getParameterName(parameters[aliasTarget.parameterIndex]!, aliasTarget.parameterIndex),
       aliasTarget.parameterIndex,
       rewrites,
       handledEffects,
@@ -1059,9 +1075,20 @@ function summarizeForwardedArgumentInBody(
 
   const summary = getSummaryForCallablePath(context, argument, memberPath);
   if (!summary) {
+    const unwrappedArgument = unwrapOuterExpression(argument);
+    const argumentLabel = ts.isIdentifier(unwrappedArgument)
+      ? unwrappedArgument.text
+      : memberPath.length > 0
+      ? memberPath.join('.')
+      : undefined;
     return createEffectComposition(
       [],
-      [createEffectUnknownReason('unresolvedForwardedCallback')],
+      [createEffectUnknownReason(
+        'unresolvedForwardedCallback',
+        argumentLabel && memberPath.length > 0
+          ? `${argumentLabel}.${memberPath.join('.')}`
+          : argumentLabel,
+      )],
     );
   }
   const transformedEffects = applyForwardedTransform(summary.effects, rewrites, handledEffects);
@@ -1236,6 +1263,10 @@ function recomputeBodyDeclarationSummary(
             : failureBoundaryToForwardTransform('preserve');
           addForwardedParameter(
             targetForwardedParameters,
+            getParameterName(
+              parameters[directAliasTarget.parameterIndex]!,
+              directAliasTarget.parameterIndex,
+            ),
             directAliasTarget.parameterIndex,
             boundaryTransform.rewrites,
             boundaryTransform.handledEffects,
@@ -1477,11 +1508,18 @@ export function callableExpressionMayViolateForbidEffects(
   expression: ts.Expression,
   forbidEffects: readonly EffectNameFact[],
 ): boolean {
-  const summary = getSummaryForCallableExpression(context, expression);
+  const summary = getEffectCompositionForCallableExpression(context, expression);
   if (!summary) {
     return true;
   }
   return summary.unknown || effectSetsOverlap(summary.effects, forbidEffects);
+}
+
+export function getEffectCompositionForCallableExpression(
+  context: AnalysisContext,
+  expression: ts.Expression,
+): EffectComposition | undefined {
+  return getSummaryForCallableExpression(context, expression);
 }
 
 export function declarationMayViolateOwnForbid(summary: EffectSummaryFact): boolean {

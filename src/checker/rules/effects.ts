@@ -13,6 +13,7 @@ import {
   classifyCallableEffectContractMismatch,
   declarationMayViolateOwnForbid,
   getCallableContractSummary,
+  getEffectCompositionForCallableExpression,
   getEffectCompositionForCallLike,
   getEffectContractName,
   getEffectSummaryForDeclaration,
@@ -243,14 +244,26 @@ export function runEffectRules(context: AnalysisContext): SoundDiagnostic[] {
         if (summary) {
           for (const contract of summary.parameterContracts) {
             const argument = node.arguments?.[contract.parameterIndex];
+            if (!argument) {
+              continue;
+            }
+            const argumentComposition = getEffectCompositionForCallableExpression(context, argument);
             if (
-              !argument ||
+              argumentComposition &&
+              !argumentComposition.unknown &&
               !callableExpressionMayViolateForbidEffects(
                 context,
                 argument,
                 contract.forbidEffects,
               )
             ) {
+              continue;
+            }
+            if (!argumentComposition && !callableExpressionMayViolateForbidEffects(
+              context,
+              argument,
+              contract.forbidEffects,
+            )) {
               continue;
             }
             const declaration = context.checker.getResolvedSignature(node)?.getDeclaration();
@@ -262,6 +275,7 @@ export function runEffectRules(context: AnalysisContext): SoundDiagnostic[] {
                 kind: 'call',
                 primarySymbol: parameterName,
                 forbiddenEffects: contract.forbidEffects,
+                unknownReasons: argumentComposition?.unknown ? argumentComposition.unknownReasons : undefined,
                 relation: 'parameter_forbid',
               }),
             );

@@ -100,6 +100,7 @@ export interface EffectForwardedParameterFact {
   failureBoundary: EffectFailureBoundary;
   memberPath: readonly string[];
   memberName?: string;
+  parameterName?: string;
   parameterIndex: number;
   rewrites: readonly EffectRewriteFact[];
 }

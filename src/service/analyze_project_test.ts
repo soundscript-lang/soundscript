@@ -6614,13 +6614,9 @@ Deno.test('analyzeProject reports unknown effect reason categories in forbid dia
     workingDirectory: tempDirectory,
   });
 
-  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), [
-    'SOUND1040',
-    'SOUND1040',
-  ]);
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1040']);
   assertEquals(result.diagnostics.map((diagnostic) => diagnostic.metadata?.primarySymbol), [
     'callOpaqueExtern',
-    'dispatchUnknown',
   ]);
   assertEquals(
     result.diagnostics.map((diagnostic) =>
@@ -6628,8 +6624,59 @@ Deno.test('analyzeProject reports unknown effect reason categories in forbid dia
     ),
     [
       'unsummarized declaration frontier',
-      'annotation declares unknown direct effects (dispatchEvent)',
     ],
+  );
+});
+
+Deno.test('analyzeProject includes forwarded path detail in unknown effect reasons', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/index.sts': [
+      'interface Decoder<T> {',
+      '  readonly decode: (value: number) => T;',
+      '}',
+      '',
+      'function wrap<T>(decoder: Decoder<T>, value: number): T {',
+      '  return decoder.decode(value);',
+      '}',
+      '',
+      'function useDecoder(',
+      '  // #[effects(forbid: [fails])]',
+      '  callback: (decoder: Decoder<number>, value: number) => number,',
+      '  decoder: Decoder<number>,',
+      '): number {',
+      '  return callback(decoder, 1);',
+      '}',
+      '',
+      'function use(decoder: Decoder<number>): number {',
+      '  return useDecoder(wrap, decoder);',
+      '}',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1040', 'SOUND1019']);
+  assertEquals(result.diagnostics[0]?.metadata?.primarySymbol, 'callback');
+  assertEquals(
+    result.diagnostics[0]?.metadata?.evidence?.find((entry) => entry.label === 'unknownEffectReasons')?.value,
+    'unresolved forwarded callback (decoder.decode)',
   );
 });
 
