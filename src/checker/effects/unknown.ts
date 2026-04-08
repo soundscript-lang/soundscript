@@ -50,6 +50,10 @@ export function effectUnknownReasonsEqual(
 
 export function formatEffectUnknownReason(reason: EffectUnknownReasonFact): string {
   switch (reason.kind) {
+    case 'annotatedUnknownDirectEffect':
+      return reason.detail === undefined
+        ? 'annotation declares unknown direct effects'
+        : `annotation declares unknown direct effects (${reason.detail})`;
     case 'builtinUnknownDirectEffect':
       return reason.detail === undefined
         ? 'builtin direct effect remains unknown'

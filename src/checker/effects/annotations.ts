@@ -26,6 +26,7 @@ export interface ParsedEffectsAnnotationContract {
   forbidEffects: readonly EffectNameFact[];
   forbidMask: number;
   forwardEntries: readonly ParsedEffectsForwardEntry[];
+  unknownDirect: boolean;
   viaNames: readonly string[];
 }
 
@@ -278,17 +279,42 @@ function parseForwardEntryList(
   return entries;
 }
 
+function parseUnknownList(value: ParsedAnnotationValue): boolean | string {
+  if (value.kind !== 'array') {
+    return 'Effects annotation field `unknown` must use an array literal such as `[direct]`.';
+  }
+
+  let unknownDirect = false;
+  for (const element of value.elements) {
+    if (element.kind !== 'identifier') {
+      return 'Effects annotation field `unknown` must list bare identifiers.';
+    }
+    if (element.name !== 'direct') {
+      return `Effects annotation field \`unknown\` only supports \`direct\`; found \`${element.name}\`.`;
+    }
+    if (unknownDirect) {
+      return 'Effects annotation field `unknown` mentions `direct` more than once.';
+    }
+    unknownDirect = true;
+  }
+
+  return unknownDirect;
+}
+
 export function parseEffectsAnnotationContract(
   annotation: ParsedAnnotation,
 ): ParsedEffectsAnnotationContract | string {
   const args = annotation.arguments ?? [];
-  const fieldValues = new Map<'add' | 'forbid' | 'forward' | 'via', ParsedAnnotationValue>();
+  const fieldValues = new Map<'add' | 'forbid' | 'forward' | 'unknown' | 'via', ParsedAnnotationValue>();
   for (const arg of args) {
     if (arg.kind !== 'named') {
-      return 'Effects annotations only accept named fields: `add`, `forbid`, `forward`, and `via`.';
+      return 'Effects annotations only accept named fields: `add`, `forbid`, `forward`, `unknown`, and `via`.';
     }
-    if (arg.name !== 'add' && arg.name !== 'forbid' && arg.name !== 'forward' && arg.name !== 'via') {
-      return `Unknown effects annotation field \`${arg.name}\`. Use only \`add\`, \`forbid\`, \`forward\`, and \`via\`.`;
+    if (
+      arg.name !== 'add' && arg.name !== 'forbid' && arg.name !== 'forward' && arg.name !== 'unknown' &&
+      arg.name !== 'via'
+    ) {
+      return `Unknown effects annotation field \`${arg.name}\`. Use only \`add\`, \`forbid\`, \`forward\`, \`unknown\`, and \`via\`.`;
     }
     if (fieldValues.has(arg.name)) {
       return `Effects annotation field \`${arg.name}\` appears more than once.`;
@@ -300,6 +326,7 @@ export function parseEffectsAnnotationContract(
   const forbidValue = fieldValues.get('forbid');
   const viaValue = fieldValues.get('via');
   const forwardValue = fieldValues.get('forward');
+  const unknownValue = fieldValues.get('unknown');
   const addEffects = addValue ? parseEffectIdentifierList(addValue, 'add') : [];
   if (typeof addEffects === 'string') {
     return addEffects;
@@ -316,6 +343,10 @@ export function parseEffectsAnnotationContract(
   if (typeof forwardEntries === 'string') {
     return forwardEntries;
   }
+  const unknownDirect = unknownValue ? parseUnknownList(unknownValue) : false;
+  if (typeof unknownDirect === 'string') {
+    return unknownDirect;
+  }
   const viaNames = viaEntries.map((entry) => entry.fromPath.join('.'));
   const allForwardEntries = [...viaEntries, ...forwardEntries];
   if (typeof viaNames === 'string') {
@@ -328,6 +359,7 @@ export function parseEffectsAnnotationContract(
     forbidEffects,
     forbidMask: effectNamesToMask(forbidEffects),
     forwardEntries: allForwardEntries,
+    unknownDirect,
     viaNames,
   };
 }
@@ -400,18 +432,18 @@ export function validateEffectsAnnotation(
   }
 
   if (classification.kind === 'parameter') {
-    if (parsed.addEffects.length > 0 || parsed.forwardEntries.length > 0) {
+    if (parsed.addEffects.length > 0 || parsed.forwardEntries.length > 0 || parsed.unknownDirect) {
       return 'Function-valued parameters only support `#[effects(forbid: [...])]`.';
     }
     return undefined;
   }
 
-  if (classification.kind === 'callable_body' && parsed.addEffects.length > 0) {
-    return 'Bodyful callable declarations infer direct effects from their implementation; use `forbid` and `forward`, not `add`.';
+  if (classification.kind === 'callable_body' && (parsed.addEffects.length > 0 || parsed.unknownDirect)) {
+    return 'Bodyful callable declarations infer direct effects from their implementation; use `forbid` and `forward`, not `add` or `unknown`.';
   }
 
   if (classification.kind === 'callable_declaration' && parsed.forbidEffects.length > 0) {
-    return 'Declaration-only callable surfaces use `add` and `forward`; `forbid` is only supported on bodyful callables and function-valued parameters.';
+    return 'Declaration-only callable surfaces use `add`, `forward`, and `unknown`; `forbid` is only supported on bodyful callables and function-valued parameters.';
   }
 
   if (parsed.forwardEntries.length === 0) {

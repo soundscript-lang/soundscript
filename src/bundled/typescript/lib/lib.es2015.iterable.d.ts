@@ -188,13 +188,16 @@ interface ReadonlyMap<K, V> {
 }
 
 interface MapConstructor {
+    // #[effects(add: [])]
     new (): Map<unknown, unknown>;
+    // #[effects(add: [])]
     new <K, V>(iterable?: Iterable<readonly [K, V]> | null): Map<K, V>;
 }
 
 interface WeakMap<K extends WeakKey, V> {}
 
 interface WeakMapConstructor {
+    // #[effects(add: [])]
     new <K extends WeakKey, V>(iterable: Iterable<readonly [K, V]>): WeakMap<K, V>;
 }
 
@@ -244,12 +247,14 @@ interface ReadonlySet<T> {
 }
 
 interface SetConstructor {
+    // #[effects(add: [])]
     new <T>(iterable?: Iterable<T> | null): Set<T>;
 }
 
 interface WeakSet<T extends WeakKey> {}
 
 interface WeakSetConstructor {
+    // #[effects(add: [])]
     new <T extends WeakKey = WeakKey>(iterable: Iterable<T>): WeakSet<T>;
 }
 

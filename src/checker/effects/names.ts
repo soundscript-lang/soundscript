@@ -112,7 +112,7 @@ export function effectNamesToMask(effectNames: readonly string[]): number {
     }
     if (
       effectNamesOverlap(effectName, 'host.system') || effectNamesOverlap(effectName, 'host.ffi') ||
-      effectNamesOverlap(effectName, 'host.browser.message') || effectNamesOverlap(effectName, 'host')
+      effectNamesOverlap(effectName, 'host.browser.message')
     ) {
       mask |= INTERNAL_EFFECT_MASKS.hostInterop;
     }

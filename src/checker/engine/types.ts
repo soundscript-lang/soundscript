@@ -86,6 +86,7 @@ export interface EffectParameterContractFact {
 export type EffectFailureBoundary = 'preserve' | 'reject' | 'capture';
 
 export type EffectUnknownReasonKind =
+  | 'annotatedUnknownDirectEffect'
   | 'builtinUnknownDirectEffect'
   | 'opaqueCallableExpression'
   | 'unresolvedForwardedCallback'

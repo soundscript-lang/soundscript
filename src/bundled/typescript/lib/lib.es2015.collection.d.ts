@@ -52,10 +52,13 @@ interface Map<K, V> extends ReadonlyMap<K, V> {
 }
 
 interface MapConstructor {
+    // #[effects(add: [])]
     new (): Map<unknown, unknown>;
+    // #[effects(add: [])]
     new <K, V>(entries?: readonly (readonly [K, V])[] | null): Map<K, V>;
     readonly prototype: Map<unknown, unknown>;
 }
+// #[effects(add: [])]
 declare var Map: MapConstructor;
 
 // #[variance(K: out, V: out)]
@@ -74,26 +77,32 @@ interface WeakMap<K extends WeakKey, V> {
      * Removes the specified element from the WeakMap.
      * @returns true if the element was successfully removed, or false if it was not present.
      */
+    // #[effects(add: [mut])]
     delete(key: K): boolean;
     /**
      * @returns a specified element.
      */
+    // #[effects(add: [])]
     get(key: K): V | undefined;
     /**
      * @returns a boolean indicating whether an element with the specified key exists or not.
      */
+    // #[effects(add: [])]
     has(key: K): boolean;
     /**
      * Adds a new element with a specified key and value.
      * @param key Must be an object or symbol.
      */
+    // #[effects(add: [mut])]
     set(key: K, value: V): this;
 }
 
 interface WeakMapConstructor {
+    // #[effects(add: [])]
     new <K extends WeakKey = WeakKey, V = unknown>(entries?: readonly (readonly [K, V])[] | null): WeakMap<K, V>;
     readonly prototype: WeakMap<WeakKey, unknown>;
 }
+// #[effects(add: [])]
 declare var WeakMap: WeakMapConstructor;
 
 interface Set<T> extends ReadonlySet<T> {
@@ -128,9 +137,11 @@ interface Set<T> extends ReadonlySet<T> {
 }
 
 interface SetConstructor {
+    // #[effects(add: [])]
     new <T = unknown>(values?: readonly T[] | null): Set<T>;
     readonly prototype: Set<unknown>;
 }
+// #[effects(add: [])]
 declare var Set: SetConstructor;
 
 // #[variance(T: out)]
@@ -146,20 +157,25 @@ interface WeakSet<T extends WeakKey> {
     /**
      * Appends a new value to the end of the WeakSet.
      */
+    // #[effects(add: [mut])]
     add(value: T): this;
     /**
      * Removes the specified element from the WeakSet.
      * @returns Returns true if the element existed and has been removed, or false if the element does not exist.
      */
+    // #[effects(add: [mut])]
     delete(value: T): boolean;
     /**
      * @returns a boolean indicating whether a value exists in the WeakSet or not.
      */
+    // #[effects(add: [])]
     has(value: T): boolean;
 }
 
 interface WeakSetConstructor {
+    // #[effects(add: [])]
     new <T extends WeakKey = WeakKey>(values?: readonly T[] | null): WeakSet<T>;
     readonly prototype: WeakSet<WeakKey>;
 }
+// #[effects(add: [])]
 declare var WeakSet: WeakSetConstructor;

@@ -799,6 +799,7 @@ interface Math {
         y: number,
     ): number;
     /** Returns a pseudorandom number between 0 and 1. */
+    // #[effects(add: [host.random])]
     random(): number;
     /**
      * Returns a supplied numeric expression rounded to the nearest integer.
@@ -1065,6 +1066,7 @@ interface DateConstructor {
         ms?: number,
     ): number;
     /** Returns the number of milliseconds elapsed since midnight, January 1, 1970 Universal Coordinated Time (UTC). */
+    // #[effects(add: [host.time])]
     now(): number;
 }
 

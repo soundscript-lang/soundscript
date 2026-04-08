@@ -1,4 +1,5 @@
 import ts from 'typescript';
+import type { ParsedAnnotation } from '../annotation_syntax.ts';
 
 import type {
   AnalysisContext,
@@ -272,6 +273,125 @@ function createInitialSolveSummary(
   }
 
   return summary;
+}
+
+function getDeclarationMemberName(
+  declaration: ts.Declaration,
+): string | undefined {
+  const name = (declaration as ts.NamedDeclaration).name;
+  if (!name) {
+    return undefined;
+  }
+  if (ts.isIdentifier(name) || ts.isStringLiteral(name) || ts.isNumericLiteral(name)) {
+    return name.text;
+  }
+  return undefined;
+}
+
+function findSiblingEffectsAnnotation(
+  context: AnalysisContext,
+  declaration: EffectCallableDeclaration,
+): ParsedAnnotation | undefined {
+  const name = (declaration as ts.NamedDeclaration).name;
+  if (!name) {
+    return undefined;
+  }
+
+  const symbol = context.checker.getSymbolAtLocation(name);
+  if (!symbol) {
+    return undefined;
+  }
+
+  for (const siblingDeclaration of symbol.declarations ?? []) {
+    if (siblingDeclaration === declaration || !isCallableDeclarationNode(siblingDeclaration)) {
+      continue;
+    }
+    const annotation = getEffectsAnnotation(context, siblingDeclaration);
+    if (annotation) {
+      return annotation;
+    }
+  }
+
+  return undefined;
+}
+
+function findInheritedEffectsAnnotation(
+  context: AnalysisContext,
+  declaration: EffectCallableDeclaration,
+  visitedOwners = new Set<ts.Symbol>(),
+): ParsedAnnotation | undefined {
+  const memberName = getDeclarationMemberName(declaration);
+  if (!memberName) {
+    return undefined;
+  }
+
+  const owner = declaration.parent;
+  if (
+    !ts.isInterfaceDeclaration(owner) &&
+    !ts.isClassDeclaration(owner) &&
+    !ts.isClassExpression(owner)
+  ) {
+    return undefined;
+  }
+
+  const ownerName = owner.name;
+  if (!ownerName) {
+    return undefined;
+  }
+
+  const ownerSymbol = context.checker.getSymbolAtLocation(ownerName);
+  if (!ownerSymbol || visitedOwners.has(ownerSymbol)) {
+    return undefined;
+  }
+  visitedOwners.add(ownerSymbol);
+
+  const declaredType = context.checker.getDeclaredTypeOfSymbol(ownerSymbol);
+  if ((declaredType.flags & ts.TypeFlags.Object) === 0) {
+    return undefined;
+  }
+
+  for (const baseType of context.checker.getBaseTypes(declaredType as ts.InterfaceType) ?? []) {
+    const property = baseType.getProperty(memberName);
+    if (!property) {
+      continue;
+    }
+    for (const baseDeclaration of property.declarations ?? []) {
+      if (!isCallableDeclarationNode(baseDeclaration)) {
+        continue;
+      }
+      const directAnnotation = getEffectsAnnotation(context, baseDeclaration);
+      if (directAnnotation) {
+        return directAnnotation;
+      }
+      const siblingAnnotation = findSiblingEffectsAnnotation(context, baseDeclaration);
+      if (siblingAnnotation) {
+        return siblingAnnotation;
+      }
+      const inheritedAnnotation = findInheritedEffectsAnnotation(
+        context,
+        baseDeclaration,
+        visitedOwners,
+      );
+      if (inheritedAnnotation) {
+        return inheritedAnnotation;
+      }
+    }
+  }
+
+  return undefined;
+}
+
+function getEffectiveEffectsAnnotation(
+  context: AnalysisContext,
+  declaration: EffectCallableDeclaration,
+): ParsedAnnotation | undefined {
+  const directAnnotation = getEffectsAnnotation(context, declaration);
+  if (directAnnotation || isCallableBodyDeclaration(declaration)) {
+    return directAnnotation;
+  }
+
+  return findSiblingEffectsAnnotation(context, declaration) ??
+    findInheritedEffectsAnnotation(context, declaration);
 }
 
 function effectSummaryEquals(left: EffectSummaryFact, right: EffectSummaryFact): boolean {
@@ -844,7 +964,7 @@ function buildDeclarationOnlySummary(
   context: AnalysisContext,
   declaration: EffectCallableDeclaration,
 ): EffectSummaryFact {
-  const explicitEffects = getEffectsAnnotation(context, declaration);
+  const explicitEffects = getEffectiveEffectsAnnotation(context, declaration);
   const parsedEffects = explicitEffects ? parseEffectsAnnotationContract(explicitEffects) : undefined;
   const parameters = declaration.parameters;
   const parameterContracts = getParameterContracts(context, parameters);
@@ -859,6 +979,12 @@ function buildDeclarationOnlySummary(
   if (!isCallableBodyDeclaration(declaration)) {
     if (parsedEffects && typeof parsedEffects !== 'string') {
       setSummaryDirectEffects(summary, parsedEffects.addEffects);
+      if (parsedEffects.unknownDirect) {
+        setSummaryUnknownDirectReasons(
+          summary,
+          [createEffectUnknownReason('annotatedUnknownDirectEffect', getDeclarationMemberName(declaration))],
+        );
+      }
     } else {
       setSummaryUnknownDirectReasons(
         summary,
@@ -1198,7 +1324,7 @@ function shouldUseDirectSignatureSummary(
   if (!declaration || !isCallableDeclarationNode(declaration)) {
     return true;
   }
-  if (isCallableBodyDeclaration(declaration) || getEffectsAnnotation(context, declaration)) {
+  if (isCallableBodyDeclaration(declaration) || getEffectiveEffectsAnnotation(context, declaration)) {
     return true;
   }
   return !(
@@ -1219,7 +1345,7 @@ export function getEffectCompositionForCallLike(
       resolvedDeclaration &&
       isCallableDeclarationNode(resolvedDeclaration) &&
       !isCallableBodyDeclaration(resolvedDeclaration) &&
-      !getEffectsAnnotation(context, resolvedDeclaration) &&
+      !getEffectiveEffectsAnnotation(context, resolvedDeclaration) &&
       summary.hasUnknownDirectEffects &&
       summary.unknownDirectReasons.some((reason) => reason.kind === 'unsummarizedDeclarationFrontier')
     );

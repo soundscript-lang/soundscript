@@ -2,6 +2,7 @@ import { assertEquals, assertExists, assertStrictEquals } from '@std/assert';
 import { dirname, join } from '@std/path';
 import ts from 'typescript';
 
+import { createSoundStdlibCompilerHost } from './bundled/sound_stdlib.ts';
 import {
   getEffectSummaryForDeclaration,
   INTERNAL_EFFECT_MASKS,
@@ -36,6 +37,7 @@ function loadProgram(projectPath: string): ts.Program {
   );
 
   return ts.createProgram({
+    host: createSoundStdlibCompilerHost(parsedConfig.options, dirname(projectPath)),
     rootNames: parsedConfig.fileNames,
     options: parsedConfig.options,
     projectReferences: parsedConfig.projectReferences,
@@ -489,6 +491,9 @@ Deno.test('createAnalysisContext parses dotted effects and forward transforms on
         '  decoder: { decode(value: unknown): T | E },',
         '): T | E;',
         '',
+        '// #[effects(add: [host.browser.dom], unknown: [direct])]',
+        'export declare function dispatchNow(event: Event): boolean;',
+        '',
       ].join('\n'),
     },
   ]);
@@ -510,9 +515,11 @@ Deno.test('createAnalysisContext parses dotted effects and forward transforms on
 
   const wrapAsync = declarationsByName.get('wrapAsync');
   const parseWith = declarationsByName.get('parseWith');
+  const dispatchNow = declarationsByName.get('dispatchNow');
 
   assertExists(wrapAsync);
   assertExists(parseWith);
+  assertExists(dispatchNow);
 
   const wrapAsyncSummary = getEffectSummaryForDeclaration(context, wrapAsync);
   assertEquals(wrapAsyncSummary.directEffects, ['host.io', 'host.node.fs', 'suspend.await']);
@@ -534,6 +541,13 @@ Deno.test('createAnalysisContext parses dotted effects and forward transforms on
       memberName: 'decode',
       parameterIndex: 1,
     }],
+  );
+
+  const dispatchNowSummary = getEffectSummaryForDeclaration(context, dispatchNow);
+  assertEquals(dispatchNowSummary.directEffects, ['host.browser.dom']);
+  assertEquals(
+    dispatchNowSummary.unknownDirectReasons.map((reason) => `${reason.kind}:${reason.detail ?? ''}`),
+    ['annotatedUnknownDirectEffect:dispatchNow'],
   );
 });
 
@@ -1974,10 +1988,15 @@ Deno.test('createAnalysisContext summarizes bundled deno extern builtins precise
       contents: [
         'declare namespace Deno {',
         '  interface Env {',
+        '    // #[effects(add: [host.system, host.deno.env, mut])]',
         '    delete(key: string): void;',
+        '    // #[effects(add: [host.system, host.deno.env])]',
         '    get(key: string): string | undefined;',
+        '    // #[effects(add: [host.system, host.deno.env])]',
         '    has(key: string): boolean;',
+        '    // #[effects(add: [host.system, host.deno.env, mut])]',
         '    set(key: string, value: string): void;',
+        '    // #[effects(add: [host.system, host.deno.env])]',
         '    toObject(): Record<string, string>;',
         '  }',
         '}',
@@ -1985,17 +2004,29 @@ Deno.test('createAnalysisContext summarizes bundled deno extern builtins precise
         'declare const Deno: {',
         '  readonly args: readonly string[];',
         '  readonly env: Deno.Env;',
+        '  // #[effects(add: [host.system, host.deno.fs, mut, fails.throws])]',
         '  chdir(directory: string | URL): void;',
+        '  // #[effects(add: [host.system, host.deno.fs])]',
         '  cwd(): string;',
+        '  // #[effects(add: [host.io, host.deno.fs, suspend.await])]',
         '  readFile(path: string | URL): Promise<Uint8Array<ArrayBufferLike>>;',
+        '  // #[effects(add: [host.io, host.deno.fs, fails.throws])]',
         '  readFileSync(path: string | URL): Uint8Array<ArrayBufferLike>;',
+        '  // #[effects(add: [host.io, host.deno.fs, suspend.await])]',
         '  readTextFile(path: string | URL): Promise<string>;',
+        '  // #[effects(add: [host.io, host.deno.fs, fails.throws])]',
         '  readTextFileSync(path: string | URL): string;',
+        '  // #[effects(add: [host.io, host.deno.fs, mut, suspend.await])]',
         '  mkdir(path: string | URL): Promise<void>;',
+        '  // #[effects(add: [host.io, host.deno.fs, mut, fails.throws])]',
         '  mkdirSync(path: string | URL): void;',
+        '  // #[effects(add: [host.io, host.deno.fs, mut, suspend.await])]',
         '  remove(path: string | URL): Promise<void>;',
+        '  // #[effects(add: [host.io, host.deno.fs, mut, fails.throws])]',
         '  removeSync(path: string | URL): void;',
+        '  // #[effects(add: [host.io, host.deno.fs, mut, suspend.await])]',
         '  writeTextFile(path: string | URL, data: string): Promise<void>;',
+        '  // #[effects(add: [host.io, host.deno.fs, mut, fails.throws])]',
         '  writeTextFileSync(path: string | URL, data: string): void;',
         '};',
         '',
@@ -2243,8 +2274,11 @@ Deno.test('createAnalysisContext summarizes bundled node builtins precisely', as
         'interface Process {',
         '  readonly argv: readonly string[];',
         '  readonly env: ProcessEnv;',
+        '  // #[effects(add: [host.system, host.node.process, mut, fails.throws])]',
         '  chdir(directory: string): void;',
+        '  // #[effects(add: [host.system, host.node.process])]',
         '  cwd(): string;',
+        '  // #[effects(add: [host.system, host.node.process])]',
         '  exit(code?: number): never;',
         '}',
         '',
@@ -2252,18 +2286,24 @@ Deno.test('createAnalysisContext summarizes bundled node builtins precisely', as
         '',
         'interface Immediate {}',
         '',
+        '// #[effects(add: [host.time])]',
         'declare function setImmediate(callback: (...args: unknown[]) => void): Immediate;',
+        '// #[effects(add: [host.time])]',
         'declare function clearImmediate(handle: Immediate): void;',
         '',
         'interface Buffer extends Uint8Array<ArrayBufferLike> {',
+        '  // #[effects(add: [])]',
         '  toString(encoding?: string): string;',
         '}',
         '',
         'declare const Buffer: {',
+        '  // #[effects(add: [])]',
         '  alloc(size: number): Buffer;',
+        '  // #[effects(add: [])]',
         '  from(',
         '    data: string | ArrayLike<number> | ArrayBufferLike | ArrayBufferView<ArrayBufferLike>,',
         '  ): Buffer;',
+        '  // #[effects(add: [])]',
         '  concat(list: readonly ArrayBufferView<ArrayBufferLike>[]): Buffer;',
         '};',
         '',
@@ -2274,22 +2314,39 @@ Deno.test('createAnalysisContext summarizes bundled node builtins precisely', as
       contents: [
         'declare module "node:fs" {',
         '  export interface Stats {}',
+        '  // #[effects(add: [host.io, host.node.fs, fails.throws])]',
         '  export function accessSync(path: string): void;',
+        '  // #[effects(add: [host.io, host.node.fs, mut, fails.throws])]',
         '  export function appendFileSync(path: string, data: string | Uint8Array<ArrayBufferLike>): void;',
+        '  // #[effects(add: [host.io, host.node.fs, mut, fails.throws])]',
         '  export function cpSync(source: string, destination: string): void;',
+        '  // #[effects(add: [host.io, host.node.fs, mut, fails.throws])]',
         '  export function copyFileSync(source: string, destination: string): void;',
+        '  // #[effects(add: [host.io, host.node.fs, mut, fails.throws])]',
         '  export function mkdtempSync(prefix: string): string;',
+        '  // #[effects(add: [host.io, host.node.fs, fails.throws])]',
         '  export function readlinkSync(path: string): string;',
+        '  // #[effects(add: [host.io, host.node.fs, fails.throws])]',
         '  export function realpathSync(path: string): string;',
+        '  // #[effects(add: [host.io, host.node.fs, mut, fails.throws])]',
         '  export function renameSync(oldPath: string, newPath: string): void;',
+        '  // #[effects(add: [host.io, host.node.fs, fails.throws])]',
         '  export function readFileSync(path: string): Uint8Array<ArrayBufferLike>;',
+        '  // #[effects(add: [host.io, host.node.fs, fails.throws])]',
         '  export function readdirSync(path: string): string[];',
+        '  // #[effects(add: [host.io, host.node.fs, fails.throws])]',
         '  export function statSync(path: string): Stats;',
+        '  // #[effects(add: [host.io, host.node.fs, mut, fails.throws])]',
         '  export function symlinkSync(target: string, path: string): void;',
+        '  // #[effects(add: [host.io, host.node.fs, mut, fails.throws])]',
         '  export function truncateSync(path: string, len?: number): void;',
+        '  // #[effects(add: [host.io, host.node.fs, mut, fails.throws])]',
         '  export function unlinkSync(path: string): void;',
+        '  // #[effects(add: [host.io, host.node.fs, mut, fails.throws])]',
         '  export function writeFileSync(path: string, data: string | Uint8Array<ArrayBufferLike>): void;',
+        '  // #[effects(add: [host.io, host.node.fs, mut, fails.throws])]',
         '  export function mkdirSync(path: string): void;',
+        '  // #[effects(add: [host.io, host.node.fs, mut, fails.throws])]',
         '  export function rmSync(path: string): void;',
         '}',
         '',
@@ -2300,22 +2357,39 @@ Deno.test('createAnalysisContext summarizes bundled node builtins precisely', as
       contents: [
         'declare module "node:fs/promises" {',
         '  export interface Stats {}',
+        '  // #[effects(add: [host.io, host.node.fs, suspend.await])]',
         '  export function access(path: string): Promise<void>;',
+        '  // #[effects(add: [host.io, host.node.fs, mut, suspend.await])]',
         '  export function appendFile(path: string, data: string | Uint8Array<ArrayBufferLike>): Promise<void>;',
+        '  // #[effects(add: [host.io, host.node.fs, mut, suspend.await])]',
         '  export function cp(source: string, destination: string): Promise<void>;',
+        '  // #[effects(add: [host.io, host.node.fs, mut, suspend.await])]',
         '  export function copyFile(source: string, destination: string): Promise<void>;',
+        '  // #[effects(add: [host.io, host.node.fs, mut, suspend.await])]',
         '  export function mkdtemp(prefix: string): Promise<string>;',
+        '  // #[effects(add: [host.io, host.node.fs, suspend.await])]',
         '  export function readlink(path: string): Promise<string>;',
+        '  // #[effects(add: [host.io, host.node.fs, suspend.await])]',
         '  export function realpath(path: string): Promise<string>;',
+        '  // #[effects(add: [host.io, host.node.fs, mut, suspend.await])]',
         '  export function rename(oldPath: string, newPath: string): Promise<void>;',
+        '  // #[effects(add: [host.io, host.node.fs, suspend.await])]',
         '  export function readFile(path: string): Promise<Uint8Array<ArrayBufferLike>>;',
+        '  // #[effects(add: [host.io, host.node.fs, suspend.await])]',
         '  export function readdir(path: string): Promise<string[]>;',
+        '  // #[effects(add: [host.io, host.node.fs, suspend.await])]',
         '  export function stat(path: string): Promise<Stats>;',
+        '  // #[effects(add: [host.io, host.node.fs, mut, suspend.await])]',
         '  export function symlink(target: string, path: string): Promise<void>;',
+        '  // #[effects(add: [host.io, host.node.fs, mut, suspend.await])]',
         '  export function truncate(path: string, len?: number): Promise<void>;',
+        '  // #[effects(add: [host.io, host.node.fs, mut, suspend.await])]',
         '  export function unlink(path: string): Promise<void>;',
+        '  // #[effects(add: [host.io, host.node.fs, mut, suspend.await])]',
         '  export function writeFile(path: string, data: string | Uint8Array<ArrayBufferLike>): Promise<void>;',
+        '  // #[effects(add: [host.io, host.node.fs, mut, suspend.await])]',
         '  export function mkdir(path: string): Promise<void>;',
+        '  // #[effects(add: [host.io, host.node.fs, mut, suspend.await])]',
         '  export function rm(path: string): Promise<void>;',
         '}',
         '',
@@ -2325,9 +2399,13 @@ Deno.test('createAnalysisContext summarizes bundled node builtins precisely', as
       path: '__soundscript_externs__/node.path.d.ts',
       contents: [
         'declare module "node:path" {',
+        '  // #[effects(add: [])]',
         '  export function basename(path: string): string;',
+        '  // #[effects(add: [])]',
         '  export function dirname(path: string): string;',
+        '  // #[effects(add: [])]',
         '  export function join(...paths: readonly string[]): string;',
+        '  // #[effects(add: [])]',
         '  export function resolve(...paths: readonly string[]): string;',
         '}',
         '',
@@ -2338,11 +2416,15 @@ Deno.test('createAnalysisContext summarizes bundled node builtins precisely', as
       contents: [
         'declare module "node:buffer" {',
         '  export interface Buffer extends Uint8Array<ArrayBufferLike> {',
+        '    // #[effects(add: [])]',
         '    toString(encoding?: string): string;',
         '  }',
         '  export const Buffer: {',
+        '    // #[effects(add: [])]',
         '    alloc(size: number): Buffer;',
+        '    // #[effects(add: [])]',
         '    from(data: string | ArrayLike<number> | ArrayBufferLike | ArrayBufferView<ArrayBufferLike>): Buffer;',
+        '    // #[effects(add: [])]',
         '    concat(list: readonly ArrayBufferView<ArrayBufferLike>[]): Buffer;',
         '  };',
         '}',
@@ -2354,22 +2436,36 @@ Deno.test('createAnalysisContext summarizes bundled node builtins precisely', as
       contents: [
         'declare module "node:crypto" {',
         '  export interface Hash {',
+        '    // #[effects(add: [fails.throws, mut])]',
         '    update(data: string | Uint8Array<ArrayBufferLike>): Hash;',
+        '    // #[effects(add: [fails.throws])]',
         '    digest(): Buffer;',
+        '    // #[effects(add: [fails.throws])]',
         '    digest(encoding: string): string;',
         '  }',
         '  export interface Hmac {',
+        '    // #[effects(add: [fails.throws, mut])]',
         '    update(data: string | Uint8Array<ArrayBufferLike>): Hmac;',
+        '    // #[effects(add: [fails.throws])]',
         '    digest(): Buffer;',
+        '    // #[effects(add: [fails.throws])]',
         '    digest(encoding: string): string;',
         '  }',
+        '  // #[effects(add: [fails.throws])]',
         '  export function createHash(algorithm: string): Hash;',
+        '  // #[effects(add: [fails.throws])]',
         '  export function createHmac(algorithm: string, key: string): Hmac;',
+        '  // #[effects(add: [host.random])]',
         '  export function randomInt(max: number): number;',
+        '  // #[effects(add: [host.random])]',
         '  export function randomUUID(): string;',
+        '  // #[effects(add: [host.random])]',
         '  export function randomBytes(size: number): Buffer;',
+        '  // #[effects(add: [host.random, mut])]',
         '  export function randomFillSync<T extends Uint8Array<ArrayBufferLike>>(array: T): T;',
+        '  // #[effects(add: [host.random, mut, suspend.await])]',
         '  export function randomFill<T extends Uint8Array<ArrayBufferLike>>(array: T): Promise<T>;',
+        '  // #[effects(add: [host.random, mut])]',
         '  export function getRandomValues<T extends DataView<ArrayBufferLike> | Uint8Array<ArrayBufferLike>>(array: T): T;',
         '}',
         '',
@@ -2380,11 +2476,17 @@ Deno.test('createAnalysisContext summarizes bundled node builtins precisely', as
       contents: [
         'declare module "node:timers" {',
         '  export interface Timeout {}',
+        '  // #[effects(add: [host.time])]',
         '  export function setImmediate(callback: (...args: unknown[]) => void): Immediate;',
+        '  // #[effects(add: [host.time])]',
         '  export function clearImmediate(handle: Immediate): void;',
+        '  // #[effects(add: [host.time])]',
         '  export function setTimeout(callback: (...args: unknown[]) => void, delay?: number): Timeout;',
+        '  // #[effects(add: [host.time])]',
         '  export function clearTimeout(handle: Timeout): void;',
+        '  // #[effects(add: [host.time])]',
         '  export function setInterval(callback: (...args: unknown[]) => void, delay?: number): Timeout;',
+        '  // #[effects(add: [host.time])]',
         '  export function clearInterval(handle: Timeout): void;',
         '}',
         '',
@@ -2394,10 +2496,14 @@ Deno.test('createAnalysisContext summarizes bundled node builtins precisely', as
       path: '__soundscript_externs__/node.timers.promises.d.ts',
       contents: [
         'declare module "node:timers/promises" {',
+        '  // #[effects(add: [host.time, suspend.await])]',
         '  export function setImmediate(): Promise<void>;',
+        '  // #[effects(add: [host.time, suspend.await])]',
         '  export function setTimeout(delay?: number): Promise<void>;',
         '  export interface Scheduler {',
+        '    // #[effects(add: [host.time, suspend.await])]',
         '    wait(delay?: number): Promise<void>;',
+        '    // #[effects(add: [host.time, suspend.await])]',
         '    yield(): Promise<void>;',
         '  }',
         '  export const scheduler: Scheduler;',
@@ -2862,11 +2968,11 @@ Deno.test('createAnalysisContext summarizes bundled node builtins precisely', as
   );
   assertEquals(
     getEffectSummaryForDeclaration(context, scheduleImmediate).directMask,
-    INTERNAL_EFFECT_MASKS.hostInterop,
+    INTERNAL_EFFECT_MASKS.hostTime,
   );
   assertEquals(
     getEffectSummaryForDeclaration(context, cancelImmediate).directMask,
-    INTERNAL_EFFECT_MASKS.hostInterop,
+    INTERNAL_EFFECT_MASKS.hostTime,
   );
   assertEquals(getEffectSummaryForDeclaration(context, makeBuffer).directMask, 0);
   assertEquals(getEffectSummaryForDeclaration(context, allocateBuffer).directMask, 0);
@@ -2925,11 +3031,11 @@ Deno.test('createAnalysisContext summarizes bundled node builtins precisely', as
   );
   assertEquals(
     getEffectSummaryForDeclaration(context, scheduleModuleImmediate).directMask,
-    INTERNAL_EFFECT_MASKS.hostInterop,
+    INTERNAL_EFFECT_MASKS.hostTime,
   );
   assertEquals(
     getEffectSummaryForDeclaration(context, cancelModuleImmediate).directMask,
-    INTERNAL_EFFECT_MASKS.hostInterop,
+    INTERNAL_EFFECT_MASKS.hostTime,
   );
   assertEquals(
     getEffectSummaryForDeclaration(context, scheduleTimeout).directMask,
@@ -2949,7 +3055,7 @@ Deno.test('createAnalysisContext summarizes bundled node builtins precisely', as
   );
   assertEquals(
     getEffectSummaryForDeclaration(context, awaitImmediate).directMask,
-    INTERNAL_EFFECT_MASKS.hostInterop | INTERNAL_EFFECT_MASKS.suspend,
+    INTERNAL_EFFECT_MASKS.hostTime | INTERNAL_EFFECT_MASKS.suspend,
   );
   assertEquals(
     getEffectSummaryForDeclaration(context, awaitTimeout).directMask,
@@ -2961,7 +3067,7 @@ Deno.test('createAnalysisContext summarizes bundled node builtins precisely', as
   );
   assertEquals(
     getEffectSummaryForDeclaration(context, yieldOnScheduler).directMask,
-    INTERNAL_EFFECT_MASKS.hostInterop | INTERNAL_EFFECT_MASKS.suspend,
+    INTERNAL_EFFECT_MASKS.hostTime | INTERNAL_EFFECT_MASKS.suspend,
   );
   assertEquals(
     getEffectSummaryForDeclaration(context, accessPath).directMask,
@@ -3507,7 +3613,7 @@ Deno.test('createAnalysisContext records structured effect unknown reasons', asy
   );
   assertEquals(
     getEffectSummaryForDeclaration(context, usesDispatch).unknownDirectReasons.map((reason) => reason.kind),
-    ['builtinUnknownDirectEffect'],
+    ['annotatedUnknownDirectEffect'],
   );
 });
 

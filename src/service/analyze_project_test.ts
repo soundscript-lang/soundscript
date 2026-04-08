@@ -6493,7 +6493,7 @@ Deno.test('analyzeProject reports unknown effect reason categories in forbid dia
     ),
     [
       'unsummarized declaration frontier',
-      'builtin direct effect remains unknown (dispatchEvent)',
+      'annotation declares unknown direct effects (dispatchEvent)',
     ],
   );
 });
