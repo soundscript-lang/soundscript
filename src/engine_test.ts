@@ -616,10 +616,24 @@ Deno.test('createAnalysisContext treats fresh local scratch mutation as non-obse
     {
       path: 'src/index.ts',
       contents: [
+        'class Counter {',
+        '  value = 0;',
+        '  set(value: number): void {',
+        '    this.value = value;',
+        '  }',
+        '}',
+        '',
         'export function buildRecord(): { value: number } {',
         '  const box = { value: 0 };',
         '  box.value = 1;',
         '  return box;',
+        '}',
+        '',
+        'export function buildRecordAlias(): { value: number } {',
+        '  const box = { value: 0 };',
+        '  const out = box;',
+        '  out.value = 1;',
+        '  return out;',
         '}',
         '',
         'export function buildList(): number[] {',
@@ -634,10 +648,30 @@ Deno.test('createAnalysisContext treats fresh local scratch mutation as non-obse
         '  return map;',
         '}',
         '',
+        'export function buildMapAlias(): Map<string, number> {',
+        '  const map = new Map<string, number>();',
+        '  const out = map;',
+        '  out.set("value", 1);',
+        '  return out;',
+        '}',
+        '',
         'export function buildParams(): URLSearchParams {',
         '  const params = new URLSearchParams();',
         '  params.set("q", "music");',
         '  return params;',
+        '}',
+        '',
+        'export function buildParamsAlias(): URLSearchParams {',
+        '  const params = new URLSearchParams();',
+        '  const out = params;',
+        '  out.set("q", "music");',
+        '  return out;',
+        '}',
+        '',
+        'export function buildCustomCounter(): Counter {',
+        '  const counter = new Counter();',
+        '  counter.set(1);',
+        '  return counter;',
         '}',
         '',
         'export function escapeBeforeMutate(store: (value: { value: number }) => void): { value: number } {',
@@ -676,23 +710,35 @@ Deno.test('createAnalysisContext treats fresh local scratch mutation as non-obse
   );
 
   const buildRecord = declarationsByName.get('buildRecord');
+  const buildRecordAlias = declarationsByName.get('buildRecordAlias');
   const buildList = declarationsByName.get('buildList');
   const buildMap = declarationsByName.get('buildMap');
+  const buildMapAlias = declarationsByName.get('buildMapAlias');
   const buildParams = declarationsByName.get('buildParams');
+  const buildParamsAlias = declarationsByName.get('buildParamsAlias');
+  const buildCustomCounter = declarationsByName.get('buildCustomCounter');
   const escapeBeforeMutate = declarationsByName.get('escapeBeforeMutate');
   const escapeMapBeforeMutate = declarationsByName.get('escapeMapBeforeMutate');
 
   assertExists(buildRecord);
+  assertExists(buildRecordAlias);
   assertExists(buildList);
   assertExists(buildMap);
+  assertExists(buildMapAlias);
   assertExists(buildParams);
+  assertExists(buildParamsAlias);
+  assertExists(buildCustomCounter);
   assertExists(escapeBeforeMutate);
   assertExists(escapeMapBeforeMutate);
 
   assertEquals(getEffectSummaryForDeclaration(context, buildRecord).directEffects, []);
+  assertEquals(getEffectSummaryForDeclaration(context, buildRecordAlias).directEffects, []);
   assertEquals(getEffectSummaryForDeclaration(context, buildList).directEffects, []);
   assertEquals(getEffectSummaryForDeclaration(context, buildMap).directEffects, []);
+  assertEquals(getEffectSummaryForDeclaration(context, buildMapAlias).directEffects, []);
   assertEquals(getEffectSummaryForDeclaration(context, buildParams).directEffects, []);
+  assertEquals(getEffectSummaryForDeclaration(context, buildParamsAlias).directEffects, []);
+  assertEquals(getEffectSummaryForDeclaration(context, buildCustomCounter).directEffects, ['mut']);
   assertEquals(getEffectSummaryForDeclaration(context, escapeBeforeMutate).directEffects, ['mut']);
   assertEquals(getEffectSummaryForDeclaration(context, escapeMapBeforeMutate).directEffects, ['mut']);
 });
@@ -4578,6 +4624,46 @@ Deno.test('createAnalysisContext infers forwarding through local callback aliase
         '  return decode(value);',
         '}',
         '',
+        'export function adapterCallback<T>(callback: (value: number) => T, value: number): T {',
+        '  const wrapped = (input: number): T => callback(input);',
+        '  return wrapped(value);',
+        '}',
+        '',
+        'export function adapterMember<T>(decoder: Decoder<T>, value: number): T {',
+        '  const wrapped = (input: number): T => decoder.decode(input);',
+        '  return wrapped(value);',
+        '}',
+        '',
+        'export async function asyncAdapterCallback<T>(',
+        '  callback: (value: number) => Promise<T>,',
+        '  value: number,',
+        '): Promise<T> {',
+        '  const wrapped = async (input: number): Promise<T> => await callback(input);',
+        '  return await wrapped(value);',
+        '}',
+        '',
+        'export function doubleAdapterCallback<T>(callback: (value: number) => T, value: number): T {',
+        '  const wrapped = (input: number): T => {',
+        '    callback(input);',
+        '    return callback(input);',
+        '  };',
+        '  return wrapped(value);',
+        '}',
+        '',
+        'export function branchedAdapterCallback<T>(',
+        '  callback: (value: number) => T,',
+        '  value: number,',
+        '  flag: boolean,',
+        '): T {',
+        '  const wrapped = (input: number): T => {',
+        '    if (flag) {',
+        '      return callback(input);',
+        '    }',
+        '    return callback(input);',
+        '  };',
+        '  return wrapped(value);',
+        '}',
+        '',
       ].join('\n'),
     },
   ]);
@@ -4599,10 +4685,20 @@ Deno.test('createAnalysisContext infers forwarding through local callback aliase
   const aliasCallback = declarationsByName.get('aliasCallback');
   const aliasMember = declarationsByName.get('aliasMember');
   const destructuredMember = declarationsByName.get('destructuredMember');
+  const adapterCallback = declarationsByName.get('adapterCallback');
+  const adapterMember = declarationsByName.get('adapterMember');
+  const asyncAdapterCallback = declarationsByName.get('asyncAdapterCallback');
+  const doubleAdapterCallback = declarationsByName.get('doubleAdapterCallback');
+  const branchedAdapterCallback = declarationsByName.get('branchedAdapterCallback');
 
   assertExists(aliasCallback);
   assertExists(aliasMember);
   assertExists(destructuredMember);
+  assertExists(adapterCallback);
+  assertExists(adapterMember);
+  assertExists(asyncAdapterCallback);
+  assertExists(doubleAdapterCallback);
+  assertExists(branchedAdapterCallback);
 
   assertEquals(
     normalizeForwardedParameters(getEffectSummaryForDeclaration(context, aliasCallback).forwardedParameters),
@@ -4616,7 +4712,36 @@ Deno.test('createAnalysisContext infers forwarding through local callback aliase
     normalizeForwardedParameters(getEffectSummaryForDeclaration(context, destructuredMember).forwardedParameters),
     [{ parameterIndex: 0, failureBoundary: 'preserve', memberName: 'decode' }],
   );
+  assertEquals(
+    normalizeForwardedParameters(getEffectSummaryForDeclaration(context, adapterCallback).forwardedParameters),
+    [{ parameterIndex: 0, failureBoundary: 'preserve' }],
+  );
+  assertEquals(
+    normalizeForwardedParameters(getEffectSummaryForDeclaration(context, adapterMember).forwardedParameters),
+    [{ parameterIndex: 0, failureBoundary: 'preserve', memberName: 'decode' }],
+  );
+  assertEquals(
+    normalizeForwardedParameters(getEffectSummaryForDeclaration(context, asyncAdapterCallback).forwardedParameters),
+    [{ parameterIndex: 0, failureBoundary: 'reject' }],
+  );
   assertEquals(getEffectSummaryForDeclaration(context, aliasCallback).hasUnknownDirectEffects, false);
   assertEquals(getEffectSummaryForDeclaration(context, aliasMember).hasUnknownDirectEffects, false);
   assertEquals(getEffectSummaryForDeclaration(context, destructuredMember).hasUnknownDirectEffects, false);
+  assertEquals(getEffectSummaryForDeclaration(context, adapterCallback).hasUnknownDirectEffects, false);
+  assertEquals(getEffectSummaryForDeclaration(context, adapterMember).hasUnknownDirectEffects, false);
+  assertEquals(getEffectSummaryForDeclaration(context, asyncAdapterCallback).hasUnknownDirectEffects, false);
+  assertEquals(
+    normalizeForwardedParameters(
+      getEffectSummaryForDeclaration(context, doubleAdapterCallback).forwardedParameters,
+    ),
+    [],
+  );
+  assertEquals(
+    normalizeForwardedParameters(
+      getEffectSummaryForDeclaration(context, branchedAdapterCallback).forwardedParameters,
+    ),
+    [],
+  );
+  assertEquals(getEffectSummaryForDeclaration(context, doubleAdapterCallback).hasUnknownDirectEffects, true);
+  assertEquals(getEffectSummaryForDeclaration(context, branchedAdapterCallback).hasUnknownDirectEffects, true);
 });

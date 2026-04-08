@@ -10,6 +10,10 @@ import {
   SYNCHRONOUS_MAP_CALLBACK_PARAMETER_BINDINGS,
   SYNCHRONOUS_SET_CALLBACK_PARAMETER_BINDINGS,
 } from '../effects/builtins.ts';
+import {
+  getEnclosingBodyFreshLocalProof,
+  getFreshLocalMutatingCall,
+} from '../effects/fresh_locals.ts';
 import { compositionPreservesNarrowing, getEffectCompositionForCallLike } from '../effects.ts';
 
 import type { FlowFactEnvironment } from './flow_facts.ts';
@@ -1662,6 +1666,22 @@ function stateCallAffectsNarrow(
       )
     ) {
       return true;
+    }
+  }
+
+  if (calledMember) {
+    const freshLocalProof = getEnclosingBodyFreshLocalProof(context, node);
+    const freshLocalMutatingCall = freshLocalProof
+      ? getFreshLocalMutatingCall(context, node, freshLocalProof)
+      : undefined;
+    if (
+      freshLocalMutatingCall?.suppressesMut &&
+      !receiverPathAffectsMemberNarrow(
+        normalizeExpressionPath(context, calledMember.receiver, state),
+        narrowPath,
+      )
+    ) {
+      return false;
     }
   }
 

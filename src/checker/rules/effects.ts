@@ -20,10 +20,19 @@ import {
   getEffectSummaryForSignature,
   getParameterContractName,
 } from '../effects.ts';
+import {
+  collectFreshLocalConservativeMutReasons,
+  formatFreshLocalFailureReasons,
+  getEnclosingBodyFreshLocalProof,
+  getFreshLocalMutatingCall,
+} from '../effects/fresh_locals.ts';
+import { effectNamesOverlap, normalizeEffectNames } from '../effects/names.ts';
 import { formatEffectUnknownReasons } from '../effects/unknown.ts';
 
 type EffectViolationContext =
   | {
+    conservativeMutReasonTexts?: readonly string[];
+    conflictingEffects?: readonly EffectNameFact[];
     kind: 'call';
     primarySymbol: string;
     forbiddenEffects: readonly EffectNameFact[];
@@ -31,12 +40,16 @@ type EffectViolationContext =
     relation: 'callee_forbid' | 'parameter_forbid';
   }
   | {
+    conservativeMutReasonTexts?: readonly string[];
+    conflictingEffects?: readonly EffectNameFact[];
     kind: 'declaration';
     primarySymbol: string;
     forbiddenEffects: readonly EffectNameFact[];
     unknownReasons?: readonly EffectUnknownReasonFact[];
   }
   | {
+    conservativeMutReasonTexts?: readonly string[];
+    conflictingEffects?: readonly EffectNameFact[];
     kind: 'relation';
     primarySymbol?: string;
     forbiddenEffects: readonly EffectNameFact[];
@@ -46,6 +59,54 @@ type EffectViolationContext =
 
 function formatPublicEffectList(effects: readonly (PublicEffectName | EffectNameFact)[]): string {
   return effects.map((effect) => `\`${effect}\``).join(', ');
+}
+
+function findConflictingEffects(
+  activeEffects: readonly EffectNameFact[],
+  forbiddenEffects: readonly EffectNameFact[],
+): readonly EffectNameFact[] {
+  return normalizeEffectNames(
+    activeEffects.filter((effect) =>
+      forbiddenEffects.some((forbiddenEffect) => effectNamesOverlap(effect, forbiddenEffect))
+    ),
+  );
+}
+
+function getDeclarationConservativeMutReasonTexts(
+  context: AnalysisContext,
+  node: ts.Node,
+  forbiddenEffects: readonly EffectNameFact[],
+  directEffects: readonly EffectNameFact[],
+): readonly string[] | undefined {
+  if (
+    !forbiddenEffects.some((effect) => effectNamesOverlap(effect, 'mut')) ||
+    !directEffects.some((effect) => effectNamesOverlap(effect, 'mut')) ||
+    !isEffectCheckedDeclaration(node)
+  ) {
+    return undefined;
+  }
+
+  const reasons = collectFreshLocalConservativeMutReasons(context, node);
+  return reasons.length > 0 ? formatFreshLocalFailureReasons(reasons) : undefined;
+}
+
+function getCallConservativeMutReasonTexts(
+  context: AnalysisContext,
+  node: ts.CallExpression | ts.NewExpression,
+  forbiddenEffects: readonly EffectNameFact[],
+  directEffects: readonly EffectNameFact[],
+): readonly string[] | undefined {
+  if (
+    !ts.isCallExpression(node) ||
+    !forbiddenEffects.some((effect) => effectNamesOverlap(effect, 'mut')) ||
+    !directEffects.some((effect) => effectNamesOverlap(effect, 'mut'))
+  ) {
+    return undefined;
+  }
+
+  const proof = getEnclosingBodyFreshLocalProof(context, node);
+  const blockedReason = proof ? getFreshLocalMutatingCall(context, node, proof)?.blockedReason : undefined;
+  return blockedReason ? formatFreshLocalFailureReasons([blockedReason]) : undefined;
 }
 
 function createEffectContractViolationDiagnostic(
@@ -106,10 +167,22 @@ function createEffectContractViolationDiagnostic(
           label: 'forbiddenEffects',
           value: context.forbiddenEffects.join(', '),
         },
+        ...(context.conflictingEffects && context.conflictingEffects.length > 0
+          ? [{
+            label: 'conflictingEffects',
+            value: context.conflictingEffects.join(', '),
+          }]
+          : []),
         ...(unknownReasonTexts.length > 0
           ? [{
             label: 'unknownEffectReasons',
             value: unknownReasonTexts.join('; '),
+          }]
+          : []),
+        ...(context.conservativeMutReasonTexts && context.conservativeMutReasonTexts.length > 0
+          ? [{
+            label: 'conservativeMutReasons',
+            value: context.conservativeMutReasonTexts.join('; '),
           }]
           : []),
       ],
@@ -121,6 +194,13 @@ function createEffectContractViolationDiagnostic(
       message.replace(`${SOUND_DIAGNOSTIC_MESSAGES.effectContractViolation} `, ''),
       ...(unknownReasonTexts.length > 0
         ? [`Proof blocked by unknown effect reasons: ${unknownReasonTexts.join(', ')}.`]
+        : []),
+      ...(context.conservativeMutReasonTexts && context.conservativeMutReasonTexts.length > 0
+        ? [
+          `Fresh-local mut proof did not apply: ${
+            context.conservativeMutReasonTexts.join(', ')
+          }.`,
+        ]
         : []),
       `Example: ${example}`,
     ],
@@ -229,6 +309,13 @@ export function runEffectRules(context: AnalysisContext): SoundDiagnostic[] {
           diagnostics.push(
             createEffectContractViolationDiagnostic(node, {
               kind: 'declaration',
+              conflictingEffects: findConflictingEffects(summary.directEffects, summary.forbidEffects),
+              conservativeMutReasonTexts: getDeclarationConservativeMutReasonTexts(
+                context,
+                node,
+                summary.forbidEffects,
+                summary.directEffects,
+              ),
               primarySymbol: getEffectContractName(node),
               forbiddenEffects: summary.forbidEffects,
               unknownReasons: summary.hasUnknownDirectEffects
@@ -273,6 +360,9 @@ export function runEffectRules(context: AnalysisContext): SoundDiagnostic[] {
             diagnostics.push(
               createEffectContractViolationDiagnostic(node, {
                 kind: 'call',
+                conflictingEffects: argumentComposition
+                  ? findConflictingEffects(argumentComposition.effects, contract.forbidEffects)
+                  : undefined,
                 primarySymbol: parameterName,
                 forbiddenEffects: contract.forbidEffects,
                 unknownReasons: argumentComposition?.unknown ? argumentComposition.unknownReasons : undefined,
@@ -295,6 +385,13 @@ export function runEffectRules(context: AnalysisContext): SoundDiagnostic[] {
               diagnostics.push(
                 createEffectContractViolationDiagnostic(node, {
                   kind: 'call',
+                  conflictingEffects: findConflictingEffects(composedEffects.effects, summary.forbidEffects),
+                  conservativeMutReasonTexts: getCallConservativeMutReasonTexts(
+                    context,
+                    node,
+                    summary.forbidEffects,
+                    composedEffects.effects,
+                  ),
                   primarySymbol: getEffectContractName(
                     context.checker.getResolvedSignature(node)?.getDeclaration() ?? node.expression,
                   ),
