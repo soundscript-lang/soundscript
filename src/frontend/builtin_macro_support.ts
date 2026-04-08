@@ -1210,6 +1210,11 @@ export function createBuiltinExpandedProgram(
 
         const finalText = normalized
           ? normalized.rewriteStage.rewrittenText
+          : !containsMacroSyntax &&
+              !importsBuiltinMacros &&
+              !numericNormalized &&
+              preparedSource?.postRewriteStage
+          ? sourceFile.text
           : repairBuiltinMacroModuleSpecifiers(printer.printFile(sourceFile));
         if (containsMacroSyntax && preparedSource) {
           const { cleanedProgramText, preparedFile } = buildDiagnosticPreparedSourceFile(

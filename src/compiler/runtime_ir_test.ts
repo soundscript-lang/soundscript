@@ -1,50 +1,51 @@
-import { assertEquals } from '@std/assert';
+import { assertEquals, assertStringIncludes } from '@std/assert';
 import { dirname, join } from '@std/path';
 import ts from 'typescript';
 
 import { createSoundStdlibCompilerHost } from '../bundled/sound_stdlib.ts';
 import type { CompilerModuleIR } from './ir.ts';
 import { lowerProgramToCompilerIR } from './lower.ts';
+import { emitCompilerModuleToWat } from './wat_emitter.ts';
 import {
   COMPILER_RUNTIME_ORDINARY_OBJECT_PROTOTYPE_OWN_PROPERTY_KEYS,
   createCompilerRuntimeOrderedFallbackObjectRepresentationRef,
   createCompilerRuntimeOrdinaryObjectPrototypeMembership,
 } from './runtime_ir.ts';
 import type {
+  CompilerRuntimeAdaptArrayValueIR,
+  CompilerRuntimeAdaptObjectValueIR,
+  CompilerRuntimeAdaptStringValueIR,
+  CompilerRuntimeAdaptValueIR,
   CompilerRuntimeAllocateFallbackObjectIR,
   CompilerRuntimeAllocateSpecializedObjectIR,
-  CompilerRuntimeAdaptArrayValueIR,
-  CompilerRuntimeAdaptStringValueIR,
-  CompilerRuntimeTaggedPayloadLayoutIR,
-  CompilerRuntimeTaggedHeapValueCaseIR,
-  CompilerRuntimeTaggedInlineValueCaseIR,
-  CompilerRuntimeAdaptValueIR,
-  CompilerRuntimeAdaptObjectValueIR,
   CompilerRuntimeDenseArrayRepresentationIR,
   CompilerRuntimeFallbackArrayRepresentationIR,
   CompilerRuntimeFallbackArrayRepresentationRefIR,
-  CompilerRuntimeOrderedFallbackObjectRepresentationIR,
-  CompilerRuntimeOrderedFallbackObjectRepresentationRefIR,
-  CompilerRuntimeFallbackStringRepresentationIR,
-  CompilerRuntimeFallbackStringRepresentationRefIR,
-  CompilerRuntimeIR,
   CompilerRuntimeFallbackObjectRepresentationIR,
   CompilerRuntimeFallbackObjectRepresentationRefIR,
-  CompilerRuntimeListFallbackObjectKeysIR,
-  CompilerRuntimeListSpecializedObjectKeysIR,
+  CompilerRuntimeFallbackStringRepresentationIR,
+  CompilerRuntimeFallbackStringRepresentationRefIR,
   CompilerRuntimeGetFallbackObjectPropertyIR,
+  CompilerRuntimeGetSpecializedObjectFieldIR,
   CompilerRuntimeHasFallbackObjectPropertyIR,
   CompilerRuntimeHasSpecializedObjectOwnPropertyIR,
+  CompilerRuntimeIR,
+  CompilerRuntimeListFallbackObjectKeysIR,
+  CompilerRuntimeListSpecializedObjectKeysIR,
+  CompilerRuntimeOrderedFallbackObjectRepresentationIR,
+  CompilerRuntimeOrderedFallbackObjectRepresentationRefIR,
   CompilerRuntimeOrdinaryObjectPrototypeMembershipIR,
-  CompilerRuntimeRepresentationRefIR,
   CompilerRuntimeRepresentationIR,
-  CompilerRuntimeGetSpecializedObjectFieldIR,
+  CompilerRuntimeRepresentationRefIR,
   CompilerRuntimeSetFallbackObjectPropertyIR,
   CompilerRuntimeSpecializedArrayRepresentationRefIR,
+  CompilerRuntimeSpecializedObjectRepresentationIR,
   CompilerRuntimeSpecializedObjectRepresentationRefIR,
   CompilerRuntimeSpecializedStringRepresentationRefIR,
-  CompilerRuntimeSpecializedObjectRepresentationIR,
   CompilerRuntimeStringRepresentationIR,
+  CompilerRuntimeTaggedHeapValueCaseIR,
+  CompilerRuntimeTaggedInlineValueCaseIR,
+  CompilerRuntimeTaggedPayloadLayoutIR,
   CompilerRuntimeTaggedValueRepresentationIR,
 } from './runtime_ir.ts';
 import { loadConfig } from '../config.ts';
@@ -64,7 +65,9 @@ const EXPECTED_ORDINARY_OBJECT_PROTOTYPE_OWN_PROPERTY_KEYS = [
   'valueOf',
 ] as const;
 
-async function createTempProject(files: Array<{ path: string; contents: string }>): Promise<string> {
+async function createTempProject(
+  files: Array<{ path: string; contents: string }>,
+): Promise<string> {
   const tempDirectory = await Deno.makeTempDir({ prefix: 'sound-runtime-ir-' });
 
   for (const file of files) {
@@ -94,65 +97,85 @@ function lowerTempProjectToCompilerIR(tempDirectory: string): CompilerModuleIR {
   return lowerProgramToCompilerIR(program, dirname(projectPath));
 }
 
-// @ts-expect-error object-family refs cannot use array-only kinds
-type InvalidObjectFamilyRef = CompilerRuntimeRepresentationRefIR<'object', 'fallback_array_representation'>;
+type InvalidObjectFamilyRef = CompilerRuntimeRepresentationRefIR<
+  'object',
+  // @ts-expect-error object-family refs cannot use array-only kinds
+  'fallback_array_representation'
+>;
 
 // @ts-expect-error object-family adapt operations cannot point at array representations
-const invalidObjectAdaptFrom: CompilerRuntimeAdaptValueIR<'object'>['fromRepresentation'] = {} as CompilerRuntimeSpecializedArrayRepresentationRefIR;
+const invalidObjectAdaptFrom: CompilerRuntimeAdaptValueIR<'object'>['fromRepresentation'] =
+  {} as CompilerRuntimeSpecializedArrayRepresentationRefIR;
 
 // @ts-expect-error array-family adapt operations cannot generalize to object fallback refs
-const invalidArrayAdaptTo: CompilerRuntimeAdaptValueIR<'array'>['toRepresentation'] = {} as CompilerRuntimeFallbackObjectRepresentationRefIR;
+const invalidArrayAdaptTo: CompilerRuntimeAdaptValueIR<'array'>['toRepresentation'] =
+  {} as CompilerRuntimeFallbackObjectRepresentationRefIR;
 
-// @ts-expect-error string-family refs cannot use object-only kinds
-type InvalidStringFamilyRef = CompilerRuntimeRepresentationRefIR<'string', 'fallback_object_representation'>;
+type InvalidStringFamilyRef = CompilerRuntimeRepresentationRefIR<
+  'string',
+  // @ts-expect-error string-family refs cannot use object-only kinds
+  'fallback_object_representation'
+>;
 
 // @ts-expect-error executable object allocation cannot use fallback object refs
 const invalidExecutableObjectAllocateFallbackRepresentation:
-  CompilerRuntimeAllocateSpecializedObjectIR['representation'] = {} as CompilerRuntimeFallbackObjectRepresentationRefIR;
+  CompilerRuntimeAllocateSpecializedObjectIR['representation'] =
+    {} as CompilerRuntimeFallbackObjectRepresentationRefIR;
 
 // @ts-expect-error executable object allocation cannot use generic object refs
 const invalidExecutableObjectAllocateGenericRepresentation:
-  CompilerRuntimeAllocateSpecializedObjectIR['representation'] = {} as CompilerRuntimeRepresentationRefIR<'object'>;
+  CompilerRuntimeAllocateSpecializedObjectIR['representation'] =
+    {} as CompilerRuntimeRepresentationRefIR<'object'>;
 
 // @ts-expect-error executable object field reads cannot use fallback object refs
 const invalidExecutableObjectGetFallbackRepresentation:
-  CompilerRuntimeGetSpecializedObjectFieldIR['representation'] = {} as CompilerRuntimeFallbackObjectRepresentationRefIR;
+  CompilerRuntimeGetSpecializedObjectFieldIR['representation'] =
+    {} as CompilerRuntimeFallbackObjectRepresentationRefIR;
 
 // @ts-expect-error executable object field reads cannot use generic object refs
 const invalidExecutableObjectGetGenericRepresentation:
-  CompilerRuntimeGetSpecializedObjectFieldIR['representation'] = {} as CompilerRuntimeRepresentationRefIR<'object'>;
+  CompilerRuntimeGetSpecializedObjectFieldIR['representation'] =
+    {} as CompilerRuntimeRepresentationRefIR<'object'>;
 
 // @ts-expect-error fallback object allocation cannot use specialized object refs
 const invalidFallbackObjectAllocateSpecializedRepresentation:
-  CompilerRuntimeAllocateFallbackObjectIR['representation'] = {} as CompilerRuntimeSpecializedObjectRepresentationRefIR;
+  CompilerRuntimeAllocateFallbackObjectIR['representation'] =
+    {} as CompilerRuntimeSpecializedObjectRepresentationRefIR;
 
 // @ts-expect-error fallback object property reads cannot use specialized object refs
 const invalidFallbackObjectGetSpecializedRepresentation:
-  CompilerRuntimeGetFallbackObjectPropertyIR['representation'] = {} as CompilerRuntimeSpecializedObjectRepresentationRefIR;
+  CompilerRuntimeGetFallbackObjectPropertyIR['representation'] =
+    {} as CompilerRuntimeSpecializedObjectRepresentationRefIR;
 
 // @ts-expect-error fallback object property writes cannot use specialized object refs
 const invalidFallbackObjectSetSpecializedRepresentation:
-  CompilerRuntimeSetFallbackObjectPropertyIR['representation'] = {} as CompilerRuntimeSpecializedObjectRepresentationRefIR;
+  CompilerRuntimeSetFallbackObjectPropertyIR['representation'] =
+    {} as CompilerRuntimeSpecializedObjectRepresentationRefIR;
 
 // @ts-expect-error specialized own-property membership cannot use fallback object refs
 const invalidSpecializedObjectHasFallbackRepresentation:
-  CompilerRuntimeHasSpecializedObjectOwnPropertyIR['representation'] = {} as CompilerRuntimeFallbackObjectRepresentationRefIR;
+  CompilerRuntimeHasSpecializedObjectOwnPropertyIR['representation'] =
+    {} as CompilerRuntimeFallbackObjectRepresentationRefIR;
 
 // @ts-expect-error fallback membership cannot use specialized object refs
 const invalidFallbackObjectHasSpecializedRepresentation:
-  CompilerRuntimeHasFallbackObjectPropertyIR['representation'] = {} as CompilerRuntimeSpecializedObjectRepresentationRefIR;
+  CompilerRuntimeHasFallbackObjectPropertyIR['representation'] =
+    {} as CompilerRuntimeSpecializedObjectRepresentationRefIR;
 
 // @ts-expect-error specialized direct key listing cannot use fallback object refs
 const invalidSpecializedObjectListFallbackRepresentation:
-  CompilerRuntimeListSpecializedObjectKeysIR['representation'] = {} as CompilerRuntimeFallbackObjectRepresentationRefIR;
+  CompilerRuntimeListSpecializedObjectKeysIR['representation'] =
+    {} as CompilerRuntimeFallbackObjectRepresentationRefIR;
 
 // @ts-expect-error fallback key listing cannot use specialized object refs
 const invalidFallbackObjectListSpecializedRepresentation:
-  CompilerRuntimeListFallbackObjectKeysIR['representation'] = {} as CompilerRuntimeSpecializedObjectRepresentationRefIR;
+  CompilerRuntimeListFallbackObjectKeysIR['representation'] =
+    {} as CompilerRuntimeSpecializedObjectRepresentationRefIR;
 
 // @ts-expect-error fallback key listing requires an ordering-capable fallback representation ref
 const invalidFallbackObjectListUnorderedRepresentation:
-  CompilerRuntimeListFallbackObjectKeysIR['representation'] = {} as CompilerRuntimeFallbackObjectRepresentationRefIR;
+  CompilerRuntimeListFallbackObjectKeysIR['representation'] =
+    {} as CompilerRuntimeFallbackObjectRepresentationRefIR;
 
 // @ts-expect-error ordered fallback refs must be derived from an ordered representation, not handwritten
 const invalidManualOrderedFallbackObjectRepresentationRef:
@@ -163,93 +186,96 @@ const invalidManualOrderedFallbackObjectRepresentationRef:
     runtimeStateKind: 'ordered_hash_indexed_property_bag',
   };
 
-const invalidOrderedFallbackObjectRepresentation: CompilerRuntimeOrderedFallbackObjectRepresentationIR = {
-  kind: 'fallback_object_representation',
-  family: 'object',
-  name: 'object.invalid_ordered_fallback',
-  keyRepresentation: 'string',
-  valueRepresentation: 'tagged_value',
-  prototypeMembership: createCompilerRuntimeOrdinaryObjectPrototypeMembership(),
-  runtimeState: {
-    // @ts-expect-error ordered fallback representations require ordered runtime state
-    kind: 'hash_indexed_property_bag',
-    sizeType: 'i32',
-    storageKind: 'open_addressed',
-    capacityType: 'i32',
-    indexMaskType: 'i32',
-    occupiedSlotCountType: 'i32',
-    probe: {
-      kind: 'linear',
-      stepType: 'i32',
-    },
-    loadFactor: {
-      maxOccupiedNumerator: 3,
-      maxOccupiedDenominator: 4,
-    },
-    slots: {
-      hashCodeType: 'i32',
-      occupancyTagType: 'i32',
-      keyRepresentation: 'string',
-      valueRepresentation: 'tagged_value',
-      insertionRankType: 'i32',
-      occupancyStates: {
-        empty: 0,
-        occupied: 1,
-        deleted: 2,
+const invalidOrderedFallbackObjectRepresentation:
+  CompilerRuntimeOrderedFallbackObjectRepresentationIR = {
+    kind: 'fallback_object_representation',
+    family: 'object',
+    name: 'object.invalid_ordered_fallback',
+    keyRepresentation: 'string',
+    valueRepresentation: 'tagged_value',
+    prototypeMembership: createCompilerRuntimeOrdinaryObjectPrototypeMembership(),
+    runtimeState: {
+      // @ts-expect-error ordered fallback representations require ordered runtime state
+      kind: 'hash_indexed_property_bag',
+      sizeType: 'i32',
+      storageKind: 'open_addressed',
+      capacityType: 'i32',
+      indexMaskType: 'i32',
+      occupiedSlotCountType: 'i32',
+      probe: {
+        kind: 'linear',
+        stepType: 'i32',
+      },
+      loadFactor: {
+        maxOccupiedNumerator: 3,
+        maxOccupiedDenominator: 4,
+      },
+      slots: {
+        hashCodeType: 'i32',
+        occupancyTagType: 'i32',
+        keyRepresentation: 'string',
+        valueRepresentation: 'tagged_value',
+        insertionRankType: 'i32',
+        occupancyStates: {
+          empty: 0,
+          occupied: 1,
+          deleted: 2,
+        },
       },
     },
-  },
-};
+  };
 
-const invalidSpecializedObjectPrototypeMembership: CompilerRuntimeSpecializedObjectRepresentationIR = {
-  kind: 'specialized_object_representation',
-  family: 'object',
-  name: 'object.invalid',
-  shapeName: 'Invalid',
-  fields: [],
-  fallbackRepresentation: {} as CompilerRuntimeFallbackObjectRepresentationRefIR,
-  // @ts-expect-error prototype membership is owned by the fallback object representation
-  prototypeMembership: {
-    kind: 'ordinary_object_prototype_membership',
-    inheritedPropertyKeys: [],
-  },
-};
+const invalidSpecializedObjectPrototypeMembership:
+  CompilerRuntimeSpecializedObjectRepresentationIR = {
+    kind: 'specialized_object_representation',
+    family: 'object',
+    name: 'object.invalid',
+    shapeName: 'Invalid',
+    fields: [],
+    fallbackRepresentation: {} as CompilerRuntimeFallbackObjectRepresentationRefIR,
+    // @ts-expect-error prototype membership is owned by the fallback object representation
+    prototypeMembership: {
+      kind: 'ordinary_object_prototype_membership',
+      inheritedPropertyKeys: [],
+    },
+  };
 
 // @ts-expect-error fallback object representations participating in in semantics require prototype membership
-const invalidFallbackObjectWithoutPrototypeMembership: CompilerRuntimeFallbackObjectRepresentationIR = {
-  kind: 'fallback_object_representation',
-  family: 'object',
-  name: 'object.invalid_fallback',
-  keyRepresentation: 'string',
-  valueRepresentation: 'tagged_value',
-  runtimeState: {
-    kind: 'hash_indexed_property_bag',
-    sizeType: 'i32',
-    storageKind: 'open_addressed',
-    capacityType: 'i32',
-    indexMaskType: 'i32',
-    occupiedSlotCountType: 'i32',
-    probe: {
-      kind: 'linear',
-      stepType: 'i32',
-    },
-    loadFactor: {
-      maxOccupiedNumerator: 3,
-      maxOccupiedDenominator: 4,
-    },
-    slots: {
-      hashCodeType: 'i32',
-      occupancyTagType: 'i32',
-      keyRepresentation: 'string',
-      valueRepresentation: 'tagged_value',
-      occupancyStates: {
-        empty: 0,
-        occupied: 1,
-        deleted: 2,
+const invalidFallbackObjectWithoutPrototypeMembership:
+  CompilerRuntimeFallbackObjectRepresentationIR = {
+    kind: 'fallback_object_representation',
+    family: 'object',
+    name: 'object.invalid_fallback',
+    keyRepresentation: 'string',
+    valueRepresentation: 'tagged_value',
+    runtimeState: {
+      kind: 'hash_indexed_property_bag',
+      sizeType: 'i32',
+      storageKind: 'open_addressed',
+      capacityType: 'i32',
+      indexMaskType: 'i32',
+      occupiedSlotCountType: 'i32',
+      probe: {
+        kind: 'linear',
+        stepType: 'i32',
+      },
+      loadFactor: {
+        maxOccupiedNumerator: 3,
+        maxOccupiedDenominator: 4,
+      },
+      slots: {
+        hashCodeType: 'i32',
+        occupancyTagType: 'i32',
+        keyRepresentation: 'string',
+        valueRepresentation: 'tagged_value',
+        occupancyStates: {
+          empty: 0,
+          occupied: 1,
+          deleted: 2,
+        },
       },
     },
-  },
-};
+  };
 
 type InvalidPrototypeMembershipPush =
   // @ts-expect-error ordinary-object prototype keys are immutable metadata
@@ -260,19 +286,24 @@ type InvalidSpecializedObjectListPropertyKeysPush =
   CompilerRuntimeListSpecializedObjectKeysIR['propertyKeys']['push'];
 
 // @ts-expect-error number tagged values must use f64 payloads
-const invalidTaggedNumberPayload: CompilerRuntimeTaggedInlineValueCaseIR<'number'>['payloadType'] = 'i32';
+const invalidTaggedNumberPayload: CompilerRuntimeTaggedInlineValueCaseIR<'number'>['payloadType'] =
+  'i32';
 
 // @ts-expect-error string heap tagged values must use heap_ref payloads
-const invalidTaggedStringPayload: CompilerRuntimeTaggedHeapValueCaseIR<'string'>['payloadType'] = 'f64';
+const invalidTaggedStringPayload: CompilerRuntimeTaggedHeapValueCaseIR<'string'>['payloadType'] =
+  'f64';
 
 // @ts-expect-error heap tagged values require heap families, not inline kinds
-const invalidTaggedHeapFamily: CompilerRuntimeTaggedHeapValueCaseIR<'string'>['heapFamily'] = 'number';
+const invalidTaggedHeapFamily: CompilerRuntimeTaggedHeapValueCaseIR<'string'>['heapFamily'] =
+  'number';
 
 // @ts-expect-error array heap tagged values must use heap_ref payloads
-const invalidTaggedArrayPayload: CompilerRuntimeTaggedHeapValueCaseIR<'array'>['payloadType'] = 'i32';
+const invalidTaggedArrayPayload: CompilerRuntimeTaggedHeapValueCaseIR<'array'>['payloadType'] =
+  'i32';
 
 // @ts-expect-error heap payload layout must use heap_ref storage
-const invalidTaggedHeapPayloadLayout: CompilerRuntimeTaggedPayloadLayoutIR['heapPayloadType'] = 'i32';
+const invalidTaggedHeapPayloadLayout: CompilerRuntimeTaggedPayloadLayoutIR['heapPayloadType'] =
+  'i32';
 
 void (0 as InvalidObjectFamilyRef | 0);
 void invalidObjectAdaptFrom;
@@ -350,8 +381,8 @@ Deno.test('runtime IR describes fallback and specialized heap representations', 
     name: 'object.point2d',
     shapeName: 'Point2D',
     fields: [
-      { name: 'x', valueRepresentation: 'tagged_value' },
-      { name: 'y', valueRepresentation: 'tagged_value' },
+      { name: 'x', optional: false, valueType: 'f64', valueRepresentation: 'tagged_value' },
+      { name: 'y', optional: false, valueType: 'f64', valueRepresentation: 'tagged_value' },
     ],
     fallbackRepresentation: fallbackObjectRef,
   };
@@ -577,8 +608,8 @@ Deno.test('runtime IR describes executable specialized ordinary-object operation
     name: 'object.point2d',
     shapeName: 'Point2D',
     fields: [
-      { name: 'x', valueRepresentation: 'tagged_value' },
-      { name: 'y', valueRepresentation: 'tagged_value' },
+      { name: 'x', optional: false, valueType: 'f64', valueRepresentation: 'tagged_value' },
+      { name: 'y', optional: false, valueType: 'f64', valueRepresentation: 'tagged_value' },
     ],
     fallbackRepresentation: fallbackObjectRef,
   };
@@ -637,6 +668,8 @@ Deno.test('runtime IR describes executable specialized ordinary-object operation
   assertEquals(readPointX.fieldIndex, 0);
   assertEquals(pointRepresentation.fields[readPointX.fieldIndex], {
     name: 'x',
+    optional: false,
+    valueType: 'f64',
     valueRepresentation: 'tagged_value',
   });
   assertEquals('fieldName' in readPointX, false);
@@ -691,8 +724,8 @@ Deno.test('runtime IR describes ordinary-object membership fast paths and fallba
     name: 'object.point2d',
     shapeName: 'Point2D',
     fields: [
-      { name: 'x', valueRepresentation: 'tagged_value' },
-      { name: 'y', valueRepresentation: 'tagged_value' },
+      { name: 'x', optional: false, valueType: 'f64', valueRepresentation: 'tagged_value' },
+      { name: 'y', optional: false, valueType: 'f64', valueRepresentation: 'tagged_value' },
     ],
     fallbackRepresentation: fallbackObjectRef,
   };
@@ -738,6 +771,8 @@ Deno.test('runtime IR describes ordinary-object membership fast paths and fallba
   assertEquals(hasPointX.fieldIndex, 0);
   assertEquals(pointRepresentation.fields[hasPointX.fieldIndex], {
     name: 'x',
+    optional: false,
+    valueType: 'f64',
     valueRepresentation: 'tagged_value',
   });
   assertEquals(hasFallbackZ.representation, fallbackObjectRef);
@@ -796,8 +831,8 @@ Deno.test('runtime IR describes ordered ordinary-object key listing fast paths',
     name: 'object.point2d',
     shapeName: 'Point2D',
     fields: [
-      { name: 'x', valueRepresentation: 'tagged_value' },
-      { name: 'y', valueRepresentation: 'tagged_value' },
+      { name: 'x', optional: false, valueType: 'f64', valueRepresentation: 'tagged_value' },
+      { name: 'y', optional: false, valueType: 'f64', valueRepresentation: 'tagged_value' },
     ],
     fallbackRepresentation: fallbackObjectRef,
   };
@@ -870,9 +905,27 @@ Deno.test('runtime IR describes executable fallback ordinary-object operations a
       undefined: { kind: 'undefined', tag: 0, payloadSlot: 'inline_payload', payloadType: 'i32' },
     },
     heapCases: {
-      string: { kind: 'heap', heapFamily: 'string', tag: 3, payloadSlot: 'heap_payload', payloadType: 'heap_ref' },
-      object: { kind: 'heap', heapFamily: 'object', tag: 4, payloadSlot: 'heap_payload', payloadType: 'heap_ref' },
-      array: { kind: 'heap', heapFamily: 'array', tag: 5, payloadSlot: 'heap_payload', payloadType: 'heap_ref' },
+      string: {
+        kind: 'heap',
+        heapFamily: 'string',
+        tag: 3,
+        payloadSlot: 'heap_payload',
+        payloadType: 'heap_ref',
+      },
+      object: {
+        kind: 'heap',
+        heapFamily: 'object',
+        tag: 4,
+        payloadSlot: 'heap_payload',
+        payloadType: 'heap_ref',
+      },
+      array: {
+        kind: 'heap',
+        heapFamily: 'array',
+        tag: 5,
+        payloadSlot: 'heap_payload',
+        payloadType: 'heap_ref',
+      },
     },
   };
   const fallbackObject: CompilerRuntimeFallbackObjectRepresentationIR = {
@@ -921,8 +974,8 @@ Deno.test('runtime IR describes executable fallback ordinary-object operations a
     name: 'object.point2d',
     shapeName: 'Point2D',
     fields: [
-      { name: 'x', valueRepresentation: 'tagged_value' },
-      { name: 'y', valueRepresentation: 'tagged_value' },
+      { name: 'x', optional: false, valueType: 'f64', valueRepresentation: 'tagged_value' },
+      { name: 'y', optional: false, valueType: 'f64', valueRepresentation: 'tagged_value' },
     ],
     fallbackRepresentation: fallbackObjectRef,
   };
@@ -1166,9 +1219,27 @@ Deno.test('lowering ensures canonical tagged values when fallback object represe
       undefined: { kind: 'undefined', tag: 0, payloadSlot: 'inline_payload', payloadType: 'i32' },
     },
     heapCases: {
-      array: { kind: 'heap', heapFamily: 'array', tag: 5, payloadSlot: 'heap_payload', payloadType: 'heap_ref' },
-      object: { kind: 'heap', heapFamily: 'object', tag: 4, payloadSlot: 'heap_payload', payloadType: 'heap_ref' },
-      string: { kind: 'heap', heapFamily: 'string', tag: 3, payloadSlot: 'heap_payload', payloadType: 'heap_ref' },
+      array: {
+        kind: 'heap',
+        heapFamily: 'array',
+        tag: 5,
+        payloadSlot: 'heap_payload',
+        payloadType: 'heap_ref',
+      },
+      object: {
+        kind: 'heap',
+        heapFamily: 'object',
+        tag: 4,
+        payloadSlot: 'heap_payload',
+        payloadType: 'heap_ref',
+      },
+      string: {
+        kind: 'heap',
+        heapFamily: 'string',
+        tag: 3,
+        payloadSlot: 'heap_payload',
+        payloadType: 'heap_ref',
+      },
     },
   });
 });
@@ -1221,23 +1292,80 @@ Deno.test('lowering records compiler-owned string runtime representations for st
       { kind: 'string_representation', name: 'string.runtime' },
     ],
   );
-  assertEquals(runtime?.representations.find((representation) => representation.kind === 'fallback_string_representation'), {
-    kind: 'fallback_string_representation',
-    family: 'string',
-    name: 'string.fallback.utf16',
-    codeUnitRepresentation: 'i32',
-  });
-  assertEquals(runtime?.representations.find((representation) => representation.kind === 'string_representation'), {
-    kind: 'string_representation',
-    family: 'string',
-    name: 'string.runtime',
-    status: 'placeholder',
-    fallbackRepresentation: {
-      family: 'string',
+  assertEquals(
+    runtime?.representations.find((representation) =>
+      representation.kind === 'fallback_string_representation'
+    ),
+    {
       kind: 'fallback_string_representation',
+      family: 'string',
       name: 'string.fallback.utf16',
+      codeUnitRepresentation: 'i32',
     },
-  });
+  );
+  assertEquals(
+    runtime?.representations.find((representation) =>
+      representation.kind === 'string_representation'
+    ),
+    {
+      kind: 'string_representation',
+      family: 'string',
+      name: 'string.runtime',
+      status: 'placeholder',
+      fallbackRepresentation: {
+        family: 'string',
+        kind: 'fallback_string_representation',
+        name: 'string.fallback.utf16',
+      },
+    },
+  );
+});
+
+Deno.test('WAT emission uses explicit specialized object field metadata instead of reparsing shapeName', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: {
+          strict: true,
+          target: 'ES2022',
+          module: 'ESNext',
+          moduleResolution: 'Bundler',
+          noEmit: true,
+          skipLibCheck: true,
+        },
+        include: ['src/**/*.ts'],
+      }),
+    },
+    {
+      path: 'src/index.ts',
+      contents: [
+        'type Point = { x: number; y: number };',
+        '',
+        'export function main(point: Point): number {',
+        '  return point.x;',
+        '}',
+        '',
+      ].join('\n'),
+    },
+  ]);
+
+  const moduleIR = lowerTempProjectToCompilerIR(tempDirectory);
+  const pointRepresentation = moduleIR.runtime?.representations.find((
+    representation,
+  ): representation is CompilerRuntimeSpecializedObjectRepresentationIR =>
+    representation.kind === 'specialized_object_representation' &&
+    representation.fields.some((field) => field.name === 'x') &&
+    representation.fields.some((field) => field.name === 'y')
+  );
+
+  if (!pointRepresentation) {
+    throw new Error('Expected specialized point representation metadata.');
+  }
+
+  pointRepresentation.shapeName = 'opaque.boundary.cache.key';
+  const wat = emitCompilerModuleToWat(moduleIR);
+  assertStringIncludes(wat, '(func $main__export (export "src/index.ts:main")');
 });
 
 Deno.test('lowering records UTF-16 code-unit literals without normalizing surrogate structure', async () => {

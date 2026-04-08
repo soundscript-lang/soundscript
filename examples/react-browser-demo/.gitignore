@@ -1,0 +1,3 @@
+node_modules/
+soundscript-out/
+.playwright-cli/

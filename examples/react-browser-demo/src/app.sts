@@ -1,0 +1,30 @@
+// #[interop]
+import { createRoot } from 'react-dom/client';
+// #[interop]
+import { getAppContainer } from './dom-host.js';
+
+let root: ReturnType<typeof createRoot> | undefined = undefined;
+let clickCount = 0;
+
+function click(): void {
+  clickCount = clickCount + 1;
+}
+
+function label(): string {
+  return clickCount === 0
+    ? 'Click the Wasm button'
+    : (clickCount === 1 ? 'Clicked 1 time' : 'Clicked many times');
+}
+
+function view() {
+  return <button onClick={() => {
+    click();
+    start();
+  }}>{label()}</button>;
+}
+
+export function start(): void {
+  const currentRoot = root ?? createRoot(getAppContainer());
+  root = currentRoot;
+  currentRoot.render(view());
+}

@@ -18,6 +18,10 @@ export function isUndefinedType(type: ts.Type): boolean {
   return (type.flags & ts.TypeFlags.Undefined) !== 0;
 }
 
+export function isVoidType(type: ts.Type): boolean {
+  return (type.flags & ts.TypeFlags.Void) !== 0;
+}
+
 export function isNullType(type: ts.Type): boolean {
   return (type.flags & ts.TypeFlags.Null) !== 0;
 }
@@ -399,7 +403,7 @@ export function getCompilerValueTypeForType(type: ts.Type, node: ts.Node): Compi
   if ((type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0) {
     return 'tagged_ref';
   }
-  if (isUndefinedType(type) || isNullType(type)) {
+  if (isUndefinedType(type) || isVoidType(type) || isNullType(type)) {
     return 'tagged_ref';
   }
   if (isTaggedCompilerUnionType(type)) {
