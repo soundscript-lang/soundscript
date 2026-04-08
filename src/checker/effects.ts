@@ -605,6 +605,174 @@ function getCurrentFunctionParameterIndex(
   return undefined;
 }
 
+function getCurrentFunctionParameterReferenceIndex(
+  context: AnalysisContext,
+  parameters: readonly ts.ParameterDeclaration[],
+  expression: ts.Expression,
+): number | undefined {
+  if (!ts.isIdentifier(expression)) {
+    return undefined;
+  }
+
+  const symbol = context.checker.getSymbolAtLocation(expression);
+  if (!symbol) {
+    return undefined;
+  }
+
+  for (const [index, parameter] of parameters.entries()) {
+    if (!ts.isIdentifier(parameter.name)) {
+      continue;
+    }
+    const parameterSymbol = context.checker.getSymbolAtLocation(parameter.name);
+    if (parameterSymbol === symbol) {
+      return index;
+    }
+  }
+
+  return undefined;
+}
+
+interface CurrentFunctionAliasTarget {
+  readonly memberPath: readonly string[];
+  readonly parameterIndex: number;
+}
+
+function isConstVariableDeclaration(node: ts.VariableDeclaration): boolean {
+  return ts.isVariableDeclarationList(node.parent) &&
+    (node.parent.flags & ts.NodeFlags.Const) !== 0;
+}
+
+function isConstBindingElement(node: ts.BindingElement): boolean {
+  return ts.isObjectBindingPattern(node.parent) &&
+    ts.isVariableDeclaration(node.parent.parent) &&
+    isConstVariableDeclaration(node.parent.parent);
+}
+
+function getBindingElementPropertySegment(element: ts.BindingElement): string | undefined {
+  if (!element.propertyName) {
+    return ts.isIdentifier(element.name) ? element.name.text : undefined;
+  }
+  if (
+    ts.isIdentifier(element.propertyName) || ts.isStringLiteral(element.propertyName) ||
+    ts.isNumericLiteral(element.propertyName)
+  ) {
+    return element.propertyName.text;
+  }
+  return undefined;
+}
+
+function resolveCurrentFunctionAliasTarget(
+  context: AnalysisContext,
+  parameters: readonly ts.ParameterDeclaration[],
+  expression: ts.Expression,
+  seenSymbols = new Set<number>(),
+  allowNonCallableParameterRoot = false,
+): CurrentFunctionAliasTarget | undefined {
+  const current = unwrapOuterExpression(expression);
+
+  if (ts.isPropertyAccessExpression(current)) {
+    const target = resolveCurrentFunctionAliasTarget(
+      context,
+      parameters,
+      current.expression,
+      seenSymbols,
+      true,
+    );
+    return target
+      ? {
+        parameterIndex: target.parameterIndex,
+        memberPath: [...target.memberPath, current.name.text],
+      }
+      : undefined;
+  }
+
+  if (
+    ts.isElementAccessExpression(current) &&
+    (ts.isStringLiteral(current.argumentExpression) || ts.isNumericLiteral(current.argumentExpression))
+  ) {
+    const target = resolveCurrentFunctionAliasTarget(
+      context,
+      parameters,
+      current.expression,
+      seenSymbols,
+      true,
+    );
+    return target
+      ? {
+        parameterIndex: target.parameterIndex,
+        memberPath: [...target.memberPath, current.argumentExpression.text],
+      }
+      : undefined;
+  }
+
+  const directParameterIndex = allowNonCallableParameterRoot
+    ? getCurrentFunctionParameterReferenceIndex(context, parameters, current)
+    : getCurrentFunctionParameterIndex(context, parameters, current);
+  if (directParameterIndex !== undefined) {
+    return { parameterIndex: directParameterIndex, memberPath: [] };
+  }
+
+  if (!ts.isIdentifier(current)) {
+    return undefined;
+  }
+
+  const symbol = context.checker.getSymbolAtLocation(current);
+  if (!symbol) {
+    return undefined;
+  }
+
+  const symbolId = context.getSymbolId(symbol);
+  if (seenSymbols.has(symbolId)) {
+    return undefined;
+  }
+  seenSymbols.add(symbolId);
+
+  for (const declaration of symbol.declarations ?? []) {
+    if (ts.isVariableDeclaration(declaration)) {
+      if (!declaration.initializer || !isConstVariableDeclaration(declaration)) {
+        continue;
+      }
+      const target = resolveCurrentFunctionAliasTarget(
+        context,
+        parameters,
+        declaration.initializer,
+        seenSymbols,
+        allowNonCallableParameterRoot,
+      );
+      if (target) {
+        return target;
+      }
+      continue;
+    }
+
+    if (ts.isBindingElement(declaration)) {
+      if (!isConstBindingElement(declaration)) {
+        continue;
+      }
+      const propertySegment = getBindingElementPropertySegment(declaration);
+      const variableDeclaration = declaration.parent.parent;
+      if (!propertySegment || !ts.isVariableDeclaration(variableDeclaration) || !variableDeclaration.initializer) {
+        continue;
+      }
+      const target = resolveCurrentFunctionAliasTarget(
+        context,
+        parameters,
+        variableDeclaration.initializer,
+        seenSymbols,
+        true,
+      );
+      if (target) {
+        return {
+          parameterIndex: target.parameterIndex,
+          memberPath: [...target.memberPath, propertySegment],
+        };
+      }
+    }
+  }
+
+  return undefined;
+}
+
 function getCurrentFunctionMemberParameterIndex(
   context: AnalysisContext,
   parameters: readonly ts.ParameterDeclaration[],
@@ -871,16 +1039,20 @@ function summarizeForwardedArgumentInBody(
   }
 
   const memberName = memberPath.length === 1 ? memberPath[0] : undefined;
-  const parameterIndex = memberName
-    ? getCurrentFunctionMemberParameterIndex(context, parameters, argument, memberName)
-    : getCurrentFunctionParameterIndex(context, parameters, argument);
-  if (parameterIndex !== undefined) {
+  const aliasTarget = resolveCurrentFunctionAliasTarget(
+    context,
+    parameters,
+    argument,
+    new Set<number>(),
+    memberPath.length > 0,
+  );
+  if (aliasTarget !== undefined) {
     addForwardedParameter(
       forwardedParameters,
-      parameterIndex,
+      aliasTarget.parameterIndex,
       rewrites,
       handledEffects,
-      memberPath,
+      [...aliasTarget.memberPath, ...memberPath],
     );
     return createEffectComposition();
   }
@@ -1057,20 +1229,17 @@ function recomputeBodyDeclarationSummary(
       if (node.expression.kind === ts.SyntaxKind.ImportKeyword) {
         appendSummaryDirectEffects(targetSummary, ['host.system', 'suspend.await']);
       } else {
-        const directParameterIndex = getCurrentFunctionParameterIndex(
-          context,
-          parameters,
-          node.expression,
-        );
-        if (directParameterIndex !== undefined) {
+        const directAliasTarget = resolveCurrentFunctionAliasTarget(context, parameters, node.expression);
+        if (directAliasTarget !== undefined) {
           const boundaryTransform = asyncBoundary
             ? failureBoundaryToForwardTransform('reject')
             : failureBoundaryToForwardTransform('preserve');
           addForwardedParameter(
             targetForwardedParameters,
-            directParameterIndex,
+            directAliasTarget.parameterIndex,
             boundaryTransform.rewrites,
             boundaryTransform.handledEffects,
+            directAliasTarget.memberPath,
           );
         } else {
           const resolvedSignature = context.checker.getResolvedSignature(node);

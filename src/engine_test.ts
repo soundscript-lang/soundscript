@@ -4435,3 +4435,86 @@ Deno.test('createAnalysisContext summarizes result, json, and debug stdlib helpe
   assertEquals(getEffectSummaryForDeclaration(context, forwardEncodeJson).hasUnknownDirectEffects, false);
   assertEquals(getEffectSummaryForDeclaration(context, debugLogValue).hasUnknownDirectEffects, false);
 });
+
+Deno.test('createAnalysisContext infers forwarding through local callback aliases', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+          },
+          include: ['src/**/*.ts'],
+        },
+        null,
+        2,
+      ),
+    },
+    {
+      path: 'src/index.ts',
+      contents: [
+        'export interface Decoder<T> {',
+        '  readonly decode: (value: number) => T;',
+        '}',
+        '',
+        'export function aliasCallback<T>(callback: () => T): T {',
+        '  const fn = callback;',
+        '  return fn();',
+        '}',
+        '',
+        'export function aliasMember<T>(decoder: Decoder<T>, value: number): T {',
+        '  const decode = decoder.decode;',
+        '  return decode(value);',
+        '}',
+        '',
+        'export function destructuredMember<T>(decoder: Decoder<T>, value: number): T {',
+        '  const { decode } = decoder;',
+        '  return decode(value);',
+        '}',
+        '',
+      ].join('\n'),
+    },
+  ]);
+
+  const projectPath = join(tempDirectory, 'tsconfig.json');
+  const program = loadProgram(projectPath);
+  const context = createAnalysisContext({ program, workingDirectory: tempDirectory });
+  const sourceFile = context.getSourceFiles().find((file) => file.fileName.endsWith('/src/index.ts'));
+  assertExists(sourceFile);
+
+  const declarationsByName = new Map(
+    sourceFile.statements
+      .filter((statement): statement is ts.FunctionDeclaration => ts.isFunctionDeclaration(statement))
+      .filter((declaration): declaration is ts.FunctionDeclaration & { name: ts.Identifier } =>
+        declaration.name !== undefined
+      )
+      .map((declaration) => [declaration.name.text, declaration]),
+  );
+  const aliasCallback = declarationsByName.get('aliasCallback');
+  const aliasMember = declarationsByName.get('aliasMember');
+  const destructuredMember = declarationsByName.get('destructuredMember');
+
+  assertExists(aliasCallback);
+  assertExists(aliasMember);
+  assertExists(destructuredMember);
+
+  assertEquals(
+    normalizeForwardedParameters(getEffectSummaryForDeclaration(context, aliasCallback).forwardedParameters),
+    [{ parameterIndex: 0, failureBoundary: 'preserve' }],
+  );
+  assertEquals(
+    normalizeForwardedParameters(getEffectSummaryForDeclaration(context, aliasMember).forwardedParameters),
+    [{ parameterIndex: 0, failureBoundary: 'preserve', memberName: 'decode' }],
+  );
+  assertEquals(
+    normalizeForwardedParameters(getEffectSummaryForDeclaration(context, destructuredMember).forwardedParameters),
+    [{ parameterIndex: 0, failureBoundary: 'preserve', memberName: 'decode' }],
+  );
+  assertEquals(getEffectSummaryForDeclaration(context, aliasCallback).hasUnknownDirectEffects, false);
+  assertEquals(getEffectSummaryForDeclaration(context, aliasMember).hasUnknownDirectEffects, false);
+  assertEquals(getEffectSummaryForDeclaration(context, destructuredMember).hasUnknownDirectEffects, false);
+});

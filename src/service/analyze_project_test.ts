@@ -9675,6 +9675,71 @@ Deno.test('analyzeProject preserves narrowing across local callback parameter ca
   assertEquals(result.diagnostics, []);
 });
 
+Deno.test('analyzeProject infers callback and member effects through local aliases', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/index.sts': [
+      'interface Decoder<T> {',
+      '  readonly decode: (value: number) => T;',
+      '}',
+      '',
+      'function aliasRun(callback: () => void): void {',
+      '  const fn = callback;',
+      '  fn();',
+      '}',
+      '',
+      'function aliasDecode<T>(decoder: Decoder<T>, value: number): T {',
+      '  const { decode } = decoder;',
+      '  return decode(value);',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function pureThroughAliases(): number {',
+      '  aliasRun(() => {});',
+      '  return aliasDecode({',
+      '    decode: (value: number): number => value + 1,',
+      '  }, 1);',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function failThroughCallbackAlias(): void {',
+      '  aliasRun(() => {',
+      '    throw new Error("boom");',
+      '  });',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function failThroughMemberAlias(): number {',
+      '  return aliasDecode({',
+      '    decode: (_value: number): number => {',
+      '      throw new Error("boom");',
+      '    },',
+      '  }, 1);',
+      '}',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1040', 'SOUND1040']);
+});
+
 Deno.test('analyzeProject invalidates narrowing across local helper constructors that mutate', async () => {
   const tempDirectory = await createTempProject({
     'tsconfig.json': JSON.stringify(
