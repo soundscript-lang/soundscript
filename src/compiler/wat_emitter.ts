@@ -51,6 +51,7 @@ import {
   getHostTaggedBoundary,
   getHostTaggedHeapNullableBoundary,
   getHostTaggedPrimitiveKinds,
+  visitHostBoundary,
   visitFunctionFallbackObjectBoundaryFields,
 } from './host_boundary.ts';
 import {
@@ -2386,6 +2387,11 @@ function moduleUsesStringLiteralRuntime(module: CompilerModuleIR): boolean {
 }
 
 function moduleUsesOwnedStringRuntime(module: CompilerModuleIR): boolean {
+  const usesHostClosureStringBoundary = getHostClosureBoundarySignatures(module).some(
+    ({ signature }) =>
+      signature.params.some((param) => param === 'owned_string_ref') ||
+      signature.resultType === 'owned_string_ref',
+  );
   return module.functions.some((func) => {
     const hostTaggedArrayParamsByName = getEffectiveHostTaggedArrayParamsByName(func);
     const hostTaggedArrayResultKinds = getEffectiveHostTaggedArrayResultKinds(func);
@@ -2403,6 +2409,7 @@ function moduleUsesOwnedStringRuntime(module: CompilerModuleIR): boolean {
       hostTaggedPrimitiveResultKinds?.includesString === true ||
       statementsUseStringHelper(func.body, expressionUsesOwnedStringRuntime);
   }) || getClassStaticTaggedArrayFields(module).some((field) => field.includesString) ||
+    usesHostClosureStringBoundary ||
     moduleUsesHostFallbackObjectBoundary(module) ||
     getDynamicObjectLayout(module.runtime) !== undefined;
 }
@@ -3375,9 +3382,11 @@ function moduleUsesHostClosureBoundaryFromHostType(
   return getHostClosureBoundarySignatures(module).some((
     { signature, needsParamBoundary, needsResultBoundary },
   ) =>
-    (needsParamBoundary && signature.resultType === valueType) ||
-    (needsResultBoundary &&
-      signature.params.some((param: CompilerValueType) => param === valueType))
+    (needsParamBoundary || needsResultBoundary) &&
+    (
+      signature.resultType === valueType ||
+      signature.params.some((param: CompilerValueType) => param === valueType)
+    )
   );
 }
 
@@ -3388,9 +3397,28 @@ function moduleUsesHostClosureBoundaryToHostType(
   return getHostClosureBoundarySignatures(module).some((
     { signature, needsParamBoundary, needsResultBoundary },
   ) =>
-    (needsParamBoundary &&
-      signature.params.some((param: CompilerValueType) => param === valueType)) ||
-    (needsResultBoundary && signature.resultType === valueType)
+    (needsParamBoundary || needsResultBoundary) &&
+    (
+      signature.params.some((param: CompilerValueType) => param === valueType) ||
+      signature.resultType === valueType
+    )
+  );
+}
+
+function moduleUsesHostClosureDynamicObjectBridge(module: CompilerModuleIR): boolean {
+  return getHostClosureBoundarySignatures(module).some((
+    { signature, needsParamBoundary, needsResultBoundary },
+  ) =>
+    (
+      needsParamBoundary &&
+      signature.resultHeapRepresentation?.kind === 'dynamic_object_representation'
+    ) ||
+    (
+      needsResultBoundary &&
+      signature.paramHeapRepresentations?.some((representation) =>
+        representation?.kind === 'dynamic_object_representation'
+      ) === true
+    )
   );
 }
 
@@ -3398,10 +3426,12 @@ function moduleUsesHostClosureTaggedStringBoundaryFromHost(module: CompilerModul
   return getHostClosureBoundarySignatures(module).some((
     { signature, needsParamBoundary, needsResultBoundary },
   ) =>
-    (needsParamBoundary && signature.resultTaggedPrimitiveKinds?.includesString === true) ||
-    (needsResultBoundary &&
+    (needsParamBoundary || needsResultBoundary) &&
+    (
+      signature.resultTaggedPrimitiveKinds?.includesString === true ||
       signature.paramTaggedPrimitiveKinds?.some((kinds) => kinds?.includesString === true) ===
-        true)
+        true
+    )
   );
 }
 
@@ -3409,10 +3439,12 @@ function moduleUsesHostClosureTaggedStringBoundaryToHost(module: CompilerModuleI
   return getHostClosureBoundarySignatures(module).some((
     { signature, needsParamBoundary, needsResultBoundary },
   ) =>
-    (needsParamBoundary &&
+    (needsParamBoundary || needsResultBoundary) &&
+    (
       signature.paramTaggedPrimitiveKinds?.some((kinds) => kinds?.includesString === true) ===
-        true) ||
-    (needsResultBoundary && signature.resultTaggedPrimitiveKinds?.includesString === true)
+        true ||
+      signature.resultTaggedPrimitiveKinds?.includesString === true
+    )
   );
 }
 
@@ -3452,12 +3484,48 @@ function moduleUsesHostObjectClosureTaggedStringBoundary(module: CompilerModuleI
     );
 }
 
+function moduleUsesHostObjectClosureBoundaryValueType(
+  module: CompilerModuleIR,
+  valueType: CompilerValueType,
+): boolean {
+  const signatureById = new Map(
+    (module.closureSignatures ?? []).map((signature) => [signature.id, signature]),
+  );
+  const signatureUsesValueType = (signatureId: number): boolean => {
+    const signature = signatureById.get(signatureId);
+    return signature?.params.some((param: CompilerValueType) => param === valueType) === true ||
+      signature?.resultType === valueType;
+  };
+  const boundaryUsesValueType = (boundary: CompilerHostBoundaryIR | undefined): boolean => {
+    if (!boundary) {
+      return false;
+    }
+    let usesValueType = false;
+    visitHostBoundary(boundary, (candidate) => {
+      if (usesValueType || candidate.kind !== 'object') {
+        return;
+      }
+      usesValueType = candidate.fields?.some((field) =>
+        field.boundary.kind === 'closure' && signatureUsesValueType(field.boundary.signatureId)
+      ) === true;
+    });
+    return usesValueType;
+  };
+  return module.functions.some((func) =>
+    boundaryUsesValueType(func.hostResultBoundary) ||
+    boundaryUsesValueType(func.hostLocalFallbackBoundary) ||
+    (func.hostParamBoundaries?.some((boundary) => boundaryUsesValueType(boundary.boundary)) ??
+      false)
+  );
+}
+
 function moduleUsesStringToOwnedRuntime(module: CompilerModuleIR): boolean {
   return module.functions.some((func) =>
     (functionNeedsHostExportWrapper(func, moduleUsesPromiseRuntime(module)) &&
       func.params.some((param) => param.type === 'owned_string_ref')) ||
     statementsUseStringHelper(func.body, expressionUsesStringToOwnedHelper)
-  ) || moduleUsesHostClosureBoundaryFromHostType(module, 'owned_string_ref');
+  ) || moduleUsesHostClosureBoundaryFromHostType(module, 'owned_string_ref') ||
+    moduleUsesHostObjectClosureBoundaryValueType(module, 'owned_string_ref');
 }
 
 function moduleUsesOwnedStringLengthRuntime(module: CompilerModuleIR): boolean {
@@ -3730,6 +3798,7 @@ function moduleUsesOwnedStringToHostRuntime(module: CompilerModuleIR): boolean {
     ) ||
     statementsUseStringHelper(func.body, expressionUsesOwnedStringToHostHelper)
   ) || moduleUsesHostClosureBoundaryToHostType(module, 'owned_string_ref') ||
+    moduleUsesHostObjectClosureBoundaryValueType(module, 'owned_string_ref') ||
     moduleUsesHostPromiseResultBridge(module);
 }
 
@@ -4284,6 +4353,7 @@ function moduleUsedOwnedStringLiteralIds(module: CompilerModuleIR): Set<number> 
     moduleUsesHostPromiseResultBridge(module) ||
     moduleUsesGeneratorStepClosureHostBridge(module) ||
     moduleUsesSyncTryCatchRuntime(module);
+  const usesHostClosureDynamicObjectBridge = moduleUsesHostClosureDynamicObjectBridge(module);
   const usesTaggedThrowBuiltinErrorBridge = moduleUsesTaggedThrowRuntime(module) &&
     moduleUsesBuiltinErrorRuntime(module);
   for (const func of module.functions) {
@@ -4333,6 +4403,7 @@ function moduleUsedOwnedStringLiteralIds(module: CompilerModuleIR): Set<number> 
   if (
     builtinErrorInstanceOfUsages.length > 0 ||
     usesHostPromiseErrorBridge ||
+    usesHostClosureDynamicObjectBridge ||
     usesTaggedThrowBuiltinErrorBridge
   ) {
     const stringLiteralIdsByText = createStringLiteralIds(module);
@@ -4897,14 +4968,14 @@ function isHostAdaptableSpecializedObjectLayout(layout: BackendSpecializedObject
     ((!field.optional) && field.valueType === 'class_constructor_ref') ||
     (field.valueType === 'closure_ref' && field.closureSignatureId !== undefined) ||
     (field.valueType === 'tagged_ref' && field.taggedPrimitiveKinds !== undefined) ||
-    ((!field.optional) && (
+    (
       (field.valueType === 'heap_ref' && field.heapRepresentation !== undefined) ||
       (field.valueType === 'owned_heap_array_ref' && field.heapArrayRepresentation !== undefined) ||
       (field.valueType === 'owned_tagged_array_ref' && field.taggedPrimitiveKinds !== undefined) ||
       field.valueType === 'owned_array_ref' ||
       field.valueType === 'owned_number_array_ref' ||
       field.valueType === 'owned_boolean_array_ref'
-    ))
+    )
   );
 }
 
@@ -5805,16 +5876,22 @@ function getHostFallbackObjectHasImportFunctionName(propertyName: string): strin
   }`;
 }
 
-function getHostFallbackObjectGetImportFunctionName(propertyName: string): string {
-  return `host_object_get_tagged__${
+function getHostFallbackObjectGetImportFunctionName(
+  propertyName: string,
+  kind: 'get_closure' | 'get_tagged' = 'get_tagged',
+): string {
+  return `host_object_${kind}__${
     [...new TextEncoder().encode(propertyName)]
       .map((byte) => byte.toString(16).padStart(2, '0'))
       .join('')
   }`;
 }
 
-function getHostFallbackObjectSetImportFunctionName(propertyName: string): string {
-  return `host_object_set_tagged__${
+function getHostFallbackObjectSetImportFunctionName(
+  propertyName: string,
+  kind: 'set_closure' | 'set_tagged' = 'set_tagged',
+): string {
+  return `host_object_${kind}__${
     [...new TextEncoder().encode(propertyName)]
       .map((byte) => byte.toString(16).padStart(2, '0'))
       .join('')
@@ -7270,26 +7347,34 @@ function emitSyncTryCatchRuntimeImports(module: CompilerModuleIR): string[] {
   ];
 }
 
-function emitTaggedValueType(runtime?: CompilerRuntimeIR): string[] {
-  if (
-    !runtime?.representations.some((representation) =>
+function moduleNeedsTaggedValueRuntime(module: CompilerModuleIR): boolean {
+  const specializedTaggedArrayFieldBoundaryUsage = getSpecializedTaggedArrayFieldBoundaryUsage(
+    module,
+  );
+  return module.runtime?.representations.some((representation) =>
       representation.kind === 'tagged_value_representation'
-    )
-  ) {
-    return [];
-  }
-  return ['(type $tagged_value (struct (field i32) (field f64) (field (ref null eq))))'];
+    ) === true ||
+    getTaggedHostBoundaryUsage(module).usesHostBoundary ||
+    specializedTaggedArrayFieldBoundaryUsage.usesParamBoundary ||
+    specializedTaggedArrayFieldBoundaryUsage.usesResultBoundary ||
+    moduleUsesTaggedNullRuntime(module) ||
+    moduleUsesTaggedThrowRuntime(module) ||
+    moduleUsesHostPromiseBridge(module) ||
+    moduleUsesGeneratorStepClosureHostBridge(module) ||
+    moduleUsesSyncTryCatchRuntime(module);
+}
+
+function emitTaggedValueType(module: CompilerModuleIR): string[] {
+  return moduleNeedsTaggedValueRuntime(module)
+    ? ['(type $tagged_value (struct (field i32) (field f64) (field (ref null eq))))']
+    : [];
 }
 
 function emitTaggedValueHelpers(
   module: CompilerModuleIR,
   stringRuntimeLayout?: BackendStringRuntimeLayout,
 ): string[] {
-  if (
-    !module.runtime?.representations.some((representation) =>
-      representation.kind === 'tagged_value_representation'
-    )
-  ) {
+  if (!moduleNeedsTaggedValueRuntime(module)) {
     return [];
   }
   const usesTaggedThrowRuntime = moduleUsesTaggedThrowRuntime(module);
@@ -7867,6 +7952,13 @@ function getHostClosureBoundarySignatures(module: CompilerModuleIR): readonly {
   const signatureById = new Map(
     (module.closureSignatures ?? []).map((signature) => [signature.id, signature]),
   );
+  const localClosureFunctionSignatureIds = new Set<number>(
+    module.functions.flatMap((func) =>
+      func.closureFunctionId !== undefined && func.closureSignatureId !== undefined
+        ? [func.closureSignatureId]
+        : []
+    ),
+  );
   const layoutsByRepresentationName = createSpecializedObjectLayouts(module.runtime);
   const usageById = new Map<
     number,
@@ -8000,7 +8092,65 @@ function getHostClosureBoundarySignatures(module: CompilerModuleIR): readonly {
       }
     }
   };
+  const calledClosureSignatureIds = new Set<number>();
+  const visitExpression = (expression: CompilerExpressionIR): void => {
+    if (expression.kind === 'closure_call') {
+      calledClosureSignatureIds.add(expression.signatureId);
+    } else if (expression.kind === 'host_closure_to_externref') {
+      markUsage(expression.signatureId, {
+        needsParamBoundary: true,
+        needsResultBoundary: true,
+      });
+    }
+    forEachExpressionChild(expression, visitExpression);
+  };
+  const visitStatements = (statements: readonly CompilerStatementIR[]): void => {
+    for (const statement of statements) {
+      switch (statement.kind) {
+        case 'local_set':
+        case 'global_set':
+        case 'return':
+        case 'expression':
+        case 'throw_tagged':
+          visitExpression(statement.value);
+          break;
+        case 'owned_string_array_set':
+        case 'owned_heap_array_set':
+        case 'owned_number_array_set':
+        case 'owned_boolean_array_set':
+        case 'owned_tagged_array_set':
+          visitExpression(statement.array);
+          visitExpression(statement.index);
+          visitExpression(statement.value);
+          break;
+        case 'box_set':
+          visitExpression(statement.box);
+          visitExpression(statement.value);
+          break;
+        case 'specialized_object_field_set':
+        case 'dynamic_object_property_set':
+          visitExpression(statement.value);
+          break;
+        case 'if':
+          visitExpression(statement.condition);
+          visitStatements(statement.thenBody);
+          visitStatements(statement.elseBody);
+          break;
+        case 'while':
+          visitExpression(statement.condition);
+          visitStatements(statement.body);
+          break;
+        case 'trap':
+          break;
+        default: {
+          const exhaustive: never = statement;
+          void exhaustive;
+        }
+      }
+    }
+  };
   for (const func of module.functions) {
+    visitStatements(func.body);
     const fallbackProperties = getEffectiveFunctionHostFallbackObjectPropertyMetadata(func);
     for (const signatureId of getEffectiveHostClosureParamsByName(func).values()) {
       markUsage(signatureId, { needsParamBoundary: true, needsResultBoundary: true });
@@ -8037,6 +8187,12 @@ function getHostClosureBoundarySignatures(module: CompilerModuleIR): readonly {
         }
       }
     }
+  }
+  for (const signatureId of calledClosureSignatureIds) {
+    if (localClosureFunctionSignatureIds.has(signatureId)) {
+      continue;
+    }
+    markUsage(signatureId, { needsParamBoundary: true, needsResultBoundary: true });
   }
   if (
     moduleUsesHostPromiseResultBridge(module) ||
@@ -8172,8 +8328,8 @@ function getHostClosureBoundarySignatures(module: CompilerModuleIR): readonly {
         return;
       }
       const changed = markUsage(nestedSignatureId, {
-        needsParamBoundary: usage.needsResultBoundary,
-        needsResultBoundary: usage.needsParamBoundary,
+        needsParamBoundary: usage.needsParamBoundary,
+        needsResultBoundary: usage.needsResultBoundary,
       });
       if (changed) {
         pending.push(nestedSignatureId);
@@ -8278,6 +8434,7 @@ function emitObjectRuntimeImports(
   const usesHostPromiseErrorBridge = moduleUsesHostPromiseParamBridge(module) ||
     moduleUsesHostPromiseResultBridge(module) ||
     moduleUsesGeneratorStepClosureHostBridge(module);
+  const usesHostClosureDynamicObjectBridge = moduleUsesHostClosureDynamicObjectBridge(module);
   const usesTaggedThrowBuiltinErrorBridge = moduleUsesTaggedThrowRuntime(module) &&
     moduleUsesBuiltinErrorRuntime(module);
   const usesSyncTryCatch = moduleUsesSyncTryCatchRuntime(module);
@@ -8324,6 +8481,7 @@ function emitObjectRuntimeImports(
     !usesHostMapParamBoundary &&
     !usesHostSetParamBoundary &&
     !usesHostPromiseErrorBridge &&
+    !usesHostClosureDynamicObjectBridge &&
     !usesTaggedThrowBuiltinErrorBridge &&
     !usesSyncTryCatch
   ) {
@@ -8366,6 +8524,7 @@ function emitObjectRuntimeImports(
     [...usageByRepresentationName.values()].some((usage) => usage.needsResultBoundary) ||
     fallbackUsage?.needsResultBoundary === true ||
     usesHostPromiseErrorBridge ||
+    usesHostClosureDynamicObjectBridge ||
     usesTaggedThrowBuiltinErrorBridge ||
     usesSyncTryCatch;
   const needsSame =
@@ -8416,7 +8575,12 @@ function emitObjectRuntimeImports(
   const paramCacheLookupImports = new Map<string, string>();
   const paramCacheRememberImports = new Map<string, string>();
   const collectionImports = new Map<string, string>();
-  if (usesHostPromiseErrorBridge || usesTaggedThrowBuiltinErrorBridge || usesSyncTryCatch) {
+  if (
+    usesHostPromiseErrorBridge ||
+    usesHostClosureDynamicObjectBridge ||
+    usesTaggedThrowBuiltinErrorBridge ||
+    usesSyncTryCatch
+  ) {
     getterImports.set(
       'is_builtin_error',
       `(import "soundscript_object" "is_builtin_error" (func $${getHostObjectIsBuiltinErrorImportFunctionName()} (param externref) (result i32)))`,
@@ -8458,7 +8622,12 @@ function emitObjectRuntimeImports(
       );
     }
   }
-  if (usesHostPromiseErrorBridge || usesTaggedThrowBuiltinErrorBridge || usesSyncTryCatch) {
+  if (
+    usesHostPromiseErrorBridge ||
+    usesHostClosureDynamicObjectBridge ||
+    usesTaggedThrowBuiltinErrorBridge ||
+    usesSyncTryCatch
+  ) {
     setterImports.set(
       'set_tagged:name',
       `(import "soundscript_object" "set_tagged:${getHostObjectPropertyToken('name')}" (func $${
@@ -8650,7 +8819,7 @@ function emitObjectRuntimeImports(
             ? `(import "soundscript_object" "get_closure:${
               getHostObjectPropertyToken(propertyName)
             }" (func $${
-              getHostFallbackObjectGetImportFunctionName(propertyName)
+              getHostFallbackObjectGetImportFunctionName(propertyName, 'get_closure')
             } (param externref) (result externref)))`
             : `(import "soundscript_object" "get_tagged:${
               getHostObjectPropertyToken(propertyName)
@@ -8666,7 +8835,7 @@ function emitObjectRuntimeImports(
             ? `(import "soundscript_object" "set_closure:${
               getHostObjectPropertyToken(propertyName)
             }" (func $${
-              getHostFallbackObjectSetImportFunctionName(propertyName)
+              getHostFallbackObjectSetImportFunctionName(propertyName, 'set_closure')
             } (param externref) (param externref)))`
             : `(import "soundscript_object" "set_tagged:${
               getHostObjectPropertyToken(propertyName)
@@ -9638,6 +9807,14 @@ function emitHostFallbackObjectBoundaryHelpers(
   if (!usage || !layout) {
     return [];
   }
+  const specializedUsageByRepresentationName = collectHostBoundarySpecializedObjectUsageWithHostClosures(
+    module,
+    layoutsByRepresentationName,
+  );
+  const genericHeapResultLayouts = [...specializedUsageByRepresentationName.values()]
+    .filter(({ needsResultBoundary }) => needsResultBoundary)
+    .map(({ layout }) => layout)
+    .sort((left, right) => left.representation.name.localeCompare(right.representation.name));
 
   const sortedPropertyEntries = collectHostBoundaryFallbackPropertyNames(module)
     .map((propertyName) => {
@@ -9665,6 +9842,45 @@ function emitHostFallbackObjectBoundaryHelpers(
       .map((func) => [func.closureFunctionId!, func]),
   );
   const lines: string[] = [];
+  const emitGenericHeapObjectToHostSet = (
+    level: number,
+    setterImportName: string,
+    targetLocalName: string,
+  ): string[] => {
+    const emitDispatch = (index: number): string[] => {
+      const candidateLayout = genericHeapResultLayouts[index];
+      if (candidateLayout) {
+        return [
+          `${indent(level)}local.get $entry_heap`,
+          `${indent(level)}ref.test (ref null $${candidateLayout.watTypeId})`,
+          `${indent(level)}if`,
+          `${indent(level + 1)}local.get $${targetLocalName}`,
+          `${indent(level + 1)}local.get $entry_heap`,
+          `${indent(level + 1)}ref.cast (ref null $${candidateLayout.watTypeId})`,
+          `${indent(level + 1)}call $${getSpecializedObjectToHostHelperName(candidateLayout)}`,
+          `${indent(level + 1)}call $${setterImportName}`,
+          `${indent(level)}else`,
+          ...emitDispatch(index + 1),
+          `${indent(level)}end`,
+        ];
+      }
+      return [
+        `${indent(level)}local.get $entry_heap`,
+        `${indent(level)}ref.test (ref null $${layout.watTypeId})`,
+        `${indent(level)}if`,
+        `${indent(level + 1)}local.get $${targetLocalName}`,
+        `${indent(level + 1)}local.get $entry_heap`,
+        `${indent(level + 1)}ref.cast (ref null $${layout.watTypeId})`,
+        `${indent(level + 1)}call $${getFallbackObjectToHostHelperName()}`,
+        `${indent(level + 1)}call $${setterImportName}`,
+        `${indent(level)}else`,
+        `${indent(level + 1)}unreachable`,
+        `${indent(level)}end`,
+      ];
+    };
+
+    return emitDispatch(0);
+  };
   const needsMethodSyncCopyBack = usage.needsResultBoundary &&
     [...fallbackMethodClosureFunctionIds.values()].some((functionIds) =>
       functionIds.some((functionId) => {
@@ -9707,7 +9923,7 @@ function emitHostFallbackObjectBoundaryHelpers(
             `${indent(3)}local.get $result`,
             `${indent(3)}i32.const ${propertyKeyId}`,
             `${indent(3)}local.get $value`,
-            `${indent(3)}call $${getHostFallbackObjectGetImportFunctionName(propertyName)}`,
+            `${indent(3)}call $${getHostFallbackObjectGetImportFunctionName(propertyName, 'get_closure')}`,
             `${indent(3)}call $host_externref_to_closure_${closureSignatureId}`,
             `${indent(3)}call $tag_heap_object`,
             `${indent(3)}call $set_fallback_object_property`,
@@ -9906,7 +10122,7 @@ function emitHostFallbackObjectBoundaryHelpers(
                       getHostFallbackMethodSyncExportName(propertyName),
                     )
                   }`,
-                  `${indent(2)}call $${getHostFallbackObjectSetImportFunctionName(propertyName)}`,
+                  `${indent(2)}call $${getHostFallbackObjectSetImportFunctionName(propertyName, 'set_closure')}`,
                 ]
                 : [
                   `${indent(2)}local.get $target`,
@@ -9915,7 +10131,7 @@ function emitHostFallbackObjectBoundaryHelpers(
                   `${indent(2)}call $get_fallback_object_property`,
                   `${indent(2)}call $untag_heap_object`,
                   `${indent(2)}call $host_closure_to_host_${closureSignatureId}`,
-                  `${indent(2)}call $${getHostFallbackObjectSetImportFunctionName(propertyName)}`,
+                  `${indent(2)}call $${getHostFallbackObjectSetImportFunctionName(propertyName, 'set_closure')}`,
                 ]),
             ]
             : classConstructorTagId !== undefined
@@ -10083,20 +10299,46 @@ function emitHostFallbackObjectBoundaryHelpers(
               `${indent(2)}end`,
             ]
             : [
-              `${indent(2)}local.get $target`,
               `${indent(2)}local.get $value`,
               `${indent(2)}i32.const ${propertyKeyId}`,
               `${indent(2)}call $get_fallback_object_property`,
               `${indent(2)}local.set $entry_tagged`,
+              `${indent(2)}local.get $entry_tagged`,
+              `${indent(2)}struct.get $tagged_value 0`,
+              `${indent(2)}local.set $entry_tag`,
+              `${indent(2)}local.get $entry_tag`,
+              `${indent(2)}i32.const 4`,
+              `${indent(2)}i32.eq`,
+              `${indent(2)}if`,
+              `${indent(3)}local.get $entry_tagged`,
+              `${indent(3)}call $untag_heap_object`,
+              `${indent(3)}local.tee $entry_heap`,
+              `${indent(3)}call $${getHostObjectLookupCachedImportFunctionName()}`,
+              `${indent(3)}local.tee $entry_value`,
+              `${indent(3)}ref.is_null`,
+              `${indent(3)}if`,
+              ...emitGenericHeapObjectToHostSet(
+                4,
+                getHostFallbackObjectSetImportFunctionName(propertyName),
+                'target',
+              ),
+              `${indent(3)}else`,
+              `${indent(4)}local.get $target`,
+              `${indent(4)}local.get $entry_value`,
+              `${indent(4)}call $${getHostFallbackObjectSetImportFunctionName(propertyName)}`,
+              `${indent(3)}end`,
+              `${indent(2)}else`,
+              `${indent(3)}local.get $target`,
               ...emitTaggedPrimitiveToHostExternref(
                 'entry_tagged',
                 'entry_tag',
                 'entry_value',
                 HOST_FALLBACK_OBJECT_VALUE_KINDS,
-                2,
+                3,
                 indent,
               ),
-              `${indent(2)}call $${getHostFallbackObjectSetImportFunctionName(propertyName)}`,
+              `${indent(3)}call $${getHostFallbackObjectSetImportFunctionName(propertyName)}`,
+              `${indent(2)}end`,
             ]),
           `${indent(1)}end`,
         ];
@@ -10115,6 +10357,7 @@ function emitHostFallbackObjectBoundaryHelpers(
       `${indent(1)}(local $cached externref)`,
       `${indent(1)}(local $entry_tag i32)`,
       `${indent(1)}(local $entry_value externref)`,
+      `${indent(1)}(local $entry_heap (ref null eq))`,
       `${indent(1)}(local $entry_tagged (ref null $tagged_value))`,
       `${indent(1)}local.get $value`,
       `${indent(1)}call $${getHostObjectLookupCachedImportFunctionName()}`,
@@ -10163,7 +10406,7 @@ function emitHostFallbackObjectBoundaryHelpers(
                       getHostFallbackMethodSyncExportName(propertyName),
                     )
                   }`,
-                  `${indent(3)}call $${getHostFallbackObjectSetImportFunctionName(propertyName)}`,
+                  `${indent(3)}call $${getHostFallbackObjectSetImportFunctionName(propertyName, 'set_closure')}`,
                 ]
                 : [
                   `${indent(3)}local.get $result`,
@@ -10172,7 +10415,7 @@ function emitHostFallbackObjectBoundaryHelpers(
                   `${indent(3)}call $get_fallback_object_property`,
                   `${indent(3)}call $untag_heap_object`,
                   `${indent(3)}call $host_closure_to_host_${closureSignatureId}`,
-                  `${indent(3)}call $${getHostFallbackObjectSetImportFunctionName(propertyName)}`,
+                  `${indent(3)}call $${getHostFallbackObjectSetImportFunctionName(propertyName, 'set_closure')}`,
                 ]),
             ]
             : classConstructorTagId !== undefined
@@ -10263,20 +10506,46 @@ function emitHostFallbackObjectBoundaryHelpers(
               `${indent(3)}call $${getHostFallbackObjectSetImportFunctionName(propertyName)}`,
             ]
             : [
-              `${indent(3)}local.get $result`,
               `${indent(3)}local.get $value`,
               `${indent(3)}i32.const ${propertyKeyId}`,
               `${indent(3)}call $get_fallback_object_property`,
               `${indent(3)}local.set $entry_tagged`,
+              `${indent(3)}local.get $entry_tagged`,
+              `${indent(3)}struct.get $tagged_value 0`,
+              `${indent(3)}local.set $entry_tag`,
+              `${indent(3)}local.get $entry_tag`,
+              `${indent(3)}i32.const 4`,
+              `${indent(3)}i32.eq`,
+              `${indent(3)}if`,
+              `${indent(4)}local.get $entry_tagged`,
+              `${indent(4)}call $untag_heap_object`,
+              `${indent(4)}local.tee $entry_heap`,
+              `${indent(4)}call $${getHostObjectLookupCachedImportFunctionName()}`,
+              `${indent(4)}local.tee $entry_value`,
+              `${indent(4)}ref.is_null`,
+              `${indent(4)}if`,
+              ...emitGenericHeapObjectToHostSet(
+                5,
+                getHostFallbackObjectSetImportFunctionName(propertyName),
+                'result',
+              ),
+              `${indent(4)}else`,
+              `${indent(5)}local.get $result`,
+              `${indent(5)}local.get $entry_value`,
+              `${indent(5)}call $${getHostFallbackObjectSetImportFunctionName(propertyName)}`,
+              `${indent(4)}end`,
+              `${indent(3)}else`,
+              `${indent(4)}local.get $result`,
               ...emitTaggedPrimitiveToHostExternref(
                 'entry_tagged',
                 'entry_tag',
                 'entry_value',
                 HOST_FALLBACK_OBJECT_VALUE_KINDS,
-                3,
+                4,
                 indent,
               ),
-              `${indent(3)}call $${getHostFallbackObjectSetImportFunctionName(propertyName)}`,
+              `${indent(4)}call $${getHostFallbackObjectSetImportFunctionName(propertyName)}`,
+              `${indent(3)}end`,
             ]),
           `${indent(2)}end`,
         ];
@@ -10622,19 +10891,56 @@ function emitArrayRuntimeImports(module: CompilerModuleIR): string[] {
 
 function emitOwnedArrayTypes(module: CompilerModuleIR): string[] {
   const lines: string[] = [];
-  if (moduleUsesObjectKeysArrayRuntime(module)) {
+  const usesOwnedStringArrayRepresentation = module.runtime?.representations.some((representation) =>
+    representation.kind === 'specialized_object_representation' &&
+    (
+      representation.fields.some((field) => field.valueType === 'owned_array_ref') ||
+      (representation.hostStaticFields?.some((field) => field.valueKind === 'string_array') ?? false)
+    )
+  ) ?? false;
+  const usesOwnedNumberArrayRepresentation = module.runtime?.representations.some((representation) =>
+    representation.kind === 'specialized_object_representation' &&
+    (
+      representation.fields.some((field) => field.valueType === 'owned_number_array_ref') ||
+      (representation.hostStaticFields?.some((field) => field.valueKind === 'number_array') ?? false)
+    )
+  ) ?? false;
+  const usesOwnedBooleanArrayRepresentation = module.runtime?.representations.some((representation) =>
+    representation.kind === 'specialized_object_representation' &&
+    (
+      representation.fields.some((field) => field.valueType === 'owned_boolean_array_ref') ||
+      (representation.hostStaticFields?.some((field) => field.valueKind === 'boolean_array') ??
+        false)
+    )
+  ) ?? false;
+  if (
+    moduleUsesObjectKeysArrayRuntime(module) ||
+    usesOwnedStringArrayRepresentation ||
+    moduleUsesOwnedArrayHostParamBoundary(module) ||
+    moduleUsesOwnedArrayHostResultBoundary(module)
+  ) {
     lines.push('(type $owned_string_array_data (array (mut (ref null eq))))');
     lines.push(
       '(type $owned_string_array (struct (field (mut (ref null $owned_string_array_data)))))',
     );
   }
-  if (moduleUsesOwnedNumberArrayRuntime(module)) {
+  if (
+    moduleUsesOwnedNumberArrayRuntime(module) ||
+    usesOwnedNumberArrayRepresentation ||
+    moduleUsesOwnedNumberArrayHostParamBoundary(module) ||
+    moduleUsesOwnedNumberArrayHostResultBoundary(module)
+  ) {
     lines.push('(type $owned_number_array_data (array (mut f64)))');
     lines.push(
       '(type $owned_number_array (struct (field (mut (ref null $owned_number_array_data)))))',
     );
   }
-  if (moduleUsesOwnedBooleanArrayRuntime(module)) {
+  if (
+    moduleUsesOwnedBooleanArrayRuntime(module) ||
+    usesOwnedBooleanArrayRepresentation ||
+    moduleUsesOwnedBooleanArrayHostParamBoundary(module) ||
+    moduleUsesOwnedBooleanArrayHostResultBoundary(module)
+  ) {
     lines.push('(type $owned_boolean_array_data (array (mut i32)))');
     lines.push(
       '(type $owned_boolean_array (struct (field (mut (ref null $owned_boolean_array_data)))))',
@@ -12457,6 +12763,11 @@ function emitOwnedStringNativeHelpers(
   const usesOwnedStringArrayJoinRuntime = moduleUsesOwnedStringArrayJoin(module);
   const usesOwnedNumberArrayJoinRuntime = moduleUsesOwnedNumberArrayJoin(module);
   const usesOwnedBooleanArrayJoinRuntime = moduleUsesOwnedBooleanArrayJoin(module);
+  const usesHostClosureStringBoundary = getHostClosureBoundarySignatures(module).some(
+    ({ signature }) =>
+      signature.params.some((param) => param === 'owned_string_ref') ||
+      signature.resultType === 'owned_string_ref',
+  );
   const taggedHostBoundaryUsage = getTaggedHostBoundaryUsage(module);
   const usesHostFallbackObjectBoundary = moduleUsesHostFallbackObjectBoundary(module);
   const usesTaggedArrayHostParamStringBoundary = module.functions.some((func) =>
@@ -12489,6 +12800,7 @@ function emitOwnedStringNativeHelpers(
   const usesOwnedArrayHostParamBoundary = moduleUsesOwnedArrayHostParamBoundary(module);
   const usesOwnedArrayHostResultBoundary = moduleUsesOwnedArrayHostResultBoundary(module);
   const usesToHost = moduleUsesOwnedStringToHostRuntime(module) ||
+    usesHostClosureStringBoundary ||
     usesPrimitiveHostStringToHostBoundary ||
     usesTaggedArrayHostParamStringBoundary ||
     usesTaggedArrayHostResultStringBoundary ||
@@ -12508,6 +12820,7 @@ function emitOwnedStringNativeHelpers(
     usesTrimStart || usesTrimEnd ||
     usesStartsWith || usesEndsWith || usesIncludes || usesIndexOf || usesLastIndexOf || usesToHost;
   const usesFromHost = moduleUsesStringToOwnedRuntime(module) ||
+    usesHostClosureStringBoundary ||
     usesPrimitiveHostStringFromHostBoundary ||
     usesTaggedArrayHostParamStringBoundary ||
     usesOwnedArrayHostParamBoundary ||
@@ -15673,7 +15986,8 @@ function emitPromiseRuntimeHelpers(
     usesAsyncGeneratorHostStepBridge;
   const usesTaggedThrowRuntime = moduleUsesTaggedThrowRuntime(module);
   const usesHostErrorBridge = usesHostPromiseErrorBridge ||
-    (usesTaggedThrowRuntime && moduleUsesBuiltinErrorRuntime(module));
+    (usesTaggedThrowRuntime && moduleUsesBuiltinErrorRuntime(module)) ||
+    moduleUsesHostClosureDynamicObjectBridge(module);
   const iteratorResultValueLiteralId = usesAsyncGeneratorHostStepBridge
     ? getRequiredStringLiteralId(stringLiteralIdsByText, 'value')
     : undefined;
@@ -17100,6 +17414,7 @@ function emitHostBuiltinErrorBridgeHelpers(
   const usesHostErrorBridge = moduleUsesHostPromiseParamBridge(module) ||
     moduleUsesHostPromiseResultBridge(module) ||
     moduleUsesGeneratorStepClosureHostBridge(module) ||
+    moduleUsesHostClosureDynamicObjectBridge(module) ||
     moduleUsesSyncTryCatchRuntime(module) ||
     (moduleUsesTaggedThrowRuntime(module) && moduleUsesBuiltinErrorRuntime(module));
   if (!usesHostErrorBridge || !layout || moduleUsesPromiseRuntime(module)) {
@@ -20970,6 +21285,13 @@ function emitExpression(
         ...expression.args.flatMap((argument) => emitExpression(argument, level, runtime)),
         `${indent(level)}call $closure_call_${expression.signatureId}`,
       ];
+    case 'host_import_externref':
+      return [`${indent(level)}call $${expression.functionName}`];
+    case 'host_closure_to_externref':
+      return [
+        ...emitExpression(expression.value, level, runtime),
+        `${indent(level)}call $host_closure_to_host_${expression.signatureId}`,
+      ];
     default: {
       const exhaustiveCheck: never = expression;
       return exhaustiveCheck;
@@ -21561,11 +21883,22 @@ function emitHostImportedFunction(func: CompilerFunctionIR): string[] {
         ? 'externref'
         : getWatValueType(func.resultType)
     })))`,
+    ...(func.hostImportValueUsed
+      ? [
+        `(import "${hostImport.module}" "${hostImport.name}__value" (func $${
+          getHostImportedValueFunctionName(func)
+        } (result externref)))`,
+      ]
+      : []),
   ];
 }
 
 function getHostImportedRawFunctionName(func: CompilerFunctionIR): string {
   return `${func.name}__host_import`;
+}
+
+function getHostImportedValueFunctionName(func: CompilerFunctionIR): string {
+  return `${func.name}__host_import_value`;
 }
 
 function getFunctionResultWatType(
@@ -24469,8 +24802,23 @@ function emitClosureCallHelpers(
       ...(hostClosureSignatures.has(signature.id)
         ? [
           `(func $host_externref_to_closure_${signature.id} (param $callback externref) (result (ref null $closure))`,
+          `${indent(1)}(local $callback_tag i32)`,
           `${indent(1)}(local $cached (ref null eq))`,
           `${indent(1)}(local $result (ref null $closure))`,
+          `${indent(1)}local.get $callback`,
+          `${indent(1)}call $tagged_type_tag`,
+          `${indent(1)}local.set $callback_tag`,
+          `${indent(1)}local.get $callback_tag`,
+          `${indent(1)}i32.const 0`,
+          `${indent(1)}i32.eq`,
+          `${indent(1)}local.get $callback_tag`,
+          `${indent(1)}i32.const 6`,
+          `${indent(1)}i32.eq`,
+          `${indent(1)}i32.or`,
+          `${indent(1)}if`,
+          `${indent(2)}ref.null $closure`,
+          `${indent(2)}return`,
+          `${indent(1)}end`,
           `${indent(1)}local.get $callback`,
           `${indent(1)}call $${getHostClosureLookupParamCachedImportFunctionName(signature.id)}`,
           `${indent(1)}local.tee $cached`,
@@ -25372,7 +25720,7 @@ export function emitCompilerModuleToWat(module: CompilerModuleIR): string {
     ...emitOwnedStringNativeHelpers(module, stringRuntimeLayout).map((line) =>
       `${indent(1)}${line}`
     ),
-    ...emitTaggedValueType(module.runtime).map((line) => `${indent(1)}${line}`),
+    ...emitTaggedValueType(module).map((line) => `${indent(1)}${line}`),
     ...emitTaggedValueHelpers(module, stringRuntimeLayout).map((line) => `${indent(1)}${line}`),
     ...(moduleUsesTaggedThrowRuntime(module)
       ? [
@@ -25429,10 +25777,40 @@ export function emitCompilerModuleToWat(module: CompilerModuleIR): string {
     ...emitOwnedArrayTypesFromArrays({
       usesOwnedHeapArray: moduleUsesOwnedHeapArrayRuntime(module),
       usesOwnedStringArray: moduleUsesObjectKeysArrayRuntime(module) ||
+        (module.runtime?.representations.some((representation) =>
+          representation.kind === 'specialized_object_representation' &&
+          (
+            representation.fields.some((field) => field.valueType === 'owned_array_ref') ||
+            (representation.hostStaticFields?.some((field) => field.valueKind === 'string_array') ??
+              false)
+          )
+        ) ?? false) ||
+        moduleUsesOwnedArrayHostParamBoundary(module) ||
+        moduleUsesOwnedArrayHostResultBoundary(module) ||
         moduleUsesGeneratorStepClosureHostBridge(module),
       usesOwnedNumberArray: moduleUsesOwnedNumberArrayRuntime(module) ||
+        (module.runtime?.representations.some((representation) =>
+          representation.kind === 'specialized_object_representation' &&
+          (
+            representation.fields.some((field) => field.valueType === 'owned_number_array_ref') ||
+            (representation.hostStaticFields?.some((field) => field.valueKind === 'number_array') ??
+              false)
+          )
+        ) ?? false) ||
+        moduleUsesOwnedNumberArrayHostParamBoundary(module) ||
+        moduleUsesOwnedNumberArrayHostResultBoundary(module) ||
         moduleUsesGeneratorStepClosureHostBridge(module),
       usesOwnedBooleanArray: moduleUsesOwnedBooleanArrayRuntime(module) ||
+        (module.runtime?.representations.some((representation) =>
+          representation.kind === 'specialized_object_representation' &&
+          (
+            representation.fields.some((field) => field.valueType === 'owned_boolean_array_ref') ||
+            (representation.hostStaticFields?.some((field) => field.valueKind === 'boolean_array') ??
+              false)
+          )
+        ) ?? false) ||
+        moduleUsesOwnedBooleanArrayHostParamBoundary(module) ||
+        moduleUsesOwnedBooleanArrayHostResultBoundary(module) ||
         moduleUsesGeneratorStepClosureHostBridge(module),
       usesOwnedTaggedArray: moduleUsesOwnedTaggedArrayRuntime(module) ||
         moduleUsesGeneratorStepClosureHostBridge(module),

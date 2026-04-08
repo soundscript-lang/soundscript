@@ -7111,11 +7111,13 @@ function analyzeRecursiveGenericRelation(
   if (!targetInfo) {
     return { handled: false };
   }
+  const sourceInfo = getGenericRelationTypeInfo(context, normalizedSourceType);
 
   const targetAliasPolicy = targetInfo.kind === 'alias'
     ? getGenericAliasVariancePolicy(context, targetInfo.symbol)
     : undefined;
   const targetAliasPolicyMismatch = targetInfo.kind === 'alias'
+    ? sourceInfo
     ? classifyGenericAliasPolicyFallbackMismatch(
       context,
       targetAliasPolicy,
@@ -7123,6 +7125,7 @@ function analyzeRecursiveGenericRelation(
       targetType,
       targetInfo.name,
     )
+    : undefined
     : undefined;
   if (targetAliasPolicyMismatch) {
     return {
@@ -7143,7 +7146,6 @@ function analyzeRecursiveGenericRelation(
     };
   }
 
-  const sourceInfo = getGenericRelationTypeInfo(context, normalizedSourceType);
   if (!sourceInfo) {
     return { handled: false };
   }
@@ -7283,12 +7285,15 @@ function classifyCurrentTypeNodeGenericAliasRelation(
             context,
             relationTargetTypeNode,
           );
+          let sourceTypeArguments:
+            | readonly ts.Type[]
+            | undefined;
 
           if (
             (aliasPolicy.isImportedDeclarationAlias || aliasPolicy.hasVarianceAnnotation) &&
             targetTypeArguments.length === aliasPolicy.typeParameters.length
           ) {
-            const sourceTypeArguments = getDeclaredGenericAliasTypeArgumentsFromTypeNode(
+            sourceTypeArguments = getDeclaredGenericAliasTypeArgumentsFromTypeNode(
               context,
               sourceTypeNode,
               targetSymbol,
@@ -7332,6 +7337,14 @@ function classifyCurrentTypeNodeGenericAliasRelation(
                 };
               }
             }
+          }
+
+          if (
+            sourceTypeArguments === undefined &&
+            aliasPolicy.isImportedDeclarationAlias &&
+            !aliasPolicy.hasVarianceAnnotation
+          ) {
+            return { handled: false };
           }
 
           const aliasPolicyMismatch = classifyGenericAliasPolicyFallbackMismatch(

@@ -1,12 +1,13 @@
 import {
   assert,
   assertEquals,
+  assertFalse,
   assertMatch,
   assertStrictEquals,
   assertStringIncludes,
   assertThrows,
 } from '@std/assert';
-import { join } from '@std/path';
+import { dirname, fromFileUrl, join } from '@std/path';
 import {
   createInvalidDeepValueRouteProgram,
   createValueRouteProgram,
@@ -74,6 +75,37 @@ function createSoundscriptOnlyCompilerTsconfig(): string {
     },
     null,
     2,
+  );
+}
+
+function getSiblingWorkspaceNodeModulesPath(name: string): string {
+  return join(dirname(fromFileUrl(import.meta.url)), '..', '..', name, 'node_modules');
+}
+
+function getExampleNodeModulesPath(relativeExampleDirectory: string): string {
+  return join(dirname(fromFileUrl(import.meta.url)), '..', relativeExampleDirectory, 'node_modules');
+}
+
+async function linkTempProjectNodeModulesFromSource(
+  tempDirectory: string,
+  sourceNodeModulesDirectory: string,
+  packagePaths: readonly string[],
+): Promise<void> {
+  for (const packagePath of packagePaths) {
+    const destinationPath = join(tempDirectory, 'node_modules', packagePath);
+    await Deno.mkdir(dirname(destinationPath), { recursive: true });
+    await Deno.symlink(join(sourceNodeModulesDirectory, packagePath), destinationPath);
+  }
+}
+
+async function linkTempProjectNodeModules(
+  tempDirectory: string,
+  packagePaths: readonly string[],
+): Promise<void> {
+  await linkTempProjectNodeModulesFromSource(
+    tempDirectory,
+    getSiblingWorkspaceNodeModulesPath('website'),
+    packagePaths,
   );
 }
 
@@ -3225,7 +3257,7 @@ compilerIntegrationTest(
               module: 'ESNext',
               moduleResolution: 'bundler',
             },
-            include: ['src/**/*.sts'],
+            include: ['src/**/*.sts', 'src/**/*.d.ts'],
             soundscript: {
               target: 'wasm-browser',
             },
@@ -3318,7 +3350,7 @@ compilerIntegrationTest(
               module: 'ESNext',
               moduleResolution: 'bundler',
             },
-            include: ['src/**/*.sts'],
+            include: ['src/**/*.sts', 'src/**/*.d.ts'],
             soundscript: {
               target: 'wasm-browser',
             },
@@ -3452,7 +3484,7 @@ compilerIntegrationTest(
               module: 'ESNext',
               moduleResolution: 'bundler',
             },
-            include: ['src/**/*.sts'],
+            include: ['src/**/*.sts', 'src/**/*.d.ts'],
             soundscript: {
               target: 'wasm-browser',
             },
@@ -3610,7 +3642,7 @@ compilerIntegrationTest(
               module: 'ESNext',
               moduleResolution: 'bundler',
             },
-            include: ['src/**/*.sts'],
+            include: ['src/**/*.sts', 'src/**/*.d.ts'],
             soundscript: {
               target: 'wasm-browser',
             },
@@ -3772,7 +3804,7 @@ compilerIntegrationTest(
               target: 'ES2022',
               module: 'ESNext',
             },
-            include: ['src/**/*.sts'],
+            include: ['src/**/*.sts', 'src/**/*.d.ts'],
             soundscript: {
               target: 'wasm-browser',
             },
@@ -6400,8 +6432,13 @@ compilerIntegrationTest(
     let createRootCalls = 0;
     const container = { children: { length: 0 }, nodeType: 1, tagName: 'DIV' };
     let lastRendered:
-      | { key: string | null; props: { children: string; onClick?: () => void }; type: string }
+      | {
+        key: string | null;
+        props: { children: string; onClick?: () => void };
+        type: string;
+      }
       | undefined;
+
     const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
     const instantiated = await wrapperModule.instantiate({
       modules: {
@@ -6452,15 +6489,909 @@ compilerIntegrationTest(
     assert(lastRendered.props.onClick);
 
     lastRendered.props.onClick();
-    assertEquals(createRootCalls, 1);
     assert(lastRendered);
     assertEquals(lastRendered.props.children, 'Clicked 1 time');
     assert(lastRendered.props.onClick);
 
-    lastRendered.props.onClick();
     assertEquals(createRootCalls, 1);
+    lastRendered.props.onClick();
     assert(lastRendered);
     assertEquals(lastRendered.props.children, 'Clicked many times');
+    assert(lastRendered.props.onClick);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject supports real express package declarations with omitted optional callback host methods',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              lib: ['ES2022'],
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+              allowSyntheticDefaultImports: true,
+              types: ['node', 'express'],
+            },
+            include: ['src/**/*.sts', 'src/**/*.d.ts'],
+            soundscript: {
+              target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/express-types.d.ts',
+        contents: [
+          'interface MinimalApp {',
+          '  listen(port: number): void;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.sts',
+        contents: [
+          '// #[interop]',
+          "import express from 'express';",
+          '',
+          'function createApp(): MinimalApp {',
+          '  const app = express();',
+          '  return {',
+          '    listen(port) {',
+          '      app.listen(port);',
+          '    },',
+          '  };',
+          '}',
+          '',
+          'export function main(): number {',
+          '  const app = createApp();',
+          '  app.listen(4310);',
+          '  return 4310;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    await linkTempProjectNodeModules(tempDirectory, [
+      'express',
+      '@types/express',
+      '@types/express-serve-static-core',
+      '@types/body-parser',
+      '@types/serve-static',
+      '@types/node',
+      '@types/qs',
+      '@types/range-parser',
+      '@types/send',
+      '@types/connect',
+      '@types/http-errors',
+      '@types/mime',
+      '@types/ms',
+      'undici-types',
+      'mime-db',
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    let listenedPort = -1;
+
+    const app = {
+      listen(port: number) {
+        listenedPort = port;
+        return this;
+      },
+    };
+
+    function express() {
+      return app;
+    }
+
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate({
+      modules: {
+        express: {
+          default: express,
+        },
+      },
+    });
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+
+    assertEquals(await exported(), 4310);
+    assertEquals(listenedPort, 4310);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject compiles the checked-in express-react-ssr-demo example with react-router SSR',
+  async () => {
+    const { result } = compileCheckedInProject('examples/express-react-ssr-demo');
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject executes the checked-in express-react-ssr-demo example through express react-router and react-dom/server',
+  async () => {
+    const { projectDirectory, result } = compileCheckedInProject('examples/express-react-ssr-demo');
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    let listenedPort = -1;
+    const registeredPaths: string[] = [];
+    let sentHtml = '';
+
+    interface ResponseLike {
+      send(html: string): ResponseLike;
+    }
+
+    interface AppLike {
+      get(path: string, handler: (req: { url: string }, res: ResponseLike) => void): AppLike;
+      listen(port: number): { close(): void };
+    }
+
+    const app: AppLike = {
+      get(path, handler) {
+        registeredPaths.push(path);
+        const response: ResponseLike = {
+          send(html: string) {
+            sentHtml = html;
+            return response;
+          },
+        };
+        handler({ url: '/todos' }, response);
+        return this;
+      },
+      listen(port) {
+        listenedPort = port;
+        return {
+          close() {
+          },
+        };
+      },
+    };
+
+    function express() {
+      return app;
+    }
+
+    const reactJsxRuntimeModule = await import('npm:react@19.2.4/jsx-runtime');
+    const reactDomServerModule = await import('npm:react-dom@19.2.4/server');
+    const reactRouterModule = await import('npm:react-router@7.14.0');
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate({
+      modules: {
+        express: {
+          default: express,
+        },
+        'react/jsx-runtime': reactJsxRuntimeModule,
+        'react-dom/server': reactDomServerModule,
+        'react-router': reactRouterModule,
+      },
+    });
+
+    const renderPageName = await resolveQualifiedExportName(projectDirectory, 'renderPage');
+    const renderPageExport = instantiated.exports[renderPageName];
+    if (typeof renderPageExport !== 'function') {
+      throw new Error(`Expected exported function "${renderPageName}".`);
+    }
+
+    const directHtml = await renderPageExport('/direct');
+    assertStringIncludes(directHtml, '<!doctype html>');
+    assertFalse(directHtml.includes('<main'));
+
+    const startName = await resolveQualifiedExportName(projectDirectory, 'start');
+    const startExport = instantiated.exports[startName];
+    if (typeof startExport !== 'function') {
+      throw new Error(`Expected exported function "${startName}".`);
+    }
+
+    assertEquals(await startExport(4324), undefined);
+    assertEquals(registeredPaths, ['/todos']);
+    assertEquals(listenedPort, 4324);
+    assertStringIncludes(sentHtml, '<!doctype html>');
+    assertStringIncludes(sentHtml, '<main');
+    assertStringIncludes(sentHtml, '/todos');
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject supports real express package declarations with chained app and router middleware',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              lib: ['ES2022'],
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+              allowSyntheticDefaultImports: true,
+              types: ['node', 'express'],
+            },
+            include: ['src/**/*.sts', 'src/**/*.d.ts'],
+            soundscript: {
+              target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/express-types.d.ts',
+        contents: [
+          "type MinimalRequest = Pick<import('express').Request, 'url'>;",
+          "type MinimalResponse = Pick<import('express').Response, 'status' | 'statusCode'>;",
+          '',
+          'interface MinimalRouter {',
+          '  get(path: string, handler: (req: MinimalRequest, res: MinimalResponse) => void): void;',
+          '}',
+          '',
+          'interface MinimalApp {',
+          "  use(handler: (req: MinimalRequest, res: MinimalResponse, next: import('express').NextFunction) => void): void;",
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.sts',
+        contents: [
+          '// #[interop]',
+          "import express from 'express';",
+          '',
+          'let observed = 0;',
+          '',
+          'function createApp(): MinimalApp {',
+          '  const app = express();',
+          '  return {',
+          '    use(handler) {',
+          '      app.use(handler);',
+          '    },',
+          '  };',
+          '}',
+          '',
+          'function createRouter(): MinimalRouter {',
+          '  const router = express.Router();',
+          '  return {',
+          '    get(path, handler) {',
+          '      router.get(path, handler);',
+          '    },',
+          '  };',
+          '}',
+          '',
+          'export function main(): number {',
+          '  const app = createApp();',
+          '  const router = createRouter();',
+          '',
+          '  app.use((req, res, next) => {',
+          '    observed = req.url.length + res.statusCode;',
+          '    next();',
+          '  });',
+          '',
+          "  router.get('/status', (req, res) => {",
+          '    observed = observed + req.url.length;',
+          '    res.status(204);',
+          '  });',
+          '  return observed;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    await linkTempProjectNodeModules(tempDirectory, [
+      'express',
+      '@types/express',
+      '@types/express-serve-static-core',
+      '@types/body-parser',
+      '@types/serve-static',
+      '@types/node',
+      '@types/qs',
+      '@types/range-parser',
+      '@types/send',
+      '@types/connect',
+      '@types/http-errors',
+      'undici-types',
+      '@types/mime',
+      '@types/ms',
+      'mime-db',
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const routerGetPaths: string[] = [];
+    const appUseCalls: unknown[] = [];
+    const statusCalls: number[] = [];
+    let nextCalls = 0;
+
+	    interface RouterLike {
+	      get(path: string, handler: (req: { url: string }, res: {
+	        status(code: number): unknown;
+	        statusCode: number;
+	      }) => void): RouterLike;
+	    }
+
+	    const router: RouterLike = {
+	      get(path, handler) {
+	        routerGetPaths.push(path);
+	        handler(
+          { url: '/status' },
+          {
+            status(code: number) {
+              statusCalls.push(code);
+              return this;
+            },
+	            statusCode: 200,
+	          },
+	        );
+	        return this;
+	      },
+	    };
+
+	    interface AppLike {
+	      use(first: (
+	        req: { url: string },
+	        res: {
+	          status(code: number): unknown;
+	          statusCode: number;
+	        },
+	        next: () => void,
+	      ) => void): AppLike;
+	    }
+
+	    const app: AppLike = {
+	      use(first) {
+	        appUseCalls.push(first);
+	        first(
+          { url: '/ping' },
+          {
+            status(code: number) {
+              statusCalls.push(code);
+              return this;
+            },
+            statusCode: 200,
+          },
+	          () => {
+	            nextCalls += 1;
+	          },
+	        );
+	        return this;
+	      },
+	    };
+
+    function express() {
+      return app;
+    }
+    express.Router = () => router;
+
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate({
+      modules: {
+        express: {
+          default: express,
+        },
+      },
+    });
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+
+    assertEquals(await exported(), 212);
+    assertEquals(routerGetPaths, ['/status']);
+    assertEquals(appUseCalls.length, 1);
+    assertEquals(nextCalls, 1);
+    assertEquals(statusCalls, [204]);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject supports real express and react-dom/server package declarations for SSR handlers',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              lib: ['ES2022'],
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+              allowSyntheticDefaultImports: true,
+              types: ['node', 'express'],
+            },
+            include: ['src/**/*.sts', 'src/**/*.d.ts'],
+            soundscript: {
+              target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/express-types.d.ts',
+        contents: [
+          "type MinimalRequest = Pick<import('express').Request, 'url'>;",
+          "type MinimalResponse = Pick<import('express').Response, 'send'>;",
+          '',
+          'interface MinimalApp {',
+          '  get(path: string, handler: (req: MinimalRequest, res: MinimalResponse) => void): void;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.sts',
+        contents: [
+          '// #[interop]',
+          "import express from 'express';",
+          '// #[interop]',
+          "import { renderToString } from 'react-dom/server';",
+          '',
+          'function createApp(): MinimalApp {',
+          '  const app = express();',
+          '  return {',
+          '    get(path, handler) {',
+          '      app.get(path, handler);',
+          '    },',
+          '  };',
+          '}',
+          '',
+          'function TodoPage(path: string) {',
+          '  return <main>{path}</main>;',
+          '}',
+          '',
+          'export function main(): string {',
+          "  let html = '';",
+          '  const app = createApp();',
+          "  app.get('/todos', (req, res) => {",
+          '    html = renderToString(TodoPage(req.url));',
+          '    res.send(html);',
+          '  });',
+          '  return html;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    await linkTempProjectNodeModules(tempDirectory, [
+      'express',
+      '@types/express',
+      '@types/express-serve-static-core',
+      '@types/body-parser',
+      '@types/serve-static',
+      '@types/node',
+      '@types/qs',
+      '@types/range-parser',
+      '@types/send',
+      '@types/connect',
+      '@types/http-errors',
+      '@types/mime',
+      '@types/ms',
+      'undici-types',
+      'mime-db',
+    ]);
+    await linkTempProjectNodeModulesFromSource(
+      tempDirectory,
+      getExampleNodeModulesPath('examples/react-browser-demo'),
+      [
+      'react',
+      'react-dom',
+      '@types/react',
+      '@types/react-dom',
+      'csstype',
+      ],
+    );
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const registeredPaths: string[] = [];
+    let sentHtml = '';
+
+    interface AppLike {
+      get(
+        path: string,
+        handler: (req: { url: string }, res: ResponseLike) => void,
+      ): AppLike;
+    }
+
+    interface ResponseLike {
+      send(html: string): ResponseLike;
+    }
+
+    const app: AppLike = {
+      get(path, handler) {
+        registeredPaths.push(path);
+        const response: ResponseLike = {
+          send(html: string) {
+            sentHtml = html;
+            return response;
+          },
+        };
+        handler(
+          { url: '/todos' },
+          response,
+        );
+        return this;
+      },
+    };
+
+    function express() {
+      return app;
+    }
+
+    const reactJsxRuntimeModule = await import('npm:react@19.2.4/jsx-runtime');
+    const reactDomServerModule = await import('npm:react-dom@19.2.4/server');
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate({
+      modules: {
+        express: {
+          default: express,
+        },
+        'react/jsx-runtime': reactJsxRuntimeModule,
+        'react-dom/server': reactDomServerModule,
+      },
+    });
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+
+    const html = await exported();
+    assertEquals(registeredPaths, ['/todos']);
+    assertStringIncludes(html, '<main');
+    assertStringIncludes(html, '/todos');
+    assertEquals(sentHtml, html);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject supports ambient host functions with destructured declaration params',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              lib: ['ES2022'],
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+              allowSyntheticDefaultImports: true,
+            },
+            include: ['src/**/*.sts', 'src/**/*.d.ts'],
+            soundscript: {
+              target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/router.d.ts',
+        contents: [
+          "declare module 'router' {",
+          '  export function renderLocation(',
+          '    { location }: { location: string },',
+          '  ): string;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.sts',
+        contents: [
+          '// #[interop]',
+          "import { renderLocation } from 'router';",
+          '',
+          'export function main(url: string): string {',
+          '  return renderLocation({ location: url });',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate({
+      modules: {
+        router: {
+          renderLocation: ({ location }: { location: string }) => `route:${location}`,
+        },
+      },
+    });
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+
+    assertEquals(await exported('/todos'), 'route:/todos');
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject supports ambient host functions with mixed string and callable params',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              lib: ['ES2022'],
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+              allowSyntheticDefaultImports: true,
+            },
+            include: ['src/**/*.sts', 'src/**/*.d.ts'],
+            soundscript: {
+              target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/jsx-runtime.d.ts',
+        contents: [
+          "declare module 'jsx-runtime' {",
+          '  export function jsx(',
+          '    type: string | ((props: { path: string }) => string),',
+          '    props: { path: string },',
+          '  ): string;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/router.d.ts',
+        contents: [
+          "declare module 'router' {",
+          '  export function StaticRouter(props: { path: string }): string;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.sts',
+        contents: [
+          '// #[interop]',
+          "import { jsx } from 'jsx-runtime';",
+          '// #[interop]',
+          "import { StaticRouter } from 'router';",
+          '',
+          'export function component(path: string): string {',
+          '  return jsx(StaticRouter, { path });',
+          '}',
+          '',
+          'export function intrinsic(path: string): string {',
+          "  return jsx('main', { path });",
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    function jsx(
+      type: string | ((props: { path: string }) => string),
+      props: { path: string },
+    ): string {
+      return typeof type === 'string' ? `<${type}>${props.path}</${type}>` : type(props);
+    }
+
+    function StaticRouter(props: { path: string }): string {
+      return `<router>${props.path}</router>`;
+    }
+
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate({
+      modules: {
+        'jsx-runtime': {
+          jsx,
+        },
+        router: {
+          StaticRouter,
+        },
+      },
+    });
+
+    const componentName = await resolveQualifiedExportName(tempDirectory, 'component');
+    const componentExport = instantiated.exports[componentName];
+    if (typeof componentExport !== 'function') {
+      throw new Error(`Expected exported function "${componentName}".`);
+    }
+    assertEquals(await componentExport('/todos'), '<router>/todos</router>');
+
+    const intrinsicName = await resolveQualifiedExportName(tempDirectory, 'intrinsic');
+    const intrinsicExport = instantiated.exports[intrinsicName];
+    if (typeof intrinsicExport !== 'function') {
+      throw new Error(`Expected exported function "${intrinsicName}".`);
+    }
+    assertEquals(await intrinsicExport('/todos'), '<main>/todos</main>');
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject supports real react-router package declarations for SSR routes',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              skipLibCheck: true,
+              target: 'ES2022',
+              lib: ['ES2022', 'DOM', 'DOM.Iterable'],
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+              allowSyntheticDefaultImports: true,
+            },
+            include: ['src/**/*.sts', 'src/**/*.d.ts'],
+            soundscript: {
+              target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/index.sts',
+        contents: [
+          '// #[interop]',
+          "import { renderToString } from 'react-dom/server';",
+          '// #[interop]',
+          "import { Route, Routes, StaticRouter } from 'react-router';",
+          '',
+          'function App(path: string) {',
+          '  return (',
+          '    <StaticRouter location={path}>',
+          '      <Routes>',
+          '        <Route path="/todos" element={<main>{path}</main>} />',
+          '      </Routes>',
+          '    </StaticRouter>',
+          '  );',
+          '}',
+          '',
+          'export function main(path: string): string {',
+          '  return renderToString(App(path));',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    await linkTempProjectNodeModulesFromSource(
+      tempDirectory,
+      getExampleNodeModulesPath('examples/express-react-ssr-demo'),
+      [
+        'react',
+        'react-dom',
+        'react-router',
+        'react-router-dom',
+        '@types/react',
+        '@types/react-dom',
+        'csstype',
+      ],
+    );
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const reactJsxRuntimeModule = await import('npm:react@19.2.4/jsx-runtime');
+    const reactDomServerModule = await import('npm:react-dom@19.2.4/server');
+    const reactRouterModule = await import('npm:react-router@7.14.0');
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate({
+      modules: {
+        'react/jsx-runtime': reactJsxRuntimeModule,
+        'react-dom/server': reactDomServerModule,
+        'react-router': reactRouterModule,
+      },
+    });
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+
+    const html = await exported('/todos');
+    assertStringIncludes(html, '<main');
+    assertStringIncludes(html, '/todos');
   },
 );
 

@@ -42,6 +42,7 @@ export function visitHostBoundary(
     case 'string':
     case 'closure':
     case 'class_constructor':
+    case 'externref':
       return;
     case 'tagged':
       if (boundary.heapBoundary) {
@@ -119,6 +120,7 @@ export function visitFallbackObjectBoundaryFields(
     case 'string':
     case 'closure':
     case 'class_constructor':
+    case 'externref':
       return;
     case 'promise':
       if (boundary.valueBoundary) {
@@ -167,6 +169,9 @@ export function visitFunctionFallbackObjectBoundaryFields(
   if (func.hostResultBoundary) {
     visitFallbackObjectBoundaryFields(func.hostResultBoundary, visitor);
   }
+  if (func.hostLocalFallbackBoundary) {
+    visitFallbackObjectBoundaryFields(func.hostLocalFallbackBoundary, visitor);
+  }
 }
 
 export function getHostPromiseParamBoundaryNames(func: CompilerFunctionIR): Set<string> {
@@ -192,6 +197,9 @@ export function getHeapRepresentationFromHostBoundary(
     case 'object':
     case 'promise':
       return boundary.representation;
+    case 'tagged':
+      return boundary.heapBoundary?.representation;
+    case 'externref':
     default:
       return undefined;
   }

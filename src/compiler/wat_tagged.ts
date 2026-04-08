@@ -202,13 +202,67 @@ export function getTaggedHostBoundaryUsage(module: CompilerModuleIR): TaggedHost
     if (!usage || !signature) {
       continue;
     }
+    if (usage.needsParamBoundary) {
+      for (const representation of signature.paramHeapRepresentations ?? []) {
+        if (representation?.kind !== 'specialized_object_representation') {
+          continue;
+        }
+        specializedParamFieldKinds.push(...getSpecializedFieldKinds(representation.name));
+        markSpecializedClosureUsage(representation.name, {
+          needsParamBoundary: true,
+        });
+      }
+      if (signature.resultHeapRepresentation?.kind === 'specialized_object_representation') {
+        specializedParamFieldKinds.push(
+          ...getSpecializedFieldKinds(signature.resultHeapRepresentation.name),
+        );
+        markSpecializedClosureUsage(signature.resultHeapRepresentation.name, {
+          needsParamBoundary: true,
+        });
+      }
+      if (signature.resultHeapArrayRepresentation?.kind === 'specialized_object_representation') {
+        specializedParamFieldKinds.push(
+          ...getSpecializedFieldKinds(signature.resultHeapArrayRepresentation.name),
+        );
+        markSpecializedClosureUsage(signature.resultHeapArrayRepresentation.name, {
+          needsParamBoundary: true,
+        });
+      }
+    }
+    if (usage.needsResultBoundary) {
+      for (const representation of signature.paramHeapRepresentations ?? []) {
+        if (representation?.kind !== 'specialized_object_representation') {
+          continue;
+        }
+        specializedResultFieldKinds.push(...getSpecializedFieldKinds(representation.name));
+        markSpecializedClosureUsage(representation.name, {
+          needsResultBoundary: true,
+        });
+      }
+      if (signature.resultHeapRepresentation?.kind === 'specialized_object_representation') {
+        specializedResultFieldKinds.push(
+          ...getSpecializedFieldKinds(signature.resultHeapRepresentation.name),
+        );
+        markSpecializedClosureUsage(signature.resultHeapRepresentation.name, {
+          needsResultBoundary: true,
+        });
+      }
+      if (signature.resultHeapArrayRepresentation?.kind === 'specialized_object_representation') {
+        specializedResultFieldKinds.push(
+          ...getSpecializedFieldKinds(signature.resultHeapArrayRepresentation.name),
+        );
+        markSpecializedClosureUsage(signature.resultHeapArrayRepresentation.name, {
+          needsResultBoundary: true,
+        });
+      }
+    }
     signature.paramClosureSignatureIds?.forEach((nestedSignatureId) => {
       if (nestedSignatureId === undefined) {
         return;
       }
       const changed = markClosureUsage(nestedSignatureId, {
-        needsParamBoundary: usage.needsResultBoundary,
-        needsResultBoundary: usage.needsParamBoundary,
+        needsParamBoundary: usage.needsParamBoundary,
+        needsResultBoundary: usage.needsResultBoundary,
       });
       if (changed) {
         pending.push(nestedSignatureId);

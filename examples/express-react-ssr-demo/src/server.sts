@@ -1,0 +1,44 @@
+// #[interop]
+import express from 'express';
+// #[interop]
+import { renderToString } from 'react-dom/server';
+// #[interop]
+import { Route, Routes, StaticRouter } from 'react-router';
+
+function createApp(): MinimalApp {
+  const app = express();
+  return {
+    get(path, handler) {
+      app.get(path, handler);
+    },
+    listen(port) {
+      app.listen(port);
+    },
+  };
+}
+
+function TodoPage(path: string) {
+  return <main>{path}</main>;
+}
+
+function App(path: string) {
+  return (
+    <StaticRouter location={path}>
+      <Routes>
+        <Route path="/todos" Component={() => TodoPage(path)} />
+      </Routes>
+    </StaticRouter>
+  );
+}
+
+export function renderPage(url: string): string {
+  return '<!doctype html>' + renderToString(App(url));
+}
+
+export function start(port: number): void {
+  const app = createApp();
+  app.get('/todos', (req, res) => {
+    res.send(renderPage(req.url));
+  });
+  app.listen(port);
+}

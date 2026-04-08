@@ -4332,7 +4332,7 @@ interface BeforeUnloadEvent extends Event {
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/BeforeUnloadEvent/returnValue)
      */
-    returnValue: unknown;
+    returnValue: boolean;
 }
 
 declare var BeforeUnloadEvent: {
@@ -27110,7 +27110,7 @@ interface SVGElementEventMap extends ElementEventMap, GlobalEventHandlersEventMa
  */
 interface SVGElement extends Element, ElementCSSInlineStyle, GlobalEventHandlers, HTMLOrSVGElement {
     /** @deprecated */
-    readonly className: unknown;
+    readonly className: string;
     /**
      * The **`ownerSVGElement`** property of the SVGElement interface reflects the nearest ancestor svg element.
      *

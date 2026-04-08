@@ -586,7 +586,18 @@ function createJsHostImports(
           case 'set_tagged':
             return (value: unknown, next: unknown) => {
               const objectRecord = expectObjectRecord(value);
-              objectRecord[propertyName] = syncHostBoundaryValue(next);
+              const nextValue = syncHostBoundaryValue(next);
+              if (
+                nextValue === undefined &&
+                !Reflect.has(objectRecord, propertyName) &&
+                !Object.isExtensible(objectRecord)
+              ) {
+                return;
+              }
+              if (Reflect.has(objectRecord, propertyName) && Object.is(objectRecord[propertyName], nextValue)) {
+                return;
+              }
+              objectRecord[propertyName] = nextValue;
               if (
                 propertyName === SOUNDSCRIPT_CLASS_BASE_CONSTRUCTOR &&
                 typeof value === 'function' &&
@@ -690,6 +701,9 @@ function createJsHostImports(
           const signatureId = Number(toHostSyncMatch[1]);
           const syncExportName = decodeURIComponent(toHostSyncMatch[2] ?? '');
           return (target: unknown, closure: unknown) => {
+            if (closure == null) {
+              return undefined;
+            }
             const cacheKey = `sync:${signatureId}:${syncExportName}`;
             const syncCache = getOrCreateClosureToHostSyncCache(closure);
             const targetKey = getHostIdentityKey(target);
@@ -773,6 +787,9 @@ function createJsHostImports(
         if (toHostMatch) {
           const signatureId = Number(toHostMatch[1]);
           return (closure: unknown) => {
+            if (closure == null) {
+              return undefined;
+            }
             const cacheKey = `plain:${signatureId}`;
             const closureCache = getOrCreateClosureToHostCache(closure);
             const existing = closureCache.get(cacheKey);

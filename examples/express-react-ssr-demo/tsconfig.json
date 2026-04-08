@@ -1,0 +1,27 @@
+{
+  "compilerOptions": {
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "target": "ES2022",
+    "lib": [
+      "ES2022",
+      "DOM",
+      "DOM.Iterable"
+    ],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "allowSyntheticDefaultImports": true,
+    "types": [
+      "node",
+      "express"
+    ]
+  },
+  "include": [
+    "src/**/*.sts",
+    "src/**/*.d.ts"
+  ],
+  "soundscript": {
+    "target": "wasm-node"
+  }
+}

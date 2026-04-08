@@ -240,6 +240,19 @@ export interface CompilerOwnedStringToHostIR {
   type: 'string_ref';
 }
 
+export interface CompilerHostClosureToExternrefIR {
+  kind: 'host_closure_to_externref';
+  value: CompilerExpressionIR;
+  signatureId: number;
+  type: 'string_ref';
+}
+
+export interface CompilerHostImportExternrefIR {
+  kind: 'host_import_externref';
+  functionName: string;
+  type: 'string_ref';
+}
+
 export interface CompilerOwnedStringArrayLiteralIR {
   kind: 'owned_string_array_literal';
   elements: readonly CompilerExpressionIR[];
@@ -1136,6 +1149,8 @@ export type CompilerExpressionIR =
   | CompilerOwnedStringTrimEndIR
   | CompilerStringToOwnedIR
   | CompilerOwnedStringToHostIR
+  | CompilerHostClosureToExternrefIR
+  | CompilerHostImportExternrefIR
   | CompilerOwnedStringArrayLiteralIR
   | CompilerOwnedHeapArrayLiteralIR
   | CompilerOwnedNumberArrayLiteralIR
@@ -1405,6 +1420,10 @@ export interface CompilerHostBoundaryClassConstructorIR {
   classTagId: number;
 }
 
+export interface CompilerHostBoundaryExternrefIR {
+  kind: 'externref';
+}
+
 export interface CompilerHostBoundaryObjectIR {
   kind: 'object';
   representation: CompilerRuntimeRepresentationRefIR<'object'>;
@@ -1438,6 +1457,7 @@ export type CompilerHostBoundaryIR =
   | CompilerHostBoundaryStringIR
   | CompilerHostBoundaryClosureIR
   | CompilerHostBoundaryClassConstructorIR
+  | CompilerHostBoundaryExternrefIR
   | CompilerHostBoundaryObjectIR
   | CompilerHostBoundaryTaggedIR
   | CompilerHostBoundaryPromiseIR
@@ -1498,6 +1518,7 @@ export interface CompilerFunctionIR {
     construct?: boolean;
     promiseResult?: boolean;
   };
+  hostImportValueUsed?: boolean;
   heapLocalRepresentations?: CompilerFunctionHeapBoundaryIR[];
   heapParamRepresentations?: CompilerFunctionHeapBoundaryIR[];
   heapResultRepresentation?: CompilerRuntimeRepresentationRefIR<'object'>;
@@ -1511,6 +1532,7 @@ export interface CompilerFunctionIR {
   hostLengthViewResult?: boolean;
   hostParamBoundaries?: readonly CompilerHostParamBoundaryIR[];
   hostResultBoundary?: CompilerHostBoundaryIR;
+  hostLocalFallbackBoundary?: CompilerHostBoundaryObjectIR;
   locals: CompilerLocalIR[];
   name: string;
   params: CompilerLocalIR[];

@@ -16,7 +16,7 @@ function label(): string {
     : (clickCount === 1 ? 'Clicked 1 time' : 'Clicked many times');
 }
 
-function view() {
+function homeView() {
   return <button onClick={() => {
     click();
     start();
@@ -26,5 +26,5 @@ function view() {
 export function start(): void {
   const currentRoot = root ?? createRoot(getAppContainer());
   root = currentRoot;
-  currentRoot.render(view());
+  currentRoot.render(homeView());
 }
