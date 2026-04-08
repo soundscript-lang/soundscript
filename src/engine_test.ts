@@ -668,6 +668,19 @@ Deno.test('createAnalysisContext treats fresh local scratch mutation as non-obse
         '  return out;',
         '}',
         '',
+        'export function buildFormData(): FormData {',
+        '  const data = new FormData();',
+        '  data.append("q", "music");',
+        '  return data;',
+        '}',
+        '',
+        'export function buildFormDataAlias(): FormData {',
+        '  const data = new FormData();',
+        '  const out = data;',
+        '  out.append("q", "music");',
+        '  return out;',
+        '}',
+        '',
         'export function buildCustomCounter(): Counter {',
         '  const counter = new Counter();',
         '  counter.set(1);',
@@ -716,6 +729,8 @@ Deno.test('createAnalysisContext treats fresh local scratch mutation as non-obse
   const buildMapAlias = declarationsByName.get('buildMapAlias');
   const buildParams = declarationsByName.get('buildParams');
   const buildParamsAlias = declarationsByName.get('buildParamsAlias');
+  const buildFormData = declarationsByName.get('buildFormData');
+  const buildFormDataAlias = declarationsByName.get('buildFormDataAlias');
   const buildCustomCounter = declarationsByName.get('buildCustomCounter');
   const escapeBeforeMutate = declarationsByName.get('escapeBeforeMutate');
   const escapeMapBeforeMutate = declarationsByName.get('escapeMapBeforeMutate');
@@ -727,6 +742,8 @@ Deno.test('createAnalysisContext treats fresh local scratch mutation as non-obse
   assertExists(buildMapAlias);
   assertExists(buildParams);
   assertExists(buildParamsAlias);
+  assertExists(buildFormData);
+  assertExists(buildFormDataAlias);
   assertExists(buildCustomCounter);
   assertExists(escapeBeforeMutate);
   assertExists(escapeMapBeforeMutate);
@@ -738,6 +755,8 @@ Deno.test('createAnalysisContext treats fresh local scratch mutation as non-obse
   assertEquals(getEffectSummaryForDeclaration(context, buildMapAlias).directEffects, []);
   assertEquals(getEffectSummaryForDeclaration(context, buildParams).directEffects, []);
   assertEquals(getEffectSummaryForDeclaration(context, buildParamsAlias).directEffects, []);
+  assertEquals(getEffectSummaryForDeclaration(context, buildFormData).directEffects, []);
+  assertEquals(getEffectSummaryForDeclaration(context, buildFormDataAlias).directEffects, []);
   assertEquals(getEffectSummaryForDeclaration(context, buildCustomCounter).directEffects, ['mut']);
   assertEquals(getEffectSummaryForDeclaration(context, escapeBeforeMutate).directEffects, ['mut']);
   assertEquals(getEffectSummaryForDeclaration(context, escapeMapBeforeMutate).directEffects, ['mut']);

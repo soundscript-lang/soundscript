@@ -69,6 +69,23 @@ That means:
 The current `sts:*` stdlib now follows that rule. Its remaining explicit effects are on host
 facades such as `sts:fetch`, `sts:text`, and `sts:url`, not on ordinary bodyful helper code.
 
+## What The Checker Now Proves For You
+
+Two inference ergonomics are worth knowing before you reach for explicit annotations.
+
+- Fresh local builders are treated as non-observable `mut` when the checker can prove the mutated
+  value is still local scratch state. That includes object/array literals and a small set of
+  receiver-local builder families such as `Map`, `Set`, `URLSearchParams`, `Headers`, and
+  `FormData`, including stable `const` aliases.
+- Trivial higher-order adapters are inferred through local `const` wrappers when the wrapper body is
+  just one direct call or `return await ...` of a parameter-rooted callback/member path with only
+  pure argument plumbing.
+
+When that proof fails, the checker stays conservative and the diagnostics now try to say why. For
+example, forwarded-path failures report the full path plus the first failing segment, and
+fresh-local `mut` failures explain whether the value escaped, became unstable, or used an
+unsupported mutator family.
+
 ## Prefix Containment Matters
 
 Containment is by prefix, not by broad "same family" intuition.

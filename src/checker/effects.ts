@@ -1170,6 +1170,52 @@ function getSummaryForCallableMember(
   return getSummaryForSignatures(context, [...callSignatures, ...constructSignatures]);
 }
 
+function getForwardedCallablePathLabel(
+  argument: ts.Expression,
+  memberPath: readonly string[],
+): string | undefined {
+  const unwrappedArgument = unwrapOuterExpression(argument);
+  const baseLabel = ts.isIdentifier(unwrappedArgument)
+    ? unwrappedArgument.text
+    : undefined;
+  if (memberPath.length === 0) {
+    return baseLabel;
+  }
+  const pathLabel = memberPath.join('.');
+  return baseLabel ? `${baseLabel}.${pathLabel}` : pathLabel;
+}
+
+function getUnresolvedCallablePathStep(
+  context: AnalysisContext,
+  expression: ts.Expression,
+  memberPath: readonly string[],
+): string | undefined {
+  if (memberPath.length === 0) {
+    return undefined;
+  }
+
+  let currentType = context.checker.getTypeAtLocation(expression);
+  for (let index = 0; index < memberPath.length; index += 1) {
+    const step = memberPath[index]!;
+    const property = currentType.getProperty(step);
+    if (!property) {
+      return step;
+    }
+    const memberType = context.checker.getTypeOfSymbolAtLocation(property, expression);
+    if (index === memberPath.length - 1) {
+      const callSignatures = context.checker.getSignaturesOfType(memberType, ts.SignatureKind.Call);
+      const constructSignatures = context.checker.getSignaturesOfType(
+        memberType,
+        ts.SignatureKind.Construct,
+      );
+      return callSignatures.length === 0 && constructSignatures.length === 0 ? step : undefined;
+    }
+    currentType = memberType;
+  }
+
+  return undefined;
+}
+
 function getSummaryForCallablePath(
   context: AnalysisContext,
   expression: ts.Expression,
@@ -1239,18 +1285,16 @@ function summarizeForwardedArgumentInBody(
 
   const summary = getSummaryForCallablePath(context, argument, memberPath);
   if (!summary) {
-    const unwrappedArgument = unwrapOuterExpression(argument);
-    const argumentLabel = ts.isIdentifier(unwrappedArgument)
-      ? unwrappedArgument.text
-      : memberPath.length > 0
-      ? memberPath.join('.')
-      : undefined;
+    const argumentLabel = getForwardedCallablePathLabel(argument, memberPath);
+    const unresolvedStep = getUnresolvedCallablePathStep(context, argument, memberPath);
     return createEffectComposition(
       [],
       [createEffectUnknownReason(
         'unresolvedForwardedCallback',
-        argumentLabel && memberPath.length > 0
-          ? `${argumentLabel}.${memberPath.join('.')}`
+        argumentLabel === undefined
+          ? undefined
+          : unresolvedStep
+          ? `${argumentLabel}; failed at ${unresolvedStep}`
           : argumentLabel,
       )],
     );
@@ -1660,15 +1704,31 @@ export function getEffectCompositionForCallLike(
   let effects = summary.directEffects;
   let unknownReasons = summary.unknownDirectReasons;
   for (const forwardedParameter of summary.forwardedParameters) {
+    const argument = expression.arguments?.[forwardedParameter.parameterIndex];
     const forwarded = getSummaryForCallablePath(
       context,
-      expression.arguments?.[forwardedParameter.parameterIndex]!,
+      argument!,
       forwardedParameter.memberPath,
     );
     if (!forwarded) {
+      const argumentLabel = argument
+        ? getForwardedCallablePathLabel(argument, forwardedParameter.memberPath)
+        : forwardedParameter.parameterName
+        ? [forwardedParameter.parameterName, ...forwardedParameter.memberPath].join('.')
+        : forwardedParameter.memberPath.length > 0
+        ? `<param ${forwardedParameter.parameterIndex + 1}>.${forwardedParameter.memberPath.join('.')}`
+        : `<param ${forwardedParameter.parameterIndex + 1}>`;
+      const unresolvedStep = argument
+        ? getUnresolvedCallablePathStep(context, argument, forwardedParameter.memberPath)
+        : undefined;
       unknownReasons = mergeEffectUnknownReasons(
         unknownReasons,
-        [createEffectUnknownReason('unresolvedForwardedCallback')],
+        [createEffectUnknownReason(
+          'unresolvedForwardedCallback',
+          unresolvedStep && argumentLabel
+            ? `${argumentLabel}; failed at ${unresolvedStep}`
+            : argumentLabel,
+        )],
       );
       continue;
     }

@@ -32,6 +32,7 @@ export interface FreshLocalMutatingCall {
 const freshLocalProofCache = new WeakMap<AnalysisContext, Map<number, FreshLocalProof>>();
 
 const RECEIVER_LOCAL_MUTATOR_FAMILIES = new Map<string, ReadonlySet<string>>([
+  ['FormData', new Set(['append', 'delete', 'set'])],
   ['Map', new Set(['clear', 'delete', 'set'])],
   ['Set', new Set(['add', 'clear', 'delete'])],
   ['WeakMap', new Set(['delete', 'set'])],
