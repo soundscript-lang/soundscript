@@ -2736,11 +2736,13 @@ interface AbortController {
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/AbortController/abort)
      */
+    // #[effects(add: [host.ffi, mut])]
     abort(reason?: unknown): void;
 }
 
 declare var AbortController: {
     prototype: AbortController;
+    // #[effects(add: [host.ffi])]
     new(): AbortController;
 };
 
@@ -2773,6 +2775,7 @@ interface AbortSignal extends EventTarget {
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/AbortSignal/throwIfAborted)
      */
+    // #[effects(add: [fails.throws])]
     throwIfAborted(): void;
     addEventListener<K extends keyof AbortSignalEventMap>(type: K, listener: (this: AbortSignal, ev: AbortSignalEventMap[K]) => void, options?: boolean | AddEventListenerOptions): void;
     addEventListener(type: string, listener: EventListenerOrEventListenerObject, options?: boolean | AddEventListenerOptions): void;
@@ -2782,24 +2785,28 @@ interface AbortSignal extends EventTarget {
 
 declare var AbortSignal: {
     prototype: AbortSignal;
+    // #[effects(add: [host.ffi])]
     new(): AbortSignal;
     /**
      * The **`AbortSignal.abort()`** static method returns an AbortSignal that is already set as aborted (and which does not trigger an AbortSignal/abort_event event).
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/AbortSignal/abort_static)
      */
+    // #[effects(add: [host.ffi])]
     abort(reason?: unknown): AbortSignal;
     /**
      * The **`AbortSignal.any()`** static method takes an iterable of abort signals and returns an AbortSignal.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/AbortSignal/any_static)
      */
+    // #[effects(add: [host.ffi])]
     any(signals: AbortSignal[]): AbortSignal;
     /**
      * The **`AbortSignal.timeout()`** static method returns an AbortSignal that will automatically abort after a specified time.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/AbortSignal/timeout_static)
      */
+    // #[effects(add: [host.time])]
     timeout(milliseconds: number): AbortSignal;
 };
 
@@ -4416,6 +4423,7 @@ interface Blob {
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/Blob/arrayBuffer)
      */
+    // #[effects(add: [host.io, suspend.await])]
     arrayBuffer(): Promise<ArrayBuffer>;
     /**
      * The **`bytes()`** method of the Blob interface returns a Promise that resolves with a Uint8Array containing the contents of the blob as an array of bytes.
@@ -4482,14 +4490,18 @@ interface Body {
     /** [MDN Reference](https://developer.mozilla.org/docs/Web/API/Request/arrayBuffer) */
     arrayBuffer(): Promise<ArrayBuffer>;
     /** [MDN Reference](https://developer.mozilla.org/docs/Web/API/Request/blob) */
+    // #[effects(add: [host.io, suspend.await])]
     blob(): Promise<Blob>;
     /** [MDN Reference](https://developer.mozilla.org/docs/Web/API/Request/bytes) */
     bytes(): Promise<Uint8Array<ArrayBuffer>>;
     /** [MDN Reference](https://developer.mozilla.org/docs/Web/API/Request/formData) */
+    // #[effects(add: [host.io, suspend.await])]
     formData(): Promise<FormData>;
     /** [MDN Reference](https://developer.mozilla.org/docs/Web/API/Request/json) */
+    // #[effects(add: [host.io, suspend.await])]
     json(): Promise<unknown>;
     /** [MDN Reference](https://developer.mozilla.org/docs/Web/API/Request/text) */
+    // #[effects(add: [host.io, suspend.await])]
     text(): Promise<string>;
 }
 
@@ -12248,6 +12260,7 @@ interface FormData {
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/FormData/append)
      */
     append(name: string, value: string | Blob): void;
+    // #[effects(add: [mut])]
     append(name: string, value: string): void;
     append(name: string, blobValue: Blob, filename?: string): void;
     /**
@@ -12255,6 +12268,7 @@ interface FormData {
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/FormData/delete)
      */
+    // #[effects(add: [mut])]
     delete(name: string): void;
     /**
      * The **`get()`** method of the FormData interface returns the first value associated with a given key from within a `FormData` object.
@@ -17817,6 +17831,7 @@ interface Headers {
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/Headers/get)
      */
+    // #[effects(add: [])]
     get(name: string): string | null;
     /**
      * The **`getSetCookie()`** method of the Headers interface returns an array containing the values of all Set-Cookie headers associated with a response.
@@ -17829,18 +17844,22 @@ interface Headers {
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/Headers/has)
      */
+    // #[effects(add: [])]
     has(name: string): boolean;
     /**
      * The **`set()`** method of the Headers interface sets a new value for an existing header inside a `Headers` object, or adds the header if it does not already exist.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/Headers/set)
      */
+    // #[effects(add: [mut])]
     set(name: string, value: string): void;
+    // #[effects(add: [], forward: [callbackfn])]
     forEach(callbackfn: (value: string, key: string, parent: Headers) => void, thisArg?: unknown): void;
 }
 
 declare var Headers: {
     prototype: Headers;
+    // #[effects(add: [host.ffi])]
     new(init?: HeadersInit): Headers;
 };
 
@@ -26386,11 +26405,13 @@ interface Request extends Body {
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/Request/clone)
      */
+    // #[effects(add: [])]
     clone(): Request;
 }
 
 declare var Request: {
     prototype: Request;
+    // #[effects(add: [host.ffi])]
     new(input: RequestInfo | URL, init?: RequestInit): Request;
 };
 
@@ -26546,29 +26567,34 @@ interface Response extends Body {
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/Response/clone)
      */
+    // #[effects(add: [])]
     clone(): Response;
 }
 
 declare var Response: {
     prototype: Response;
+    // #[effects(add: [host.ffi])]
     new(body?: BodyInit | null, init?: ResponseInit): Response;
     /**
      * The **`error()`** static method of the Response interface returns a new `Response` object associated with a network error.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/Response/error_static)
      */
+    // #[effects(add: [host.ffi])]
     error(): Response;
     /**
      * The **`json()`** static method of the Response interface returns a `Response` that contains the provided JSON data as body, and a Content-Type header which is set to `application/json`.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/Response/json_static)
      */
+    // #[effects(add: [host.ffi])]
     json(data: unknown, init?: ResponseInit): Response;
     /**
      * The **`redirect()`** static method of the Response interface returns a `Response` resulting in a redirect to the specified URL.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/Response/redirect_static)
      */
+    // #[effects(add: [host.ffi])]
     redirect(url: string | URL, status?: number): Response;
 };
 
@@ -39378,6 +39404,7 @@ declare function clearTimeout(id: number | undefined): void;
 declare function createImageBitmap(image: ImageBitmapSource, options?: ImageBitmapOptions): Promise<ImageBitmap>;
 declare function createImageBitmap(image: ImageBitmapSource, sx: number, sy: number, sw: number, sh: number, options?: ImageBitmapOptions): Promise<ImageBitmap>;
 /** [MDN Reference](https://developer.mozilla.org/docs/Web/API/Window/fetch) */
+// #[effects(add: [host.io, suspend.await])]
 declare function fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response>;
 /** [MDN Reference](https://developer.mozilla.org/docs/Web/API/Window/queueMicrotask) */
 declare function queueMicrotask(callback: VoidFunction): void;
@@ -39388,6 +39415,7 @@ declare function setInterval(handler: TimerHandler, timeout?: number, ...argumen
 /** [MDN Reference](https://developer.mozilla.org/docs/Web/API/Window/setTimeout) */
 declare function setTimeout(handler: TimerHandler, timeout?: number, ...arguments: unknown[]): number;
 /** [MDN Reference](https://developer.mozilla.org/docs/Web/API/Window/structuredClone) */
+// #[effects(add: [fails.throws])]
 declare function structuredClone<T = unknown>(value: T, options?: StructuredSerializeOptions): T;
 /** [MDN Reference](https://developer.mozilla.org/docs/Web/API/Window/sessionStorage) */
 declare var sessionStorage: Storage;
