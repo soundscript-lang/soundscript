@@ -36,7 +36,7 @@ interface ReadableStreamAsyncIterator<T> extends AsyncIteratorObject<T, BuiltinI
     [Symbol.asyncIterator](): ReadableStreamAsyncIterator<T>;
 }
 
-interface ReadableStream<R = any> {
+interface ReadableStream<R = unknown> {
     [Symbol.asyncIterator](options?: ReadableStreamIteratorOptions): ReadableStreamAsyncIterator<R>;
     values(options?: ReadableStreamIteratorOptions): ReadableStreamAsyncIterator<R>;
 }
