@@ -595,6 +595,78 @@ Deno.test('createAnalysisContext unions explicit bodyful add effects with inferr
   assertEquals(summary.directEffects, ['host.db.query', 'host.io', 'suspend.await']);
 });
 
+Deno.test('createAnalysisContext treats fresh local scratch mutation as non-observable mut', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+          },
+          include: ['src/**/*.ts'],
+        },
+        null,
+        2,
+      ),
+    },
+    {
+      path: 'src/index.ts',
+      contents: [
+        'export function buildRecord(): { value: number } {',
+        '  const box = { value: 0 };',
+        '  box.value = 1;',
+        '  return box;',
+        '}',
+        '',
+        'export function buildList(): number[] {',
+        '  const values = [0];',
+        '  values[0] = 1;',
+        '  return values;',
+        '}',
+        '',
+        'export function escapeBeforeMutate(store: (value: { value: number }) => void): { value: number } {',
+        '  const box = { value: 0 };',
+        '  store(box);',
+        '  box.value = 1;',
+        '  return box;',
+        '}',
+        '',
+      ].join('\n'),
+    },
+  ]);
+  const projectPath = join(tempDirectory, 'tsconfig.json');
+  const program = loadProgram(projectPath);
+  const context = createAnalysisContext({ program, workingDirectory: tempDirectory });
+  const sourceFile = context.getSourceFiles().find((file) => file.fileName.endsWith('/src/index.ts'));
+
+  assertExists(sourceFile);
+
+  const declarationsByName = new Map(
+    sourceFile.statements
+      .filter(ts.isFunctionDeclaration)
+      .filter((declaration): declaration is ts.FunctionDeclaration & { name: ts.Identifier } =>
+        declaration.name !== undefined
+      )
+      .map((declaration) => [declaration.name.text, declaration]),
+  );
+
+  const buildRecord = declarationsByName.get('buildRecord');
+  const buildList = declarationsByName.get('buildList');
+  const escapeBeforeMutate = declarationsByName.get('escapeBeforeMutate');
+
+  assertExists(buildRecord);
+  assertExists(buildList);
+  assertExists(escapeBeforeMutate);
+
+  assertEquals(getEffectSummaryForDeclaration(context, buildRecord).directEffects, []);
+  assertEquals(getEffectSummaryForDeclaration(context, buildList).directEffects, []);
+  assertEquals(getEffectSummaryForDeclaration(context, escapeBeforeMutate).directEffects, ['mut']);
+});
+
 Deno.test('createAnalysisContext summarizes Promise continuation builtins with precise forwarded effects', async () => {
   const tempDirectory = await createTempProject([
     {

@@ -576,12 +576,137 @@ function collectLocalBindingSymbolIds(
   return localSymbols;
 }
 
+interface FreshScratchLocalBindingCandidate {
+  readonly declarationName: ts.Identifier;
+  readonly symbolId: number;
+}
+
+function isFreshScratchLocalInitializer(expression: ts.Expression): boolean {
+  const current = unwrapOuterExpression(expression);
+  return ts.isObjectLiteralExpression(current) || ts.isArrayLiteralExpression(current);
+}
+
+function isTransparentExpressionNode(node: ts.Node): boolean {
+  return ts.isParenthesizedExpression(node) || ts.isAsExpression(node) ||
+    ts.isTypeAssertionExpression(node) || ts.isSatisfiesExpression(node) ||
+    ts.isNonNullExpression(node);
+}
+
+function getFreshScratchReferenceSite(identifier: ts.Identifier): ts.Node {
+  let current: ts.Node = identifier;
+  while (current.parent && isTransparentExpressionNode(current.parent)) {
+    current = current.parent;
+  }
+  return current;
+}
+
+function isSafeFreshScratchReference(identifier: ts.Identifier): boolean {
+  const site = getFreshScratchReferenceSite(identifier);
+  const parent = site.parent;
+  if (!parent) {
+    return false;
+  }
+
+  if (
+    (ts.isPropertyAccessExpression(parent) || ts.isElementAccessExpression(parent)) &&
+    parent.expression === site
+  ) {
+    return true;
+  }
+
+  return ts.isReturnStatement(parent) && parent.expression === site;
+}
+
+function collectFreshScratchLocalBindingSymbolIds(
+  context: AnalysisContext,
+  declaration: EffectCallableDeclaration,
+): ReadonlySet<number> {
+  const body = 'body' in declaration ? declaration.body : undefined;
+  if (!body) {
+    return new Set<number>();
+  }
+
+  const candidates = new Map<number, FreshScratchLocalBindingCandidate>();
+
+  const collectCandidates = (node: ts.Node): void => {
+    if (node !== body && ts.isFunctionLike(node)) {
+      return;
+    }
+    if (
+      ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer &&
+      isFreshScratchLocalInitializer(node.initializer)
+    ) {
+      const symbol = context.checker.getSymbolAtLocation(node.name);
+      if (symbol) {
+        candidates.set(context.getSymbolId(symbol), {
+          declarationName: node.name,
+          symbolId: context.getSymbolId(symbol),
+        });
+      }
+    }
+    ts.forEachChild(node, collectCandidates);
+  };
+  collectCandidates(body);
+
+  if (candidates.size === 0) {
+    return new Set<number>();
+  }
+
+  const safeSymbolIds = new Set(candidates.keys());
+
+  const validateReferences = (node: ts.Node, nestedFunctionDepth = 0): void => {
+    if (ts.isFunctionLike(node) && node !== body) {
+      nestedFunctionDepth += 1;
+    }
+
+    if (ts.isIdentifier(node)) {
+      const symbol = context.checker.getSymbolAtLocation(node);
+      if (symbol) {
+        const symbolId = context.getSymbolId(symbol);
+        const candidate = candidates.get(symbolId);
+        if (candidate && node !== candidate.declarationName) {
+          if (nestedFunctionDepth > 0 || !isSafeFreshScratchReference(node)) {
+            safeSymbolIds.delete(symbolId);
+          }
+        }
+      }
+    }
+
+    ts.forEachChild(node, (child) => validateReferences(child, nestedFunctionDepth));
+  };
+  validateReferences(body);
+
+  return safeSymbolIds;
+}
+
+function getMutationTargetRootSymbolId(
+  context: AnalysisContext,
+  expression: ts.Expression,
+): number | undefined {
+  let current = unwrapOuterExpression(expression);
+  while (ts.isPropertyAccessExpression(current) || ts.isElementAccessExpression(current)) {
+    current = unwrapOuterExpression(current.expression);
+  }
+
+  if (!ts.isIdentifier(current)) {
+    return undefined;
+  }
+
+  const symbol = context.checker.getSymbolAtLocation(current);
+  return symbol ? context.getSymbolId(symbol) : undefined;
+}
+
 function mutationTouchesObservableState(
   context: AnalysisContext,
   expression: ts.Expression,
   localBindingSymbolIds: ReadonlySet<number>,
+  freshScratchLocalBindingSymbolIds: ReadonlySet<number>,
 ): boolean {
   if (ts.isPropertyAccessExpression(expression) || ts.isElementAccessExpression(expression)) {
+    const rootSymbolId = getMutationTargetRootSymbolId(context, expression);
+    if (rootSymbolId !== undefined && freshScratchLocalBindingSymbolIds.has(rootSymbolId)) {
+      return false;
+    }
     return true;
   }
 
@@ -1177,6 +1302,10 @@ function recomputeBodyDeclarationSummary(
   }
 
   const localBindingSymbolIds = collectLocalBindingSymbolIds(context, declaration);
+  const freshScratchLocalBindingSymbolIds = collectFreshScratchLocalBindingSymbolIds(
+    context,
+    declaration,
+  );
   const forwardedParameters = new Map<string, EffectForwardedParameterFact>(
     summary.forwardedParameters.map((forwardedParameter) => [
       createForwardedParameterKey(
@@ -1256,7 +1385,9 @@ function recomputeBodyDeclarationSummary(
       if (node.expression.kind === ts.SyntaxKind.ImportKeyword) {
         appendSummaryDirectEffects(targetSummary, ['host.system', 'suspend.await']);
       } else {
-        const directAliasTarget = resolveCurrentFunctionAliasTarget(context, parameters, node.expression);
+        const directAliasTarget = ts.isIdentifier(unwrapOuterExpression(node.expression))
+          ? resolveCurrentFunctionAliasTarget(context, parameters, node.expression)
+          : undefined;
         if (directAliasTarget !== undefined) {
           const boundaryTransform = asyncBoundary
             ? failureBoundaryToForwardTransform('reject')
@@ -1321,17 +1452,35 @@ function recomputeBodyDeclarationSummary(
       ts.isBinaryExpression(node) &&
       node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
       node.operatorToken.kind <= ts.SyntaxKind.LastAssignment &&
-      mutationTouchesObservableState(context, node.left, localBindingSymbolIds)
+      mutationTouchesObservableState(
+        context,
+        node.left,
+        localBindingSymbolIds,
+        freshScratchLocalBindingSymbolIds,
+      )
     ) {
       appendSummaryDirectEffects(targetSummary, ['mut']);
     } else if (
       (ts.isPrefixUnaryExpression(node) || ts.isPostfixUnaryExpression(node)) &&
       (node.operator === ts.SyntaxKind.PlusPlusToken ||
         node.operator === ts.SyntaxKind.MinusMinusToken) &&
-      mutationTouchesObservableState(context, node.operand, localBindingSymbolIds)
+      mutationTouchesObservableState(
+        context,
+        node.operand,
+        localBindingSymbolIds,
+        freshScratchLocalBindingSymbolIds,
+      )
     ) {
       appendSummaryDirectEffects(targetSummary, ['mut']);
-    } else if (ts.isDeleteExpression(node)) {
+    } else if (
+      ts.isDeleteExpression(node) &&
+      mutationTouchesObservableState(
+        context,
+        node.expression,
+        localBindingSymbolIds,
+        freshScratchLocalBindingSymbolIds,
+      )
+    ) {
       appendSummaryDirectEffects(targetSummary, ['mut']);
     }
 

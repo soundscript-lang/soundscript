@@ -5658,6 +5658,59 @@ Deno.test('analyzeProject tracks builtin host and mut effects under forbid contr
   assertEquals(result.diagnostics[1]?.metadata?.primarySymbol, 'update');
 });
 
+Deno.test('analyzeProject allows fresh local scratch mutation under forbid mut', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/index.sts': [
+      '// #[effects(forbid: [mut])]',
+      'function buildRecord(): { value: number } {',
+      '  const box = { value: 0 };',
+      '  box.value = 1;',
+      '  return box;',
+      '}',
+      '',
+      '// #[effects(forbid: [mut])]',
+      'function buildList(): number[] {',
+      '  const values = [0];',
+      '  values[0] = 1;',
+      '  return values;',
+      '}',
+      '',
+      '// #[effects(forbid: [mut])]',
+      'function escapeBeforeMutate(',
+      '  // #[effects(forbid: [fails, suspend, mut, host])]',
+      '  store: (value: { value: number }) => void,',
+      '): { value: number } {',
+      '  const box = { value: 0 };',
+      '  store(box);',
+      '  box.value = 1;',
+      '  return box;',
+      '}',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1040']);
+  assertEquals(result.diagnostics[0]?.metadata?.primarySymbol, 'escapeBeforeMutate');
+});
+
 Deno.test('analyzeProject tracks host-backed globals and stdlib wrappers under forbid contracts', async () => {
   const tempDirectory = await createTempProject({
     'tsconfig.json': JSON.stringify(
@@ -6614,9 +6667,10 @@ Deno.test('analyzeProject reports unknown effect reason categories in forbid dia
     workingDirectory: tempDirectory,
   });
 
-  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1040']);
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1040', 'SOUND1040']);
   assertEquals(result.diagnostics.map((diagnostic) => diagnostic.metadata?.primarySymbol), [
     'callOpaqueExtern',
+    'dispatchUnknown',
   ]);
   assertEquals(
     result.diagnostics.map((diagnostic) =>
@@ -6624,6 +6678,7 @@ Deno.test('analyzeProject reports unknown effect reason categories in forbid dia
     ),
     [
       'unsummarized declaration frontier',
+      'annotation declares unknown direct effects (dispatchEvent)',
     ],
   );
 });
@@ -6648,9 +6703,9 @@ Deno.test('analyzeProject includes forwarded path detail in unknown effect reaso
       '  readonly decode: (value: number) => T;',
       '}',
       '',
-      'function wrap<T>(decoder: Decoder<T>, value: number): T {',
-      '  return decoder.decode(value);',
-      '}',
+      '// #[extern]',
+      '// #[effects(forward: [decoder.decode])]',
+      'declare function wrap<T>(decoder: Decoder<T>, value: number): T;',
       '',
       'function useDecoder(',
       '  // #[effects(forbid: [fails])]',
