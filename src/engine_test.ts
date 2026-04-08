@@ -628,11 +628,32 @@ Deno.test('createAnalysisContext treats fresh local scratch mutation as non-obse
         '  return values;',
         '}',
         '',
+        'export function buildMap(): Map<string, number> {',
+        '  const map = new Map<string, number>();',
+        '  map.set("value", 1);',
+        '  return map;',
+        '}',
+        '',
+        'export function buildParams(): URLSearchParams {',
+        '  const params = new URLSearchParams();',
+        '  params.set("q", "music");',
+        '  return params;',
+        '}',
+        '',
         'export function escapeBeforeMutate(store: (value: { value: number }) => void): { value: number } {',
         '  const box = { value: 0 };',
         '  store(box);',
         '  box.value = 1;',
         '  return box;',
+        '}',
+        '',
+        'export function escapeMapBeforeMutate(',
+        '  store: (value: Map<string, number>) => void,',
+        '): Map<string, number> {',
+        '  const map = new Map<string, number>();',
+        '  store(map);',
+        '  map.set("value", 1);',
+        '  return map;',
         '}',
         '',
       ].join('\n'),
@@ -656,15 +677,24 @@ Deno.test('createAnalysisContext treats fresh local scratch mutation as non-obse
 
   const buildRecord = declarationsByName.get('buildRecord');
   const buildList = declarationsByName.get('buildList');
+  const buildMap = declarationsByName.get('buildMap');
+  const buildParams = declarationsByName.get('buildParams');
   const escapeBeforeMutate = declarationsByName.get('escapeBeforeMutate');
+  const escapeMapBeforeMutate = declarationsByName.get('escapeMapBeforeMutate');
 
   assertExists(buildRecord);
   assertExists(buildList);
+  assertExists(buildMap);
+  assertExists(buildParams);
   assertExists(escapeBeforeMutate);
+  assertExists(escapeMapBeforeMutate);
 
   assertEquals(getEffectSummaryForDeclaration(context, buildRecord).directEffects, []);
   assertEquals(getEffectSummaryForDeclaration(context, buildList).directEffects, []);
+  assertEquals(getEffectSummaryForDeclaration(context, buildMap).directEffects, []);
+  assertEquals(getEffectSummaryForDeclaration(context, buildParams).directEffects, []);
   assertEquals(getEffectSummaryForDeclaration(context, escapeBeforeMutate).directEffects, ['mut']);
+  assertEquals(getEffectSummaryForDeclaration(context, escapeMapBeforeMutate).directEffects, ['mut']);
 });
 
 Deno.test('createAnalysisContext summarizes Promise continuation builtins with precise forwarded effects', async () => {

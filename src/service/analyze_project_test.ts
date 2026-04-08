@@ -5689,6 +5689,20 @@ Deno.test('analyzeProject allows fresh local scratch mutation under forbid mut',
       '}',
       '',
       '// #[effects(forbid: [mut])]',
+      'function buildMap(): Map<string, number> {',
+      '  const map = new Map<string, number>();',
+      '  map.set("value", 1);',
+      '  return map;',
+      '}',
+      '',
+      '// #[effects(forbid: [mut])]',
+      'function buildParams(): URLSearchParams {',
+      '  const params = new URLSearchParams();',
+      '  params.set("q", "music");',
+      '  return params;',
+      '}',
+      '',
+      '// #[effects(forbid: [mut])]',
       'function escapeBeforeMutate(',
       '  // #[effects(forbid: [fails, suspend, mut, host])]',
       '  store: (value: { value: number }) => void,',
@@ -5699,6 +5713,17 @@ Deno.test('analyzeProject allows fresh local scratch mutation under forbid mut',
       '  return box;',
       '}',
       '',
+      '// #[effects(forbid: [mut])]',
+      'function escapeMapBeforeMutate(',
+      '  // #[effects(forbid: [fails, suspend, mut, host])]',
+      '  store: (value: Map<string, number>) => void,',
+      '): Map<string, number> {',
+      '  const map = new Map<string, number>();',
+      '  store(map);',
+      '  map.set("value", 1);',
+      '  return map;',
+      '}',
+      '',
     ].join('\n'),
   });
 
@@ -5707,8 +5732,11 @@ Deno.test('analyzeProject allows fresh local scratch mutation under forbid mut',
     workingDirectory: tempDirectory,
   });
 
-  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1040']);
-  assertEquals(result.diagnostics[0]?.metadata?.primarySymbol, 'escapeBeforeMutate');
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1040', 'SOUND1040']);
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.metadata?.primarySymbol), [
+    'escapeBeforeMutate',
+    'escapeMapBeforeMutate',
+  ]);
 });
 
 Deno.test('analyzeProject tracks host-backed globals and stdlib wrappers under forbid contracts', async () => {

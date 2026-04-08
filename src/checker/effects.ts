@@ -583,7 +583,8 @@ interface FreshScratchLocalBindingCandidate {
 
 function isFreshScratchLocalInitializer(expression: ts.Expression): boolean {
   const current = unwrapOuterExpression(expression);
-  return ts.isObjectLiteralExpression(current) || ts.isArrayLiteralExpression(current);
+  return ts.isObjectLiteralExpression(current) || ts.isArrayLiteralExpression(current) ||
+    ts.isNewExpression(current);
 }
 
 function isTransparentExpressionNode(node: ts.Node): boolean {
@@ -694,6 +695,24 @@ function getMutationTargetRootSymbolId(
 
   const symbol = context.checker.getSymbolAtLocation(current);
   return symbol ? context.getSymbolId(symbol) : undefined;
+}
+
+function callMutatesFreshScratchLocal(
+  context: AnalysisContext,
+  expression: ts.CallExpression,
+  freshScratchLocalBindingSymbolIds: ReadonlySet<number>,
+): boolean {
+  if (freshScratchLocalBindingSymbolIds.size === 0) {
+    return false;
+  }
+
+  const callee = unwrapOuterExpression(expression.expression);
+  if (!ts.isPropertyAccessExpression(callee) && !ts.isElementAccessExpression(callee)) {
+    return false;
+  }
+
+  const rootSymbolId = getMutationTargetRootSymbolId(context, callee);
+  return rootSymbolId !== undefined && freshScratchLocalBindingSymbolIds.has(rootSymbolId);
 }
 
 function mutationTouchesObservableState(
@@ -1407,10 +1426,17 @@ function recomputeBodyDeclarationSummary(
           const resolvedSignature = context.checker.getResolvedSignature(node);
           const signatureSummary = getEffectSummaryForSignature(context, resolvedSignature);
           if (signatureSummary) {
+            const directEffects = callMutatesFreshScratchLocal(
+                context,
+                node,
+                freshScratchLocalBindingSymbolIds,
+              )
+              ? subtractEffectSet(signatureSummary.directEffects, ['mut'])
+              : signatureSummary.directEffects;
             appendSummaryDirectEffects(
               targetSummary,
               applyContainingCallableBoundaryToEffects(
-                signatureSummary.directEffects,
+                directEffects,
                 asyncBoundary,
               ),
             );
