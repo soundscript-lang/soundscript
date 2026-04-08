@@ -53,7 +53,6 @@ export function fromPromise<T, E>(
   fn: (signal?: AbortSignalLike) => Promise<T>,
   mapError: (error: Error) => E,
 ): Task<T, E>;
-// #[effects(add: [])]
 export function fromPromise<T, E>(
   fn: (signal?: AbortSignalLike) => Promise<T>,
   mapError?: (error: Error) => E,
