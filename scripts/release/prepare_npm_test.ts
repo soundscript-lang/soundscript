@@ -267,9 +267,6 @@ Deno.test('prepare_npm --stdlib-only emits canonical package source maps and .st
   const publishedJsonRuntime = await Deno.readTextFile(
     join(canonicalRoot, 'json.js'),
   );
-  const publishedHostDomRuntime = await Deno.readTextFile(
-    join(canonicalRoot, 'host', 'dom.js'),
-  );
   const runtimeMap = await Deno.readTextFile(join(canonicalRoot, 'result.js.map'));
   const rootMap = await Deno.readTextFile(join(canonicalRoot, 'index.js.map'));
   const packageJson = JSON.parse(await Deno.readTextFile(join(canonicalRoot, 'package.json'))) as {
@@ -291,10 +288,6 @@ Deno.test('prepare_npm --stdlib-only emits canonical package source maps and .st
   assertStringIncludes(publishedJsonSource, "from './numerics.sts';");
   assertStringIncludes(publishedJsonRuntime, "from './numerics.js';");
   assertEquals(publishedJsonRuntime.includes("from './numerics.sts';"), false);
-  assertEquals(
-    publishedHostDomRuntime.includes("from '@soundscript/soundscript/host/dom'"),
-    false,
-  );
   assertStringIncludes(
     publishedTypeclassesSource,
     'function bind<A>(effect: BoundEffect<F, A>): A {',
@@ -318,10 +311,8 @@ Deno.test('prepare_npm --stdlib-only emits canonical package source maps and .st
   assertEquals(packageJson.exports?.['./thunk'], undefined);
   assertEquals(packageJson.exports?.['./experimental/sql'], undefined);
   assertEquals(packageJson.exports?.['./experimental/component'], undefined);
-  assertEquals(packageJson.exports?.['./host/dom']?.import, './host/dom.js');
-  assertEquals(packageJson.exports?.['./host/dom']?.types, './host/dom.d.ts');
-  assertEquals(packageJson.exports?.['./host/node']?.import, './host/node.js');
-  assertEquals(packageJson.exports?.['./host/node']?.types, './host/node.d.ts');
+  assertEquals(packageJson.exports?.['./host/dom'], undefined);
+  assertEquals(packageJson.exports?.['./host/node'], undefined);
   assertEquals(packageJson.exports?.['./value'] !== undefined, true);
   assertEquals(packageJson.exports?.['./derive'] !== undefined, true);
   assertEquals(packageJson.exports?.['./numerics'] !== undefined, true);

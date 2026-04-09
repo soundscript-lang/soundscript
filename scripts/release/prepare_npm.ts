@@ -4,6 +4,7 @@ import ts from 'typescript';
 import { getStdlibDeclarationTexts } from '../../src/frontend/std_package_support.ts';
 import { rewriteModuleSpecifiersForEmit } from '../../src/runtime/transform.ts';
 import {
+  BUNDLED_TYPESCRIPT_SOURCE,
   CANONICAL_DIST,
   CANONICAL_PACKAGE_NAME,
   CLI_ENTRY,
@@ -14,7 +15,6 @@ import {
   parseVersion,
   ROOT,
   SHIM_DIST,
-  SOUND_LIBS_SOURCE,
   SOUNDSCRIPT_HOMEPAGE_URL,
   SOUNDSCRIPT_ISSUES_URL,
   SOUNDSCRIPT_REPOSITORY_URL,
@@ -62,7 +62,7 @@ function requireDirectory(path: string, label: string): void {
 function verifyReleaseInputs(): void {
   requireFile(CLI_ENTRY, 'CLI entrypoint');
   requireFile(LICENSE_SOURCE, 'LICENSE');
-  requireDirectory(SOUND_LIBS_SOURCE, 'bundled sound libraries');
+  requireDirectory(BUNDLED_TYPESCRIPT_SOURCE, 'bundled TypeScript libraries');
   requireDirectory(STDLIB_SOURCE, 'stdlib sources');
 }
 
@@ -96,8 +96,8 @@ async function copyLicense(destinationPath: string): Promise<void> {
 
 export async function copyCliRuntimeSupportFiles(destinationRoot: string): Promise<void> {
   await copyDirectory(
-    SOUND_LIBS_SOURCE,
-    join(destinationRoot, 'src', 'bundled', 'sound-libs'),
+    BUNDLED_TYPESCRIPT_SOURCE,
+    join(destinationRoot, 'src', 'bundled', 'typescript'),
   );
   const bundledDestination = join(destinationRoot, 'src', 'bundled');
   await Deno.mkdir(bundledDestination, { recursive: true });
@@ -749,7 +749,7 @@ export function createCliTargetPackageManifest(version: string, target: CliTarge
       'README.md',
       'bin/**',
       'src/bundled/*.d.ts',
-      'src/bundled/sound-libs/**',
+      'src/bundled/typescript/**',
       'src/stdlib/**',
     ],
     repository: {
