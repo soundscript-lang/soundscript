@@ -1,7 +1,7 @@
-import type { Decoder } from 'sts:decode';
-import type { Encoder } from 'sts:encode';
+import type { DecodeMode, Decoder, DecodeOutput, DecodeIssue } from 'sts:decode';
+import type { EncodeMode, EncodeOutput, Encoder, EncodeIssue } from 'sts:encode';
 import { Failure } from 'sts:failures';
-import { isErr, type Result, resultOf } from 'sts:result';
+import { err, isErr, type Result, resultOf } from 'sts:result';
 import {
   F32,
   F64,
@@ -173,20 +173,64 @@ export function stringifyJson(
   );
 }
 
-export function parseAndDecode<T, E>(
+export function parseAndDecode<T, E, M extends DecodeMode>(
   text: string,
-  decoder: Decoder<T, E>,
-): Result<T, JsonParseFailure | E> {
+  decoder: Decoder<T, E, M>,
+): DecodeOutput<T, JsonParseFailure | E, M> {
   const parsed = parseJson(text);
-  return isErr(parsed) ? parsed : decoder.decode(parsed.value);
+  return (isErr(parsed) ? parsed : decoder.decode(parsed.value)) as DecodeOutput<
+    T,
+    JsonParseFailure | E,
+    M
+  >;
 }
 
-export function encodeAndStringify<T, E>(
+export function validateDecodeJson<T, M extends DecodeMode>(
+  text: string,
+  decoder: Decoder<T, unknown, M>,
+): DecodeOutput<T, readonly DecodeIssue[] | JsonParseFailure, M> {
+  const parsed = parseJsonLike(text);
+  return isErr(parsed)
+    ? (err([{
+      code: 'json_parse_failure',
+      ...(parsed.error.cause === undefined ? {} : { input: text }),
+      message: parsed.error.message,
+      path: [],
+    }]) as unknown as DecodeOutput<T, readonly DecodeIssue[] | JsonParseFailure, M>)
+    : decoder.validateDecode(parsed.value) as DecodeOutput<
+      T,
+      readonly DecodeIssue[] | JsonParseFailure,
+      M
+    >;
+}
+
+export function encodeAndStringify<T, E, M extends EncodeMode>(
   value: T,
-  encoder: Encoder<T, JsonValue, E>,
-): Result<string, E | JsonStringifyFailure> {
+  encoder: Encoder<T, JsonValue, E, M>,
+): EncodeOutput<string, E | JsonStringifyFailure, M> {
   const encoded = encoder.encode(value);
-  return isErr(encoded) ? encoded : stringifyJson(encoded.value);
+  return (isPromiseLike(encoded)
+    ? encoded.then((resolved) => isErr(resolved) ? resolved : stringifyJson(resolved.value))
+    : isErr(encoded)
+    ? encoded
+    : stringifyJson(encoded.value)) as EncodeOutput<string, E | JsonStringifyFailure, M>;
+}
+
+export function validateEncodeJson<T, M extends EncodeMode>(
+  value: T,
+  encoder: Encoder<T, JsonLikeValue, unknown, M>,
+  options: JsonStringifyOptions = {},
+): EncodeOutput<string, readonly EncodeIssue[] | JsonStringifyFailure, M> {
+  const encoded = encoder.validateEncode(value);
+  return (isPromiseLike(encoded)
+    ? encoded.then((resolved) => isErr(resolved) ? resolved : stringifyJsonLike(resolved.value, options))
+    : isErr(encoded)
+    ? encoded
+    : stringifyJsonLike(encoded.value, options)) as EncodeOutput<
+      string,
+      readonly EncodeIssue[] | JsonStringifyFailure,
+      M
+    >;
 }
 
 export function isJsonValue(value: unknown): value is JsonValue {
@@ -226,21 +270,29 @@ export function stringifyJsonLike(
   );
 }
 
-export function decodeJson<T, E>(
+export function decodeJson<T, E, M extends DecodeMode>(
   text: string,
-  decoder: Decoder<T, E>,
-): Result<T, E | JsonParseFailure> {
+  decoder: Decoder<T, E, M>,
+): DecodeOutput<T, E | JsonParseFailure, M> {
   const parsed = parseJsonLike(text);
-  return isErr(parsed) ? parsed : decoder.decode(parsed.value);
+  return (isErr(parsed) ? parsed : decoder.decode(parsed.value)) as DecodeOutput<
+    T,
+    E | JsonParseFailure,
+    M
+  >;
 }
 
-export function encodeJson<T, E>(
+export function encodeJson<T, E, M extends EncodeMode>(
   value: T,
-  encoder: Encoder<T, JsonLikeValue, E>,
+  encoder: Encoder<T, JsonLikeValue, E, M>,
   options: JsonStringifyOptions = {},
-): Result<string, E | JsonStringifyFailure> {
+): EncodeOutput<string, E | JsonStringifyFailure, M> {
   const encoded = encoder.encode(value);
-  return isErr(encoded) ? encoded : stringifyJsonLike(encoded.value, options);
+  return (isPromiseLike(encoded)
+    ? encoded.then((resolved) => isErr(resolved) ? resolved : stringifyJsonLike(resolved.value, options))
+    : isErr(encoded)
+    ? encoded
+    : stringifyJsonLike(encoded.value, options)) as EncodeOutput<string, E | JsonStringifyFailure, M>;
 }
 
 export function isJsonLikeValue(value: unknown): value is JsonLikeValue {
@@ -273,6 +325,10 @@ export function mergeJsonRecords(
     }
   }
   return merged;
+}
+
+function isPromiseLike<T>(value: T | Promise<T>): value is Promise<T> {
+  return value instanceof Promise;
 }
 
 function stringifyJsonWithInt64Mode(

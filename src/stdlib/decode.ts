@@ -1164,7 +1164,7 @@ export function optionalField<K extends string, T, E, M extends DecodeMode>(
   key: K,
   decoder: Decoder<T, E, M>,
 ): Decoder<T | undefined, E | DecodeFailure, M> {
-  const shape = { [key]: optional(decoder) } as {
+  const shape = { [key]: optional(decoder) } as unknown as {
     readonly [P in K]: OptionalDecoder<T, E, M>;
   };
   return map(object(shape), (value) => value[key]) as Decoder<T | undefined, E | DecodeFailure, M>;

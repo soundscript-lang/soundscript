@@ -47,7 +47,9 @@ export interface Headers {
 export const Headers: {
   // #[effects(add: [host.ffi])]
   new(init?: HeadersInit): Headers;
-} = globalThis.Headers;
+} = globalThis.Headers as unknown as {
+  new(init?: HeadersInit): Headers;
+};
 
 export interface Request {
   readonly headers: Headers;
@@ -67,7 +69,9 @@ export interface Request {
 export const Request: {
   // #[effects(add: [host.ffi])]
   new(input: RequestInfo, init?: RequestInit): Request;
-} = globalThis.Request;
+} = globalThis.Request as unknown as {
+  new(input: RequestInfo, init?: RequestInit): Request;
+};
 
 export interface Response {
   readonly headers: Headers;
@@ -94,9 +98,16 @@ export const Response: {
   json(data: unknown, init?: ResponseInit): Response;
   // #[effects(add: [host.ffi])]
   redirect(url: string | URL, status?: number): Response;
-} = globalThis.Response;
+} = globalThis.Response as unknown as {
+  new(body?: BodyInit | null, init?: ResponseInit): Response;
+  error(): Response;
+  json(data: unknown, init?: ResponseInit): Response;
+  redirect(url: string | URL, status?: number): Response;
+};
 
 export const fetch: {
   // #[effects(add: [host.io, suspend.await])]
   (input: RequestInfo, init?: RequestInit): Promise<Response>;
-} = globalThis.fetch.bind(globalThis);
+} = globalThis.fetch.bind(globalThis) as unknown as {
+  (input: RequestInfo, init?: RequestInit): Promise<Response>;
+};

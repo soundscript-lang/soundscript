@@ -31,4 +31,6 @@ export interface TextDecoder {
 export const TextDecoder: {
   // #[effects(add: [fails.throws])]
   new(label?: string, options?: TextDecoderOptions): TextDecoder;
-} = globalThis.TextDecoder;
+} = globalThis.TextDecoder as unknown as {
+  new(label?: string, options?: TextDecoderOptions): TextDecoder;
+};
