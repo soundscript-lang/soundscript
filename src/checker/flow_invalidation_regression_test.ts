@@ -285,6 +285,13 @@ Deno.test(
         2,
       ),
       'src/index.sts': [
+        '// #[extern]',
+        'declare const URLSearchParams: typeof globalThis.URLSearchParams;',
+        '// #[extern]',
+        'declare const Headers: typeof globalThis.Headers;',
+        '// #[extern]',
+        'declare const FormData: typeof globalThis.FormData;',
+        '',
         'function useRecord(box: { value: string | null }): string {',
         '  if (box.value !== null) {',
         '    const record = { count: 0 };',

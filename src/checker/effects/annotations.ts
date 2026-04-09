@@ -146,17 +146,18 @@ function parseEffectIdentifierList(
   const effects: EffectNameFact[] = [];
   const seen = new Set<string>();
   for (const element of value.elements) {
-    if (element.kind !== 'identifier') {
-      return `Effects annotation field \`${fieldName}\` must list bare effect identifiers.`;
+    const effectName = getDottedIdentifierText(element);
+    if (!effectName) {
+      return `Effects annotation field \`${fieldName}\` must list dotted identifier effect names.`;
     }
-    if (!isPublicEffectName(element.name)) {
-      return `Effects annotation field \`${fieldName}\` must use dotted identifier names such as \`host.node.fs\`; found \`${element.name}\`.`;
+    if (!isPublicEffectName(effectName)) {
+      return `Effects annotation field \`${fieldName}\` must use dotted identifier names such as \`host.node.fs\`; found \`${effectName}\`.`;
     }
-    if (seen.has(element.name)) {
-      return `Effects annotation field \`${fieldName}\` mentions \`${element.name}\` more than once.`;
+    if (seen.has(effectName)) {
+      return `Effects annotation field \`${fieldName}\` mentions \`${effectName}\` more than once.`;
     }
-    seen.add(element.name);
-    effects.push(element.name);
+    seen.add(effectName);
+    effects.push(effectName);
   }
 
   return normalizeEffectNames(effects);
@@ -164,6 +165,16 @@ function parseEffectIdentifierList(
 
 function splitForwardPath(text: string): readonly string[] {
   return text.split('.');
+}
+
+function getDottedIdentifierText(value: ParsedAnnotationValue): string | undefined {
+  if (value.kind === 'identifier') {
+    return value.name;
+  }
+  if (value.kind === 'member') {
+    return value.path.join('.');
+  }
+  return undefined;
 }
 
 function parseForwardPathList(
@@ -177,15 +188,16 @@ function parseForwardPathList(
   const entries: ParsedEffectsForwardEntry[] = [];
   const seen = new Set<string>();
   for (const element of value.elements) {
-    if (element.kind !== 'identifier') {
+    const forwardPath = getDottedIdentifierText(element);
+    if (!forwardPath) {
       return `Effects annotation field \`${fieldName}\` must list parameter-rooted callable references.`;
     }
-    if (seen.has(element.name)) {
-      return `Effects annotation field \`${fieldName}\` mentions \`${element.name}\` more than once.`;
+    if (seen.has(forwardPath)) {
+      return `Effects annotation field \`${fieldName}\` mentions \`${forwardPath}\` more than once.`;
     }
-    seen.add(element.name);
+    seen.add(forwardPath);
     entries.push({
-      fromPath: splitForwardPath(element.name),
+      fromPath: splitForwardPath(forwardPath),
       handleEffects: [],
       rewrites: [],
     });
@@ -224,17 +236,19 @@ function parseRewriteList(value: ParsedAnnotationValue): readonly EffectRewriteF
     }
     const fromValue = getObjectProperty(element, 'from');
     const toValue = getObjectProperty(element, 'to');
-    if (fromValue?.kind !== 'identifier' || toValue?.kind !== 'identifier') {
+    const fromEffect = fromValue ? getDottedIdentifierText(fromValue) : undefined;
+    const toEffect = toValue ? getDottedIdentifierText(toValue) : undefined;
+    if (!fromEffect || !toEffect) {
       return 'Effects annotation `rewrite` entries must use dotted identifier effect names.';
     }
-    const key = `${fromValue.name}->${toValue.name}`;
+    const key = `${fromEffect}->${toEffect}`;
     if (seen.has(key)) {
       return `Effects annotation \`rewrite\` mentions \`${key}\` more than once.`;
     }
     seen.add(key);
     rewrites.push({
-      from: fromValue.name,
-      to: toValue.name,
+      from: fromEffect,
+      to: toEffect,
     });
   }
 
@@ -242,9 +256,10 @@ function parseRewriteList(value: ParsedAnnotationValue): readonly EffectRewriteF
 }
 
 function parseForwardEntry(value: ParsedAnnotationValue): ParsedEffectsForwardEntry | string {
-  if (value.kind === 'identifier') {
+  const shorthandPath = getDottedIdentifierText(value);
+  if (shorthandPath) {
     return {
-      fromPath: splitForwardPath(value.name),
+      fromPath: splitForwardPath(shorthandPath),
       handleEffects: [],
       rewrites: [],
     };
@@ -263,7 +278,8 @@ function parseForwardEntry(value: ParsedAnnotationValue): ParsedEffectsForwardEn
   }
 
   const fromValue = properties.get('from');
-  if (!fromValue || fromValue.kind !== 'identifier') {
+  const fromPath = fromValue ? getDottedIdentifierText(fromValue) : undefined;
+  if (!fromPath) {
     return 'Effects annotation `forward` entries require `from: parameterOrMemberPath`.';
   }
   for (const propertyName of properties.keys()) {
@@ -284,7 +300,7 @@ function parseForwardEntry(value: ParsedAnnotationValue): ParsedEffectsForwardEn
   }
 
   return {
-    fromPath: splitForwardPath(fromValue.name),
+    fromPath: splitForwardPath(fromPath),
     handleEffects,
     rewrites,
   };
@@ -326,11 +342,12 @@ function parseUnknownList(value: ParsedAnnotationValue): boolean | string {
 
   let unknownDirect = false;
   for (const element of value.elements) {
-    if (element.kind !== 'identifier') {
+    const unknownName = getDottedIdentifierText(element);
+    if (!unknownName) {
       return 'Effects annotation field `unknown` must list bare identifiers.';
     }
-    if (element.name !== 'direct') {
-      return `Effects annotation field \`unknown\` only supports \`direct\`; found \`${element.name}\`.`;
+    if (unknownName !== 'direct') {
+      return `Effects annotation field \`unknown\` only supports \`direct\`; found \`${unknownName}\`.`;
     }
     if (unknownDirect) {
       return 'Effects annotation field `unknown` mentions `direct` more than once.';

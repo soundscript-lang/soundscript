@@ -2153,9 +2153,41 @@ function getTypeReferenceSymbol(type: ts.Type): ts.Symbol | undefined {
   return (type as ts.TypeReference).target.symbol ?? type.getSymbol();
 }
 
+function isImportedDeclarationBackedRelationConstituent(
+  context: AnalysisContext,
+  type: ts.Type,
+  visitedTypeIds: Set<number>,
+): boolean {
+  const normalizedType = normalizeTransparentRelationType(context, type);
+  const typeId = (normalizedType as ts.Type & { id?: number }).id;
+  if (typeof typeId === 'number') {
+    if (visitedTypeIds.has(typeId)) {
+      return true;
+    }
+    visitedTypeIds.add(typeId);
+  }
+
+  const symbol = getTypeReferenceSymbol(normalizedType);
+  const declarations = symbol?.getDeclarations() ?? [];
+  if (
+    declarations.length === 0 ||
+    !declarations.every((declaration) => declaration.getSourceFile().isDeclarationFile) ||
+    declarations.some((declaration) =>
+      isTrustedSoundStdlibDeclarationSourceFile(declaration.getSourceFile())
+    )
+  ) {
+    return false;
+  }
+
+  return getReferenceTypeArguments(context, normalizedType).every((typeArgument) =>
+    isImportedDeclarationBackedRelationType(context, typeArgument, visitedTypeIds)
+  );
+}
+
 function isImportedDeclarationBackedRelationType(
   context: AnalysisContext,
   type: ts.Type,
+  visitedTypeIds: Set<number> = new Set(),
 ): boolean {
   const constituents = getCompositeRelationConstituents(
     getSafeNonNullableRelationType(context, type),
@@ -2164,16 +2196,13 @@ function isImportedDeclarationBackedRelationType(
     return false;
   }
 
-  return constituents.every((constituentType) => {
-    const normalizedType = normalizeTransparentRelationType(context, constituentType);
-    const symbol = getTypeReferenceSymbol(normalizedType);
-    const declarations = symbol?.getDeclarations() ?? [];
-    return declarations.length > 0 &&
-      declarations.every((declaration) => declaration.getSourceFile().isDeclarationFile) &&
-      !declarations.some((declaration) =>
-        isTrustedSoundStdlibDeclarationSourceFile(declaration.getSourceFile())
-      );
-  });
+  return constituents.every((constituentType) =>
+    isImportedDeclarationBackedRelationConstituent(
+      context,
+      constituentType,
+      visitedTypeIds,
+    )
+  );
 }
 
 function getMatchingBaseType(

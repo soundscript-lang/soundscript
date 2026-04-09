@@ -2,6 +2,7 @@ import { type Bind, type Kind3, type TypeLambda } from 'sts:hkt';
 import { Failure } from 'sts:failures';
 import { err, isErr, isOk, isSome, ok, type Option, type Result } from 'sts:result';
 import type { Contravariant } from 'sts:typeclasses';
+import type { UrlLike } from 'sts:decode';
 import {
   __attachEncodeMetadata,
   __cloneNodeWithEffects,
@@ -272,7 +273,7 @@ export const undefinedEncoder: Encoder<undefined, undefined> = __attachEncodeMet
   ),
   { mode: 'sync', root: { kind: 'undefined' } },
 );
-export const url: Encoder<URL, string> = __attachEncodeMetadata(fromEncode((value) => ok(value.toString())), {
+export const url: Encoder<UrlLike, string> = __attachEncodeMetadata(fromEncode((value) => ok(value.toString())), {
   mode: 'sync',
   root: {
     effects: [{

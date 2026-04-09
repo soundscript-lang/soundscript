@@ -35,6 +35,20 @@ export type DecodeRefinementContext = {
   issue(code: string, message: string, input?: unknown): DecodeIssue;
 };
 export type DecodeRefinementResult = boolean | string | DecodeIssue | readonly DecodeIssue[];
+export interface UrlLike {
+  readonly hash: string;
+  readonly host: string;
+  readonly hostname: string;
+  readonly href: string;
+  readonly password: string;
+  readonly pathname: string;
+  readonly port: string;
+  readonly protocol: string;
+  readonly search: string;
+  readonly username: string;
+  toJSON(): string;
+  toString(): string;
+}
 export type DecodeOutput<T, E, M extends DecodeMode = 'sync'> = M extends 'async'
   ? Promise<Result<T, E>>
   : Result<T, E>;
@@ -103,7 +117,10 @@ type DecoderValue<TDecoder> = TDecoder extends Decoder<infer TValue, unknown, De
   ? TValue
   : never;
 type DecoderError<TDecoder> = TDecoder extends Decoder<unknown, infer E, DecodeMode> ? E : never;
-type DecoderModeOf<TDecoder> = TDecoder extends Decoder<unknown, unknown, infer M> ? M : never;
+type DecoderModeOf<TDecoder> = TDecoder extends { decode(value: unknown): infer TOutput }
+  ? TOutput extends Promise<Result<unknown, unknown>> ? 'async'
+  : 'sync'
+  : never;
 type MergeDecodeModes<M extends DecodeMode> = [M] extends [never] ? 'sync'
   : [M] extends ['sync'] ? 'sync'
   : 'async';
@@ -244,7 +261,7 @@ export const undefinedValue: Decoder<undefined> = __attachDecodeMetadata(
   },
 );
 
-export const url: Decoder<URL> = __attachDecodeMetadata(fromDecode((value) => {
+export const url: Decoder<UrlLike> = __attachDecodeMetadata(fromDecode((value) => {
   if (typeof value !== 'string') {
     return err(new DecodeFailure('Expected URL string.', { cause: value }));
   }
@@ -292,7 +309,7 @@ export const isoDate: Decoder<Date> = __attachDecodeMetadata(fromDecode((value) 
   },
 });
 
-export function lazy<TDecoder extends Decoder<unknown, unknown, DecodeMode>>(
+export function lazy<const TDecoder extends Decoder<unknown, unknown, DecodeMode>>(
   getDecoder: () => TDecoder,
 ): Decoder<DecoderValue<TDecoder>, DecoderError<TDecoder>, DecoderModeOf<TDecoder>>;
 export function lazy<T, E, M extends DecodeMode>(
@@ -310,7 +327,7 @@ export function lazy<T, E, M extends DecodeMode>(
   });
 }
 
-export function optional<TDecoder extends Decoder<unknown, unknown, DecodeMode>>(
+export function optional<const TDecoder extends Decoder<unknown, unknown, DecodeMode>>(
   decoder: TDecoder,
 ): OptionalDecoder<Exclude<DecoderValue<TDecoder>, undefined>, DecoderError<TDecoder>, DecoderModeOf<TDecoder>>;
 export function optional<T, E, M extends DecodeMode>(
@@ -933,7 +950,7 @@ export function result<T, EValue, EDecodeValue, EDecodeError, MOk extends Decode
   >;
 }
 
-export function object<TShape extends ObjectShape>(
+export function object<const TShape extends ObjectShape>(
   shape: TShape,
   options?: DecodeObjectOptions,
 ): Decoder<
@@ -1115,7 +1132,7 @@ export function object<TShape extends ObjectShape>(
   });
 }
 
-export function strictObject<TShape extends ObjectShape>(
+export function strictObject<const TShape extends ObjectShape>(
   shape: TShape,
 ): Decoder<
   { readonly [K in keyof TShape]: DecoderValue<TShape[K]> },
@@ -1125,7 +1142,7 @@ export function strictObject<TShape extends ObjectShape>(
   return object(shape, { unknownKeys: 'strict' });
 }
 
-export function passthroughObject<TShape extends ObjectShape>(
+export function passthroughObject<const TShape extends ObjectShape>(
   shape: TShape,
 ): Decoder<
   { readonly [K in keyof TShape]: DecoderValue<TShape[K]> },

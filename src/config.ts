@@ -194,6 +194,7 @@ const DEFAULT_SOUNDSCRIPT_CONFIG: SoundscriptConfig = {
   target: DEFAULT_RUNTIME_TARGET,
 };
 const DEFAULT_CORE_LIBS = ['lib.es2024.d.ts'] as const;
+const DEFAULT_NODE_TYPES = ['node'] as const;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object';
@@ -273,6 +274,12 @@ function hasExplicitCompilerLibs(rawConfig: unknown): boolean {
     Array.isArray(rawConfig.compilerOptions.lib);
 }
 
+function hasExplicitCompilerTypes(rawConfig: unknown): boolean {
+  return isRecord(rawConfig) &&
+    isRecord(rawConfig.compilerOptions) &&
+    Array.isArray(rawConfig.compilerOptions.types);
+}
+
 function applyDefaultRuntimeLibs(
   commandLine: ts.ParsedCommandLine,
   runtime: RuntimeContext,
@@ -288,6 +295,33 @@ function applyDefaultRuntimeLibs(
     options: {
       ...commandLine.options,
       lib: [...DEFAULT_CORE_LIBS],
+    },
+  };
+}
+
+function runtimeDefaultTypes(runtime: RuntimeContext): readonly string[] | undefined {
+  return runtime.host === 'node' ? DEFAULT_NODE_TYPES : undefined;
+}
+
+function applyDefaultRuntimeTypes(
+  commandLine: ts.ParsedCommandLine,
+  runtime: RuntimeContext,
+  rawConfig: unknown,
+): ts.ParsedCommandLine {
+  if (hasExplicitCompilerTypes(rawConfig)) {
+    return commandLine;
+  }
+
+  const defaultTypes = runtimeDefaultTypes(runtime);
+  if (!defaultTypes) {
+    return commandLine;
+  }
+
+  return {
+    ...commandLine,
+    options: {
+      ...commandLine.options,
+      types: [...defaultTypes],
     },
   };
 }
@@ -846,7 +880,11 @@ export function loadConfig(
       {},
       projectPath,
     );
-    const normalizedCommandLine = applyDefaultRuntimeLibs(commandLine, runtime, {});
+    const normalizedCommandLine = applyDefaultRuntimeTypes(
+      applyDefaultRuntimeLibs(commandLine, runtime, {}),
+      runtime,
+      {},
+    );
     return {
       commandLine: shouldApplySoundCompilerOptionBaseline(
           projectPath,
@@ -874,7 +912,11 @@ export function loadConfig(
     runtimeOverrides,
   );
   const runtime = normalizeRuntimeContext(soundscript);
-  const normalizedCommandLine = applyDefaultRuntimeLibs(commandLine, runtime, configFile.config);
+  const normalizedCommandLine = applyDefaultRuntimeTypes(
+    applyDefaultRuntimeLibs(commandLine, runtime, configFile.config),
+    runtime,
+    configFile.config,
+  );
   const configDiagnostics = collectSoundscriptConfigDiagnostics(configFile.config, projectPath);
   return {
     commandLine: shouldApplySoundCompilerOptionBaseline(

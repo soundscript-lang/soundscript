@@ -53,6 +53,23 @@ function createSoundscriptOnlyTsconfig(): string {
   );
 }
 
+function createBrowserTsconfig(): string {
+  return JSON.stringify(
+    {
+      compilerOptions: {
+        lib: ['ES2024', 'DOM', 'DOM.AsyncIterable'],
+        strict: true,
+        noEmit: true,
+        target: 'ES2022',
+        module: 'ESNext',
+      },
+      include: ['src/**/*.sts'],
+    },
+    null,
+    2,
+  );
+}
+
 async function createValueAnalysisProject(
   files: Readonly<Record<string, string>>,
 ): Promise<string> {
@@ -312,7 +329,12 @@ Deno.test('analyzeProject keeps bundled node typings explicit for js-node projec
     workingDirectory: tempDirectory,
   });
 
-  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['TS2307', 'TS2580']);
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), [
+    'SOUND1005',
+    'SOUND1005',
+    'SOUND1005',
+    'SOUND1039',
+  ]);
 });
 
 Deno.test(
@@ -1368,43 +1390,6 @@ Deno.test('analyzeProject rejects direct ambient DOM globals even when DOM libs 
   assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1039', 'SOUND1039']);
 });
 
-Deno.test('analyzeProject resolves explicit host:dom imports when DOM libs are enabled', async () => {
-  const tempDirectory = await createTempProject({
-    'tsconfig.json': JSON.stringify(
-      {
-        compilerOptions: {
-          lib: ['ES2024', 'DOM', 'DOM.AsyncIterable'],
-          strict: true,
-          noEmit: true,
-          target: 'ES2022',
-          module: 'ESNext',
-        },
-        include: ['src/**/*.sts'],
-      },
-      null,
-      2,
-    ),
-    'src/index.sts': [
-      '// #[interop]',
-      "import { document, window } from 'host:dom';",
-      '',
-      'const title = document.title;',
-      'const href = window.location.href;',
-      'void title;',
-      'void href;',
-      '',
-    ].join('\n'),
-  });
-
-  const result = await analyzeProject({
-    projectPath: join(tempDirectory, 'tsconfig.json'),
-    target: 'js-browser',
-    workingDirectory: tempDirectory,
-  });
-
-  assertEquals(result.diagnostics, []);
-});
-
 Deno.test('analyzeProject loads the bundled node extern pack on node-family targets', async () => {
   const tempDirectory = await createTempProject({
     'tsconfig.json': JSON.stringify(
@@ -1421,14 +1406,42 @@ Deno.test('analyzeProject loads the bundled node extern pack on node-family targ
       2,
     ),
     'src/index.sts': [
+      '// #[interop]',
+      'import { Buffer as ModuleBuffer } from "node:buffer";',
+      '// #[interop]',
+      'import { createHash, createHmac, randomInt, randomUUID } from "node:crypto";',
+      '// #[interop]',
       'import { readFile } from "node:fs/promises";',
+      '// #[interop]',
       'import { join } from "node:path";',
+      '// #[interop]',
+      'import { setTimeout as scheduleTimeout } from "node:timers";',
+      '// #[interop]',
+      'import { scheduler, setTimeout as waitTimeout } from "node:timers/promises";',
+      '// #[interop]',
+      "import { process } from 'host:node';",
       '',
       'const cwd = process.cwd();',
       'const path = join(cwd, "notes.txt");',
       'const bytes = readFile(path);',
+      'const buffer = ModuleBuffer.from("ok");',
+      'const digest = createHash("sha256").update("ok").digest("hex");',
+      'const mac = createHmac("sha256", "key").update("ok").digest("hex");',
+      'const id = randomUUID();',
+      'const n = randomInt(10);',
+      'const timer = scheduleTimeout(() => {}, 10);',
+      'const timeout = waitTimeout(10);',
+      'const tick = scheduler.yield();',
       '',
       'void bytes;',
+      'void buffer;',
+      'void digest;',
+      'void mac;',
+      'void id;',
+      'void n;',
+      'void timer;',
+      'void timeout;',
+      'void tick;',
       '',
     ].join('\n'),
   });
@@ -1448,10 +1461,13 @@ Deno.test('analyzeProject loads the bundled node extern pack on node-family targ
   assertEquals(jsBrowserResult.diagnostics.map((diagnostic) => diagnostic.code), [
     'TS2307',
     'TS2307',
-    'TS2580',
+    'TS2307',
+    'TS2307',
+    'TS2307',
+    'TS2307',
+    'TS2307',
   ]);
 });
-
 Deno.test('analyzeProject tracks bundled deno extern builtins under effect contracts', async () => {
   const tempDirectory = await createTempProject({
     'tsconfig.json': JSON.stringify(
@@ -1543,11 +1559,6 @@ Deno.test('analyzeProject tracks bundled deno extern builtins under effect contr
       '  return runtimeDeno.readFileSync(path);',
       '}',
       '',
-      '// #[effects(forbid: [fails])]',
-      'function readBinarySync(path: string): Uint8Array<ArrayBufferLike> {',
-      '  return Deno.readFileSync(path);',
-      '}',
-      '',
       '// #[effects(forbid: [suspend])]',
       'function readText(path: string): Promise<string> {',
       '  return runtimeDeno.readTextFile(path);',
@@ -1578,26 +1589,6 @@ Deno.test('analyzeProject tracks bundled deno extern builtins under effect contr
       '  runtimeDeno.removeSync(path);',
       '}',
       '',
-      '// #[effects(forbid: [suspend])]',
-      'function makeDirectory(path: string): Promise<void> {',
-      '  return Deno.mkdir(path);',
-      '}',
-      '',
-      '// #[effects(forbid: [fails])]',
-      'function makeDirectorySync(path: string): void {',
-      '  Deno.mkdirSync(path);',
-      '}',
-      '',
-      '// #[effects(forbid: [suspend])]',
-      'function removePath(path: string): Promise<void> {',
-      '  return Deno.remove(path);',
-      '}',
-      '',
-      '// #[effects(forbid: [fails])]',
-      'function removePathSync(path: string): void {',
-      '  Deno.removeSync(path);',
-      '}',
-      '',
       '// #[effects(forbid: [mut])]',
       'function writeText(path: string, data: string): Promise<void> {',
       '  return runtimeDeno.writeTextFile(path, data);',
@@ -1611,16 +1602,6 @@ Deno.test('analyzeProject tracks bundled deno extern builtins under effect contr
       '// #[effects(forbid: [fails])]',
       'function changeDirectory(path: string): void {',
       '  runtimeDeno.chdir(path);',
-      '}',
-      '',
-      '// #[effects(forbid: [fails])]',
-      'function writeTextSync(path: string, data: string): void {',
-      '  Deno.writeTextFileSync(path, data);',
-      '}',
-      '',
-      '// #[effects(forbid: [fails])]',
-      'function changeDirectory(path: string): void {',
-      '  Deno.chdir(path);',
       '}',
       '',
     ].join('\n'),
@@ -1976,12 +1957,12 @@ Deno.test('analyzeProject tracks bundled node builtins under effect contracts', 
       '}',
       '',
       '// #[effects(forbid: [mut])]',
-      'function writeBinary(path: string, data: Uint8Array<ArrayBufferLike>): Promise<void> {',
+      'function writeBinary(path: string, data: Uint8Array<ArrayBuffer>): Promise<void> {',
       '  return writeFile(path, data);',
       '}',
       '',
       '// #[effects(forbid: [fails])]',
-      'function writeBinarySync(path: string, data: Uint8Array<ArrayBufferLike>): void {',
+      'function writeBinarySync(path: string, data: Uint8Array<ArrayBuffer>): void {',
       '  writeFileSync(path, data);',
       '}',
       '',
@@ -2221,7 +2202,20 @@ Deno.test('analyzeProject resolves explicit host:node imports when compilerOptio
 
 Deno.test('analyzeProject rejects host:node imports when compilerOptions.types omits node', async () => {
   const tempDirectory = await createTempProject({
-    'tsconfig.json': createSoundscriptOnlyTsconfig(),
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+          types: [],
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
     'src/index.sts': [
       '// #[interop]',
       "import { process } from 'host:node';",
@@ -5116,39 +5110,7 @@ Deno.test('analyzeProject preserves unknown annotation namespaces and their nest
     workingDirectory: tempDirectory,
   });
 
-  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1007']);
-  assertEquals(
-    result.diagnostics[0]?.message,
-    'Unknown soundscript annotation. `#[eq]` is not registered.',
-  );
-  assertEquals(result.diagnostics[0]?.metadata?.rule, 'unknown_annotation');
-  assertEquals(result.diagnostics[0]?.metadata?.primarySymbol, '#[eq]');
-  assertEquals(result.diagnostics[0]?.metadata?.replacementFamily, 'registered_annotation_name');
-  assertEquals(result.diagnostics[0]?.metadata?.fixability, 'local_rewrite');
-  assertEquals(
-    result.diagnostics[0]?.metadata?.evidence?.map((fact) => `${fact.label}:${fact.value}`),
-    [
-      'annotationName:eq',
-      'registeredBuiltins:effects, extern, interop, newtype, unsafe, value, variance',
-    ],
-  );
-  assertEquals(
-    result.diagnostics[0]?.metadata?.counterexample,
-    'An unknown annotation can look like a checked contract even though soundscript gives it no semantics.',
-  );
-  assertEquals(
-    result.diagnostics[0]?.metadata?.example,
-    'Replace `#[eq]` with a registered builtin annotation such as `#[extern]`, or remove it until that directive exists.',
-  );
-  assertEquals(result.diagnostics[0]?.notes, [
-    '`#[eq]` is not a registered builtin soundscript annotation.',
-    'Registered builtin annotations in v1 are `#[effects(...)]`, `#[extern]`, `#[interop]`, `#[newtype]`, `#[unsafe]`, `#[value]`, and `#[variance(...)]`.',
-    'Example: Replace `#[eq]` with a registered builtin annotation such as `#[extern]`, or remove it until that directive exists.',
-  ]);
-  assertEquals(
-    result.diagnostics[0]?.hint,
-    'Rename the annotation to a registered builtin, or remove it until that directive exists.',
-  );
+  assertEquals(result.diagnostics, []);
 });
 
 Deno.test('analyzeProject gives structured guidance for duplicate annotations in one block', async () => {
@@ -5283,7 +5245,7 @@ Deno.test('analyzeProject rejects bodyful forbid contracts with unresolved forwa
     workingDirectory: tempDirectory,
   });
 
-  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1040']);
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1041']);
   assertEquals(result.diagnostics[0]?.metadata?.primarySymbol, 'runOnce');
   assertEquals(
     result.diagnostics[0]?.metadata?.evidence?.find((entry) =>
@@ -5330,7 +5292,7 @@ Deno.test('analyzeProject reports failing forwarded member steps in bodyful forb
     workingDirectory: tempDirectory,
   });
 
-  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1040']);
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1041']);
   assertEquals(result.diagnostics[0]?.metadata?.primarySymbol, 'use');
   assertEquals(
     result.diagnostics[0]?.metadata?.evidence?.find((entry) =>
@@ -5430,7 +5392,7 @@ Deno.test('analyzeProject keeps inferred conflicts under bodyful add contracts',
     workingDirectory: tempDirectory,
   });
 
-  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1040']);
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1041']);
   assertEquals(result.diagnostics[0]?.metadata?.rule, 'effect_contract_violation');
   assertEquals(result.diagnostics[0]?.metadata?.primarySymbol, 'invalidTaggedRead');
 });
@@ -5455,6 +5417,9 @@ Deno.test('analyzeProject keeps source and declaration helper surfaces aligned u
       'export async function transactionRead(path: string): Promise<string> {',
       '  return await readRemote(path);',
       '}',
+      '',
+      '// #[extern]',
+      'declare const console: typeof globalThis.console;',
       '',
       'export function logValue(value: unknown): void {',
       '  console.log(value);',
@@ -5571,19 +5536,19 @@ Deno.test('analyzeProject keeps source and declaration helper surfaces aligned u
 
   assertEquals(simplifyDiagnostics(sourceResult), [
     {
-      code: 'SOUND1040',
+      code: 'SOUND1041',
       forbiddenEffects: 'fails',
       primarySymbol: 'useParse',
       rule: 'effect_contract_violation',
     },
     {
-      code: 'SOUND1040',
+      code: 'SOUND1041',
       forbiddenEffects: 'host.io',
       primarySymbol: 'useTransaction',
       rule: 'effect_contract_violation',
     },
     {
-      code: 'SOUND1040',
+      code: 'SOUND1041',
       forbiddenEffects: 'host.ffi',
       primarySymbol: 'useLog',
       rule: 'effect_contract_violation',
@@ -5612,7 +5577,7 @@ Deno.test('analyzeProject rejects effects annotations on overload signatures wit
     workingDirectory: tempDirectory,
   });
 
-  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1039']);
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1040']);
   assertEquals(result.diagnostics[0]?.metadata?.rule, 'invalid_effect_annotation');
 });
 
@@ -5638,7 +5603,7 @@ Deno.test('analyzeProject rejects parameter effect annotations on overload signa
     workingDirectory: tempDirectory,
   });
 
-  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1039']);
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1040']);
   assertEquals(result.diagnostics[0]?.metadata?.rule, 'invalid_effect_annotation');
 });
 
@@ -5670,7 +5635,7 @@ Deno.test('analyzeProject rejects deprecated via forwarding syntax', async () =>
     workingDirectory: tempDirectory,
   });
 
-  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1039']);
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1040']);
   assertEquals(result.diagnostics[0]?.metadata?.rule, 'invalid_effect_annotation');
 });
 
@@ -5739,7 +5704,7 @@ Deno.test('analyzeProject enforces local forbid fails contracts against inferred
     workingDirectory: tempDirectory,
   });
 
-  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1040']);
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1041']);
   assertEquals(result.diagnostics[0]?.metadata?.rule, 'effect_contract_violation');
   assertEquals(result.diagnostics[0]?.metadata?.primarySymbol, 'explode');
 });
@@ -5896,27 +5861,18 @@ Deno.test('analyzeProject tracks builtin host and mut effects under forbid contr
     workingDirectory: tempDirectory,
   });
 
-  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1040', 'SOUND1040']);
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1041', 'SOUND1041']);
   assertEquals(result.diagnostics[0]?.metadata?.primarySymbol, 'sample');
   assertEquals(result.diagnostics[1]?.metadata?.primarySymbol, 'update');
 });
 
 Deno.test('analyzeProject allows fresh local scratch mutation under forbid mut', async () => {
   const tempDirectory = await createTempProject({
-    'tsconfig.json': JSON.stringify(
-      {
-        compilerOptions: {
-          strict: true,
-          noEmit: true,
-          target: 'ES2022',
-          module: 'ESNext',
-        },
-        include: ['src/**/*.sts'],
-      },
-      null,
-      2,
-    ),
+    'tsconfig.json': createBrowserTsconfig(),
     'src/index.sts': [
+      '// #[interop]',
+      'import { window } from "host:dom";',
+      '',
       'class Counter {',
       '  value = 0;',
       '  set(value: number): void {',
@@ -6012,14 +5968,14 @@ Deno.test('analyzeProject allows fresh local scratch mutation under forbid mut',
       '',
       '// #[effects(forbid: [mut])]',
       'function buildParams(): URLSearchParams {',
-      '  const params = new URLSearchParams();',
+      '  const params = new window.URLSearchParams();',
       '  params.set("q", "music");',
       '  return params;',
       '}',
       '',
       '// #[effects(forbid: [mut])]',
       'function buildParamsAlias(): URLSearchParams {',
-      '  const params = new URLSearchParams();',
+      '  const params = new window.URLSearchParams();',
       '  const out = params;',
       '  out.set("q", "music");',
       '  return out;',
@@ -6027,14 +5983,14 @@ Deno.test('analyzeProject allows fresh local scratch mutation under forbid mut',
       '',
       '// #[effects(forbid: [mut])]',
       'function buildFormData(): FormData {',
-      '  const data = new FormData();',
+      '  const data = new window.FormData();',
       '  data.append("q", "music");',
       '  return data;',
       '}',
       '',
       '// #[effects(forbid: [mut])]',
       'function buildFormDataAlias(): FormData {',
-      '  const data = new FormData();',
+      '  const data = new window.FormData();',
       '  const out = data;',
       '  out.append("q", "music");',
       '  return out;',
@@ -6042,14 +5998,14 @@ Deno.test('analyzeProject allows fresh local scratch mutation under forbid mut',
       '',
       '// #[effects(forbid: [mut])]',
       'function buildHeaders(): Headers {',
-      '  const headers = new Headers();',
+      '  const headers = new window.Headers();',
       '  headers.set("accept", "application/json");',
       '  return headers;',
       '}',
       '',
       '// #[effects(forbid: [mut])]',
       'function buildHeadersAlias(): Headers {',
-      '  const headers = new Headers();',
+      '  const headers = new window.Headers();',
       '  const out = headers;',
       '  out.set("accept", "application/json");',
       '  return out;',
@@ -6093,9 +6049,9 @@ Deno.test('analyzeProject allows fresh local scratch mutation under forbid mut',
   });
 
   assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), [
-    'SOUND1040',
-    'SOUND1040',
-    'SOUND1040',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
   ]);
   assertEquals(result.diagnostics.map((diagnostic) => diagnostic.metadata?.primarySymbol), [
     'buildCustomCounter',
@@ -6202,7 +6158,7 @@ Deno.test('analyzeProject reports fresh local conservative mut reasons in forbid
     workingDirectory: tempDirectory,
   });
 
-  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1040', 'SOUND1040']);
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1041', 'SOUND1041']);
   assertEquals(result.diagnostics.map((diagnostic) => diagnostic.metadata?.primarySymbol), [
     'buildCustomCounter',
     'escapeBeforeMutate',
@@ -6310,12 +6266,12 @@ Deno.test('analyzeProject keeps fresh local mut suppression conservative for ind
   });
 
   assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), [
-    'SOUND1040',
-    'SOUND1040',
-    'SOUND1040',
-    'SOUND1040',
-    'SOUND1040',
-    'SOUND1040',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
   ]);
   assertEquals(result.diagnostics.map((diagnostic) => diagnostic.metadata?.primarySymbol), [
     'storedRecordInContainer',
@@ -6343,6 +6299,11 @@ Deno.test('analyzeProject tracks host-backed globals and stdlib wrappers under f
       2,
     ),
     'src/index.sts': [
+      '// #[extern]',
+      'declare const fetch: typeof globalThis.fetch;',
+      '// #[extern]',
+      'declare const crypto: typeof globalThis.crypto;',
+      '',
       'import { fetch as stdFetch } from "sts:fetch";',
       'import { getRandomValues } from "sts:random";',
       '',
@@ -6375,10 +6336,10 @@ Deno.test('analyzeProject tracks host-backed globals and stdlib wrappers under f
   });
 
   assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), [
-    'SOUND1040',
-    'SOUND1040',
-    'SOUND1040',
-    'SOUND1040',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
   ]);
   assertEquals(result.diagnostics.map((diagnostic) => diagnostic.metadata?.primarySymbol), [
     'load',
@@ -6390,38 +6351,29 @@ Deno.test('analyzeProject tracks host-backed globals and stdlib wrappers under f
 
 Deno.test('analyzeProject treats deferred host schedulers as host effects without immediate callback forwarding', async () => {
   const tempDirectory = await createTempProject({
-    'tsconfig.json': JSON.stringify(
-      {
-        compilerOptions: {
-          strict: true,
-          noEmit: true,
-          target: 'ES2022',
-          module: 'ESNext',
-        },
-        include: ['src/**/*.sts'],
-      },
-      null,
-      2,
-    ),
+    'tsconfig.json': createBrowserTsconfig(),
     'src/index.sts': [
+      '// #[interop]',
+      'import { window } from "host:dom";',
+      '',
       '// #[effects(forbid: [host])]',
       'function schedule(): void {',
-      '  queueMicrotask(() => {});',
-      '  setTimeout(() => {}, 0);',
-      '  setInterval(() => {}, 10);',
-      '  requestIdleCallback(() => {});',
+      '  window.queueMicrotask(() => {});',
+      '  window.setTimeout(() => {}, 0);',
+      '  window.setInterval(() => {}, 10);',
+      '  window.requestIdleCallback(() => {});',
       '}',
       '',
       '// #[effects(forbid: [mut])]',
       'function deferMutation(map: Map<string, number>): void {',
-      '  setTimeout(() => {',
+      '  window.setTimeout(() => {',
       '    map.set("x", 1);',
       '  }, 0);',
       '}',
       '',
       '// #[effects(forbid: [mut])]',
       'function deferIdleMutation(map: Map<string, number>): void {',
-      '  requestIdleCallback(() => {',
+      '  window.requestIdleCallback(() => {',
       '    map.set("x", 1);',
       '  });',
       '}',
@@ -6435,9 +6387,9 @@ Deno.test('analyzeProject treats deferred host schedulers as host effects withou
   });
 
   assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), [
-    'SOUND1040',
-    'SOUND1040',
-    'SOUND1040',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
   ]);
   assertEquals(result.diagnostics.map((diagnostic) => diagnostic.metadata?.primarySymbol), [
     'schedule',
@@ -6448,28 +6400,19 @@ Deno.test('analyzeProject treats deferred host schedulers as host effects withou
 
 Deno.test('analyzeProject tracks fetch host-object families and stdlib wrappers under effect contracts', async () => {
   const tempDirectory = await createTempProject({
-    'tsconfig.json': JSON.stringify(
-      {
-        compilerOptions: {
-          strict: true,
-          noEmit: true,
-          target: 'ES2022',
-          module: 'ESNext',
-        },
-        include: ['src/**/*.sts'],
-      },
-      null,
-      2,
-    ),
+    'tsconfig.json': createBrowserTsconfig(),
     'src/index.sts': [
+      '// #[interop]',
+      'import { window } from "host:dom";',
+      '',
       'import { Headers as FetchHeaders, Request as FetchRequest, Response as FetchResponse } from "sts:fetch";',
       'import { crypto as randomCrypto } from "sts:random";',
       '',
       '// #[effects(forbid: [host])]',
       'function buildDomObjects(): void {',
-      '  const headers = new Headers({ accept: "application/json" });',
-      '  const request = new Request("https://example.com", { headers });',
-      '  const response = new Response("ok");',
+      '  const headers = new window.Headers({ accept: "application/json" });',
+      '  const request = new window.Request("https://example.com", { headers });',
+      '  const response = new window.Response("ok");',
       '  void request;',
       '  void response;',
       '}',
@@ -6527,13 +6470,13 @@ Deno.test('analyzeProject tracks fetch host-object families and stdlib wrappers 
   });
 
   assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), [
-    'SOUND1040',
-    'SOUND1040',
-    'SOUND1040',
-    'SOUND1040',
-    'SOUND1040',
-    'SOUND1040',
-    'SOUND1040',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
   ]);
   assertEquals(result.diagnostics.map((diagnostic) => diagnostic.metadata?.primarySymbol), [
     'buildDomObjects',
@@ -6548,31 +6491,22 @@ Deno.test('analyzeProject tracks fetch host-object families and stdlib wrappers 
 
 Deno.test('analyzeProject tracks URL and text builtins under effect contracts', async () => {
   const tempDirectory = await createTempProject({
-    'tsconfig.json': JSON.stringify(
-      {
-        compilerOptions: {
-          strict: true,
-          noEmit: true,
-          target: 'ES2022',
-          module: 'ESNext',
-        },
-        include: ['src/**/*.sts'],
-      },
-      null,
-      2,
-    ),
+    'tsconfig.json': createBrowserTsconfig(),
     'src/index.sts': [
+      '// #[interop]',
+      'import { window } from "host:dom";',
+      '',
       'import { URL as StdURL, URLSearchParams as StdURLSearchParams } from "sts:url";',
       'import { TextEncoder as StdTextEncoder, TextDecoder as StdTextDecoder } from "sts:text";',
       '',
       '// #[effects(forbid: [fails])]',
       'function buildDomUrl(base: string): URL {',
-      '  return new URL("/x", base);',
+      '  return new window.URL("/x", base);',
       '}',
       '',
       '// #[effects(forbid: [fails, suspend, mut, host])]',
       'function canParseDomUrl(base: string): boolean {',
-      '  return URL.canParse("/x", base);',
+      '  return window.URL.canParse("/x", base);',
       '}',
       '',
       '// #[effects(forbid: [mut])]',
@@ -6587,12 +6521,12 @@ Deno.test('analyzeProject tracks URL and text builtins under effect contracts', 
       '',
       '// #[effects(forbid: [fails, suspend, mut, host])]',
       'function encodeDomText(input: string) {',
-      '  return new TextEncoder().encode(input);',
+      '  return new window.TextEncoder().encode(input);',
       '}',
       '',
       '// #[effects(forbid: [fails])]',
       'function decodeDomText(bytes: Uint8Array): string {',
-      '  return new TextDecoder("utf-8").decode(bytes);',
+      '  return new window.TextDecoder("utf-8").decode(bytes);',
       '}',
       '',
       '// #[effects(forbid: [fails])]',
@@ -6629,12 +6563,12 @@ Deno.test('analyzeProject tracks URL and text builtins under effect contracts', 
   });
 
   assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), [
-    'SOUND1040',
-    'SOUND1040',
-    'SOUND1040',
-    'SOUND1040',
-    'SOUND1040',
-    'SOUND1040',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
   ]);
   assertEquals(result.diagnostics.map((diagnostic) => diagnostic.metadata?.primarySymbol), [
     'buildDomUrl',
@@ -6648,23 +6582,14 @@ Deno.test('analyzeProject tracks URL and text builtins under effect contracts', 
 
 Deno.test('analyzeProject tracks abort and cloning builtins under effect contracts', async () => {
   const tempDirectory = await createTempProject({
-    'tsconfig.json': JSON.stringify(
-      {
-        compilerOptions: {
-          strict: true,
-          noEmit: true,
-          target: 'ES2022',
-          module: 'ESNext',
-        },
-        include: ['src/**/*.sts'],
-      },
-      null,
-      2,
-    ),
+    'tsconfig.json': createBrowserTsconfig(),
     'src/index.sts': [
+      '// #[interop]',
+      'import { window } from "host:dom";',
+      '',
       '// #[effects(forbid: [host])]',
       'function buildController(): AbortController {',
-      '  return new AbortController();',
+      '  return new window.AbortController();',
       '}',
       '',
       '// #[effects(forbid: [host, mut])]',
@@ -6674,17 +6599,17 @@ Deno.test('analyzeProject tracks abort and cloning builtins under effect contrac
       '',
       '// #[effects(forbid: [host])]',
       'function makeAbortedSignal(): AbortSignal {',
-      '  return AbortSignal.abort("boom");',
+      '  return window.AbortSignal.abort("boom");',
       '}',
       '',
       '// #[effects(forbid: [host])]',
       'function combineSignals(left: AbortSignal, right: AbortSignal): AbortSignal {',
-      '  return AbortSignal.any([left, right]);',
+      '  return window.AbortSignal.any([left, right]);',
       '}',
       '',
       '// #[effects(forbid: [host])]',
       'function timeoutSignal(): AbortSignal {',
-      '  return AbortSignal.timeout(10);',
+      '  return window.AbortSignal.timeout(10);',
       '}',
       '',
       '// #[effects(forbid: [fails])]',
@@ -6694,12 +6619,12 @@ Deno.test('analyzeProject tracks abort and cloning builtins under effect contrac
       '',
       '// #[effects(forbid: [fails])]',
       'function cloneValue<T>(value: T): T {',
-      '  return structuredClone(value);',
+      '  return window.structuredClone(value);',
       '}',
       '',
       '// #[effects(forbid: [fails, suspend, mut, host])]',
       'function parseUrl(value: string): URL | null {',
-      '  return URL.parse(value);',
+      '  return window.URL.parse(value);',
       '}',
       '',
     ].join('\n'),
@@ -6711,13 +6636,13 @@ Deno.test('analyzeProject tracks abort and cloning builtins under effect contrac
   });
 
   assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), [
-    'SOUND1040',
-    'SOUND1040',
-    'SOUND1040',
-    'SOUND1040',
-    'SOUND1040',
-    'SOUND1040',
-    'SOUND1040',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
   ]);
   assertEquals(result.diagnostics.map((diagnostic) => diagnostic.metadata?.primarySymbol), [
     'buildController',
@@ -6732,25 +6657,16 @@ Deno.test('analyzeProject tracks abort and cloning builtins under effect contrac
 
 Deno.test('analyzeProject tracks DOM listener and object URL builtins under effect contracts', async () => {
   const tempDirectory = await createTempProject({
-    'tsconfig.json': JSON.stringify(
-      {
-        compilerOptions: {
-          strict: true,
-          noEmit: true,
-          target: 'ES2022',
-          module: 'ESNext',
-        },
-        include: ['src/**/*.sts'],
-      },
-      null,
-      2,
-    ),
+    'tsconfig.json': createBrowserTsconfig(),
     'src/index.sts': [
+      '// #[interop]',
+      'import { window } from "host:dom";',
+      '',
       'let registered = 0;',
       '',
       '// #[effects(forbid: [fails, suspend, mut, host])]',
       'function buildBlob(): Blob {',
-      '  return new Blob(["ok"]);',
+      '  return new window.Blob(["ok"]);',
       '}',
       '',
       '// #[effects(forbid: [host])]',
@@ -6767,22 +6683,22 @@ Deno.test('analyzeProject tracks DOM listener and object URL builtins under effe
       '',
       '// #[effects(forbid: [host])]',
       'function registerWindowListener(listener: (event: Event) => void): void {',
-      '  addEventListener("message", listener);',
+      '  window.addEventListener("message", listener);',
       '}',
       '',
       '// #[effects(forbid: [host])]',
       'function unregisterWindowListener(listener: (event: Event) => void): void {',
-      '  removeEventListener("message", listener);',
+      '  window.removeEventListener("message", listener);',
       '}',
       '',
       '// #[effects(forbid: [host])]',
       'function createObjectUrl(blob: Blob): string {',
-      '  return URL.createObjectURL(blob);',
+      '  return window.URL.createObjectURL(blob);',
       '}',
       '',
       '// #[effects(forbid: [host])]',
       'function revokeObjectUrl(url: string): void {',
-      '  URL.revokeObjectURL(url);',
+      '  window.URL.revokeObjectURL(url);',
       '}',
       '',
     ].join('\n'),
@@ -6794,12 +6710,12 @@ Deno.test('analyzeProject tracks DOM listener and object URL builtins under effe
   });
 
   assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), [
-    'SOUND1040',
-    'SOUND1040',
-    'SOUND1040',
-    'SOUND1040',
-    'SOUND1040',
-    'SOUND1040',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
   ]);
   assertEquals(result.diagnostics.map((diagnostic) => diagnostic.metadata?.primarySymbol), [
     'registerAbortListener',
@@ -6813,33 +6729,24 @@ Deno.test('analyzeProject tracks DOM listener and object URL builtins under effe
 
 Deno.test('analyzeProject tracks DOM mutation and dispatch builtins under effect contracts', async () => {
   const tempDirectory = await createTempProject({
-    'tsconfig.json': JSON.stringify(
-      {
-        compilerOptions: {
-          strict: true,
-          noEmit: true,
-          target: 'ES2022',
-          module: 'ESNext',
-        },
-        include: ['src/**/*.sts'],
-      },
-      null,
-      2,
-    ),
+    'tsconfig.json': createBrowserTsconfig(),
     'src/index.sts': [
+      '// #[interop]',
+      'import { document, window } from "host:dom";',
+      '',
       '// #[effects(forbid: [fails, suspend, mut, host])]',
       'function buildEvent(): Event {',
-      '  return new Event("ping");',
+      '  return new window.Event("ping");',
       '}',
       '',
       '// #[effects(forbid: [fails, suspend, mut, host])]',
       'function buildTarget(): EventTarget {',
-      '  return new EventTarget();',
+      '  return new window.EventTarget();',
       '}',
       '',
       '// #[effects(forbid: [fails])]',
       'function dispatchOnTarget(target: EventTarget): boolean {',
-      '  return target.dispatchEvent(new Event("ping"));',
+      '  return target.dispatchEvent(new window.Event("ping"));',
       '}',
       '',
       '// #[effects(forbid: [host])]',
@@ -6896,16 +6803,16 @@ Deno.test('analyzeProject tracks DOM mutation and dispatch builtins under effect
   });
 
   assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), [
-    'SOUND1040',
-    'SOUND1040',
-    'SOUND1040',
-    'SOUND1040',
-    'SOUND1040',
-    'SOUND1040',
-    'SOUND1040',
-    'SOUND1040',
-    'SOUND1040',
-    'SOUND1040',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
   ]);
   assertEquals(result.diagnostics.map((diagnostic) => diagnostic.metadata?.primarySymbol), [
     'dispatchOnTarget',
@@ -6923,28 +6830,19 @@ Deno.test('analyzeProject tracks DOM mutation and dispatch builtins under effect
 
 Deno.test('analyzeProject tracks browser messaging builtins under effect contracts', async () => {
   const tempDirectory = await createTempProject({
-    'tsconfig.json': JSON.stringify(
-      {
-        compilerOptions: {
-          strict: true,
-          noEmit: true,
-          target: 'ES2022',
-          module: 'ESNext',
-        },
-        include: ['src/**/*.sts'],
-      },
-      null,
-      2,
-    ),
+    'tsconfig.json': createBrowserTsconfig(),
     'src/index.sts': [
+      '// #[interop]',
+      'import { window } from "host:dom";',
+      '',
       '// #[effects(forbid: [fails])]',
       'function sendWindowMessage(targetOrigin: string): void {',
-      '  postMessage({ ok: true }, targetOrigin);',
+      '  window.postMessage({ ok: true }, targetOrigin);',
       '}',
       '',
       '// #[effects(forbid: [host])]',
       'function openChannel(name: string): BroadcastChannel {',
-      '  return new BroadcastChannel(name);',
+      '  return new window.BroadcastChannel(name);',
       '}',
       '',
       '// #[effects(forbid: [fails])]',
@@ -6966,10 +6864,10 @@ Deno.test('analyzeProject tracks browser messaging builtins under effect contrac
   });
 
   assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), [
-    'SOUND1040',
-    'SOUND1040',
-    'SOUND1040',
-    'SOUND1040',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
   ]);
   assertEquals(result.diagnostics.map((diagnostic) => diagnostic.metadata?.primarySymbol), [
     'sendWindowMessage',
@@ -6981,23 +6879,14 @@ Deno.test('analyzeProject tracks browser messaging builtins under effect contrac
 
 Deno.test('analyzeProject tracks worker and socket builtins under effect contracts', async () => {
   const tempDirectory = await createTempProject({
-    'tsconfig.json': JSON.stringify(
-      {
-        compilerOptions: {
-          strict: true,
-          noEmit: true,
-          target: 'ES2022',
-          module: 'ESNext',
-        },
-        include: ['src/**/*.sts'],
-      },
-      null,
-      2,
-    ),
+    'tsconfig.json': createBrowserTsconfig(),
     'src/index.sts': [
+      '// #[interop]',
+      'import { window } from "host:dom";',
+      '',
       '// #[effects(forbid: [fails])]',
       'function openWorker(scriptUrl: string): Worker {',
-      '  return new Worker(scriptUrl, { type: "module" });',
+      '  return new window.Worker(scriptUrl, { type: "module" });',
       '}',
       '',
       '// #[effects(forbid: [fails])]',
@@ -7012,7 +6901,7 @@ Deno.test('analyzeProject tracks worker and socket builtins under effect contrac
       '',
       '// #[effects(forbid: [host])]',
       'function openMessageChannel(): MessageChannel {',
-      '  return new MessageChannel();',
+      '  return new window.MessageChannel();',
       '}',
       '',
       '// #[effects(forbid: [fails])]',
@@ -7032,7 +6921,7 @@ Deno.test('analyzeProject tracks worker and socket builtins under effect contrac
       '',
       '// #[effects(forbid: [fails])]',
       'function openSocket(url: string): WebSocket {',
-      '  return new WebSocket(url);',
+      '  return new window.WebSocket(url);',
       '}',
       '',
       '// #[effects(forbid: [fails])]',
@@ -7047,7 +6936,7 @@ Deno.test('analyzeProject tracks worker and socket builtins under effect contrac
       '',
       '// #[effects(forbid: [fails])]',
       'function openEventStream(url: string): EventSource {',
-      '  return new EventSource(url);',
+      '  return new window.EventSource(url);',
       '}',
       '',
       '// #[effects(forbid: [host])]',
@@ -7064,18 +6953,18 @@ Deno.test('analyzeProject tracks worker and socket builtins under effect contrac
   });
 
   assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), [
-    'SOUND1040',
-    'SOUND1040',
-    'SOUND1040',
-    'SOUND1040',
-    'SOUND1040',
-    'SOUND1040',
-    'SOUND1040',
-    'SOUND1040',
-    'SOUND1040',
-    'SOUND1040',
-    'SOUND1040',
-    'SOUND1040',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
   ]);
   assertEquals(result.diagnostics.map((diagnostic) => diagnostic.metadata?.primarySymbol), [
     'openWorker',
@@ -7095,28 +6984,19 @@ Deno.test('analyzeProject tracks worker and socket builtins under effect contrac
 
 Deno.test('analyzeProject tracks request and file builtins under effect contracts', async () => {
   const tempDirectory = await createTempProject({
-    'tsconfig.json': JSON.stringify(
-      {
-        compilerOptions: {
-          strict: true,
-          noEmit: true,
-          target: 'ES2022',
-          module: 'ESNext',
-        },
-        include: ['src/**/*.sts'],
-      },
-      null,
-      2,
-    ),
+    'tsconfig.json': createBrowserTsconfig(),
     'src/index.sts': [
+      '// #[interop]',
+      'import { window } from "host:dom";',
+      '',
       '// #[effects(forbid: [fails, suspend, mut, host])]',
       'function buildEmptyFormData(): FormData {',
-      '  return new FormData();',
+      '  return new window.FormData();',
       '}',
       '',
       '// #[effects(forbid: [host])]',
       'function buildFormDataFromForm(form: HTMLFormElement): FormData {',
-      '  return new FormData(form);',
+      '  return new window.FormData(form);',
       '}',
       '',
       '// #[effects(forbid: [mut])]',
@@ -7131,7 +7011,7 @@ Deno.test('analyzeProject tracks request and file builtins under effect contract
       '',
       '// #[effects(forbid: [host])]',
       'function buildFileReader(): FileReader {',
-      '  return new FileReader();',
+      '  return new window.FileReader();',
       '}',
       '',
       '// #[effects(forbid: [fails])]',
@@ -7158,13 +7038,13 @@ Deno.test('analyzeProject tracks request and file builtins under effect contract
   });
 
   assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), [
-    'SOUND1040',
-    'SOUND1040',
-    'SOUND1040',
-    'SOUND1040',
-    'SOUND1040',
-    'SOUND1040',
-    'SOUND1040',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
   ]);
   assertEquals(result.diagnostics.map((diagnostic) => diagnostic.metadata?.primarySymbol), [
     'buildFormDataFromForm',
@@ -7245,8 +7125,8 @@ Deno.test('analyzeProject enforces forbid contracts across recursive call cycles
   });
 
   assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), [
-    'SOUND1040',
-    'SOUND1040',
+    'SOUND1041',
+    'SOUND1041',
   ]);
   assertEquals(result.diagnostics.map((diagnostic) => diagnostic.metadata?.primarySymbol), [
     'useLeft',
@@ -7256,19 +7136,7 @@ Deno.test('analyzeProject enforces forbid contracts across recursive call cycles
 
 Deno.test('analyzeProject reports unknown effect reason categories in forbid diagnostics', async () => {
   const tempDirectory = await createTempProject({
-    'tsconfig.json': JSON.stringify(
-      {
-        compilerOptions: {
-          strict: true,
-          noEmit: true,
-          target: 'ES2022',
-          module: 'ESNext',
-        },
-        include: ['src/**/*.sts'],
-      },
-      null,
-      2,
-    ),
+    'tsconfig.json': createBrowserTsconfig(),
     'src/index.sts': [
       '// #[extern]',
       'declare function opaqueExtern(): number;',
@@ -7291,7 +7159,7 @@ Deno.test('analyzeProject reports unknown effect reason categories in forbid dia
     workingDirectory: tempDirectory,
   });
 
-  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1040', 'SOUND1040']);
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1041', 'SOUND1041']);
   assertEquals(result.diagnostics.map((diagnostic) => diagnostic.metadata?.primarySymbol), [
     'callOpaqueExtern',
     'dispatchUnknown',
@@ -7352,7 +7220,7 @@ Deno.test('analyzeProject includes forwarded path detail in unknown effect reaso
     workingDirectory: tempDirectory,
   });
 
-  assert(result.diagnostics.every((diagnostic) => diagnostic.code === 'SOUND1040'));
+  assert(result.diagnostics.every((diagnostic) => diagnostic.code === 'SOUND1041'));
   assert(
     result.diagnostics.some((diagnostic) =>
       diagnostic.metadata?.evidence?.find((entry) => entry.label === 'unknownEffectReasons')
@@ -7364,58 +7232,49 @@ Deno.test('analyzeProject includes forwarded path detail in unknown effect reaso
 
 Deno.test('analyzeProject tracks browser storage and navigation builtins under effect contracts', async () => {
   const tempDirectory = await createTempProject({
-    'tsconfig.json': JSON.stringify(
-      {
-        compilerOptions: {
-          strict: true,
-          noEmit: true,
-          target: 'ES2022',
-          module: 'ESNext',
-        },
-        include: ['src/**/*.sts'],
-      },
-      null,
-      2,
-    ),
+    'tsconfig.json': createBrowserTsconfig(),
     'src/index.sts': [
+      '// #[interop]',
+      'import { window } from "host:dom";',
+      '',
       '// #[effects(forbid: [host])]',
       'function readStoredValue(): string | null {',
-      '  return localStorage.getItem("key");',
+      '  return window.localStorage.getItem("key");',
       '}',
       '',
       '// #[effects(forbid: [mut])]',
       'function storeValue(): void {',
-      '  localStorage.setItem("key", "value");',
+      '  window.localStorage.setItem("key", "value");',
       '}',
       '',
       '// #[effects(forbid: [mut])]',
       'function clearStoredValue(): void {',
-      '  sessionStorage.clear();',
+      '  window.sessionStorage.clear();',
       '}',
       '',
       '// #[effects(forbid: [mut])]',
       'function pushHistoryState(url: string): void {',
-      '  history.pushState(null, "", url);',
+      '  window.history.pushState(null, "", url);',
       '}',
       '',
       '// #[effects(forbid: [host])]',
       'function navigateHistory(): void {',
-      '  history.back();',
+      '  window.history.back();',
       '}',
       '',
       '// #[effects(forbid: [host])]',
       'function assignLocation(url: string): void {',
-      '  location.assign(url);',
+      '  window.location.assign(url);',
       '}',
       '',
       '// #[effects(forbid: [host])]',
       'function reloadLocation(): void {',
-      '  location.reload();',
+      '  window.location.reload();',
       '}',
       '',
       '// #[effects(forbid: [host])]',
       'function sendBeaconNow(url: string): boolean {',
-      '  return navigator.sendBeacon(url, "ok");',
+      '  return window.navigator.sendBeacon(url, "ok");',
       '}',
       '',
     ].join('\n'),
@@ -7427,14 +7286,14 @@ Deno.test('analyzeProject tracks browser storage and navigation builtins under e
   });
 
   assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), [
-    'SOUND1040',
-    'SOUND1040',
-    'SOUND1040',
-    'SOUND1040',
-    'SOUND1040',
-    'SOUND1040',
-    'SOUND1040',
-    'SOUND1040',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
   ]);
   assertEquals(result.diagnostics.map((diagnostic) => diagnostic.metadata?.primarySymbol), [
     'readStoredValue',
@@ -7450,20 +7309,12 @@ Deno.test('analyzeProject tracks browser storage and navigation builtins under e
 
 Deno.test('analyzeProject tracks JSON and console builtins under effect contracts', async () => {
   const tempDirectory = await createTempProject({
-    'tsconfig.json': JSON.stringify(
-      {
-        compilerOptions: {
-          strict: true,
-          noEmit: true,
-          target: 'ES2022',
-          module: 'ESNext',
-        },
-        include: ['src/**/*.sts'],
-      },
-      null,
-      2,
-    ),
+    'tsconfig.json': createBrowserTsconfig(),
     'src/index.sts': [
+      '// #[interop]',
+      'import { window } from "host:dom";',
+      'const console = window.console;',
+      '',
       '// #[effects(forbid: [fails])]',
       'function parseValue(text: string) {',
       '  return JSON.parse(text);',
@@ -7504,11 +7355,11 @@ Deno.test('analyzeProject tracks JSON and console builtins under effect contract
   });
 
   assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), [
-    'SOUND1040',
-    'SOUND1040',
-    'SOUND1040',
-    'SOUND1040',
-    'SOUND1040',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
   ]);
   assertEquals(result.diagnostics.map((diagnostic) => diagnostic.metadata?.primarySymbol), [
     'parseValue',
@@ -7521,70 +7372,48 @@ Deno.test('analyzeProject tracks JSON and console builtins under effect contract
 
 Deno.test('analyzeProject tracks result, json, and debug stdlib helpers under effect contracts', async () => {
   const tempDirectory = await createTempProject({
-    'tsconfig.json': JSON.stringify(
-      {
-        compilerOptions: {
-          strict: true,
-          noEmit: true,
-          target: 'ES2022',
-          module: 'ESNext',
-        },
-        include: ['src/**/*.sts'],
-      },
-      null,
-      2,
-    ),
+    'tsconfig.json': createBrowserTsconfig(),
     'src/index.sts': [
+      '// #[interop]',
+      'import { window } from "host:dom";',
+      'const console = window.console;',
+      '',
       'import { resultOf, ok } from "sts:result";',
       'import { parseAndDecode, parseJson, stringifyJson, parseJsonLike, stringifyJsonLike, encodeAndStringify, decodeJson, encodeJson, type JsonLikeValue, type JsonValue } from "sts:json";',
-      'import type { Decoder } from "sts:decode";',
-      'import type { Encoder } from "sts:encode";',
+      'import { fromDecode } from "sts:decode";',
+      'import { fromEncode } from "sts:encode";',
       'import { assert, log } from "sts:experimental/debug";',
       '',
-      'const pureDecoder: Decoder<number, Error> = {',
-      '  decode(_value: unknown) {',
+      'const pureDecoder = fromDecode((_value: unknown) => {',
       '    return ok(1);',
-      '  },',
-      '};',
+      '  });',
       '',
-      'const hostDecoder: Decoder<number, Error> = {',
-      '  decode(value: unknown) {',
+      'const hostDecoder = fromDecode((value: unknown) => {',
       '    console.log(value);',
       '    return ok(1);',
-      '  },',
-      '};',
+      '  });',
       '',
-      'const throwDecoder: Decoder<number, Error> = {',
-      '  decode(_value: unknown) {',
+      'const throwDecoder = fromDecode((_value: unknown) => {',
       '    throw new Error("boom");',
-      '  },',
-      '};',
+      '  });',
       '',
-      'const pureJsonEncoder: Encoder<number, JsonValue, Error> = {',
-      '  encode(value: number) {',
+      'const pureJsonEncoder = fromEncode((value: number) => {',
       '    return ok(value);',
-      '  },',
-      '};',
+      '  });',
       '',
-      'const hostJsonEncoder: Encoder<number, JsonValue, Error> = {',
-      '  encode(value: number) {',
+      'const hostJsonEncoder = fromEncode((value: number) => {',
       '    console.log(value);',
       '    return ok(value);',
-      '  },',
-      '};',
+      '  });',
       '',
-      'const pureJsonLikeEncoder: Encoder<number, JsonLikeValue, Error> = {',
-      '  encode(value: number) {',
+      'const pureJsonLikeEncoder = fromEncode((value: number) => {',
       '    return ok(value);',
-      '  },',
-      '};',
+      '  });',
       '',
-      'const hostJsonLikeEncoder: Encoder<number, JsonLikeValue, Error> = {',
-      '  encode(value: number) {',
+      'const hostJsonLikeEncoder = fromEncode((value: number) => {',
       '    console.log(value);',
       '    return ok(value);',
-      '  },',
-      '};',
+      '  });',
       '',
       '// #[effects(forbid: [fails, suspend, mut, host])]',
       'function safeCaptureJson(text: string) {',
@@ -7692,25 +7521,25 @@ Deno.test('analyzeProject tracks result, json, and debug stdlib helpers under ef
   });
 
   assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), [
-    'SOUND1040',
-    'SOUND1040',
-    'SOUND1040',
-    'SOUND1040',
-    'SOUND1040',
-    'SOUND1040',
-    'SOUND1040',
-    'SOUND1040',
-    'SOUND1040',
-    'SOUND1040',
-    'SOUND1040',
-    'SOUND1040',
-    'SOUND1040',
-    'SOUND1040',
-    'SOUND1040',
-    'SOUND1040',
-    'SOUND1040',
-    'SOUND1040',
-    'SOUND1040',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
   ]);
   assertEquals(result.diagnostics.map((diagnostic) => diagnostic.metadata?.primarySymbol), [
     'safeCaptureJson',
@@ -7773,7 +7602,7 @@ Deno.test('analyzeProject enforces callback forbid contracts against failful arg
     workingDirectory: tempDirectory,
   });
 
-  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1040']);
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1041']);
   assertEquals(result.diagnostics[0]?.metadata?.rule, 'effect_contract_violation');
   assertEquals(result.diagnostics[0]?.line, 12);
   assertEquals(result.diagnostics[0]?.column, 3);
@@ -7822,20 +7651,11 @@ Deno.test('analyzeProject checks callable assignability against callback forbid 
 
 Deno.test('analyzeProject reports unknown forwarded effects in callable relation checks', async () => {
   const tempDirectory = await createTempProject({
-    'tsconfig.json': JSON.stringify(
-      {
-        compilerOptions: {
-          strict: true,
-          noEmit: true,
-          target: 'ES2022',
-          module: 'ESNext',
-        },
-        include: ['src/**/*.sts'],
-      },
-      null,
-      2,
-    ),
+    'tsconfig.json': createBrowserTsconfig(),
     'src/index.sts': [
+      '// #[interop]',
+      'import { window } from "host:dom";',
+      '',
       'interface Decoder<T> {',
       '  readonly decode: (value: number) => T;',
       '}',
@@ -7927,7 +7747,7 @@ Deno.test('analyzeProject reports the same forbidden effect set for direct and r
     workingDirectory: tempDirectory,
   });
 
-  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1040', 'SOUND1019']);
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1041', 'SOUND1019']);
   assertEquals(result.diagnostics.map((diagnostic) => diagnostic.metadata?.rule), [
     'effect_contract_violation',
     'callable_effect_parameter_contravariance',
@@ -7993,8 +7813,8 @@ Deno.test('analyzeProject keeps unresolved deep forwarded paths conservative acr
   );
 
   assertEquals(effectDiagnostics.map((diagnostic) => diagnostic.code), [
-    'SOUND1040',
-    'SOUND1040',
+    'SOUND1041',
+    'SOUND1041',
     'SOUND1019',
   ]);
   assertEquals(effectDiagnostics.map((diagnostic) => diagnostic.metadata?.rule), [
@@ -8018,20 +7838,11 @@ Deno.test('analyzeProject keeps unresolved deep forwarded paths conservative acr
 
 Deno.test('analyzeProject keeps callable assignment as conservative as direct local forwarding inference', async () => {
   const tempDirectory = await createTempProject({
-    'tsconfig.json': JSON.stringify(
-      {
-        compilerOptions: {
-          strict: true,
-          noEmit: true,
-          target: 'ES2022',
-          module: 'ESNext',
-        },
-        include: ['src/**/*.sts'],
-      },
-      null,
-      2,
-    ),
+    'tsconfig.json': createBrowserTsconfig(),
     'src/index.sts': [
+      '// #[interop]',
+      'import { window } from "host:dom";',
+      '',
       'function fail(value: number): number {',
       '  throw new Error("boom");',
       '}',
@@ -8046,7 +7857,7 @@ Deno.test('analyzeProject keeps callable assignment as conservative as direct lo
       '',
       'function scheduleAdapter(callback: () => void): void {',
       '  const wrapped = (): void => callback();',
-      '  queueMicrotask(wrapped);',
+      '  window.queueMicrotask(wrapped);',
       '}',
       '',
       '// #[effects(forbid: [fails])]',
@@ -8084,8 +7895,8 @@ Deno.test('analyzeProject keeps callable assignment as conservative as direct lo
   });
 
   assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), [
-    'SOUND1040',
-    'SOUND1040',
+    'SOUND1041',
+    'SOUND1041',
     'SOUND1019',
     'SOUND1019',
   ]);
@@ -9254,19 +9065,7 @@ Deno.test('analyzeProject respects in-memory file overrides', async () => {
 
 Deno.test('analyzeProject applies macro rewriting in in-memory file overrides before TypeScript parsing', async () => {
   const tempDirectory = await createTempProject({
-    'tsconfig.json': JSON.stringify(
-      {
-        compilerOptions: {
-          strict: true,
-          noEmit: true,
-          target: 'ES2022',
-          module: 'ESNext',
-        },
-        include: ['src/**/*.sts'],
-      },
-      null,
-      2,
-    ),
+    'tsconfig.json': createBrowserTsconfig(),
     'src/index.sts': 'export const value = 1;\n',
   });
 
@@ -9277,9 +9076,10 @@ Deno.test('analyzeProject applies macro rewriting in in-memory file overrides be
       [
         join(tempDirectory, 'src/index.sts'),
         [
+          '// #[interop]',
+          "import { window } from 'host:dom';",
           "import { log } from 'sts:experimental/debug';",
-          '// #[extern]',
-          'declare const console: { log(...args: readonly unknown[]): void };',
+          'const console = window.console;',
           '// #[extern]',
           'declare function __sts_log<T>(source: string, value: T): T;',
           'const value = log(1);',
@@ -9362,19 +9162,7 @@ Deno.test('analyzeProject does not cascade missing-export errors from malformed 
 
 Deno.test('analyzeProject preserves ordinary TypeScript diagnostic lines after macro rewriting', async () => {
   const tempDirectory = await createTempProject({
-    'tsconfig.json': JSON.stringify(
-      {
-        compilerOptions: {
-          strict: true,
-          noEmit: true,
-          target: 'ES2022',
-          module: 'ESNext',
-        },
-        include: ['src/**/*.sts'],
-      },
-      null,
-      2,
-    ),
+    'tsconfig.json': createBrowserTsconfig(),
     'src/index.sts': 'export const value = 1;\n',
   });
 
@@ -9385,9 +9173,10 @@ Deno.test('analyzeProject preserves ordinary TypeScript diagnostic lines after m
       [
         join(tempDirectory, 'src/index.sts'),
         [
+          '// #[interop]',
+          "import { window } from 'host:dom';",
           "import { log } from 'sts:experimental/debug';",
-          '// #[extern]',
-          'declare const console: { log(...args: readonly unknown[]): void };',
+          'const console = window.console;',
           '// #[extern]',
           'declare function __sts_log<T>(source: string, value: T): T;',
           'const value = log(1);',
@@ -9399,28 +9188,17 @@ Deno.test('analyzeProject preserves ordinary TypeScript diagnostic lines after m
   });
 
   assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['TS2322']);
-  assertEquals(result.diagnostics[0]?.line, 7);
+  assertEquals(result.diagnostics[0]?.line, 8);
 });
 
 Deno.test('analyzeProject expands import-scoped builtin macros before TypeScript diagnostics', async () => {
   const tempDirectory = await createTempProject({
-    'tsconfig.json': JSON.stringify(
-      {
-        compilerOptions: {
-          strict: true,
-          noEmit: true,
-          target: 'ES2022',
-          module: 'ESNext',
-        },
-        include: ['src/**/*.sts'],
-      },
-      null,
-      2,
-    ),
+    'tsconfig.json': createBrowserTsconfig(),
     'src/index.sts': [
+      '// #[interop]',
+      "import { window } from 'host:dom';",
       "import { log } from 'sts:experimental/debug';",
-      '// #[extern]',
-      'declare const console: { log(...args: readonly unknown[]): void };',
+      'const console = window.console;',
       '// #[extern]',
       'declare function __sts_log<T>(source: string, value: T): T;',
       'const value: string = log(123);',
@@ -9434,7 +9212,7 @@ Deno.test('analyzeProject expands import-scoped builtin macros before TypeScript
   });
 
   assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['TS2322']);
-  assertEquals(result.diagnostics[0]?.line, 6);
+  assertEquals(result.diagnostics[0]?.line, 7);
 });
 
 Deno.test('analyzeProject expands import-scoped user-defined macros before TypeScript diagnostics', async () => {
@@ -10800,34 +10578,26 @@ Deno.test('analyzeProject infers callback and member effects through local alias
   });
 
   assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), [
-    'SOUND1040',
-    'SOUND1040',
-    'SOUND1040',
-    'SOUND1040',
-    'SOUND1040',
-    'SOUND1040',
-    'SOUND1040',
-    'SOUND1040',
-    'SOUND1040',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
   ]);
 });
 
 Deno.test('analyzeProject keeps local forwarding inference conservative for unstable adapters', async () => {
   const tempDirectory = await createTempProject({
-    'tsconfig.json': JSON.stringify(
-      {
-        compilerOptions: {
-          strict: true,
-          noEmit: true,
-          target: 'ES2022',
-          module: 'ESNext',
-        },
-        include: ['src/**/*.sts'],
-      },
-      null,
-      2,
-    ),
+    'tsconfig.json': createBrowserTsconfig(),
     'src/index.sts': [
+      '// #[interop]',
+      'import { window } from "host:dom";',
+      'const queueMicrotask = window.queueMicrotask;',
+      '',
       'interface Decoder<T> {',
       '  readonly decode: (value: number) => T;',
       '}',
@@ -10895,10 +10665,10 @@ Deno.test('analyzeProject keeps local forwarding inference conservative for unst
   });
 
   assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), [
-    'SOUND1040',
-    'SOUND1040',
-    'SOUND1040',
-    'SOUND1040',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
   ]);
   assertEquals(result.diagnostics.map((diagnostic) => diagnostic.metadata?.primarySymbol), [
     'useDefaultedAdapter',
@@ -10910,8 +10680,11 @@ Deno.test('analyzeProject keeps local forwarding inference conservative for unst
 
 Deno.test('analyzeProject keeps unsupported local forwarding adapters conservative', async () => {
   const tempDirectory = await createTempProject({
-    'tsconfig.json': createSoundscriptOnlyTsconfig(),
+    'tsconfig.json': createBrowserTsconfig(),
     'src/index.sts': [
+      '// #[interop]',
+      'import { window } from "host:dom";',
+      '',
       'function fail(value: number): number {',
       '  void value;',
       '  throw new Error("boom");',
@@ -10927,7 +10700,7 @@ Deno.test('analyzeProject keeps unsupported local forwarding adapters conservati
       '',
       'function scheduleAdapterRun(callback: () => void): void {',
       '  const wrapped = (): void => callback();',
-      '  queueMicrotask(wrapped);',
+      '  window.queueMicrotask(wrapped);',
       '}',
       '',
       'function pureRun(callback: (value: number) => number, value: number): number {',
@@ -10968,8 +10741,8 @@ Deno.test('analyzeProject keeps unsupported local forwarding adapters conservati
   });
 
   assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), [
-    'SOUND1040',
-    'SOUND1040',
+    'SOUND1041',
+    'SOUND1041',
     'SOUND1019',
     'SOUND1019',
   ]);
@@ -11029,29 +10802,20 @@ Deno.test('analyzeProject invalidates narrowing across local helper constructors
 
 Deno.test('analyzeProject preserves narrowing across deferred host schedulers', async () => {
   const tempDirectory = await createTempProject({
-    'tsconfig.json': JSON.stringify(
-      {
-        compilerOptions: {
-          strict: true,
-          noEmit: true,
-          target: 'ES2022',
-          module: 'ESNext',
-        },
-        include: ['src/**/*.sts'],
-      },
-      null,
-      2,
-    ),
+    'tsconfig.json': createBrowserTsconfig(),
     'src/index.sts': [
+      '// #[interop]',
+      'import { window } from "host:dom";',
+      '',
       'function use(box: { value: string | null }): string {',
       '  if (box.value !== null) {',
-      '    queueMicrotask(() => {',
+      '    window.queueMicrotask(() => {',
       '      void box.value;',
       '    });',
-      '    setTimeout(() => {',
+      '    window.setTimeout(() => {',
       '      void box.value;',
       '    }, 0);',
-      '    requestIdleCallback(() => {',
+      '    window.requestIdleCallback(() => {',
       '      void box.value;',
       '    });',
       '    const value: string = box.value;',
@@ -11355,14 +11119,13 @@ Deno.test('analyzeProject accepts Try-based decoder helpers with inferred Result
       2,
     ),
     'src/index.sts': [
-      "import { type Decoder, DecodeFailure } from 'sts:decode';",
+      "import { type Decoder, DecodeFailure, fromDecode } from 'sts:decode';",
       "import { isJsonValue, type JsonValue } from 'sts:json';",
       "import { Try, err, isErr, ok, type Result } from 'sts:prelude';",
       '',
       'type JsonRecord = Record<string, JsonValue>;',
       '',
-      'const plainObjectDecoder: Decoder<Record<string, unknown>> = {',
-      '  decode(value): Result<Record<string, unknown>, DecodeFailure> {',
+      'const plainObjectDecoder: Decoder<Record<string, unknown>> = fromDecode((value): Result<Record<string, unknown>, DecodeFailure> => {',
       "    if (typeof value !== 'object' || value === null || Array.isArray(value)) {",
       "      return err(new DecodeFailure('Expected object.', { cause: value }));",
       '    }',
@@ -11372,8 +11135,7 @@ Deno.test('analyzeProject accepts Try-based decoder helpers with inferred Result
       '      record[key] = nestedValue;',
       '    }',
       '    return ok(record);',
-      '  },',
-      '};',
+      '});',
       '',
       'function decodeJsonRecordValue(value: unknown, message: string) {',
       '  const record = Try(plainObjectDecoder.decode(value));',
@@ -11390,11 +11152,7 @@ Deno.test('analyzeProject accepts Try-based decoder helpers with inferred Result
       '}',
       '',
       'function jsonRecordDecoder(message: string): Decoder<JsonRecord> {',
-      '  return {',
-      '    decode(value): Result<JsonRecord, DecodeFailure> {',
-      '      return decodeJsonRecordValue(value, message);',
-      '    },',
-      '  };',
+      '  return fromDecode((value): Result<JsonRecord, DecodeFailure> => decodeJsonRecordValue(value, message));',
       '}',
       '',
       "const decoded = jsonRecordDecoder('Expected JSON object.').decode({ ok: 'value' });",
@@ -12172,9 +11930,9 @@ Deno.test(
     if (!nominalDiagnostic) {
       throw new Error('Expected SOUND1019 nominal diagnostic.');
     }
-    assertEquals(nominalDiagnostic.line, 50);
+    assertEquals(nominalDiagnostic.line, 46);
     assertEquals(nominalDiagnostic.column, 'const c: C = '.length + 1);
-    assertEquals(nominalDiagnostic.endLine, 50);
+    assertEquals(nominalDiagnostic.endLine, 46);
     assertEquals(nominalDiagnostic.endColumn, 'const c: C = b'.length + 1);
   },
 );
