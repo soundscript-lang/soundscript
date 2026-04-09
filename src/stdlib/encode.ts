@@ -1443,7 +1443,7 @@ function encodeFailureFromRefinementResult(
     });
   }
   if (Array.isArray(result) && result.length > 0) {
-    const [firstIssue] = result;
+    const firstIssue = result.find(isEncodeIssue);
     if (firstIssue) {
       return new EncodeFailure(firstIssue.message, {
         cause: firstIssue.input ?? input,
@@ -1471,7 +1471,8 @@ function encodeIssuesFromRefinementResult(
     return [normalizeEncodeIssue(result, input)];
   }
   if (Array.isArray(result)) {
-    return result.length === 0 ? [] : result.map((issue) => normalizeEncodeIssue(issue, input));
+    const issues = result.filter(isEncodeIssue);
+    return issues.length === 0 ? [] : issues.map((issue) => normalizeEncodeIssue(issue, input));
   }
   return [{
     code: 'encode_failure',

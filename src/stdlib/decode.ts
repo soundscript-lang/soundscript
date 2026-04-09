@@ -1679,7 +1679,7 @@ function decodeFailureFromRefinementResult(
     });
   }
   if (Array.isArray(result) && result.length > 0) {
-    const [firstIssue] = result;
+    const firstIssue = result.find(isDecodeIssue);
     if (firstIssue) {
       return new DecodeFailure(firstIssue.message, {
         cause: firstIssue.input ?? input,
@@ -1707,7 +1707,8 @@ function decodeIssuesFromRefinementResult(
     return [normalizeDecodeIssue(result, input)];
   }
   if (Array.isArray(result)) {
-    return result.length === 0 ? [] : result.map((issue) => normalizeDecodeIssue(issue, input));
+    const issues = result.filter(isDecodeIssue);
+    return issues.length === 0 ? [] : issues.map((issue) => normalizeDecodeIssue(issue, input));
   }
   return [{
     code: 'decode_failure',

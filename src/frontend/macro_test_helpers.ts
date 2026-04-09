@@ -50,6 +50,8 @@ interface CreatePreparedProgramForMacroTestOptions {
 
 function createBaseHost(files: ReadonlyMap<string, string>): ts.CompilerHost {
   const baseHost = ts.createCompilerHost({
+    allowImportingTsExtensions: true,
+    moduleResolution: ts.ModuleResolutionKind.Bundler,
     target: ts.ScriptTarget.ES2022,
     module: ts.ModuleKind.ESNext,
     noEmit: true,
@@ -122,6 +124,8 @@ export function createPreparedProgramForMacroTest(
       ...(options.importedMacroSiteKindsBySpecifier ?? new Map()).entries(),
     ]),
     options: {
+      allowImportingTsExtensions: true,
+      moduleResolution: ts.ModuleResolutionKind.Bundler,
       noEmit: true,
       strict: true,
       target: ts.ScriptTarget.ES2022,
