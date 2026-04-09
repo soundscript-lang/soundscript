@@ -20971,6 +20971,7 @@ interface MessagePort extends EventTarget, MessageEventTarget<MessagePort> {
     */
     // #[effects(add: [host.browser.message, fails.throws])]
     postMessage(message: unknown, transfer: Transferable[]): void;
+    // #[effects(add: [host.browser.message, fails.throws])]
     postMessage(message: unknown, options?: StructuredSerializeOptions): void;
     /**
      * The **`start()`** method of the MessagePort interface starts the sending of messages queued on the port.
@@ -30813,9 +30814,10 @@ interface ServiceWorker extends EventTarget, AbstractWorker {
      * The **`postMessage()`** method of the ServiceWorker interface sends a message to the worker.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/ServiceWorker/postMessage)
-     */
+    */
     // #[effects(add: [host.browser.message, fails.throws])]
     postMessage(message: unknown, transfer: Transferable[]): void;
+    // #[effects(add: [host.browser.message, fails.throws])]
     postMessage(message: unknown, options?: StructuredSerializeOptions): void;
     addEventListener<K extends keyof ServiceWorkerEventMap>(type: K, listener: (this: ServiceWorker, ev: ServiceWorkerEventMap[K]) => void, options?: boolean | AddEventListenerOptions): void;
     addEventListener(type: string, listener: EventListenerOrEventListenerObject, options?: boolean | AddEventListenerOptions): void;
@@ -37025,9 +37027,10 @@ interface Window extends EventTarget, AnimationFrameProvider, GlobalEventHandler
      * The **`window.postMessage()`** method safely enables cross-origin communication between Window objects; _e.g.,_ between a page and a pop-up that it spawned, or between a page and an iframe embedded within it.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/Window/postMessage)
-     */
+    */
     // #[effects(add: [host.browser.message, fails.throws])]
     postMessage(message: unknown, targetOrigin: string, transfer?: Transferable[]): void;
+    // #[effects(add: [host.browser.message, fails.throws])]
     postMessage(message: unknown, options?: WindowPostMessageOptions): void;
     /**
      * Opens the print dialog to print the current document.
@@ -37256,9 +37259,10 @@ interface Worker extends EventTarget, AbstractWorker, MessageEventTarget<Worker>
      * The **`postMessage()`** method of the Worker interface sends a message to the worker.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/Worker/postMessage)
-     */
+    */
     // #[effects(add: [host.browser.message, fails.throws])]
     postMessage(message: unknown, transfer: Transferable[]): void;
+    // #[effects(add: [host.browser.message, fails.throws])]
     postMessage(message: unknown, options?: StructuredSerializeOptions): void;
     /**
      * The **`terminate()`** method of the Worker interface immediately terminates the Worker.
@@ -39114,6 +39118,7 @@ declare function open(url?: string | URL, target?: string, features?: string): W
  */
 // #[effects(add: [host.browser.message, fails.throws])]
 declare function postMessage(message: unknown, targetOrigin: string, transfer?: Transferable[]): void;
+// #[effects(add: [host.browser.message, fails.throws])]
 declare function postMessage(message: unknown, options?: WindowPostMessageOptions): void;
 /**
  * Opens the print dialog to print the current document.

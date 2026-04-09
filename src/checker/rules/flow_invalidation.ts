@@ -1440,6 +1440,7 @@ function functionBodyCallAffectsNarrow(
         narrowPath,
         state,
         body,
+        activeDeclarations,
       )
     );
 }
@@ -1613,6 +1614,7 @@ function stateCallAffectsNarrow(
   narrowPath: NormalizedPath,
   state: AnalysisState,
   options: StateCallNarrowingOptions,
+  activeDeclarations: Set<ts.FunctionLikeDeclaration> = new Set(),
 ): boolean {
   const calledMember = getCalledMember(context, node.expression);
   const receiverBinding = calledMember
@@ -1719,6 +1721,8 @@ function stateCallAffectsNarrow(
       state,
       true,
       receiverBinding,
+      undefined,
+      activeDeclarations,
     )
   ) {
     return true;
@@ -1928,6 +1932,7 @@ function escapingExpressionAffectsNarrow(
               opaqueArgumentExpressionAffectsNarrow(context, argument, narrowPath, state),
             respectEffectPreservation: false,
           },
+          activeDeclarations,
         )
       ) {
         return true;

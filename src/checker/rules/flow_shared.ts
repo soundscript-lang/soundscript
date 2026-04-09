@@ -3414,8 +3414,14 @@ function getFlowCallResultSummaryFromExpression(
   context: AnalysisContext,
   expression: ts.Expression,
   bindings: FunctionBodyBindings,
+  seen = new Set<number>(),
 ): FlowCallResultSummary | undefined {
   expression = unwrapFlowTransparentExpression(expression);
+  const expressionId = context.getNodeId(expression);
+  if (seen.has(expressionId)) {
+    return undefined;
+  }
+  seen.add(expressionId);
 
   if (isDefinitelyNullishExpression(expression)) {
     return {
@@ -3426,7 +3432,12 @@ function getFlowCallResultSummaryFromExpression(
 
   const boundValue = getBoundValue(context, expression, bindings);
   if (boundValue && ts.isExpression(boundValue) && boundValue !== expression) {
-    const boundSummary = getFlowCallResultSummaryFromExpression(context, boundValue, bindings);
+    const boundSummary = getFlowCallResultSummaryFromExpression(
+      context,
+      boundValue,
+      bindings,
+      seen,
+    );
     if (boundSummary) {
       return boundSummary;
     }
@@ -3452,7 +3463,7 @@ function getFlowCallResultSummaryFromExpression(
     expression.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken
   ) {
     const leftSummary =
-      getFlowCallResultSummaryFromExpression(context, expression.left, bindings) ??
+      getFlowCallResultSummaryFromExpression(context, expression.left, bindings, seen) ??
         (isDefinitelyNullishExpression(expression.left)
           ? { canBeNullish: true, shape: undefined }
           : undefined);
@@ -3460,6 +3471,7 @@ function getFlowCallResultSummaryFromExpression(
       context,
       expression.right,
       bindings,
+      seen,
     );
 
     if (!leftSummary || !rightSummary) {
@@ -3496,9 +3508,9 @@ function getFlowCallResultSummaryFromExpression(
     )
   ) {
     const [left, right] = branches;
-    const leftSummary = getFlowCallResultSummaryFromExpression(context, left, bindings) ??
+    const leftSummary = getFlowCallResultSummaryFromExpression(context, left, bindings, seen) ??
       (isDefinitelyNullishExpression(left) ? { canBeNullish: true, shape: undefined } : undefined);
-    const rightSummary = getFlowCallResultSummaryFromExpression(context, right, bindings) ??
+    const rightSummary = getFlowCallResultSummaryFromExpression(context, right, bindings, seen) ??
       (isDefinitelyNullishExpression(right) ? { canBeNullish: true, shape: undefined } : undefined);
     if (!leftSummary || !rightSummary) {
       return undefined;

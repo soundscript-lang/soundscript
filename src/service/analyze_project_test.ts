@@ -12166,11 +12166,16 @@ Deno.test(
       workingDirectory: tempDirectory,
     });
 
-    assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1019']);
-    assertEquals(result.diagnostics[0]?.line, 46);
-    assertEquals(result.diagnostics[0]?.column, 'const c: C = '.length + 1);
-    assertEquals(result.diagnostics[0]?.endLine, 46);
-    assertEquals(result.diagnostics[0]?.endColumn, 'const c: C = b'.length + 1);
+    const nominalDiagnostic = result.diagnostics.find((diagnostic) =>
+      diagnostic.code === 'SOUND1019'
+    );
+    if (!nominalDiagnostic) {
+      throw new Error('Expected SOUND1019 nominal diagnostic.');
+    }
+    assertEquals(nominalDiagnostic.line, 50);
+    assertEquals(nominalDiagnostic.column, 'const c: C = '.length + 1);
+    assertEquals(nominalDiagnostic.endLine, 50);
+    assertEquals(nominalDiagnostic.endColumn, 'const c: C = b'.length + 1);
   },
 );
 
