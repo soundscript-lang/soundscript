@@ -1,7 +1,5 @@
 // #[interop]
 import { createRoot } from 'react-dom/client';
-// #[interop]
-import { getAppContainer } from './dom-host.js';
 
 let root: ReturnType<typeof createRoot> | undefined = undefined;
 let clickCount = 0;
@@ -21,6 +19,14 @@ function homeView() {
     click();
     start();
   }}>{label()}</button>;
+}
+
+function getAppContainer(): Element {
+  const appElement = document.getElementById('app');
+  if (appElement === null) {
+    throw new Error('Expected #app to exist.');
+  }
+  return appElement;
 }
 
 export function start(): void {

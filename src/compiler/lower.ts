@@ -18,6 +18,7 @@ import type {
   CompilerFunctionHostTaggedHeapNullableParamIR,
   CompilerFunctionHostTaggedPrimitiveParamIR,
   CompilerFunctionIR,
+  CompilerHostBoundaryArrayIR,
   CompilerHostBoundaryFieldIR,
   CompilerHostBoundaryIR,
   CompilerHostBoundaryObjectIR,
@@ -2347,6 +2348,177 @@ function getHostTaggedArrayBoundaryInfo(
   }
 
   return representation ? { ...kinds, representation } : kinds;
+}
+
+function getHostTaggedArrayUnionBoundaryInfo(
+  checker: ts.TypeChecker,
+  type: ts.Type,
+  contextNode: ts.Node,
+  runtime: ModuleRuntimeLoweringState,
+  classes: ReadonlyMap<ts.Symbol, ts.ClassDeclaration>,
+): {
+  taggedPrimitiveKinds: CompilerTaggedPrimitiveBoundaryKindsIR;
+  arrayBoundary: CompilerHostBoundaryArrayIR;
+} | undefined {
+  if ((type.flags & ts.TypeFlags.Union) === 0) {
+    return undefined;
+  }
+  let arrayBoundary: CompilerHostBoundaryArrayIR | undefined;
+  let sawArray = false;
+  const taggedPrimitiveKinds: CompilerTaggedPrimitiveBoundaryKindsIR = {
+    includesBoolean: false,
+    includesNull: false,
+    includesNumber: false,
+    includesString: false,
+    includesUndefined: false,
+  };
+  const hasMatchingBoundary = (
+    existing: CompilerHostBoundaryArrayIR,
+    candidate: CompilerHostBoundaryArrayIR,
+  ): boolean => {
+    if (existing.carrierType !== candidate.carrierType) {
+      return false;
+    }
+    if (
+      existing.carrierType === 'owned_array_ref' ||
+      existing.carrierType === 'owned_number_array_ref' ||
+      existing.carrierType === 'owned_boolean_array_ref'
+    ) {
+      return true;
+    }
+    if (existing.carrierType === 'owned_heap_array_ref') {
+      return existing.elementBoundary.kind === 'object' &&
+        candidate.elementBoundary.kind === 'object' &&
+        existing.elementBoundary.representation.kind === candidate.elementBoundary.representation.kind &&
+        existing.elementBoundary.representation.name === candidate.elementBoundary.representation.name;
+    }
+    return existing.elementBoundary.kind === 'tagged' &&
+      candidate.elementBoundary.kind === 'tagged' &&
+      existing.elementBoundary.includesBoolean === candidate.elementBoundary.includesBoolean &&
+      existing.elementBoundary.includesNull === candidate.elementBoundary.includesNull &&
+      existing.elementBoundary.includesNumber === candidate.elementBoundary.includesNumber &&
+      existing.elementBoundary.includesString === candidate.elementBoundary.includesString &&
+      existing.elementBoundary.includesUndefined === candidate.elementBoundary.includesUndefined &&
+      ((
+        existing.elementBoundary.heapBoundary?.kind !== 'object' &&
+          candidate.elementBoundary.heapBoundary?.kind !== 'object'
+      ) || (
+          existing.elementBoundary.heapBoundary?.kind === 'object' &&
+          candidate.elementBoundary.heapBoundary?.kind === 'object' &&
+          existing.elementBoundary.heapBoundary.representation.kind ===
+            candidate.elementBoundary.heapBoundary.representation.kind &&
+          existing.elementBoundary.heapBoundary.representation.name ===
+            candidate.elementBoundary.heapBoundary.representation.name
+      ));
+  };
+  for (const member of (type as ts.UnionType).types) {
+    if (isUndefinedType(member)) {
+      taggedPrimitiveKinds.includesUndefined = true;
+      continue;
+    }
+    if (isNullType(member)) {
+      taggedPrimitiveKinds.includesNull = true;
+      continue;
+    }
+    if ((member.flags & ts.TypeFlags.BooleanLike) !== 0) {
+      taggedPrimitiveKinds.includesBoolean = true;
+      continue;
+    }
+    if ((member.flags & ts.TypeFlags.NumberLike) !== 0) {
+      taggedPrimitiveKinds.includesNumber = true;
+      continue;
+    }
+    if (isStringLikeType(member)) {
+      taggedPrimitiveKinds.includesString = true;
+      continue;
+    }
+    let candidateBoundary: CompilerHostBoundaryArrayIR | undefined;
+    if (isSupportedOwnedStringArrayType(checker, member)) {
+      candidateBoundary = {
+        kind: 'array',
+        carrierType: 'owned_array_ref',
+        elementBoundary: { kind: 'string', owned: true },
+      };
+    } else if (isSupportedOwnedNumberArrayType(checker, member)) {
+      candidateBoundary = {
+        kind: 'array',
+        carrierType: 'owned_number_array_ref',
+        elementBoundary: { kind: 'scalar', valueType: 'f64' },
+      };
+    } else if (isSupportedOwnedBooleanArrayType(checker, member)) {
+      candidateBoundary = {
+        kind: 'array',
+        carrierType: 'owned_boolean_array_ref',
+        elementBoundary: { kind: 'scalar', valueType: 'i32' },
+      };
+    } else {
+      const taggedArrayBoundary = getHostTaggedArrayBoundaryInfo(
+        checker,
+        member,
+        contextNode,
+        runtime,
+        classes,
+      );
+      if (taggedArrayBoundary) {
+        candidateBoundary = {
+          kind: 'array',
+          carrierType: 'owned_tagged_array_ref',
+          elementBoundary: createHostTaggedBoundary(
+            {
+              includesBoolean: taggedArrayBoundary.includesBoolean,
+              includesNull: taggedArrayBoundary.includesNull,
+              includesNumber: taggedArrayBoundary.includesNumber,
+              includesString: taggedArrayBoundary.includesString,
+              includesUndefined: taggedArrayBoundary.includesUndefined,
+            },
+            taggedArrayBoundary.representation
+              ? createHostObjectBoundary(runtime, taggedArrayBoundary.representation.name)
+              : undefined,
+          ),
+        };
+      } else if (isSupportedOwnedHeapArrayType(checker, member)) {
+        const heapArrayRepresentation = getOwnedHeapArrayBoundaryRepresentation(
+          checker,
+          member,
+          contextNode,
+          runtime,
+          classes,
+        );
+        candidateBoundary = {
+          kind: 'array',
+          carrierType: 'owned_heap_array_ref',
+          elementBoundary: createHostObjectBoundary(runtime, heapArrayRepresentation.name),
+        };
+      }
+    }
+    if (!candidateBoundary) {
+      return undefined;
+    }
+    sawArray = true;
+    if (!arrayBoundary) {
+      arrayBoundary = candidateBoundary;
+      continue;
+    }
+    if (!hasMatchingBoundary(arrayBoundary, candidateBoundary)) {
+      return undefined;
+    }
+  }
+  if (!sawArray) {
+    return undefined;
+  }
+  const categoryCount = Number(taggedPrimitiveKinds.includesBoolean === true) +
+    Number(taggedPrimitiveKinds.includesNull === true) +
+    Number(taggedPrimitiveKinds.includesNumber === true) +
+    Number(taggedPrimitiveKinds.includesString === true) +
+    Number(taggedPrimitiveKinds.includesUndefined === true) +
+    Number(sawArray);
+  if (categoryCount < 2 || !arrayBoundary) {
+    return undefined;
+  }
+  return {
+    taggedPrimitiveKinds,
+    arrayBoundary,
+  };
 }
 
 function getTaggedArrayObjectMemberTypes(
@@ -18290,7 +18462,7 @@ function finalizeFixedLayoutPropertyShape(
   return runtime
     ? {
       ...shape,
-      boundary: createHostBoundaryFromFixedLayoutPropertyShape(runtime, shape),
+      boundary: shape.boundary ?? createHostBoundaryFromFixedLayoutPropertyShape(runtime, shape),
     }
     : shape;
 }
@@ -18439,6 +18611,33 @@ function getFixedLayoutPropertyShape(
         valueType: 'tagged_ref',
         taggedPrimitiveKinds: getUnknownTaggedPrimitiveBoundaryKinds(),
         heapRepresentationName: ensureObjectFallbackRepresentation(runtime).name,
+      },
+      runtime,
+    );
+  }
+  const taggedArrayUnionBoundary = runtime
+    ? getHostTaggedArrayUnionBoundaryInfo(
+      checker,
+      propertyType,
+      contextNode,
+      runtime,
+      classes,
+    )
+    : undefined;
+  if (taggedArrayUnionBoundary) {
+    return finalizeFixedLayoutPropertyShape(
+      {
+        name: property.getName(),
+        optional: isOptional,
+        valueType: 'tagged_ref',
+        taggedPrimitiveKinds: withOptionalUndefinedTaggedKinds(
+          taggedArrayUnionBoundary.taggedPrimitiveKinds,
+          isOptional,
+        ),
+        boundary: createHostTaggedBoundary(
+          withOptionalUndefinedTaggedKinds(taggedArrayUnionBoundary.taggedPrimitiveKinds, isOptional),
+          taggedArrayUnionBoundary.arrayBoundary,
+        ),
       },
       runtime,
     );
@@ -18671,6 +18870,58 @@ function getFixedLayoutShapeSignature(
   classes: ReadonlyMap<ts.Symbol, ts.ClassDeclaration> = new Map(),
   allowAmbientDeclarationFileMethods = false,
 ): string | undefined {
+  const shapeInfo = getFixedLayoutShapeInfo(
+    checker,
+    type,
+    contextNode,
+    runtime,
+    classes,
+    allowAmbientDeclarationFileMethods,
+  );
+  return shapeInfo?.shapeSignature;
+}
+
+function encodeFixedLayoutPropertyShapeSignature(
+  property: FixedLayoutPropertyShape,
+): string {
+  return `${property.name}:${property.optional ? 'optional' : 'required'}:${
+    property.valueType === 'class_constructor_ref'
+      ? `class_constructor_ref#${property.classTagId!}`
+      : property.valueType === 'tagged_ref'
+      ? `tagged_ref#${encodeSpecializedTaggedPrimitiveKinds(property.taggedPrimitiveKinds!)}${
+        property.heapRepresentationName
+          ? `#${encodeSpecializedClassComponent(property.heapRepresentationName)}`
+          : ''
+      }`
+      : property.valueType === 'heap_ref'
+      ? `heap_ref#${property.promiseBridge ? 'promise#' : ''}${
+        encodeSpecializedClassComponent(property.heapRepresentationName!)
+      }`
+      : property.valueType === 'owned_heap_array_ref'
+      ? `owned_heap_array_ref#${
+        encodeSpecializedClassComponent(property.heapArrayRepresentationName!)
+      }`
+      : property.valueType === 'owned_tagged_array_ref'
+      ? `owned_tagged_array_ref#${encodeSpecializedTaggedPrimitiveKinds(property.taggedPrimitiveKinds!)}${
+        property.heapRepresentationName
+          ? `#${encodeSpecializedClassComponent(property.heapRepresentationName)}`
+          : ''
+      }`
+      : property.valueType
+  }`;
+}
+
+function getFixedLayoutShapeInfo(
+  checker: ts.TypeChecker,
+  type: ts.Type,
+  contextNode: ts.Node,
+  runtime?: ModuleRuntimeLoweringState,
+  classes: ReadonlyMap<ts.Symbol, ts.ClassDeclaration> = new Map(),
+  allowAmbientDeclarationFileMethods = false,
+): {
+  shapeSignature: string;
+  fields: CompilerRuntimeSpecializedObjectFieldIR[];
+} | undefined {
   if (!isSupportedHeapLocalType(checker, type)) {
     return undefined;
   }
@@ -18705,41 +18956,25 @@ function getFixedLayoutShapeSignature(
   );
   if (concreteShape.length === 0) {
     return type.getProperties().every((property) => isPureClassMethodProperty(property))
-      ? ''
+      ? { shapeSignature: '', fields: [] }
       : undefined;
   }
 
-  return concreteShape
-    .map((property) =>
-      `${property.name}:${property.optional ? 'optional' : 'required'}:${
-        property.valueType === 'class_constructor_ref'
-          ? `class_constructor_ref#${property.classTagId!}`
-          : property.valueType === 'tagged_ref'
-          ? `tagged_ref#${encodeSpecializedTaggedPrimitiveKinds(property.taggedPrimitiveKinds!)}${
-            property.heapRepresentationName
-              ? `#${encodeSpecializedClassComponent(property.heapRepresentationName)}`
-              : ''
-          }`
-          : property.valueType === 'heap_ref'
-          ? `heap_ref#${property.promiseBridge ? 'promise#' : ''}${
-            encodeSpecializedClassComponent(property.heapRepresentationName!)
-          }`
-          : property.valueType === 'owned_heap_array_ref'
-          ? `owned_heap_array_ref#${
-            encodeSpecializedClassComponent(property.heapArrayRepresentationName!)
-          }`
-          : property.valueType === 'owned_tagged_array_ref'
-          ? `owned_tagged_array_ref#${
-            encodeSpecializedTaggedPrimitiveKinds(property.taggedPrimitiveKinds!)
-          }${
-            property.heapRepresentationName
-              ? `#${encodeSpecializedClassComponent(property.heapRepresentationName)}`
-              : ''
-          }`
-          : property.valueType
-      }`
-    )
-    .join('|');
+  return {
+    shapeSignature: concreteShape.map(encodeFixedLayoutPropertyShapeSignature).join('|'),
+    fields: concreteShape.map((property) => ({
+      name: property.name,
+      optional: property.optional,
+      valueType: property.valueType,
+      valueRepresentation: 'tagged_value',
+      taggedPrimitiveKinds: property.taggedPrimitiveKinds,
+      classTagId: property.classTagId,
+      promiseBridge: property.promiseBridge,
+      heapRepresentationName: property.heapRepresentationName,
+      heapArrayRepresentationName: property.heapArrayRepresentationName,
+      boundary: property.boundary,
+    })),
+  };
 }
 
 function supportsLocalOnlyFixedLayoutHeapScaffolding(
@@ -18835,8 +19070,29 @@ function getCandidateSpecializedObjectShapeSignature(
   classes: ReadonlyMap<ts.Symbol, ts.ClassDeclaration> = new Map(),
   allowAmbientDeclarationFileMethods = false,
 ): string | undefined {
+  return getCandidateSpecializedObjectShapeInfo(
+    checker,
+    type,
+    contextNode,
+    runtime,
+    classes,
+    allowAmbientDeclarationFileMethods,
+  )?.shapeSignature;
+}
+
+function getCandidateSpecializedObjectShapeInfo(
+  checker: ts.TypeChecker,
+  type: ts.Type,
+  contextNode: ts.Node,
+  runtime?: ModuleRuntimeLoweringState,
+  classes: ReadonlyMap<ts.Symbol, ts.ClassDeclaration> = new Map(),
+  allowAmbientDeclarationFileMethods = false,
+): {
+  shapeSignature: string;
+  fields: CompilerRuntimeSpecializedObjectFieldIR[];
+} | undefined {
   if ((type.flags & ts.TypeFlags.Union) === 0) {
-    return getFixedLayoutShapeSignature(
+    return getFixedLayoutShapeInfo(
       checker,
       type,
       contextNode,
@@ -18846,12 +19102,17 @@ function getCandidateSpecializedObjectShapeSignature(
     );
   }
 
-  const candidateShapes = new Set<string>();
+  let candidateShapeInfo:
+    | {
+      shapeSignature: string;
+      fields: CompilerRuntimeSpecializedObjectFieldIR[];
+    }
+    | undefined;
   for (const member of (type as ts.UnionType).types) {
     if (isBagLikeType(checker, member)) {
       continue;
     }
-    const memberShape = getFixedLayoutShapeSignature(
+    const memberShape = getFixedLayoutShapeInfo(
       checker,
       member,
       contextNode,
@@ -18862,13 +19123,16 @@ function getCandidateSpecializedObjectShapeSignature(
     if (memberShape === undefined) {
       return undefined;
     }
-    candidateShapes.add(memberShape);
-    if (candidateShapes.size > 1) {
+    if (!candidateShapeInfo) {
+      candidateShapeInfo = memberShape;
+      continue;
+    }
+    if (candidateShapeInfo.shapeSignature !== memberShape.shapeSignature) {
       return undefined;
     }
   }
 
-  return candidateShapes.size === 1 ? [...candidateShapes][0] : undefined;
+  return candidateShapeInfo;
 }
 
 function hasCallableHeapProperty(
@@ -23405,7 +23669,17 @@ function getCandidateObjectRepresentationForType(
   ) {
     return ensureObjectFallbackRepresentation(runtime);
   }
-  const candidateShape = getCandidateSpecializedObjectShapeSignature(
+  const candidateShapeInfo = runtime
+    ? getCandidateSpecializedObjectShapeInfo(
+      checker,
+      type,
+      contextNode,
+      runtime,
+      classes,
+      usesAmbientDeclarationProjection,
+    )
+    : undefined;
+  const candidateShape = candidateShapeInfo?.shapeSignature ?? getCandidateSpecializedObjectShapeSignature(
     checker,
     type,
     contextNode,
@@ -23442,6 +23716,7 @@ function getCandidateObjectRepresentationForType(
       runtime,
       getSpecializedObjectRepresentationName(candidateShape),
       candidateShape,
+      candidateShapeInfo ? { fields: candidateShapeInfo.fields } : undefined,
     );
   }
   if (isBagLikeType(checker, type)) {
@@ -29150,6 +29425,102 @@ function isImportedNamespaceMemberReferencedOutsideDeclaration(
 
   visit(declaration.getSourceFile());
   return referenced;
+}
+
+function isImportLikeDeclaration(declaration: ts.Declaration): boolean {
+  return ts.isImportClause(declaration) ||
+    ts.isImportSpecifier(declaration) ||
+    ts.isNamespaceImport(declaration) ||
+    ts.isImportEqualsDeclaration(declaration);
+}
+
+function isValueReferenceIdentifier(node: ts.Identifier): boolean {
+  const parent = node.parent;
+  if (!parent) {
+    return false;
+  }
+  if (
+    ts.isTypeReferenceNode(parent) ||
+    ts.isExpressionWithTypeArguments(parent) ||
+    ts.isTypeAliasDeclaration(parent) ||
+    ts.isInterfaceDeclaration(parent) ||
+    ts.isQualifiedName(parent) ||
+    ts.isTypeParameterDeclaration(parent) ||
+    ts.isImportClause(parent) ||
+    ts.isImportSpecifier(parent) ||
+    ts.isNamespaceImport(parent) ||
+    ts.isExportSpecifier(parent) ||
+    ts.isPropertySignature(parent) ||
+    ts.isMethodSignature(parent) ||
+    ts.isPropertyDeclaration(parent) ||
+    ts.isMethodDeclaration(parent) ||
+    ts.isClassDeclaration(parent) ||
+    ts.isFunctionDeclaration(parent) ||
+    ts.isParameter(parent) ||
+    ts.isVariableDeclaration(parent) ||
+    ts.isBindingElement(parent) ||
+    ts.isModuleDeclaration(parent) ||
+    ts.isPropertyAccessExpression(parent) && parent.name === node
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function collectAmbientGlobalHostBindings(
+  sourceFiles: readonly ts.SourceFile[],
+  checker: ts.TypeChecker,
+  importedHostDeclarations: Map<ts.Symbol, ImportedHostBinding>,
+  functionNameCounts: Map<string, number>,
+): void {
+  for (const sourceFile of sourceFiles) {
+    const visit = (node: ts.Node): void => {
+      if (ts.isIdentifier(node) && isValueReferenceIdentifier(node)) {
+        if (node.text === 'undefined' || node.text === 'globalThis') {
+          return;
+        }
+        const directSymbol = checker.getSymbolAtLocation(node);
+        if (directSymbol?.declarations?.some(isImportLikeDeclaration)) {
+          return;
+        }
+        const resolved = resolveReferencedSymbol(checker, node);
+        if (!resolved || importedHostDeclarations.has(resolved.symbol)) {
+          return;
+        }
+        const declarations = resolved.symbol.getDeclarations();
+        if (!declarations || declarations.length === 0) {
+          return;
+        }
+        if (!declarations.every((declaration) => declaration.getSourceFile().isDeclarationFile)) {
+          return;
+        }
+        let resolvedRoot: ResolvedImportedHostDeclarationRoot;
+        try {
+          resolvedRoot = resolveImportedHostDeclarationRoot(declarations, node);
+        } catch {
+          return;
+        }
+        registerImportedHostBinding(
+          resolved.symbol,
+          resolvedRoot.declaration,
+          resolvedRoot.namespaceMemberFunctions,
+          resolvedRoot.namespaceMemberVariables,
+          {
+            exportName: resolved.symbol.getName(),
+            importKind: 'global',
+            importingSourceFileName: sourceFile.fileName,
+            moduleSpecifier: 'globalThis',
+          },
+          undefined,
+          importedHostDeclarations,
+          functionNameCounts,
+          checker,
+        );
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(sourceFile);
+  }
 }
 
 function registerImportedHostBinding(
@@ -54296,8 +54667,22 @@ function maybeRecordFallbackBoundaryCallablePropertyAccess(
   const fallbackReceiverRepresentation = receiverRepresentation?.kind === 'fallback_object_representation'
     ? receiverRepresentation
     : undefined;
+  const ambientReceiverHeader = ts.isIdentifier(expression.expression)
+    ? getAmbientHostImportedTopLevelPropertyBinding(expression.expression, context)?.header
+    : ts.isPropertyAccessExpression(expression.expression)
+    ? getAmbientHostImportedPropertyBinding(expression.expression, context)?.header
+    : undefined;
+  const ambientHeapResultRepresentation = ambientReceiverHeader?.heapResultRepresentation;
+  let fallbackRepresentationForProperty = fallbackReceiverRepresentation;
   if (
-    !fallbackReceiverRepresentation &&
+    !fallbackRepresentationForProperty &&
+    ambientHeapResultRepresentation?.kind === 'fallback_object_representation'
+  ) {
+    fallbackRepresentationForProperty =
+      ambientHeapResultRepresentation as CompilerRuntimeFallbackObjectRepresentationRefIR;
+  }
+  if (
+    !fallbackRepresentationForProperty &&
     !currentFunctionHasTopLevelFallbackHostObjectBoundary(context.currentFunction)
   ) {
     return;
@@ -54395,7 +54780,7 @@ function maybeRecordFallbackBoundaryCallablePropertyAccess(
       signatureId,
     },
     expression.name,
-    fallbackReceiverRepresentation,
+    fallbackRepresentationForProperty,
     context,
   );
 }
@@ -60918,6 +61303,13 @@ export function lowerProgramToCompilerIR(
       }
     }
   }
+
+  collectAmbientGlobalHostBindings(
+    sourceFiles,
+    checker,
+    importedHostDeclarations,
+    functionNameCounts,
+  );
 
   assertAcyclicImportGraph(importGraph, sourceFilesByName);
 

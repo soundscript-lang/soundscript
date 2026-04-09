@@ -1471,6 +1471,93 @@ compilerTaggedTest(
 );
 
 compilerTaggedTest(
+  'emitCompilerModuleToWat omits promise runtime and host promise bridge for sync-only modules',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts'],
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          'export function main(left: number, right: number): number {',
+          '  return left + right;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const moduleIR = lowerTempProjectToCompilerIR(tempDirectory);
+    const watOutput = emitCompilerModuleToWat(moduleIR);
+
+    assertEquals(watOutput.includes('__soundscript_promise_new_pending'), false);
+    assertEquals(watOutput.includes('$host_promise_to_internal'), false);
+    assertEquals(watOutput.includes('$host_promise_to_host'), false);
+    assertEquals(watOutput.includes('"soundscript_promise"'), false);
+  },
+);
+
+compilerTaggedTest(
+  'emitCompilerModuleToWat keeps internal promise runtime without host promise bridge when promises stay inside Wasm',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts'],
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          'async function computeAsync(): Promise<number> {',
+          '  return Promise.resolve(41);',
+          '}',
+          '',
+          'export function main(): number {',
+          '  computeAsync();',
+          '  return 1;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const moduleIR = lowerTempProjectToCompilerIR(tempDirectory);
+    const watOutput = emitCompilerModuleToWat(moduleIR);
+
+    assertStringIncludes(watOutput, '(func $__soundscript_promise_new_pending');
+    assertEquals(watOutput.includes('$host_promise_to_internal'), false);
+    assertEquals(watOutput.includes('$host_promise_to_host'), false);
+    assertEquals(watOutput.includes('"soundscript_promise"'), false);
+  },
+);
+
+compilerTaggedTest(
   'emitCompilerModuleToWat keeps promise runtime when exported promise params only remain in recursive host boundaries',
   async () => {
     const tempDirectory = await createTempProject([

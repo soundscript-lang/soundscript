@@ -19,7 +19,7 @@ deno run -A dev.ts
 
 3. Open [http://localhost:4313](http://localhost:4313).
 
-The React root and the rendered button both live in [src/app.sts](/Users/jakemccloskey/repos/soundscript-lang/soundscript/examples/react-browser-demo/src/app.sts). The `.sts` module imports [src/dom-host.js](/Users/jakemccloskey/repos/soundscript-lang/soundscript/examples/react-browser-demo/src/dom-host.js) to find the mount node, calls real `createRoot(...)` from `react-dom/client`, and rerenders itself from a Wasm-authored `onClick` callback. [src/bootstrap.js](/Users/jakemccloskey/repos/soundscript-lang/soundscript/examples/react-browser-demo/src/bootstrap.js) now just loads the wrapper and calls `start()`.
+The React root and the rendered button both live in [src/app.sts](/Users/jakemccloskey/repos/soundscript-lang/soundscript/examples/react-browser-demo/src/app.sts). The `.sts` module now reads `document.getElementById('app')` directly through ambient DOM globals, calls real `createRoot(...)` from `react-dom/client`, and rerenders itself from a Wasm-authored `onClick` callback. [src/bootstrap.js](/Users/jakemccloskey/repos/soundscript-lang/soundscript/examples/react-browser-demo/src/bootstrap.js) just loads the wrapper and calls `start()`.
 
 ## Notes
 

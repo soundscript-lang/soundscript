@@ -86,6 +86,24 @@ function getExampleNodeModulesPath(relativeExampleDirectory: string): string {
   return join(dirname(fromFileUrl(import.meta.url)), '..', relativeExampleDirectory, 'node_modules');
 }
 
+function getExampleProjectPath(relativeExampleDirectory: string): string {
+  return join(dirname(fromFileUrl(import.meta.url)), '..', relativeExampleDirectory);
+}
+
+function listExampleSourceJsFiles(relativeExampleDirectory: string): string[] {
+  return Array.from(Deno.readDirSync(join(getExampleProjectPath(relativeExampleDirectory), 'src')))
+    .filter((entry) => entry.isFile && entry.name.endsWith('.js'))
+    .map((entry) => entry.name)
+    .sort();
+}
+
+function readExampleProjectFile(
+  relativeExampleDirectory: string,
+  relativeFilePath: string,
+): string {
+  return Deno.readTextFileSync(join(getExampleProjectPath(relativeExampleDirectory), relativeFilePath));
+}
+
 async function linkTempProjectNodeModulesFromSource(
   tempDirectory: string,
   sourceNodeModulesDirectory: string,
@@ -4751,6 +4769,75 @@ compilerIntegrationTest(
 );
 
 compilerIntegrationTest(
+  'compileProject supports ambient DOM global values on wasm-browser without handwritten host shims',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              lib: ['ES2022', 'DOM'],
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+            },
+            include: ['src/**/*.sts'],
+            soundscript: {
+              target: 'wasm-browser',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/index.sts',
+        contents: [
+          'export function main(): number {',
+          "  const element = document.getElementById('app');",
+          '  return element === null ? 0 : element.nodeType;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate({
+      modules: {
+        globalThis: {
+          document: {
+            getElementById(id: string) {
+              return id === 'app' ? { nodeType: 1 } : null;
+            },
+          },
+        },
+      },
+    });
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+
+    assertEquals(await exported(), 1);
+  },
+);
+
+compilerIntegrationTest(
   'compileProject supports imported host callbacks with unknown params',
   async () => {
     const tempDirectory = await createTempProject([
@@ -6217,8 +6304,13 @@ compilerIntegrationTest(
     const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
     const instantiated = await wrapperModule.instantiate({
       modules: {
-        './dom-host.js': {
-          getAppContainer: () => container,
+        globalThis: {
+          document: {
+            getElementById(id: string) {
+              assertEquals(id, 'app');
+              return container;
+            },
+          },
         },
         'react/jsx-runtime': {
           jsx: (
@@ -6420,6 +6512,32 @@ compilerIntegrationTest(
 );
 
 compilerIntegrationTest(
+  'checked-in Wasm flagship examples keep handwritten JS limited to bootstrap boundaries',
+  async () => {
+    assertEquals(listExampleSourceJsFiles('examples/react-browser-demo'), ['bootstrap.js']);
+    assertEquals(listExampleSourceJsFiles('examples/express-react-ssr-demo'), []);
+    assertEquals(listExampleSourceJsFiles('examples/fullstack-todo'), []);
+  },
+);
+
+compilerIntegrationTest(
+  'checked-in react-browser-demo handwritten JS stays on instantiation only',
+  async () => {
+    const bootstrapSource = readExampleProjectFile(
+      'examples/react-browser-demo',
+      'src/bootstrap.js',
+    );
+    assertStringIncludes(bootstrapSource, 'const { exports } = await instantiate();');
+    assertStringIncludes(bootstrapSource, "const start = resolveExport(exports, 'start');");
+    assertStringIncludes(bootstrapSource, 'start();');
+    assertEquals(bootstrapSource.includes('createRoot('), false);
+    assertEquals(bootstrapSource.includes('.render('), false);
+    assertEquals(bootstrapSource.includes('addEventListener('), false);
+    assertEquals(bootstrapSource.includes('HashRouter'), false);
+  },
+);
+
+compilerIntegrationTest(
   'compileProject executes the checked-in react-browser-demo example through Wasm-owned React roots',
   async () => {
     const { projectDirectory, result } = compileCheckedInProject('examples/react-browser-demo');
@@ -6438,66 +6556,89 @@ compilerIntegrationTest(
         type: string;
       }
       | undefined;
+    const documentStub = {
+      getElementById: (id: string) => {
+        assertEquals(id, 'app');
+        return container;
+      },
+    };
+    const hadDocument = Reflect.has(globalThis, 'document');
+    const previousDocument = Reflect.get(globalThis, 'document');
 
-    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
-    const instantiated = await wrapperModule.instantiate({
-      modules: {
-        './dom-host.js': {
-          getAppContainer: () => container,
-        },
-        'react/jsx-runtime': {
-          jsx: (
-            type: string,
-            props: { children: string; onClick?: () => void },
-            key?: string | number | bigint,
-          ) => ({ key: key === undefined ? null : String(key), props, type }),
-        },
-        'react-dom/client': {
-          createRoot: (
-            receivedContainer: { children: { length: number }; nodeType: number; tagName: string },
-          ) => {
-            createRootCalls += 1;
-            assertStrictEquals(receivedContainer, container);
-            class Root {
-              render(children: {
-                key: string | null;
-                props: { children: string; onClick?: () => void };
-                type: string;
-              }) {
-                lastRendered = children;
-              }
+    Object.defineProperty(globalThis, 'document', {
+      configurable: true,
+      writable: true,
+      value: documentStub,
+    });
 
-              unmount() {
+    try {
+      const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+      const instantiated = await wrapperModule.instantiate({
+        modules: {
+          'react/jsx-runtime': {
+            jsx: (
+              type: string,
+              props: { children: string; onClick?: () => void },
+              key?: string | number | bigint,
+            ) => ({ key: key === undefined ? null : String(key), props, type }),
+          },
+          'react-dom/client': {
+            createRoot: (
+              receivedContainer: { children: { length: number }; nodeType: number; tagName: string },
+            ) => {
+              createRootCalls += 1;
+              assertStrictEquals(receivedContainer, container);
+              class Root {
+                render(children: {
+                  key: string | null;
+                  props: { children: string; onClick?: () => void };
+                  type: string;
+                }) {
+                  lastRendered = children;
+                }
+
+                unmount() {
+                }
               }
+              return new Root();
             }
-            return new Root();
           },
         },
-      },
-    });
-    const exportName = await resolveQualifiedExportName(projectDirectory, 'start');
-    const exported = instantiated.exports[exportName];
-    if (typeof exported !== 'function') {
-      throw new Error(`Expected exported function "${exportName}".`);
+      });
+      const exportName = await resolveQualifiedExportName(projectDirectory, 'start');
+      const exported = instantiated.exports[exportName];
+      if (typeof exported !== 'function') {
+        throw new Error(`Expected exported function "${exportName}".`);
+      }
+
+      assertEquals(exported(), undefined);
+      assertEquals(createRootCalls, 1);
+      assert(lastRendered);
+      assertEquals(lastRendered.type, 'button');
+      assertEquals(lastRendered.props.children, 'Click the Wasm button');
+      assert(lastRendered.props.onClick);
+
+      lastRendered.props.onClick();
+      assert(lastRendered);
+      assertEquals(lastRendered.props.children, 'Clicked 1 time');
+      assert(lastRendered.props.onClick);
+
+      assertEquals(createRootCalls, 1);
+      lastRendered.props.onClick();
+      assert(lastRendered);
+      assertEquals(lastRendered.props.children, 'Clicked many times');
+      assert(lastRendered.props.onClick);
+    } finally {
+      if (hadDocument) {
+        Object.defineProperty(globalThis, 'document', {
+          configurable: true,
+          writable: true,
+          value: previousDocument,
+        });
+      } else {
+        Reflect.deleteProperty(globalThis, 'document');
+      }
     }
-
-    assertEquals(exported(), undefined);
-    assertEquals(createRootCalls, 1);
-    assert(lastRendered);
-    assertEquals(lastRendered.type, 'button');
-    assertEquals(lastRendered.props.children, 'Click the Wasm button');
-    assert(lastRendered.props.onClick);
-
-    lastRendered.props.onClick();
-    assert(lastRendered);
-    assertEquals(lastRendered.props.children, 'Clicked 1 time');
-    assert(lastRendered.props.onClick);
-
-    assertEquals(createRootCalls, 1);
-    lastRendered.props.onClick();
-    assert(lastRendered);
-    assertEquals(lastRendered.props.children, 'Clicked many times');
-    assert(lastRendered.props.onClick);
   },
 );
 

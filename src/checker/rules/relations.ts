@@ -176,6 +176,15 @@ interface NormalizedRelationCallableSurface {
   constructSignatures: readonly ResolvedSignatureTypeNodes[];
 }
 
+const normalizedRelationCallableSurfaceCache = new WeakMap<
+  AnalysisContext,
+  WeakMap<ts.TypeNode, NormalizedRelationCallableSurface | null>
+>();
+const normalizedRelationMemberSurfaceCache = new WeakMap<
+  AnalysisContext,
+  WeakMap<ts.TypeNode, NormalizedRelationMemberSurface | null>
+>();
+
 type CallableSignatureKind = ts.SignatureKind.Call | ts.SignatureKind.Construct;
 type InferUtilityWrapperName =
   | 'ReturnType'
@@ -2054,6 +2063,29 @@ function getTypeReferenceSymbol(type: ts.Type): ts.Symbol | undefined {
   return (type as ts.TypeReference).target.symbol ?? type.getSymbol();
 }
 
+function isImportedDeclarationBackedRelationType(
+  context: AnalysisContext,
+  type: ts.Type,
+): boolean {
+  const constituents = getCompositeRelationConstituents(
+    getSafeNonNullableRelationType(context, type),
+  );
+  if (constituents.length === 0) {
+    return false;
+  }
+
+  return constituents.every((constituentType) => {
+    const normalizedType = normalizeTransparentRelationType(context, constituentType);
+    const symbol = getTypeReferenceSymbol(normalizedType);
+    const declarations = symbol?.getDeclarations() ?? [];
+    return declarations.length > 0 &&
+      declarations.every((declaration) => declaration.getSourceFile().isDeclarationFile) &&
+      !declarations.some((declaration) =>
+        isTrustedSoundStdlibDeclarationSourceFile(declaration.getSourceFile())
+      );
+  });
+}
+
 function getMatchingBaseType(
   context: AnalysisContext,
   type: ts.Type,
@@ -2534,6 +2566,14 @@ function isLocalBuiltinSoundStdlibSourceFile(sourceFile: ts.SourceFile): boolean
 
 function isTrustedSoundLibSourceFile(sourceFile: ts.SourceFile): boolean {
   return isBundledSoundLibSourceFile(sourceFile) ||
+    isInstalledSoundStdlibSourceFile(sourceFile) ||
+    isLocalBuiltinSoundStdlibSourceFile(sourceFile);
+}
+
+function isTrustedSoundStdlibDeclarationSourceFile(sourceFile: ts.SourceFile): boolean {
+  const normalizedFileName = sourceFile.fileName.replaceAll('\\', '/');
+  return /^\/__soundscript_std(?:_[a-z]+)?__\.d\.ts$/u.test(normalizedFileName) ||
+    normalizedFileName.includes('/src/bundled/sound-libs/') ||
     isInstalledSoundStdlibSourceFile(sourceFile) ||
     isLocalBuiltinSoundStdlibSourceFile(sourceFile);
 }
@@ -9715,6 +9755,12 @@ function checkUnsoundRelationAtExpression(
   const unwrappedExpression = unwrapRelationExpression(expression);
   const sourceType = context.checker.getTypeAtLocation(expression);
   if (
+    isImportedDeclarationBackedRelationType(context, sourceType) &&
+    isImportedDeclarationBackedRelationType(context, targetType)
+  ) {
+    return;
+  }
+  if (
     relationTypeHasFunctionObjectBrand(context, sourceType) ||
     relationTypeHasFunctionObjectBrand(context, targetType)
   ) {
@@ -9892,10 +9938,13 @@ function checkUnsoundRelationAtExpression(
           expression,
         ),
     );
+    const canSkipAliasMismatch = skipTypeNodeGenericRelation
+      ? true
+      : canSkipTypeNodeAliasMismatch(context, relationSourceType, targetType);
     typeNodeAliasMismatch = !skipTypeNodeGenericRelation &&
         (
           preservesExpandedNewtypeCarrierAliasCheck ||
-          !canSkipTypeNodeAliasMismatch(context, relationSourceType, targetType)
+          !canSkipAliasMismatch
         )
       ? measureRelationExpressionPhase(
         timingEnabled,
@@ -10041,6 +10090,12 @@ function checkUnsoundRelationAtType(
   targetTypeNode?: ts.TypeNode,
 ): void {
   const timingEnabled = isCheckerTimingEnabled();
+  if (
+    isImportedDeclarationBackedRelationType(context, sourceType) &&
+    isImportedDeclarationBackedRelationType(context, targetType)
+  ) {
+    return;
+  }
   if (
     relationTypeHasFunctionObjectBrand(context, sourceType) ||
     relationTypeHasFunctionObjectBrand(context, targetType)
@@ -10784,7 +10839,14 @@ function getOrdinaryRelationSymbolCallableSurface(
   context: AnalysisContext,
   symbol: ts.Symbol,
   substitutions: ReadonlyMap<number, ts.TypeNode>,
+  seenSymbols: Set<number> = new Set(),
 ): NormalizedRelationCallableSurface | undefined {
+  const symbolId = context.getSymbolId(symbol);
+  if (seenSymbols.has(symbolId)) {
+    return undefined;
+  }
+  const nextSeenSymbols = new Set(seenSymbols);
+  nextSeenSymbols.add(symbolId);
   let callableSurface: NormalizedRelationCallableSurface | undefined;
   for (const declaration of symbol.getDeclarations() ?? []) {
     if (ts.isInterfaceDeclaration(declaration)) {
@@ -10803,6 +10865,7 @@ function getOrdinaryRelationSymbolCallableSurface(
               heritageType.typeArguments?.map((typeArgumentNode) =>
                 substituteTypeParameterTypeNodes(context, typeArgumentNode, substitutions)
               ),
+              nextSeenSymbols,
             ),
           );
         }
@@ -10828,6 +10891,7 @@ function getOrdinaryExpressionReferenceCallableSurface(
   context: AnalysisContext,
   expression: ts.Expression,
   typeArguments: readonly ts.TypeNode[] | undefined,
+  seenSymbols: Set<number> = new Set(),
 ): NormalizedRelationCallableSurface | undefined {
   const symbol = getResolvedAliasSymbol(
     context,
@@ -10842,12 +10906,13 @@ function getOrdinaryExpressionReferenceCallableSurface(
     return undefined;
   }
 
-  return getOrdinaryRelationSymbolCallableSurface(context, symbol, substitutions);
+  return getOrdinaryRelationSymbolCallableSurface(context, symbol, substitutions, seenSymbols);
 }
 
 function getOrdinaryRelationReferenceCallableSurface(
   context: AnalysisContext,
   typeReferenceNode: ts.ImportTypeNode | ts.TypeReferenceNode,
+  seenSymbols: Set<number> = new Set(),
 ): NormalizedRelationCallableSurface | undefined {
   const symbol = getResolvedAliasSymbol(
     context,
@@ -10866,7 +10931,7 @@ function getOrdinaryRelationReferenceCallableSurface(
     return undefined;
   }
 
-  return getOrdinaryRelationSymbolCallableSurface(context, symbol, substitutions);
+  return getOrdinaryRelationSymbolCallableSurface(context, symbol, substitutions, seenSymbols);
 }
 
 function getNormalizedRelationCallableSurface(
@@ -10897,11 +10962,23 @@ function getNormalizedRelationCallableSurface(
   const effectiveTypeNode = substitutions.size > 0
     ? substituteTypeParameterTypeNodes(context, unwrappedTypeNode, substitutions)
     : unwrappedTypeNode;
-  if (isRelationReferenceTypeNode(effectiveTypeNode)) {
-    return getOrdinaryRelationReferenceCallableSurface(context, effectiveTypeNode);
+  let cachedSurfaces = normalizedRelationCallableSurfaceCache.get(context);
+  if (!cachedSurfaces) {
+    cachedSurfaces = new WeakMap<ts.TypeNode, NormalizedRelationCallableSurface | null>();
+    normalizedRelationCallableSurfaceCache.set(context, cachedSurfaces);
+  }
+  const cachedSurface = cachedSurfaces.get(effectiveTypeNode);
+  if (cachedSurface !== undefined) {
+    return cachedSurface ?? undefined;
   }
 
-  return undefined;
+  let callableSurface: NormalizedRelationCallableSurface | undefined;
+  if (isRelationReferenceTypeNode(effectiveTypeNode)) {
+    callableSurface = getOrdinaryRelationReferenceCallableSurface(context, effectiveTypeNode);
+  }
+
+  cachedSurfaces.set(effectiveTypeNode, callableSurface ?? null);
+  return callableSurface;
 }
 
 function getOrdinaryRelationTypeCallableSurface(
@@ -10941,7 +11018,14 @@ function getOrdinaryRelationSymbolMemberSurface(
   context: AnalysisContext,
   symbol: ts.Symbol,
   substitutions: ReadonlyMap<number, ts.TypeNode>,
+  seenSymbols: Set<number> = new Set(),
 ): NormalizedRelationMemberSurface | undefined {
+  const symbolId = context.getSymbolId(symbol);
+  if (seenSymbols.has(symbolId)) {
+    return undefined;
+  }
+  const nextSeenSymbols = new Set(seenSymbols);
+  nextSeenSymbols.add(symbolId);
   let inheritedSurface: NormalizedRelationMemberSurface | undefined;
   const mergedInterfaceMembers: ts.TypeElement[] = [];
   for (const declaration of symbol.getDeclarations() ?? []) {
@@ -10956,6 +11040,7 @@ function getOrdinaryRelationSymbolMemberSurface(
               heritageType.typeArguments?.map((typeArgumentNode) =>
                 substituteTypeParameterTypeNodes(context, typeArgumentNode, substitutions)
               ),
+              nextSeenSymbols,
             ),
           );
         }
@@ -10988,6 +11073,7 @@ function getOrdinaryExpressionReferenceMemberSurface(
   context: AnalysisContext,
   expression: ts.Expression,
   typeArguments: readonly ts.TypeNode[] | undefined,
+  seenSymbols: Set<number> = new Set(),
 ): NormalizedRelationMemberSurface | undefined {
   const symbol = getResolvedAliasSymbol(
     context,
@@ -11002,12 +11088,13 @@ function getOrdinaryExpressionReferenceMemberSurface(
     return undefined;
   }
 
-  return getOrdinaryRelationSymbolMemberSurface(context, symbol, substitutions);
+  return getOrdinaryRelationSymbolMemberSurface(context, symbol, substitutions, seenSymbols);
 }
 
 function getOrdinaryRelationReferenceMemberSurface(
   context: AnalysisContext,
   typeReferenceNode: ts.ImportTypeNode | ts.TypeReferenceNode,
+  seenSymbols: Set<number> = new Set(),
 ): NormalizedRelationMemberSurface | undefined {
   const symbol = getResolvedAliasSymbol(
     context,
@@ -11026,7 +11113,7 @@ function getOrdinaryRelationReferenceMemberSurface(
     return undefined;
   }
 
-  return getOrdinaryRelationSymbolMemberSurface(context, symbol, substitutions);
+  return getOrdinaryRelationSymbolMemberSurface(context, symbol, substitutions, seenSymbols);
 }
 
 function getNormalizedRelationMemberSurface(
@@ -11053,14 +11140,26 @@ function getNormalizedRelationMemberSurface(
     return getMappedTypeMemberSurface(unwrappedTypeNode);
   }
 
+  let cachedSurfaces = normalizedRelationMemberSurfaceCache.get(context);
+  if (!cachedSurfaces) {
+    cachedSurfaces = new WeakMap<ts.TypeNode, NormalizedRelationMemberSurface | null>();
+    normalizedRelationMemberSurfaceCache.set(context, cachedSurfaces);
+  }
+  const cachedSurface = cachedSurfaces.get(unwrappedTypeNode);
+  if (cachedSurface !== undefined) {
+    return cachedSurface ?? undefined;
+  }
+
+  let memberSurface: NormalizedRelationMemberSurface | undefined;
   if (isRelationReferenceTypeNode(unwrappedTypeNode)) {
-    return ts.isTypeReferenceNode(unwrappedTypeNode)
+    memberSurface = ts.isTypeReferenceNode(unwrappedTypeNode)
       ? getTrustedUtilityAliasMemberSurface(context, unwrappedTypeNode) ??
         getOrdinaryRelationReferenceMemberSurface(context, unwrappedTypeNode)
       : getOrdinaryRelationReferenceMemberSurface(context, unwrappedTypeNode);
   }
 
-  return undefined;
+  cachedSurfaces.set(unwrappedTypeNode, memberSurface ?? null);
+  return memberSurface;
 }
 
 function getPropertyTypeNodeFromTypeNode(
@@ -11290,6 +11389,13 @@ function classifyUnsoundCompositePayloadGenericAliasRelation(
   visitedPairs: Set<string> = new Set(),
 ): RelationMismatch | undefined {
   try {
+    if (
+      isImportedDeclarationBackedRelationType(context, sourceType) &&
+      isImportedDeclarationBackedRelationType(context, targetType)
+    ) {
+      return undefined;
+    }
+
     const targetMemberSurface = getNormalizedRelationMemberSurface(context, targetTypeNode);
     const propertyNames = new Set<string>(collectCompositePropertyNames(context, targetType));
     for (const propertyName of targetMemberSurface?.propertyTypeNodes.keys() ?? []) {

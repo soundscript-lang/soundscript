@@ -957,6 +957,40 @@ Deno.test('analyzeProject emits per-phase and per-rule checker timing logs', asy
   }
 });
 
+Deno.test(
+  'analyzeProject completes explicit declaration-backed DOM return relations without diagnostics',
+  async () => {
+    const tempDirectory = await createTempProject({
+      'tsconfig.json': JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+          },
+          include: ['src/**/*.sts'],
+        },
+        null,
+        2,
+      ),
+      'src/index.sts': [
+        'export function main(): Element | null {',
+        "  return document.getElementById('app');",
+        '}',
+        '',
+      ].join('\n'),
+    });
+
+    const result = await analyzeProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.summary.total, 0);
+  },
+);
+
 Deno.test('analyzePreparedProjectForFile works with a deferred ts view for .sts diagnostics', async () => {
   const tempDirectory = await createTempProject({
     'tsconfig.json': JSON.stringify(

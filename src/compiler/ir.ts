@@ -1596,7 +1596,7 @@ export interface CompilerHostObjectNestedPropertyNamesIR {
 export interface CompilerJsHostImportIR {
   hostImportName: string;
   bindingKind: 'function' | 'constructor' | 'static_method' | 'property';
-  importKind: 'default' | 'named';
+  importKind: 'default' | 'named' | 'global';
   importerModulePath: string;
   moduleSpecifier: string;
   exportName?: string;
