@@ -1,7 +1,10 @@
 import { basename, dirname, join, relative } from '@std/path';
 import ts from 'typescript';
 
-import { getStdlibDeclarationTexts } from '../../src/frontend/std_package_support.ts';
+import {
+  getStdlibDeclarationTexts,
+  STDLIB_DECLARATION_FILE,
+} from '../../src/frontend/std_package_support.ts';
 import { rewriteModuleSpecifiersForEmit } from '../../src/runtime/transform.ts';
 import {
   BUNDLED_TYPESCRIPT_SOURCE,
@@ -112,9 +115,11 @@ export async function copyCliRuntimeSupportFiles(destinationRoot: string): Promi
     );
   }
   const stdlibDestination = join(destinationRoot, 'src', 'stdlib');
+  const stdlibDeclarationRoot = dirname(STDLIB_DECLARATION_FILE);
   await Deno.mkdir(stdlibDestination, { recursive: true });
   for (const [filePath, text] of getStdlibDeclarationTexts().entries()) {
-    await Deno.writeTextFile(join(stdlibDestination, basename(filePath)), text);
+    const relativePath = relative(stdlibDeclarationRoot, filePath);
+    await writeTextFile(join(stdlibDestination, relativePath), text);
   }
 }
 

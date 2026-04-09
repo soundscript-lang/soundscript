@@ -397,6 +397,12 @@ Deno.test('prepare_npm copies stdlib declarations for compiled cli runtime packa
         'index.d.ts',
       ),
     );
+    const hostDomDeclarations = await Deno.readTextFile(
+      join(distRoot, 'src', 'stdlib', 'host', 'dom.d.ts'),
+    );
+    const hostNodeDeclarations = await Deno.readTextFile(
+      join(distRoot, 'src', 'stdlib', 'host', 'node.d.ts'),
+    );
     const bundledNodeVendorMetadata = JSON.parse(
       await Deno.readTextFile(
         join(distRoot, 'src', 'bundled', 'typescript', 'types', 'node', 'vendor.json'),
@@ -409,6 +415,8 @@ Deno.test('prepare_npm copies stdlib declarations for compiled cli runtime packa
     assertStringIncludes(bundledNodeTypesText, 'reference path="http.d.ts"');
     assertStringIncludes(bundledNodeHttpTypesText, 'declare module "node:http"');
     assertStringIncludes(bundledUndiciTypesText, "export * from './fetch'");
+    assertStringIncludes(hostDomDeclarations, 'export declare const document: Document;');
+    assertStringIncludes(hostNodeDeclarations, "export { Buffer } from 'node:buffer';");
     assertEquals(bundledNodeVendorMetadata.nodeTypesVersion, '24.12.2');
   } finally {
     await Deno.remove(distRoot, { recursive: true }).catch(() => undefined);

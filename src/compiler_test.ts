@@ -416,6 +416,55 @@ compilerIntegrationTest(
 );
 
 compilerIntegrationTest(
+  'compileProject rejects fixed-layout object literal helper calls when the effect summary comes from a generated stdlib declaration',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+              moduleResolution: 'Bundler',
+            },
+            include: ['src/**/*.ts'],
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          "import { getRandomValues } from 'sts:random';",
+          '',
+          'export function main(): Uint8Array<ArrayBuffer> {',
+          '  const box = { value: getRandomValues(new Uint8Array(1)) };',
+          '  return box.value;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileTempProject(tempDirectory);
+
+    assertEquals(result.exitCode, 1);
+    assertEquals(
+      result.diagnostics.map((diagnostic: { source: string }) => diagnostic.source),
+      ['compiler'],
+    );
+    assertEquals(
+      result.diagnostics.map((diagnostic: { code: string }) => diagnostic.code),
+      ['COMPILER2001'],
+    );
+  },
+);
+
+compilerIntegrationTest(
   'compileProject executes plain sync while break and continue control flow',
   async () => {
     const tempDirectory = await createCompilerTestProject([
