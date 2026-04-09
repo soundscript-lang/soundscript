@@ -53,6 +53,23 @@ function createSoundscriptOnlyTsconfig(): string {
   );
 }
 
+function createBrowserTsconfig(): string {
+  return JSON.stringify(
+    {
+      compilerOptions: {
+        lib: ['ES2024', 'DOM', 'DOM.AsyncIterable'],
+        strict: true,
+        noEmit: true,
+        target: 'ES2022',
+        module: 'ESNext',
+      },
+      include: ['src/**/*.sts'],
+    },
+    null,
+    2,
+  );
+}
+
 async function createValueAnalysisProject(
   files: Readonly<Record<string, string>>,
 ): Promise<string> {
@@ -312,7 +329,12 @@ Deno.test('analyzeProject keeps bundled node typings explicit for js-node projec
     workingDirectory: tempDirectory,
   });
 
-  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['TS2307', 'TS2580']);
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), [
+    'SOUND1005',
+    'SOUND1005',
+    'SOUND1005',
+    'SOUND1039',
+  ]);
 });
 
 Deno.test(
@@ -1368,7 +1390,685 @@ Deno.test('analyzeProject rejects direct ambient DOM globals even when DOM libs 
   assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1039', 'SOUND1039']);
 });
 
-Deno.test('analyzeProject resolves explicit host:dom imports when DOM libs are enabled', async () => {
+Deno.test('analyzeProject loads the bundled node extern pack on node-family targets', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/index.sts': [
+      '// #[interop]',
+      'import { Buffer as ModuleBuffer } from "node:buffer";',
+      '// #[interop]',
+      'import { createHash, createHmac, randomInt, randomUUID } from "node:crypto";',
+      '// #[interop]',
+      'import { readFile } from "node:fs/promises";',
+      '// #[interop]',
+      'import { join } from "node:path";',
+      '// #[interop]',
+      'import { setTimeout as scheduleTimeout } from "node:timers";',
+      '// #[interop]',
+      'import { scheduler, setTimeout as waitTimeout } from "node:timers/promises";',
+      '// #[interop]',
+      "import { process } from 'host:node';",
+      '',
+      'const cwd = process.cwd();',
+      'const path = join(cwd, "notes.txt");',
+      'const bytes = readFile(path);',
+      'const buffer = ModuleBuffer.from("ok");',
+      'const digest = createHash("sha256").update("ok").digest("hex");',
+      'const mac = createHmac("sha256", "key").update("ok").digest("hex");',
+      'const id = randomUUID();',
+      'const n = randomInt(10);',
+      'const timer = scheduleTimeout(() => {}, 10);',
+      'const timeout = waitTimeout(10);',
+      'const tick = scheduler.yield();',
+      '',
+      'void bytes;',
+      'void buffer;',
+      'void digest;',
+      'void mac;',
+      'void id;',
+      'void n;',
+      'void timer;',
+      'void timeout;',
+      'void tick;',
+      '',
+    ].join('\n'),
+  });
+
+  const jsNodeResult = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    target: 'js-node',
+    workingDirectory: tempDirectory,
+  });
+  const jsBrowserResult = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    target: 'js-browser',
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(jsNodeResult.diagnostics, []);
+  assertEquals(jsBrowserResult.diagnostics.map((diagnostic) => diagnostic.code), [
+    'TS2307',
+    'TS2307',
+    'TS2307',
+    'TS2307',
+    'TS2307',
+    'TS2307',
+    'TS2307',
+  ]);
+});
+Deno.test('analyzeProject tracks bundled deno extern builtins under effect contracts', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts', '__soundscript_externs__/**/*.d.ts'],
+      },
+      null,
+      2,
+    ),
+    '__soundscript_externs__/deno.global.d.ts': [
+      'declare namespace Deno {',
+      '  const env: {',
+      '    // #[effects(add: [host.system, host.deno.env, mut])]',
+      '    delete(key: string): void;',
+      '    // #[effects(add: [host.system, host.deno.env])]',
+      '    get(key: string): string | undefined;',
+      '    // #[effects(add: [host.system, host.deno.env])]',
+      '    has(key: string): boolean;',
+      '    // #[effects(add: [host.system, host.deno.env, mut])]',
+      '    set(key: string, value: string): void;',
+      '    // #[effects(add: [host.system, host.deno.env])]',
+      '    toObject(): Record<string, string>;',
+      '  };',
+      '',
+      '  // #[effects(add: [host.system, host.deno.process, mut, fails.throws])]',
+      '  function chdir(path: string | URL): void;',
+      '  // #[effects(add: [host.system, host.deno.process])]',
+      '  function cwd(): string;',
+      '  // #[effects(add: [host.io, host.deno.fs, suspend.await])]',
+      '  function readFile(path: string | URL): Promise<Uint8Array<ArrayBufferLike>>;',
+      '  // #[effects(add: [host.io, host.deno.fs, fails.throws])]',
+      '  function readFileSync(path: string | URL): Uint8Array<ArrayBufferLike>;',
+      '  // #[effects(add: [host.io, host.deno.fs, suspend.await])]',
+      '  function readTextFile(path: string | URL): Promise<string>;',
+      '  // #[effects(add: [host.io, host.deno.fs, fails.throws])]',
+      '  function readTextFileSync(path: string | URL): string;',
+      '  // #[effects(add: [host.io, host.deno.fs, mut, suspend.await])]',
+      '  function mkdir(path: string | URL): Promise<void>;',
+      '  // #[effects(add: [host.io, host.deno.fs, mut, fails.throws])]',
+      '  function mkdirSync(path: string | URL): void;',
+      '  // #[effects(add: [host.io, host.deno.fs, mut, suspend.await])]',
+      '  function remove(path: string | URL): Promise<void>;',
+      '  // #[effects(add: [host.io, host.deno.fs, mut, fails.throws])]',
+      '  function removeSync(path: string | URL): void;',
+      '  // #[effects(add: [host.io, host.deno.fs, mut, suspend.await])]',
+      '  function writeTextFile(path: string | URL, data: string): Promise<void>;',
+      '  // #[effects(add: [host.io, host.deno.fs, mut, fails.throws])]',
+      '  function writeTextFileSync(path: string | URL, data: string): void;',
+      '}',
+      '',
+    ].join('\n'),
+    'src/index.sts': [
+      '// #[extern]',
+      'declare const runtimeDeno: typeof Deno;',
+      '',
+      '// #[effects(forbid: [host])]',
+      'function readCurrentDirectory(): string {',
+      '  return runtimeDeno.cwd();',
+      '}',
+      '',
+      '// #[effects(forbid: [host])]',
+      'function readEnvValue(): string | undefined {',
+      '  return runtimeDeno.env.get("HOME");',
+      '}',
+      '',
+      '// #[effects(forbid: [mut])]',
+      'function setEnvValue(value: string): void {',
+      '  runtimeDeno.env.set("HOME", value);',
+      '}',
+      '',
+      '// #[effects(forbid: [mut])]',
+      'function deleteEnvValue(): void {',
+      '  runtimeDeno.env.delete("HOME");',
+      '}',
+      '',
+      '// #[effects(forbid: [suspend])]',
+      'function readBinary(path: string): Promise<Uint8Array<ArrayBufferLike>> {',
+      '  return runtimeDeno.readFile(path);',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function readBinarySync(path: string): Uint8Array<ArrayBufferLike> {',
+      '  return runtimeDeno.readFileSync(path);',
+      '}',
+      '',
+      '// #[effects(forbid: [suspend])]',
+      'function readText(path: string): Promise<string> {',
+      '  return runtimeDeno.readTextFile(path);',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function readTextSync(path: string): string {',
+      '  return runtimeDeno.readTextFileSync(path);',
+      '}',
+      '',
+      '// #[effects(forbid: [suspend])]',
+      'function makeDirectory(path: string): Promise<void> {',
+      '  return runtimeDeno.mkdir(path);',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function makeDirectorySync(path: string): void {',
+      '  runtimeDeno.mkdirSync(path);',
+      '}',
+      '',
+      '// #[effects(forbid: [suspend])]',
+      'function removePath(path: string): Promise<void> {',
+      '  return runtimeDeno.remove(path);',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function removePathSync(path: string): void {',
+      '  runtimeDeno.removeSync(path);',
+      '}',
+      '',
+      '// #[effects(forbid: [mut])]',
+      'function writeText(path: string, data: string): Promise<void> {',
+      '  return runtimeDeno.writeTextFile(path, data);',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function writeTextSync(path: string, data: string): void {',
+      '  runtimeDeno.writeTextFileSync(path, data);',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function changeDirectory(path: string): void {',
+      '  runtimeDeno.chdir(path);',
+      '}',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    target: 'js-node',
+    workingDirectory: tempDirectory,
+  });
+
+  const expectedDenoSymbols = [
+    'readCurrentDirectory',
+    'readEnvValue',
+    'setEnvValue',
+    'deleteEnvValue',
+    'readBinary',
+    'readBinarySync',
+    'readText',
+    'readTextSync',
+    'makeDirectory',
+    'makeDirectorySync',
+    'removePath',
+    'removePathSync',
+    'writeText',
+    'writeTextSync',
+    'changeDirectory',
+  ];
+  assertEquals(
+    result.diagnostics.map((diagnostic) => diagnostic.code),
+    new Array(expectedDenoSymbols.length).fill('SOUND1041'),
+  );
+  assertEquals(
+    result.diagnostics.map((diagnostic) => diagnostic.metadata?.primarySymbol),
+    expectedDenoSymbols,
+  );
+});
+
+Deno.test('analyzeProject tracks bundled node builtins under effect contracts', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/index.sts': [
+      '// #[interop]',
+      'import { Buffer as ModuleBuffer } from "node:buffer";',
+      '// #[interop]',
+      'import { createHash, createHmac, getRandomValues, randomBytes, randomFill, randomFillSync, randomInt, randomUUID } from "node:crypto";',
+      '// #[interop]',
+      'import { access, appendFile, cp, copyFile, mkdir, mkdtemp, readFile, readlink, readdir, realpath, rename, rm, stat, symlink, truncate, unlink, writeFile } from "node:fs/promises";',
+      '// #[interop]',
+      'import { accessSync, appendFileSync, cpSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, truncateSync, unlinkSync, writeFileSync } from "node:fs";',
+      '// #[interop]',
+      'import { dirname, join } from "node:path";',
+      '// #[interop]',
+      'import { clearImmediate as clearModuleImmediate, clearInterval, clearTimeout, setImmediate as setModuleImmediate, setInterval, setTimeout } from "node:timers";',
+      '// #[interop]',
+      'import { scheduler, setImmediate as waitImmediate, setTimeout as waitTimeout } from "node:timers/promises";',
+      '// #[interop]',
+      "import { Buffer, process } from 'host:node';",
+      '',
+      '// #[effects(forbid: [host])]',
+      'function readCurrentDirectory(): string {',
+      '  return process.cwd();',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function changeDirectory(path: string): void {',
+      '  process.chdir(path);',
+      '}',
+      '',
+      '// #[effects(forbid: [host])]',
+      'function exitProcess(code: number): never {',
+      '  return process.exit(code);',
+      '}',
+      '',
+      '// #[effects(forbid: [host])]',
+      'function scheduleImmediate(callback: () => void): NodeJS.Immediate {',
+      '  return setModuleImmediate(callback);',
+      '}',
+      '',
+      '// #[effects(forbid: [host])]',
+      'function cancelImmediate(handle: NodeJS.Immediate): void {',
+      '  clearModuleImmediate(handle);',
+      '}',
+      '',
+      '// #[effects(forbid: [host, fails, mut, suspend])]',
+      'function makeBuffer(value: string): Buffer {',
+      '  return Buffer.from(value);',
+      '}',
+      '',
+      '// #[effects(forbid: [host, fails, mut, suspend])]',
+      'function makeModuleBuffer(value: string): Buffer {',
+      '  return ModuleBuffer.from(value);',
+      '}',
+      '',
+      '// #[effects(forbid: [host, fails, mut, suspend])]',
+      'function joinPath(left: string, right: string): string {',
+      '  return join(dirname(left), right);',
+      '}',
+      '',
+      '// #[effects(forbid: [host])]',
+      'function makeUuid(): string {',
+      '  return randomUUID();',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function makeHasher() {',
+      '  return createHash("sha256");',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function makeHmac() {',
+      '  return createHmac("sha256", "key");',
+      '}',
+      '',
+      '// #[effects(forbid: [host])]',
+      'function makeRandomInt(max: number): number {',
+      '  return randomInt(max);',
+      '}',
+      '',
+      '// #[effects(forbid: [host])]',
+      'function makeRandomBytes(size: number): Buffer {',
+      '  return randomBytes(size);',
+      '}',
+      '',
+      '// #[effects(forbid: [mut])]',
+      'function fillRandom(bytes: Uint8Array<ArrayBuffer>): Uint8Array<ArrayBuffer> {',
+      '  return getRandomValues(bytes);',
+      '}',
+      '',
+      '// #[effects(forbid: [mut])]',
+      'function fillRandomSync(bytes: Uint8Array<ArrayBuffer>): Uint8Array<ArrayBuffer> {',
+      '  return randomFillSync(bytes);',
+      '}',
+      '',
+      '// #[effects(forbid: [mut])]',
+      'function hashText(value: string): Buffer {',
+      '  const hash = createHash("sha256");',
+      '  hash.update(value);',
+      '  return hash.digest();',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function hashTextHex(value: string): string {',
+      '  const hash = createHash("sha256");',
+      '  hash.update(value);',
+      '  return hash.digest("hex");',
+      '}',
+      '',
+      '// #[effects(forbid: [host])]',
+      'function hmacText(value: string): Buffer {',
+      '  const hmac = createHmac("sha256", "key");',
+      '  hmac.update(value);',
+      '  return hmac.digest();',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function hmacTextHex(value: string): string {',
+      '  const hmac = createHmac("sha256", "key");',
+      '  hmac.update(value);',
+      '  return hmac.digest("hex");',
+      '}',
+      '',
+      '// #[effects(forbid: [host])]',
+      'function scheduleTimeout(callback: () => void): NodeJS.Timeout {',
+      '  return setTimeout(callback, 10);',
+      '}',
+      '',
+      '// #[effects(forbid: [host])]',
+      'function cancelTimeout(handle: NodeJS.Timeout): void {',
+      '  clearTimeout(handle);',
+      '}',
+      '',
+      '// #[effects(forbid: [host])]',
+      'function scheduleInterval(callback: () => void): NodeJS.Timeout {',
+      '  return setInterval(callback, 10);',
+      '}',
+      '',
+      '// #[effects(forbid: [host])]',
+      'function cancelInterval(handle: NodeJS.Timeout): void {',
+      '  clearInterval(handle);',
+      '}',
+      '',
+      '// #[effects(forbid: [suspend])]',
+      'function awaitImmediate(): Promise<void> {',
+      '  return waitImmediate();',
+      '}',
+      '',
+      '// #[effects(forbid: [suspend])]',
+      'function awaitTimeout(): Promise<void> {',
+      '  return waitTimeout(10);',
+      '}',
+      '',
+      '// #[effects(forbid: [suspend])]',
+      'function waitOnScheduler(): Promise<void> {',
+      '  return scheduler.wait(10);',
+      '}',
+      '',
+      '// #[effects(forbid: [suspend])]',
+      'function yieldOnScheduler(): Promise<void> {',
+      '  return scheduler.yield();',
+      '}',
+      '',
+      '// #[effects(forbid: [suspend])]',
+      'function accessPath(path: string): Promise<void> {',
+      '  return access(path);',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function accessPathSync(path: string): void {',
+      '  accessSync(path);',
+      '}',
+      '',
+      '// #[effects(forbid: [suspend])]',
+      'function statPath(path: string) {',
+      '  return stat(path);',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function statPathSync(path: string) {',
+      '  return statSync(path);',
+      '}',
+      '',
+      '// #[effects(forbid: [mut])]',
+      'function renamePath(from: string, to: string): Promise<void> {',
+      '  return rename(from, to);',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function renamePathSync(from: string, to: string): void {',
+      '  renameSync(from, to);',
+      '}',
+      '',
+      '// #[effects(forbid: [mut])]',
+      'function copyPath(from: string, to: string): Promise<void> {',
+      '  return copyFile(from, to);',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function copyPathSync(from: string, to: string): void {',
+      '  copyFileSync(from, to);',
+      '}',
+      '',
+      '// #[effects(forbid: [suspend])]',
+      'function readLinkTarget(path: string): Promise<string> {',
+      '  return readlink(path);',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function readLinkTargetSync(path: string): string {',
+      '  return readlinkSync(path);',
+      '}',
+      '',
+      '// #[effects(forbid: [suspend])]',
+      'function resolveRealPath(path: string): Promise<string> {',
+      '  return realpath(path);',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function resolveRealPathSync(path: string): string {',
+      '  return realpathSync(path);',
+      '}',
+      '',
+      '// #[effects(forbid: [mut])]',
+      'function createSymlink(target: string, path: string): Promise<void> {',
+      '  return symlink(target, path);',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function createSymlinkSync(target: string, path: string): void {',
+      '  symlinkSync(target, path);',
+      '}',
+      '',
+      '// #[effects(forbid: [mut])]',
+      'function unlinkPath(path: string): Promise<void> {',
+      '  return unlink(path);',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function unlinkPathSync(path: string): void {',
+      '  unlinkSync(path);',
+      '}',
+      '',
+      '// #[effects(forbid: [mut])]',
+      'function makeTempDirectory(prefix: string): Promise<string> {',
+      '  return mkdtemp(prefix);',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function makeTempDirectorySync(prefix: string): string {',
+      '  return mkdtempSync(prefix);',
+      '}',
+      '',
+      '// #[effects(forbid: [mut])]',
+      'function copyTree(from: string, to: string): Promise<void> {',
+      '  return cp(from, to);',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function copyTreeSync(from: string, to: string): void {',
+      '  cpSync(from, to);',
+      '}',
+      '',
+      '// #[effects(forbid: [mut])]',
+      'function truncatePath(path: string): Promise<void> {',
+      '  return truncate(path, 0);',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function truncatePathSync(path: string): void {',
+      '  truncateSync(path, 0);',
+      '}',
+      '',
+      '// #[effects(forbid: [mut])]',
+      'function appendBinary(path: string, data: Uint8Array<ArrayBuffer>): Promise<void> {',
+      '  return appendFile(path, data);',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function appendBinarySync(path: string, data: Uint8Array<ArrayBuffer>): void {',
+      '  appendFileSync(path, data);',
+      '}',
+      '',
+      '// #[effects(forbid: [suspend])]',
+      'function readBinary(path: string): Promise<Uint8Array<ArrayBufferLike>> {',
+      '  return readFile(path);',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function readBinarySync(path: string): Uint8Array<ArrayBufferLike> {',
+      '  return readFileSync(path);',
+      '}',
+      '',
+      '// #[effects(forbid: [suspend])]',
+      'function readDirectory(path: string): Promise<string[]> {',
+      '  return readdir(path);',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function readDirectorySync(path: string): string[] {',
+      '  return readdirSync(path);',
+      '}',
+      '',
+      '// #[effects(forbid: [mut])]',
+      'function writeBinary(path: string, data: Uint8Array<ArrayBuffer>): Promise<void> {',
+      '  return writeFile(path, data);',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function writeBinarySync(path: string, data: Uint8Array<ArrayBuffer>): void {',
+      '  writeFileSync(path, data);',
+      '}',
+      '',
+      '// #[effects(forbid: [mut])]',
+      'function makeDirectory(path: string): Promise<void> {',
+      '  return mkdir(path);',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function makeDirectorySync(path: string): void {',
+      '  mkdirSync(path);',
+      '}',
+      '',
+      '// #[effects(forbid: [mut])]',
+      'function removePath(path: string): Promise<void> {',
+      '  return rm(path);',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function removePathSync(path: string): void {',
+      '  rmSync(path);',
+      '}',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    target: 'js-node',
+    workingDirectory: tempDirectory,
+  });
+
+  const expectedNodeSymbols = [
+    'readCurrentDirectory',
+    'changeDirectory',
+    'exitProcess',
+    'scheduleImmediate',
+    'cancelImmediate',
+    'makeBuffer',
+    'makeModuleBuffer',
+    'joinPath',
+    'makeUuid',
+    'makeHasher',
+    'makeHmac',
+    'makeRandomInt',
+    'makeRandomBytes',
+    'fillRandom',
+    'fillRandomSync',
+    'hashText',
+    'hashTextHex',
+    'hmacText',
+    'hmacTextHex',
+    'scheduleTimeout',
+    'cancelTimeout',
+    'scheduleInterval',
+    'cancelInterval',
+    'awaitImmediate',
+    'awaitTimeout',
+    'waitOnScheduler',
+    'yieldOnScheduler',
+    'accessPath',
+    'accessPathSync',
+    'statPath',
+    'statPathSync',
+    'renamePath',
+    'renamePathSync',
+    'copyPath',
+    'copyPathSync',
+    'readLinkTarget',
+    'readLinkTargetSync',
+    'resolveRealPath',
+    'resolveRealPathSync',
+    'createSymlink',
+    'createSymlinkSync',
+    'unlinkPath',
+    'unlinkPathSync',
+    'makeTempDirectory',
+    'makeTempDirectorySync',
+    'copyTree',
+    'copyTreeSync',
+    'truncatePath',
+    'truncatePathSync',
+    'appendBinary',
+    'appendBinarySync',
+    'readBinary',
+    'readBinarySync',
+    'readDirectory',
+    'readDirectorySync',
+    'writeBinary',
+    'writeBinarySync',
+    'makeDirectory',
+    'makeDirectorySync',
+    'removePath',
+    'removePathSync',
+  ];
+  assertEquals(
+    result.diagnostics.map((diagnostic) => diagnostic.code),
+    new Array(expectedNodeSymbols.length).fill('SOUND1041'),
+  );
+  assertEquals(
+    result.diagnostics.map((diagnostic) => diagnostic.metadata?.primarySymbol),
+    expectedNodeSymbols,
+  );
+});
+
+Deno.test('analyzeProject exposes portable web globals on wasm-wasi', async () => {
   const tempDirectory = await createTempProject({
     'tsconfig.json': JSON.stringify(
       {
@@ -1502,7 +2202,20 @@ Deno.test('analyzeProject resolves explicit host:node imports when compilerOptio
 
 Deno.test('analyzeProject rejects host:node imports when compilerOptions.types omits node', async () => {
   const tempDirectory = await createTempProject({
-    'tsconfig.json': createSoundscriptOnlyTsconfig(),
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+          types: [],
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
     'src/index.sts': [
       '// #[interop]',
       "import { process } from 'host:node';",
@@ -4397,36 +5110,7 @@ Deno.test('analyzeProject preserves unknown annotation namespaces and their nest
     workingDirectory: tempDirectory,
   });
 
-  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1007']);
-  assertEquals(
-    result.diagnostics[0]?.message,
-    'Unknown soundscript annotation. `#[eq]` is not registered.',
-  );
-  assertEquals(result.diagnostics[0]?.metadata?.rule, 'unknown_annotation');
-  assertEquals(result.diagnostics[0]?.metadata?.primarySymbol, '#[eq]');
-  assertEquals(result.diagnostics[0]?.metadata?.replacementFamily, 'registered_annotation_name');
-  assertEquals(result.diagnostics[0]?.metadata?.fixability, 'local_rewrite');
-  assertEquals(
-    result.diagnostics[0]?.metadata?.evidence?.map((fact) => `${fact.label}:${fact.value}`),
-    ['annotationName:eq', 'registeredBuiltins:extern, interop, newtype, unsafe, value, variance'],
-  );
-  assertEquals(
-    result.diagnostics[0]?.metadata?.counterexample,
-    'An unknown annotation can look like a checked contract even though soundscript gives it no semantics.',
-  );
-  assertEquals(
-    result.diagnostics[0]?.metadata?.example,
-    'Replace `#[eq]` with a registered builtin annotation such as `#[extern]`, or remove it until that directive exists.',
-  );
-  assertEquals(result.diagnostics[0]?.notes, [
-    '`#[eq]` is not a registered builtin soundscript annotation.',
-    'Registered builtin annotations in v1 are `#[extern]`, `#[interop]`, `#[newtype]`, `#[unsafe]`, `#[value]`, and `#[variance(...)]`.',
-    'Example: Replace `#[eq]` with a registered builtin annotation such as `#[extern]`, or remove it until that directive exists.',
-  ]);
-  assertEquals(
-    result.diagnostics[0]?.hint,
-    'Rename the annotation to a registered builtin, or remove it until that directive exists.',
-  );
+  assertEquals(result.diagnostics, []);
 });
 
 Deno.test('analyzeProject gives structured guidance for duplicate annotations in one block', async () => {
@@ -4485,6 +5169,2748 @@ Deno.test('analyzeProject gives structured guidance for duplicate annotations in
   assertEquals(
     result.diagnostics[0]?.hint,
     'Keep a single annotation entry for each name in the attached block.',
+  );
+});
+
+Deno.test('analyzeProject accepts local forwarding annotations and callback parameter contracts', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/index.sts': [
+      'function each(',
+      '  values: number[],',
+      '  // #[effects(forbid: [fails])]',
+      '  callback: (value: number) => void,',
+      '): void {',
+      '  for (const value of values) {',
+      '    callback(value);',
+      '  }',
+      '}',
+      '',
+      '// #[effects(forward: [callback])]',
+      'function runOnce(callback: () => void): void {',
+      '  callback();',
+      '}',
+      '',
+      'runOnce(() => each([1, 2, 3], () => {}));',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics, []);
+});
+
+Deno.test('analyzeProject rejects bodyful forbid contracts with unresolved forwarded callbacks', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/index.sts': [
+      '// #[effects(forbid: [fails], forward: [callback])]',
+      'function runOnce(callback: () => void): void {',
+      '  callback();',
+      '}',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1041']);
+  assertEquals(result.diagnostics[0]?.metadata?.primarySymbol, 'runOnce');
+  assertEquals(
+    result.diagnostics[0]?.metadata?.evidence?.find((entry) =>
+      entry.label === 'unknownEffectReasons'
+    )?.value,
+    'unresolved forwarded callback (callback)',
+  );
+});
+
+Deno.test('analyzeProject reports failing forwarded member steps in bodyful forbid diagnostics', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/index.sts': [
+      'interface Decoder<T> {',
+      '  readonly decode: (value: number) => T;',
+      '}',
+      '',
+      'interface DecoderWithOptionalInner<T> extends Decoder<T> {',
+      '  readonly inner?: Decoder<T>;',
+      '}',
+      '',
+      '// #[effects(forbid: [fails], forward: [decoder.inner.decode])]',
+      'function use(decoder: DecoderWithOptionalInner<number>, value: number): number {',
+      '  return value;',
+      '}',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1041']);
+  assertEquals(result.diagnostics[0]?.metadata?.primarySymbol, 'use');
+  assertEquals(
+    result.diagnostics[0]?.metadata?.evidence?.find((entry) =>
+      entry.label === 'unknownEffectReasons'
+    )?.value,
+    'unresolved forwarded callback (decoder.inner.decode; failed at decode)',
+  );
+});
+
+Deno.test('analyzeProject accepts open dotted effects and forward transforms', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/index.sts': [
+      '// #[extern]',
+      '// #[effects(add: [suspend.await], forward: [{ from: callback, rewrite: [{ from: fails, to: fails.rejects }] }])]',
+      'declare function toPromise<T>(callback: () => T): Promise<T>;',
+      '',
+      '// #[extern]',
+      '// #[effects(add: [], forward: [{ from: callback, handle: [fails] }])]',
+      'declare function resultOfLike<T>(callback: () => T): T | Error;',
+      '',
+      '// #[effects(forbid: [fails.throws])]',
+      'function wrapThrowsAsRejects(): Promise<unknown> {',
+      '  return toPromise(() => JSON.parse("1"));',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function captureFailures(text: string): unknown {',
+      '  return resultOfLike(() => JSON.parse(text));',
+      '}',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics, []);
+});
+
+Deno.test('analyzeProject allows bodyful add alongside inferred effects', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': createSoundscriptOnlyTsconfig(),
+    'src/index.sts': [
+      '// #[extern]',
+      '// #[effects(add: [host.io, host.node.fs, suspend.await])]',
+      'declare function readRemote(path: string): Promise<string>;',
+      '',
+      '// #[effects(add: [host.db.query])]',
+      'export async function taggedRead(path: string): Promise<string> {',
+      '  return await readRemote(path);',
+      '}',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics, []);
+});
+
+Deno.test('analyzeProject keeps inferred conflicts under bodyful add contracts', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': createSoundscriptOnlyTsconfig(),
+    'src/index.sts': [
+      '// #[extern]',
+      '// #[effects(add: [host.io, host.node.fs, suspend.await])]',
+      'declare function readRemote(path: string): Promise<string>;',
+      '',
+      '// #[effects(add: [host.db.query], forbid: [host.io])]',
+      'export async function invalidTaggedRead(path: string): Promise<string> {',
+      '  return await readRemote(path);',
+      '}',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1041']);
+  assertEquals(result.diagnostics[0]?.metadata?.rule, 'effect_contract_violation');
+  assertEquals(result.diagnostics[0]?.metadata?.primarySymbol, 'invalidTaggedRead');
+});
+
+Deno.test('analyzeProject keeps source and declaration helper surfaces aligned under forbid contracts', async () => {
+  const sourceProjectDirectory = await createTempProject({
+    'tsconfig.json': createSoundscriptOnlyTsconfig(),
+    'src/helpers.sts': [
+      'export interface Decoder<T> {',
+      '  readonly decode: (value: unknown) => T;',
+      '}',
+      '',
+      '// #[extern]',
+      '// #[effects(add: [host.io, host.node.fs, suspend.await])]',
+      'declare function readRemote(path: string): Promise<string>;',
+      '',
+      'export function parseAndDecode<T>(text: string, decoder: Decoder<T>): T {',
+      '  return decoder.decode(JSON.parse(text));',
+      '}',
+      '',
+      '// #[effects(add: [host.db.transaction])]',
+      'export async function transactionRead(path: string): Promise<string> {',
+      '  return await readRemote(path);',
+      '}',
+      '',
+      '// #[extern]',
+      'declare const console: typeof globalThis.console;',
+      '',
+      'export function logValue(value: unknown): void {',
+      '  console.log(value);',
+      '}',
+      '',
+    ].join('\n'),
+    'src/index.sts': [
+      'import { type Decoder, logValue, parseAndDecode, transactionRead } from "./helpers";',
+      '',
+      'const failingDecoder: Decoder<number> = {',
+      '  decode(_value: unknown): number {',
+      '    throw new Error("boom");',
+      '  },',
+      '};',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function useParse(text: string): number {',
+      '  return parseAndDecode(text, failingDecoder);',
+      '}',
+      '',
+      '// #[effects(forbid: [host.io])]',
+      'async function useTransaction(path: string): Promise<string> {',
+      '  return await transactionRead(path);',
+      '}',
+      '',
+      '// #[effects(forbid: [host.ffi])]',
+      'function useLog(value: unknown): void {',
+      '  logValue(value);',
+      '}',
+      '',
+    ].join('\n'),
+  });
+  const declarationProjectDirectory = await createTempProject({
+    'tsconfig.json': createSoundscriptOnlyTsconfig(),
+    'node_modules/generated-helpers/package.json': JSON.stringify(
+      {
+        name: 'generated-helpers',
+        version: '1.0.0',
+        type: 'module',
+        exports: {
+          '.': {
+            types: './dist/index.d.ts',
+            import: './dist/index.js',
+          },
+        },
+      },
+      null,
+      2,
+    ),
+    'node_modules/generated-helpers/dist/index.js': 'export {};\n',
+    'node_modules/generated-helpers/dist/index.d.ts': [
+      'export interface Decoder<T> {',
+      '  readonly decode: (value: unknown) => T;',
+      '}',
+      '',
+      '// #[effects(add: [fails.throws], forward: [decoder.decode], unknown: [direct])]',
+      'export declare function parseAndDecode<T>(text: string, decoder: Decoder<T>): T;',
+      '',
+      '// #[effects(add: [host.db.transaction, host.io, host.node.fs, suspend.await])]',
+      'export declare function transactionRead(path: string): Promise<string>;',
+      '',
+      '// #[effects(add: [host.ffi])]',
+      'export declare function logValue(value: unknown): void;',
+      '',
+    ].join('\n'),
+    'src/index.sts': [
+      'import { type Decoder, logValue, parseAndDecode, transactionRead } from "generated-helpers";',
+      '',
+      'const failingDecoder: Decoder<number> = {',
+      '  decode(_value: unknown): number {',
+      '    throw new Error("boom");',
+      '  },',
+      '};',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function useParse(text: string): number {',
+      '  return parseAndDecode(text, failingDecoder);',
+      '}',
+      '',
+      '// #[effects(forbid: [host.io])]',
+      'async function useTransaction(path: string): Promise<string> {',
+      '  return await transactionRead(path);',
+      '}',
+      '',
+      '// #[effects(forbid: [host.ffi])]',
+      'function useLog(value: unknown): void {',
+      '  logValue(value);',
+      '}',
+      '',
+    ].join('\n'),
+  });
+
+  const sourceResult = await analyzeProject({
+    projectPath: join(sourceProjectDirectory, 'tsconfig.json'),
+    workingDirectory: sourceProjectDirectory,
+  });
+  const declarationResult = await analyzeProject({
+    projectPath: join(declarationProjectDirectory, 'tsconfig.json'),
+    workingDirectory: declarationProjectDirectory,
+  });
+
+  const simplifyDiagnostics = (result: Awaited<ReturnType<typeof analyzeProject>>) =>
+    result.diagnostics
+      .filter((diagnostic) => diagnostic.code !== 'SOUND1005')
+      .map((diagnostic) => ({
+        code: diagnostic.code,
+        forbiddenEffects: diagnostic.metadata?.evidence?.find((entry) =>
+          entry.label === 'forbiddenEffects'
+        )
+          ?.value,
+        primarySymbol: diagnostic.metadata?.primarySymbol,
+        rule: diagnostic.metadata?.rule,
+      }));
+
+  assertEquals(simplifyDiagnostics(sourceResult), [
+    {
+      code: 'SOUND1041',
+      forbiddenEffects: 'fails',
+      primarySymbol: 'useParse',
+      rule: 'effect_contract_violation',
+    },
+    {
+      code: 'SOUND1041',
+      forbiddenEffects: 'host.io',
+      primarySymbol: 'useTransaction',
+      rule: 'effect_contract_violation',
+    },
+    {
+      code: 'SOUND1041',
+      forbiddenEffects: 'host.ffi',
+      primarySymbol: 'useLog',
+      rule: 'effect_contract_violation',
+    },
+  ]);
+  assertEquals(simplifyDiagnostics(declarationResult), simplifyDiagnostics(sourceResult));
+});
+
+Deno.test('analyzeProject rejects effects annotations on overload signatures with implementations', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': createSoundscriptOnlyTsconfig(),
+    'src/index.sts': [
+      '// #[effects(add: [host.io])]',
+      'export function parse(input: string): string;',
+      'export function parse(input: number): string;',
+      '// #[effects(add: [host.io])]',
+      'export function parse(input: string | number): string {',
+      '  return String(input);',
+      '}',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1040']);
+  assertEquals(result.diagnostics[0]?.metadata?.rule, 'invalid_effect_annotation');
+});
+
+Deno.test('analyzeProject rejects parameter effect annotations on overload signatures with implementations', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': createSoundscriptOnlyTsconfig(),
+    'src/index.sts': [
+      'export function wrap(',
+      '  // #[effects(forbid: [fails])]',
+      '  callback: () => number,',
+      '): number;',
+      'export function wrap(callback: () => number, label: string): number;',
+      '// #[effects(add: [])]',
+      'export function wrap(callback: () => number, _label?: string): number {',
+      '  return callback();',
+      '}',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1040']);
+  assertEquals(result.diagnostics[0]?.metadata?.rule, 'invalid_effect_annotation');
+});
+
+Deno.test('analyzeProject rejects deprecated via forwarding syntax', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/index.sts': [
+      '// #[extern]',
+      '// #[effects(add: [], via: [callback])]',
+      'declare function wrap<T>(callback: () => T): T;',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1040']);
+  assertEquals(result.diagnostics[0]?.metadata?.rule, 'invalid_effect_annotation');
+});
+
+Deno.test('analyzeProject discharges local failures handled by try catch', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/index.sts': [
+      '// #[effects(forbid: [fails])]',
+      'function parseSafely(text: string): unknown {',
+      '  try {',
+      '    return JSON.parse(text);',
+      '  } catch (_error) {',
+      '    return null;',
+      '  }',
+      '}',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics, []);
+});
+
+Deno.test('analyzeProject enforces local forbid fails contracts against inferred throw behavior', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/index.sts': [
+      '// #[effects(forbid: [fails])]',
+      'function explode(): number {',
+      '  throw new Error("boom");',
+      '}',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1041']);
+  assertEquals(result.diagnostics[0]?.metadata?.rule, 'effect_contract_violation');
+  assertEquals(result.diagnostics[0]?.metadata?.primarySymbol, 'explode');
+});
+
+Deno.test('analyzeProject accepts pure Promise continuations under forbid fails contracts', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/index.sts': [
+      '// #[effects(forbid: [fails])]',
+      'function chain(source: Promise<number>): Promise<number> {',
+      '  return source.then((value) => value + 1);',
+      '}',
+      '',
+      'function forwardThen(',
+      '  source: Promise<number>,',
+      '  // #[effects(forbid: [fails])]',
+      '  project: (value: number) => number,',
+      '): Promise<number> {',
+      '  return source.then(project);',
+      '}',
+      '',
+      'const plusOne = (value: number): number => value + 1;',
+      'void chain(Promise.resolve(1));',
+      'void forwardThen(Promise.resolve(1), plusOne);',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics, []);
+});
+
+Deno.test('analyzeProject accepts sts:async task constructors under forbid contracts', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/index.sts': [
+      "import * as async from 'sts:async';",
+      "import type { Task } from 'sts:async';",
+      '',
+      '// #[effects(forbid: [fails, suspend, mut, host])]',
+      'function build(project: (value: number) => number): Task<number> {',
+      '  const seed = async.fromPromise(async () => 1);',
+      '  return async.map(seed, project);',
+      '}',
+      '',
+      'const plusOne = (value: number): number => value + 1;',
+      'void build(plusOne);',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics, []);
+});
+
+Deno.test('analyzeProject accepts builtin collection readers and constructors under forbid contracts', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/index.sts': [
+      '// #[effects(forbid: [fails, suspend, mut, host])]',
+      'function build(): number {',
+      '  const map = new Map<string, number>();',
+      '  const set = new Set<number>();',
+      '  return (map.has("x") ? 1 : 0) + (set.has(1) ? 1 : 0);',
+      '}',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics, []);
+});
+
+Deno.test('analyzeProject tracks builtin host and mut effects under forbid contracts', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/index.sts': [
+      '// #[effects(forbid: [host])]',
+      'function sample(): number {',
+      '  return Math.random() + Date.now();',
+      '}',
+      '',
+      '// #[effects(forbid: [mut])]',
+      'function update(map: Map<string, number>, set: Set<number>): void {',
+      '  map.set("x", 1);',
+      '  set.add(1);',
+      '}',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1041', 'SOUND1041']);
+  assertEquals(result.diagnostics[0]?.metadata?.primarySymbol, 'sample');
+  assertEquals(result.diagnostics[1]?.metadata?.primarySymbol, 'update');
+});
+
+Deno.test('analyzeProject allows fresh local scratch mutation under forbid mut', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': createBrowserTsconfig(),
+    'src/index.sts': [
+      '// #[interop]',
+      'import { window } from "host:dom";',
+      '',
+      'class Counter {',
+      '  value = 0;',
+      '  set(value: number): void {',
+      '    this.value = value;',
+      '  }',
+      '}',
+      '',
+      '// #[effects(forbid: [mut])]',
+      'function buildRecord(): { value: number } {',
+      '  const box = { value: 0 };',
+      '  box.value = 1;',
+      '  return box;',
+      '}',
+      '',
+      '// #[effects(forbid: [mut])]',
+      'function buildRecordAlias(): { value: number } {',
+      '  const box = { value: 0 };',
+      '  const out = box;',
+      '  out.value = 1;',
+      '  return out;',
+      '}',
+      '',
+      '// #[effects(forbid: [mut])]',
+      'function buildList(): number[] {',
+      '  const values = [0];',
+      '  values[0] = 1;',
+      '  return values;',
+      '}',
+      '',
+      '// #[effects(forbid: [mut])]',
+      'function buildMap(): Map<string, number> {',
+      '  const map = new Map<string, number>();',
+      '  map.set("value", 1);',
+      '  return map;',
+      '}',
+      '',
+      '// #[effects(forbid: [mut])]',
+      'function buildMapAlias(): Map<string, number> {',
+      '  const map = new Map<string, number>();',
+      '  const out = map;',
+      '  out.set("value", 1);',
+      '  return out;',
+      '}',
+      '',
+      '// #[effects(forbid: [mut])]',
+      'function buildSet(): Set<number> {',
+      '  const values = new Set<number>();',
+      '  values.add(1);',
+      '  return values;',
+      '}',
+      '',
+      '// #[effects(forbid: [mut])]',
+      'function buildSetAlias(): Set<number> {',
+      '  const values = new Set<number>();',
+      '  const out = values;',
+      '  out.add(1);',
+      '  return out;',
+      '}',
+      '',
+      '// #[effects(forbid: [mut])]',
+      'function buildWeakMap(): WeakMap<object, number> {',
+      '  const key = {};',
+      '  const values = new WeakMap<object, number>();',
+      '  values.set(key, 1);',
+      '  return values;',
+      '}',
+      '',
+      '// #[effects(forbid: [mut])]',
+      'function buildWeakMapAlias(): WeakMap<object, number> {',
+      '  const key = {};',
+      '  const values = new WeakMap<object, number>();',
+      '  const out = values;',
+      '  out.set(key, 1);',
+      '  return out;',
+      '}',
+      '',
+      '// #[effects(forbid: [mut])]',
+      'function buildWeakSet(): WeakSet<object> {',
+      '  const key = {};',
+      '  const values = new WeakSet<object>();',
+      '  values.add(key);',
+      '  return values;',
+      '}',
+      '',
+      '// #[effects(forbid: [mut])]',
+      'function buildWeakSetAlias(): WeakSet<object> {',
+      '  const key = {};',
+      '  const values = new WeakSet<object>();',
+      '  const out = values;',
+      '  out.add(key);',
+      '  return out;',
+      '}',
+      '',
+      '// #[effects(forbid: [mut])]',
+      'function buildParams(): URLSearchParams {',
+      '  const params = new window.URLSearchParams();',
+      '  params.set("q", "music");',
+      '  return params;',
+      '}',
+      '',
+      '// #[effects(forbid: [mut])]',
+      'function buildParamsAlias(): URLSearchParams {',
+      '  const params = new window.URLSearchParams();',
+      '  const out = params;',
+      '  out.set("q", "music");',
+      '  return out;',
+      '}',
+      '',
+      '// #[effects(forbid: [mut])]',
+      'function buildFormData(): FormData {',
+      '  const data = new window.FormData();',
+      '  data.append("q", "music");',
+      '  return data;',
+      '}',
+      '',
+      '// #[effects(forbid: [mut])]',
+      'function buildFormDataAlias(): FormData {',
+      '  const data = new window.FormData();',
+      '  const out = data;',
+      '  out.append("q", "music");',
+      '  return out;',
+      '}',
+      '',
+      '// #[effects(forbid: [mut])]',
+      'function buildHeaders(): Headers {',
+      '  const headers = new window.Headers();',
+      '  headers.set("accept", "application/json");',
+      '  return headers;',
+      '}',
+      '',
+      '// #[effects(forbid: [mut])]',
+      'function buildHeadersAlias(): Headers {',
+      '  const headers = new window.Headers();',
+      '  const out = headers;',
+      '  out.set("accept", "application/json");',
+      '  return out;',
+      '}',
+      '',
+      '// #[effects(forbid: [mut])]',
+      'function buildCustomCounter(): Counter {',
+      '  const counter = new Counter();',
+      '  counter.set(1);',
+      '  return counter;',
+      '}',
+      '',
+      '// #[effects(forbid: [mut])]',
+      'function escapeBeforeMutate(',
+      '  // #[effects(forbid: [fails, suspend, mut, host])]',
+      '  store: (value: { value: number }) => void,',
+      '): { value: number } {',
+      '  const box = { value: 0 };',
+      '  store(box);',
+      '  box.value = 1;',
+      '  return box;',
+      '}',
+      '',
+      '// #[effects(forbid: [mut])]',
+      'function escapeMapBeforeMutate(',
+      '  // #[effects(forbid: [fails, suspend, mut, host])]',
+      '  store: (value: Map<string, number>) => void,',
+      '): Map<string, number> {',
+      '  const map = new Map<string, number>();',
+      '  store(map);',
+      '  map.set("value", 1);',
+      '  return map;',
+      '}',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), [
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+  ]);
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.metadata?.primarySymbol), [
+    'buildCustomCounter',
+    'escapeBeforeMutate',
+    'escapeMapBeforeMutate',
+  ]);
+});
+
+Deno.test('analyzeProject preserves narrowing across fresh local builder mutation', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/index.sts': [
+      'function useMap(box: { value: string | null }): string {',
+      '  if (box.value !== null) {',
+      '    const map = new Map<string, number>();',
+      '    const out = map;',
+      '    out.set("value", 1);',
+      '    const value: string = box.value;',
+      '    return value;',
+      '  }',
+      '  return "";',
+      '}',
+      '',
+      'function useRecord(box: { value: string | null }): string {',
+      '  if (box.value !== null) {',
+      '    const record = { count: 0 };',
+      '    const out = record;',
+      '    out.count = 1;',
+      '    const value: string = box.value;',
+      '    return value;',
+      '  }',
+      '  return "";',
+      '}',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics, []);
+});
+
+Deno.test('analyzeProject reports fresh local conservative mut reasons in forbid diagnostics', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/index.sts': [
+      'class Counter {',
+      '  value = 0;',
+      '  set(value: number): void {',
+      '    this.value = value;',
+      '  }',
+      '}',
+      '',
+      '// #[effects(forbid: [mut])]',
+      'function buildCustomCounter(): Counter {',
+      '  const counter = new Counter();',
+      '  counter.set(1);',
+      '  return counter;',
+      '}',
+      '',
+      '// #[effects(forbid: [mut])]',
+      'function escapeBeforeMutate(',
+      '  // #[effects(forbid: [fails, suspend, mut, host])]',
+      '  store: (value: { value: number }) => void,',
+      '): { value: number } {',
+      '  const box = { value: 0 };',
+      '  store(box);',
+      '  box.value = 1;',
+      '  return box;',
+      '}',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1041', 'SOUND1041']);
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.metadata?.primarySymbol), [
+    'buildCustomCounter',
+    'escapeBeforeMutate',
+  ]);
+  assertEquals(
+    result.diagnostics[0]?.metadata?.evidence?.find((entry) =>
+      entry.label === 'conservativeMutReasons'
+    )
+      ?.value,
+    'unsupported mutator family (Counter.set)',
+  );
+  assertEquals(
+    result.diagnostics[1]?.metadata?.evidence?.find((entry) =>
+      entry.label === 'conservativeMutReasons'
+    )
+      ?.value,
+    'escaped via argument',
+  );
+});
+
+Deno.test('analyzeProject keeps fresh local mut suppression conservative for indirect or unstable builder paths', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/index.sts': [
+      'let observed = 0;',
+      '',
+      'function mutateOuter(): void {',
+      '  observed += 1;',
+      '}',
+      '',
+      'class MyMap extends Map<string, number> {',
+      '  override set(key: string, value: number): this {',
+      '    mutateOuter();',
+      '    return super.set(key, value);',
+      '  }',
+      '}',
+      '',
+      '// #[effects(forbid: [mut])]',
+      'function storedRecordInContainer(): { value: number } {',
+      '  const box = { value: 0 };',
+      '  const holder = { box };',
+      '  holder.box.value = 1;',
+      '  return box;',
+      '}',
+      '',
+      '// #[effects(forbid: [mut])]',
+      'function storedMapInArray(): Map<string, number> {',
+      '  const map = new Map<string, number>();',
+      '  const holders: [Map<string, number>] = [map];',
+      '  holders[0].set("value", 1);',
+      '  return map;',
+      '}',
+      '',
+      '// #[effects(forbid: [mut])]',
+      'function capturedBeforeMutate(): { value: number } {',
+      '  const box = { value: 0 };',
+      '  const read = (): number => box.value;',
+      '  void read;',
+      '  box.value = 1;',
+      '  return box;',
+      '}',
+      '',
+      '// #[effects(forbid: [mut])]',
+      'function unstableAliasBeforeMutate(): { value: number } {',
+      '  const box = { value: 0 };',
+      '  let alias = box;',
+      '  alias = { value: 1 };',
+      '  box.value = 1;',
+      '  return box;',
+      '}',
+      '',
+      '// #[effects(forbid: [mut])]',
+      'function subclassedMapAsBase(): Map<string, number> {',
+      '  const map: Map<string, number> = new MyMap();',
+      '  map.set("value", 1);',
+      '  return map;',
+      '}',
+      '',
+      '// #[effects(forbid: [mut])]',
+      'function boundMapMethod(): Map<string, number> {',
+      '  const map = new Map<string, number>();',
+      '  const setValue = map.set.bind(map);',
+      '  setValue("value", 1);',
+      '  return map;',
+      '}',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), [
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+  ]);
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.metadata?.primarySymbol), [
+    'storedRecordInContainer',
+    'storedMapInArray',
+    'capturedBeforeMutate',
+    'unstableAliasBeforeMutate',
+    'subclassedMapAsBase',
+    'boundMapMethod',
+  ]);
+});
+
+Deno.test('analyzeProject tracks host-backed globals and stdlib wrappers under forbid contracts', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/index.sts': [
+      '// #[extern]',
+      'declare const fetch: typeof globalThis.fetch;',
+      '// #[extern]',
+      'declare const crypto: typeof globalThis.crypto;',
+      '',
+      'import { fetch as stdFetch } from "sts:fetch";',
+      'import { getRandomValues } from "sts:random";',
+      '',
+      '// #[effects(forbid: [host, suspend])]',
+      'function load() {',
+      '  return fetch("https://example.com");',
+      '}',
+      '',
+      '// #[effects(forbid: [host])]',
+      'function uuid(): string {',
+      '  return crypto.randomUUID();',
+      '}',
+      '',
+      '// #[effects(forbid: [host, mut])]',
+      'function fill(bytes: Uint8Array): Uint8Array {',
+      '  return getRandomValues(bytes);',
+      '}',
+      '',
+      '// #[effects(forbid: [host, suspend])]',
+      'function loadStd() {',
+      '  return stdFetch("https://example.com");',
+      '}',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), [
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+  ]);
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.metadata?.primarySymbol), [
+    'load',
+    'uuid',
+    'fill',
+    'loadStd',
+  ]);
+});
+
+Deno.test('analyzeProject treats deferred host schedulers as host effects without immediate callback forwarding', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': createBrowserTsconfig(),
+    'src/index.sts': [
+      '// #[interop]',
+      'import { window } from "host:dom";',
+      '',
+      '// #[effects(forbid: [host])]',
+      'function schedule(): void {',
+      '  window.queueMicrotask(() => {});',
+      '  window.setTimeout(() => {}, 0);',
+      '  window.setInterval(() => {}, 10);',
+      '  window.requestIdleCallback(() => {});',
+      '}',
+      '',
+      '// #[effects(forbid: [mut])]',
+      'function deferMutation(map: Map<string, number>): void {',
+      '  window.setTimeout(() => {',
+      '    map.set("x", 1);',
+      '  }, 0);',
+      '}',
+      '',
+      '// #[effects(forbid: [mut])]',
+      'function deferIdleMutation(map: Map<string, number>): void {',
+      '  window.requestIdleCallback(() => {',
+      '    map.set("x", 1);',
+      '  });',
+      '}',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), [
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+  ]);
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.metadata?.primarySymbol), [
+    'schedule',
+    'deferMutation',
+    'deferIdleMutation',
+  ]);
+});
+
+Deno.test('analyzeProject tracks fetch host-object families and stdlib wrappers under effect contracts', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': createBrowserTsconfig(),
+    'src/index.sts': [
+      '// #[interop]',
+      'import { window } from "host:dom";',
+      '',
+      'import { Headers as FetchHeaders, Request as FetchRequest, Response as FetchResponse } from "sts:fetch";',
+      'import { crypto as randomCrypto } from "sts:random";',
+      '',
+      '// #[effects(forbid: [host])]',
+      'function buildDomObjects(): void {',
+      '  const headers = new window.Headers({ accept: "application/json" });',
+      '  const request = new window.Request("https://example.com", { headers });',
+      '  const response = new window.Response("ok");',
+      '  void request;',
+      '  void response;',
+      '}',
+      '',
+      '// #[effects(forbid: [mut])]',
+      'function mutateDomHeaders(headers: Headers): void {',
+      '  headers.set("x-id", "123");',
+      '}',
+      '',
+      '// #[effects(forbid: [fails, suspend, mut, host])]',
+      'function readDomHeaders(headers: Headers): boolean {',
+      '  return headers.has("x-id");',
+      '}',
+      '',
+      '// #[effects(forbid: [host, suspend])]',
+      'function readDomRequest(request: Request) {',
+      '  return request.text();',
+      '}',
+      '',
+      '// #[effects(forbid: [host])]',
+      'function buildStdObjects(): void {',
+      '  const headers = new FetchHeaders({ accept: "application/json" });',
+      '  const request = new FetchRequest("https://example.com", { headers });',
+      '  const response = new FetchResponse("ok");',
+      '  void request;',
+      '  void response;',
+      '}',
+      '',
+      '// #[effects(forbid: [mut])]',
+      'function mutateStdHeaders(headers: FetchHeaders): void {',
+      '  headers.set("x-id", "123");',
+      '}',
+      '',
+      '// #[effects(forbid: [fails, suspend, mut, host])]',
+      'function readStdHeaders(headers: FetchHeaders): boolean {',
+      '  return headers.has("x-id");',
+      '}',
+      '',
+      '// #[effects(forbid: [host, suspend])]',
+      'function readStdResponse(response: FetchResponse) {',
+      '  return response.text();',
+      '}',
+      '',
+      '// #[effects(forbid: [host, mut])]',
+      'function fillViaCrypto(bytes: Uint8Array): Uint8Array {',
+      '  return randomCrypto.getRandomValues(bytes);',
+      '}',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), [
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+  ]);
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.metadata?.primarySymbol), [
+    'buildDomObjects',
+    'mutateDomHeaders',
+    'readDomRequest',
+    'buildStdObjects',
+    'mutateStdHeaders',
+    'readStdResponse',
+    'fillViaCrypto',
+  ]);
+});
+
+Deno.test('analyzeProject tracks URL and text builtins under effect contracts', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': createBrowserTsconfig(),
+    'src/index.sts': [
+      '// #[interop]',
+      'import { window } from "host:dom";',
+      '',
+      'import { URL as StdURL, URLSearchParams as StdURLSearchParams } from "sts:url";',
+      'import { TextEncoder as StdTextEncoder, TextDecoder as StdTextDecoder } from "sts:text";',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function buildDomUrl(base: string): URL {',
+      '  return new window.URL("/x", base);',
+      '}',
+      '',
+      '// #[effects(forbid: [fails, suspend, mut, host])]',
+      'function canParseDomUrl(base: string): boolean {',
+      '  return window.URL.canParse("/x", base);',
+      '}',
+      '',
+      '// #[effects(forbid: [mut])]',
+      'function mutateDomParams(params: URLSearchParams): void {',
+      '  params.set("q", "music");',
+      '}',
+      '',
+      '// #[effects(forbid: [fails, suspend, mut, host])]',
+      'function readDomParams(params: URLSearchParams): boolean {',
+      '  return params.has("q");',
+      '}',
+      '',
+      '// #[effects(forbid: [fails, suspend, mut, host])]',
+      'function encodeDomText(input: string) {',
+      '  return new window.TextEncoder().encode(input);',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function decodeDomText(bytes: Uint8Array): string {',
+      '  return new window.TextDecoder("utf-8").decode(bytes);',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function buildStdUrl(base: string): StdURL {',
+      '  return new StdURL("/x", base);',
+      '}',
+      '',
+      '// #[effects(forbid: [mut])]',
+      'function mutateStdParams(params: StdURLSearchParams): void {',
+      '  params.set("q", "music");',
+      '}',
+      '',
+      '// #[effects(forbid: [fails, suspend, mut, host])]',
+      'function readStdParams(params: StdURLSearchParams): boolean {',
+      '  return params.has("q");',
+      '}',
+      '',
+      '// #[effects(forbid: [fails, suspend, mut, host])]',
+      'function encodeStdText(input: string) {',
+      '  return new StdTextEncoder().encode(input);',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function decodeStdText(bytes: Uint8Array): string {',
+      '  return new StdTextDecoder("utf-8").decode(bytes);',
+      '}',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), [
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+  ]);
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.metadata?.primarySymbol), [
+    'buildDomUrl',
+    'mutateDomParams',
+    'decodeDomText',
+    'buildStdUrl',
+    'mutateStdParams',
+    'decodeStdText',
+  ]);
+});
+
+Deno.test('analyzeProject tracks abort and cloning builtins under effect contracts', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': createBrowserTsconfig(),
+    'src/index.sts': [
+      '// #[interop]',
+      'import { window } from "host:dom";',
+      '',
+      '// #[effects(forbid: [host])]',
+      'function buildController(): AbortController {',
+      '  return new window.AbortController();',
+      '}',
+      '',
+      '// #[effects(forbid: [host, mut])]',
+      'function abortController(controller: AbortController): void {',
+      '  controller.abort();',
+      '}',
+      '',
+      '// #[effects(forbid: [host])]',
+      'function makeAbortedSignal(): AbortSignal {',
+      '  return window.AbortSignal.abort("boom");',
+      '}',
+      '',
+      '// #[effects(forbid: [host])]',
+      'function combineSignals(left: AbortSignal, right: AbortSignal): AbortSignal {',
+      '  return window.AbortSignal.any([left, right]);',
+      '}',
+      '',
+      '// #[effects(forbid: [host])]',
+      'function timeoutSignal(): AbortSignal {',
+      '  return window.AbortSignal.timeout(10);',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function ensureNotAborted(signal: AbortSignal): void {',
+      '  signal.throwIfAborted();',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function cloneValue<T>(value: T): T {',
+      '  return window.structuredClone(value);',
+      '}',
+      '',
+      '// #[effects(forbid: [fails, suspend, mut, host])]',
+      'function parseUrl(value: string): URL | null {',
+      '  return window.URL.parse(value);',
+      '}',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), [
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+  ]);
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.metadata?.primarySymbol), [
+    'buildController',
+    'abortController',
+    'makeAbortedSignal',
+    'combineSignals',
+    'timeoutSignal',
+    'ensureNotAborted',
+    'cloneValue',
+  ]);
+});
+
+Deno.test('analyzeProject tracks DOM listener and object URL builtins under effect contracts', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': createBrowserTsconfig(),
+    'src/index.sts': [
+      '// #[interop]',
+      'import { window } from "host:dom";',
+      '',
+      'let registered = 0;',
+      '',
+      '// #[effects(forbid: [fails, suspend, mut, host])]',
+      'function buildBlob(): Blob {',
+      '  return new window.Blob(["ok"]);',
+      '}',
+      '',
+      '// #[effects(forbid: [host])]',
+      'function registerAbortListener(signal: AbortSignal): void {',
+      '  signal.addEventListener("abort", () => {',
+      '    registered += 1;',
+      '  });',
+      '}',
+      '',
+      '// #[effects(forbid: [host])]',
+      'function unregisterAbortListener(signal: AbortSignal, listener: (event: Event) => void): void {',
+      '  signal.removeEventListener("abort", listener);',
+      '}',
+      '',
+      '// #[effects(forbid: [host])]',
+      'function registerWindowListener(listener: (event: Event) => void): void {',
+      '  window.addEventListener("message", listener);',
+      '}',
+      '',
+      '// #[effects(forbid: [host])]',
+      'function unregisterWindowListener(listener: (event: Event) => void): void {',
+      '  window.removeEventListener("message", listener);',
+      '}',
+      '',
+      '// #[effects(forbid: [host])]',
+      'function createObjectUrl(blob: Blob): string {',
+      '  return window.URL.createObjectURL(blob);',
+      '}',
+      '',
+      '// #[effects(forbid: [host])]',
+      'function revokeObjectUrl(url: string): void {',
+      '  window.URL.revokeObjectURL(url);',
+      '}',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), [
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+  ]);
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.metadata?.primarySymbol), [
+    'registerAbortListener',
+    'unregisterAbortListener',
+    'registerWindowListener',
+    'unregisterWindowListener',
+    'createObjectUrl',
+    'revokeObjectUrl',
+  ]);
+});
+
+Deno.test('analyzeProject tracks DOM mutation and dispatch builtins under effect contracts', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': createBrowserTsconfig(),
+    'src/index.sts': [
+      '// #[interop]',
+      'import { document, window } from "host:dom";',
+      '',
+      '// #[effects(forbid: [fails, suspend, mut, host])]',
+      'function buildEvent(): Event {',
+      '  return new window.Event("ping");',
+      '}',
+      '',
+      '// #[effects(forbid: [fails, suspend, mut, host])]',
+      'function buildTarget(): EventTarget {',
+      '  return new window.EventTarget();',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function dispatchOnTarget(target: EventTarget): boolean {',
+      '  return target.dispatchEvent(new window.Event("ping"));',
+      '}',
+      '',
+      '// #[effects(forbid: [host])]',
+      'function createDomElement(): HTMLElement {',
+      '  return document.createElement("div");',
+      '}',
+      '',
+      '// #[effects(forbid: [mut])]',
+      'function setDomAttribute(element: Element): void {',
+      '  element.setAttribute("data-id", "1");',
+      '}',
+      '',
+      '// #[effects(forbid: [mut])]',
+      'function removeDomAttributeNs(element: Element): void {',
+      '  element.removeAttributeNS(null, "data-id");',
+      '}',
+      '',
+      '// #[effects(forbid: [mut])]',
+      'function removeDomAttribute(element: Element): void {',
+      '  element.removeAttribute("data-id");',
+      '}',
+      '',
+      '// #[effects(forbid: [host])]',
+      'function appendDomChild(parent: Element, child: Element): Element {',
+      '  return parent.appendChild(child);',
+      '}',
+      '',
+      '// #[effects(forbid: [mut])]',
+      'function removeDomChild(parent: Element, child: Element): Element {',
+      '  return parent.removeChild(child);',
+      '}',
+      '',
+      '// #[effects(forbid: [host])]',
+      'function insertDomChild(parent: Element, child: Element, nextChild: Element | null): Element {',
+      '  return parent.insertBefore(child, nextChild);',
+      '}',
+      '',
+      '// #[effects(forbid: [host])]',
+      'function removeDomNode(child: Element): void {',
+      '  child.remove();',
+      '}',
+      '',
+      '// #[effects(forbid: [host])]',
+      'function replaceDomNode(child: Element, sibling: Element): void {',
+      '  child.replaceWith("prefix", sibling);',
+      '}',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), [
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+  ]);
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.metadata?.primarySymbol), [
+    'dispatchOnTarget',
+    'createDomElement',
+    'setDomAttribute',
+    'removeDomAttributeNs',
+    'removeDomAttribute',
+    'appendDomChild',
+    'removeDomChild',
+    'insertDomChild',
+    'removeDomNode',
+    'replaceDomNode',
+  ]);
+});
+
+Deno.test('analyzeProject tracks browser messaging builtins under effect contracts', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': createBrowserTsconfig(),
+    'src/index.sts': [
+      '// #[interop]',
+      'import { window } from "host:dom";',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function sendWindowMessage(targetOrigin: string): void {',
+      '  window.postMessage({ ok: true }, targetOrigin);',
+      '}',
+      '',
+      '// #[effects(forbid: [host])]',
+      'function openChannel(name: string): BroadcastChannel {',
+      '  return new window.BroadcastChannel(name);',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function sendChannelMessage(channel: BroadcastChannel): void {',
+      '  channel.postMessage({ ok: true });',
+      '}',
+      '',
+      '// #[effects(forbid: [host])]',
+      'function closeChannel(channel: BroadcastChannel): void {',
+      '  channel.close();',
+      '}',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), [
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+  ]);
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.metadata?.primarySymbol), [
+    'sendWindowMessage',
+    'openChannel',
+    'sendChannelMessage',
+    'closeChannel',
+  ]);
+});
+
+Deno.test('analyzeProject tracks worker and socket builtins under effect contracts', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': createBrowserTsconfig(),
+    'src/index.sts': [
+      '// #[interop]',
+      'import { window } from "host:dom";',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function openWorker(scriptUrl: string): Worker {',
+      '  return new window.Worker(scriptUrl, { type: "module" });',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function postWorkerMessage(worker: Worker): void {',
+      '  worker.postMessage({ ok: true });',
+      '}',
+      '',
+      '// #[effects(forbid: [host])]',
+      'function terminateWorker(worker: Worker): void {',
+      '  worker.terminate();',
+      '}',
+      '',
+      '// #[effects(forbid: [host])]',
+      'function openMessageChannel(): MessageChannel {',
+      '  return new window.MessageChannel();',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function postPortMessage(port: MessagePort): void {',
+      '  port.postMessage({ ok: true });',
+      '}',
+      '',
+      '// #[effects(forbid: [host])]',
+      'function startPort(port: MessagePort): void {',
+      '  port.start();',
+      '}',
+      '',
+      '// #[effects(forbid: [host])]',
+      'function closePort(port: MessagePort): void {',
+      '  port.close();',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function openSocket(url: string): WebSocket {',
+      '  return new window.WebSocket(url);',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function sendSocketMessage(socket: WebSocket): void {',
+      '  socket.send("ok");',
+      '}',
+      '',
+      '// #[effects(forbid: [host])]',
+      'function closeSocket(socket: WebSocket): void {',
+      '  socket.close();',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function openEventStream(url: string): EventSource {',
+      '  return new window.EventSource(url);',
+      '}',
+      '',
+      '// #[effects(forbid: [host])]',
+      'function closeEventStream(stream: EventSource): void {',
+      '  stream.close();',
+      '}',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), [
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+  ]);
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.metadata?.primarySymbol), [
+    'openWorker',
+    'postWorkerMessage',
+    'terminateWorker',
+    'openMessageChannel',
+    'postPortMessage',
+    'startPort',
+    'closePort',
+    'openSocket',
+    'sendSocketMessage',
+    'closeSocket',
+    'openEventStream',
+    'closeEventStream',
+  ]);
+});
+
+Deno.test('analyzeProject tracks request and file builtins under effect contracts', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': createBrowserTsconfig(),
+    'src/index.sts': [
+      '// #[interop]',
+      'import { window } from "host:dom";',
+      '',
+      '// #[effects(forbid: [fails, suspend, mut, host])]',
+      'function buildEmptyFormData(): FormData {',
+      '  return new window.FormData();',
+      '}',
+      '',
+      '// #[effects(forbid: [host])]',
+      'function buildFormDataFromForm(form: HTMLFormElement): FormData {',
+      '  return new window.FormData(form);',
+      '}',
+      '',
+      '// #[effects(forbid: [mut])]',
+      'function appendFormData(data: FormData, file: Blob): void {',
+      '  data.append("file", file);',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function readFileText(reader: FileReader, blob: Blob): void {',
+      '  reader.readAsText(blob);',
+      '}',
+      '',
+      '// #[effects(forbid: [host])]',
+      'function buildFileReader(): FileReader {',
+      '  return new window.FileReader();',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function openXmlHttpRequest(xhr: XMLHttpRequest, url: string): void {',
+      '  xhr.open("GET", url);',
+      '}',
+      '',
+      '// #[effects(forbid: [mut])]',
+      'function setXmlHttpRequestHeader(xhr: XMLHttpRequest): void {',
+      '  xhr.setRequestHeader("x-test", "1");',
+      '}',
+      '',
+      '// #[effects(forbid: [host])]',
+      'function sendXmlHttpRequest(xhr: XMLHttpRequest): void {',
+      '  xhr.send();',
+      '}',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), [
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+  ]);
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.metadata?.primarySymbol), [
+    'buildFormDataFromForm',
+    'appendFormData',
+    'readFileText',
+    'buildFileReader',
+    'openXmlHttpRequest',
+    'setXmlHttpRequestHeader',
+    'sendXmlHttpRequest',
+  ]);
+});
+
+Deno.test('analyzeProject enforces forbid contracts across recursive call cycles', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/index.sts': [
+      '// #[extern]',
+      'declare const failure: Error;',
+      '',
+      'function left(flag: boolean): void {',
+      '  if (!flag) {',
+      '    right(false);',
+      '    return;',
+      '  }',
+      '  right(false);',
+      '}',
+      '',
+      'function right(flag: boolean): void {',
+      '  if (!flag) {',
+      '    throw failure;',
+      '  }',
+      '  left(false);',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function useLeft(flag: boolean): void {',
+      '  left(flag);',
+      '}',
+      '',
+      'async function asyncLeft(flag: boolean): Promise<void> {',
+      '  if (!flag) {',
+      '    await asyncRight(false);',
+      '    return;',
+      '  }',
+      '  await asyncRight(false);',
+      '}',
+      '',
+      'async function asyncRight(flag: boolean): Promise<void> {',
+      '  if (!flag) {',
+      '    throw failure;',
+      '  }',
+      '  await asyncLeft(false);',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'async function useAsyncLeft(flag: boolean): Promise<void> {',
+      '  await asyncLeft(flag);',
+      '}',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), [
+    'SOUND1041',
+    'SOUND1041',
+  ]);
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.metadata?.primarySymbol), [
+    'useLeft',
+    'useAsyncLeft',
+  ]);
+});
+
+Deno.test('analyzeProject reports unknown effect reason categories in forbid diagnostics', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': createBrowserTsconfig(),
+    'src/index.sts': [
+      '// #[extern]',
+      'declare function opaqueExtern(): number;',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function callOpaqueExtern(): number {',
+      '  return opaqueExtern();',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function dispatchUnknown(target: EventTarget, event: Event): boolean {',
+      '  return target.dispatchEvent(event);',
+      '}',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1041', 'SOUND1041']);
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.metadata?.primarySymbol), [
+    'callOpaqueExtern',
+    'dispatchUnknown',
+  ]);
+  assertEquals(
+    result.diagnostics.map((diagnostic) =>
+      diagnostic.metadata?.evidence?.find((entry) => entry.label === 'unknownEffectReasons')?.value
+    ),
+    [
+      'unsummarized declaration frontier',
+      'annotation declares unknown direct effects (dispatchEvent)',
+    ],
+  );
+});
+
+Deno.test('analyzeProject includes forwarded path detail in unknown effect reasons', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/index.sts': [
+      'interface Decoder<T> {',
+      '  readonly decode: (value: number) => T;',
+      '}',
+      '',
+      'interface DecoderWithOptionalInner<T> extends Decoder<T> {',
+      '  readonly inner?: Decoder<T>;',
+      '}',
+      '',
+      '// #[extern]',
+      '// #[effects(forward: [decoder.inner.decode])]',
+      'declare function wrap<T>(decoder: DecoderWithOptionalInner<T>, value: number): T;',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function use(decoder: Decoder<number>): number {',
+      '  return wrap(decoder, 1);',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function runTop(decoder: Decoder<number>): number {',
+      '  return use(decoder);',
+      '}',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assert(result.diagnostics.every((diagnostic) => diagnostic.code === 'SOUND1041'));
+  assert(
+    result.diagnostics.some((diagnostic) =>
+      diagnostic.metadata?.evidence?.find((entry) => entry.label === 'unknownEffectReasons')
+        ?.value ===
+        'unresolved forwarded callback (decoder.inner.decode; failed at inner)'
+    ),
+  );
+});
+
+Deno.test('analyzeProject tracks browser storage and navigation builtins under effect contracts', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': createBrowserTsconfig(),
+    'src/index.sts': [
+      '// #[interop]',
+      'import { window } from "host:dom";',
+      '',
+      '// #[effects(forbid: [host])]',
+      'function readStoredValue(): string | null {',
+      '  return window.localStorage.getItem("key");',
+      '}',
+      '',
+      '// #[effects(forbid: [mut])]',
+      'function storeValue(): void {',
+      '  window.localStorage.setItem("key", "value");',
+      '}',
+      '',
+      '// #[effects(forbid: [mut])]',
+      'function clearStoredValue(): void {',
+      '  window.sessionStorage.clear();',
+      '}',
+      '',
+      '// #[effects(forbid: [mut])]',
+      'function pushHistoryState(url: string): void {',
+      '  window.history.pushState(null, "", url);',
+      '}',
+      '',
+      '// #[effects(forbid: [host])]',
+      'function navigateHistory(): void {',
+      '  window.history.back();',
+      '}',
+      '',
+      '// #[effects(forbid: [host])]',
+      'function assignLocation(url: string): void {',
+      '  window.location.assign(url);',
+      '}',
+      '',
+      '// #[effects(forbid: [host])]',
+      'function reloadLocation(): void {',
+      '  window.location.reload();',
+      '}',
+      '',
+      '// #[effects(forbid: [host])]',
+      'function sendBeaconNow(url: string): boolean {',
+      '  return window.navigator.sendBeacon(url, "ok");',
+      '}',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), [
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+  ]);
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.metadata?.primarySymbol), [
+    'readStoredValue',
+    'storeValue',
+    'clearStoredValue',
+    'pushHistoryState',
+    'navigateHistory',
+    'assignLocation',
+    'reloadLocation',
+    'sendBeaconNow',
+  ]);
+});
+
+Deno.test('analyzeProject tracks JSON and console builtins under effect contracts', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': createBrowserTsconfig(),
+    'src/index.sts': [
+      '// #[interop]',
+      'import { window } from "host:dom";',
+      'const console = window.console;',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function parseValue(text: string) {',
+      '  return JSON.parse(text);',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function stringifyValue(value: unknown) {',
+      '  return JSON.stringify(value);',
+      '}',
+      '',
+      '// #[effects(forbid: [host])]',
+      'function logValue(value: unknown): void {',
+      '  console.log(value);',
+      '}',
+      '',
+      '// #[effects(forbid: [host])]',
+      'function parseWithHostReviver(text: string) {',
+      '  return JSON.parse(text, (_key, raw) => {',
+      '    console.log(raw);',
+      '    return raw;',
+      '  });',
+      '}',
+      '',
+      '// #[effects(forbid: [host])]',
+      'function stringifyWithHostReplacer(value: unknown) {',
+      '  return JSON.stringify(value, (_key, raw) => {',
+      '    console.log(raw);',
+      '    return raw;',
+      '  });',
+      '}',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), [
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+  ]);
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.metadata?.primarySymbol), [
+    'parseValue',
+    'stringifyValue',
+    'logValue',
+    'parseWithHostReviver',
+    'stringifyWithHostReplacer',
+  ]);
+});
+
+Deno.test('analyzeProject tracks result, json, and debug stdlib helpers under effect contracts', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': createBrowserTsconfig(),
+    'src/index.sts': [
+      '// #[interop]',
+      'import { window } from "host:dom";',
+      'const console = window.console;',
+      '',
+      'import { resultOf, ok } from "sts:result";',
+      'import { parseAndDecode, parseJson, stringifyJson, parseJsonLike, stringifyJsonLike, encodeAndStringify, decodeJson, encodeJson, type JsonLikeValue, type JsonValue } from "sts:json";',
+      'import { fromDecode } from "sts:decode";',
+      'import { fromEncode } from "sts:encode";',
+      'import { assert, log } from "sts:experimental/debug";',
+      '',
+      'const pureDecoder = fromDecode((_value: unknown) => {',
+      '    return ok(1);',
+      '  });',
+      '',
+      'const hostDecoder = fromDecode((value: unknown) => {',
+      '    console.log(value);',
+      '    return ok(1);',
+      '  });',
+      '',
+      'const throwDecoder = fromDecode((_value: unknown) => {',
+      '    throw new Error("boom");',
+      '  });',
+      '',
+      'const pureJsonEncoder = fromEncode((value: number) => {',
+      '    return ok(value);',
+      '  });',
+      '',
+      'const hostJsonEncoder = fromEncode((value: number) => {',
+      '    console.log(value);',
+      '    return ok(value);',
+      '  });',
+      '',
+      'const pureJsonLikeEncoder = fromEncode((value: number) => {',
+      '    return ok(value);',
+      '  });',
+      '',
+      'const hostJsonLikeEncoder = fromEncode((value: number) => {',
+      '    console.log(value);',
+      '    return ok(value);',
+      '  });',
+      '',
+      '// #[effects(forbid: [fails, suspend, mut, host])]',
+      'function safeCaptureJson(text: string) {',
+      '  return resultOf(() => JSON.parse(text));',
+      '}',
+      '',
+      '// #[effects(forbid: [host])]',
+      'function captureHost(value: unknown) {',
+      '  return resultOf(() => console.log(value));',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function mapErrorThrows(text: string) {',
+      '  return resultOf(() => JSON.parse(text), (_error) => {',
+      '    throw new Error("boom");',
+      '  });',
+      '}',
+      '',
+      '// #[effects(forbid: [suspend])]',
+      'function captureAsync() {',
+      '  return resultOf(async () => 1);',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function stdParseJson(text: string) {',
+      '  return parseJson(text);',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function stdStringifyJson() {',
+      '  return stringifyJson({ ok: true });',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function stdParseJsonLike(text: string) {',
+      '  return parseJsonLike(text);',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function stdStringifyJsonLike() {',
+      '  return stringifyJsonLike({ ok: true, maybe: undefined });',
+      '}',
+      '',
+      '// #[effects(forbid: [fails, suspend, mut, host])]',
+      'function safeParseAndDecode(text: string) {',
+      '  return parseAndDecode(text, pureDecoder);',
+      '}',
+      '',
+      '// #[effects(forbid: [host])]',
+      'function hostParseAndDecode(text: string) {',
+      '  return parseAndDecode(text, hostDecoder);',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function failParseAndDecode(text: string) {',
+      '  return parseAndDecode(text, throwDecoder);',
+      '}',
+      '',
+      '// #[effects(forbid: [fails, suspend, mut, host])]',
+      'function safeEncodeAndStringify(value: number) {',
+      '  return encodeAndStringify(value, pureJsonEncoder);',
+      '}',
+      '',
+      '// #[effects(forbid: [host])]',
+      'function hostEncodeAndStringify(value: number) {',
+      '  return encodeAndStringify(value, hostJsonEncoder);',
+      '}',
+      '',
+      '// #[effects(forbid: [fails, suspend, mut, host])]',
+      'function safeDecodeJson(text: string) {',
+      '  return decodeJson(text, pureDecoder);',
+      '}',
+      '',
+      '// #[effects(forbid: [host])]',
+      'function hostDecodeJson(text: string) {',
+      '  return decodeJson(text, hostDecoder);',
+      '}',
+      '',
+      '// #[effects(forbid: [fails, suspend, mut, host])]',
+      'function safeEncodeJson(value: number) {',
+      '  return encodeJson(value, pureJsonLikeEncoder);',
+      '}',
+      '',
+      '// #[effects(forbid: [host])]',
+      'function hostEncodeJson(value: number) {',
+      '  return encodeJson(value, hostJsonLikeEncoder);',
+      '}',
+      '',
+      '// #[effects(forbid: [host])]',
+      'function debugLogValue(value: unknown) {',
+      '  return log(value);',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function debugAssertValue(condition: boolean): void {',
+      '  assert(condition);',
+      '}',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), [
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+  ]);
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.metadata?.primarySymbol), [
+    'safeCaptureJson',
+    'captureHost',
+    'mapErrorThrows',
+    'captureAsync',
+    'stdParseJson',
+    'stdStringifyJson',
+    'stdParseJsonLike',
+    'stdStringifyJsonLike',
+    'safeParseAndDecode',
+    'hostParseAndDecode',
+    'failParseAndDecode',
+    'safeEncodeAndStringify',
+    'hostEncodeAndStringify',
+    'safeDecodeJson',
+    'hostDecodeJson',
+    'safeEncodeJson',
+    'hostEncodeJson',
+    'debugLogValue',
+    'debugAssertValue',
+  ]);
+});
+
+Deno.test('analyzeProject enforces callback forbid contracts against failful arguments', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/index.sts': [
+      '// #[extern]',
+      'declare function runChecked(',
+      '  // #[effects(forbid: [fails])]',
+      '  callback: () => void,',
+      '): void;',
+      '',
+      'function bad(): void {',
+      '  throw new Error("boom");',
+      '}',
+      '',
+      'function main(): void {',
+      '  runChecked(bad);',
+      '}',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1041']);
+  assertEquals(result.diagnostics[0]?.metadata?.rule, 'effect_contract_violation');
+  assertEquals(result.diagnostics[0]?.line, 12);
+  assertEquals(result.diagnostics[0]?.column, 3);
+});
+
+Deno.test('analyzeProject checks callable assignability against callback forbid contracts', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/index.sts': [
+      'interface NeedsPureCallback {',
+      '  (',
+      '    // #[effects(forbid: [fails])]',
+      '    callback: () => void,',
+      '  ): void;',
+      '}',
+      '',
+      '// #[extern]',
+      'declare const needsPure: NeedsPureCallback;',
+      '',
+      'const general: (callback: () => void) => void = needsPure;',
+      'void general;',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1019']);
+  assertEquals(result.diagnostics[0]?.metadata?.rule, 'callable_effect_parameter_contravariance');
+});
+
+Deno.test('analyzeProject reports unknown forwarded effects in callable relation checks', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': createBrowserTsconfig(),
+    'src/index.sts': [
+      '// #[interop]',
+      'import { window } from "host:dom";',
+      '',
+      'interface Decoder<T> {',
+      '  readonly decode: (value: number) => T;',
+      '}',
+      '',
+      'interface DecoderWithOptionalInner<T> extends Decoder<T> {',
+      '  readonly inner?: Decoder<T>;',
+      '}',
+      '',
+      '// #[extern]',
+      '// #[effects(forward: [decoder.inner.decode])]',
+      'declare function wrapNumber(decoder: DecoderWithOptionalInner<number>, value: number): number;',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function pureWrap(decoder: DecoderWithOptionalInner<number>, value: number): number {',
+      '  void decoder;',
+      '  return value;',
+      '}',
+      '',
+      'const assigned: typeof pureWrap = wrapNumber;',
+      'void assigned;',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1019']);
+  assertEquals(result.diagnostics[0]?.metadata?.rule, 'callable_effect_covariance');
+  assertEquals(
+    result.diagnostics[0]?.metadata?.evidence?.find((entry) =>
+      entry.label === 'unknownEffectReasons'
+    )
+      ?.value,
+    'unresolved forwarded callback (decoder.inner.decode; failed at decode)',
+  );
+});
+
+Deno.test('analyzeProject reports the same forbidden effect set for direct and relation callback contract violations', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/index.sts': [
+      '// #[extern]',
+      'declare function runChecked(',
+      '  // #[effects(forbid: [fails])]',
+      '  callback: () => void,',
+      '): void;',
+      '',
+      'interface NeedsPureCallback {',
+      '  (',
+      '    // #[effects(forbid: [fails])]',
+      '    callback: () => void,',
+      '  ): void;',
+      '}',
+      '',
+      '// #[extern]',
+      'declare const needsPure: NeedsPureCallback;',
+      '',
+      'function bad(): void {',
+      '  throw new Error("boom");',
+      '}',
+      '',
+      'function main(): void {',
+      '  runChecked(bad);',
+      '}',
+      '',
+      'const general: (callback: () => void) => void = needsPure;',
+      'void general;',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1041', 'SOUND1019']);
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.metadata?.rule), [
+    'effect_contract_violation',
+    'callable_effect_parameter_contravariance',
+  ]);
+  assertEquals(
+    result.diagnostics.map((diagnostic) =>
+      diagnostic.metadata?.evidence?.find((entry) => entry.label === 'forbiddenEffects')?.value
+    ),
+    ['fails', 'fails'],
+  );
+});
+
+Deno.test('analyzeProject keeps unresolved deep forwarded paths conservative across declaration, call-site, and relation checks', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': createSoundscriptOnlyTsconfig(),
+    'src/index.sts': [
+      'interface Decoder<T> {',
+      '  readonly decode: (value: number) => T;',
+      '}',
+      '',
+      'interface DecoderLeaf<T> {',
+      '  readonly leaf?: Decoder<T>;',
+      '}',
+      '',
+      'interface DecoderTree<T> {',
+      '  readonly inner?: DecoderLeaf<T>;',
+      '}',
+      '',
+      '// #[extern]',
+      '// #[effects(forward: [decoder.inner.leaf.decode])]',
+      'declare function wrap(decoder: DecoderTree<number>, value: number): number;',
+      '',
+      '// #[effects(forbid: [fails], forward: [decoder.inner.leaf.decode])]',
+      'function ownWrap(decoder: DecoderTree<number>, value: number): number {',
+      '  return value;',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function callWrap(decoder: DecoderTree<number>): number {',
+      '  return wrap(decoder, 1);',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function pureWrap(decoder: DecoderTree<number>, value: number): number {',
+      '  void decoder;',
+      '  return value;',
+      '}',
+      '',
+      'const assigned: typeof pureWrap = wrap;',
+      'void assigned;',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  const effectDiagnostics = result.diagnostics.filter((diagnostic) =>
+    diagnostic.metadata?.rule === 'effect_contract_violation' ||
+    diagnostic.metadata?.rule === 'callable_effect_covariance'
+  );
+
+  assertEquals(effectDiagnostics.map((diagnostic) => diagnostic.code), [
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1019',
+  ]);
+  assertEquals(effectDiagnostics.map((diagnostic) => diagnostic.metadata?.rule), [
+    'effect_contract_violation',
+    'effect_contract_violation',
+    'callable_effect_covariance',
+  ]);
+  assertEquals(
+    effectDiagnostics.map((diagnostic) =>
+      diagnostic.metadata?.evidence?.find((entry) => entry.label === 'forbiddenEffects')?.value
+    ),
+    ['fails', 'fails', 'fails'],
+  );
+  assert(
+    effectDiagnostics.every((diagnostic) =>
+      diagnostic.metadata?.evidence?.find((entry) => entry.label === 'unknownEffectReasons')
+        ?.value?.includes('unresolved forwarded callback') === true
+    ),
+  );
+});
+
+Deno.test('analyzeProject keeps callable assignment as conservative as direct local forwarding inference', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': createBrowserTsconfig(),
+    'src/index.sts': [
+      '// #[interop]',
+      'import { window } from "host:dom";',
+      '',
+      'function fail(value: number): number {',
+      '  throw new Error("boom");',
+      '}',
+      '',
+      'function defaultedAdapter(',
+      '  callback: (value: number) => number = fail,',
+      '  value: number = 1,',
+      '): number {',
+      '  const wrapped = (input: number): number => callback(input);',
+      '  return wrapped(value);',
+      '}',
+      '',
+      'function scheduleAdapter(callback: () => void): void {',
+      '  const wrapped = (): void => callback();',
+      '  window.queueMicrotask(wrapped);',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function useDefaultedAdapter(): number {',
+      '  return defaultedAdapter((value: number): number => value + 1, 1);',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function useScheduleAdapter(): void {',
+      '  scheduleAdapter((): void => {});',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function pureDefaulted(callback: (value: number) => number, value: number): number {',
+      '  void callback;',
+      '  return value;',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function pureSchedule(callback: () => void): void {',
+      '  void callback;',
+      '}',
+      '',
+      'const assignedDefaulted: typeof pureDefaulted = defaultedAdapter;',
+      'const assignedSchedule: typeof pureSchedule = scheduleAdapter;',
+      'void assignedDefaulted;',
+      'void assignedSchedule;',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), [
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1019',
+    'SOUND1019',
+  ]);
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.metadata?.rule), [
+    'effect_contract_violation',
+    'effect_contract_violation',
+    'callable_effect_covariance',
+    'callable_effect_covariance',
+  ]);
+  assertEquals(
+    result.diagnostics.map((diagnostic) =>
+      diagnostic.metadata?.evidence?.find((entry) => entry.label === 'forbiddenEffects')?.value
+    ),
+    ['fails', 'fails', 'fails', 'fails'],
   );
 });
 
@@ -5639,19 +9065,7 @@ Deno.test('analyzeProject respects in-memory file overrides', async () => {
 
 Deno.test('analyzeProject applies macro rewriting in in-memory file overrides before TypeScript parsing', async () => {
   const tempDirectory = await createTempProject({
-    'tsconfig.json': JSON.stringify(
-      {
-        compilerOptions: {
-          strict: true,
-          noEmit: true,
-          target: 'ES2022',
-          module: 'ESNext',
-        },
-        include: ['src/**/*.sts'],
-      },
-      null,
-      2,
-    ),
+    'tsconfig.json': createBrowserTsconfig(),
     'src/index.sts': 'export const value = 1;\n',
   });
 
@@ -5662,9 +9076,10 @@ Deno.test('analyzeProject applies macro rewriting in in-memory file overrides be
       [
         join(tempDirectory, 'src/index.sts'),
         [
+          '// #[interop]',
+          "import { window } from 'host:dom';",
           "import { log } from 'sts:experimental/debug';",
-          '// #[extern]',
-          'declare const console: { log(...args: readonly unknown[]): void };',
+          'const console = window.console;',
           '// #[extern]',
           'declare function __sts_log<T>(source: string, value: T): T;',
           'const value = log(1);',
@@ -5747,19 +9162,7 @@ Deno.test('analyzeProject does not cascade missing-export errors from malformed 
 
 Deno.test('analyzeProject preserves ordinary TypeScript diagnostic lines after macro rewriting', async () => {
   const tempDirectory = await createTempProject({
-    'tsconfig.json': JSON.stringify(
-      {
-        compilerOptions: {
-          strict: true,
-          noEmit: true,
-          target: 'ES2022',
-          module: 'ESNext',
-        },
-        include: ['src/**/*.sts'],
-      },
-      null,
-      2,
-    ),
+    'tsconfig.json': createBrowserTsconfig(),
     'src/index.sts': 'export const value = 1;\n',
   });
 
@@ -5770,9 +9173,10 @@ Deno.test('analyzeProject preserves ordinary TypeScript diagnostic lines after m
       [
         join(tempDirectory, 'src/index.sts'),
         [
+          '// #[interop]',
+          "import { window } from 'host:dom';",
           "import { log } from 'sts:experimental/debug';",
-          '// #[extern]',
-          'declare const console: { log(...args: readonly unknown[]): void };',
+          'const console = window.console;',
           '// #[extern]',
           'declare function __sts_log<T>(source: string, value: T): T;',
           'const value = log(1);',
@@ -5784,28 +9188,17 @@ Deno.test('analyzeProject preserves ordinary TypeScript diagnostic lines after m
   });
 
   assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['TS2322']);
-  assertEquals(result.diagnostics[0]?.line, 7);
+  assertEquals(result.diagnostics[0]?.line, 8);
 });
 
 Deno.test('analyzeProject expands import-scoped builtin macros before TypeScript diagnostics', async () => {
   const tempDirectory = await createTempProject({
-    'tsconfig.json': JSON.stringify(
-      {
-        compilerOptions: {
-          strict: true,
-          noEmit: true,
-          target: 'ES2022',
-          module: 'ESNext',
-        },
-        include: ['src/**/*.sts'],
-      },
-      null,
-      2,
-    ),
+    'tsconfig.json': createBrowserTsconfig(),
     'src/index.sts': [
+      '// #[interop]',
+      "import { window } from 'host:dom';",
       "import { log } from 'sts:experimental/debug';",
-      '// #[extern]',
-      'declare const console: { log(...args: readonly unknown[]): void };',
+      'const console = window.console;',
       '// #[extern]',
       'declare function __sts_log<T>(source: string, value: T): T;',
       'const value: string = log(123);',
@@ -5819,7 +9212,7 @@ Deno.test('analyzeProject expands import-scoped builtin macros before TypeScript
   });
 
   assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['TS2322']);
-  assertEquals(result.diagnostics[0]?.line, 6);
+  assertEquals(result.diagnostics[0]?.line, 7);
 });
 
 Deno.test('analyzeProject expands import-scoped user-defined macros before TypeScript diagnostics', async () => {
@@ -6660,6 +10053,788 @@ Deno.test('analyzeProject reports actionable guidance for SOUND1020 invalidation
   ]);
 });
 
+Deno.test('analyzeProject preserves narrowing across calls proven free of mut and suspend', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/index.sts': [
+      'function peek(box: { value: string | null }): string | null {',
+      '  return box.value;',
+      '}',
+      '',
+      'function use(box: { value: string | null }): string {',
+      '  if (box.value !== null) {',
+      '    peek(box);',
+      '    const value: string = box.value;',
+      '    return value;',
+      '  }',
+      '  return "";',
+      '}',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics, []);
+});
+
+Deno.test('analyzeProject preserves narrowing across declaration-only calls proven free of mut and suspend', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/index.sts': [
+      '// #[extern]',
+      '// #[effects(add: [])]',
+      'declare function observe(box: { value: string | null }): void;',
+      '',
+      'function use(box: { value: string | null }): string {',
+      '  if (box.value !== null) {',
+      '    observe(box);',
+      '    const value: string = box.value;',
+      '    return value;',
+      '  }',
+      '  return "";',
+      '}',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics, []);
+});
+
+Deno.test('analyzeProject preserves narrowing across shared collection callback metadata paths', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/index.sts': [
+      'function useArray(values: readonly number[], box: { value: string | null }): string {',
+      '  if (box.value !== null) {',
+      '    values.forEach((_value, _index, array) => {',
+      '      void array.length;',
+      '    });',
+      '    const value: string = box.value;',
+      '    return value;',
+      '  }',
+      '  return "";',
+      '}',
+      '',
+      'function useSet(values: ReadonlySet<number>, box: { value: string | null }): string {',
+      '  if (box.value !== null) {',
+      '    values.forEach((_value, _again, set) => {',
+      '      void set.size;',
+      '    });',
+      '    const value: string = box.value;',
+      '    return value;',
+      '  }',
+      '  return "";',
+      '}',
+      '',
+      'function useMap(values: ReadonlyMap<string, number>, box: { value: string | null }): string {',
+      '  if (box.value !== null) {',
+      '    values.forEach((_value, _key, map) => {',
+      '      void map.size;',
+      '    });',
+      '    const value: string = box.value;',
+      '    return value;',
+      '  }',
+      '  return "";',
+      '}',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics, []);
+});
+
+Deno.test('analyzeProject preserves narrowing across sts:async task constructor helpers', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/index.sts': [
+      "import * as async from 'sts:async';",
+      "import type { Task } from 'sts:async';",
+      '',
+      'function use(box: { value: string | null }, task: Task<number>): string {',
+      '  if (box.value !== null) {',
+      '    const mapped = async.map(task, (value: number) => value + 1);',
+      '    void mapped;',
+      '    const value: string = box.value;',
+      '    return value;',
+      '  }',
+      '  return "";',
+      '}',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics, []);
+});
+
+Deno.test('analyzeProject preserves narrowing across pure builtin collection helpers', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/index.sts': [
+      'function use(box: { value: string | null }, map: ReadonlyMap<string, number>): string {',
+      '  if (box.value !== null) {',
+      '    map.forEach(() => {});',
+      '    const value: string = box.value;',
+      '    return value;',
+      '  }',
+      '  return "";',
+      '}',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics, []);
+});
+
+Deno.test('analyzeProject preserves narrowing across collection callbacks that use bound receiver parameters', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/index.sts': [
+      'function useArray(values: readonly number[], box: { value: string | null }): string {',
+      '  if (box.value !== null) {',
+      '    values.map((_value, _index, array) => array.length);',
+      '    const value: string = box.value;',
+      '    return value;',
+      '  }',
+      '  return "";',
+      '}',
+      '',
+      'function useSet(values: ReadonlySet<number>, box: { value: string | null }): string {',
+      '  if (box.value !== null) {',
+      '    values.forEach((_value, _again, set) => {',
+      '      void set.size;',
+      '    });',
+      '    const value: string = box.value;',
+      '    return value;',
+      '  }',
+      '  return "";',
+      '}',
+      '',
+      'function useMap(values: ReadonlyMap<string, number>, box: { value: string | null }): string {',
+      '  if (box.value !== null) {',
+      '    values.forEach((_value, _key, map) => {',
+      '      void map.size;',
+      '    });',
+      '    const value: string = box.value;',
+      '    return value;',
+      '  }',
+      '  return "";',
+      '}',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics, []);
+});
+
+Deno.test('analyzeProject preserves narrowing when returning opaque calls with extracted readonly arguments', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/index.sts': [
+      'function use(box: { value: string | null }, project: (value: string) => string): string {',
+      '  if (box.value !== null) {',
+      '    return project(box.value);',
+      '  }',
+      '  return "";',
+      '}',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics, []);
+});
+
+Deno.test('analyzeProject preserves narrowing across local callback parameter calls proven free of mut and suspend', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/index.sts': [
+      'function run(callback: (value: string) => void, value: string): void {',
+      '  callback(value);',
+      '}',
+      '',
+      'function use(box: { value: string | null }, callback: (value: string) => void): string {',
+      '  if (box.value !== null) {',
+      '    run(callback, box.value);',
+      '    const value: string = box.value;',
+      '    return value;',
+      '  }',
+      '  return "";',
+      '}',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics, []);
+});
+
+Deno.test('analyzeProject infers callback and member effects through local aliases', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/index.sts': [
+      'interface Decoder<T> {',
+      '  readonly decode: (value: number) => T;',
+      '}',
+      '',
+      'function aliasRun(callback: () => void): void {',
+      '  const fn = callback;',
+      '  fn();',
+      '}',
+      '',
+      'function aliasDecode<T>(decoder: Decoder<T>, value: number): T {',
+      '  const { decode } = decoder;',
+      '  return decode(value);',
+      '}',
+      '',
+      'function adapterRun<T>(callback: (value: number) => T, value: number): T {',
+      '  const wrapped = (input: number): T => callback(input);',
+      '  return wrapped(value);',
+      '}',
+      '',
+      'function preludeAdapterRun<T>(callback: (value: number) => T, value: number): T {',
+      '  const wrapped = (input: number): T => {',
+      '    const forwarded = input;',
+      '    return callback(forwarded);',
+      '  };',
+      '  return wrapped(value);',
+      '}',
+      '',
+      'function adapterDecode<T>(decoder: Decoder<T>, value: number): T {',
+      '  const wrapped = (input: number): T => decoder.decode(input);',
+      '  return wrapped(value);',
+      '}',
+      '',
+      'function preludeAdapterDecode<T>(decoder: Decoder<T>, value: number): T {',
+      '  const wrapped = (input: number): T => {',
+      '    const forwarded = input;',
+      '    return decoder.decode(forwarded);',
+      '  };',
+      '  return wrapped(value);',
+      '}',
+      '',
+      'async function asyncAdapterRun<T>(',
+      '  callback: (value: number) => Promise<T>,',
+      '  value: number,',
+      '): Promise<T> {',
+      '  const wrapped = async (input: number): Promise<T> => await callback(input);',
+      '  return await wrapped(value);',
+      '}',
+      '',
+      'function doubleAdapterRun<T>(callback: (value: number) => T, value: number): T {',
+      '  const wrapped = (input: number): T => {',
+      '    callback(input);',
+      '    return callback(input);',
+      '  };',
+      '  return wrapped(value);',
+      '}',
+      '',
+      'function branchedAdapterRun<T>(',
+      '  callback: (value: number) => T,',
+      '  value: number,',
+      '  flag: boolean,',
+      '): T {',
+      '  const wrapped = (input: number): T => {',
+      '    if (flag) {',
+      '      return callback(input);',
+      '    }',
+      '    return callback(input);',
+      '  };',
+      '  return wrapped(value);',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function pureThroughAliases(): number {',
+      '  aliasRun(() => {});',
+      '  adapterRun((value: number): number => value + 1, 1);',
+      '  preludeAdapterRun((value: number): number => value + 1, 1);',
+      '  preludeAdapterDecode({',
+      '    decode: (value: number): number => value + 1,',
+      '  }, 1);',
+      '  return aliasDecode({',
+      '    decode: (value: number): number => value + 1,',
+      '  }, 1);',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function failThroughCallbackAlias(): void {',
+      '  aliasRun(() => {',
+      '    throw new Error("boom");',
+      '  });',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function failThroughMemberAlias(): number {',
+      '  return aliasDecode({',
+      '    decode: (_value: number): number => {',
+      '      throw new Error("boom");',
+      '    },',
+      '  }, 1);',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function failThroughCallbackAdapter(): void {',
+      '  adapterRun((_value: number): void => {',
+      '    throw new Error("boom");',
+      '  }, 1);',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function failThroughMemberAdapter(): number {',
+      '  return adapterDecode({',
+      '    decode: (_value: number): number => {',
+      '      throw new Error("boom");',
+      '    },',
+      '  }, 1);',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function failThroughPreludeCallbackAdapter(): void {',
+      '  preludeAdapterRun((_value: number): void => {',
+      '    throw new Error("boom");',
+      '  }, 1);',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function failThroughPreludeMemberAdapter(): number {',
+      '  return preludeAdapterDecode({',
+      '    decode: (_value: number): number => {',
+      '      throw new Error("boom");',
+      '    },',
+      '  }, 1);',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'async function failThroughAsyncCallbackAdapter(): Promise<void> {',
+      '  await asyncAdapterRun(async (_value: number): Promise<void> => {',
+      '    throw new Error("boom");',
+      '  }, 1);',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function failThroughDoubleAdapter(): void {',
+      '  doubleAdapterRun((_value: number): void => {',
+      '    throw new Error("boom");',
+      '  }, 1);',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function failThroughBranchedAdapter(): void {',
+      '  branchedAdapterRun((_value: number): void => {',
+      '    throw new Error("boom");',
+      '  }, 1, true);',
+      '}',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), [
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+  ]);
+});
+
+Deno.test('analyzeProject keeps local forwarding inference conservative for unstable adapters', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': createBrowserTsconfig(),
+    'src/index.sts': [
+      '// #[interop]',
+      'import { window } from "host:dom";',
+      'const queueMicrotask = window.queueMicrotask;',
+      '',
+      'interface Decoder<T> {',
+      '  readonly decode: (value: number) => T;',
+      '}',
+      '',
+      'function fail(value: number): number {',
+      '  throw new Error("boom");',
+      '}',
+      '',
+      'function defaultedAdapter(',
+      '  callback: (value: number) => number = fail,',
+      '  value: number = 1,',
+      '): number {',
+      '  const wrapped = (input: number): number => callback(input);',
+      '  return wrapped(value);',
+      '}',
+      '',
+      'function extractedMemberAdapter(decoder: Decoder<number>, value: number): number {',
+      '  const decode = decoder.decode;',
+      '  const wrapped = (input: number): number => decode(input);',
+      '  return wrapped(value);',
+      '}',
+      '',
+      'function scheduleAdapter(callback: () => void): void {',
+      '  const wrapped = (): void => callback();',
+      '  queueMicrotask(wrapped);',
+      '}',
+      '',
+      'function scheduleMemberAdapter(decoder: Decoder<number>, value: number): void {',
+      '  const wrapped = (): void => {',
+      '    decoder.decode(value);',
+      '  };',
+      '  queueMicrotask(wrapped);',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function useDefaultedAdapter(): number {',
+      '  return defaultedAdapter((input: number): number => input + 1, 1);',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function useExtractedMemberAdapter(): number {',
+      '  return extractedMemberAdapter({',
+      '    decode: (input: number): number => input + 1,',
+      '  }, 1);',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function useScheduleAdapter(): void {',
+      '  scheduleAdapter((): void => {});',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function useScheduleMemberAdapter(): void {',
+      '  scheduleMemberAdapter({',
+      '    decode: (input: number): number => input + 1,',
+      '  }, 1);',
+      '}',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), [
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1041',
+  ]);
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.metadata?.primarySymbol), [
+    'useDefaultedAdapter',
+    'useExtractedMemberAdapter',
+    'useScheduleAdapter',
+    'useScheduleMemberAdapter',
+  ]);
+});
+
+Deno.test('analyzeProject keeps unsupported local forwarding adapters conservative', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': createBrowserTsconfig(),
+    'src/index.sts': [
+      '// #[interop]',
+      'import { window } from "host:dom";',
+      '',
+      'function fail(value: number): number {',
+      '  void value;',
+      '  throw new Error("boom");',
+      '}',
+      '',
+      'function defaultedAdapterRun(',
+      '  callback: (value: number) => number = fail,',
+      '  value: number = 1,',
+      '): number {',
+      '  const wrapped = (input: number): number => callback(input);',
+      '  return wrapped(value);',
+      '}',
+      '',
+      'function scheduleAdapterRun(callback: () => void): void {',
+      '  const wrapped = (): void => callback();',
+      '  window.queueMicrotask(wrapped);',
+      '}',
+      '',
+      'function pureRun(callback: (value: number) => number, value: number): number {',
+      '  return callback(value);',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function useDefaultedAdapter(): number {',
+      '  return defaultedAdapterRun((value: number): number => value + 1, 1);',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function useScheduledAdapter(): void {',
+      '  scheduleAdapterRun((): void => {',
+      '    throw new Error("boom");',
+      '  });',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function pureWrapper(_callback: (value: number) => number, value: number): number {',
+      '  return value;',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function pureZero(_callback: () => void): void {}',
+      '',
+      'const assignedDefaulted: typeof pureWrapper = defaultedAdapterRun;',
+      'const assignedScheduled: typeof pureZero = scheduleAdapterRun;',
+      'void assignedDefaulted;',
+      'void assignedScheduled;',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), [
+    'SOUND1041',
+    'SOUND1041',
+    'SOUND1019',
+    'SOUND1019',
+  ]);
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.metadata?.rule), [
+    'effect_contract_violation',
+    'effect_contract_violation',
+    'callable_effect_covariance',
+    'callable_effect_covariance',
+  ]);
+});
+
+Deno.test('analyzeProject invalidates narrowing across local helper constructors that mutate', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/index.sts': [
+      'class ClearBox {',
+      '  constructor(box: { value: string | null }) {',
+      '    box.value = null;',
+      '  }',
+      '}',
+      '',
+      'function clear(box: { value: string | null }): void {',
+      '  new ClearBox(box);',
+      '}',
+      '',
+      'function use(box: { value: string | null }): string {',
+      '  if (box.value !== null) {',
+      '    clear(box);',
+      '    const value: string = box.value;',
+      '    return value;',
+      '  }',
+      '  return "";',
+      '}',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1020']);
+});
+
+Deno.test('analyzeProject preserves narrowing across deferred host schedulers', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': createBrowserTsconfig(),
+    'src/index.sts': [
+      '// #[interop]',
+      'import { window } from "host:dom";',
+      '',
+      'function use(box: { value: string | null }): string {',
+      '  if (box.value !== null) {',
+      '    window.queueMicrotask(() => {',
+      '      void box.value;',
+      '    });',
+      '    window.setTimeout(() => {',
+      '      void box.value;',
+      '    }, 0);',
+      '    window.requestIdleCallback(() => {',
+      '      void box.value;',
+      '    });',
+      '    const value: string = box.value;',
+      '    return value;',
+      '  }',
+      '  return "";',
+      '}',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics, []);
+});
+
 Deno.test('analyzeProject keeps guarded Error Match arms free of generated-code diagnostics', async () => {
   const tempDirectory = await createTempProject({
     'tsconfig.json': JSON.stringify(
@@ -6944,14 +11119,13 @@ Deno.test('analyzeProject accepts Try-based decoder helpers with inferred Result
       2,
     ),
     'src/index.sts': [
-      "import { type Decoder, DecodeFailure } from 'sts:decode';",
+      "import { type Decoder, DecodeFailure, fromDecode } from 'sts:decode';",
       "import { isJsonValue, type JsonValue } from 'sts:json';",
       "import { Try, err, isErr, ok, type Result } from 'sts:prelude';",
       '',
       'type JsonRecord = Record<string, JsonValue>;',
       '',
-      'const plainObjectDecoder: Decoder<Record<string, unknown>> = {',
-      '  decode(value): Result<Record<string, unknown>, DecodeFailure> {',
+      'const plainObjectDecoder: Decoder<Record<string, unknown>> = fromDecode((value): Result<Record<string, unknown>, DecodeFailure> => {',
       "    if (typeof value !== 'object' || value === null || Array.isArray(value)) {",
       "      return err(new DecodeFailure('Expected object.', { cause: value }));",
       '    }',
@@ -6961,8 +11135,7 @@ Deno.test('analyzeProject accepts Try-based decoder helpers with inferred Result
       '      record[key] = nestedValue;',
       '    }',
       '    return ok(record);',
-      '  },',
-      '};',
+      '});',
       '',
       'function decodeJsonRecordValue(value: unknown, message: string) {',
       '  const record = Try(plainObjectDecoder.decode(value));',
@@ -6979,11 +11152,7 @@ Deno.test('analyzeProject accepts Try-based decoder helpers with inferred Result
       '}',
       '',
       'function jsonRecordDecoder(message: string): Decoder<JsonRecord> {',
-      '  return {',
-      '    decode(value): Result<JsonRecord, DecodeFailure> {',
-      '      return decodeJsonRecordValue(value, message);',
-      '    },',
-      '  };',
+      '  return fromDecode((value): Result<JsonRecord, DecodeFailure> => decodeJsonRecordValue(value, message));',
       '}',
       '',
       "const decoded = jsonRecordDecoder('Expected JSON object.').decode({ ok: 'value' });",
@@ -7755,11 +11924,16 @@ Deno.test(
       workingDirectory: tempDirectory,
     });
 
-    assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1019']);
-    assertEquals(result.diagnostics[0]?.line, 46);
-    assertEquals(result.diagnostics[0]?.column, 'const c: C = '.length + 1);
-    assertEquals(result.diagnostics[0]?.endLine, 46);
-    assertEquals(result.diagnostics[0]?.endColumn, 'const c: C = b'.length + 1);
+    const nominalDiagnostic = result.diagnostics.find((diagnostic) =>
+      diagnostic.code === 'SOUND1019'
+    );
+    if (!nominalDiagnostic) {
+      throw new Error('Expected SOUND1019 nominal diagnostic.');
+    }
+    assertEquals(nominalDiagnostic.line, 46);
+    assertEquals(nominalDiagnostic.column, 'const c: C = '.length + 1);
+    assertEquals(nominalDiagnostic.endLine, 46);
+    assertEquals(nominalDiagnostic.endColumn, 'const c: C = b'.length + 1);
   },
 );
 

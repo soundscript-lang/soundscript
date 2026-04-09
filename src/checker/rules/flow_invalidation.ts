@@ -5,6 +5,16 @@ import type {
   FlowInvalidationCandidateFact,
   FlowInvalidationStructureFact,
 } from '../engine/types.ts';
+import {
+  SYNCHRONOUS_ARRAY_CALLBACK_PARAMETER_BINDINGS,
+  SYNCHRONOUS_MAP_CALLBACK_PARAMETER_BINDINGS,
+  SYNCHRONOUS_SET_CALLBACK_PARAMETER_BINDINGS,
+} from '../effects/builtins.ts';
+import {
+  getEnclosingBodyFreshLocalProof,
+  getFreshLocalMutatingCall,
+} from '../effects/fresh_locals.ts';
+import { compositionPreservesNarrowing, getEffectCompositionForCallLike } from '../effects.ts';
 
 import type { FlowFactEnvironment } from './flow_facts.ts';
 
@@ -15,6 +25,7 @@ import {
   assignmentAffectsNarrow,
   bindFunctionBindingName,
   bindFunctionReceiverPath,
+  type BoundValue,
   cloneState,
   type FunctionBodyBindings,
   getCalledMember,
@@ -69,60 +80,6 @@ export {
 
 type ExpressionUseKind = 'mutation' | 'opaqueEscape' | 'return';
 
-const SYNCHRONOUS_ARRAY_CALLBACK_PARAMETER_BINDINGS = new Map<
-  string,
-  {
-    readonly arrayParameterIndex?: number;
-    readonly callbackArgumentIndex: number;
-    readonly elementParameterIndex: number;
-  }
->([
-  ['every', { callbackArgumentIndex: 0, elementParameterIndex: 0, arrayParameterIndex: 2 }],
-  ['filter', { callbackArgumentIndex: 0, elementParameterIndex: 0, arrayParameterIndex: 2 }],
-  ['find', { callbackArgumentIndex: 0, elementParameterIndex: 0, arrayParameterIndex: 2 }],
-  ['findIndex', { callbackArgumentIndex: 0, elementParameterIndex: 0, arrayParameterIndex: 2 }],
-  ['findLast', { callbackArgumentIndex: 0, elementParameterIndex: 0, arrayParameterIndex: 2 }],
-  ['findLastIndex', { callbackArgumentIndex: 0, elementParameterIndex: 0, arrayParameterIndex: 2 }],
-  ['flatMap', { callbackArgumentIndex: 0, elementParameterIndex: 0, arrayParameterIndex: 2 }],
-  ['forEach', { callbackArgumentIndex: 0, elementParameterIndex: 0, arrayParameterIndex: 2 }],
-  ['map', { callbackArgumentIndex: 0, elementParameterIndex: 0, arrayParameterIndex: 2 }],
-  ['reduce', { callbackArgumentIndex: 0, elementParameterIndex: 1, arrayParameterIndex: 3 }],
-  ['reduceRight', { callbackArgumentIndex: 0, elementParameterIndex: 1, arrayParameterIndex: 3 }],
-  ['some', { callbackArgumentIndex: 0, elementParameterIndex: 0, arrayParameterIndex: 2 }],
-]);
-
-const SYNCHRONOUS_SET_CALLBACK_PARAMETER_BINDINGS = new Map<
-  string,
-  {
-    readonly callbackArgumentIndex: number;
-    readonly elementParameterIndexes: readonly number[];
-    readonly receiverParameterIndex?: number;
-  }
->([
-  ['forEach', {
-    callbackArgumentIndex: 0,
-    elementParameterIndexes: [0, 1],
-    receiverParameterIndex: 2,
-  }],
-]);
-
-const SYNCHRONOUS_MAP_CALLBACK_PARAMETER_BINDINGS = new Map<
-  string,
-  {
-    readonly callbackArgumentIndex: number;
-    readonly keyParameterIndex?: number;
-    readonly receiverParameterIndex?: number;
-    readonly valueParameterIndex?: number;
-  }
->([
-  ['forEach', {
-    callbackArgumentIndex: 0,
-    valueParameterIndex: 0,
-    keyParameterIndex: 1,
-    receiverParameterIndex: 2,
-  }],
-]);
-
 interface ExpressionPathInfo {
   readonly readPath: NormalizedPath | undefined;
   readonly sourcePath: NormalizedPath | undefined;
@@ -132,6 +89,36 @@ interface ExpressionPathInfo {
 interface ReceiverBinding {
   readonly memberPaths: ReadonlyMap<string, NormalizedPath> | undefined;
   readonly path: NormalizedPath | undefined;
+}
+
+function getConstructedClassLike(
+  declaration: ts.Declaration,
+): ts.ClassLikeDeclarationBase | undefined {
+  if (ts.isClassLike(declaration)) {
+    return declaration;
+  }
+
+  return ts.isClassLike(declaration.parent) ? declaration.parent : undefined;
+}
+
+function getResolvedConstructorBodyDeclaration(
+  declaration: ts.Declaration,
+): ts.ConstructorDeclaration | undefined {
+  if (ts.isConstructorDeclaration(declaration)) {
+    return declaration;
+  }
+
+  return getConstructedClassLike(declaration)?.members.find(ts.isConstructorDeclaration);
+}
+
+function getResolvedConstructorDeclaration(
+  context: AnalysisContext,
+  expression: ts.NewExpression,
+): ts.Declaration | undefined {
+  const declaration = context.checker.getResolvedSignature(expression)?.declaration;
+  return declaration
+    ? getResolvedConstructorBodyDeclaration(declaration) ?? declaration
+    : undefined;
 }
 
 function unwrapTransparentExpression(expression: ts.Expression): ts.Expression {
@@ -221,16 +208,20 @@ function getConstructorAssignedReceiverMemberPaths(
   declaration: ts.Declaration,
   bindings: FunctionBodyBindings,
 ): ReadonlyMap<string, NormalizedPath> | undefined {
-  if (!ts.isConstructorDeclaration(declaration) || !declaration.body) {
+  const constructorDeclaration = getResolvedConstructorBodyDeclaration(declaration);
+  if (!constructorDeclaration?.body) {
     return undefined;
   }
 
   const memberPaths = new Map<string, NormalizedPath>();
-  recordFunctionBodyConstBindings(context, declaration.body, bindings);
+  recordFunctionBodyConstBindings(context, constructorDeclaration.body, bindings);
 
   for (
-    const candidate of getFlowInvalidationStructure(context, declaration.body, 'functionBody')
-      .candidates
+    const candidate of getFlowInvalidationStructure(
+      context,
+      constructorDeclaration.body,
+      'functionBody',
+    ).candidates
   ) {
     if (
       candidate.kind !== 'assignment' ||
@@ -326,7 +317,7 @@ function getStateConstructedReceiverBinding(
     return path ? { path, memberPaths: undefined } : undefined;
   }
 
-  const constructorDeclaration = context.checker.getResolvedSignature(expression)?.declaration;
+  const constructorDeclaration = getResolvedConstructorDeclaration(context, expression);
   return constructorDeclaration
     ? getConstructorReceiverBindingFromState(
       context,
@@ -381,7 +372,7 @@ function getFunctionConstructedReceiverBinding(
     return path ? { path, memberPaths: undefined } : undefined;
   }
 
-  const constructorDeclaration = context.checker.getResolvedSignature(expression)?.declaration;
+  const constructorDeclaration = getResolvedConstructorDeclaration(context, expression);
   return constructorDeclaration
     ? getConstructorReceiverBindingFromBindings(
       context,
@@ -845,6 +836,130 @@ function getStateCallbackFunctionLike(
     : getFunctionLikeFromExpression(context, expression);
 }
 
+interface ResolvedCollectionCallback<Binding> {
+  readonly binding: Binding;
+  readonly callbackBindings: FunctionBodyBindings;
+  readonly callbackDeclaration: ts.FunctionLikeDeclaration;
+}
+
+function bindCallbackParameter(
+  context: AnalysisContext,
+  callbackDeclaration: ts.FunctionLikeDeclaration,
+  callbackBindings: FunctionBodyBindings,
+  parameterIndex: number | undefined,
+  path: NormalizedPath | undefined,
+  value: BoundValue | undefined,
+): void {
+  if (parameterIndex === undefined || path === undefined || value === undefined) {
+    return;
+  }
+
+  const parameter = callbackDeclaration.parameters[parameterIndex];
+  if (!parameter) {
+    return;
+  }
+
+  bindFunctionBindingName(
+    context,
+    parameter.name,
+    path,
+    value,
+    callbackBindings,
+  );
+}
+
+function getFunctionBodyCollectionCallback<
+  Binding,
+>(
+  context: AnalysisContext,
+  member: string | undefined,
+  callExpression: ts.CallExpression,
+  bindings: FunctionBodyBindings,
+  bindingMap: ReadonlyMap<string, Binding>,
+  getCallbackArgumentIndex: (binding: Binding) => number,
+): ResolvedCollectionCallback<Binding> | undefined {
+  const binding = member ? bindingMap.get(member) : undefined;
+  if (!binding) {
+    return undefined;
+  }
+
+  const callbackArgument = callExpression.arguments[getCallbackArgumentIndex(binding)];
+  if (!callbackArgument) {
+    return undefined;
+  }
+
+  const callbackDeclaration = getLocalCallbackFunctionLike(context, callbackArgument, bindings);
+  if (!callbackDeclaration) {
+    return undefined;
+  }
+
+  return {
+    binding,
+    callbackBindings: getNestedFunctionBindings(context, [], callbackDeclaration, bindings),
+    callbackDeclaration,
+  };
+}
+
+function getStateCollectionCallback<
+  Binding,
+>(
+  context: AnalysisContext,
+  member: string | undefined,
+  callExpression: ts.CallExpression,
+  state: AnalysisState,
+  bindingMap: ReadonlyMap<string, Binding>,
+  getCallbackArgumentIndex: (binding: Binding) => number,
+): ResolvedCollectionCallback<Binding> | undefined {
+  const binding = member ? bindingMap.get(member) : undefined;
+  if (!binding) {
+    return undefined;
+  }
+
+  const callbackArgument = callExpression.arguments[getCallbackArgumentIndex(binding)];
+  if (!callbackArgument) {
+    return undefined;
+  }
+
+  const callbackDeclaration = getStateCallbackFunctionLike(context, callbackArgument, state);
+  if (!callbackDeclaration) {
+    return undefined;
+  }
+
+  return {
+    binding,
+    callbackBindings: getFunctionBindings(context, [], callbackDeclaration, state),
+    callbackDeclaration,
+  };
+}
+
+function collectionCallbackAffectsNarrow(
+  context: AnalysisContext,
+  resolved: ResolvedCollectionCallback<unknown>,
+  narrowPath: NormalizedPath,
+  state: AnalysisState,
+): boolean {
+  return functionLikeAffectsNarrow(
+    context,
+    resolved.callbackDeclaration,
+    [],
+    narrowPath,
+    state,
+    false,
+    undefined,
+    resolved.callbackBindings,
+  );
+}
+
+function receiverPathAffectsMemberNarrow(
+  receiverPath: NormalizedPath | undefined,
+  narrowPath: NormalizedPath,
+): boolean {
+  return !!receiverPath &&
+    receiverPath.baseSymbol === narrowPath.baseSymbol &&
+    receiverPath.segments.length === 0 &&
+    narrowPath.segments.length > 0;
+}
+
 function arrayCallbackArgumentAffectsNarrow(
   context: AnalysisContext,
   receiver: ts.Expression,
@@ -854,20 +969,15 @@ function arrayCallbackArgumentAffectsNarrow(
   narrowPath: NormalizedPath,
   state: AnalysisState,
 ): boolean {
-  const callbackBinding = member
-    ? SYNCHRONOUS_ARRAY_CALLBACK_PARAMETER_BINDINGS.get(member)
-    : undefined;
-  if (!callbackBinding) {
-    return false;
-  }
-
-  const callbackArgument = callExpression.arguments[callbackBinding.callbackArgumentIndex];
-  if (!callbackArgument) {
-    return false;
-  }
-
-  const callbackDeclaration = getLocalCallbackFunctionLike(context, callbackArgument, bindings);
-  if (!callbackDeclaration) {
+  const resolved = getFunctionBodyCollectionCallback(
+    context,
+    member,
+    callExpression,
+    bindings,
+    SYNCHRONOUS_ARRAY_CALLBACK_PARAMETER_BINDINGS,
+    (binding) => binding.callbackArgumentIndex,
+  );
+  if (!resolved) {
     return false;
   }
 
@@ -880,41 +990,24 @@ function arrayCallbackArgumentAffectsNarrow(
     return false;
   }
 
-  const nestedBindings = getNestedFunctionBindings(context, [], callbackDeclaration, bindings);
-  const elementParameter = callbackDeclaration.parameters[callbackBinding.elementParameterIndex];
-  if (elementParameter) {
-    bindFunctionBindingName(
-      context,
-      elementParameter.name,
-      representativeElement.path,
-      representativeElement.value,
-      nestedBindings,
-    );
-  }
-
-  if (callbackBinding.arrayParameterIndex !== undefined) {
-    const arrayParameter = callbackDeclaration.parameters[callbackBinding.arrayParameterIndex];
-    if (arrayParameter) {
-      bindFunctionBindingName(
-        context,
-        arrayParameter.name,
-        normalizeFunctionBodyPath(context, receiver, bindings),
-        receiver,
-        nestedBindings,
-      );
-    }
-  }
-
-  return functionLikeAffectsNarrow(
+  bindCallbackParameter(
     context,
-    callbackDeclaration,
-    [],
-    narrowPath,
-    state,
-    false,
-    undefined,
-    nestedBindings,
+    resolved.callbackDeclaration,
+    resolved.callbackBindings,
+    resolved.binding.elementParameterIndex,
+    representativeElement.path,
+    representativeElement.value,
   );
+  bindCallbackParameter(
+    context,
+    resolved.callbackDeclaration,
+    resolved.callbackBindings,
+    resolved.binding.arrayParameterIndex,
+    normalizeFunctionBodyPath(context, receiver, bindings),
+    receiver,
+  );
+
+  return collectionCallbackAffectsNarrow(context, resolved, narrowPath, state);
 }
 
 function arrayCallbackExpressionAffectsNarrow(
@@ -925,20 +1018,15 @@ function arrayCallbackExpressionAffectsNarrow(
   narrowPath: NormalizedPath,
   state: AnalysisState,
 ): boolean {
-  const callbackBinding = member
-    ? SYNCHRONOUS_ARRAY_CALLBACK_PARAMETER_BINDINGS.get(member)
-    : undefined;
-  if (!callbackBinding) {
-    return false;
-  }
-
-  const callbackArgument = callExpression.arguments[callbackBinding.callbackArgumentIndex];
-  if (!callbackArgument) {
-    return false;
-  }
-
-  const callbackDeclaration = getStateCallbackFunctionLike(context, callbackArgument, state);
-  if (!callbackDeclaration) {
+  const resolved = getStateCollectionCallback(
+    context,
+    member,
+    callExpression,
+    state,
+    SYNCHRONOUS_ARRAY_CALLBACK_PARAMETER_BINDINGS,
+    (binding) => binding.callbackArgumentIndex,
+  );
+  if (!resolved) {
     return false;
   }
 
@@ -951,41 +1039,24 @@ function arrayCallbackExpressionAffectsNarrow(
     return false;
   }
 
-  const bindings = getFunctionBindings(context, [], callbackDeclaration, state);
-  const elementParameter = callbackDeclaration.parameters[callbackBinding.elementParameterIndex];
-  if (elementParameter) {
-    bindFunctionBindingName(
-      context,
-      elementParameter.name,
-      representativeElement.path,
-      representativeElement.value,
-      bindings,
-    );
-  }
-
-  if (callbackBinding.arrayParameterIndex !== undefined) {
-    const arrayParameter = callbackDeclaration.parameters[callbackBinding.arrayParameterIndex];
-    if (arrayParameter) {
-      bindFunctionBindingName(
-        context,
-        arrayParameter.name,
-        normalizeExpressionPath(context, receiver, state),
-        getStateExpressionBoundValue(context, receiver, state) ?? receiver,
-        bindings,
-      );
-    }
-  }
-
-  return functionLikeAffectsNarrow(
+  bindCallbackParameter(
     context,
-    callbackDeclaration,
-    [],
-    narrowPath,
-    state,
-    false,
-    undefined,
-    bindings,
+    resolved.callbackDeclaration,
+    resolved.callbackBindings,
+    resolved.binding.elementParameterIndex,
+    representativeElement.path,
+    representativeElement.value,
   );
+  bindCallbackParameter(
+    context,
+    resolved.callbackDeclaration,
+    resolved.callbackBindings,
+    resolved.binding.arrayParameterIndex,
+    normalizeExpressionPath(context, receiver, state),
+    getStateExpressionBoundValue(context, receiver, state) ?? receiver,
+  );
+
+  return collectionCallbackAffectsNarrow(context, resolved, narrowPath, state);
 }
 
 function setCallbackArgumentAffectsNarrow(
@@ -997,20 +1068,15 @@ function setCallbackArgumentAffectsNarrow(
   narrowPath: NormalizedPath,
   state: AnalysisState,
 ): boolean {
-  const callbackBinding = member
-    ? SYNCHRONOUS_SET_CALLBACK_PARAMETER_BINDINGS.get(member)
-    : undefined;
-  if (!callbackBinding) {
-    return false;
-  }
-
-  const callbackArgument = callExpression.arguments[callbackBinding.callbackArgumentIndex];
-  if (!callbackArgument) {
-    return false;
-  }
-
-  const callbackDeclaration = getLocalCallbackFunctionLike(context, callbackArgument, bindings);
-  if (!callbackDeclaration) {
+  const resolved = getFunctionBodyCollectionCallback(
+    context,
+    member,
+    callExpression,
+    bindings,
+    SYNCHRONOUS_SET_CALLBACK_PARAMETER_BINDINGS,
+    (binding) => binding.callbackArgumentIndex,
+  );
+  if (!resolved) {
     return false;
   }
 
@@ -1023,45 +1089,27 @@ function setCallbackArgumentAffectsNarrow(
     return false;
   }
 
-  const nestedBindings = getNestedFunctionBindings(context, [], callbackDeclaration, bindings);
-  for (const parameterIndex of callbackBinding.elementParameterIndexes) {
-    const parameter = callbackDeclaration.parameters[parameterIndex];
-    if (!parameter) {
-      continue;
-    }
-    bindFunctionBindingName(
+  for (const parameterIndex of resolved.binding.elementParameterIndexes) {
+    bindCallbackParameter(
       context,
-      parameter.name,
+      resolved.callbackDeclaration,
+      resolved.callbackBindings,
+      parameterIndex,
       representativeElement.path,
       representativeElement.value,
-      nestedBindings,
     );
   }
 
-  if (callbackBinding.receiverParameterIndex !== undefined) {
-    const receiverParameter =
-      callbackDeclaration.parameters[callbackBinding.receiverParameterIndex];
-    if (receiverParameter) {
-      bindFunctionBindingName(
-        context,
-        receiverParameter.name,
-        normalizeFunctionBodyPath(context, receiver, bindings),
-        receiver,
-        nestedBindings,
-      );
-    }
-  }
-
-  return functionLikeAffectsNarrow(
+  bindCallbackParameter(
     context,
-    callbackDeclaration,
-    [],
-    narrowPath,
-    state,
-    false,
-    undefined,
-    nestedBindings,
+    resolved.callbackDeclaration,
+    resolved.callbackBindings,
+    resolved.binding.receiverParameterIndex,
+    normalizeFunctionBodyPath(context, receiver, bindings),
+    receiver,
   );
+
+  return collectionCallbackAffectsNarrow(context, resolved, narrowPath, state);
 }
 
 function setCallbackExpressionAffectsNarrow(
@@ -1072,20 +1120,15 @@ function setCallbackExpressionAffectsNarrow(
   narrowPath: NormalizedPath,
   state: AnalysisState,
 ): boolean {
-  const callbackBinding = member
-    ? SYNCHRONOUS_SET_CALLBACK_PARAMETER_BINDINGS.get(member)
-    : undefined;
-  if (!callbackBinding) {
-    return false;
-  }
-
-  const callbackArgument = callExpression.arguments[callbackBinding.callbackArgumentIndex];
-  if (!callbackArgument) {
-    return false;
-  }
-
-  const callbackDeclaration = getStateCallbackFunctionLike(context, callbackArgument, state);
-  if (!callbackDeclaration) {
+  const resolved = getStateCollectionCallback(
+    context,
+    member,
+    callExpression,
+    state,
+    SYNCHRONOUS_SET_CALLBACK_PARAMETER_BINDINGS,
+    (binding) => binding.callbackArgumentIndex,
+  );
+  if (!resolved) {
     return false;
   }
 
@@ -1098,45 +1141,27 @@ function setCallbackExpressionAffectsNarrow(
     return false;
   }
 
-  const bindings = getFunctionBindings(context, [], callbackDeclaration, state);
-  for (const parameterIndex of callbackBinding.elementParameterIndexes) {
-    const parameter = callbackDeclaration.parameters[parameterIndex];
-    if (!parameter) {
-      continue;
-    }
-    bindFunctionBindingName(
+  for (const parameterIndex of resolved.binding.elementParameterIndexes) {
+    bindCallbackParameter(
       context,
-      parameter.name,
+      resolved.callbackDeclaration,
+      resolved.callbackBindings,
+      parameterIndex,
       representativeElement.path,
       representativeElement.value,
-      bindings,
     );
   }
 
-  if (callbackBinding.receiverParameterIndex !== undefined) {
-    const receiverParameter =
-      callbackDeclaration.parameters[callbackBinding.receiverParameterIndex];
-    if (receiverParameter) {
-      bindFunctionBindingName(
-        context,
-        receiverParameter.name,
-        normalizeExpressionPath(context, receiver, state),
-        getStateExpressionBoundValue(context, receiver, state) ?? receiver,
-        bindings,
-      );
-    }
-  }
-
-  return functionLikeAffectsNarrow(
+  bindCallbackParameter(
     context,
-    callbackDeclaration,
-    [],
-    narrowPath,
-    state,
-    false,
-    undefined,
-    bindings,
+    resolved.callbackDeclaration,
+    resolved.callbackBindings,
+    resolved.binding.receiverParameterIndex,
+    normalizeExpressionPath(context, receiver, state),
+    getStateExpressionBoundValue(context, receiver, state) ?? receiver,
   );
+
+  return collectionCallbackAffectsNarrow(context, resolved, narrowPath, state);
 }
 
 function mapCallbackArgumentAffectsNarrow(
@@ -1148,20 +1173,15 @@ function mapCallbackArgumentAffectsNarrow(
   narrowPath: NormalizedPath,
   state: AnalysisState,
 ): boolean {
-  const callbackBinding = member
-    ? SYNCHRONOUS_MAP_CALLBACK_PARAMETER_BINDINGS.get(member)
-    : undefined;
-  if (!callbackBinding) {
-    return false;
-  }
-
-  const callbackArgument = callExpression.arguments[callbackBinding.callbackArgumentIndex];
-  if (!callbackArgument) {
-    return false;
-  }
-
-  const callbackDeclaration = getLocalCallbackFunctionLike(context, callbackArgument, bindings);
-  if (!callbackDeclaration) {
+  const resolved = getFunctionBodyCollectionCallback(
+    context,
+    member,
+    callExpression,
+    bindings,
+    SYNCHRONOUS_MAP_CALLBACK_PARAMETER_BINDINGS,
+    (binding) => binding.callbackArgumentIndex,
+  );
+  if (!resolved) {
     return false;
   }
 
@@ -1174,58 +1194,32 @@ function mapCallbackArgumentAffectsNarrow(
     return false;
   }
 
-  const nestedBindings = getNestedFunctionBindings(context, [], callbackDeclaration, bindings);
-
-  if (callbackBinding.valueParameterIndex !== undefined && representativeEntry.value) {
-    const parameter = callbackDeclaration.parameters[callbackBinding.valueParameterIndex];
-    if (parameter) {
-      bindFunctionBindingName(
-        context,
-        parameter.name,
-        representativeEntry.value.path,
-        representativeEntry.value.value,
-        nestedBindings,
-      );
-    }
-  }
-
-  if (callbackBinding.keyParameterIndex !== undefined && representativeEntry.key) {
-    const parameter = callbackDeclaration.parameters[callbackBinding.keyParameterIndex];
-    if (parameter) {
-      bindFunctionBindingName(
-        context,
-        parameter.name,
-        representativeEntry.key.path,
-        representativeEntry.key.value,
-        nestedBindings,
-      );
-    }
-  }
-
-  if (callbackBinding.receiverParameterIndex !== undefined) {
-    const receiverParameter =
-      callbackDeclaration.parameters[callbackBinding.receiverParameterIndex];
-    if (receiverParameter) {
-      bindFunctionBindingName(
-        context,
-        receiverParameter.name,
-        normalizeFunctionBodyPath(context, receiver, bindings),
-        receiver,
-        nestedBindings,
-      );
-    }
-  }
-
-  return functionLikeAffectsNarrow(
+  bindCallbackParameter(
     context,
-    callbackDeclaration,
-    [],
-    narrowPath,
-    state,
-    false,
-    undefined,
-    nestedBindings,
+    resolved.callbackDeclaration,
+    resolved.callbackBindings,
+    resolved.binding.valueParameterIndex,
+    representativeEntry.value?.path,
+    representativeEntry.value?.value,
   );
+  bindCallbackParameter(
+    context,
+    resolved.callbackDeclaration,
+    resolved.callbackBindings,
+    resolved.binding.keyParameterIndex,
+    representativeEntry.key?.path,
+    representativeEntry.key?.value,
+  );
+  bindCallbackParameter(
+    context,
+    resolved.callbackDeclaration,
+    resolved.callbackBindings,
+    resolved.binding.receiverParameterIndex,
+    normalizeFunctionBodyPath(context, receiver, bindings),
+    receiver,
+  );
+
+  return collectionCallbackAffectsNarrow(context, resolved, narrowPath, state);
 }
 
 function mapCallbackExpressionAffectsNarrow(
@@ -1236,20 +1230,15 @@ function mapCallbackExpressionAffectsNarrow(
   narrowPath: NormalizedPath,
   state: AnalysisState,
 ): boolean {
-  const callbackBinding = member
-    ? SYNCHRONOUS_MAP_CALLBACK_PARAMETER_BINDINGS.get(member)
-    : undefined;
-  if (!callbackBinding) {
-    return false;
-  }
-
-  const callbackArgument = callExpression.arguments[callbackBinding.callbackArgumentIndex];
-  if (!callbackArgument) {
-    return false;
-  }
-
-  const callbackDeclaration = getStateCallbackFunctionLike(context, callbackArgument, state);
-  if (!callbackDeclaration) {
+  const resolved = getStateCollectionCallback(
+    context,
+    member,
+    callExpression,
+    state,
+    SYNCHRONOUS_MAP_CALLBACK_PARAMETER_BINDINGS,
+    (binding) => binding.callbackArgumentIndex,
+  );
+  if (!resolved) {
     return false;
   }
 
@@ -1262,57 +1251,223 @@ function mapCallbackExpressionAffectsNarrow(
     return false;
   }
 
-  const bindings = getFunctionBindings(context, [], callbackDeclaration, state);
+  bindCallbackParameter(
+    context,
+    resolved.callbackDeclaration,
+    resolved.callbackBindings,
+    resolved.binding.valueParameterIndex,
+    representativeEntry.value?.path,
+    representativeEntry.value?.value,
+  );
+  bindCallbackParameter(
+    context,
+    resolved.callbackDeclaration,
+    resolved.callbackBindings,
+    resolved.binding.keyParameterIndex,
+    representativeEntry.key?.path,
+    representativeEntry.key?.value,
+  );
+  bindCallbackParameter(
+    context,
+    resolved.callbackDeclaration,
+    resolved.callbackBindings,
+    resolved.binding.receiverParameterIndex,
+    normalizeExpressionPath(context, receiver, state),
+    getStateExpressionBoundValue(context, receiver, state) ?? receiver,
+  );
 
-  if (callbackBinding.valueParameterIndex !== undefined && representativeEntry.value) {
-    const parameter = callbackDeclaration.parameters[callbackBinding.valueParameterIndex];
-    if (parameter) {
-      bindFunctionBindingName(
+  return collectionCallbackAffectsNarrow(context, resolved, narrowPath, state);
+}
+
+function functionBodyCallAffectsNarrow(
+  context: AnalysisContext,
+  node: ts.CallExpression,
+  bindings: FunctionBodyBindings,
+  narrowPath: NormalizedPath,
+  state: AnalysisState,
+  body: ts.ConciseBody,
+  activeDeclarations: Set<ts.FunctionLikeDeclaration>,
+): boolean {
+  const directCalleeDeclaration = getFunctionLikeFromCallExpression(context, node);
+  const directCalleeHasBody = directCalleeDeclaration &&
+    isFunctionLikeWithBody(directCalleeDeclaration);
+  const calledMember = getFunctionBodyCalledMember(
+    context,
+    node.expression,
+    bindings,
+  );
+  if (
+    calledMember &&
+    arrayMutationCallAffectsNarrow(
+      context,
+      calledMember.receiver,
+      normalizeFunctionBodyPath(context, calledMember.receiver, bindings),
+      calledMember.member,
+      calledMember.memberType,
+      narrowPath,
+    )
+  ) {
+    return true;
+  }
+
+  if (
+    calledMember &&
+    (
+      arrayCallbackArgumentAffectsNarrow(
         context,
-        parameter.name,
-        representativeEntry.value.path,
-        representativeEntry.value.value,
+        calledMember.receiver,
+        calledMember.member,
+        node,
         bindings,
-      );
+        narrowPath,
+        state,
+      ) ||
+      setCallbackArgumentAffectsNarrow(
+        context,
+        calledMember.receiver,
+        calledMember.member,
+        node,
+        bindings,
+        narrowPath,
+        state,
+      ) ||
+      mapCallbackArgumentAffectsNarrow(
+        context,
+        calledMember.receiver,
+        calledMember.member,
+        node,
+        bindings,
+        narrowPath,
+        state,
+      )
+    )
+  ) {
+    return true;
+  }
+
+  if (callPreservesNarrowing(context, node)) {
+    return false;
+  }
+
+  const boundMemberDeclaration = getFunctionLikeFromBoundMemberCall(
+    context,
+    node.expression,
+    bindings,
+  );
+  const boundMemberHasBody = boundMemberDeclaration &&
+    isFunctionLikeWithBody(boundMemberDeclaration);
+  const receiverBinding = calledMember
+    ? getFunctionConstructedReceiverBinding(context, calledMember.receiver, bindings)
+    : undefined;
+  if (
+    boundMemberHasBody &&
+    functionLikeAffectsNarrow(
+      context,
+      boundMemberDeclaration,
+      node.arguments,
+      narrowPath,
+      state,
+      false,
+      receiverBinding,
+      undefined,
+      activeDeclarations,
+    )
+  ) {
+    return true;
+  }
+
+  if (
+    calledMember &&
+    receiverPathAffectsMemberNarrow(
+      normalizeFunctionBodyPath(context, calledMember.receiver, bindings),
+      narrowPath,
+    )
+  ) {
+    return true;
+  }
+
+  if (
+    directCalleeHasBody &&
+    functionLikeAffectsNarrow(
+      context,
+      directCalleeDeclaration,
+      node.arguments,
+      narrowPath,
+      state,
+      false,
+      receiverBinding,
+      undefined,
+      activeDeclarations,
+    )
+  ) {
+    return true;
+  }
+
+  if (ts.isIdentifier(node.expression)) {
+    const parameterSymbol = getExpressionSymbol(context, node.expression);
+    if (parameterSymbol) {
+      const boundValue = bindings.boundValues.get(getSymbolId(context, parameterSymbol));
+      const boundFunction = boundValue
+        ? getFunctionLikeFromBoundValue(context, boundValue)
+        : undefined;
+      const boundFunctionHasBody = boundFunction && isFunctionLikeWithBody(boundFunction);
+      if (
+        boundFunctionHasBody &&
+        functionLikeAffectsNarrow(
+          context,
+          boundFunction,
+          node.arguments,
+          narrowPath,
+          state,
+          false,
+          undefined,
+          undefined,
+          activeDeclarations,
+        )
+      ) {
+        return true;
+      }
     }
   }
 
-  if (callbackBinding.keyParameterIndex !== undefined && representativeEntry.key) {
-    const parameter = callbackDeclaration.parameters[callbackBinding.keyParameterIndex];
-    if (parameter) {
-      bindFunctionBindingName(
+  return !directCalleeHasBody &&
+    !boundMemberHasBody &&
+    node.arguments.some((argument) =>
+      opaqueFunctionBodyArgumentExpressionAffectsNarrow(
         context,
-        parameter.name,
-        representativeEntry.key.path,
-        representativeEntry.key.value,
+        argument,
         bindings,
-      );
-    }
-  }
+        narrowPath,
+        state,
+        body,
+        activeDeclarations,
+      )
+    );
+}
 
-  if (callbackBinding.receiverParameterIndex !== undefined) {
-    const receiverParameter =
-      callbackDeclaration.parameters[callbackBinding.receiverParameterIndex];
-    if (receiverParameter) {
-      bindFunctionBindingName(
-        context,
-        receiverParameter.name,
-        normalizeExpressionPath(context, receiver, state),
-        getStateExpressionBoundValue(context, receiver, state) ?? receiver,
-        bindings,
-      );
-    }
+function functionBodyNewAffectsNarrow(
+  context: AnalysisContext,
+  node: ts.NewExpression,
+  bindings: FunctionBodyBindings,
+  narrowPath: NormalizedPath,
+  state: AnalysisState,
+  activeDeclarations: Set<ts.FunctionLikeDeclaration>,
+): boolean {
+  const constructorDeclaration = getResolvedConstructorDeclaration(context, node);
+  if (!constructorDeclaration || !isFunctionLikeWithBody(constructorDeclaration)) {
+    return false;
   }
 
   return functionLikeAffectsNarrow(
     context,
-    callbackDeclaration,
-    [],
+    constructorDeclaration,
+    node.arguments ?? [],
     narrowPath,
     state,
     false,
     undefined,
-    bindings,
+    getNestedFunctionBindings(context, node.arguments ?? [], constructorDeclaration, bindings),
+    activeDeclarations,
   );
 }
 
@@ -1373,184 +1528,33 @@ function functionLikeAffectsNarrow(
       }
 
       if (candidate.kind === 'call') {
-        const directCalleeDeclaration = getFunctionLikeFromCallExpression(context, candidate.node);
-        const directCalleeHasBody = directCalleeDeclaration &&
-          isFunctionLikeWithBody(directCalleeDeclaration);
-        const calledMember = getFunctionBodyCalledMember(
-          context,
-          candidate.node.expression,
-          bindings,
-        );
         if (
-          calledMember &&
-          arrayMutationCallAffectsNarrow(
+          functionBodyCallAffectsNarrow(
             context,
-            calledMember.receiver,
-            normalizeFunctionBodyPath(context, calledMember.receiver, bindings),
-            calledMember.member,
-            calledMember.memberType,
-            narrowPath,
-          )
-        ) {
-          return true;
-        }
-
-        if (
-          calledMember &&
-          arrayCallbackArgumentAffectsNarrow(
-            context,
-            calledMember.receiver,
-            calledMember.member,
             candidate.node,
             bindings,
             narrowPath,
             state,
-          )
-        ) {
-          return true;
-        }
-
-        if (
-          calledMember &&
-          setCallbackArgumentAffectsNarrow(
-            context,
-            calledMember.receiver,
-            calledMember.member,
-            candidate.node,
-            bindings,
-            narrowPath,
-            state,
-          )
-        ) {
-          return true;
-        }
-
-        if (
-          calledMember &&
-          mapCallbackArgumentAffectsNarrow(
-            context,
-            calledMember.receiver,
-            calledMember.member,
-            candidate.node,
-            bindings,
-            narrowPath,
-            state,
-          )
-        ) {
-          return true;
-        }
-
-        const boundMemberDeclaration = getFunctionLikeFromBoundMemberCall(
-          context,
-          candidate.node.expression,
-          bindings,
-        );
-        const boundMemberHasBody = boundMemberDeclaration &&
-          isFunctionLikeWithBody(boundMemberDeclaration);
-        const receiverBinding = calledMember
-          ? getFunctionConstructedReceiverBinding(context, calledMember.receiver, bindings)
-          : undefined;
-        if (
-          boundMemberHasBody &&
-          functionLikeAffectsNarrow(
-            context,
-            boundMemberDeclaration,
-            candidate.node.arguments,
-            narrowPath,
-            state,
-            false,
-            receiverBinding,
-            undefined,
+            body,
             activeDeclarations,
           )
         ) {
           return true;
         }
+      }
 
-        if (
-          ts.isElementAccessExpression(candidate.node.expression) ||
-          candidate.node.questionDotToken !== undefined
-        ) {
-          const receiver = ts.isPropertyAccessExpression(candidate.node.expression) ||
-              ts.isElementAccessExpression(candidate.node.expression)
-            ? candidate.node.expression.expression
-            : undefined;
-          if (receiver) {
-            const receiverPath = normalizeFunctionBodyPath(context, receiver, bindings);
-            if (
-              receiverPath &&
-              receiverPath.baseSymbol === narrowPath.baseSymbol &&
-              receiverPath.segments.length === 0 &&
-              narrowPath.segments.length > 0
-            ) {
-              return true;
-            }
-          }
-        }
-
-        if (
-          directCalleeHasBody &&
-          functionLikeAffectsNarrow(
-            context,
-            directCalleeDeclaration,
-            candidate.node.arguments,
-            narrowPath,
-            state,
-            false,
-            receiverBinding,
-            undefined,
-            activeDeclarations,
-          )
-        ) {
-          return true;
-        }
-
-        if (ts.isIdentifier(candidate.node.expression)) {
-          const parameterSymbol = getExpressionSymbol(context, candidate.node.expression);
-          if (parameterSymbol) {
-            const boundValue = bindings.boundValues.get(
-              getSymbolId(context, parameterSymbol),
-            );
-            const boundFunction = boundValue
-              ? getFunctionLikeFromBoundValue(context, boundValue)
-              : undefined;
-            const boundFunctionHasBody = boundFunction && isFunctionLikeWithBody(boundFunction);
-            if (
-              boundFunctionHasBody &&
-              functionLikeAffectsNarrow(
-                context,
-                boundFunction,
-                candidate.node.arguments,
-                narrowPath,
-                state,
-                false,
-                undefined,
-                undefined,
-                activeDeclarations,
-              )
-            ) {
-              return true;
-            }
-          }
-        }
-
-        if (
-          !directCalleeHasBody &&
-          !boundMemberHasBody &&
-          candidate.node.arguments.some((argument) =>
-            opaqueFunctionBodyArgumentExpressionAffectsNarrow(
-              context,
-              argument,
-              bindings,
-              narrowPath,
-              state,
-              body,
-              activeDeclarations,
-            )
-          )
-        ) {
-          return true;
-        }
+      if (
+        candidate.kind === 'new' &&
+        functionBodyNewAffectsNarrow(
+          context,
+          candidate.node,
+          bindings,
+          narrowPath,
+          state,
+          activeDeclarations,
+        )
+      ) {
+        return true;
       }
 
       if (
@@ -1586,6 +1590,148 @@ function functionLikeAffectsNarrow(
   }
 }
 
+function callPreservesNarrowing(
+  context: AnalysisContext,
+  node: ts.CallExpression | ts.NewExpression,
+): boolean {
+  return compositionPreservesNarrowing(getEffectCompositionForCallLike(context, node));
+}
+
+interface StateCallNarrowingOptions {
+  readonly includeCollectionCallbacks: boolean;
+  readonly opaqueArgumentAffectsNarrow: (argument: ts.Expression) => boolean;
+  readonly respectEffectPreservation: boolean;
+}
+
+interface NewExpressionNarrowingOptions {
+  readonly allowCapturedRead: boolean;
+  readonly includeInstanceMethods: boolean;
+}
+
+function stateCallAffectsNarrow(
+  context: AnalysisContext,
+  node: ts.CallExpression,
+  narrowPath: NormalizedPath,
+  state: AnalysisState,
+  options: StateCallNarrowingOptions,
+  activeDeclarations: Set<ts.FunctionLikeDeclaration> = new Set(),
+): boolean {
+  const calledMember = getCalledMember(context, node.expression);
+  const receiverBinding = calledMember
+    ? getStateConstructedReceiverBinding(
+      context,
+      calledMember.receiver,
+      state,
+      'mutation',
+    )
+    : undefined;
+  const freshLocalMutatingCall = calledMember
+    ? (() => {
+      const freshLocalProof = getEnclosingBodyFreshLocalProof(context, node);
+      return freshLocalProof
+        ? getFreshLocalMutatingCall(context, node, freshLocalProof)
+        : undefined;
+    })()
+    : undefined;
+
+  if (
+    calledMember &&
+    arrayMutationCallAffectsNarrow(
+      context,
+      calledMember.receiver,
+      receiverBinding?.path,
+      calledMember.member,
+      calledMember.memberType,
+      narrowPath,
+    )
+  ) {
+    return true;
+  }
+
+  if (options.includeCollectionCallbacks && calledMember) {
+    if (
+      arrayCallbackExpressionAffectsNarrow(
+        context,
+        calledMember.receiver,
+        calledMember.member,
+        node,
+        narrowPath,
+        state,
+      ) ||
+      setCallbackExpressionAffectsNarrow(
+        context,
+        calledMember.receiver,
+        calledMember.member,
+        node,
+        narrowPath,
+        state,
+      ) ||
+      mapCallbackExpressionAffectsNarrow(
+        context,
+        calledMember.receiver,
+        calledMember.member,
+        node,
+        narrowPath,
+        state,
+      )
+    ) {
+      return true;
+    }
+  }
+
+  if (calledMember) {
+    if (
+      freshLocalMutatingCall?.suppressesMut &&
+      !receiverPathAffectsMemberNarrow(
+        normalizeExpressionPath(context, calledMember.receiver, state),
+        narrowPath,
+      )
+    ) {
+      return false;
+    }
+  }
+
+  if (options.respectEffectPreservation) {
+    if (callPreservesNarrowing(context, node)) {
+      return false;
+    }
+    if (freshLocalMutatingCall && !freshLocalMutatingCall.suppressesMut) {
+      return true;
+    }
+  }
+
+  if (
+    calledMember &&
+    receiverPathAffectsMemberNarrow(
+      normalizeExpressionPath(context, calledMember.receiver, state),
+      narrowPath,
+    )
+  ) {
+    return true;
+  }
+
+  const calleeDeclaration = getFunctionLikeFromCallExpression(context, node);
+  if (
+    calleeDeclaration &&
+    functionLikeAffectsNarrow(
+      context,
+      calleeDeclaration,
+      node.arguments,
+      narrowPath,
+      state,
+      true,
+      receiverBinding,
+      undefined,
+      activeDeclarations,
+    )
+  ) {
+    return true;
+  }
+
+  return !calleeDeclaration &&
+    node.arguments.some((argument) => options.opaqueArgumentAffectsNarrow(argument));
+}
+
 function classInstanceMethodsAffectNarrow(
   context: AnalysisContext,
   constructorDeclaration: ts.Declaration,
@@ -1594,8 +1740,8 @@ function classInstanceMethodsAffectNarrow(
   state: AnalysisState,
   activeDeclarations: Set<ts.FunctionLikeDeclaration> = new Set(),
 ): boolean {
-  const classLike = constructorDeclaration.parent;
-  if (!ts.isClassLike(classLike)) {
+  const classLike = getConstructedClassLike(constructorDeclaration);
+  if (!classLike) {
     return false;
   }
 
@@ -1635,6 +1781,44 @@ function classInstanceMethodsAffectNarrow(
   return hasInstanceMethod &&
     argumentsList.some((argument) =>
       expressionPathEscapesNarrow(context, argument, narrowPath, state)
+    );
+}
+
+function newExpressionAffectsNarrow(
+  context: AnalysisContext,
+  node: ts.NewExpression,
+  narrowPath: NormalizedPath,
+  state: AnalysisState,
+  options: NewExpressionNarrowingOptions,
+): boolean {
+  const constructorDeclaration = getResolvedConstructorDeclaration(context, node);
+  if (!constructorDeclaration) {
+    return false;
+  }
+
+  if (
+    isFunctionLikeWithBody(constructorDeclaration) &&
+    functionLikeAffectsNarrow(
+      context,
+      constructorDeclaration,
+      node.arguments ?? [],
+      narrowPath,
+      state,
+      options.allowCapturedRead,
+      undefined,
+      undefined,
+    )
+  ) {
+    return true;
+  }
+
+  return options.includeInstanceMethods &&
+    classInstanceMethodsAffectNarrow(
+      context,
+      constructorDeclaration,
+      node.arguments ?? [],
+      narrowPath,
+      state,
     );
 }
 
@@ -1736,113 +1920,39 @@ function escapingExpressionAffectsNarrow(
     }
 
     if (candidate.kind === 'call') {
-      const calledMember = getCalledMember(context, candidate.node.expression);
       if (
-        calledMember &&
-        arrayMutationCallAffectsNarrow(
+        stateCallAffectsNarrow(
           context,
-          calledMember.receiver,
-          normalizeExpressionPath(context, calledMember.receiver, state),
-          calledMember.member,
-          calledMember.memberType,
-          narrowPath,
-        )
-      ) {
-        return true;
-      }
-
-      if (
-        ts.isElementAccessExpression(candidate.node.expression) ||
-        candidate.node.questionDotToken !== undefined
-      ) {
-        const receiver = ts.isPropertyAccessExpression(candidate.node.expression) ||
-            ts.isElementAccessExpression(candidate.node.expression)
-          ? candidate.node.expression.expression
-          : undefined;
-        if (receiver) {
-          const receiverPath = normalizeExpressionPath(context, receiver, state);
-          if (
-            receiverPath &&
-            receiverPath.baseSymbol === narrowPath.baseSymbol &&
-            receiverPath.segments.length === 0 &&
-            narrowPath.segments.length > 0
-          ) {
-            return true;
-          }
-        }
-      }
-
-      const calleeDeclaration = getFunctionLikeFromCallExpression(context, candidate.node);
-      if (
-        calleeDeclaration &&
-        functionLikeAffectsNarrow(
-          context,
-          calleeDeclaration,
-          candidate.node.arguments,
+          candidate.node,
           narrowPath,
           state,
-          true,
-          calledMember
-            ? getStateConstructedReceiverBinding(
-              context,
-              calledMember.receiver,
-              state,
-              'mutation',
-            )
-            : undefined,
-          undefined,
+          {
+            includeCollectionCallbacks: false,
+            opaqueArgumentAffectsNarrow: (argument) =>
+              opaqueArgumentExpressionAffectsNarrow(context, argument, narrowPath, state),
+            respectEffectPreservation: false,
+          },
           activeDeclarations,
-        )
-      ) {
-        return true;
-      }
-
-      if (
-        !calleeDeclaration &&
-        candidate.node.arguments.some((argument) =>
-          opaqueArgumentExpressionAffectsNarrow(
-            context,
-            argument,
-            narrowPath,
-            state,
-            activeDeclarations,
-          )
         )
       ) {
         return true;
       }
     }
 
-    if (candidate.kind === 'new') {
-      const constructorDeclaration = context.checker.getResolvedSignature(candidate.node)
-        ?.declaration;
-      if (
-        constructorDeclaration &&
-        (
-          (isFunctionLikeWithBody(constructorDeclaration) &&
-            functionLikeAffectsNarrow(
-              context,
-              constructorDeclaration,
-              candidate.node.arguments ?? [],
-              narrowPath,
-              state,
-              false,
-              undefined,
-              undefined,
-              activeDeclarations,
-            )) ||
-          classInstanceMethodsAffectNarrow(
-            context,
-            constructorDeclaration,
-            candidate.node.arguments ?? [],
-            narrowPath,
-            state,
-            activeDeclarations,
-          )
-        )
-      ) {
-        return true;
-      }
+    if (
+      candidate.kind === 'new' &&
+      newExpressionAffectsNarrow(
+        context,
+        candidate.node,
+        narrowPath,
+        state,
+        {
+          allowCapturedRead: false,
+          includeInstanceMethods: true,
+        },
+      )
+    ) {
+      return true;
     }
   }
 
@@ -2114,144 +2224,47 @@ export function statementAffectsNarrow(
     }
 
     if (candidate.kind === 'call') {
-      const calledMember = getCalledMember(context, candidate.node.expression);
-      const receiverBinding = calledMember
-        ? getStateConstructedReceiverBinding(
-          context,
-          calledMember.receiver,
-          state,
-          'mutation',
-        )
-        : undefined;
       if (
-        calledMember &&
-        arrayMutationCallAffectsNarrow(
+        stateCallAffectsNarrow(
           context,
-          calledMember.receiver,
-          receiverBinding?.path,
-          calledMember.member,
-          calledMember.memberType,
-          narrowPath,
-        )
-      ) {
-        return candidate.node;
-      }
-
-      if (
-        calledMember &&
-        arrayCallbackExpressionAffectsNarrow(
-          context,
-          calledMember.receiver,
-          calledMember.member,
           candidate.node,
           narrowPath,
           state,
+          {
+            includeCollectionCallbacks: true,
+            opaqueArgumentAffectsNarrow: (argument) => {
+              if (!opaqueArgumentExpressionAffectsNarrow(context, argument, narrowPath, state)) {
+                return false;
+              }
+
+              if (!ts.isReturnStatement(statement)) {
+                return true;
+              }
+
+              return !isExtractedReadOnlyReturnArgument(context, argument, state);
+            },
+            respectEffectPreservation: true,
+          },
         )
-      ) {
-        return candidate.node;
-      }
-
-      if (
-        calledMember &&
-        setCallbackExpressionAffectsNarrow(
-          context,
-          calledMember.receiver,
-          calledMember.member,
-          candidate.node,
-          narrowPath,
-          state,
-        )
-      ) {
-        return candidate.node;
-      }
-
-      if (
-        calledMember &&
-        mapCallbackExpressionAffectsNarrow(
-          context,
-          calledMember.receiver,
-          calledMember.member,
-          candidate.node,
-          narrowPath,
-          state,
-        )
-      ) {
-        return candidate.node;
-      }
-
-      if (
-        ts.isElementAccessExpression(candidate.node.expression) ||
-        candidate.node.questionDotToken !== undefined
-      ) {
-        const receiver = ts.isPropertyAccessExpression(candidate.node.expression) ||
-            ts.isElementAccessExpression(candidate.node.expression)
-          ? candidate.node.expression.expression
-          : undefined;
-        if (!receiver) {
-          continue;
-        }
-        const receiverPath = normalizeExpressionPath(context, receiver, state);
-        if (
-          receiverPath &&
-          receiverPath.baseSymbol === narrowPath.baseSymbol &&
-          receiverPath.segments.length === 0 &&
-          narrowPath.segments.length > 0
-        ) {
-          return candidate.node;
-        }
-      }
-
-      const calleeDeclaration = getFunctionLikeFromCallExpression(context, candidate.node);
-      if (
-        calleeDeclaration &&
-        functionLikeAffectsNarrow(
-          context,
-          calleeDeclaration,
-          candidate.node.arguments,
-          narrowPath,
-          state,
-          true,
-          receiverBinding,
-        )
-      ) {
-        return candidate.node;
-      }
-
-      if (
-        !calleeDeclaration &&
-        candidate.node.arguments.some((argument) => {
-          if (!opaqueArgumentExpressionAffectsNarrow(context, argument, narrowPath, state)) {
-            return false;
-          }
-
-          if (!ts.isReturnStatement(statement)) {
-            return true;
-          }
-
-          return !isExtractedReadOnlyReturnArgument(context, argument, state);
-        })
       ) {
         return candidate.node;
       }
     }
 
-    if (candidate.kind === 'new') {
-      const constructorDeclaration = context.checker.getResolvedSignature(candidate.node)
-        ?.declaration;
-      if (
-        constructorDeclaration &&
-        isFunctionLikeWithBody(constructorDeclaration) &&
-        functionLikeAffectsNarrow(
-          context,
-          constructorDeclaration,
-          candidate.node.arguments ?? [],
-          narrowPath,
-          state,
-          true,
-        )
-      ) {
-        return candidate.node;
-      }
+    if (
+      candidate.kind === 'new' &&
+      newExpressionAffectsNarrow(
+        context,
+        candidate.node,
+        narrowPath,
+        state,
+        {
+          allowCapturedRead: true,
+          includeInstanceMethods: false,
+        },
+      )
+    ) {
+      return candidate.node;
     }
   }
 

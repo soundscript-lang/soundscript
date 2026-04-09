@@ -22,6 +22,7 @@ import {
   isSoundscriptSourceFile,
   toSourceFileName,
 } from './frontend/project_frontend.ts';
+import { captureTypeScriptDeclarationOutputs } from './frontend/typescript_effect_declarations.ts';
 import { loadSoundScriptPackageInfo, type SoundScriptPackageInfo } from './soundscript_packages.ts';
 import {
   copyFile,
@@ -213,19 +214,6 @@ function createPackageBuildProgram(options: BuildProjectOptions) {
     runtime: loadedConfig.runtime,
     rootNames: [...new Set([...loadedConfig.commandLine.fileNames, ...soundscriptRootNames])],
   });
-}
-
-function captureTypeScriptDeclarationOutputs(program: ts.Program): ReadonlyMap<string, string> {
-  const outputs = new Map<string, string>();
-  program.emit(
-    undefined,
-    (fileName, text) => {
-      outputs.set(fileName, text);
-    },
-    undefined,
-    true,
-  );
-  return outputs;
 }
 
 async function writeGeneratedFile(

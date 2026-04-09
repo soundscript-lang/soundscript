@@ -8,6 +8,7 @@ import {
   isoDate as isoDateDecoder,
   number as numberDecoder,
   string as stringDecoder,
+  type UrlLike,
   url as urlDecoder,
 } from 'sts:decode';
 import {
@@ -117,5 +118,5 @@ export function codecInvariant<TEncoded, DE = DecodeFailure, EE = EncodeFailure>
 export const stringCodec: Codec<string, string> = codec(stringDecoder, stringEncoderValue);
 export const numberCodec: Codec<number, number> = codec(numberDecoder, numberEncoderValue);
 export const booleanCodec: Codec<boolean, boolean> = codec(booleanDecoder, booleanEncoderValue);
-export const url: Codec<URL, string> = codec(urlDecoder, urlEncoder);
+export const url: Codec<UrlLike, string> = codec(urlDecoder, urlEncoder);
 export const isoDate: Codec<Date, string> = codec(isoDateDecoder, isoDateEncoder);

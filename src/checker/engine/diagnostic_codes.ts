@@ -29,6 +29,8 @@ export const SOUND_DIAGNOSTIC_CODES = {
   fieldReadBeforeInitialization: 'SOUND1037',
   definiteAssignmentAssertion: 'SOUND1038',
   ambientHostValueRequiresExplicitBoundary: 'SOUND1039',
+  invalidEffectAnnotation: 'SOUND1040',
+  effectContractViolation: 'SOUND1041',
 } as const;
 
 export type SoundDiagnosticCode =
@@ -78,6 +80,8 @@ export const SOUND_DIAGNOSTIC_MESSAGES = {
     'Definite-assignment assertions are not supported in soundscript.',
   ambientHostValueRequiresExplicitBoundary:
     "Ambient host values cannot be used directly in soundscript without an explicit boundary import or same-file '// #[extern]' declaration.",
+  invalidEffectAnnotation: 'Effects annotation contract is invalid.',
+  effectContractViolation: 'Effect contract violation.',
 } as const;
 
 export const COMPILER_DIAGNOSTIC_CODES = {

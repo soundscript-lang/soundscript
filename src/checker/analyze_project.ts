@@ -1,7 +1,10 @@
 import ts from 'typescript';
 import { dirname, isAbsolute, join } from '../platform/path.ts';
 
-import { createSoundStdlibCompilerHost } from '../bundled/sound_stdlib.ts';
+import {
+  createSoundStdlibCompilerHost,
+  resolveBundledTypesDirectory,
+} from '../bundled/sound_stdlib.ts';
 import {
   type BuiltinExpandedTsDiagnosticProgram,
   createBuiltinExpandedProgram,
@@ -102,6 +105,10 @@ const fileScopedAnalysisContextCache = new WeakMap<
   Map<string, AnalysisContext | null>
 >();
 const IGNORED_GENERATED_TOP_LEVEL_IMPORT_SPECIFIERS = new Set(['sts:prelude']);
+const BUNDLED_TYPES_DIRECTORY = ts.sys.resolvePath(resolveBundledTypesDirectory()).replaceAll(
+  '\\',
+  '/',
+);
 
 interface PrepareProjectAnalysisOptions {
   deferTypescriptView?: boolean;
@@ -749,7 +756,13 @@ function shouldAnalyzeProjectSoundscriptSourceFile(
 }
 
 function shouldAnalyzeTypescriptViewSourceFile(sourceFile: ts.SourceFile): boolean {
-  return !isSoundscriptSourceFile(toSourceFileName(sourceFile.fileName));
+  const sourceFileName = toSourceFileName(sourceFile.fileName);
+  if (isSoundscriptSourceFile(sourceFileName)) {
+    return false;
+  }
+
+  const normalizedSourceFileName = ts.sys.resolvePath(sourceFileName).replaceAll('\\', '/');
+  return !normalizedSourceFileName.startsWith(`${BUNDLED_TYPES_DIRECTORY}/`);
 }
 
 function isIgnorableGeneratedTopLevelStatement(statement: ts.Statement): boolean {
@@ -1852,7 +1865,10 @@ export function prepareProjectAnalysis(
               options,
               loadedConfig,
               typescriptRootNames,
-              ts.createCompilerHost(loadedConfig.commandLine.options),
+              createSoundStdlibCompilerHost(
+                loadedConfig.commandLine.options,
+                dirname(options.projectPath),
+              ),
               configFileParsingDiagnostics,
               (sourceFile) => shouldAnalyzeTypescriptViewSourceFile(sourceFile),
               localProjectedDeclarationOverrides,

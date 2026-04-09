@@ -4,6 +4,7 @@ import { measureCheckerTiming } from '../timing.ts';
 
 import { runAmbientHostValueRules } from './ambient_host_values.ts';
 import { runAnnotationValidationRules } from './directive_validation.ts';
+import { runEffectRules } from './effects.ts';
 import { runFlowRules } from './flow.ts';
 import { runNamespaceObjectRules } from './namespace_object.ts';
 import { runNullPrototypeRules } from './null_prototype.ts';
@@ -37,6 +38,7 @@ function runTimedSoundRule(
 export function runSoundAnalysis(context: AnalysisContext): SoundDiagnostic[] {
   return [
     ...runTimedSoundRule('directiveValidation', context, runAnnotationValidationRules),
+    ...runTimedSoundRule('effects', context, runEffectRules),
     ...runTimedSoundRule('unsoundSyntax', context, runUnsoundSyntaxRules),
     ...runTimedSoundRule('unsoundImports', context, runUnsoundImportRules),
     ...runTimedSoundRule('ambientHostValues', context, runAmbientHostValueRules),

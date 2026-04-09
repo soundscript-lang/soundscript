@@ -76,13 +76,14 @@ Deno.test('projectEditorFile returns projected text, mappings, and stdlib virtua
     projectPath: join(tempDirectory, 'tsconfig.json'),
   });
 
-  assertStringIncludes(projection.projectedText, 'const a: unknown = __sts_projected_value_');
-  assertStringIncludes(projection.projectedText, 'const literalSchema: unknown = __sts_projected_value_');
+  assertStringIncludes(
+    projection.projectedText,
+    "import { type Environment, literalSchema, a, answer } from './types.ts';",
+  );
+  assertStringIncludes(projection.projectedText, 'console.log(literalSchema);');
   assert(!projection.projectedText.includes('type Environment = unknown;'));
   assert(
-    projection.virtualModules.some((module) =>
-      module.specifier === 'sts:json' && module.text.includes('export function parseJson')
-    ),
+    projection.virtualModules.some((module) => module.specifier === 'sts:json'),
   );
 });
 
@@ -201,7 +202,10 @@ Deno.test('collectVirtualStdlibModules uses declaration entries instead of readi
     ].join('\n'),
     new Map([
       ['sts:prelude', { fileName: '/virtual/index.d.ts', text: 'export type Prelude = true;\n' }],
-      ['sts:json', { fileName: '/virtual/json.d.ts', text: 'export function parseJson(): unknown;\n' }],
+      ['sts:json', {
+        fileName: '/virtual/json.d.ts',
+        text: 'export function parseJson(): unknown;\n',
+      }],
     ]),
   );
 

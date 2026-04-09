@@ -3,10 +3,15 @@ import ts from 'typescript';
 import { SOUND_DIAGNOSTIC_CODES, SOUND_DIAGNOSTIC_MESSAGES } from '../engine/diagnostic_codes.ts';
 import type { AnalysisContext } from '../engine/types.ts';
 import {
-  getNodeDiagnosticRange,
   type DiagnosticRelatedInformation,
+  getNodeDiagnosticRange,
   type SoundDiagnostic,
 } from '../diagnostics.ts';
+import {
+  formatFreshLocalFailureReasons,
+  getEnclosingBodyFreshLocalProof,
+  getFreshLocalMutatingCall,
+} from '../effects/fresh_locals.ts';
 import {
   type FlowFact,
   getFlowChildRegionStructure,
@@ -92,7 +97,9 @@ function formatNormalizedPath(
   context: AnalysisContext,
   path: NormalizedPath,
 ): string {
-  return `${context.checker.symbolToString(path.baseSymbol)}${path.segments.map(formatPathSegment).join('')}`;
+  return `${context.checker.symbolToString(path.baseSymbol)}${
+    path.segments.map(formatPathSegment).join('')
+  }`;
 }
 
 function formatNodeText(node: ts.Node): string {
@@ -166,10 +173,17 @@ function createDiagnostic(
     narrowedValue,
     invalidatingBoundary,
   );
-  const earlierProof = invalidation.fact
-    ? formatNodeText(invalidation.fact.sourceNode)
-    : undefined;
+  const earlierProof = invalidation.fact ? formatNodeText(invalidation.fact.sourceNode) : undefined;
   const hint = invalidationRewriteHint(invalidation.boundaryKind);
+  const conservativeMutReasonTexts = ts.isCallExpression(invalidation.node)
+    ? (() => {
+      const proof = getEnclosingBodyFreshLocalProof(context, invalidation.node);
+      const blockedReason = proof
+        ? getFreshLocalMutatingCall(context, invalidation.node, proof)?.blockedReason
+        : undefined;
+      return blockedReason ? formatFreshLocalFailureReasons([blockedReason]) : undefined;
+    })()
+    : undefined;
   return {
     source: 'sound',
     code: SOUND_DIAGNOSTIC_CODES.unsoundFlowNarrowing,
@@ -188,6 +202,9 @@ function createDiagnostic(
         { label: 'boundaryKind', value: invalidation.boundaryKind },
         { label: 'invalidatingBoundary', value: invalidatingBoundary },
         ...(earlierProof ? [{ label: 'earlierProof', value: earlierProof }] : []),
+        ...(conservativeMutReasonTexts && conservativeMutReasonTexts.length > 0
+          ? [{ label: 'conservativeMutReasons', value: conservativeMutReasonTexts.join('; ') }]
+          : []),
       ],
       counterexample:
         'A boundary between the check and later use could change the value before the narrowed use runs.',
@@ -199,11 +216,21 @@ function createDiagnostic(
         : 'A call, mutation, callback, alias, or suspension point can change the value after the earlier check.',
       ...(earlierProof ? [`Earlier proof: \`${earlierProof}\`.`] : []),
       hint,
+      ...(conservativeMutReasonTexts && conservativeMutReasonTexts.length > 0
+        ? [
+          `Fresh-local mut proof did not apply: ${conservativeMutReasonTexts.join(', ')}.`,
+        ]
+        : []),
       `Example: ${example}`,
     ],
     hint,
     relatedInformation: invalidation.fact
-      ? [createRelatedInformation(invalidation.fact.sourceNode, 'Earlier narrowing established here.')]
+      ? [
+        createRelatedInformation(
+          invalidation.fact.sourceNode,
+          'Earlier narrowing established here.',
+        ),
+      ]
       : undefined,
     ...getNodeDiagnosticRange(invalidation.node),
   };
@@ -367,7 +394,9 @@ export function runFlowRules(context: AnalysisContext): SoundDiagnostic[] {
   const diagnostics: SoundDiagnostic[] = [];
 
   context.forEachSourceFile((sourceFile) => {
-    const rootStatements = sourceFile.statements.filter((statement) => !context.isGeneratedNode(statement));
+    const rootStatements = sourceFile.statements.filter((statement) =>
+      !context.isGeneratedNode(statement)
+    );
     analyzeRootRegion(
       context,
       sourceFile,
@@ -383,7 +412,9 @@ export function runFlowRules(context: AnalysisContext): SoundDiagnostic[] {
         return;
       }
 
-      const bodyStatements = getRootStatements(node.body).filter((statement) => !context.isGeneratedNode(statement));
+      const bodyStatements = getRootStatements(node.body).filter((statement) =>
+        !context.isGeneratedNode(statement)
+      );
       analyzeRootRegion(
         context,
         ts.isBlock(node.body) ? node.body : undefined,

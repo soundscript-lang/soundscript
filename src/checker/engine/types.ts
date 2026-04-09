@@ -68,20 +68,53 @@ export interface AliasRelationshipFact {
   kind: AliasRelationshipKind;
 }
 
-export type EffectKind =
-  | 'await'
-  | 'callback'
-  | 'exception'
-  | 'mutation'
-  | 'none'
-  | 'unknown'
-  | 'yield';
+export type PublicEffectName = string;
+
+export type EffectNameFact = string;
+
+export interface EffectRewriteFact {
+  from: EffectNameFact;
+  to: EffectNameFact;
+}
+
+export interface EffectParameterContractFact {
+  forbidEffects: readonly EffectNameFact[];
+  parameterIndex: number;
+}
+
+export type EffectFailureBoundary = 'preserve' | 'reject' | 'capture';
+
+export type EffectUnknownReasonKind =
+  | 'annotatedUnknownDirectEffect'
+  | 'opaqueCallableExpression'
+  | 'unresolvedForwardedCallback'
+  | 'unsummarizedDeclarationFrontier';
+
+export interface EffectUnknownReasonFact {
+  detail?: string;
+  kind: EffectUnknownReasonKind;
+}
+
+export interface EffectForwardedParameterFact {
+  handledEffects: readonly EffectNameFact[];
+  failureBoundary: EffectFailureBoundary;
+  memberPath: readonly string[];
+  memberName?: string;
+  parameterName?: string;
+  parameterIndex: number;
+  rewrites: readonly EffectRewriteFact[];
+}
 
 export interface EffectSummaryFact {
+  directEffects: readonly EffectNameFact[];
+  directMask: number;
+  forbidEffects: readonly EffectNameFact[];
+  forbidMask: number;
+  forwardedParameters: readonly EffectForwardedParameterFact[];
+  hasUnknownDirectEffects: boolean;
   nodeId: number;
-  kind: EffectKind;
-  invalidatesNarrowing: boolean;
-  reason: string;
+  unknownDirectReasons: readonly EffectUnknownReasonFact[];
+  parameterContracts: readonly EffectParameterContractFact[];
 }
 
 export type NarrowingInvalidationReason =
@@ -393,7 +426,9 @@ export interface AnalysisFactQueries {
     target: ts.Node | ts.Symbol,
     compute: () => AliasRelationshipFact,
   ): AliasRelationshipFact;
+  peekEffectSummary(node: ts.Node): EffectSummaryFact | undefined;
   getEffectSummary(node: ts.Node, compute: () => EffectSummaryFact): EffectSummaryFact;
+  setEffectSummary(node: ts.Node, fact: EffectSummaryFact): EffectSummaryFact;
   getFlowBranchStructure(
     node: ts.Statement,
     compute: () => FlowBranchStructureFact,

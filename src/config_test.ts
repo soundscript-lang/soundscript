@@ -254,6 +254,8 @@ Deno.test('loadConfig applies ES-only default libs when compilerOptions.lib is o
 
   assertEquals(jsNodeConfig.commandLine.options.lib, ['lib.es2024.d.ts']);
   assertEquals(wasmWasiConfig.commandLine.options.lib, ['lib.es2024.d.ts']);
+  assertEquals(jsNodeConfig.commandLine.options.types, ['node']);
+  assertEquals(wasmWasiConfig.commandLine.options.types, undefined);
 });
 
 Deno.test('loadConfig preserves explicit compilerOptions.lib over runtime defaults', async () => {
@@ -277,6 +279,29 @@ Deno.test('loadConfig preserves explicit compilerOptions.lib over runtime defaul
   const loadedConfig = loadConfig(projectPath, { target: 'wasm-wasi' });
 
   assertEquals(loadedConfig.commandLine.options.lib, ['lib.es2022.d.ts']);
+});
+
+Deno.test('loadConfig preserves explicit compilerOptions.types over runtime defaults', async () => {
+  const tempDirectory = await Deno.makeTempDir({ prefix: 'soundscript-config-explicit-types-' });
+  const projectPath = join(tempDirectory, 'tsconfig.json');
+  await Deno.writeTextFile(
+    projectPath,
+    JSON.stringify(
+      {
+        compilerOptions: {
+          module: 'ESNext',
+          target: 'ES2022',
+          types: [],
+        },
+      },
+      null,
+      2,
+    ),
+  );
+
+  const loadedConfig = loadConfig(projectPath);
+
+  assertEquals(loadedConfig.commandLine.options.types, []);
 });
 
 Deno.test('loadConfig always enables JSX emit for soundscript programs', async () => {

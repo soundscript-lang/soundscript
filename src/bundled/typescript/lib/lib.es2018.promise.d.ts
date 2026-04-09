@@ -26,5 +26,6 @@ interface Promise<T> {
      * @param onfinally The callback to execute when the Promise is settled (fulfilled or rejected).
      * @returns A Promise for the completion of the callback.
      */
+    // #[effects(add: [suspend.await], forward: [{ from: onfinally, rewrite: [{ from: fails, to: fails.rejects }] }])]
     finally(onfinally?: (() => void) | undefined | null): Promise<T>;
 }

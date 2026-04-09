@@ -267,9 +267,6 @@ Deno.test('prepare_npm --stdlib-only emits canonical package source maps and .st
   const publishedJsonRuntime = await Deno.readTextFile(
     join(canonicalRoot, 'json.js'),
   );
-  const publishedHostDomRuntime = await Deno.readTextFile(
-    join(canonicalRoot, 'host', 'dom.js'),
-  );
   const runtimeMap = await Deno.readTextFile(join(canonicalRoot, 'result.js.map'));
   const rootMap = await Deno.readTextFile(join(canonicalRoot, 'index.js.map'));
   const packageJson = JSON.parse(await Deno.readTextFile(join(canonicalRoot, 'package.json'))) as {
@@ -291,10 +288,6 @@ Deno.test('prepare_npm --stdlib-only emits canonical package source maps and .st
   assertStringIncludes(publishedJsonSource, "from './numerics.sts';");
   assertStringIncludes(publishedJsonRuntime, "from './numerics.js';");
   assertEquals(publishedJsonRuntime.includes("from './numerics.sts';"), false);
-  assertEquals(
-    publishedHostDomRuntime.includes("from '@soundscript/soundscript/host/dom'"),
-    false,
-  );
   assertStringIncludes(
     publishedTypeclassesSource,
     'function bind<A>(effect: BoundEffect<F, A>): A {',
@@ -318,10 +311,8 @@ Deno.test('prepare_npm --stdlib-only emits canonical package source maps and .st
   assertEquals(packageJson.exports?.['./thunk'], undefined);
   assertEquals(packageJson.exports?.['./experimental/sql'], undefined);
   assertEquals(packageJson.exports?.['./experimental/component'], undefined);
-  assertEquals(packageJson.exports?.['./host/dom']?.import, './host/dom.js');
-  assertEquals(packageJson.exports?.['./host/dom']?.types, './host/dom.d.ts');
-  assertEquals(packageJson.exports?.['./host/node']?.import, './host/node.js');
-  assertEquals(packageJson.exports?.['./host/node']?.types, './host/node.d.ts');
+  assertEquals(packageJson.exports?.['./host/dom'], undefined);
+  assertEquals(packageJson.exports?.['./host/node'], undefined);
   assertEquals(packageJson.exports?.['./value'] !== undefined, true);
   assertEquals(packageJson.exports?.['./derive'] !== undefined, true);
   assertEquals(packageJson.exports?.['./numerics'] !== undefined, true);
@@ -782,13 +773,17 @@ Deno.test('buildCliCompileArgs omits worker flags and entrypoints', () => {
   assertEquals(args.includes('src/frontend/macro_sandbox_worker.ts'), false);
 });
 
-Deno.test('deno task build omits worker flags and entrypoints', async () => {
+Deno.test('deno task build stages runtime support files and omits worker entrypoints', async () => {
   const denoConfig = JSON.parse(await Deno.readTextFile(join(ROOT, 'deno.json'))) as {
     tasks: { build: string };
   };
 
   assertEquals(denoConfig.tasks.build.includes('--unstable-worker-options'), false);
   assertEquals(denoConfig.tasks.build.includes('--include'), false);
+  assertEquals(
+    denoConfig.tasks.build.includes('scripts/release/stage_cli_runtime_support.ts ./bin'),
+    true,
+  );
   assertEquals(
     denoConfig.tasks.build.includes('src/frontend/macro_sandbox_worker_bootstrap.ts'),
     false,

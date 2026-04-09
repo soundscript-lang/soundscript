@@ -1,6 +1,6 @@
 import ts from 'typescript';
 
-import { resolveHostDeclarationFile } from './frontend/std_package_support.ts';
+import { resolveHostDeclarationFile } from './frontend/host_declaration_resolution.ts';
 import {
   isSoundscriptProtocolSpecifier,
   SOUNDSCRIPT_RUNTIME_PACKAGE_NAME,

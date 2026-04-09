@@ -4,6 +4,8 @@ bin/
 coverage/
 dist/
 node_modules/
+!src/bundled/typescript/types/node_modules/
+!src/bundled/typescript/types/node_modules/**
 .worktrees/
 soundscript-out/
 soundscript-expanded/

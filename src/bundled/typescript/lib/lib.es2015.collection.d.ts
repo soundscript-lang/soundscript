@@ -17,27 +17,33 @@ and limitations under the License.
 /// <reference no-default-lib="true"/>
 
 interface Map<K, V> extends ReadonlyMap<K, V> {
+    // #[effects(add: [mut])]
     clear(): void;
     /**
      * @returns true if an element in the Map existed and has been removed, or false if the element does not exist.
      */
+    // #[effects(add: [mut])]
     delete(key: K): boolean;
     /**
      * Executes a provided function once per each key/value pair in the Map, in insertion order.
      */
+    // #[effects(add: [], forward: [callbackfn])]
     forEach(callbackfn: (value: V, key: K, map: ReadonlyMap<K, V>) => void, thisArg?: unknown): void;
     /**
      * Returns a specified element from the Map object. If the value that is associated to the provided key is an object, then you will get a reference to that object and any change made to that object will effectively modify it inside the Map.
      * @returns Returns the element associated with the specified key. If no element is associated with the specified key, undefined is returned.
      */
+    // #[effects(add: [])]
     get(key: unknown): V | undefined;
     /**
      * @returns boolean indicating whether an element with the specified key exists or not.
      */
+    // #[effects(add: [])]
     has(key: unknown): boolean;
     /**
      * Adds a new element with a specified key and value to the Map. If an element with the same key already exists, the element will be updated.
      */
+    // #[effects(add: [mut])]
     set(key: K, value: V): this;
     /**
      * @returns the number of elements in the Map.
@@ -46,16 +52,22 @@ interface Map<K, V> extends ReadonlyMap<K, V> {
 }
 
 interface MapConstructor {
+    // #[effects(add: [])]
     new (): Map<unknown, unknown>;
+    // #[effects(add: [])]
     new <K, V>(entries?: readonly (readonly [K, V])[] | null): Map<K, V>;
     readonly prototype: Map<unknown, unknown>;
 }
+// #[effects(add: [])]
 declare var Map: MapConstructor;
 
 // #[variance(K: out, V: out)]
 interface ReadonlyMap<K, V> {
+    // #[effects(add: [], forward: [callbackfn])]
     forEach(callbackfn: (value: V, key: K, map: ReadonlyMap<K, V>) => void, thisArg?: unknown): void;
+    // #[effects(add: [])]
     get(key: unknown): V | undefined;
+    // #[effects(add: [])]
     has(key: unknown): boolean;
     readonly size: number;
 }
@@ -65,47 +77,58 @@ interface WeakMap<K extends WeakKey, V> {
      * Removes the specified element from the WeakMap.
      * @returns true if the element was successfully removed, or false if it was not present.
      */
+    // #[effects(add: [mut])]
     delete(key: K): boolean;
     /**
      * @returns a specified element.
      */
+    // #[effects(add: [])]
     get(key: K): V | undefined;
     /**
      * @returns a boolean indicating whether an element with the specified key exists or not.
      */
+    // #[effects(add: [])]
     has(key: K): boolean;
     /**
      * Adds a new element with a specified key and value.
      * @param key Must be an object or symbol.
      */
+    // #[effects(add: [mut])]
     set(key: K, value: V): this;
 }
 
 interface WeakMapConstructor {
+    // #[effects(add: [])]
     new <K extends WeakKey = WeakKey, V = unknown>(entries?: readonly (readonly [K, V])[] | null): WeakMap<K, V>;
     readonly prototype: WeakMap<WeakKey, unknown>;
 }
+// #[effects(add: [])]
 declare var WeakMap: WeakMapConstructor;
 
 interface Set<T> extends ReadonlySet<T> {
     /**
      * Appends a new element with a specified value to the end of the Set.
      */
+    // #[effects(add: [mut])]
     add(value: T): this;
 
+    // #[effects(add: [mut])]
     clear(): void;
     /**
      * Removes a specified value from the Set.
      * @returns Returns true if an element in the Set existed and has been removed, or false if the element does not exist.
      */
+    // #[effects(add: [mut])]
     delete(value: T): boolean;
     /**
      * Executes a provided function once per each value in the Set object, in insertion order.
      */
+    // #[effects(add: [], forward: [callbackfn])]
     forEach(callbackfn: (value: T, value2: T, set: ReadonlySet<T>) => void, thisArg?: unknown): void;
     /**
      * @returns a boolean indicating whether an element with the specified value exists in the Set or not.
      */
+    // #[effects(add: [])]
     has(value: unknown): boolean;
     /**
      * @returns the number of (unique) elements in Set.
@@ -114,14 +137,18 @@ interface Set<T> extends ReadonlySet<T> {
 }
 
 interface SetConstructor {
+    // #[effects(add: [])]
     new <T = unknown>(values?: readonly T[] | null): Set<T>;
     readonly prototype: Set<unknown>;
 }
+// #[effects(add: [])]
 declare var Set: SetConstructor;
 
 // #[variance(T: out)]
 interface ReadonlySet<T> {
+    // #[effects(add: [], forward: [callbackfn])]
     forEach(callbackfn: (value: T, value2: T, set: ReadonlySet<T>) => void, thisArg?: unknown): void;
+    // #[effects(add: [])]
     has(value: unknown): boolean;
     readonly size: number;
 }
@@ -130,20 +157,25 @@ interface WeakSet<T extends WeakKey> {
     /**
      * Appends a new value to the end of the WeakSet.
      */
+    // #[effects(add: [mut])]
     add(value: T): this;
     /**
      * Removes the specified element from the WeakSet.
      * @returns Returns true if the element existed and has been removed, or false if the element does not exist.
      */
+    // #[effects(add: [mut])]
     delete(value: T): boolean;
     /**
      * @returns a boolean indicating whether a value exists in the WeakSet or not.
      */
+    // #[effects(add: [])]
     has(value: T): boolean;
 }
 
 interface WeakSetConstructor {
+    // #[effects(add: [])]
     new <T extends WeakKey = WeakKey>(values?: readonly T[] | null): WeakSet<T>;
     readonly prototype: WeakSet<WeakKey>;
 }
+// #[effects(add: [])]
 declare var WeakSet: WeakSetConstructor;

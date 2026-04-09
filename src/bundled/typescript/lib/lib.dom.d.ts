@@ -2736,11 +2736,13 @@ interface AbortController {
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/AbortController/abort)
      */
+    // #[effects(add: [host.ffi, mut])]
     abort(reason?: unknown): void;
 }
 
 declare var AbortController: {
     prototype: AbortController;
+    // #[effects(add: [host.ffi])]
     new(): AbortController;
 };
 
@@ -2773,6 +2775,7 @@ interface AbortSignal extends EventTarget {
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/AbortSignal/throwIfAborted)
      */
+    // #[effects(add: [fails.throws])]
     throwIfAborted(): void;
     addEventListener<K extends keyof AbortSignalEventMap>(type: K, listener: (this: AbortSignal, ev: AbortSignalEventMap[K]) => void, options?: boolean | AddEventListenerOptions): void;
     addEventListener(type: string, listener: EventListenerOrEventListenerObject, options?: boolean | AddEventListenerOptions): void;
@@ -2782,24 +2785,28 @@ interface AbortSignal extends EventTarget {
 
 declare var AbortSignal: {
     prototype: AbortSignal;
+    // #[effects(add: [host.ffi])]
     new(): AbortSignal;
     /**
      * The **`AbortSignal.abort()`** static method returns an AbortSignal that is already set as aborted (and which does not trigger an AbortSignal/abort_event event).
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/AbortSignal/abort_static)
      */
+    // #[effects(add: [host.ffi])]
     abort(reason?: unknown): AbortSignal;
     /**
      * The **`AbortSignal.any()`** static method takes an iterable of abort signals and returns an AbortSignal.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/AbortSignal/any_static)
      */
+    // #[effects(add: [host.ffi])]
     any(signals: AbortSignal[]): AbortSignal;
     /**
      * The **`AbortSignal.timeout()`** static method returns an AbortSignal that will automatically abort after a specified time.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/AbortSignal/timeout_static)
      */
+    // #[effects(add: [host.time])]
     timeout(milliseconds: number): AbortSignal;
 };
 
@@ -4416,6 +4423,7 @@ interface Blob {
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/Blob/arrayBuffer)
      */
+    // #[effects(add: [host.io, suspend.await])]
     arrayBuffer(): Promise<ArrayBuffer>;
     /**
      * The **`bytes()`** method of the Blob interface returns a Promise that resolves with a Uint8Array containing the contents of the blob as an array of bytes.
@@ -4445,6 +4453,7 @@ interface Blob {
 
 declare var Blob: {
     prototype: Blob;
+    // #[effects(add: [])]
     new(blobParts?: BlobPart[], options?: BlobPropertyBag): Blob;
 };
 
@@ -4481,14 +4490,18 @@ interface Body {
     /** [MDN Reference](https://developer.mozilla.org/docs/Web/API/Request/arrayBuffer) */
     arrayBuffer(): Promise<ArrayBuffer>;
     /** [MDN Reference](https://developer.mozilla.org/docs/Web/API/Request/blob) */
+    // #[effects(add: [host.io, suspend.await])]
     blob(): Promise<Blob>;
     /** [MDN Reference](https://developer.mozilla.org/docs/Web/API/Request/bytes) */
     bytes(): Promise<Uint8Array<ArrayBuffer>>;
     /** [MDN Reference](https://developer.mozilla.org/docs/Web/API/Request/formData) */
+    // #[effects(add: [host.io, suspend.await])]
     formData(): Promise<FormData>;
     /** [MDN Reference](https://developer.mozilla.org/docs/Web/API/Request/json) */
+    // #[effects(add: [host.io, suspend.await])]
     json(): Promise<unknown>;
     /** [MDN Reference](https://developer.mozilla.org/docs/Web/API/Request/text) */
+    // #[effects(add: [host.io, suspend.await])]
     text(): Promise<string>;
 }
 
@@ -4518,12 +4531,14 @@ interface BroadcastChannel extends EventTarget {
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/BroadcastChannel/close)
      */
+    // #[effects(add: [host.browser.message])]
     close(): void;
     /**
      * The **`postMessage()`** method of the BroadcastChannel interface sends a message, which can be of any kind of Object, to each listener in any browsing context with the same origin.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/BroadcastChannel/postMessage)
      */
+    // #[effects(add: [host.browser.message, fails.throws])]
     postMessage(message: unknown): void;
     addEventListener<K extends keyof BroadcastChannelEventMap>(type: K, listener: (this: BroadcastChannel, ev: BroadcastChannelEventMap[K]) => void, options?: boolean | AddEventListenerOptions): void;
     addEventListener(type: string, listener: EventListenerOrEventListenerObject, options?: boolean | AddEventListenerOptions): void;
@@ -4533,6 +4548,7 @@ interface BroadcastChannel extends EventTarget {
 
 declare var BroadcastChannel: {
     prototype: BroadcastChannel;
+    // #[effects(add: [host.browser.message])]
     new(name: string): BroadcastChannel;
 };
 
@@ -7974,6 +7990,7 @@ interface ChildNode extends Node {
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/CharacterData/after)
      */
+    // #[effects(add: [host.browser.dom, mut])]
     after(...nodes: (Node | string)[]): void;
     /**
      * Inserts nodes just before node, while replacing strings in nodes with equivalent Text nodes.
@@ -7982,12 +7999,14 @@ interface ChildNode extends Node {
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/CharacterData/before)
      */
+    // #[effects(add: [host.browser.dom, mut])]
     before(...nodes: (Node | string)[]): void;
     /**
      * Removes node.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/CharacterData/remove)
      */
+    // #[effects(add: [host.browser.dom, mut])]
     remove(): void;
     /**
      * Replaces node with nodes, while replacing strings in nodes with equivalent Text nodes.
@@ -7996,6 +8015,7 @@ interface ChildNode extends Node {
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/CharacterData/replaceWith)
      */
+    // #[effects(add: [host.browser.dom, mut])]
     replaceWith(...nodes: (Node | string)[]): void;
 }
 
@@ -8463,6 +8483,7 @@ interface Crypto {
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/Crypto/getRandomValues)
      */
+    // #[effects(add: [host.random, mut])]
     getRandomValues<T extends ArrayBufferView>(array: T): T;
     /**
      * The **`randomUUID()`** method of the Crypto interface is used to generate a v4 UUID using a cryptographically secure random number generator.
@@ -8470,6 +8491,7 @@ interface Crypto {
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/Crypto/randomUUID)
      */
+    // #[effects(add: [host.random])]
     randomUUID(): `${string}-${string}-${string}-${string}-${string}`;
 }
 
@@ -10154,6 +10176,7 @@ interface Document extends Node, DocumentOrShadowRoot, FontFaceSource, GlobalEve
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/Document/createElement)
      */
+    // #[effects(add: [host.browser.dom])]
     createElement<K extends keyof HTMLElementTagNameMap>(tagName: K, options?: ElementCreationOptions): HTMLElementTagNameMap[K];
     /** @deprecated */
     createElement<K extends keyof HTMLElementDeprecatedTagNameMap>(tagName: K, options?: ElementCreationOptions): HTMLElementDeprecatedTagNameMap[K];
@@ -11022,12 +11045,14 @@ interface Element extends Node, ARIAMixin, Animatable, ChildNode, NonDocumentTyp
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/Element/removeAttribute)
      */
+    // #[effects(add: [host.browser.dom, mut])]
     removeAttribute(qualifiedName: string): void;
     /**
      * The **`removeAttributeNS()`** method of the If you are working with HTML and you don't need to specify the requested attribute as being part of a specific namespace, use the Element.removeAttribute() method instead.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/Element/removeAttributeNS)
      */
+    // #[effects(add: [host.browser.dom, mut])]
     removeAttributeNS(namespace: string | null, localName: string): void;
     /**
      * The **`removeAttributeNode()`** method of the Element interface removes the specified Attr node from the element.
@@ -11079,6 +11104,7 @@ interface Element extends Node, ARIAMixin, Animatable, ChildNode, NonDocumentTyp
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/Element/setAttribute)
      */
+    // #[effects(add: [host.browser.dom, mut])]
     setAttribute(qualifiedName: string, value: string): void;
     /**
      * `setAttributeNS` adds a new attribute or changes the value of an attribute with the given namespace and name.
@@ -11489,6 +11515,7 @@ interface Event {
 
 declare var Event: {
     prototype: Event;
+    // #[effects(add: [])]
     new(type: string, eventInitDict?: EventInit): Event;
     readonly NONE: 0;
     readonly CAPTURING_PHASE: 1;
@@ -11559,6 +11586,7 @@ interface EventSource extends EventTarget {
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/EventSource/close)
      */
+    // #[effects(add: [host.io])]
     close(): void;
     readonly CONNECTING: 0;
     readonly OPEN: 1;
@@ -11573,6 +11601,7 @@ interface EventSource extends EventTarget {
 
 declare var EventSource: {
     prototype: EventSource;
+    // #[effects(add: [host.io, fails.throws])]
     new(url: string | URL, eventSourceInitDict?: EventSourceInit): EventSource;
     readonly CONNECTING: 0;
     readonly OPEN: 1;
@@ -11590,23 +11619,27 @@ interface EventTarget {
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/EventTarget/addEventListener)
      */
+    // #[effects(add: [host.browser.dom])]
     addEventListener(type: string, callback: EventListenerOrEventListenerObject | null, options?: AddEventListenerOptions | boolean): void;
     /**
      * The **`dispatchEvent()`** method of the EventTarget sends an Event to the object, (synchronously) invoking the affected event listeners in the appropriate order.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/EventTarget/dispatchEvent)
      */
+    // #[effects(add: [host.browser.dom], unknown: [direct])]
     dispatchEvent(event: Event): boolean;
     /**
      * The **`removeEventListener()`** method of the EventTarget interface removes an event listener previously registered with EventTarget.addEventListener() from the target.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/EventTarget/removeEventListener)
      */
+    // #[effects(add: [host.browser.dom])]
     removeEventListener(type: string, callback: EventListenerOrEventListenerObject | null, options?: EventListenerOptions | boolean): void;
 }
 
 declare var EventTarget: {
     prototype: EventTarget;
+    // #[effects(add: [])]
     new(): EventTarget;
 };
 
@@ -11731,12 +11764,14 @@ interface FileReader extends EventTarget {
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/FileReader/abort)
      */
+    // #[effects(add: [host.ffi])]
     abort(): void;
     /**
      * The **`readAsArrayBuffer()`** method of the FileReader interface is used to start reading the contents of a specified Blob or File.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/FileReader/readAsArrayBuffer)
      */
+    // #[effects(add: [host.io, fails.throws])]
     readAsArrayBuffer(blob: Blob): void;
     /**
      * The **`readAsBinaryString()`** method of the FileReader interface is used to start reading the contents of the specified Blob or File.
@@ -11744,18 +11779,21 @@ interface FileReader extends EventTarget {
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/FileReader/readAsBinaryString)
      */
+    // #[effects(add: [host.io, fails.throws])]
     readAsBinaryString(blob: Blob): void;
     /**
      * The **`readAsDataURL()`** method of the FileReader interface is used to read the contents of the specified file's data as a base64 encoded string.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/FileReader/readAsDataURL)
      */
+    // #[effects(add: [host.io, fails.throws])]
     readAsDataURL(blob: Blob): void;
     /**
      * The **`readAsText()`** method of the FileReader interface is used to read the contents of the specified Blob or File.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/FileReader/readAsText)
      */
+    // #[effects(add: [host.io, fails.throws])]
     readAsText(blob: Blob, encoding?: string): void;
     readonly EMPTY: 0;
     readonly LOADING: 1;
@@ -11768,6 +11806,7 @@ interface FileReader extends EventTarget {
 
 declare var FileReader: {
     prototype: FileReader;
+    // #[effects(add: [host.ffi])]
     new(): FileReader;
     readonly EMPTY: 0;
     readonly LOADING: 1;
@@ -12246,7 +12285,10 @@ interface FormData {
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/FormData/append)
      */
+    // #[effects(add: [mut])]
     append(name: string, value: string | Blob): void;
+    // #[effects(add: [mut])]
+    // #[effects(add: [mut])]
     append(name: string, value: string): void;
     append(name: string, blobValue: Blob, filename?: string): void;
     /**
@@ -12254,39 +12296,49 @@ interface FormData {
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/FormData/delete)
      */
+    // #[effects(add: [mut])]
+    // #[effects(add: [mut])]
     delete(name: string): void;
     /**
      * The **`get()`** method of the FormData interface returns the first value associated with a given key from within a `FormData` object.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/FormData/get)
      */
+    // #[effects(add: [])]
     get(name: string): FormDataEntryValue | null;
     /**
      * The **`getAll()`** method of the FormData interface returns all the values associated with a given key from within a `FormData` object.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/FormData/getAll)
      */
+    // #[effects(add: [])]
     getAll(name: string): FormDataEntryValue[];
     /**
      * The **`has()`** method of the FormData interface returns whether a `FormData` object contains a certain key.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/FormData/has)
      */
+    // #[effects(add: [])]
     has(name: string): boolean;
     /**
      * The **`set()`** method of the FormData interface sets a new value for an existing key inside a `FormData` object, or adds the key/value if it does not already exist.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/FormData/set)
      */
+    // #[effects(add: [mut])]
     set(name: string, value: string | Blob): void;
     set(name: string, value: string): void;
     set(name: string, blobValue: Blob, filename?: string): void;
+    // #[effects(add: [], forward: [callbackfn])]
     forEach(callbackfn: (value: FormDataEntryValue, key: string, parent: FormData) => void, thisArg?: unknown): void;
 }
 
 declare var FormData: {
     prototype: FormData;
-    new(form?: HTMLFormElement, submitter?: HTMLElement | null): FormData;
+    // #[effects(add: [])]
+    new(): FormData;
+    // #[effects(add: [host.browser.dom])]
+    new(form: HTMLFormElement, submitter?: HTMLElement | null): FormData;
 };
 
 /**
@@ -17816,6 +17868,7 @@ interface Headers {
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/Headers/get)
      */
+    // #[effects(add: [])]
     get(name: string): string | null;
     /**
      * The **`getSetCookie()`** method of the Headers interface returns an array containing the values of all Set-Cookie headers associated with a response.
@@ -17828,18 +17881,22 @@ interface Headers {
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/Headers/has)
      */
+    // #[effects(add: [])]
     has(name: string): boolean;
     /**
      * The **`set()`** method of the Headers interface sets a new value for an existing header inside a `Headers` object, or adds the header if it does not already exist.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/Headers/set)
      */
+    // #[effects(add: [mut])]
     set(name: string, value: string): void;
+    // #[effects(add: [], forward: [callbackfn])]
     forEach(callbackfn: (value: string, key: string, parent: Headers) => void, thisArg?: unknown): void;
 }
 
 declare var Headers: {
     prototype: Headers;
+    // #[effects(add: [host.ffi])]
     new(init?: HeadersInit): Headers;
 };
 
@@ -17912,30 +17969,35 @@ interface History {
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/History/back)
      */
+    // #[effects(add: [host.browser.dom])]
     back(): void;
     /**
      * The **`forward()`** method of the History interface causes the browser to move forward one page in the session history.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/History/forward)
      */
+    // #[effects(add: [host.browser.dom])]
     forward(): void;
     /**
      * The **`go()`** method of the History interface loads a specific page from the session history.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/History/go)
      */
+    // #[effects(add: [host.browser.dom])]
     go(delta?: number): void;
     /**
      * The **`pushState()`** method of the History interface adds an entry to the browser's session history stack.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/History/pushState)
      */
+    // #[effects(add: [host.browser.dom, mut])]
     pushState(data: unknown, unused: string, url?: string | URL | null): void;
     /**
      * The **`replaceState()`** method of the History interface modifies the current history entry, replacing it with the state object and URL passed in the method parameters.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/History/replaceState)
      */
+    // #[effects(add: [host.browser.dom, mut])]
     replaceState(data: unknown, unused: string, url?: string | URL | null): void;
 }
 
@@ -19396,18 +19458,21 @@ interface Location {
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/Location/assign)
      */
+    // #[effects(add: [host.browser.dom])]
     assign(url: string | URL): void;
     /**
      * The **`reload()`** method of the Location interface reloads the current URL, like the Refresh button.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/Location/reload)
      */
+    // #[effects(add: [host.browser.dom])]
     reload(): void;
     /**
      * The **`replace()`** method of the Location interface replaces the current resource with the one at the provided URL.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/Location/replace)
      */
+    // #[effects(add: [host.browser.dom])]
     replace(url: string | URL): void;
 }
 
@@ -20814,6 +20879,7 @@ interface MessageChannel {
 
 declare var MessageChannel: {
     prototype: MessageChannel;
+    // #[effects(add: [host.browser.message])]
     new(): MessageChannel;
 };
 
@@ -20896,19 +20962,23 @@ interface MessagePort extends EventTarget, MessageEventTarget<MessagePort> {
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/MessagePort/close)
      */
+    // #[effects(add: [host.browser.message])]
     close(): void;
     /**
      * The **`postMessage()`** method of the transfers ownership of objects to other browsing contexts.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/MessagePort/postMessage)
-     */
+    */
+    // #[effects(add: [host.browser.message, fails.throws])]
     postMessage(message: unknown, transfer: Transferable[]): void;
+    // #[effects(add: [host.browser.message, fails.throws])]
     postMessage(message: unknown, options?: StructuredSerializeOptions): void;
     /**
      * The **`start()`** method of the MessagePort interface starts the sending of messages queued on the port.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/MessagePort/start)
      */
+    // #[effects(add: [host.browser.message])]
     start(): void;
     addEventListener<K extends keyof MessagePortEventMap>(type: K, listener: (this: MessagePort, ev: MessagePortEventMap[K]) => void, options?: boolean | AddEventListenerOptions): void;
     addEventListener(type: string, listener: EventListenerOrEventListenerObject, options?: boolean | AddEventListenerOptions): void;
@@ -21534,6 +21604,7 @@ interface Navigator extends NavigatorAutomationInformation, NavigatorBadge, Navi
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/Navigator/sendBeacon)
      */
+    // #[effects(add: [host.io])]
     sendBeacon(url: string | URL, data?: BodyInit | null): boolean;
     /**
      * The **`share()`** method of the Navigator interface invokes the native sharing mechanism of the device to share data such as text, URLs, or files.
@@ -21802,6 +21873,7 @@ interface Node extends EventTarget {
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/Node/appendChild)
      */
+    // #[effects(add: [host.browser.dom, mut])]
     appendChild<T extends Node>(node: T): T;
     /**
      * The **`cloneNode()`** method of the Node interface returns a duplicate of the node on which this method was called.
@@ -21838,6 +21910,7 @@ interface Node extends EventTarget {
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/Node/insertBefore)
      */
+    // #[effects(add: [host.browser.dom, mut])]
     insertBefore<T extends Node>(node: T, child: Node | null): T;
     /**
      * The **`isDefaultNamespace()`** method of the Node interface accepts a namespace URI as an argument.
@@ -21880,12 +21953,14 @@ interface Node extends EventTarget {
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/Node/removeChild)
      */
+    // #[effects(add: [host.browser.dom, mut])]
     removeChild<T extends Node>(child: T): T;
     /**
      * The **`replaceChild()`** method of the Node interface replaces a child node within the given (parent) node.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/Node/replaceChild)
      */
+    // #[effects(add: [host.browser.dom, mut])]
     replaceChild<T extends Node>(node: Node, child: T): T;
     /** node is an element. */
     readonly ELEMENT_NODE: 1;
@@ -22749,6 +22824,7 @@ interface ParentNode extends Node {
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/Document/append)
      */
+    // #[effects(add: [host.browser.dom, mut])]
     append(...nodes: (Node | string)[]): void;
     /**
      * Inserts nodes before the first child of node, while replacing strings in nodes with equivalent Text nodes.
@@ -22757,6 +22833,7 @@ interface ParentNode extends Node {
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/Document/prepend)
      */
+    // #[effects(add: [host.browser.dom, mut])]
     prepend(...nodes: (Node | string)[]): void;
     /**
      * Returns the first element that is a descendant of node that matches selectors.
@@ -26385,11 +26462,13 @@ interface Request extends Body {
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/Request/clone)
      */
+    // #[effects(add: [])]
     clone(): Request;
 }
 
 declare var Request: {
     prototype: Request;
+    // #[effects(add: [host.ffi])]
     new(input: RequestInfo | URL, init?: RequestInit): Request;
 };
 
@@ -26545,29 +26624,34 @@ interface Response extends Body {
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/Response/clone)
      */
+    // #[effects(add: [])]
     clone(): Response;
 }
 
 declare var Response: {
     prototype: Response;
+    // #[effects(add: [host.ffi])]
     new(body?: BodyInit | null, init?: ResponseInit): Response;
     /**
      * The **`error()`** static method of the Response interface returns a new `Response` object associated with a network error.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/Response/error_static)
      */
+    // #[effects(add: [host.ffi])]
     error(): Response;
     /**
      * The **`json()`** static method of the Response interface returns a `Response` that contains the provided JSON data as body, and a Content-Type header which is set to `application/json`.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/Response/json_static)
      */
+    // #[effects(add: [host.ffi])]
     json(data: unknown, init?: ResponseInit): Response;
     /**
      * The **`redirect()`** static method of the Response interface returns a `Response` resulting in a redirect to the specified URL.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/Response/redirect_static)
      */
+    // #[effects(add: [host.ffi])]
     redirect(url: string | URL, status?: number): Response;
 };
 
@@ -30730,8 +30814,10 @@ interface ServiceWorker extends EventTarget, AbstractWorker {
      * The **`postMessage()`** method of the ServiceWorker interface sends a message to the worker.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/ServiceWorker/postMessage)
-     */
+    */
+    // #[effects(add: [host.browser.message, fails.throws])]
     postMessage(message: unknown, transfer: Transferable[]): void;
+    // #[effects(add: [host.browser.message, fails.throws])]
     postMessage(message: unknown, options?: StructuredSerializeOptions): void;
     addEventListener<K extends keyof ServiceWorkerEventMap>(type: K, listener: (this: ServiceWorker, ev: ServiceWorkerEventMap[K]) => void, options?: boolean | AddEventListenerOptions): void;
     addEventListener(type: string, listener: EventListenerOrEventListenerObject, options?: boolean | AddEventListenerOptions): void;
@@ -31519,30 +31605,35 @@ interface Storage {
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/Storage/clear)
      */
+    // #[effects(add: [host.browser.dom, mut])]
     clear(): void;
     /**
      * The **`getItem()`** method of the Storage interface, when passed a key name, will return that key's value, or `null` if the key does not exist, in the given `Storage` object.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/Storage/getItem)
      */
+    // #[effects(add: [host.browser.dom])]
     getItem(key: string): string | null;
     /**
      * The **`key()`** method of the Storage interface, when passed a number n, returns the name of the nth key in a given `Storage` object.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/Storage/key)
      */
+    // #[effects(add: [host.browser.dom])]
     key(index: number): string | null;
     /**
      * The **`removeItem()`** method of the Storage interface, when passed a key name, will remove that key from the given `Storage` object if it exists.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/Storage/removeItem)
      */
+    // #[effects(add: [host.browser.dom, mut])]
     removeItem(key: string): void;
     /**
      * The **`setItem()`** method of the Storage interface, when passed a key name and value, will add that key to the given `Storage` object, or update that key's value if it already exists.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/Storage/setItem)
      */
+    // #[effects(add: [host.browser.dom, mut])]
     setItem(key: string, value: string): void;
     [name: string]: unknown;
 }
@@ -31950,11 +32041,13 @@ interface TextDecoder extends TextDecoderCommon {
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/TextDecoder/decode)
      */
+    // #[effects(add: [fails.throws])]
     decode(input?: AllowSharedBufferSource, options?: TextDecodeOptions): string;
 }
 
 declare var TextDecoder: {
     prototype: TextDecoder;
+    // #[effects(add: [fails.throws])]
     new(label?: string, options?: TextDecoderOptions): TextDecoder;
 };
 
@@ -32005,17 +32098,20 @@ interface TextEncoder extends TextEncoderCommon {
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/TextEncoder/encode)
      */
+    // #[effects(add: [])]
     encode(input?: string): Uint8Array<ArrayBuffer>;
     /**
      * The **`TextEncoder.encodeInto()`** method takes a string to encode and a destination Uint8Array to put resulting UTF-8 encoded text into, and returns a dictionary object indicating the progress of the encoding.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/TextEncoder/encodeInto)
      */
+    // #[effects(add: [mut])]
     encodeInto(source: string, destination: Uint8Array<ArrayBufferLike>): TextEncoderEncodeIntoResult;
 }
 
 declare var TextEncoder: {
     prototype: TextEncoder;
+    // #[effects(add: [])]
     new(): TextEncoder;
 };
 
@@ -32848,6 +32944,7 @@ interface URL {
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/URL/href)
      */
     href: string;
+    // #[effects(add: [])]
     toString(): string;
     /**
      * The **`origin`** read-only property of the URL interface returns a string containing the Unicode serialization of the origin of the represented URL.
@@ -32902,35 +32999,41 @@ interface URL {
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/URL/toJSON)
      */
+    // #[effects(add: [])]
     toJSON(): string;
 }
 
 declare var URL: {
     prototype: URL;
+    // #[effects(add: [fails.throws])]
     new(url: string | URL, base?: string | URL): URL;
     /**
      * The **`URL.canParse()`** static method of the URL interface returns a boolean indicating whether or not an absolute URL, or a relative URL combined with a base URL, are parsable and valid.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/URL/canParse_static)
      */
+    // #[effects(add: [])]
     canParse(url: string | URL, base?: string | URL): boolean;
     /**
      * The **`createObjectURL()`** static method of the URL interface creates a string containing a URL representing the object given in the parameter.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/URL/createObjectURL_static)
      */
+    // #[effects(add: [host.browser.dom])]
     createObjectURL(obj: Blob | MediaSource): string;
     /**
      * The **`URL.parse()`** static method of the URL interface returns a newly created URL object representing the URL defined by the parameters.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/URL/parse_static)
      */
+    // #[effects(add: [])]
     parse(url: string | URL, base?: string | URL): URL | null;
     /**
      * The **`revokeObjectURL()`** static method of the URL interface releases an existing object URL which was previously created by calling Call this method when you've finished using an object URL to let the browser know not to keep the reference to the file any longer.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/URL/revokeObjectURL_static)
      */
+    // #[effects(add: [host.browser.dom])]
     revokeObjectURL(url: string): void;
 };
 
@@ -32954,49 +33057,59 @@ interface URLSearchParams {
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/URLSearchParams/append)
      */
+    // #[effects(add: [mut])]
     append(name: string, value: string): void;
     /**
      * The **`delete()`** method of the URLSearchParams interface deletes specified parameters and their associated value(s) from the list of all search parameters.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/URLSearchParams/delete)
      */
+    // #[effects(add: [mut])]
     delete(name: string, value?: string): void;
     /**
      * The **`get()`** method of the URLSearchParams interface returns the first value associated to the given search parameter.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/URLSearchParams/get)
      */
+    // #[effects(add: [])]
     get(name: string): string | null;
     /**
      * The **`getAll()`** method of the URLSearchParams interface returns all the values associated with a given search parameter as an array.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/URLSearchParams/getAll)
      */
+    // #[effects(add: [])]
     getAll(name: string): string[];
     /**
      * The **`has()`** method of the URLSearchParams interface returns a boolean value that indicates whether the specified parameter is in the search parameters.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/URLSearchParams/has)
      */
+    // #[effects(add: [])]
     has(name: string, value?: string): boolean;
     /**
      * The **`set()`** method of the URLSearchParams interface sets the value associated with a given search parameter to the given value.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/URLSearchParams/set)
      */
+    // #[effects(add: [mut])]
     set(name: string, value: string): void;
     /**
      * The **`URLSearchParams.sort()`** method sorts all key/value pairs contained in this object in place and returns `undefined`.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/URLSearchParams/sort)
      */
+    // #[effects(add: [mut])]
     sort(): void;
+    // #[effects(add: [])]
     toString(): string;
+    // #[effects(add: [], forward: [callbackfn])]
     forEach(callbackfn: (value: string, key: string, parent: URLSearchParams) => void, thisArg?: unknown): void;
 }
 
 declare var URLSearchParams: {
     prototype: URLSearchParams;
+    // #[effects(add: [])]
     new(init?: string[][] | Record<string, string> | string | URLSearchParams): URLSearchParams;
 };
 
@@ -36291,12 +36404,14 @@ interface WebSocket extends EventTarget {
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/WebSocket/close)
      */
+    // #[effects(add: [host.io, fails.throws])]
     close(code?: number, reason?: string): void;
     /**
      * The **`WebSocket.send()`** method enqueues the specified data to be transmitted to the server over the WebSocket connection, increasing the value of `bufferedAmount` by the number of bytes needed to contain the data.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/WebSocket/send)
      */
+    // #[effects(add: [host.io, fails.throws])]
     send(data: string | ArrayBufferLike | Blob | ArrayBufferView): void;
     readonly CONNECTING: 0;
     readonly OPEN: 1;
@@ -36310,6 +36425,7 @@ interface WebSocket extends EventTarget {
 
 declare var WebSocket: {
     prototype: WebSocket;
+    // #[effects(add: [host.io, fails.throws])]
     new(url: string | URL, protocols?: string | string[]): WebSocket;
     readonly CONNECTING: 0;
     readonly OPEN: 1;
@@ -36911,8 +37027,10 @@ interface Window extends EventTarget, AnimationFrameProvider, GlobalEventHandler
      * The **`window.postMessage()`** method safely enables cross-origin communication between Window objects; _e.g.,_ between a page and a pop-up that it spawned, or between a page and an iframe embedded within it.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/Window/postMessage)
-     */
+    */
+    // #[effects(add: [host.browser.message, fails.throws])]
     postMessage(message: unknown, targetOrigin: string, transfer?: Transferable[]): void;
+    // #[effects(add: [host.browser.message, fails.throws])]
     postMessage(message: unknown, options?: WindowPostMessageOptions): void;
     /**
      * Opens the print dialog to print the current document.
@@ -36938,6 +37056,7 @@ interface Window extends EventTarget, AnimationFrameProvider, GlobalEventHandler
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/Window/requestIdleCallback)
      */
+    // #[effects(add: [host.ffi])]
     requestIdleCallback(callback: IdleRequestCallback, options?: IdleRequestOptions): number;
     /**
      * The **`Window.resizeBy()`** method resizes the current window by a specified amount.
@@ -37093,23 +37212,32 @@ interface WindowOrWorkerGlobalScope {
     /** [MDN Reference](https://developer.mozilla.org/docs/Web/API/Window/btoa) */
     btoa(data: string): string;
     /** [MDN Reference](https://developer.mozilla.org/docs/Web/API/Window/clearInterval) */
+    // #[effects(add: [host.time])]
     clearInterval(id: number | undefined): void;
     /** [MDN Reference](https://developer.mozilla.org/docs/Web/API/Window/clearTimeout) */
+    // #[effects(add: [host.time])]
     clearTimeout(id: number | undefined): void;
     /** [MDN Reference](https://developer.mozilla.org/docs/Web/API/Window/createImageBitmap) */
     createImageBitmap(image: ImageBitmapSource, options?: ImageBitmapOptions): Promise<ImageBitmap>;
     createImageBitmap(image: ImageBitmapSource, sx: number, sy: number, sw: number, sh: number, options?: ImageBitmapOptions): Promise<ImageBitmap>;
     /** [MDN Reference](https://developer.mozilla.org/docs/Web/API/Window/fetch) */
+    // #[effects(add: [host.io, suspend.await])]
     fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response>;
     /** [MDN Reference](https://developer.mozilla.org/docs/Web/API/Window/queueMicrotask) */
+    // #[effects(add: [host.ffi])]
     queueMicrotask(callback: VoidFunction): void;
     /** [MDN Reference](https://developer.mozilla.org/docs/Web/API/Window/reportError) */
     reportError(e: unknown): void;
     /** [MDN Reference](https://developer.mozilla.org/docs/Web/API/Window/setInterval) */
+    // #[effects(add: [host.time])]
+    // #[effects(add: [host.time])]
+    // #[effects(add: [fails.throws])]
     setInterval(handler: TimerHandler, timeout?: number, ...arguments: unknown[]): number;
     /** [MDN Reference](https://developer.mozilla.org/docs/Web/API/Window/setTimeout) */
+    // #[effects(add: [host.time])]
     setTimeout(handler: TimerHandler, timeout?: number, ...arguments: unknown[]): number;
     /** [MDN Reference](https://developer.mozilla.org/docs/Web/API/Window/structuredClone) */
+    // #[effects(add: [fails.throws])]
     structuredClone<T = unknown>(value: T, options?: StructuredSerializeOptions): T;
 }
 
@@ -37131,14 +37259,17 @@ interface Worker extends EventTarget, AbstractWorker, MessageEventTarget<Worker>
      * The **`postMessage()`** method of the Worker interface sends a message to the worker.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/Worker/postMessage)
-     */
+    */
+    // #[effects(add: [host.browser.message, fails.throws])]
     postMessage(message: unknown, transfer: Transferable[]): void;
+    // #[effects(add: [host.browser.message, fails.throws])]
     postMessage(message: unknown, options?: StructuredSerializeOptions): void;
     /**
      * The **`terminate()`** method of the Worker interface immediately terminates the Worker.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/Worker/terminate)
      */
+    // #[effects(add: [host.browser.message])]
     terminate(): void;
     addEventListener<K extends keyof WorkerEventMap>(type: K, listener: (this: Worker, ev: WorkerEventMap[K]) => void, options?: boolean | AddEventListenerOptions): void;
     addEventListener(type: string, listener: EventListenerOrEventListenerObject, options?: boolean | AddEventListenerOptions): void;
@@ -37148,6 +37279,7 @@ interface Worker extends EventTarget, AbstractWorker, MessageEventTarget<Worker>
 
 declare var Worker: {
     prototype: Worker;
+    // #[effects(add: [host.browser.message, fails.throws])]
     new(scriptURL: string | URL, options?: WorkerOptions): Worker;
 };
 
@@ -37390,6 +37522,7 @@ interface XMLHttpRequest extends XMLHttpRequestEventTarget {
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/XMLHttpRequest/abort)
      */
+    // #[effects(add: [host.io])]
     abort(): void;
     /**
      * The XMLHttpRequest method **`getAllResponseHeaders()`** returns all the response headers, separated by CRLF, as a string, or returns `null` if no response has been received.
@@ -37408,6 +37541,7 @@ interface XMLHttpRequest extends XMLHttpRequestEventTarget {
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/XMLHttpRequest/open)
      */
+    // #[effects(add: [host.io, fails.throws])]
     open(method: string, url: string | URL): void;
     open(method: string, url: string | URL, async: boolean, username?: string | null, password?: string | null): void;
     /**
@@ -37421,12 +37555,14 @@ interface XMLHttpRequest extends XMLHttpRequestEventTarget {
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/XMLHttpRequest/send)
      */
+    // #[effects(add: [host.io, fails.throws])]
     send(body?: Document | XMLHttpRequestBodyInit | null): void;
     /**
      * The XMLHttpRequest method **`setRequestHeader()`** sets the value of an HTTP request header.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/XMLHttpRequest/setRequestHeader)
      */
+    // #[effects(add: [host.io, fails.throws, mut])]
     setRequestHeader(name: string, value: string): void;
     readonly UNSENT: 0;
     readonly OPENED: 1;
@@ -37441,6 +37577,7 @@ interface XMLHttpRequest extends XMLHttpRequestEventTarget {
 
 declare var XMLHttpRequest: {
     prototype: XMLHttpRequest;
+    // #[effects(add: [host.ffi])]
     new(): XMLHttpRequest;
     readonly UNSENT: 0;
     readonly OPENED: 1;
@@ -38028,115 +38165,135 @@ interface Console {
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/console/assert_static)
      */
+    // #[effects(add: [host.ffi])]
     assert(condition?: boolean, ...data: unknown[]): void;
     /**
      * The **`console.clear()`** static method clears the console if possible.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/console/clear_static)
      */
+    // #[effects(add: [host.ffi])]
     clear(): void;
     /**
      * The **`console.count()`** static method logs the number of times that this particular call to `count()` has been called.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/console/count_static)
      */
+    // #[effects(add: [host.ffi])]
     count(label?: string): void;
     /**
      * The **`console.countReset()`** static method resets counter used with console/count_static.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/console/countReset_static)
      */
+    // #[effects(add: [host.ffi])]
     countReset(label?: string): void;
     /**
      * The **`console.debug()`** static method outputs a message to the console at the 'debug' log level.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/console/debug_static)
      */
+    // #[effects(add: [host.ffi])]
     debug(...data: unknown[]): void;
     /**
      * The **`console.dir()`** static method displays a list of the properties of the specified JavaScript object.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/console/dir_static)
      */
+    // #[effects(add: [host.ffi])]
     dir(item?: unknown, options?: unknown): void;
     /**
      * The **`console.dirxml()`** static method displays an interactive tree of the descendant elements of the specified XML/HTML element.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/console/dirxml_static)
      */
+    // #[effects(add: [host.ffi])]
     dirxml(...data: unknown[]): void;
     /**
      * The **`console.error()`** static method outputs a message to the console at the 'error' log level.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/console/error_static)
      */
+    // #[effects(add: [host.ffi])]
     error(...data: unknown[]): void;
     /**
      * The **`console.group()`** static method creates a new inline group in the Web console log, causing any subsequent console messages to be indented by an additional level, until console/groupEnd_static is called.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/console/group_static)
      */
+    // #[effects(add: [host.ffi])]
     group(...data: unknown[]): void;
     /**
      * The **`console.groupCollapsed()`** static method creates a new inline group in the console.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/console/groupCollapsed_static)
      */
+    // #[effects(add: [host.ffi])]
     groupCollapsed(...data: unknown[]): void;
     /**
      * The **`console.groupEnd()`** static method exits the current inline group in the console.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/console/groupEnd_static)
      */
+    // #[effects(add: [host.ffi])]
     groupEnd(): void;
     /**
      * The **`console.info()`** static method outputs a message to the console at the 'info' log level.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/console/info_static)
      */
+    // #[effects(add: [host.ffi])]
     info(...data: unknown[]): void;
     /**
      * The **`console.log()`** static method outputs a message to the console.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/console/log_static)
      */
+    // #[effects(add: [host.ffi])]
     log(...data: unknown[]): void;
     /**
      * The **`console.table()`** static method displays tabular data as a table.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/console/table_static)
      */
+    // #[effects(add: [host.ffi])]
     table(tabularData?: unknown, properties?: string[]): void;
     /**
      * The **`console.time()`** static method starts a timer you can use to track how long an operation takes.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/console/time_static)
      */
+    // #[effects(add: [host.ffi])]
     time(label?: string): void;
     /**
      * The **`console.timeEnd()`** static method stops a timer that was previously started by calling console/time_static.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/console/timeEnd_static)
      */
+    // #[effects(add: [host.ffi])]
     timeEnd(label?: string): void;
     /**
      * The **`console.timeLog()`** static method logs the current value of a timer that was previously started by calling console/time_static.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/console/timeLog_static)
      */
+    // #[effects(add: [host.ffi])]
     timeLog(label?: string, ...data: unknown[]): void;
+    // #[effects(add: [host.ffi])]
     timeStamp(label?: string): void;
     /**
      * The **`console.trace()`** static method outputs a stack trace to the console.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/console/trace_static)
      */
+    // #[effects(add: [host.ffi])]
     trace(...data: unknown[]): void;
     /**
      * The **`console.warn()`** static method outputs a warning message to the console at the 'warning' log level.
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/console/warn_static)
      */
+    // #[effects(add: [host.ffi])]
     warn(...data: unknown[]): void;
 }
 
@@ -38891,6 +39048,7 @@ declare function blur(): void;
  *
  * [MDN Reference](https://developer.mozilla.org/docs/Web/API/Window/cancelIdleCallback)
  */
+// #[effects(add: [host.ffi])]
 declare function cancelIdleCallback(handle: number): void;
 /**
  * The **`Window.captureEvents()`** method does nothing.
@@ -38958,7 +39116,9 @@ declare function open(url?: string | URL, target?: string, features?: string): W
  *
  * [MDN Reference](https://developer.mozilla.org/docs/Web/API/Window/postMessage)
  */
+// #[effects(add: [host.browser.message, fails.throws])]
 declare function postMessage(message: unknown, targetOrigin: string, transfer?: Transferable[]): void;
+// #[effects(add: [host.browser.message, fails.throws])]
 declare function postMessage(message: unknown, options?: WindowPostMessageOptions): void;
 /**
  * Opens the print dialog to print the current document.
@@ -38984,6 +39144,7 @@ declare function releaseEvents(): void;
  *
  * [MDN Reference](https://developer.mozilla.org/docs/Web/API/Window/requestIdleCallback)
  */
+// #[effects(add: [host.ffi])]
 declare function requestIdleCallback(callback: IdleRequestCallback, options?: IdleRequestOptions): number;
 /**
  * The **`Window.resizeBy()`** method resizes the current window by a specified amount.
@@ -39030,6 +39191,7 @@ declare function toString(): string;
  *
  * [MDN Reference](https://developer.mozilla.org/docs/Web/API/EventTarget/dispatchEvent)
  */
+// #[effects(add: [host.browser.dom], unknown: [direct])]
 declare function dispatchEvent(event: Event): boolean;
 /** [MDN Reference](https://developer.mozilla.org/docs/Web/API/DedicatedWorkerGlobalScope/cancelAnimationFrame) */
 declare function cancelAnimationFrame(handle: number): void;
@@ -39328,28 +39490,38 @@ declare function atob(data: string): string;
 /** [MDN Reference](https://developer.mozilla.org/docs/Web/API/Window/btoa) */
 declare function btoa(data: string): string;
 /** [MDN Reference](https://developer.mozilla.org/docs/Web/API/Window/clearInterval) */
+// #[effects(add: [host.time])]
 declare function clearInterval(id: number | undefined): void;
 /** [MDN Reference](https://developer.mozilla.org/docs/Web/API/Window/clearTimeout) */
+// #[effects(add: [host.time])]
 declare function clearTimeout(id: number | undefined): void;
 /** [MDN Reference](https://developer.mozilla.org/docs/Web/API/Window/createImageBitmap) */
 declare function createImageBitmap(image: ImageBitmapSource, options?: ImageBitmapOptions): Promise<ImageBitmap>;
 declare function createImageBitmap(image: ImageBitmapSource, sx: number, sy: number, sw: number, sh: number, options?: ImageBitmapOptions): Promise<ImageBitmap>;
 /** [MDN Reference](https://developer.mozilla.org/docs/Web/API/Window/fetch) */
+// #[effects(add: [host.io, suspend.await])]
 declare function fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response>;
 /** [MDN Reference](https://developer.mozilla.org/docs/Web/API/Window/queueMicrotask) */
+// #[effects(add: [host.ffi])]
 declare function queueMicrotask(callback: VoidFunction): void;
 /** [MDN Reference](https://developer.mozilla.org/docs/Web/API/Window/reportError) */
 declare function reportError(e: unknown): void;
 /** [MDN Reference](https://developer.mozilla.org/docs/Web/API/Window/setInterval) */
+// #[effects(add: [host.time])]
+// #[effects(add: [host.time])]
 declare function setInterval(handler: TimerHandler, timeout?: number, ...arguments: unknown[]): number;
 /** [MDN Reference](https://developer.mozilla.org/docs/Web/API/Window/setTimeout) */
+// #[effects(add: [host.time])]
 declare function setTimeout(handler: TimerHandler, timeout?: number, ...arguments: unknown[]): number;
 /** [MDN Reference](https://developer.mozilla.org/docs/Web/API/Window/structuredClone) */
+// #[effects(add: [fails.throws])]
 declare function structuredClone<T = unknown>(value: T, options?: StructuredSerializeOptions): T;
 /** [MDN Reference](https://developer.mozilla.org/docs/Web/API/Window/sessionStorage) */
 declare var sessionStorage: Storage;
+// #[effects(add: [host.browser.dom])]
 declare function addEventListener<K extends keyof WindowEventMap>(type: K, listener: (this: Window, ev: WindowEventMap[K]) => void, options?: boolean | AddEventListenerOptions): void;
 declare function addEventListener(type: string, listener: EventListenerOrEventListenerObject, options?: boolean | AddEventListenerOptions): void;
+// #[effects(add: [host.browser.dom])]
 declare function removeEventListener<K extends keyof WindowEventMap>(type: K, listener: (this: Window, ev: WindowEventMap[K]) => void, options?: boolean | EventListenerOptions): void;
 declare function removeEventListener(type: string, listener: EventListenerOrEventListenerObject, options?: boolean | EventListenerOptions): void;
 type AlgorithmIdentifier = Algorithm | string;

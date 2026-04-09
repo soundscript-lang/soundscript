@@ -1,10 +1,13 @@
 import { relative } from '../platform/path.ts';
 import ts from 'typescript';
 
+import { createAnalysisContext } from '../checker/engine/context.ts';
 import {
   COMPILER_DIAGNOSTIC_CODES,
   COMPILER_DIAGNOSTIC_MESSAGES,
 } from '../checker/engine/diagnostic_codes.ts';
+import type { AnalysisContext } from '../checker/engine/types.ts';
+import { getEffectCompositionForCallLike, isEffectFreeForCompiler } from '../checker/effects.ts';
 import { type CompilerUnsupportedDiagnosticOptions, CompilerUnsupportedError } from './errors.ts';
 import type {
   CompilerBinaryOp,
@@ -268,6 +271,7 @@ const FRAME_GENERATOR_COMPLETION_BREAK = 3;
 const FRAME_GENERATOR_COMPLETION_CONTINUE = 4;
 const SOUNDSCRIPT_BUILTIN_ERROR_INTERNAL_BRAND_KEY = '__ss_error_brand';
 const SOUNDSCRIPT_HOST_FUNCTION_IMPORT_MODULE = 'soundscript_host_function';
+let activeCompilerAnalysisContext: AnalysisContext | undefined;
 
 function collectBindingIdentifiers(
   name: ts.BindingName,
@@ -17900,6 +17904,27 @@ function isScalarSafeFixedLayoutObjectValueExpression(
   expression: ts.Expression,
   checker: ts.TypeChecker | undefined,
 ): boolean {
+  const isSupportedFixedLayoutResultType = (
+    type: ts.Type,
+    node: ts.Expression,
+  ): boolean => {
+    if (getConcreteClassConstructorDeclarationFromResolvedType(checker!, type, node)) {
+      return true;
+    }
+    if (checker!.getSignaturesOfType(type, ts.SignatureKind.Call).length > 0) {
+      return true;
+    }
+    return (type.flags & ts.TypeFlags.NumberLike) !== 0 ||
+      (type.flags & ts.TypeFlags.BooleanLike) !== 0 ||
+      isSupportedTaggedHeapNullableType(checker!, type) ||
+      isSupportedInternalTaggedHeapUnionType(checker!, type) ||
+      getHostTaggedBoundaryKinds(type) !== undefined ||
+      isSupportedHeapLocalType(checker!, type) ||
+      isSupportedInternalOwnedTaggedHeapArrayType(checker!, type) ||
+      isSupportedOwnedStringArrayType(checker!, type) ||
+      isSupportedOwnedNumberArrayType(checker!, type) ||
+      isSupportedOwnedBooleanArrayType(checker!, type);
+  };
   const isSupportedFixedLayoutHeapExpression = (
     candidate: ts.Expression,
   ): boolean => {
@@ -17983,6 +18008,18 @@ function isScalarSafeFixedLayoutObjectValueExpression(
   }
   if (ts.isParenthesizedExpression(expression)) {
     return isScalarSafeFixedLayoutObjectValueExpression(expression.expression, checker);
+  }
+  if (ts.isCallExpression(expression)) {
+    if (!checker || !activeCompilerAnalysisContext) {
+      return false;
+    }
+    const effects = getEffectCompositionForCallLike(activeCompilerAnalysisContext, expression);
+    if (!isEffectFreeForCompiler(effects)) {
+      return false;
+    }
+    return expression.arguments.every((argument) =>
+      isScalarSafeFixedLayoutObjectValueExpression(argument, checker)
+    ) && isSupportedFixedLayoutResultType(checker.getTypeAtLocation(expression), expression);
   }
   if (ts.isArrayLiteralExpression(expression)) {
     if (!checker) {
@@ -61151,6 +61188,11 @@ export function lowerProgramToCompilerIR(
   program: ts.Program,
   projectRoot: string,
 ): CompilerModuleIR {
+  activeCompilerAnalysisContext = createAnalysisContext({
+    program,
+    workingDirectory: projectRoot,
+    includeSourceFile: (sourceFile) => !sourceFile.isDeclarationFile,
+  });
   const checker = program.getTypeChecker();
   const closures = createModuleClosureLoweringState();
   const declarations: ts.FunctionDeclaration[] = [];

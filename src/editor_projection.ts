@@ -359,7 +359,7 @@ export function projectEditorFile(
     const projectedText = applySemanticMacroPlaceholderDeclarations(
       expandedProgram,
       options.filePath,
-      preparedSource.rewrittenText,
+      preparedSource.postRewriteStage?.rewrittenText ?? preparedSource.rewrittenText,
     );
 
     return {

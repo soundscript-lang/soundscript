@@ -5,6 +5,10 @@ import { SOUND_DIAGNOSTIC_CODES, SOUND_DIAGNOSTIC_MESSAGES } from '../engine/dia
 import type { AnalysisContext, ExportedNonOrdinaryFamily, ExportSummary } from '../engine/types.ts';
 import { getNodeDiagnosticRange, type SoundDiagnostic } from '../diagnostics.ts';
 import {
+  classifyCallableEffectContractMismatch,
+  getEffectSummaryForSignature,
+} from '../effects.ts';
+import {
   collectExportedSymbolsBySourceFile,
   getKnownRecoveredNonOrdinaryFamily,
   populateDirectExportValueSummaries,
@@ -36,6 +40,7 @@ interface TupleShape {
 }
 
 type RelationDiagnosticKind =
+  | 'callableEffectContract'
   | 'callableParameterVariance'
   | 'exoticObjectWidening'
   | 'genericClassExactMatchVariance'
@@ -324,6 +329,80 @@ function createCallableParameterVarianceMismatch(
     hint:
       'Keep the exact callable type, widen parameter types, or wrap the callable with an adapter.',
   };
+}
+
+function createCallableEffectContractMismatch(
+  context: AnalysisContext,
+  sourceType: ts.Type,
+  targetType: ts.Type,
+  forbiddenEffects: readonly string[],
+  relation: 'outer' | 'parameter',
+  parameterName?: string,
+): RelationMismatch {
+  const sourceTypeText = context.checker.typeToString(sourceType);
+  const targetTypeText = context.checker.typeToString(targetType);
+  const forbiddenText = forbiddenEffects.map((effect) => `\`${effect}\``).join(', ');
+  return {
+    kind: 'callableEffectContract',
+    message: relation === 'outer'
+      ? 'Callable effect contracts are covariant in soundscript.'
+      : 'Higher-order callback effect contracts are contravariant in soundscript.',
+    metadata: {
+      rule: relation === 'outer' ? 'callable_effect_covariance' : 'callable_effect_parameter_contravariance',
+      fixability: 'local_rewrite',
+      invariant: relation === 'outer'
+        ? 'A callable assigned to an effect-forbidding surface must itself stay within that forbidden-effect contract.'
+        : 'Higher-order callback parameters may not demand stricter forbid contracts than the target callable surface declares.',
+      replacementFamily: 'adapter_or_effect_contract_alignment',
+      evidence: [
+        createVarianceEvidence('sourceType', sourceTypeText),
+        createVarianceEvidence('targetType', targetTypeText),
+        createVarianceEvidence('forbiddenEffects', forbiddenEffects.join(', ')),
+        ...(parameterName ? [createVarianceEvidence('parameterName', parameterName)] : []),
+      ],
+      counterexample: relation === 'outer'
+        ? `Code typed as '${targetTypeText}' could rely on forbidding ${forbiddenText}, but '${sourceTypeText}' may still perform them.`
+        : `Code typed as '${targetTypeText}' could pass a callback accepted by the target surface, but '${sourceTypeText}' demands a stricter forbid contract${parameterName ? ` on '${parameterName}'` : ''}.`,
+    },
+    notes: relation === 'outer'
+      ? [
+        `'${sourceTypeText}' cannot be widened to '${targetTypeText}' because the target callable surface forbids ${forbiddenText}.`,
+      ]
+      : [
+        `'${sourceTypeText}' cannot be widened to '${targetTypeText}' because it requires a stricter callback forbid contract${parameterName ? ` on '${parameterName}'` : ''}.`,
+      ],
+    hint:
+      'Align the callable effect contracts, or insert an adapter that enforces the stronger contract explicitly.',
+  };
+}
+
+function classifyUnsoundCallableEffectContractRelation(
+  context: AnalysisContext,
+  sourceType: ts.Type,
+  targetType: ts.Type,
+  sourceSignature: ts.Signature,
+  targetSignature: ts.Signature,
+): RelationMismatch | undefined {
+  const sourceSummary = getEffectSummaryForSignature(context, sourceSignature);
+  const targetSummary = getEffectSummaryForSignature(context, targetSignature);
+  const mismatch = classifyCallableEffectContractMismatch(
+    context,
+    sourceSummary,
+    targetSummary,
+    sourceSignature,
+    targetSignature,
+  );
+  if (!mismatch) {
+    return undefined;
+  }
+  return createCallableEffectContractMismatch(
+    context,
+    sourceType,
+    targetType,
+    mismatch.forbiddenEffects,
+    mismatch.kind,
+    mismatch.parameterName,
+  );
 }
 
 function createDiagnostic(node: ts.Node, details?: RelationDiagnosticDetails): SoundDiagnostic {
@@ -1901,6 +1980,17 @@ function classifyUnsoundSignatureRelation(
     return predicateMismatch;
   }
 
+  const effectMismatch = classifyUnsoundCallableEffectContractRelation(
+    context,
+    sourceType,
+    targetType,
+    sourceSignature,
+    targetSignature,
+  );
+  if (effectMismatch) {
+    return effectMismatch;
+  }
+
   return returnTypeNodeAliasMismatch;
 }
 
@@ -2063,9 +2153,41 @@ function getTypeReferenceSymbol(type: ts.Type): ts.Symbol | undefined {
   return (type as ts.TypeReference).target.symbol ?? type.getSymbol();
 }
 
+function isImportedDeclarationBackedRelationConstituent(
+  context: AnalysisContext,
+  type: ts.Type,
+  visitedTypeIds: Set<number>,
+): boolean {
+  const normalizedType = normalizeTransparentRelationType(context, type);
+  const typeId = (normalizedType as ts.Type & { id?: number }).id;
+  if (typeof typeId === 'number') {
+    if (visitedTypeIds.has(typeId)) {
+      return true;
+    }
+    visitedTypeIds.add(typeId);
+  }
+
+  const symbol = getTypeReferenceSymbol(normalizedType);
+  const declarations = symbol?.getDeclarations() ?? [];
+  if (
+    declarations.length === 0 ||
+    !declarations.every((declaration) => declaration.getSourceFile().isDeclarationFile) ||
+    declarations.some((declaration) =>
+      isTrustedSoundStdlibDeclarationSourceFile(declaration.getSourceFile())
+    )
+  ) {
+    return false;
+  }
+
+  return getReferenceTypeArguments(context, normalizedType).every((typeArgument) =>
+    isImportedDeclarationBackedRelationType(context, typeArgument, visitedTypeIds)
+  );
+}
+
 function isImportedDeclarationBackedRelationType(
   context: AnalysisContext,
   type: ts.Type,
+  visitedTypeIds: Set<number> = new Set(),
 ): boolean {
   const constituents = getCompositeRelationConstituents(
     getSafeNonNullableRelationType(context, type),
@@ -2074,16 +2196,13 @@ function isImportedDeclarationBackedRelationType(
     return false;
   }
 
-  return constituents.every((constituentType) => {
-    const normalizedType = normalizeTransparentRelationType(context, constituentType);
-    const symbol = getTypeReferenceSymbol(normalizedType);
-    const declarations = symbol?.getDeclarations() ?? [];
-    return declarations.length > 0 &&
-      declarations.every((declaration) => declaration.getSourceFile().isDeclarationFile) &&
-      !declarations.some((declaration) =>
-        isTrustedSoundStdlibDeclarationSourceFile(declaration.getSourceFile())
-      );
-  });
+  return constituents.every((constituentType) =>
+    isImportedDeclarationBackedRelationConstituent(
+      context,
+      constituentType,
+      visitedTypeIds,
+    )
+  );
 }
 
 function getMatchingBaseType(
@@ -7537,6 +7656,30 @@ function classifyUnsoundTypeNodeGenericAliasRelation(
   }
 
   if (isRelationReferenceTypeNode(unwrappedTargetTypeNode)) {
+    if ((unwrappedTargetTypeNode.typeArguments?.length ?? 0) === 0) {
+      const plainReferenceWrapperPayload = getTransparentRelationWrapperPayloadTypeNode(
+        context,
+        unwrappedTargetTypeNode,
+      );
+      const plainReferenceSymbol = getResolvedAliasSymbol(
+        context,
+        getRelationReferenceTypeNodeSymbol(context, unwrappedTargetTypeNode),
+      );
+      if (
+        !plainReferenceWrapperPayload &&
+        (
+          !plainReferenceSymbol ||
+          (
+            !isInferUtilityWrapperName(plainReferenceSymbol.getName()) &&
+            getGenericAliasVariancePolicy(context, plainReferenceSymbol) === undefined &&
+            getSymbolTypeParameterDeclarations(plainReferenceSymbol).length === 0
+          )
+        )
+      ) {
+        return undefined;
+      }
+    }
+
     const targetWrapperSymbol = getResolvedAliasSymbol(
       context,
       getRelationReferenceTypeNodeSymbol(context, unwrappedTargetTypeNode),
@@ -7570,6 +7713,7 @@ function classifyUnsoundTypeNodeGenericAliasRelation(
         visitedPairs,
       );
     }
+
   }
 
   const expandedTargetTypeNode = expandOrdinaryRelationCarrierTypeNode(context, targetTypeNode);
@@ -9336,12 +9480,15 @@ function classifyUnsoundRelation(
 
 function toRelationDiagnosticDetails(mismatch: RelationMismatch): RelationDiagnosticDetails {
   switch (mismatch.kind) {
+    case 'callableEffectContract':
     case 'callableParameterVariance':
     case 'exoticObjectWidening':
       return {
-        code: mismatch.kind === 'callableParameterVariance'
+        code: mismatch.kind === 'exoticObjectWidening'
+          ? SOUND_DIAGNOSTIC_CODES.exoticObjectWidening
+          : mismatch.kind === 'callableParameterVariance'
           ? SOUND_DIAGNOSTIC_CODES.unsoundRelation
-          : SOUND_DIAGNOSTIC_CODES.exoticObjectWidening,
+          : SOUND_DIAGNOSTIC_CODES.unsoundRelation,
         metadata: mismatch.metadata,
         message: mismatch.message,
         notes: mismatch.notes,

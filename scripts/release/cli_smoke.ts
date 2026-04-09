@@ -45,7 +45,7 @@ export async function smokeTestCliBinary(outputPath: string, version: string): P
     });
     await Deno.writeTextFile(
       join(smokeProjectRoot, 'src', 'main.sts'),
-      "console.log('Hello from Soundscript');\n",
+      'export const greeting = "Hello from Soundscript";\n',
     );
 
     const checkResult = await new Deno.Command(resolvedOutputPath, {

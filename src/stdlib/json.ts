@@ -190,12 +190,18 @@ export function validateDecodeJson<T, M extends DecodeMode>(
   decoder: Decoder<T, unknown, M>,
 ): DecodeOutput<T, readonly DecodeIssue[] | JsonParseFailure, M> {
   const parsed = parseJsonLike(text);
-  return isErr(parsed) ? (err([{
-    code: 'json_parse_failure',
-    ...(parsed.error.cause === undefined ? {} : { input: text }),
-    message: parsed.error.message,
-    path: [],
-  }]) as unknown as DecodeOutput<T, readonly DecodeIssue[] | JsonParseFailure, M>) : decoder.validateDecode(parsed.value) as DecodeOutput<T, readonly DecodeIssue[] | JsonParseFailure, M>;
+  return isErr(parsed)
+    ? (err([{
+      code: 'json_parse_failure',
+      ...(parsed.error.cause === undefined ? {} : { input: text }),
+      message: parsed.error.message,
+      path: [],
+    }]) as unknown as DecodeOutput<T, readonly DecodeIssue[] | JsonParseFailure, M>)
+    : decoder.validateDecode(parsed.value) as DecodeOutput<
+      T,
+      readonly DecodeIssue[] | JsonParseFailure,
+      M
+    >;
 }
 
 export function encodeAndStringify<T, E, M extends EncodeMode>(
@@ -321,15 +327,15 @@ export function mergeJsonRecords(
   return merged;
 }
 
+function isPromiseLike<T>(value: T | Promise<T>): value is Promise<T> {
+  return value instanceof Promise;
+}
+
 function stringifyJsonWithInt64Mode(
   value: LosslessJsonValue,
   int64Mode: 'string' | 'lossless',
 ): string {
   return stringifyJsonWithInt64ModeInternal(value, int64Mode, new Set<object>());
-}
-
-function isPromiseLike<T>(value: T | Promise<T>): value is Promise<T> {
-  return value instanceof Promise;
 }
 
 function stringifyJsonWithInt64ModeInternal(

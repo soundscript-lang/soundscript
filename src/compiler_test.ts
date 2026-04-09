@@ -365,6 +365,57 @@ compilerIntegrationTest(
 );
 
 compilerIntegrationTest(
+  'compileProject accepts provably effect-free helper calls in fixed-layout object literal initializers',
+  async () => {
+    const tempDirectory = await createCompilerTestProject([
+      'function scale(value: number): number {',
+      '  return value * 2;',
+      '}',
+      '',
+      'export function main(input: number): number {',
+      '  const box = { value: scale(input) };',
+      '  return box.value;',
+      '}',
+      '',
+    ].join('\n'));
+
+    const result = compileTempProject(tempDirectory);
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assertEquals(await invokeCompiledEntry(tempDirectory, 'main', [7]), 14);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject rejects fixed-layout object literal helper calls with custom open host effects',
+  async () => {
+    const tempDirectory = await createCompilerTestProject([
+      '// #[effects(add: [host.custom.api])]',
+      'declare function readHostValue(value: number): number;',
+      '',
+      'export function main(input: number): number {',
+      '  const box = { value: readHostValue(input) };',
+      '  return box.value;',
+      '}',
+      '',
+    ].join('\n'));
+
+    const result = compileTempProject(tempDirectory);
+
+    assertEquals(result.exitCode, 1);
+    assertEquals(
+      result.diagnostics.map((diagnostic: { source: string }) => diagnostic.source),
+      ['compiler'],
+    );
+    assertEquals(
+      result.diagnostics.map((diagnostic: { code: string }) => diagnostic.code),
+      ['COMPILER2001'],
+    );
+  },
+);
+
+compilerIntegrationTest(
   'compileProject executes plain sync while break and continue control flow',
   async () => {
     const tempDirectory = await createCompilerTestProject([

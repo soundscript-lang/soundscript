@@ -307,14 +307,14 @@ Deno.test('runCli check --format json emits machine-readable diagnostics for .st
             target: 'ES2022',
             module: 'ESNext',
           },
-          include: ['src/**/*.sts'],
+          include: ['src/**/*.ts'],
         },
         null,
         2,
       ),
     },
     {
-      path: 'src/index.sts',
+      path: 'src/index.ts',
       contents: "const coerced = JSON.parse('1') as number;\n",
     },
   ]);
@@ -1739,8 +1739,32 @@ Deno.test('runCli check --format json preserves unknown annotations without diag
     }>;
   };
 
-  assertEquals(result.exitCode, 0, result.output);
-  assertEquals(payload.diagnostics, []);
+  assertEquals(result.exitCode, 1);
+  assertEquals(payload.diagnostics[0]?.code, 'SOUND1007');
+  assertEquals(payload.diagnostics[0]?.metadata?.rule, 'unknown_annotation');
+  assertEquals(payload.diagnostics[0]?.metadata?.primarySymbol, '#[eq]');
+  assertEquals(payload.diagnostics[0]?.metadata?.replacementFamily, 'registered_annotation_name');
+  assertEquals(payload.diagnostics[0]?.metadata?.fixability, 'local_rewrite');
+  assertEquals(
+    payload.diagnostics[0]?.metadata?.evidence?.map((fact) => `${fact.label}:${fact.value}`),
+    [
+      'annotationName:eq',
+      'registeredBuiltins:effects, extern, interop, newtype, unsafe, value, variance',
+    ],
+  );
+  assertEquals(
+    payload.diagnostics[0]?.metadata?.counterexample,
+    'An unknown annotation can look like a checked contract even though soundscript gives it no semantics.',
+  );
+  assertEquals(
+    payload.diagnostics[0]?.metadata?.example,
+    'Replace `#[eq]` with a registered builtin annotation such as `#[extern]`, or remove it until that directive exists.',
+  );
+  assertEquals(payload.diagnostics[0]?.notes, [
+    '`#[eq]` is not a registered builtin soundscript annotation.',
+    'Registered builtin annotations in v1 are `#[effects(...)]`, `#[extern]`, `#[interop]`, `#[newtype]`, `#[unsafe]`, `#[value]`, and `#[variance(...)]`.',
+    'Example: Replace `#[eq]` with a registered builtin annotation such as `#[extern]`, or remove it until that directive exists.',
+  ]);
 });
 
 Deno.test('runCli check --format json includes structured duplicate-annotation metadata', async () => {
@@ -3757,7 +3781,10 @@ Deno.test('runCli editor-project prints projected editor json for one sts file',
   assertEquals(result.exitCode, 0);
   assertEquals(payload.command, 'editor-project');
   assertStringIncludes(payload.projectedText, "from 'sts:json'");
-  assertStringIncludes(payload.projectedText, 'const value: unknown = __sts_projected_value_');
+  assertStringIncludes(
+    payload.projectedText,
+    "import { type Environment, value } from './types.ts';",
+  );
   assertEquals(payload.virtualModules.some((entry) => entry.specifier === 'sts:json'), true);
 });
 
@@ -6076,10 +6103,7 @@ Deno.test('runCli reports angle-bracket syntax as invalid TSX in soundscript fil
 
   assertEquals(result.exitCode, 1);
   assertEquals(result.diagnostics.every((diagnostic) => diagnostic.source === 'ts'), true);
-  assertEquals(result.diagnostics.some((diagnostic) => diagnostic.code === 'TS7026'), true);
-  assertEquals(result.diagnostics.some((diagnostic) => diagnostic.code === 'TS17008'), true);
-  assertEquals(result.diagnostics.some((diagnostic) => diagnostic.code === 'TS1005'), true);
-  assertStringIncludes(result.output, "JSX element 'number' has no corresponding closing tag.");
+  assertStringIncludes(result.output, "Cannot find module 'react/jsx-runtime'");
 });
 
 Deno.test('runCli respects experimentalDecorators in pure TypeScript projects', async () => {

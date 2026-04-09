@@ -1,6 +1,7 @@
 import { basename, dirname, join, relative } from '@std/path';
 import ts from 'typescript';
 
+import { getStdlibDeclarationTexts } from '../../src/frontend/std_package_support.ts';
 import { rewriteModuleSpecifiersForEmit } from '../../src/runtime/transform.ts';
 import {
   BUNDLED_TYPESCRIPT_SOURCE,
@@ -10,7 +11,6 @@ import {
   CLI_TARGETS,
   type CliTarget,
   DIST_ROOT,
-  HOST_RUNTIME_MODULES,
   LICENSE_SOURCE,
   parseVersion,
   ROOT,
@@ -62,8 +62,8 @@ function requireDirectory(path: string, label: string): void {
 function verifyReleaseInputs(): void {
   requireFile(CLI_ENTRY, 'CLI entrypoint');
   requireFile(LICENSE_SOURCE, 'LICENSE');
-  requireDirectory(BUNDLED_TYPESCRIPT_SOURCE, 'bundled TypeScript libraries and type packages');
-  requireDirectory(STDLIB_SOURCE, 'stdlib declarations');
+  requireDirectory(BUNDLED_TYPESCRIPT_SOURCE, 'bundled TypeScript libraries');
+  requireDirectory(STDLIB_SOURCE, 'stdlib sources');
 }
 
 async function emptyDirectory(path: string): Promise<void> {
@@ -113,15 +113,8 @@ export async function copyCliRuntimeSupportFiles(destinationRoot: string): Promi
   }
   const stdlibDestination = join(destinationRoot, 'src', 'stdlib');
   await Deno.mkdir(stdlibDestination, { recursive: true });
-  for await (const entry of Deno.readDir(STDLIB_SOURCE)) {
-    if (!entry.isFile || !entry.name.endsWith('.d.ts')) {
-      continue;
-    }
-
-    await Deno.copyFile(
-      join(STDLIB_SOURCE, entry.name),
-      join(stdlibDestination, entry.name),
-    );
+  for (const [filePath, text] of getStdlibDeclarationTexts().entries()) {
+    await Deno.writeTextFile(join(stdlibDestination, basename(filePath)), text);
   }
 }
 
@@ -308,13 +301,19 @@ async function prepareStdlibPackage(version: string): Promise<void> {
   await Deno.mkdir(join(CANONICAL_DIST, 'soundscript', 'experimental'), { recursive: true });
   await Deno.mkdir(join(CANONICAL_DIST, 'bin'), { recursive: true });
 
+  const stdlibDeclarationsByBaseName = new Map(
+    [...getStdlibDeclarationTexts().entries()].map(([filePath, text]) => [basename(filePath), text] as const),
+  );
   const rootSource = rewriteModuleSpecifiersForEmit(
     Deno.readTextFileSync(join(ROOT, 'src', 'stdlib', 'index.ts')),
     join(ROOT, 'src', 'stdlib', 'index.ts'),
     { moduleSpecifierMode: 'source-sts' },
   );
   const rootDeclarations = rewriteModuleSpecifiersForEmit(
-    Deno.readTextFileSync(join(ROOT, 'src', 'stdlib', 'index.d.ts')),
+    stdlibDeclarationsByBaseName.get('index.d.ts') ??
+      (() => {
+        throw new Error('Missing generated stdlib declaration for index.d.ts.');
+      })(),
     join(ROOT, 'src', 'stdlib', 'index.d.ts'),
   );
   const rootSourcePath = join(CANONICAL_DIST, 'soundscript', 'index.sts');
@@ -330,41 +329,17 @@ async function prepareStdlibPackage(version: string): Promise<void> {
 
   for (const moduleName of STABLE_RUNTIME_MODULES) {
     const sourcePath = join(ROOT, 'src', 'stdlib', `${moduleName}.ts`);
-    const declarationPath = join(ROOT, 'src', 'stdlib', `${moduleName}.d.ts`);
     const rewrittenSource = rewriteModuleSpecifiersForEmit(
       Deno.readTextFileSync(sourcePath),
       sourcePath,
       { moduleSpecifierMode: 'source-sts' },
     );
     const rewrittenDeclarations = rewriteModuleSpecifiersForEmit(
-      Deno.readTextFileSync(declarationPath),
-      declarationPath,
-    );
-    const publishedSourcePath = join(CANONICAL_DIST, 'soundscript', `${moduleName}.sts`);
-    await writeTextFile(publishedSourcePath, rewrittenSource);
-    await writeTranspiledModule(
-      join(CANONICAL_DIST, `${moduleName}.js`),
-      publishedSourcePath,
-      rewrittenSource,
-      `./soundscript/${moduleName}.sts`,
-    );
-    await writeTextFile(
-      join(CANONICAL_DIST, `${moduleName}.d.ts`),
-      rewrittenDeclarations,
-    );
-  }
-
-  for (const moduleName of HOST_RUNTIME_MODULES) {
-    const sourcePath = join(ROOT, 'src', 'stdlib', `${moduleName}.ts`);
-    const declarationPath = join(ROOT, 'src', 'stdlib', `${moduleName}.d.ts`);
-    const rewrittenSource = rewriteModuleSpecifiersForEmit(
-      Deno.readTextFileSync(sourcePath),
-      sourcePath,
-      { moduleSpecifierMode: 'source-sts' },
-    );
-    const rewrittenDeclarations = rewriteModuleSpecifiersForEmit(
-      Deno.readTextFileSync(declarationPath),
-      declarationPath,
+      stdlibDeclarationsByBaseName.get(`${moduleName}.d.ts`) ??
+        (() => {
+          throw new Error(`Missing generated stdlib declaration for ${moduleName}.d.ts.`);
+        })(),
+      join(ROOT, 'src', 'stdlib', `${moduleName}.d.ts`),
     );
     const publishedSourcePath = join(CANONICAL_DIST, 'soundscript', `${moduleName}.sts`);
     await writeTextFile(publishedSourcePath, rewrittenSource);
@@ -382,15 +357,17 @@ async function prepareStdlibPackage(version: string): Promise<void> {
 
   for (const moduleName of SOURCE_ONLY_RUNTIME_MODULES) {
     const sourcePath = join(ROOT, 'src', 'stdlib', `${moduleName}.ts`);
-    const declarationPath = join(ROOT, 'src', 'stdlib', `${moduleName}.d.ts`);
     const rewrittenSource = rewriteModuleSpecifiersForEmit(
       Deno.readTextFileSync(sourcePath),
       sourcePath,
       { moduleSpecifierMode: 'source-sts' },
     );
     const rewrittenDeclarations = rewriteModuleSpecifiersForEmit(
-      Deno.readTextFileSync(declarationPath),
-      declarationPath,
+      stdlibDeclarationsByBaseName.get(`${moduleName}.d.ts`) ??
+        (() => {
+          throw new Error(`Missing generated stdlib declaration for ${moduleName}.d.ts.`);
+        })(),
+      join(ROOT, 'src', 'stdlib', `${moduleName}.d.ts`),
     );
     const publishedSourcePath = join(
       CANONICAL_DIST,
@@ -452,13 +429,6 @@ async function prepareStdlibPackage(version: string): Promise<void> {
           import: `./${moduleName}.js`,
         },
       ]),
-      ...HOST_RUNTIME_MODULES.map((moduleName) => [
-        `./${moduleName}`,
-        {
-          types: `./${moduleName}.d.ts`,
-          import: `./${moduleName}.js`,
-        },
-      ]),
     ],
   );
   const soundscriptExports = Object.fromEntries(
@@ -497,11 +467,6 @@ async function prepareStdlibPackage(version: string): Promise<void> {
       'index.d.ts',
       'project-transform/**',
       ...STABLE_RUNTIME_MODULES.flatMap((moduleName) => [
-        `${moduleName}.js`,
-        `${moduleName}.js.map`,
-        `${moduleName}.d.ts`,
-      ]),
-      ...HOST_RUNTIME_MODULES.flatMap((moduleName) => [
         `${moduleName}.js`,
         `${moduleName}.js.map`,
         `${moduleName}.d.ts`,

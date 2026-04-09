@@ -762,6 +762,71 @@ const DIAGNOSTIC_REFERENCES = {
       },
     ],
   },
+  SOUND1039: {
+    code: 'SOUND1039',
+    title: 'Effects annotations must use the supported v0.2.0 contract shape',
+    summary:
+      'soundscript only accepts `#[effects(...)]` on supported callable or callback-parameter sites, using the `add`, `forbid`, and `forward` contract shape with parameter-rooted forwarding references.',
+    repairHeuristic:
+      'Rewrite the annotation to use only `add`, `forbid`, and `forward` and move it to a supported callable declaration or function-valued parameter.',
+    details: [
+      'Bodyful callable declarations may use `add`, `forbid`, and `forward`; bodyful `add` unions with inference and never hides inferred effects.',
+      'Declaration-only callable surfaces support `add` and `forward`.',
+      'Function-valued parameters only support `forbid`.',
+      'Overload signatures with an implementation sibling must not carry `#[effects(...)]`; put the effect contract on the implementation declaration instead.',
+    ],
+    examples: [
+      {
+        bad: '// #[effects(add: [fails], forbid: [fails], forward: [{ from: missing }])]',
+        good: '// #[effects(forbid: [fails.throws])]',
+      },
+    ],
+    suggestions: [
+      {
+        applicability: 'manual',
+        title: 'Use supported effect fields and forwarding references',
+        message:
+          'Use `forward` entries rooted at real parameters, put overload-group effects on the implementation declaration, and use bodyful `add` only to widen the honest inferred surface. Open dotted effect names such as `fails.rejects` or `host.node.fs` are allowed.',
+      },
+    ],
+  },
+  SOUND1040: {
+    code: 'SOUND1040',
+    title: 'Effect contracts must match implementation and callback arguments',
+    summary:
+      'A `forbid` contract only holds when the callable implementation and any constrained callback arguments stay within the declared effect surface.',
+    repairHeuristic:
+      'Either remove the forbidden effect from the implementation or callback flow, or relax the `#[effects(forbid: [...]) ]` contract to match reality.',
+    details: [
+      'Bodyful callable declarations are checked against their inferred direct effects.',
+      'Function-valued parameters annotated with `#[effects(forbid: [...])]` reject callback arguments that may perform forbidden effects.',
+      'When proof fails because the effect surface stays unknown, the diagnostic metadata includes the unknown-effect reason categories so tooling can distinguish unsummarized frontiers from opaque callables or unresolved forwarding.',
+    ],
+    examples: [
+      {
+        bad: [
+          '// #[effects(forbid: [fails])]',
+          'function explode(): number {',
+          '  throw new Error("boom");',
+          '}',
+        ].join('\n'),
+        good: [
+          '// #[effects(forbid: [fails])]',
+          'function safe(): number {',
+          '  return 1;',
+          '}',
+        ].join('\n'),
+      },
+    ],
+    suggestions: [
+      {
+        applicability: 'manual',
+        title: 'Align the contract with the implementation',
+        message:
+          'Remove the forbidden effect from the implementation or callback path, or loosen the `forbid` contract so callers are not promised behavior the checker cannot prove.',
+      },
+    ],
+  },
   SOUND1023: {
     code: 'SOUND1023',
     title: 'TypeScript pragmas are banned',

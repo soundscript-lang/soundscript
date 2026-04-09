@@ -799,6 +799,7 @@ interface Math {
         y: number,
     ): number;
     /** Returns a pseudorandom number between 0 and 1. */
+    // #[effects(add: [host.random])]
     random(): number;
     /**
      * Returns a supplied numeric expression rounded to the nearest integer.
@@ -1065,6 +1066,7 @@ interface DateConstructor {
         ms?: number,
     ): number;
     /** Returns the number of milliseconds elapsed since midnight, January 1, 1970 Universal Coordinated Time (UTC). */
+    // #[effects(add: [host.time])]
     now(): number;
 }
 
@@ -1270,7 +1272,9 @@ interface JSON {
      * If a member contains nested objects, the nested objects are transformed before the parent object is.
      * @throws {SyntaxError} If `text` is not valid JSON.
      */
+    // #[effects(add: [fails.throws])]
     parse(text: string): JsonValue;
+    // #[effects(add: [fails.throws], forward: [reviver])]
     parse(text: string, reviver: (this: unknown, key: string, value: unknown) => unknown): unknown;
     /**
      * Converts a JavaScript value to a JavaScript Object Notation (JSON) string.
@@ -1279,6 +1283,7 @@ interface JSON {
      * @param space Adds indentation, white space, and line break characters to the return-value JSON text to make it easier to read.
      * @throws {TypeError} If a circular reference or a BigInt value is found.
      */
+    // #[effects(add: [fails.throws], forward: [replacer])]
     stringify(value: unknown, replacer: (this: unknown, key: string, value: unknown) => unknown, space?: string | number): string | undefined;
     /**
      * Converts a JavaScript value to a JavaScript Object Notation (JSON) string.
@@ -1287,6 +1292,7 @@ interface JSON {
      * @param space Adds indentation, white space, and line break characters to the return-value JSON text to make it easier to read.
      * @throws {TypeError} If a circular reference or a BigInt value is found.
      */
+    // #[effects(add: [fails.throws])]
     stringify<T>(value: T, replacer?: readonly (number | string)[] | null, space?: string | number): JsonStringifyResult<T>;
 }
 
@@ -1404,6 +1410,7 @@ interface ReadonlyArray<T> {
      * @param callbackfn A function that accepts up to three arguments. forEach calls the callbackfn function one time for each element in the array.
      * @param thisArg An object to which the this keyword can refer in the callbackfn function. If thisArg is omitted, undefined is used as the this value.
      */
+    // #[effects(add: [], forward: [callbackfn])]
     forEach(
         callbackfn: (
             value: T,
@@ -1417,6 +1424,7 @@ interface ReadonlyArray<T> {
      * @param callbackfn A function that accepts up to three arguments. The map method calls the callbackfn function one time for each element in the array.
      * @param thisArg An object to which the this keyword can refer in the callbackfn function. If thisArg is omitted, undefined is used as the this value.
      */
+    // #[effects(add: [], forward: [callbackfn])]
     map<U>(
         callbackfn: (
             value: T,
@@ -1707,6 +1715,7 @@ interface Array<T> {
      * @param callbackfn A function that accepts up to three arguments. forEach calls the callbackfn function one time for each element in the array.
      * @param thisArg An object to which the this keyword can refer in the callbackfn function. If thisArg is omitted, undefined is used as the this value.
      */
+    // #[effects(add: [], forward: [callbackfn])]
     forEach(
         callbackfn: (
             value: T,
@@ -1720,6 +1729,7 @@ interface Array<T> {
      * @param callbackfn A function that accepts up to three arguments. The map method calls the callbackfn function one time for each element in the array.
      * @param thisArg An object to which the this keyword can refer in the callbackfn function. If thisArg is omitted, undefined is used as the this value.
      */
+    // #[effects(add: [], forward: [callbackfn])]
     map<U>(
         callbackfn: (
             value: T,
@@ -1876,6 +1886,7 @@ interface Promise<T> extends PromiseLike<T> {
      * @param onrejected The callback to execute when the Promise is rejected.
      * @returns A Promise for the completion of which ever callback is executed.
      */
+    // #[effects(add: [suspend.await], forward: [{ from: onfulfilled, rewrite: [{ from: fails, to: fails.rejects }] }, { from: onrejected, rewrite: [{ from: fails, to: fails.rejects }] }])]
     then<TResult1 = T, TResult2 = never>(onfulfilled?: ((value: T) => TResult1 | Promise<TResult1>) | undefined | null, onrejected?: ((reason: unknown) => TResult2 | Promise<TResult2>) | undefined | null): Promise<TResult1 | TResult2>;
 
     /**
@@ -1883,6 +1894,7 @@ interface Promise<T> extends PromiseLike<T> {
      * @param onrejected The callback to execute when the Promise is rejected.
      * @returns A Promise for the completion of the callback.
      */
+    // #[effects(add: [suspend.await], forward: [{ from: onrejected, rewrite: [{ from: fails, to: fails.rejects }] }])]
     catch<TResult = never>(onrejected?: ((reason: unknown) => TResult | Promise<TResult>) | undefined | null): Promise<T | TResult>;
 }
 

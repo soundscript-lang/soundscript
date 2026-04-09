@@ -79,6 +79,10 @@ const BUNDLED_TYPE_DIRECTIVE_ENTRY_POINTS = new Map<string, string>([
   ['node', join('node', 'index.d.ts')],
 ]);
 
+const BUNDLED_TYPE_MODULE_ENTRY_POINTS = new Map<string, string>([
+  ['undici-types', join('node_modules', 'undici-types', 'index.d.ts')],
+]);
+
 const cachedOverrideContentsByDirectory = new Map<string, ReadonlyMap<string, string>>();
 
 function normalizePathForComparison(path: string): string {
@@ -201,6 +205,42 @@ function resolveBundledTypeReferenceDirective(
   };
 }
 
+function resolveBundledTypeModule(moduleName: string): ts.ResolvedModuleFull | undefined {
+  const relativeEntryPoint = BUNDLED_TYPE_MODULE_ENTRY_POINTS.get(moduleName);
+  if (!relativeEntryPoint) {
+    return undefined;
+  }
+
+  const resolvedFileName = join(resolveBundledTypesDirectory(), relativeEntryPoint);
+  if (!fileExistsSync(resolvedFileName)) {
+    return undefined;
+  }
+
+  return {
+    extension: ts.Extension.Dts,
+    isExternalLibraryImport: true,
+    packageId: {
+      name: moduleName,
+      subModuleName: '',
+      version: 'sound-bundled',
+    },
+    resolvedFileName,
+  };
+}
+
+function createModuleResolutionHost(baseHost: ts.CompilerHost): ts.ModuleResolutionHost {
+  return {
+    directoryExists: baseHost.directoryExists?.bind(baseHost),
+    fileExists: baseHost.fileExists.bind(baseHost),
+    getCurrentDirectory: baseHost.getCurrentDirectory?.bind(baseHost) ??
+      (() => ts.sys.getCurrentDirectory()),
+    getDirectories: baseHost.getDirectories?.bind(baseHost),
+    readFile: baseHost.readFile.bind(baseHost),
+    realpath: baseHost.realpath?.bind(baseHost),
+    useCaseSensitiveFileNames: () => ts.sys.useCaseSensitiveFileNames,
+  };
+}
+
 export function createSoundStdlibCompilerHost(
   options: ts.CompilerOptions,
   currentDirectory?: string,
@@ -236,6 +276,42 @@ export function createSoundStdlibCompilerHost(
     readFile(fileName) {
       return shouldUseOverride(fileName, normalizedDefaultLibDirectory, overrideContents) ??
         baseHost.readFile(fileName);
+    },
+    resolveModuleNames(
+      moduleNames,
+      containingFile,
+      reusedNames,
+      redirectedReference,
+      compilerOptions,
+      containingSourceFile,
+    ) {
+      const delegated = baseHost.resolveModuleNames?.(
+        moduleNames,
+        containingFile,
+        reusedNames,
+        redirectedReference,
+        compilerOptions,
+        containingSourceFile,
+      );
+      const fallbackHost = createModuleResolutionHost(baseHost);
+
+      return moduleNames.map((moduleName, index) => {
+        const bundledResolution = resolveBundledTypeModule(moduleName);
+        if (bundledResolution) {
+          return bundledResolution;
+        }
+        if (delegated?.[index]) {
+          return delegated[index];
+        }
+        return ts.resolveModuleName(
+          moduleName,
+          containingFile,
+          compilerOptions ?? options,
+          fallbackHost,
+          undefined,
+          redirectedReference,
+        ).resolvedModule;
+      });
     },
     resolveTypeReferenceDirectives(
       typeReferenceDirectiveNames,

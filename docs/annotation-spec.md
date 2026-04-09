@@ -81,6 +81,7 @@ Reserved builtin directive names are:
 
 - `extern`
 - `interop`
+- `effects`
 - `newtype`
 - `unsafe`
 - `value`
@@ -109,29 +110,131 @@ Imported declaration macros may currently attach only to module-scope:
 These use the same `// #[name]` or `// #[name(...)]` surface as directives, but resolve through the
 imported macro registry instead of the builtin directive registry.
 
-User-authored macro modules themselves are a separate compile-time target. They must be
-`.macro.sts` modules and may not cross `#[interop]` or foreign `.ts` / `.js` boundaries anywhere
-in their macro dependency graph.
+User-authored macro modules themselves are a separate compile-time target. They must be `.macro.sts`
+modules and may not cross `#[interop]` or foreign `.ts` / `.js` boundaries anywhere in their macro
+dependency graph.
 
 ### Builtin Directives
 
 Builtin directives validate their own target rules:
 
-- `#[interop]`
-  attaches to import boundaries
-- `#[extern]`
-  attaches to local ambient runtime declarations
-- `#[variance(...)]`
-  attaches to generic `interface` or `type alias` declarations
-- `#[newtype]`
-  attaches to `type alias` declarations
-- `#[value]`
-  attaches to class declarations
-- `#[unsafe]`
-  attaches to local proof-override declarations or statements and waives one contiguous proof-override
-  chain at the selected site
+- `#[effects(...)]` attaches to callable declarations and callable type members, plus
+  function-valued parameters for parameter-local negative contracts
+- `#[interop]` attaches to import boundaries
+- `#[extern]` attaches to local ambient runtime declarations
+- `#[variance(...)]` attaches to generic `interface` or `type alias` declarations
+- `#[newtype]` attaches to `type alias` declarations
+- `#[value]` attaches to class declarations
+- `#[unsafe]` attaches to local proof-override declarations or statements and waives one contiguous
+  proof-override chain at the selected site
 
 Using a known annotation on the wrong target is an error.
+
+### `#[effects(...)]`
+
+`effects` is the builtin runtime effect directive used by the v0.2.0 effect system.
+
+Current supported surface:
+
+```ts
+// #[effects(
+//   add: [host.io, host.node.fs, suspend.await],
+//   forbid: [fails.throws],
+//   forward: [
+//     callback,
+//     { from: onRejected, rewrite: [{ from: fails, to: fails.rejects }] },
+//     { from: decoder.decode, handle: [fails] },
+//   ],
+// )]
+function map<T, U>(values: readonly T[], callback: (value: T) => U): readonly U[] {
+  return values.map(callback);
+}
+```
+
+Current validation rules:
+
+- `add`, `forbid`, `forward`, and `unknown` are the supported fields
+- `via` is no longer supported; unchanged forwarding uses `forward: [callback]`
+- `add` and `forbid` must be arrays
+- `unknown` must currently be an array literal containing only `direct`
+- `forward` must be an array of parameter-rooted callable references or
+  `{ from, rewrite?, handle? }` objects
+- effect names are open dotted identifiers with prefix containment, for example `fails.rejects`,
+  `host.io`, `host.node.fs`, and `host.browser.dom`
+- `from` must start at a parameter name and may continue through callable members such as
+  `decoder.decode`
+- `rewrite` must be an array of `{ from: effect, to: effect }` objects
+- `handle` must be an array of effect identifiers discharged after rewrites are applied
+- duplicate fields, duplicate effect names, unknown field names, and invalid `forward` references
+  are errors
+
+Current semantic direction:
+
+- bodyful local callables may use `add`, `forbid`, and `forward`
+- bodyful `add` is monotonic: explicit `add` effects are unioned with inferred effects and never
+  hide inferred lower-level behavior
+- ordinary bodyful wrappers should usually rely on inference alone; use callable-level `add` or
+  `forward` only when you are intentionally widening or classifying the honest inferred surface
+- declaration-only callable surfaces may use `add` and `forward`
+- function-valued parameters may use `forbid` only
+- `unknown: [direct]` is valid only on declaration-only callable surfaces and marks the
+  declaration's direct effect surface as intentionally unknown
+- overload signatures with an implementation sibling must not carry callable-level or parameter-level
+  `#[effects(...)]`; the implementation declaration is the single effect source of truth for the
+  overload group
+- the standard semantic core currently includes `fails`, `fails.throws`, `fails.rejects`, `suspend`,
+  `suspend.await`, `suspend.yield`, `mut`, `host`, `host.io`, `host.random`, `host.time`,
+  `host.system`, and `host.ffi`
+- platform and library tags such as `host.node.fs`, `host.node.process`, `host.browser.dom`, and
+  `host.browser.message` are user-space representable and may appear directly in declaration
+  annotations
+
+Current effect-set semantics:
+
+- dotted names use prefix containment, so `host` covers `host.io` and `host.browser.dom`
+- effect sets normalize conservatively: if an ancestor name is present, descendant names are
+  redundant and may be dropped
+- overlap is by ancestor/descendant relation, so `forbid: [host]` conflicts with `host.io`,
+  `host.node.fs`, `host.browser.dom`, and any other `host.*` effect
+- there is no allow-list or "all except ..." surface in `#[effects(...)]`
+- transitive effects stay honest, so policies like "allow database I/O but forbid other I/O" are
+  not representable today without a different abstraction model
+
+Current forwarding semantics:
+
+1. resolve the forwarded callable summary from the argument named by `from`
+2. apply `rewrite` entries in array order
+3. apply `handle` removal after rewrites
+4. union the resulting effects into the containing callable summary
+
+Current transform semantics:
+
+- `rewrite` is prefix-based replacement without suffix preservation, so rewriting `fails` to
+  `fails.rejects` turns both `fails.throws` and `fails.rejects` into exactly `fails.rejects`
+- `handle` removes any overlapping effect by prefix, so `handle: [fails]` discharges `fails`,
+  `fails.throws`, and `fails.rejects`
+
+Current local inference rules:
+
+- `throw` infers `fails.throws`
+- async rejection paths infer `fails.rejects`
+- `await`, async functions, async generators, and dynamic `import()` infer `suspend.await`
+- `yield` infers `suspend.yield`
+- observable or shared mutation infers `mut`
+- platform or library tags are not inferred from API names; those come from declaration annotations
+
+Current failure-discharge rule:
+
+- local `try/catch` discharges `fails` effects originating inside the protected region unless the
+  failure is rethrown
+
+Current declaration-projection note:
+
+- soundscript package declarations, including the shipped `sts:*` stdlib surface, are generated
+  from source and project the checker summary onto the emitted declaration text
+- that means most bodyful library code should not need hand-authored declaration-only effect
+  summaries; the remaining explicit stdlib annotations are primarily host-frontier facades over
+  ambient globals
 
 ## Directive Notes
 
@@ -208,14 +311,15 @@ Current semantic limits:
 - they support `class`, `function`, `interface`, and `typeAlias`
 - they use explicit `replace` or `augment` expansion modes
 - they do not support arbitrary type-expression expansion
-- they do not attach to parameters or type parameters
+- they do not attach to parameters or type parameters, except for `#[effects(...)]` on
+  function-valued parameters
 
 ## Current Non-Goals
 
 The following are intentionally out of scope for the current annotation system:
 
 - bare parser syntax for `#[...]`
-- parameter annotations
+- parameter annotations, except for `#[effects(...)]` on function-valued parameters
 - type-parameter annotations
 - arbitrary type-expression macros
 - statement-local user-defined declaration annotations
@@ -223,6 +327,7 @@ The following are intentionally out of scope for the current annotation system:
 
 ## Related Docs
 
+- [Advanced Effects Guide](./guides/advanced-effects.md)
 - [Macro Authoring](./macro-authoring.md)
 - [Nominal Types, Newtypes, And Class Identity](./reference/2026-03-27-nominal-types-newtypes-and-class-identity.md)
 - [JS Value Types Plan](./reference/2026-03-30-js-value-types-plan.md)
