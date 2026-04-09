@@ -3,18 +3,18 @@ import ts from 'typescript';
 
 import { rewriteModuleSpecifiersForEmit } from '../../src/runtime/transform.ts';
 import {
+  BUNDLED_TYPESCRIPT_SOURCE,
   CANONICAL_DIST,
   CANONICAL_PACKAGE_NAME,
   CLI_ENTRY,
   CLI_TARGETS,
   type CliTarget,
   DIST_ROOT,
+  HOST_RUNTIME_MODULES,
   LICENSE_SOURCE,
   parseVersion,
   ROOT,
   SHIM_DIST,
-  SOUND_LIBS_SOURCE,
-  SOUND_TYPES_SOURCE,
   SOUNDSCRIPT_HOMEPAGE_URL,
   SOUNDSCRIPT_ISSUES_URL,
   SOUNDSCRIPT_REPOSITORY_URL,
@@ -62,8 +62,7 @@ function requireDirectory(path: string, label: string): void {
 function verifyReleaseInputs(): void {
   requireFile(CLI_ENTRY, 'CLI entrypoint');
   requireFile(LICENSE_SOURCE, 'LICENSE');
-  requireDirectory(SOUND_LIBS_SOURCE, 'bundled sound libraries');
-  requireDirectory(SOUND_TYPES_SOURCE, 'bundled sound type packages');
+  requireDirectory(BUNDLED_TYPESCRIPT_SOURCE, 'bundled TypeScript libraries and type packages');
   requireDirectory(STDLIB_SOURCE, 'stdlib declarations');
 }
 
@@ -97,12 +96,8 @@ async function copyLicense(destinationPath: string): Promise<void> {
 
 export async function copyCliRuntimeSupportFiles(destinationRoot: string): Promise<void> {
   await copyDirectory(
-    SOUND_LIBS_SOURCE,
-    join(destinationRoot, 'src', 'bundled', 'sound-libs'),
-  );
-  await copyDirectory(
-    SOUND_TYPES_SOURCE,
-    join(destinationRoot, 'src', 'bundled', 'sound-types'),
+    BUNDLED_TYPESCRIPT_SOURCE,
+    join(destinationRoot, 'src', 'bundled', 'typescript'),
   );
   const bundledDestination = join(destinationRoot, 'src', 'bundled');
   await Deno.mkdir(bundledDestination, { recursive: true });
@@ -359,6 +354,32 @@ async function prepareStdlibPackage(version: string): Promise<void> {
     );
   }
 
+  for (const moduleName of HOST_RUNTIME_MODULES) {
+    const sourcePath = join(ROOT, 'src', 'stdlib', `${moduleName}.ts`);
+    const declarationPath = join(ROOT, 'src', 'stdlib', `${moduleName}.d.ts`);
+    const rewrittenSource = rewriteModuleSpecifiersForEmit(
+      Deno.readTextFileSync(sourcePath),
+      sourcePath,
+      { moduleSpecifierMode: 'source-sts' },
+    );
+    const rewrittenDeclarations = rewriteModuleSpecifiersForEmit(
+      Deno.readTextFileSync(declarationPath),
+      declarationPath,
+    );
+    const publishedSourcePath = join(CANONICAL_DIST, 'soundscript', `${moduleName}.sts`);
+    await writeTextFile(publishedSourcePath, rewrittenSource);
+    await writeTranspiledModule(
+      join(CANONICAL_DIST, `${moduleName}.js`),
+      publishedSourcePath,
+      rewrittenSource,
+      `./soundscript/${moduleName}.sts`,
+    );
+    await writeTextFile(
+      join(CANONICAL_DIST, `${moduleName}.d.ts`),
+      rewrittenDeclarations,
+    );
+  }
+
   for (const moduleName of SOURCE_ONLY_RUNTIME_MODULES) {
     const sourcePath = join(ROOT, 'src', 'stdlib', `${moduleName}.ts`);
     const declarationPath = join(ROOT, 'src', 'stdlib', `${moduleName}.d.ts`);
@@ -431,6 +452,13 @@ async function prepareStdlibPackage(version: string): Promise<void> {
           import: `./${moduleName}.js`,
         },
       ]),
+      ...HOST_RUNTIME_MODULES.map((moduleName) => [
+        `./${moduleName}`,
+        {
+          types: `./${moduleName}.d.ts`,
+          import: `./${moduleName}.js`,
+        },
+      ]),
     ],
   );
   const soundscriptExports = Object.fromEntries(
@@ -469,6 +497,11 @@ async function prepareStdlibPackage(version: string): Promise<void> {
       'index.d.ts',
       'project-transform/**',
       ...STABLE_RUNTIME_MODULES.flatMap((moduleName) => [
+        `${moduleName}.js`,
+        `${moduleName}.js.map`,
+        `${moduleName}.d.ts`,
+      ]),
+      ...HOST_RUNTIME_MODULES.flatMap((moduleName) => [
         `${moduleName}.js`,
         `${moduleName}.js.map`,
         `${moduleName}.d.ts`,
@@ -751,8 +784,7 @@ export function createCliTargetPackageManifest(version: string, target: CliTarge
       'README.md',
       'bin/**',
       'src/bundled/*.d.ts',
-      'src/bundled/sound-libs/**',
-      'src/bundled/sound-types/**',
+      'src/bundled/typescript/**',
       'src/stdlib/**',
     ],
     repository: {

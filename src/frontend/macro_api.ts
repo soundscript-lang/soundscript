@@ -773,7 +773,6 @@ export interface MacroRuntimeAccess {
   readonly host: RuntimeHost;
   readonly target: RuntimeTarget;
   default(specifier: string): ExprSyntax;
-  externs(): readonly string[];
   named(specifier: string, exportName: string): ExprSyntax;
   namespace(specifier: string): ExprSyntax;
 }

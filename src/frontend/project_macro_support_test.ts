@@ -432,7 +432,7 @@ Deno.test('createProjectMacroEnvironment exposes ctx.runtime target and extern m
             'export function Foo() {',
             '  return {',
             '    expand(ctx) {',
-            "      return ctx.output.expr(ctx.build.stringLiteral(`${ctx.runtime.target}:${ctx.runtime.backend}:${ctx.runtime.host}:${ctx.runtime.externs().join(',')}`));",
+            "      return ctx.output.expr(ctx.build.stringLiteral(`${ctx.runtime.target}:${ctx.runtime.backend}:${ctx.runtime.host}`));",
             '    },',
             '  };',
             '}',
@@ -449,13 +449,12 @@ Deno.test('createProjectMacroEnvironment exposes ctx.runtime target and extern m
     },
     rootNames: [fileName],
     runtime: normalizeRuntimeContext({
-      externs: ['deno'],
       target: 'wasm-node',
     }),
   });
 
   const printed = printExpandedFile(preparedProgram, fileName);
-  assertStringIncludes(printed, 'export const value = "wasm-node:wasm:node:deno";');
+  assertStringIncludes(printed, 'export const value = "wasm-node:wasm:node";');
 });
 
 Deno.test('createProjectMacroEnvironment rejects ambient Deno usage in macro modules', () => {

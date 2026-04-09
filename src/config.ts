@@ -15,19 +15,16 @@ export type RuntimeBackend = 'js' | 'wasm';
 export type RuntimeHost = 'browser' | 'node' | 'wasi';
 
 export interface SoundscriptConfig {
-  externs: string[];
   target: RuntimeTarget;
 }
 
 export interface RuntimeContext {
   backend: RuntimeBackend;
-  externs: readonly string[];
   host: RuntimeHost;
   target: RuntimeTarget;
 }
 
 export interface RuntimeConfigOverrides {
-  externs?: readonly string[];
   target?: RuntimeTarget;
 }
 
@@ -194,15 +191,9 @@ export function normalizeSoundCompilerOptions(
 
 const DEFAULT_RUNTIME_TARGET: RuntimeTarget = 'js-node';
 const DEFAULT_SOUNDSCRIPT_CONFIG: SoundscriptConfig = {
-  externs: [],
   target: DEFAULT_RUNTIME_TARGET,
 };
-const DEFAULT_BROWSER_FAMILY_LIBS = [
-  'lib.es2024.d.ts',
-  'lib.dom.d.ts',
-  'lib.dom.asynciterable.d.ts',
-] as const;
-const DEFAULT_WASI_LIBS = ['lib.es2024.d.ts'] as const;
+const DEFAULT_CORE_LIBS = ['lib.es2024.d.ts'] as const;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object';
@@ -229,6 +220,31 @@ function isRuntimeTarget(value: string): value is RuntimeTarget {
     value === 'wasm-wasi';
 }
 
+function createRemovedExternsDiagnostic(projectPath: string): ts.Diagnostic {
+  return {
+    category: ts.DiagnosticCategory.Error,
+    code: 80001,
+    file: undefined,
+    length: undefined,
+    messageText:
+      '`soundscript.externs` is no longer supported. Use `compilerOptions.lib` and `compilerOptions.types` for host declaration visibility.',
+    start: undefined,
+    source: projectPath,
+  };
+}
+
+function collectSoundscriptConfigDiagnostics(
+  rawConfig: unknown,
+  projectPath: string,
+): ts.Diagnostic[] {
+  const soundscriptSection = isRecord(rawConfig) && isRecord(rawConfig.soundscript)
+    ? rawConfig.soundscript
+    : undefined;
+  return soundscriptSection && 'externs' in soundscriptSection
+    ? [createRemovedExternsDiagnostic(projectPath)]
+    : [];
+}
+
 function parseSoundscriptConfig(rawConfig: unknown): SoundscriptConfig {
   const soundscriptSection = isRecord(rawConfig) && isRecord(rawConfig.soundscript)
     ? rawConfig.soundscript
@@ -237,16 +253,7 @@ function parseSoundscriptConfig(rawConfig: unknown): SoundscriptConfig {
       isRuntimeTarget(soundscriptSection.target)
     ? soundscriptSection.target
     : DEFAULT_RUNTIME_TARGET;
-  const configuredExterns = Array.isArray(soundscriptSection?.externs)
-    ? [
-      ...new Set(
-        soundscriptSection.externs.filter((value): value is string => typeof value === 'string'),
-      ),
-    ]
-    : [];
-
   return {
-    externs: configuredExterns,
     target: configuredTarget,
   };
 }
@@ -256,11 +263,6 @@ function applyRuntimeConfigOverrides(
   overrides: RuntimeConfigOverrides = {},
 ): SoundscriptConfig {
   return {
-    externs: overrides.externs
-      ? [
-        ...new Set(overrides.externs.filter((value): value is string => typeof value === 'string')),
-      ]
-      : [...soundscript.externs],
     target: overrides.target ?? soundscript.target,
   };
 }
@@ -276,19 +278,16 @@ function applyDefaultRuntimeLibs(
   runtime: RuntimeContext,
   rawConfig: unknown,
 ): ts.ParsedCommandLine {
+  void runtime;
   if (hasExplicitCompilerLibs(rawConfig)) {
     return commandLine;
   }
-
-  const lib = runtime.target === 'wasm-wasi'
-    ? [...DEFAULT_WASI_LIBS]
-    : [...DEFAULT_BROWSER_FAMILY_LIBS];
 
   return {
     ...commandLine,
     options: {
       ...commandLine.options,
-      lib,
+      lib: [...DEFAULT_CORE_LIBS],
     },
   };
 }
@@ -325,20 +324,19 @@ export function normalizeRuntimeContext(
   const resolved = applyRuntimeConfigOverrides(soundscript, overrides);
   switch (resolved.target) {
     case 'js-browser':
-      return { backend: 'js', externs: resolved.externs, host: 'browser', target: resolved.target };
+      return { backend: 'js', host: 'browser', target: resolved.target };
     case 'js-node':
-      return { backend: 'js', externs: resolved.externs, host: 'node', target: resolved.target };
+      return { backend: 'js', host: 'node', target: resolved.target };
     case 'wasm-browser':
       return {
         backend: 'wasm',
-        externs: resolved.externs,
         host: 'browser',
         target: resolved.target,
       };
     case 'wasm-node':
-      return { backend: 'wasm', externs: resolved.externs, host: 'node', target: resolved.target };
+      return { backend: 'wasm', host: 'node', target: resolved.target };
     case 'wasm-wasi':
-      return { backend: 'wasm', externs: resolved.externs, host: 'wasi', target: resolved.target };
+      return { backend: 'wasm', host: 'wasi', target: resolved.target };
   }
 }
 
@@ -877,6 +875,7 @@ export function loadConfig(
   );
   const runtime = normalizeRuntimeContext(soundscript);
   const normalizedCommandLine = applyDefaultRuntimeLibs(commandLine, runtime, configFile.config);
+  const configDiagnostics = collectSoundscriptConfigDiagnostics(configFile.config, projectPath);
   return {
     commandLine: shouldApplySoundCompilerOptionBaseline(
         projectPath,
@@ -885,7 +884,7 @@ export function loadConfig(
       )
       ? applySoundCompilerOptionBaseline(normalizedCommandLine)
       : normalizedCommandLine,
-    diagnostics: commandLine.errors,
+    diagnostics: [...commandLine.errors, ...configDiagnostics],
     runtime,
     soundscript,
   };

@@ -315,7 +315,9 @@ Deno.test('analyzeProject keeps bundled node typings explicit for js-node projec
   assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['TS2307', 'TS2580']);
 });
 
-Deno.test('analyzeProject resolves bundled node typings when compilerOptions.types requests node', async () => {
+Deno.test(
+  'analyzeProject keeps bundled node globals and modules explicit even when compilerOptions.types requests node',
+  async () => {
   const tempDirectory = await createTempProject({
     'tsconfig.json': JSON.stringify(
       {
@@ -349,8 +351,16 @@ Deno.test('analyzeProject resolves bundled node typings when compilerOptions.typ
     workingDirectory: tempDirectory,
   });
 
-  assertEquals(result.diagnostics, []);
-});
+    const diagnosticCodes = result.diagnostics.map((diagnostic) => diagnostic.code);
+    assertEquals(diagnosticCodes, [
+      'SOUND1005',
+      'SOUND1005',
+      'SOUND1005',
+      'SOUND1039',
+      'SOUND1039',
+    ]);
+  },
+);
 
 Deno.test(
   'analyzeProject resolves the explicit bundled node package across the supported core module slice',
@@ -371,16 +381,24 @@ Deno.test(
         2,
       ),
       'src/index.sts': [
+        '// #[interop]',
         "import { Buffer as NodeBuffer } from 'node:buffer';",
+        '// #[interop]',
         "import { spawn } from 'node:child_process';",
+        '// #[interop]',
         "import { readdirSync, statSync, watch } from 'node:fs';",
+        '// #[interop]',
         "import { readFile } from 'node:fs/promises';",
+        '// #[interop]',
         "import { createRequire } from 'node:module';",
+        '// #[interop]',
         "import { tmpdir } from 'node:os';",
+        '// #[interop]',
         "import nodeProcess from 'node:process';",
+        '// #[interop]',
         "import { Readable, Writable } from 'node:stream';",
+        '// #[interop]',
         "import { fileURLToPath, pathToFileURL } from 'node:url';",
-        "import { createContext, Script } from 'node:vm';",
         '',
         'const cwd: string = nodeProcess.cwd();',
         'const entries = readdirSync(cwd, { withFileTypes: true });',
@@ -410,18 +428,15 @@ Deno.test(
         'const require = createRequire(pathToFileURL(filePath));',
         "const resolved: string = require.resolve('node:path');",
         'void resolved;',
-        'const bytes: Buffer = NodeBuffer.alloc(4);',
+        'const bytes: NodeBuffer = NodeBuffer.alloc(4);',
         'void bytes;',
         'const webReadable: ReadableStream<Uint8Array> = Readable.toWeb(nodeProcess.stdin);',
         'const webWritable: WritableStream<Uint8Array> = Writable.toWeb(nodeProcess.stdout);',
         'void webReadable;',
         'void webWritable;',
-        'const context = createContext({ answer: 42 });',
-        "const scriptResult: unknown = new Script('globalThis.answer').runInContext(context);",
-        'void scriptResult;',
         'async function loadText(): Promise<void> {',
         "  const text: string = await readFile(filePath, 'utf8');",
-        '  const binary: Buffer = await readFile(fileUrl);',
+        '  const binary: NodeBuffer = await readFile(fileUrl);',
         '  void text;',
         '  void binary;',
         '}',
@@ -459,10 +474,17 @@ Deno.test(
         2,
       ),
       'src/index.sts': [
+        '// #[interop]',
+        "import { Buffer } from 'node:buffer';",
+        '// #[interop]',
         "import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual, webcrypto } from 'node:crypto';",
+        '// #[interop]',
         "import { EventEmitter } from 'node:events';",
+        '// #[interop]',
         "import { clearImmediate, clearTimeout, setImmediate, setTimeout } from 'node:timers';",
+        '// #[interop]',
         "import { setImmediate as waitImmediate, setTimeout as waitTimeout } from 'node:timers/promises';",
+        '// #[interop]',
         "import { inspect, promisify } from 'node:util';",
         '',
         'type Events = {',
@@ -538,10 +560,15 @@ Deno.test(
         2,
       ),
       'src/index.sts': [
+        '// #[interop]',
         "import assert from 'node:assert/strict';",
+        '// #[interop]',
         "import { Readable, Writable } from 'node:stream';",
+        '// #[interop]',
         "import { finished, pipeline } from 'node:stream/promises';",
+        '// #[interop]',
         "import { createServer, get, request } from 'node:http';",
+        '// #[interop]',
         "import { Agent, get as httpsGet, request as httpsRequest } from 'node:https';",
         '',
         "assert.equal('sound', 'sound');",
@@ -615,11 +642,19 @@ Deno.test(
         2,
       ),
       'src/index.sts': [
+        '// #[interop]',
+        "import { Buffer } from 'node:buffer';",
+        '// #[interop]',
         "import { createReadStream, createWriteStream } from 'node:fs';",
+        '// #[interop]',
         "import { connect, createServer } from 'node:net';",
+        '// #[interop]',
         "import { tmpdir } from 'node:os';",
+        '// #[interop]',
         "import { join } from 'node:path';",
+        '// #[interop]',
         "import { ReadableStream as WebReadableStream, TransformStream as WebTransformStream, WritableStream as WebWritableStream } from 'node:stream/web';",
+        '// #[interop]',
         "import { createGunzip, createGzip, gzipSync } from 'node:zlib';",
         '',
         "const sourcePath = join(tmpdir(), 'input.txt');",
@@ -701,11 +736,17 @@ Deno.test(
         2,
       ),
       'src/index.sts': [
+        '// #[interop]',
         "import { Console } from 'node:console';",
+        '// #[interop]',
         "import { lookup } from 'node:dns/promises';",
+        '// #[interop]',
         "import { performance } from 'node:perf_hooks';",
+        '// #[interop]',
         "import process from 'node:process';",
+        '// #[interop]',
         "import { createInterface } from 'node:readline/promises';",
+        '// #[interop]',
         "import { isatty } from 'node:tty';",
         '',
         'const logger = new Console({ stdout: process.stdout, stderr: process.stderr });',
@@ -759,9 +800,17 @@ Deno.test(
         2,
       ),
       'src/index.sts': [
+        "import { URL } from 'sts:url';",
+        '',
+        '// #[interop]',
+        "import { Buffer } from 'node:buffer';",
+        '// #[interop]',
         "import { parse, stringify } from 'node:querystring';",
+        '// #[interop]',
         "import { StringDecoder } from 'node:string_decoder';",
+        '// #[interop]',
         "import { isArrayBufferView, isDate, isPromise } from 'node:util/types';",
+        '// #[interop]',
         "import { Worker, isMainThread, parentPort, threadId } from 'node:worker_threads';",
         '',
         "const query = stringify({ first: 'sound', second: ['one', 'two'] });",
@@ -780,7 +829,7 @@ Deno.test(
         'void dateState;',
         'void promiseState;',
         '',
-        "const worker = new Worker(new URL('file:///tmp/worker.js'));",
+        "const worker = new Worker('file:///tmp/worker.js');",
         "worker.postMessage({ kind: 'sound' });",
         'const workerId: number = worker.threadId;',
         'void workerId;',
@@ -824,8 +873,11 @@ Deno.test(
         2,
       ),
       'src/index.sts': [
+        '// #[interop]',
         "import { AsyncLocalStorage } from 'node:async_hooks';",
+        '// #[interop]',
         "import { connect as connectHttp2, constants, createServer as createHttp2Server } from 'node:http2';",
+        '// #[interop]',
         "import { connect as connectTls, createServer as createTlsServer } from 'node:tls';",
         '',
         'const storage = new AsyncLocalStorage<{ readonly requestId: string }>();',
@@ -896,7 +948,9 @@ Deno.test(
         2,
       ),
       'src/index.sts': [
+        '// #[interop]',
         "import assert from 'node:assert';",
+        '// #[interop]',
         "import { after, afterEach, before, beforeEach, describe, it, test } from 'node:test';",
         '',
         'let counter = 0;',
@@ -962,10 +1016,15 @@ Deno.test(
         2,
       ),
       'src/index.sts': [
+        '// #[interop]',
         "import { join as joinPosix } from 'node:path/posix';",
+        '// #[interop]',
         "import { join as joinWin32 } from 'node:path/win32';",
+        '// #[interop]',
         "import { text } from 'node:stream/consumers';",
+        '// #[interop]',
         "import { spec, tap } from 'node:test/reporters';",
+        '// #[interop]',
         "import { Readable } from 'node:stream';",
         '',
         "const posixPath: string = joinPosix('/tmp', 'sound');",
@@ -1014,10 +1073,17 @@ Deno.test(
         2,
       ),
       'src/index.sts': [
+        '// #[interop]',
+        "import { Buffer } from 'node:buffer';",
+        '// #[interop]',
         "import * as constants from 'node:constants';",
+        '// #[interop]',
         "import cluster from 'node:cluster';",
+        '// #[interop]',
         "import { channel } from 'node:diagnostics_channel';",
+        '// #[interop]',
         "import { createSocket } from 'node:dgram';",
+        '// #[interop]',
         "import { createTracing } from 'node:trace_events';",
         '',
         'const e2big: number = constants.E2BIG;',
@@ -1069,14 +1135,21 @@ Deno.test(
         2,
       ),
       'src/index.sts': [
+        '// #[interop]',
         "import { create } from 'node:domain';",
+        '// #[interop]',
         "import * as inspector from 'node:inspector';",
+        '// #[interop]',
         "import { Session as InspectorSession } from 'node:inspector/promises';",
+        '// #[interop]',
         "import { toASCII, toUnicode } from 'node:punycode';",
-        "import { start as startRepl } from 'node:repl';",
+        '// #[interop]',
         "import { getAssetKeys, isSea } from 'node:sea';",
+        '// #[interop]',
         "import { DatabaseSync } from 'node:sqlite';",
+        '// #[interop]',
         "import { getHeapStatistics } from 'node:v8';",
+        '// #[interop]',
         "import { WASI } from 'node:wasi';",
         '',
         'const domain = create();',
@@ -1092,9 +1165,6 @@ Deno.test(
         "const unicode: string = toUnicode('xn--maana-pta.com');",
         'void ascii;',
         'void unicode;',
-        '',
-        "const replServer = startRepl({ prompt: '> ' });",
-        'replServer.close();',
         '',
         'const seaState: boolean = isSea();',
         'const assetKeys: string[] = getAssetKeys();',
@@ -1264,36 +1334,12 @@ Deno.test('analyzeProject widens decoder aliases through their declared generic 
   );
 });
 
-Deno.test('analyzeProject loads the bundled deno extern pack only when enabled for node-family targets', async () => {
-  const externEnabledDirectory = await createTempProject({
+Deno.test('analyzeProject rejects direct ambient DOM globals even when DOM libs are enabled', async () => {
+  const tempDirectory = await createTempProject({
     'tsconfig.json': JSON.stringify(
       {
         compilerOptions: {
-          strict: true,
-          noEmit: true,
-          target: 'ES2022',
-          module: 'ESNext',
-        },
-        soundscript: {
-          externs: ['deno'],
-        },
-        include: ['src/**/*.sts'],
-      },
-      null,
-      2,
-    ),
-    'src/index.sts': [
-      'const cwd = Deno.cwd();',
-      'const home = Deno.env.get("HOME");',
-      'void cwd;',
-      'void home;',
-      '',
-    ].join('\n'),
-  });
-  const externDisabledDirectory = await createTempProject({
-    'tsconfig.json': JSON.stringify(
-      {
-        compilerOptions: {
+          lib: ['ES2024', 'DOM', 'DOM.AsyncIterable'],
           strict: true,
           noEmit: true,
           target: 'ES2022',
@@ -1305,42 +1351,119 @@ Deno.test('analyzeProject loads the bundled deno extern pack only when enabled f
       2,
     ),
     'src/index.sts': [
-      'const cwd = Deno.cwd();',
-      'const home = Deno.env.get("HOME");',
-      'void cwd;',
-      'void home;',
+      'const title = document.title;',
+      'const href = window.location.href;',
+      'void title;',
+      'void href;',
       '',
     ].join('\n'),
   });
 
-  const jsNodeResult = await analyzeProject({
-    projectPath: join(externEnabledDirectory, 'tsconfig.json'),
-    target: 'js-node',
-    workingDirectory: externEnabledDirectory,
-  });
-  const jsBrowserResult = await analyzeProject({
-    projectPath: join(externEnabledDirectory, 'tsconfig.json'),
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
     target: 'js-browser',
-    workingDirectory: externEnabledDirectory,
-  });
-  const missingExternResult = await analyzeProject({
-    projectPath: join(externDisabledDirectory, 'tsconfig.json'),
-    target: 'js-node',
-    workingDirectory: externDisabledDirectory,
+    workingDirectory: tempDirectory,
   });
 
-  assertEquals(jsNodeResult.diagnostics, []);
-  assertEquals(jsBrowserResult.diagnostics.map((diagnostic) => diagnostic.code), [
-    'TS2304',
-    'TS2304',
-  ]);
-  assertEquals(missingExternResult.diagnostics.map((diagnostic) => diagnostic.code), [
-    'TS2304',
-    'TS2304',
-  ]);
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1039', 'SOUND1039']);
 });
 
-Deno.test('analyzeProject exposes portable web globals on wasm-wasi', async () => {
+Deno.test('analyzeProject resolves explicit host:dom imports when DOM libs are enabled', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          lib: ['ES2024', 'DOM', 'DOM.AsyncIterable'],
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/index.sts': [
+      '// #[interop]',
+      "import { document, window } from 'host:dom';",
+      '',
+      'const title = document.title;',
+      'const href = window.location.href;',
+      'void title;',
+      'void href;',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    target: 'js-browser',
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics, []);
+});
+
+Deno.test('analyzeProject rejects host:dom imports when DOM libs are unavailable', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': createSoundscriptOnlyTsconfig(),
+    'src/index.sts': [
+      '// #[interop]',
+      "import { document } from 'host:dom';",
+      '',
+      'void document;',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    target: 'js-browser',
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['TS2307']);
+});
+
+Deno.test(
+  'analyzeProject rejects direct ambient node globals even when compilerOptions.types requests node',
+  async () => {
+    const tempDirectory = await createTempProject({
+      'tsconfig.json': JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+            types: ['node'],
+          },
+          include: ['src/**/*.sts'],
+        },
+        null,
+        2,
+      ),
+      'src/index.sts': [
+        'const cwd = process.cwd();',
+        "const bytes = Buffer.from('sound');",
+        'void cwd;',
+        'void bytes;',
+        '',
+      ].join('\n'),
+    });
+
+    const result = await analyzeProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      target: 'js-node',
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1039', 'SOUND1039']);
+  },
+);
+
+Deno.test('analyzeProject resolves explicit host:node imports when compilerOptions.types requests node', async () => {
   const tempDirectory = await createTempProject({
     'tsconfig.json': JSON.stringify(
       {
@@ -1349,6 +1472,7 @@ Deno.test('analyzeProject exposes portable web globals on wasm-wasi', async () =
           noEmit: true,
           target: 'ES2022',
           module: 'ESNext',
+          types: ['node'],
         },
         include: ['src/**/*.sts'],
       },
@@ -1356,28 +1480,89 @@ Deno.test('analyzeProject exposes portable web globals on wasm-wasi', async () =
       2,
     ),
     'src/index.sts': [
-      'const url = new URL("/x", "https://example.com");',
-      'const params = new URLSearchParams({ q: "music" });',
-      'const headers = new Headers({ accept: "application/json" });',
-      'const request = new Request(url, { headers });',
-      'const responsePromise = fetch(request);',
-      'const encoder = new TextEncoder();',
-      'const decoder = new TextDecoder();',
-      'const bytes = encoder.encode(url.href);',
-      'const text = decoder.decode(bytes);',
-      'const cryptoRef = crypto;',
+      '// #[interop]',
+      "import { Buffer, process } from 'host:node';",
       '',
-      'void params;',
-      'void responsePromise;',
-      'void cryptoRef;',
-      'void text;',
+      'const cwd = process.cwd();',
+      "const bytes = Buffer.from('sound');",
+      'void cwd;',
+      'void bytes;',
       '',
     ].join('\n'),
   });
 
   const result = await analyzeProject({
     projectPath: join(tempDirectory, 'tsconfig.json'),
-    target: 'wasm-wasi',
+    target: 'js-node',
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics, []);
+});
+
+Deno.test('analyzeProject rejects host:node imports when compilerOptions.types omits node', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': createSoundscriptOnlyTsconfig(),
+    'src/index.sts': [
+      '// #[interop]',
+      "import { process } from 'host:node';",
+      '',
+      'void process;',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    target: 'js-node',
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['TS2307']);
+});
+
+Deno.test('analyzeProject accepts same-file #[extern] declarations for node and user-supplied Deno globals', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+          types: ['node'],
+        },
+        include: ['src/**/*.sts', 'src/**/*.d.ts'],
+      },
+      null,
+      2,
+    ),
+    'src/deno-globals.d.ts': [
+      'declare namespace Deno {',
+      '  interface Runtime {',
+      '    cwd(): string;',
+      '  }',
+      '}',
+      '',
+    ].join('\n'),
+    'src/index.sts': [
+      '// #[extern]',
+      'declare const runtimeProcess: NodeJS.Process;',
+      '',
+      '// #[extern]',
+      'declare const runtimeDeno: Deno.Runtime;',
+      '',
+      'const cwd = runtimeProcess.cwd();',
+      'const denoCwd = runtimeDeno.cwd();',
+      'void cwd;',
+      'void denoCwd;',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    target: 'js-node',
     workingDirectory: tempDirectory,
   });
 
@@ -5479,6 +5664,8 @@ Deno.test('analyzeProject applies macro rewriting in in-memory file overrides be
         [
           "import { log } from 'sts:experimental/debug';",
           '// #[extern]',
+          'declare const console: { log(...args: readonly unknown[]): void };',
+          '// #[extern]',
           'declare function __sts_log<T>(source: string, value: T): T;',
           'const value = log(1);',
           'void value;',
@@ -5585,6 +5772,8 @@ Deno.test('analyzeProject preserves ordinary TypeScript diagnostic lines after m
         [
           "import { log } from 'sts:experimental/debug';",
           '// #[extern]',
+          'declare const console: { log(...args: readonly unknown[]): void };',
+          '// #[extern]',
           'declare function __sts_log<T>(source: string, value: T): T;',
           'const value = log(1);',
           'const count: number = "oops";',
@@ -5595,7 +5784,7 @@ Deno.test('analyzeProject preserves ordinary TypeScript diagnostic lines after m
   });
 
   assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['TS2322']);
-  assertEquals(result.diagnostics[0]?.line, 5);
+  assertEquals(result.diagnostics[0]?.line, 7);
 });
 
 Deno.test('analyzeProject expands import-scoped builtin macros before TypeScript diagnostics', async () => {
@@ -5616,6 +5805,8 @@ Deno.test('analyzeProject expands import-scoped builtin macros before TypeScript
     'src/index.sts': [
       "import { log } from 'sts:experimental/debug';",
       '// #[extern]',
+      'declare const console: { log(...args: readonly unknown[]): void };',
+      '// #[extern]',
       'declare function __sts_log<T>(source: string, value: T): T;',
       'const value: string = log(123);',
       '',
@@ -5628,7 +5819,7 @@ Deno.test('analyzeProject expands import-scoped builtin macros before TypeScript
   });
 
   assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['TS2322']);
-  assertEquals(result.diagnostics[0]?.line, 4);
+  assertEquals(result.diagnostics[0]?.line, 6);
 });
 
 Deno.test('analyzeProject expands import-scoped user-defined macros before TypeScript diagnostics', async () => {
@@ -7537,10 +7728,6 @@ Deno.test(
         '//     return value;',
         '// }',
         '',
-        'console.log(literalSchema)',
-        '',
-        'console.log(a)',
-        '',
         'class B {',
         '    type: string;',
         '',
@@ -7569,9 +7756,9 @@ Deno.test(
     });
 
     assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1019']);
-    assertEquals(result.diagnostics[0]?.line, 50);
+    assertEquals(result.diagnostics[0]?.line, 46);
     assertEquals(result.diagnostics[0]?.column, 'const c: C = '.length + 1);
-    assertEquals(result.diagnostics[0]?.endLine, 50);
+    assertEquals(result.diagnostics[0]?.endLine, 46);
     assertEquals(result.diagnostics[0]?.endColumn, 'const c: C = b'.length + 1);
   },
 );

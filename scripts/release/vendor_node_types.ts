@@ -2,7 +2,7 @@ import { dirname, fromFileUrl, join } from '@std/path';
 import ts from 'typescript';
 
 const ROOT = join(dirname(fromFileUrl(import.meta.url)), '..', '..');
-const SOUND_TYPES_ROOT = join(ROOT, 'src', 'bundled', 'sound-types');
+const SOUND_TYPES_ROOT = join(ROOT, 'src', 'bundled', 'typescript', 'types');
 const NODE_TYPES_VERSION = '24.12.2';
 const UNDICI_TYPES_VERSION = '7.16.0';
 const EXCLUDED_PUBLIC_MODULES = ['node:sys'] as const;

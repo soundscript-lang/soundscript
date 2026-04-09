@@ -23,6 +23,10 @@ import {
   HASH_STDLIB_DECLARATION_FILE,
   HASH_STDLIB_DECLARATION_TEXT,
   HASH_STDLIB_MODULE_SPECIFIER,
+  HOST_DOM_DECLARATION_FILE,
+  HOST_DOM_MODULE_SPECIFIER,
+  HOST_NODE_DECLARATION_FILE,
+  HOST_NODE_MODULE_SPECIFIER,
   HKT_STDLIB_DECLARATION_FILE,
   HKT_STDLIB_DECLARATION_TEXT,
   HKT_STDLIB_MODULE_SPECIFIER,
@@ -128,6 +132,41 @@ Deno.test('std package support resolves root and stdlib leaf specifiers to virtu
   assertEquals(codecResolved?.resolvedFileName, CODEC_STDLIB_DECLARATION_FILE);
   assertEquals(asyncResolved?.resolvedFileName, ASYNC_STDLIB_DECLARATION_FILE);
   assertEquals(numericsResolved?.resolvedFileName, NUMERICS_STDLIB_DECLARATION_FILE);
+});
+
+Deno.test('std package support resolves host protocol modules only when the underlying host declarations are enabled', () => {
+  const host = withStdPackageModuleResolution(ts.createCompilerHost({
+    module: ts.ModuleKind.ESNext,
+    target: ts.ScriptTarget.ES2022,
+  }));
+
+  const [hostDomResolved, hostNodeResolved] = host.resolveModuleNames!(
+    [HOST_DOM_MODULE_SPECIFIER, HOST_NODE_MODULE_SPECIFIER],
+    '/virtual/index.ts',
+    undefined,
+    undefined,
+    {
+      lib: ['lib.es2024.d.ts', 'lib.dom.d.ts', 'lib.dom.asynciterable.d.ts'],
+      module: ts.ModuleKind.ESNext,
+      target: ts.ScriptTarget.ES2022,
+      types: ['node'],
+    },
+  );
+  const [hostDomMissing, hostNodeMissing] = host.resolveModuleNames!(
+    [HOST_DOM_MODULE_SPECIFIER, HOST_NODE_MODULE_SPECIFIER],
+    '/virtual/index.ts',
+    undefined,
+    undefined,
+    {
+      module: ts.ModuleKind.ESNext,
+      target: ts.ScriptTarget.ES2022,
+    },
+  );
+
+  assertEquals(hostDomResolved?.resolvedFileName, HOST_DOM_DECLARATION_FILE);
+  assertEquals(hostNodeResolved?.resolvedFileName, HOST_NODE_DECLARATION_FILE);
+  assertEquals(hostDomMissing, undefined);
+  assertEquals(hostNodeMissing, undefined);
 });
 
 Deno.test('std package support hkt text stays in sync with the checked-in hkt declaration file', async () => {

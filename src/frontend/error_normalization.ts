@@ -24,7 +24,7 @@ function repairBuiltinMacroModuleSpecifiers(text: string): string {
 }
 
 function isBuiltInPromiseDeclarationFile(fileName: string): boolean {
-  return fileName.includes('/sound-libs/lib.') || /\/lib\..+\.d\.ts$/u.test(fileName);
+  return fileName.includes('/typescript/lib/lib.') || /\/lib\..+\.d\.ts$/u.test(fileName);
 }
 
 function isBuiltInPromiseMethodCall(

@@ -2,6 +2,7 @@ import type { AnalysisContext } from '../engine/types.ts';
 import type { SoundDiagnostic } from '../diagnostics.ts';
 import { measureCheckerTiming } from '../timing.ts';
 
+import { runAmbientHostValueRules } from './ambient_host_values.ts';
 import { runAnnotationValidationRules } from './directive_validation.ts';
 import { runFlowRules } from './flow.ts';
 import { runNamespaceObjectRules } from './namespace_object.ts';
@@ -38,6 +39,7 @@ export function runSoundAnalysis(context: AnalysisContext): SoundDiagnostic[] {
     ...runTimedSoundRule('directiveValidation', context, runAnnotationValidationRules),
     ...runTimedSoundRule('unsoundSyntax', context, runUnsoundSyntaxRules),
     ...runTimedSoundRule('unsoundImports', context, runUnsoundImportRules),
+    ...runTimedSoundRule('ambientHostValues', context, runAmbientHostValueRules),
     ...runTimedSoundRule('namespaceObject', context, runNamespaceObjectRules),
     ...runTimedSoundRule('nullPrototype', context, runNullPrototypeRules),
     ...runTimedSoundRule('relations', context, runRelationRules),

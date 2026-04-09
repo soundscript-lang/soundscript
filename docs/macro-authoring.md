@@ -376,21 +376,19 @@ its own package’s published runtime surface.
 
 ## Target-Aware Generation
 
-Macros may branch on the active target and extern environment through `ctx.runtime`.
+Macros may branch on the active target environment through `ctx.runtime`.
 
 The supported public APIs are:
 
 - `ctx.runtime.target`
 - `ctx.runtime.backend`
 - `ctx.runtime.host`
-- `ctx.runtime.externs()`
 
 Meanings:
 
 - `target`: one of `js-browser`, `js-node`, `wasm-browser`, `wasm-node`, or `wasm-wasi`
 - `backend`: `js` or `wasm`
 - `host`: `browser`, `node`, or `wasi`
-- `externs()`: returns the explicitly enabled extern-pack names such as `deno`
 
 Example:
 
@@ -403,17 +401,17 @@ export function runtimeOnly() {
         return ctx.output.expr(ctx.quote.expr`unsupported()`);
       }
 
-      if (ctx.runtime.externs().includes('deno')) {
-        return ctx.output.expr(ctx.quote.expr`Deno.version.deno`);
+      if (ctx.runtime.host === 'node') {
+        return ctx.output.expr(ctx.quote.expr`process.version`);
       }
 
-      return ctx.output.expr(ctx.quote.expr`process.version`);
+      return ctx.output.expr(ctx.quote.expr`navigator.userAgent`);
     },
   };
 }
 ```
 
-This is the supported way for user-space macros to alter generated code by target or extern pack.
+This is the supported way for user-space macros to alter generated code by target, backend, or host.
 
 ## Tooling Contract
 

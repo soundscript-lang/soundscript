@@ -144,7 +144,6 @@ Deno.test('createMacroContext exposes normalized call-macro arglist accessors', 
 Deno.test('createMacroContext exposes runtime target metadata', () => {
   const { resolved } = createContext('const value = Foo(bar + baz);\n');
   const runtime = normalizeRuntimeContext({
-    externs: ['deno'],
     target: 'wasm-node',
   });
   const context = createMacroContext(resolved, null, undefined, runtime);
@@ -152,7 +151,6 @@ Deno.test('createMacroContext exposes runtime target metadata', () => {
   assertEquals(context.runtime.target, 'wasm-node');
   assertEquals(context.runtime.backend, 'wasm');
   assertEquals(context.runtime.host, 'node');
-  assertEquals(context.runtime.externs(), ['deno']);
 });
 
 Deno.test('createMacroContext treats Match array arms as ordinary expression args', () => {

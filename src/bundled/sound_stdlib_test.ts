@@ -5,6 +5,19 @@ import ts from 'typescript';
 
 import { resolveBundledTypesDirectory, resolveOverrideDirectory } from './sound_stdlib.ts';
 
+const LOCAL_BUNDLED_TYPESCRIPT_DIRECTORY = join(
+  dirname(fromFileUrl(import.meta.url)),
+  'typescript',
+);
+
+function getLocalBundledLibDirectory(): string {
+  return join(LOCAL_BUNDLED_TYPESCRIPT_DIRECTORY, 'lib');
+}
+
+function getLocalBundledTypesDirectory(): string {
+  return join(LOCAL_BUNDLED_TYPESCRIPT_DIRECTORY, 'types');
+}
+
 type AnyTokenOccurrence = {
   fileName: string;
   line: number;
@@ -79,8 +92,8 @@ function collectDeclaredModulesInDirectory(directoryPath: string): string[] {
 }
 
 Deno.test('vendored sound stdlib declarations contain no any keywords', () => {
-  const bundledLibDirectory = join(dirname(fromFileUrl(import.meta.url)), 'sound-libs');
-  const bundledTypesDirectory = join(dirname(fromFileUrl(import.meta.url)), 'sound-types');
+  const bundledLibDirectory = getLocalBundledLibDirectory();
+  const bundledTypesDirectory = getLocalBundledTypesDirectory();
   const occurrences: AnyTokenOccurrence[] = [];
 
   for (
@@ -96,7 +109,7 @@ Deno.test('vendored sound stdlib declarations contain no any keywords', () => {
 });
 
 Deno.test('vendored sound node package records pinned upstream metadata', () => {
-  const bundledTypesDirectory = join(dirname(fromFileUrl(import.meta.url)), 'sound-types');
+  const bundledTypesDirectory = getLocalBundledTypesDirectory();
   const vendorMetadata = JSON.parse(
     Deno.readTextFileSync(join(bundledTypesDirectory, 'node', 'vendor.json')),
   ) as {
@@ -113,7 +126,7 @@ Deno.test('vendored sound node package records pinned upstream metadata', () => 
 });
 
 Deno.test('vendored sound node package covers the public node 24 builtin module surface', () => {
-  const bundledTypesDirectory = join(dirname(fromFileUrl(import.meta.url)), 'sound-types');
+  const bundledTypesDirectory = getLocalBundledTypesDirectory();
   const declaredModules = collectDeclaredModulesInDirectory(join(bundledTypesDirectory, 'node'));
   const declaredNodeModules = declaredModules.filter((moduleName) =>
     moduleName.startsWith('node:')
@@ -140,7 +153,7 @@ Deno.test('vendored sound node package covers the public node 24 builtin module 
 });
 
 Deno.test('vendored sound stdlib Date declarations use plain number numerics', () => {
-  const bundledLibDirectory = join(dirname(fromFileUrl(import.meta.url)), 'sound-libs');
+  const bundledLibDirectory = getLocalBundledLibDirectory();
   const es5Text = Deno.readTextFileSync(join(bundledLibDirectory, 'lib.es5.d.ts'));
   const es2015CoreText = Deno.readTextFileSync(join(bundledLibDirectory, 'lib.es2015.core.d.ts'));
 
@@ -155,7 +168,7 @@ Deno.test('vendored sound stdlib Date declarations use plain number numerics', (
 });
 
 Deno.test('vendored sound stdlib String Array and RegExp declarations use plain number numerics', () => {
-  const bundledLibDirectory = join(dirname(fromFileUrl(import.meta.url)), 'sound-libs');
+  const bundledLibDirectory = getLocalBundledLibDirectory();
   const es5Text = Deno.readTextFileSync(join(bundledLibDirectory, 'lib.es5.d.ts'));
   const es2015CoreText = Deno.readTextFileSync(join(bundledLibDirectory, 'lib.es2015.core.d.ts'));
 
@@ -189,7 +202,7 @@ Deno.test('vendored sound stdlib String Array and RegExp declarations use plain 
 });
 
 Deno.test('vendored sound stdlib ArrayBuffer and DataView declarations use plain number numerics', () => {
-  const bundledLibDirectory = join(dirname(fromFileUrl(import.meta.url)), 'sound-libs');
+  const bundledLibDirectory = getLocalBundledLibDirectory();
   const es5Text = Deno.readTextFileSync(join(bundledLibDirectory, 'lib.es5.d.ts'));
 
   assertEquals(es5Text.includes('readonly byteLength: number;'), true);
@@ -216,7 +229,7 @@ Deno.test('vendored sound stdlib ArrayBuffer and DataView declarations use plain
 });
 
 Deno.test('vendored sound stdlib typed array declarations use plain number numerics', () => {
-  const bundledLibDirectory = join(dirname(fromFileUrl(import.meta.url)), 'sound-libs');
+  const bundledLibDirectory = getLocalBundledLibDirectory();
   const es5Text = Deno.readTextFileSync(join(bundledLibDirectory, 'lib.es5.d.ts'));
   const es2020BigIntText = Deno.readTextFileSync(
     join(bundledLibDirectory, 'lib.es2020.bigint.d.ts'),
@@ -279,7 +292,7 @@ Deno.test('vendored sound stdlib typed array declarations use plain number numer
 });
 
 Deno.test('vendored sound stdlib typed array iterable and helper declarations use plain number numerics', () => {
-  const bundledLibDirectory = join(dirname(fromFileUrl(import.meta.url)), 'sound-libs');
+  const bundledLibDirectory = getLocalBundledLibDirectory();
   const es2015IterableText = Deno.readTextFileSync(
     join(bundledLibDirectory, 'lib.es2015.iterable.d.ts'),
   );
@@ -327,7 +340,7 @@ Deno.test('vendored sound stdlib typed array iterable and helper declarations us
 });
 
 Deno.test('vendored sound stdlib modern array and arraybuffer declarations use plain number numerics', () => {
-  const bundledLibDirectory = join(dirname(fromFileUrl(import.meta.url)), 'sound-libs');
+  const bundledLibDirectory = getLocalBundledLibDirectory();
   const es2023ArrayText = Deno.readTextFileSync(join(bundledLibDirectory, 'lib.es2023.array.d.ts'));
   const es2024ArrayBufferText = Deno.readTextFileSync(
     join(bundledLibDirectory, 'lib.es2024.arraybuffer.d.ts'),
@@ -385,7 +398,7 @@ Deno.test('vendored sound stdlib modern array and arraybuffer declarations use p
 });
 
 Deno.test('vendored sound stdlib DOM binary and media declarations use plain number numerics', () => {
-  const bundledLibDirectory = join(dirname(fromFileUrl(import.meta.url)), 'sound-libs');
+  const bundledLibDirectory = getLocalBundledLibDirectory();
   const domText = Deno.readTextFileSync(join(bundledLibDirectory, 'lib.dom.d.ts'));
 
   assertEquals(domText.includes('readonly duration: number;'), true);
@@ -415,7 +428,7 @@ Deno.test('vendored sound stdlib DOM binary and media declarations use plain num
 });
 
 Deno.test('vendored sound stdlib DOM dynamic boundary declarations use unknown instead of any', () => {
-  const bundledLibDirectory = join(dirname(fromFileUrl(import.meta.url)), 'sound-libs');
+  const bundledLibDirectory = getLocalBundledLibDirectory();
   const domText = Deno.readTextFileSync(join(bundledLibDirectory, 'lib.dom.d.ts'));
   const domAsyncIterableText = Deno.readTextFileSync(
     join(bundledLibDirectory, 'lib.dom.asynciterable.d.ts'),
@@ -491,7 +504,7 @@ Deno.test('vendored sound stdlib DOM dynamic boundary declarations use unknown i
 });
 
 Deno.test('vendored sound stdlib DOM stream and event generics carry variance annotations', () => {
-  const bundledLibDirectory = join(dirname(fromFileUrl(import.meta.url)), 'sound-libs');
+  const bundledLibDirectory = getLocalBundledLibDirectory();
   const domText = Deno.readTextFileSync(join(bundledLibDirectory, 'lib.dom.d.ts'));
 
   assertEquals(
@@ -629,7 +642,7 @@ Deno.test('vendored sound stdlib DOM stream and event generics carry variance an
 });
 
 Deno.test('vendored sound stdlib DOM serializer declarations use exact object shapes when obvious', () => {
-  const bundledLibDirectory = join(dirname(fromFileUrl(import.meta.url)), 'sound-libs');
+  const bundledLibDirectory = getLocalBundledLibDirectory();
   const domText = Deno.readTextFileSync(join(bundledLibDirectory, 'lib.dom.d.ts'));
 
   assertEquals(
@@ -885,7 +898,7 @@ Deno.test('vendored sound stdlib DOM serializer declarations use exact object sh
 });
 
 Deno.test('vendored sound stdlib DOM timestamp declarations use plain number numerics', () => {
-  const bundledLibDirectory = join(dirname(fromFileUrl(import.meta.url)), 'sound-libs');
+  const bundledLibDirectory = getLocalBundledLibDirectory();
   const domText = Deno.readTextFileSync(join(bundledLibDirectory, 'lib.dom.d.ts'));
 
   assertEquals(
@@ -903,7 +916,7 @@ Deno.test('vendored sound stdlib DOM timestamp declarations use plain number num
 });
 
 Deno.test('vendored sound stdlib WebGL declarations use plain number numerics', () => {
-  const bundledLibDirectory = join(dirname(fromFileUrl(import.meta.url)), 'sound-libs');
+  const bundledLibDirectory = getLocalBundledLibDirectory();
   const domText = Deno.readTextFileSync(join(bundledLibDirectory, 'lib.dom.d.ts'));
 
   assertEquals(domText.includes('type GLbitfield = number;'), true);
@@ -941,7 +954,7 @@ Deno.test('vendored sound stdlib WebGL declarations use plain number numerics', 
 });
 
 Deno.test('vendored sound stdlib DOM numeric alias unions use plain number numerics', () => {
-  const bundledLibDirectory = join(dirname(fromFileUrl(import.meta.url)), 'sound-libs');
+  const bundledLibDirectory = getLocalBundledLibDirectory();
   const domText = Deno.readTextFileSync(join(bundledLibDirectory, 'lib.dom.d.ts'));
 
   assertEquals(
@@ -980,7 +993,7 @@ Deno.test('vendored sound stdlib DOM numeric alias unions use plain number numer
 });
 
 Deno.test('vendored sound stdlib viewport and stream sizing declarations use plain number numerics', () => {
-  const bundledLibDirectory = join(dirname(fromFileUrl(import.meta.url)), 'sound-libs');
+  const bundledLibDirectory = getLocalBundledLibDirectory();
   const domText = Deno.readTextFileSync(join(bundledLibDirectory, 'lib.dom.d.ts'));
 
   assertEquals(domText.includes('highWaterMark?: number;'), true);
@@ -1009,7 +1022,7 @@ Deno.test('vendored sound stdlib viewport and stream sizing declarations use pla
 });
 
 Deno.test('vendored sound stdlib geometry and text measurement declarations use plain number numerics', () => {
-  const bundledLibDirectory = join(dirname(fromFileUrl(import.meta.url)), 'sound-libs');
+  const bundledLibDirectory = getLocalBundledLibDirectory();
   const domText = Deno.readTextFileSync(join(bundledLibDirectory, 'lib.dom.d.ts'));
 
   assertEquals(domText.includes('w?: number;'), true);
@@ -1065,7 +1078,7 @@ Deno.test('vendored sound stdlib geometry and text measurement declarations use 
 });
 
 Deno.test('vendored sound stdlib canvas image and video sizing declarations use plain number numerics', () => {
-  const bundledLibDirectory = join(dirname(fromFileUrl(import.meta.url)), 'sound-libs');
+  const bundledLibDirectory = getLocalBundledLibDirectory();
   const domText = Deno.readTextFileSync(join(bundledLibDirectory, 'lib.dom.d.ts'));
 
   assertEquals(domText.includes('resizeHeight?: number;'), true);
@@ -1132,7 +1145,7 @@ Deno.test('vendored sound stdlib canvas image and video sizing declarations use 
 });
 
 Deno.test('vendored sound stdlib audio timing and canvas image-data declarations use plain number numerics', () => {
-  const bundledLibDirectory = join(dirname(fromFileUrl(import.meta.url)), 'sound-libs');
+  const bundledLibDirectory = getLocalBundledLibDirectory();
   const domText = Deno.readTextFileSync(join(bundledLibDirectory, 'lib.dom.d.ts'));
 
   assertEquals(domText.includes('length: number;'), true);
@@ -1208,11 +1221,13 @@ Deno.test('vendored sound stdlib audio timing and canvas image-data declarations
   );
 });
 
-Deno.test('resolveOverrideDirectory falls back to repository sound-libs next to compiled binary', async () => {
+Deno.test(
+  'resolveOverrideDirectory falls back to the repository bundled lib directory next to the compiled binary',
+  async () => {
   const tempDirectory = await Deno.makeTempDir({ prefix: 'sound-stdlib-dir-' });
   const runtimeDirectory = join(tempDirectory, 'runtime', 'src', 'bundled');
   const binaryDirectory = join(tempDirectory, 'repo', 'bin');
-  const bundledLibDirectory = join(tempDirectory, 'repo', 'src', 'bundled', 'sound-libs');
+  const bundledLibDirectory = join(tempDirectory, 'repo', 'src', 'bundled', 'typescript', 'lib');
 
   Deno.mkdirSync(runtimeDirectory, { recursive: true });
   Deno.mkdirSync(binaryDirectory, { recursive: true });
@@ -1226,11 +1241,20 @@ Deno.test('resolveOverrideDirectory falls back to repository sound-libs next to 
   assertEquals(resolved, bundledLibDirectory);
 });
 
-Deno.test('resolveBundledTypesDirectory falls back to repository sound-types next to compiled binary', async () => {
+Deno.test(
+  'resolveBundledTypesDirectory falls back to the repository bundled types directory next to the compiled binary',
+  async () => {
   const tempDirectory = await Deno.makeTempDir({ prefix: 'sound-bundled-types-dir-' });
   const runtimeDirectory = join(tempDirectory, 'runtime', 'src', 'bundled');
   const binaryDirectory = join(tempDirectory, 'repo', 'bin');
-  const bundledTypesDirectory = join(tempDirectory, 'repo', 'src', 'bundled', 'sound-types');
+  const bundledTypesDirectory = join(
+    tempDirectory,
+    'repo',
+    'src',
+    'bundled',
+    'typescript',
+    'types',
+  );
 
   Deno.mkdirSync(runtimeDirectory, { recursive: true });
   Deno.mkdirSync(binaryDirectory, { recursive: true });

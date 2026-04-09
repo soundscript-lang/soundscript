@@ -11,7 +11,7 @@ import { basename, dirname, fromFileUrl, join, normalize } from '../platform/pat
 // These overrides vendor the builtin-only ES2024 lib closure for the currently pinned
 // TypeScript release, plus the decorator support files referenced from `lib.es5.d.ts`.
 // When `deno.json` upgrades `typescript`, re-copy the matching upstream lib files
-// and re-apply the sound patches in `src/bundled/sound-libs/`.
+// and re-apply the sound patches in `src/bundled/typescript/lib/`.
 const SOUND_STDLIB_FILE_NAMES = [
   'lib.decorators.d.ts',
   'lib.decorators.legacy.d.ts',
@@ -100,8 +100,8 @@ export function resolveOverrideDirectory(
   } = {},
 ): string {
   const candidateDirectories = [
-    join(dirname(fromFileUrl(importMetaUrl)), 'sound-libs'),
-    join(dirname(execPath), '..', 'src', 'bundled', 'sound-libs'),
+    join(dirname(fromFileUrl(importMetaUrl)), 'typescript', 'lib'),
+    join(dirname(execPath), '..', 'src', 'bundled', 'typescript', 'lib'),
   ];
 
   for (const candidateDirectory of candidateDirectories) {
@@ -123,8 +123,8 @@ export function resolveBundledTypesDirectory(
   } = {},
 ): string {
   const candidateDirectories = [
-    join(dirname(fromFileUrl(importMetaUrl)), 'sound-types'),
-    join(dirname(execPath), '..', 'src', 'bundled', 'sound-types'),
+    join(dirname(fromFileUrl(importMetaUrl)), 'typescript', 'types'),
+    join(dirname(execPath), '..', 'src', 'bundled', 'typescript', 'types'),
   ];
 
   for (const candidateDirectory of candidateDirectories) {

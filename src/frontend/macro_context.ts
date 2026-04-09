@@ -112,7 +112,6 @@ export interface BaseMacroContext {
 }
 
 const DEFAULT_MACRO_RUNTIME_CONTEXT = normalizeRuntimeContext({
-  externs: [],
   target: 'js-node',
 });
 
@@ -249,9 +248,6 @@ function createUnsupportedRuntimeAccess(
     default() {
       throw new Error(reason);
     },
-    externs() {
-      return [...runtimeContext.externs];
-    },
     host: runtimeContext.host,
     named() {
       throw new Error(reason);
@@ -301,9 +297,6 @@ function createRuntimeTracker(
       backend: runtimeContext.backend,
       default(specifier: string) {
         return record('default', specifier);
-      },
-      externs() {
-        return [...runtimeContext.externs];
       },
       host: runtimeContext.host,
       named(specifier: string, exportName: string) {
