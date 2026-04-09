@@ -101,7 +101,7 @@ export const JSON_STDLIB_DECLARATION_FILE = fromFileUrl(
   new URL('../stdlib/json.d.ts', import.meta.url),
 );
 export const METADATA_STDLIB_DECLARATION_FILE = fromFileUrl(
-  new URL('../stdlib/metadata.d.ts', import.meta.url),
+  new URL('../stdlib/metadata.ts', import.meta.url),
 );
 export const COMPARE_STDLIB_DECLARATION_FILE = fromFileUrl(
   new URL('../stdlib/compare.d.ts', import.meta.url),

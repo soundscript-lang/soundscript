@@ -214,8 +214,8 @@ Deno.test('std package support json text stays in sync with the checked-in json 
   assertEquals(JSON_STDLIB_DECLARATION_TEXT.trim(), fileText.trim());
 });
 
-Deno.test('std package support metadata text stays in sync with the checked-in metadata stdlib declaration file', async () => {
-  const fileText = await Deno.readTextFile(new URL('../stdlib/metadata.d.ts', import.meta.url));
+Deno.test('std package support metadata text stays in sync with the checked-in metadata stdlib source file', async () => {
+  const fileText = await Deno.readTextFile(new URL('../stdlib/metadata.ts', import.meta.url));
   assertEquals(METADATA_STDLIB_DECLARATION_TEXT.trim(), fileText.trim());
 });
 
