@@ -154,13 +154,52 @@ Deno.test('stdlib source tree no longer carries checked-in .d.ts files', async (
   assertEquals(declarationFileNames, []);
 });
 
-Deno.test('std package support resolves declaration runtime paths relative to the compiled binary', async () => {
+Deno.test('std package support resolves declaration runtime paths relative to locally staged compiled binaries', async () => {
+  const tempDirectory = await Deno.makeTempDir();
+  try {
+    const execPath = `${tempDirectory}/bin/soundscript`;
+    const fallbackFilePath = `${tempDirectory}/bin/src/stdlib/index.d.ts`;
+    await Deno.mkdir(`${tempDirectory}/bin/src/stdlib`, { recursive: true });
+    await Deno.writeTextFile(fallbackFilePath, 'export type RuntimePrelude = true;\n');
+
+    const resolved = resolveStdlibDeclarationRuntimePath('/missing/source/tree/index.d.ts', {
+      execPath,
+    });
+
+    assertEquals(resolved, fallbackFilePath);
+  } finally {
+    await Deno.remove(tempDirectory, { recursive: true });
+  }
+});
+
+Deno.test('std package support resolves nested stdlib declaration runtime paths without dropping subdirectories', async () => {
+  const tempDirectory = await Deno.makeTempDir();
+  try {
+    const execPath = `${tempDirectory}/bin/soundscript`;
+    const fallbackFilePath = `${tempDirectory}/bin/src/stdlib/host/dom.d.ts`;
+    await Deno.mkdir(`${tempDirectory}/bin/src/stdlib/host`, { recursive: true });
+    await Deno.writeTextFile(fallbackFilePath, 'export type RuntimeHostDom = true;\n');
+
+    const resolved = resolveStdlibDeclarationRuntimePath(
+      '/missing/source/tree/src/stdlib/host/dom.d.ts',
+      {
+      execPath,
+      },
+    );
+
+    assertEquals(resolved, fallbackFilePath);
+  } finally {
+    await Deno.remove(tempDirectory, { recursive: true });
+  }
+});
+
+Deno.test('std package support still resolves declaration runtime paths relative to packaged cli targets', async () => {
   const tempDirectory = await Deno.makeTempDir();
   try {
     const execPath = `${tempDirectory}/bin/soundscript`;
     const fallbackFilePath = `${tempDirectory}/src/stdlib/index.d.ts`;
     await Deno.mkdir(`${tempDirectory}/src/stdlib`, { recursive: true });
-    await Deno.writeTextFile(fallbackFilePath, 'export type RuntimePrelude = true;\n');
+    await Deno.writeTextFile(fallbackFilePath, 'export type PackagedPrelude = true;\n');
 
     const resolved = resolveStdlibDeclarationRuntimePath('/missing/source/tree/index.d.ts', {
       execPath,

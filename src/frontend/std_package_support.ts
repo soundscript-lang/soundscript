@@ -39,7 +39,7 @@ import {
   resolveHostDeclarationFile,
 } from './host_declaration_resolution.ts';
 import { fileExistsSync, readTextFileSync, runtimeExecPath } from '../platform/host.ts';
-import { basename, dirname, fromFileUrl, join } from '../platform/path.ts';
+import { basename, dirname, fromFileUrl, join, relative } from '../platform/path.ts';
 
 export {
   HOST_DOM_DECLARATION_FILE,
@@ -166,9 +166,26 @@ interface MacroStdlibDeclarationGlobal {
 }
 
 let generatedStdlibDeclarationTextsCache: ReadonlyMap<string, string> | undefined;
+const STDLIB_DECLARATION_ROOT = dirname(STDLIB_DECLARATION_FILE);
 
 function fileExists(path: string): boolean {
   return fileExistsSync(path);
+}
+
+function toRuntimeStdlibRelativePath(sourceFilePath: string): string {
+  const relativeStdlibPath = relative(STDLIB_DECLARATION_ROOT, sourceFilePath);
+  if (!relativeStdlibPath.startsWith('..')) {
+    return relativeStdlibPath;
+  }
+
+  const extractedStdlibMatch = sourceFilePath.match(
+    /(?:^|[/\\])(?:src[/\\])?stdlib[/\\](.+)$/u,
+  );
+  if (extractedStdlibMatch?.[1]) {
+    return extractedStdlibMatch[1];
+  }
+
+  return basename(sourceFilePath);
 }
 
 export function resolveStdlibDeclarationRuntimePath(
@@ -179,10 +196,11 @@ export function resolveStdlibDeclarationRuntimePath(
     execPath?: string;
   } = {},
 ): string {
-  const fileName = basename(sourceFilePath);
+  const runtimeRelativePath = toRuntimeStdlibRelativePath(sourceFilePath);
   const candidatePaths = [
     sourceFilePath,
-    join(dirname(execPath), '..', 'src', 'stdlib', fileName),
+    join(dirname(execPath), 'src', 'stdlib', runtimeRelativePath),
+    join(dirname(execPath), '..', 'src', 'stdlib', runtimeRelativePath),
   ];
 
   for (const candidatePath of candidatePaths) {

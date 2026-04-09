@@ -57,7 +57,7 @@
   ],
   "nodeModulesDir": "auto",
   "tasks": {
-    "build": "deno compile --allow-env --allow-read --allow-run --allow-write --output ./bin/soundscript src/main.ts",
+    "build": "deno compile --allow-env --allow-read --allow-run --allow-write --output ./bin/soundscript src/main.ts && deno run -A scripts/release/stage_cli_runtime_support.ts ./bin",
     "dev": "deno run src/main.ts",
     "check": "deno check src/main.ts src/cli.ts src/lsp_main.ts src/stdlib/*.ts",
     "fmt": "deno fmt",

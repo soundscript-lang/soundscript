@@ -773,13 +773,17 @@ Deno.test('buildCliCompileArgs omits worker flags and entrypoints', () => {
   assertEquals(args.includes('src/frontend/macro_sandbox_worker.ts'), false);
 });
 
-Deno.test('deno task build omits worker flags and entrypoints', async () => {
+Deno.test('deno task build stages runtime support files and omits worker entrypoints', async () => {
   const denoConfig = JSON.parse(await Deno.readTextFile(join(ROOT, 'deno.json'))) as {
     tasks: { build: string };
   };
 
   assertEquals(denoConfig.tasks.build.includes('--unstable-worker-options'), false);
   assertEquals(denoConfig.tasks.build.includes('--include'), false);
+  assertEquals(
+    denoConfig.tasks.build.includes('scripts/release/stage_cli_runtime_support.ts ./bin'),
+    true,
+  );
   assertEquals(
     denoConfig.tasks.build.includes('src/frontend/macro_sandbox_worker_bootstrap.ts'),
     false,
