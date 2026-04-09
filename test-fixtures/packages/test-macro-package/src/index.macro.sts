@@ -1,7 +1,7 @@
 import { macroSignature } from 'sts:macros';
 
 const TWICE_SIGNATURE = macroSignature.of(macroSignature.expr('value'));
-const REGISTER_SIGNATURE = macroSignature.of();
+const DECL_SIGNATURE = macroSignature.of(macroSignature.decl('target'));
 
 // #[macro(call)]
 export function twice() {
@@ -26,6 +26,59 @@ export function register() {
         ctx.quote.stmt`export const ${`${name}Registry`} = ${name};`,
       );
     },
-    signature: REGISTER_SIGNATURE,
+    signature: DECL_SIGNATURE,
+  };
+}
+
+// #[macro(decl)]
+export function reflectAnnotations() {
+  function summarizeValue(value: any): any {
+    switch (value?.kind) {
+      case 'array':
+        return {
+          elements: value.elements.map((element: any) => summarizeValue(element)),
+          kind: 'array',
+        };
+      case 'object':
+        return {
+          kind: 'object',
+          properties: value.properties.map((property: any) => ({
+            name: property.name,
+            value: summarizeValue(property.value),
+          })),
+        };
+      default:
+        return value;
+    }
+  }
+
+  function summarizeAnnotation(annotation: any): any {
+    return {
+      argumentKinds: (annotation.arguments ?? []).map((argument: any) => argument.value?.kind ?? null),
+      argumentValues: (annotation.arguments ?? []).map((argument: any) =>
+        summarizeValue(argument.value)
+      ),
+      name: annotation.name,
+      path: annotation.path,
+    };
+  }
+
+  return {
+    declarationKinds: ['interface'] as const,
+    expansionMode: 'augment' as const,
+    expand(ctx: any) {
+      const declaration = ctx.syntax.declaration().asInterface() ??
+        ctx.error('expected interface declaration');
+      const name = declaration.name ?? ctx.error('expected named declaration');
+      const firstMember = declaration.members[0];
+      const summary = JSON.stringify({
+        declaration: ctx.syntax.annotations(declaration).map(summarizeAnnotation),
+        member: firstMember ? ctx.syntax.annotations(firstMember).map(summarizeAnnotation) : [],
+      });
+      return ctx.output.stmt(
+        ctx.quote.stmt`export const ${`${name}AnnotationSummary`} = ${summary};`,
+      );
+    },
+    signature: DECL_SIGNATURE,
   };
 }

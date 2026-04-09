@@ -23,6 +23,8 @@ import {
   parseJsonLike,
   stringifyJson,
   stringifyJsonLike,
+  validateDecodeJson,
+  validateEncodeJson,
   type MachineJsonLikeValue,
   type JsonValue,
   type JsonStringifyBigintMode,
@@ -162,10 +164,59 @@ Deno.test('json parseAndDecode composes JSON parsing with a decoder', () => {
   assertTaggedEquals(decoded, { tag: 'ok', value: true });
 });
 
+Deno.test('json parseAndDecode and decodeJson mirror async decoder helpers', async () => {
+  const AsyncStringDecoder = {
+    async decode(value: unknown) {
+      return typeof value === 'string'
+        ? ok(value.toUpperCase())
+        : err(new JsonParseFailure(value));
+    },
+    async validateDecode(value: unknown) {
+      return typeof value === 'string'
+        ? ok(value.toUpperCase())
+        : err([{
+          code: 'decode_failure',
+          input: value,
+          message: 'Expected string.',
+          path: [],
+        }] as const);
+    },
+  };
+
+  assertTaggedEquals(await parseAndDecode('"user-1"', AsyncStringDecoder), {
+    tag: 'ok',
+    value: 'USER-1',
+  });
+  assertTaggedEquals(await decodeJson('"user-1"', AsyncStringDecoder), {
+    tag: 'ok',
+    value: 'USER-1',
+  });
+});
+
 Deno.test('json encodeAndStringify composes an encoder with JSON serialization', () => {
   const encoded = encodeAndStringify(true, booleanEncoder);
 
   assertTaggedEquals(encoded, { tag: 'ok', value: 'true' });
+});
+
+Deno.test('json encodeAndStringify and encodeJson mirror async encoder helpers', async () => {
+  const AsyncStringEncoder = {
+    async encode(value: string) {
+      return ok(value.toUpperCase());
+    },
+    async validateEncode(value: string) {
+      return ok(value.toUpperCase());
+    },
+  };
+
+  assertTaggedEquals(await encodeAndStringify('user-1', AsyncStringEncoder), {
+    tag: 'ok',
+    value: '"USER-1"',
+  });
+  assertTaggedEquals(await encodeJson('user-1', AsyncStringEncoder), {
+    tag: 'ok',
+    value: '"USER-1"',
+  });
 });
 
 Deno.test('json parseJsonLike preserves large integer literals as bigint', () => {
@@ -327,6 +378,46 @@ Deno.test('json bridge round-trips Option and Result through tagged result-famil
     {
       tag: 'ok',
       value: err(12n),
+    },
+  );
+});
+
+Deno.test('json validateDecodeJson and validateEncodeJson mirror accumulation helpers', () => {
+  const UserDecoder = decodeObject({
+    id: decodeString,
+    active: boolean,
+  });
+  const UserEncoder = encodeObject({
+    id: stringEncoder,
+    active: booleanEncoder,
+  });
+
+  assertTaggedEquals(
+    validateDecodeJson('{"id":1,"active":"yes"}', UserDecoder),
+    {
+      tag: 'err',
+      error: [
+        {
+          code: 'decode_failure',
+          input: 1,
+          message: 'Expected string.',
+          path: ['id'],
+        },
+        {
+          code: 'decode_failure',
+          input: 'yes',
+          message: 'Expected boolean.',
+          path: ['active'],
+        },
+      ],
+    },
+  );
+
+  assertTaggedEquals(
+    validateEncodeJson({ id: 'user-1', active: true }, UserEncoder),
+    {
+      tag: 'ok',
+      value: '{"id":"user-1","active":true}',
     },
   );
 });

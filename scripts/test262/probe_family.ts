@@ -1,5 +1,10 @@
-import type { Test262AssertedEntry, Test262ExpectedFailure } from '../../test/test262/harness.ts';
-import { loadManifest, runManifest } from '../../test/test262/harness.ts';
+import type {
+  Test262AssertedEntry,
+  Test262CaseResult,
+  Test262ExpectedFailure,
+  Test262ManifestEntry,
+} from '../../test/test262/harness.ts';
+import { loadManifest } from '../../test/test262/harness.ts';
 import {
   matchesExpectedFailure,
   parseCandidateManifestEntryMetadata,
@@ -33,10 +38,14 @@ function parseCliOptions(args: readonly string[]): ProbeCliOptions {
   };
 }
 
-function isAssertedEntry(
-  entry: Test262AssertedEntry | { entry?: string; execution?: 'module'; completion?: { kind: 'normal' } },
-): entry is Test262AssertedEntry {
-  return 'entry' in entry || entry.execution === 'module' || 'completion' in entry;
+function isAssertedEntry(entry: Test262ManifestEntry): entry is Test262AssertedEntry {
+  return 'entry' in entry || ('execution' in entry && entry.execution === 'module');
+}
+
+function isFailureAssertedEntry(
+  entry: Test262AssertedEntry,
+): entry is Extract<Test262AssertedEntry, { failure: Test262ExpectedFailure }> {
+  return 'failure' in entry;
 }
 
 function matchesAnyFailure(
@@ -79,11 +88,28 @@ function classifyNegativeResult(
   return 'wrong_red';
 }
 
+async function runManifestInSubprocess(manifestPath: string): Promise<Test262CaseResult[]> {
+  const command = new Deno.Command(Deno.execPath(), {
+    args: ['run', '-A', resolveRepoPath('test/test262/run_manifest.ts'), manifestPath],
+    cwd: Deno.cwd(),
+    stdout: 'piped',
+    stderr: 'piped',
+  });
+  const output = await command.output();
+  if (!output.success) {
+    throw new Error(
+      new TextDecoder().decode(output.stderr).trim() ||
+        'Failed to run test262 manifest subprocess.',
+    );
+  }
+  return JSON.parse(new TextDecoder().decode(output.stdout)) as Test262CaseResult[];
+}
+
 export async function probeFamily(manifestPath: string): Promise<ProbeFamilyReport> {
   const resolvedManifestPath = resolveRepoPath(manifestPath);
   const manifest = await loadManifest(resolvedManifestPath);
   const rawManifest = JSON.parse(await Deno.readTextFile(resolvedManifestPath)) as unknown[];
-  const results = await runManifest(resolvedManifestPath);
+  const results = await runManifestInSubprocess(resolvedManifestPath);
 
   if (!Array.isArray(rawManifest) || rawManifest.length !== manifest.length || results.length !== manifest.length) {
     throw new Error('Candidate manifest shape drifted during probing.');
@@ -96,9 +122,15 @@ export async function probeFamily(manifestPath: string): Promise<ProbeFamilyRepo
 
     const metadata = parseCandidateManifestEntryMetadata(rawManifest[index], `manifest[${index}]`);
     const result = results[index]!;
-    const mode = metadata.probeMode ?? ('failure' in entry ? 'negative' : 'positive');
+    const mode = metadata.probeMode ?? (isFailureAssertedEntry(entry) ? 'negative' : 'positive');
     const classification = mode === 'negative'
-      ? classifyNegativeResult(result.diagnostics, result.status, entry.failure)
+      ? (isFailureAssertedEntry(entry)
+        ? classifyNegativeResult(result.diagnostics, result.status, entry.failure)
+        : (() => {
+          throw new Error(
+            `Negative probe cases must define a failure expectation: ${entry.test}`,
+          );
+        })())
       : classifyPositiveResult(
         result.diagnostics,
         result.status,

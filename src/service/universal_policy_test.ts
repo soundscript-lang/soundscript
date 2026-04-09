@@ -832,7 +832,7 @@ for (const project of LOCAL_PROJECTS) {
           [`src/index.${project.extension}`]: testCase.source,
       });
 
-        const expectedCodes = 'expectedCodes' in testCase
+        const expectedCodes: readonly string[] = 'expectedCodes' in testCase
           ? testCase.expectedCodes
           : ['SOUND1022'];
         assertEquals(

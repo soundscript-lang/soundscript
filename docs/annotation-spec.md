@@ -29,21 +29,31 @@ Annotation   := "#[" Name ("(" Arguments? ")")? "]"
 Arguments    := Argument ("," Argument)*
 Argument     := Value | Identifier ":" Value
 Value        := Identifier
+             | MemberReference
              | String
              | Number
+             | BigInt
              | Boolean
+             | Null
+             | Undefined
+             | RegExp
              | Array
              | Object
 Array        := "[" (Value ("," Value)*)? "]"
-Object       := "{" (Identifier ":" Value ("," Identifier ":" Value)*)? "}"
+Object       := "{" ((Identifier | String) ":" Value ("," (Identifier | String) ":" Value)*)? "}"
 ```
 
 Current value kinds:
 
 - identifiers
+- dotted member references such as `Routes.users.show`
 - strings
 - numbers
+- bigint literals
 - booleans
+- `null`
+- `undefined`
+- regular expression literals
 - arrays
 - objects
 
@@ -52,7 +62,7 @@ Current parser restrictions:
 - trailing commas are not allowed in annotation argument lists
 - trailing commas are not allowed in annotation arrays
 - trailing commas are not allowed in annotation objects
-- object keys must be identifier-like names
+- object keys must be identifier-like names or string literals
 
 ## Resolution Model
 
@@ -65,7 +75,7 @@ Resolution order is:
 
 1. reserved builtin directive names
 2. imported declaration macros
-3. otherwise unknown annotation
+3. otherwise user-space or tool-defined annotation metadata
 
 Reserved builtin directive names are:
 
@@ -79,6 +89,11 @@ Reserved builtin directive names are:
 Imported declaration macros must not silently shadow these names. If a macro package exports a
 declaration macro using a reserved builtin name, the import must be aliased before use at the
 annotation site.
+
+Unknown namespaces are preserved by reflection and ignored by core soundscript behavior unless a
+builtin rule or an imported declaration macro explicitly claims them. This is what allows
+user-space tooling to attach metadata such as `#[openapi.example(...)]` without teaching the core
+checker about every downstream library.
 
 ## Attachment Targets
 

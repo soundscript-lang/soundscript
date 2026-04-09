@@ -14,6 +14,9 @@ import {
   DECODE_STDLIB_DECLARATION_FILE,
   DECODE_STDLIB_DECLARATION_TEXT,
   DECODE_STDLIB_MODULE_SPECIFIER,
+  ENCODE_STDLIB_DECLARATION_FILE,
+  ENCODE_STDLIB_DECLARATION_TEXT,
+  ENCODE_STDLIB_MODULE_SPECIFIER,
   FETCH_STDLIB_DECLARATION_FILE,
   FETCH_STDLIB_DECLARATION_TEXT,
   FETCH_STDLIB_MODULE_SPECIFIER,
@@ -26,6 +29,9 @@ import {
   JSON_STDLIB_DECLARATION_FILE,
   JSON_STDLIB_DECLARATION_TEXT,
   JSON_STDLIB_MODULE_SPECIFIER,
+  METADATA_STDLIB_DECLARATION_FILE,
+  METADATA_STDLIB_DECLARATION_TEXT,
+  METADATA_STDLIB_MODULE_SPECIFIER,
   MATCH_STDLIB_DECLARATION_FILE,
   MATCH_STDLIB_DECLARATION_TEXT,
   MATCH_STDLIB_MODULE_SPECIFIER,
@@ -67,9 +73,11 @@ Deno.test('std package support resolves root and stdlib leaf specifiers to virtu
     textResolved,
     randomResolved,
     jsonResolved,
+    metadataResolved,
     compareResolved,
     hashResolved,
     decodeResolved,
+    encodeResolved,
     codecResolved,
     asyncResolved,
     numericsResolved,
@@ -85,9 +93,11 @@ Deno.test('std package support resolves root and stdlib leaf specifiers to virtu
         TEXT_STDLIB_MODULE_SPECIFIER,
         RANDOM_STDLIB_MODULE_SPECIFIER,
         JSON_STDLIB_MODULE_SPECIFIER,
+        METADATA_STDLIB_MODULE_SPECIFIER,
         COMPARE_STDLIB_MODULE_SPECIFIER,
         HASH_STDLIB_MODULE_SPECIFIER,
         DECODE_STDLIB_MODULE_SPECIFIER,
+        ENCODE_STDLIB_MODULE_SPECIFIER,
         CODEC_STDLIB_MODULE_SPECIFIER,
         ASYNC_STDLIB_MODULE_SPECIFIER,
         NUMERICS_STDLIB_MODULE_SPECIFIER,
@@ -110,9 +120,11 @@ Deno.test('std package support resolves root and stdlib leaf specifiers to virtu
   assertEquals(textResolved?.resolvedFileName, TEXT_STDLIB_DECLARATION_FILE);
   assertEquals(randomResolved?.resolvedFileName, RANDOM_STDLIB_DECLARATION_FILE);
   assertEquals(jsonResolved?.resolvedFileName, JSON_STDLIB_DECLARATION_FILE);
+  assertEquals(metadataResolved?.resolvedFileName, METADATA_STDLIB_DECLARATION_FILE);
   assertEquals(compareResolved?.resolvedFileName, COMPARE_STDLIB_DECLARATION_FILE);
   assertEquals(hashResolved?.resolvedFileName, HASH_STDLIB_DECLARATION_FILE);
   assertEquals(decodeResolved?.resolvedFileName, DECODE_STDLIB_DECLARATION_FILE);
+  assertEquals(encodeResolved?.resolvedFileName, ENCODE_STDLIB_DECLARATION_FILE);
   assertEquals(codecResolved?.resolvedFileName, CODEC_STDLIB_DECLARATION_FILE);
   assertEquals(asyncResolved?.resolvedFileName, ASYNC_STDLIB_DECLARATION_FILE);
   assertEquals(numericsResolved?.resolvedFileName, NUMERICS_STDLIB_DECLARATION_FILE);
@@ -163,6 +175,11 @@ Deno.test('std package support json text stays in sync with the checked-in json 
   assertEquals(JSON_STDLIB_DECLARATION_TEXT.trim(), fileText.trim());
 });
 
+Deno.test('std package support metadata text stays in sync with the checked-in metadata stdlib declaration file', async () => {
+  const fileText = await Deno.readTextFile(new URL('../stdlib/metadata.d.ts', import.meta.url));
+  assertEquals(METADATA_STDLIB_DECLARATION_TEXT.trim(), fileText.trim());
+});
+
 Deno.test('std package support compare text stays in sync with the checked-in compare stdlib declaration file', async () => {
   const fileText = await Deno.readTextFile(new URL('../stdlib/compare.d.ts', import.meta.url));
   assertEquals(COMPARE_STDLIB_DECLARATION_TEXT.trim(), fileText.trim());
@@ -176,6 +193,13 @@ Deno.test('std package support hash text stays in sync with the checked-in hash 
 Deno.test('std package support decode text stays in sync with the checked-in decode stdlib declaration file', async () => {
   const fileText = await Deno.readTextFile(new URL('../stdlib/decode.d.ts', import.meta.url));
   assertEquals(DECODE_STDLIB_DECLARATION_TEXT.trim(), fileText.trim());
+  assertEquals(fileText.includes('__decodeMode'), false);
+});
+
+Deno.test('std package support encode text stays in sync with the checked-in encode stdlib declaration file', async () => {
+  const fileText = await Deno.readTextFile(new URL('../stdlib/encode.d.ts', import.meta.url));
+  assertEquals(ENCODE_STDLIB_DECLARATION_TEXT.trim(), fileText.trim());
+  assertEquals(fileText.includes('__encodeMode'), false);
 });
 
 Deno.test('std package support codec text stays in sync with the checked-in codec stdlib declaration file', async () => {

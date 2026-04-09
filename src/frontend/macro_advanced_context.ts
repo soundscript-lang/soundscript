@@ -20,6 +20,10 @@ import type {
   MacroReflectedDiscriminant,
   MacroReflectedDiscriminatedUnionVariant,
   MacroReflectedFieldShape,
+  MacroSerializableDeclarationShape,
+  MacroSerializableDiscriminatedUnionVariant,
+  MacroSerializableFieldShape,
+  MacroSerializableTypeShape,
   MacroReflectedTypeShape,
   MacroSyntaxNode,
   MacroTypeAliasDeclSyntax,
@@ -34,6 +38,7 @@ import {
   resolvePrimaryExprOperand,
 } from './macro_operand_semantics.ts';
 import { createMacroSemantics } from './macro_semantics.ts';
+import { attachSemanticLookupNodeResolver } from './macro_context_internal.ts';
 import type { ResolvedMacroPlaceholder } from './macro_resolver.ts';
 import { createMacroScopeExitOutput, createMacroValueRewriteOutput } from './macro_output.ts';
 import { scanMacroCandidates } from './macro_scanner.ts';
@@ -320,6 +325,19 @@ export function createAdvancedMacroContext(
       : baseContext.syntax.annotations(node);
   }
 
+  function semanticLookupNode(node?: MacroSyntaxNode): ts.Node | null {
+    const directHostNode = node ? getHostNode(node) : null;
+    const directHostSourceFile = directHostNode?.getSourceFile() ?? null;
+    const originalNode = node ? findOriginalNodeForSyntaxNode(node) : null;
+    return node
+      ? originalNode ??
+        directHostNode ??
+        directHostSourceFile ??
+        resolved.callExpression.getSourceFile() ??
+        resolved.callExpression
+      : resolved.callExpression;
+  }
+
   function reflectedSyntaxNode(node: ts.Node, kind = 'reflected_syntax'): MacroSyntaxNode {
     const sourceFile = node.getSourceFile();
     return {
@@ -424,6 +442,29 @@ export function createAdvancedMacroContext(
       : null;
   }
 
+  function buildRecordShapeFromTypeLiteral(node: ts.TypeLiteralNode): MacroReflectedTypeShape | null {
+    if (node.members.length !== 1) {
+      return null;
+    }
+
+    const [member] = node.members;
+    if (!member || !ts.isIndexSignatureDeclaration(member) || member.parameters.length !== 1) {
+      return null;
+    }
+
+    const [parameter] = member.parameters;
+    if (!parameter?.type || !member.type) {
+      return null;
+    }
+
+    return {
+      key: buildTypeShapeFromTypeNode(parameter.type),
+      kind: 'record',
+      text: reflectedTypeText(node),
+      value: buildTypeShapeFromTypeNode(member.type),
+    };
+  }
+
   function buildTypeShapeFromTypeNode(node: ts.TypeNode): MacroReflectedTypeShape {
     if (ts.isParenthesizedTypeNode(node)) {
       return buildTypeShapeFromTypeNode(node.type);
@@ -467,6 +508,10 @@ export function createAdvancedMacroContext(
     }
 
     if (ts.isTypeLiteralNode(node)) {
+      const recordShape = buildRecordShapeFromTypeLiteral(node);
+      if (recordShape) {
+        return recordShape;
+      }
       const fields = buildObjectFieldShapesFromTypeLiteral(node);
       return fields
         ? {
@@ -485,7 +530,21 @@ export function createAdvancedMacroContext(
       };
     }
 
+    if (ts.isIntersectionTypeNode(node)) {
+      return {
+        kind: 'intersection',
+        members: node.types.map((member) => buildTypeShapeFromTypeNode(member)),
+        text: reflectedTypeText(node),
+      };
+    }
+
     if (ts.isLiteralTypeNode(node)) {
+      if (node.literal.kind === ts.SyntaxKind.NullKeyword) {
+        return {
+          kind: 'null',
+          text: reflectedTypeText(node),
+        };
+      }
       if (ts.isStringLiteral(node.literal)) {
         return {
           kind: 'literal',
@@ -546,6 +605,11 @@ export function createAdvancedMacroContext(
           primitiveKind: 'bigint',
           text: reflectedTypeText(node),
         };
+      case ts.SyntaxKind.UndefinedKeyword:
+        return {
+          kind: 'undefined',
+          text: reflectedTypeText(node),
+        };
     }
 
     if (ts.isTypeReferenceNode(node)) {
@@ -585,6 +649,14 @@ export function createAdvancedMacroContext(
           text: reflectedTypeText(node),
         };
       }
+      if (simpleName === 'Record' && typeArguments.length === 2) {
+        return {
+          key: typeArguments[0]!,
+          kind: 'record',
+          text: reflectedTypeText(node),
+          value: typeArguments[1]!,
+        };
+      }
       return {
         kind: 'named',
         name,
@@ -608,6 +680,130 @@ export function createAdvancedMacroContext(
     }
 
     return { kind: 'unsupported', text: type.text() };
+  }
+
+  function serializeReflectedFieldShape(
+    field: MacroReflectedFieldShape,
+  ): MacroSerializableFieldShape {
+    return {
+      annotations: field.annotations,
+      name: field.name,
+      optional: field.optional,
+      originKind: field.originKind,
+      text: field.text,
+      type: field.type ? serializeReflectedTypeShape(field.type) : null,
+    };
+  }
+
+  function serializeReflectedTypeShape(
+    shape: MacroReflectedTypeShape,
+  ): MacroSerializableTypeShape {
+    switch (shape.kind) {
+      case 'array':
+        return {
+          element: serializeReflectedTypeShape(shape.element),
+          kind: 'array',
+          readonly: shape.readonly,
+          text: shape.text,
+        };
+      case 'intersection':
+        return {
+          kind: 'intersection',
+          members: shape.members.map((member) => serializeReflectedTypeShape(member)),
+          text: shape.text,
+        };
+      case 'object':
+        return {
+          fields: shape.fields.map((field) => serializeReflectedFieldShape(field)),
+          kind: 'object',
+          text: shape.text,
+        };
+      case 'result':
+        return {
+          err: serializeReflectedTypeShape(shape.err),
+          kind: 'result',
+          ok: serializeReflectedTypeShape(shape.ok),
+          text: shape.text,
+        };
+      case 'option':
+        return {
+          kind: 'option',
+          text: shape.text,
+          value: serializeReflectedTypeShape(shape.value),
+        };
+      case 'primitive':
+      case 'literal':
+      case 'null':
+      case 'undefined':
+      case 'unsupported':
+        return shape;
+      case 'named':
+        return {
+          kind: 'named',
+          name: shape.name,
+          text: shape.text,
+          typeArguments: shape.typeArguments.map((member) => serializeReflectedTypeShape(member)),
+        };
+      case 'record':
+        return {
+          key: serializeReflectedTypeShape(shape.key),
+          kind: 'record',
+          text: shape.text,
+          value: serializeReflectedTypeShape(shape.value),
+        };
+      case 'tuple':
+        return {
+          elements: shape.elements.map((member) => serializeReflectedTypeShape(member)),
+          kind: 'tuple',
+          readonly: shape.readonly,
+          text: shape.text,
+        };
+      case 'union':
+        return {
+          kind: 'union',
+          members: shape.members.map((member) => serializeReflectedTypeShape(member)),
+          text: shape.text,
+        };
+    }
+  }
+
+  function serializeDiscriminatedUnionVariant(
+    variant: MacroReflectedDiscriminatedUnionVariant,
+  ): MacroSerializableDiscriminatedUnionVariant {
+    return {
+      discriminants: variant.discriminants,
+      fields: variant.fields.map((field) => serializeReflectedFieldShape(field)),
+      text: variant.text,
+    };
+  }
+
+  function serializeReflectedDeclarationShape(
+    shape: MacroReflectedDeclarationShape,
+  ): MacroSerializableDeclarationShape {
+    switch (shape.kind) {
+      case 'objectLike':
+        return {
+          declarationKind: shape.declarationKind,
+          fields: shape.fields.map((field) => serializeReflectedFieldShape(field)),
+          kind: 'objectLike',
+          name: shape.name,
+          text: shape.text,
+        };
+      case 'discriminatedUnion':
+        return {
+          commonDiscriminantNames: shape.commonDiscriminantNames,
+          kind: 'discriminatedUnion',
+          name: shape.name,
+          text: shape.text,
+          variants: shape.variants.map((variant) => serializeDiscriminatedUnionVariant(variant)),
+        };
+      case 'unsupported':
+        return {
+          kind: 'unsupported',
+          reason: shape.reason,
+          text: shape.text,
+        };
+    }
   }
 
   function reflectObjectLikeDeclarationShape(
@@ -801,7 +997,7 @@ export function createAdvancedMacroContext(
     };
   }
 
-  return {
+  const context: MacroContext = {
     ...baseContext,
     controlFlow: {
       deferCleanup(cleanup) {
@@ -850,8 +1046,14 @@ export function createAdvancedMacroContext(
       declarationShape(declaration: DeclSyntax) {
         return reflectDeclarationShape(declaration);
       },
+      declarationShapeData(declaration: DeclSyntax) {
+        return serializeReflectedDeclarationShape(reflectDeclarationShape(declaration));
+      },
       typeShape(type: TypeSyntax) {
         return reflectTypeShape(type);
+      },
+      typeShapeData(type: TypeSyntax) {
+        return serializeReflectedTypeShape(reflectTypeShape(type));
       },
     },
     semantics: {
@@ -939,6 +1141,37 @@ export function createAdvancedMacroContext(
 
       isAssignable(from, to) {
         return hostSemantics.isAssignable(from, to);
+      },
+
+      localDeclaration(name, node) {
+        const hostNode = node
+          ? findOriginalNodeForSyntaxNode(node) ??
+            getHostNode(node)?.getSourceFile() ??
+            resolved.callExpression
+          : resolved.callExpression;
+        if (!hostNode) {
+          return null;
+        }
+
+        const sourceFile = originalSourceFileForNode(hostNode);
+        for (const statement of sourceFile.statements) {
+          if (
+            (
+              ts.isClassDeclaration(statement) ||
+              ts.isFunctionDeclaration(statement) ||
+              ts.isInterfaceDeclaration(statement) ||
+              ts.isTypeAliasDeclaration(statement)
+            ) &&
+            statement.name?.text === name
+          ) {
+            return createDeclSyntaxFromNode(statement, sourceFile, {
+              fileName: sourceFile.fileName,
+              start: statement.getStart(sourceFile, false),
+              end: statement.end,
+            });
+          }
+        }
+        return null;
       },
 
       localDeclarationHasAnnotation(name, annotationName, node) {
@@ -1073,21 +1306,23 @@ export function createAdvancedMacroContext(
         return hostSemantics.undefinedType();
       },
 
+      valueBindingPromiseLikeInScope(name, node) {
+        const hostNode = semanticLookupNode(node);
+        return hostNode ? hostSemantics.valueBindingPromiseLikeInScope(name, hostNode) : false;
+      },
+
       valueBindingCallableInScope(name, node) {
-        const hostNode = node
-          ? findOriginalNodeForSyntaxNode(node) ??
-            getHostNode(node)?.getSourceFile() ??
-            resolved.callExpression
-          : resolved.callExpression;
+        const hostNode = semanticLookupNode(node);
         return hostNode ? hostSemantics.valueBindingCallableInScope(name, hostNode) : false;
       },
 
+      valueBindingTypeInScope(name, node) {
+        const hostNode = semanticLookupNode(node);
+        return hostNode ? hostSemantics.valueBindingTypeInScope(name, hostNode) : null;
+      },
+
       valueBindingInScope(name, node) {
-        const hostNode = node
-          ? findOriginalNodeForSyntaxNode(node) ??
-            getHostNode(node)?.getSourceFile() ??
-            resolved.callExpression
-          : resolved.callExpression;
+        const hostNode = semanticLookupNode(node);
         return hostNode ? hostSemantics.valueBindingInScope(name, hostNode) : false;
       },
 
@@ -1099,4 +1334,6 @@ export function createAdvancedMacroContext(
       },
     },
   };
+
+  return attachSemanticLookupNodeResolver(context, semanticLookupNode);
 }

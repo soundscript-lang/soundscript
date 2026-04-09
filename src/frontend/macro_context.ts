@@ -1,3 +1,5 @@
+import ts from 'typescript';
+
 import { createAnnotationLookup } from '../annotation_syntax.ts';
 import { normalizeRuntimeContext, type RuntimeContext } from '../config.ts';
 import { pathExistsSync, readBytesSync, readTextFileSync, runtimeEnv } from '../platform/host.ts';
@@ -6,6 +8,7 @@ import type {
   BlockSyntax,
   DeclSyntax,
   ExprSyntax,
+  MacroAnnotation,
   MacroArgumentView,
   MacroBuildFactory,
   MacroContext,
@@ -337,11 +340,83 @@ function getLineAndColumn(text: string, position: number): { column: number; lin
   return { column, line };
 }
 
-function attachedAnnotationsForNode(node: MacroSyntaxNode) {
-  const hostNode = getHostNode(node);
-  return hostNode
-    ? createAnnotationLookup(hostNode.getSourceFile()).getAttachedAnnotations(hostNode)
-    : [];
+function scriptKindForOriginalFile(fileName: string): ts.ScriptKind {
+  const lowerFileName = fileName.toLowerCase();
+  if (lowerFileName.endsWith('.tsx')) {
+    return ts.ScriptKind.TSX;
+  }
+  if (lowerFileName.endsWith('.jsx')) {
+    return ts.ScriptKind.JSX;
+  }
+  if (
+    lowerFileName.endsWith('.js') || lowerFileName.endsWith('.mjs') ||
+    lowerFileName.endsWith('.cjs')
+  ) {
+    return ts.ScriptKind.JS;
+  }
+  return ts.ScriptKind.TS;
+}
+
+function createAttachedAnnotationReader(
+  originalText: string,
+): (node: MacroSyntaxNode) => readonly MacroAnnotation[] {
+  let originalSourceFile: ts.SourceFile | null = null;
+  let originalLookup: ReturnType<typeof createAnnotationLookup> | null = null;
+
+  const sourceFileForNode = (node: MacroSyntaxNode): ts.SourceFile => {
+    if (originalSourceFile) {
+      return originalSourceFile;
+    }
+    originalSourceFile = ts.createSourceFile(
+      node.span.fileName,
+      originalText,
+      ts.ScriptTarget.Latest,
+      true,
+      scriptKindForOriginalFile(node.span.fileName),
+    );
+    return originalSourceFile;
+  };
+
+  const lookupForNode = (node: MacroSyntaxNode) => {
+    if (originalLookup) {
+      return originalLookup;
+    }
+    originalLookup = createAnnotationLookup(sourceFileForNode(node));
+    return originalLookup;
+  };
+
+  const findOriginalNodeForSyntaxNode = (node: MacroSyntaxNode): ts.Node | null => {
+    const sourceFile = sourceFileForNode(node);
+    let match: ts.Node | null = null;
+
+    const visit = (current: ts.Node): void => {
+      if (match) {
+        return;
+      }
+      if (
+        current.getStart(sourceFile, false) === node.span.start &&
+        current.end === node.span.end
+      ) {
+        match = current;
+        return;
+      }
+      ts.forEachChild(current, visit);
+    };
+
+    visit(sourceFile);
+    return match;
+  };
+
+  return (node: MacroSyntaxNode) => {
+    const originalNode = findOriginalNodeForSyntaxNode(node);
+    if (originalNode) {
+      return lookupForNode(node).getAttachedAnnotations(originalNode);
+    }
+    const hostNode = getHostNode(node);
+    return hostNode
+      ? createAnnotationLookup(hostNode.getSourceFile()).getAttachedAnnotations(hostNode)
+      : [];
+  };
 }
 
 function toInvocationForm(invocation: ParsedMacroInvocation): MacroInvocationForm {
@@ -605,6 +680,7 @@ export function createMacroContext(
 ): BaseMacroContext {
   const invocation = resolved.placeholder.invocation;
   const originalText = resolved.placeholder.preparedFile.originalText;
+  const attachedAnnotationsForNode = createAttachedAnnotationReader(originalText);
   const invocationView = createInvocationView(invocation, originalText);
   const parsedTemplateArgs = new Map<number, MacroTemplateOperand | null>();
   const parsedExprArgs = new Map<number, MacroArgumentView>();
@@ -794,6 +870,7 @@ export function createSyntaxOnlyMacroContext(
   runtimeContext: RuntimeContext = DEFAULT_MACRO_RUNTIME_CONTEXT,
 ): MacroContext {
   const base = (() => {
+    const attachedAnnotationsForNode = createAttachedAnnotationReader(originalText);
     const invocationView = createInvocationView(invocation, originalText);
     const parsedTemplateArgs = new Map<number, MacroTemplateOperand | null>();
     const parsedExprArgs = new Map<number, MacroArgumentView>();
@@ -1005,8 +1082,14 @@ export function createSyntaxOnlyMacroContext(
       declarationShape() {
         return unsupported('reflect.declarationShape');
       },
+      declarationShapeData() {
+        return unsupported('reflect.declarationShapeData');
+      },
       typeShape() {
         return unsupported('reflect.typeShape');
+      },
+      typeShapeData() {
+        return unsupported('reflect.typeShapeData');
       },
     },
     semantics: {
@@ -1048,6 +1131,9 @@ export function createSyntaxOnlyMacroContext(
       },
       isAssignable() {
         return unsupported('semantics.isAssignable');
+      },
+      localDeclaration() {
+        return unsupported('semantics.localDeclaration');
       },
       localDeclarationHasAnnotation() {
         return unsupported('semantics.localDeclarationHasAnnotation');
@@ -1091,8 +1177,14 @@ export function createSyntaxOnlyMacroContext(
       undefinedType() {
         return unsupported('semantics.undefinedType');
       },
+      valueBindingPromiseLikeInScope() {
+        return unsupported('semantics.valueBindingPromiseLikeInScope');
+      },
       valueBindingCallableInScope() {
         return unsupported('semantics.valueBindingCallableInScope');
+      },
+      valueBindingTypeInScope() {
+        return unsupported('semantics.valueBindingTypeInScope');
       },
       valueBindingInScope() {
         return unsupported('semantics.valueBindingInScope');

@@ -258,7 +258,17 @@ function createUnsupportedAdvancedContext(
           'This macro requires declaration/type reflection, but no prepared program was available.',
         );
       },
+      declarationShapeData() {
+        throw new Error(
+          'This macro requires declaration/type reflection, but no prepared program was available.',
+        );
+      },
       typeShape() {
+        throw new Error(
+          'This macro requires declaration/type reflection, but no prepared program was available.',
+        );
+      },
+      typeShapeData() {
         throw new Error(
           'This macro requires declaration/type reflection, but no prepared program was available.',
         );
@@ -326,6 +336,11 @@ function createUnsupportedAdvancedContext(
         );
       },
       isAssignable() {
+        throw new Error(
+          'This macro requires semantic queries, but no prepared program was available.',
+        );
+      },
+      localDeclaration() {
         throw new Error(
           'This macro requires semantic queries, but no prepared program was available.',
         );
@@ -401,6 +416,16 @@ function createUnsupportedAdvancedContext(
         );
       },
       valueBindingCallableInScope() {
+        throw new Error(
+          'This macro requires semantic queries, but no prepared program was available.',
+        );
+      },
+      valueBindingPromiseLikeInScope() {
+        throw new Error(
+          'This macro requires semantic queries, but no prepared program was available.',
+        );
+      },
+      valueBindingTypeInScope() {
         throw new Error(
           'This macro requires semantic queries, but no prepared program was available.',
         );

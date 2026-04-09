@@ -1,7 +1,10 @@
 import ts from 'typescript';
 
 import { ERROR_STDLIB_DECLARATION_FILE } from './error_stdlib_support.ts';
-import { RESULT_STDLIB_DECLARATION_FILE, STDLIB_DECLARATION_FILE } from './std_package_support.ts';
+import {
+  RESULT_STDLIB_DECLARATION_FILE,
+  STDLIB_DECLARATION_FILE,
+} from './std_package_support.ts';
 import { toSourceFileName } from './project_frontend.ts';
 import type {
   CanonicalFailureInfo,
@@ -15,15 +18,12 @@ import type {
   MacroTryCarrierInfo,
   MacroType,
 } from './macro_semantic_types.ts';
+import {
+  createMacroType,
+  getInternalChecker,
+  getInternalType,
+} from './macro_type_internal.ts';
 import type { SourceSpan } from './macro_types.ts';
-
-const INTERNAL_TS_TYPE = Symbol('macroTsType');
-const INTERNAL_TS_CHECKER = Symbol('macroTsChecker');
-
-type InternalMacroType = MacroType & {
-  [INTERNAL_TS_CHECKER]: ts.TypeChecker;
-  [INTERNAL_TS_TYPE]: ts.Type;
-};
 
 const MAX_FINITE_CASE_COMBINATIONS = 64;
 const BUILTIN_RUNTIME_CONSTRUCTOR_NAMES = new Set([
@@ -75,7 +75,9 @@ export interface MacroSemantics {
   readSetOfNode(node: ts.Node): MacroDependencySet;
   typeOfNode(node: ts.Node): MacroType;
   undefinedType(): MacroType;
+  valueBindingPromiseLikeInScope(name: string, node: ts.Node): boolean;
   valueBindingCallableInScope(name: string, node: ts.Node): boolean;
+  valueBindingTypeInScope(name: string, node: ts.Node): MacroType | null;
   valueBindingInScope(name: string, node: ts.Node): boolean;
   writeSetOfNode(node: ts.Node): MacroDependencySet;
 }
@@ -87,22 +89,6 @@ function createSourceSpan(node: ts.Node): SourceSpan {
     start: node.getStart(sourceFile),
     end: node.getEnd(),
   };
-}
-
-function createMacroType(checker: ts.TypeChecker, type: ts.Type): InternalMacroType {
-  return {
-    [INTERNAL_TS_CHECKER]: checker,
-    [INTERNAL_TS_TYPE]: type,
-    displayText: checker.typeToString(type),
-  };
-}
-
-function getInternalType(type: MacroType): ts.Type {
-  return (type as InternalMacroType)[INTERNAL_TS_TYPE];
-}
-
-function getInternalChecker(type: MacroType): ts.TypeChecker {
-  return (type as InternalMacroType)[INTERNAL_TS_CHECKER];
 }
 
 function getNodeType(checker: ts.TypeChecker, node: ts.Node): ts.Type {
@@ -198,6 +184,78 @@ function symbolHasValueMeaning(checker: ts.TypeChecker, symbol: ts.Symbol): bool
   return (resolveAliasedSymbol(checker, symbol).flags & ts.SymbolFlags.Value) !== 0;
 }
 
+function findNamedValueSymbolInTable(
+  checker: ts.TypeChecker,
+  table: ts.SymbolTable | undefined,
+  name: string,
+): ts.Symbol | undefined {
+  if (!table) {
+    return undefined;
+  }
+  for (const symbol of table.values()) {
+    if (symbol.getName() === name && symbolHasValueMeaning(checker, symbol)) {
+      return symbol;
+    }
+  }
+  return undefined;
+}
+
+function getLexicallyScopedValueSymbol(
+  checker: ts.TypeChecker,
+  node: ts.Node,
+  name: string,
+): ts.Symbol | undefined {
+  let current: (ts.Node & { locals?: ts.SymbolTable }) | undefined =
+    node as ts.Node & { locals?: ts.SymbolTable };
+  while (current) {
+    const symbol = findNamedValueSymbolInTable(checker, current.locals, name);
+    if (symbol) {
+      return symbol;
+    }
+    current = current.parent as (ts.Node & { locals?: ts.SymbolTable }) | undefined;
+  }
+
+  const sourceFile = node.getSourceFile() as ts.SourceFile & {
+    locals?: ts.SymbolTable;
+    symbol?: ts.Symbol & { exports?: ts.SymbolTable };
+  };
+  return findNamedValueSymbolInTable(checker, sourceFile.locals, name) ??
+    findNamedValueSymbolInTable(checker, sourceFile.symbol?.exports, name);
+}
+
+function getSafeValueLookupAnchor(
+  checker: ts.TypeChecker,
+  node: ts.Node,
+): ts.Node {
+  let current: ts.Node | undefined = node;
+  let lastError: unknown = undefined;
+  while (current) {
+    try {
+      checker.getSymbolsInScope(current, ts.SymbolFlags.Value | ts.SymbolFlags.Alias);
+      return current;
+    } catch (error) {
+      lastError = error;
+      current = current.parent;
+    }
+  }
+
+  const sourceFile = node.getSourceFile();
+  if (sourceFile !== node) {
+    try {
+      checker.getSymbolsInScope(sourceFile, ts.SymbolFlags.Value | ts.SymbolFlags.Alias);
+      return sourceFile;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  if (lastError !== undefined) {
+    throw lastError;
+  }
+
+  return node;
+}
+
 function getValuePathBindingInScope(
   checker: ts.TypeChecker,
   node: ts.Node,
@@ -211,14 +269,25 @@ function getValuePathBindingInScope(
     return null;
   }
 
-  const rootSymbol = checker.getSymbolsInScope(node, ts.SymbolFlags.Value | ts.SymbolFlags.Alias)
-    .find((symbol) => symbol.getName() === root && symbolHasValueMeaning(checker, symbol));
+  const sourceFile = node.getSourceFile();
+  const rootSymbol = getLexicallyScopedValueSymbol(checker, node, root) ?? (() => {
+    try {
+      const lookupAnchor = getSafeValueLookupAnchor(checker, node);
+      return checker.getSymbolsInScope(lookupAnchor, ts.SymbolFlags.Value | ts.SymbolFlags.Alias)
+        .find((symbol) => symbol.getName() === root && symbolHasValueMeaning(checker, symbol));
+    } catch {
+      return undefined;
+    }
+  })();
   if (!rootSymbol) {
     return null;
   }
 
   const fromAlias = (rootSymbol.flags & ts.SymbolFlags.Alias) !== 0;
-  let currentType = checker.getTypeOfSymbolAtLocation(rootSymbol, node);
+  let currentType = checker.getTypeOfSymbolAtLocation(
+    rootSymbol,
+    rootSymbol.valueDeclaration ?? rootSymbol.declarations?.[0] ?? sourceFile,
+  );
   let currentSymbol = resolveAliasedSymbol(checker, rootSymbol);
   for (const segment of rest) {
     const property = checker.getPropertyOfType(currentType, segment);
@@ -226,7 +295,10 @@ function getValuePathBindingInScope(
       return null;
     }
     currentSymbol = property;
-    currentType = checker.getTypeOfSymbolAtLocation(property, node);
+    currentType = checker.getTypeOfSymbolAtLocation(
+      property,
+      property.valueDeclaration ?? property.declarations?.[0] ?? sourceFile,
+    );
   }
 
   return {
@@ -245,6 +317,14 @@ function declarationIsCallable(declaration: ts.Declaration): boolean {
       declaration.initializer !== undefined &&
       (ts.isArrowFunction(declaration.initializer) ||
         ts.isFunctionExpression(declaration.initializer)));
+}
+
+function typeIsPromiseLike(
+  checker: ts.TypeChecker,
+  type: ts.Type,
+): boolean {
+  const awaitedType = checker.getAwaitedType(type);
+  return awaitedType !== undefined && awaitedType !== type;
 }
 
 function unwrapDependencyNode(node: ts.Node): ts.Node {
@@ -1481,6 +1561,19 @@ export function createMacroSemantics(program: ts.Program): MacroSemantics {
       return createMacroType(checker, checker.getUndefinedType());
     },
 
+    valueBindingPromiseLikeInScope(name: string, node: ts.Node): boolean {
+      const binding = getValuePathBindingInScope(checker, node, name);
+      if (!binding) {
+        return false;
+      }
+      if (typeIsPromiseLike(checker, binding.type)) {
+        return true;
+      }
+      return checker.getSignaturesOfType(binding.type, ts.SignatureKind.Call).some((signature) =>
+        typeIsPromiseLike(checker, checker.getReturnTypeOfSignature(signature))
+      );
+    },
+
     valueBindingCallableInScope(name: string, node: ts.Node): boolean {
       const binding = getValuePathBindingInScope(checker, node, name);
       if (!binding) {
@@ -1489,6 +1582,11 @@ export function createMacroSemantics(program: ts.Program): MacroSemantics {
       return checker.getSignaturesOfType(binding.type, ts.SignatureKind.Call).length > 0 ||
         (binding.fromAlias && (binding.type.flags & ts.TypeFlags.Any) !== 0) ||
         (binding.symbol.declarations ?? []).some(declarationIsCallable);
+    },
+
+    valueBindingTypeInScope(name: string, node: ts.Node): MacroType | null {
+      const binding = getValuePathBindingInScope(checker, node, name);
+      return binding ? createMacroType(checker, binding.type) : null;
     },
 
     valueBindingInScope(name: string, node: ts.Node): boolean {

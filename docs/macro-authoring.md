@@ -146,6 +146,9 @@ Normalized fields include their source origin kind, optionality, explicit type s
 annotations. This is the supported way to build declaration-shape-driven macros without walking
 TypeScript syntax directly.
 
+For a practical library-building walkthrough using `ctx.reflect` plus raw annotation reflection, see
+[Building Annotation-Driven Libraries](./guides/building-annotation-driven-libraries.md).
+
 ## Minimal Example
 
 ```ts
@@ -295,9 +298,14 @@ Supported member-level annotation forms currently include:
 - `#[hash.via(...)]`
 - `#[decode.rename(...)]`
 - `#[decode.via(...)]`
+- `#[decode.default(...)]`
+- `#[decode.transform(...)]`
+- `#[decode.refine(...)]`
 - `#[decode.factory(...)]` on class declarations
 - `#[encode.rename(...)]`
 - `#[encode.via(...)]`
+- `#[encode.transform(...)]`
+- `#[encode.refine(...)]`
 - `#[codec.rename(...)]`
 - `#[codec.via(...)]`
 - `#[codec.factory(...)]` on class declarations

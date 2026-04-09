@@ -11,8 +11,32 @@ export interface ParsedAnnotationIdentifierValue {
   readonly text: string;
 }
 
+export interface ParsedAnnotationMemberValue {
+  readonly kind: 'member';
+  readonly path: readonly string[];
+  readonly text: string;
+}
+
+export interface ParsedAnnotationNullValue {
+  readonly kind: 'null';
+  readonly text: string;
+}
+
+export interface ParsedAnnotationRegexpValue {
+  readonly flags: string;
+  readonly kind: 'regexp';
+  readonly pattern: string;
+  readonly text: string;
+}
+
 export interface ParsedAnnotationStringValue {
   readonly kind: 'string';
+  readonly text: string;
+  readonly value: string;
+}
+
+export interface ParsedAnnotationBigIntValue {
+  readonly kind: 'bigint';
   readonly text: string;
   readonly value: string;
 }
@@ -27,6 +51,11 @@ export interface ParsedAnnotationBooleanValue {
   readonly kind: 'boolean';
   readonly text: string;
   readonly value: boolean;
+}
+
+export interface ParsedAnnotationUndefinedValue {
+  readonly kind: 'undefined';
+  readonly text: string;
 }
 
 export interface ParsedAnnotationArrayValue {
@@ -49,11 +78,16 @@ export interface ParsedAnnotationObjectValue {
 
 export type ParsedAnnotationValue =
   | ParsedAnnotationArrayValue
+  | ParsedAnnotationBigIntValue
   | ParsedAnnotationBooleanValue
   | ParsedAnnotationIdentifierValue
+  | ParsedAnnotationMemberValue
+  | ParsedAnnotationNullValue
   | ParsedAnnotationNumberValue
   | ParsedAnnotationObjectValue
-  | ParsedAnnotationStringValue;
+  | ParsedAnnotationRegexpValue
+  | ParsedAnnotationStringValue
+  | ParsedAnnotationUndefinedValue;
 
 export type ParsedAnnotationArgument =
   | {
@@ -73,6 +107,7 @@ export interface ParsedAnnotationSyntax {
   readonly argumentsText?: string;
   readonly nameRange?: AnnotationTextRange;
   readonly name: string;
+  readonly path: readonly string[];
   readonly range?: AnnotationTextRange;
   readonly text: string;
 }
@@ -193,6 +228,50 @@ function readStringLiteral(text: string, start: number): number | string {
   }
 
   return 'String literals in annotation arguments must terminate before the annotation closes.';
+}
+
+function readRegExpLiteral(
+  text: string,
+  start: number,
+): { readonly end: number; readonly flags: string; readonly pattern: string } | string {
+  if (text[start] !== '/') {
+    return 'Expected a regular expression literal.';
+  }
+
+  let index = start + 1;
+  let inCharacterClass = false;
+  while (index < text.length) {
+    const character = text[index];
+    if (character === '\\') {
+      index += 2;
+      continue;
+    }
+    if (character === '[') {
+      inCharacterClass = true;
+      index += 1;
+      continue;
+    }
+    if (character === ']' && inCharacterClass) {
+      inCharacterClass = false;
+      index += 1;
+      continue;
+    }
+    if (character === '/' && !inCharacterClass) {
+      const flagsStart = index + 1;
+      let flagsEnd = flagsStart;
+      while (/[a-z]/iu.test(text[flagsEnd] ?? '')) {
+        flagsEnd += 1;
+      }
+      return {
+        end: flagsEnd,
+        flags: text.slice(flagsStart, flagsEnd),
+        pattern: text.slice(start + 1, index),
+      };
+    }
+    index += 1;
+  }
+
+  return 'Regular expression literals in annotation arguments must terminate before the annotation closes.';
 }
 
 function parseIdentifierName(
@@ -333,6 +412,9 @@ class AnnotationValueParser {
   private parseBooleanOrIdentifierValue():
     | ParsedAnnotationBooleanValue
     | ParsedAnnotationIdentifierValue
+    | ParsedAnnotationMemberValue
+    | ParsedAnnotationNullValue
+    | ParsedAnnotationUndefinedValue
     | string {
     const parsedName = parseIdentifierName(this.text, this.#index, true);
     if (typeof parsedName === 'string') {
@@ -344,6 +426,25 @@ class AnnotationValueParser {
         kind: 'boolean',
         text: parsedName.name,
         value: parsedName.name === 'true',
+      };
+    }
+    if (parsedName.name === 'null') {
+      return {
+        kind: 'null',
+        text: parsedName.name,
+      };
+    }
+    if (parsedName.name === 'undefined') {
+      return {
+        kind: 'undefined',
+        text: parsedName.name,
+      };
+    }
+    if (parsedName.name.includes('.')) {
+      return {
+        kind: 'member',
+        path: parsedName.name.split('.'),
+        text: parsedName.name,
       };
     }
     return {
@@ -368,6 +469,21 @@ class AnnotationValueParser {
     };
   }
 
+  private parseBigIntValue(): ParsedAnnotationBigIntValue | string {
+    const remaining = this.text.slice(this.#index);
+    const match = /^-?(?:0|[1-9][0-9]*)n/u.exec(remaining);
+    if (!match) {
+      return 'Expected a bigint literal.';
+    }
+    const bigintText = match[0] ?? '';
+    this.#index += bigintText.length;
+    return {
+      kind: 'bigint',
+      text: bigintText,
+      value: bigintText.slice(0, -1),
+    };
+  }
+
   private parseObjectValue(): ParsedAnnotationObjectValue | string {
     const start = this.#index;
     if (this.text[this.#index] !== '{') {
@@ -388,14 +504,25 @@ class AnnotationValueParser {
 
     while (this.#index < this.text.length) {
       const propertyStart = this.#index;
-      const parsedName = parseIdentifierName(this.text, this.#index, false);
-      if (typeof parsedName === 'string') {
-        return 'Object literals in annotation arguments require identifier property names.';
+      let propertyName: string;
+      const propertyStartChar = this.text[this.#index];
+      if (propertyStartChar === '"' || propertyStartChar === "'") {
+        const parsedName = this.parseStringValue();
+        if (typeof parsedName === 'string') {
+          return parsedName;
+        }
+        propertyName = parsedName.value;
+      } else {
+        const parsedName = parseIdentifierName(this.text, this.#index, false);
+        if (typeof parsedName === 'string') {
+          return 'Object literals in annotation arguments require identifier or string literal property names.';
+        }
+        this.#index = parsedName.end;
+        propertyName = parsedName.name;
       }
-      this.#index = parsedName.end;
       this.#index = skipWhitespace(this.text, this.#index);
       if (this.text[this.#index] !== ':') {
-        return `Object literal property \`${parsedName.name}\` must use \`name: value\` syntax.`;
+        return `Object literal property \`${propertyName}\` must use \`name: value\` syntax.`;
       }
       this.#index += 1;
       this.#index = skipWhitespace(this.text, this.#index);
@@ -404,7 +531,7 @@ class AnnotationValueParser {
         return value;
       }
       properties.push({
-        name: parsedName.name,
+        name: propertyName,
         text: this.text.slice(propertyStart, this.#index),
         value,
       });
@@ -459,6 +586,21 @@ class AnnotationValueParser {
     }
   }
 
+  private parseRegexpValue(): ParsedAnnotationRegexpValue | string {
+    const start = this.#index;
+    const parsed = readRegExpLiteral(this.text, start);
+    if (typeof parsed === 'string') {
+      return parsed;
+    }
+    this.#index = parsed.end;
+    return {
+      flags: parsed.flags,
+      kind: 'regexp',
+      pattern: parsed.pattern,
+      text: this.text.slice(start, parsed.end),
+    };
+  }
+
   private parseValueAtCurrentIndex(): ParsedAnnotationValue | string {
     this.#index = skipWhitespace(this.text, this.#index);
     const character = this.text[this.#index];
@@ -471,13 +613,24 @@ class AnnotationValueParser {
     if (character === '{') {
       return this.parseObjectValue();
     }
+    if (character === '/') {
+      return this.parseRegexpValue();
+    }
     if (character === '-' || isDigit(character)) {
+      const bigintValue = this.parseBigIntValue();
+      if (typeof bigintValue !== 'string') {
+        return bigintValue;
+      }
+      if (bigintValue !== 'Expected a bigint literal.') {
+        return bigintValue;
+      }
+      this.#index = skipWhitespace(this.text, this.#index);
       return this.parseNumberValue();
     }
     if (isIdentifierStart(character)) {
       return this.parseBooleanOrIdentifierValue();
     }
-    return 'Annotation arguments must use identifiers, strings, numbers, booleans, arrays, or objects.';
+    return 'Annotation arguments must use identifiers, member references, strings, numbers, bigint literals, booleans, null, undefined, regular expressions, arrays, or objects.';
   }
 
   private tryParseNamedArgument(): ParsedAnnotationArgument | string {
@@ -526,6 +679,14 @@ function splitAnnotationItems(
         return stringEnd;
       }
       index = stringEnd - 1;
+      continue;
+    }
+    if (character === '/') {
+      const regexpEnd = readRegExpLiteral(innerText, index);
+      if (typeof regexpEnd === 'string') {
+        return regexpEnd;
+      }
+      index = regexpEnd.end - 1;
       continue;
     }
 
@@ -609,6 +770,7 @@ export function parseAnnotationItemText(
   if (index >= trimmed.length) {
     return {
       name: parsedName.name,
+      path: parsedName.name.split('.'),
       text: trimmed,
     };
   }
@@ -630,6 +792,14 @@ export function parseAnnotationItemText(
         return stringEnd;
       }
       index = stringEnd;
+      continue;
+    }
+    if (character === '/') {
+      const regexpEnd = readRegExpLiteral(trimmed, index);
+      if (typeof regexpEnd === 'string') {
+        return regexpEnd;
+      }
+      index = regexpEnd.end;
       continue;
     }
     if (character === '(') {
@@ -700,6 +870,7 @@ export function parseAnnotationItemText(
     arguments: parsedArguments.length === 0 ? [] : parsedArguments,
     argumentsText,
     name: parsedName.name,
+    path: parsedName.name.split('.'),
     text: trimmed,
   };
 }
@@ -730,6 +901,14 @@ export function parseAnnotationCommentText(
         return stringEnd;
       }
       index = stringEnd - 1;
+      continue;
+    }
+    if (character === '/') {
+      const regexpEnd = readRegExpLiteral(commentText, index);
+      if (typeof regexpEnd === 'string') {
+        return regexpEnd;
+      }
+      index = regexpEnd.end - 1;
       continue;
     }
 

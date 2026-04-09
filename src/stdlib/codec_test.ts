@@ -1,6 +1,6 @@
 import { assertEquals } from '@std/assert';
 
-import { isOk, ok } from '@soundscript/soundscript/result';
+import { isErr, isOk, ok } from '@soundscript/soundscript/result';
 
 import { string } from './decode.ts';
 import {
@@ -8,10 +8,13 @@ import {
   codecInvariant,
   contramap,
   imap,
+  isoDate,
   numberEncoder,
   stringCodec,
   stringEncoder,
+  url,
 } from './codec.ts';
+import { URL } from './url.ts';
 
 Deno.test('codec primitive codecs expose both decode and encode', () => {
   assertEquals(stringCodec.decode('user-1'), ok('user-1'));
@@ -66,4 +69,28 @@ Deno.test('codec combines a separate decoder and encoder contract', () => {
 
   assertEquals(isOk(decoded), true);
   assertEquals(encoded, ok(4));
+});
+
+Deno.test('codec isoDate decodes ISO strings to Date values and encodes back to strings', () => {
+  const decoded = isoDate.decode('2024-01-02T03:04:05.000Z');
+  const encoded = isoDate.encode(new Date('2024-01-02T03:04:05.000Z'));
+
+  assertEquals(isOk(decoded), true);
+  if (isErr(decoded)) {
+    throw new Error('expected isoDate decode to succeed');
+  }
+  assertEquals(decoded.value.toISOString(), '2024-01-02T03:04:05.000Z');
+  assertEquals(encoded, ok('2024-01-02T03:04:05.000Z'));
+});
+
+Deno.test('codec url decodes URL strings to URL values and encodes back to href', () => {
+  const decoded = url.decode('https://example.com/path?q=1');
+  const encoded = url.encode(new URL('https://example.com/path?q=1'));
+
+  assertEquals(isOk(decoded), true);
+  if (isErr(decoded)) {
+    throw new Error('expected url decode to succeed');
+  }
+  assertEquals(decoded.value.href, 'https://example.com/path?q=1');
+  assertEquals(encoded, ok('https://example.com/path?q=1'));
 });

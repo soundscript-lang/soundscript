@@ -118,6 +118,11 @@ export type MacroAnnotationValue =
     readonly elements: readonly MacroAnnotationValue[];
   }
   | {
+    readonly kind: 'bigint';
+    readonly text: string;
+    readonly value: string;
+  }
+  | {
     readonly kind: 'boolean';
     readonly text: string;
     readonly value: boolean;
@@ -126,6 +131,15 @@ export type MacroAnnotationValue =
     readonly kind: 'identifier';
     readonly text: string;
     readonly name: string;
+  }
+  | {
+    readonly kind: 'member';
+    readonly path: readonly string[];
+    readonly text: string;
+  }
+  | {
+    readonly kind: 'null';
+    readonly text: string;
   }
   | {
     readonly kind: 'number';
@@ -142,9 +156,19 @@ export type MacroAnnotationValue =
     }[];
   }
   | {
+    readonly flags: string;
+    readonly kind: 'regexp';
+    readonly pattern: string;
+    readonly text: string;
+  }
+  | {
     readonly kind: 'string';
     readonly text: string;
     readonly value: string;
+  }
+  | {
+    readonly kind: 'undefined';
+    readonly text: string;
   };
 
 export type MacroAnnotationArgument =
@@ -164,6 +188,7 @@ export interface MacroAnnotation {
   readonly arguments?: readonly MacroAnnotationArgument[];
   readonly argumentsText?: string;
   readonly name: string;
+  readonly path: readonly string[];
   readonly text: string;
 }
 
@@ -788,6 +813,11 @@ export type MacroReflectedTypeShape =
     readonly text: string;
   }
   | {
+    readonly kind: 'intersection';
+    readonly members: readonly MacroReflectedTypeShape[];
+    readonly text: string;
+  }
+  | {
     readonly fields: readonly MacroReflectedFieldShape[];
     readonly kind: 'object';
     readonly text: string;
@@ -815,10 +845,20 @@ export type MacroReflectedTypeShape =
     readonly value: boolean | number | string;
   }
   | {
+    readonly kind: 'null';
+    readonly text: string;
+  }
+  | {
     readonly kind: 'named';
     readonly name: string;
     readonly text: string;
     readonly typeArguments: readonly MacroReflectedTypeShape[];
+  }
+  | {
+    readonly key: MacroReflectedTypeShape;
+    readonly kind: 'record';
+    readonly text: string;
+    readonly value: MacroReflectedTypeShape;
   }
   | {
     readonly elements: readonly MacroReflectedTypeShape[];
@@ -829,6 +869,10 @@ export type MacroReflectedTypeShape =
   | {
     readonly kind: 'union';
     readonly members: readonly MacroReflectedTypeShape[];
+    readonly text: string;
+  }
+  | {
+    readonly kind: 'undefined';
     readonly text: string;
   }
   | {
@@ -846,6 +890,90 @@ export interface MacroReflectedFieldShape {
   readonly type: MacroReflectedTypeShape | null;
 }
 
+export type MacroSerializableTypeShape =
+  | {
+    readonly element: MacroSerializableTypeShape;
+    readonly kind: 'array';
+    readonly readonly: boolean;
+    readonly text: string;
+  }
+  | {
+    readonly kind: 'intersection';
+    readonly members: readonly MacroSerializableTypeShape[];
+    readonly text: string;
+  }
+  | {
+    readonly fields: readonly MacroSerializableFieldShape[];
+    readonly kind: 'object';
+    readonly text: string;
+  }
+  | {
+    readonly err: MacroSerializableTypeShape;
+    readonly kind: 'result';
+    readonly ok: MacroSerializableTypeShape;
+    readonly text: string;
+  }
+  | {
+    readonly kind: 'option';
+    readonly text: string;
+    readonly value: MacroSerializableTypeShape;
+  }
+  | {
+    readonly kind: 'primitive';
+    readonly primitiveKind: MacroReflectedPrimitiveKind;
+    readonly text: string;
+  }
+  | {
+    readonly kind: 'literal';
+    readonly literalKind: 'boolean' | 'number' | 'string';
+    readonly text: string;
+    readonly value: boolean | number | string;
+  }
+  | {
+    readonly kind: 'null';
+    readonly text: string;
+  }
+  | {
+    readonly kind: 'named';
+    readonly name: string;
+    readonly text: string;
+    readonly typeArguments: readonly MacroSerializableTypeShape[];
+  }
+  | {
+    readonly key: MacroSerializableTypeShape;
+    readonly kind: 'record';
+    readonly text: string;
+    readonly value: MacroSerializableTypeShape;
+  }
+  | {
+    readonly elements: readonly MacroSerializableTypeShape[];
+    readonly kind: 'tuple';
+    readonly readonly: boolean;
+    readonly text: string;
+  }
+  | {
+    readonly kind: 'union';
+    readonly members: readonly MacroSerializableTypeShape[];
+    readonly text: string;
+  }
+  | {
+    readonly kind: 'undefined';
+    readonly text: string;
+  }
+  | {
+    readonly kind: 'unsupported';
+    readonly text: string;
+  };
+
+export interface MacroSerializableFieldShape {
+  readonly annotations: readonly MacroAnnotation[];
+  readonly name: string;
+  readonly optional: boolean;
+  readonly originKind: MacroReflectedFieldOriginKind;
+  readonly text: string;
+  readonly type: MacroSerializableTypeShape | null;
+}
+
 export interface MacroReflectedDiscriminant {
   readonly name: string;
   readonly tag: string;
@@ -855,6 +983,12 @@ export interface MacroReflectedDiscriminatedUnionVariant {
   readonly discriminants: readonly MacroReflectedDiscriminant[];
   readonly fields: readonly MacroReflectedFieldShape[];
   readonly node: MacroSyntaxNode;
+  readonly text: string;
+}
+
+export interface MacroSerializableDiscriminatedUnionVariant {
+  readonly discriminants: readonly MacroReflectedDiscriminant[];
+  readonly fields: readonly MacroSerializableFieldShape[];
   readonly text: string;
 }
 
@@ -882,9 +1016,32 @@ export type MacroReflectedDeclarationShape =
     readonly text: string;
   };
 
+export type MacroSerializableDeclarationShape =
+  | {
+    readonly declarationKind: 'class' | 'interface' | 'typeAlias';
+    readonly fields: readonly MacroSerializableFieldShape[];
+    readonly kind: 'objectLike';
+    readonly name: string | null;
+    readonly text: string;
+  }
+  | {
+    readonly commonDiscriminantNames: readonly string[];
+    readonly kind: 'discriminatedUnion';
+    readonly name: string | null;
+    readonly text: string;
+    readonly variants: readonly MacroSerializableDiscriminatedUnionVariant[];
+  }
+  | {
+    readonly kind: 'unsupported';
+    readonly reason: 'notDiscriminatedUnion' | 'notObjectLike' | 'unsupportedDeclarationKind';
+    readonly text: string;
+  };
+
 export interface MacroReflectionAccess {
   declarationShape(declaration: DeclSyntax): MacroReflectedDeclarationShape;
+  declarationShapeData(declaration: DeclSyntax): MacroSerializableDeclarationShape;
   typeShape(type: TypeSyntax): MacroReflectedTypeShape;
+  typeShapeData(type: TypeSyntax): MacroSerializableTypeShape;
 }
 
 export interface MacroContext {
@@ -925,6 +1082,7 @@ export interface MacroSemanticsView {
   enclosingFunctionCanonicalResult(): CanonicalResultInfo | null;
   finiteCases(type: MacroType): readonly MacroFiniteCase[] | null;
   isAssignable(from: MacroType, to: MacroType): boolean;
+  localDeclaration(name: string, node?: MacroSyntaxNode): DeclSyntax | null;
   localDeclarationHasAnnotation(
     name: string,
     annotationName: string,
@@ -943,7 +1101,9 @@ export interface MacroSemanticsView {
   primaryExprType(): MacroType | null;
   readSet(node: ExprSyntax | BlockSyntax): MacroDependencySet;
   undefinedType(): MacroType;
+  valueBindingPromiseLikeInScope(name: string, node?: MacroSyntaxNode): boolean;
   valueBindingCallableInScope(name: string, node?: MacroSyntaxNode): boolean;
+  valueBindingTypeInScope(name: string, node?: MacroSyntaxNode): MacroType | null;
   valueBindingInScope(name: string, node?: MacroSyntaxNode): boolean;
   writeSet(node: ExprSyntax | BlockSyntax): MacroDependencySet;
 }

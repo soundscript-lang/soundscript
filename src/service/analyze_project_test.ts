@@ -3330,7 +3330,7 @@ Deno.test('analyzeProject reports targeted diagnostics for dotted macro-owned me
   );
 });
 
-Deno.test('analyzeProject does not report dotted macro-owned member annotations as unknown when the owner annotation is present', async () => {
+Deno.test('analyzeProject preserves unknown annotation namespaces and their nested member annotations', async () => {
   const tempDirectory = await createTempProject({
     'tsconfig.json': JSON.stringify(
       {
@@ -3360,33 +3360,7 @@ Deno.test('analyzeProject does not report dotted macro-owned member annotations 
     workingDirectory: tempDirectory,
   });
 
-  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1007']);
-  assertEquals(result.diagnostics[0]?.message, 'Unknown soundscript annotation. `#[eq]` is not registered.');
-  assertEquals(result.diagnostics[0]?.metadata?.rule, 'unknown_annotation');
-  assertEquals(result.diagnostics[0]?.metadata?.primarySymbol, '#[eq]');
-  assertEquals(result.diagnostics[0]?.metadata?.replacementFamily, 'registered_annotation_name');
-  assertEquals(result.diagnostics[0]?.metadata?.fixability, 'local_rewrite');
-  assertEquals(
-    result.diagnostics[0]?.metadata?.evidence?.map((fact) => `${fact.label}:${fact.value}`),
-    ['annotationName:eq', 'registeredBuiltins:extern, interop, newtype, unsafe, value, variance'],
-  );
-  assertEquals(
-    result.diagnostics[0]?.metadata?.counterexample,
-    'An unknown annotation can look like a checked contract even though soundscript gives it no semantics.',
-  );
-  assertEquals(
-    result.diagnostics[0]?.metadata?.example,
-    'Replace `#[eq]` with a registered builtin annotation such as `#[extern]`, or remove it until that directive exists.',
-  );
-  assertEquals(result.diagnostics[0]?.notes, [
-    '`#[eq]` is not a registered builtin soundscript annotation.',
-    'Registered builtin annotations in v1 are `#[extern]`, `#[interop]`, `#[newtype]`, `#[unsafe]`, `#[value]`, and `#[variance(...)]`.',
-    'Example: Replace `#[eq]` with a registered builtin annotation such as `#[extern]`, or remove it until that directive exists.',
-  ]);
-  assertEquals(
-    result.diagnostics[0]?.hint,
-    'Rename the annotation to a registered builtin, or remove it until that directive exists.',
-  );
+  assertEquals(result.diagnostics, []);
 });
 
 Deno.test('analyzeProject gives structured guidance for duplicate annotations in one block', async () => {
@@ -5189,13 +5163,9 @@ Deno.test(
     const directCodes = directResult.diagnostics.map((diagnostic) => diagnostic.code);
     assertEquals(directCodes, ['TS2305']);
     assertEquals(wholePreparedResult.diagnostics.map((diagnostic) => diagnostic.code), directCodes);
-    assertEquals(
-      sortedFileScopedDiagnostics.map((diagnostic) => diagnostic.code),
-      ['SOUND1007', 'TS2305'],
-    );
-    assertEquals(sortedFileScopedDiagnostics[0]?.filePath, filePath);
+    assertEquals(sortedFileScopedDiagnostics.map((diagnostic) => diagnostic.code), ['TS2305']);
     assertStringIncludes(
-      sortedFileScopedDiagnostics[1]?.filePath ?? '',
+      sortedFileScopedDiagnostics[0]?.filePath ?? '',
       '/node_modules/sound-pkg/src/index.sts',
     );
   },
