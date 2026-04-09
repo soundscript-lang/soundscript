@@ -1,12 +1,17 @@
 import ts from 'typescript';
 
-import { directoryExistsSync, readTextFileSync, runtimeExecPath } from '../platform/host.ts';
+import {
+  directoryExistsSync,
+  fileExistsSync,
+  readTextFileSync,
+  runtimeExecPath,
+} from '../platform/host.ts';
 import { basename, dirname, fromFileUrl, join, normalize } from '../platform/path.ts';
 
 // These overrides vendor the builtin-only ES2024 lib closure for the currently pinned
 // TypeScript release, plus the decorator support files referenced from `lib.es5.d.ts`.
 // When `deno.json` upgrades `typescript`, re-copy the matching upstream lib files
-// and re-apply the sound patches in `src/bundled/sound-libs/`.
+// and re-apply the sound patches in `src/bundled/typescript/lib/`.
 const SOUND_STDLIB_FILE_NAMES = [
   'lib.decorators.d.ts',
   'lib.decorators.legacy.d.ts',
@@ -70,6 +75,10 @@ const SOUND_STDLIB_FILE_NAMES = [
   'lib.es2024.string.d.ts',
 ] as const;
 
+const BUNDLED_TYPE_DIRECTIVE_ENTRY_POINTS = new Map<string, string>([
+  ['node', join('node', 'index.d.ts')],
+]);
+
 const cachedOverrideContentsByDirectory = new Map<string, ReadonlyMap<string, string>>();
 
 function normalizePathForComparison(path: string): string {
@@ -91,8 +100,31 @@ export function resolveOverrideDirectory(
   } = {},
 ): string {
   const candidateDirectories = [
-    join(dirname(fromFileUrl(importMetaUrl)), 'sound-libs'),
-    join(dirname(execPath), '..', 'src', 'bundled', 'sound-libs'),
+    join(dirname(fromFileUrl(importMetaUrl)), 'typescript', 'lib'),
+    join(dirname(execPath), '..', 'src', 'bundled', 'typescript', 'lib'),
+  ];
+
+  for (const candidateDirectory of candidateDirectories) {
+    if (directoryExists(candidateDirectory)) {
+      return candidateDirectory;
+    }
+  }
+
+  return candidateDirectories[0];
+}
+
+export function resolveBundledTypesDirectory(
+  {
+    importMetaUrl = import.meta.url,
+    execPath = runtimeExecPath(),
+  }: {
+    importMetaUrl?: string;
+    execPath?: string;
+  } = {},
+): string {
+  const candidateDirectories = [
+    join(dirname(fromFileUrl(importMetaUrl)), 'typescript', 'types'),
+    join(dirname(execPath), '..', 'src', 'bundled', 'typescript', 'types'),
   ];
 
   for (const candidateDirectory of candidateDirectories) {
@@ -140,6 +172,35 @@ function shouldUseOverride(
   return overrideText;
 }
 
+function getTypeDirectiveName(typeDirectiveName: string | ts.FileReference): string {
+  return typeof typeDirectiveName === 'string' ? typeDirectiveName : typeDirectiveName.fileName;
+}
+
+function resolveBundledTypeReferenceDirective(
+  typeDirectiveName: string,
+): ts.ResolvedTypeReferenceDirective | undefined {
+  const relativeEntryPoint = BUNDLED_TYPE_DIRECTIVE_ENTRY_POINTS.get(typeDirectiveName);
+  if (!relativeEntryPoint) {
+    return undefined;
+  }
+
+  const resolvedFileName = join(resolveBundledTypesDirectory(), relativeEntryPoint);
+  if (!fileExistsSync(resolvedFileName)) {
+    return undefined;
+  }
+
+  return {
+    isExternalLibraryImport: true,
+    packageId: {
+      name: typeDirectiveName,
+      subModuleName: '',
+      version: 'sound-bundled',
+    },
+    primary: true,
+    resolvedFileName,
+  };
+}
+
 export function createSoundStdlibCompilerHost(
   options: ts.CompilerOptions,
   currentDirectory?: string,
@@ -150,7 +211,7 @@ export function createSoundStdlibCompilerHost(
     dirname(ts.getDefaultLibFilePath(options)),
   );
 
-  return {
+  const host: ts.CompilerHost = {
     ...baseHost,
     fileExists(fileName) {
       return shouldUseOverride(fileName, normalizedDefaultLibDirectory, overrideContents) !==
@@ -176,5 +237,33 @@ export function createSoundStdlibCompilerHost(
       return shouldUseOverride(fileName, normalizedDefaultLibDirectory, overrideContents) ??
         baseHost.readFile(fileName);
     },
+    resolveTypeReferenceDirectives(
+      typeReferenceDirectiveNames,
+      containingFile,
+      redirectedReference,
+      compilerOptions,
+      containingFileMode,
+    ) {
+      return typeReferenceDirectiveNames.map((typeReferenceDirectiveName) => {
+        const bundledResolution = resolveBundledTypeReferenceDirective(
+          getTypeDirectiveName(typeReferenceDirectiveName),
+        );
+        if (bundledResolution) {
+          return bundledResolution;
+        }
+
+        return ts.resolveTypeReferenceDirective(
+          getTypeDirectiveName(typeReferenceDirectiveName),
+          containingFile,
+          compilerOptions,
+          host,
+          redirectedReference,
+          undefined,
+          containingFileMode,
+        ).resolvedTypeReferenceDirective;
+      });
+    },
   };
+
+  return host;
 }

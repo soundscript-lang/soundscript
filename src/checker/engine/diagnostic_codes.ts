@@ -28,6 +28,7 @@ export const SOUND_DIAGNOSTIC_CODES = {
   constructionLifecycleViolation: 'SOUND1036',
   fieldReadBeforeInitialization: 'SOUND1037',
   definiteAssignmentAssertion: 'SOUND1038',
+  ambientHostValueRequiresExplicitBoundary: 'SOUND1039',
 } as const;
 
 export type SoundDiagnosticCode =
@@ -75,6 +76,8 @@ export const SOUND_DIAGNOSTIC_MESSAGES = {
     'Instance fields may not be read before definite initialization in soundscript.',
   definiteAssignmentAssertion:
     'Definite-assignment assertions are not supported in soundscript.',
+  ambientHostValueRequiresExplicitBoundary:
+    "Ambient host values cannot be used directly in soundscript without an explicit boundary import or same-file '// #[extern]' declaration.",
 } as const;
 
 export const COMPILER_DIAGNOSTIC_CODES = {

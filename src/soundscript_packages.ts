@@ -1,5 +1,6 @@
 import ts from 'typescript';
 
+import { resolveHostDeclarationFile } from './frontend/std_package_support.ts';
 import {
   isSoundscriptProtocolSpecifier,
   SOUNDSCRIPT_RUNTIME_PACKAGE_NAME,
@@ -564,6 +565,15 @@ export function resolveSoundScriptAwareModule(
   compilerOptions: ts.CompilerOptions,
   host: ModuleResolutionHostLike,
 ): ts.ResolvedModuleFull | undefined {
+  const hostDeclarationFile = resolveHostDeclarationFile(moduleSpecifier, compilerOptions);
+  if (hostDeclarationFile) {
+    return {
+      extension: ts.Extension.Dts,
+      isExternalLibraryImport: true,
+      resolvedFileName: hostDeclarationFile,
+    };
+  }
+
   if (isSoundscriptProtocolSpecifier(moduleSpecifier)) {
     return undefined;
   }

@@ -20,6 +20,17 @@ export interface ForeignImportBindingInfo {
   resolution: ImportedModuleResolution;
 }
 
+function hasConfiguredNodeTypes(compilerOptions: ts.CompilerOptions): boolean {
+  return compilerOptions.types?.includes('node') ?? false;
+}
+
+function isAmbientNodeHostModule(
+  moduleSpecifier: string,
+  compilerOptions: ts.CompilerOptions,
+): boolean {
+  return moduleSpecifier.startsWith('node:') && hasConfiguredNodeTypes(compilerOptions);
+}
+
 export function isRequireCall(node: ts.CallExpression): node is ts.CallExpression & {
   expression: ts.Identifier;
   arguments: [ts.StringLiteral];
@@ -49,6 +60,10 @@ export function resolveImportedModule(
   moduleSpecifier: ts.StringLiteral,
   containingSourceFile: ts.SourceFile,
 ): ImportedModuleResolution {
+  if (isAmbientNodeHostModule(moduleSpecifier.text, context.program.getCompilerOptions())) {
+    return { isForeign: true };
+  }
+
   const resolvedModule = resolveSoundScriptAwareModule(
     moduleSpecifier.text,
     containingSourceFile.fileName,

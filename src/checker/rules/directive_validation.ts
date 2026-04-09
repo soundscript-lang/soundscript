@@ -64,7 +64,7 @@ function normalizeFileName(fileName: string): string {
 function isStandardLibraryExternProofSourceFile(sourceFile: ts.SourceFile): boolean {
   const normalizedFileName = normalizeFileName(sourceFile.fileName);
   const baseName = normalizedFileName.split('/').at(-1) ?? normalizedFileName;
-  return normalizedFileName.includes('/src/bundled/sound-libs/') ||
+  return normalizedFileName.includes('/src/bundled/typescript/lib/') ||
     (baseName.startsWith('lib.') &&
       (baseName.endsWith('.d.ts') || baseName.endsWith('.d.mts') || baseName.endsWith('.d.cts')));
 }

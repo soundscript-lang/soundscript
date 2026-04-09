@@ -1,9 +1,5 @@
 import ts from 'typescript';
 
-import {
-  getBundledExternRootNames,
-  withBundledRuntimeExterns,
-} from '../bundled/runtime_externs.ts';
 import { normalizeRuntimeContext } from '../config.ts';
 import { hasErrorDiagnostics, type MergedDiagnostic } from '../checker/diagnostics.ts';
 import { measureCheckerTiming } from '../checker/timing.ts';
@@ -894,7 +890,6 @@ export function withBuiltinMacroSupport(
   options: CreatePreparedProgramOptions,
 ): CreatePreparedProgramOptions {
   const runtime = options.runtime ?? normalizeRuntimeContext({
-    externs: [],
     target: 'js-node',
   });
 
@@ -905,13 +900,13 @@ export function withBuiltinMacroSupport(
       ...(options.alwaysAvailableMacroSiteKinds ?? new Map()).entries(),
     ]),
     baseHost: withStdPackageModuleResolution(
-      withMacroApiModuleResolution(withBundledRuntimeExterns(options.baseHost, runtime)),
+      withMacroApiModuleResolution(options.baseHost),
     ),
     importedMacroSiteKindsBySpecifier: new Map([
       ...getBuiltinMacroSiteKindsBySpecifier().entries(),
       ...(options.importedMacroSiteKindsBySpecifier ?? new Map()).entries(),
     ]),
-    rootNames: [...new Set([...options.rootNames, ...getBundledExternRootNames(runtime)])],
+    rootNames: [...new Set(options.rootNames)],
     runtime,
   };
 }

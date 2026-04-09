@@ -28,6 +28,8 @@ import {
   STS_TYPECLASSES_MODULE_SPECIFIER,
   STS_URL_MODULE_SPECIFIER,
   STS_VALUE_MODULE_SPECIFIER,
+  HOST_DOM_MODULE_SPECIFIER as HOST_DOM_SPECIFIER,
+  HOST_NODE_MODULE_SPECIFIER as HOST_NODE_SPECIFIER,
 } from '../soundscript_runtime_specifiers.ts';
 import { fileExistsSync, readTextFileSync, runtimeExecPath } from '../platform/host.ts';
 import { basename, dirname, fromFileUrl, join } from '../platform/path.ts';
@@ -59,6 +61,8 @@ export const GRAPHQL_STDLIB_MODULE_SPECIFIER = STS_EXPERIMENTAL_GRAPHQL_MODULE_S
 export const COMPONENT_STDLIB_MODULE_SPECIFIER = STS_EXPERIMENTAL_COMPONENT_MODULE_SPECIFIER;
 export const DEBUG_STDLIB_MODULE_SPECIFIER = STS_EXPERIMENTAL_DEBUG_MODULE_SPECIFIER;
 export const NUMERICS_STDLIB_MODULE_SPECIFIER = STS_NUMERICS_MODULE_SPECIFIER;
+export const HOST_DOM_MODULE_SPECIFIER = HOST_DOM_SPECIFIER;
+export const HOST_NODE_MODULE_SPECIFIER = HOST_NODE_SPECIFIER;
 
 export const STDLIB_DECLARATION_FILE = fromFileUrl(
   new URL('../stdlib/index.d.ts', import.meta.url),
@@ -140,6 +144,12 @@ export const DEBUG_STDLIB_DECLARATION_FILE = fromFileUrl(
 );
 export const NUMERICS_STDLIB_DECLARATION_FILE = fromFileUrl(
   new URL('../stdlib/numerics.d.ts', import.meta.url),
+);
+export const HOST_DOM_DECLARATION_FILE = fromFileUrl(
+  new URL('../stdlib/host/dom.d.ts', import.meta.url),
+);
+export const HOST_NODE_DECLARATION_FILE = fromFileUrl(
+  new URL('../stdlib/host/node.d.ts', import.meta.url),
 );
 
 interface MacroStdlibDeclarationGlobal {
@@ -251,6 +261,8 @@ export const DEBUG_STDLIB_DECLARATION_TEXT = readStdlibDeclarationText(
 export const NUMERICS_STDLIB_DECLARATION_TEXT = readStdlibDeclarationText(
   NUMERICS_STDLIB_DECLARATION_FILE,
 );
+export const HOST_DOM_DECLARATION_TEXT = readStdlibDeclarationText(HOST_DOM_DECLARATION_FILE);
+export const HOST_NODE_DECLARATION_TEXT = readStdlibDeclarationText(HOST_NODE_DECLARATION_FILE);
 
 const STDLIB_DECLARATION_FILES = new Map<string, string>([
   [STDLIB_MODULE_SPECIFIER, STDLIB_DECLARATION_FILE],
@@ -285,7 +297,14 @@ const STDLIB_DECLARATION_FILES = new Map<string, string>([
   [DEBUG_STDLIB_MODULE_SPECIFIER, DEBUG_STDLIB_DECLARATION_FILE],
   [NUMERICS_STDLIB_MODULE_SPECIFIER, NUMERICS_STDLIB_DECLARATION_FILE],
 ]);
-const STDLIB_DECLARATION_FILE_SET = new Set(STDLIB_DECLARATION_FILES.values());
+const HOST_DECLARATION_FILES = new Map<string, string>([
+  [HOST_DOM_MODULE_SPECIFIER, HOST_DOM_DECLARATION_FILE],
+  [HOST_NODE_MODULE_SPECIFIER, HOST_NODE_DECLARATION_FILE],
+]);
+const VIRTUAL_DECLARATION_FILE_SET = new Set([
+  ...STDLIB_DECLARATION_FILES.values(),
+  ...HOST_DECLARATION_FILES.values(),
+]);
 const STDLIB_DECLARATION_TEXTS = new Map<string, string>([
   [STDLIB_DECLARATION_FILE, STDLIB_DECLARATION_TEXT],
   [HKT_STDLIB_DECLARATION_FILE, HKT_STDLIB_DECLARATION_TEXT],
@@ -318,6 +337,8 @@ const STDLIB_DECLARATION_TEXTS = new Map<string, string>([
   ),
   [DEBUG_STDLIB_DECLARATION_FILE, DEBUG_STDLIB_DECLARATION_TEXT],
   [NUMERICS_STDLIB_DECLARATION_FILE, NUMERICS_STDLIB_DECLARATION_TEXT],
+  [HOST_DOM_DECLARATION_FILE, HOST_DOM_DECLARATION_TEXT],
+  [HOST_NODE_DECLARATION_FILE, HOST_NODE_DECLARATION_TEXT],
 ]);
 const STDLIB_DECLARATION_ENTRIES_BY_SPECIFIER = new Map<
   string,
@@ -340,6 +361,29 @@ export function getStdlibDeclarationEntriesBySpecifier(): ReadonlyMap<
   return STDLIB_DECLARATION_ENTRIES_BY_SPECIFIER;
 }
 
+function hasDomLibSupport(options: ts.CompilerOptions): boolean {
+  return options.lib?.includes('lib.dom.d.ts') === true;
+}
+
+function hasNodeTypeSupport(options: ts.CompilerOptions): boolean {
+  return options.types?.includes('node') === true;
+}
+
+export function resolveHostDeclarationFile(
+  moduleName: string,
+  options: ts.CompilerOptions,
+): string | undefined {
+  if (moduleName === HOST_DOM_MODULE_SPECIFIER) {
+    return hasDomLibSupport(options) ? HOST_DOM_DECLARATION_FILE : undefined;
+  }
+
+  if (moduleName === HOST_NODE_MODULE_SPECIFIER) {
+    return hasNodeTypeSupport(options) ? HOST_NODE_DECLARATION_FILE : undefined;
+  }
+
+  return undefined;
+}
+
 function createModuleResolutionHost(baseHost: ts.CompilerHost): ts.ModuleResolutionHost {
   return {
     directoryExists: baseHost.directoryExists?.bind(baseHost),
@@ -357,10 +401,10 @@ export function withStdPackageModuleResolution(baseHost: ts.CompilerHost): ts.Co
   return {
     ...baseHost,
     fileExists(fileName: string): boolean {
-      return STDLIB_DECLARATION_FILE_SET.has(fileName) || baseHost.fileExists(fileName);
+      return VIRTUAL_DECLARATION_FILE_SET.has(fileName) || baseHost.fileExists(fileName);
     },
     readFile(fileName: string): string | undefined {
-      if (STDLIB_DECLARATION_FILE_SET.has(fileName)) {
+      if (VIRTUAL_DECLARATION_FILE_SET.has(fileName)) {
         return STDLIB_DECLARATION_TEXTS.get(fileName);
       }
       return baseHost.readFile(fileName);
@@ -386,6 +430,15 @@ export function withStdPackageModuleResolution(baseHost: ts.CompilerHost): ts.Co
         if (stdlibDeclarationFile) {
           return {
             resolvedFileName: stdlibDeclarationFile,
+            extension: ts.Extension.Dts,
+            isExternalLibraryImport: true,
+          };
+        }
+
+        const hostDeclarationFile = resolveHostDeclarationFile(moduleName, options ?? {});
+        if (hostDeclarationFile) {
+          return {
+            resolvedFileName: hostDeclarationFile,
             extension: ts.Extension.Dts,
             isExternalLibraryImport: true,
           };

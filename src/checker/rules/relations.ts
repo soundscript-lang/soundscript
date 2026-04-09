@@ -2509,7 +2509,7 @@ function isBundledSoundLibSourceFile(sourceFile: ts.SourceFile): boolean {
   if (/^\/__soundscript_std(?:_[a-z]+)?__\.d\.ts$/u.test(normalizedFileName)) {
     return true;
   }
-  return normalizedFileName.includes('/src/bundled/sound-libs/') ||
+  return normalizedFileName.includes('/src/bundled/typescript/lib/') ||
     /^lib\.[^.].*\.d\.ts$/u.test(baseName);
 }
 

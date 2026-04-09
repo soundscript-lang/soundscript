@@ -2290,6 +2290,7 @@ interface TrackEventInit extends EventInit {
     track?: TextTrack | null;
 }
 
+// #[variance(I: in, O: out)]
 interface Transformer<I = unknown, O = unknown> {
     flush?: TransformerFlushCallback<O>;
     readableType?: undefined;
@@ -2324,6 +2325,7 @@ interface UnderlyingByteSource {
     type: "bytes";
 }
 
+// #[variance(R: out)]
 interface UnderlyingDefaultSource<R = unknown> {
     cancel?: UnderlyingSourceCancelCallback;
     pull?: (controller: ReadableStreamDefaultController<R>) => void | PromiseLike<void>;
@@ -2331,6 +2333,7 @@ interface UnderlyingDefaultSource<R = unknown> {
     type?: undefined;
 }
 
+// #[variance(W: in)]
 interface UnderlyingSink<W = unknown> {
     abort?: UnderlyingSinkAbortCallback;
     close?: UnderlyingSinkCloseCallback;
@@ -2339,6 +2342,7 @@ interface UnderlyingSink<W = unknown> {
     write?: UnderlyingSinkWriteCallback<W>;
 }
 
+// #[variance(R: out)]
 interface UnderlyingSource<R = unknown> {
     autoAllocateChunkSize?: number;
     cancel?: UnderlyingSourceCancelCallback;
@@ -4571,6 +4575,20 @@ declare var CDATASection: {
  *
  * [MDN Reference](https://developer.mozilla.org/docs/Web/API/CSPViolationReportBody)
  */
+interface CSPViolationReportBodyJSON {
+    blockedURL: string | null;
+    columnNumber: number | null;
+    disposition: SecurityPolicyViolationEventDisposition;
+    documentURL: string;
+    effectiveDirective: string;
+    lineNumber: number | null;
+    originalPolicy: string;
+    referrer: string | null;
+    sample: string | null;
+    sourceFile: string | null;
+    statusCode: number;
+}
+
 interface CSPViolationReportBody extends ReportBody {
     /**
      * The **`blockedURL`** read-only property of the CSPViolationReportBody interface is a string value that represents the resource that was blocked because it violates a Content Security Policy (CSP).
@@ -4643,7 +4661,7 @@ interface CSPViolationReportBody extends ReportBody {
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/CSPViolationReportBody/toJSON)
      */
-    toJSON(): unknown;
+    toJSON(): CSPViolationReportBodyJSON;
 }
 
 declare var CSPViolationReportBody: {
@@ -13492,6 +13510,7 @@ declare var HTMLCollection: {
     new(): HTMLCollection;
 };
 
+// #[variance(T: out)]
 interface HTMLCollectionOf<T extends Element> extends HTMLCollectionBase {
     item(index: number): T | null;
     namedItem(name: string): T | null;
@@ -19246,6 +19265,14 @@ declare var KeyframeEffect: {
  *
  * [MDN Reference](https://developer.mozilla.org/docs/Web/API/LargestContentfulPaint)
  */
+interface LargestContentfulPaintJSON extends PerformanceEntryJSON {
+    id: string;
+    loadTime: DOMHighResTimeStamp;
+    renderTime: DOMHighResTimeStamp;
+    size: number;
+    url: string;
+}
+
 interface LargestContentfulPaint extends PerformanceEntry {
     /**
      * The **`element`** read-only property of the LargestContentfulPaint interface returns an object representing the Element that is the largest contentful paint.
@@ -19284,7 +19311,7 @@ interface LargestContentfulPaint extends PerformanceEntry {
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/LargestContentfulPaint/toJSON)
      */
-    toJSON(): unknown;
+    toJSON(): LargestContentfulPaintJSON;
 }
 
 declare var LargestContentfulPaint: {
@@ -20841,6 +20868,7 @@ interface MessageEventTargetEventMap {
     "messageerror": MessageEvent;
 }
 
+// #[variance(T: in)]
 interface MessageEventTarget<T> {
     /** [MDN Reference](https://developer.mozilla.org/docs/Web/API/DedicatedWorkerGlobalScope/message_event) */
     onmessage: ((this: T, ev: MessageEvent) => void) | null;
@@ -22017,6 +22045,7 @@ declare var NodeList: {
     new(): NodeList;
 };
 
+// #[variance(TNode: out)]
 interface NodeListOf<TNode extends Node> extends NodeList {
     item(index: number): TNode;
     forEach(callbackfn: (value: TNode, key: number, parent: NodeListOf<TNode>) => void, thisArg?: unknown): void;
@@ -22785,6 +22814,19 @@ declare var Path2D: {
  *
  * [MDN Reference](https://developer.mozilla.org/docs/Web/API/ContactAddress)
  */
+interface PaymentAddressJSON {
+    addressLine: ReadonlyArray<string>;
+    city: string;
+    country: string;
+    dependentLocality: string;
+    organization: string;
+    phone: string;
+    postalCode: string;
+    recipient: string;
+    region: string;
+    sortingCode: string;
+}
+
 interface PaymentAddress {
     /**
      * The **`addressLine`** read-only property of the ContactAddress interface is an array of strings, each specifying a line of the address that is not covered by one of the other properties of `ContactAddress`.
@@ -22851,7 +22893,7 @@ interface PaymentAddress {
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/ContactAddress/toJSON)
      */
-    toJSON(): unknown;
+    toJSON(): PaymentAddressJSON;
 }
 
 declare var PaymentAddress: {
@@ -22992,6 +23034,17 @@ interface PaymentResponseEventMap {
     "payerdetailchange": PaymentRequestUpdateEvent;
 }
 
+interface PaymentResponseJSON {
+    details: unknown;
+    methodName: string;
+    payerEmail: string | null;
+    payerName: string | null;
+    payerPhone: string | null;
+    requestId: string;
+    shippingAddress: PaymentAddressJSON | null;
+    shippingOption: string | null;
+}
+
 /**
  * The **`PaymentResponse`** interface of the Payment Request API is returned after a user selects a payment method and approves a payment request.
  * Available only in secure contexts.
@@ -23066,7 +23119,7 @@ interface PaymentResponse extends EventTarget {
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/PaymentResponse/toJSON)
      */
-    toJSON(): unknown;
+    toJSON(): PaymentResponseJSON;
     addEventListener<K extends keyof PaymentResponseEventMap>(type: K, listener: (this: PaymentResponse, ev: PaymentResponseEventMap[K]) => void, options?: boolean | AddEventListenerOptions): void;
     addEventListener(type: string, listener: EventListenerOrEventListenerObject, options?: boolean | AddEventListenerOptions): void;
     removeEventListener<K extends keyof PaymentResponseEventMap>(type: K, listener: (this: PaymentResponse, ev: PaymentResponseEventMap[K]) => void, options?: boolean | EventListenerOptions): void;
@@ -23080,6 +23133,12 @@ declare var PaymentResponse: {
 
 interface PerformanceEventMap {
     "resourcetimingbufferfull": Event;
+}
+
+interface PerformanceJSON {
+    navigation: PerformanceNavigationJSON;
+    timeOrigin: DOMHighResTimeStamp;
+    timing: PerformanceTimingJSON;
 }
 
 /**
@@ -23181,7 +23240,7 @@ interface Performance extends EventTarget {
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/Performance/toJSON)
      */
-    toJSON(): unknown;
+    toJSON(): PerformanceJSON;
     addEventListener<K extends keyof PerformanceEventMap>(type: K, listener: (this: Performance, ev: PerformanceEventMap[K]) => void, options?: boolean | AddEventListenerOptions): void;
     addEventListener(type: string, listener: EventListenerOrEventListenerObject, options?: boolean | AddEventListenerOptions): void;
     removeEventListener<K extends keyof PerformanceEventMap>(type: K, listener: (this: Performance, ev: PerformanceEventMap[K]) => void, options?: boolean | EventListenerOptions): void;
@@ -23198,6 +23257,13 @@ declare var Performance: {
  *
  * [MDN Reference](https://developer.mozilla.org/docs/Web/API/PerformanceEntry)
  */
+interface PerformanceEntryJSON {
+    duration: DOMHighResTimeStamp;
+    entryType: string;
+    name: string;
+    startTime: DOMHighResTimeStamp;
+}
+
 interface PerformanceEntry {
     /**
      * The read-only **`duration`** property returns a DOMHighResTimeStamp that is the duration of the PerformanceEntry.
@@ -23228,7 +23294,7 @@ interface PerformanceEntry {
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/PerformanceEntry/toJSON)
      */
-    toJSON(): unknown;
+    toJSON(): PerformanceEntryJSON;
 }
 
 declare var PerformanceEntry: {
@@ -23241,6 +23307,12 @@ declare var PerformanceEntry: {
  *
  * [MDN Reference](https://developer.mozilla.org/docs/Web/API/PerformanceEventTiming)
  */
+interface PerformanceEventTimingJSON extends PerformanceEntryJSON {
+    cancelable: boolean;
+    processingEnd: DOMHighResTimeStamp;
+    processingStart: DOMHighResTimeStamp;
+}
+
 interface PerformanceEventTiming extends PerformanceEntry {
     /**
      * The read-only **`cancelable`** property returns the associated event's `cancelable` property, indicating whether the event can be canceled.
@@ -23271,7 +23343,7 @@ interface PerformanceEventTiming extends PerformanceEntry {
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/PerformanceEventTiming/toJSON)
      */
-    toJSON(): unknown;
+    toJSON(): PerformanceEventTimingJSON;
 }
 
 declare var PerformanceEventTiming: {
@@ -23323,6 +23395,11 @@ declare var PerformanceMeasure: {
  *
  * [MDN Reference](https://developer.mozilla.org/docs/Web/API/PerformanceNavigation)
  */
+interface PerformanceNavigationJSON {
+    redirectCount: number;
+    type: number;
+}
+
 interface PerformanceNavigation {
     /**
      * The legacy **`PerformanceNavigation.redirectCount`** read-only property returns an `unsigned short` representing the number of REDIRECTs done before reaching the page.
@@ -23344,7 +23421,7 @@ interface PerformanceNavigation {
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/PerformanceNavigation/toJSON)
      */
-    toJSON(): unknown;
+    toJSON(): PerformanceNavigationJSON;
     readonly TYPE_NAVIGATE: 0;
     readonly TYPE_RELOAD: 1;
     readonly TYPE_BACK_FORWARD: 2;
@@ -23366,6 +23443,19 @@ declare var PerformanceNavigation: {
  *
  * [MDN Reference](https://developer.mozilla.org/docs/Web/API/PerformanceNavigationTiming)
  */
+interface PerformanceNavigationTimingJSON extends PerformanceResourceTimingJSON {
+    domComplete: DOMHighResTimeStamp;
+    domContentLoadedEventEnd: DOMHighResTimeStamp;
+    domContentLoadedEventStart: DOMHighResTimeStamp;
+    domInteractive: DOMHighResTimeStamp;
+    loadEventEnd: DOMHighResTimeStamp;
+    loadEventStart: DOMHighResTimeStamp;
+    redirectCount: number;
+    type: NavigationTimingType;
+    unloadEventEnd: DOMHighResTimeStamp;
+    unloadEventStart: DOMHighResTimeStamp;
+}
+
 interface PerformanceNavigationTiming extends PerformanceResourceTiming {
     /**
      * The **`domComplete`** read-only property returns a DOMHighResTimeStamp representing the time immediately before the user agent sets the document's `readyState` to `'complete'`.
@@ -23432,7 +23522,7 @@ interface PerformanceNavigationTiming extends PerformanceResourceTiming {
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/PerformanceNavigationTiming/toJSON)
      */
-    toJSON(): unknown;
+    toJSON(): PerformanceNavigationTimingJSON;
 }
 
 declare var PerformanceNavigationTiming: {
@@ -23526,6 +23616,28 @@ declare var PerformancePaintTiming: {
  *
  * [MDN Reference](https://developer.mozilla.org/docs/Web/API/PerformanceResourceTiming)
  */
+interface PerformanceResourceTimingJSON extends PerformanceEntryJSON {
+    connectEnd: DOMHighResTimeStamp;
+    connectStart: DOMHighResTimeStamp;
+    decodedBodySize: number;
+    domainLookupEnd: DOMHighResTimeStamp;
+    domainLookupStart: DOMHighResTimeStamp;
+    encodedBodySize: number;
+    fetchStart: DOMHighResTimeStamp;
+    initiatorType: string;
+    nextHopProtocol: string;
+    redirectEnd: DOMHighResTimeStamp;
+    redirectStart: DOMHighResTimeStamp;
+    requestStart: DOMHighResTimeStamp;
+    responseEnd: DOMHighResTimeStamp;
+    responseStart: DOMHighResTimeStamp;
+    responseStatus: number;
+    secureConnectionStart: DOMHighResTimeStamp;
+    serverTiming: ReadonlyArray<PerformanceServerTimingJSON>;
+    transferSize: number;
+    workerStart: DOMHighResTimeStamp;
+}
+
 interface PerformanceResourceTiming extends PerformanceEntry {
     /**
      * The **`connectEnd`** read-only property returns the DOMHighResTimeStamp immediately after the browser finishes establishing the connection to the server to retrieve the resource.
@@ -23646,7 +23758,7 @@ interface PerformanceResourceTiming extends PerformanceEntry {
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/PerformanceResourceTiming/toJSON)
      */
-    toJSON(): unknown;
+    toJSON(): PerformanceResourceTimingJSON;
 }
 
 declare var PerformanceResourceTiming: {
@@ -23659,6 +23771,12 @@ declare var PerformanceResourceTiming: {
  *
  * [MDN Reference](https://developer.mozilla.org/docs/Web/API/PerformanceServerTiming)
  */
+interface PerformanceServerTimingJSON {
+    description: string;
+    duration: DOMHighResTimeStamp;
+    name: string;
+}
+
 interface PerformanceServerTiming {
     /**
      * The **`description`** read-only property returns a string value of the server-specified metric description, or an empty string.
@@ -23683,7 +23801,7 @@ interface PerformanceServerTiming {
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/PerformanceServerTiming/toJSON)
      */
-    toJSON(): unknown;
+    toJSON(): PerformanceServerTimingJSON;
 }
 
 declare var PerformanceServerTiming: {
@@ -23697,6 +23815,30 @@ declare var PerformanceServerTiming: {
  *
  * [MDN Reference](https://developer.mozilla.org/docs/Web/API/PerformanceTiming)
  */
+interface PerformanceTimingJSON {
+    connectEnd: number;
+    connectStart: number;
+    domComplete: number;
+    domContentLoadedEventEnd: number;
+    domContentLoadedEventStart: number;
+    domInteractive: number;
+    domLoading: number;
+    domainLookupEnd: number;
+    domainLookupStart: number;
+    fetchStart: number;
+    loadEventEnd: number;
+    loadEventStart: number;
+    navigationStart: number;
+    redirectEnd: number;
+    redirectStart: number;
+    requestStart: number;
+    responseEnd: number;
+    responseStart: number;
+    secureConnectionStart: number;
+    unloadEventEnd: number;
+    unloadEventStart: number;
+}
+
 interface PerformanceTiming {
     /**
      * The legacy **`PerformanceTiming.connectEnd`** read-only property returns an `unsigned long long` representing the moment, in milliseconds since the UNIX epoch, where the connection is opened network.
@@ -23851,7 +23993,7 @@ interface PerformanceTiming {
      *
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/PerformanceTiming/toJSON)
      */
-    toJSON(): unknown;
+    toJSON(): PerformanceTimingJSON;
 }
 
 /** @deprecated */
@@ -26071,6 +26213,12 @@ declare var RemotePlayback: {
  *
  * [MDN Reference](https://developer.mozilla.org/docs/Web/API/Report)
  */
+interface ReportJSON {
+    body: unknown | null;
+    type: string;
+    url: string;
+}
+
 interface Report {
     /**
      * The **`body`** read-only property of the Report interface returns the body of the report, which is a `ReportBody` object containing the detailed report information.
@@ -26090,7 +26238,7 @@ interface Report {
      * [MDN Reference](https://developer.mozilla.org/docs/Web/API/Report/url)
      */
     readonly url: string;
-    toJSON(): unknown;
+    toJSON(): ReportJSON;
 }
 
 declare var Report: {
@@ -27110,7 +27258,7 @@ interface SVGElementEventMap extends ElementEventMap, GlobalEventHandlersEventMa
  */
 interface SVGElement extends Element, ElementCSSInlineStyle, GlobalEventHandlers, HTMLOrSVGElement {
     /** @deprecated */
-    readonly className: string;
+    readonly className: string & SVGAnimatedString;
     /**
      * The **`ownerSVGElement`** property of the SVGElement interface reflects the nearest ancestor svg element.
      *

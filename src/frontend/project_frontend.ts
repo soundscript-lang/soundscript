@@ -833,7 +833,6 @@ export interface PreparedProgram {
 }
 
 const DEFAULT_PREPARED_PROGRAM_RUNTIME = normalizeRuntimeContext({
-  externs: [],
   target: 'js-node',
 });
 

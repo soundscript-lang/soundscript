@@ -159,7 +159,7 @@ Deno.test('parseCommand accepts explain subcommand with a diagnostic code', () =
   });
 });
 
-Deno.test('loadConfig parses soundscript runtime target and extern packs', async () => {
+Deno.test('loadConfig parses soundscript runtime target and rejects removed extern packs', async () => {
   const tempDirectory = await Deno.makeTempDir({ prefix: 'soundscript-config-runtime-' });
   const projectPath = join(tempDirectory, 'tsconfig.json');
   await Deno.writeTextFile(
@@ -183,20 +183,21 @@ Deno.test('loadConfig parses soundscript runtime target and extern packs', async
   const loadedConfig = loadConfig(projectPath);
 
   assertEquals(loadedConfig.soundscript, {
-    externs: ['deno'],
     target: 'wasm-node',
   });
   assertEquals(loadedConfig.runtime, {
     backend: 'wasm',
-    externs: ['deno'],
     host: 'node',
     target: 'wasm-node',
   });
-  assertEquals(loadedConfig.commandLine.options.lib, [
-    'lib.es2024.d.ts',
-    'lib.dom.d.ts',
-    'lib.dom.asynciterable.d.ts',
-  ]);
+  assertEquals(loadedConfig.commandLine.options.lib, ['lib.es2024.d.ts']);
+  assertEquals(loadedConfig.diagnostics.length >= 1, true);
+  assertEquals(
+    loadedConfig.diagnostics.some((diagnostic) =>
+      String(diagnostic.messageText).includes('soundscript.externs')
+    ),
+    true,
+  );
 });
 
 Deno.test('loadConfig applies runtime target overrides over tsconfig soundscript settings', async () => {
@@ -212,7 +213,6 @@ Deno.test('loadConfig applies runtime target overrides over tsconfig soundscript
         },
         soundscript: {
           target: 'js-node',
-          externs: ['deno'],
         },
       },
       null,
@@ -223,18 +223,16 @@ Deno.test('loadConfig applies runtime target overrides over tsconfig soundscript
   const loadedConfig = loadConfig(projectPath, { target: 'wasm-browser' });
 
   assertEquals(loadedConfig.soundscript, {
-    externs: ['deno'],
     target: 'wasm-browser',
   });
   assertEquals(loadedConfig.runtime, {
     backend: 'wasm',
-    externs: ['deno'],
     host: 'browser',
     target: 'wasm-browser',
   });
 });
 
-Deno.test('loadConfig applies target-family default libs when compilerOptions.lib is omitted', async () => {
+Deno.test('loadConfig applies ES-only default libs when compilerOptions.lib is omitted', async () => {
   const tempDirectory = await Deno.makeTempDir({ prefix: 'soundscript-config-libs-' });
   const projectPath = join(tempDirectory, 'tsconfig.json');
   await Deno.writeTextFile(
@@ -254,11 +252,7 @@ Deno.test('loadConfig applies target-family default libs when compilerOptions.li
   const jsNodeConfig = loadConfig(projectPath);
   const wasmWasiConfig = loadConfig(projectPath, { target: 'wasm-wasi' });
 
-  assertEquals(jsNodeConfig.commandLine.options.lib, [
-    'lib.es2024.d.ts',
-    'lib.dom.d.ts',
-    'lib.dom.asynciterable.d.ts',
-  ]);
+  assertEquals(jsNodeConfig.commandLine.options.lib, ['lib.es2024.d.ts']);
   assertEquals(wasmWasiConfig.commandLine.options.lib, ['lib.es2024.d.ts']);
 });
 

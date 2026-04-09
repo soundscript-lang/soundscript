@@ -84,6 +84,7 @@ export interface PreparedAnalysisProject {
   soundscriptRootDiscoverySignature: string;
   stsCompilerHostReuseState: PreparedCompilerHostReuseState | undefined;
   soundscriptFileOverridesSignature: string;
+  stsProgramRootNames: readonly string[];
   soundscriptRootNames: readonly string[];
   stsView: PreparedAnalysisView | null;
   tsCompilerHostReuseState: PreparedCompilerHostReuseState | undefined;
@@ -242,6 +243,10 @@ function createModuleResolutionHostWithOverrides(
   };
 }
 
+function isDeclarationRootFileName(fileName: string): boolean {
+  return fileName.endsWith('.d.ts') || fileName.endsWith('.d.mts') || fileName.endsWith('.d.cts');
+}
+
 function isRelativeOrAbsoluteModuleSpecifier(moduleSpecifier: string): boolean {
   return moduleSpecifier.startsWith('.') ||
     moduleSpecifier.startsWith('/') ||
@@ -340,7 +345,15 @@ function createSoundscriptRootContentSignature(
   fileOverrides: ReadonlyMap<string, string> | undefined,
 ): string {
   const host = createModuleResolutionHostWithOverrides(fileOverrides);
-  return collectReachableSoundscriptDependencyFiles(rootNames, compilerOptions, fileOverrides)
+  const declarationRootNames = rootNames
+    .map((fileName) => ts.sys.resolvePath(fileName))
+    .filter(isDeclarationRootFileName);
+
+  return [...new Set([
+    ...collectReachableSoundscriptDependencyFiles(rootNames, compilerOptions, fileOverrides),
+    ...declarationRootNames,
+  ])]
+    .sort()
     .map((fileName) => {
       const text = host.readFile(fileName) ?? '';
       return `${fileName}\u0001${text.length}\u0001${text}`;
@@ -1677,8 +1690,10 @@ export function prepareProjectAnalysis(
         options.additionalRootNames,
       );
       const soundscriptRootNames = allRootNames.filter(isSoundscriptSourceFile);
+      const declarationRootNames = allRootNames.filter(isDeclarationRootFileName);
+      const stsProgramRootNames = combineRootNames(soundscriptRootNames, declarationRootNames);
       const typescriptRootNames = allRootNames.filter((fileName) =>
-        !isSoundscriptSourceFile(fileName)
+        !isSoundscriptSourceFile(fileName) && !isDeclarationRootFileName(fileName)
       );
       const configFileParsingDiagnostics = getConfigFileParsingDiagnostics(
         loadedConfig.diagnostics,
@@ -1689,7 +1704,7 @@ export function prepareProjectAnalysis(
         isSoundscriptSourceFile,
       );
       const soundscriptRootContentSignature = createSoundscriptRootContentSignature(
-        soundscriptRootNames,
+        stsProgramRootNames,
         loadedConfig.commandLine.options,
         options.fileOverrides,
       );
@@ -1697,7 +1712,7 @@ export function prepareProjectAnalysis(
         reusableProject.analyzeOptions.projectPath === options.projectPath &&
         reusableProject.configReuseSignature === configReuseSignature;
       const canReuseStsArtifacts = canReuseConfigArtifacts &&
-        rootNamesEqual(reusableProject.soundscriptRootNames, soundscriptRootNames) &&
+        rootNamesEqual(reusableProject.stsProgramRootNames, stsProgramRootNames) &&
         reusableProject.soundscriptRootContentSignature === soundscriptRootContentSignature &&
         reusableProject.soundscriptFileOverridesSignature === soundscriptFileOverridesSignature;
       const soundscriptRootNameSet = new Set(
@@ -1705,7 +1720,7 @@ export function prepareProjectAnalysis(
       );
       const stsView = canReuseStsArtifacts ? reusableProject.stsView : (() => {
         const metadata: Record<string, string | number> = {
-          rootCount: soundscriptRootNames.length,
+          rootCount: stsProgramRootNames.length,
         };
         return measureCheckerTiming(
           'project.prepare.stsView',
@@ -1714,7 +1729,7 @@ export function prepareProjectAnalysis(
             const preparedView = prepareAnalysisView(
               options,
               loadedConfig,
-              soundscriptRootNames,
+              stsProgramRootNames,
               createSoundStdlibCompilerHost(
                 loadedConfig.commandLine.options,
                 dirname(options.projectPath),
@@ -1761,6 +1776,7 @@ export function prepareProjectAnalysis(
           soundscriptRootDiscoverySignature,
           stsCompilerHostReuseState: stsView?.preparedProgram.preparedHost.reuseState,
           soundscriptFileOverridesSignature,
+          stsProgramRootNames,
           soundscriptRootNames,
           stsView,
           tsCompilerHostReuseState: canReuseConfigArtifacts
@@ -1793,6 +1809,7 @@ export function prepareProjectAnalysis(
           soundscriptRootDiscoverySignature,
           stsCompilerHostReuseState: stsView?.preparedProgram.preparedHost.reuseState,
           soundscriptFileOverridesSignature,
+          stsProgramRootNames,
           soundscriptRootNames,
           stsView,
           tsCompilerHostReuseState: canReuseConfigArtifacts
@@ -1963,6 +1980,7 @@ export function prepareProjectAnalysis(
         soundscriptRootDiscoverySignature,
         stsCompilerHostReuseState: stsView?.preparedProgram.preparedHost.reuseState,
         soundscriptFileOverridesSignature,
+        stsProgramRootNames,
         soundscriptRootNames,
         stsView,
         tsCompilerHostReuseState: preliminaryTsView?.preparedProgram.preparedHost.reuseState,

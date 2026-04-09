@@ -14,7 +14,7 @@ export const DIST_ROOT = Deno.env.get('SOUNDSCRIPT_RELEASE_DIST_ROOT') ??
   join(ROOT, 'dist', 'npm');
 export const CANONICAL_DIST = join(DIST_ROOT, 'soundscript-canonical');
 export const SHIM_DIST = join(DIST_ROOT, 'soundscript-shim');
-export const SOUND_LIBS_SOURCE = join(ROOT, 'src', 'bundled', 'sound-libs');
+export const BUNDLED_TYPESCRIPT_SOURCE = join(ROOT, 'src', 'bundled', 'typescript');
 export const STDLIB_SOURCE = join(ROOT, 'src', 'stdlib');
 export const CLI_ENTRY = join(ROOT, 'src', 'main.ts');
 export const LICENSE_SOURCE = join(ROOT, 'LICENSE');
@@ -52,6 +52,11 @@ export const SOURCE_ONLY_RUNTIME_MODULES = [
   'css',
   'graphql',
   'debug',
+] as const;
+
+export const HOST_RUNTIME_MODULES = [
+  'host/dom',
+  'host/node',
 ] as const;
 
 export const CLI_TARGETS: readonly CliTarget[] = [

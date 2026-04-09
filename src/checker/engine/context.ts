@@ -46,7 +46,6 @@ export function createAnalysisContext(options: CreateAnalysisContextOptions): An
       (options.includeSourceFile?.(sourceFile) ?? true),
   );
   const runtime = options.runtime ?? normalizeRuntimeContext({
-    externs: [],
     target: 'js-node',
   });
   let nextNodeId = 1;
