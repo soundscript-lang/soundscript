@@ -198,7 +198,9 @@ export function getHeapRepresentationFromHostBoundary(
     case 'promise':
       return boundary.representation;
     case 'tagged':
-      return boundary.heapBoundary?.representation;
+      return boundary.heapBoundary?.kind === 'object'
+        ? boundary.heapBoundary.representation
+        : undefined;
     case 'externref':
     default:
       return undefined;
@@ -245,7 +247,7 @@ export function getHostTaggedPrimitiveKinds(
 export function getHostTaggedHeapNullableBoundary(
   boundary: CompilerHostBoundaryIR | undefined,
 ): CompilerFunctionHostTaggedHeapNullableBoundaryIR | undefined {
-  if (boundary?.kind !== 'tagged' || !boundary.heapBoundary) {
+  if (boundary?.kind !== 'tagged' || boundary.heapBoundary?.kind !== 'object') {
     return undefined;
   }
   return {
@@ -495,7 +497,9 @@ export function getTaggedArrayBoundaryFromHostBoundary(
     includesNumber: boundary.elementBoundary.includesNumber,
     includesString: boundary.elementBoundary.includesString,
     includesUndefined: boundary.elementBoundary.includesUndefined,
-    representation: boundary.elementBoundary.heapBoundary?.representation,
+    representation: boundary.elementBoundary.heapBoundary?.kind === 'object'
+      ? boundary.elementBoundary.heapBoundary.representation
+      : undefined,
   };
 }
 
@@ -684,7 +688,9 @@ export function getEffectiveFunctionHostFallbackObjectPropertyMetadata(
             field.name,
             {
               name: field.name,
-              representation: field.boundary.elementBoundary.heapBoundary?.representation,
+              representation: field.boundary.elementBoundary.heapBoundary?.kind === 'object'
+                ? field.boundary.elementBoundary.heapBoundary.representation
+                : undefined,
               includesBoolean: field.boundary.elementBoundary.includesBoolean,
               includesNull: field.boundary.elementBoundary.includesNull,
               includesNumber: field.boundary.elementBoundary.includesNumber,
@@ -708,7 +714,7 @@ export function getEffectiveFunctionHostFallbackObjectPropertyMetadata(
         );
         break;
       case 'tagged':
-        if (field.boundary.heapBoundary) {
+        if (field.boundary.heapBoundary?.kind === 'object') {
           mergeNamedMetadata(
             taggedHeapProperties,
             field.name,
@@ -898,7 +904,7 @@ export function collectHostObjectBoundaryPropertyMetadata(
       }
       const nestedBoundary = field.boundary.kind === 'object'
         ? field.boundary
-        : field.boundary.kind === 'tagged'
+        : field.boundary.kind === 'tagged' && field.boundary.heapBoundary?.kind === 'object'
         ? field.boundary.heapBoundary
         : undefined;
       if (nestedBoundary) {

@@ -6718,7 +6718,362 @@ compilerIntegrationTest(
     assertEquals(listenedPort, 4324);
     assertStringIncludes(sentHtml, '<!doctype html>');
     assertStringIncludes(sentHtml, '<main');
-    assertStringIncludes(sentHtml, '/todos');
+    assertStringIncludes(sentHtml, 'todos');
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject compiles the checked-in express-react-ssr-demo browser client example with react-router-dom',
+  async () => {
+    const projectDirectory = join(
+      dirname(fromFileUrl(import.meta.url)),
+      '..',
+      'examples/express-react-ssr-demo',
+    );
+    const result = compileProject({
+      projectPath: join(projectDirectory, 'browser.tsconfig.json'),
+      workingDirectory: projectDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject executes the checked-in express-react-ssr-demo browser client example through react-router-dom and react-dom/client',
+  async () => {
+    const projectDirectory = join(
+      dirname(fromFileUrl(import.meta.url)),
+      '..',
+      'examples/express-react-ssr-demo',
+    );
+    const result = compileProject({
+      projectPath: join(projectDirectory, 'browser.tsconfig.json'),
+      workingDirectory: projectDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const container = { nodeType: 1, tagName: 'DIV' };
+    let createRootCalls = 0;
+    let lastRendered:
+      | {
+        key: string | null;
+        props: Record<string, unknown>;
+        type: unknown;
+      }
+      | undefined;
+
+    function jsx(
+      type: unknown,
+      props: Record<string, unknown>,
+      key?: string | number | bigint,
+    ) {
+      return { key: key === undefined ? null : String(key), props, type };
+    }
+
+    function Routes(props: Record<string, unknown>) {
+      return { kind: 'Routes', props };
+    }
+
+    function Route(props: Record<string, unknown>) {
+      return { kind: 'Route', props };
+    }
+
+    function HashRouter(props: Record<string, unknown>) {
+      return { kind: 'HashRouter', props };
+    }
+
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate({
+      modules: {
+        'react/jsx-runtime': {
+          jsx,
+          jsxs: jsx,
+        },
+        'react-router': {
+          Route,
+          Routes,
+        },
+        'react-router-dom': {
+          HashRouter,
+        },
+        'react-dom/client': {
+          createRoot(receivedContainer: { nodeType: number; tagName: string }) {
+            createRootCalls += 1;
+            assertStrictEquals(receivedContainer, container);
+            return {
+              render(children: {
+                key: string | null;
+                props: Record<string, unknown>;
+                type: unknown;
+              }) {
+                lastRendered = children;
+              },
+              unmount() {
+              },
+            };
+          },
+        },
+      },
+    });
+
+    const startName = await resolveQualifiedExportName(projectDirectory, 'start');
+    const startExport = instantiated.exports[startName];
+    if (typeof startExport !== 'function') {
+      throw new Error(`Expected exported function "${startName}".`);
+    }
+
+    assertEquals(await startExport(container), undefined);
+    assertEquals(createRootCalls, 1);
+    assert(lastRendered);
+    assertEquals(typeof lastRendered.type, 'function');
+
+    const appRoutesElement = lastRendered.props.children as {
+      key: string | null;
+      props: Record<string, unknown>;
+      type: unknown;
+    };
+    assertEquals(typeof appRoutesElement.type, 'function');
+    assertEquals(appRoutesElement.key, null);
+    assertEquals(Object.keys(appRoutesElement.props), []);
+
+    assertEquals(await startExport(container), undefined);
+    assertEquals(createRootCalls, 1);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject compiles the checked-in fullstack-todo example with express react-router SSR',
+  async () => {
+    const { result } = compileCheckedInProject('examples/fullstack-todo');
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject executes the checked-in fullstack-todo example through express react-router and react-dom/server',
+  async () => {
+    const { projectDirectory, result } = compileCheckedInProject('examples/fullstack-todo');
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    let listenedPort = -1;
+    const registeredPaths: string[] = [];
+    let sentHtml = '';
+
+    interface ResponseLike {
+      send(html: string): ResponseLike;
+    }
+
+    interface AppLike {
+      get(path: string, handler: (req: { url: string }, res: ResponseLike) => void): AppLike;
+      listen(port: number): { close(): void };
+    }
+
+    const app: AppLike = {
+      get(path, handler) {
+        registeredPaths.push(path);
+        const response: ResponseLike = {
+          send(html: string) {
+            sentHtml = html;
+            return response;
+          },
+        };
+        handler({ url: '/todos' }, response);
+        return this;
+      },
+      listen(port) {
+        listenedPort = port;
+        return {
+          close() {
+          },
+        };
+      },
+    };
+
+    function express() {
+      return app;
+    }
+
+    const reactJsxRuntimeModule = await import('npm:react@19.2.4/jsx-runtime');
+    const reactDomServerModule = await import('npm:react-dom@19.2.4/server');
+    const reactRouterModule = await import('npm:react-router@7.14.0');
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate({
+      modules: {
+        express: {
+          default: express,
+        },
+        'react/jsx-runtime': reactJsxRuntimeModule,
+        'react-dom/server': reactDomServerModule,
+        'react-router': reactRouterModule,
+      },
+    });
+
+    const renderPageName = await resolveQualifiedExportName(projectDirectory, 'renderPage');
+    const renderPageExport = instantiated.exports[renderPageName];
+    if (typeof renderPageExport !== 'function') {
+      throw new Error(`Expected exported function "${renderPageName}".`);
+    }
+
+    const directHtml = await renderPageExport('/todos');
+    assertStringIncludes(directHtml, '<!doctype html>');
+    assertStringIncludes(directHtml, 'Todos');
+    assertStringIncludes(directHtml, 'Write compiler tests');
+    assertStringIncludes(directHtml, 'done');
+    assertStringIncludes(directHtml, '2');
+
+    const startName = await resolveQualifiedExportName(projectDirectory, 'start');
+    const startExport = instantiated.exports[startName];
+    if (typeof startExport !== 'function') {
+      throw new Error(`Expected exported function "${startName}".`);
+    }
+
+    assertEquals(await startExport(4325), undefined);
+    assertEquals(registeredPaths, ['/todos']);
+    assertEquals(listenedPort, 4325);
+    assertStringIncludes(sentHtml, '<!doctype html>');
+    assertStringIncludes(sentHtml, 'Todos');
+    assertStringIncludes(sentHtml, 'Write compiler tests');
+    assertStringIncludes(sentHtml, 'done');
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject compiles the checked-in fullstack-todo browser client example with react-router-dom browser roots',
+  async () => {
+    const projectDirectory = join(
+      dirname(fromFileUrl(import.meta.url)),
+      '..',
+      'examples/fullstack-todo',
+    );
+    const result = compileProject({
+      projectPath: join(projectDirectory, 'browser.tsconfig.json'),
+      workingDirectory: projectDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject executes the checked-in fullstack-todo browser client example through react-dom/client createRoot',
+  async () => {
+    const projectDirectory = join(
+      dirname(fromFileUrl(import.meta.url)),
+      '..',
+      'examples/fullstack-todo',
+    );
+    const result = compileProject({
+      projectPath: join(projectDirectory, 'browser.tsconfig.json'),
+      workingDirectory: projectDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const container = { firstChild: { nodeType: 1 }, nodeType: 1, tagName: 'DIV' };
+    let createRootCalls = 0;
+    let lastRendered:
+      | {
+        key: string | null;
+        props: Record<string, unknown>;
+        type: unknown;
+      }
+      | undefined;
+
+    function jsx(
+      type: unknown,
+      props: Record<string, unknown>,
+      key?: string | number | bigint,
+    ) {
+      return { key: key === undefined ? null : String(key), props, type };
+    }
+
+    function HashRouter(props: Record<string, unknown>) {
+      return { kind: 'HashRouter', props };
+    }
+
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate({
+      modules: {
+        'react/jsx-runtime': {
+          jsx,
+          jsxs: jsx,
+        },
+        'react-router': await import('npm:react-router@7.14.0'),
+        'react-router-dom': {
+          HashRouter,
+        },
+        'react-dom/client': {
+          createRoot(receivedContainer: {
+            firstChild: { nodeType: number };
+            nodeType: number;
+            tagName: string;
+          }) {
+            createRootCalls += 1;
+            assertStrictEquals(receivedContainer, container);
+            return {
+              render(children: {
+                key: string | null;
+                props: Record<string, unknown>;
+                type: unknown;
+              }) {
+                lastRendered = children;
+              },
+              unmount() {
+              },
+            };
+          },
+        },
+      },
+    });
+
+    const startName = await resolveQualifiedExportName(projectDirectory, 'start');
+    const startExport = instantiated.exports[startName];
+    if (typeof startExport !== 'function') {
+      throw new Error(`Expected exported function "${startName}".`);
+    }
+
+    assertEquals(await startExport(container), undefined);
+    assertEquals(createRootCalls, 1);
+    assert(lastRendered);
+    assertEquals(typeof lastRendered.type, 'function');
+
+    const appRoutesElement = lastRendered.props.children as {
+      key: string | null;
+      props: {
+        todos: Array<{ completed: boolean; id: number; title: string }>;
+      };
+      type: unknown;
+    };
+    assertEquals(typeof appRoutesElement.type, 'function');
+    assertEquals(appRoutesElement.key, null);
+    assertEquals(appRoutesElement.props.todos.length, 2);
+    assertEquals(appRoutesElement.props.todos[0]?.title, 'Write compiler tests');
+    assertEquals(appRoutesElement.props.todos[1]?.completed, true);
+
+    assertEquals(await startExport(container), undefined);
+    assertEquals(createRootCalls, 1);
   },
 );
 

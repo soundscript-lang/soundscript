@@ -4642,6 +4642,7 @@ interface BackendSpecializedObjectFieldLayout {
   name: string;
   optional: boolean;
   valueType: CompilerSpecializedObjectFieldValueType;
+  boundary?: CompilerHostBoundaryIR;
   taggedPrimitiveKinds?: CompilerTaggedPrimitiveBoundaryKindsIR;
   classTagId?: number;
   closureSignatureId?: number;
@@ -4864,6 +4865,7 @@ function createSpecializedObjectLayouts(
         name: field.name,
         optional: field.optional,
         valueType: field.valueType,
+        boundary: fieldMetadataByName.get(field.name)?.boundary,
         closureSignatureId: fieldMetadataByName.get(field.name)?.closureSignatureId,
         promiseBridge: fieldMetadataByName.get(field.name)?.promiseBridge,
         taggedPrimitiveKinds: fieldMetadataByName.get(field.name)?.taggedPrimitiveKinds,
@@ -6081,6 +6083,19 @@ function emitHostSpecializedFieldFromHostForTarget(
     ];
   }
   if (field.valueType === 'tagged_ref') {
+    if (field.boundary?.kind === 'tagged' && field.boundary.heapBoundary?.kind === 'closure') {
+      return [
+        ...getterLines,
+        `${indent(level)}local.set $entry_value`,
+        ...emitHostTaggedPrimitiveAndClosureToInternal(
+          'entry_value',
+          'entry_tag',
+          'entry_tagged',
+          field.boundary,
+          level,
+        ),
+      ];
+    }
     if (!field.taggedPrimitiveKinds) {
       throw createUnsupportedHeapRuntimeBackendError(
         `Missing tagged field metadata for ${field.name}.`,
@@ -6338,6 +6353,21 @@ function emitSpecializedFieldCopyToHost(
     ];
   }
   if (field.valueType === 'tagged_ref') {
+    if (field.boundary?.kind === 'tagged' && field.boundary.heapBoundary?.kind === 'closure') {
+      return [
+        `${indent(level)}local.get $target`,
+        ...fieldValueLines,
+        `${indent(level)}local.set $entry_tagged`,
+        ...emitInternalTaggedPrimitiveAndClosureToHost(
+          'entry_tagged',
+          'entry_tag',
+          'entry_value',
+          field.boundary,
+          level,
+        ),
+        `${indent(level)}call $${getHostObjectImportFunctionName('set_tagged', field.name)}`,
+      ];
+    }
     if (!field.taggedPrimitiveKinds) {
       throw createUnsupportedHeapRuntimeBackendError(
         `Missing tagged field metadata for ${field.name}.`,
@@ -6527,6 +6557,20 @@ function emitSpecializedFieldResultToHost(
     ];
   }
   if (field.valueType === 'tagged_ref') {
+    if (field.boundary?.kind === 'tagged' && field.boundary.heapBoundary?.kind === 'closure') {
+      return [
+        ...fieldValueLines,
+        `${indent(level)}local.set $entry_tagged`,
+        ...emitInternalTaggedPrimitiveAndClosureToHost(
+          'entry_tagged',
+          'entry_tag',
+          'entry_value',
+          field.boundary,
+          level,
+        ),
+        `${indent(level)}call $${getHostObjectImportFunctionName('set_tagged', field.name)}`,
+      ];
+    }
     if (!field.taggedPrimitiveKinds) {
       throw createUnsupportedHeapRuntimeBackendError(
         `Missing tagged field metadata for ${field.name}.`,
@@ -9851,6 +9895,7 @@ function emitHostFallbackObjectBoundaryHelpers(
   const heapProperties = collectHostBoundaryFallbackHeapProperties(module);
   const taggedHeapProperties = collectHostBoundaryFallbackTaggedHeapProperties(module);
   const usesHeapArrayResultBoundary = moduleUsesOwnedHeapArrayHostResultBoundary(module);
+  const usesHeapArrayRuntime = moduleUsesOwnedHeapArrayRuntime(module);
   const usesStringArrayResultBoundary = moduleUsesOwnedArrayHostResultBoundary(module);
   const usesNumberArrayResultBoundary = moduleUsesOwnedNumberArrayHostResultBoundary(module);
   const usesBooleanArrayResultBoundary = moduleUsesOwnedBooleanArrayHostResultBoundary(module);
@@ -9868,7 +9913,7 @@ function emitHostFallbackObjectBoundaryHelpers(
   ): string[] => {
     const emitArrayDispatch = (index: number): string[] => {
       const arrayKinds = [
-        ...(usesHeapArrayResultBoundary
+        ...(usesHeapArrayRuntime
           ? [{ kind: 'heap' as const, watTypeId: 'owned_heap_array' }]
           : []),
         ...(usesStringArrayResultBoundary
@@ -9950,7 +9995,7 @@ function emitHostFallbackObjectBoundaryHelpers(
     );
 
   if (usage.needsParamBoundary || usage.needsResultBoundary) {
-    if (usesHeapArrayResultBoundary) {
+    if (usesHeapArrayRuntime) {
       lines.push(
         '(func $generic_owned_heap_array_to_host_array (param $value (ref null $owned_heap_array)) (result externref)',
         `${indent(1)}(local $length i32)`,
@@ -10346,65 +10391,67 @@ function emitHostFallbackObjectBoundaryHelpers(
               `${indent(2)}call $${getHostFallbackObjectSetImportFunctionName(propertyName)}`,
             ]
             : heapRepresentation !== undefined
-            ? [
-              `${indent(2)}local.get $value`,
-              `${indent(2)}i32.const ${propertyKeyId}`,
-              `${indent(2)}call $get_fallback_object_property`,
-              `${indent(2)}call $untag_heap_object`,
-              `${indent(2)}local.set $entry_heap`,
-              `${indent(2)}local.get $target`,
-              `${indent(2)}call $${getHostFallbackObjectGetImportFunctionName(propertyName)}`,
-              `${indent(2)}local.set $entry_existing`,
-              `${indent(2)}local.get $entry_heap`,
-              `${indent(2)}call $${getHostObjectLookupCachedImportFunctionName()}`,
-              `${indent(2)}local.set $entry_value`,
-              `${indent(2)}local.get $entry_value`,
-              `${indent(2)}ref.is_null`,
-              `${indent(2)}if`,
-              `${indent(3)}local.get $target`,
-              `${indent(3)}local.get $entry_heap`,
-              ...(heapRepresentation.kind === 'specialized_object_representation'
-                ? [
-                  `${indent(3)}ref.cast (ref null $${heapLayout!.watTypeId})`,
-                  `${indent(3)}call $${getSpecializedObjectToHostHelperName(heapLayout!)}`,
-                ]
-                : [
-                  `${indent(3)}ref.cast (ref null $${layout.watTypeId})`,
-                  `${indent(3)}call $${getFallbackObjectToHostHelperName()}`,
-                ]),
-              `${indent(3)}call $${getHostFallbackObjectSetImportFunctionName(propertyName)}`,
-              `${indent(2)}else`,
-              `${indent(3)}local.get $entry_existing`,
-              `${indent(3)}local.get $entry_value`,
-              `${indent(3)}call $host_object_same`,
-              `${indent(3)}if`,
-              `${indent(4)}local.get $entry_existing`,
-              `${indent(4)}local.get $entry_heap`,
-              ...(heapRepresentation.kind === 'specialized_object_representation'
-                ? [
-                  `${indent(4)}ref.cast (ref null $${heapLayout!.watTypeId})`,
-                  `${indent(4)}call $${getCopySpecializedObjectToHostHelperName(heapLayout!)}`,
-                ]
-                : [
-                  `${indent(4)}ref.cast (ref null $${layout.watTypeId})`,
-                  `${indent(4)}call $${getCopyFallbackObjectToHostHelperName()}`,
-                ]),
-              `${indent(3)}else`,
-              `${indent(4)}local.get $target`,
-              `${indent(4)}local.get $entry_heap`,
-              ...(heapRepresentation.kind === 'specialized_object_representation'
-                ? [
-                  `${indent(4)}ref.cast (ref null $${heapLayout!.watTypeId})`,
-                  `${indent(4)}call $${getSpecializedObjectToHostHelperName(heapLayout!)}`,
-                ]
-                : [
-                  `${indent(4)}ref.cast (ref null $${layout.watTypeId})`,
-                  `${indent(4)}call $${getFallbackObjectToHostHelperName()}`,
-                ]),
-              `${indent(4)}call $${getHostFallbackObjectSetImportFunctionName(propertyName)}`,
-              `${indent(3)}end`,
-              `${indent(2)}end`,
-            ]
+            ? heapRepresentation.kind === 'specialized_object_representation'
+              ? [
+                `${indent(2)}local.get $value`,
+                `${indent(2)}i32.const ${propertyKeyId}`,
+                `${indent(2)}call $get_fallback_object_property`,
+                `${indent(2)}call $untag_heap_object`,
+                `${indent(2)}local.set $entry_heap`,
+                `${indent(2)}local.get $target`,
+                `${indent(2)}call $${getHostFallbackObjectGetImportFunctionName(propertyName)}`,
+                `${indent(2)}local.set $entry_existing`,
+                `${indent(2)}local.get $entry_heap`,
+                `${indent(2)}call $${getHostObjectLookupCachedImportFunctionName()}`,
+                `${indent(2)}local.set $entry_value`,
+                `${indent(2)}local.get $entry_value`,
+                `${indent(2)}ref.is_null`,
+                `${indent(2)}if`,
+                `${indent(3)}local.get $target`,
+                `${indent(3)}local.get $entry_heap`,
+                `${indent(3)}ref.cast (ref null $${heapLayout!.watTypeId})`,
+                `${indent(3)}call $${getSpecializedObjectToHostHelperName(heapLayout!)}`,
+                `${indent(3)}call $${getHostFallbackObjectSetImportFunctionName(propertyName)}`,
+                `${indent(2)}else`,
+                `${indent(3)}local.get $entry_existing`,
+                `${indent(3)}local.get $entry_value`,
+                `${indent(3)}call $host_object_same`,
+                `${indent(3)}if`,
+                `${indent(4)}local.get $entry_existing`,
+                `${indent(4)}local.get $entry_heap`,
+                `${indent(4)}ref.cast (ref null $${heapLayout!.watTypeId})`,
+                `${indent(4)}call $${getCopySpecializedObjectToHostHelperName(heapLayout!)}`,
+                `${indent(3)}else`,
+                `${indent(4)}local.get $target`,
+                `${indent(4)}local.get $entry_heap`,
+                `${indent(4)}ref.cast (ref null $${heapLayout!.watTypeId})`,
+                `${indent(4)}call $${getSpecializedObjectToHostHelperName(heapLayout!)}`,
+                `${indent(4)}call $${getHostFallbackObjectSetImportFunctionName(propertyName)}`,
+                `${indent(3)}end`,
+                `${indent(2)}end`,
+              ]
+              : [
+                `${indent(2)}local.get $value`,
+                `${indent(2)}i32.const ${propertyKeyId}`,
+                `${indent(2)}call $get_fallback_object_property`,
+                `${indent(2)}call $untag_heap_object`,
+                `${indent(2)}local.tee $entry_heap`,
+                `${indent(2)}call $${getHostObjectLookupCachedImportFunctionName()}`,
+                `${indent(2)}local.set $entry_value`,
+                `${indent(2)}local.get $entry_value`,
+                `${indent(2)}ref.is_null`,
+                `${indent(2)}if`,
+                ...emitGenericHeapObjectToHostSet(
+                  3,
+                  getHostFallbackObjectSetImportFunctionName(propertyName),
+                  'target',
+                ),
+                `${indent(2)}else`,
+                `${indent(3)}local.get $target`,
+                `${indent(3)}local.get $entry_value`,
+                `${indent(3)}call $${getHostFallbackObjectSetImportFunctionName(propertyName)}`,
+                `${indent(2)}end`,
+              ]
             : [
               `${indent(2)}local.get $value`,
               `${indent(2)}i32.const ${propertyKeyId}`,
@@ -10595,23 +10642,38 @@ function emitHostFallbackObjectBoundaryHelpers(
               `${indent(3)}call $${getHostFallbackObjectSetImportFunctionName(propertyName)}`,
             ]
             : heapRepresentation !== undefined
-            ? [
-              `${indent(3)}local.get $result`,
-              `${indent(3)}local.get $value`,
-              `${indent(3)}i32.const ${propertyKeyId}`,
-              `${indent(3)}call $get_fallback_object_property`,
-              `${indent(3)}call $untag_heap_object`,
-              ...(heapRepresentation.kind === 'specialized_object_representation'
-                ? [
-                  `${indent(3)}ref.cast (ref null $${heapLayout!.watTypeId})`,
-                  `${indent(3)}call $${getSpecializedObjectToHostHelperName(heapLayout!)}`,
-                ]
-                : [
-                  `${indent(3)}ref.cast (ref null $${layout.watTypeId})`,
-                  `${indent(3)}call $${getFallbackObjectToHostHelperName()}`,
-                ]),
-              `${indent(3)}call $${getHostFallbackObjectSetImportFunctionName(propertyName)}`,
-            ]
+            ? heapRepresentation.kind === 'specialized_object_representation'
+              ? [
+                `${indent(3)}local.get $result`,
+                `${indent(3)}local.get $value`,
+                `${indent(3)}i32.const ${propertyKeyId}`,
+                `${indent(3)}call $get_fallback_object_property`,
+                `${indent(3)}call $untag_heap_object`,
+                `${indent(3)}ref.cast (ref null $${heapLayout!.watTypeId})`,
+                `${indent(3)}call $${getSpecializedObjectToHostHelperName(heapLayout!)}`,
+                `${indent(3)}call $${getHostFallbackObjectSetImportFunctionName(propertyName)}`,
+              ]
+              : [
+                `${indent(3)}local.get $value`,
+                `${indent(3)}i32.const ${propertyKeyId}`,
+                `${indent(3)}call $get_fallback_object_property`,
+                `${indent(3)}call $untag_heap_object`,
+                `${indent(3)}local.tee $entry_heap`,
+                `${indent(3)}call $${getHostObjectLookupCachedImportFunctionName()}`,
+                `${indent(3)}local.tee $entry_value`,
+                `${indent(3)}ref.is_null`,
+                `${indent(3)}if`,
+                ...emitGenericHeapObjectToHostSet(
+                  4,
+                  getHostFallbackObjectSetImportFunctionName(propertyName),
+                  'result',
+                ),
+                `${indent(3)}else`,
+                `${indent(4)}local.get $result`,
+                `${indent(4)}local.get $entry_value`,
+                `${indent(4)}call $${getHostFallbackObjectSetImportFunctionName(propertyName)}`,
+                `${indent(3)}end`,
+              ]
             : [
               `${indent(3)}local.get $value`,
               `${indent(3)}i32.const ${propertyKeyId}`,
@@ -11551,16 +11613,18 @@ function emitOwnedHeapArrayBoundaryHelpers(
   layoutsByRepresentationName: ReadonlyMap<string, BackendSpecializedObjectLayout>,
   fallbackObjectLayout: BackendFallbackObjectRuntimeLayout | undefined,
 ): string[] {
-  const emittedRepresentations = new Set<string>();
+  const emittedParamRepresentations = new Set<string>();
+  const emittedResultRepresentations = new Set<string>();
+  const emittedCopyRepresentations = new Set<string>();
   const lines: string[] = [];
   const emitParamBoundaryHelper = (
     representation: CompilerRuntimeRepresentationRefIR<'object'>,
-    key: string,
+    _key: string,
   ): void => {
-    if (emittedRepresentations.has(key)) {
+    if (emittedParamRepresentations.has(representation.name)) {
       return;
     }
-    emittedRepresentations.add(key);
+    emittedParamRepresentations.add(representation.name);
     lines.push(
       ...emitHostArrayToOwnedHeapArrayHelper(
         representation,
@@ -11571,12 +11635,12 @@ function emitOwnedHeapArrayBoundaryHelpers(
   };
   const emitResultBoundaryHelper = (
     representation: CompilerRuntimeRepresentationRefIR<'object'>,
-    key: string,
+    _key: string,
   ): void => {
-    if (emittedRepresentations.has(key)) {
+    if (emittedResultRepresentations.has(representation.name)) {
       return;
     }
-    emittedRepresentations.add(key);
+    emittedResultRepresentations.add(representation.name);
     lines.push(
       ...emitOwnedHeapArrayToHostArrayHelper(
         representation,
@@ -11587,12 +11651,12 @@ function emitOwnedHeapArrayBoundaryHelpers(
   };
   const emitParamCopyBackHelper = (
     representation: CompilerRuntimeRepresentationRefIR<'object'>,
-    key: string,
+    _key: string,
   ): void => {
-    if (emittedRepresentations.has(key)) {
+    if (emittedCopyRepresentations.has(representation.name)) {
       return;
     }
-    emittedRepresentations.add(key);
+    emittedCopyRepresentations.add(representation.name);
     lines.push(
       ...emitCopyOwnedHeapArrayToHostArrayHelper(
         representation,
@@ -22383,6 +22447,117 @@ function emitHostClosureTaggedPrimitiveAndHeapToInternal(
   ];
 }
 
+function emitHostTaggedPrimitiveAndClosureToInternal(
+  externrefLocalName: string,
+  tagLocalName: string,
+  taggedLocalName: string,
+  boundary: Extract<CompilerHostBoundaryIR, { kind: 'tagged' }>,
+  level: number,
+): string[] {
+  const closureBoundary = boundary.heapBoundary;
+  if (closureBoundary?.kind !== 'closure') {
+    throw new Error('Expected closure heap boundary for host-to-internal tagged adaptation.');
+  }
+  const doneLabel = `$${taggedLocalName}__done`;
+  return [
+    `${indent(level)}local.get $${externrefLocalName}`,
+    `${indent(level)}call $tagged_type_tag`,
+    `${indent(level)}local.set $${tagLocalName}`,
+    `${indent(level)}(block ${doneLabel}`,
+    ...(boundary.includesUndefined
+      ? [
+        `${indent(level + 1)}local.get $${tagLocalName}`,
+        `${indent(level + 1)}i32.const 0`,
+        `${indent(level + 1)}i32.eq`,
+        `${indent(level + 1)}(if`,
+        `${indent(level + 2)}(then`,
+        `${indent(level + 3)}call $tag_undefined`,
+        `${indent(level + 3)}local.set $${taggedLocalName}`,
+        `${indent(level + 3)}br ${doneLabel}`,
+        `${indent(level + 2)})`,
+        `${indent(level + 1)})`,
+      ]
+      : []),
+    ...(boundary.includesNull
+      ? [
+        `${indent(level + 1)}local.get $${tagLocalName}`,
+        `${indent(level + 1)}i32.const 6`,
+        `${indent(level + 1)}i32.eq`,
+        `${indent(level + 1)}(if`,
+        `${indent(level + 2)}(then`,
+        `${indent(level + 3)}call $tag_null`,
+        `${indent(level + 3)}local.set $${taggedLocalName}`,
+        `${indent(level + 3)}br ${doneLabel}`,
+        `${indent(level + 2)})`,
+        `${indent(level + 1)})`,
+      ]
+      : []),
+    ...(boundary.includesBoolean
+      ? [
+        `${indent(level + 1)}local.get $${tagLocalName}`,
+        `${indent(level + 1)}i32.const 1`,
+        `${indent(level + 1)}i32.eq`,
+        `${indent(level + 1)}(if`,
+        `${indent(level + 2)}(then`,
+        `${indent(level + 3)}local.get $${externrefLocalName}`,
+        `${indent(level + 3)}call $tagged_boolean_value`,
+        `${indent(level + 3)}call $tag_boolean`,
+        `${indent(level + 3)}local.set $${taggedLocalName}`,
+        `${indent(level + 3)}br ${doneLabel}`,
+        `${indent(level + 2)})`,
+        `${indent(level + 1)})`,
+      ]
+      : []),
+    ...(boundary.includesNumber
+      ? [
+        `${indent(level + 1)}local.get $${tagLocalName}`,
+        `${indent(level + 1)}i32.const 2`,
+        `${indent(level + 1)}i32.eq`,
+        `${indent(level + 1)}(if`,
+        `${indent(level + 2)}(then`,
+        `${indent(level + 3)}local.get $${externrefLocalName}`,
+        `${indent(level + 3)}call $tagged_number_value`,
+        `${indent(level + 3)}call $tag_number`,
+        `${indent(level + 3)}local.set $${taggedLocalName}`,
+        `${indent(level + 3)}br ${doneLabel}`,
+        `${indent(level + 2)})`,
+        `${indent(level + 1)})`,
+      ]
+      : []),
+    ...(boundary.includesString
+      ? [
+        `${indent(level + 1)}local.get $${tagLocalName}`,
+        `${indent(level + 1)}i32.const 3`,
+        `${indent(level + 1)}i32.eq`,
+        `${indent(level + 1)}(if`,
+        `${indent(level + 2)}(then`,
+        `${indent(level + 3)}local.get $${externrefLocalName}`,
+        `${indent(level + 3)}call $string_to_owned`,
+        `${indent(level + 3)}call $tag_string`,
+        `${indent(level + 3)}local.set $${taggedLocalName}`,
+        `${indent(level + 3)}br ${doneLabel}`,
+        `${indent(level + 2)})`,
+        `${indent(level + 1)})`,
+      ]
+      : []),
+    `${indent(level + 1)}local.get $${tagLocalName}`,
+    `${indent(level + 1)}i32.const 4`,
+    `${indent(level + 1)}i32.eq`,
+    `${indent(level + 1)}(if`,
+    `${indent(level + 2)}(then`,
+    `${indent(level + 3)}local.get $${externrefLocalName}`,
+    `${indent(level + 3)}call $host_externref_to_closure_${closureBoundary.signatureId}`,
+    `${indent(level + 3)}call $tag_heap_object`,
+    `${indent(level + 3)}local.set $${taggedLocalName}`,
+    `${indent(level + 3)}br ${doneLabel}`,
+    `${indent(level + 2)})`,
+    `${indent(level + 1)})`,
+    `${indent(level + 1)}unreachable`,
+    `${indent(level)})`,
+    `${indent(level)}local.get $${taggedLocalName}`,
+  ];
+}
+
 function emitInternalClosureTaggedPrimitiveAndHeapToHost(
   taggedLocalName: string,
   tagLocalName: string,
@@ -22521,6 +22696,118 @@ function emitInternalClosureTaggedPrimitiveAndHeapToHost(
         ? getHostDynamicBuiltinErrorHelperName()
         : getFallbackObjectToHostHelperName()
     }`,
+    `${indent(level + 3)}local.set $${externrefLocalName}`,
+    `${indent(level + 3)}br ${doneLabel}`,
+    `${indent(level + 2)})`,
+    `${indent(level + 1)})`,
+    `${indent(level + 1)}unreachable`,
+    `${indent(level)})`,
+    `${indent(level)}local.get $${externrefLocalName}`,
+  ];
+}
+
+function emitInternalTaggedPrimitiveAndClosureToHost(
+  taggedLocalName: string,
+  tagLocalName: string,
+  externrefLocalName: string,
+  boundary: Extract<CompilerHostBoundaryIR, { kind: 'tagged' }>,
+  level: number,
+): string[] {
+  const closureBoundary = boundary.heapBoundary;
+  if (closureBoundary?.kind !== 'closure') {
+    throw new Error('Expected closure heap boundary for internal-to-host tagged adaptation.');
+  }
+  const doneLabel = `$${externrefLocalName}__done`;
+  return [
+    `${indent(level)}local.get $${taggedLocalName}`,
+    `${indent(level)}struct.get $tagged_value 0`,
+    `${indent(level)}local.set $${tagLocalName}`,
+    `${indent(level)}(block ${doneLabel}`,
+    ...(boundary.includesUndefined
+      ? [
+        `${indent(level + 1)}local.get $${tagLocalName}`,
+        `${indent(level + 1)}i32.const 0`,
+        `${indent(level + 1)}i32.eq`,
+        `${indent(level + 1)}(if`,
+        `${indent(level + 2)}(then`,
+        `${indent(level + 3)}call $tagged_undefined_value`,
+        `${indent(level + 3)}local.set $${externrefLocalName}`,
+        `${indent(level + 3)}br ${doneLabel}`,
+        `${indent(level + 2)})`,
+        `${indent(level + 1)})`,
+      ]
+      : []),
+    ...(boundary.includesNull
+      ? [
+        `${indent(level + 1)}local.get $${tagLocalName}`,
+        `${indent(level + 1)}i32.const 6`,
+        `${indent(level + 1)}i32.eq`,
+        `${indent(level + 1)}(if`,
+        `${indent(level + 2)}(then`,
+        `${indent(level + 3)}ref.null extern`,
+        `${indent(level + 3)}local.set $${externrefLocalName}`,
+        `${indent(level + 3)}br ${doneLabel}`,
+        `${indent(level + 2)})`,
+        `${indent(level + 1)})`,
+      ]
+      : []),
+    ...(boundary.includesBoolean
+      ? [
+        `${indent(level + 1)}local.get $${tagLocalName}`,
+        `${indent(level + 1)}i32.const 1`,
+        `${indent(level + 1)}i32.eq`,
+        `${indent(level + 1)}(if`,
+        `${indent(level + 2)}(then`,
+        `${indent(level + 3)}local.get $${taggedLocalName}`,
+        `${indent(level + 3)}call $untag_boolean`,
+        `${indent(level + 3)}call $tagged_from_boolean`,
+        `${indent(level + 3)}local.set $${externrefLocalName}`,
+        `${indent(level + 3)}br ${doneLabel}`,
+        `${indent(level + 2)})`,
+        `${indent(level + 1)})`,
+      ]
+      : []),
+    ...(boundary.includesNumber
+      ? [
+        `${indent(level + 1)}local.get $${tagLocalName}`,
+        `${indent(level + 1)}i32.const 2`,
+        `${indent(level + 1)}i32.eq`,
+        `${indent(level + 1)}(if`,
+        `${indent(level + 2)}(then`,
+        `${indent(level + 3)}local.get $${taggedLocalName}`,
+        `${indent(level + 3)}call $untag_number`,
+        `${indent(level + 3)}call $tagged_from_number`,
+        `${indent(level + 3)}local.set $${externrefLocalName}`,
+        `${indent(level + 3)}br ${doneLabel}`,
+        `${indent(level + 2)})`,
+        `${indent(level + 1)})`,
+      ]
+      : []),
+    ...(boundary.includesString
+      ? [
+        `${indent(level + 1)}local.get $${tagLocalName}`,
+        `${indent(level + 1)}i32.const 3`,
+        `${indent(level + 1)}i32.eq`,
+        `${indent(level + 1)}(if`,
+        `${indent(level + 2)}(then`,
+        `${indent(level + 3)}local.get $${taggedLocalName}`,
+        `${indent(level + 3)}call $untag_owned_string`,
+        `${indent(level + 3)}call $owned_string_to_host`,
+        `${indent(level + 3)}local.set $${externrefLocalName}`,
+        `${indent(level + 3)}br ${doneLabel}`,
+        `${indent(level + 2)})`,
+        `${indent(level + 1)})`,
+      ]
+      : []),
+    `${indent(level + 1)}local.get $${tagLocalName}`,
+    `${indent(level + 1)}i32.const 4`,
+    `${indent(level + 1)}i32.eq`,
+    `${indent(level + 1)}(if`,
+    `${indent(level + 2)}(then`,
+    `${indent(level + 3)}local.get $${taggedLocalName}`,
+    `${indent(level + 3)}call $untag_heap_object`,
+    `${indent(level + 3)}ref.cast (ref null $closure)`,
+    `${indent(level + 3)}call $host_closure_to_host_${closureBoundary.signatureId}`,
     `${indent(level + 3)}local.set $${externrefLocalName}`,
     `${indent(level + 3)}br ${doneLabel}`,
     `${indent(level + 2)})`,

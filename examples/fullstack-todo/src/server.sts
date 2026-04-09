@@ -5,7 +5,7 @@ import { renderToString } from 'react-dom/server';
 // #[interop]
 import { StaticRouter } from 'react-router';
 
-import { AppRoutes } from './app.sts';
+import { AppRoutes, createInitialTodos } from './app.sts';
 
 function createApp(): MinimalApp {
   const app = express();
@@ -22,7 +22,7 @@ function createApp(): MinimalApp {
 function App(path: string) {
   return (
     <StaticRouter location={path}>
-      <AppRoutes />
+      <AppRoutes todos={createInitialTodos()} />
     </StaticRouter>
   );
 }

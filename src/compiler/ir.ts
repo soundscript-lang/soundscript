@@ -1432,7 +1432,7 @@ export interface CompilerHostBoundaryObjectIR {
 
 export interface CompilerHostBoundaryTaggedIR extends CompilerTaggedPrimitiveBoundaryKindsIR {
   kind: 'tagged';
-  heapBoundary?: CompilerHostBoundaryObjectIR;
+  heapBoundary?: CompilerHostBoundaryIR;
 }
 
 export interface CompilerHostBoundaryPromiseIR {

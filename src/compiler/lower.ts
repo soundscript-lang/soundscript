@@ -18108,7 +18108,7 @@ function createHostObjectBoundary(
 
 function createHostTaggedBoundary(
   taggedPrimitiveKinds: CompilerTaggedPrimitiveBoundaryKindsIR | undefined,
-  heapBoundary?: CompilerHostBoundaryObjectIR,
+  heapBoundary?: CompilerHostBoundaryIR,
 ): CompilerHostBoundaryIR {
   return {
     kind: 'tagged',
@@ -18895,7 +18895,12 @@ function hasCallableHeapProperty(
   }
   return type.getProperties().some((property) => {
     const propertyType = checker.getTypeOfSymbolAtLocation(property, contextNode);
-    if (checker.getSignaturesOfType(propertyType, ts.SignatureKind.Call).length === 0) {
+    const signatures = checker.getSignaturesOfType(propertyType, ts.SignatureKind.Call);
+    const hasCallableUnionMember = (propertyType.flags & ts.TypeFlags.Union) !== 0 &&
+      (propertyType as ts.UnionType).types.some((member) =>
+        checker.getSignaturesOfType(member, ts.SignatureKind.Call).length > 0
+      );
+    if (signatures.length === 0 && !hasCallableUnionMember) {
       return getCandidateSpecializedObjectShapeSignature(
             checker,
             propertyType,
@@ -18911,6 +18916,9 @@ function hasCallableHeapProperty(
           allowAmbientDeclarationFileMethods,
           visitedTypes,
         );
+    }
+    if (hasCallableUnionMember) {
+      return true;
     }
     return property.getDeclarations()?.some((declaration) =>
       isSupportedCallableFixedLayoutPropertyDeclaration(
@@ -18946,6 +18954,10 @@ function hasOverloadedCallableHeapProperty(
   return type.getProperties().some((property) => {
     const propertyType = checker.getTypeOfSymbolAtLocation(property, contextNode);
     const signatures = checker.getSignaturesOfType(propertyType, ts.SignatureKind.Call);
+    const overloadedCallableUnionMember = (propertyType.flags & ts.TypeFlags.Union) !== 0 &&
+      (propertyType as ts.UnionType).types.some((member) =>
+        checker.getSignaturesOfType(member, ts.SignatureKind.Call).length > 1
+      );
     if (signatures.length > 1) {
       return property.getDeclarations()?.some((declaration) =>
         isSupportedCallableFixedLayoutPropertyDeclaration(
@@ -18953,6 +18965,9 @@ function hasOverloadedCallableHeapProperty(
           allowAmbientDeclarationFileMethods,
         )
       ) ?? false;
+    }
+    if (overloadedCallableUnionMember) {
+      return true;
     }
     if (signatures.length === 1) {
       return false;
@@ -19917,6 +19932,28 @@ function annotateCallableSpecializedObjectFieldsForHostBoundary(
         propertyShape.valueType !== 'tagged_ref'
       ) {
         continue;
+      }
+      if (propertyShape.valueType === 'tagged_ref') {
+        const taggedClosureBoundary = getAmbientTaggedClosureBoundary(
+          checker,
+          propertyType,
+          contextNode,
+          closures,
+          runtime,
+          classes,
+        );
+        if (taggedClosureBoundary) {
+          const field = concreteRepresentation.fields.find((candidate) =>
+            candidate.name === property.getName()
+          );
+          if (!field) {
+            throw new Error(
+              `Missing specialized object field metadata for tagged callable property ${property.getName()}.`,
+            );
+          }
+          field.boundary = taggedClosureBoundary;
+          continue;
+        }
       }
       if (!propertyShape.heapRepresentationName) {
         continue;
@@ -21211,6 +21248,101 @@ function mergeCompilerTaggedPrimitiveBoundaryKinds(
   };
 }
 
+function getAmbientTaggedClosureBoundary(
+  checker: ts.TypeChecker,
+  type: ts.Type,
+  contextNode: ts.Node,
+  closures: ModuleClosureLoweringState,
+  runtime: ModuleRuntimeLoweringState,
+  classes: ReadonlyMap<ts.Symbol, ts.ClassDeclaration>,
+): CompilerHostBoundaryIR | undefined {
+  if ((type.flags & ts.TypeFlags.Union) === 0) {
+    return undefined;
+  }
+  let closureSignatureId: number | undefined;
+  let includesBoolean = false;
+  let includesNull = false;
+  let includesNumber = false;
+  let includesString = false;
+  let includesUndefined = false;
+  for (const member of (type as ts.UnionType).types) {
+    if ((member.flags & ts.TypeFlags.BooleanLike) !== 0) {
+      includesBoolean = true;
+      continue;
+    }
+    if ((member.flags & ts.TypeFlags.NumberLike) !== 0) {
+      includesNumber = true;
+      continue;
+    }
+    if (isStringLikeType(member)) {
+      includesString = true;
+      continue;
+    }
+    if (isNullType(member)) {
+      includesNull = true;
+      continue;
+    }
+    if (isUndefinedType(member)) {
+      includesUndefined = true;
+      continue;
+    }
+    if (checker.getSignaturesOfType(member, ts.SignatureKind.Call).length > 0) {
+      const shallowClosureBoundaryOptions = {
+        annotateNestedCallableHeapFields: false,
+      } satisfies ResolveClosureAbiSignatureOptions;
+      ensureSupportedHostClosureBoundarySignature(
+        checker,
+        member,
+        contextNode,
+        closures,
+        runtime,
+        classes,
+        shallowClosureBoundaryOptions,
+      );
+      annotateHostClosureBoundaryTypes(
+        checker,
+        member,
+        contextNode,
+        runtime,
+        closures,
+        classes,
+        shallowClosureBoundaryOptions,
+      );
+      const currentSignatureId = getClosureSignatureIdForType(
+        checker,
+        member,
+        contextNode,
+        closures,
+        runtime,
+        classes,
+        shallowClosureBoundaryOptions,
+      );
+      if (closureSignatureId !== undefined && closureSignatureId !== currentSignatureId) {
+        return undefined;
+      }
+      closureSignatureId = currentSignatureId;
+      continue;
+    }
+    return undefined;
+  }
+  if (closureSignatureId === undefined) {
+    return undefined;
+  }
+  return createHostTaggedBoundary(
+    {
+      includesBoolean,
+      includesNull,
+      includesNumber,
+      includesString,
+      includesUndefined,
+    },
+    {
+      kind: 'closure',
+      signatureId: closureSignatureId,
+    },
+  );
+}
+
 function getFunctionHostBoundaryParamOrder(
   func: Pick<CompilerFunctionIR, 'hostExportParamOrder' | 'params'>,
   metadata: HostBoundaryBuildMetadata,
@@ -21560,7 +21692,8 @@ function visitTopLevelFallbackHostObjectBoundaries(
     }
     if (
       boundary.kind === 'tagged' &&
-      boundary.heapBoundary?.representation.kind === 'fallback_object_representation'
+      boundary.heapBoundary?.kind === 'object' &&
+      boundary.heapBoundary.representation.kind === 'fallback_object_representation'
     ) {
       visitor(boundary.heapBoundary);
     }

@@ -1,0 +1,11 @@
+// #[interop]
+import { Route, Routes } from 'react-router';
+
+export function AppRoutes() {
+  return (
+    <Routes>
+      <Route path="/" element={<main>home</main>} />
+      <Route path="/todos" element={<main>todos</main>} />
+    </Routes>
+  );
+}

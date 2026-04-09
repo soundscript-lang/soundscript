@@ -11,18 +11,13 @@
     ],
     "module": "ESNext",
     "moduleResolution": "bundler",
-    "allowSyntheticDefaultImports": true,
-    "types": [
-      "node",
-      "express"
-    ]
+    "allowSyntheticDefaultImports": true
   },
   "include": [
     "src/app.sts",
-    "src/server.sts",
-    "src/**/*.d.ts"
+    "src/client.sts"
   ],
   "soundscript": {
-    "target": "wasm-node"
+    "target": "wasm-browser"
   }
 }

@@ -1,0 +1,48 @@
+// #[interop]
+import { Route, Routes } from 'react-router';
+
+export interface Todo {
+  id: number;
+  title: string;
+  completed: boolean;
+}
+
+export type TodoList = [Todo, Todo];
+
+export function createInitialTodos(): TodoList {
+  return [
+    {
+      id: 1,
+      title: 'Write compiler tests',
+      completed: false,
+    },
+    {
+      id: 2,
+      title: 'Ship the Wasm SSR todo app',
+      completed: true,
+    },
+  ];
+}
+
+function TodoPage(props: { todos: TodoList }) {
+  const firstTodo = props.todos[0];
+  const secondTodo = props.todos[1];
+  const completedLabel = secondTodo.completed ? 'done' : 'open';
+  return (
+    <main>
+      <h1>Todos</h1>
+      <p>{firstTodo.title}</p>
+      <p>{completedLabel}</p>
+      <p>{props.todos.length}</p>
+    </main>
+  );
+}
+
+export function AppRoutes(props: { todos: TodoList }) {
+  return (
+    <Routes>
+      <Route path="/" element={<TodoPage todos={props.todos} />} />
+      <Route path="/todos" element={<TodoPage todos={props.todos} />} />
+    </Routes>
+  );
+}
