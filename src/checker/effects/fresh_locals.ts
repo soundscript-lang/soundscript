@@ -19,6 +19,7 @@ export interface FreshLocalFailureReason {
 
 export interface FreshLocalProof {
   readonly failureReasonsByRootSymbolId: ReadonlyMap<number, readonly FreshLocalFailureReason[]>;
+  readonly receiverMutatorFamiliesByRootSymbolId: ReadonlyMap<number, string>;
   readonly rootSymbolIds: ReadonlySet<number>;
   readonly symbolIdToRootSymbolId: ReadonlyMap<number, number>;
 }
@@ -101,6 +102,22 @@ function resolveDirectFreshLocalRootSymbolId(
   }
   const symbolId = getIdentifierSymbolId(context, current);
   return symbolId === undefined ? undefined : symbolIdToRootSymbolId.get(symbolId);
+}
+
+function getNewExpressionFamilyName(
+  expression: ts.NewExpression,
+): string | undefined {
+  const callee = unwrapOuterExpression(expression.expression);
+  if (ts.isIdentifier(callee)) {
+    return callee.text;
+  }
+  if (ts.isPropertyAccessExpression(callee)) {
+    return callee.name.text;
+  }
+  if (ts.isElementAccessExpression(callee) && ts.isStringLiteralLike(callee.argumentExpression)) {
+    return callee.argumentExpression.text;
+  }
+  return undefined;
 }
 
 function addFailureReason(
@@ -201,6 +218,7 @@ function computeFreshLocalProof(
 ): FreshLocalProof {
   const emptyProof: FreshLocalProof = {
     failureReasonsByRootSymbolId: new Map(),
+    receiverMutatorFamiliesByRootSymbolId: new Map(),
     rootSymbolIds: new Set(),
     symbolIdToRootSymbolId: new Map(),
   };
@@ -211,6 +229,7 @@ function computeFreshLocalProof(
   const body = declaration.body;
   const rootSymbolIds = new Set<number>();
   const symbolIdToRootSymbolId = new Map<number, number>();
+  const receiverMutatorFamiliesByRootSymbolId = new Map<number, string>();
   const failureReasonsByRootSymbolId = new Map<number, FreshLocalFailureReason[]>();
 
   const collect = (node: ts.Node): void => {
@@ -224,6 +243,13 @@ function computeFreshLocalProof(
         if (isFreshLocalInitializer(node.initializer)) {
           rootSymbolIds.add(symbolId);
           symbolIdToRootSymbolId.set(symbolId, symbolId);
+          const initializer = unwrapOuterExpression(node.initializer);
+          if (ts.isNewExpression(initializer)) {
+            const familyName = getNewExpressionFamilyName(initializer);
+            if (familyName) {
+              receiverMutatorFamiliesByRootSymbolId.set(symbolId, familyName);
+            }
+          }
         } else {
           const rootSymbolId = resolveDirectFreshLocalRootSymbolId(
             context,
@@ -289,6 +315,11 @@ function computeFreshLocalProof(
 
   return {
     failureReasonsByRootSymbolId,
+    receiverMutatorFamiliesByRootSymbolId: new Map(
+      [...receiverMutatorFamiliesByRootSymbolId.entries()].filter(([rootSymbolId]) =>
+        validRootSymbolIds.has(rootSymbolId)
+      ),
+    ),
     rootSymbolIds: validRootSymbolIds,
     symbolIdToRootSymbolId: new Map(
       [...symbolIdToRootSymbolId.entries()].filter(([, rootSymbolId]) => validRootSymbolIds.has(rootSymbolId)),
@@ -345,6 +376,32 @@ export function getFreshLocalRootSymbolId(
   return symbolId === undefined ? undefined : proof.symbolIdToRootSymbolId.get(symbolId);
 }
 
+interface FreshLocalAccessPath {
+  readonly depth: number;
+  readonly rootSymbolId: number;
+}
+
+function getFreshLocalAccessPath(
+  context: AnalysisContext,
+  expression: ts.Expression,
+  proof: FreshLocalProof,
+): FreshLocalAccessPath | undefined {
+  let current = unwrapOuterExpression(expression);
+  let depth = 0;
+  while (ts.isPropertyAccessExpression(current) || ts.isElementAccessExpression(current)) {
+    depth += 1;
+    current = unwrapOuterExpression(current.expression);
+  }
+
+  if (!ts.isIdentifier(current)) {
+    return undefined;
+  }
+
+  const symbolId = getIdentifierSymbolId(context, current);
+  const rootSymbolId = symbolId === undefined ? undefined : proof.symbolIdToRootSymbolId.get(symbolId);
+  return rootSymbolId === undefined ? undefined : { depth, rootSymbolId };
+}
+
 function getCallReceiverMemberName(
   expression: ts.CallExpression,
 ): string | undefined {
@@ -356,20 +413,6 @@ function getCallReceiverMemberName(
     return callee.argumentExpression.text;
   }
   return undefined;
-}
-
-function getReceiverFamilyName(
-  context: AnalysisContext,
-  expression: ts.Expression,
-): string | undefined {
-  const type = context.checker.getApparentType(context.checker.getTypeAtLocation(expression));
-  if (type.isUnionOrIntersection()) {
-    const familyNames = new Set(
-      type.types.map((part) => (part.aliasSymbol ?? part.getSymbol())?.getName()).filter(Boolean),
-    );
-    return familyNames.size === 1 ? [...familyNames][0] : undefined;
-  }
-  return (type.aliasSymbol ?? type.getSymbol())?.getName();
 }
 
 export function getFreshLocalMutatingCall(
@@ -386,13 +429,21 @@ export function getFreshLocalMutatingCall(
     return undefined;
   }
 
-  const rootSymbolId = getFreshLocalRootSymbolId(context, callee, proof);
-  if (rootSymbolId === undefined) {
+  const receiverPath = getFreshLocalAccessPath(context, callee.expression, proof);
+  if (!receiverPath) {
     return undefined;
+  }
+  const { rootSymbolId } = receiverPath;
+  if (receiverPath.depth !== 0) {
+    return {
+      blockedReason: { kind: 'opaqueCallBoundary' },
+      rootSymbolId,
+      suppressesMut: false,
+    };
   }
 
   const memberName = getCallReceiverMemberName(expression);
-  const familyName = getReceiverFamilyName(context, callee.expression);
+  const familyName = proof.receiverMutatorFamiliesByRootSymbolId.get(rootSymbolId);
   if (!memberName || !familyName) {
     return {
       blockedReason: { kind: 'opaqueCallBoundary' },

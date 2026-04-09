@@ -5286,7 +5286,9 @@ Deno.test('analyzeProject rejects bodyful forbid contracts with unresolved forwa
   assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1040']);
   assertEquals(result.diagnostics[0]?.metadata?.primarySymbol, 'runOnce');
   assertEquals(
-    result.diagnostics[0]?.metadata?.evidence?.find((entry) => entry.label === 'unknownEffectReasons')?.value,
+    result.diagnostics[0]?.metadata?.evidence?.find((entry) =>
+      entry.label === 'unknownEffectReasons'
+    )?.value,
     'unresolved forwarded callback (callback)',
   );
 });
@@ -5331,7 +5333,9 @@ Deno.test('analyzeProject reports failing forwarded member steps in bodyful forb
   assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1040']);
   assertEquals(result.diagnostics[0]?.metadata?.primarySymbol, 'use');
   assertEquals(
-    result.diagnostics[0]?.metadata?.evidence?.find((entry) => entry.label === 'unknownEffectReasons')?.value,
+    result.diagnostics[0]?.metadata?.evidence?.find((entry) =>
+      entry.label === 'unknownEffectReasons'
+    )?.value,
     'unresolved forwarded callback (decoder.inner.decode; failed at decode)',
   );
 });
@@ -5429,6 +5433,163 @@ Deno.test('analyzeProject keeps inferred conflicts under bodyful add contracts',
   assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1040']);
   assertEquals(result.diagnostics[0]?.metadata?.rule, 'effect_contract_violation');
   assertEquals(result.diagnostics[0]?.metadata?.primarySymbol, 'invalidTaggedRead');
+});
+
+Deno.test('analyzeProject keeps source and declaration helper surfaces aligned under forbid contracts', async () => {
+  const sourceProjectDirectory = await createTempProject({
+    'tsconfig.json': createSoundscriptOnlyTsconfig(),
+    'src/helpers.sts': [
+      'export interface Decoder<T> {',
+      '  readonly decode: (value: unknown) => T;',
+      '}',
+      '',
+      '// #[extern]',
+      '// #[effects(add: [host.io, host.node.fs, suspend.await])]',
+      'declare function readRemote(path: string): Promise<string>;',
+      '',
+      'export function parseAndDecode<T>(text: string, decoder: Decoder<T>): T {',
+      '  return decoder.decode(JSON.parse(text));',
+      '}',
+      '',
+      '// #[effects(add: [host.db.transaction])]',
+      'export async function transactionRead(path: string): Promise<string> {',
+      '  return await readRemote(path);',
+      '}',
+      '',
+      'export function logValue(value: unknown): void {',
+      '  console.log(value);',
+      '}',
+      '',
+    ].join('\n'),
+    'src/index.sts': [
+      'import { type Decoder, logValue, parseAndDecode, transactionRead } from "./helpers";',
+      '',
+      'const failingDecoder: Decoder<number> = {',
+      '  decode(_value: unknown): number {',
+      '    throw new Error("boom");',
+      '  },',
+      '};',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function useParse(text: string): number {',
+      '  return parseAndDecode(text, failingDecoder);',
+      '}',
+      '',
+      '// #[effects(forbid: [host.io])]',
+      'async function useTransaction(path: string): Promise<string> {',
+      '  return await transactionRead(path);',
+      '}',
+      '',
+      '// #[effects(forbid: [host.ffi])]',
+      'function useLog(value: unknown): void {',
+      '  logValue(value);',
+      '}',
+      '',
+    ].join('\n'),
+  });
+  const declarationProjectDirectory = await createTempProject({
+    'tsconfig.json': createSoundscriptOnlyTsconfig(),
+    'node_modules/generated-helpers/package.json': JSON.stringify(
+      {
+        name: 'generated-helpers',
+        version: '1.0.0',
+        type: 'module',
+        exports: {
+          '.': {
+            types: './dist/index.d.ts',
+            import: './dist/index.js',
+          },
+        },
+      },
+      null,
+      2,
+    ),
+    'node_modules/generated-helpers/dist/index.js': 'export {};\n',
+    'node_modules/generated-helpers/dist/index.d.ts': [
+      'export interface Decoder<T> {',
+      '  readonly decode: (value: unknown) => T;',
+      '}',
+      '',
+      '// #[effects(add: [fails.throws], forward: [decoder.decode], unknown: [direct])]',
+      'export declare function parseAndDecode<T>(text: string, decoder: Decoder<T>): T;',
+      '',
+      '// #[effects(add: [host.db.transaction, host.io, host.node.fs, suspend.await])]',
+      'export declare function transactionRead(path: string): Promise<string>;',
+      '',
+      '// #[effects(add: [host.ffi])]',
+      'export declare function logValue(value: unknown): void;',
+      '',
+    ].join('\n'),
+    'src/index.sts': [
+      'import { type Decoder, logValue, parseAndDecode, transactionRead } from "generated-helpers";',
+      '',
+      'const failingDecoder: Decoder<number> = {',
+      '  decode(_value: unknown): number {',
+      '    throw new Error("boom");',
+      '  },',
+      '};',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function useParse(text: string): number {',
+      '  return parseAndDecode(text, failingDecoder);',
+      '}',
+      '',
+      '// #[effects(forbid: [host.io])]',
+      'async function useTransaction(path: string): Promise<string> {',
+      '  return await transactionRead(path);',
+      '}',
+      '',
+      '// #[effects(forbid: [host.ffi])]',
+      'function useLog(value: unknown): void {',
+      '  logValue(value);',
+      '}',
+      '',
+    ].join('\n'),
+  });
+
+  const sourceResult = await analyzeProject({
+    projectPath: join(sourceProjectDirectory, 'tsconfig.json'),
+    workingDirectory: sourceProjectDirectory,
+  });
+  const declarationResult = await analyzeProject({
+    projectPath: join(declarationProjectDirectory, 'tsconfig.json'),
+    workingDirectory: declarationProjectDirectory,
+  });
+
+  const simplifyDiagnostics = (result: Awaited<ReturnType<typeof analyzeProject>>) =>
+    result.diagnostics
+      .filter((diagnostic) => diagnostic.code !== 'SOUND1005')
+      .map((diagnostic) => ({
+        code: diagnostic.code,
+        forbiddenEffects: diagnostic.metadata?.evidence?.find((entry) =>
+          entry.label === 'forbiddenEffects'
+        )
+          ?.value,
+        primarySymbol: diagnostic.metadata?.primarySymbol,
+        rule: diagnostic.metadata?.rule,
+      }));
+
+  assertEquals(simplifyDiagnostics(sourceResult), [
+    {
+      code: 'SOUND1040',
+      forbiddenEffects: 'fails',
+      primarySymbol: 'useParse',
+      rule: 'effect_contract_violation',
+    },
+    {
+      code: 'SOUND1040',
+      forbiddenEffects: 'host.io',
+      primarySymbol: 'useTransaction',
+      rule: 'effect_contract_violation',
+    },
+    {
+      code: 'SOUND1040',
+      forbiddenEffects: 'host.ffi',
+      primarySymbol: 'useLog',
+      rule: 'effect_contract_violation',
+    },
+  ]);
+  assertEquals(simplifyDiagnostics(declarationResult), simplifyDiagnostics(sourceResult));
 });
 
 Deno.test('analyzeProject rejects effects annotations on overload signatures with implementations', async () => {
@@ -5801,6 +5962,55 @@ Deno.test('analyzeProject allows fresh local scratch mutation under forbid mut',
       '}',
       '',
       '// #[effects(forbid: [mut])]',
+      'function buildSet(): Set<number> {',
+      '  const values = new Set<number>();',
+      '  values.add(1);',
+      '  return values;',
+      '}',
+      '',
+      '// #[effects(forbid: [mut])]',
+      'function buildSetAlias(): Set<number> {',
+      '  const values = new Set<number>();',
+      '  const out = values;',
+      '  out.add(1);',
+      '  return out;',
+      '}',
+      '',
+      '// #[effects(forbid: [mut])]',
+      'function buildWeakMap(): WeakMap<object, number> {',
+      '  const key = {};',
+      '  const values = new WeakMap<object, number>();',
+      '  values.set(key, 1);',
+      '  return values;',
+      '}',
+      '',
+      '// #[effects(forbid: [mut])]',
+      'function buildWeakMapAlias(): WeakMap<object, number> {',
+      '  const key = {};',
+      '  const values = new WeakMap<object, number>();',
+      '  const out = values;',
+      '  out.set(key, 1);',
+      '  return out;',
+      '}',
+      '',
+      '// #[effects(forbid: [mut])]',
+      'function buildWeakSet(): WeakSet<object> {',
+      '  const key = {};',
+      '  const values = new WeakSet<object>();',
+      '  values.add(key);',
+      '  return values;',
+      '}',
+      '',
+      '// #[effects(forbid: [mut])]',
+      'function buildWeakSetAlias(): WeakSet<object> {',
+      '  const key = {};',
+      '  const values = new WeakSet<object>();',
+      '  const out = values;',
+      '  out.add(key);',
+      '  return out;',
+      '}',
+      '',
+      '// #[effects(forbid: [mut])]',
       'function buildParams(): URLSearchParams {',
       '  const params = new URLSearchParams();',
       '  params.set("q", "music");',
@@ -5827,6 +6037,21 @@ Deno.test('analyzeProject allows fresh local scratch mutation under forbid mut',
       '  const data = new FormData();',
       '  const out = data;',
       '  out.append("q", "music");',
+      '  return out;',
+      '}',
+      '',
+      '// #[effects(forbid: [mut])]',
+      'function buildHeaders(): Headers {',
+      '  const headers = new Headers();',
+      '  headers.set("accept", "application/json");',
+      '  return headers;',
+      '}',
+      '',
+      '// #[effects(forbid: [mut])]',
+      'function buildHeadersAlias(): Headers {',
+      '  const headers = new Headers();',
+      '  const out = headers;',
+      '  out.set("accept", "application/json");',
       '  return out;',
       '}',
       '',
@@ -5983,15 +6208,123 @@ Deno.test('analyzeProject reports fresh local conservative mut reasons in forbid
     'escapeBeforeMutate',
   ]);
   assertEquals(
-    result.diagnostics[0]?.metadata?.evidence?.find((entry) => entry.label === 'conservativeMutReasons')
+    result.diagnostics[0]?.metadata?.evidence?.find((entry) =>
+      entry.label === 'conservativeMutReasons'
+    )
       ?.value,
     'unsupported mutator family (Counter.set)',
   );
   assertEquals(
-    result.diagnostics[1]?.metadata?.evidence?.find((entry) => entry.label === 'conservativeMutReasons')
+    result.diagnostics[1]?.metadata?.evidence?.find((entry) =>
+      entry.label === 'conservativeMutReasons'
+    )
       ?.value,
     'escaped via argument',
   );
+});
+
+Deno.test('analyzeProject keeps fresh local mut suppression conservative for indirect or unstable builder paths', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/index.sts': [
+      'let observed = 0;',
+      '',
+      'function mutateOuter(): void {',
+      '  observed += 1;',
+      '}',
+      '',
+      'class MyMap extends Map<string, number> {',
+      '  override set(key: string, value: number): this {',
+      '    mutateOuter();',
+      '    return super.set(key, value);',
+      '  }',
+      '}',
+      '',
+      '// #[effects(forbid: [mut])]',
+      'function storedRecordInContainer(): { value: number } {',
+      '  const box = { value: 0 };',
+      '  const holder = { box };',
+      '  holder.box.value = 1;',
+      '  return box;',
+      '}',
+      '',
+      '// #[effects(forbid: [mut])]',
+      'function storedMapInArray(): Map<string, number> {',
+      '  const map = new Map<string, number>();',
+      '  const holders: [Map<string, number>] = [map];',
+      '  holders[0].set("value", 1);',
+      '  return map;',
+      '}',
+      '',
+      '// #[effects(forbid: [mut])]',
+      'function capturedBeforeMutate(): { value: number } {',
+      '  const box = { value: 0 };',
+      '  const read = (): number => box.value;',
+      '  void read;',
+      '  box.value = 1;',
+      '  return box;',
+      '}',
+      '',
+      '// #[effects(forbid: [mut])]',
+      'function unstableAliasBeforeMutate(): { value: number } {',
+      '  const box = { value: 0 };',
+      '  let alias = box;',
+      '  alias = { value: 1 };',
+      '  box.value = 1;',
+      '  return box;',
+      '}',
+      '',
+      '// #[effects(forbid: [mut])]',
+      'function subclassedMapAsBase(): Map<string, number> {',
+      '  const map: Map<string, number> = new MyMap();',
+      '  map.set("value", 1);',
+      '  return map;',
+      '}',
+      '',
+      '// #[effects(forbid: [mut])]',
+      'function boundMapMethod(): Map<string, number> {',
+      '  const map = new Map<string, number>();',
+      '  const setValue = map.set.bind(map);',
+      '  setValue("value", 1);',
+      '  return map;',
+      '}',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), [
+    'SOUND1040',
+    'SOUND1040',
+    'SOUND1040',
+    'SOUND1040',
+    'SOUND1040',
+    'SOUND1040',
+  ]);
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.metadata?.primarySymbol), [
+    'storedRecordInContainer',
+    'storedMapInArray',
+    'capturedBeforeMutate',
+    'unstableAliasBeforeMutate',
+    'subclassedMapAsBase',
+    'boundMapMethod',
+  ]);
 });
 
 Deno.test('analyzeProject tracks host-backed globals and stdlib wrappers under forbid contracts', async () => {
@@ -6101,8 +6434,16 @@ Deno.test('analyzeProject treats deferred host schedulers as host effects withou
     workingDirectory: tempDirectory,
   });
 
-  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1040']);
-  assertEquals(result.diagnostics[0]?.metadata?.primarySymbol, 'schedule');
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), [
+    'SOUND1040',
+    'SOUND1040',
+    'SOUND1040',
+  ]);
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.metadata?.primarySymbol), [
+    'schedule',
+    'deferMutation',
+    'deferIdleMutation',
+  ]);
 });
 
 Deno.test('analyzeProject tracks fetch host-object families and stdlib wrappers under effect contracts', async () => {
@@ -7014,7 +7355,8 @@ Deno.test('analyzeProject includes forwarded path detail in unknown effect reaso
   assert(result.diagnostics.every((diagnostic) => diagnostic.code === 'SOUND1040'));
   assert(
     result.diagnostics.some((diagnostic) =>
-      diagnostic.metadata?.evidence?.find((entry) => entry.label === 'unknownEffectReasons')?.value ===
+      diagnostic.metadata?.evidence?.find((entry) => entry.label === 'unknownEffectReasons')
+        ?.value ===
         'unresolved forwarded callback (decoder.inner.decode; failed at inner)'
     ),
   );
@@ -7526,7 +7868,9 @@ Deno.test('analyzeProject reports unknown forwarded effects in callable relation
   assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1019']);
   assertEquals(result.diagnostics[0]?.metadata?.rule, 'callable_effect_covariance');
   assertEquals(
-    result.diagnostics[0]?.metadata?.evidence?.find((entry) => entry.label === 'unknownEffectReasons')
+    result.diagnostics[0]?.metadata?.evidence?.find((entry) =>
+      entry.label === 'unknownEffectReasons'
+    )
       ?.value,
     'unresolved forwarded callback (decoder.inner.decode; failed at decode)',
   );
@@ -7593,6 +7937,169 @@ Deno.test('analyzeProject reports the same forbidden effect set for direct and r
       diagnostic.metadata?.evidence?.find((entry) => entry.label === 'forbiddenEffects')?.value
     ),
     ['fails', 'fails'],
+  );
+});
+
+Deno.test('analyzeProject keeps unresolved deep forwarded paths conservative across declaration, call-site, and relation checks', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': createSoundscriptOnlyTsconfig(),
+    'src/index.sts': [
+      'interface Decoder<T> {',
+      '  readonly decode: (value: number) => T;',
+      '}',
+      '',
+      'interface DecoderLeaf<T> {',
+      '  readonly leaf?: Decoder<T>;',
+      '}',
+      '',
+      'interface DecoderTree<T> {',
+      '  readonly inner?: DecoderLeaf<T>;',
+      '}',
+      '',
+      '// #[extern]',
+      '// #[effects(forward: [decoder.inner.leaf.decode])]',
+      'declare function wrap(decoder: DecoderTree<number>, value: number): number;',
+      '',
+      '// #[effects(forbid: [fails], forward: [decoder.inner.leaf.decode])]',
+      'function ownWrap(decoder: DecoderTree<number>, value: number): number {',
+      '  return value;',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function callWrap(decoder: DecoderTree<number>): number {',
+      '  return wrap(decoder, 1);',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function pureWrap(decoder: DecoderTree<number>, value: number): number {',
+      '  void decoder;',
+      '  return value;',
+      '}',
+      '',
+      'const assigned: typeof pureWrap = wrap;',
+      'void assigned;',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  const effectDiagnostics = result.diagnostics.filter((diagnostic) =>
+    diagnostic.metadata?.rule === 'effect_contract_violation' ||
+    diagnostic.metadata?.rule === 'callable_effect_covariance'
+  );
+
+  assertEquals(effectDiagnostics.map((diagnostic) => diagnostic.code), [
+    'SOUND1040',
+    'SOUND1040',
+    'SOUND1019',
+  ]);
+  assertEquals(effectDiagnostics.map((diagnostic) => diagnostic.metadata?.rule), [
+    'effect_contract_violation',
+    'effect_contract_violation',
+    'callable_effect_covariance',
+  ]);
+  assertEquals(
+    effectDiagnostics.map((diagnostic) =>
+      diagnostic.metadata?.evidence?.find((entry) => entry.label === 'forbiddenEffects')?.value
+    ),
+    ['fails', 'fails', 'fails'],
+  );
+  assert(
+    effectDiagnostics.every((diagnostic) =>
+      diagnostic.metadata?.evidence?.find((entry) => entry.label === 'unknownEffectReasons')
+        ?.value?.includes('unresolved forwarded callback') === true
+    ),
+  );
+});
+
+Deno.test('analyzeProject keeps callable assignment as conservative as direct local forwarding inference', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/index.sts': [
+      'function fail(value: number): number {',
+      '  throw new Error("boom");',
+      '}',
+      '',
+      'function defaultedAdapter(',
+      '  callback: (value: number) => number = fail,',
+      '  value: number = 1,',
+      '): number {',
+      '  const wrapped = (input: number): number => callback(input);',
+      '  return wrapped(value);',
+      '}',
+      '',
+      'function scheduleAdapter(callback: () => void): void {',
+      '  const wrapped = (): void => callback();',
+      '  queueMicrotask(wrapped);',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function useDefaultedAdapter(): number {',
+      '  return defaultedAdapter((value: number): number => value + 1, 1);',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function useScheduleAdapter(): void {',
+      '  scheduleAdapter((): void => {});',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function pureDefaulted(callback: (value: number) => number, value: number): number {',
+      '  void callback;',
+      '  return value;',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function pureSchedule(callback: () => void): void {',
+      '  void callback;',
+      '}',
+      '',
+      'const assignedDefaulted: typeof pureDefaulted = defaultedAdapter;',
+      'const assignedSchedule: typeof pureSchedule = scheduleAdapter;',
+      'void assignedDefaulted;',
+      'void assignedSchedule;',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), [
+    'SOUND1040',
+    'SOUND1040',
+    'SOUND1019',
+    'SOUND1019',
+  ]);
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.metadata?.rule), [
+    'effect_contract_violation',
+    'effect_contract_violation',
+    'callable_effect_covariance',
+    'callable_effect_covariance',
+  ]);
+  assertEquals(
+    result.diagnostics.map((diagnostic) =>
+      diagnostic.metadata?.evidence?.find((entry) => entry.label === 'forbiddenEffects')?.value
+    ),
+    ['fails', 'fails', 'fails', 'fails'],
   );
 });
 
@@ -10151,8 +10658,24 @@ Deno.test('analyzeProject infers callback and member effects through local alias
       '  return wrapped(value);',
       '}',
       '',
+      'function preludeAdapterRun<T>(callback: (value: number) => T, value: number): T {',
+      '  const wrapped = (input: number): T => {',
+      '    const forwarded = input;',
+      '    return callback(forwarded);',
+      '  };',
+      '  return wrapped(value);',
+      '}',
+      '',
       'function adapterDecode<T>(decoder: Decoder<T>, value: number): T {',
       '  const wrapped = (input: number): T => decoder.decode(input);',
+      '  return wrapped(value);',
+      '}',
+      '',
+      'function preludeAdapterDecode<T>(decoder: Decoder<T>, value: number): T {',
+      '  const wrapped = (input: number): T => {',
+      '    const forwarded = input;',
+      '    return decoder.decode(forwarded);',
+      '  };',
       '  return wrapped(value);',
       '}',
       '',
@@ -10190,6 +10713,10 @@ Deno.test('analyzeProject infers callback and member effects through local alias
       'function pureThroughAliases(): number {',
       '  aliasRun(() => {});',
       '  adapterRun((value: number): number => value + 1, 1);',
+      '  preludeAdapterRun((value: number): number => value + 1, 1);',
+      '  preludeAdapterDecode({',
+      '    decode: (value: number): number => value + 1,',
+      '  }, 1);',
       '  return aliasDecode({',
       '    decode: (value: number): number => value + 1,',
       '  }, 1);',
@@ -10221,6 +10748,22 @@ Deno.test('analyzeProject infers callback and member effects through local alias
       '// #[effects(forbid: [fails])]',
       'function failThroughMemberAdapter(): number {',
       '  return adapterDecode({',
+      '    decode: (_value: number): number => {',
+      '      throw new Error("boom");',
+      '    },',
+      '  }, 1);',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function failThroughPreludeCallbackAdapter(): void {',
+      '  preludeAdapterRun((_value: number): void => {',
+      '    throw new Error("boom");',
+      '  }, 1);',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function failThroughPreludeMemberAdapter(): number {',
+      '  return preludeAdapterDecode({',
       '    decode: (_value: number): number => {',
       '      throw new Error("boom");',
       '    },',
@@ -10264,6 +10807,177 @@ Deno.test('analyzeProject infers callback and member effects through local alias
     'SOUND1040',
     'SOUND1040',
     'SOUND1040',
+    'SOUND1040',
+    'SOUND1040',
+  ]);
+});
+
+Deno.test('analyzeProject keeps local forwarding inference conservative for unstable adapters', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/index.sts': [
+      'interface Decoder<T> {',
+      '  readonly decode: (value: number) => T;',
+      '}',
+      '',
+      'function fail(value: number): number {',
+      '  throw new Error("boom");',
+      '}',
+      '',
+      'function defaultedAdapter(',
+      '  callback: (value: number) => number = fail,',
+      '  value: number = 1,',
+      '): number {',
+      '  const wrapped = (input: number): number => callback(input);',
+      '  return wrapped(value);',
+      '}',
+      '',
+      'function extractedMemberAdapter(decoder: Decoder<number>, value: number): number {',
+      '  const decode = decoder.decode;',
+      '  const wrapped = (input: number): number => decode(input);',
+      '  return wrapped(value);',
+      '}',
+      '',
+      'function scheduleAdapter(callback: () => void): void {',
+      '  const wrapped = (): void => callback();',
+      '  queueMicrotask(wrapped);',
+      '}',
+      '',
+      'function scheduleMemberAdapter(decoder: Decoder<number>, value: number): void {',
+      '  const wrapped = (): void => {',
+      '    decoder.decode(value);',
+      '  };',
+      '  queueMicrotask(wrapped);',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function useDefaultedAdapter(): number {',
+      '  return defaultedAdapter((input: number): number => input + 1, 1);',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function useExtractedMemberAdapter(): number {',
+      '  return extractedMemberAdapter({',
+      '    decode: (input: number): number => input + 1,',
+      '  }, 1);',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function useScheduleAdapter(): void {',
+      '  scheduleAdapter((): void => {});',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function useScheduleMemberAdapter(): void {',
+      '  scheduleMemberAdapter({',
+      '    decode: (input: number): number => input + 1,',
+      '  }, 1);',
+      '}',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), [
+    'SOUND1040',
+    'SOUND1040',
+    'SOUND1040',
+    'SOUND1040',
+  ]);
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.metadata?.primarySymbol), [
+    'useDefaultedAdapter',
+    'useExtractedMemberAdapter',
+    'useScheduleAdapter',
+    'useScheduleMemberAdapter',
+  ]);
+});
+
+Deno.test('analyzeProject keeps unsupported local forwarding adapters conservative', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': createSoundscriptOnlyTsconfig(),
+    'src/index.sts': [
+      'function fail(value: number): number {',
+      '  void value;',
+      '  throw new Error("boom");',
+      '}',
+      '',
+      'function defaultedAdapterRun(',
+      '  callback: (value: number) => number = fail,',
+      '  value: number = 1,',
+      '): number {',
+      '  const wrapped = (input: number): number => callback(input);',
+      '  return wrapped(value);',
+      '}',
+      '',
+      'function scheduleAdapterRun(callback: () => void): void {',
+      '  const wrapped = (): void => callback();',
+      '  queueMicrotask(wrapped);',
+      '}',
+      '',
+      'function pureRun(callback: (value: number) => number, value: number): number {',
+      '  return callback(value);',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function useDefaultedAdapter(): number {',
+      '  return defaultedAdapterRun((value: number): number => value + 1, 1);',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function useScheduledAdapter(): void {',
+      '  scheduleAdapterRun((): void => {',
+      '    throw new Error("boom");',
+      '  });',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function pureWrapper(_callback: (value: number) => number, value: number): number {',
+      '  return value;',
+      '}',
+      '',
+      '// #[effects(forbid: [fails])]',
+      'function pureZero(_callback: () => void): void {}',
+      '',
+      'const assignedDefaulted: typeof pureWrapper = defaultedAdapterRun;',
+      'const assignedScheduled: typeof pureZero = scheduleAdapterRun;',
+      'void assignedDefaulted;',
+      'void assignedScheduled;',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), [
+    'SOUND1040',
+    'SOUND1040',
+    'SOUND1019',
+    'SOUND1019',
+  ]);
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.metadata?.rule), [
+    'effect_contract_violation',
+    'effect_contract_violation',
+    'callable_effect_covariance',
+    'callable_effect_covariance',
   ]);
 });
 

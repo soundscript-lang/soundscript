@@ -3,10 +3,7 @@ import { dirname, join } from '@std/path';
 import ts from 'typescript';
 
 import { createSoundStdlibCompilerHost } from './bundled/sound_stdlib.ts';
-import {
-  getEffectSummaryForDeclaration,
-  INTERNAL_EFFECT_MASKS,
-} from './checker/effects.ts';
+import { getEffectSummaryForDeclaration, INTERNAL_EFFECT_MASKS } from './checker/effects.ts';
 import { createAnalysisContext } from './checker/engine/context.ts';
 
 interface TempProjectFile {
@@ -58,16 +55,16 @@ function normalizeForwardedParameters(
   memberName?: string;
   parameterIndex: number;
 }[] {
-  return forwardedParameters.map((forwardedParameter) =>
-    ({
-      failureBoundary: forwardedParameter.failureBoundary,
-      ...(forwardedParameter.handledEffects && forwardedParameter.handledEffects.length > 0
-        ? { handledEffects: [...forwardedParameter.handledEffects] }
-        : {}),
-      ...(forwardedParameter.memberName === undefined ? {} : { memberName: forwardedParameter.memberName }),
-      parameterIndex: forwardedParameter.parameterIndex,
-    })
-  );
+  return forwardedParameters.map((forwardedParameter) => ({
+    failureBoundary: forwardedParameter.failureBoundary,
+    ...(forwardedParameter.handledEffects && forwardedParameter.handledEffects.length > 0
+      ? { handledEffects: [...forwardedParameter.handledEffects] }
+      : {}),
+    ...(forwardedParameter.memberName === undefined
+      ? {}
+      : { memberName: forwardedParameter.memberName }),
+    parameterIndex: forwardedParameter.parameterIndex,
+  }));
 }
 
 Deno.test('createAnalysisContext exposes stable identities and cached fact queries', async () => {
@@ -105,7 +102,9 @@ Deno.test('createAnalysisContext exposes stable identities and cached fact queri
   const projectPath = join(tempDirectory, 'tsconfig.json');
   const program = loadProgram(projectPath);
   const context = createAnalysisContext({ program, workingDirectory: tempDirectory });
-  const sourceFile = context.getSourceFiles().find((file) => file.fileName.endsWith('/src/index.ts'));
+  const sourceFile = context.getSourceFiles().find((file) =>
+    file.fileName.endsWith('/src/index.ts')
+  );
   const visitedSourceFiles: string[] = [];
   const visitedDeclarations: string[] = [];
 
@@ -212,7 +211,9 @@ Deno.test('createAnalysisContext indexes attached annotations and parses annotat
   const projectPath = join(tempDirectory, 'tsconfig.json');
   const program = loadProgram(projectPath);
   const context = createAnalysisContext({ program, workingDirectory: tempDirectory });
-  const sourceFile = context.getSourceFiles().find((file) => file.fileName.endsWith('/src/index.ts'));
+  const sourceFile = context.getSourceFiles().find((file) =>
+    file.fileName.endsWith('/src/index.ts')
+  );
 
   assertExists(sourceFile);
 
@@ -305,9 +306,7 @@ Deno.test('createAnalysisContext indexes attached annotations and parses annotat
   assertEquals(
     annotations.getAttachedAnnotations(interfaceDeclaration).map((annotation) => ({
       arguments: annotation.arguments?.map((argument) =>
-        argument.kind === 'named'
-          ? `${argument.name}:${argument.value.text}`
-          : argument.value.text
+        argument.kind === 'named' ? `${argument.name}:${argument.value.text}` : argument.value.text
       ),
       name: annotation.name,
     })),
@@ -371,7 +370,9 @@ Deno.test('createAnalysisContext only parses annotations from real comments and 
   const projectPath = join(tempDirectory, 'tsconfig.json');
   const program = loadProgram(projectPath);
   const context = createAnalysisContext({ program, workingDirectory: tempDirectory });
-  const sourceFile = context.getSourceFiles().find((file) => file.fileName.endsWith('/src/index.ts'));
+  const sourceFile = context.getSourceFiles().find((file) =>
+    file.fileName.endsWith('/src/index.ts')
+  );
 
   assertExists(sourceFile);
 
@@ -437,7 +438,9 @@ Deno.test('createAnalysisContext attaches effects annotations to function-valued
   const projectPath = join(tempDirectory, 'tsconfig.json');
   const program = loadProgram(projectPath);
   const context = createAnalysisContext({ program, workingDirectory: tempDirectory });
-  const sourceFile = context.getSourceFiles().find((file) => file.fileName.endsWith('/src/index.ts'));
+  const sourceFile = context.getSourceFiles().find((file) =>
+    file.fileName.endsWith('/src/index.ts')
+  );
 
   assertExists(sourceFile);
 
@@ -473,7 +476,7 @@ Deno.test('createAnalysisContext parses dotted effects and forward transforms on
             target: 'ES2022',
             module: 'ESNext',
           },
-          include: ['src/**/*.ts', 'src/**/*.d.ts'],
+          include: ['src/**/*.ts', 'src/**/*.d.ts', 'vendor/**/*.d.ts'],
         },
         null,
         2,
@@ -500,13 +503,17 @@ Deno.test('createAnalysisContext parses dotted effects and forward transforms on
   const projectPath = join(tempDirectory, 'tsconfig.json');
   const program = loadProgram(projectPath);
   const context = createAnalysisContext({ program, workingDirectory: tempDirectory });
-  const sourceFile = context.getSourceFiles().find((file) => file.fileName.endsWith('/src/runtime.d.ts'));
+  const sourceFile = context.getSourceFiles().find((file) =>
+    file.fileName.endsWith('/src/runtime.d.ts')
+  );
 
   assertExists(sourceFile);
 
   const declarationsByName = new Map(
     sourceFile.statements
-      .filter((statement): statement is ts.FunctionDeclaration => ts.isFunctionDeclaration(statement))
+      .filter((statement): statement is ts.FunctionDeclaration =>
+        ts.isFunctionDeclaration(statement)
+      )
       .filter((declaration): declaration is ts.FunctionDeclaration & { name: ts.Identifier } =>
         declaration.name !== undefined
       )
@@ -546,7 +553,9 @@ Deno.test('createAnalysisContext parses dotted effects and forward transforms on
   const dispatchNowSummary = getEffectSummaryForDeclaration(context, dispatchNow);
   assertEquals(dispatchNowSummary.directEffects, ['host.browser.dom']);
   assertEquals(
-    dispatchNowSummary.unknownDirectReasons.map((reason) => `${reason.kind}:${reason.detail ?? ''}`),
+    dispatchNowSummary.unknownDirectReasons.map((reason) =>
+      `${reason.kind}:${reason.detail ?? ''}`
+    ),
     ['annotatedUnknownDirectEffect:dispatchNow'],
   );
 });
@@ -584,7 +593,9 @@ Deno.test('createAnalysisContext unions explicit bodyful add effects with inferr
   const projectPath = join(tempDirectory, 'tsconfig.json');
   const program = loadProgram(projectPath);
   const context = createAnalysisContext({ program, workingDirectory: tempDirectory });
-  const sourceFile = context.getSourceFiles().find((file) => file.fileName.endsWith('/src/index.ts'));
+  const sourceFile = context.getSourceFiles().find((file) =>
+    file.fileName.endsWith('/src/index.ts')
+  );
 
   assertExists(sourceFile);
 
@@ -655,6 +666,49 @@ Deno.test('createAnalysisContext treats fresh local scratch mutation as non-obse
         '  return out;',
         '}',
         '',
+        'export function buildSet(): Set<number> {',
+        '  const values = new Set<number>();',
+        '  values.add(1);',
+        '  return values;',
+        '}',
+        '',
+        'export function buildSetAlias(): Set<number> {',
+        '  const values = new Set<number>();',
+        '  const out = values;',
+        '  out.add(1);',
+        '  return out;',
+        '}',
+        '',
+        'export function buildWeakMap(): WeakMap<object, number> {',
+        '  const key = {};',
+        '  const values = new WeakMap<object, number>();',
+        '  values.set(key, 1);',
+        '  return values;',
+        '}',
+        '',
+        'export function buildWeakMapAlias(): WeakMap<object, number> {',
+        '  const key = {};',
+        '  const values = new WeakMap<object, number>();',
+        '  const out = values;',
+        '  out.set(key, 1);',
+        '  return out;',
+        '}',
+        '',
+        'export function buildWeakSet(): WeakSet<object> {',
+        '  const key = {};',
+        '  const values = new WeakSet<object>();',
+        '  values.add(key);',
+        '  return values;',
+        '}',
+        '',
+        'export function buildWeakSetAlias(): WeakSet<object> {',
+        '  const key = {};',
+        '  const values = new WeakSet<object>();',
+        '  const out = values;',
+        '  out.add(key);',
+        '  return out;',
+        '}',
+        '',
         'export function buildParams(): URLSearchParams {',
         '  const params = new URLSearchParams();',
         '  params.set("q", "music");',
@@ -678,6 +732,19 @@ Deno.test('createAnalysisContext treats fresh local scratch mutation as non-obse
         '  const data = new FormData();',
         '  const out = data;',
         '  out.append("q", "music");',
+        '  return out;',
+        '}',
+        '',
+        'export function buildHeaders(): Headers {',
+        '  const headers = new Headers();',
+        '  headers.set("accept", "application/json");',
+        '  return headers;',
+        '}',
+        '',
+        'export function buildHeadersAlias(): Headers {',
+        '  const headers = new Headers();',
+        '  const out = headers;',
+        '  out.set("accept", "application/json");',
         '  return out;',
         '}',
         '',
@@ -709,7 +776,9 @@ Deno.test('createAnalysisContext treats fresh local scratch mutation as non-obse
   const projectPath = join(tempDirectory, 'tsconfig.json');
   const program = loadProgram(projectPath);
   const context = createAnalysisContext({ program, workingDirectory: tempDirectory });
-  const sourceFile = context.getSourceFiles().find((file) => file.fileName.endsWith('/src/index.ts'));
+  const sourceFile = context.getSourceFiles().find((file) =>
+    file.fileName.endsWith('/src/index.ts')
+  );
 
   assertExists(sourceFile);
 
@@ -727,10 +796,18 @@ Deno.test('createAnalysisContext treats fresh local scratch mutation as non-obse
   const buildList = declarationsByName.get('buildList');
   const buildMap = declarationsByName.get('buildMap');
   const buildMapAlias = declarationsByName.get('buildMapAlias');
+  const buildSet = declarationsByName.get('buildSet');
+  const buildSetAlias = declarationsByName.get('buildSetAlias');
+  const buildWeakMap = declarationsByName.get('buildWeakMap');
+  const buildWeakMapAlias = declarationsByName.get('buildWeakMapAlias');
+  const buildWeakSet = declarationsByName.get('buildWeakSet');
+  const buildWeakSetAlias = declarationsByName.get('buildWeakSetAlias');
   const buildParams = declarationsByName.get('buildParams');
   const buildParamsAlias = declarationsByName.get('buildParamsAlias');
   const buildFormData = declarationsByName.get('buildFormData');
   const buildFormDataAlias = declarationsByName.get('buildFormDataAlias');
+  const buildHeaders = declarationsByName.get('buildHeaders');
+  const buildHeadersAlias = declarationsByName.get('buildHeadersAlias');
   const buildCustomCounter = declarationsByName.get('buildCustomCounter');
   const escapeBeforeMutate = declarationsByName.get('escapeBeforeMutate');
   const escapeMapBeforeMutate = declarationsByName.get('escapeMapBeforeMutate');
@@ -740,10 +817,18 @@ Deno.test('createAnalysisContext treats fresh local scratch mutation as non-obse
   assertExists(buildList);
   assertExists(buildMap);
   assertExists(buildMapAlias);
+  assertExists(buildSet);
+  assertExists(buildSetAlias);
+  assertExists(buildWeakMap);
+  assertExists(buildWeakMapAlias);
+  assertExists(buildWeakSet);
+  assertExists(buildWeakSetAlias);
   assertExists(buildParams);
   assertExists(buildParamsAlias);
   assertExists(buildFormData);
   assertExists(buildFormDataAlias);
+  assertExists(buildHeaders);
+  assertExists(buildHeadersAlias);
   assertExists(buildCustomCounter);
   assertExists(escapeBeforeMutate);
   assertExists(escapeMapBeforeMutate);
@@ -753,13 +838,156 @@ Deno.test('createAnalysisContext treats fresh local scratch mutation as non-obse
   assertEquals(getEffectSummaryForDeclaration(context, buildList).directEffects, []);
   assertEquals(getEffectSummaryForDeclaration(context, buildMap).directEffects, []);
   assertEquals(getEffectSummaryForDeclaration(context, buildMapAlias).directEffects, []);
+  assertEquals(getEffectSummaryForDeclaration(context, buildSet).directEffects, []);
+  assertEquals(getEffectSummaryForDeclaration(context, buildSetAlias).directEffects, []);
+  assertEquals(getEffectSummaryForDeclaration(context, buildWeakMap).directEffects, []);
+  assertEquals(getEffectSummaryForDeclaration(context, buildWeakMapAlias).directEffects, []);
+  assertEquals(getEffectSummaryForDeclaration(context, buildWeakSet).directEffects, []);
+  assertEquals(getEffectSummaryForDeclaration(context, buildWeakSetAlias).directEffects, []);
   assertEquals(getEffectSummaryForDeclaration(context, buildParams).directEffects, []);
   assertEquals(getEffectSummaryForDeclaration(context, buildParamsAlias).directEffects, []);
   assertEquals(getEffectSummaryForDeclaration(context, buildFormData).directEffects, []);
   assertEquals(getEffectSummaryForDeclaration(context, buildFormDataAlias).directEffects, []);
+  assertEquals(getEffectSummaryForDeclaration(context, buildHeaders).directEffects, ['host.ffi']);
+  assertEquals(getEffectSummaryForDeclaration(context, buildHeadersAlias).directEffects, [
+    'host.ffi',
+  ]);
   assertEquals(getEffectSummaryForDeclaration(context, buildCustomCounter).directEffects, ['mut']);
   assertEquals(getEffectSummaryForDeclaration(context, escapeBeforeMutate).directEffects, ['mut']);
-  assertEquals(getEffectSummaryForDeclaration(context, escapeMapBeforeMutate).directEffects, ['mut']);
+  assertEquals(getEffectSummaryForDeclaration(context, escapeMapBeforeMutate).directEffects, [
+    'mut',
+  ]);
+});
+
+Deno.test('createAnalysisContext keeps fresh local mut suppression conservative for indirect or unstable builders', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+          },
+          include: ['src/**/*.ts'],
+        },
+        null,
+        2,
+      ),
+    },
+    {
+      path: 'src/index.ts',
+      contents: [
+        'let observed = 0;',
+        '',
+        'function mutateOuter(): void {',
+        '  observed += 1;',
+        '}',
+        '',
+        'class MyMap extends Map<string, number> {',
+        '  override set(key: string, value: number): this {',
+        '    mutateOuter();',
+        '    return super.set(key, value);',
+        '  }',
+        '}',
+        '',
+        'export function getterBackedMap(): Map<string, number> {',
+        '  const map = new Map<string, number>();',
+        '  const holder = {',
+        '    get current(): Map<string, number> {',
+        '      mutateOuter();',
+        '      return map;',
+        '    },',
+        '  };',
+        '  holder.current.set("value", 1);',
+        '  return map;',
+        '}',
+        '',
+        'export function storedRecordInContainer(): { value: number } {',
+        '  const box = { value: 0 };',
+        '  const holder = { box };',
+        '  holder.box.value = 1;',
+        '  return box;',
+        '}',
+        '',
+        'export function storedMapInArray(): Map<string, number> {',
+        '  const map = new Map<string, number>();',
+        '  const holders: [Map<string, number>] = [map];',
+        '  holders[0].set("value", 1);',
+        '  return map;',
+        '}',
+        '',
+        'export function capturedBeforeMutate(): { value: number } {',
+        '  const box = { value: 0 };',
+        '  const read = (): number => box.value;',
+        '  void read;',
+        '  box.value = 1;',
+        '  return box;',
+        '}',
+        '',
+        'export function unstableAliasBeforeMutate(): { value: number } {',
+        '  const box = { value: 0 };',
+        '  let alias = box;',
+        '  alias = { value: 1 };',
+        '  box.value = 1;',
+        '  return box;',
+        '}',
+        '',
+        'export function subclassedMapAsBase(): Map<string, number> {',
+        '  const map: Map<string, number> = new MyMap();',
+        '  map.set("value", 1);',
+        '  return map;',
+        '}',
+        '',
+      ].join('\n'),
+    },
+  ]);
+  const projectPath = join(tempDirectory, 'tsconfig.json');
+  const program = loadProgram(projectPath);
+  const context = createAnalysisContext({ program, workingDirectory: tempDirectory });
+  const sourceFile = context.getSourceFiles().find((file) =>
+    file.fileName.endsWith('/src/index.ts')
+  );
+
+  assertExists(sourceFile);
+
+  const declarationsByName = new Map(
+    sourceFile.statements
+      .filter(ts.isFunctionDeclaration)
+      .filter((declaration): declaration is ts.FunctionDeclaration & { name: ts.Identifier } =>
+        declaration.name !== undefined
+      )
+      .map((declaration) => [declaration.name.text, declaration]),
+  );
+
+  const getterBackedMap = declarationsByName.get('getterBackedMap');
+  const storedRecordInContainer = declarationsByName.get('storedRecordInContainer');
+  const storedMapInArray = declarationsByName.get('storedMapInArray');
+  const capturedBeforeMutate = declarationsByName.get('capturedBeforeMutate');
+  const unstableAliasBeforeMutate = declarationsByName.get('unstableAliasBeforeMutate');
+  const subclassedMapAsBase = declarationsByName.get('subclassedMapAsBase');
+
+  assertExists(getterBackedMap);
+  assertExists(storedRecordInContainer);
+  assertExists(storedMapInArray);
+  assertExists(capturedBeforeMutate);
+  assertExists(unstableAliasBeforeMutate);
+  assertExists(subclassedMapAsBase);
+
+  assertEquals(getEffectSummaryForDeclaration(context, getterBackedMap).directEffects, ['mut']);
+  assertEquals(getEffectSummaryForDeclaration(context, storedRecordInContainer).directEffects, [
+    'mut',
+  ]);
+  assertEquals(getEffectSummaryForDeclaration(context, storedMapInArray).directEffects, ['mut']);
+  assertEquals(getEffectSummaryForDeclaration(context, capturedBeforeMutate).directEffects, [
+    'mut',
+  ]);
+  assertEquals(getEffectSummaryForDeclaration(context, unstableAliasBeforeMutate).directEffects, [
+    'mut',
+  ]);
+  assertEquals(getEffectSummaryForDeclaration(context, subclassedMapAsBase).directEffects, ['mut']);
 });
 
 Deno.test('createAnalysisContext summarizes Promise continuation builtins with precise forwarded effects', async () => {
@@ -820,7 +1048,9 @@ Deno.test('createAnalysisContext summarizes Promise continuation builtins with p
   const projectPath = join(tempDirectory, 'tsconfig.json');
   const program = loadProgram(projectPath);
   const context = createAnalysisContext({ program, workingDirectory: tempDirectory });
-  const sourceFile = context.getSourceFiles().find((file) => file.fileName.endsWith('/src/index.ts'));
+  const sourceFile = context.getSourceFiles().find((file) =>
+    file.fileName.endsWith('/src/index.ts')
+  );
 
   assertExists(sourceFile);
 
@@ -956,7 +1186,9 @@ Deno.test('createAnalysisContext summarizes portable globals and collection buil
   const projectPath = join(tempDirectory, 'tsconfig.json');
   const program = loadProgram(projectPath);
   const context = createAnalysisContext({ program, workingDirectory: tempDirectory });
-  const sourceFile = context.getSourceFiles().find((file) => file.fileName.endsWith('/src/index.ts'));
+  const sourceFile = context.getSourceFiles().find((file) =>
+    file.fileName.endsWith('/src/index.ts')
+  );
 
   assertExists(sourceFile);
 
@@ -1070,7 +1302,9 @@ Deno.test('createAnalysisContext summarizes host-backed globals precisely', asyn
   const projectPath = join(tempDirectory, 'tsconfig.json');
   const program = loadProgram(projectPath);
   const context = createAnalysisContext({ program, workingDirectory: tempDirectory });
-  const sourceFile = context.getSourceFiles().find((file) => file.fileName.endsWith('/src/index.ts'));
+  const sourceFile = context.getSourceFiles().find((file) =>
+    file.fileName.endsWith('/src/index.ts')
+  );
 
   assertExists(sourceFile);
 
@@ -1111,7 +1345,7 @@ Deno.test('createAnalysisContext summarizes host-backed globals precisely', asyn
   assertEquals(fillSummary.hasUnknownDirectEffects, false);
 });
 
-Deno.test('createAnalysisContext summarizes deferred host schedulers without immediate callback forwarding', async () => {
+Deno.test('createAnalysisContext keeps deferred host schedulers conservative when callbacks escape', async () => {
   const tempDirectory = await createTempProject([
     {
       path: 'tsconfig.json',
@@ -1162,7 +1396,9 @@ Deno.test('createAnalysisContext summarizes deferred host schedulers without imm
   const projectPath = join(tempDirectory, 'tsconfig.json');
   const program = loadProgram(projectPath);
   const context = createAnalysisContext({ program, workingDirectory: tempDirectory });
-  const sourceFile = context.getSourceFiles().find((file) => file.fileName.endsWith('/src/index.ts'));
+  const sourceFile = context.getSourceFiles().find((file) =>
+    file.fileName.endsWith('/src/index.ts')
+  );
 
   assertExists(sourceFile);
 
@@ -1198,19 +1434,19 @@ Deno.test('createAnalysisContext summarizes deferred host schedulers without imm
 
   assertEquals(microtaskSummary.directMask, INTERNAL_EFFECT_MASKS.hostInterop);
   assertEquals(normalizeForwardedParameters(microtaskSummary.forwardedParameters), []);
-  assertEquals(microtaskSummary.hasUnknownDirectEffects, false);
+  assertEquals(microtaskSummary.hasUnknownDirectEffects, true);
 
   assertEquals(timeoutSummary.directMask, INTERNAL_EFFECT_MASKS.hostTime);
   assertEquals(normalizeForwardedParameters(timeoutSummary.forwardedParameters), []);
-  assertEquals(timeoutSummary.hasUnknownDirectEffects, false);
+  assertEquals(timeoutSummary.hasUnknownDirectEffects, true);
 
   assertEquals(intervalSummary.directMask, INTERNAL_EFFECT_MASKS.hostTime);
   assertEquals(normalizeForwardedParameters(intervalSummary.forwardedParameters), []);
-  assertEquals(intervalSummary.hasUnknownDirectEffects, false);
+  assertEquals(intervalSummary.hasUnknownDirectEffects, true);
 
   assertEquals(idleSummary.directMask, INTERNAL_EFFECT_MASKS.hostInterop);
   assertEquals(normalizeForwardedParameters(idleSummary.forwardedParameters), []);
-  assertEquals(idleSummary.hasUnknownDirectEffects, false);
+  assertEquals(idleSummary.hasUnknownDirectEffects, true);
 
   assertEquals(cancelSummary.directMask, INTERNAL_EFFECT_MASKS.hostTime);
   assertEquals(normalizeForwardedParameters(cancelSummary.forwardedParameters), []);
@@ -1283,7 +1519,9 @@ Deno.test('createAnalysisContext summarizes abort and cloning builtins precisely
   const projectPath = join(tempDirectory, 'tsconfig.json');
   const program = loadProgram(projectPath);
   const context = createAnalysisContext({ program, workingDirectory: tempDirectory });
-  const sourceFile = context.getSourceFiles().find((file) => file.fileName.endsWith('/src/index.ts'));
+  const sourceFile = context.getSourceFiles().find((file) =>
+    file.fileName.endsWith('/src/index.ts')
+  );
 
   assertExists(sourceFile);
 
@@ -1346,12 +1584,30 @@ Deno.test('createAnalysisContext summarizes abort and cloning builtins precisely
     getEffectSummaryForDeclaration(context, parseUrl).directMask,
     0,
   );
-  assertEquals(getEffectSummaryForDeclaration(context, buildController).hasUnknownDirectEffects, false);
-  assertEquals(getEffectSummaryForDeclaration(context, abortController).hasUnknownDirectEffects, false);
-  assertEquals(getEffectSummaryForDeclaration(context, makeAbortedSignal).hasUnknownDirectEffects, false);
-  assertEquals(getEffectSummaryForDeclaration(context, combineSignals).hasUnknownDirectEffects, false);
-  assertEquals(getEffectSummaryForDeclaration(context, timeoutSignal).hasUnknownDirectEffects, false);
-  assertEquals(getEffectSummaryForDeclaration(context, ensureNotAborted).hasUnknownDirectEffects, false);
+  assertEquals(
+    getEffectSummaryForDeclaration(context, buildController).hasUnknownDirectEffects,
+    false,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, abortController).hasUnknownDirectEffects,
+    false,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, makeAbortedSignal).hasUnknownDirectEffects,
+    false,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, combineSignals).hasUnknownDirectEffects,
+    false,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, timeoutSignal).hasUnknownDirectEffects,
+    false,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, ensureNotAborted).hasUnknownDirectEffects,
+    false,
+  );
   assertEquals(getEffectSummaryForDeclaration(context, cloneValue).hasUnknownDirectEffects, false);
   assertEquals(getEffectSummaryForDeclaration(context, parseUrl).hasUnknownDirectEffects, false);
 });
@@ -1417,7 +1673,9 @@ Deno.test('createAnalysisContext summarizes DOM listener and object URL builtins
   const projectPath = join(tempDirectory, 'tsconfig.json');
   const program = loadProgram(projectPath);
   const context = createAnalysisContext({ program, workingDirectory: tempDirectory });
-  const sourceFile = context.getSourceFiles().find((file) => file.fileName.endsWith('/src/index.ts'));
+  const sourceFile = context.getSourceFiles().find((file) =>
+    file.fileName.endsWith('/src/index.ts')
+  );
 
   assertExists(sourceFile);
 
@@ -1499,18 +1757,30 @@ Deno.test('createAnalysisContext summarizes DOM listener and object URL builtins
     INTERNAL_EFFECT_MASKS.hostDom,
   );
   assertEquals(getEffectSummaryForDeclaration(context, buildBlob).hasUnknownDirectEffects, false);
-  assertEquals(getEffectSummaryForDeclaration(context, registerAbortListener).hasUnknownDirectEffects, false);
+  assertEquals(
+    getEffectSummaryForDeclaration(context, registerAbortListener).hasUnknownDirectEffects,
+    false,
+  );
   assertEquals(
     getEffectSummaryForDeclaration(context, unregisterAbortListener).hasUnknownDirectEffects,
     false,
   );
-  assertEquals(getEffectSummaryForDeclaration(context, registerWindowListener).hasUnknownDirectEffects, false);
+  assertEquals(
+    getEffectSummaryForDeclaration(context, registerWindowListener).hasUnknownDirectEffects,
+    false,
+  );
   assertEquals(
     getEffectSummaryForDeclaration(context, unregisterWindowListener).hasUnknownDirectEffects,
     false,
   );
-  assertEquals(getEffectSummaryForDeclaration(context, createObjectUrl).hasUnknownDirectEffects, false);
-  assertEquals(getEffectSummaryForDeclaration(context, revokeObjectUrl).hasUnknownDirectEffects, false);
+  assertEquals(
+    getEffectSummaryForDeclaration(context, createObjectUrl).hasUnknownDirectEffects,
+    false,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, revokeObjectUrl).hasUnknownDirectEffects,
+    false,
+  );
 });
 
 Deno.test('createAnalysisContext summarizes DOM mutation and dispatch builtins precisely', async () => {
@@ -1608,7 +1878,9 @@ Deno.test('createAnalysisContext summarizes DOM mutation and dispatch builtins p
   const projectPath = join(tempDirectory, 'tsconfig.json');
   const program = loadProgram(projectPath);
   const context = createAnalysisContext({ program, workingDirectory: tempDirectory });
-  const sourceFile = context.getSourceFiles().find((file) => file.fileName.endsWith('/src/index.ts'));
+  const sourceFile = context.getSourceFiles().find((file) =>
+    file.fileName.endsWith('/src/index.ts')
+  );
 
   assertExists(sourceFile);
 
@@ -1723,20 +1995,62 @@ Deno.test('createAnalysisContext summarizes DOM mutation and dispatch builtins p
 
   assertEquals(getEffectSummaryForDeclaration(context, buildEvent).hasUnknownDirectEffects, false);
   assertEquals(getEffectSummaryForDeclaration(context, buildTarget).hasUnknownDirectEffects, false);
-  assertEquals(getEffectSummaryForDeclaration(context, createDomElement).hasUnknownDirectEffects, false);
-  assertEquals(getEffectSummaryForDeclaration(context, setDomAttribute).hasUnknownDirectEffects, false);
-  assertEquals(getEffectSummaryForDeclaration(context, appendDomChild).hasUnknownDirectEffects, false);
-  assertEquals(getEffectSummaryForDeclaration(context, removeDomAttribute).hasUnknownDirectEffects, false);
-  assertEquals(getEffectSummaryForDeclaration(context, removeDomAttributeNs).hasUnknownDirectEffects, false);
-  assertEquals(getEffectSummaryForDeclaration(context, removeDomChild).hasUnknownDirectEffects, false);
-  assertEquals(getEffectSummaryForDeclaration(context, replaceDomChild).hasUnknownDirectEffects, false);
-  assertEquals(getEffectSummaryForDeclaration(context, insertDomChild).hasUnknownDirectEffects, false);
-  assertEquals(getEffectSummaryForDeclaration(context, appendDomNodes).hasUnknownDirectEffects, false);
-  assertEquals(getEffectSummaryForDeclaration(context, prependDomNodes).hasUnknownDirectEffects, false);
-  assertEquals(getEffectSummaryForDeclaration(context, placeNodeBefore).hasUnknownDirectEffects, false);
-  assertEquals(getEffectSummaryForDeclaration(context, placeNodeAfter).hasUnknownDirectEffects, false);
-  assertEquals(getEffectSummaryForDeclaration(context, removeDomNode).hasUnknownDirectEffects, false);
-  assertEquals(getEffectSummaryForDeclaration(context, replaceDomNode).hasUnknownDirectEffects, false);
+  assertEquals(
+    getEffectSummaryForDeclaration(context, createDomElement).hasUnknownDirectEffects,
+    false,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, setDomAttribute).hasUnknownDirectEffects,
+    false,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, appendDomChild).hasUnknownDirectEffects,
+    false,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, removeDomAttribute).hasUnknownDirectEffects,
+    false,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, removeDomAttributeNs).hasUnknownDirectEffects,
+    false,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, removeDomChild).hasUnknownDirectEffects,
+    false,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, replaceDomChild).hasUnknownDirectEffects,
+    false,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, insertDomChild).hasUnknownDirectEffects,
+    false,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, appendDomNodes).hasUnknownDirectEffects,
+    false,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, prependDomNodes).hasUnknownDirectEffects,
+    false,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, placeNodeBefore).hasUnknownDirectEffects,
+    false,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, placeNodeAfter).hasUnknownDirectEffects,
+    false,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, removeDomNode).hasUnknownDirectEffects,
+    false,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, replaceDomNode).hasUnknownDirectEffects,
+    false,
+  );
 });
 
 Deno.test('createAnalysisContext summarizes browser messaging builtins precisely', async () => {
@@ -1782,7 +2096,9 @@ Deno.test('createAnalysisContext summarizes browser messaging builtins precisely
   const projectPath = join(tempDirectory, 'tsconfig.json');
   const program = loadProgram(projectPath);
   const context = createAnalysisContext({ program, workingDirectory: tempDirectory });
-  const sourceFile = context.getSourceFiles().find((file) => file.fileName.endsWith('/src/index.ts'));
+  const sourceFile = context.getSourceFiles().find((file) =>
+    file.fileName.endsWith('/src/index.ts')
+  );
 
   assertExists(sourceFile);
 
@@ -1822,10 +2138,19 @@ Deno.test('createAnalysisContext summarizes browser messaging builtins precisely
     INTERNAL_EFFECT_MASKS.hostInterop,
   );
 
-  assertEquals(getEffectSummaryForDeclaration(context, sendWindowMessage).hasUnknownDirectEffects, false);
+  assertEquals(
+    getEffectSummaryForDeclaration(context, sendWindowMessage).hasUnknownDirectEffects,
+    false,
+  );
   assertEquals(getEffectSummaryForDeclaration(context, openChannel).hasUnknownDirectEffects, false);
-  assertEquals(getEffectSummaryForDeclaration(context, sendChannelMessage).hasUnknownDirectEffects, false);
-  assertEquals(getEffectSummaryForDeclaration(context, closeChannel).hasUnknownDirectEffects, false);
+  assertEquals(
+    getEffectSummaryForDeclaration(context, sendChannelMessage).hasUnknownDirectEffects,
+    false,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, closeChannel).hasUnknownDirectEffects,
+    false,
+  );
 });
 
 Deno.test('createAnalysisContext summarizes worker and socket builtins precisely', async () => {
@@ -1903,7 +2228,9 @@ Deno.test('createAnalysisContext summarizes worker and socket builtins precisely
   const projectPath = join(tempDirectory, 'tsconfig.json');
   const program = loadProgram(projectPath);
   const context = createAnalysisContext({ program, workingDirectory: tempDirectory });
-  const sourceFile = context.getSourceFiles().find((file) => file.fileName.endsWith('/src/index.ts'));
+  const sourceFile = context.getSourceFiles().find((file) =>
+    file.fileName.endsWith('/src/index.ts')
+  );
 
   assertExists(sourceFile);
 
@@ -1992,17 +2319,38 @@ Deno.test('createAnalysisContext summarizes worker and socket builtins precisely
   );
 
   assertEquals(getEffectSummaryForDeclaration(context, openWorker).hasUnknownDirectEffects, false);
-  assertEquals(getEffectSummaryForDeclaration(context, postWorkerMessage).hasUnknownDirectEffects, false);
-  assertEquals(getEffectSummaryForDeclaration(context, terminateWorker).hasUnknownDirectEffects, false);
-  assertEquals(getEffectSummaryForDeclaration(context, openMessageChannel).hasUnknownDirectEffects, false);
-  assertEquals(getEffectSummaryForDeclaration(context, postPortMessage).hasUnknownDirectEffects, false);
+  assertEquals(
+    getEffectSummaryForDeclaration(context, postWorkerMessage).hasUnknownDirectEffects,
+    false,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, terminateWorker).hasUnknownDirectEffects,
+    false,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, openMessageChannel).hasUnknownDirectEffects,
+    false,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, postPortMessage).hasUnknownDirectEffects,
+    false,
+  );
   assertEquals(getEffectSummaryForDeclaration(context, startPort).hasUnknownDirectEffects, false);
   assertEquals(getEffectSummaryForDeclaration(context, closePort).hasUnknownDirectEffects, false);
   assertEquals(getEffectSummaryForDeclaration(context, openSocket).hasUnknownDirectEffects, false);
-  assertEquals(getEffectSummaryForDeclaration(context, sendSocketMessage).hasUnknownDirectEffects, false);
+  assertEquals(
+    getEffectSummaryForDeclaration(context, sendSocketMessage).hasUnknownDirectEffects,
+    false,
+  );
   assertEquals(getEffectSummaryForDeclaration(context, closeSocket).hasUnknownDirectEffects, false);
-  assertEquals(getEffectSummaryForDeclaration(context, openEventStream).hasUnknownDirectEffects, false);
-  assertEquals(getEffectSummaryForDeclaration(context, closeEventStream).hasUnknownDirectEffects, false);
+  assertEquals(
+    getEffectSummaryForDeclaration(context, openEventStream).hasUnknownDirectEffects,
+    false,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, closeEventStream).hasUnknownDirectEffects,
+    false,
+  );
 });
 
 Deno.test('createAnalysisContext summarizes request and file builtins precisely', async () => {
@@ -2080,7 +2428,9 @@ Deno.test('createAnalysisContext summarizes request and file builtins precisely'
   const projectPath = join(tempDirectory, 'tsconfig.json');
   const program = loadProgram(projectPath);
   const context = createAnalysisContext({ program, workingDirectory: tempDirectory });
-  const sourceFile = context.getSourceFiles().find((file) => file.fileName.endsWith('/src/index.ts'));
+  const sourceFile = context.getSourceFiles().find((file) =>
+    file.fileName.endsWith('/src/index.ts')
+  );
 
   assertExists(sourceFile);
 
@@ -2162,18 +2512,54 @@ Deno.test('createAnalysisContext summarizes request and file builtins precisely'
     INTERNAL_EFFECT_MASKS.hostIo,
   );
 
-  assertEquals(getEffectSummaryForDeclaration(context, buildEmptyFormData).hasUnknownDirectEffects, false);
-  assertEquals(getEffectSummaryForDeclaration(context, buildFormDataFromForm).hasUnknownDirectEffects, false);
-  assertEquals(getEffectSummaryForDeclaration(context, appendFormData).hasUnknownDirectEffects, false);
-  assertEquals(getEffectSummaryForDeclaration(context, readFormData).hasUnknownDirectEffects, false);
-  assertEquals(getEffectSummaryForDeclaration(context, buildFileReader).hasUnknownDirectEffects, false);
-  assertEquals(getEffectSummaryForDeclaration(context, readFileText).hasUnknownDirectEffects, false);
-  assertEquals(getEffectSummaryForDeclaration(context, abortFileRead).hasUnknownDirectEffects, false);
-  assertEquals(getEffectSummaryForDeclaration(context, buildXmlHttpRequest).hasUnknownDirectEffects, false);
-  assertEquals(getEffectSummaryForDeclaration(context, openXmlHttpRequest).hasUnknownDirectEffects, false);
-  assertEquals(getEffectSummaryForDeclaration(context, setXmlHttpRequestHeader).hasUnknownDirectEffects, false);
-  assertEquals(getEffectSummaryForDeclaration(context, sendXmlHttpRequest).hasUnknownDirectEffects, false);
-  assertEquals(getEffectSummaryForDeclaration(context, abortXmlHttpRequest).hasUnknownDirectEffects, false);
+  assertEquals(
+    getEffectSummaryForDeclaration(context, buildEmptyFormData).hasUnknownDirectEffects,
+    false,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, buildFormDataFromForm).hasUnknownDirectEffects,
+    false,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, appendFormData).hasUnknownDirectEffects,
+    false,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, readFormData).hasUnknownDirectEffects,
+    false,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, buildFileReader).hasUnknownDirectEffects,
+    false,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, readFileText).hasUnknownDirectEffects,
+    false,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, abortFileRead).hasUnknownDirectEffects,
+    false,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, buildXmlHttpRequest).hasUnknownDirectEffects,
+    false,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, openXmlHttpRequest).hasUnknownDirectEffects,
+    false,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, setXmlHttpRequestHeader).hasUnknownDirectEffects,
+    false,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, sendXmlHttpRequest).hasUnknownDirectEffects,
+    false,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, abortXmlHttpRequest).hasUnknownDirectEffects,
+    false,
+  );
 });
 
 Deno.test('createAnalysisContext summarizes bundled deno extern builtins precisely', async () => {
@@ -2320,7 +2706,9 @@ Deno.test('createAnalysisContext summarizes bundled deno extern builtins precise
   const projectPath = join(tempDirectory, 'tsconfig.json');
   const program = loadProgram(projectPath);
   const context = createAnalysisContext({ program, workingDirectory: tempDirectory });
-  const sourceFile = context.getSourceFiles().find((file) => file.fileName.endsWith('/src/index.ts'));
+  const sourceFile = context.getSourceFiles().find((file) =>
+    file.fileName.endsWith('/src/index.ts')
+  );
 
   assertExists(sourceFile);
 
@@ -2435,26 +2823,57 @@ Deno.test('createAnalysisContext summarizes bundled deno extern builtins precise
   );
   assertEquals(
     getEffectSummaryForDeclaration(context, changeDirectory).directMask,
-    INTERNAL_EFFECT_MASKS.hostInterop | INTERNAL_EFFECT_MASKS.failsThrows | INTERNAL_EFFECT_MASKS.mut,
+    INTERNAL_EFFECT_MASKS.hostInterop | INTERNAL_EFFECT_MASKS.failsThrows |
+      INTERNAL_EFFECT_MASKS.mut,
   );
 
-  assertEquals(getEffectSummaryForDeclaration(context, readCurrentDirectory).hasUnknownDirectEffects, false);
-  assertEquals(getEffectSummaryForDeclaration(context, readEnvValue).hasUnknownDirectEffects, false);
+  assertEquals(
+    getEffectSummaryForDeclaration(context, readCurrentDirectory).hasUnknownDirectEffects,
+    false,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, readEnvValue).hasUnknownDirectEffects,
+    false,
+  );
   assertEquals(getEffectSummaryForDeclaration(context, hasEnvValue).hasUnknownDirectEffects, false);
   assertEquals(getEffectSummaryForDeclaration(context, snapshotEnv).hasUnknownDirectEffects, false);
   assertEquals(getEffectSummaryForDeclaration(context, setEnvValue).hasUnknownDirectEffects, false);
-  assertEquals(getEffectSummaryForDeclaration(context, deleteEnvValue).hasUnknownDirectEffects, false);
+  assertEquals(
+    getEffectSummaryForDeclaration(context, deleteEnvValue).hasUnknownDirectEffects,
+    false,
+  );
   assertEquals(getEffectSummaryForDeclaration(context, readBinary).hasUnknownDirectEffects, false);
-  assertEquals(getEffectSummaryForDeclaration(context, readBinarySync).hasUnknownDirectEffects, false);
+  assertEquals(
+    getEffectSummaryForDeclaration(context, readBinarySync).hasUnknownDirectEffects,
+    false,
+  );
   assertEquals(getEffectSummaryForDeclaration(context, readText).hasUnknownDirectEffects, false);
-  assertEquals(getEffectSummaryForDeclaration(context, readTextSync).hasUnknownDirectEffects, false);
-  assertEquals(getEffectSummaryForDeclaration(context, makeDirectory).hasUnknownDirectEffects, false);
-  assertEquals(getEffectSummaryForDeclaration(context, makeDirectorySync).hasUnknownDirectEffects, false);
+  assertEquals(
+    getEffectSummaryForDeclaration(context, readTextSync).hasUnknownDirectEffects,
+    false,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, makeDirectory).hasUnknownDirectEffects,
+    false,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, makeDirectorySync).hasUnknownDirectEffects,
+    false,
+  );
   assertEquals(getEffectSummaryForDeclaration(context, removePath).hasUnknownDirectEffects, false);
-  assertEquals(getEffectSummaryForDeclaration(context, removePathSync).hasUnknownDirectEffects, false);
+  assertEquals(
+    getEffectSummaryForDeclaration(context, removePathSync).hasUnknownDirectEffects,
+    false,
+  );
   assertEquals(getEffectSummaryForDeclaration(context, writeText).hasUnknownDirectEffects, false);
-  assertEquals(getEffectSummaryForDeclaration(context, writeTextSync).hasUnknownDirectEffects, false);
-  assertEquals(getEffectSummaryForDeclaration(context, changeDirectory).hasUnknownDirectEffects, false);
+  assertEquals(
+    getEffectSummaryForDeclaration(context, writeTextSync).hasUnknownDirectEffects,
+    false,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, changeDirectory).hasUnknownDirectEffects,
+    false,
+  );
 });
 
 Deno.test('createAnalysisContext summarizes bundled node builtins precisely', async () => {
@@ -2798,7 +3217,7 @@ Deno.test('createAnalysisContext summarizes bundled node builtins precisely', as
         '}',
         '',
         'export function fillRandom(bytes: Uint8Array<ArrayBufferLike>): Uint8Array<ArrayBufferLike> {',
-          '  return getRandomValues(bytes);',
+        '  return getRandomValues(bytes);',
         '}',
         '',
         'export function fillRandomSync(bytes: Uint8Array<ArrayBufferLike>): Uint8Array<ArrayBufferLike> {',
@@ -3015,7 +3434,9 @@ Deno.test('createAnalysisContext summarizes bundled node builtins precisely', as
   const projectPath = join(tempDirectory, 'tsconfig.json');
   const program = loadProgram(projectPath);
   const context = createAnalysisContext({ program, workingDirectory: tempDirectory });
-  const sourceFile = context.getSourceFiles().find((file) => file.fileName.endsWith('/src/index.ts'));
+  const sourceFile = context.getSourceFiles().find((file) =>
+    file.fileName.endsWith('/src/index.ts')
+  );
 
   assertExists(sourceFile);
 
@@ -3417,66 +3838,79 @@ Deno.test('createAnalysisContext summarizes bundled node builtins precisely', as
     INTERNAL_EFFECT_MASKS.hostIo | INTERNAL_EFFECT_MASKS.failsThrows | INTERNAL_EFFECT_MASKS.mut,
   );
 
+  assertEquals(
+    getEffectSummaryForDeclaration(context, scheduleImmediate).hasUnknownDirectEffects,
+    true,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, scheduleModuleImmediate).hasUnknownDirectEffects,
+    true,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, scheduleTimeout).hasUnknownDirectEffects,
+    true,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, scheduleInterval).hasUnknownDirectEffects,
+    true,
+  );
+
   for (
     const declaration of [
       currentWorkingDirectory,
       changeDirectory,
       exitProcess,
-      scheduleImmediate,
       cancelImmediate,
       makeBuffer,
       allocateBuffer,
       concatBuffers,
       stringifyBuffer,
-    makeModuleBuffer,
-    joinPath,
-    makeUuid,
-    makeHasher,
-    makeHmac,
-    makeRandomInt,
-    makeRandomBytes,
-    fillRandom,
-    fillRandomSync,
-    fillRandomAsync,
-    hashText,
-    hashTextHex,
-    hmacText,
-    hmacTextHex,
-    scheduleModuleImmediate,
-    cancelModuleImmediate,
-    scheduleTimeout,
-    cancelTimeout,
-    scheduleInterval,
-    cancelInterval,
-    awaitImmediate,
-    awaitTimeout,
-    waitOnScheduler,
-    yieldOnScheduler,
-    accessPath,
-    accessPathSync,
-    statPath,
-    statPathSync,
-    renamePath,
-    renamePathSync,
-    copyPath,
-    copyPathSync,
-    readLinkTarget,
-    readLinkTargetSync,
-    resolveRealPath,
-    resolveRealPathSync,
-    createSymlink,
-    createSymlinkSync,
-    unlinkPath,
-    unlinkPathSync,
-    makeTempDirectory,
-    makeTempDirectorySync,
-    copyTree,
-    copyTreeSync,
-    truncatePath,
-    truncatePathSync,
-    appendBinary,
-    appendBinarySync,
-    readBinary,
+      makeModuleBuffer,
+      joinPath,
+      makeUuid,
+      makeHasher,
+      makeHmac,
+      makeRandomInt,
+      makeRandomBytes,
+      fillRandom,
+      fillRandomSync,
+      fillRandomAsync,
+      hashText,
+      hashTextHex,
+      hmacText,
+      hmacTextHex,
+      cancelModuleImmediate,
+      cancelTimeout,
+      cancelInterval,
+      awaitImmediate,
+      awaitTimeout,
+      waitOnScheduler,
+      yieldOnScheduler,
+      accessPath,
+      accessPathSync,
+      statPath,
+      statPathSync,
+      renamePath,
+      renamePathSync,
+      copyPath,
+      copyPathSync,
+      readLinkTarget,
+      readLinkTargetSync,
+      resolveRealPath,
+      resolveRealPathSync,
+      createSymlink,
+      createSymlinkSync,
+      unlinkPath,
+      unlinkPathSync,
+      makeTempDirectory,
+      makeTempDirectorySync,
+      copyTree,
+      copyTreeSync,
+      truncatePath,
+      truncatePathSync,
+      appendBinary,
+      appendBinarySync,
+      readBinary,
       readBinarySync,
       readDirectory,
       readDirectorySync,
@@ -3488,7 +3922,10 @@ Deno.test('createAnalysisContext summarizes bundled node builtins precisely', as
       removePathSync,
     ]
   ) {
-    assertEquals(getEffectSummaryForDeclaration(context, declaration).hasUnknownDirectEffects, false);
+    assertEquals(
+      getEffectSummaryForDeclaration(context, declaration).hasUnknownDirectEffects,
+      false,
+    );
   }
 });
 
@@ -3558,7 +3995,9 @@ Deno.test('createAnalysisContext reaches a fixpoint for recursive effect summari
   const projectPath = join(tempDirectory, 'tsconfig.json');
   const program = loadProgram(projectPath);
   const context = createAnalysisContext({ program, workingDirectory: tempDirectory });
-  const sourceFile = context.getSourceFiles().find((file) => file.fileName.endsWith('/src/index.ts'));
+  const sourceFile = context.getSourceFiles().find((file) =>
+    file.fileName.endsWith('/src/index.ts')
+  );
 
   assertExists(sourceFile);
 
@@ -3604,9 +4043,18 @@ Deno.test('createAnalysisContext reaches a fixpoint for recursive effect summari
     INTERNAL_EFFECT_MASKS.suspend | INTERNAL_EFFECT_MASKS.failsRejects,
   );
 
-  assertEquals(getEffectSummaryForDeclaration(context, selfRecursive).hasUnknownDirectEffects, false);
-  assertEquals(getEffectSummaryForDeclaration(context, leftRecursive).hasUnknownDirectEffects, false);
-  assertEquals(getEffectSummaryForDeclaration(context, rightRecursive).hasUnknownDirectEffects, false);
+  assertEquals(
+    getEffectSummaryForDeclaration(context, selfRecursive).hasUnknownDirectEffects,
+    false,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, leftRecursive).hasUnknownDirectEffects,
+    false,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, rightRecursive).hasUnknownDirectEffects,
+    false,
+  );
   assertEquals(getEffectSummaryForDeclaration(context, asyncLeft).hasUnknownDirectEffects, false);
   assertEquals(getEffectSummaryForDeclaration(context, asyncRight).hasUnknownDirectEffects, false);
 });
@@ -3656,7 +4104,9 @@ Deno.test('createAnalysisContext keeps effect summaries stable across repeated q
   const program = loadProgram(projectPath);
 
   const loadNamedDeclarations = (context: ReturnType<typeof createAnalysisContext>) => {
-    const sourceFile = context.getSourceFiles().find((file) => file.fileName.endsWith('/src/index.ts'));
+    const sourceFile = context.getSourceFiles().find((file) =>
+      file.fileName.endsWith('/src/index.ts')
+    );
     assertExists(sourceFile);
     const declarationsByName = new Map(
       sourceFile.statements
@@ -3678,7 +4128,9 @@ Deno.test('createAnalysisContext keeps effect summaries stable across repeated q
     forwardedParameters: normalizeForwardedParameters(summary.forwardedParameters),
     hasUnknownDirectEffects: summary.hasUnknownDirectEffects,
     parameterContracts: [...summary.parameterContracts],
-    unknownDirectReasons: summary.unknownDirectReasons.map((reason) => `${reason.kind}:${reason.detail ?? ''}`),
+    unknownDirectReasons: summary.unknownDirectReasons.map((reason) =>
+      `${reason.kind}:${reason.detail ?? ''}`
+    ),
   });
 
   const leftFirstContext = createAnalysisContext({ program, workingDirectory: tempDirectory });
@@ -3787,7 +4239,9 @@ Deno.test('createAnalysisContext records structured effect unknown reasons', asy
   const projectPath = join(tempDirectory, 'tsconfig.json');
   const program = loadProgram(projectPath);
   const context = createAnalysisContext({ program, workingDirectory: tempDirectory });
-  const sourceFile = context.getSourceFiles().find((file) => file.fileName.endsWith('/src/index.ts'));
+  const sourceFile = context.getSourceFiles().find((file) =>
+    file.fileName.endsWith('/src/index.ts')
+  );
 
   assertExists(sourceFile);
 
@@ -3811,19 +4265,27 @@ Deno.test('createAnalysisContext records structured effect unknown reasons', asy
   assertExists(usesDispatch);
 
   assertEquals(
-    getEffectSummaryForDeclaration(context, usesOpaqueFrontier).unknownDirectReasons.map((reason) => reason.kind),
+    getEffectSummaryForDeclaration(context, usesOpaqueFrontier).unknownDirectReasons.map((reason) =>
+      reason.kind
+    ),
     ['unsummarizedDeclarationFrontier'],
   );
   assertEquals(
-    getEffectSummaryForDeclaration(context, usesOpaqueCallback).unknownDirectReasons.map((reason) => reason.kind),
+    getEffectSummaryForDeclaration(context, usesOpaqueCallback).unknownDirectReasons.map((reason) =>
+      reason.kind
+    ),
     ['opaqueCallableExpression'],
   );
   assertEquals(
-    getEffectSummaryForDeclaration(context, unresolvedDecoder).unknownDirectReasons.map((reason) => reason.kind),
+    getEffectSummaryForDeclaration(context, unresolvedDecoder).unknownDirectReasons.map((reason) =>
+      reason.kind
+    ),
     ['unresolvedForwardedCallback'],
   );
   assertEquals(
-    getEffectSummaryForDeclaration(context, usesDispatch).unknownDirectReasons.map((reason) => reason.kind),
+    getEffectSummaryForDeclaration(context, usesDispatch).unknownDirectReasons.map((reason) =>
+      reason.kind
+    ),
     ['annotatedUnknownDirectEffect'],
   );
 });
@@ -3887,7 +4349,9 @@ Deno.test('createAnalysisContext summarizes browser storage and navigation built
   const projectPath = join(tempDirectory, 'tsconfig.json');
   const program = loadProgram(projectPath);
   const context = createAnalysisContext({ program, workingDirectory: tempDirectory });
-  const sourceFile = context.getSourceFiles().find((file) => file.fileName.endsWith('/src/index.ts'));
+  const sourceFile = context.getSourceFiles().find((file) =>
+    file.fileName.endsWith('/src/index.ts')
+  );
 
   assertExists(sourceFile);
 
@@ -3951,14 +4415,35 @@ Deno.test('createAnalysisContext summarizes browser storage and navigation built
     INTERNAL_EFFECT_MASKS.hostIo,
   );
 
-  assertEquals(getEffectSummaryForDeclaration(context, readStoredValue).hasUnknownDirectEffects, false);
+  assertEquals(
+    getEffectSummaryForDeclaration(context, readStoredValue).hasUnknownDirectEffects,
+    false,
+  );
   assertEquals(getEffectSummaryForDeclaration(context, storeValue).hasUnknownDirectEffects, false);
-  assertEquals(getEffectSummaryForDeclaration(context, clearStoredValue).hasUnknownDirectEffects, false);
-  assertEquals(getEffectSummaryForDeclaration(context, pushHistoryState).hasUnknownDirectEffects, false);
-  assertEquals(getEffectSummaryForDeclaration(context, navigateHistory).hasUnknownDirectEffects, false);
-  assertEquals(getEffectSummaryForDeclaration(context, assignLocation).hasUnknownDirectEffects, false);
-  assertEquals(getEffectSummaryForDeclaration(context, reloadLocation).hasUnknownDirectEffects, false);
-  assertEquals(getEffectSummaryForDeclaration(context, sendBeaconNow).hasUnknownDirectEffects, false);
+  assertEquals(
+    getEffectSummaryForDeclaration(context, clearStoredValue).hasUnknownDirectEffects,
+    false,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, pushHistoryState).hasUnknownDirectEffects,
+    false,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, navigateHistory).hasUnknownDirectEffects,
+    false,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, assignLocation).hasUnknownDirectEffects,
+    false,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, reloadLocation).hasUnknownDirectEffects,
+    false,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, sendBeaconNow).hasUnknownDirectEffects,
+    false,
+  );
 });
 
 Deno.test('createAnalysisContext summarizes fetch host-object families precisely', async () => {
@@ -4016,7 +4501,9 @@ Deno.test('createAnalysisContext summarizes fetch host-object families precisely
   const projectPath = join(tempDirectory, 'tsconfig.json');
   const program = loadProgram(projectPath);
   const context = createAnalysisContext({ program, workingDirectory: tempDirectory });
-  const sourceFile = context.getSourceFiles().find((file) => file.fileName.endsWith('/src/index.ts'));
+  const sourceFile = context.getSourceFiles().find((file) =>
+    file.fileName.endsWith('/src/index.ts')
+  );
 
   assertExists(sourceFile);
 
@@ -4075,7 +4562,10 @@ Deno.test('createAnalysisContext summarizes fetch host-object families precisely
   );
   assertEquals(getEffectSummaryForDeclaration(context, readHeaders).hasUnknownDirectEffects, false);
   assertEquals(getEffectSummaryForDeclaration(context, readRequest).hasUnknownDirectEffects, false);
-  assertEquals(getEffectSummaryForDeclaration(context, readResponse).hasUnknownDirectEffects, false);
+  assertEquals(
+    getEffectSummaryForDeclaration(context, readResponse).hasUnknownDirectEffects,
+    false,
+  );
 });
 
 Deno.test('createAnalysisContext summarizes URL and text builtins precisely', async () => {
@@ -4137,7 +4627,9 @@ Deno.test('createAnalysisContext summarizes URL and text builtins precisely', as
   const projectPath = join(tempDirectory, 'tsconfig.json');
   const program = loadProgram(projectPath);
   const context = createAnalysisContext({ program, workingDirectory: tempDirectory });
-  const sourceFile = context.getSourceFiles().find((file) => file.fileName.endsWith('/src/index.ts'));
+  const sourceFile = context.getSourceFiles().find((file) =>
+    file.fileName.endsWith('/src/index.ts')
+  );
 
   assertExists(sourceFile);
 
@@ -4259,7 +4751,9 @@ Deno.test('createAnalysisContext summarizes JSON and console builtins precisely'
   const projectPath = join(tempDirectory, 'tsconfig.json');
   const program = loadProgram(projectPath);
   const context = createAnalysisContext({ program, workingDirectory: tempDirectory });
-  const sourceFile = context.getSourceFiles().find((file) => file.fileName.endsWith('/src/index.ts'));
+  const sourceFile = context.getSourceFiles().find((file) =>
+    file.fileName.endsWith('/src/index.ts')
+  );
 
   assertExists(sourceFile);
 
@@ -4316,7 +4810,10 @@ Deno.test('createAnalysisContext summarizes JSON and console builtins precisely'
     getEffectSummaryForDeclaration(context, logValue).directMask,
     INTERNAL_EFFECT_MASKS.hostInterop,
   );
-  assertEquals(getEffectSummaryForDeclaration(context, parseWithReviver).hasUnknownDirectEffects, false);
+  assertEquals(
+    getEffectSummaryForDeclaration(context, parseWithReviver).hasUnknownDirectEffects,
+    false,
+  );
   assertEquals(
     getEffectSummaryForDeclaration(context, stringifyWithReplacer).hasUnknownDirectEffects,
     false,
@@ -4501,7 +4998,9 @@ Deno.test('createAnalysisContext summarizes result, json, and debug stdlib helpe
   const projectPath = join(tempDirectory, 'tsconfig.json');
   const program = loadProgram(projectPath);
   const context = createAnalysisContext({ program, workingDirectory: tempDirectory });
-  const sourceFile = context.getSourceFiles().find((file) => file.fileName.endsWith('/src/index.ts'));
+  const sourceFile = context.getSourceFiles().find((file) =>
+    file.fileName.endsWith('/src/index.ts')
+  );
 
   assertExists(sourceFile);
 
@@ -4595,12 +5094,209 @@ Deno.test('createAnalysisContext summarizes result, json, and debug stdlib helpe
     getEffectSummaryForDeclaration(context, debugAssertValue).directMask,
     INTERNAL_EFFECT_MASKS.failsThrows,
   );
-  assertEquals(getEffectSummaryForDeclaration(context, captureJsonFailure).hasUnknownDirectEffects, false);
-  assertEquals(getEffectSummaryForDeclaration(context, captureAsync).hasUnknownDirectEffects, false);
-  assertEquals(getEffectSummaryForDeclaration(context, parseStdJson).hasUnknownDirectEffects, false);
-  assertEquals(getEffectSummaryForDeclaration(context, forwardParseAndDecode).hasUnknownDirectEffects, false);
-  assertEquals(getEffectSummaryForDeclaration(context, forwardEncodeJson).hasUnknownDirectEffects, false);
-  assertEquals(getEffectSummaryForDeclaration(context, debugLogValue).hasUnknownDirectEffects, false);
+  assertEquals(
+    getEffectSummaryForDeclaration(context, captureJsonFailure).hasUnknownDirectEffects,
+    false,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, captureAsync).hasUnknownDirectEffects,
+    false,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, parseStdJson).hasUnknownDirectEffects,
+    false,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, forwardParseAndDecode).hasUnknownDirectEffects,
+    false,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, forwardEncodeJson).hasUnknownDirectEffects,
+    false,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, debugLogValue).hasUnknownDirectEffects,
+    false,
+  );
+});
+
+Deno.test('createAnalysisContext keeps declaration summaries aligned with source helper surfaces', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+          },
+          include: ['src/**/*.ts', 'src/**/*.d.ts'],
+        },
+        null,
+        2,
+      ),
+    },
+    {
+      path: 'src/shared/decode.d.ts',
+      contents: [
+        'export interface Decoder<T> {',
+        '  readonly decode: (value: unknown) => T;',
+        '}',
+        '',
+      ].join('\n'),
+    },
+    {
+      path: 'src/source_helpers.ts',
+      contents: [
+        'import type { Decoder } from "./shared/decode";',
+        '',
+        '// #[effects(add: [host.io, host.node.fs, suspend.await])]',
+        'declare function readRemote(path: string): Promise<string>;',
+        '',
+        'export function parseAndDecodeSource<T>(text: string, decoder: Decoder<T>): T {',
+        '  return decoder.decode(JSON.parse(text));',
+        '}',
+        '',
+        '// #[effects(add: [host.db.transaction])]',
+        'export async function transactionReadSource(path: string): Promise<string> {',
+        '  return await readRemote(path);',
+        '}',
+        '',
+        'export function logSource(value: unknown): void {',
+        '  console.log(value);',
+        '}',
+        '',
+      ].join('\n'),
+    },
+    {
+      path: 'vendor/generated_helpers.d.ts',
+      contents: [
+        'export interface Decoder<T> {',
+        '  readonly decode: (value: unknown) => T;',
+        '}',
+        '',
+        '// #[effects(add: [fails.throws], forward: [decoder.decode], unknown: [direct])]',
+        'export declare function parseAndDecodeDecl<T>(text: string, decoder: Decoder<T>): T;',
+        '',
+        '// #[effects(add: [host.db.transaction, host.io, host.node.fs, suspend.await])]',
+        'export declare function transactionReadDecl(path: string): Promise<string>;',
+        '',
+        '// #[effects(add: [host.ffi])]',
+        'export declare function logDecl(value: unknown): void;',
+        '',
+      ].join('\n'),
+    },
+    {
+      path: 'src/index.ts',
+      contents: [
+        'import { logDecl, parseAndDecodeDecl, transactionReadDecl } from "../vendor/generated_helpers";',
+        '',
+        'void logDecl;',
+        'void parseAndDecodeDecl;',
+        'void transactionReadDecl;',
+        '',
+      ].join('\n'),
+    },
+  ]);
+  const projectPath = join(tempDirectory, 'tsconfig.json');
+  const program = loadProgram(projectPath);
+  const context = createAnalysisContext({ program, workingDirectory: tempDirectory });
+  const sourceFile = context.getSourceFiles().find((file) =>
+    file.fileName.endsWith('/src/source_helpers.ts')
+  );
+  const declarationFile = context.getSourceFiles().find((file) =>
+    file.fileName.endsWith('/vendor/generated_helpers.d.ts')
+  );
+
+  assertExists(sourceFile);
+  assertExists(declarationFile);
+
+  const sourceDeclarations = new Map(
+    sourceFile.statements
+      .filter((statement): statement is ts.FunctionDeclaration =>
+        ts.isFunctionDeclaration(statement)
+      )
+      .filter((declaration): declaration is ts.FunctionDeclaration & { name: ts.Identifier } =>
+        declaration.name !== undefined
+      )
+      .map((declaration) => [declaration.name.text, declaration]),
+  );
+  const declarationDeclarations = new Map(
+    declarationFile.statements
+      .filter((statement): statement is ts.FunctionDeclaration =>
+        ts.isFunctionDeclaration(statement)
+      )
+      .filter((declaration): declaration is ts.FunctionDeclaration & { name: ts.Identifier } =>
+        declaration.name !== undefined
+      )
+      .map((declaration) => [declaration.name.text, declaration]),
+  );
+
+  const parseAndDecodeSource = sourceDeclarations.get('parseAndDecodeSource');
+  const transactionReadSource = sourceDeclarations.get('transactionReadSource');
+  const logSource = sourceDeclarations.get('logSource');
+  const parseAndDecodeDecl = declarationDeclarations.get('parseAndDecodeDecl');
+  const transactionReadDecl = declarationDeclarations.get('transactionReadDecl');
+  const logDecl = declarationDeclarations.get('logDecl');
+
+  assertExists(parseAndDecodeSource);
+  assertExists(transactionReadSource);
+  assertExists(logSource);
+  assertExists(parseAndDecodeDecl);
+  assertExists(transactionReadDecl);
+  assertExists(logDecl);
+
+  const parseAndDecodeSourceSummary = getEffectSummaryForDeclaration(context, parseAndDecodeSource);
+  const parseAndDecodeDeclSummary = getEffectSummaryForDeclaration(context, parseAndDecodeDecl);
+  const parseAndDecodeDeclMatchesSourceForwarding = JSON.stringify(
+    normalizeForwardedParameters(parseAndDecodeDeclSummary.forwardedParameters),
+  ) === JSON.stringify(
+    normalizeForwardedParameters(parseAndDecodeSourceSummary.forwardedParameters),
+  );
+  assertEquals(parseAndDecodeSourceSummary.directMask, parseAndDecodeDeclSummary.directMask);
+  assertEquals(
+    parseAndDecodeDeclSummary.hasUnknownDirectEffects ||
+      parseAndDecodeDeclMatchesSourceForwarding,
+    true,
+  );
+  assertEquals(
+    {
+      directMask: getEffectSummaryForDeclaration(context, transactionReadSource).directMask,
+      forwardedParameters: normalizeForwardedParameters(
+        getEffectSummaryForDeclaration(context, transactionReadSource).forwardedParameters,
+      ),
+      hasUnknownDirectEffects: getEffectSummaryForDeclaration(context, transactionReadSource)
+        .hasUnknownDirectEffects,
+    },
+    {
+      directMask: getEffectSummaryForDeclaration(context, transactionReadDecl).directMask,
+      forwardedParameters: normalizeForwardedParameters(
+        getEffectSummaryForDeclaration(context, transactionReadDecl).forwardedParameters,
+      ),
+      hasUnknownDirectEffects: getEffectSummaryForDeclaration(context, transactionReadDecl)
+        .hasUnknownDirectEffects,
+    },
+  );
+  assertEquals(
+    {
+      directMask: getEffectSummaryForDeclaration(context, logSource).directMask,
+      forwardedParameters: normalizeForwardedParameters(
+        getEffectSummaryForDeclaration(context, logSource).forwardedParameters,
+      ),
+      hasUnknownDirectEffects:
+        getEffectSummaryForDeclaration(context, logSource).hasUnknownDirectEffects,
+    },
+    {
+      directMask: getEffectSummaryForDeclaration(context, logDecl).directMask,
+      forwardedParameters: normalizeForwardedParameters(
+        getEffectSummaryForDeclaration(context, logDecl).forwardedParameters,
+      ),
+      hasUnknownDirectEffects:
+        getEffectSummaryForDeclaration(context, logDecl).hasUnknownDirectEffects,
+    },
+  );
 });
 
 Deno.test('createAnalysisContext infers forwarding through local callback aliases', async () => {
@@ -4648,8 +5344,27 @@ Deno.test('createAnalysisContext infers forwarding through local callback aliase
         '  return wrapped(value);',
         '}',
         '',
+        'export function preludeAdapterCallback<T>(',
+        '  callback: (value: number) => T,',
+        '  value: number,',
+        '): T {',
+        '  const wrapped = (input: number): T => {',
+        '    const forwarded = input;',
+        '    return callback(forwarded);',
+        '  };',
+        '  return wrapped(value);',
+        '}',
+        '',
         'export function adapterMember<T>(decoder: Decoder<T>, value: number): T {',
         '  const wrapped = (input: number): T => decoder.decode(input);',
+        '  return wrapped(value);',
+        '}',
+        '',
+        'export function preludeAdapterMember<T>(decoder: Decoder<T>, value: number): T {',
+        '  const wrapped = (input: number): T => {',
+        '    const forwarded = input;',
+        '    return decoder.decode(forwarded);',
+        '  };',
         '  return wrapped(value);',
         '}',
         '',
@@ -4690,12 +5405,16 @@ Deno.test('createAnalysisContext infers forwarding through local callback aliase
   const projectPath = join(tempDirectory, 'tsconfig.json');
   const program = loadProgram(projectPath);
   const context = createAnalysisContext({ program, workingDirectory: tempDirectory });
-  const sourceFile = context.getSourceFiles().find((file) => file.fileName.endsWith('/src/index.ts'));
+  const sourceFile = context.getSourceFiles().find((file) =>
+    file.fileName.endsWith('/src/index.ts')
+  );
   assertExists(sourceFile);
 
   const declarationsByName = new Map(
     sourceFile.statements
-      .filter((statement): statement is ts.FunctionDeclaration => ts.isFunctionDeclaration(statement))
+      .filter((statement): statement is ts.FunctionDeclaration =>
+        ts.isFunctionDeclaration(statement)
+      )
       .filter((declaration): declaration is ts.FunctionDeclaration & { name: ts.Identifier } =>
         declaration.name !== undefined
       )
@@ -4705,7 +5424,9 @@ Deno.test('createAnalysisContext infers forwarding through local callback aliase
   const aliasMember = declarationsByName.get('aliasMember');
   const destructuredMember = declarationsByName.get('destructuredMember');
   const adapterCallback = declarationsByName.get('adapterCallback');
+  const preludeAdapterCallback = declarationsByName.get('preludeAdapterCallback');
   const adapterMember = declarationsByName.get('adapterMember');
+  const preludeAdapterMember = declarationsByName.get('preludeAdapterMember');
   const asyncAdapterCallback = declarationsByName.get('asyncAdapterCallback');
   const doubleAdapterCallback = declarationsByName.get('doubleAdapterCallback');
   const branchedAdapterCallback = declarationsByName.get('branchedAdapterCallback');
@@ -4714,41 +5435,90 @@ Deno.test('createAnalysisContext infers forwarding through local callback aliase
   assertExists(aliasMember);
   assertExists(destructuredMember);
   assertExists(adapterCallback);
+  assertExists(preludeAdapterCallback);
   assertExists(adapterMember);
+  assertExists(preludeAdapterMember);
   assertExists(asyncAdapterCallback);
   assertExists(doubleAdapterCallback);
   assertExists(branchedAdapterCallback);
 
   assertEquals(
-    normalizeForwardedParameters(getEffectSummaryForDeclaration(context, aliasCallback).forwardedParameters),
+    normalizeForwardedParameters(
+      getEffectSummaryForDeclaration(context, aliasCallback).forwardedParameters,
+    ),
     [{ parameterIndex: 0, failureBoundary: 'preserve' }],
   );
   assertEquals(
-    normalizeForwardedParameters(getEffectSummaryForDeclaration(context, aliasMember).forwardedParameters),
+    normalizeForwardedParameters(
+      getEffectSummaryForDeclaration(context, aliasMember).forwardedParameters,
+    ),
     [{ parameterIndex: 0, failureBoundary: 'preserve', memberName: 'decode' }],
   );
   assertEquals(
-    normalizeForwardedParameters(getEffectSummaryForDeclaration(context, destructuredMember).forwardedParameters),
+    normalizeForwardedParameters(
+      getEffectSummaryForDeclaration(context, destructuredMember).forwardedParameters,
+    ),
     [{ parameterIndex: 0, failureBoundary: 'preserve', memberName: 'decode' }],
   );
   assertEquals(
-    normalizeForwardedParameters(getEffectSummaryForDeclaration(context, adapterCallback).forwardedParameters),
+    normalizeForwardedParameters(
+      getEffectSummaryForDeclaration(context, adapterCallback).forwardedParameters,
+    ),
     [{ parameterIndex: 0, failureBoundary: 'preserve' }],
   );
   assertEquals(
-    normalizeForwardedParameters(getEffectSummaryForDeclaration(context, adapterMember).forwardedParameters),
+    normalizeForwardedParameters(
+      getEffectSummaryForDeclaration(context, preludeAdapterCallback).forwardedParameters,
+    ),
+    [{ parameterIndex: 0, failureBoundary: 'preserve' }],
+  );
+  assertEquals(
+    normalizeForwardedParameters(
+      getEffectSummaryForDeclaration(context, adapterMember).forwardedParameters,
+    ),
     [{ parameterIndex: 0, failureBoundary: 'preserve', memberName: 'decode' }],
   );
   assertEquals(
-    normalizeForwardedParameters(getEffectSummaryForDeclaration(context, asyncAdapterCallback).forwardedParameters),
+    normalizeForwardedParameters(
+      getEffectSummaryForDeclaration(context, preludeAdapterMember).forwardedParameters,
+    ),
+    [{ parameterIndex: 0, failureBoundary: 'preserve', memberName: 'decode' }],
+  );
+  assertEquals(
+    normalizeForwardedParameters(
+      getEffectSummaryForDeclaration(context, asyncAdapterCallback).forwardedParameters,
+    ),
     [{ parameterIndex: 0, failureBoundary: 'reject' }],
   );
-  assertEquals(getEffectSummaryForDeclaration(context, aliasCallback).hasUnknownDirectEffects, false);
+  assertEquals(
+    getEffectSummaryForDeclaration(context, aliasCallback).hasUnknownDirectEffects,
+    false,
+  );
   assertEquals(getEffectSummaryForDeclaration(context, aliasMember).hasUnknownDirectEffects, false);
-  assertEquals(getEffectSummaryForDeclaration(context, destructuredMember).hasUnknownDirectEffects, false);
-  assertEquals(getEffectSummaryForDeclaration(context, adapterCallback).hasUnknownDirectEffects, false);
-  assertEquals(getEffectSummaryForDeclaration(context, adapterMember).hasUnknownDirectEffects, false);
-  assertEquals(getEffectSummaryForDeclaration(context, asyncAdapterCallback).hasUnknownDirectEffects, false);
+  assertEquals(
+    getEffectSummaryForDeclaration(context, destructuredMember).hasUnknownDirectEffects,
+    false,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, adapterCallback).hasUnknownDirectEffects,
+    false,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, preludeAdapterCallback).hasUnknownDirectEffects,
+    false,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, adapterMember).hasUnknownDirectEffects,
+    false,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, preludeAdapterMember).hasUnknownDirectEffects,
+    false,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, asyncAdapterCallback).hasUnknownDirectEffects,
+    false,
+  );
   assertEquals(
     normalizeForwardedParameters(
       getEffectSummaryForDeclaration(context, doubleAdapterCallback).forwardedParameters,
@@ -4761,6 +5531,330 @@ Deno.test('createAnalysisContext infers forwarding through local callback aliase
     ),
     [],
   );
-  assertEquals(getEffectSummaryForDeclaration(context, doubleAdapterCallback).hasUnknownDirectEffects, true);
-  assertEquals(getEffectSummaryForDeclaration(context, branchedAdapterCallback).hasUnknownDirectEffects, true);
+  assertEquals(
+    getEffectSummaryForDeclaration(context, doubleAdapterCallback).hasUnknownDirectEffects,
+    true,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, branchedAdapterCallback).hasUnknownDirectEffects,
+    true,
+  );
+});
+
+Deno.test('createAnalysisContext keeps unsupported local forwarding adapters conservative', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+          },
+          include: ['src/**/*.ts'],
+        },
+        null,
+        2,
+      ),
+    },
+    {
+      path: 'src/index.ts',
+      contents: [
+        'export function fail(value: number): number {',
+        '  throw new Error(`boom ${value}`);',
+        '}',
+        '',
+        'export class Box {',
+        '  get value(): number {',
+        '    return fail(1);',
+        '  }',
+        '}',
+        '',
+        'export function defaultedAdapterCallback(',
+        '  callback: (value: number) => number = fail,',
+        '  value: number = 1,',
+        '): number {',
+        '  const wrapped = (input: number): number => callback(input);',
+        '  return wrapped(value);',
+        '}',
+        '',
+        'export function getterArgumentAdapter(',
+        '  callback: (value: number) => number,',
+        '  box: Box,',
+        '): number {',
+        '  const wrapped = (input: Box): number => callback(input.value);',
+        '  return wrapped(box);',
+        '}',
+        '',
+        'export function scheduledAdapterCallback(callback: () => void): void {',
+        '  const wrapped = (): void => callback();',
+        '  queueMicrotask(wrapped);',
+        '}',
+        '',
+        'export function helperAdapterCallback(callback: (value: number) => number, value: number): number {',
+        '  const call = (input: number): number => callback(input + 1);',
+        '  const wrapped = (input: number): number => call(input);',
+        '  return wrapped(value);',
+        '}',
+        '',
+        'export function boundAdapterCallback(',
+        '  callback: (value: number) => number,',
+        '  value: number,',
+        '): number {',
+        '  const invoke = callback.bind(undefined);',
+        '  const wrapped = (input: number): number => invoke(input);',
+        '  return wrapped(value);',
+        '}',
+        '',
+      ].join('\n'),
+    },
+  ]);
+
+  const projectPath = join(tempDirectory, 'tsconfig.json');
+  const program = loadProgram(projectPath);
+  const context = createAnalysisContext({ program, workingDirectory: tempDirectory });
+  const sourceFile = context.getSourceFiles().find((file) =>
+    file.fileName.endsWith('/src/index.ts')
+  );
+
+  assertExists(sourceFile);
+
+  const declarationsByName = new Map(
+    sourceFile.statements
+      .filter((statement): statement is ts.FunctionDeclaration =>
+        ts.isFunctionDeclaration(statement)
+      )
+      .filter((declaration): declaration is ts.FunctionDeclaration & { name: ts.Identifier } =>
+        declaration.name !== undefined
+      )
+      .map((declaration) => [declaration.name.text, declaration]),
+  );
+  const defaultedAdapterCallback = declarationsByName.get('defaultedAdapterCallback');
+  const getterArgumentAdapter = declarationsByName.get('getterArgumentAdapter');
+  const scheduledAdapterCallback = declarationsByName.get('scheduledAdapterCallback');
+  const helperAdapterCallback = declarationsByName.get('helperAdapterCallback');
+  const boundAdapterCallback = declarationsByName.get('boundAdapterCallback');
+
+  assertExists(defaultedAdapterCallback);
+  assertExists(getterArgumentAdapter);
+  assertExists(scheduledAdapterCallback);
+  assertExists(helperAdapterCallback);
+  assertExists(boundAdapterCallback);
+
+  assertEquals(
+    normalizeForwardedParameters(
+      getEffectSummaryForDeclaration(context, defaultedAdapterCallback).forwardedParameters,
+    ),
+    [],
+  );
+  assertEquals(
+    normalizeForwardedParameters(
+      getEffectSummaryForDeclaration(context, getterArgumentAdapter).forwardedParameters,
+    ),
+    [],
+  );
+  assertEquals(
+    normalizeForwardedParameters(
+      getEffectSummaryForDeclaration(context, scheduledAdapterCallback).forwardedParameters,
+    ),
+    [],
+  );
+  assertEquals(
+    normalizeForwardedParameters(
+      getEffectSummaryForDeclaration(context, helperAdapterCallback).forwardedParameters,
+    ),
+    [],
+  );
+  assertEquals(
+    normalizeForwardedParameters(
+      getEffectSummaryForDeclaration(context, boundAdapterCallback).forwardedParameters,
+    ),
+    [],
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, defaultedAdapterCallback).hasUnknownDirectEffects,
+    true,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, getterArgumentAdapter).hasUnknownDirectEffects,
+    true,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, scheduledAdapterCallback).hasUnknownDirectEffects,
+    true,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, helperAdapterCallback).hasUnknownDirectEffects,
+    true,
+  );
+  assertEquals(
+    getEffectSummaryForDeclaration(context, boundAdapterCallback).hasUnknownDirectEffects,
+    true,
+  );
+});
+
+Deno.test('createAnalysisContext keeps local forwarding inference conservative for unstable adapters', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+          },
+          include: ['src/**/*.ts'],
+        },
+        null,
+        2,
+      ),
+    },
+    {
+      path: 'src/index.ts',
+      contents: [
+        'export interface Decoder<T> {',
+        '  readonly decode: (value: number) => T;',
+        '}',
+        '',
+        'function fail(value: number): number {',
+        '  throw new Error("boom");',
+        '}',
+        '',
+        'class Box {',
+        '  get value(): number {',
+        '    return fail(1);',
+        '  }',
+        '}',
+        '',
+        'export function defaultedAdapter(',
+        '  callback: (value: number) => number = fail,',
+        '  value: number = 1,',
+        '): number {',
+        '  const wrapped = (input: number): number => callback(input);',
+        '  return wrapped(value);',
+        '}',
+        '',
+        'export function getterArgumentAdapter(',
+        '  callback: (value: number) => number,',
+        '  box: Box,',
+        '): number {',
+        '  const wrapped = (input: Box): number => callback(input.value);',
+        '  return wrapped(box);',
+        '}',
+        '',
+        'export function extractedMemberAdapter(decoder: Decoder<number>, value: number): number {',
+        '  const decode = decoder.decode;',
+        '  const wrapped = (input: number): number => decode(input);',
+        '  return wrapped(value);',
+        '}',
+        '',
+        'export function boundMemberAdapter(decoder: Decoder<number>, value: number): number {',
+        '  const bound = decoder.decode.bind(decoder);',
+        '  const wrapped = (input: number): number => bound(input);',
+        '  return wrapped(value);',
+        '}',
+        '',
+        'export function mutatedAdapter(callback: (value: number) => number, value: number): number {',
+        '  const wrapped = (input: number): number => {',
+        '    let current = input;',
+        '    current += 1;',
+        '    return callback(current - 1);',
+        '  };',
+        '  return wrapped(value);',
+        '}',
+        '',
+        'export function switchAdapter(',
+        '  callback: (value: number) => number,',
+        '  value: number,',
+        '  flag: boolean,',
+        '): number {',
+        '  const wrapped = (input: number): number => {',
+        '    switch (flag) {',
+        '      case true:',
+        '        return callback(input);',
+        '      default:',
+        '        return callback(input);',
+        '    }',
+        '  };',
+        '  return wrapped(value);',
+        '}',
+        '',
+        'export function tryAdapter(callback: (value: number) => number, value: number): number {',
+        '  const wrapped = (input: number): number => {',
+        '    try {',
+        '      return callback(input);',
+        '    } catch {',
+        '      return input;',
+        '    }',
+        '  };',
+        '  return wrapped(value);',
+        '}',
+        '',
+        'export function scheduledAdapter(callback: () => void): void {',
+        '  const wrapped = (): void => callback();',
+        '  queueMicrotask(wrapped);',
+        '}',
+        '',
+        'export function scheduledMemberAdapter(decoder: Decoder<number>, value: number): void {',
+        '  const wrapped = (): void => {',
+        '    decoder.decode(value);',
+        '  };',
+        '  queueMicrotask(wrapped);',
+        '}',
+        '',
+      ].join('\n'),
+    },
+  ]);
+
+  const projectPath = join(tempDirectory, 'tsconfig.json');
+  const program = loadProgram(projectPath);
+  const context = createAnalysisContext({ program, workingDirectory: tempDirectory });
+  const sourceFile = context.getSourceFiles().find((file) =>
+    file.fileName.endsWith('/src/index.ts')
+  );
+  assertExists(sourceFile);
+
+  const declarationsByName = new Map(
+    sourceFile.statements
+      .filter((statement): statement is ts.FunctionDeclaration =>
+        ts.isFunctionDeclaration(statement)
+      )
+      .filter((declaration): declaration is ts.FunctionDeclaration & { name: ts.Identifier } =>
+        declaration.name !== undefined
+      )
+      .map((declaration) => [declaration.name.text, declaration]),
+  );
+
+  for (
+    const name of [
+      'defaultedAdapter',
+      'getterArgumentAdapter',
+      'extractedMemberAdapter',
+      'boundMemberAdapter',
+      'mutatedAdapter',
+      'switchAdapter',
+      'tryAdapter',
+      'scheduledAdapter',
+      'scheduledMemberAdapter',
+    ]
+  ) {
+    const declaration = declarationsByName.get(name);
+    assertExists(declaration);
+    assertEquals(
+      normalizeForwardedParameters(
+        getEffectSummaryForDeclaration(context, declaration).forwardedParameters,
+      ),
+      [],
+      name,
+    );
+    assertEquals(
+      getEffectSummaryForDeclaration(context, declaration).hasUnknownDirectEffects,
+      true,
+      name,
+    );
+  }
 });

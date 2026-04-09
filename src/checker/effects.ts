@@ -30,10 +30,10 @@ import {
   subtractEffectSet,
 } from './effects/names.ts';
 import {
+  type FreshLocalProof,
   getFreshLocalMutatingCall,
   getFreshLocalProof,
   getFreshLocalRootSymbolId,
-  type FreshLocalProof,
 } from './effects/fresh_locals.ts';
 import type { EffectCallableDeclaration, EffectComposition } from './effects/model.ts';
 import { isCallableBodyDeclaration, isCallableDeclarationNode } from './effects/model.ts';
@@ -576,7 +576,13 @@ function mutationTouchesObservableState(
 ): boolean {
   if (ts.isPropertyAccessExpression(expression) || ts.isElementAccessExpression(expression)) {
     const rootSymbolId = getFreshLocalRootSymbolId(context, expression, freshLocalProof);
-    if (rootSymbolId !== undefined) {
+    let current = unwrapOuterExpression(expression);
+    let depth = 0;
+    while (ts.isPropertyAccessExpression(current) || ts.isElementAccessExpression(current)) {
+      depth += 1;
+      current = unwrapOuterExpression(current.expression);
+    }
+    if (rootSymbolId !== undefined && depth === 1) {
       return false;
     }
     return true;
@@ -644,6 +650,12 @@ function getCurrentFunctionParameterReferenceIndex(
   return undefined;
 }
 
+function currentFunctionHasParameterInitializers(
+  parameters: readonly ts.ParameterDeclaration[],
+): boolean {
+  return parameters.some((parameter) => parameter.initializer !== undefined);
+}
+
 interface CurrentFunctionAliasTarget {
   readonly memberPath: readonly string[];
   readonly parameterIndex: number;
@@ -691,13 +703,14 @@ function isTrivialAdapterArgumentExpression(
     return true;
   }
 
-  return resolveCurrentFunctionAliasTarget(
-      context,
-      parameters,
-      expression,
-      new Set<number>(),
-      true,
-    ) !== undefined;
+  const target = resolveCurrentFunctionAliasTarget(
+    context,
+    parameters,
+    expression,
+    new Set<number>(),
+    true,
+  );
+  return target !== undefined && target.memberPath.length === 0;
 }
 
 function isTrivialAdapterPreludeStatement(
@@ -735,7 +748,10 @@ function getTrivialAdapterBodyCall(
     if (ts.isCallExpression(current)) {
       return { awaited: false, callExpression: current };
     }
-    if (ts.isAwaitExpression(current) && ts.isCallExpression(unwrapOuterExpression(current.expression))) {
+    if (
+      ts.isAwaitExpression(current) &&
+      ts.isCallExpression(unwrapOuterExpression(current.expression))
+    ) {
       return {
         awaited: true,
         callExpression: unwrapOuterExpression(current.expression) as ts.CallExpression,
@@ -750,9 +766,7 @@ function getTrivialAdapterBodyCall(
       return undefined;
     }
     return declaration.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword)
-      ? direct.awaited
-        ? direct
-        : undefined
+      ? direct.awaited ? direct : undefined
       : direct.awaited
       ? undefined
       : direct;
@@ -780,9 +794,7 @@ function getTrivialAdapterBodyCall(
     return undefined;
   }
   return declaration.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword)
-    ? direct.awaited
-      ? direct
-      : undefined
+    ? direct.awaited ? direct : undefined
     : direct.awaited
     ? undefined
     : direct;
@@ -801,19 +813,71 @@ function resolveCurrentFunctionTrivialAdapterTarget(
   }
 
   const direct = getTrivialAdapterBodyCall(context, current);
-  if (!direct || !direct.callExpression.arguments.every((argument) =>
-    isTrivialAdapterArgumentExpression(context, current.parameters, argument)
-  )) {
+  if (
+    !direct ||
+    !direct.callExpression.arguments.every((argument) =>
+      isTrivialAdapterArgumentExpression(context, current.parameters, argument)
+    )
+  ) {
     return undefined;
   }
 
-  return resolveCurrentFunctionAliasTarget(
+  return resolveCurrentFunctionTrivialAdapterCalleeTarget(
     context,
     parameters,
     direct.callExpression.expression,
-    seenSymbols,
     allowNonCallableParameterRoot,
   );
+}
+
+function resolveCurrentFunctionTrivialAdapterCalleeTarget(
+  context: AnalysisContext,
+  parameters: readonly ts.ParameterDeclaration[],
+  expression: ts.Expression,
+  allowNonCallableParameterRoot: boolean,
+): CurrentFunctionAliasTarget | undefined {
+  const current = unwrapOuterExpression(expression);
+
+  if (ts.isPropertyAccessExpression(current)) {
+    const target = resolveCurrentFunctionTrivialAdapterCalleeTarget(
+      context,
+      parameters,
+      current.expression,
+      true,
+    );
+    return target
+      ? {
+        parameterIndex: target.parameterIndex,
+        memberPath: [...target.memberPath, current.name.text],
+      }
+      : undefined;
+  }
+
+  if (
+    ts.isElementAccessExpression(current) &&
+    (ts.isStringLiteral(current.argumentExpression) ||
+      ts.isNumericLiteral(current.argumentExpression))
+  ) {
+    const target = resolveCurrentFunctionTrivialAdapterCalleeTarget(
+      context,
+      parameters,
+      current.expression,
+      true,
+    );
+    return target
+      ? {
+        parameterIndex: target.parameterIndex,
+        memberPath: [...target.memberPath, current.argumentExpression.text],
+      }
+      : undefined;
+  }
+
+  const directParameterIndex = allowNonCallableParameterRoot
+    ? getCurrentFunctionParameterReferenceIndex(context, parameters, current)
+    : getCurrentFunctionParameterIndex(context, parameters, current);
+  return directParameterIndex === undefined
+    ? undefined
+    : { parameterIndex: directParameterIndex, memberPath: [] };
 }
 
 function resolveCurrentFunctionAliasTarget(
@@ -823,6 +887,10 @@ function resolveCurrentFunctionAliasTarget(
   seenSymbols = new Set<number>(),
   allowNonCallableParameterRoot = false,
 ): CurrentFunctionAliasTarget | undefined {
+  if (currentFunctionHasParameterInitializers(parameters)) {
+    return undefined;
+  }
+
   const current = unwrapOuterExpression(expression);
 
   if (ts.isPropertyAccessExpression(current)) {
@@ -843,7 +911,8 @@ function resolveCurrentFunctionAliasTarget(
 
   if (
     ts.isElementAccessExpression(current) &&
-    (ts.isStringLiteral(current.argumentExpression) || ts.isNumericLiteral(current.argumentExpression))
+    (ts.isStringLiteral(current.argumentExpression) ||
+      ts.isNumericLiteral(current.argumentExpression))
   ) {
     const target = resolveCurrentFunctionAliasTarget(
       context,
@@ -916,7 +985,10 @@ function resolveCurrentFunctionAliasTarget(
       }
       const propertySegment = getBindingElementPropertySegment(declaration);
       const variableDeclaration = declaration.parent.parent;
-      if (!propertySegment || !ts.isVariableDeclaration(variableDeclaration) || !variableDeclaration.initializer) {
+      if (
+        !propertySegment || !ts.isVariableDeclaration(variableDeclaration) ||
+        !variableDeclaration.initializer
+      ) {
         continue;
       }
       const target = resolveCurrentFunctionAliasTarget(
@@ -1160,14 +1232,128 @@ function getForwardedCallablePathLabel(
   memberPath: readonly string[],
 ): string | undefined {
   const unwrappedArgument = unwrapOuterExpression(argument);
-  const baseLabel = ts.isIdentifier(unwrappedArgument)
-    ? unwrappedArgument.text
-    : undefined;
+  const baseLabel = ts.isIdentifier(unwrappedArgument) ? unwrappedArgument.text : undefined;
   if (memberPath.length === 0) {
     return baseLabel;
   }
   const pathLabel = memberPath.join('.');
   return baseLabel ? `${baseLabel}.${pathLabel}` : pathLabel;
+}
+
+function formatCurrentFunctionAliasTargetLabel(
+  parameters: readonly ts.ParameterDeclaration[],
+  target: CurrentFunctionAliasTarget,
+): string {
+  return [
+    getParameterName(parameters[target.parameterIndex]!, target.parameterIndex),
+    ...target.memberPath,
+  ].join(
+    '.',
+  );
+}
+
+function currentFunctionAliasTargetIsCallable(
+  context: AnalysisContext,
+  parameters: readonly ts.ParameterDeclaration[],
+  target: CurrentFunctionAliasTarget,
+): boolean {
+  const parameter = parameters[target.parameterIndex];
+  if (parameter === undefined) {
+    return false;
+  }
+
+  let currentType = context.checker.getTypeAtLocation(parameter);
+  for (const step of target.memberPath) {
+    const property = currentType.getProperty(step);
+    if (!property) {
+      return false;
+    }
+    currentType = context.checker.getTypeOfSymbolAtLocation(property, parameter);
+  }
+
+  return context.checker.getSignaturesOfType(currentType, ts.SignatureKind.Call).length > 0 ||
+    context.checker.getSignaturesOfType(currentType, ts.SignatureKind.Construct).length > 0;
+}
+
+function isDeferredHostCallbackBoundary(summary: EffectSummaryFact): boolean {
+  if (summary.forwardedParameters.length !== 0) {
+    return false;
+  }
+
+  return summary.directEffects.some((effect) =>
+    effectSetsOverlap([effect], ['host.ffi']) ||
+    effectSetsOverlap([effect], ['host.interop']) ||
+    effectSetsOverlap([effect], ['host.time'])
+  );
+}
+
+function getUnhandledCallableArgumentUnknownReasons(
+  context: AnalysisContext,
+  parameters: readonly ts.ParameterDeclaration[],
+  expression: ts.CallExpression | ts.NewExpression,
+  summary: EffectSummaryFact,
+): readonly EffectUnknownReasonFact[] {
+  if (
+    !expression.arguments || expression.arguments.length === 0 ||
+    !isDeferredHostCallbackBoundary(summary)
+  ) {
+    return [];
+  }
+
+  const forwardedIndices = new Set(
+    summary.forwardedParameters.map((forwardedParameter) => forwardedParameter.parameterIndex),
+  );
+  const reasons: EffectUnknownReasonFact[] = [];
+  for (const [index, argument] of expression.arguments.entries()) {
+    if (forwardedIndices.has(index)) {
+      continue;
+    }
+
+    const localTarget = resolveCurrentFunctionTrivialAdapterTarget(
+      context,
+      parameters,
+      argument,
+      new Set<number>(),
+      true,
+    ) ?? resolveCurrentFunctionAliasTarget(
+      context,
+      parameters,
+      argument,
+      new Set<number>(),
+      true,
+    );
+    if (localTarget && currentFunctionAliasTargetIsCallable(context, parameters, localTarget)) {
+      reasons.push(
+        createEffectUnknownReason(
+          'unresolvedForwardedCallback',
+          formatCurrentFunctionAliasTargetLabel(parameters, localTarget),
+        ),
+      );
+      continue;
+    }
+
+    const current = unwrapOuterExpression(argument);
+    if (!ts.isArrowFunction(current) && !ts.isFunctionExpression(current)) {
+      const type = context.checker.getTypeAtLocation(argument);
+      const callSignatures = context.checker.getSignaturesOfType(type, ts.SignatureKind.Call);
+      const constructSignatures = context.checker.getSignaturesOfType(
+        type,
+        ts.SignatureKind.Construct,
+      );
+      if (callSignatures.length === 0 && constructSignatures.length === 0) {
+        continue;
+      }
+    }
+
+    const callableSummary = getEffectCompositionForCallableExpression(context, argument);
+    if (!callableSummary || (!callableSummary.unknown && callableSummary.effects.length === 0)) {
+      continue;
+    }
+
+    const argumentLabel = getForwardedCallablePathLabel(argument, []) ?? `<arg ${index + 1}>`;
+    reasons.push(createEffectUnknownReason('unresolvedForwardedCallback', argumentLabel));
+  }
+  return mergeEffectUnknownReasons(reasons);
 }
 
 function getUnresolvedCallablePathStep(
@@ -1365,6 +1551,7 @@ function recomputeBodyDeclarationSummary(
     return summary;
   }
   const asyncBoundary = hasAsyncBoundary(declaration);
+  const hasParameterInitializers = currentFunctionHasParameterInitializers(parameters);
   if (asyncBoundary) {
     appendSummaryDirectEffects(summary, ['suspend.await']);
   }
@@ -1472,10 +1659,11 @@ function recomputeBodyDeclarationSummary(
           const resolvedSignature = context.checker.getResolvedSignature(node);
           const signatureSummary = getEffectSummaryForSignature(context, resolvedSignature);
           if (signatureSummary) {
-            const directEffects = (getFreshLocalMutatingCall(context, node, freshLocalProof)?.suppressesMut ??
-                false)
-              ? subtractEffectSet(signatureSummary.directEffects, ['mut'])
-              : signatureSummary.directEffects;
+            const directEffects =
+              (getFreshLocalMutatingCall(context, node, freshLocalProof)?.suppressesMut ??
+                  false)
+                ? subtractEffectSet(signatureSummary.directEffects, ['mut'])
+                : signatureSummary.directEffects;
             appendSummaryDirectEffects(
               targetSummary,
               applyContainingCallableBoundaryToEffects(
@@ -1484,6 +1672,15 @@ function recomputeBodyDeclarationSummary(
               ),
             );
             appendSummaryUnknownDirectReasons(targetSummary, signatureSummary.unknownDirectReasons);
+            appendSummaryUnknownDirectReasons(
+              targetSummary,
+              getUnhandledCallableArgumentUnknownReasons(
+                context,
+                parameters,
+                node,
+                signatureSummary,
+              ),
+            );
             for (const forwardedParameter of signatureSummary.forwardedParameters) {
               const forwarded = summarizeForwardedArgumentInBody(
                 context,
@@ -1555,6 +1752,11 @@ function recomputeBodyDeclarationSummary(
 
     ts.forEachChild(node, (child) => visit(child, targetSummary, targetForwardedParameters));
   };
+  for (const parameter of parameters) {
+    if (parameter.initializer) {
+      visit(parameter.initializer, summary, forwardedParameters);
+    }
+  }
   visit(body, summary, forwardedParameters);
 
   summary.forwardedParameters = [...forwardedParameters.values()].sort((left, right) =>
@@ -1562,6 +1764,21 @@ function recomputeBodyDeclarationSummary(
     left.failureBoundary.localeCompare(right.failureBoundary) ||
     left.memberPath.join('.').localeCompare(right.memberPath.join('.'))
   );
+  if (hasParameterInitializers && summary.forwardedParameters.length > 0) {
+    appendSummaryUnknownDirectReasons(
+      summary,
+      summary.forwardedParameters.map((forwardedParameter) =>
+        createEffectUnknownReason(
+          'unresolvedForwardedCallback',
+          formatCurrentFunctionAliasTargetLabel(parameters, {
+            parameterIndex: forwardedParameter.parameterIndex,
+            memberPath: forwardedParameter.memberPath,
+          }),
+        )
+      ),
+    );
+    summary.forwardedParameters = [];
+  }
   return summary;
 }
 
@@ -1701,7 +1918,9 @@ export function getEffectCompositionForCallLike(
         : forwardedParameter.parameterName
         ? [forwardedParameter.parameterName, ...forwardedParameter.memberPath].join('.')
         : forwardedParameter.memberPath.length > 0
-        ? `<param ${forwardedParameter.parameterIndex + 1}>.${forwardedParameter.memberPath.join('.')}`
+        ? `<param ${forwardedParameter.parameterIndex + 1}>.${
+          forwardedParameter.memberPath.join('.')
+        }`
         : `<param ${forwardedParameter.parameterIndex + 1}>`;
       const unresolvedStep = argument
         ? getUnresolvedCallablePathStep(context, argument, forwardedParameter.memberPath)

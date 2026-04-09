@@ -1623,6 +1623,14 @@ function stateCallAffectsNarrow(
       'mutation',
     )
     : undefined;
+  const freshLocalMutatingCall = calledMember
+    ? (() => {
+      const freshLocalProof = getEnclosingBodyFreshLocalProof(context, node);
+      return freshLocalProof
+        ? getFreshLocalMutatingCall(context, node, freshLocalProof)
+        : undefined;
+    })()
+    : undefined;
 
   if (
     calledMember &&
@@ -1670,10 +1678,6 @@ function stateCallAffectsNarrow(
   }
 
   if (calledMember) {
-    const freshLocalProof = getEnclosingBodyFreshLocalProof(context, node);
-    const freshLocalMutatingCall = freshLocalProof
-      ? getFreshLocalMutatingCall(context, node, freshLocalProof)
-      : undefined;
     if (
       freshLocalMutatingCall?.suppressesMut &&
       !receiverPathAffectsMemberNarrow(
@@ -1685,8 +1689,13 @@ function stateCallAffectsNarrow(
     }
   }
 
-  if (options.respectEffectPreservation && callPreservesNarrowing(context, node)) {
-    return false;
+  if (options.respectEffectPreservation) {
+    if (callPreservesNarrowing(context, node)) {
+      return false;
+    }
+    if (freshLocalMutatingCall && !freshLocalMutatingCall.suppressesMut) {
+      return true;
+    }
   }
 
   if (
