@@ -8,12 +8,6 @@ import {
   type MergedDiagnostic,
   toMergedDiagnostic,
 } from '../checker/diagnostics.ts';
-import { analyzeProject } from '../checker/analyze_project.ts';
-import {
-  collectSoundscriptRootNames,
-  getConfigFileParsingDiagnostics,
-  loadConfig,
-} from '../config.ts';
 import { createBuiltinExpandedProgram } from '../frontend/builtin_macro_support.ts';
 import { MacroError } from '../frontend/macro_errors.ts';
 import { isSoundscriptSourceFile } from '../frontend/project_frontend.ts';
@@ -29,6 +23,7 @@ import {
   removePath,
   writeTextFile,
 } from '../platform/host.ts';
+import { loadRuntimeProgramConfig } from './project_roots.ts';
 import { inlineSourceMapComment, stripTrailingSourceMapComment } from './source_maps.ts';
 import { type RuntimeTransformArtifact, transpileTypeScriptModuleToEsm } from './transform.ts';
 
@@ -295,21 +290,17 @@ function createRuntimeMacroDiagnostic(error: MacroError): MergedDiagnostic {
   };
 }
 
-function createExpandedProgram(projectPath: string) {
-  const loadedConfig = loadConfig(projectPath);
-  const soundscriptRootNames = collectSoundscriptRootNames(projectPath, loadedConfig);
+function createExpandedProgram(projectPath: string, extraRootNames: readonly string[] = []) {
+  const runtimeConfig = loadRuntimeProgramConfig(projectPath, extraRootNames);
   return createBuiltinExpandedProgram({
     baseHost: createSoundStdlibCompilerHost(
-      loadedConfig.commandLine.options,
+      runtimeConfig.loadedConfig.commandLine.options,
       dirname(projectPath),
     ),
-    configFileParsingDiagnostics: getConfigFileParsingDiagnostics(
-      loadedConfig.diagnostics,
-      soundscriptRootNames,
-    ),
-    options: loadedConfig.commandLine.options,
-    projectReferences: loadedConfig.commandLine.projectReferences,
-    rootNames: [...new Set([...loadedConfig.commandLine.fileNames, ...soundscriptRootNames])],
+    configFileParsingDiagnostics: runtimeConfig.configFileParsingDiagnostics,
+    options: runtimeConfig.loadedConfig.commandLine.options,
+    projectReferences: runtimeConfig.loadedConfig.commandLine.projectReferences,
+    rootNames: runtimeConfig.rootNames,
   });
 }
 
@@ -379,19 +370,10 @@ export async function materializeRuntimeGraph(
     };
   }
 
-  const analysis = analyzeProject({
-    projectPath: entryProjectPath,
-    workingDirectory: options.workingDirectory,
-  });
-  if (hasErrorDiagnostics(analysis.diagnostics)) {
-    return {
-      diagnostics: analysis.diagnostics,
-      exitCode: 1,
-      output: formatDiagnostics(analysis.diagnostics, options.workingDirectory),
-    };
-  }
-
-  const expandedProgram = createExpandedProgram(entryProjectPath);
+  const expandedProgram = createExpandedProgram(
+    entryProjectPath,
+    options.entryPaths.filter(isSoundscriptSourceFile),
+  );
   const frontendDiagnostics: MergedDiagnostic[] = [
     ...expandedProgram.frontendDiagnostics(),
     ...ts.getPreEmitDiagnostics(expandedProgram.program).map(toMergedDiagnostic),

@@ -147,8 +147,10 @@ function encodeMappings(lines: readonly DecodedSegment[][]): string {
       let encoded = encodeVlqValue(segment.generatedColumn - previousGeneratedColumn);
       previousGeneratedColumn = segment.generatedColumn;
 
-      if (segment.sourceIndex !== undefined && segment.originalLine !== undefined &&
-        segment.originalColumn !== undefined) {
+      if (
+        segment.sourceIndex !== undefined && segment.originalLine !== undefined &&
+        segment.originalColumn !== undefined
+      ) {
         encoded += encodeVlqValue(segment.sourceIndex - previousSourceIndex);
         previousSourceIndex = segment.sourceIndex;
 
@@ -226,6 +228,25 @@ function stripSourceMappingUrl(code: string): string {
   return code.replace(/\n\/\/# sourceMappingURL=.*$/u, '');
 }
 
+function encodeBase64Utf8(text: string): string {
+  const bytes = new TextEncoder().encode(text);
+  let encoded = '';
+
+  for (let index = 0; index < bytes.length; index += 3) {
+    const first = bytes[index]!;
+    const second = bytes[index + 1];
+    const third = bytes[index + 2];
+    const combined = (first << 16) | ((second ?? 0) << 8) | (third ?? 0);
+
+    encoded += BASE64_ALPHABET[(combined >> 18) & 63]!;
+    encoded += BASE64_ALPHABET[(combined >> 12) & 63]!;
+    encoded += second === undefined ? '=' : BASE64_ALPHABET[(combined >> 6) & 63]!;
+    encoded += third === undefined ? '=' : BASE64_ALPHABET[combined & 63]!;
+  }
+
+  return encoded;
+}
+
 export interface ComposedSourceMapResult {
   code: string;
   map: SourceMapV3;
@@ -260,7 +281,10 @@ export function composeTranspiledSourceMapToOriginal(
         segment.originalColumn,
       );
       const mappedSource = mapProgramPositionToSource(preparedFile, rewrittenPosition);
-      const mappedLineAndColumn = lineAndColumnForPosition(originalLineStarts, mappedSource.position);
+      const mappedLineAndColumn = lineAndColumnForPosition(
+        originalLineStarts,
+        mappedSource.position,
+      );
 
       return {
         generatedColumn: segment.generatedColumn,
@@ -288,7 +312,7 @@ export function composeTranspiledSourceMapToOriginal(
 }
 
 export function inlineSourceMapComment(mapText: string): string {
-  const base64 = btoa(mapText);
+  const base64 = encodeBase64Utf8(mapText);
   return `//# sourceMappingURL=data:application/json;base64,${base64}`;
 }
 

@@ -3112,6 +3112,57 @@ Deno.test('runCli node materializes a mixed .ts/.sts app through a temporary tra
   assertStringIncludes(result.output, '42');
 });
 
+Deno.test('runCli node does not run soundscript checker rules on plain TypeScript entry files', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            target: 'ES2022',
+            module: 'ESNext',
+          },
+          include: ['src/**/*.ts'],
+        },
+        null,
+        2,
+      ),
+    },
+    {
+      path: 'src/main.ts',
+      contents: [
+        'class Box {',
+        '  read() { return 1; }',
+        '}',
+        'const read = new Box().read;',
+        'console.log(typeof read);',
+        '',
+      ].join('\n'),
+    },
+  ], { legacySoundMode: false });
+
+  const result = await runCli(
+    ['node', join(tempDirectory, 'src/main.ts')],
+    tempDirectory,
+    {
+      runSubprocess: async () => {
+        return {
+          exitCode: 0,
+          output: 'function\n',
+        };
+      },
+    },
+  );
+
+  assertEquals(result.exitCode, 0, result.output);
+  assertStringIncludes(result.output, 'function');
+  assertEquals(
+    result.diagnostics.some((diagnostic) => diagnostic.source === 'sound'),
+    false,
+  );
+});
+
 Deno.test('runCli node preserves leading Node.js flags ahead of the materialized entry', async () => {
   const tempDirectory = await createTempProject([
     {

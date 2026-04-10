@@ -1,15 +1,12 @@
 import ts from 'typescript';
 
 import { createSoundStdlibCompilerHost } from '../bundled/sound_stdlib.ts';
-import {
-  collectSoundscriptRootNames,
-  getConfigFileParsingDiagnostics,
-  loadConfig,
-} from '../config.ts';
+import { loadConfig } from '../config.ts';
 import { dirname, join } from '../platform/path.ts';
 import { createBuiltinExpandedProgram } from '../frontend/builtin_macro_support.ts';
 import { isSoundscriptSourceFile, toSourceFileName } from '../frontend/project_frontend.ts';
 import { resolveSoundScriptAwareModule } from '../soundscript_packages.ts';
+import { loadRuntimeProgramConfig } from './project_roots.ts';
 import { type RuntimeTransformArtifact, transpileTypeScriptModuleToEsm } from './transform.ts';
 
 const PROJECT_CONFIG_CANDIDATES = ['tsconfig.soundscript.json', 'tsconfig.json'] as const;
@@ -132,26 +129,16 @@ function createExpandedProgram(
   projectPath: string,
   extraRootNames: readonly string[] = [],
 ) {
-  const loadedConfig = loadConfig(projectPath);
-  const soundscriptRootNames = collectSoundscriptRootNames(projectPath, loadedConfig);
+  const runtimeConfig = loadRuntimeProgramConfig(projectPath, extraRootNames);
   return createBuiltinExpandedProgram({
     baseHost: createSoundStdlibCompilerHost(
-      loadedConfig.commandLine.options,
+      runtimeConfig.loadedConfig.commandLine.options,
       dirname(projectPath),
     ),
-    configFileParsingDiagnostics: getConfigFileParsingDiagnostics(
-      loadedConfig.diagnostics,
-      soundscriptRootNames,
-    ),
-    options: loadedConfig.commandLine.options,
-    projectReferences: loadedConfig.commandLine.projectReferences,
-    rootNames: [
-      ...new Set([
-        ...loadedConfig.commandLine.fileNames,
-        ...soundscriptRootNames,
-        ...extraRootNames,
-      ]),
-    ],
+    configFileParsingDiagnostics: runtimeConfig.configFileParsingDiagnostics,
+    options: runtimeConfig.loadedConfig.commandLine.options,
+    projectReferences: runtimeConfig.loadedConfig.commandLine.projectReferences,
+    rootNames: runtimeConfig.rootNames,
   });
 }
 
