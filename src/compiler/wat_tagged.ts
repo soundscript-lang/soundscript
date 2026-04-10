@@ -1,8 +1,8 @@
 import type { CompilerModuleIR, CompilerTaggedPrimitiveBoundaryKindsIR } from './ir.ts';
 import {
+  getEffectiveFunctionHostFallbackObjectPropertyMetadata,
   getEffectiveHostClosureParamsByName,
   getEffectiveHostClosureResultSignatureId,
-  getEffectiveFunctionHostFallbackObjectPropertyMetadata,
   getEffectiveHostTaggedHeapNullableParamsByName,
   getEffectiveHostTaggedHeapNullableResultBoundary,
   getEffectiveHostTaggedPrimitiveParamsByName,
@@ -123,7 +123,10 @@ export function getTaggedHostBoundaryUsage(module: CompilerModuleIR): TaggedHost
       if (boundary.kind === 'tagged') {
         recursiveParamTaggedKinds.push(boundary);
       }
-      if (boundary.kind === 'object' && boundary.representation.kind === 'specialized_object_representation') {
+      if (
+        boundary.kind === 'object' &&
+        boundary.representation.kind === 'specialized_object_representation'
+      ) {
         specializedParamFieldKinds.push(...getSpecializedFieldKinds(boundary.representation.name));
         markSpecializedClosureUsage(boundary.representation.name, {
           needsParamBoundary: true,
@@ -140,7 +143,10 @@ export function getTaggedHostBoundaryUsage(module: CompilerModuleIR): TaggedHost
       if (boundary.kind === 'tagged') {
         recursiveResultTaggedKinds.push(boundary);
       }
-      if (boundary.kind === 'object' && boundary.representation.kind === 'specialized_object_representation') {
+      if (
+        boundary.kind === 'object' &&
+        boundary.representation.kind === 'specialized_object_representation'
+      ) {
         specializedResultFieldKinds.push(...getSpecializedFieldKinds(boundary.representation.name));
         markSpecializedClosureUsage(boundary.representation.name, {
           needsResultBoundary: true,
@@ -173,7 +179,9 @@ export function getTaggedHostBoundaryUsage(module: CompilerModuleIR): TaggedHost
     }
     const hostTaggedHeapNullableResult = getEffectiveHostTaggedHeapNullableResultBoundary(func);
     if (hostTaggedHeapNullableResult?.representation.kind === 'specialized_object_representation') {
-      specializedResultFieldKinds.push(...getSpecializedFieldKinds(hostTaggedHeapNullableResult.representation.name));
+      specializedResultFieldKinds.push(
+        ...getSpecializedFieldKinds(hostTaggedHeapNullableResult.representation.name),
+      );
       markSpecializedClosureUsage(hostTaggedHeapNullableResult.representation.name, {
         needsResultBoundary: true,
       });
@@ -465,7 +473,9 @@ export function getTaggedHostBoundaryUsage(module: CompilerModuleIR): TaggedHost
       specializedParamFieldKinds.length > 0 ||
       specializedResultFieldKinds.length > 0 ||
       fallbackTaggedHeapFieldKinds.length > 0 ||
-      module.functions.some((func) => getEffectiveHostTaggedHeapNullableParamsByName(func).size > 0) ||
+      module.functions.some((func) =>
+        getEffectiveHostTaggedHeapNullableParamsByName(func).size > 0
+      ) ||
       module.functions.some((func) =>
         getEffectiveHostTaggedHeapNullableResultBoundary(func) !== undefined
       ) ||
@@ -473,7 +483,9 @@ export function getTaggedHostBoundaryUsage(module: CompilerModuleIR): TaggedHost
     usesParamBoundary: usesParamBoundary ||
       specializedParamFieldKinds.length > 0 ||
       fallbackTaggedHeapFieldKinds.length > 0 ||
-      module.functions.some((func) => getEffectiveHostTaggedHeapNullableParamsByName(func).size > 0) ||
+      module.functions.some((func) =>
+        getEffectiveHostTaggedHeapNullableParamsByName(func).size > 0
+      ) ||
       [...closureUsageById.values()].some((usage) => usage.needsParamBoundary),
     usesResultBoundary: usesResultBoundary ||
       specializedResultFieldKinds.length > 0 ||

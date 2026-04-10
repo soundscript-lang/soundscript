@@ -136,7 +136,8 @@ function cssHover(
   }
 
   return {
-    contents: 'Embedded CSS fragment. `${...}` expressions become CSS variable placeholders by default.',
+    contents:
+      'Embedded CSS fragment. `${...}` expressions become CSS variable placeholders by default.',
   };
 }
 

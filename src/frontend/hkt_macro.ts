@@ -1,7 +1,7 @@
 import ts from 'typescript';
 
 import { fromFileUrl } from '../platform/path.ts';
-import { STS_HKT_MODULE_SPECIFIER } from '../soundscript_runtime_specifiers.ts';
+import { STS_HKT_MODULE_SPECIFIER } from '../project/soundscript_runtime_specifiers.ts';
 import type { MacroDefinition } from './macro_api.ts';
 import { macroSignature } from './macro_api.ts';
 import { attachMacroFactoryMetadata } from './macro_api_internal.ts';

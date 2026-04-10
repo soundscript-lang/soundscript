@@ -15,7 +15,11 @@ export function normalizeEffectNames(effectNames: readonly string[]): readonly E
   );
   const normalized: EffectNameFact[] = [];
   for (const effectName of unique) {
-    if (normalized.some((existing) => effectNamesOverlap(existing, effectName) && existing !== effectName)) {
+    if (
+      normalized.some((existing) =>
+        effectNamesOverlap(existing, effectName) && existing !== effectName
+      )
+    ) {
       continue;
     }
     normalized.push(effectName);
@@ -27,7 +31,9 @@ export function effectSetsOverlap(
   left: readonly string[],
   right: readonly string[],
 ): boolean {
-  return left.some((leftName) => right.some((rightName) => effectNamesOverlap(leftName, rightName)));
+  return left.some((leftName) =>
+    right.some((rightName) => effectNamesOverlap(leftName, rightName))
+  );
 }
 
 export function subtractEffectSet(
@@ -81,8 +87,11 @@ export function effectNamesToMask(effectNames: readonly string[]): number {
       mask |= PUBLIC_EFFECT_MASKS.fails;
       continue;
     }
-    if (effectNamesOverlap(effectName, 'suspend.await') || effectNamesOverlap(effectName, 'suspend.yield') ||
-      effectNamesOverlap(effectName, 'suspend')) {
+    if (
+      effectNamesOverlap(effectName, 'suspend.await') ||
+      effectNamesOverlap(effectName, 'suspend.yield') ||
+      effectNamesOverlap(effectName, 'suspend')
+    ) {
       mask |= INTERNAL_EFFECT_MASKS.suspend;
       continue;
     }

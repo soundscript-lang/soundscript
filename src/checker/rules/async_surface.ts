@@ -3,7 +3,7 @@ import ts from 'typescript';
 import { SOUND_DIAGNOSTIC_CODES, SOUND_DIAGNOSTIC_MESSAGES } from '../engine/diagnostic_codes.ts';
 import type { AnalysisContext } from '../engine/types.ts';
 import { getNodeDiagnosticRange, type SoundDiagnostic } from '../diagnostics.ts';
-import { isForeignSourceFile } from '../../soundscript_packages.ts';
+import { isForeignSourceFile } from '../../project/soundscript_packages.ts';
 
 import {
   matchesResolvedBuiltinCallableValue,
@@ -17,7 +17,11 @@ type PromiseLikeChecker = ts.TypeChecker & {
 interface AsyncSurfaceDiagnosticInfo {
   node: ts.Node;
   primarySymbol?: string;
-  surfaceKind: 'awaited thenable' | 'promise subclass' | 'promise resolve thenable' | 'thenable surface';
+  surfaceKind:
+    | 'awaited thenable'
+    | 'promise subclass'
+    | 'promise resolve thenable'
+    | 'thenable surface';
   surfaceText: string;
 }
 
@@ -57,10 +61,13 @@ function createDiagnostic(info: AsyncSurfaceDiagnosticInfo): SoundDiagnostic {
         `Replace \`${info.surfaceText}\` with \`Promise<number>\`, or normalize the foreign thenable at a boundary before it reaches checked soundscript code.`,
     },
     notes: [
-      `This async surface uses \`${info.surfaceText}\`, which is a ${describeSurfaceKind(info.surfaceKind)} rather than a builtin \`Promise<T>\` surface.`,
+      `This async surface uses \`${info.surfaceText}\`, which is a ${
+        describeSurfaceKind(info.surfaceKind)
+      } rather than a builtin \`Promise<T>\` surface.`,
       `Example: Replace \`${info.surfaceText}\` with \`Promise<number>\`, or normalize the foreign thenable at a boundary before it reaches checked soundscript code.`,
     ],
-    hint: 'Use plain `Promise<T>` surfaces in soundscript, and normalize foreign thenables at the boundary.',
+    hint:
+      'Use plain `Promise<T>` surfaces in soundscript, and normalize foreign thenables at the boundary.',
     ...getNodeDiagnosticRange(info.node),
   };
 }
@@ -112,7 +119,10 @@ function getSurfaceText(context: AnalysisContext, node: ts.Node): string {
     return node.getText();
   }
 
-  if ((ts.isInterfaceDeclaration(node) || ts.isClassDeclaration(node) || ts.isClassExpression(node)) && node.name) {
+  if (
+    (ts.isInterfaceDeclaration(node) || ts.isClassDeclaration(node) ||
+      ts.isClassExpression(node)) && node.name
+  ) {
     const declaredType = getSurfaceType(context, node);
     if (declaredType) {
       return context.checker.typeToString(declaredType);
@@ -128,7 +138,10 @@ function getSurfacePrimarySymbol(node: ts.Node): string | undefined {
     return node.typeName.text;
   }
 
-  if ((ts.isInterfaceDeclaration(node) || ts.isClassDeclaration(node) || ts.isClassExpression(node)) && node.name) {
+  if (
+    (ts.isInterfaceDeclaration(node) || ts.isClassDeclaration(node) ||
+      ts.isClassExpression(node)) && node.name
+  ) {
     return node.name.text;
   }
 
@@ -171,7 +184,8 @@ function isUnsupportedThenableType(context: AnalysisContext, type: ts.Type): boo
 
 function getSurfaceType(context: AnalysisContext, node: ts.Node): ts.Type | undefined {
   if (
-    (ts.isClassDeclaration(node) || ts.isClassExpression(node) || ts.isInterfaceDeclaration(node)) &&
+    (ts.isClassDeclaration(node) || ts.isClassExpression(node) ||
+      ts.isInterfaceDeclaration(node)) &&
     node.name
   ) {
     const symbol = context.checker.getSymbolAtLocation(node.name);

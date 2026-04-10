@@ -1,10 +1,6 @@
 import ts from 'typescript';
 
-import type {
-  MacroSemanticToken,
-  MacroTemplateOperand,
-  MacroTemplateQuasi,
-} from './macro_api.ts';
+import type { MacroSemanticToken, MacroTemplateOperand, MacroTemplateQuasi } from './macro_api.ts';
 import type { SourceSpan } from './macro_types.ts';
 
 export interface ParsedMacroHelperCallExpression {

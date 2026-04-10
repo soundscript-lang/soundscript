@@ -39,9 +39,7 @@ Deno.test('publishPreparedPackages publishes prepared packages in the expected o
       calls,
       createPublishPlan(distRoot).map((target) => ({
         directory: target.directory,
-        args: target.access === 'public'
-          ? ['publish', '--access', 'public']
-          : ['publish'],
+        args: target.access === 'public' ? ['publish', '--access', 'public'] : ['publish'],
       })),
     );
   } finally {

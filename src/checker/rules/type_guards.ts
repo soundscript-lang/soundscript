@@ -39,7 +39,10 @@ function createUnsupportedPredicateDiagnostic(
   declaration: PredicateSignatureDeclaration,
   node: ts.Node,
   reason: Exclude<
-    Extract<ReturnType<typeof classifyPredicateVerificationTarget>, { kind: 'unsupported' }>['reason'],
+    Extract<
+      ReturnType<typeof classifyPredicateVerificationTarget>,
+      { kind: 'unsupported' }
+    >['reason'],
     undefined
   >,
 ): SoundDiagnostic {
@@ -149,7 +152,9 @@ function getPredicateOverloadDeclarations(
     return [];
   }
 
-  return (symbol.declarations ?? []).filter((candidate): candidate is OverloadPredicateDeclaration =>
+  return (symbol.declarations ?? []).filter((
+    candidate,
+  ): candidate is OverloadPredicateDeclaration =>
     (ts.isFunctionDeclaration(candidate) || ts.isMethodDeclaration(candidate)) &&
     candidate !== declaration &&
     !candidate.body &&
@@ -175,7 +180,12 @@ export function runTypeGuardRules(context: AnalysisContext): SoundDiagnostic[] {
       const predicateTarget = classifyPredicateVerificationTarget(context, node);
       if (predicateTarget?.kind === 'unsupported') {
         diagnostics.push(
-          createUnsupportedPredicateDiagnostic(context, node, node.name ?? node, predicateTarget.reason),
+          createUnsupportedPredicateDiagnostic(
+            context,
+            node,
+            node.name ?? node,
+            predicateTarget.reason,
+          ),
         );
         return;
       }
@@ -195,7 +205,6 @@ export function runTypeGuardRules(context: AnalysisContext): SoundDiagnostic[] {
         if (!ts.isFunctionDeclaration(node) && !ts.isMethodDeclaration(node)) {
           return;
         }
-
       } else {
         if (verifyPredicateBody(context, predicateCheck)) {
           if (!ts.isFunctionDeclaration(node) && !ts.isMethodDeclaration(node)) {
@@ -244,7 +253,12 @@ export function runTypeGuardRules(context: AnalysisContext): SoundDiagnostic[] {
         if (!overloadCheck || !verifyPredicateBody(context, overloadCheck)) {
           diagnostics.push(
             overloadCheck
-              ? createPredicateBodyMismatchDiagnostic(node, node.name ?? node, overloadCheck, context)
+              ? createPredicateBodyMismatchDiagnostic(
+                node,
+                node.name ?? node,
+                overloadCheck,
+                context,
+              )
               : createDiagnostic(node.name ?? node),
           );
           return;

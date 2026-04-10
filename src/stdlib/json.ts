@@ -1,22 +1,22 @@
-import type { DecodeMode, Decoder, DecodeOutput, DecodeIssue } from 'sts:decode';
-import type { EncodeMode, EncodeOutput, Encoder, EncodeIssue } from 'sts:encode';
+import type { DecodeIssue, DecodeMode, DecodeOutput, Decoder } from 'sts:decode';
+import type { EncodeIssue, EncodeMode, EncodeOutput, Encoder } from 'sts:encode';
 import { Failure } from 'sts:failures';
 import { err, isErr, type Result, resultOf } from 'sts:result';
 import {
   F32,
   F64,
   format as formatNumeric,
-  I8,
   I16,
   I32,
   I64,
+  I8,
   isNumeric,
-  toHostNumber,
   type Numeric,
-  U8,
+  toHostNumber,
   U16,
   U32,
   U64,
+  U8,
 } from './numerics.ts';
 
 export type JsonArray = JsonValue[];
@@ -223,7 +223,9 @@ export function validateEncodeJson<T, M extends EncodeMode>(
 ): EncodeOutput<string, readonly EncodeIssue[] | JsonStringifyFailure, M> {
   const encoded = encoder.validateEncode(value);
   return (isPromiseLike(encoded)
-    ? encoded.then((resolved) => isErr(resolved) ? resolved : stringifyJsonLike(resolved.value, options))
+    ? encoded.then((resolved) =>
+      isErr(resolved) ? resolved : stringifyJsonLike(resolved.value, options)
+    )
     : isErr(encoded)
     ? encoded
     : stringifyJsonLike(encoded.value, options)) as EncodeOutput<
@@ -289,10 +291,16 @@ export function encodeJson<T, E, M extends EncodeMode>(
 ): EncodeOutput<string, E | JsonStringifyFailure, M> {
   const encoded = encoder.encode(value);
   return (isPromiseLike(encoded)
-    ? encoded.then((resolved) => isErr(resolved) ? resolved : stringifyJsonLike(resolved.value, options))
+    ? encoded.then((resolved) =>
+      isErr(resolved) ? resolved : stringifyJsonLike(resolved.value, options)
+    )
     : isErr(encoded)
     ? encoded
-    : stringifyJsonLike(encoded.value, options)) as EncodeOutput<string, E | JsonStringifyFailure, M>;
+    : stringifyJsonLike(encoded.value, options)) as EncodeOutput<
+      string,
+      E | JsonStringifyFailure,
+      M
+    >;
 }
 
 export function isJsonLikeValue(value: unknown): value is JsonLikeValue {
@@ -354,9 +362,7 @@ function stringifyJsonWithInt64ModeInternal(
       return encoded;
     }
     case 'bigint':
-      return int64Mode === 'string'
-        ? JSON.stringify(value.toString())
-        : value.toString();
+      return int64Mode === 'string' ? JSON.stringify(value.toString()) : value.toString();
     case 'boolean':
       return value ? 'true' : 'false';
     case 'object':
@@ -371,11 +377,16 @@ function stringifyJsonWithInt64ModeInternal(
       visited.add(value);
       try {
         if (Array.isArray(value)) {
-          return `[${value.map((entry) => stringifyJsonWithInt64ModeInternal(entry, int64Mode, visited)).join(',')}]`;
+          return `[${
+            value.map((entry) => stringifyJsonWithInt64ModeInternal(entry, int64Mode, visited))
+              .join(',')
+          }]`;
         }
 
         const fields = Object.keys(value).map((key) =>
-          `${JSON.stringify(key)}:${stringifyJsonWithInt64ModeInternal(value[key]!, int64Mode, visited)}`
+          `${JSON.stringify(key)}:${
+            stringifyJsonWithInt64ModeInternal(value[key]!, int64Mode, visited)
+          }`
         );
         return `{${fields.join(',')}}`;
       } finally {
@@ -564,7 +575,9 @@ function normalizeMachineNumericJsonValue(
       switch (value.__soundscript_numeric_kind) {
         case 'i64':
         case 'u64':
-          throw new TypeError('json-number machine JSON mode does not support bigint-backed machine numerics.');
+          throw new TypeError(
+            'json-number machine JSON mode does not support bigint-backed machine numerics.',
+          );
         default:
           return toHostNumber(value);
       }
@@ -670,9 +683,11 @@ function stringifyJsonLikeInternal(
       visited.add(value);
       try {
         if (Array.isArray(value)) {
-          return `[${value.map((entry) =>
-            stringifyJsonLikeInternal(entry, visited, bigintMode, 'array') ?? 'null'
-          ).join(',')}]`;
+          return `[${
+            value.map((entry) =>
+              stringifyJsonLikeInternal(entry, visited, bigintMode, 'array') ?? 'null'
+            ).join(',')
+          }]`;
         }
 
         const encodedProperties: string[] = [];

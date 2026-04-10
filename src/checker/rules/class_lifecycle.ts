@@ -57,7 +57,9 @@ function createLifecycleExample(info: LifecycleDiagnosticInfo): string {
     info.hazardKind === 'receiver method dispatch' ||
     info.hazardKind === 'receiver accessor dispatch'
   ) {
-    return `Write fields directly during construction, then call \`${info.memberName ?? 'the member'}\` from a post-construction method or factory step instead of from the constructor.`;
+    return `Write fields directly during construction, then call \`${
+      info.memberName ?? 'the member'
+    }\` from a post-construction method or factory step instead of from the constructor.`;
   }
 
   return 'Finish initialization first, then pass `this` or code that captures it to other routines only after construction completes.';
@@ -69,7 +71,9 @@ function createLifecycleNote(info: LifecycleDiagnosticInfo): string {
     info.hazardKind === 'receiver accessor dispatch'
   ) {
     const receiver = info.receiverKind ?? 'this';
-    return `This constructor dispatches through \`${receiver}.${info.memberName ?? 'member'}\` before construction completes.`;
+    return `This constructor dispatches through \`${receiver}.${
+      info.memberName ?? 'member'
+    }\` before construction completes.`;
   }
 
   if (info.hazardKind === 'captured closure call') {
@@ -124,7 +128,9 @@ function createLifecycleDiagnostic(info: LifecycleDiagnosticInfo): SoundDiagnost
   };
 }
 
-function createFieldInitializationDiagnostic(info: FieldInitializationDiagnosticInfo): SoundDiagnostic {
+function createFieldInitializationDiagnostic(
+  info: FieldInitializationDiagnosticInfo,
+): SoundDiagnostic {
   const fieldName = info.fieldName ?? 'this field';
   const example =
     `Assign \`${fieldName}\` on every path before reading it, or move the read after the initializing assignment.`;
@@ -153,7 +159,8 @@ function createFieldInitializationDiagnostic(info: FieldInitializationDiagnostic
       `The read of \`${fieldName}\` can happen before that field is definitely initialized on every path.`,
       `Example: ${example}`,
     ],
-    hint: 'Initialize the field before reading it, or defer the read until after construction establishes the value.',
+    hint:
+      'Initialize the field before reading it, or defer the read until after construction establishes the value.',
     ...getNodeDiagnosticRange(info.node),
   };
 }
@@ -202,12 +209,18 @@ function mergeStates(states: readonly LifecycleState[]): LifecycleState | null {
     for (const [fieldName, fieldState] of state.fieldStates) {
       mergedFieldStates.set(
         fieldName,
-        mergeFieldState(mergedFieldStates.get(fieldName) ?? FieldInitializationState.Uninitialized, fieldState),
+        mergeFieldState(
+          mergedFieldStates.get(fieldName) ?? FieldInitializationState.Uninitialized,
+          fieldState,
+        ),
       );
     }
 
     for (const [symbolId, mask] of state.trackedValues) {
-      mergedTrackedValues.set(symbolId, (mergedTrackedValues.get(symbolId) ?? TrackedValueMask.None) | mask);
+      mergedTrackedValues.set(
+        symbolId,
+        (mergedTrackedValues.get(symbolId) ?? TrackedValueMask.None) | mask,
+      );
     }
   }
 
@@ -236,7 +249,8 @@ function getSimpleNameText(name: ts.PropertyName | ts.BindingName | undefined): 
 
 function hasStaticModifier(node: ts.Node): boolean {
   return ts.canHaveModifiers(node) &&
-    ts.getModifiers(node)?.some((modifier) => modifier.kind === ts.SyntaxKind.StaticKeyword) === true;
+    ts.getModifiers(node)?.some((modifier) => modifier.kind === ts.SyntaxKind.StaticKeyword) ===
+      true;
 }
 
 function isParameterProperty(parameter: ts.ParameterDeclaration): boolean {
@@ -306,7 +320,9 @@ function getTrackedMaskForSymbol(
   state: LifecycleState,
   symbol: ts.Symbol | undefined,
 ): TrackedValueMask {
-  return symbol ? state.trackedValues.get(context.getSymbolId(symbol)) ?? TrackedValueMask.None : TrackedValueMask.None;
+  return symbol
+    ? state.trackedValues.get(context.getSymbolId(symbol)) ?? TrackedValueMask.None
+    : TrackedValueMask.None;
 }
 
 function setTrackedMaskForSymbol(
@@ -482,7 +498,8 @@ function getMemberSymbol(
   }
 
   const memberName = node.argumentExpression && (
-      ts.isStringLiteralLike(node.argumentExpression) || ts.isNumericLiteral(node.argumentExpression)
+      ts.isStringLiteralLike(node.argumentExpression) ||
+      ts.isNumericLiteral(node.argumentExpression)
     )
     ? node.argumentExpression.text
     : undefined;
@@ -499,7 +516,8 @@ function getMemberName(
   return ts.isPropertyAccessExpression(node)
     ? getSimpleNameText(node.name)
     : node.argumentExpression &&
-        (ts.isStringLiteralLike(node.argumentExpression) || ts.isNumericLiteral(node.argumentExpression))
+        (ts.isStringLiteralLike(node.argumentExpression) ||
+          ts.isNumericLiteral(node.argumentExpression))
     ? node.argumentExpression.text
     : undefined;
 }
@@ -535,7 +553,8 @@ function getTrackedFieldName(
   const memberName = ts.isPropertyAccessExpression(node)
     ? getSimpleNameText(node.name)
     : node.argumentExpression &&
-        (ts.isStringLiteralLike(node.argumentExpression) || ts.isNumericLiteral(node.argumentExpression))
+        (ts.isStringLiteralLike(node.argumentExpression) ||
+          ts.isNumericLiteral(node.argumentExpression))
     ? node.argumentExpression.text
     : undefined;
   if (!memberName || !classInfo.fieldNames.has(memberName)) {
@@ -557,13 +576,17 @@ function getFieldAccessMode(
   node: ts.PropertyAccessExpression | ts.ElementAccessExpression,
 ): 'read' | 'readwrite' | 'write' {
   const parent = node.parent;
-  if (ts.isBinaryExpression(parent) && parent.left === node && isAssignmentOperator(parent.operatorToken.kind)) {
+  if (
+    ts.isBinaryExpression(parent) && parent.left === node &&
+    isAssignmentOperator(parent.operatorToken.kind)
+  ) {
     return isSimpleAssignmentOperator(parent.operatorToken.kind) ? 'write' : 'readwrite';
   }
 
   if (
     (ts.isPrefixUnaryExpression(parent) || ts.isPostfixUnaryExpression(parent)) &&
-    (parent.operator === ts.SyntaxKind.PlusPlusToken || parent.operator === ts.SyntaxKind.MinusMinusToken)
+    (parent.operator === ts.SyntaxKind.PlusPlusToken ||
+      parent.operator === ts.SyntaxKind.MinusMinusToken)
   ) {
     return 'readwrite';
   }
@@ -594,8 +617,7 @@ function pushDiagnostic(
   seen: Set<string>,
   diagnostic: SoundDiagnostic,
 ): void {
-  const key =
-    `${diagnostic.code}:${diagnostic.filePath}:${diagnostic.line}:${diagnostic.column}:` +
+  const key = `${diagnostic.code}:${diagnostic.filePath}:${diagnostic.line}:${diagnostic.column}:` +
     `${diagnostic.endLine}:${diagnostic.endColumn}`;
   if (seen.has(key)) {
     return;
@@ -614,7 +636,9 @@ function analyzeExpression(
 ): void {
   const current = unwrapExpression(expression);
 
-  if (ts.isFunctionExpression(current) || ts.isArrowFunction(current) || ts.isClassExpression(current)) {
+  if (
+    ts.isFunctionExpression(current) || ts.isArrowFunction(current) || ts.isClassExpression(current)
+  ) {
     return;
   }
 
@@ -697,7 +721,10 @@ function analyzeExpression(
           pushDiagnostic(
             diagnostics,
             seen,
-            createLifecycleDiagnostic({ node: current.right, hazardKind: 'tracked this alias escape' }),
+            createLifecycleDiagnostic({
+              node: current.right,
+              hazardKind: 'tracked this alias escape',
+            }),
           );
         }
       }
@@ -710,7 +737,10 @@ function analyzeExpression(
         pushDiagnostic(
           diagnostics,
           seen,
-          createLifecycleDiagnostic({ node: current.right, hazardKind: 'tracked this alias escape' }),
+          createLifecycleDiagnostic({
+            node: current.right,
+            hazardKind: 'tracked this alias escape',
+          }),
         );
       }
       return;
@@ -817,9 +847,11 @@ function analyzePropertyAccess(
   }
 
   const accessMode = getFieldAccessMode(node);
-  if (accessMode !== 'write' &&
+  if (
+    accessMode !== 'write' &&
     (state.fieldStates.get(fieldName) ?? FieldInitializationState.Uninitialized) !==
-      FieldInitializationState.DefinitelyInitialized) {
+      FieldInitializationState.DefinitelyInitialized
+  ) {
     pushDiagnostic(
       diagnostics,
       seen,
@@ -876,7 +908,8 @@ function analyzeObjectBindingPatternFromThis(
     }
 
     if (receiverKind === 'this' && classInfo.fieldNames.has(memberName)) {
-      const fieldState = state.fieldStates.get(memberName) ?? FieldInitializationState.Uninitialized;
+      const fieldState = state.fieldStates.get(memberName) ??
+        FieldInitializationState.Uninitialized;
       if (fieldState !== FieldInitializationState.DefinitelyInitialized) {
         pushDiagnostic(
           diagnostics,
@@ -952,7 +985,14 @@ function analyzeStatement(
   seen: Set<string>,
 ): LifecycleState | null {
   if (ts.isBlock(statement)) {
-    return analyzeStatements(context, classInfo, cloneState(state), statement.statements, diagnostics, seen);
+    return analyzeStatements(
+      context,
+      classInfo,
+      cloneState(state),
+      statement.statements,
+      diagnostics,
+      seen,
+    );
   }
 
   if (ts.isVariableStatement(statement)) {
@@ -970,13 +1010,18 @@ function analyzeStatement(
   if (ts.isReturnStatement(statement) || ts.isThrowStatement(statement)) {
     if (statement.expression) {
       analyzeExpression(context, classInfo, state, statement.expression, diagnostics, seen);
-      if (expressionContainsTrackedValue(context, state, statement.expression) !== TrackedValueMask.None) {
+      if (
+        expressionContainsTrackedValue(context, state, statement.expression) !==
+          TrackedValueMask.None
+      ) {
         pushDiagnostic(
           diagnostics,
           seen,
           createLifecycleDiagnostic({
             node: statement.expression,
-            hazardKind: ts.isReturnStatement(statement) ? 'tracked this return' : 'tracked this throw',
+            hazardKind: ts.isReturnStatement(statement)
+              ? 'tracked this return'
+              : 'tracked this throw',
           }),
         );
       }
@@ -995,9 +1040,18 @@ function analyzeStatement(
       seen,
     );
     const elseState = statement.elseStatement
-      ? analyzeStatement(context, classInfo, cloneState(state), statement.elseStatement, diagnostics, seen)
+      ? analyzeStatement(
+        context,
+        classInfo,
+        cloneState(state),
+        statement.elseStatement,
+        diagnostics,
+        seen,
+      )
       : cloneState(state);
-    return mergeStates([thenState, elseState].filter((value): value is LifecycleState => value !== null));
+    return mergeStates(
+      [thenState, elseState].filter((value): value is LifecycleState => value !== null),
+    );
   }
 
   if (ts.isWhileStatement(statement)) {
@@ -1010,7 +1064,9 @@ function analyzeStatement(
       diagnostics,
       seen,
     );
-    return mergeStates([state, bodyState].filter((value): value is LifecycleState => value !== null));
+    return mergeStates(
+      [state, bodyState].filter((value): value is LifecycleState => value !== null),
+    );
   }
 
   if (ts.isDoStatement(statement)) {
@@ -1025,7 +1081,9 @@ function analyzeStatement(
     if (bodyState) {
       analyzeExpression(context, classInfo, bodyState, statement.expression, diagnostics, seen);
     }
-    return mergeStates([state, bodyState].filter((value): value is LifecycleState => value !== null));
+    return mergeStates(
+      [state, bodyState].filter((value): value is LifecycleState => value !== null),
+    );
   }
 
   if (ts.isForStatement(statement)) {
@@ -1052,7 +1110,9 @@ function analyzeStatement(
     if (bodyState && statement.incrementor) {
       analyzeExpression(context, classInfo, bodyState, statement.incrementor, diagnostics, seen);
     }
-    return mergeStates([state, bodyState].filter((value): value is LifecycleState => value !== null));
+    return mergeStates(
+      [state, bodyState].filter((value): value is LifecycleState => value !== null),
+    );
   }
 
   if (ts.isForOfStatement(statement) || ts.isForInStatement(statement)) {
@@ -1065,7 +1125,9 @@ function analyzeStatement(
       diagnostics,
       seen,
     );
-    return mergeStates([state, bodyState].filter((value): value is LifecycleState => value !== null));
+    return mergeStates(
+      [state, bodyState].filter((value): value is LifecycleState => value !== null),
+    );
   }
 
   if (ts.isSwitchStatement(statement)) {
@@ -1223,7 +1285,9 @@ function analyzeClassLike(
   }
 
   const statements = constructorDeclaration.body.statements;
-  const superStatementIndex = statements.findIndex((statement) => getDirectSuperCallStatement(statement) !== undefined);
+  const superStatementIndex = statements.findIndex((statement) =>
+    getDirectSuperCallStatement(statement) !== undefined
+  );
   if (superStatementIndex === -1) {
     return;
   }

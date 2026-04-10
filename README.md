@@ -1,7 +1,7 @@
 # soundscript
 
 <p align="center">
-  <img src="./logo.png" alt="soundscript logo" width="520" />
+  <img src="./media/brand/logo-dark.png" alt="soundscript logo" width="520" />
 </p>
 
 soundscript is a sound checker and language tooling layer for TypeScript projects.
@@ -13,9 +13,9 @@ extension, a very small stdlib, and a narrow macro surface. Broader macro work a
 experimental.
 
 For the fastest orientation on the builtin surface and the recommended coding patterns, see
-[docs/reference/builtin-modules.md](docs/reference/builtin-modules.md) and
-[docs/guides/idiomatic-soundscript.md](docs/guides/idiomatic-soundscript.md) and
-[docs/guides/common-rewrites.md](docs/guides/common-rewrites.md).
+[docs/reference/builtin-modules.md](./docs/reference/builtin-modules.md) and
+[docs/guides/idiomatic-soundscript.md](./docs/guides/idiomatic-soundscript.md) and
+[docs/guides/common-rewrites.md](./docs/guides/common-rewrites.md).
 
 It adds a second file type, `.sts`, for code checked under a stricter rule set. Ordinary `.ts` files
 keep normal TypeScript behavior. The goal is incremental adoption: move the parts of a codebase you
@@ -142,10 +142,10 @@ Exit codes are:
 
 ## Release automation
 
-The canonical release version comes from [src/cli.ts](src/cli.ts).
+The canonical release version comes from [src/cli/cli.ts](./src/cli/cli.ts).
 
-For a normal public release, bump `VERSION` there, push `main`, then run the
-`Publish Release` GitHub Actions workflow. It will:
+For a normal public release, bump `VERSION` there, push `main`, then run the `Publish Release`
+GitHub Actions workflow. It will:
 
 - run the release checks
 - prepare and publish the npm package set
@@ -153,9 +153,9 @@ For a normal public release, bump `VERSION` there, push `main`, then run the
 - create the GitHub release
 - attach the platform CLI archives plus checksums
 
-The workflow is set up for npm trusted publishing from GitHub Actions. npm must
-be configured to trust the `publish-release.yml` workflow file in this
-repository for every package in the release set:
+The workflow is set up for npm trusted publishing from GitHub Actions. npm must be configured to
+trust the `publish-release.yml` workflow file in this repository for every package in the release
+set:
 
 - `@soundscript/cli-darwin-arm64`
 - `@soundscript/cli-darwin-x64`
@@ -165,13 +165,12 @@ repository for every package in the release set:
 - `@soundscript/soundscript`
 - `soundscript`
 
-If npm returns a `404` during `npm publish`, the usual cause is that the
-package's trusted-publisher settings have not been added yet. The workflow also
-needs GitHub's `id-token: write` permission, which is already configured in the
-workflow file.
+If npm returns a `404` during `npm publish`, the usual cause is that the package's trusted-publisher
+settings have not been added yet. The workflow also needs GitHub's `id-token: write` permission,
+which is already configured in the workflow file.
 
-You can bulk-configure the package set from a shell after logging in to npm with
-an account that has write access to all seven packages:
+You can bulk-configure the package set from a shell after logging in to npm with an account that has
+write access to all seven packages:
 
 ```bash
 for package in \
@@ -191,8 +190,8 @@ do
 done
 ```
 
-If you need to reattach CLI archives to an existing release, use the separate
-`Backfill CLI Assets` workflow.
+If you need to reattach CLI archives to an existing release, use the separate `Backfill CLI Assets`
+workflow.
 
 ## What `.sts` means
 
@@ -233,7 +232,7 @@ runtime semantics. The main remaining rough edges are:
   platform model
 
 The release-facing contract for those boundaries is in
-[docs/v1-user-contract.md](docs/v1-user-contract.md).
+[docs/reference/v1-user-contract.md](./docs/reference/v1-user-contract.md).
 
 ## Example
 
@@ -342,7 +341,7 @@ deno task verify
 
 Start here:
 
-- [SPEC.md](SPEC.md)
-- [ROADMAP.md](ROADMAP.md)
-- [docs/README.md](docs/README.md)
-- [docs/v1-user-contract.md](docs/v1-user-contract.md)
+- [docs/architecture/spec.md](./docs/architecture/spec.md)
+- [docs/project/roadmap.md](./docs/project/roadmap.md)
+- [docs/README.md](./docs/README.md)
+- [docs/reference/v1-user-contract.md](./docs/reference/v1-user-contract.md)

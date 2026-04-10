@@ -1,13 +1,11 @@
 import ts from 'typescript';
 
-import { createAnnotationLookup } from '../annotation_syntax.ts';
+import { createAnnotationLookup } from '../language/annotation_syntax.ts';
 import { dirname, join } from '../platform/path.ts';
-import {
-  SOUND_DIAGNOSTIC_CODES,
-} from '../checker/engine/diagnostic_codes.ts';
+import { SOUND_DIAGNOSTIC_CODES } from '../checker/engine/diagnostic_codes.ts';
 import { describeUnsupportedFeature } from '../checker/unsupported_feature_messages.ts';
 import * as publicMacroApi from '../macros.ts';
-import { getSoundScriptPackageExportInfoForResolvedModule } from '../soundscript_packages.ts';
+import { getSoundScriptPackageExportInfoForResolvedModule } from '../project/soundscript_packages.ts';
 
 import type { MacroDefinition } from './macro_api.ts';
 import { getLoadedMacroDefinitionMetadata } from './macro_api_internal.ts';
@@ -401,7 +399,9 @@ function stripImportedMacroBindings(
     let keptNamedBindings = namedBindings;
 
     if (namedBindings && ts.isNamespaceImport(namedBindings)) {
-      keptNamedBindings = strippedImportNames.has(namedBindings.name.text) ? undefined : namedBindings;
+      keptNamedBindings = strippedImportNames.has(namedBindings.name.text)
+        ? undefined
+        : namedBindings;
     }
 
     if (namedBindings && ts.isNamedImports(namedBindings)) {
@@ -982,8 +982,7 @@ export function createProjectMacroEnvironment(
       ? [`${specifier}.sts`, `${specifier}/index.macro.sts`]
       : specifier.endsWith('.sts')
       ? [specifier]
-      : [`${specifier}.sts`, `${specifier}/index.sts`]
-      ;
+      : [`${specifier}.sts`, `${specifier}/index.sts`];
     for (const candidate of candidates) {
       const absoluteCandidate = join(dirname(containingFileName), candidate);
       if (

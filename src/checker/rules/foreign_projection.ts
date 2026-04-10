@@ -156,7 +156,9 @@ export function isAllowedProjectedUnknownUse(
     return isUnknownType(context.checker.getTypeAtLocation(parent.left));
   }
 
-  if ((ts.isCallExpression(parent) || ts.isNewExpression(parent)) && parent.arguments?.includes(node)) {
+  if (
+    (ts.isCallExpression(parent) || ts.isNewExpression(parent)) && parent.arguments?.includes(node)
+  ) {
     const expectedType = getCallArgumentExpectedType(context, parent, node);
     return expectedType !== undefined && isUnknownType(expectedType);
   }

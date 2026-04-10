@@ -2,9 +2,9 @@ import { basename, dirname, extname, join, relative, resolve } from '@std/path';
 
 import type {
   Test262ExpectedFailure,
-  Test262NormalCompletion,
   Test262ManifestValue,
-} from '../../test/test262/harness.ts';
+  Test262NormalCompletion,
+} from '../../tests/test262/harness.ts';
 
 export type RawImportMode = 'positive' | 'negative';
 export type ProbeClassification = 'green' | 'right_red' | 'wrong_red' | 'needs_adapter';
@@ -207,7 +207,10 @@ export function deriveCaseStem(upstreamPath: string, localName?: string): string
 }
 
 export function relativeFixturePath(candidateManifestPath: string, fixturePath: string): string {
-  const candidateRelative = relative(dirname(candidateManifestPath), fixturePath).replaceAll('\\', '/');
+  const candidateRelative = relative(dirname(candidateManifestPath), fixturePath).replaceAll(
+    '\\',
+    '/',
+  );
   return candidateRelative.startsWith('..') ? fixturePath : candidateRelative;
 }
 
@@ -240,7 +243,9 @@ export async function loadUpstreamAssertionLine(caseSpec: ImportFamilyCaseSpec):
   return matchingLine;
 }
 
-export async function loadUpstreamSource(caseSpec: Pick<ImportFamilyCaseSpec, 'upstreamContentPath' | 'upstreamPath'>): Promise<string> {
+export async function loadUpstreamSource(
+  caseSpec: Pick<ImportFamilyCaseSpec, 'upstreamContentPath' | 'upstreamPath'>,
+): Promise<string> {
   return caseSpec.upstreamContentPath
     ? await Deno.readTextFile(resolveRepoPath(caseSpec.upstreamContentPath))
     : await fetchUpstreamFile(caseSpec.upstreamPath);
@@ -267,7 +272,10 @@ export async function readImportFamilySpec(specPath: string): Promise<ImportFami
   }
 
   const destinationRoot = asString(record.destinationRoot, 'spec.destinationRoot');
-  const candidateManifestPath = asString(record.candidateManifestPath, 'spec.candidateManifestPath');
+  const candidateManifestPath = asString(
+    record.candidateManifestPath,
+    'spec.candidateManifestPath',
+  );
   if (!Array.isArray(record.cases) || record.cases.length === 0) {
     throw new Error('spec.cases must be a non-empty array.');
   }
@@ -277,7 +285,9 @@ export async function readImportFamilySpec(specPath: string): Promise<ImportFami
     mode,
     destinationRoot,
     candidateManifestPath,
-    cases: record.cases.map((entry, index) => parseImportFamilyCaseSpec(entry, `spec.cases[${index}]`)),
+    cases: record.cases.map((entry, index) =>
+      parseImportFamilyCaseSpec(entry, `spec.cases[${index}]`)
+    ),
   };
 }
 
@@ -285,7 +295,9 @@ function parseImportFamilyCaseSpec(value: unknown, fieldName: string): ImportFam
   const record = asRecord(value, fieldName);
   const fixtureSourceFromUpstream = record.fixtureSourceFromUpstream === true;
   if (!fixtureSourceFromUpstream && typeof record.fixtureSource !== 'string') {
-    throw new Error(`${fieldName}.fixtureSource must be a non-empty string unless fixtureSourceFromUpstream is true.`);
+    throw new Error(
+      `${fieldName}.fixtureSource must be a non-empty string unless fixtureSourceFromUpstream is true.`,
+    );
   }
 
   return {
@@ -299,7 +311,9 @@ function parseImportFamilyCaseSpec(value: unknown, fieldName: string): ImportFam
       ? undefined
       : parseExecutionMode(record.execution, `${fieldName}.execution`),
     entry: typeof record.entry === 'string' ? record.entry : undefined,
-    args: record.args === undefined ? undefined : asManifestValueArray(record.args, `${fieldName}.args`),
+    args: record.args === undefined
+      ? undefined
+      : asManifestValueArray(record.args, `${fieldName}.args`),
     expected: record.expected === undefined
       ? undefined
       : asManifestValue(record.expected, `${fieldName}.expected`),
@@ -316,8 +330,14 @@ function parseImportFamilyCaseSpec(value: unknown, fieldName: string): ImportFam
       : parseFixtureKind(record.fixtureKind, `${fieldName}.fixtureKind`),
     adapterSource: typeof record.adapterSource === 'string' ? record.adapterSource : undefined,
     localName: typeof record.localName === 'string' ? record.localName : undefined,
-    allowedFailures: parseExpectedFailureArray(record.allowedFailures, `${fieldName}.allowedFailures`),
-    adapterFailures: parseExpectedFailureArray(record.adapterFailures, `${fieldName}.adapterFailures`),
+    allowedFailures: parseExpectedFailureArray(
+      record.allowedFailures,
+      `${fieldName}.allowedFailures`,
+    ),
+    adapterFailures: parseExpectedFailureArray(
+      record.adapterFailures,
+      `${fieldName}.adapterFailures`,
+    ),
   };
 }
 
@@ -348,8 +368,14 @@ export function parseCandidateManifestEntryMetadata(
 
   return {
     probeMode,
-    allowedFailures: parseExpectedFailureArray(record.allowedFailures, `${fieldName}.allowedFailures`),
-    adapterFailures: parseExpectedFailureArray(record.adapterFailures, `${fieldName}.adapterFailures`),
+    allowedFailures: parseExpectedFailureArray(
+      record.allowedFailures,
+      `${fieldName}.allowedFailures`,
+    ),
+    adapterFailures: parseExpectedFailureArray(
+      record.adapterFailures,
+      `${fieldName}.adapterFailures`,
+    ),
   };
 }
 
@@ -366,7 +392,10 @@ export function buildSingleFileFixturePath(
   caseSpec: ImportFamilyCaseSpec,
 ): string {
   const extension = caseSpec.fixtureKind ?? 'js';
-  return join(destinationRoot, `${deriveCaseStem(caseSpec.upstreamPath, caseSpec.localName)}.${extension}`);
+  return join(
+    destinationRoot,
+    `${deriveCaseStem(caseSpec.upstreamPath, caseSpec.localName)}.${extension}`,
+  );
 }
 
 export function buildAdapterFixtureDirectory(

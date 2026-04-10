@@ -111,7 +111,9 @@ function getOverloadCases(
         context.checker.typeToString(context.checker.getTypeAtLocation(parameter))
       ),
       returnType: context.checker.getReturnTypeOfSignature(signature),
-      returnTypeText: context.checker.typeToString(context.checker.getReturnTypeOfSignature(signature)),
+      returnTypeText: context.checker.typeToString(
+        context.checker.getReturnTypeOfSignature(signature),
+      ),
       signatureText: formatOverloadSignature(
         candidate,
         candidate.parameters.map((parameter) =>

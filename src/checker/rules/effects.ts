@@ -110,7 +110,9 @@ function getCallConservativeMutReasonTexts(
   }
 
   const proof = getEnclosingBodyFreshLocalProof(context, node);
-  const blockedReason = proof ? getFreshLocalMutatingCall(context, node, proof)?.blockedReason : undefined;
+  const blockedReason = proof
+    ? getFreshLocalMutatingCall(context, node, proof)?.blockedReason
+    : undefined;
   return blockedReason ? formatFreshLocalFailureReasons([blockedReason]) : undefined;
 }
 
@@ -202,9 +204,7 @@ function createEffectContractViolationDiagnostic(
         : []),
       ...(context.conservativeMutReasonTexts && context.conservativeMutReasonTexts.length > 0
         ? [
-          `Fresh-local mut proof did not apply: ${
-            context.conservativeMutReasonTexts.join(', ')
-          }.`,
+          `Fresh-local mut proof did not apply: ${context.conservativeMutReasonTexts.join(', ')}.`,
         ]
         : []),
       `Example: ${example}`,
@@ -315,7 +315,10 @@ export function runEffectRules(context: AnalysisContext): SoundDiagnostic[] {
           diagnostics.push(
             createEffectContractViolationDiagnostic(node, {
               kind: 'declaration',
-              conflictingEffects: findConflictingEffects(summary.directEffects, summary.forbidEffects),
+              conflictingEffects: findConflictingEffects(
+                summary.directEffects,
+                summary.forbidEffects,
+              ),
               conservativeMutReasonTexts: getDeclarationConservativeMutReasonTexts(
                 context,
                 node,
@@ -344,7 +347,10 @@ export function runEffectRules(context: AnalysisContext): SoundDiagnostic[] {
             if (!argument) {
               continue;
             }
-            const argumentComposition = getEffectCompositionForCallableExpression(context, argument);
+            const argumentComposition = getEffectCompositionForCallableExpression(
+              context,
+              argument,
+            );
             if (
               argumentComposition &&
               !argumentComposition.unknown &&
@@ -356,11 +362,13 @@ export function runEffectRules(context: AnalysisContext): SoundDiagnostic[] {
             ) {
               continue;
             }
-            if (!argumentComposition && !callableExpressionMayViolateForbidEffects(
-              context,
-              argument,
-              contract.forbidEffects,
-            )) {
+            if (
+              !argumentComposition && !callableExpressionMayViolateForbidEffects(
+                context,
+                argument,
+                contract.forbidEffects,
+              )
+            ) {
               continue;
             }
             const declaration = context.checker.getResolvedSignature(node)?.getDeclaration();
@@ -375,7 +383,9 @@ export function runEffectRules(context: AnalysisContext): SoundDiagnostic[] {
                   : undefined,
                 primarySymbol: parameterName,
                 forbiddenEffects: contract.forbidEffects,
-                unknownReasons: argumentComposition?.unknown ? argumentComposition.unknownReasons : undefined,
+                unknownReasons: argumentComposition?.unknown
+                  ? argumentComposition.unknownReasons
+                  : undefined,
                 relation: 'parameter_forbid',
               }),
             );
@@ -395,7 +405,10 @@ export function runEffectRules(context: AnalysisContext): SoundDiagnostic[] {
               diagnostics.push(
                 createEffectContractViolationDiagnostic(node, {
                   kind: 'call',
-                  conflictingEffects: findConflictingEffects(composedEffects.effects, summary.forbidEffects),
+                  conflictingEffects: findConflictingEffects(
+                    composedEffects.effects,
+                    summary.forbidEffects,
+                  ),
                   conservativeMutReasonTexts: getCallConservativeMutReasonTexts(
                     context,
                     node,

@@ -8,7 +8,7 @@ import {
 import { dirname } from '@std/path';
 import ts from 'typescript';
 
-import { normalizeRuntimeContext } from '../config.ts';
+import { normalizeRuntimeContext } from '../project/config.ts';
 import { installTestDisposableCleanup } from './builtin_expanded_program_test_cleanup.ts';
 import {
   createPreparedCompilerHostReuseState,
@@ -398,20 +398,23 @@ Deno.test('createProjectMacroEnvironment exposes portable ctx.host env and file 
 });
 
 Deno.test('createProjectMacroEnvironment keeps globalThis builtins in the macro vm realm', () => {
-  const printed = printExpandedFile(createMacroPreparedProgram([
-    "import 'sts:macros';",
-    '',
-    '// #[macro(call)]',
-    'export function Foo() {',
-    '  return {',
-    '    expand(ctx: any) {',
-    "      const sameRealm = globalThis.Array === Array;",
-    "      return ctx.output.expr(ctx.build.stringLiteral(sameRealm ? 'same' : 'different'));",
-    '    },',
-    '  };',
-    '}',
-    '',
-  ].join('\n')), '/virtual/index.sts');
+  const printed = printExpandedFile(
+    createMacroPreparedProgram([
+      "import 'sts:macros';",
+      '',
+      '// #[macro(call)]',
+      'export function Foo() {',
+      '  return {',
+      '    expand(ctx: any) {',
+      '      const sameRealm = globalThis.Array === Array;',
+      "      return ctx.output.expr(ctx.build.stringLiteral(sameRealm ? 'same' : 'different'));",
+      '    },',
+      '  };',
+      '}',
+      '',
+    ].join('\n')),
+    '/virtual/index.sts',
+  );
 
   assertStringIncludes(printed, 'export const value = "same";');
 });
@@ -432,7 +435,7 @@ Deno.test('createProjectMacroEnvironment exposes ctx.runtime target and extern m
             'export function Foo() {',
             '  return {',
             '    expand(ctx) {',
-            "      return ctx.output.expr(ctx.build.stringLiteral(`${ctx.runtime.target}:${ctx.runtime.backend}:${ctx.runtime.host}`));",
+            '      return ctx.output.expr(ctx.build.stringLiteral(`${ctx.runtime.target}:${ctx.runtime.backend}:${ctx.runtime.host}`));',
             '    },',
             '  };',
             '}',
@@ -733,7 +736,10 @@ Deno.test(
     const preparedProgram = createPreparedProgram({
       baseHost: createBaseHost(
         new Map([
-          [fileName, 'import { augment } from "sound-pkg";\n// #[augment]\nexport class Registry {}\n'],
+          [
+            fileName,
+            'import { augment } from "sound-pkg";\n// #[augment]\nexport class Registry {}\n',
+          ],
           [
             '/virtual/node_modules/sound-pkg/package.json',
             JSON.stringify(
@@ -750,9 +756,15 @@ Deno.test(
               2,
             ),
           ],
-          ['/virtual/node_modules/sound-pkg/dist/index.d.ts', 'export declare const augment: unique symbol;\n'],
+          [
+            '/virtual/node_modules/sound-pkg/dist/index.d.ts',
+            'export declare const augment: unique symbol;\n',
+          ],
           ['/virtual/node_modules/sound-pkg/src/index.sts', 'export { augment } from "./mid";\n'],
-          ['/virtual/node_modules/sound-pkg/src/mid.sts', 'export { augment } from "./macros/augment.macro";\n'],
+          [
+            '/virtual/node_modules/sound-pkg/src/mid.sts',
+            'export { augment } from "./macros/augment.macro";\n',
+          ],
           [
             '/virtual/node_modules/sound-pkg/src/macros/augment.macro.sts',
             [

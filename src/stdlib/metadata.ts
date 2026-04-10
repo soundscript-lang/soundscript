@@ -389,9 +389,7 @@ export function __cloneNodeWithEffects(
 ): __InternalMetadataNode {
   return {
     ...node,
-    ...(effects.length > 0
-      ? { effects: [...(node.effects ?? []), ...effects] }
-      : {}),
+    ...(effects.length > 0 ? { effects: [...(node.effects ?? []), ...effects] } : {}),
   };
 }
 
@@ -415,7 +413,8 @@ export function __inferCallableMode(...values: readonly unknown[]): ModeValue {
 
 export function __metadataValueOf(value: unknown): MetadataValue | null {
   if (
-    value === null || value === undefined || typeof value === 'string' || typeof value === 'number' ||
+    value === null || value === undefined || typeof value === 'string' ||
+    typeof value === 'number' ||
     typeof value === 'boolean' || typeof value === 'bigint'
   ) {
     return value;
@@ -427,7 +426,9 @@ export function __metadataValueOf(value: unknown): MetadataValue | null {
   if (!isPlainObject(value)) {
     return null;
   }
-  const entries = Object.entries(value).map(([key, entry]) => [key, __metadataValueOf(entry)] as const);
+  const entries = Object.entries(value).map(([key, entry]) =>
+    [key, __metadataValueOf(entry)] as const
+  );
   return entries.every(([, entry]) => entry !== null)
     ? Object.fromEntries(entries) as { readonly [key: string]: MetadataValue }
     : null;
@@ -500,7 +501,11 @@ function materializeNodeValue(
         unknownKeys: node.unknownKeys,
       });
     case 'record':
-      return copyEffects(node, { key: 'string', kind: 'record', value: materializeNode(node.value) });
+      return copyEffects(node, {
+        key: 'string',
+        kind: 'record',
+        value: materializeNode(node.value),
+      });
     case 'union':
       return copyEffects(node, {
         kind: 'union',

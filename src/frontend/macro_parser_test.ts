@@ -521,8 +521,7 @@ Deno.test('parseMacroInvocationAt parses arglist-plus-interface declaration form
 });
 
 Deno.test('parseMacroInvocationAt parses arglist-plus-type-alias declaration form', () => {
-  const sourceText =
-    '#main(node) export type Entry<A> = { readonly run: (value: A) => number };';
+  const sourceText = '#main(node) export type Entry<A> = { readonly run: (value: A) => number };';
   const result = parseMacroInvocationAt('example.sts', sourceText, 0);
 
   assertEquals('reason' in result, false);

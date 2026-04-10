@@ -1,28 +1,21 @@
 import ts from 'typescript';
 
 import { ERROR_STDLIB_DECLARATION_FILE } from './error_stdlib_support.ts';
-import {
-  RESULT_STDLIB_DECLARATION_FILE,
-  STDLIB_DECLARATION_FILE,
-} from './std_package_support.ts';
+import { RESULT_STDLIB_DECLARATION_FILE, STDLIB_DECLARATION_FILE } from './std_package_support.ts';
 import { toSourceFileName } from './project_frontend.ts';
 import type {
   CanonicalFailureInfo,
-  MacroDependencyReference,
-  MacroDependencySet,
   CanonicalResultCarrierInfo,
   CanonicalResultInfo,
+  MacroDependencyReference,
+  MacroDependencySet,
   MacroFiniteCase,
   MacroFunctionContext,
   MacroRuntimeKind,
   MacroTryCarrierInfo,
   MacroType,
 } from './macro_semantic_types.ts';
-import {
-  createMacroType,
-  getInternalChecker,
-  getInternalType,
-} from './macro_type_internal.ts';
+import { createMacroType, getInternalChecker, getInternalType } from './macro_type_internal.ts';
 import type { SourceSpan } from './macro_types.ts';
 
 const MAX_FINITE_CASE_COMBINATIONS = 64;
@@ -205,8 +198,9 @@ function getLexicallyScopedValueSymbol(
   node: ts.Node,
   name: string,
 ): ts.Symbol | undefined {
-  let current: (ts.Node & { locals?: ts.SymbolTable }) | undefined =
-    node as ts.Node & { locals?: ts.SymbolTable };
+  let current: (ts.Node & { locals?: ts.SymbolTable }) | undefined = node as ts.Node & {
+    locals?: ts.SymbolTable;
+  };
   while (current) {
     const symbol = findNamedValueSymbolInTable(checker, current.locals, name);
     if (symbol) {
@@ -368,7 +362,8 @@ function isDeclarationNameIdentifier(node: ts.Identifier): boolean {
     (ts.isPropertySignature(parent) && parent.name === node) ||
     (ts.isMethodSignature(parent) && parent.name === node) ||
     (ts.isPropertyAssignment(parent) && parent.name === node) ||
-    (ts.isShorthandPropertyAssignment(parent) && parent.name === node && !!parent.objectAssignmentInitializer) ||
+    (ts.isShorthandPropertyAssignment(parent) && parent.name === node &&
+      !!parent.objectAssignmentInitializer) ||
     (ts.isEnumMember(parent) && parent.name === node) ||
     (ts.isTypeAliasDeclaration(parent) && parent.name === node) ||
     (ts.isInterfaceDeclaration(parent) && parent.name === node) ||
@@ -499,7 +494,10 @@ function collectDependencySets(
     });
   }
 
-  function addBinding(builder: ReturnType<typeof createDependencySetBuilder>, identifier: ts.Identifier) {
+  function addBinding(
+    builder: ReturnType<typeof createDependencySetBuilder>,
+    identifier: ts.Identifier,
+  ) {
     if (!isReferenceIdentifier(identifier)) {
       return;
     }

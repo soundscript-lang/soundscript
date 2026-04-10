@@ -1,10 +1,10 @@
 ## Summary
 
-- 
+-
 
 ## Testing
 
-- 
+-
 
 ## Public Docs Impact
 

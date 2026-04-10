@@ -2,11 +2,11 @@ import { join } from '@std/path';
 
 import {
   CLI_TARGETS,
+  type CliTarget,
   DIST_ROOT,
   LICENSE_SOURCE,
-  ROOT,
-  type CliTarget,
   parseVersion,
+  ROOT,
 } from './npm_manifest.ts';
 
 export interface GitHubReleaseAsset {
@@ -51,7 +51,9 @@ export function getGitHubReleaseArchiveFileName(version: string, target: CliTarg
 
 function createReadme(version: string, target: CliTarget): string {
   const platformLabel = getGitHubReleasePlatformLabel(target);
-  const launchCommand = target.os[0] === 'win32' ? '.\\soundscript.exe --version' : './soundscript --version';
+  const launchCommand = target.os[0] === 'win32'
+    ? '.\\soundscript.exe --version'
+    : './soundscript --version';
 
   return [
     `# soundscript v${version}`,
@@ -111,7 +113,10 @@ export async function stageGitHubReleaseAssets(
     await Deno.mkdir(stageDirectory, { recursive: true });
     await Deno.copyFile(binarySource, join(stageDirectory, binaryFileName));
     await Deno.copyFile(licenseSource, join(stageDirectory, 'LICENSE'));
-    await Deno.writeTextFile(join(stageDirectory, 'README.md'), `${createReadme(version, target)}\n`);
+    await Deno.writeTextFile(
+      join(stageDirectory, 'README.md'),
+      `${createReadme(version, target)}\n`,
+    );
 
     assets.push({
       archiveFileName: getGitHubReleaseArchiveFileName(version, target),

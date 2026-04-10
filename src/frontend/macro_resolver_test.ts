@@ -45,10 +45,13 @@ function createResolverPlaceholderIndex(
 }
 
 const TEST_MACRO_SITE_KINDS = new Map([
-  ['macros/test', new Map([
-    ['Bar', 'call' as const],
-    ['Foo', 'call' as const],
-  ])],
+  [
+    'macros/test',
+    new Map([
+      ['Bar', 'call' as const],
+      ['Foo', 'call' as const],
+    ]),
+  ],
 ]);
 
 Deno.test('resolveMacroPlaceholdersInSourceFile resolves rewritten macro calls back to indexed invocations', () => {
@@ -68,7 +71,9 @@ Deno.test('resolveMacroPlaceholdersInSourceFile resolves rewritten macro calls b
     rootNames: [fileName],
   });
 
-  const sourceFile = preparedProgram.program.getSourceFile(preparedProgram.toProgramFileName(fileName));
+  const sourceFile = preparedProgram.program.getSourceFile(
+    preparedProgram.toProgramFileName(fileName),
+  );
   const preparedFile = preparedProgram.preparedHost.getPreparedSourceFile(fileName);
   const resolved = sourceFile
     ? resolveMacroPlaceholdersInSourceFile(
@@ -90,7 +95,7 @@ Deno.test('resolveMacroPlaceholdersInSourceFile finds placeholders through paren
   const preparedProgram = createPreparedProgram({
     baseHost: createBaseHost(
       new Map([
-        [fileName, "import { Foo } from 'macros/test';\nFoo(() => { console.log(\"x\"); });\n"],
+        [fileName, 'import { Foo } from \'macros/test\';\nFoo(() => { console.log("x"); });\n'],
       ]),
     ),
     importedMacroSiteKindsBySpecifier: TEST_MACRO_SITE_KINDS,
@@ -102,7 +107,9 @@ Deno.test('resolveMacroPlaceholdersInSourceFile finds placeholders through paren
     rootNames: [fileName],
   });
 
-  const sourceFile = preparedProgram.program.getSourceFile(preparedProgram.toProgramFileName(fileName));
+  const sourceFile = preparedProgram.program.getSourceFile(
+    preparedProgram.toProgramFileName(fileName),
+  );
   const preparedFile = preparedProgram.preparedHost.getPreparedSourceFile(fileName);
   const resolved = sourceFile
     ? resolveMacroPlaceholdersInSourceFile(
@@ -139,7 +146,10 @@ Deno.test('resolveMacroPlaceholdersInSourceFile ignores numeric-literal helper l
   const preparedProgram = createPreparedProgram({
     baseHost: createBaseHost(
       new Map([
-        [fileName, "import { Foo } from 'macros/test';\nconst value = Foo(1, 2);\n__sts_macro_expr(1);\n"],
+        [
+          fileName,
+          "import { Foo } from 'macros/test';\nconst value = Foo(1, 2);\n__sts_macro_expr(1);\n",
+        ],
       ]),
     ),
     importedMacroSiteKindsBySpecifier: TEST_MACRO_SITE_KINDS,
@@ -151,7 +161,9 @@ Deno.test('resolveMacroPlaceholdersInSourceFile ignores numeric-literal helper l
     rootNames: [fileName],
   });
 
-  const sourceFile = preparedProgram.program.getSourceFile(preparedProgram.toProgramFileName(fileName));
+  const sourceFile = preparedProgram.program.getSourceFile(
+    preparedProgram.toProgramFileName(fileName),
+  );
   const preparedFile = preparedProgram.preparedHost.getPreparedSourceFile(fileName);
   const resolved = sourceFile
     ? resolveMacroPlaceholdersInSourceFile(
@@ -211,7 +223,10 @@ Deno.test('collectResolvedMacroPlaceholders resolves placeholders after syntheti
 
   assertEquals(collected.length, 1);
   assertEquals(collected[0]?.resolved.placeholder.invocation.nameText, 'log');
-  assertEquals(collected[0]?.resolved.callExpression.expression.getText(collected[0]!.sourceFile), '__sts_macro_expr');
+  assertEquals(
+    collected[0]?.resolved.callExpression.expression.getText(collected[0]!.sourceFile),
+    '__sts_macro_expr',
+  );
 });
 
 Deno.test('collectResolvedMacroPlaceholders skips declaration files and unresolved helper lookalikes', () => {
@@ -236,17 +251,19 @@ Deno.test('collectResolvedMacroPlaceholders skips declaration files and unresolv
     },
   } as Pick<ts.Program, 'getSourceFiles'>;
 
-  const collected = collectResolvedMacroPlaceholders({
-    placeholderIndex: () => ({
-      entries: () => [],
-      get: () => undefined,
-    }),
-    preparedHost: undefined,
-    program: program as ts.Program,
-    toSourceFileName(fileName: string) {
-      return fileName;
-    },
-  } as Parameters<typeof collectResolvedMacroPlaceholders>[0]);
+  const collected = collectResolvedMacroPlaceholders(
+    {
+      placeholderIndex: () => ({
+        entries: () => [],
+        get: () => undefined,
+      }),
+      preparedHost: undefined,
+      program: program as ts.Program,
+      toSourceFileName(fileName: string) {
+        return fileName;
+      },
+    } as Parameters<typeof collectResolvedMacroPlaceholders>[0],
+  );
 
   assertEquals(collected, []);
 });

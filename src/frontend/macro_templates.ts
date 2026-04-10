@@ -1,10 +1,6 @@
 import ts from 'typescript';
 
-import type {
-  ExprSyntax,
-  MacroTemplateOperand,
-  MacroTemplateQuasi,
-} from './macro_api.ts';
+import type { ExprSyntax, MacroTemplateOperand, MacroTemplateQuasi } from './macro_api.ts';
 import {
   createExprSyntaxFromNode,
   createTemplateSyntaxFromPieces,

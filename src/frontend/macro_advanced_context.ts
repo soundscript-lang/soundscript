@@ -1,6 +1,6 @@
 import ts from 'typescript';
 
-import { createAnnotationLookup } from '../annotation_syntax.ts';
+import { createAnnotationLookup } from '../language/annotation_syntax.ts';
 import { createMacroContext } from './macro_context.ts';
 import type {
   BlockSyntax,
@@ -20,11 +20,11 @@ import type {
   MacroReflectedDiscriminant,
   MacroReflectedDiscriminatedUnionVariant,
   MacroReflectedFieldShape,
+  MacroReflectedTypeShape,
   MacroSerializableDeclarationShape,
   MacroSerializableDiscriminatedUnionVariant,
   MacroSerializableFieldShape,
   MacroSerializableTypeShape,
-  MacroReflectedTypeShape,
   MacroSyntaxNode,
   MacroTypeAliasDeclSyntax,
   MacroUnionTypeSyntax,
@@ -442,7 +442,9 @@ export function createAdvancedMacroContext(
       : null;
   }
 
-  function buildRecordShapeFromTypeLiteral(node: ts.TypeLiteralNode): MacroReflectedTypeShape | null {
+  function buildRecordShapeFromTypeLiteral(
+    node: ts.TypeLiteralNode,
+  ): MacroReflectedTypeShape | null {
     if (node.members.length !== 1) {
       return null;
     }

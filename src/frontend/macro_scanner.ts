@@ -311,7 +311,9 @@ export function scanMacroCandidates(fileName: string, text: string): ScanResult 
           ? { kind: 'invalid-hash' as const, reason: 'illegal-context' as const }
           : classifyHashContext({
             braceStack,
-            hasLineBreakBeforeHash: text.slice(previousSignificantTokenEnd, tokenStart).includes('\n'),
+            hasLineBreakBeforeHash: text.slice(previousSignificantTokenEnd, tokenStart).includes(
+              '\n',
+            ),
             insideParameterList,
             previousSignificantToken,
           });

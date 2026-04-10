@@ -5,9 +5,9 @@ import { err, isErr, isOk, ok } from '@soundscript/soundscript/result';
 import {
   array,
   bigint,
-  defaulted,
   DecodeFailure,
   type DecodeIssue,
+  defaulted,
   endsWith,
   field,
   format,
@@ -28,16 +28,16 @@ import {
   passthroughObject,
   pattern,
   preprocess,
-  refine,
   readonlyRecord,
+  refine,
   result as decodeResult,
   startsWith,
   strictObject,
   string,
   tuple,
-  union,
-  undefinedValue,
   undefinedable,
+  undefinedValue,
+  union,
 } from './decode.ts';
 
 function toTaggedPlain(value: unknown): unknown {
@@ -298,12 +298,15 @@ Deno.test('decode validateDecode prefers issues from the best-matching union bra
     throw new Error('expected validateDecode to fail');
   }
 
-  assertEquals(decoded.error, [{
-    code: 'decode_failure',
-    input: 123,
-    message: 'Expected string.',
-    path: ['id'],
-  }] satisfies readonly DecodeIssue[]);
+  assertEquals(
+    decoded.error,
+    [{
+      code: 'decode_failure',
+      input: 123,
+      message: 'Expected string.',
+      path: ['id'],
+    }] satisfies readonly DecodeIssue[],
+  );
 });
 
 Deno.test('decode async validateDecode prefers issues from the best-matching union branch', async () => {
@@ -339,12 +342,15 @@ Deno.test('decode async validateDecode prefers issues from the best-matching uni
     throw new Error('expected async validateDecode to fail');
   }
 
-  assertEquals(decoded.error, [{
-    code: 'decode_failure',
-    input: 123,
-    message: 'Expected string.',
-    path: ['id'],
-  }] satisfies readonly DecodeIssue[]);
+  assertEquals(
+    decoded.error,
+    [{
+      code: 'decode_failure',
+      input: 123,
+      message: 'Expected string.',
+      path: ['id'],
+    }] satisfies readonly DecodeIssue[],
+  );
 });
 
 Deno.test('decode nullable accepts null and readonlyRecord decodes record values with key paths', () => {
@@ -444,26 +450,29 @@ Deno.test('decode validateDecode accumulates nested object and array issues', ()
     throw new Error('expected validateDecode to fail');
   }
 
-  assertEquals(decoded.error, [
-    {
-      code: 'decode_failure',
-      input: 123,
-      message: 'Expected string.',
-      path: ['id'],
-    },
-    {
-      code: 'decode_failure',
-      input: 456,
-      message: 'Expected string.',
-      path: ['tags', 1],
-    },
-    {
-      code: 'decode_failure',
-      input: false,
-      message: 'Expected string.',
-      path: ['tags', 2],
-    },
-  ] satisfies readonly DecodeIssue[]);
+  assertEquals(
+    decoded.error,
+    [
+      {
+        code: 'decode_failure',
+        input: 123,
+        message: 'Expected string.',
+        path: ['id'],
+      },
+      {
+        code: 'decode_failure',
+        input: 456,
+        message: 'Expected string.',
+        path: ['tags', 1],
+      },
+      {
+        code: 'decode_failure',
+        input: false,
+        message: 'Expected string.',
+        path: ['tags', 2],
+      },
+    ] satisfies readonly DecodeIssue[],
+  );
 });
 
 Deno.test('decode refine supports promise-returning predicates and promotes decode to async', async () => {
@@ -488,14 +497,12 @@ Deno.test('decode refine supports string and issue-returning predicate failures'
   const SlugDecoder = refine(
     string,
     (value: string) =>
-      value === value.toLowerCase()
-        ? true
-        : {
-          code: 'custom_slug',
-          input: value,
-          message: 'Expected lowercase slug.',
-          path: [],
-        },
+      value === value.toLowerCase() ? true : {
+        code: 'custom_slug',
+        input: value,
+        message: 'Expected lowercase slug.',
+        path: [],
+      },
     'Expected lowercase slug.',
   );
 
@@ -512,12 +519,15 @@ Deno.test('decode refine supports string and issue-returning predicate failures'
   if (isOk(validated)) {
     throw new Error('expected issue-returning refine validateDecode to fail');
   }
-  assertEquals(validated.error, [{
-    code: 'custom_slug',
-    input: 'Hello',
-    message: 'Expected lowercase slug.',
-    path: [],
-  }] satisfies readonly DecodeIssue[]);
+  assertEquals(
+    validated.error,
+    [{
+      code: 'custom_slug',
+      input: 'Hello',
+      message: 'Expected lowercase slug.',
+      path: [],
+    }] satisfies readonly DecodeIssue[],
+  );
 });
 
 Deno.test('decode object becomes async when a nested child decoder is async', async () => {
@@ -528,14 +538,14 @@ Deno.test('decode object becomes async when a nested child decoder is async', as
         : err(new DecodeFailure('Expected string.', { cause: value }));
     },
     async validateDecode(value: unknown) {
-      return typeof value === 'string'
-        ? ok(value.toUpperCase())
-        : err([{
+      return typeof value === 'string' ? ok(value.toUpperCase()) : err(
+        [{
           code: 'decode_failure',
           input: value,
           message: 'Expected string.',
           path: [],
-        }] satisfies readonly DecodeIssue[]);
+        }] satisfies readonly DecodeIssue[],
+      );
     },
   };
 
@@ -569,14 +579,14 @@ Deno.test('decode async container helpers reuse the first pending child result',
       },
       async validateDecode(value: unknown) {
         validateCalls += 1;
-        return typeof value === 'string'
-          ? ok(value.toUpperCase())
-          : err([{
+        return typeof value === 'string' ? ok(value.toUpperCase()) : err(
+          [{
             code: 'decode_failure',
             input: value,
             message: 'Expected string.',
             path: [],
-          }] satisfies readonly DecodeIssue[]);
+          }] satisfies readonly DecodeIssue[],
+        );
       },
       get counts() {
         return { decodeCalls, validateCalls };
@@ -638,10 +648,13 @@ Deno.test('decode async container helpers reuse the first pending child result',
   assertEquals(validateObjectField.counts, { decodeCalls: 0, validateCalls: 1 });
 
   const validateRecordValue = makeAsyncStringDecoder();
-  assertTaggedEquals(await readonlyRecord(validateRecordValue).validateDecode({ first: 'a', second: 'b' }), {
-    tag: 'ok',
-    value: { first: 'A', second: 'B' },
-  });
+  assertTaggedEquals(
+    await readonlyRecord(validateRecordValue).validateDecode({ first: 'a', second: 'b' }),
+    {
+      tag: 'ok',
+      value: { first: 'A', second: 'B' },
+    },
+  );
   assertEquals(validateRecordValue.counts, { decodeCalls: 0, validateCalls: 2 });
 });
 

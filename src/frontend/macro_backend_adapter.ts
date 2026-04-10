@@ -65,16 +65,22 @@ export function createExpandMacroPlaceholderFromDefinition<
           definitionMetadata.moduleFileName,
         )
         : null;
-      const compilerHost = preparedProgram?.preparedHost.host as MacroSandboxAwareCompilerHost | undefined;
+      const compilerHost = preparedProgram?.preparedHost.host as
+        | MacroSandboxAwareCompilerHost
+        | undefined;
       const hostAccess = preparedProgram && definitionMetadata?.moduleFileName
         ? createHostAccess({
           env: compilerHost?.soundscriptEnvSnapshot?.(),
-          fileExists: preparedProgram.preparedHost.host.fileExists.bind(preparedProgram.preparedHost.host),
+          fileExists: preparedProgram.preparedHost.host.fileExists.bind(
+            preparedProgram.preparedHost.host,
+          ),
           macroFileName: definitionMetadata.moduleFileName,
           projectDirectory: preparedProgram.preparedHost.host.getCurrentDirectory?.() ??
             ts.sys.getCurrentDirectory(),
           readBytes: compilerHost?.soundscriptReadBytes?.bind(compilerHost),
-          readFile: preparedProgram.preparedHost.host.readFile.bind(preparedProgram.preparedHost.host),
+          readFile: preparedProgram.preparedHost.host.readFile.bind(
+            preparedProgram.preparedHost.host,
+          ),
         })
         : undefined;
       const baseContext = preparedProgram

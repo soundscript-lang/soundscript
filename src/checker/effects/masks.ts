@@ -12,8 +12,12 @@ export const INTERNAL_EFFECT_MASKS = {
   suspend: 1 << 8,
 } as const;
 
-export const PUBLIC_EFFECT_NAMES = ['fails', 'host', 'mut', 'suspend'] as const satisfies
-  readonly PublicEffectName[];
+export const PUBLIC_EFFECT_NAMES = [
+  'fails',
+  'host',
+  'mut',
+  'suspend',
+] as const satisfies readonly PublicEffectName[];
 
 export const STANDARD_EFFECT_NAMES = [
   'fails',
@@ -34,7 +38,8 @@ export const STANDARD_EFFECT_NAMES = [
 export const PUBLIC_EFFECT_MASKS: Readonly<Record<PublicEffectName, number>> = {
   fails: INTERNAL_EFFECT_MASKS.failsRejects | INTERNAL_EFFECT_MASKS.failsThrows,
   host: INTERNAL_EFFECT_MASKS.hostDom | INTERNAL_EFFECT_MASKS.hostInterop |
-    INTERNAL_EFFECT_MASKS.hostIo | INTERNAL_EFFECT_MASKS.hostRandom | INTERNAL_EFFECT_MASKS.hostTime,
+    INTERNAL_EFFECT_MASKS.hostIo | INTERNAL_EFFECT_MASKS.hostRandom |
+    INTERNAL_EFFECT_MASKS.hostTime,
   mut: INTERNAL_EFFECT_MASKS.mut,
   suspend: INTERNAL_EFFECT_MASKS.suspend,
 };

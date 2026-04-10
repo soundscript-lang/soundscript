@@ -19,6 +19,8 @@ export interface CryptoLike {
 export const crypto: CryptoLike = globalThis.crypto;
 
 // #[effects(add: [host.random, mut])]
-export function getRandomValues<T extends DataView<ArrayBufferLike> | RandomBufferView>(array: T): T {
+export function getRandomValues<T extends DataView<ArrayBufferLike> | RandomBufferView>(
+  array: T,
+): T {
   return crypto.getRandomValues(array);
 }

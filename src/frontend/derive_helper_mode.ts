@@ -281,7 +281,9 @@ function helperModeFromTypeStructure(
     aliasSymbol?: ts.Symbol;
     aliasTypeArguments?: readonly ts.Type[];
   };
-  const aliasSymbol = anyType.aliasSymbol ? resolveAliasedSymbol(checker, anyType.aliasSymbol) : null;
+  const aliasSymbol = anyType.aliasSymbol
+    ? resolveAliasedSymbol(checker, anyType.aliasSymbol)
+    : null;
   if (aliasSymbol) {
     const helperIdentity = stdlibHelperIdentityForSymbol(checker, aliasSymbol);
     if (helperIdentity) {
@@ -394,7 +396,9 @@ function initializerExpressionForBindingDeclaration(
 
 function callableImplementationForDeclaration(
   declaration: ts.Declaration,
-): { readonly body: ts.ConciseBody; readonly parameters: readonly ts.ParameterDeclaration[] } | null {
+):
+  | { readonly body: ts.ConciseBody; readonly parameters: readonly ts.ParameterDeclaration[] }
+  | null {
   if (
     (ts.isFunctionDeclaration(declaration) || ts.isMethodDeclaration(declaration)) &&
     declaration.body
@@ -465,7 +469,9 @@ function combineFunctionReturnModes(
   function visit(node: ts.Node) {
     if (ts.isReturnStatement(node)) {
       modes.push(
-        node.expression ? inferHelperModeFromExpression(checker, node.expression, direction, state) : null,
+        node.expression
+          ? inferHelperModeFromExpression(checker, node.expression, direction, state)
+          : null,
       );
       return;
     }
@@ -604,7 +610,9 @@ function inferHelperModeFromCallExpression(
         case 'defaulted':
           return combineHelperModes([
             inferArgMode(0),
-            callableExpressionReturnsPromiseLike(checker, callExpression.arguments[1]!) ? 'async' : 'sync',
+            callableExpressionReturnsPromiseLike(checker, callExpression.arguments[1]!)
+              ? 'async'
+              : 'sync',
           ]);
         case 'lazy':
           return inferThunkMode(0);
@@ -613,7 +621,9 @@ function inferHelperModeFromCallExpression(
         case 'preprocess':
           return combineHelperModes([
             inferArgMode(0),
-            callableExpressionReturnsPromiseLike(checker, callExpression.arguments[1]!) ? 'async' : 'sync',
+            callableExpressionReturnsPromiseLike(checker, callExpression.arguments[1]!)
+              ? 'async'
+              : 'sync',
           ]);
         case 'object':
         case 'passthroughObject':
@@ -645,7 +655,9 @@ function inferHelperModeFromCallExpression(
         case 'refine':
           return combineHelperModes([
             inferArgMode(0),
-            callableExpressionReturnsPromiseLike(checker, callExpression.arguments[1]!) ? 'async' : 'sync',
+            callableExpressionReturnsPromiseLike(checker, callExpression.arguments[1]!)
+              ? 'async'
+              : 'sync',
           ]);
         case 'lazy':
           return inferThunkMode(0);
@@ -703,9 +715,13 @@ function inferHelperModeFromBinding(
           return combineFunctionReturnModes(checker, implementation.body, direction, state);
         }
         const expression = initializerExpressionForBindingDeclaration(declaration);
-        return expression ? inferHelperModeFromExpression(checker, expression, direction, state) : null;
+        return expression
+          ? inferHelperModeFromExpression(checker, expression, direction, state)
+          : null;
       });
-    const declarationMode = declarationModes.length > 0 ? combineHelperModes(declarationModes) : null;
+    const declarationMode = declarationModes.length > 0
+      ? combineHelperModes(declarationModes)
+      : null;
     return declarationMode ?? typeMode;
   } finally {
     state.seenSymbols.delete(resolvedSymbol);
@@ -732,7 +748,9 @@ function inferHelperModeFromExpression(
   if (ts.isIdentifier(expression)) {
     const symbol = checker.getSymbolAtLocation(expression);
     if (symbol) {
-      const overrideExpression = state.parameterBindings?.get(resolveAliasedSymbol(checker, symbol));
+      const overrideExpression = state.parameterBindings?.get(
+        resolveAliasedSymbol(checker, symbol),
+      );
       if (overrideExpression) {
         return inferHelperModeFromExpression(checker, overrideExpression, direction, state);
       }

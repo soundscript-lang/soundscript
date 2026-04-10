@@ -1,7 +1,7 @@
 import { assertEquals } from '@std/assert';
 import ts from 'typescript';
 
-import { formatDiagnostic, toMergedDiagnostic, type MergedDiagnostic } from './diagnostics.ts';
+import { formatDiagnostic, type MergedDiagnostic, toMergedDiagnostic } from './diagnostics.ts';
 
 Deno.test('formatDiagnostic renders notes hints and related information', () => {
   const diagnostic: MergedDiagnostic = {
@@ -15,7 +15,8 @@ Deno.test('formatDiagnostic renders notes hints and related information', () => 
     notes: [
       "'object' assumes Object.prototype members, but this value is known to have a null prototype.",
     ],
-    hint: "Keep the current null-prototype type, or use 'BareObject' when you intentionally want a null-prototype value.",
+    hint:
+      "Keep the current null-prototype type, or use 'BareObject' when you intentionally want a null-prototype value.",
     relatedInformation: [
       {
         message: 'Null-prototype value originates here.',

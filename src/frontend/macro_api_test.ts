@@ -159,7 +159,7 @@ Deno.test('shipped macros no longer depend on removed text-first macro helpers',
   ];
   const macroFiles = [
     'builtin_macros.ts',
-    '../../test-fixtures/packages/test-macro-package/src/index.macro.sts',
+    '../../tests/fixtures/packages/test-macro-package/src/index.macro.sts',
     'css_macro.ts',
     'graphql_macro.ts',
     'match_macro.ts',

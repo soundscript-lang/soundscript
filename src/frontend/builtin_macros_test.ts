@@ -2,7 +2,7 @@ import { assert, assertEquals, assertRejects, assertStringIncludes } from '@std/
 import { dirname } from '@std/path';
 import ts from 'typescript';
 
-import { createInstalledStdlibPackageFiles } from '../test_installed_stdlib.ts';
+import { createInstalledStdlibPackageFiles } from '../../tests/support/test_installed_stdlib.ts';
 import {
   assert as assertMacro,
   css,
@@ -692,7 +692,10 @@ Deno.test('decode macro supports named derived references and arrays', () => {
     '',
   ].join('\n'));
 
-  assertStringIncludes(printed, 'type __sts_GroupDecoderType = import("sts:decode").Decoder<Group>;');
+  assertStringIncludes(
+    printed,
+    'type __sts_GroupDecoderType = import("sts:decode").Decoder<Group>;',
+  );
   assertStringIncludes(printed, 'export const GroupDecoder: __sts_GroupDecoderType = ');
   assertStringIncludes(printed, 'lazy as __sts_runtime_named_lazy_');
   assertStringIncludes(printed, 'array as __sts_runtime_named_array_');
@@ -1928,7 +1931,7 @@ Deno.test('recursive derived companions expand across decode encode codec and js
     "const encoded: Result<{ readonly id: string; readonly next?: unknown }, unknown> = NodeEncoder.encode({ id: 'root', next: { id: 'child' } });",
     "const codecDecoded: Result<Node, unknown> = NodeCodec.decode({ id: 'root', next: { id: 'child' } });",
     "const codecEncoded: Result<{ readonly id: string; readonly next?: unknown }, unknown> = NodeCodec.encode({ id: 'root', next: { id: 'child' } });",
-    "const jsonDecoded: Result<Node, unknown> = decodeJson('{\"id\":\"root\",\"next\":{\"id\":\"child\"}}', NodeCodec);",
+    'const jsonDecoded: Result<Node, unknown> = decodeJson(\'{"id":"root","next":{"id":"child"}}\', NodeCodec);',
     "const jsonEncoded: Result<string, unknown> = encodeJson({ id: 'root', next: { id: 'child' } }, NodeCodec);",
     'if (decoded.tag === "ok") {',
     '  decoded.value.next?.next?.id;',
@@ -1946,10 +1949,19 @@ Deno.test('recursive derived companions expand across decode encode codec and js
 
   assertStringIncludes(printed, 'lazy as __sts_runtime_named_lazy_');
   assertStringIncludes(printed, 'type __sts_NodeDecoderType = import("sts:decode").Decoder<Node>;');
-  assertStringIncludes(printed, 'type __sts_NodeEncoderType = import("sts:encode").Encoder<Node, __sts_NodeEncodedForEncode>;');
+  assertStringIncludes(
+    printed,
+    'type __sts_NodeEncoderType = import("sts:encode").Encoder<Node, __sts_NodeEncodedForEncode>;',
+  );
   assertStringIncludes(printed, 'as unknown as __sts_NodeCodecType');
-  assertStringIncludes(printed, `const jsonDecoded: Result<Node, unknown> = decodeJson('{"id":"root","next":{"id":"child"}}', NodeCodec);`);
-  assertStringIncludes(printed, "const jsonEncoded: Result<string, unknown> = encodeJson({ id: 'root', next: { id: 'child' } }, NodeCodec);");
+  assertStringIncludes(
+    printed,
+    `const jsonDecoded: Result<Node, unknown> = decodeJson('{"id":"root","next":{"id":"child"}}', NodeCodec);`,
+  );
+  assertStringIncludes(
+    printed,
+    "const jsonEncoded: Result<string, unknown> = encodeJson({ id: 'root', next: { id: 'child' } }, NodeCodec);",
+  );
 });
 
 Deno.test('recursive derived companions typecheck for decode encode codec and json bridge usage', () => {
@@ -1977,7 +1989,7 @@ Deno.test('recursive derived companions typecheck for decode encode codec and js
         "const validatedEncode: Result<{ readonly id: string; readonly next?: unknown }, readonly unknown[]> = NodeEncoder.validateEncode({ id: 'root', next: { id: 'child' } });",
         "const codecDecoded: Result<Node, unknown> = NodeCodec.decode({ id: 'root', next: { id: 'child' } });",
         "const codecEncoded: Result<{ readonly id: string; readonly next?: unknown }, unknown> = NodeCodec.encode({ id: 'root', next: { id: 'child' } });",
-        "const jsonDecoded = decodeJson('{\"id\":\"root\",\"next\":{\"id\":\"child\"}}', NodeCodec);",
+        'const jsonDecoded = decodeJson(\'{"id":"root","next":{"id":"child"}}\', NodeCodec);',
         "const jsonEncoded = encodeJson({ id: 'root', next: { id: 'child' } }, NodeCodec);",
         'void decoded;',
         'void validated;',
@@ -1999,7 +2011,10 @@ Deno.test('recursive derived companions typecheck for decode encode codec and js
 
   const printed = printSourceFileForMacroTest(sourceFile);
   assertStringIncludes(printed, 'type __sts_NodeDecoderType = import("sts:decode").Decoder<Node>;');
-  assertStringIncludes(printed, 'type __sts_NodeEncoderType = import("sts:encode").Encoder<Node, __sts_NodeEncodedForEncode>;');
+  assertStringIncludes(
+    printed,
+    'type __sts_NodeEncoderType = import("sts:encode").Encoder<Node, __sts_NodeEncodedForEncode>;',
+  );
   assertStringIncludes(printed, 'let __sts_self!: __sts_NodeCodecType;');
   assertStringIncludes(printed, 'export const NodeCodec: __sts_NodeCodecType = ');
 });
@@ -2053,8 +2068,14 @@ Deno.test('mutually recursive derived companions typecheck for decode encode and
   assert(sourceFile);
 
   const printed = printSourceFileForMacroTest(sourceFile);
-  assertStringIncludes(printed, 'type __sts_ParentDecoderType = import("sts:decode").Decoder<Parent>;');
-  assertStringIncludes(printed, 'type __sts_ChildDecoderType = import("sts:decode").Decoder<Child>;');
+  assertStringIncludes(
+    printed,
+    'type __sts_ParentDecoderType = import("sts:decode").Decoder<Parent>;',
+  );
+  assertStringIncludes(
+    printed,
+    'type __sts_ChildDecoderType = import("sts:decode").Decoder<Child>;',
+  );
   assertStringIncludes(
     printed,
     'type __sts_ParentEncoderType = import("sts:encode").Encoder<Parent, __sts_ParentEncodedForEncode>;',
@@ -2063,8 +2084,14 @@ Deno.test('mutually recursive derived companions typecheck for decode encode and
     printed,
     'type __sts_ChildEncoderType = import("sts:encode").Encoder<Child, __sts_ChildEncodedForEncode>;',
   );
-  assertStringIncludes(printed, 'type __sts_ParentCodecType = import("sts:codec").Codec<Parent, __sts_ParentEncodedForCodec>;');
-  assertStringIncludes(printed, 'type __sts_ChildCodecType = import("sts:codec").Codec<Child, __sts_ChildEncodedForCodec>;');
+  assertStringIncludes(
+    printed,
+    'type __sts_ParentCodecType = import("sts:codec").Codec<Parent, __sts_ParentEncodedForCodec>;',
+  );
+  assertStringIncludes(
+    printed,
+    'type __sts_ChildCodecType = import("sts:codec").Codec<Child, __sts_ChildEncodedForCodec>;',
+  );
   assertStringIncludes(printed, 'export const ParentDecoder');
   assertStringIncludes(printed, 'export const ChildDecoder');
   assertStringIncludes(printed, 'export const ParentCodec');
@@ -2219,8 +2246,14 @@ Deno.test('recursive derived companions typecheck with sync defaults transforms 
 
   const printed = printSourceFileForMacroTest(sourceFile);
   assertStringIncludes(printed, 'type __sts_NodeDecoderType = import("sts:decode").Decoder<Node>;');
-  assertStringIncludes(printed, 'type __sts_NodeEncoderType = import("sts:encode").Encoder<Node, __sts_NodeEncodedForEncode>;');
-  assertStringIncludes(printed, 'type __sts_NodeCodecType = import("sts:codec").Codec<Node, __sts_NodeEncodedForCodec>;');
+  assertStringIncludes(
+    printed,
+    'type __sts_NodeEncoderType = import("sts:encode").Encoder<Node, __sts_NodeEncodedForEncode>;',
+  );
+  assertStringIncludes(
+    printed,
+    'type __sts_NodeCodecType = import("sts:codec").Codec<Node, __sts_NodeEncodedForCodec>;',
+  );
   assertStringIncludes(printed, 'normalizeNode');
   assertStringIncludes(printed, 'normalizeLabel');
   assertStringIncludes(printed, 'nonEmptyLabel');
@@ -2698,7 +2731,7 @@ Deno.test('derive via helpers require explicit stdlib helper types when mode inf
   assertEquals(
     expanded.frontendDiagnostics().map((diagnostic) => diagnostic.message),
     [
-      'decode.via(...) helper "NodeDecoderRef" must have an explicit stdlib helper type annotation such as import(\'sts:decode\').Decoder<...> or import(\'sts:codec\').Codec<...>, or a local implementation the macro can analyze, so its async/sync mode can be determined.',
+      "decode.via(...) helper \"NodeDecoderRef\" must have an explicit stdlib helper type annotation such as import('sts:decode').Decoder<...> or import('sts:codec').Codec<...>, or a local implementation the macro can analyze, so its async/sync mode can be determined.",
     ],
   );
 });
@@ -2763,7 +2796,10 @@ Deno.test('recursive derived companions typecheck with async defaults transforms
   assert(sourceFile);
 
   const printed = printSourceFileForMacroTest(sourceFile);
-  assertStringIncludes(printed, 'type __sts_NodeDecoderType = import("sts:decode").Decoder<Node, unknown, "async">;');
+  assertStringIncludes(
+    printed,
+    'type __sts_NodeDecoderType = import("sts:decode").Decoder<Node, unknown, "async">;',
+  );
   assertStringIncludes(
     printed,
     'type __sts_NodeEncoderType = import("sts:encode").Encoder<Node, __sts_NodeEncodedForEncode, unknown, "async">;',
@@ -2802,11 +2838,11 @@ Deno.test('recursive class companions typecheck with async decode factories', ()
         '  }',
         '}',
         '',
-        "const decoded: Promise<Result<Node, unknown>> = NodeDecoder.decode({ next: {} });",
-        "const validated: Promise<Result<Node, readonly unknown[]>> = NodeDecoder.validateDecode({ next: {} });",
-        "const codecDecoded: Promise<Result<Node, unknown>> = NodeCodec.decode({ next: {} });",
-        "const codecValidated: Promise<Result<Node, readonly unknown[]>> = NodeCodec.validateDecode({ next: {} });",
-        "const codecEncoded: Result<{ readonly next?: unknown }, unknown> = NodeCodec.encode({ next: new Node() });",
+        'const decoded: Promise<Result<Node, unknown>> = NodeDecoder.decode({ next: {} });',
+        'const validated: Promise<Result<Node, readonly unknown[]>> = NodeDecoder.validateDecode({ next: {} });',
+        'const codecDecoded: Promise<Result<Node, unknown>> = NodeCodec.decode({ next: {} });',
+        'const codecValidated: Promise<Result<Node, readonly unknown[]>> = NodeCodec.validateDecode({ next: {} });',
+        'const codecEncoded: Result<{ readonly next?: unknown }, unknown> = NodeCodec.encode({ next: new Node() });',
         'void decoded;',
         'void validated;',
         'void codecDecoded;',
@@ -2823,7 +2859,10 @@ Deno.test('recursive class companions typecheck with async decode factories', ()
   assert(sourceFile);
 
   const printed = printSourceFileForMacroTest(sourceFile);
-  assertStringIncludes(printed, 'type __sts_NodeDecoderType = import("sts:decode").Decoder<Node, unknown, "async">;');
+  assertStringIncludes(
+    printed,
+    'type __sts_NodeDecoderType = import("sts:decode").Decoder<Node, unknown, "async">;',
+  );
   assertStringIncludes(
     printed,
     'type __sts_NodeCodecType = import("sts:codec").Codec<Node, __sts_NodeEncodedForCodec, unknown, import("sts:encode").EncodeFailure, "async", "sync">;',
@@ -3537,7 +3576,7 @@ Deno.test('Match macro rewrites explicit instanceof arms', async () => {
       "  other => 'fallback',",
       ']);',
       '',
-  ].join('\n'),
+    ].join('\n'),
     { Match },
   );
 

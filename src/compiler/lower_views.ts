@@ -2,8 +2,8 @@ import ts from 'typescript';
 
 import type { CompilerExpressionIR, CompilerValueType } from './ir.ts';
 import {
-  isSupportedOwnedHeapArrayType,
   isSupportedOwnedBooleanArrayType,
+  isSupportedOwnedHeapArrayType,
   isSupportedOwnedNumberArrayType,
   isSupportedOwnedStringArrayType,
   isSupportedOwnedTaggedArrayType,
@@ -93,7 +93,8 @@ export function isSupportedLengthViewType(
   if (!lengthSymbol) {
     return false;
   }
-  const declaration = lengthSymbol.valueDeclaration ?? lengthSymbol.declarations?.[0] ?? contextNode;
+  const declaration = lengthSymbol.valueDeclaration ?? lengthSymbol.declarations?.[0] ??
+    contextNode;
   const lengthType = checker.getTypeOfSymbolAtLocation(lengthSymbol, declaration);
   return (lengthType.flags & ts.TypeFlags.NumberLike) !== 0;
 }
@@ -174,7 +175,10 @@ export function tryLowerLengthViewExpression<TContext extends LengthViewContextL
   if (ts.isIdentifier(expression)) {
     const symbol = deps.lookupSymbol(context, expression.text);
     const expressionType = context.checker.getTypeAtLocation(expression);
-    if (symbol?.type === 'f64' && isSupportedLengthViewType(context.checker, expressionType, expression)) {
+    if (
+      symbol?.type === 'f64' &&
+      isSupportedLengthViewType(context.checker, expressionType, expression)
+    ) {
       return {
         kind: 'local_get',
         name: symbol.emittedName,

@@ -1,66 +1,74 @@
 import type { SourceSpan } from './macro_types.d.ts';
 export interface MacroType {
-    readonly displayText: string;
+  readonly displayText: string;
 }
-export type MacroRuntimeKind = 'bigint' | 'boolean' | 'function' | 'number' | 'object' | 'string' | 'symbol' | 'undefined';
+export type MacroRuntimeKind =
+  | 'bigint'
+  | 'boolean'
+  | 'function'
+  | 'number'
+  | 'object'
+  | 'string'
+  | 'symbol'
+  | 'undefined';
 export type MacroFiniteCase = {
-    readonly elements: readonly MacroFiniteTupleElement[];
-    readonly exactLength: number;
-    readonly kind: 'array';
+  readonly elements: readonly MacroFiniteTupleElement[];
+  readonly exactLength: number;
+  readonly kind: 'array';
 } | {
-    readonly kind: 'class';
-    readonly className: string;
+  readonly kind: 'class';
+  readonly className: string;
 } | {
-    readonly kind: 'literal';
-    readonly code: string;
+  readonly kind: 'literal';
+  readonly code: string;
 } | {
-    readonly kind: 'object';
-    readonly properties: readonly MacroFiniteObjectProperty[];
+  readonly kind: 'object';
+  readonly properties: readonly MacroFiniteObjectProperty[];
 } | {
-    readonly kind: 'runtime';
-    readonly typeName: MacroRuntimeKind;
+  readonly kind: 'runtime';
+  readonly typeName: MacroRuntimeKind;
 };
 export interface MacroFiniteObjectProperty {
-    readonly finiteCase: MacroFiniteCase | null;
-    readonly key: string;
+  readonly finiteCase: MacroFiniteCase | null;
+  readonly key: string;
 }
 export interface MacroFiniteTupleElement {
-    readonly finiteCase: MacroFiniteCase | null;
+  readonly finiteCase: MacroFiniteCase | null;
 }
 export interface MacroFunctionContext {
-    readonly fileName: string;
-    readonly isAsync: boolean;
-    readonly isGenerator: boolean;
-    readonly name?: string;
-    readonly returnType: MacroType;
-    readonly span: SourceSpan;
+  readonly fileName: string;
+  readonly isAsync: boolean;
+  readonly isGenerator: boolean;
+  readonly name?: string;
+  readonly returnType: MacroType;
+  readonly span: SourceSpan;
 }
 export interface MacroDependencyReference {
-    readonly kind: 'binding' | 'this-member';
-    readonly name: string;
+  readonly kind: 'binding' | 'this-member';
+  readonly name: string;
 }
 export interface MacroDependencySet {
-    readonly dependencies: readonly MacroDependencyReference[];
-    readonly unknown: boolean;
+  readonly dependencies: readonly MacroDependencyReference[];
+  readonly unknown: boolean;
 }
 export interface CanonicalResultInfo {
-    readonly errType: MacroType;
-    readonly okType: MacroType;
-    readonly resultType: MacroType;
+  readonly errType: MacroType;
+  readonly okType: MacroType;
+  readonly resultType: MacroType;
 }
 export interface CanonicalResultCarrierInfo extends CanonicalResultInfo {
-    readonly requiresAwait: boolean;
+  readonly requiresAwait: boolean;
 }
 export interface CanonicalFailureInfo {
-    readonly failureType: MacroType;
+  readonly failureType: MacroType;
 }
 export interface MacroTryResultCarrierInfo extends CanonicalResultInfo {
-    readonly kind: 'result';
+  readonly kind: 'result';
 }
 export interface MacroTryNullishCarrierInfo {
-    readonly carrierType: MacroType;
-    readonly kind: 'nullish';
-    readonly nullishKinds: readonly ('null' | 'undefined')[];
-    readonly valueType: MacroType;
+  readonly carrierType: MacroType;
+  readonly kind: 'nullish';
+  readonly nullishKinds: readonly ('null' | 'undefined')[];
+  readonly valueType: MacroType;
 }
 export type MacroTryCarrierInfo = MacroTryNullishCarrierInfo | MacroTryResultCarrierInfo;

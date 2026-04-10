@@ -24,7 +24,8 @@ function resolveAliasedSymbol(checker: ts.TypeChecker, symbol: ts.Symbol): ts.Sy
 
 function hasStaticModifier(node: ts.Node): boolean {
   return ts.canHaveModifiers(node) &&
-    ts.getModifiers(node)?.some((modifier) => modifier.kind === ts.SyntaxKind.StaticKeyword) === true;
+    ts.getModifiers(node)?.some((modifier) => modifier.kind === ts.SyntaxKind.StaticKeyword) ===
+      true;
 }
 
 function isReceiverSensitiveMethodDeclaration(
@@ -65,7 +66,9 @@ function hasReceiverSensitiveCallSignature(context: AnalysisContext, type: ts.Ty
   });
 }
 
-function getMemberName(expression: ts.PropertyAccessExpression | ts.ElementAccessExpression): string | undefined {
+function getMemberName(
+  expression: ts.PropertyAccessExpression | ts.ElementAccessExpression,
+): string | undefined {
   if (ts.isPropertyAccessExpression(expression)) {
     return expression.name.text;
   }
@@ -183,8 +186,7 @@ function createDiagnostic(context: AnalysisContext, node: ts.Node): SoundDiagnos
       rule: 'receiver_sensitive_callable_value',
       primarySymbol: nodeInfo?.memberName,
       fixability: 'local_rewrite',
-      invariant:
-        'Receiver-sensitive callables must stay in receiver-preserving member-call form.',
+      invariant: 'Receiver-sensitive callables must stay in receiver-preserving member-call form.',
       replacementFamily: 'receiver_preserving_wrapper',
       evidence: evidence.length > 0 ? evidence : undefined,
       counterexample:
@@ -228,7 +230,10 @@ function isReceiverSensitiveCallableExpression(
       return true;
     }
 
-    return hasReceiverSensitiveCallSignature(context, context.checker.getTypeAtLocation(expression));
+    return hasReceiverSensitiveCallSignature(
+      context,
+      context.checker.getTypeAtLocation(expression),
+    );
   }
 
   if (ts.isIdentifier(expression)) {
@@ -237,7 +242,10 @@ function isReceiverSensitiveCallableExpression(
       return true;
     }
 
-    return hasReceiverSensitiveCallSignature(context, context.checker.getTypeAtLocation(expression));
+    return hasReceiverSensitiveCallSignature(
+      context,
+      context.checker.getTypeAtLocation(expression),
+    );
   }
 
   return false;
@@ -262,12 +270,16 @@ function isDeclarationNameExpression(node: ts.Expression): boolean {
 
 function isAllowedReceiverSensitiveUse(expression: ts.Expression): boolean {
   const parent = expression.parent;
-  return (ts.isCallExpression(parent) || ts.isNewExpression(parent)) && parent.expression === expression;
+  return (ts.isCallExpression(parent) || ts.isNewExpression(parent)) &&
+    parent.expression === expression;
 }
 
 function getBindingElementPropertyName(element: ts.BindingElement): string | undefined {
   const propertyName = element.propertyName ?? element.name;
-  if (ts.isIdentifier(propertyName) || ts.isStringLiteralLike(propertyName) || ts.isNumericLiteral(propertyName)) {
+  if (
+    ts.isIdentifier(propertyName) || ts.isStringLiteralLike(propertyName) ||
+    ts.isNumericLiteral(propertyName)
+  ) {
     return propertyName.text;
   }
 
@@ -321,7 +333,8 @@ export function runReceiverDisciplineRules(context: AnalysisContext): SoundDiagn
 
   function push(node: ts.Node): void {
     const range = getNodeDiagnosticRange(node);
-    const key = `${range.filePath}:${range.line}:${range.column}:${range.endLine}:${range.endColumn}`;
+    const key =
+      `${range.filePath}:${range.line}:${range.column}:${range.endLine}:${range.endColumn}`;
     if (seen.has(key)) {
       return;
     }

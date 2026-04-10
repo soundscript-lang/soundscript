@@ -7,7 +7,7 @@ import type {
   EffectUnknownReasonFact,
   PublicEffectName,
 } from '../engine/types.ts';
-import { subtractEffectSet, effectSetsOverlap } from './names.ts';
+import { effectSetsOverlap, subtractEffectSet } from './names.ts';
 import { effectSummaryHasUnknown, getEffectSummaryUnknownReasonsForSignature } from './unknown.ts';
 
 export interface CallableEffectContractMismatch {
@@ -41,12 +41,19 @@ export function classifyCallableEffectContractMismatch(
   }
 
   const sourceParameterContracts = new Map(
-    (sourceSummary?.parameterContracts ?? []).map((contract) => [contract.parameterIndex, contract]),
+    (sourceSummary?.parameterContracts ?? []).map((
+      contract,
+    ) => [contract.parameterIndex, contract]),
   );
   const targetParameterContracts = new Map(
-    (targetSummary?.parameterContracts ?? []).map((contract) => [contract.parameterIndex, contract]),
+    (targetSummary?.parameterContracts ?? []).map((
+      contract,
+    ) => [contract.parameterIndex, contract]),
   );
-  const parameterCount = Math.max(sourceSignature.getParameters().length, targetSignature.getParameters().length);
+  const parameterCount = Math.max(
+    sourceSignature.getParameters().length,
+    targetSignature.getParameters().length,
+  );
   for (let index = 0; index < parameterCount; index += 1) {
     const sourceForbidEffects = sourceParameterContracts.get(index)?.forbidEffects ?? [];
     const targetForbidEffects = targetParameterContracts.get(index)?.forbidEffects ?? [];

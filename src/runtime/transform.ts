@@ -6,7 +6,7 @@ import {
   normalizeValueSemanticsInProgramForFile,
   normalizeValueSemanticsInSourceText,
 } from '../frontend/value_normalization.ts';
-import { builtinRuntimeImportSpecifier } from '../soundscript_runtime_specifiers.ts';
+import { builtinRuntimeImportSpecifier } from '../project/soundscript_runtime_specifiers.ts';
 
 import {
   composeTranspiledSourceMapToOriginal,

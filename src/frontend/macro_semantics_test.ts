@@ -55,7 +55,10 @@ function findFunctionDeclaration(sourceFile: ts.SourceFile, name: string): ts.Fu
   return found;
 }
 
-function findTypeAliasDeclaration(sourceFile: ts.SourceFile, name: string): ts.TypeAliasDeclaration {
+function findTypeAliasDeclaration(
+  sourceFile: ts.SourceFile,
+  name: string,
+): ts.TypeAliasDeclaration {
   let found: ts.TypeAliasDeclaration | undefined;
 
   function visit(node: ts.Node) {

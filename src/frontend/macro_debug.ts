@@ -75,10 +75,14 @@ export function createMacroDebugSnapshot(
   const definitions = options.macroEnvironment.definitionsForFile(programSourceFile);
   const registries = options.macroEnvironment.registriesForFile(programSourceFile);
   const generatedReplacementsById = new Map(
-    debugPreparedSource.rewriteResult.replacements.map((replacement) => [replacement.id, replacement] as const),
+    debugPreparedSource.rewriteResult.replacements.map((replacement) =>
+      [replacement.id, replacement] as const
+    ),
   );
   const traces = collectResolvedMacroPlaceholders(options.preparedProgram)
-    .filter((entry) => options.preparedProgram.toSourceFileName(entry.sourceFile.fileName) === sourceFileName)
+    .filter((entry) =>
+      options.preparedProgram.toSourceFileName(entry.sourceFile.fileName) === sourceFileName
+    )
     .map((entry): MacroExpansionTrace => {
       const invocation = entry.resolved.placeholder.invocation;
       const definition = definitions.get(invocation.nameText);
@@ -96,11 +100,13 @@ export function createMacroDebugSnapshot(
           if (advancedExpansion) {
             runtimeImports = advancedExpansion.runtimeImports ?? [];
           } else {
-            runtimeImports = registries.registry.get(invocation.nameText)?.(entry.resolved)?.runtimeImports ??
-              [];
+            runtimeImports =
+              registries.registry.get(invocation.nameText)?.(entry.resolved)?.runtimeImports ??
+                [];
           }
         } else {
-          runtimeImports = registries.registry.get(invocation.nameText)?.(entry.resolved)?.runtimeImports ?? [];
+          runtimeImports =
+            registries.registry.get(invocation.nameText)?.(entry.resolved)?.runtimeImports ?? [];
         }
       } catch (error) {
         diagnostics.push(error instanceof Error ? error.message : String(error));
@@ -122,9 +128,8 @@ export function createMacroDebugSnapshot(
           generatedReplacementsById.get(entry.resolved.placeholder.id),
         ),
         invocationId: entry.resolved.placeholder.id,
-        macroForm: metadata?.form ?? (invocation.siteKind === 'annotation'
-          ? 'decl'
-          : invocation.siteKind),
+        macroForm: metadata?.form ??
+          (invocation.siteKind === 'annotation' ? 'decl' : invocation.siteKind),
         macroName: invocation.nameText,
         runtimeImports,
         sourceSpan: invocation.span,

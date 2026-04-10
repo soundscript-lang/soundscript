@@ -1,6 +1,6 @@
-import { runCli } from './cli.ts';
-import { parseCommand } from './config.ts';
-import { runEditorDiagnosticsWorker } from './editor_diagnostics_worker.ts';
+import { runCli } from './cli/cli.ts';
+import { parseCommand } from './project/config.ts';
+import { runEditorDiagnosticsWorker } from './editor/diagnostics_worker.ts';
 import { createServer } from './lsp/server.ts';
 import { createStdioTransport } from './lsp/transport.ts';
 import { runtimeArgs, runtimeCwd, runtimeExit, writeStdout } from './platform/host.ts';

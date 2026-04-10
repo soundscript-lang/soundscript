@@ -79,11 +79,15 @@ export function createExpandAdvancedMacroPlaceholderFromDefinition<
         : null;
       const hostAccess = definitionMetadata?.moduleFileName
         ? createHostAccess({
-          fileExists: preparedProgram.preparedHost.host.fileExists.bind(preparedProgram.preparedHost.host),
+          fileExists: preparedProgram.preparedHost.host.fileExists.bind(
+            preparedProgram.preparedHost.host,
+          ),
           macroFileName: definitionMetadata.moduleFileName,
           projectDirectory: preparedProgram.preparedHost.host.getCurrentDirectory?.() ??
             ts.sys.getCurrentDirectory(),
-          readFile: preparedProgram.preparedHost.host.readFile.bind(preparedProgram.preparedHost.host),
+          readFile: preparedProgram.preparedHost.host.readFile.bind(
+            preparedProgram.preparedHost.host,
+          ),
         })
         : undefined;
       const baseContext = createAdvancedMacroContext(

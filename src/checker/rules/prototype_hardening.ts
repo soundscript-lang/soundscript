@@ -60,7 +60,10 @@ function unwrapExpression(expression: ts.Expression): ts.Expression {
   return current;
 }
 
-function isNonDeclarationClassSymbol(symbol: ts.Symbol | undefined, checker: ts.TypeChecker): boolean {
+function isNonDeclarationClassSymbol(
+  symbol: ts.Symbol | undefined,
+  checker: ts.TypeChecker,
+): boolean {
   if (!symbol) {
     return false;
   }
@@ -74,8 +77,14 @@ function isNonDeclarationClassSymbol(symbol: ts.Symbol | undefined, checker: ts.
 
 function isClassConstructorValue(context: AnalysisContext, expression: ts.Expression): boolean {
   const current = unwrapExpression(expression);
-  return isNonDeclarationClassSymbol(context.checker.getSymbolAtLocation(current), context.checker) ||
-    isNonDeclarationClassSymbol(context.checker.getTypeAtLocation(current).getSymbol(), context.checker);
+  return isNonDeclarationClassSymbol(
+    context.checker.getSymbolAtLocation(current),
+    context.checker,
+  ) ||
+    isNonDeclarationClassSymbol(
+      context.checker.getTypeAtLocation(current).getSymbol(),
+      context.checker,
+    );
 }
 
 function isClassInstanceValue(context: AnalysisContext, expression: ts.Expression): boolean {
@@ -85,9 +94,13 @@ function isClassInstanceValue(context: AnalysisContext, expression: ts.Expressio
   );
 }
 
-function getMemberName(expression: ts.PropertyAccessExpression | ts.ElementAccessExpression): string | undefined {
+function getMemberName(
+  expression: ts.PropertyAccessExpression | ts.ElementAccessExpression,
+): string | undefined {
   if (ts.isPropertyAccessExpression(expression)) {
-    return ts.isPrivateIdentifier(expression.name) ? `#${expression.name.text}` : expression.name.text;
+    return ts.isPrivateIdentifier(expression.name)
+      ? `#${expression.name.text}`
+      : expression.name.text;
   }
 
   const argument = expression.argumentExpression;
@@ -204,21 +217,36 @@ function getPrototypeMutationDiagnosticNode(
       )
     )
   ) {
-    return ts.isPropertyAccessExpression(node.left) ? node.left.name : node.left.argumentExpression ?? node.left;
+    return ts.isPropertyAccessExpression(node.left)
+      ? node.left.name
+      : node.left.argumentExpression ?? node.left;
   }
 
   if (!ts.isCallExpression(node)) {
     return undefined;
   }
 
-  const directBuiltinMutation =
-    matchesResolvedBuiltinSignature(context, node, {
-      ownerNames: ['ObjectConstructor'],
-      memberNames: ['assign', 'defineProperties', 'defineProperty', 'freeze', 'preventExtensions', 'seal'],
-    }) ||
+  const directBuiltinMutation = matchesResolvedBuiltinSignature(context, node, {
+    ownerNames: ['ObjectConstructor'],
+    memberNames: [
+      'assign',
+      'defineProperties',
+      'defineProperty',
+      'freeze',
+      'preventExtensions',
+      'seal',
+    ],
+  }) ||
     matchesResolvedBuiltinCallableValue(context, node.expression, {
       ownerNames: ['ObjectConstructor'],
-      memberNames: ['assign', 'defineProperties', 'defineProperty', 'freeze', 'preventExtensions', 'seal'],
+      memberNames: [
+        'assign',
+        'defineProperties',
+        'defineProperty',
+        'freeze',
+        'preventExtensions',
+        'seal',
+      ],
     }) ||
     matchesResolvedBuiltinSignature(context, node, {
       ownerNames: ['Reflect'],
@@ -252,7 +280,15 @@ function getPrototypeMutationDiagnosticNode(
   const wrappedBuiltinMutation =
     matchesResolvedBuiltinCallableValue(context, wrappedInvocation.target, {
       ownerNames: ['ObjectConstructor'],
-      memberNames: ['assign', 'defineProperties', 'defineProperty', 'freeze', 'preventExtensions', 'seal', 'setPrototypeOf'],
+      memberNames: [
+        'assign',
+        'defineProperties',
+        'defineProperty',
+        'freeze',
+        'preventExtensions',
+        'seal',
+        'setPrototypeOf',
+      ],
     }) ||
     matchesResolvedBuiltinCallableValue(context, wrappedInvocation.target, {
       ownerNames: ['Reflect'],
@@ -282,7 +318,8 @@ export function runPrototypeHardeningRules(context: AnalysisContext): SoundDiagn
     }
 
     const range = getNodeDiagnosticRange(node);
-    const key = `${range.filePath}:${range.line}:${range.column}:${range.endLine}:${range.endColumn}`;
+    const key =
+      `${range.filePath}:${range.line}:${range.column}:${range.endLine}:${range.endColumn}`;
     if (seen.has(key)) {
       return;
     }

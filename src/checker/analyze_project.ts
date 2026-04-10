@@ -33,12 +33,12 @@ import {
   toProjectedDeclarationSourceFileName,
   toSourceFileName,
 } from '../frontend/project_frontend.ts';
-import { collectSoundscriptRootNames, loadConfig } from '../config.ts';
+import { collectSoundscriptRootNames, loadConfig } from '../project/config.ts';
 import {
   findNearestPackageJsonPath,
   getSoundScriptPackageInfoForResolvedModule,
   resolveSoundScriptAwareModule,
-} from '../soundscript_packages.ts';
+} from '../project/soundscript_packages.ts';
 import {
   hasErrorDiagnostics,
   remapDiagnosticFilePaths,
@@ -356,10 +356,12 @@ function createSoundscriptRootContentSignature(
     .map((fileName) => ts.sys.resolvePath(fileName))
     .filter(isDeclarationRootFileName);
 
-  return [...new Set([
-    ...collectReachableSoundscriptDependencyFiles(rootNames, compilerOptions, fileOverrides),
-    ...declarationRootNames,
-  ])]
+  return [
+    ...new Set([
+      ...collectReachableSoundscriptDependencyFiles(rootNames, compilerOptions, fileOverrides),
+      ...declarationRootNames,
+    ]),
+  ]
     .sort()
     .map((fileName) => {
       const text = host.readFile(fileName) ?? '';
@@ -1885,11 +1887,12 @@ export function prepareProjectAnalysis(
           { always: true },
         );
       })();
-      const packageProjectedDeclarationRootNames = collectProjectedDeclarationCandidateRootNamesFromPrograms(
-        [preliminaryTsView?.program, stsView?.program],
-        localProjectedDeclarationOverrides,
-        projectPackageJsonPath,
-      );
+      const packageProjectedDeclarationRootNames =
+        collectProjectedDeclarationCandidateRootNamesFromPrograms(
+          [preliminaryTsView?.program, stsView?.program],
+          localProjectedDeclarationOverrides,
+          projectPackageJsonPath,
+        );
       const packageSourcePolicyContentSignature = packageProjectedDeclarationRootNames.length === 0
         ? ''
         : createSoundscriptRootContentSignature(

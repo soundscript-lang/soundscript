@@ -3,10 +3,7 @@ import ts from 'typescript';
 import type { MacroContext } from './macro_api.ts';
 import { createSemanticMacroContext } from './macro_semantic_context.ts';
 import { createMacroError, MacroError } from './macro_errors.ts';
-import {
-  type SemanticMacroOutput,
-  isSemanticMacroOutput,
-} from './macro_semantic_output.ts';
+import { isSemanticMacroOutput, type SemanticMacroOutput } from './macro_semantic_output.ts';
 import type { ResolvedMacroPlaceholder } from './macro_resolver.ts';
 import type { PreparedProgram } from './project_frontend.ts';
 
@@ -86,7 +83,10 @@ function lowerPreludeStatements(
     'semantic_macro_prelude',
     output.preludeStatements.join('\n'),
   );
-  ensureNoParseDiagnostics(sourceFile, 'Semantic macro prelude statements must be valid host-language statements.');
+  ensureNoParseDiagnostics(
+    sourceFile,
+    'Semantic macro prelude statements must be valid host-language statements.',
+  );
   return [...sourceFile.statements].map((statement) => synthesizeNode(statement));
 }
 
@@ -99,19 +99,26 @@ function lowerReplacementExpr(
     'semantic_macro_expr',
     `const __semantic_expr = (${output.replacementExpr});`,
   );
-  ensureNoParseDiagnostics(sourceFile, 'Semantic macro replacement expression must be valid host-language expression code.');
+  ensureNoParseDiagnostics(
+    sourceFile,
+    'Semantic macro replacement expression must be valid host-language expression code.',
+  );
   const [statement] = sourceFile.statements;
   if (
     !statement ||
     !ts.isVariableStatement(statement) ||
     statement.declarationList.declarations.length !== 1
   ) {
-    throw new Error('Semantic macro replacement expression must parse as exactly one host-language expression.');
+    throw new Error(
+      'Semantic macro replacement expression must parse as exactly one host-language expression.',
+    );
   }
 
   const initializer = statement.declarationList.declarations[0]?.initializer;
   if (!initializer || !ts.isParenthesizedExpression(initializer)) {
-    throw new Error('Semantic macro replacement expression must parse as exactly one host-language expression.');
+    throw new Error(
+      'Semantic macro replacement expression must parse as exactly one host-language expression.',
+    );
   }
 
   return synthesizeNode(initializer.expression);

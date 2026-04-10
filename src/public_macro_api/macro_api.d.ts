@@ -1,8 +1,8 @@
 import type {
   CanonicalFailureInfo,
-  MacroDependencySet,
   CanonicalResultCarrierInfo,
   CanonicalResultInfo,
+  MacroDependencySet,
   MacroFiniteCase,
   MacroFunctionContext,
   MacroTryCarrierInfo,
@@ -116,7 +116,7 @@ export type MacroAnnotationValue = {
   readonly properties: readonly {
     readonly name: string;
     readonly text: string;
-  readonly value: MacroAnnotationValue;
+    readonly value: MacroAnnotationValue;
   }[];
 } | {
   readonly flags: string;
@@ -757,18 +757,64 @@ export interface MacroReflectedFieldShape {
   readonly type: MacroReflectedTypeShape | null;
 }
 export type MacroSerializableTypeShape =
-  | { readonly element: MacroSerializableTypeShape; readonly kind: 'array'; readonly readonly: boolean; readonly text: string }
-  | { readonly kind: 'intersection'; readonly members: readonly MacroSerializableTypeShape[]; readonly text: string }
-  | { readonly fields: readonly MacroSerializableFieldShape[]; readonly kind: 'object'; readonly text: string }
-  | { readonly err: MacroSerializableTypeShape; readonly kind: 'result'; readonly ok: MacroSerializableTypeShape; readonly text: string }
+  | {
+    readonly element: MacroSerializableTypeShape;
+    readonly kind: 'array';
+    readonly readonly: boolean;
+    readonly text: string;
+  }
+  | {
+    readonly kind: 'intersection';
+    readonly members: readonly MacroSerializableTypeShape[];
+    readonly text: string;
+  }
+  | {
+    readonly fields: readonly MacroSerializableFieldShape[];
+    readonly kind: 'object';
+    readonly text: string;
+  }
+  | {
+    readonly err: MacroSerializableTypeShape;
+    readonly kind: 'result';
+    readonly ok: MacroSerializableTypeShape;
+    readonly text: string;
+  }
   | { readonly kind: 'option'; readonly text: string; readonly value: MacroSerializableTypeShape }
-  | { readonly kind: 'primitive'; readonly primitiveKind: MacroReflectedPrimitiveKind; readonly text: string }
-  | { readonly kind: 'literal'; readonly literalKind: 'boolean' | 'number' | 'string'; readonly text: string; readonly value: boolean | number | string }
+  | {
+    readonly kind: 'primitive';
+    readonly primitiveKind: MacroReflectedPrimitiveKind;
+    readonly text: string;
+  }
+  | {
+    readonly kind: 'literal';
+    readonly literalKind: 'boolean' | 'number' | 'string';
+    readonly text: string;
+    readonly value: boolean | number | string;
+  }
   | { readonly kind: 'null'; readonly text: string }
-  | { readonly kind: 'named'; readonly name: string; readonly text: string; readonly typeArguments: readonly MacroSerializableTypeShape[] }
-  | { readonly key: MacroSerializableTypeShape; readonly kind: 'record'; readonly text: string; readonly value: MacroSerializableTypeShape }
-  | { readonly elements: readonly MacroSerializableTypeShape[]; readonly kind: 'tuple'; readonly readonly: boolean; readonly text: string }
-  | { readonly kind: 'union'; readonly members: readonly MacroSerializableTypeShape[]; readonly text: string }
+  | {
+    readonly kind: 'named';
+    readonly name: string;
+    readonly text: string;
+    readonly typeArguments: readonly MacroSerializableTypeShape[];
+  }
+  | {
+    readonly key: MacroSerializableTypeShape;
+    readonly kind: 'record';
+    readonly text: string;
+    readonly value: MacroSerializableTypeShape;
+  }
+  | {
+    readonly elements: readonly MacroSerializableTypeShape[];
+    readonly kind: 'tuple';
+    readonly readonly: boolean;
+    readonly text: string;
+  }
+  | {
+    readonly kind: 'union';
+    readonly members: readonly MacroSerializableTypeShape[];
+    readonly text: string;
+  }
   | { readonly kind: 'undefined'; readonly text: string }
   | { readonly kind: 'unsupported'; readonly text: string };
 export interface MacroSerializableFieldShape {
@@ -883,7 +929,11 @@ export interface MacroSemanticsView {
   finiteCases(type: MacroType): readonly MacroFiniteCase[] | null;
   isAssignable(from: MacroType, to: MacroType): boolean;
   localDeclaration(name: string, node?: MacroSyntaxNode): DeclSyntax | null;
-  localDeclarationHasAnnotation(name: string, annotationName: string, node?: MacroSyntaxNode): boolean;
+  localDeclarationHasAnnotation(
+    name: string,
+    annotationName: string,
+    node?: MacroSyntaxNode,
+  ): boolean;
   nullType(): MacroType;
   parameterType(parameter: MacroParameterSyntax): MacroType | null;
   primaryExprEnclosingFunction(): MacroFunctionContext | null;

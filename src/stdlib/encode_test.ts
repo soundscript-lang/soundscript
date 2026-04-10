@@ -7,10 +7,10 @@ import {
   bigintEncoder,
   booleanEncoder,
   contramap,
-  type Encoder,
   EncodeFailure,
   type EncodeIssue,
   type EncodeMode,
+  type Encoder,
   encoderContravariant,
   fromEncode,
   lazy,
@@ -27,8 +27,8 @@ import {
   strictObject,
   stringEncoder,
   tuple,
-  undefinedEncoder,
   undefinedable,
+  undefinedEncoder,
 } from './encode.ts';
 import { none, some } from './result.ts';
 
@@ -264,14 +264,14 @@ Deno.test('encode validateEncode accumulates nested object and array issues', ()
         ? ok(value)
         : err(new EncodeFailure('Expected non-empty string.', { cause: value })),
     (value) =>
-      value.length > 0
-        ? ok(value)
-        : err([{
+      value.length > 0 ? ok(value) : err(
+        [{
           code: 'encode_failure',
           input: value,
           message: 'Expected non-empty string.',
           path: [],
-        }] satisfies readonly EncodeIssue[]),
+        }] satisfies readonly EncodeIssue[],
+      ),
   );
 
   const UserEncoder = object({
@@ -289,20 +289,23 @@ Deno.test('encode validateEncode accumulates nested object and array issues', ()
     throw new Error('expected validateEncode to fail');
   }
 
-  assertEquals(encoded.error, [
-    {
-      code: 'encode_failure',
-      input: '',
-      message: 'Expected non-empty string.',
-      path: ['id'],
-    },
-    {
-      code: 'encode_failure',
-      input: '',
-      message: 'Expected non-empty string.',
-      path: ['tags', 1],
-    },
-  ] satisfies readonly EncodeIssue[]);
+  assertEquals(
+    encoded.error,
+    [
+      {
+        code: 'encode_failure',
+        input: '',
+        message: 'Expected non-empty string.',
+        path: ['id'],
+      },
+      {
+        code: 'encode_failure',
+        input: '',
+        message: 'Expected non-empty string.',
+        path: ['tags', 1],
+      },
+    ] satisfies readonly EncodeIssue[],
+  );
 });
 
 Deno.test('encode contramap supports promise-returning projections and promotes encode to async', async () => {
@@ -326,14 +329,12 @@ Deno.test('encode refine supports string and issue-returning predicate failures'
   const SlugEncoder = refine(
     stringEncoder,
     (value: string) =>
-      value === value.toLowerCase()
-        ? true
-        : {
-          code: 'custom_slug',
-          input: value,
-          message: 'Expected lowercase slug.',
-          path: [],
-        },
+      value === value.toLowerCase() ? true : {
+        code: 'custom_slug',
+        input: value,
+        message: 'Expected lowercase slug.',
+        path: [],
+      },
     'Expected lowercase slug.',
   );
 
@@ -350,12 +351,15 @@ Deno.test('encode refine supports string and issue-returning predicate failures'
   if (isOk(validated)) {
     throw new Error('expected issue-returning refine validateEncode to fail');
   }
-  assertEquals(validated.error, [{
-    code: 'custom_slug',
-    input: 'Hello',
-    message: 'Expected lowercase slug.',
-    path: [],
-  }] satisfies readonly EncodeIssue[]);
+  assertEquals(
+    validated.error,
+    [{
+      code: 'custom_slug',
+      input: 'Hello',
+      message: 'Expected lowercase slug.',
+      path: [],
+    }] satisfies readonly EncodeIssue[],
+  );
 });
 
 Deno.test('encode object becomes async when a nested child encoder is async', async () => {
@@ -423,10 +427,13 @@ Deno.test('encode async container helpers reuse the first pending child result',
   assertEquals(tupleItem.counts, { encodeCalls: 1, validateCalls: 0 });
 
   const objectField = makeAsyncStringEncoder();
-  assertTaggedEquals(await object({ id: objectField, tag: stringEncoder }).encode({ id: 'a', tag: 'b' }), {
-    tag: 'ok',
-    value: { id: 'A', tag: 'b' },
-  });
+  assertTaggedEquals(
+    await object({ id: objectField, tag: stringEncoder }).encode({ id: 'a', tag: 'b' }),
+    {
+      tag: 'ok',
+      value: { id: 'A', tag: 'b' },
+    },
+  );
   assertEquals(objectField.counts, { encodeCalls: 1, validateCalls: 0 });
 
   const recordValue = makeAsyncStringEncoder();
@@ -452,7 +459,10 @@ Deno.test('encode async container helpers reuse the first pending child result',
 
   const validateObjectField = makeAsyncStringEncoder();
   assertTaggedEquals(
-    await object({ id: validateObjectField, tag: stringEncoder }).validateEncode({ id: 'a', tag: 'b' }),
+    await object({ id: validateObjectField, tag: stringEncoder }).validateEncode({
+      id: 'a',
+      tag: 'b',
+    }),
     {
       tag: 'ok',
       value: { id: 'A', tag: 'b' },
@@ -461,10 +471,13 @@ Deno.test('encode async container helpers reuse the first pending child result',
   assertEquals(validateObjectField.counts, { encodeCalls: 0, validateCalls: 1 });
 
   const validateRecordValue = makeAsyncStringEncoder();
-  assertTaggedEquals(await record(validateRecordValue).validateEncode({ first: 'a', second: 'b' }), {
-    tag: 'ok',
-    value: { first: 'A', second: 'B' },
-  });
+  assertTaggedEquals(
+    await record(validateRecordValue).validateEncode({ first: 'a', second: 'b' }),
+    {
+      tag: 'ok',
+      value: { first: 'A', second: 'B' },
+    },
+  );
   assertEquals(validateRecordValue.counts, { encodeCalls: 0, validateCalls: 2 });
 });
 
@@ -496,14 +509,14 @@ Deno.test('encode record encodes keyed values and accumulates nested issues', ()
         ? ok(value)
         : err(new EncodeFailure('Expected non-empty string.', { cause: value })),
     (value) =>
-      value.length > 0
-        ? ok(value)
-        : err([{
+      value.length > 0 ? ok(value) : err(
+        [{
           code: 'encode_failure',
           input: value,
           message: 'Expected non-empty string.',
           path: [],
-        }] satisfies readonly EncodeIssue[]),
+        }] satisfies readonly EncodeIssue[],
+      ),
   );
 
   assertTaggedEquals(record(NonEmptyStringEncoder).encode({ first: 'ok', second: 'yep' }), {
@@ -516,12 +529,15 @@ Deno.test('encode record encodes keyed values and accumulates nested issues', ()
   if (isOk(badRecord)) {
     throw new Error('expected record validateEncode failure');
   }
-  assertEquals(badRecord.error, [{
-    code: 'encode_failure',
-    input: '',
-    message: 'Expected non-empty string.',
-    path: ['first'],
-  }] satisfies readonly EncodeIssue[]);
+  assertEquals(
+    badRecord.error,
+    [{
+      code: 'encode_failure',
+      input: '',
+      message: 'Expected non-empty string.',
+      path: ['first'],
+    }] satisfies readonly EncodeIssue[],
+  );
 });
 
 Deno.test('encode lazy recursive encoders reject cyclic object graphs', async () => {
@@ -530,7 +546,12 @@ Deno.test('encode lazy recursive encoders reject cyclic object graphs', async ()
     readonly next?: Node;
   };
 
-  const NodeEncoder: Encoder<Node, { readonly id: string; readonly next?: unknown }, EncodeFailure, EncodeMode> = lazy(() =>
+  const NodeEncoder: Encoder<
+    Node,
+    { readonly id: string; readonly next?: unknown },
+    EncodeFailure,
+    EncodeMode
+  > = lazy(() =>
     object({
       id: stringEncoder,
       next: optional(NodeEncoder),

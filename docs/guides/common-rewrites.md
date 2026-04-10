@@ -1,7 +1,7 @@
 # Common Rewrites
 
-This guide collects the small, repeatable rewrites that come up most often when soundscript asks
-for a more explicit shape.
+This guide collects the small, repeatable rewrites that come up most often when soundscript asks for
+a more explicit shape.
 
 For the broader style guidance behind these examples, see
 [Idiomatic SoundScript](./idiomatic-soundscript.md).

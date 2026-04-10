@@ -11,8 +11,8 @@ import {
   VALUE_MODES,
   VALUE_ROUTES,
   type ValueMode,
-} from '../../test/value_matrix.ts';
-import { createInstalledStdlibPackageFiles } from '../test_installed_stdlib.ts';
+} from '../../tests/support/value_matrix.ts';
+import { createInstalledStdlibPackageFiles } from '../../tests/support/test_installed_stdlib.ts';
 import { transpilePreparedSoundscriptModuleToEsm } from '../runtime/transform.ts';
 import { createBuiltinExpandedProgram as createBuiltinExpandedProgramRaw } from './builtin_macro_support.ts';
 import { installTestDisposableCleanup } from './builtin_expanded_program_test_cleanup.ts';
@@ -137,7 +137,9 @@ function transpileValueDefinitionFile(
   definitionFile: string,
   mode: ValueMode,
 ): string {
-  const preparedFile = builtinExpanded.preparedProgram.preparedHost.getPreparedSourceFile(definitionFile);
+  const preparedFile = builtinExpanded.preparedProgram.preparedHost.getPreparedSourceFile(
+    definitionFile,
+  );
   assert(preparedFile);
   const artifact = transpilePreparedSoundscriptModuleToEsm(
     definitionFile,
@@ -655,7 +657,9 @@ Deno.test('createBuiltinExpandedProgram splits augment declaration mapping from 
 for (const mode of VALUE_MODES) {
   for (const route of VALUE_ROUTES) {
     Deno.test(
-      `transpilePreparedSoundscriptModuleToEsm lowers valid ${getValueModeSlug(mode)} #[value] routes through ${getValueRouteSlug(route)}`,
+      `transpilePreparedSoundscriptModuleToEsm lowers valid ${
+        getValueModeSlug(mode)
+      } #[value] routes through ${getValueRouteSlug(route)}`,
       () => {
         const program = prefixValueMatrixProgram(createValueRouteProgram(mode, route), '/virtual');
         const builtinExpanded = createValueFrontendProgram(program.files);
@@ -674,9 +678,14 @@ for (const mode of VALUE_MODES) {
 
 for (const route of VALUE_ROUTES) {
   Deno.test(
-    `transpilePreparedSoundscriptModuleToEsm does not lower invalid deep #[value] routes through ${getValueRouteSlug(route)}`,
+    `transpilePreparedSoundscriptModuleToEsm does not lower invalid deep #[value] routes through ${
+      getValueRouteSlug(route)
+    }`,
     () => {
-      const program = prefixValueMatrixProgram(createInvalidDeepValueRouteProgram(route), '/virtual');
+      const program = prefixValueMatrixProgram(
+        createInvalidDeepValueRouteProgram(route),
+        '/virtual',
+      );
       const builtinExpanded = createValueFrontendProgram(program.files);
       const printed = transpileValueDefinitionFile(builtinExpanded, program.definitionFile, 'deep');
 
@@ -1978,7 +1987,9 @@ Deno.test('createBuiltinExpandedProgram can defer normalization-only final rebui
     });
 
     const analysisSourceFile = builtinExpanded.program.getSourceFile(`${fileName}.ts`);
-    const analysisPrinted = analysisSourceFile ? ts.createPrinter().printFile(analysisSourceFile) : '';
+    const analysisPrinted = analysisSourceFile
+      ? ts.createPrinter().printFile(analysisSourceFile)
+      : '';
     const supplementalProgram = builtinExpanded.tsDiagnosticPrograms.find((program) =>
       program.filePaths?.includes(fileName)
     )?.program;
@@ -3255,7 +3266,9 @@ Deno.test('createBuiltinExpandedProgram rejects default-exported local barrel ma
     rootNames: [entryFile],
   });
 
-  const projectedDeclarationText = emitProjectedDeclarations(expandedProgram.analysisPreparedProgram)
+  const projectedDeclarationText = emitProjectedDeclarations(
+    expandedProgram.analysisPreparedProgram,
+  )
     .get(entryFile);
 
   assertEquals(expandedProgram.frontendDiagnostics().map((diagnostic) => diagnostic.code), [

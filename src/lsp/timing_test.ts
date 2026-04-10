@@ -18,10 +18,16 @@ Deno.test('logLspTiming stays silent unless instrumentation is enabled', () => {
   };
 
   try {
-    logLspTiming('request.hover', 100, { uri: 'file:///workspace/src/index.ts' }, { enabled: false, always: true });
+    logLspTiming('request.hover', 100, { uri: 'file:///workspace/src/index.ts' }, {
+      enabled: false,
+      always: true,
+    });
     assertEquals(calls, []);
 
-    logLspTiming('request.hover', 100, { uri: 'file:///workspace/src/index.ts' }, { enabled: true, always: true });
+    logLspTiming('request.hover', 100, { uri: 'file:///workspace/src/index.ts' }, {
+      enabled: true,
+      always: true,
+    });
     assertEquals(calls.length, 1);
     assertEquals(calls[0]?.includes('[soundscript:lsp] request.hover 100.0ms'), true);
     assertEquals(calls[0]?.includes('uri=file:///workspace/src/index.ts'), true);

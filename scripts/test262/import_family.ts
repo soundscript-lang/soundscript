@@ -1,6 +1,6 @@
 import { dirname, join } from '@std/path';
 
-import type { Test262ManifestValue } from '../../test/test262/harness.ts';
+import type { Test262ManifestValue } from '../../tests/test262/harness.ts';
 import {
   buildAdapterFixtureDirectory,
   buildSingleFileFixturePath,
@@ -42,21 +42,28 @@ function buildCandidateManifestEntry(
 ): CandidateManifestEntry {
   const isModuleExecution = caseSpec.execution === 'module';
   const entry = isModuleExecution ? undefined : (caseSpec.entry ?? 'main');
-  const args = isModuleExecution ? undefined : (caseSpec.args ?? []) as readonly Test262ManifestValue[];
+  const args = isModuleExecution
+    ? undefined
+    : (caseSpec.args ?? []) as readonly Test262ManifestValue[];
 
   if (spec.mode === 'positive') {
     const hasExpected = caseSpec.expected !== undefined;
     const hasCompletion = caseSpec.completion !== undefined;
     if (caseSpec.failure !== undefined || hasExpected === hasCompletion) {
       throw new Error(
-        `Positive import case ${deriveCaseStem(caseSpec.upstreamPath, caseSpec.localName)} must define exactly one of expected or completion, and must not define failure.`,
+        `Positive import case ${
+          deriveCaseStem(caseSpec.upstreamPath, caseSpec.localName)
+        } must define exactly one of expected or completion, and must not define failure.`,
       );
     }
   } else if (
-    caseSpec.failure === undefined || caseSpec.expected !== undefined || caseSpec.completion !== undefined
+    caseSpec.failure === undefined || caseSpec.expected !== undefined ||
+    caseSpec.completion !== undefined
   ) {
     throw new Error(
-      `Negative import case ${deriveCaseStem(caseSpec.upstreamPath, caseSpec.localName)} must define failure and must not define expected or completion.`,
+      `Negative import case ${
+        deriveCaseStem(caseSpec.upstreamPath, caseSpec.localName)
+      } must define failure and must not define expected or completion.`,
     );
   }
 
@@ -102,7 +109,13 @@ export async function importFamily(specPath: string): Promise<ImportFamilyResult
       await writeTextFile(join(adapterDirectory, 'raw.js'), fixtureSource);
       await writeTextFile(join(adapterDirectory, 'index.ts'), caseSpec.adapterSource);
       manifestEntries.push(
-        buildCandidateManifestEntry(spec, caseSpec, candidateManifestPath, adapterDirectory, assertion),
+        buildCandidateManifestEntry(
+          spec,
+          caseSpec,
+          candidateManifestPath,
+          adapterDirectory,
+          assertion,
+        ),
       );
       writtenTests.push(relativeFixturePath(candidateManifestPath, adapterDirectory));
       continue;

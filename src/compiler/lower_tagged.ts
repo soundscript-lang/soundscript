@@ -62,7 +62,8 @@ export function isNumberOrNullableType(type: ts.Type): boolean {
   const members = (type as ts.UnionType).types;
   return members.some((member) => isUndefinedType(member) || isNullType(member)) &&
     members.every((member) =>
-      isUndefinedType(member) || isNullType(member) || (member.flags & ts.TypeFlags.NumberLike) !== 0
+      isUndefinedType(member) || isNullType(member) ||
+      (member.flags & ts.TypeFlags.NumberLike) !== 0
     );
 }
 
@@ -73,7 +74,8 @@ export function isBooleanOrNullableType(type: ts.Type): boolean {
   const members = (type as ts.UnionType).types;
   return members.some((member) => isUndefinedType(member) || isNullType(member)) &&
     members.every((member) =>
-      isUndefinedType(member) || isNullType(member) || (member.flags & ts.TypeFlags.BooleanLike) !== 0
+      isUndefinedType(member) || isNullType(member) ||
+      (member.flags & ts.TypeFlags.BooleanLike) !== 0
     );
 }
 
@@ -83,7 +85,9 @@ export function isStringOrNullableType(type: ts.Type): boolean {
   }
   const members = (type as ts.UnionType).types;
   return members.some((member) => isUndefinedType(member) || isNullType(member)) &&
-    members.every((member) => isUndefinedType(member) || isNullType(member) || isStringLikeType(member));
+    members.every((member) =>
+      isUndefinedType(member) || isNullType(member) || isStringLikeType(member)
+    );
 }
 
 export function isTaggedPrimitiveUnionType(type: ts.Type): boolean {
@@ -123,13 +127,15 @@ function getTaggedCompilerUnionKinds(type: ts.Type): {
     return undefined;
   }
   const members = (type as ts.UnionType).types;
-  if (members.some((member) =>
-    !isUndefinedType(member) &&
-    !isNullType(member) &&
-    (member.flags & ts.TypeFlags.BooleanLike) === 0 &&
-    (member.flags & ts.TypeFlags.NumberLike) === 0 &&
-    !isStringLikeType(member)
-  )) {
+  if (
+    members.some((member) =>
+      !isUndefinedType(member) &&
+      !isNullType(member) &&
+      (member.flags & ts.TypeFlags.BooleanLike) === 0 &&
+      (member.flags & ts.TypeFlags.NumberLike) === 0 &&
+      !isStringLikeType(member)
+    )
+  ) {
     return undefined;
   }
   return {
@@ -227,14 +233,19 @@ export function isTaggedTypeofLiteralTagSupported(literal: string, operandType: 
     : false;
 }
 
-function getSafeCompoundTaggedSubjectExpression(expression: ts.Expression): ts.Expression | undefined {
+function getSafeCompoundTaggedSubjectExpression(
+  expression: ts.Expression,
+): ts.Expression | undefined {
   if (ts.isParenthesizedExpression(expression)) {
     return getSafeCompoundTaggedSubjectExpression(expression.expression);
   }
   return ts.isIdentifier(expression) ? expression : undefined;
 }
 
-function isSafeCompoundTaggedAtomicPredicateSyntax(expression: ts.Expression, checker: ts.TypeChecker): boolean {
+function isSafeCompoundTaggedAtomicPredicateSyntax(
+  expression: ts.Expression,
+  checker: ts.TypeChecker,
+): boolean {
   if (ts.isParenthesizedExpression(expression)) {
     return isSafeCompoundTaggedAtomicPredicateSyntax(expression.expression, checker);
   }
@@ -250,14 +261,23 @@ function isSafeCompoundTaggedAtomicPredicateSyntax(expression: ts.Expression, ch
   const leftType = checker.getTypeAtLocation(expression.left);
   const rightType = checker.getTypeAtLocation(expression.right);
   const leftTypeofExpression = ts.isTypeOfExpression(expression.left) ? expression.left : undefined;
-  const rightTypeofExpression = ts.isTypeOfExpression(expression.right) ? expression.right : undefined;
-  const leftLiteral = leftTypeofExpression ? tryGetStaticStringLiteralText(expression.right) : undefined;
-  const rightLiteral = rightTypeofExpression ? tryGetStaticStringLiteralText(expression.left) : undefined;
+  const rightTypeofExpression = ts.isTypeOfExpression(expression.right)
+    ? expression.right
+    : undefined;
+  const leftLiteral = leftTypeofExpression
+    ? tryGetStaticStringLiteralText(expression.right)
+    : undefined;
+  const rightLiteral = rightTypeofExpression
+    ? tryGetStaticStringLiteralText(expression.left)
+    : undefined;
   if (
     leftLiteral !== undefined &&
     leftTypeofExpression &&
     getSafeCompoundTaggedSubjectExpression(leftTypeofExpression.expression) &&
-    isTaggedTypeofLiteralTagSupported(leftLiteral, checker.getTypeAtLocation(leftTypeofExpression.expression))
+    isTaggedTypeofLiteralTagSupported(
+      leftLiteral,
+      checker.getTypeAtLocation(leftTypeofExpression.expression),
+    )
   ) {
     return true;
   }
@@ -265,7 +285,10 @@ function isSafeCompoundTaggedAtomicPredicateSyntax(expression: ts.Expression, ch
     rightLiteral !== undefined &&
     rightTypeofExpression &&
     getSafeCompoundTaggedSubjectExpression(rightTypeofExpression.expression) &&
-    isTaggedTypeofLiteralTagSupported(rightLiteral, checker.getTypeAtLocation(rightTypeofExpression.expression))
+    isTaggedTypeofLiteralTagSupported(
+      rightLiteral,
+      checker.getTypeAtLocation(rightTypeofExpression.expression),
+    )
   ) {
     return true;
   }
@@ -288,11 +311,16 @@ function isSafeCompoundTaggedAtomicPredicateSyntax(expression: ts.Expression, ch
   );
 }
 
-export function isSafeCompoundTaggedPredicateSyntax(expression: ts.Expression, checker: ts.TypeChecker): boolean {
+export function isSafeCompoundTaggedPredicateSyntax(
+  expression: ts.Expression,
+  checker: ts.TypeChecker,
+): boolean {
   if (ts.isParenthesizedExpression(expression)) {
     return isSafeCompoundTaggedPredicateSyntax(expression.expression, checker);
   }
-  if (ts.isPrefixUnaryExpression(expression) && expression.operator === ts.SyntaxKind.ExclamationToken) {
+  if (
+    ts.isPrefixUnaryExpression(expression) && expression.operator === ts.SyntaxKind.ExclamationToken
+  ) {
     return isSafeCompoundTaggedAtomicPredicateSyntax(expression.operand, checker);
   }
   if (
@@ -308,11 +336,16 @@ export function isSafeCompoundTaggedPredicateSyntax(expression: ts.Expression, c
   return isSafeCompoundTaggedAtomicPredicateSyntax(expression, checker);
 }
 
-export function isSupportedTaggedPredicateSyntax(expression: ts.Expression, checker: ts.TypeChecker): boolean {
+export function isSupportedTaggedPredicateSyntax(
+  expression: ts.Expression,
+  checker: ts.TypeChecker,
+): boolean {
   if (ts.isParenthesizedExpression(expression)) {
     return isSupportedTaggedPredicateSyntax(expression.expression, checker);
   }
-  if (ts.isPrefixUnaryExpression(expression) && expression.operator === ts.SyntaxKind.ExclamationToken) {
+  if (
+    ts.isPrefixUnaryExpression(expression) && expression.operator === ts.SyntaxKind.ExclamationToken
+  ) {
     return isSupportedTaggedPredicateSyntax(expression.operand, checker);
   }
   if (
@@ -337,20 +370,32 @@ export function isSupportedTaggedPredicateSyntax(expression: ts.Expression, chec
   const leftType = checker.getTypeAtLocation(expression.left);
   const rightType = checker.getTypeAtLocation(expression.right);
   const leftTypeofExpression = ts.isTypeOfExpression(expression.left) ? expression.left : undefined;
-  const rightTypeofExpression = ts.isTypeOfExpression(expression.right) ? expression.right : undefined;
-  const leftLiteral = leftTypeofExpression ? tryGetStaticStringLiteralText(expression.right) : undefined;
-  const rightLiteral = rightTypeofExpression ? tryGetStaticStringLiteralText(expression.left) : undefined;
+  const rightTypeofExpression = ts.isTypeOfExpression(expression.right)
+    ? expression.right
+    : undefined;
+  const leftLiteral = leftTypeofExpression
+    ? tryGetStaticStringLiteralText(expression.right)
+    : undefined;
+  const rightLiteral = rightTypeofExpression
+    ? tryGetStaticStringLiteralText(expression.left)
+    : undefined;
   if (
     leftLiteral !== undefined &&
     leftTypeofExpression &&
-    isTaggedTypeofLiteralTagSupported(leftLiteral, checker.getTypeAtLocation(leftTypeofExpression.expression))
+    isTaggedTypeofLiteralTagSupported(
+      leftLiteral,
+      checker.getTypeAtLocation(leftTypeofExpression.expression),
+    )
   ) {
     return true;
   }
   if (
     rightLiteral !== undefined &&
     rightTypeofExpression &&
-    isTaggedTypeofLiteralTagSupported(rightLiteral, checker.getTypeAtLocation(rightTypeofExpression.expression))
+    isTaggedTypeofLiteralTagSupported(
+      rightLiteral,
+      checker.getTypeAtLocation(rightTypeofExpression.expression),
+    )
   ) {
     return true;
   }
@@ -360,7 +405,10 @@ export function isSupportedTaggedPredicateSyntax(expression: ts.Expression, chec
     (isNullType(leftType) && isTaggedTypeWithNull(rightType));
 }
 
-export function getCompilerScalarValueType(checker: ts.TypeChecker, node: ts.Node): CompilerValueType {
+export function getCompilerScalarValueType(
+  checker: ts.TypeChecker,
+  node: ts.Node,
+): CompilerValueType {
   const type = checker.getTypeAtLocation(node);
   if ((type.flags & ts.TypeFlags.NumberLike) !== 0) {
     return 'f64';
@@ -370,10 +418,16 @@ export function getCompilerScalarValueType(checker: ts.TypeChecker, node: ts.Nod
   }
   if ((type.flags & ts.TypeFlags.Union) !== 0) {
     const members = (type as ts.UnionType).types;
-    if (members.length > 0 && members.every((member) => (member.flags & ts.TypeFlags.NumberLike) !== 0)) {
+    if (
+      members.length > 0 &&
+      members.every((member) => (member.flags & ts.TypeFlags.NumberLike) !== 0)
+    ) {
       return 'f64';
     }
-    if (members.length > 0 && members.every((member) => (member.flags & ts.TypeFlags.BooleanLike) !== 0)) {
+    if (
+      members.length > 0 &&
+      members.every((member) => (member.flags & ts.TypeFlags.BooleanLike) !== 0)
+    ) {
       return 'i32';
     }
   }
@@ -387,10 +441,16 @@ export function getCompilerScalarValueType(checker: ts.TypeChecker, node: ts.Nod
 export function getCompilerValueTypeForType(type: ts.Type, node: ts.Node): CompilerValueType {
   if ((type.flags & ts.TypeFlags.Union) !== 0) {
     const members = (type as ts.UnionType).types;
-    if (members.length > 0 && members.every((member) => (member.flags & ts.TypeFlags.NumberLike) !== 0)) {
+    if (
+      members.length > 0 &&
+      members.every((member) => (member.flags & ts.TypeFlags.NumberLike) !== 0)
+    ) {
       return 'f64';
     }
-    if (members.length > 0 && members.every((member) => (member.flags & ts.TypeFlags.BooleanLike) !== 0)) {
+    if (
+      members.length > 0 &&
+      members.every((member) => (member.flags & ts.TypeFlags.BooleanLike) !== 0)
+    ) {
       return 'i32';
     }
   }

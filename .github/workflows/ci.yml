@@ -19,6 +19,7 @@ jobs:
         with:
           deno-version: v2.x
       - run: deno task check
+      - run: deno task test:layout
 
   cli-smoke:
     needs: static-checks

@@ -2,18 +2,18 @@ import type {
   CompilerFunctionHeapBoundaryIR,
   CompilerFunctionHostFallbackTaggedArrayPropertyIR,
   CompilerFunctionHostTaggedArrayBoundaryIR,
-  CompilerFunctionHostTaggedHeapNullableParamIR,
   CompilerFunctionHostTaggedHeapNullableBoundaryIR,
+  CompilerFunctionHostTaggedHeapNullableParamIR,
   CompilerFunctionIR,
-  CompilerModuleIR,
   CompilerHostBoundaryClassConstructorIR,
   CompilerHostBoundaryClosureIR,
   CompilerHostBoundaryFieldIR,
-  CompilerHostBoundaryObjectIR,
   CompilerHostBoundaryIR,
-  CompilerHostObjectNestedPropertyNamesIR,
+  CompilerHostBoundaryObjectIR,
   CompilerHostBoundaryPromiseIR,
   CompilerHostBoundaryTaggedIR,
+  CompilerHostObjectNestedPropertyNamesIR,
+  CompilerModuleIR,
   CompilerTaggedPrimitiveBoundaryKindsIR,
 } from './ir.ts';
 import type { CompilerRuntimeRepresentationRefIR } from './runtime_ir.ts';
@@ -337,7 +337,8 @@ export function getEffectiveFunctionHeapParamRepresentation(
   func: CompilerFunctionIR,
   name: string,
 ): CompilerRuntimeRepresentationRefIR<'object'> | undefined {
-  return func.heapParamRepresentations?.find((boundary) => boundary.name === name)?.representation ??
+  return func.heapParamRepresentations?.find((boundary) => boundary.name === name)
+    ?.representation ??
     getHeapRepresentationFromHostBoundary(getFunctionHostParamBoundary(func, name));
 }
 
@@ -345,7 +346,9 @@ export function getEffectiveFunctionHeapParamRepresentationsByName(
   func: CompilerFunctionIR,
 ): Map<string, CompilerRuntimeRepresentationRefIR<'object'>> {
   const representationsByName = new Map<string, CompilerRuntimeRepresentationRefIR<'object'>>(
-    (func.heapParamRepresentations ?? []).map((boundary) => [boundary.name, boundary.representation] as const),
+    (func.heapParamRepresentations ?? []).map((boundary) =>
+      [boundary.name, boundary.representation] as const
+    ),
   );
   for (const boundary of func.hostParamBoundaries ?? []) {
     const representation = getHeapRepresentationFromHostBoundary(boundary.boundary);
@@ -359,10 +362,13 @@ export function getEffectiveFunctionHeapParamRepresentationsByName(
 export function getEffectiveFunctionHeapResultRepresentation(
   func: CompilerFunctionIR,
 ): CompilerRuntimeRepresentationRefIR<'object'> | undefined {
-  return func.heapResultRepresentation ?? getHeapRepresentationFromHostBoundary(func.hostResultBoundary);
+  return func.heapResultRepresentation ??
+    getHeapRepresentationFromHostBoundary(func.hostResultBoundary);
 }
 
-export function getEffectiveHostFallbackObjectParamBoundaryNames(func: CompilerFunctionIR): string[] {
+export function getEffectiveHostFallbackObjectParamBoundaryNames(
+  func: CompilerFunctionIR,
+): string[] {
   const paramNames = new Set<string>();
   const hostLengthViewParamNames = new Set(func.hostLengthViewParams ?? []);
   const hostTaggedPrimitiveParamNames = new Set(
@@ -398,11 +404,11 @@ export function getEffectiveHostFallbackObjectParamBoundaryNames(func: CompilerF
 export function hasEffectiveHostFallbackObjectResultBoundary(func: CompilerFunctionIR): boolean {
   const hostTaggedPrimitiveResultKinds = getEffectiveHostTaggedPrimitiveResultKinds(func);
   return (func.hostLengthViewResult !== true &&
-      func.heapResultRepresentation?.kind === 'fallback_object_representation' &&
-      (
-        func.resultType === 'heap_ref' ||
-        (func.resultType === 'tagged_ref' && hostTaggedPrimitiveResultKinds !== undefined)
-      )) ||
+    func.heapResultRepresentation?.kind === 'fallback_object_representation' &&
+    (
+      func.resultType === 'heap_ref' ||
+      (func.resultType === 'tagged_ref' && hostTaggedPrimitiveResultKinds !== undefined)
+    )) ||
     (
       func.hostLengthViewResult !== true &&
       func.hostResultBoundary?.kind === 'object' &&
@@ -426,7 +432,9 @@ export function getEffectiveHostTaggedArrayParamsByName(
 export function getEffectiveHostTaggedArrayResultKinds(
   func: CompilerFunctionIR,
 ): CompilerFunctionHostTaggedArrayBoundaryIR | undefined {
-  return func.hostResultBoundary ? getTaggedArrayBoundaryFromHostBoundary(func.hostResultBoundary) : undefined;
+  return func.hostResultBoundary
+    ? getTaggedArrayBoundaryFromHostBoundary(func.hostResultBoundary)
+    : undefined;
 }
 
 export function getEffectiveHostImportPromiseParamNames(
@@ -450,7 +458,8 @@ export function getEffectiveHostExportPromiseParamNames(
 }
 
 export function hasEffectiveHostImportPromiseResult(func: CompilerFunctionIR): boolean {
-  return func.hostImport?.promiseResult === true || getHostPromiseBoundary(func.hostResultBoundary) !== undefined;
+  return func.hostImport?.promiseResult === true ||
+    getHostPromiseBoundary(func.hostResultBoundary) !== undefined;
 }
 
 export function hasEffectiveHostExportPromiseResult(func: CompilerFunctionIR): boolean {
@@ -532,7 +541,9 @@ export function getEffectiveHostHeapArrayParamsByName(
 export function getEffectiveHostHeapArrayResultRepresentation(
   func: CompilerFunctionIR,
 ): CompilerFunctionHeapBoundaryIR['representation'] | undefined {
-  return func.hostResultBoundary ? getHeapArrayRepresentationFromHostBoundary(func.hostResultBoundary) : undefined;
+  return func.hostResultBoundary
+    ? getHeapArrayRepresentationFromHostBoundary(func.hostResultBoundary)
+    : undefined;
 }
 
 function runtimeRepresentationsEqual(
@@ -583,7 +594,10 @@ export interface CompilerHostFallbackObjectPropertyMetadataIR {
   classConstructorProperties: ReadonlyMap<string, number>;
   arrayProperties: ReadonlyMap<
     string,
-    'owned_array_ref' | 'owned_number_array_ref' | 'owned_boolean_array_ref' | 'owned_tagged_array_ref'
+    | 'owned_array_ref'
+    | 'owned_number_array_ref'
+    | 'owned_boolean_array_ref'
+    | 'owned_tagged_array_ref'
   >;
   heapArrayProperties: ReadonlyMap<string, CompilerRuntimeRepresentationRefIR<'object'>>;
   taggedArrayProperties: ReadonlyMap<string, CompilerFunctionHostFallbackTaggedArrayPropertyIR>;
@@ -606,10 +620,16 @@ export function getEffectiveFunctionHostFallbackObjectPropertyMetadata(
   const classConstructorProperties = new Map<string, number>();
   const arrayProperties = new Map<
     string,
-    'owned_array_ref' | 'owned_number_array_ref' | 'owned_boolean_array_ref' | 'owned_tagged_array_ref'
+    | 'owned_array_ref'
+    | 'owned_number_array_ref'
+    | 'owned_boolean_array_ref'
+    | 'owned_tagged_array_ref'
   >();
   const heapArrayProperties = new Map<string, CompilerRuntimeRepresentationRefIR<'object'>>();
-  const taggedArrayProperties = new Map<string, CompilerFunctionHostFallbackTaggedArrayPropertyIR>();
+  const taggedArrayProperties = new Map<
+    string,
+    CompilerFunctionHostFallbackTaggedArrayPropertyIR
+  >();
   const heapProperties = new Map<string, CompilerRuntimeRepresentationRefIR<'object'>>();
   const taggedHeapProperties = new Map<
     string,
@@ -761,10 +781,16 @@ export function getEffectiveHostFallbackObjectPropertyMetadata(
   const classConstructorProperties = new Map<string, number>();
   const arrayProperties = new Map<
     string,
-    'owned_array_ref' | 'owned_number_array_ref' | 'owned_boolean_array_ref' | 'owned_tagged_array_ref'
+    | 'owned_array_ref'
+    | 'owned_number_array_ref'
+    | 'owned_boolean_array_ref'
+    | 'owned_tagged_array_ref'
   >();
   const heapArrayProperties = new Map<string, CompilerRuntimeRepresentationRefIR<'object'>>();
-  const taggedArrayProperties = new Map<string, CompilerFunctionHostFallbackTaggedArrayPropertyIR>();
+  const taggedArrayProperties = new Map<
+    string,
+    CompilerFunctionHostFallbackTaggedArrayPropertyIR
+  >();
   const heapProperties = new Map<string, CompilerRuntimeRepresentationRefIR<'object'>>();
   const taggedHeapProperties = new Map<
     string,
@@ -889,7 +915,10 @@ export function collectHostObjectBoundaryPropertyMetadata(
     propertyPath: readonly string[];
     nestedPropertyNames: Set<string>;
   }>();
-  const visitObject = (currentBoundary: CompilerHostBoundaryObjectIR, propertyPath: readonly string[]): void => {
+  const visitObject = (
+    currentBoundary: CompilerHostBoundaryObjectIR,
+    propertyPath: readonly string[],
+  ): void => {
     for (const field of currentBoundary.fields ?? []) {
       if (propertyPath.length === 0) {
         rootPropertyNames.add(field.name);

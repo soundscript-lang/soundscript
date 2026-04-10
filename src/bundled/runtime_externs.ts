@@ -1,6 +1,6 @@
 import ts from 'typescript';
 
-import type { RuntimeContext } from '../config.ts';
+import type { RuntimeContext } from '../project/config.ts';
 import { dirname } from '../platform/path.ts';
 
 const DENO_EXTERN_DECLARATION_FILE = '/__soundscript_externs__/deno.global.d.ts';

@@ -106,7 +106,7 @@ export function parseVersion(root: string = ROOT): string {
   const cliSource = Deno.readTextFileSync(join(root, 'src', 'cli.ts'));
   const match = cliSource.match(/export const VERSION = '([^']+)'/u);
   if (!match) {
-    throw new Error('Could not find VERSION in src/cli.ts.');
+    throw new Error('Could not find VERSION in src/cli/cli.ts.');
   }
 
   return match[1];

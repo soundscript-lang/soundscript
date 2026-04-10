@@ -302,7 +302,9 @@ async function prepareStdlibPackage(version: string): Promise<void> {
   await Deno.mkdir(join(CANONICAL_DIST, 'bin'), { recursive: true });
 
   const stdlibDeclarationsByBaseName = new Map(
-    [...getStdlibDeclarationTexts().entries()].map(([filePath, text]) => [basename(filePath), text] as const),
+    [...getStdlibDeclarationTexts().entries()].map(([filePath, text]) =>
+      [basename(filePath), text] as const
+    ),
   );
   const rootSource = rewriteModuleSpecifiersForEmit(
     Deno.readTextFileSync(join(ROOT, 'src', 'stdlib', 'index.ts')),

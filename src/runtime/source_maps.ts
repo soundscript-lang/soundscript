@@ -147,8 +147,10 @@ function encodeMappings(lines: readonly DecodedSegment[][]): string {
       let encoded = encodeVlqValue(segment.generatedColumn - previousGeneratedColumn);
       previousGeneratedColumn = segment.generatedColumn;
 
-      if (segment.sourceIndex !== undefined && segment.originalLine !== undefined &&
-        segment.originalColumn !== undefined) {
+      if (
+        segment.sourceIndex !== undefined && segment.originalLine !== undefined &&
+        segment.originalColumn !== undefined
+      ) {
         encoded += encodeVlqValue(segment.sourceIndex - previousSourceIndex);
         previousSourceIndex = segment.sourceIndex;
 
@@ -260,7 +262,10 @@ export function composeTranspiledSourceMapToOriginal(
         segment.originalColumn,
       );
       const mappedSource = mapProgramPositionToSource(preparedFile, rewrittenPosition);
-      const mappedLineAndColumn = lineAndColumnForPosition(originalLineStarts, mappedSource.position);
+      const mappedLineAndColumn = lineAndColumnForPosition(
+        originalLineStarts,
+        mappedSource.position,
+      );
 
       return {
         generatedColumn: segment.generatedColumn,

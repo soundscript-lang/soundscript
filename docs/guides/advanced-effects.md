@@ -3,8 +3,9 @@
 This guide is for library authors and teams that want to design their own effect taxonomies, not
 just consume the standard `fails` / `suspend` / `mut` / `host` umbrellas.
 
-The canonical surface is still [`docs/annotation-spec.md`](../annotation-spec.md). This guide is
-about how to use that surface well.
+The canonical surface is still
+[`docs/reference/annotation-spec.md`](../reference/annotation-spec.md). This guide is about how to
+use that surface well.
 
 ## Mental Model
 
@@ -66,8 +67,8 @@ That means:
 - a higher-order wrapper only needs explicit `forward` / `rewrite` / `handle` when inference does
   not already recover the intended public summary
 
-The current `sts:*` stdlib now follows that rule. Its remaining explicit effects are on host
-facades such as `sts:fetch`, `sts:text`, and `sts:url`, not on ordinary bodyful helper code.
+The current `sts:*` stdlib now follows that rule. Its remaining explicit effects are on host facades
+such as `sts:fetch`, `sts:text`, and `sts:url`, not on ordinary bodyful helper code.
 
 ## What The Checker Now Proves For You
 
@@ -178,5 +179,5 @@ So the practical naming rule is:
 
 ## Related Docs
 
-- [Annotation Spec](../annotation-spec.md)
-- [2026-04-01 Effect System V1 Plan](../plans/2026-04-01-effect-system-v1-plan.md)
+- [Annotation Spec](../reference/annotation-spec.md)
+- [2026-04-01 Effect System V1 Plan](../plans/effect-system-v1.md)

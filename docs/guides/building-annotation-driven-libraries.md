@@ -82,7 +82,9 @@ export function rest() {
 
       const fields = shape.fields.map((field: any) => {
         const fieldAnnotations = field.annotations;
-        const restField = fieldAnnotations.find((annotation: any) => annotation.name === 'rest.field');
+        const restField = fieldAnnotations.find((annotation: any) =>
+          annotation.name === 'rest.field'
+        );
         const minLength = fieldAnnotations.find((annotation: any) =>
           annotation.name === 'decode.minLength'
         );
@@ -106,10 +108,12 @@ export function rest() {
 
       return ctx.output.stmt(
         ctx.quote.stmt`
-          export const ${`${name}RestMetadata`} = ${JSON.stringify({
+          export const ${`${name}RestMetadata`} = ${
+          JSON.stringify({
             fields,
             resource: resource?.arguments?.[0]?.value?.text ?? null,
-          })};
+          })
+        };
         `,
       );
     },
@@ -169,5 +173,5 @@ For library authors, the current stable reflection contract is:
 - use `ctx.syntax.annotations(...)` and reflected `field.annotations` for metadata
 
 At the moment, that is the intended public foundation for downstream schema, transport, policy, and
-documentation libraries. Core does not currently provide a separate contract or schema object on
-top of this.
+documentation libraries. Core does not currently provide a separate contract or schema object on top
+of this.

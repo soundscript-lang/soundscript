@@ -1,6 +1,6 @@
 import ts from 'typescript';
 
-import { normalizeRuntimeContext, type RuntimeContext } from '../config.ts';
+import { normalizeRuntimeContext, type RuntimeContext } from '../project/config.ts';
 import type { MergedDiagnostic } from '../checker/diagnostics.ts';
 import { dirname, join } from '../platform/path.ts';
 import {
@@ -9,14 +9,14 @@ import {
 } from '../checker/engine/diagnostic_codes.ts';
 import { describeUnsupportedFeature } from '../checker/unsupported_feature_messages.ts';
 import { measureCheckerTiming } from '../checker/timing.ts';
-import { BUILTIN_DIRECTIVE_NAMES, createAnnotationLookup } from '../annotation_syntax.ts';
+import { BUILTIN_DIRECTIVE_NAMES, createAnnotationLookup } from '../language/annotation_syntax.ts';
 import {
   getSoundScriptPackageExportInfoForResolvedModule,
   isForeignPackageSourceFile,
   isForeignResolvedModule,
   remapResolvedModuleToSoundScriptSource,
   resolveSoundScriptAwareModule,
-} from '../soundscript_packages.ts';
+} from '../project/soundscript_packages.ts';
 import { buildRewriteStageFromTexts } from './error_normalization.ts';
 
 import { buildMacroPlaceholderIndex } from './macro_index.ts';
@@ -148,8 +148,7 @@ const PRELUDE_VALUE_IMPORT_PATTERNS = PRELUDE_VALUE_IMPORT_NAMES.map((name) => (
 }));
 const PRELUDE_MODULE_SPECIFIER = 'sts:prelude';
 const EXPLICIT_FOREIGN_SOURCE_EXTENSION_PATTERN = /\.(?:[cm]?[jt]sx?|[cm]?js)$/u;
-const EXPLICIT_FOREIGN_SOURCE_SPECIFIER_PATTERN =
-  /['"][^'"]+\.(?:[cm]?[jt]sx?|[cm]?js)['"]/u;
+const EXPLICIT_FOREIGN_SOURCE_SPECIFIER_PATTERN = /['"][^'"]+\.(?:[cm]?[jt]sx?|[cm]?js)['"]/u;
 const SCRIPT_SCOPE_BUILTIN_INTERFACE_NAMES = new Set([
   'Array',
   'ArrayConstructor',
@@ -603,18 +602,18 @@ function lowerJsxSyntaxToRuntimeCalls(
     }`;
   }
 
-    const helperSpecifiers = [`jsx as ${jsxHelperName}`];
-    if (usesFragment) {
-      helperSpecifiers.push(`Fragment as ${fragmentHelperName}`);
-    }
-    const importBlock = [
-      '// #[interop]',
-      `import { ${helperSpecifiers.join(', ')} } from 'react/jsx-runtime';`,
-      '',
-    ].join('\n');
-    const { prefix, suffix } = splitLeadingNonAnnotationTrivia(loweredText);
-    const finalText = `${prefix}${importBlock}${suffix}`;
-    return rewrittenText.endsWith('\n') && !finalText.endsWith('\n') ? `${finalText}\n` : finalText;
+  const helperSpecifiers = [`jsx as ${jsxHelperName}`];
+  if (usesFragment) {
+    helperSpecifiers.push(`Fragment as ${fragmentHelperName}`);
+  }
+  const importBlock = [
+    '// #[interop]',
+    `import { ${helperSpecifiers.join(', ')} } from 'react/jsx-runtime';`,
+    '',
+  ].join('\n');
+  const { prefix, suffix } = splitLeadingNonAnnotationTrivia(loweredText);
+  const finalText = `${prefix}${importBlock}${suffix}`;
+  return rewrittenText.endsWith('\n') && !finalText.endsWith('\n') ? `${finalText}\n` : finalText;
 }
 
 function splitLeadingNonAnnotationTrivia(text: string): { prefix: string; suffix: string } {
@@ -689,7 +688,10 @@ function installedRuntimeStdlibDeclarationPath(fileName: string): string | null 
     return null;
   }
 
-  const packageRoot = sourceFileName.slice(0, markerIndex + '/node_modules/@soundscript/soundscript'.length);
+  const packageRoot = sourceFileName.slice(
+    0,
+    markerIndex + '/node_modules/@soundscript/soundscript'.length,
+  );
   const relativeSourcePath = sourceFileName.slice(markerIndex + marker.length);
   const declarationRelativePath = relativeSourcePath.startsWith('experimental/')
     ? relativeSourcePath.replace(/^experimental\//u, 'experimental/').replace(/\.sts$/u, '.d.ts')
@@ -1900,8 +1902,11 @@ function stripMacroAuthoringModuleReferencesFromProjectedDeclaration(
       return false;
     }
 
-    const resolvedSourceFileName = preparedProgram.toSourceFileName(resolvedModule.resolvedFileName);
-    return isSoundscriptMacroSourceFile(resolvedSourceFileName) && !isInstalledPath(resolvedSourceFileName);
+    const resolvedSourceFileName = preparedProgram.toSourceFileName(
+      resolvedModule.resolvedFileName,
+    );
+    return isSoundscriptMacroSourceFile(resolvedSourceFileName) &&
+      !isInstalledPath(resolvedSourceFileName);
   };
 
   const transformer: ts.TransformerFactory<ts.SourceFile> = (context) => {
@@ -1946,7 +1951,9 @@ function stripMacroAuthoringModuleReferencesFromProjectedDeclaration(
       return declarationText;
     }
 
-    const printed = projectedDeclarationPrinter.printFile(transformed.transformed[0] as ts.SourceFile);
+    const printed = projectedDeclarationPrinter.printFile(
+      transformed.transformed[0] as ts.SourceFile,
+    );
     return printed.endsWith('\n') ? printed : `${printed}\n`;
   } finally {
     transformed.dispose();
@@ -3047,8 +3054,11 @@ function createReservedAnnotationNameConflictDiagnostic(
   const start = getLineAndColumn(originalText, span.start);
   const end = getLineAndColumn(originalText, span.end);
   const label = `#[${annotationName}]`;
-  const example =
-    `Import the macro as an alias such as \`import { ${annotationName} as macro${annotationName[0]?.toUpperCase() ?? ''}${annotationName.slice(1)} } from "${specifier}";\`, then write \`// #[macro${annotationName[0]?.toUpperCase() ?? ''}${annotationName.slice(1)}]\` at the annotation site.`;
+  const example = `Import the macro as an alias such as \`import { ${annotationName} as macro${
+    annotationName[0]?.toUpperCase() ?? ''
+  }${annotationName.slice(1)} } from "${specifier}";\`, then write \`// #[macro${
+    annotationName[0]?.toUpperCase() ?? ''
+  }${annotationName.slice(1)}]\` at the annotation site.`;
 
   return {
     source: 'sound',
@@ -3076,8 +3086,7 @@ function createReservedAnnotationNameConflictDiagnostic(
       `\`${label}\` is reserved for the builtin directive, so the imported annotation macro from "${specifier}" must use an alias at this site.`,
       `Example: ${example}`,
     ],
-    hint:
-      'Alias the imported annotation macro and use that alias in the `// #[...]` annotation.',
+    hint: 'Alias the imported annotation macro and use that alias in the `// #[...]` annotation.',
     filePath: fileName,
     line: start.line,
     column: start.column,
@@ -3667,18 +3676,14 @@ export function createPreparedCompilerHost(
         sourceFileName,
         sourceText,
       );
-    const importedMacroSiteKindsSignature = declarationFile
-      ? ''
-      : stableStringify(
-        serializeImportedMacroSiteKindsBySpecifier(importedMacroSiteKinds),
-      );
-    const shouldPrepare = declarationFile
-      ? false
-      : shouldPrepareSourceFile(
-        sourceFileName,
-        sourceText,
-        importedMacroSiteKinds,
-      );
+    const importedMacroSiteKindsSignature = declarationFile ? '' : stableStringify(
+      serializeImportedMacroSiteKindsBySpecifier(importedMacroSiteKinds),
+    );
+    const shouldPrepare = declarationFile ? false : shouldPrepareSourceFile(
+      sourceFileName,
+      sourceText,
+      importedMacroSiteKinds,
+    );
     const cachedEntry = reusableState.preparedSourceFiles.get(sourceFileName);
     const prepared = cachedEntry?.sourceText === sourceText &&
         cachedEntry.expansionEnabled === expansionEnabled &&

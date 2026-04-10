@@ -399,7 +399,7 @@ function collectImportedMacroBindingsForFile(
     ts.ScriptTarget.Latest,
     true,
     originalFileName.endsWith('.sts') || originalFileName.endsWith('.tsx') ||
-        originalFileName.endsWith('.jsx')
+      originalFileName.endsWith('.jsx')
       ? ts.ScriptKind.TSX
       : originalFileName.endsWith('.js') || originalFileName.endsWith('.mjs') ||
           originalFileName.endsWith('.cjs')

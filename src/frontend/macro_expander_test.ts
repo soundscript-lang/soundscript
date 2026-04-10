@@ -3,18 +3,21 @@ import ts from 'typescript';
 
 import { installTestDisposableCleanup } from './builtin_expanded_program_test_cleanup.ts';
 import {
-  type ExpandMacroPlaceholder,
-  type MacroModule,
   buildMacroRegistryFromModules,
   createMacroRegistry,
   defineMacroModule,
-  expandPreparedProgramWithRegistry,
-  expandPreparedProgramWithModules,
-  expandMacroPlaceholdersWithRegistry,
+  type ExpandMacroPlaceholder,
   expandMacroPlaceholdersInSourceFile,
+  expandMacroPlaceholdersWithRegistry,
+  expandPreparedProgramWithModules,
+  expandPreparedProgramWithRegistry,
+  type MacroModule,
 } from './macro_expander.ts';
 import { collectResolvedMacroPlaceholders } from './macro_resolver.ts';
-import { createPreparedProgram as createPreparedProgramRaw, type ImportedMacroSiteKind } from './project_frontend.ts';
+import {
+  createPreparedProgram as createPreparedProgramRaw,
+  type ImportedMacroSiteKind,
+} from './project_frontend.ts';
 
 const trackDisposable = installTestDisposableCleanup();
 const createPreparedProgram = (...args: Parameters<typeof createPreparedProgramRaw>) =>
@@ -76,16 +79,22 @@ Deno.test('expandMacroPlaceholdersInSourceFile replaces expression placeholders 
     rootNames: [fileName],
   });
 
-  const sourceFile = preparedProgram.program.getSourceFile(preparedProgram.toProgramFileName(fileName));
+  const sourceFile = preparedProgram.program.getSourceFile(
+    preparedProgram.toProgramFileName(fileName),
+  );
   const collected = collectResolvedMacroPlaceholders(preparedProgram);
 
   assert(sourceFile);
-  const expanded = expandMacroPlaceholdersInSourceFile(sourceFile, collected, ((
-    resolved,
-  ) => ({
-    kind: 'expr',
-    node: ts.factory.createNumericLiteral(resolved.placeholder.id),
-  })) satisfies ExpandMacroPlaceholder);
+  const expanded = expandMacroPlaceholdersInSourceFile(
+    sourceFile,
+    collected,
+    ((
+      resolved,
+    ) => ({
+      kind: 'expr',
+      node: ts.factory.createNumericLiteral(resolved.placeholder.id),
+    })) satisfies ExpandMacroPlaceholder,
+  );
 
   assertEquals(printSourceFile(expanded), `${FOO_IMPORT}const value = 1;\n`);
 });
@@ -107,7 +116,9 @@ Deno.test('expandMacroPlaceholdersInSourceFile replaces statement placeholders w
     rootNames: [fileName],
   });
 
-  const sourceFile = preparedProgram.program.getSourceFile(preparedProgram.toProgramFileName(fileName));
+  const sourceFile = preparedProgram.program.getSourceFile(
+    preparedProgram.toProgramFileName(fileName),
+  );
   const collected = collectResolvedMacroPlaceholders(preparedProgram);
 
   assert(sourceFile);
@@ -161,7 +172,9 @@ Deno.test('expandMacroPlaceholdersInSourceFile splices multi-statement expansion
     rootNames: [fileName],
   });
 
-  const sourceFile = preparedProgram.program.getSourceFile(preparedProgram.toProgramFileName(fileName));
+  const sourceFile = preparedProgram.program.getSourceFile(
+    preparedProgram.toProgramFileName(fileName),
+  );
   const collected = collectResolvedMacroPlaceholders(preparedProgram);
 
   assert(sourceFile);
@@ -181,7 +194,10 @@ Deno.test('expandMacroPlaceholdersInSourceFile splices multi-statement expansion
   const preparedProgram = createPreparedProgram({
     baseHost: createBaseHost(
       new Map([
-        [fileName, `${FOO_IMPORT}if (ok) {\n  before();\n  Foo(() => { console.log("x"); });\n  after();\n}\n`],
+        [
+          fileName,
+          `${FOO_IMPORT}if (ok) {\n  before();\n  Foo(() => { console.log("x"); });\n  after();\n}\n`,
+        ],
       ]),
     ),
     importedMacroSiteKindsBySpecifier: TEST_MACRO_SITE_KINDS,
@@ -193,7 +209,9 @@ Deno.test('expandMacroPlaceholdersInSourceFile splices multi-statement expansion
     rootNames: [fileName],
   });
 
-  const sourceFile = preparedProgram.program.getSourceFile(preparedProgram.toProgramFileName(fileName));
+  const sourceFile = preparedProgram.program.getSourceFile(
+    preparedProgram.toProgramFileName(fileName),
+  );
   const collected = collectResolvedMacroPlaceholders(preparedProgram);
 
   assert(sourceFile);
@@ -231,7 +249,9 @@ Deno.test('expandMacroPlaceholdersInSourceFile splices statement macros inside s
     rootNames: [fileName],
   });
 
-  const sourceFile = preparedProgram.program.getSourceFile(preparedProgram.toProgramFileName(fileName));
+  const sourceFile = preparedProgram.program.getSourceFile(
+    preparedProgram.toProgramFileName(fileName),
+  );
   const collected = collectResolvedMacroPlaceholders(preparedProgram);
 
   assert(sourceFile);
@@ -266,7 +286,9 @@ Deno.test('expandMacroPlaceholdersInSourceFile rejects statement output for expr
     rootNames: [fileName],
   });
 
-  const sourceFile = preparedProgram.program.getSourceFile(preparedProgram.toProgramFileName(fileName));
+  const sourceFile = preparedProgram.program.getSourceFile(
+    preparedProgram.toProgramFileName(fileName),
+  );
   const collected = collectResolvedMacroPlaceholders(preparedProgram);
 
   assert(sourceFile);
@@ -280,9 +302,12 @@ Deno.test('expandMacroPlaceholdersInSourceFile rejects statement output for expr
     error = caught;
   }
 
-  assertEquals(error instanceof Error ? error.message : String(error), [
-    'Expression macro placeholder must expand to an expression node.',
-  ].join(''));
+  assertEquals(
+    error instanceof Error ? error.message : String(error),
+    [
+      'Expression macro placeholder must expand to an expression node.',
+    ].join(''),
+  );
 });
 
 Deno.test('expandMacroPlaceholdersInSourceFile rejects expression output for statement placeholders', () => {
@@ -302,7 +327,9 @@ Deno.test('expandMacroPlaceholdersInSourceFile rejects expression output for sta
     rootNames: [fileName],
   });
 
-  const sourceFile = preparedProgram.program.getSourceFile(preparedProgram.toProgramFileName(fileName));
+  const sourceFile = preparedProgram.program.getSourceFile(
+    preparedProgram.toProgramFileName(fileName),
+  );
   const collected = collectResolvedMacroPlaceholders(preparedProgram);
 
   assert(sourceFile);
@@ -316,9 +343,12 @@ Deno.test('expandMacroPlaceholdersInSourceFile rejects expression output for sta
     error = caught;
   }
 
-  assertEquals(error instanceof Error ? error.message : String(error), [
-    'Statement macro placeholder must expand to statement nodes.',
-  ].join(''));
+  assertEquals(
+    error instanceof Error ? error.message : String(error),
+    [
+      'Statement macro placeholder must expand to statement nodes.',
+    ].join(''),
+  );
 });
 
 Deno.test('expandMacroPlaceholdersInSourceFile strips macro helper declarations even when nothing resolves', () => {
@@ -359,16 +389,20 @@ Deno.test('expandMacroPlaceholdersWithRegistry dispatches expression placeholder
     },
     rootNames: [fileName],
   });
-  const sourceFile = preparedProgram.program.getSourceFile(preparedProgram.toProgramFileName(fileName));
+  const sourceFile = preparedProgram.program.getSourceFile(
+    preparedProgram.toProgramFileName(fileName),
+  );
   const collected = collectResolvedMacroPlaceholders(preparedProgram);
-  const registry = createMacroRegistry({
-    Foo(resolved: Parameters<ExpandMacroPlaceholder>[0]) {
-      return {
-        kind: 'expr',
-        node: ts.factory.createStringLiteral(resolved.placeholder.invocation.nameText),
-      };
-    },
-  } satisfies Record<string, ExpandMacroPlaceholder>);
+  const registry = createMacroRegistry(
+    {
+      Foo(resolved: Parameters<ExpandMacroPlaceholder>[0]) {
+        return {
+          kind: 'expr',
+          node: ts.factory.createStringLiteral(resolved.placeholder.invocation.nameText),
+        };
+      },
+    } satisfies Record<string, ExpandMacroPlaceholder>,
+  );
 
   assert(sourceFile);
   const expanded = expandMacroPlaceholdersWithRegistry(sourceFile, collected, registry);
@@ -392,16 +426,20 @@ Deno.test('expandMacroPlaceholdersWithRegistry dispatches statement placeholders
     },
     rootNames: [fileName],
   });
-  const sourceFile = preparedProgram.program.getSourceFile(preparedProgram.toProgramFileName(fileName));
+  const sourceFile = preparedProgram.program.getSourceFile(
+    preparedProgram.toProgramFileName(fileName),
+  );
   const collected = collectResolvedMacroPlaceholders(preparedProgram);
-  const registry = createMacroRegistry({
-    Bar() {
-      return {
-        kind: 'stmt',
-        nodes: [ts.factory.createExpressionStatement(ts.factory.createIdentifier('done'))],
-      };
-    },
-  } satisfies Record<string, ExpandMacroPlaceholder>);
+  const registry = createMacroRegistry(
+    {
+      Bar() {
+        return {
+          kind: 'stmt',
+          nodes: [ts.factory.createExpressionStatement(ts.factory.createIdentifier('done'))],
+        };
+      },
+    } satisfies Record<string, ExpandMacroPlaceholder>,
+  );
 
   assert(sourceFile);
   const expanded = expandMacroPlaceholdersWithRegistry(sourceFile, collected, registry);
@@ -425,7 +463,9 @@ Deno.test('expandMacroPlaceholdersWithRegistry throws for unresolved macro names
     },
     rootNames: [fileName],
   });
-  const sourceFile = preparedProgram.program.getSourceFile(preparedProgram.toProgramFileName(fileName));
+  const sourceFile = preparedProgram.program.getSourceFile(
+    preparedProgram.toProgramFileName(fileName),
+  );
   const collected = collectResolvedMacroPlaceholders(preparedProgram);
 
   assert(sourceFile);
@@ -436,9 +476,12 @@ Deno.test('expandMacroPlaceholdersWithRegistry throws for unresolved macro names
     error = caught;
   }
 
-  assertEquals(error instanceof Error ? error.message : String(error), [
-    'No macro expander registered for "Missing".',
-  ].join(''));
+  assertEquals(
+    error instanceof Error ? error.message : String(error),
+    [
+      'No macro expander registered for "Missing".',
+    ].join(''),
+  );
 });
 
 Deno.test('expandMacroPlaceholdersWithRegistry can preserve unresolved placeholders when requested', () => {
@@ -457,7 +500,9 @@ Deno.test('expandMacroPlaceholdersWithRegistry can preserve unresolved placehold
     },
     rootNames: [fileName],
   });
-  const sourceFile = preparedProgram.program.getSourceFile(preparedProgram.toProgramFileName(fileName));
+  const sourceFile = preparedProgram.program.getSourceFile(
+    preparedProgram.toProgramFileName(fileName),
+  );
   const collected = collectResolvedMacroPlaceholders(preparedProgram);
 
   assert(sourceFile);
@@ -472,28 +517,8 @@ Deno.test('expandMacroPlaceholdersWithRegistry can preserve unresolved placehold
 });
 
 Deno.test('buildMacroRegistryFromModules merges expanders across modules', () => {
-  const registry = buildMacroRegistryFromModules([
-    {
-      moduleName: 'alpha',
-      expanders: {
-        Foo: () => ({ kind: 'expr', node: ts.factory.createNumericLiteral(1) }),
-      },
-    },
-    {
-      moduleName: 'beta',
-      expanders: {
-        Bar: () => ({ kind: 'stmt', nodes: [] }),
-      },
-    },
-  ] satisfies readonly MacroModule[]);
-
-  assertEquals([...registry.keys()], ['Foo', 'Bar']);
-});
-
-Deno.test('buildMacroRegistryFromModules rejects duplicate macro names across modules', () => {
-  let error: unknown;
-  try {
-    buildMacroRegistryFromModules([
+  const registry = buildMacroRegistryFromModules(
+    [
       {
         moduleName: 'alpha',
         expanders: {
@@ -503,17 +528,44 @@ Deno.test('buildMacroRegistryFromModules rejects duplicate macro names across mo
       {
         moduleName: 'beta',
         expanders: {
-          Foo: () => ({ kind: 'expr', node: ts.factory.createNumericLiteral(2) }),
+          Bar: () => ({ kind: 'stmt', nodes: [] }),
         },
       },
-    ] satisfies readonly MacroModule[]);
+    ] satisfies readonly MacroModule[],
+  );
+
+  assertEquals([...registry.keys()], ['Foo', 'Bar']);
+});
+
+Deno.test('buildMacroRegistryFromModules rejects duplicate macro names across modules', () => {
+  let error: unknown;
+  try {
+    buildMacroRegistryFromModules(
+      [
+        {
+          moduleName: 'alpha',
+          expanders: {
+            Foo: () => ({ kind: 'expr', node: ts.factory.createNumericLiteral(1) }),
+          },
+        },
+        {
+          moduleName: 'beta',
+          expanders: {
+            Foo: () => ({ kind: 'expr', node: ts.factory.createNumericLiteral(2) }),
+          },
+        },
+      ] satisfies readonly MacroModule[],
+    );
   } catch (caught) {
     error = caught;
   }
 
-  assertEquals(error instanceof Error ? error.message : String(error), [
-    'Duplicate macro expander registration for "Foo" from module "beta".',
-  ].join(''));
+  assertEquals(
+    error instanceof Error ? error.message : String(error),
+    [
+      'Duplicate macro expander registration for "Foo" from module "beta".',
+    ].join(''),
+  );
 });
 
 Deno.test('expandPreparedProgramWithRegistry expands all prepared program source files', () => {
@@ -534,18 +586,20 @@ Deno.test('expandPreparedProgramWithRegistry expands all prepared program source
     },
     rootNames: [firstFile, secondFile],
   });
-  const registry = buildMacroRegistryFromModules([
-    {
-      moduleName: 'test',
-      expanders: {
-        Foo: () => ({ kind: 'expr', node: ts.factory.createNumericLiteral(7) }),
-        Bar: () => ({
-          kind: 'stmt',
-          nodes: [ts.factory.createExpressionStatement(ts.factory.createIdentifier('done'))],
-        }),
+  const registry = buildMacroRegistryFromModules(
+    [
+      {
+        moduleName: 'test',
+        expanders: {
+          Foo: () => ({ kind: 'expr', node: ts.factory.createNumericLiteral(7) }),
+          Bar: () => ({
+            kind: 'stmt',
+            nodes: [ts.factory.createExpressionStatement(ts.factory.createIdentifier('done'))],
+          }),
+        },
       },
-    },
-  ] satisfies readonly MacroModule[]);
+    ] satisfies readonly MacroModule[],
+  );
 
   const expanded = expandPreparedProgramWithRegistry(preparedProgram, registry);
 

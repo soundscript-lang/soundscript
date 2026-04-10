@@ -1,6 +1,6 @@
 import ts from 'typescript';
 
-import { createAnnotationLookup } from '../annotation_syntax.ts';
+import { createAnnotationLookup } from '../language/annotation_syntax.ts';
 import type { SourceSpan } from './macro_types.ts';
 
 export type MacroFactoryForm = 'call' | 'decl' | 'tag';
@@ -249,9 +249,7 @@ export function stripMacroFactoryAuthoringFromText(
         ]
         : []),
     ];
-    return `${stripped}\n/* soundscript:macros */\n${
-      placeholderStatements.join('\n')
-    }\n`;
+    return `${stripped}\n/* soundscript:macros */\n${placeholderStatements.join('\n')}\n`;
   }
 
   if (!originalWasModule) {

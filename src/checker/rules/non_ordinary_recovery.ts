@@ -611,7 +611,12 @@ function getFreshArrayMethodInputs(
     return undefined;
   }
 
-  const arrayLiteral = getArrayLiteralFromExpression(context, targetExpression, bindings, seenSymbols);
+  const arrayLiteral = getArrayLiteralFromExpression(
+    context,
+    targetExpression,
+    bindings,
+    seenSymbols,
+  );
   return arrayLiteral?.elements.filter((element): element is ts.Expression =>
     !ts.isOmittedExpression(element)
   );
@@ -2378,7 +2383,11 @@ export function populateFunctionLikeNonOrdinarySummaries<
       continue;
     }
 
-    const helperWrapperEntries = collectHelperWrapperEntries(context, functionLike, returnExpression);
+    const helperWrapperEntries = collectHelperWrapperEntries(
+      context,
+      functionLike,
+      returnExpression,
+    );
     if (!helperWrapperEntries || helperWrapperEntries.length === 0) {
       continue;
     }

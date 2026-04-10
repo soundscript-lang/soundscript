@@ -15,8 +15,9 @@ import {
 } from './project_frontend.ts';
 
 const trackDisposable = installTestDisposableCleanup();
-const createBuiltinExpandedProgram = (...args: Parameters<typeof createBuiltinExpandedProgramRaw>) =>
-  trackDisposable(createBuiltinExpandedProgramRaw(...args));
+const createBuiltinExpandedProgram = (
+  ...args: Parameters<typeof createBuiltinExpandedProgramRaw>
+) => trackDisposable(createBuiltinExpandedProgramRaw(...args));
 const createPreparedCompilerHost = (...args: Parameters<typeof createPreparedCompilerHostRaw>) =>
   trackDisposable(createPreparedCompilerHostRaw(...args));
 const createPreparedProgram = (...args: Parameters<typeof createPreparedProgramRaw>) =>
@@ -433,7 +434,10 @@ Deno.test('emitProjectedDeclarations preserves bundled plain numeric API referen
   ).get(entryFile);
 
   assert(projectedDeclarationText);
-  assertStringIncludes(projectedDeclarationText, 'export declare const round: (x: number) => number;');
+  assertStringIncludes(
+    projectedDeclarationText,
+    'export declare const round: (x: number) => number;',
+  );
   assertStringIncludes(
     projectedDeclarationText,
     'export declare const parseFloatRef: (string: string) => number;',
@@ -476,10 +480,16 @@ Deno.test('emitProjectedDeclarations preserves bundled Date numeric API referenc
   ).get(entryFile);
 
   assert(projectedDeclarationText);
-    assertStringIncludes(projectedDeclarationText, 'export declare const now: () => number;');
-  assertStringIncludes(projectedDeclarationText, 'export declare const parse: (s: string) => number;');
+  assertStringIncludes(projectedDeclarationText, 'export declare const now: () => number;');
+  assertStringIncludes(
+    projectedDeclarationText,
+    'export declare const parse: (s: string) => number;',
+  );
   assertStringIncludes(projectedDeclarationText, 'export declare const getTime: () => number;');
-  assertStringIncludes(projectedDeclarationText, 'export declare const setTime: (time: number) => number;');
+  assertStringIncludes(
+    projectedDeclarationText,
+    'export declare const setTime: (time: number) => number;',
+  );
 });
 
 Deno.test('emitProjectedDeclarations preserves bundled String Array and RegExp numeric API references as number', () => {
@@ -516,13 +526,22 @@ Deno.test('emitProjectedDeclarations preserves bundled String Array and RegExp n
   ).get(entryFile);
 
   assert(projectedDeclarationText);
-    assertStringIncludes(projectedDeclarationText, 'export declare const charCodeAt: (index: number) => number;');
+  assertStringIncludes(
+    projectedDeclarationText,
+    'export declare const charCodeAt: (index: number) => number;',
+  );
   assertStringIncludes(
     projectedDeclarationText,
     'export declare const stringIndexOf: (searchString: string, position?: number) => number;',
   );
-  assertStringIncludes(projectedDeclarationText, 'export declare function arrayIndex(values: string[]): number;');
-  assertStringIncludes(projectedDeclarationText, 'export declare function regexLastIndex(re: RegExp): number;');
+  assertStringIncludes(
+    projectedDeclarationText,
+    'export declare function arrayIndex(values: string[]): number;',
+  );
+  assertStringIncludes(
+    projectedDeclarationText,
+    'export declare function regexLastIndex(re: RegExp): number;',
+  );
 });
 
 Deno.test('emitProjectedDeclarations preserves bundled ArrayBuffer and DataView numeric API references as number', () => {
@@ -562,8 +581,14 @@ Deno.test('emitProjectedDeclarations preserves bundled ArrayBuffer and DataView 
     projectedDeclarationText,
     'export declare const bufferSlice: (begin?: number, end?: number) => ArrayBuffer;',
   );
-  assertStringIncludes(projectedDeclarationText, 'export declare function viewByteOffset(view: DataView): number;');
-  assertStringIncludes(projectedDeclarationText, 'export declare const getUint8: (byteOffset: number) => number;');
+  assertStringIncludes(
+    projectedDeclarationText,
+    'export declare function viewByteOffset(view: DataView): number;',
+  );
+  assertStringIncludes(
+    projectedDeclarationText,
+    'export declare const getUint8: (byteOffset: number) => number;',
+  );
 });
 
 Deno.test('emitProjectedDeclarations preserves bundled typed array plain numeric API references as number', () => {
@@ -820,7 +845,7 @@ Deno.test('emitProjectedDeclarations preserves bundled DOM binary and media nume
   ).get(entryFile);
 
   assert(projectedDeclarationText);
-    assertStringIncludes(
+  assertStringIncludes(
     projectedDeclarationText,
     'export declare function audioDuration(buffer: AudioBuffer): number;',
   );
@@ -884,7 +909,7 @@ Deno.test('emitProjectedDeclarations preserves bundled DOM timestamp numeric API
   ).get(entryFile);
 
   assert(projectedDeclarationText);
-    assertStringIncludes(
+  assertStringIncludes(
     projectedDeclarationText,
     'export declare function now(performance: Performance): number;',
   );
@@ -994,7 +1019,7 @@ Deno.test('emitProjectedDeclarations preserves bundled DOM numeric alias unions 
   ).get(entryFile);
 
   assert(projectedDeclarationText);
-    assertStringIncludes(
+  assertStringIncludes(
     projectedDeclarationText,
     'export declare function animationCurrentTime(animation: Animation): CSSNumberish;',
   );
@@ -1055,7 +1080,7 @@ Deno.test('emitProjectedDeclarations preserves bundled viewport and stream sizin
   ).get(entryFile);
 
   assert(projectedDeclarationText);
-    assertStringIncludes(
+  assertStringIncludes(
     projectedDeclarationText,
     'export declare function viewportScale(viewport: VisualViewport): number;',
   );
@@ -1123,7 +1148,7 @@ Deno.test('emitProjectedDeclarations preserves bundled geometry and text measure
   ).get(entryFile);
 
   assert(projectedDeclarationText);
-    assertStringIncludes(
+  assertStringIncludes(
     projectedDeclarationText,
     'export declare function pointX(point: DOMPointReadOnly): number;',
   );
@@ -1196,7 +1221,7 @@ Deno.test('emitProjectedDeclarations preserves bundled canvas image and video si
   ).get(entryFile);
 
   assert(projectedDeclarationText);
-    assertStringIncludes(
+  assertStringIncludes(
     projectedDeclarationText,
     'export declare function bitmapWidth(bitmap: ImageBitmap): number;',
   );
@@ -1285,7 +1310,7 @@ Deno.test('emitProjectedDeclarations preserves bundled audio timing and canvas i
   ).get(entryFile);
 
   assert(projectedDeclarationText);
-    assertStringIncludes(
+  assertStringIncludes(
     projectedDeclarationText,
     'export declare function contextCurrentTime(context: BaseAudioContext): number;',
   );
@@ -1369,7 +1394,10 @@ Deno.test('machine numerics only apply JS coercer lowering for JS-target expansi
   assertStringIncludes(jsSourceFile.text, 'const inferred = 1 + 2;');
   assertStringIncludes(wasmSourceFile.text, 'const inferred = 1 + 2;');
   assertStringIncludes(jsSourceFile.text, 'void (__numericBinary("+", U8(1), U8(2)));');
-  assertStringIncludes(wasmSourceFile.text, '__numericWasmLeaf<u8>(__numericBinary("+", U8(1), U8(2)))');
+  assertStringIncludes(
+    wasmSourceFile.text,
+    '__numericWasmLeaf<u8>(__numericBinary("+", U8(1), U8(2)))',
+  );
   assertEquals(jsSourceFile.text.includes('void (U8(1) + U8(2));'), false);
   assertEquals(wasmSourceFile.text.includes('void (U8(1) + U8(2));'), false);
 });
@@ -1541,13 +1569,13 @@ Deno.test('machine numerics reject arithmetic on abstract numeric families until
       new Map([
         [
           entryFile,
-        [
+          [
             "import * as Num from 'sts:numerics';",
             'declare const a: Numeric;',
             'declare const b: Numeric;',
             'const direct = a + b;',
             'if (Num.isInt(a) && Num.isInt(b)) {',
-              '  const guarded = a + b;',
+            '  const guarded = a + b;',
             '}',
             '',
           ].join('\n'),
@@ -1694,12 +1722,12 @@ Deno.test('machine numerics reject unary plus on abstract numeric families until
       new Map([
         [
           entryFile,
-        [
+          [
             "import * as Num from 'sts:numerics';",
             'declare let value: Numeric;',
             'const direct = +value;',
             'if (Num.isInt(value)) {',
-              '  const guarded = +value;',
+            '  const guarded = +value;',
             '}',
             '',
           ].join('\n'),
@@ -1737,7 +1765,7 @@ Deno.test('machine numerics reject remaining unary and update operators on abstr
       new Map([
         [
           entryFile,
-        [
+          [
             "import * as Num from 'sts:numerics';",
             'declare let value: Numeric;',
             'const negated = -value;',
@@ -1745,10 +1773,10 @@ Deno.test('machine numerics reject remaining unary and update operators on abstr
             '++value;',
             'value--;',
             'if (Num.isInt(value)) {',
-              '  const guardedNegated = -value;',
-              '  const guardedInverted = ~value;',
-              '  ++value;',
-              '  value--;',
+            '  const guardedNegated = -value;',
+            '  const guardedInverted = ~value;',
+            '  ++value;',
+            '  value--;',
             '}',
             "if (typeof value === 'number') {",
             '  const hostNarrowed = value;',
@@ -1996,7 +2024,10 @@ Deno.test('emitProjectedDeclarations preserves authored bigint surfaces without 
   const builtinExpanded = createBuiltinExpandedProgram({
     baseHost: createBaseHost(
       new Map([
-        [sourceFile, 'export function add(left: bigint, right: bigint): bigint { return left + right; }\n'],
+        [
+          sourceFile,
+          'export function add(left: bigint, right: bigint): bigint { return left + right; }\n',
+        ],
       ]),
       { soundStdlib: true },
     ),
@@ -2511,9 +2542,9 @@ Deno.test('sts:numerics and sts:json expose explicit machine helper surfaces', (
   };
   const host = createBaseHost(
     new Map([
+      [
+        entryFile,
         [
-          entryFile,
-          [
           "import { F64, U8, binarySearchAs, clampAs, eqAs, hashEqAs, maxAs, minAs, orderAs } from 'sts:numerics';",
           "import { parseJson, stringifyJson, type MachineJsonLikeValue } from 'sts:json';",
           "import { isOk } from 'sts:result';",

@@ -1224,46 +1224,48 @@ Deno.test('vendored sound stdlib audio timing and canvas image-data declarations
 Deno.test(
   'resolveOverrideDirectory falls back to the repository bundled lib directory next to the compiled binary',
   async () => {
-  const tempDirectory = await Deno.makeTempDir({ prefix: 'sound-stdlib-dir-' });
-  const runtimeDirectory = join(tempDirectory, 'runtime', 'src', 'bundled');
-  const binaryDirectory = join(tempDirectory, 'repo', 'bin');
-  const bundledLibDirectory = join(tempDirectory, 'repo', 'src', 'bundled', 'typescript', 'lib');
+    const tempDirectory = await Deno.makeTempDir({ prefix: 'sound-stdlib-dir-' });
+    const runtimeDirectory = join(tempDirectory, 'runtime', 'src', 'bundled');
+    const binaryDirectory = join(tempDirectory, 'repo', 'bin');
+    const bundledLibDirectory = join(tempDirectory, 'repo', 'src', 'bundled', 'typescript', 'lib');
 
-  Deno.mkdirSync(runtimeDirectory, { recursive: true });
-  Deno.mkdirSync(binaryDirectory, { recursive: true });
-  Deno.mkdirSync(bundledLibDirectory, { recursive: true });
+    Deno.mkdirSync(runtimeDirectory, { recursive: true });
+    Deno.mkdirSync(binaryDirectory, { recursive: true });
+    Deno.mkdirSync(bundledLibDirectory, { recursive: true });
 
-  const resolved = resolveOverrideDirectory({
-    importMetaUrl: `file://${join(runtimeDirectory, 'sound_stdlib.ts')}`,
-    execPath: join(binaryDirectory, 'soundscript'),
-  });
+    const resolved = resolveOverrideDirectory({
+      importMetaUrl: `file://${join(runtimeDirectory, 'sound_stdlib.ts')}`,
+      execPath: join(binaryDirectory, 'soundscript'),
+    });
 
-  assertEquals(resolved, bundledLibDirectory);
-});
+    assertEquals(resolved, bundledLibDirectory);
+  },
+);
 
 Deno.test(
   'resolveBundledTypesDirectory falls back to the repository bundled types directory next to the compiled binary',
   async () => {
-  const tempDirectory = await Deno.makeTempDir({ prefix: 'sound-bundled-types-dir-' });
-  const runtimeDirectory = join(tempDirectory, 'runtime', 'src', 'bundled');
-  const binaryDirectory = join(tempDirectory, 'repo', 'bin');
-  const bundledTypesDirectory = join(
-    tempDirectory,
-    'repo',
-    'src',
-    'bundled',
-    'typescript',
-    'types',
-  );
+    const tempDirectory = await Deno.makeTempDir({ prefix: 'sound-bundled-types-dir-' });
+    const runtimeDirectory = join(tempDirectory, 'runtime', 'src', 'bundled');
+    const binaryDirectory = join(tempDirectory, 'repo', 'bin');
+    const bundledTypesDirectory = join(
+      tempDirectory,
+      'repo',
+      'src',
+      'bundled',
+      'typescript',
+      'types',
+    );
 
-  Deno.mkdirSync(runtimeDirectory, { recursive: true });
-  Deno.mkdirSync(binaryDirectory, { recursive: true });
-  Deno.mkdirSync(bundledTypesDirectory, { recursive: true });
+    Deno.mkdirSync(runtimeDirectory, { recursive: true });
+    Deno.mkdirSync(binaryDirectory, { recursive: true });
+    Deno.mkdirSync(bundledTypesDirectory, { recursive: true });
 
-  const resolved = resolveBundledTypesDirectory({
-    importMetaUrl: `file://${join(runtimeDirectory, 'sound_stdlib.ts')}`,
-    execPath: join(binaryDirectory, 'soundscript'),
-  });
+    const resolved = resolveBundledTypesDirectory({
+      importMetaUrl: `file://${join(runtimeDirectory, 'sound_stdlib.ts')}`,
+      execPath: join(binaryDirectory, 'soundscript'),
+    });
 
-  assertEquals(resolved, bundledTypesDirectory);
-});
+    assertEquals(resolved, bundledTypesDirectory);
+  },
+);

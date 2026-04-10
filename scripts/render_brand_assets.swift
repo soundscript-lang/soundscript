@@ -256,8 +256,6 @@ let outputs: [(String, NSImage)] = [
   ("media/brand/wordmark-dark.png", renderWordmark(soundColor: palette.lightWord)),
   ("media/brand/wordmark-light.png", renderWordmark(soundColor: palette.darkWord)),
   ("media/brand/icon-vscode.png", renderIcon(size: NSSize(width: 512, height: 512), showBadge: false)),
-  ("logo.png", renderFullLogo(size: NSSize(width: 1800, height: 480), background: palette.darkBackground, soundColor: palette.lightWord)),
-  ("icon.png", renderIcon(size: NSSize(width: 512, height: 512), showBadge: true)),
 ]
 
 for (relativePath, image) in outputs {

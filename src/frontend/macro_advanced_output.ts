@@ -4,8 +4,7 @@ interface AdvancedMacroOutputBase {
   readonly [ADVANCED_MACRO_OUTPUT_BRAND]: true;
 }
 
-export type AdvancedMacroPlacementKind =
-  | 'statement-region';
+export type AdvancedMacroPlacementKind = 'statement-region';
 
 export interface AdvancedValueRewriteOutput extends AdvancedMacroOutputBase {
   readonly kind: 'value_rewrite';

@@ -37,8 +37,9 @@ function buildSqlQuery(
   };
 }
 
-const sqlTag = ((strings: TemplateStringsArray, ...values: readonly unknown[]) =>
-  buildSqlQuery(strings, values)) as SqlTag;
+const sqlTag =
+  ((strings: TemplateStringsArray, ...values: readonly unknown[]) =>
+    buildSqlQuery(strings, values)) as SqlTag;
 
 sqlTag.ident = (name: string): SqlIdentifier => ({
   __sqlKind: 'identifier',

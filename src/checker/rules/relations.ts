@@ -1,6 +1,6 @@
 import ts from 'typescript';
 
-import type { ParsedAnnotationArgument } from '../../annotation_syntax.ts';
+import type { ParsedAnnotationArgument } from '../../language/annotation_syntax.ts';
 import { SOUND_DIAGNOSTIC_CODES, SOUND_DIAGNOSTIC_MESSAGES } from '../engine/diagnostic_codes.ts';
 import type { AnalysisContext, ExportedNonOrdinaryFamily, ExportSummary } from '../engine/types.ts';
 import { getNodeDiagnosticRange, type SoundDiagnostic } from '../diagnostics.ts';
@@ -274,7 +274,7 @@ function createModeledBuiltinExoticObjectWideningMismatch(
       rule: 'modeled_exotic_object_widening',
       fixability: 'local_rewrite',
       invariant:
-        "Plain `object` erases the explicit typed-array or DataView family that soundscript tracks as non-ordinary.",
+        'Plain `object` erases the explicit typed-array or DataView family that soundscript tracks as non-ordinary.',
       replacementFamily: 'exact_nonordinary_type',
       evidence: [
         createVarianceEvidence('sourceType', context.checker.typeToString(sourceType)),
@@ -348,7 +348,9 @@ function createCallableEffectContractMismatch(
       ? 'Callable effect contracts are covariant in soundscript.'
       : 'Higher-order callback effect contracts are contravariant in soundscript.',
     metadata: {
-      rule: relation === 'outer' ? 'callable_effect_covariance' : 'callable_effect_parameter_contravariance',
+      rule: relation === 'outer'
+        ? 'callable_effect_covariance'
+        : 'callable_effect_parameter_contravariance',
       fixability: 'local_rewrite',
       invariant: relation === 'outer'
         ? 'A callable assigned to an effect-forbidding surface must itself stay within that forbidden-effect contract.'
@@ -362,14 +364,18 @@ function createCallableEffectContractMismatch(
       ],
       counterexample: relation === 'outer'
         ? `Code typed as '${targetTypeText}' could rely on forbidding ${forbiddenText}, but '${sourceTypeText}' may still perform them.`
-        : `Code typed as '${targetTypeText}' could pass a callback accepted by the target surface, but '${sourceTypeText}' demands a stricter forbid contract${parameterName ? ` on '${parameterName}'` : ''}.`,
+        : `Code typed as '${targetTypeText}' could pass a callback accepted by the target surface, but '${sourceTypeText}' demands a stricter forbid contract${
+          parameterName ? ` on '${parameterName}'` : ''
+        }.`,
     },
     notes: relation === 'outer'
       ? [
         `'${sourceTypeText}' cannot be widened to '${targetTypeText}' because the target callable surface forbids ${forbiddenText}.`,
       ]
       : [
-        `'${sourceTypeText}' cannot be widened to '${targetTypeText}' because it requires a stricter callback forbid contract${parameterName ? ` on '${parameterName}'` : ''}.`,
+        `'${sourceTypeText}' cannot be widened to '${targetTypeText}' because it requires a stricter callback forbid contract${
+          parameterName ? ` on '${parameterName}'` : ''
+        }.`,
       ],
     hint:
       'Align the callable effect contracts, or insert an adapter that enforces the stronger contract explicitly.',
@@ -2588,11 +2594,13 @@ function classifyUnsoundWritableIndexSignatureRelation(
     const { keyType, getWritableType } of [
       {
         keyType: 'string',
-        getWritableType: (type: ts.Type) => getWritableIndexType(context, type, ts.IndexKind.String),
+        getWritableType: (type: ts.Type) =>
+          getWritableIndexType(context, type, ts.IndexKind.String),
       },
       {
         keyType: 'number',
-        getWritableType: (type: ts.Type) => getWritableIndexType(context, type, ts.IndexKind.Number),
+        getWritableType: (type: ts.Type) =>
+          getWritableIndexType(context, type, ts.IndexKind.Number),
       },
       {
         keyType: 'symbol',
@@ -3097,12 +3105,17 @@ function formatVarianceAnnotationContract(
   return `// #[variance(${entries.join(', ')})]`;
 }
 
-function formatTotalInvariantVarianceContract(parameterNames: readonly string[]): string | undefined {
+function formatTotalInvariantVarianceContract(
+  parameterNames: readonly string[],
+): string | undefined {
   if (parameterNames.length === 0) {
     return undefined;
   }
 
-  return formatVarianceAnnotationContract(parameterNames, parameterNames.map(() => 'invariant' as const));
+  return formatVarianceAnnotationContract(
+    parameterNames,
+    parameterNames.map(() => 'invariant' as const),
+  );
 }
 
 function describeVarianceRewriteGuidance(
@@ -5999,9 +6012,7 @@ function createNominalClassRelationMismatch(
   const targetNames = targetIdentitySet.identities.map((identity) => identity.symbol.getName());
   const classRequirement = targetIdentitySet.mode === 'union'
     ? `one of the declared class branches (${targetNames.join(', ')})`
-    : `the declared class '${
-      targetNames[0] ?? targetTypeText
-    }' or an explicit subclass relation`;
+    : `the declared class '${targetNames[0] ?? targetTypeText}' or an explicit subclass relation`;
   return {
     kind: 'nominalClassRelation',
     message: 'Class instance types are nominal in soundscript.',
@@ -6022,8 +6033,11 @@ function createNominalClassRelationMismatch(
             : targetNames[0] ?? targetTypeText,
         ),
       ],
-      counterexample:
-        `A value with the public shape of '${targetNames[0] ?? targetTypeText}' is still not a real '${targetNames[0] ?? targetTypeText}' instance unless it carries the target class identity or subclass relation.`,
+      counterexample: `A value with the public shape of '${
+        targetNames[0] ?? targetTypeText
+      }' is still not a real '${
+        targetNames[0] ?? targetTypeText
+      }' instance unless it carries the target class identity or subclass relation.`,
       example:
         'Project to a structural interface or type alias when you only need the public shape.',
     },
@@ -6067,8 +6081,9 @@ function createNominalNewtypeRelationMismatch(
             : targetNames[0] ?? targetTypeText,
         ),
       ],
-      counterexample:
-        `A value with the underlying representation of '${targetNames[0] ?? targetTypeText}' still does not prove the nominal newtype identity outside the declaring module.`,
+      counterexample: `A value with the underlying representation of '${
+        targetNames[0] ?? targetTypeText
+      }' still does not prove the nominal newtype identity outside the declaring module.`,
       example:
         'Construct or unwrap the newtype inside its declaring module, or intentionally project to the underlying representation.',
     },
@@ -6524,10 +6539,12 @@ function getCanonicalResultClassFamilyForGenericRelationInfo(
   info: GenericRelationTypeInfo,
 ): CanonicalResultClassFamily | undefined {
   const declarations = info.symbol.getDeclarations() ?? [];
-  if (!declarations.some((declaration) =>
-    isTrustedSoundLibSourceFile(declaration.getSourceFile()) &&
-    isTrustedResultStdlibSourceFileName(declaration.getSourceFile().fileName)
-  )) {
+  if (
+    !declarations.some((declaration) =>
+      isTrustedSoundLibSourceFile(declaration.getSourceFile()) &&
+      isTrustedResultStdlibSourceFileName(declaration.getSourceFile().fileName)
+    )
+  ) {
     return undefined;
   }
 
@@ -6538,10 +6555,12 @@ function getCanonicalResultClassFamilyForIdentity(
   identity: GenericClassIdentity,
 ): CanonicalResultClassFamily | undefined {
   const declarations = identity.symbol.getDeclarations() ?? [];
-  if (!declarations.some((declaration) =>
-    isTrustedSoundLibSourceFile(declaration.getSourceFile()) &&
-    isTrustedResultStdlibSourceFileName(declaration.getSourceFile().fileName)
-  )) {
+  if (
+    !declarations.some((declaration) =>
+      isTrustedSoundLibSourceFile(declaration.getSourceFile()) &&
+      isTrustedResultStdlibSourceFileName(declaration.getSourceFile().fileName)
+    )
+  ) {
     return undefined;
   }
 
@@ -7277,14 +7296,14 @@ function analyzeRecursiveGenericRelation(
     : undefined;
   const targetAliasPolicyMismatch = targetInfo.kind === 'alias'
     ? sourceInfo
-    ? classifyGenericAliasPolicyFallbackMismatch(
-      context,
-      targetAliasPolicy,
-      sourceType,
-      targetType,
-      targetInfo.name,
-    )
-    : undefined
+      ? classifyGenericAliasPolicyFallbackMismatch(
+        context,
+        targetAliasPolicy,
+        sourceType,
+        targetType,
+        targetInfo.name,
+      )
+      : undefined
     : undefined;
   if (targetAliasPolicyMismatch) {
     return {
@@ -7713,7 +7732,6 @@ function classifyUnsoundTypeNodeGenericAliasRelation(
         visitedPairs,
       );
     }
-
   }
 
   const expandedTargetTypeNode = expandOrdinaryRelationCarrierTypeNode(context, targetTypeNode);
@@ -9704,7 +9722,10 @@ function canSkipWholeLiteralRelationExpression(
     return canSkipWholeObjectLiteralRelation(context, expression, targetType);
   }
 
-  if (ts.isBinaryExpression(expression) && canSkipNullishCoalescingRelation(context, expression, targetType)) {
+  if (
+    ts.isBinaryExpression(expression) &&
+    canSkipNullishCoalescingRelation(context, expression, targetType)
+  ) {
     return true;
   }
 
@@ -9763,9 +9784,7 @@ function getObjectLiteralRelationPropertyInfo(
 } | undefined {
   if (ts.isPropertyAssignment(property)) {
     const propertyName = getPropertyNameText(property.name);
-    return propertyName
-      ? { propertyExpression: property.initializer, propertyName }
-      : undefined;
+    return propertyName ? { propertyExpression: property.initializer, propertyName } : undefined;
   }
 
   if (ts.isShorthandPropertyAssignment(property)) {

@@ -814,10 +814,10 @@ function buildSharedExprOperandFileSource(
 
     const operandText = preparedFile.originalText.slice(exprSpan.start, exprSpan.end);
     replacements.push({
-        id: replacement.id,
-        end: mapStageOnePositionToProgram(preparedFile, replacement.rewrittenSpan.end),
-        operandText,
-        start: mapStageOnePositionToProgram(preparedFile, replacement.rewrittenSpan.start),
+      id: replacement.id,
+      end: mapStageOnePositionToProgram(preparedFile, replacement.rewrittenSpan.end),
+      operandText,
+      start: mapStageOnePositionToProgram(preparedFile, replacement.rewrittenSpan.start),
     });
   }
   replacements.sort((left, right) => left.start - right.start);
@@ -1576,9 +1576,7 @@ export function resolveExprArgumentOperand(
     ? preparedFile.rewrittenText.slice(0, statementStart) + insertedPrelude +
       preparedFile.rewrittenText.slice(statementStart)
     : preparedFile.rewrittenText;
-  const replacementOffset = statementStart <= programReplacementStart
-    ? insertedPrelude.length
-    : 0;
+  const replacementOffset = statementStart <= programReplacementStart ? insertedPrelude.length : 0;
   const patchedExpressionStart = programReplacementStart + replacementOffset;
   const patchedText = replaceRange(
     preludeAdjustedText,

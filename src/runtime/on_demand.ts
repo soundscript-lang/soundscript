@@ -5,11 +5,11 @@ import {
   collectSoundscriptRootNames,
   getConfigFileParsingDiagnostics,
   loadConfig,
-} from '../config.ts';
+} from '../project/config.ts';
 import { dirname, join } from '../platform/path.ts';
 import { createBuiltinExpandedProgram } from '../frontend/builtin_macro_support.ts';
 import { isSoundscriptSourceFile, toSourceFileName } from '../frontend/project_frontend.ts';
-import { resolveSoundScriptAwareModule } from '../soundscript_packages.ts';
+import { resolveSoundScriptAwareModule } from '../project/soundscript_packages.ts';
 import { type RuntimeTransformArtifact, transpileTypeScriptModuleToEsm } from './transform.ts';
 
 const PROJECT_CONFIG_CANDIDATES = ['tsconfig.soundscript.json', 'tsconfig.json'] as const;

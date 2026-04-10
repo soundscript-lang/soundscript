@@ -90,7 +90,10 @@ Deno.test('createExpandMacroPlaceholderFromDefinition lowers emitted expressions
 
 Deno.test('createExpandMacroPlaceholderFromDefinition lowers emitted statement lists', () => {
   const resolved = createResolvedPlaceholder('Foo(() => { body(); });\n');
-  const expand = createExpandMacroPlaceholderFromDefinition(stmtsMacro('first(); second();'), 'Foo');
+  const expand = createExpandMacroPlaceholderFromDefinition(
+    stmtsMacro('first(); second();'),
+    'Foo',
+  );
 
   const expansion = expand(resolved);
   assert(expansion);
@@ -109,22 +112,28 @@ Deno.test('createExpandMacroPlaceholderFromDefinition lowers emitted statement l
 });
 
 Deno.test('createExpandMacroPlaceholderFromDefinition lowers scope-exit outputs', () => {
-  const resolved = createResolvedPlaceholder('function run() { Foo(() => { body(); }); work(); }\n');
-  const expand = createExpandMacroPlaceholderFromDefinition({
-    expand(ctx) {
-      return ctx.controlFlow.deferCleanup(ctx.quote.stmts`cleanup(); after();`);
+  const resolved = createResolvedPlaceholder(
+    'function run() { Foo(() => { body(); }); work(); }\n',
+  );
+  const expand = createExpandMacroPlaceholderFromDefinition(
+    {
+      expand(ctx) {
+        return ctx.controlFlow.deferCleanup(ctx.quote.stmts`cleanup(); after();`);
+      },
     },
-  }, 'Foo', createPreparedProgramForMacroTest({
-    '/virtual/index.sts': [
-      "import { Foo } from 'macros/test';",
-      'function run() { Foo(() => { body(); }); work(); }',
-      '',
-    ].join('\n'),
-  }, {
-    importedMacroSiteKindsBySpecifier: new Map([
-      ['macros/test', new Map([['Foo', 'call' as const]])],
-    ]),
-  }));
+    'Foo',
+    createPreparedProgramForMacroTest({
+      '/virtual/index.sts': [
+        "import { Foo } from 'macros/test';",
+        'function run() { Foo(() => { body(); }); work(); }',
+        '',
+      ].join('\n'),
+    }, {
+      importedMacroSiteKindsBySpecifier: new Map([
+        ['macros/test', new Map([['Foo', 'call' as const]])],
+      ]),
+    }),
+  );
 
   const expansion = expand(resolved);
   assert(expansion);
@@ -294,7 +303,9 @@ Deno.test('createExpandMacroPlaceholderFromDefinition rejects malformed expressi
   const exprResolved = createResolvedPlaceholder('const value = Foo(bar);\n');
   let error: unknown;
   try {
-    createExpandMacroPlaceholderFromDefinition(exprMacro('1); sideEffect(); (2'), 'Foo')(exprResolved);
+    createExpandMacroPlaceholderFromDefinition(exprMacro('1); sideEffect(); (2'), 'Foo')(
+      exprResolved,
+    );
   } catch (caught) {
     error = caught;
   }
@@ -307,7 +318,9 @@ Deno.test('createExpandMacroPlaceholderFromDefinition rejects malformed expressi
   const stmtResolved = createResolvedPlaceholder('Foo(() => { body(); });\n');
   error = undefined;
   try {
-    createExpandMacroPlaceholderFromDefinition(stmtMacro('first(); second();'), 'Foo')(stmtResolved);
+    createExpandMacroPlaceholderFromDefinition(stmtMacro('first(); second();'), 'Foo')(
+      stmtResolved,
+    );
   } catch (caught) {
     error = caught;
   }

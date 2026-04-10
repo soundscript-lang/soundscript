@@ -554,8 +554,7 @@ function createJsHostImports(
         };
         switch (kind) {
           case 'has':
-            return (value: unknown) =>
-              Number(Reflect.has(expectObjectRecord(value), propertyName));
+            return (value: unknown) => Number(Reflect.has(expectObjectRecord(value), propertyName));
           case 'get_number':
             return (value: unknown) => Number(expectObjectRecord(value)[propertyName]);
           case 'get_boolean':
@@ -594,7 +593,10 @@ function createJsHostImports(
               ) {
                 return;
               }
-              if (Reflect.has(objectRecord, propertyName) && Object.is(objectRecord[propertyName], nextValue)) {
+              if (
+                Reflect.has(objectRecord, propertyName) &&
+                Object.is(objectRecord[propertyName], nextValue)
+              ) {
                 return;
               }
               objectRecord[propertyName] = nextValue;

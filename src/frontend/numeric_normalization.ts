@@ -205,9 +205,7 @@ function getSortMethodNameFromSignatureDeclaration(
     return undefined;
   }
 
-  return memberName === 'sort' || memberName === 'toSorted'
-    ? memberName
-    : undefined;
+  return memberName === 'sort' || memberName === 'toSorted' ? memberName : undefined;
 }
 
 function getSortMethodNameFromCallExpressionType(
@@ -783,9 +781,9 @@ function getExplicitLeafNameForBindingElement(node: ts.BindingElement): string |
   }
 
   const patternType = (
-    ts.isVariableDeclaration(parentPattern.parent) ||
+      ts.isVariableDeclaration(parentPattern.parent) ||
       ts.isParameter(parentPattern.parent)
-  )
+    )
     ? parentPattern.parent.type
     : undefined;
 
@@ -870,9 +868,11 @@ function literalFitsLeaf(literal: ParsedLiteral, leaf: string): boolean {
     case 'f32':
       return literal.kind === 'number';
     case 'i8':
-      return literal.kind === 'number' && Number.isInteger(literal.value) && literal.value >= -128 && literal.value <= 127;
+      return literal.kind === 'number' && Number.isInteger(literal.value) &&
+        literal.value >= -128 && literal.value <= 127;
     case 'i16':
-      return literal.kind === 'number' && Number.isInteger(literal.value) && literal.value >= -32768 && literal.value <= 32767;
+      return literal.kind === 'number' && Number.isInteger(literal.value) &&
+        literal.value >= -32768 && literal.value <= 32767;
     case 'i32':
       return literal.kind === 'number' && Number.isInteger(literal.value) &&
         literal.value >= -2147483648 && literal.value <= 2147483647;
@@ -883,11 +883,14 @@ function literalFitsLeaf(literal: ParsedLiteral, leaf: string): boolean {
       return literal.kind === 'number' && Number.isInteger(literal.value) &&
         BigInt.asIntN(64, BigInt(literal.value)) === BigInt(literal.value);
     case 'u8':
-      return literal.kind === 'number' && Number.isInteger(literal.value) && literal.value >= 0 && literal.value <= 255;
+      return literal.kind === 'number' && Number.isInteger(literal.value) && literal.value >= 0 &&
+        literal.value <= 255;
     case 'u16':
-      return literal.kind === 'number' && Number.isInteger(literal.value) && literal.value >= 0 && literal.value <= 65535;
+      return literal.kind === 'number' && Number.isInteger(literal.value) && literal.value >= 0 &&
+        literal.value <= 65535;
     case 'u32':
-      return literal.kind === 'number' && Number.isInteger(literal.value) && literal.value >= 0 && literal.value <= 4294967295;
+      return literal.kind === 'number' && Number.isInteger(literal.value) && literal.value >= 0 &&
+        literal.value <= 4294967295;
     case 'u64':
       if (literal.kind === 'bigint') {
         return literal.value >= 0n && BigInt.asUintN(64, literal.value) === literal.value;
@@ -1094,7 +1097,9 @@ function normalizeSourceFile(
         const target = getMachineNumericAssignmentTarget(operand);
         const binaryOperatorKind = MACHINE_NUMERIC_UPDATE_OPERATOR_KINDS.get(node.operator);
         if (!target || !binaryOperatorKind) {
-          return operand === node.operand ? node : ts.factory.updatePostfixUnaryExpression(node, operand);
+          return operand === node.operand
+            ? node
+            : ts.factory.updatePostfixUnaryExpression(node, operand);
         }
 
         changed = true;

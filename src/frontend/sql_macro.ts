@@ -155,8 +155,12 @@ function formatSqlText(text: string): string {
     .join('\n')
     .trim();
 
-  const uppercasedKeywords = compact.replace(SQL_WORD_REGEX, (word) =>
-    SQL_KEYWORD_SET.has(word.toLowerCase() as typeof SQL_KEYWORDS[number]) ? word.toUpperCase() : word
+  const uppercasedKeywords = compact.replace(
+    SQL_WORD_REGEX,
+    (word) =>
+      SQL_KEYWORD_SET.has(word.toLowerCase() as typeof SQL_KEYWORDS[number])
+        ? word.toUpperCase()
+        : word,
   );
 
   return uppercasedKeywords

@@ -1,8 +1,23 @@
 import { assertEquals } from '@std/assert';
 
 import { isErr, isOk } from '@soundscript/soundscript/result';
-import { boolean, bigint as decodeBigint, object as decodeObject, option as decodeOption, result as decodeResult, string as decodeString } from './decode.ts';
-import { booleanEncoder, bigintEncoder, object as encodeObject, option as encodeOption, optional as encodeOptional, result as encodeResult, stringEncoder } from './encode.ts';
+import {
+  bigint as decodeBigint,
+  boolean,
+  object as decodeObject,
+  option as decodeOption,
+  result as decodeResult,
+  string as decodeString,
+} from './decode.ts';
+import {
+  bigintEncoder,
+  booleanEncoder,
+  object as encodeObject,
+  option as encodeOption,
+  optional as encodeOptional,
+  result as encodeResult,
+  stringEncoder,
+} from './encode.ts';
 import { codec as createCodec } from './codec.ts';
 import { err, none, ok, some } from './result.ts';
 
@@ -12,11 +27,14 @@ import {
   emptyJsonRecord,
   encodeAndStringify,
   encodeJson,
-  isJsonObject,
   isJsonLikeValue,
+  isJsonObject,
   isJsonValue,
   JsonParseFailure,
+  type JsonStringifyBigintMode,
   JsonStringifyFailure,
+  type JsonValue,
+  type MachineJsonLikeValue,
   mergeJsonRecords,
   parseAndDecode,
   parseJson,
@@ -25,9 +43,6 @@ import {
   stringifyJsonLike,
   validateDecodeJson,
   validateEncodeJson,
-  type MachineJsonLikeValue,
-  type JsonValue,
-  type JsonStringifyBigintMode,
 } from './json.ts';
 import { F64, I64, U8 } from './numerics.ts';
 
@@ -167,19 +182,17 @@ Deno.test('json parseAndDecode composes JSON parsing with a decoder', () => {
 Deno.test('json parseAndDecode and decodeJson mirror async decoder helpers', async () => {
   const AsyncStringDecoder = {
     async decode(value: unknown) {
-      return typeof value === 'string'
-        ? ok(value.toUpperCase())
-        : err(new JsonParseFailure(value));
+      return typeof value === 'string' ? ok(value.toUpperCase()) : err(new JsonParseFailure(value));
     },
     async validateDecode(value: unknown) {
-      return typeof value === 'string'
-        ? ok(value.toUpperCase())
-        : err([{
+      return typeof value === 'string' ? ok(value.toUpperCase()) : err(
+        [{
           code: 'decode_failure',
           input: value,
           message: 'Expected string.',
           path: [],
-        }] as const);
+        }] as const,
+      );
     },
   };
 
@@ -441,7 +454,8 @@ Deno.test('json stringifyJson supports explicit machine numeric encoding modes',
     stringifyJson(value, { numerics: 'tagged' }),
     {
       tag: 'ok',
-      value: '{"byte":{"$numeric":"u8","value":"1"},"nan":{"$numeric":"f64","value":"NaN"},"wide":{"$numeric":"i64","value":"7"}}',
+      value:
+        '{"byte":{"$numeric":"u8","value":"1"},"nan":{"$numeric":"f64","value":"NaN"},"wide":{"$numeric":"i64","value":"7"}}',
     },
   );
   assertTaggedEquals(

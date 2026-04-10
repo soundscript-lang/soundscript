@@ -1,6 +1,6 @@
 import {
-  CASED_RANGES,
   CASE_IGNORABLE_RANGES,
+  CASED_RANGES,
   LOWER_DELTA_RANGES,
   LOWER_EXPANSIONS,
   type UnicodeDeltaRange,
@@ -41,7 +41,9 @@ export function emitStringLiteralMetadata(
   usage: OwnedStringLiteralUsage,
   layout?: BackendStringRuntimeLayoutLike,
 ): string[] {
-  if (!layout || (usage.stringLiteralCodeUnits?.length ?? 0) === 0 || usage.usedLiteralIds.size === 0) {
+  if (
+    !layout || (usage.stringLiteralCodeUnits?.length ?? 0) === 0 || usage.usedLiteralIds.size === 0
+  ) {
     return [];
   }
 
@@ -62,7 +64,9 @@ export function emitOwnedStringLiteralHelpers(
   usage: OwnedStringLiteralUsage,
   layout?: BackendStringRuntimeLayoutLike,
 ): string[] {
-  if (!layout || (usage.stringLiteralCodeUnits?.length ?? 0) === 0 || usage.usedLiteralIds.size === 0) {
+  if (
+    !layout || (usage.stringLiteralCodeUnits?.length ?? 0) === 0 || usage.usedLiteralIds.size === 0
+  ) {
     return [];
   }
 
@@ -86,7 +90,11 @@ export function emitOwnedStringRuntimeConstruction(
 ): string[] {
   return [
     ...(includeLocalDeclaration
-      ? [`${indent(level)}(local $${localName} (ref null $${layout.fallbackCodeUnitArrayWatTypeId}))`]
+      ? [
+        `${
+          indent(level)
+        }(local $${localName} (ref null $${layout.fallbackCodeUnitArrayWatTypeId}))`,
+      ]
       : []),
     `${indent(level)}i32.const ${codeUnits.length}`,
     `${indent(level)}array.new_default $${layout.fallbackCodeUnitArrayWatTypeId}`,
@@ -184,4 +192,13 @@ function emitUnicodeCaseMappingHelper(
   ];
 }
 
-export { CASED_RANGES, CASE_IGNORABLE_RANGES, LOWER_DELTA_RANGES, LOWER_EXPANSIONS, UPPER_DELTA_RANGES, UPPER_EXPANSIONS, emitUnicodeCaseMappingHelper, emitUnicodeRangeMembershipHelper };
+export {
+  CASE_IGNORABLE_RANGES,
+  CASED_RANGES,
+  emitUnicodeCaseMappingHelper,
+  emitUnicodeRangeMembershipHelper,
+  LOWER_DELTA_RANGES,
+  LOWER_EXPANSIONS,
+  UPPER_DELTA_RANGES,
+  UPPER_EXPANSIONS,
+};

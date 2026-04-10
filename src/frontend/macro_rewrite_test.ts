@@ -167,9 +167,13 @@ Deno.test('rewriteMacroSource rewrites type alias declaration annotations with a
     'export type UserId = string & { readonly __brand: "UserId" };',
     '',
   ].join('\n');
-  const result = rewriteMacroSource('example.sts', sourceText, new Map([
-    ['./macros/derive', new Map([['derive', 'annotation' as const]])],
-  ]));
+  const result = rewriteMacroSource(
+    'example.sts',
+    sourceText,
+    new Map([
+      ['./macros/derive', new Map([['derive', 'annotation' as const]])],
+    ]),
+  );
 
   assertEquals(result.diagnostics, []);
   assertEquals(result.macrosById.get(1)?.invocationKind, 'decl');
@@ -193,12 +197,19 @@ Deno.test('rewriteMacroSource preserves stacked declaration annotations as order
     'type User = { id: string };',
     '',
   ].join('\n');
-  const result = rewriteMacroSource('example.sts', sourceText, new Map([
-    ['sts:derive', new Map([
-      ['eq', 'annotation' as const],
-      ['hash', 'annotation' as const],
-    ])],
-  ]));
+  const result = rewriteMacroSource(
+    'example.sts',
+    sourceText,
+    new Map([
+      [
+        'sts:derive',
+        new Map([
+          ['eq', 'annotation' as const],
+          ['hash', 'annotation' as const],
+        ]),
+      ],
+    ]),
+  );
 
   assertEquals(result.diagnostics, []);
   assertEquals(result.replacements.length, 2);

@@ -286,7 +286,9 @@ function computeFreshLocalProof(
 
     if (ts.isIdentifier(node) && !isDeclarationNameIdentifier(node)) {
       const symbolId = getIdentifierSymbolId(context, node);
-      const rootSymbolId = symbolId === undefined ? undefined : symbolIdToRootSymbolId.get(symbolId);
+      const rootSymbolId = symbolId === undefined
+        ? undefined
+        : symbolIdToRootSymbolId.get(symbolId);
       if (rootSymbolId !== undefined) {
         if (nestedFunctionDepth > 0) {
           addFailureReason(
@@ -322,7 +324,9 @@ function computeFreshLocalProof(
     ),
     rootSymbolIds: validRootSymbolIds,
     symbolIdToRootSymbolId: new Map(
-      [...symbolIdToRootSymbolId.entries()].filter(([, rootSymbolId]) => validRootSymbolIds.has(rootSymbolId)),
+      [...symbolIdToRootSymbolId.entries()].filter(([, rootSymbolId]) =>
+        validRootSymbolIds.has(rootSymbolId)
+      ),
     ),
   };
 }
@@ -352,8 +356,10 @@ export function getEnclosingBodyFreshLocalProof(
   context: AnalysisContext,
   node: ts.Node,
 ): FreshLocalProof | undefined {
-  const declaration = ts.findAncestor(node, (candidate): candidate is EffectCallableDeclaration =>
-    isCallableBodyDeclaration(candidate as EffectCallableDeclaration)
+  const declaration = ts.findAncestor(
+    node,
+    (candidate): candidate is EffectCallableDeclaration =>
+      isCallableBodyDeclaration(candidate as EffectCallableDeclaration),
   );
   return declaration ? getFreshLocalProof(context, declaration) : undefined;
 }
@@ -398,7 +404,9 @@ function getFreshLocalAccessPath(
   }
 
   const symbolId = getIdentifierSymbolId(context, current);
-  const rootSymbolId = symbolId === undefined ? undefined : proof.symbolIdToRootSymbolId.get(symbolId);
+  const rootSymbolId = symbolId === undefined
+    ? undefined
+    : proof.symbolIdToRootSymbolId.get(symbolId);
   return rootSymbolId === undefined ? undefined : { depth, rootSymbolId };
 }
 

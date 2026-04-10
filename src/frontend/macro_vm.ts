@@ -79,7 +79,9 @@ export function createMacroVmModuleEvaluator(): MacroVmModuleEvaluator {
       options: EvaluateMacroVmModuleOptions,
     ): Record<string, unknown> {
       const script = new Script(
-        `(function(${MACRO_MODULE_PARAMETER_NAMES.join(', ')}) {\n"use strict";\n${javaScriptText}\n})`,
+        `(function(${
+          MACRO_MODULE_PARAMETER_NAMES.join(', ')
+        }) {\n"use strict";\n${javaScriptText}\n})`,
         { filename: options.fileName },
       );
       const wrapper = script.runInContext(context) as MacroModuleWrapper;

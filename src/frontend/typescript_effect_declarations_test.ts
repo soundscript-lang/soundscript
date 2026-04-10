@@ -48,10 +48,15 @@ Deno.test('captureTypeScriptDeclarationOutputs projects inferred bodyful effects
       ].join('\n'),
     },
     (program, tempDirectory) => {
-      const outputs = captureTypeScriptDeclarationOutputs(program, { workingDirectory: tempDirectory });
+      const outputs = captureTypeScriptDeclarationOutputs(program, {
+        workingDirectory: tempDirectory,
+      });
       const declarationText = outputs.get('/__effect_decl_test__/index.d.ts');
       assertExists(declarationText);
-      assertStringIncludes(declarationText, '// #[effects(add: [fails.throws], unknown: [direct])]');
+      assertStringIncludes(
+        declarationText,
+        '// #[effects(add: [fails.throws], unknown: [direct])]',
+      );
       assertStringIncludes(declarationText, 'export declare function logValue<T>(value: T): T;');
     },
   );
@@ -73,7 +78,9 @@ Deno.test('captureTypeScriptDeclarationOutputs projects implementation summaries
       ].join('\n'),
     },
     (program, tempDirectory) => {
-      const outputs = captureTypeScriptDeclarationOutputs(program, { workingDirectory: tempDirectory });
+      const outputs = captureTypeScriptDeclarationOutputs(program, {
+        workingDirectory: tempDirectory,
+      });
       const declarationText = outputs.get('/__effect_decl_test__/index.d.ts');
       assertExists(declarationText);
       assertStringIncludes(declarationText, '// #[effects(add: [], forward: [callback])]');

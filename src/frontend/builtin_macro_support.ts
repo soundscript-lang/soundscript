@@ -1,9 +1,9 @@
 import ts from 'typescript';
 
-import { normalizeRuntimeContext } from '../config.ts';
+import { normalizeRuntimeContext } from '../project/config.ts';
 import { hasErrorDiagnostics, type MergedDiagnostic } from '../checker/diagnostics.ts';
 import { measureCheckerTiming } from '../checker/timing.ts';
-import { builtinRuntimeImportSpecifier } from '../soundscript_runtime_specifiers.ts';
+import { builtinRuntimeImportSpecifier } from '../project/soundscript_runtime_specifiers.ts';
 import type { MacroDefinition } from './macro_api.ts';
 import { getLoadedMacroDefinitionMetadata, getMacroFactoryMetadata } from './macro_api_internal.ts';
 import { withMacroApiModuleResolution } from './macro_api_module_support.ts';
@@ -1111,8 +1111,8 @@ export function createBuiltinExpandedProgram(
     { always: true },
   );
 
-  const annotatedProgram = mapsEqual(annotatedOverrides, originalOverrides)
-    || programMatchesOverrides(preparedProgram, annotatedOverrides)
+  const annotatedProgram = mapsEqual(annotatedOverrides, originalOverrides) ||
+      programMatchesOverrides(preparedProgram, annotatedOverrides)
     ? preparedProgram
     : measureCheckerTiming(
       'project.prepare.builtin.annotatedProgram',

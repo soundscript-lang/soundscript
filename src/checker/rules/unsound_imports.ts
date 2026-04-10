@@ -239,8 +239,10 @@ export function runUnsoundImportRules(context: AnalysisContext): SoundDiagnostic
     context.traverse(sourceFile, (node) => {
       if (ts.isCallExpression(node) && isRequireCall(node)) {
         const resolution = resolveImportedModule(context, node.arguments[0], sourceFile);
-        if (isUnsoundImportedModule(sourceFile, resolution) &&
-          !hasDirectInteropAnnotation(context, node)) {
+        if (
+          isUnsoundImportedModule(sourceFile, resolution) &&
+          !hasDirectInteropAnnotation(context, node)
+        ) {
           diagnostics.push(createUnsoundImportDiagnostic(node.arguments[0]));
           return;
         }
@@ -253,8 +255,10 @@ export function runUnsoundImportRules(context: AnalysisContext): SoundDiagnostic
         ts.isStringLiteral(node.arguments[0])
       ) {
         const resolution = resolveImportedModule(context, node.arguments[0], sourceFile);
-        if (isUnsoundImportedModule(sourceFile, resolution) &&
-          !hasDirectInteropAnnotation(context, node)) {
+        if (
+          isUnsoundImportedModule(sourceFile, resolution) &&
+          !hasDirectInteropAnnotation(context, node)
+        ) {
           diagnostics.push(createUnsoundImportDiagnostic(node.arguments[0]));
           return;
         }

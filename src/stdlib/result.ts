@@ -1,12 +1,7 @@
 import { normalizeThrown } from 'sts:failures';
 import { type Bind, type Kind, type Kind2, type TypeLambda } from 'sts:hkt';
 import { type Applicative, type Functor, type Monad } from 'sts:typeclasses';
-import {
-  __valueFactory,
-  __valueKey,
-  __valueReadonly,
-  __valueShallowToken,
-} from 'sts:value';
+import { __valueFactory, __valueKey, __valueReadonly, __valueShallowToken } from 'sts:value';
 
 const makeOk = __valueFactory<Ok<unknown>, [unknown]>(
   (value) => __valueKey('ok', __valueShallowToken(value)),

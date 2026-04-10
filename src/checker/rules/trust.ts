@@ -36,7 +36,10 @@ export function hasDirectAnnotation(
     return false;
   }
 
-  return context.getAnnotationLookup(node.getSourceFile()).hasAttachedAnnotation(node, annotationName);
+  return context.getAnnotationLookup(node.getSourceFile()).hasAttachedAnnotation(
+    node,
+    annotationName,
+  );
 }
 
 function unwrapInteropExpression(expression: ts.Expression): ts.Expression {
@@ -62,7 +65,9 @@ function unwrapInteropExpression(expression: ts.Expression): ts.Expression {
   }
 }
 
-function getInteropBoundaryCallExpression(expression: ts.Expression): ts.CallExpression | undefined {
+function getInteropBoundaryCallExpression(
+  expression: ts.Expression,
+): ts.CallExpression | undefined {
   const current = unwrapInteropExpression(expression);
 
   if (ts.isCallExpression(current) && (isImportCall(current) || isRequireCall(current))) {

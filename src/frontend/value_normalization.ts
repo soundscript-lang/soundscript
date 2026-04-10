@@ -1,7 +1,10 @@
 import ts from 'typescript';
 
-import { createAnnotationLookup } from '../annotation_syntax.ts';
-import { deepValueClassDeclarationIsValid, typeNodeIsDeepSafe } from '../value_deep_safe.ts';
+import { createAnnotationLookup } from '../language/annotation_syntax.ts';
+import {
+  deepValueClassDeclarationIsValid,
+  typeNodeIsDeepSafe,
+} from '../language/value_deep_safe.ts';
 import { buildRewriteStageFromTexts } from './error_normalization.ts';
 import {
   isSoundscriptSourceFile,
@@ -136,10 +139,12 @@ function extractValueClassInfo(
       ) {
         return null;
       }
-      if (deep && !typeNodeIsDeepSafe(member.type, {
-        checker,
-        isDeepValueClassDeclaration: isValidDeepValueClassDeclaration,
-      })) {
+      if (
+        deep && !typeNodeIsDeepSafe(member.type, {
+          checker,
+          isDeepValueClassDeclaration: isValidDeepValueClassDeclaration,
+        })
+      ) {
         return null;
       }
       continue;
@@ -217,7 +222,9 @@ function extractValueClassInfo(
   for (const [index, field] of fields.entries()) {
     const parameter = constructor.parameters[index];
     const statement = statements[index];
-    if (!parameter || !statement || !ts.isIdentifier(field.name) || !ts.isIdentifier(parameter.name)) {
+    if (
+      !parameter || !statement || !ts.isIdentifier(field.name) || !ts.isIdentifier(parameter.name)
+    ) {
       return null;
     }
 
@@ -245,7 +252,10 @@ function extractValueClassInfo(
   };
 }
 
-function createValueImportDeclaration(names: ValueImportNames, includeDeepToken: boolean): ts.ImportDeclaration {
+function createValueImportDeclaration(
+  names: ValueImportNames,
+  includeDeepToken: boolean,
+): ts.ImportDeclaration {
   const specifiers = [
     ts.factory.createImportSpecifier(
       false,
@@ -433,27 +443,25 @@ function rewriteConstructor(
   });
 
   const hasConstructor = rewrittenMembers.some((member) => ts.isConstructorDeclaration(member));
-  const nextMembers = hasConstructor
-    ? rewrittenMembers
-    : [
-      ts.factory.createConstructorDeclaration(
-        undefined,
-        [],
-        ts.factory.createBlock(
-          [
-            ts.factory.createReturnStatement(
-              ts.factory.createCallExpression(
-                ts.factory.createIdentifier(info.helperName),
-                undefined,
-                [],
-              ),
+  const nextMembers = hasConstructor ? rewrittenMembers : [
+    ts.factory.createConstructorDeclaration(
+      undefined,
+      [],
+      ts.factory.createBlock(
+        [
+          ts.factory.createReturnStatement(
+            ts.factory.createCallExpression(
+              ts.factory.createIdentifier(info.helperName),
+              undefined,
+              [],
             ),
-          ],
-          true,
-        ),
+          ),
+        ],
+        true,
       ),
-      ...rewrittenMembers,
-    ];
+    ),
+    ...rewrittenMembers,
+  ];
 
   return ts.factory.updateClassDeclaration(
     declaration,
@@ -509,7 +517,9 @@ function normalizeSourceFile(
     return undefined;
   }
 
-  const firstNonImportIndex = rewrittenStatements.findIndex((statement) => !ts.isImportDeclaration(statement));
+  const firstNonImportIndex = rewrittenStatements.findIndex((statement) =>
+    !ts.isImportDeclaration(statement)
+  );
   const importIndex = firstNonImportIndex === -1 ? rewrittenStatements.length : firstNonImportIndex;
   rewrittenStatements.splice(
     importIndex,
@@ -563,7 +573,9 @@ export function normalizeValueSemanticsInProgramForFile(
 ): ValueNormalizedFile | undefined {
   const normalizedFileName = toSourceFileName(fileName);
   const sourceFile = program.getSourceFile(fileName) ??
-    program.getSourceFiles().find((candidate) => toSourceFileName(candidate.fileName) === normalizedFileName);
+    program.getSourceFiles().find((candidate) =>
+      toSourceFileName(candidate.fileName) === normalizedFileName
+    );
   if (
     !sourceFile ||
     sourceFile.isDeclarationFile ||

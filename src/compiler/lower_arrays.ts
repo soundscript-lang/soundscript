@@ -50,7 +50,8 @@ function isSupportedOwnedHeapArrayElementType(
   checker: ts.TypeChecker,
   type: ts.Type,
 ): boolean {
-  if (isStringLikeType(type) || (type.flags & ts.TypeFlags.NumberLike) !== 0 ||
+  if (
+    isStringLikeType(type) || (type.flags & ts.TypeFlags.NumberLike) !== 0 ||
     (type.flags & ts.TypeFlags.BooleanLike) !== 0 || isUndefinedType(type) || isNullType(type)
   ) {
     return false;
@@ -148,8 +149,11 @@ export function getSupportedOwnedTaggedArrayKinds(
   includesString: boolean;
   includesUndefined: boolean;
 } | undefined {
-  if (isSupportedOwnedStringArrayType(checker, type) || isSupportedOwnedNumberArrayType(checker, type) ||
-    isSupportedOwnedBooleanArrayType(checker, type)) {
+  if (
+    isSupportedOwnedStringArrayType(checker, type) ||
+    isSupportedOwnedNumberArrayType(checker, type) ||
+    isSupportedOwnedBooleanArrayType(checker, type)
+  ) {
     return undefined;
   }
   if ((type.flags & ts.TypeFlags.Object) === 0) {

@@ -38,8 +38,9 @@ function getLexicallyScopedValueSymbol(
   node: ts.Node,
   name: string,
 ): ts.Symbol | undefined {
-  let current: (ts.Node & { locals?: ts.SymbolTable }) | undefined =
-    node as ts.Node & { locals?: ts.SymbolTable };
+  let current: (ts.Node & { locals?: ts.SymbolTable }) | undefined = node as ts.Node & {
+    locals?: ts.SymbolTable;
+  };
   while (current) {
     const symbol = findNamedValueSymbolInTable(checker, current.locals, name);
     if (symbol) {

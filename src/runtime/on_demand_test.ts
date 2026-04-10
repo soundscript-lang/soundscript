@@ -1,7 +1,7 @@
 import { assertEquals, assertStringIncludes } from '@std/assert';
 import { dirname, join } from '@std/path';
 
-import { writeInstalledStdlibPackage } from '../test_installed_stdlib.ts';
+import { writeInstalledStdlibPackage } from '../../tests/support/test_installed_stdlib.ts';
 import { createOnDemandTransformer } from './on_demand.ts';
 
 async function writeProjectFile(

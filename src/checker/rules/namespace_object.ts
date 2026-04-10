@@ -41,7 +41,8 @@ function createNamespaceEscapeDiagnostic(node: ts.Node): SoundDiagnostic {
       replacementFamily: 'direct_exported_member_read',
       counterexample:
         'Forwarding a namespace object hides which export is actually used and lets module-namespace behavior escape ordinary code.',
-      example: 'Read the member immediately, for example `const add = math.add;` instead of storing `math`.',
+      example:
+        'Read the member immediately, for example `const add = math.add;` instead of storing `math`.',
     },
     notes: MODULE_NAMESPACE_NOTES,
     hint: MODULE_NAMESPACE_HINT,

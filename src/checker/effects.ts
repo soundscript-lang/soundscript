@@ -1,5 +1,5 @@
 import ts from 'typescript';
-import type { ParsedAnnotation } from '../annotation_syntax.ts';
+import type { ParsedAnnotation } from '../language/annotation_syntax.ts';
 
 import type {
   AnalysisContext,

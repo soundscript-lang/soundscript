@@ -13,7 +13,7 @@ import {
   collectSoundscriptRootNames,
   getConfigFileParsingDiagnostics,
   loadConfig,
-} from '../config.ts';
+} from '../project/config.ts';
 import { createBuiltinExpandedProgram } from '../frontend/builtin_macro_support.ts';
 import { MacroError } from '../frontend/macro_errors.ts';
 import { isSoundscriptSourceFile } from '../frontend/project_frontend.ts';

@@ -698,7 +698,9 @@ function rewriteNode<T extends ts.Node>(
   node: T,
   options: MacroSyntaxRewriteOptions,
 ): T {
-  const replaceThisWith = options.replaceThisWith ? getHostExpression(options.replaceThisWith) : null;
+  const replaceThisWith = options.replaceThisWith
+    ? getHostExpression(options.replaceThisWith)
+    : null;
   const replaceCallNamed = new Map(
     Object.entries(options.replaceCallNamed ?? {}).map(([name, replacement]) => [
       name,
@@ -846,9 +848,7 @@ function rewriteNode<T extends ts.Node>(
               current,
               cloneExpressionNode(replacementCallee),
               current.typeArguments,
-              current.arguments.map((argument) =>
-                ts.visitNode(argument, visit) as ts.Expression
-              ),
+              current.arguments.map((argument) => ts.visitNode(argument, visit) as ts.Expression),
             ),
           );
         }

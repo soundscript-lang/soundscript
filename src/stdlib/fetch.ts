@@ -46,9 +46,9 @@ export interface Headers {
 
 export const Headers: {
   // #[effects(add: [host.ffi])]
-  new(init?: HeadersInit): Headers;
+  new (init?: HeadersInit): Headers;
 } = globalThis.Headers as unknown as {
-  new(init?: HeadersInit): Headers;
+  new (init?: HeadersInit): Headers;
 };
 
 export interface Request {
@@ -68,9 +68,9 @@ export interface Request {
 
 export const Request: {
   // #[effects(add: [host.ffi])]
-  new(input: RequestInfo, init?: RequestInit): Request;
+  new (input: RequestInfo, init?: RequestInit): Request;
 } = globalThis.Request as unknown as {
-  new(input: RequestInfo, init?: RequestInit): Request;
+  new (input: RequestInfo, init?: RequestInit): Request;
 };
 
 export interface Response {
@@ -91,7 +91,7 @@ export interface Response {
 
 export const Response: {
   // #[effects(add: [host.ffi])]
-  new(body?: BodyInit | null, init?: ResponseInit): Response;
+  new (body?: BodyInit | null, init?: ResponseInit): Response;
   // #[effects(add: [host.ffi])]
   error(): Response;
   // #[effects(add: [host.ffi])]
@@ -99,7 +99,7 @@ export const Response: {
   // #[effects(add: [host.ffi])]
   redirect(url: string | URL, status?: number): Response;
 } = globalThis.Response as unknown as {
-  new(body?: BodyInit | null, init?: ResponseInit): Response;
+  new (body?: BodyInit | null, init?: ResponseInit): Response;
   error(): Response;
   json(data: unknown, init?: ResponseInit): Response;
   redirect(url: string | URL, status?: number): Response;

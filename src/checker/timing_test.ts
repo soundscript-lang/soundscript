@@ -18,10 +18,16 @@ Deno.test('logCheckerTiming stays silent unless instrumentation is enabled', () 
   };
 
   try {
-    logCheckerTiming('project.prepare', 100, { projectPath: '/workspace/tsconfig.json' }, { enabled: false, always: true });
+    logCheckerTiming('project.prepare', 100, { projectPath: '/workspace/tsconfig.json' }, {
+      enabled: false,
+      always: true,
+    });
     assertEquals(calls, []);
 
-    logCheckerTiming('project.prepare', 100, { projectPath: '/workspace/tsconfig.json' }, { enabled: true, always: true });
+    logCheckerTiming('project.prepare', 100, { projectPath: '/workspace/tsconfig.json' }, {
+      enabled: true,
+      always: true,
+    });
     assertEquals(calls.length, 1);
     assertEquals(calls[0]?.includes('[soundscript:checker] project.prepare 100.0ms'), true);
     assertEquals(calls[0]?.includes('projectPath=/workspace/tsconfig.json'), true);
@@ -34,4 +40,3 @@ Deno.test('measureCheckerTiming returns the wrapped result', () => {
   const result = measureCheckerTiming('project.analyze', {}, () => 42, { enabled: false });
   assertEquals(result, 42);
 });
-

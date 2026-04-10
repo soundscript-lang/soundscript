@@ -691,7 +691,7 @@ export const UPPER_DELTA_RANGES: readonly UnicodeDeltaRange[] = [
   [0x118c0, 0x118df, -0x20],
   [0x16e60, 0x16e7f, -0x20],
   [0x16ebb, 0x16ed3, -0x1b],
-  [0x1e922, 0x1e943, -0x22]
+  [0x1e922, 0x1e943, -0x22],
 ] as const;
 
 export const LOWER_DELTA_RANGES: readonly UnicodeDeltaRange[] = [
@@ -1371,7 +1371,7 @@ export const LOWER_DELTA_RANGES: readonly UnicodeDeltaRange[] = [
   [0x118a0, 0x118bf, 0x20],
   [0x16e40, 0x16e5f, 0x20],
   [0x16ea0, 0x16eb8, 0x1b],
-  [0x1e900, 0x1e921, 0x22]
+  [0x1e900, 0x1e921, 0x22],
 ] as const;
 
 export const UPPER_EXPANSIONS: readonly UnicodeExpansionMapping[] = [
@@ -1476,11 +1476,11 @@ export const UPPER_EXPANSIONS: readonly UnicodeExpansionMapping[] = [
   [0xfb14, [0x544, 0x535]],
   [0xfb15, [0x544, 0x53b]],
   [0xfb16, [0x54e, 0x546]],
-  [0xfb17, [0x544, 0x53d]]
+  [0xfb17, [0x544, 0x53d]],
 ] as const;
 
 export const LOWER_EXPANSIONS: readonly UnicodeExpansionMapping[] = [
-  [0x130, [0x69, 0x307]]
+  [0x130, [0x69, 0x307]],
 ] as const;
 
 export const CASED_RANGES: readonly UnicodeRange[] = [
@@ -1641,7 +1641,7 @@ export const CASED_RANGES: readonly UnicodeRange[] = [
   [0x1e900, 0x1e943],
   [0x1f130, 0x1f149],
   [0x1f150, 0x1f169],
-  [0x1f170, 0x1f189]
+  [0x1f170, 0x1f189],
 ] as const;
 
 export const CASE_IGNORABLE_RANGES: readonly UnicodeRange[] = [
@@ -2108,5 +2108,5 @@ export const CASE_IGNORABLE_RANGES: readonly UnicodeRange[] = [
   [0x1f3fb, 0x1f3ff],
   [0xe0001, 0xe0001],
   [0xe0020, 0xe007f],
-  [0xe0100, 0xe01ef]
+  [0xe0100, 0xe01ef],
 ] as const;

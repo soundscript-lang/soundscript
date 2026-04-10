@@ -1,6 +1,6 @@
 import ts from 'typescript';
 
-import { createAnnotationLookup } from '../annotation_syntax.ts';
+import { createAnnotationLookup } from '../language/annotation_syntax.ts';
 import { fromFileUrl } from '../platform/path.ts';
 import type {
   MacroAnnotation,
@@ -129,7 +129,9 @@ function declarationAnnotations(
   declaration: MacroClassDeclSyntax | MacroInterfaceDeclSyntax | MacroTypeAliasDeclSyntax,
 ): readonly MacroAnnotation[] {
   const hostDeclaration = getHostDeclaration(declaration);
-  return createAnnotationLookup(hostDeclaration.getSourceFile()).getAttachedAnnotations(hostDeclaration);
+  return createAnnotationLookup(hostDeclaration.getSourceFile()).getAttachedAnnotations(
+    hostDeclaration,
+  );
 }
 
 function resolvedDeclarationAnnotations(
@@ -235,7 +237,9 @@ function propertyKeyText(propertyName: string): string {
 }
 
 function decodeDefaultProjectionText(accessText: string, defaultText: string | null): string {
-  return defaultText === null ? accessText : `${accessText} === undefined ? (${defaultText}) : ${accessText}`;
+  return defaultText === null
+    ? accessText
+    : `${accessText} === undefined ? (${defaultText}) : ${accessText}`;
 }
 
 function primitiveKindForTypeText(typeText: string): PrimitiveFieldKind | null {
@@ -614,7 +618,9 @@ function shapeContainsNamedReference(
       return shapeContainsNamedReference(shape.key, typeName) ||
         shapeContainsNamedReference(shape.value, typeName);
     case 'object':
-      return shape.fields.some((field) => field.type && shapeContainsNamedReference(field.type, typeName));
+      return shape.fields.some((field) =>
+        field.type && shapeContainsNamedReference(field.type, typeName)
+      );
     case 'intersection':
     case 'union':
       return shape.members.some((member) => shapeContainsNamedReference(member, typeName));
@@ -722,12 +728,12 @@ function shapeContainsPlainRecursiveLocalReference(
       );
     case 'result':
       return shapeContainsPlainRecursiveLocalReference(
-          ctx,
-          shape.ok,
-          ownerTypeName,
-          macroName,
-          scopeNode,
-        ) ||
+        ctx,
+        shape.ok,
+        ownerTypeName,
+        macroName,
+        scopeNode,
+      ) ||
         shapeContainsPlainRecursiveLocalReference(
           ctx,
           shape.err,
@@ -737,12 +743,12 @@ function shapeContainsPlainRecursiveLocalReference(
         );
     case 'record':
       return shapeContainsPlainRecursiveLocalReference(
-          ctx,
-          shape.key,
-          ownerTypeName,
-          macroName,
-          scopeNode,
-        ) ||
+        ctx,
+        shape.key,
+        ownerTypeName,
+        macroName,
+        scopeNode,
+      ) ||
         shapeContainsPlainRecursiveLocalReference(
           ctx,
           shape.value,
@@ -816,7 +822,8 @@ function findLocalDeclarationByName(
   name: string,
 ): MacroClassDeclSyntax | MacroInterfaceDeclSyntax | MacroTypeAliasDeclSyntax | null {
   const localDeclaration = ctx.semantics.localDeclaration(name, declaration);
-  return localDeclaration?.asClass() ?? localDeclaration?.asInterface() ?? localDeclaration?.asTypeAlias() ??
+  return localDeclaration?.asClass() ?? localDeclaration?.asInterface() ??
+    localDeclaration?.asTypeAlias() ??
     null;
 }
 
@@ -1048,10 +1055,26 @@ function decodeAnnotationsMayResolveAsync(
   annotations: readonly MacroAnnotation[],
   scopeNode: MacroSyntaxNode,
 ): boolean {
-  return annotationIdentifierMayResolveAsync(ctx, findAnnotation(annotations, 'decode.default'), scopeNode) ||
-    annotationIdentifierMayResolveAsync(ctx, findAnnotation(annotations, 'decode.preprocess'), scopeNode) ||
-    annotationIdentifierMayResolveAsync(ctx, findAnnotation(annotations, 'decode.transform'), scopeNode) ||
-    annotationIdentifierMayResolveAsync(ctx, findAnnotation(annotations, 'decode.refine'), scopeNode);
+  return annotationIdentifierMayResolveAsync(
+    ctx,
+    findAnnotation(annotations, 'decode.default'),
+    scopeNode,
+  ) ||
+    annotationIdentifierMayResolveAsync(
+      ctx,
+      findAnnotation(annotations, 'decode.preprocess'),
+      scopeNode,
+    ) ||
+    annotationIdentifierMayResolveAsync(
+      ctx,
+      findAnnotation(annotations, 'decode.transform'),
+      scopeNode,
+    ) ||
+    annotationIdentifierMayResolveAsync(
+      ctx,
+      findAnnotation(annotations, 'decode.refine'),
+      scopeNode,
+    );
 }
 
 function encodeAnnotationsMayResolveAsync(
@@ -1059,8 +1082,16 @@ function encodeAnnotationsMayResolveAsync(
   annotations: readonly MacroAnnotation[],
   scopeNode: MacroSyntaxNode,
 ): boolean {
-  return annotationIdentifierMayResolveAsync(ctx, findAnnotation(annotations, 'encode.transform'), scopeNode) ||
-    annotationIdentifierMayResolveAsync(ctx, findAnnotation(annotations, 'encode.refine'), scopeNode);
+  return annotationIdentifierMayResolveAsync(
+    ctx,
+    findAnnotation(annotations, 'encode.transform'),
+    scopeNode,
+  ) ||
+    annotationIdentifierMayResolveAsync(
+      ctx,
+      findAnnotation(annotations, 'encode.refine'),
+      scopeNode,
+    );
 }
 
 function fieldDecodeViaMayResolveAsync(
@@ -1098,7 +1129,10 @@ function declarationFactoryMayResolveAsync(
   declaration: MacroClassDeclSyntax | MacroInterfaceDeclSyntax | MacroTypeAliasDeclSyntax,
   macroName: 'codec' | 'decode',
 ): boolean {
-  const factoryAnnotation = findAnnotation(resolvedDeclarationAnnotations(ctx, declaration), `${macroName}.factory`);
+  const factoryAnnotation = findAnnotation(
+    resolvedDeclarationAnnotations(ctx, declaration),
+    `${macroName}.factory`,
+  );
   if (!factoryAnnotation) {
     return false;
   }
@@ -1125,10 +1159,19 @@ function declarationOwnDecodeMode(
   declaration: MacroClassDeclSyntax | MacroInterfaceDeclSyntax | MacroTypeAliasDeclSyntax,
   macroName: 'codec' | 'decode',
 ): 'async' | 'sync' {
-  if (decodeAnnotationsMayResolveAsync(ctx, resolvedDeclarationAnnotations(ctx, declaration), declaration)) {
+  if (
+    decodeAnnotationsMayResolveAsync(
+      ctx,
+      resolvedDeclarationAnnotations(ctx, declaration),
+      declaration,
+    )
+  ) {
     return 'async';
   }
-  if (declaration.declarationKind === 'class' && declarationFactoryMayResolveAsync(ctx, declaration, macroName)) {
+  if (
+    declaration.declarationKind === 'class' &&
+    declarationFactoryMayResolveAsync(ctx, declaration, macroName)
+  ) {
     return 'async';
   }
   return objectLikeDeclarationShape(ctx, declaration, macroName).fields.some((field) =>
@@ -1144,13 +1187,20 @@ function declarationOwnEncodeMode(
   declaration: MacroClassDeclSyntax | MacroInterfaceDeclSyntax | MacroTypeAliasDeclSyntax,
   macroName: 'codec' | 'encode',
 ): 'async' | 'sync' {
-  if (encodeAnnotationsMayResolveAsync(ctx, resolvedDeclarationAnnotations(ctx, declaration), declaration)) {
+  if (
+    encodeAnnotationsMayResolveAsync(
+      ctx,
+      resolvedDeclarationAnnotations(ctx, declaration),
+      declaration,
+    )
+  ) {
     return 'async';
   }
-  return objectLikeDeclarationShape(ctx, declaration, macroName === 'codec' ? 'codec' : 'encode').fields.some((field) =>
-      encodeAnnotationsMayResolveAsync(ctx, field.annotations, field.node) ||
-      fieldEncodeViaMayResolveAsync(ctx, field.annotations, field.node, macroName)
-    )
+  return objectLikeDeclarationShape(ctx, declaration, macroName === 'codec' ? 'codec' : 'encode')
+      .fields.some((field) =>
+        encodeAnnotationsMayResolveAsync(ctx, field.annotations, field.node) ||
+        fieldEncodeViaMayResolveAsync(ctx, field.annotations, field.node, macroName)
+      )
     ? 'async'
     : 'sync';
 }
@@ -1197,13 +1247,15 @@ function recursiveDeclarationDecodeModeInternal(
     if (!localDeclaration) {
       continue;
     }
-    if (recursiveDeclarationDecodeModeInternal(
-      ctx,
-      localDeclaration,
-      macroName,
-      memo,
-      visiting,
-    ) === 'async') {
+    if (
+      recursiveDeclarationDecodeModeInternal(
+        ctx,
+        localDeclaration,
+        macroName,
+        memo,
+        visiting,
+      ) === 'async'
+    ) {
       visiting.delete(cacheKey);
       memo.set(cacheKey, 'async');
       return 'async';
@@ -1240,29 +1292,37 @@ function recursiveDeclarationEncodeModeInternal(
   }
   visiting.add(cacheKey);
 
-  const shape = objectLikeDeclarationShape(ctx, declaration, macroName === 'codec' ? 'codec' : 'encode');
-  for (const referencedName of collectTypedRecursiveLocalReferenceNames(
+  const shape = objectLikeDeclarationShape(
     ctx,
-    {
-      kind: 'object',
-      fields: shape.fields,
-      text: shape.text,
-    } satisfies MacroReflectedTypeShape,
-    typeName,
-    macroName,
     declaration,
-  )) {
+    macroName === 'codec' ? 'codec' : 'encode',
+  );
+  for (
+    const referencedName of collectTypedRecursiveLocalReferenceNames(
+      ctx,
+      {
+        kind: 'object',
+        fields: shape.fields,
+        text: shape.text,
+      } satisfies MacroReflectedTypeShape,
+      typeName,
+      macroName,
+      declaration,
+    )
+  ) {
     const localDeclaration = findLocalDeclarationByName(ctx, declaration, referencedName);
     if (!localDeclaration) {
       continue;
     }
-    if (recursiveDeclarationEncodeModeInternal(
-      ctx,
-      localDeclaration,
-      macroName,
-      memo,
-      visiting,
-    ) === 'async') {
+    if (
+      recursiveDeclarationEncodeModeInternal(
+        ctx,
+        localDeclaration,
+        macroName,
+        memo,
+        visiting,
+      ) === 'async'
+    ) {
       visiting.delete(cacheKey);
       memo.set(cacheKey, 'async');
       return 'async';
@@ -1317,9 +1377,7 @@ function localNamedDecodeCallbackTypeText(
     return null;
   }
   const mode = recursiveDeclarationDecodeMode(ctx, localDeclaration, macroName);
-  return mode === 'async'
-    ? `import('sts:decode').Decoder<${name}, unknown, "async">`
-    : null;
+  return mode === 'async' ? `import('sts:decode').Decoder<${name}, unknown, "async">` : null;
 }
 
 function localNamedEncodeCallbackTypeText(
@@ -1370,7 +1428,11 @@ function recursiveEncodedTypeTextFromShape(
     case 'named':
       return shape.name === ownerTypeName ? selfAliasName : 'any';
     case 'array': {
-      const element = recursiveEncodedTypeTextFromShape(shape.element, ownerTypeName, selfAliasName);
+      const element = recursiveEncodedTypeTextFromShape(
+        shape.element,
+        ownerTypeName,
+        selfAliasName,
+      );
       return element ? `${shape.readonly ? 'readonly ' : ''}${element}[]` : null;
     }
     case 'tuple': {
@@ -1411,7 +1473,11 @@ function recursiveEncodedTypeTextFromShape(
         if (!field.type) {
           return null;
         }
-        const fieldType = recursiveEncodedTypeTextFromShape(field.type, ownerTypeName, selfAliasName);
+        const fieldType = recursiveEncodedTypeTextFromShape(
+          field.type,
+          ownerTypeName,
+          selfAliasName,
+        );
         if (!fieldType) {
           return null;
         }
@@ -1428,7 +1494,9 @@ function recursiveEncodedTypeTextFromShape(
       }
       let text = nullishUnion.base
         ? recursiveEncodedTypeTextFromShape(nullishUnion.base, ownerTypeName, selfAliasName)
-        : nullishUnion.includesNull ? 'null' : 'undefined';
+        : nullishUnion.includesNull
+        ? 'null'
+        : 'undefined';
       if (!text) {
         return null;
       }
@@ -1833,7 +1901,9 @@ function decodeHelperTextFromShape(
         { kind: 'named', typeName: shape.name },
       );
       if (shape.name === ownerTypeName) {
-        return `${ctx.runtime.named('sts:decode', 'lazy').text()}((): import('sts:decode').Decoder<${shape.name}> => ${shape.name}Decoder)`;
+        return `${
+          ctx.runtime.named('sts:decode', 'lazy').text()
+        }((): import('sts:decode').Decoder<${shape.name}> => ${shape.name}Decoder)`;
       }
       const localCallbackTypeText = localNamedDecodeCallbackTypeText(
         ctx,
@@ -1843,11 +1913,19 @@ function decodeHelperTextFromShape(
         'decode',
       );
       return localCallbackTypeText
-        ? `${ctx.runtime.named('sts:decode', 'lazy').text()}((): ${localCallbackTypeText} => ${shape.name}Decoder)`
+        ? `${
+          ctx.runtime.named('sts:decode', 'lazy').text()
+        }((): ${localCallbackTypeText} => ${shape.name}Decoder)`
         : `${ctx.runtime.named('sts:decode', 'lazy').text()}(() => ${shape.name}Decoder)`;
     }
     case 'array': {
-      const element = decodeHelperTextFromShape(ctx, shape.element, ownerTypeName, scopeNode, errorNode);
+      const element = decodeHelperTextFromShape(
+        ctx,
+        shape.element,
+        ownerTypeName,
+        scopeNode,
+        errorNode,
+      );
       return element ? `${ctx.runtime.named('sts:decode', 'array').text()}(${element})` : null;
     }
     case 'tuple': {
@@ -1861,12 +1939,24 @@ function decodeHelperTextFromShape(
         : null;
     }
     case 'option': {
-      const value = decodeHelperTextFromShape(ctx, shape.value, ownerTypeName, scopeNode, errorNode);
+      const value = decodeHelperTextFromShape(
+        ctx,
+        shape.value,
+        ownerTypeName,
+        scopeNode,
+        errorNode,
+      );
       return value ? `${ctx.runtime.named('sts:decode', 'option').text()}(${value})` : null;
     }
     case 'result': {
       const okType = decodeHelperTextFromShape(ctx, shape.ok, ownerTypeName, scopeNode, errorNode);
-      const errType = decodeHelperTextFromShape(ctx, shape.err, ownerTypeName, scopeNode, errorNode);
+      const errType = decodeHelperTextFromShape(
+        ctx,
+        shape.err,
+        ownerTypeName,
+        scopeNode,
+        errorNode,
+      );
       return okType && errType
         ? `${ctx.runtime.named('sts:decode', 'result').text()}(${okType}, ${errType})`
         : null;
@@ -1875,13 +1965,21 @@ function decodeHelperTextFromShape(
       if (shape.key.kind !== 'primitive' || shape.key.primitiveKind !== 'string') {
         return null;
       }
-      const value = decodeHelperTextFromShape(ctx, shape.value, ownerTypeName, scopeNode, errorNode);
+      const value = decodeHelperTextFromShape(
+        ctx,
+        shape.value,
+        ownerTypeName,
+        scopeNode,
+        errorNode,
+      );
       return value ? `${ctx.runtime.named('sts:decode', 'readonlyRecord').text()}(${value})` : null;
     }
     case 'object':
     case 'intersection': {
       const fields = flattenObjectLikeTypeFields(shape);
-      return fields ? nestedDecodeHelperTextFromFields(ctx, ownerTypeName, scopeNode, fields) : null;
+      return fields
+        ? nestedDecodeHelperTextFromFields(ctx, ownerTypeName, scopeNode, fields)
+        : null;
     }
     case 'union': {
       const nullishUnion = decomposeNullishUnion(shape);
@@ -1938,7 +2036,9 @@ function encodeHelperTextFromShape(
         { kind: 'named', typeName: shape.name },
       );
       if (shape.name === ownerTypeName) {
-        return `${ctx.runtime.named('sts:encode', 'lazy').text()}((): import('sts:encode').Encoder<${shape.name}, import('sts:json').JsonLikeValue> => ${shape.name}Encoder)`;
+        return `${
+          ctx.runtime.named('sts:encode', 'lazy').text()
+        }((): import('sts:encode').Encoder<${shape.name}, import('sts:json').JsonLikeValue> => ${shape.name}Encoder)`;
       }
       const localCallbackTypeText = localNamedEncodeCallbackTypeText(
         ctx,
@@ -1948,11 +2048,19 @@ function encodeHelperTextFromShape(
         'encode',
       );
       return localCallbackTypeText
-        ? `${ctx.runtime.named('sts:encode', 'lazy').text()}((): ${localCallbackTypeText} => ${shape.name}Encoder)`
+        ? `${
+          ctx.runtime.named('sts:encode', 'lazy').text()
+        }((): ${localCallbackTypeText} => ${shape.name}Encoder)`
         : `${ctx.runtime.named('sts:encode', 'lazy').text()}(() => ${shape.name}Encoder)`;
     }
     case 'array': {
-      const element = encodeHelperTextFromShape(ctx, shape.element, ownerTypeName, scopeNode, errorNode);
+      const element = encodeHelperTextFromShape(
+        ctx,
+        shape.element,
+        ownerTypeName,
+        scopeNode,
+        errorNode,
+      );
       return element ? `${ctx.runtime.named('sts:encode', 'array').text()}(${element})` : null;
     }
     case 'tuple': {
@@ -1966,12 +2074,24 @@ function encodeHelperTextFromShape(
         : null;
     }
     case 'option': {
-      const value = encodeHelperTextFromShape(ctx, shape.value, ownerTypeName, scopeNode, errorNode);
+      const value = encodeHelperTextFromShape(
+        ctx,
+        shape.value,
+        ownerTypeName,
+        scopeNode,
+        errorNode,
+      );
       return value ? `${ctx.runtime.named('sts:encode', 'option').text()}(${value})` : null;
     }
     case 'result': {
       const okType = encodeHelperTextFromShape(ctx, shape.ok, ownerTypeName, scopeNode, errorNode);
-      const errType = encodeHelperTextFromShape(ctx, shape.err, ownerTypeName, scopeNode, errorNode);
+      const errType = encodeHelperTextFromShape(
+        ctx,
+        shape.err,
+        ownerTypeName,
+        scopeNode,
+        errorNode,
+      );
       return okType && errType
         ? `${ctx.runtime.named('sts:encode', 'result').text()}(${okType}, ${errType})`
         : null;
@@ -1980,13 +2100,21 @@ function encodeHelperTextFromShape(
       if (shape.key.kind !== 'primitive' || shape.key.primitiveKind !== 'string') {
         return null;
       }
-      const value = encodeHelperTextFromShape(ctx, shape.value, ownerTypeName, scopeNode, errorNode);
+      const value = encodeHelperTextFromShape(
+        ctx,
+        shape.value,
+        ownerTypeName,
+        scopeNode,
+        errorNode,
+      );
       return value ? `${ctx.runtime.named('sts:encode', 'record').text()}(${value})` : null;
     }
     case 'object':
     case 'intersection': {
       const fields = flattenObjectLikeTypeFields(shape);
-      return fields ? nestedEncodeHelperTextFromFields(ctx, ownerTypeName, scopeNode, fields) : null;
+      return fields
+        ? nestedEncodeHelperTextFromFields(ctx, ownerTypeName, scopeNode, fields)
+        : null;
     }
     case 'union': {
       const nullishUnion = decomposeNullishUnion(shape);
@@ -2029,8 +2157,12 @@ function codecHelperTextsFromShape(
       };
     case 'literal':
       return {
-        decodeText: `${ctx.runtime.named('sts:decode', 'literal').text()}(${JSON.stringify(shape.value)})`,
-        encodeText: `${ctx.runtime.named('sts:encode', 'literal').text()}(${JSON.stringify(shape.value)})`,
+        decodeText: `${ctx.runtime.named('sts:decode', 'literal').text()}(${
+          JSON.stringify(shape.value)
+        })`,
+        encodeText: `${ctx.runtime.named('sts:encode', 'literal').text()}(${
+          JSON.stringify(shape.value)
+        })`,
       };
     case 'null':
       return {
@@ -2072,15 +2204,27 @@ function codecHelperTextsFromShape(
         );
         return {
           decodeText: shape.name === ownerTypeName
-            ? `${ctx.runtime.named('sts:decode', 'lazy').text()}((): import('sts:decode').Decoder<${shape.name}> => ${sideCompanions.decodeCompanionName})`
+            ? `${
+              ctx.runtime.named('sts:decode', 'lazy').text()
+            }((): import('sts:decode').Decoder<${shape.name}> => ${sideCompanions.decodeCompanionName})`
             : localDecodeCallbackTypeText
-            ? `${ctx.runtime.named('sts:decode', 'lazy').text()}((): ${localDecodeCallbackTypeText} => ${sideCompanions.decodeCompanionName})`
-            : `${ctx.runtime.named('sts:decode', 'lazy').text()}(() => ${sideCompanions.decodeCompanionName})`,
+            ? `${
+              ctx.runtime.named('sts:decode', 'lazy').text()
+            }((): ${localDecodeCallbackTypeText} => ${sideCompanions.decodeCompanionName})`
+            : `${
+              ctx.runtime.named('sts:decode', 'lazy').text()
+            }(() => ${sideCompanions.decodeCompanionName})`,
           encodeText: shape.name === ownerTypeName
-            ? `${ctx.runtime.named('sts:encode', 'lazy').text()}((): import('sts:encode').Encoder<${shape.name}, import('sts:json').JsonLikeValue> => ${sideCompanions.encodeCompanionName})`
+            ? `${
+              ctx.runtime.named('sts:encode', 'lazy').text()
+            }((): import('sts:encode').Encoder<${shape.name}, import('sts:json').JsonLikeValue> => ${sideCompanions.encodeCompanionName})`
             : localEncodeCallbackTypeText
-            ? `${ctx.runtime.named('sts:encode', 'lazy').text()}((): ${localEncodeCallbackTypeText} => ${sideCompanions.encodeCompanionName})`
-            : `${ctx.runtime.named('sts:encode', 'lazy').text()}(() => ${sideCompanions.encodeCompanionName})`,
+            ? `${
+              ctx.runtime.named('sts:encode', 'lazy').text()
+            }((): ${localEncodeCallbackTypeText} => ${sideCompanions.encodeCompanionName})`
+            : `${
+              ctx.runtime.named('sts:encode', 'lazy').text()
+            }(() => ${sideCompanions.encodeCompanionName})`,
         };
       }
       const localDecodeCallbackTypeText = localNamedDecodeCallbackTypeText(
@@ -2099,19 +2243,33 @@ function codecHelperTextsFromShape(
       );
       return {
         decodeText: shape.name === ownerTypeName
-          ? `${ctx.runtime.named('sts:decode', 'lazy').text()}((): import('sts:decode').Decoder<${shape.name}> => ${shape.name}Codec)`
+          ? `${
+            ctx.runtime.named('sts:decode', 'lazy').text()
+          }((): import('sts:decode').Decoder<${shape.name}> => ${shape.name}Codec)`
           : localDecodeCallbackTypeText
-          ? `${ctx.runtime.named('sts:decode', 'lazy').text()}((): ${localDecodeCallbackTypeText} => ${shape.name}Codec)`
+          ? `${
+            ctx.runtime.named('sts:decode', 'lazy').text()
+          }((): ${localDecodeCallbackTypeText} => ${shape.name}Codec)`
           : `${ctx.runtime.named('sts:decode', 'lazy').text()}(() => ${shape.name}Codec)`,
         encodeText: shape.name === ownerTypeName
-          ? `${ctx.runtime.named('sts:encode', 'lazy').text()}((): import('sts:encode').Encoder<${shape.name}, import('sts:json').JsonLikeValue> => ${shape.name}Codec)`
+          ? `${
+            ctx.runtime.named('sts:encode', 'lazy').text()
+          }((): import('sts:encode').Encoder<${shape.name}, import('sts:json').JsonLikeValue> => ${shape.name}Codec)`
           : localEncodeCallbackTypeText
-          ? `${ctx.runtime.named('sts:encode', 'lazy').text()}((): ${localEncodeCallbackTypeText} => ${shape.name}Codec)`
+          ? `${
+            ctx.runtime.named('sts:encode', 'lazy').text()
+          }((): ${localEncodeCallbackTypeText} => ${shape.name}Codec)`
           : `${ctx.runtime.named('sts:encode', 'lazy').text()}(() => ${shape.name}Codec)`,
       };
     }
     case 'array': {
-      const element = codecHelperTextsFromShape(ctx, shape.element, ownerTypeName, scopeNode, errorNode);
+      const element = codecHelperTextsFromShape(
+        ctx,
+        shape.element,
+        ownerTypeName,
+        scopeNode,
+        errorNode,
+      );
       return element
         ? {
           decodeText: `${ctx.runtime.named('sts:decode', 'array').text()}(${element.decodeText})`,
@@ -2126,7 +2284,10 @@ function codecHelperTextsFromShape(
       if (!elements.every((element) => element !== null)) {
         return null;
       }
-      const resolved = elements as readonly { readonly decodeText: string; readonly encodeText: string }[];
+      const resolved = elements as readonly {
+        readonly decodeText: string;
+        readonly encodeText: string;
+      }[];
       return {
         decodeText: `${ctx.runtime.named('sts:decode', 'tuple').text()}(${
           resolved.map((element) => element.decodeText).join(', ')
@@ -2137,7 +2298,13 @@ function codecHelperTextsFromShape(
       };
     }
     case 'option': {
-      const value = codecHelperTextsFromShape(ctx, shape.value, ownerTypeName, scopeNode, errorNode);
+      const value = codecHelperTextsFromShape(
+        ctx,
+        shape.value,
+        ownerTypeName,
+        scopeNode,
+        errorNode,
+      );
       return value
         ? {
           decodeText: `${ctx.runtime.named('sts:decode', 'option').text()}(${value.decodeText})`,
@@ -2147,11 +2314,21 @@ function codecHelperTextsFromShape(
     }
     case 'result': {
       const okType = codecHelperTextsFromShape(ctx, shape.ok, ownerTypeName, scopeNode, errorNode);
-      const errType = codecHelperTextsFromShape(ctx, shape.err, ownerTypeName, scopeNode, errorNode);
+      const errType = codecHelperTextsFromShape(
+        ctx,
+        shape.err,
+        ownerTypeName,
+        scopeNode,
+        errorNode,
+      );
       return okType && errType
         ? {
-          decodeText: `${ctx.runtime.named('sts:decode', 'result').text()}(${okType.decodeText}, ${errType.decodeText})`,
-          encodeText: `${ctx.runtime.named('sts:encode', 'result').text()}(${okType.encodeText}, ${errType.encodeText})`,
+          decodeText: `${
+            ctx.runtime.named('sts:decode', 'result').text()
+          }(${okType.decodeText}, ${errType.decodeText})`,
+          encodeText: `${
+            ctx.runtime.named('sts:encode', 'result').text()
+          }(${okType.encodeText}, ${errType.encodeText})`,
         }
         : null;
     }
@@ -2159,10 +2336,18 @@ function codecHelperTextsFromShape(
       if (shape.key.kind !== 'primitive' || shape.key.primitiveKind !== 'string') {
         return null;
       }
-      const value = codecHelperTextsFromShape(ctx, shape.value, ownerTypeName, scopeNode, errorNode);
+      const value = codecHelperTextsFromShape(
+        ctx,
+        shape.value,
+        ownerTypeName,
+        scopeNode,
+        errorNode,
+      );
       return value
         ? {
-          decodeText: `${ctx.runtime.named('sts:decode', 'readonlyRecord').text()}(${value.decodeText})`,
+          decodeText: `${
+            ctx.runtime.named('sts:decode', 'readonlyRecord').text()
+          }(${value.decodeText})`,
           encodeText: `${ctx.runtime.named('sts:encode', 'record').text()}(${value.encodeText})`,
         }
         : null;
@@ -2170,7 +2355,9 @@ function codecHelperTextsFromShape(
     case 'object':
     case 'intersection': {
       const fields = flattenObjectLikeTypeFields(shape);
-      return fields ? nestedCodecHelperTextsFromFields(ctx, ownerTypeName, scopeNode, fields) : null;
+      return fields
+        ? nestedCodecHelperTextsFromFields(ctx, ownerTypeName, scopeNode, fields)
+        : null;
     }
     case 'union': {
       const nullishUnion = decomposeNullishUnion(shape);
@@ -2199,8 +2386,12 @@ function codecHelperTextsFromShape(
       }
       if (nullishUnion.includesUndefined) {
         texts = {
-          decodeText: `${ctx.runtime.named('sts:decode', 'undefinedable').text()}(${texts.decodeText})`,
-          encodeText: `${ctx.runtime.named('sts:encode', 'undefinedable').text()}(${texts.encodeText})`,
+          decodeText: `${
+            ctx.runtime.named('sts:decode', 'undefinedable').text()
+          }(${texts.decodeText})`,
+          encodeText: `${
+            ctx.runtime.named('sts:encode', 'undefinedable').text()
+          }(${texts.encodeText})`,
         };
       }
       return texts;
@@ -2292,7 +2483,9 @@ function wrapDecodeConstraintText(
     if (prefix === null) {
       ctx.error('decode.startsWith(...) requires a string literal.', node);
     }
-    text = `${ctx.runtime.named('sts:decode', 'startsWith').text()}(${text}, ${JSON.stringify(prefix)})`;
+    text = `${ctx.runtime.named('sts:decode', 'startsWith').text()}(${text}, ${
+      JSON.stringify(prefix)
+    })`;
   }
 
   const endsWithAnnotation = findAnnotation(annotations, 'decode.endsWith');
@@ -2301,7 +2494,9 @@ function wrapDecodeConstraintText(
     if (suffix === null) {
       ctx.error('decode.endsWith(...) requires a string literal.', node);
     }
-    text = `${ctx.runtime.named('sts:decode', 'endsWith').text()}(${text}, ${JSON.stringify(suffix)})`;
+    text = `${ctx.runtime.named('sts:decode', 'endsWith').text()}(${text}, ${
+      JSON.stringify(suffix)
+    })`;
   }
 
   const patternAnnotation = findAnnotation(annotations, 'decode.pattern');
@@ -2335,7 +2530,9 @@ function wrapDecodeConstraintText(
     ) {
       ctx.error(`decode.format(...) requires "email", "uuid", "url", or "iso-datetime".`, node);
     }
-    text = `${ctx.runtime.named('sts:decode', 'format').text()}(${text}, ${JSON.stringify(formatName)})`;
+    text = `${ctx.runtime.named('sts:decode', 'format').text()}(${text}, ${
+      JSON.stringify(formatName)
+    })`;
   }
 
   return text;
@@ -2382,7 +2579,9 @@ function wrapDecodeFieldText(
   }
 
   const transformAnnotation = findAnnotation(annotations, 'decode.transform');
-  const transformIdentifier = transformAnnotation ? annotationIdentifierArgument(transformAnnotation) : null;
+  const transformIdentifier = transformAnnotation
+    ? annotationIdentifierArgument(transformAnnotation)
+    : null;
   if (transformAnnotation && !transformIdentifier) {
     ctx.error('decode.transform(...) requires a helper identifier.', node);
   }
@@ -2425,9 +2624,9 @@ function wrapDecodeFieldText(
     text = `${decodeMap}(${text}, ${transformIdentifier})`;
   }
   if (refineIdentifier) {
-    text = `${decodeRefine}(${
-      text
-    }, ${refineIdentifier}, ${JSON.stringify(`Expected field "${localName}" to satisfy decode.refine(...).`)})`;
+    text = `${decodeRefine}(${text}, ${refineIdentifier}, ${
+      JSON.stringify(`Expected field "${localName}" to satisfy decode.refine(...).`)
+    })`;
   }
   return text;
 }
@@ -2442,7 +2641,9 @@ function wrapEncodeFieldText(
   ownerTypeName?: string,
 ): string {
   const transformAnnotation = findAnnotation(annotations, 'encode.transform');
-  const transformIdentifier = transformAnnotation ? annotationIdentifierArgument(transformAnnotation) : null;
+  const transformIdentifier = transformAnnotation
+    ? annotationIdentifierArgument(transformAnnotation)
+    : null;
   if (transformAnnotation && !transformIdentifier) {
     ctx.error('encode.transform(...) requires a helper identifier.', node);
   }
@@ -2480,9 +2681,9 @@ function wrapEncodeFieldText(
     text = `${encodeContramap}(${text}, ${transformIdentifier})`;
   }
   if (refineIdentifier) {
-    text = `${encodeRefine}(${
-      text
-    }, ${refineIdentifier}, ${JSON.stringify(`Expected field "${localName}" to satisfy encode.refine(...).`)})`;
+    text = `${encodeRefine}(${text}, ${refineIdentifier}, ${
+      JSON.stringify(`Expected field "${localName}" to satisfy encode.refine(...).`)
+    })`;
   }
   return text;
 }
@@ -2490,7 +2691,11 @@ function wrapEncodeFieldText(
 function assertAnnotationHelperCallableInScope(
   ctx: DeriveContext,
   diagnosticNode: MacroSyntaxNode,
-  declaration: MacroClassDeclSyntax | MacroInterfaceDeclSyntax | MacroTypeAliasDeclSyntax | undefined,
+  declaration:
+    | MacroClassDeclSyntax
+    | MacroInterfaceDeclSyntax
+    | MacroTypeAliasDeclSyntax
+    | undefined,
   typeName: string | undefined,
   helperIdentifier: string,
   annotationName:
@@ -2556,7 +2761,9 @@ function wrapDecodeDeclarationText(
   }
 
   const transformAnnotation = findAnnotation(annotations, 'decode.transform');
-  const transformIdentifier = transformAnnotation ? annotationIdentifierArgument(transformAnnotation) : null;
+  const transformIdentifier = transformAnnotation
+    ? annotationIdentifierArgument(transformAnnotation)
+    : null;
   if (transformAnnotation && !transformIdentifier) {
     ctx.error('decode.transform(...) requires a helper identifier.', node);
   }
@@ -2598,9 +2805,9 @@ function wrapDecodeDeclarationText(
     text = `${decodeMap}(${text}, ${transformIdentifier})`;
   }
   if (refineIdentifier) {
-    text = `${decodeRefine}(${
-      text
-    }, ${refineIdentifier}, ${JSON.stringify(`Expected ${typeName} to satisfy decode.refine(...).`)})`;
+    text = `${decodeRefine}(${text}, ${refineIdentifier}, ${
+      JSON.stringify(`Expected ${typeName} to satisfy decode.refine(...).`)
+    })`;
   }
   return text;
 }
@@ -2613,7 +2820,9 @@ function wrapEncodeDeclarationText(
   typeName: string,
 ): string {
   const transformAnnotation = findAnnotation(annotations, 'encode.transform');
-  const transformIdentifier = transformAnnotation ? annotationIdentifierArgument(transformAnnotation) : null;
+  const transformIdentifier = transformAnnotation
+    ? annotationIdentifierArgument(transformAnnotation)
+    : null;
   if (transformAnnotation && !transformIdentifier) {
     ctx.error('encode.transform(...) requires a helper identifier.', node);
   }
@@ -2650,9 +2859,9 @@ function wrapEncodeDeclarationText(
     text = `${encodeContramap}(${text}, ${transformIdentifier})`;
   }
   if (refineIdentifier) {
-    text = `${encodeRefine}(${
-      text
-    }, ${refineIdentifier}, ${JSON.stringify(`Expected ${typeName} to satisfy encode.refine(...).`)})`;
+    text = `${encodeRefine}(${text}, ${refineIdentifier}, ${
+      JSON.stringify(`Expected ${typeName} to satisfy encode.refine(...).`)
+    })`;
   }
   return text;
 }
@@ -2692,7 +2901,12 @@ function decodeFieldMetadataEffectsText(
   if (!helperIdentifier) {
     return null;
   }
-  const mode = annotationIdentifierHelperModeWithoutDiagnostic(ctx, viaAnnotation, scopeNode, 'decode');
+  const mode = annotationIdentifierHelperModeWithoutDiagnostic(
+    ctx,
+    viaAnnotation,
+    scopeNode,
+    'decode',
+  );
   return `[${metadataOpaqueEffectText('via', helperIdentifier, mode === 'async')}]`;
 }
 
@@ -2708,7 +2922,12 @@ function encodeFieldMetadataEffectsText(
   if (!helperIdentifier) {
     return null;
   }
-  const mode = annotationIdentifierHelperModeWithoutDiagnostic(ctx, viaAnnotation, scopeNode, 'encode');
+  const mode = annotationIdentifierHelperModeWithoutDiagnostic(
+    ctx,
+    viaAnnotation,
+    scopeNode,
+    'encode',
+  );
   return `[${metadataOpaqueEffectText('via', helperIdentifier, mode === 'async')}]`;
 }
 
@@ -2718,7 +2937,10 @@ function classFactoryMetadataEffectText(
   macroName: 'codec' | 'decode',
   typeName: string,
 ): string {
-  const annotation = findAnnotation(resolvedDeclarationAnnotations(ctx, declaration), `${macroName}.factory`);
+  const annotation = findAnnotation(
+    resolvedDeclarationAnnotations(ctx, declaration),
+    `${macroName}.factory`,
+  );
   if (!annotation) {
     return `{
       kind: 'opaque',
@@ -2754,24 +2976,36 @@ function metadataDirectionFallbackText(mode: 'async' | 'sync'): string {
 
 function metadataFieldPatchArrayText(
   rootName: string,
-  fields: readonly { readonly localName: string; readonly metadataEffectsText: string | null; readonly optional: boolean; readonly wireName: string }[],
+  fields: readonly {
+    readonly localName: string;
+    readonly metadataEffectsText: string | null;
+    readonly optional: boolean;
+    readonly wireName: string;
+  }[],
 ): string {
   return `[
     ${
-    fields.map((field, index) => `{
+    fields.map((field, index) =>
+      `{
       ...${rootName}.fields[${index}]!,
       localName: ${JSON.stringify(field.localName)},
       optional: ${field.optional ? 'true' : 'false'},
       wireName: ${JSON.stringify(field.wireName)}${
-      field.metadataEffectsText ? `,
-      effects: ${field.metadataEffectsText}` : ''
-    },
-    }`).join(',\n')
+        field.metadataEffectsText
+          ? `,
+      effects: ${field.metadataEffectsText}`
+          : ''
+      },
+    }`
+    ).join(',\n')
   }
   ]`;
 }
 
-function stripAnonymousProjectionEffectText(rootName: string, extraEffectsTexts: readonly string[] = []): string {
+function stripAnonymousProjectionEffectText(
+  rootName: string,
+  extraEffectsTexts: readonly string[] = [],
+): string {
   return `(() => {
     const effects = [...(${rootName}.effects ?? [])];
     const anonymousProjectionIndex = effects.findIndex((effect) =>
@@ -2783,9 +3017,7 @@ function stripAnonymousProjectionEffectText(rootName: string, extraEffectsTexts:
     if (anonymousProjectionIndex >= 0) {
       effects.splice(anonymousProjectionIndex, 1);
     }
-    ${
-    extraEffectsTexts.map((effectText) => `effects.push(${effectText});`).join('\n')
-  }
+    ${extraEffectsTexts.map((effectText) => `effects.push(${effectText});`).join('\n')}
     return effects;
   })()`;
 }
@@ -2890,11 +3122,15 @@ function withNamedMetadataText(
     const __sts_metadata = ${metadataOf}(__sts_base);
     return ${attachMetadata}(__sts_base, __sts_metadata === null ? {
       name: ${JSON.stringify(typeName)}${
-    decodeFallbackText ? `,
-      decode: ${decodeFallbackText}` : ''
+    decodeFallbackText
+      ? `,
+      decode: ${decodeFallbackText}`
+      : ''
   }${
-    encodeFallbackText ? `,
-      encode: ${encodeFallbackText}` : ''
+    encodeFallbackText
+      ? `,
+      encode: ${encodeFallbackText}`
+      : ''
   }
     } : {
       ...__sts_metadata,
@@ -3174,7 +3410,12 @@ function decodeFieldFromReflectedShape(
     decoderText: wrapDecodeDefaultFieldText(ctx, fieldDecoderText, defaultText),
     defaultText: null,
     localName: field.name,
-    metadataEffectsText: decodeFieldMetadataEffectsText(ctx, field.annotations, field.node, 'decode'),
+    metadataEffectsText: decodeFieldMetadataEffectsText(
+      ctx,
+      field.annotations,
+      field.node,
+      'decode',
+    ),
     optional: field.optional && defaultText === null,
     wireName: renamedWireName ?? field.name,
   };
@@ -3230,7 +3471,12 @@ function encodeFieldFromReflectedShape(
       ownerTypeName,
     ),
     localName: field.name,
-    metadataEffectsText: encodeFieldMetadataEffectsText(ctx, field.annotations, field.node, 'encode'),
+    metadataEffectsText: encodeFieldMetadataEffectsText(
+      ctx,
+      field.annotations,
+      field.node,
+      'encode',
+    ),
     optional: field.optional,
     wireName: renamedWireName ?? field.name,
   };
@@ -3299,7 +3545,12 @@ function codecFieldFromReflectedShape(
       ownerTypeName,
     ),
     localName: field.name,
-    metadataEffectsText: decodeFieldMetadataEffectsText(ctx, field.annotations, field.node, 'codec'),
+    metadataEffectsText: decodeFieldMetadataEffectsText(
+      ctx,
+      field.annotations,
+      field.node,
+      'codec',
+    ),
     optional: field.optional,
     wireName: renamedWireName ?? field.name,
   };
@@ -3544,9 +3795,7 @@ function nestedDecodeHelperTextFromFields(
     ).join(',\n')
   }
       })`;
-  const helperText = isIdentityProjection
-    ? `${decodeObject}(${shapeText})`
-    : `${decodeMap}(
+  const helperText = isIdentityProjection ? `${decodeObject}(${shapeText})` : `${decodeMap}(
     ${decodeObject}(${shapeText}),
     (value) => ${projectionText},
   )`;
@@ -3582,9 +3831,7 @@ function nestedEncodeHelperTextFromFields(
     ).join(',\n')
   }
       })`;
-  const helperText = isIdentityProjection
-    ? `${encodeObject}(${shapeText})`
-    : `${encodeContramap}(
+  const helperText = isIdentityProjection ? `${encodeObject}(${shapeText})` : `${encodeContramap}(
     ${encodeObject}(${shapeText}),
     (value) => ${projectionText},
   )`;
@@ -3653,10 +3900,10 @@ function nestedCodecHelperTextsFromFields(
       ${encodeObject}(${encodeShapeText}),
       (value) => ({
         ${
-        codecFields.map((field) =>
-          `${propertyKeyText(field.wireName)}: ${propertyAccessText('value', field.localName)}`
-        ).join(',\n')
-      }
+      codecFields.map((field) =>
+        `${propertyKeyText(field.wireName)}: ${propertyAccessText('value', field.localName)}`
+      ).join(',\n')
+    }
       }),
     )`;
   return {
@@ -3842,10 +4089,10 @@ function nestedCodecHelperTexts(
       ${encodeObject}(${encodeShapeText}),
       (value) => ({
         ${
-        fields.map((field) =>
-          `${propertyKeyText(field.wireName)}: ${propertyAccessText('value', field.localName)}`
-        ).join(',\n')
-      }
+      fields.map((field) =>
+        `${propertyKeyText(field.wireName)}: ${propertyAccessText('value', field.localName)}`
+      ).join(',\n')
+    }
       }),
     )`;
   return {
@@ -4076,7 +4323,9 @@ function classifySelfStaticHelper(
   return member.memberKind === 'method' ? 'callable' : 'non-callable';
 }
 
-function hostDeclarationNameText(name: ts.PropertyName | ts.DeclarationName | undefined): string | null {
+function hostDeclarationNameText(
+  name: ts.PropertyName | ts.DeclarationName | undefined,
+): string | null {
   if (!name) {
     return null;
   }
@@ -4116,7 +4365,8 @@ function selfStaticHelperMayResolveAsync(
   }
   const hostMember = hostDeclaration.members.find((member) =>
     ts.canHaveModifiers(member) &&
-    ts.getModifiers(member)?.some((modifier) => modifier.kind === ts.SyntaxKind.StaticKeyword) === true &&
+    ts.getModifiers(member)?.some((modifier) => modifier.kind === ts.SyntaxKind.StaticKeyword) ===
+      true &&
     hostDeclarationNameText(member.name) === segments[1]
   );
   if (!hostMember) {
@@ -4125,7 +4375,9 @@ function selfStaticHelperMayResolveAsync(
   if (ts.isMethodDeclaration(hostMember)) {
     return hostTypeNodeMayResolveAsync(hostMember.type) ||
       (ts.canHaveModifiers(hostMember) &&
-        ts.getModifiers(hostMember)?.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword) === true);
+        ts.getModifiers(hostMember)?.some((modifier) =>
+            modifier.kind === ts.SyntaxKind.AsyncKeyword
+          ) === true);
   }
   return false;
 }
@@ -4781,9 +5033,7 @@ function collectTaggedVariants(
     );
   }
   const sourceFile = hostDeclaration.getSourceFile();
-  const hostUnionType = ts.isUnionTypeNode(hostDeclaration.type)
-    ? hostDeclaration.type
-    : undefined;
+  const hostUnionType = ts.isUnionTypeNode(hostDeclaration.type) ? hostDeclaration.type : undefined;
   if (!hostUnionType) {
     return validateTaggedUnionSyntaxForDiagnostics(
       ctx,

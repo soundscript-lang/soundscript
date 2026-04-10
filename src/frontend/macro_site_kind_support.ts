@@ -1,6 +1,6 @@
 import ts from 'typescript';
 
-import { BUILTIN_DIRECTIVE_NAMES, createAnnotationLookup } from '../annotation_syntax.ts';
+import { BUILTIN_DIRECTIVE_NAMES, createAnnotationLookup } from '../language/annotation_syntax.ts';
 import type { ImportedMacroSiteKind } from './macro_rewrite.ts';
 
 export interface ImportedNamedBinding {
@@ -184,8 +184,8 @@ export function collectImportedMacroSiteKindsBySpecifier(
   }
   const syntaxFallbackKindsByLocalName =
     (options.useSyntaxFallback || options.resolveOnlySyntaxCandidates)
-    ? collectSyntaxFallbackKindsByLocalName(sourceFile, bindingsByLocalName)
-    : new Map<string, ImportedMacroSiteKind>();
+      ? collectSyntaxFallbackKindsByLocalName(sourceFile, bindingsByLocalName)
+      : new Map<string, ImportedMacroSiteKind>();
 
   const explicitSiteKindsBySpecifier = options.explicitSiteKindsBySpecifier ?? new Map();
   const resolvedSiteKindsCache = new Map<

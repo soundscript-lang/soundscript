@@ -26,7 +26,9 @@ export function createSpecializedObjectKeysHelperName(
   return [
     'list_specialized_object_keys',
     sanitizeObjectKeysHelperNamePart(representationName),
-    createStableHelperIdentityHash(createObjectKeysHelperIdentity(representationName, propertyKeys)),
+    createStableHelperIdentityHash(
+      createObjectKeysHelperIdentity(representationName, propertyKeys),
+    ),
   ].join('__');
 }
 

@@ -1574,7 +1574,9 @@ export function expandPreparedProgramWithFileRegistries(
   annotateExpansions = false,
   sourceFiles = preparedProgram.program.getSourceFiles(),
 ): ReadonlyMap<string, ts.SourceFile> {
-  const nonDeclarationSourceFiles = sourceFiles.filter((sourceFile) => !sourceFile.isDeclarationFile);
+  const nonDeclarationSourceFiles = sourceFiles.filter((sourceFile) =>
+    !sourceFile.isDeclarationFile
+  );
   const collected = collectResolvedMacroPlaceholders(preparedProgram, nonDeclarationSourceFiles);
   const expandedFiles = new Map<string, ts.SourceFile>();
 

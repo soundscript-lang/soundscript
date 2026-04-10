@@ -3,9 +3,9 @@ import { assertEquals, assertNotEquals } from '@std/assert';
 import { codec as createCodec, isoDate } from './codec.ts';
 import {
   array,
-  defaulted,
   type DecodeMode,
   type Decoder,
+  defaulted,
   lazy,
   minLength,
   object,
@@ -14,11 +14,7 @@ import {
   refine,
   string,
 } from './decode.ts';
-import {
-  attachMetadata,
-  metadataOf,
-  type DeriveMetadata,
-} from './metadata.ts';
+import { attachMetadata, type DeriveMetadata, metadataOf } from './metadata.ts';
 
 function expectMetadata(value: unknown): DeriveMetadata {
   const metadata = metadataOf(value as never);

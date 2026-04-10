@@ -5,7 +5,7 @@ import {
   isForeignPackageSourceFile,
   isForeignResolvedModule,
   resolveSoundScriptAwareModule,
-} from '../../soundscript_packages.ts';
+} from '../../project/soundscript_packages.ts';
 import { isSoundscriptSourceFile, toSourceFileName } from '../../frontend/project_frontend.ts';
 
 export interface ImportedModuleResolution {
@@ -87,8 +87,8 @@ export function isUnsoundImportedModule(
 ): boolean {
   const importedSourceFile = resolution.importedSourceFile;
   const importedFileName = importedSourceFile?.fileName ?? '';
-  const importedIsTrustedPackageArtifact =
-    (importedFileName.includes('/node_modules/') || importedFileName.includes('\\node_modules\\')) &&
+  const importedIsTrustedPackageArtifact = (importedFileName.includes('/node_modules/') ||
+    importedFileName.includes('\\node_modules\\')) &&
     !isForeignPackageSourceFile(importedFileName, ts.sys);
 
   if (resolution.isForeign) {
@@ -118,7 +118,11 @@ export function getForeignImportBindingInfos(
       return [];
     }
 
-    const resolution = resolveImportedModule(context, statement.moduleSpecifier, containingSourceFile);
+    const resolution = resolveImportedModule(
+      context,
+      statement.moduleSpecifier,
+      containingSourceFile,
+    );
     const results: ForeignImportBindingInfo[] = [];
 
     if (statement.importClause.name) {

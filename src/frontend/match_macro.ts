@@ -5,9 +5,9 @@ import type {
   MacroContext,
   MacroFunctionExprSyntax,
   MacroHoverContext,
-  MacroPositionHoverContext,
   MacroHoverResult,
   MacroParameterSyntax,
+  MacroPositionHoverContext,
   MacroSemanticToken,
   MacroSemanticTokensContext,
 } from './macro_api.ts';
@@ -368,7 +368,9 @@ function typeofTypeConstraint(typeName: MatchTypeofPatternKind): string {
 }
 
 function machineNumericKindCondition(subjectExpr: string, kind: string): string {
-  return `typeof ${subjectExpr} === "object" && ${subjectExpr} !== null && (${subjectExpr} as { __soundscript_numeric_kind?: unknown }).__soundscript_numeric_kind === ${JSON.stringify(kind)}`;
+  return `typeof ${subjectExpr} === "object" && ${subjectExpr} !== null && (${subjectExpr} as { __soundscript_numeric_kind?: unknown }).__soundscript_numeric_kind === ${
+    JSON.stringify(kind)
+  }`;
 }
 
 function isStringLiteralCode(code: string): boolean {
@@ -549,7 +551,9 @@ function parseArrayMatchArm(
   const emittedGuardText = guardFunction
     ? emittedArrowText(
       guardFunction,
-      parameter.hasExplicitType() ? parameter.explicitType()?.text() ?? scrutineeTypeText : scrutineeTypeText,
+      parameter.hasExplicitType()
+        ? parameter.explicitType()?.text() ?? scrutineeTypeText
+        : scrutineeTypeText,
     )
     : guardNode?.text() ?? null;
 
@@ -884,7 +888,9 @@ function lowerPattern(
         : [...successLines];
       const predicate = preludeConstructorPredicate(pattern.className);
       return wrapGuard(
-        predicate ? `${predicate}(${subjectExpr})` : `${subjectExpr} instanceof ${pattern.className}`,
+        predicate
+          ? `${predicate}(${subjectExpr})`
+          : `${subjectExpr} instanceof ${pattern.className}`,
         inner,
       );
     }
@@ -988,7 +994,9 @@ function narrowedTypeForPattern(scrutineeType: string, pattern: MatchPattern): s
     case 'typeof':
       return `Extract<${scrutineeType}, ${typeofTypeConstraint(pattern.typeName)}>`;
     case 'instanceof':
-      return `Extract<${scrutineeType}, ${pattern.narrowedTypeText ?? fallbackNarrowedTypeForClass(pattern.className)}>`;
+      return `Extract<${scrutineeType}, ${
+        pattern.narrowedTypeText ?? fallbackNarrowedTypeForClass(pattern.className)
+      }>`;
     case 'object':
       return `Extract<${scrutineeType}, ${objectTypeConstraint(pattern)}>`;
     case 'array':
@@ -1030,7 +1038,9 @@ function lowerArrayMatchArm(arm: ArrayMatchArm, subjectExpr: string): string {
         `return (${arm.emittedArmText})(${narrowedSubjectExpr});`,
       ])
       : [`return (${arm.emittedArmText})(${narrowedSubjectExpr});`];
-    return lowerPattern(pattern, subjectExpr, successLines, collectLoweringState(pattern)).join('\n');
+    return lowerPattern(pattern, subjectExpr, successLines, collectLoweringState(pattern)).join(
+      '\n',
+    );
   }).join('\n');
 }
 

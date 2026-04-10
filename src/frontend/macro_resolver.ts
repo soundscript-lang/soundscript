@@ -18,12 +18,14 @@ export interface CollectedResolvedMacroPlaceholder {
   sourceFile: ts.SourceFile;
 }
 
-type MacroResolverPreparedProgram = Pick<
-  PreparedProgram,
-  'placeholderIndex' | 'program' | 'toSourceFileName'
-> & {
-  preparedHost?: Pick<PreparedCompilerHost, 'getPreparedSourceFile'>;
-};
+type MacroResolverPreparedProgram =
+  & Pick<
+    PreparedProgram,
+    'placeholderIndex' | 'program' | 'toSourceFileName'
+  >
+  & {
+    preparedHost?: Pick<PreparedCompilerHost, 'getPreparedSourceFile'>;
+  };
 
 function getPlaceholderId(callExpression: ts.CallExpression): number | undefined {
   if (callExpression.arguments.length !== 1) {
@@ -71,7 +73,10 @@ export function resolveMacroPlaceholdersInSourceFile(
         const id = getPlaceholderId(node);
         if (id !== undefined) {
           const placeholder = placeholderIndex.get(sourceFile.fileName, id);
-          if (placeholder && matchesIndexedPlaceholderSpan(sourceFile, node, placeholder, preparedFile)) {
+          if (
+            placeholder &&
+            matchesIndexedPlaceholderSpan(sourceFile, node, placeholder, preparedFile)
+          ) {
             resolved.push({
               callExpression: node,
               placeholder,
@@ -107,10 +112,10 @@ export function collectResolvedMacroPlaceholders(
           },
         },
         preparedFile,
-        ).map((resolved) => ({
-          resolved,
-          sourceFile,
-        }));
+      ).map((resolved) => ({
+        resolved,
+        sourceFile,
+      }));
     });
 
   collected.sort((left, right) => {

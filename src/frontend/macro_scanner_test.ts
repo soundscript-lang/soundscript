@@ -355,7 +355,7 @@ Deno.test('scanMacroCandidates keeps class body tracking stable across no-substi
 });
 
 Deno.test('scanMacroCandidates ignores hashes inside regular expression literals', () => {
-  const sourceText = "const cssColor = /^#[0-9a-fA-F]{3,8}$/;";
+  const sourceText = 'const cssColor = /^#[0-9a-fA-F]{3,8}$/;';
   const result = scanMacroCandidates('example.ts', sourceText);
 
   assertEquals(result.hashes, []);

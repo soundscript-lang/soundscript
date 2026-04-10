@@ -1,6 +1,6 @@
 import { assert, assertEquals } from '@std/assert';
 
-import { normalizeRuntimeContext } from '../config.ts';
+import { normalizeRuntimeContext } from '../project/config.ts';
 import { createAdvancedMacroContext } from './macro_advanced_context.ts';
 import { createMacroContext } from './macro_context.ts';
 import { MacroError } from './macro_errors.ts';
@@ -305,16 +305,31 @@ Deno.test('createMacroContext exposes generic annotation paths and rich normaliz
   const openApiAnnotation = declarationAnnotations[1]!;
   const [openApiArgument] = openApiAnnotation.arguments ?? [];
   assertEquals(openApiArgument?.kind, 'positional');
-  if (!openApiArgument || openApiArgument.kind !== 'positional' || openApiArgument.value.kind !== 'object') {
+  if (
+    !openApiArgument || openApiArgument.kind !== 'positional' ||
+    openApiArgument.value.kind !== 'object'
+  ) {
     throw new Error('expected normalized object annotation value');
   }
 
-  const routeProperty = openApiArgument.value.properties.find((property) => property.name === 'route');
-  const matcherProperty = openApiArgument.value.properties.find((property) => property.name === 'matcher');
-  const valueProperty = openApiArgument.value.properties.find((property) => property.name === 'value');
-  const tagsProperty = openApiArgument.value.properties.find((property) => property.name === 'tags');
-  const grpcIdProperty = openApiArgument.value.properties.find((property) => property.name === 'x-grpc-id');
-  const fallbackProperty = openApiArgument.value.properties.find((property) => property.name === 'fallback');
+  const routeProperty = openApiArgument.value.properties.find((property) =>
+    property.name === 'route'
+  );
+  const matcherProperty = openApiArgument.value.properties.find((property) =>
+    property.name === 'matcher'
+  );
+  const valueProperty = openApiArgument.value.properties.find((property) =>
+    property.name === 'value'
+  );
+  const tagsProperty = openApiArgument.value.properties.find((property) =>
+    property.name === 'tags'
+  );
+  const grpcIdProperty = openApiArgument.value.properties.find((property) =>
+    property.name === 'x-grpc-id'
+  );
+  const fallbackProperty = openApiArgument.value.properties.find((property) =>
+    property.name === 'fallback'
+  );
 
   assertEquals(routeProperty?.value, {
     kind: 'member',

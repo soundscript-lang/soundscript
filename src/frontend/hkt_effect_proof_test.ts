@@ -7,8 +7,9 @@ import { installTestDisposableCleanup } from './builtin_expanded_program_test_cl
 import { printSourceFileForMacroTest } from './macro_test_helpers.ts';
 
 const trackDisposable = installTestDisposableCleanup();
-const createBuiltinExpandedProgram = (...args: Parameters<typeof createBuiltinExpandedProgramRaw>) =>
-  trackDisposable(createBuiltinExpandedProgramRaw(...args));
+const createBuiltinExpandedProgram = (
+  ...args: Parameters<typeof createBuiltinExpandedProgramRaw>
+) => trackDisposable(createBuiltinExpandedProgramRaw(...args));
 
 function createBaseHost(files: ReadonlyMap<string, string>): ts.CompilerHost {
   const baseHost = ts.createCompilerHost({

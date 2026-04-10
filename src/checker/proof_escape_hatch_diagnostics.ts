@@ -59,8 +59,7 @@ export function createAnyTypeDiagnostic(node: ts.Node): SoundDiagnostic {
         '`any` erases the type information that checked soundscript code relies on.',
         `Example: ${ANY_TYPE_EXAMPLE}`,
       ],
-      hint:
-        'Replace `any` with `unknown` plus validation, or write the precise type directly.',
+      hint: 'Replace `any` with `unknown` plus validation, or write the precise type directly.',
     },
   );
 }
@@ -69,7 +68,9 @@ export function createTypeAssertionDiagnostic(
   context: AnalysisContext,
   node: ts.TypeAssertion | ts.AsExpression,
 ): SoundDiagnostic {
-  const expressionType = context.checker.typeToString(context.checker.getTypeAtLocation(node.expression));
+  const expressionType = context.checker.typeToString(
+    context.checker.getTypeAtLocation(node.expression),
+  );
   const assertedType = context.checker.typeToString(context.checker.getTypeFromTypeNode(node.type));
 
   return createDiagnostic(
@@ -105,7 +106,9 @@ export function createNonNullAssertionDiagnostic(
   context: AnalysisContext,
   node: ts.NonNullExpression,
 ): SoundDiagnostic {
-  const expressionType = context.checker.typeToString(context.checker.getTypeAtLocation(node.expression));
+  const expressionType = context.checker.typeToString(
+    context.checker.getTypeAtLocation(node.expression),
+  );
 
   return createDiagnostic(
     node,
@@ -127,8 +130,7 @@ export function createNonNullAssertionDiagnostic(
         `This expression has type '${expressionType}', but \`!\` skips the proof that it is present.`,
         `Example: ${NON_NULL_ASSERTION_EXAMPLE}`,
       ],
-      hint:
-        'Re-check the value or provide an explicit fallback before using it as non-null.',
+      hint: 'Re-check the value or provide an explicit fallback before using it as non-null.',
     },
   );
 }

@@ -103,7 +103,8 @@ function graphqlHover(
   }
 
   return {
-    contents: 'Embedded GraphQL fragment. `${...}` expressions become GraphQL variable placeholders by default.',
+    contents:
+      'Embedded GraphQL fragment. `${...}` expressions become GraphQL variable placeholders by default.',
   };
 }
 
@@ -246,7 +247,9 @@ export function expandGraphqlMacro(ctx: MacroContext) {
   }
 
   const { queryExpression, variableEntries } = buildGraphqlQueryExpression(template, ctx.name);
-  const variablesExpression = variableEntries.length > 0 ? `{ ${variableEntries.join(', ')} }` : '{}';
+  const variablesExpression = variableEntries.length > 0
+    ? `{ ${variableEntries.join(', ')} }`
+    : '{}';
   return ctx.output.expr(
     ctx.quote.expr`({ query: ${queryExpression}, variables: ${variablesExpression} })`,
   );

@@ -152,7 +152,8 @@ Deno.test('probe_family classifies module-completion cases as right_red when all
       JSON.stringify([
         {
           test: 'cases/raw/top-level.js',
-          note: 'Module-completion positive cases should classify clean compiler blockers as right_red.',
+          note:
+            'Module-completion positive cases should classify clean compiler blockers as right_red.',
           provenance: {
             kind: 'local',
             detail: 'Probe regression fixture.',

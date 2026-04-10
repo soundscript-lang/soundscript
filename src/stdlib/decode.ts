@@ -1,5 +1,5 @@
 import { type ErrorFrame, Failure } from 'sts:failures';
-import { err, isErr, none, ok, some, type Option, type Result } from 'sts:result';
+import { err, isErr, none, ok, type Option, type Result, some } from 'sts:result';
 import {
   __attachDecodeMetadata,
   __cloneNodeWithEffects,
@@ -97,24 +97,24 @@ export type Decoder<T, E = DecodeFailure, M extends DecodeMode = 'sync'> = {
 
 // #[variance(T: out, E: out, M: out)]
 export type OptionalDecoder<T, E = DecodeFailure, M extends DecodeMode = 'sync'> =
-  Decoder<T | undefined, E, M> & {
+  & Decoder<T | undefined, E, M>
+  & {
     readonly __soundscriptOptional: true;
     readonly inner: Decoder<T, E, M>;
   };
 
 type UndefinedableDecoder<T, E = DecodeFailure, M extends DecodeMode = 'sync'> =
-  Decoder<T | undefined, E, M> & {
+  & Decoder<T | undefined, E, M>
+  & {
     readonly __soundscriptUndefinedable: true;
     readonly inner: Decoder<T, E, M>;
   };
 
-type DefaultedDecoder<T, E = DecodeFailure, M extends DecodeMode = 'sync'> =
-  Decoder<T, E, M> & {
-    readonly __soundscriptDefaulted: true;
-  };
+type DefaultedDecoder<T, E = DecodeFailure, M extends DecodeMode = 'sync'> = Decoder<T, E, M> & {
+  readonly __soundscriptDefaulted: true;
+};
 
-type DecoderValue<TDecoder> = TDecoder extends Decoder<infer TValue, unknown, DecodeMode>
-  ? TValue
+type DecoderValue<TDecoder> = TDecoder extends Decoder<infer TValue, unknown, DecodeMode> ? TValue
   : never;
 type DecoderError<TDecoder> = TDecoder extends Decoder<unknown, infer E, DecodeMode> ? E : never;
 type DecoderModeOf<TDecoder> = TDecoder extends { decode(value: unknown): infer TOutput }
@@ -140,8 +140,10 @@ export function fromDecode<T, E, M extends DecodeMode = 'sync'>(
   const inferredMode = __inferCallableMode(decode, validateDecode) as M;
   const decoder = {
     decode: decode as (value: unknown) => DecodeOutput<T, E, M>,
-    validateDecode: (validateDecode ?? ((value) => defaultValidateDecode(decode(value), value))) as
-      (value: unknown) => DecodeOutput<T, readonly DecodeIssue[], M>,
+    validateDecode:
+      (validateDecode ?? ((value) => defaultValidateDecode(decode(value), value))) as (
+        value: unknown,
+      ) => DecodeOutput<T, readonly DecodeIssue[], M>,
   };
   __setDecodeMode(decoder, inferredMode);
   return __attachDecodeMetadata(decoder, {
@@ -261,53 +263,59 @@ export const undefinedValue: Decoder<undefined> = __attachDecodeMetadata(
   },
 );
 
-export const url: Decoder<UrlLike> = __attachDecodeMetadata(fromDecode((value) => {
-  if (typeof value !== 'string') {
-    return err(new DecodeFailure('Expected URL string.', { cause: value }));
-  }
-  try {
-    return ok(new URL(value));
-  } catch {
-    return err(new DecodeFailure('Expected URL string.', { cause: value }));
-  }
-}), {
-  mode: 'sync',
-  root: {
-    effects: [{
-      async: false,
-      effect: 'transform',
-      helperName: 'url',
-      kind: 'opaque',
-    }],
-    kind: 'primitive',
-    primitive: 'string',
+export const url: Decoder<UrlLike> = __attachDecodeMetadata(
+  fromDecode((value) => {
+    if (typeof value !== 'string') {
+      return err(new DecodeFailure('Expected URL string.', { cause: value }));
+    }
+    try {
+      return ok(new URL(value));
+    } catch {
+      return err(new DecodeFailure('Expected URL string.', { cause: value }));
+    }
+  }),
+  {
+    mode: 'sync',
+    root: {
+      effects: [{
+        async: false,
+        effect: 'transform',
+        helperName: 'url',
+        kind: 'opaque',
+      }],
+      kind: 'primitive',
+      primitive: 'string',
+    },
   },
-});
+);
 
-export const isoDate: Decoder<Date> = __attachDecodeMetadata(fromDecode((value) => {
-  if (typeof value !== 'string') {
-    return err(new DecodeFailure('Expected ISO datetime string.', { cause: value }));
-  }
-  if (!isIsoDatetimeString(value)) {
-    return err(new DecodeFailure('Expected ISO datetime string.', { cause: value }));
-  }
-  const parsed = new Date(value);
-  return Number.isNaN(parsed.getTime())
-    ? err(new DecodeFailure('Expected ISO datetime string.', { cause: value }))
-    : ok(parsed);
-}), {
-  mode: 'sync',
-  root: {
-    effects: [{
-      async: false,
-      effect: 'transform',
-      helperName: 'isoDate',
-      kind: 'opaque',
-    }],
-    kind: 'primitive',
-    primitive: 'string',
+export const isoDate: Decoder<Date> = __attachDecodeMetadata(
+  fromDecode((value) => {
+    if (typeof value !== 'string') {
+      return err(new DecodeFailure('Expected ISO datetime string.', { cause: value }));
+    }
+    if (!isIsoDatetimeString(value)) {
+      return err(new DecodeFailure('Expected ISO datetime string.', { cause: value }));
+    }
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime())
+      ? err(new DecodeFailure('Expected ISO datetime string.', { cause: value }))
+      : ok(parsed);
+  }),
+  {
+    mode: 'sync',
+    root: {
+      effects: [{
+        async: false,
+        effect: 'transform',
+        helperName: 'isoDate',
+        kind: 'opaque',
+      }],
+      kind: 'primitive',
+      primitive: 'string',
+    },
   },
-});
+);
 
 export function lazy<const TDecoder extends Decoder<unknown, unknown, DecodeMode>>(
   getDecoder: () => TDecoder,
@@ -315,21 +323,28 @@ export function lazy<const TDecoder extends Decoder<unknown, unknown, DecodeMode
 export function lazy<T, E, M extends DecodeMode>(
   getDecoder: () => Decoder<T, E, M>,
 ): Decoder<T, E, M> {
-  return __attachDecodeMetadata(fromDecode(
-    (value) => getDecoder().decode(value),
-    (value) => getDecoder().validateDecode(value),
-  ), {
-    mode: () => decodeModeOf(getDecoder()),
-    root: {
-      kind: 'ref',
-      target: () => decodeNodeOf(getDecoder()),
+  return __attachDecodeMetadata(
+    fromDecode(
+      (value) => getDecoder().decode(value),
+      (value) => getDecoder().validateDecode(value),
+    ),
+    {
+      mode: () => decodeModeOf(getDecoder()),
+      root: {
+        kind: 'ref',
+        target: () => decodeNodeOf(getDecoder()),
+      },
     },
-  });
+  );
 }
 
 export function optional<const TDecoder extends Decoder<unknown, unknown, DecodeMode>>(
   decoder: TDecoder,
-): OptionalDecoder<Exclude<DecoderValue<TDecoder>, undefined>, DecoderError<TDecoder>, DecoderModeOf<TDecoder>>;
+): OptionalDecoder<
+  Exclude<DecoderValue<TDecoder>, undefined>,
+  DecoderError<TDecoder>,
+  DecoderModeOf<TDecoder>
+>;
 export function optional<T, E, M extends DecodeMode>(
   decoder: Decoder<T, E, M>,
 ): OptionalDecoder<Exclude<T, undefined>, E, M>;
@@ -400,23 +415,27 @@ export function undefinedable<T, E, M extends DecodeMode>(
 export function nullable<T, E, M extends DecodeMode>(
   decoder: Decoder<T, E, M>,
 ): Decoder<T | null, E, M> {
-  return __attachDecodeMetadata(fromDecode(
-    (value) => (value === null ? ok(null) : decoder.decode(value)) as MaybeDecodeOutput<T | null, E>,
-    (value) =>
-      (value === null ? ok(null) : decoder.validateDecode(value)) as MaybeDecodeOutput<
-        T | null,
-        readonly DecodeIssue[]
-      >,
-  ), {
-    mode: decodeModeOf(decoder),
-    root: {
-      kind: 'union',
-      members: [
-        decodeNodeOf(decoder),
-        { kind: 'null' },
-      ],
+  return __attachDecodeMetadata(
+    fromDecode(
+      (value) =>
+        (value === null ? ok(null) : decoder.decode(value)) as MaybeDecodeOutput<T | null, E>,
+      (value) =>
+        (value === null ? ok(null) : decoder.validateDecode(value)) as MaybeDecodeOutput<
+          T | null,
+          readonly DecodeIssue[]
+        >,
+    ),
+    {
+      mode: decodeModeOf(decoder),
+      root: {
+        kind: 'union',
+        members: [
+          decodeNodeOf(decoder),
+          { kind: 'null' },
+        ],
+      },
     },
-  });
+  );
 }
 
 export function defaulted<T, E, M extends DecodeMode>(
@@ -433,34 +452,38 @@ export function defaulted<T, E, M extends DecodeMode, TFallback extends T | Prom
 ): Decoder<T, E, MergeDecodeModes<M | AsyncModeOf<TFallback>>> {
   type TMode = MergeDecodeModes<M | AsyncModeOf<TFallback>>;
   const resolveFallback = (): T | Promise<T> =>
-    typeof fallback === 'function'
-      ? (fallback as () => TFallback)()
-      : fallback;
+    typeof fallback === 'function' ? (fallback as () => TFallback)() : fallback;
 
   return __attachDecodeMetadata({
     __soundscriptDefaulted: true,
     decode(value) {
-      return mapDecodeOutput(decoder.decode(value), (decoded) =>
-        isErr(decoded)
-          ? decoded as Result<T, E>
-          : decoded.value === undefined
-          ? mapMaybeAsync(resolveFallback(), (resolved) => ok(resolved))
-          : ok(decoded.value)
+      return mapDecodeOutput(
+        decoder.decode(value),
+        (decoded) =>
+          isErr(decoded)
+            ? decoded as Result<T, E>
+            : decoded.value === undefined
+            ? mapMaybeAsync(resolveFallback(), (resolved) => ok(resolved))
+            : ok(decoded.value),
       ) as DecodeOutput<T, E, TMode>;
     },
     validateDecode(value) {
-      return mapDecodeOutput(decoder.validateDecode(value), (decoded) =>
-        isErr(decoded)
-          ? decoded as Result<T, readonly DecodeIssue[]>
-          : decoded.value === undefined
-          ? mapMaybeAsync(resolveFallback(), (resolved) => ok(resolved))
-          : ok(decoded.value)
+      return mapDecodeOutput(
+        decoder.validateDecode(value),
+        (decoded) =>
+          isErr(decoded)
+            ? decoded as Result<T, readonly DecodeIssue[]>
+            : decoded.value === undefined
+            ? mapMaybeAsync(resolveFallback(), (resolved) => ok(resolved))
+            : ok(decoded.value),
       ) as DecodeOutput<T, readonly DecodeIssue[], TMode>;
     },
   } as DefaultedDecoder<T, E, TMode>, {
-    mode: () => decodeModeOf(decoder) === 'async' || typeof fallback === 'function' && __isAsyncCallable(fallback)
-      ? 'async'
-      : 'sync',
+    mode: () =>
+      decodeModeOf(decoder) === 'async' ||
+        typeof fallback === 'function' && __isAsyncCallable(fallback)
+        ? 'async'
+        : 'sync',
     root: __cloneNodeWithEffects(decodeNodeOf(decoder), [{
       ...(typeof fallback === 'function'
         ? {
@@ -482,34 +505,45 @@ export function preprocess<A, E, M extends DecodeMode, TPreprocessed>(
   project: (value: unknown) => TPreprocessed,
 ): Decoder<A, E, MergeDecodeModes<M | AsyncModeOf<TPreprocessed>>> {
   type TMode = MergeDecodeModes<M | AsyncModeOf<TPreprocessed>>;
-  return __attachDecodeMetadata(fromDecode<A, E, TMode>(
-    (value) =>
-      chainMaybeAsync(project(value), (projected) => decoder.decode(projected)) as DecodeOutput<
-        A,
-        E,
-        TMode
-      >,
-    (value) =>
-      chainMaybeAsync(project(value), (projected) => decoder.validateDecode(projected)) as DecodeOutput<
-        A,
-        readonly DecodeIssue[],
-        TMode
-      >,
-  ), {
-    mode: decodeModeOf(decoder) === 'async' || __isAsyncCallable(project) ? 'async' : 'sync',
-    root: __cloneNodeWithEffects(decodeNodeOf(decoder), [decodeOpaqueEffect('preprocess', project)]),
-  });
+  return __attachDecodeMetadata(
+    fromDecode<A, E, TMode>(
+      (value) =>
+        chainMaybeAsync(project(value), (projected) => decoder.decode(projected)) as DecodeOutput<
+          A,
+          E,
+          TMode
+        >,
+      (value) =>
+        chainMaybeAsync(
+          project(value),
+          (projected) => decoder.validateDecode(projected),
+        ) as DecodeOutput<
+          A,
+          readonly DecodeIssue[],
+          TMode
+        >,
+    ),
+    {
+      mode: decodeModeOf(decoder) === 'async' || __isAsyncCallable(project) ? 'async' : 'sync',
+      root: __cloneNodeWithEffects(decodeNodeOf(decoder), [
+        decodeOpaqueEffect('preprocess', project),
+      ]),
+    },
+  );
 }
 
 export function literal<const T extends string | number | boolean | null>(value: T): Decoder<T> {
-  return __attachDecodeMetadata(fromDecode((input) =>
-    Object.is(input, value)
-      ? ok(value)
-      : err(new DecodeFailure(`Expected literal ${JSON.stringify(value)}.`, { cause: input }))
-  ), {
-    mode: 'sync',
-    root: value === null ? { kind: 'null' } : { kind: 'literal', value },
-  });
+  return __attachDecodeMetadata(
+    fromDecode((input) =>
+      Object.is(input, value)
+        ? ok(value)
+        : err(new DecodeFailure(`Expected literal ${JSON.stringify(value)}.`, { cause: input }))
+    ),
+    {
+      mode: 'sync',
+      root: value === null ? { kind: 'null' } : { kind: 'literal', value },
+    },
+  );
 }
 
 export function min<T extends number | bigint, E, M extends DecodeMode>(
@@ -522,8 +556,7 @@ export function min<T extends number | bigint, E, M extends DecodeMode>(
       input: value,
       message: `Expected value >= ${String(minimum)}.`,
       path: [],
-    }
-  , decodeConstraintEffect({ kind: 'min', value: minimum }));
+    }, decodeConstraintEffect({ kind: 'min', value: minimum }));
 }
 
 export function max<T extends number | bigint, E, M extends DecodeMode>(
@@ -536,8 +569,7 @@ export function max<T extends number | bigint, E, M extends DecodeMode>(
       input: value,
       message: `Expected value <= ${String(maximum)}.`,
       path: [],
-    }
-  , decodeConstraintEffect({ kind: 'max', value: maximum }));
+    }, decodeConstraintEffect({ kind: 'max', value: maximum }));
 }
 
 export function minLength<T extends string | readonly unknown[], E, M extends DecodeMode>(
@@ -550,8 +582,7 @@ export function minLength<T extends string | readonly unknown[], E, M extends De
       input: value,
       message: `Expected length >= ${minimum}.`,
       path: [],
-    }
-  , decodeConstraintEffect({ kind: 'minLength', value: minimum }));
+    }, decodeConstraintEffect({ kind: 'minLength', value: minimum }));
 }
 
 export function maxLength<T extends string | readonly unknown[], E, M extends DecodeMode>(
@@ -564,8 +595,7 @@ export function maxLength<T extends string | readonly unknown[], E, M extends De
       input: value,
       message: `Expected length <= ${maximum}.`,
       path: [],
-    }
-  , decodeConstraintEffect({ kind: 'maxLength', value: maximum }));
+    }, decodeConstraintEffect({ kind: 'maxLength', value: maximum }));
 }
 
 export function startsWith<E, M extends DecodeMode>(
@@ -578,8 +608,7 @@ export function startsWith<E, M extends DecodeMode>(
       input: value,
       message: `Expected string to start with ${JSON.stringify(prefix)}.`,
       path: [],
-    }
-  , decodeConstraintEffect({ kind: 'startsWith', value: prefix }));
+    }, decodeConstraintEffect({ kind: 'startsWith', value: prefix }));
 }
 
 export function endsWith<E, M extends DecodeMode>(
@@ -592,22 +621,24 @@ export function endsWith<E, M extends DecodeMode>(
       input: value,
       message: `Expected string to end with ${JSON.stringify(suffix)}.`,
       path: [],
-    }
-  , decodeConstraintEffect({ kind: 'endsWith', value: suffix }));
+    }, decodeConstraintEffect({ kind: 'endsWith', value: suffix }));
 }
 
 export function pattern<E, M extends DecodeMode>(
   decoder: Decoder<string, E, M>,
   expression: RegExp,
 ): Decoder<string, E | DecodeFailure, M> {
-  return constrain(decoder, (value) =>
-    expression.test(value) ? null : {
-      code: 'decode_pattern',
-      input: value,
-      message: `Expected string to match ${expression}.`,
-      path: [],
-    }
-  , decodeConstraintEffect({ flags: expression.flags, kind: 'pattern', source: expression.source }));
+  return constrain(
+    decoder,
+    (value) =>
+      expression.test(value) ? null : {
+        code: 'decode_pattern',
+        input: value,
+        message: `Expected string to match ${expression}.`,
+        path: [],
+      },
+    decodeConstraintEffect({ flags: expression.flags, kind: 'pattern', source: expression.source }),
+  );
 }
 
 export function multipleOf<T extends number | bigint, E, M extends DecodeMode>(
@@ -615,7 +646,9 @@ export function multipleOf<T extends number | bigint, E, M extends DecodeMode>(
   factor: T,
 ): Decoder<T, E | DecodeFailure, M> {
   return constrain(decoder, (value) => {
-    if ((typeof factor === 'number' && factor === 0) || (typeof factor === 'bigint' && factor === 0n)) {
+    if (
+      (typeof factor === 'number' && factor === 0) || (typeof factor === 'bigint' && factor === 0n)
+    ) {
       return {
         code: 'decode_multiple_of',
         input: value,
@@ -657,8 +690,7 @@ export function integer<E, M extends DecodeMode>(
       input: value,
       message: 'Expected integer.',
       path: [],
-    }
-  , decodeConstraintEffect({ kind: 'integer' }));
+    }, decodeConstraintEffect({ kind: 'integer' }));
 }
 
 export function format<E, M extends DecodeMode>(
@@ -671,122 +703,139 @@ export function format<E, M extends DecodeMode>(
       input: value,
       message: `Expected string with format "${expectedFormat}".`,
       path: [],
-    }
-  , decodeConstraintEffect({ kind: 'format', value: expectedFormat }));
+    }, decodeConstraintEffect({ kind: 'format', value: expectedFormat }));
 }
 
 export function array<T, E, M extends DecodeMode>(
   item: Decoder<T, E, M>,
 ): Decoder<readonly T[], E | DecodeFailure, M> {
-  return __attachDecodeMetadata(fromDecode(
-    (value) => {
-      if (!Array.isArray(value)) {
-        return err(new DecodeFailure('Expected array.', { cause: value }));
-      }
-
-      const decodedValues: T[] = [];
-      for (let index = 0; index < value.length; index += 1) {
-        const decoded = item.decode(value[index]) as MaybeDecodeOutput<T, E>;
-        if (isPromiseLike(decoded)) {
-          return decodeArrayAsync(value, item, decodedValues, index, decoded);
+  return __attachDecodeMetadata(
+    fromDecode(
+      (value) => {
+        if (!Array.isArray(value)) {
+          return err(new DecodeFailure('Expected array.', { cause: value }));
         }
-        if (isErr(decoded)) {
-          return err(prependPathIfPossible(decoded.error, index) as E | DecodeFailure);
-        }
-        decodedValues.push(decoded.value);
-      }
 
-      return ok(decodedValues);
+        const decodedValues: T[] = [];
+        for (let index = 0; index < value.length; index += 1) {
+          const decoded = item.decode(value[index]) as MaybeDecodeOutput<T, E>;
+          if (isPromiseLike(decoded)) {
+            return decodeArrayAsync(value, item, decodedValues, index, decoded);
+          }
+          if (isErr(decoded)) {
+            return err(prependPathIfPossible(decoded.error, index) as E | DecodeFailure);
+          }
+          decodedValues.push(decoded.value);
+        }
+
+        return ok(decodedValues);
+      },
+      (value) => {
+        if (!Array.isArray(value)) {
+          return err([
+            issueFromDecodeFailure(new DecodeFailure('Expected array.', { cause: value })),
+          ]);
+        }
+
+        const decodedValues: T[] = [];
+        const issues: DecodeIssue[] = [];
+        for (let index = 0; index < value.length; index += 1) {
+          const decoded = item.validateDecode(value[index]) as MaybeDecodeOutput<
+            T,
+            readonly DecodeIssue[]
+          >;
+          if (isPromiseLike(decoded)) {
+            return validateArrayAsync(value, item, decodedValues, issues, index, decoded);
+          }
+          if (isErr(decoded)) {
+            issues.push(...prependIssuePaths(decoded.error, index));
+            continue;
+          }
+          decodedValues.push(decoded.value);
+        }
+
+        return issues.length > 0 ? err(issues) : ok(decodedValues);
+      },
+    ),
+    {
+      mode: decodeModeOf(item),
+      root: {
+        element: decodeNodeOf(item),
+        kind: 'array',
+      },
     },
-    (value) => {
-      if (!Array.isArray(value)) {
-        return err([issueFromDecodeFailure(new DecodeFailure('Expected array.', { cause: value }))]);
-      }
-
-      const decodedValues: T[] = [];
-      const issues: DecodeIssue[] = [];
-      for (let index = 0; index < value.length; index += 1) {
-        const decoded = item.validateDecode(value[index]) as MaybeDecodeOutput<T, readonly DecodeIssue[]>;
-        if (isPromiseLike(decoded)) {
-          return validateArrayAsync(value, item, decodedValues, issues, index, decoded);
-        }
-        if (isErr(decoded)) {
-          issues.push(...prependIssuePaths(decoded.error, index));
-          continue;
-        }
-        decodedValues.push(decoded.value);
-      }
-
-      return issues.length > 0 ? err(issues) : ok(decodedValues);
-    },
-  ), {
-    mode: decodeModeOf(item),
-    root: {
-      element: decodeNodeOf(item),
-      kind: 'array',
-    },
-  });
+  );
 }
 
 export function readonlyRecord<T, E, M extends DecodeMode>(
   valueDecoder: Decoder<T, E, M>,
 ): Decoder<Readonly<Record<string, T>>, E | DecodeFailure, M> {
-  return __attachDecodeMetadata(fromDecode(
-    (value) => {
-      if (!isPlainObject(value)) {
-        return err(new DecodeFailure('Expected object record.', { cause: value }));
-      }
-
-      const decodedRecord: Record<string, T> = {};
-      for (const [key, entry] of Object.entries(value)) {
-        const decoded = valueDecoder.decode(entry) as MaybeDecodeOutput<T, E>;
-        if (isPromiseLike(decoded)) {
-          return decodeRecordAsync(value, valueDecoder, decodedRecord, key, decoded);
+  return __attachDecodeMetadata(
+    fromDecode(
+      (value) => {
+        if (!isPlainObject(value)) {
+          return err(new DecodeFailure('Expected object record.', { cause: value }));
         }
-        if (isErr(decoded)) {
-          return err(prependPathIfPossible(decoded.error, key) as E | DecodeFailure);
-        }
-        decodedRecord[key] = decoded.value;
-      }
 
-      return ok(decodedRecord);
+        const decodedRecord: Record<string, T> = {};
+        for (const [key, entry] of Object.entries(value)) {
+          const decoded = valueDecoder.decode(entry) as MaybeDecodeOutput<T, E>;
+          if (isPromiseLike(decoded)) {
+            return decodeRecordAsync(value, valueDecoder, decodedRecord, key, decoded);
+          }
+          if (isErr(decoded)) {
+            return err(prependPathIfPossible(decoded.error, key) as E | DecodeFailure);
+          }
+          decodedRecord[key] = decoded.value;
+        }
+
+        return ok(decodedRecord);
+      },
+      (value) => {
+        if (!isPlainObject(value)) {
+          return err([
+            issueFromDecodeFailure(new DecodeFailure('Expected object record.', { cause: value })),
+          ]);
+        }
+
+        const decodedRecord: Record<string, T> = {};
+        const issues: DecodeIssue[] = [];
+        const entries = Object.entries(value);
+        for (let index = 0; index < entries.length; index += 1) {
+          const [key, entry] = entries[index]!;
+          const decoded = valueDecoder.validateDecode(entry) as MaybeDecodeOutput<
+            T,
+            readonly DecodeIssue[]
+          >;
+          if (isPromiseLike(decoded)) {
+            return validateRecordAsync(
+              entries,
+              valueDecoder,
+              decodedRecord,
+              issues,
+              index,
+              decoded,
+            );
+          }
+          if (isErr(decoded)) {
+            issues.push(...prependIssuePaths(decoded.error, key));
+            continue;
+          }
+          decodedRecord[key] = decoded.value;
+        }
+
+        return issues.length > 0 ? err(issues) : ok(decodedRecord);
+      },
+    ),
+    {
+      mode: decodeModeOf(valueDecoder),
+      root: {
+        key: 'string',
+        kind: 'record',
+        value: decodeNodeOf(valueDecoder),
+      },
     },
-    (value) => {
-      if (!isPlainObject(value)) {
-        return err([
-          issueFromDecodeFailure(new DecodeFailure('Expected object record.', { cause: value })),
-        ]);
-      }
-
-      const decodedRecord: Record<string, T> = {};
-      const issues: DecodeIssue[] = [];
-      const entries = Object.entries(value);
-      for (let index = 0; index < entries.length; index += 1) {
-        const [key, entry] = entries[index]!;
-        const decoded = valueDecoder.validateDecode(entry) as MaybeDecodeOutput<
-          T,
-          readonly DecodeIssue[]
-        >;
-        if (isPromiseLike(decoded)) {
-          return validateRecordAsync(entries, valueDecoder, decodedRecord, issues, index, decoded);
-        }
-        if (isErr(decoded)) {
-          issues.push(...prependIssuePaths(decoded.error, key));
-          continue;
-        }
-        decodedRecord[key] = decoded.value;
-      }
-
-      return issues.length > 0 ? err(issues) : ok(decodedRecord);
-    },
-  ), {
-    mode: decodeModeOf(valueDecoder),
-    root: {
-      key: 'string',
-      kind: 'record',
-      value: decodeNodeOf(valueDecoder),
-    },
-  });
+  );
 }
 
 export function tuple<const TElements extends TupleShape>(
@@ -800,108 +849,118 @@ export function tuple<const TElements extends TupleShape>(
   type TError = DecoderError<TElements[number]> | DecodeFailure;
   type TMode = TupleDecodeMode<TElements>;
 
-  return __attachDecodeMetadata(fromDecode<TValue, TError, TMode>(
-    (value) => {
-      if (!Array.isArray(value)) {
-        return err(new DecodeFailure('Expected tuple.', { cause: value })) as DecodeOutput<
-          TValue,
-          TError,
-          TMode
-        >;
-      }
-
-      if (value.length !== elements.length) {
-        return err(
-          new DecodeFailure(`Expected tuple of length ${elements.length}.`, {
-            cause: value,
-          }),
-        ) as DecodeOutput<TValue, TError, TMode>;
-      }
-
-      const decodedValues: unknown[] = [];
-      for (let index = 0; index < elements.length; index += 1) {
-        const elementDecoder = elements[index];
-        if (!elementDecoder) {
-          continue;
-        }
-        const decoded = elementDecoder.decode(value[index]) as MaybeDecodeOutput<
-          DecoderValue<TElements[number]>,
-          DecoderError<TElements[number]>
-        >;
-        if (isPromiseLike(decoded)) {
-          return decodeTupleAsync(value, elements, decodedValues, index, decoded) as DecodeOutput<
+  return __attachDecodeMetadata(
+    fromDecode<TValue, TError, TMode>(
+      (value) => {
+        if (!Array.isArray(value)) {
+          return err(new DecodeFailure('Expected tuple.', { cause: value })) as DecodeOutput<
             TValue,
             TError,
             TMode
           >;
         }
-        if (isErr(decoded)) {
-          return err(prependPathIfPossible(decoded.error, index) as TError) as DecodeOutput<
-            TValue,
-            TError,
-            TMode
-          >;
-        }
-        decodedValues.push(decoded.value);
-      }
 
-      return ok(decodedValues as TValue) as DecodeOutput<TValue, TError, TMode>;
-    },
-    (value) => {
-      if (!Array.isArray(value)) {
-        return err([
-          issueFromDecodeFailure(new DecodeFailure('Expected tuple.', { cause: value })),
-        ]) as DecodeOutput<TValue, readonly DecodeIssue[], TMode>;
-      }
-
-      if (value.length !== elements.length) {
-        return err([
-          issueFromDecodeFailure(
+        if (value.length !== elements.length) {
+          return err(
             new DecodeFailure(`Expected tuple of length ${elements.length}.`, {
               cause: value,
             }),
-          ),
-        ]) as DecodeOutput<TValue, readonly DecodeIssue[], TMode>;
-      }
-
-      const decodedValues: unknown[] = [];
-      const issues: DecodeIssue[] = [];
-      for (let index = 0; index < elements.length; index += 1) {
-        const elementDecoder = elements[index];
-        if (!elementDecoder) {
-          continue;
+          ) as DecodeOutput<TValue, TError, TMode>;
         }
-        const decoded = elementDecoder.validateDecode(value[index]) as MaybeDecodeOutput<
-          DecoderValue<TElements[number]>,
-          readonly DecodeIssue[]
-        >;
-        if (isPromiseLike(decoded)) {
-          return validateTupleAsync(value, elements, decodedValues, issues, index, decoded) as DecodeOutput<
-            TValue,
-            readonly DecodeIssue[],
-            TMode
+
+        const decodedValues: unknown[] = [];
+        for (let index = 0; index < elements.length; index += 1) {
+          const elementDecoder = elements[index];
+          if (!elementDecoder) {
+            continue;
+          }
+          const decoded = elementDecoder.decode(value[index]) as MaybeDecodeOutput<
+            DecoderValue<TElements[number]>,
+            DecoderError<TElements[number]>
           >;
+          if (isPromiseLike(decoded)) {
+            return decodeTupleAsync(value, elements, decodedValues, index, decoded) as DecodeOutput<
+              TValue,
+              TError,
+              TMode
+            >;
+          }
+          if (isErr(decoded)) {
+            return err(prependPathIfPossible(decoded.error, index) as TError) as DecodeOutput<
+              TValue,
+              TError,
+              TMode
+            >;
+          }
+          decodedValues.push(decoded.value);
         }
-        if (isErr(decoded)) {
-          issues.push(...prependIssuePaths(decoded.error, index));
-          continue;
-        }
-        decodedValues.push(decoded.value);
-      }
 
-      return (issues.length > 0 ? err(issues) : ok(decodedValues as TValue)) as DecodeOutput<
-        TValue,
-        readonly DecodeIssue[],
-        TMode
-      >;
+        return ok(decodedValues as TValue) as DecodeOutput<TValue, TError, TMode>;
+      },
+      (value) => {
+        if (!Array.isArray(value)) {
+          return err([
+            issueFromDecodeFailure(new DecodeFailure('Expected tuple.', { cause: value })),
+          ]) as DecodeOutput<TValue, readonly DecodeIssue[], TMode>;
+        }
+
+        if (value.length !== elements.length) {
+          return err([
+            issueFromDecodeFailure(
+              new DecodeFailure(`Expected tuple of length ${elements.length}.`, {
+                cause: value,
+              }),
+            ),
+          ]) as DecodeOutput<TValue, readonly DecodeIssue[], TMode>;
+        }
+
+        const decodedValues: unknown[] = [];
+        const issues: DecodeIssue[] = [];
+        for (let index = 0; index < elements.length; index += 1) {
+          const elementDecoder = elements[index];
+          if (!elementDecoder) {
+            continue;
+          }
+          const decoded = elementDecoder.validateDecode(value[index]) as MaybeDecodeOutput<
+            DecoderValue<TElements[number]>,
+            readonly DecodeIssue[]
+          >;
+          if (isPromiseLike(decoded)) {
+            return validateTupleAsync(
+              value,
+              elements,
+              decodedValues,
+              issues,
+              index,
+              decoded,
+            ) as DecodeOutput<
+              TValue,
+              readonly DecodeIssue[],
+              TMode
+            >;
+          }
+          if (isErr(decoded)) {
+            issues.push(...prependIssuePaths(decoded.error, index));
+            continue;
+          }
+          decodedValues.push(decoded.value);
+        }
+
+        return (issues.length > 0 ? err(issues) : ok(decodedValues as TValue)) as DecodeOutput<
+          TValue,
+          readonly DecodeIssue[],
+          TMode
+        >;
+      },
+    ),
+    {
+      mode: () => elements.some((element) => decodeModeOf(element) === 'async') ? 'async' : 'sync',
+      root: {
+        elements: elements.map((element) => decodeNodeOf(element)),
+        kind: 'tuple',
+      },
     },
-  ), {
-    mode: () => elements.some((element) => decodeModeOf(element) === 'async') ? 'async' : 'sync',
-    root: {
-      elements: elements.map((element) => decodeNodeOf(element)),
-      kind: 'tuple',
-    },
-  });
+  );
 }
 
 export function option<T, E, M extends DecodeMode>(
@@ -924,10 +983,21 @@ export function option<T, E, M extends DecodeMode>(
   ) as Decoder<Option<T>, E | DecodeFailure, M>;
 }
 
-export function result<T, EValue, EDecodeValue, EDecodeError, MOk extends DecodeMode, MErr extends DecodeMode>(
+export function result<
+  T,
+  EValue,
+  EDecodeValue,
+  EDecodeError,
+  MOk extends DecodeMode,
+  MErr extends DecodeMode,
+>(
   okDecoder: Decoder<T, EDecodeValue, MOk>,
   errDecoder: Decoder<EValue, EDecodeError, MErr>,
-): Decoder<Result<T, EValue>, EDecodeValue | EDecodeError | DecodeFailure, MergeDecodeModes<MOk | MErr>> {
+): Decoder<
+  Result<T, EValue>,
+  EDecodeValue | EDecodeError | DecodeFailure,
+  MergeDecodeModes<MOk | MErr>
+> {
   return union(
     map(
       object({
@@ -965,171 +1035,197 @@ export function object<const TShape extends ObjectShape>(
   const keySet = new Set<string>(keys);
   const unknownKeys = options?.unknownKeys ?? 'strip';
 
-  return __attachDecodeMetadata(fromDecode<TValue, TError, TMode>(
-    (value) => {
-      if (!isPlainObject(value)) {
-        return err(new DecodeFailure('Expected object.', { cause: value })) as DecodeOutput<
-          TValue,
-          TError,
-          TMode
-        >;
-      }
-
-      const record = value as Record<string, unknown>;
-      const extraKeys = collectUnknownObjectKeys(record, keySet);
-      if (unknownKeys === 'strict' && extraKeys.length > 0) {
-        return err(unknownDecodeKeyFailure(extraKeys[0]!, record[extraKeys[0]!])) as DecodeOutput<
-          TValue,
-          TError,
-          TMode
-        >;
-      }
-      const decodedObject: Record<string, unknown> = unknownKeys === 'passthrough' ? { ...record } : {};
-
-      for (let index = 0; index < keys.length; index += 1) {
-        const key = keys[index]!;
-        const decoder = shape[key];
-        if (!decoder) {
-          continue;
-        }
-        const hasKey = key in record;
-        const rawValue = record[key];
-
-        if (!hasKey && !allowsMissingObjectField(decoder)) {
-          return err(
-            new DecodeFailure(`Missing field "${key}".`, {
-              cause: value,
-              path: [key],
-            }),
-          ) as DecodeOutput<TValue, TError, TMode>;
-        }
-
-        if (hasKey && rawValue === undefined && !allowsUndefinedObjectField(decoder)) {
-          return err(
-            new DecodeFailure(`Missing field "${key}".`, {
-              cause: value,
-              path: [key],
-            }),
-          ) as DecodeOutput<TValue, TError, TMode>;
-        }
-
-        const decodeInput = hasKey ? rawValue : undefined;
-        const decoded = decoder.decode(decodeInput) as MaybeDecodeOutput<
-          DecoderValue<TShape[keyof TShape]>,
-          DecoderError<TShape[keyof TShape]>
-        >;
-        if (isPromiseLike(decoded)) {
-          return decodeObjectAsync(record, shape, keys, decodedObject, index, decoded) as DecodeOutput<
+  return __attachDecodeMetadata(
+    fromDecode<TValue, TError, TMode>(
+      (value) => {
+        if (!isPlainObject(value)) {
+          return err(new DecodeFailure('Expected object.', { cause: value })) as DecodeOutput<
             TValue,
             TError,
             TMode
           >;
         }
 
-        if (isErr(decoded)) {
-          return err(prependPathIfPossible(decoded.error, key) as TError) as DecodeOutput<
+        const record = value as Record<string, unknown>;
+        const extraKeys = collectUnknownObjectKeys(record, keySet);
+        if (unknownKeys === 'strict' && extraKeys.length > 0) {
+          return err(unknownDecodeKeyFailure(extraKeys[0]!, record[extraKeys[0]!])) as DecodeOutput<
             TValue,
             TError,
             TMode
           >;
         }
+        const decodedObject: Record<string, unknown> = unknownKeys === 'passthrough'
+          ? { ...record }
+          : {};
 
-        decodedObject[key] = decoded.value;
-      }
+        for (let index = 0; index < keys.length; index += 1) {
+          const key = keys[index]!;
+          const decoder = shape[key];
+          if (!decoder) {
+            continue;
+          }
+          const hasKey = key in record;
+          const rawValue = record[key];
 
-      return ok(decodedObject as TValue) as DecodeOutput<TValue, TError, TMode>;
-    },
-    (value) => {
-      if (!isPlainObject(value)) {
-        return err([
-          issueFromDecodeFailure(new DecodeFailure('Expected object.', { cause: value })),
-        ]) as DecodeOutput<TValue, readonly DecodeIssue[], TMode>;
-      }
+          if (!hasKey && !allowsMissingObjectField(decoder)) {
+            return err(
+              new DecodeFailure(`Missing field "${key}".`, {
+                cause: value,
+                path: [key],
+              }),
+            ) as DecodeOutput<TValue, TError, TMode>;
+          }
 
-      const record = value as Record<string, unknown>;
-      const decodedObject: Record<string, unknown> = unknownKeys === 'passthrough' ? { ...record } : {};
-      const issues: DecodeIssue[] = [];
-      if (unknownKeys === 'strict') {
-        for (const extraKey of collectUnknownObjectKeys(record, keySet)) {
-          issues.push({
-            code: 'decode_unknown_key',
-            input: record[extraKey],
-            message: `Unknown field "${extraKey}".`,
-            path: [extraKey],
-          });
-        }
-      }
+          if (hasKey && rawValue === undefined && !allowsUndefinedObjectField(decoder)) {
+            return err(
+              new DecodeFailure(`Missing field "${key}".`, {
+                cause: value,
+                path: [key],
+              }),
+            ) as DecodeOutput<TValue, TError, TMode>;
+          }
 
-      for (let index = 0; index < keys.length; index += 1) {
-        const key = keys[index]!;
-        const decoder = shape[key];
-        if (!decoder) {
-          continue;
-        }
-        const hasKey = key in record;
-        const rawValue = record[key];
-
-        if (!hasKey && !allowsMissingObjectField(decoder)) {
-          issues.push(issueFromDecodeFailure(new DecodeFailure(`Missing field "${key}".`, {
-            cause: value,
-            path: [key],
-          })));
-          continue;
-        }
-
-        if (hasKey && rawValue === undefined && !allowsUndefinedObjectField(decoder)) {
-          issues.push(issueFromDecodeFailure(new DecodeFailure(`Missing field "${key}".`, {
-            cause: value,
-            path: [key],
-          })));
-          continue;
-        }
-
-        const decodeInput = hasKey ? rawValue : undefined;
-        const decoded = decoder.validateDecode(decodeInput) as MaybeDecodeOutput<
-          DecoderValue<TShape[keyof TShape]>,
-          readonly DecodeIssue[]
-        >;
-        if (isPromiseLike(decoded)) {
-          return validateObjectAsync(record, shape, keys, decodedObject, issues, index, decoded) as DecodeOutput<
-            TValue,
-            readonly DecodeIssue[],
-            TMode
+          const decodeInput = hasKey ? rawValue : undefined;
+          const decoded = decoder.decode(decodeInput) as MaybeDecodeOutput<
+            DecoderValue<TShape[keyof TShape]>,
+            DecoderError<TShape[keyof TShape]>
           >;
+          if (isPromiseLike(decoded)) {
+            return decodeObjectAsync(
+              record,
+              shape,
+              keys,
+              decodedObject,
+              index,
+              decoded,
+            ) as DecodeOutput<
+              TValue,
+              TError,
+              TMode
+            >;
+          }
+
+          if (isErr(decoded)) {
+            return err(prependPathIfPossible(decoded.error, key) as TError) as DecodeOutput<
+              TValue,
+              TError,
+              TMode
+            >;
+          }
+
+          decodedObject[key] = decoded.value;
         }
 
-        if (isErr(decoded)) {
-          issues.push(...prependIssuePaths(decoded.error, key));
-          continue;
+        return ok(decodedObject as TValue) as DecodeOutput<TValue, TError, TMode>;
+      },
+      (value) => {
+        if (!isPlainObject(value)) {
+          return err([
+            issueFromDecodeFailure(new DecodeFailure('Expected object.', { cause: value })),
+          ]) as DecodeOutput<TValue, readonly DecodeIssue[], TMode>;
         }
 
-        decodedObject[key] = decoded.value;
-      }
+        const record = value as Record<string, unknown>;
+        const decodedObject: Record<string, unknown> = unknownKeys === 'passthrough'
+          ? { ...record }
+          : {};
+        const issues: DecodeIssue[] = [];
+        if (unknownKeys === 'strict') {
+          for (const extraKey of collectUnknownObjectKeys(record, keySet)) {
+            issues.push({
+              code: 'decode_unknown_key',
+              input: record[extraKey],
+              message: `Unknown field "${extraKey}".`,
+              path: [extraKey],
+            });
+          }
+        }
 
-      return (issues.length > 0 ? err(issues) : ok(decodedObject as TValue)) as DecodeOutput<
-        TValue,
-        readonly DecodeIssue[],
-        TMode
-      >;
+        for (let index = 0; index < keys.length; index += 1) {
+          const key = keys[index]!;
+          const decoder = shape[key];
+          if (!decoder) {
+            continue;
+          }
+          const hasKey = key in record;
+          const rawValue = record[key];
+
+          if (!hasKey && !allowsMissingObjectField(decoder)) {
+            issues.push(issueFromDecodeFailure(
+              new DecodeFailure(`Missing field "${key}".`, {
+                cause: value,
+                path: [key],
+              }),
+            ));
+            continue;
+          }
+
+          if (hasKey && rawValue === undefined && !allowsUndefinedObjectField(decoder)) {
+            issues.push(issueFromDecodeFailure(
+              new DecodeFailure(`Missing field "${key}".`, {
+                cause: value,
+                path: [key],
+              }),
+            ));
+            continue;
+          }
+
+          const decodeInput = hasKey ? rawValue : undefined;
+          const decoded = decoder.validateDecode(decodeInput) as MaybeDecodeOutput<
+            DecoderValue<TShape[keyof TShape]>,
+            readonly DecodeIssue[]
+          >;
+          if (isPromiseLike(decoded)) {
+            return validateObjectAsync(
+              record,
+              shape,
+              keys,
+              decodedObject,
+              issues,
+              index,
+              decoded,
+            ) as DecodeOutput<
+              TValue,
+              readonly DecodeIssue[],
+              TMode
+            >;
+          }
+
+          if (isErr(decoded)) {
+            issues.push(...prependIssuePaths(decoded.error, key));
+            continue;
+          }
+
+          decodedObject[key] = decoded.value;
+        }
+
+        return (issues.length > 0 ? err(issues) : ok(decodedObject as TValue)) as DecodeOutput<
+          TValue,
+          readonly DecodeIssue[],
+          TMode
+        >;
+      },
+    ),
+    {
+      mode: () => keys.some((key) => decodeModeOf(shape[key]) === 'async') ? 'async' : 'sync',
+      root: {
+        fields: keys.map((key) => {
+          const decoder = shape[key]!;
+          const fieldMetadata = __fieldMetadataOf(decoder);
+          return {
+            ...(fieldMetadata?.effects ? { effects: fieldMetadata.effects } : {}),
+            localName: fieldMetadata?.localName ?? key,
+            node: decodeNodeOf(decoder),
+            optional: allowsMissingObjectField(decoder),
+            wireName: fieldMetadata?.wireName ?? key,
+          };
+        }),
+        kind: 'object',
+        unknownKeys,
+      },
     },
-  ), {
-    mode: () => keys.some((key) => decodeModeOf(shape[key]) === 'async') ? 'async' : 'sync',
-    root: {
-      fields: keys.map((key) => {
-        const decoder = shape[key]!;
-        const fieldMetadata = __fieldMetadataOf(decoder);
-        return {
-          ...(fieldMetadata?.effects ? { effects: fieldMetadata.effects } : {}),
-          localName: fieldMetadata?.localName ?? key,
-          node: decodeNodeOf(decoder),
-          optional: allowsMissingObjectField(decoder),
-          wireName: fieldMetadata?.wireName ?? key,
-        };
-      }),
-      kind: 'object',
-      unknownKeys,
-    },
-  });
+  );
 }
 
 export function strictObject<const TShape extends ObjectShape>(
@@ -1177,68 +1273,81 @@ export function union<A, B, ELeft, ERight, MLeft extends DecodeMode, MRight exte
   type TValue = A | B;
   type TError = ELeft | ERight | DecodeFailure;
   type TMode = MergeDecodeModes<MLeft | MRight>;
-  return __attachDecodeMetadata(fromDecode<TValue, TError, TMode>(
-    (value) => {
-      const leftDecoded = left.decode(value) as MaybeDecodeOutput<A, ELeft>;
-      if (isPromiseLike(leftDecoded)) {
-        return decodeUnionAsync(value, leftDecoded, right) as DecodeOutput<TValue, TError, TMode>;
-      }
-      if (isErr(leftDecoded)) {
-        const rightDecoded = right.decode(value) as MaybeDecodeOutput<B, ERight>;
-        if (isPromiseLike(rightDecoded)) {
-          return decodeRightUnionAsync(value, rightDecoded) as DecodeOutput<TValue, TError, TMode>;
+  return __attachDecodeMetadata(
+    fromDecode<TValue, TError, TMode>(
+      (value) => {
+        const leftDecoded = left.decode(value) as MaybeDecodeOutput<A, ELeft>;
+        if (isPromiseLike(leftDecoded)) {
+          return decodeUnionAsync(value, leftDecoded, right) as DecodeOutput<TValue, TError, TMode>;
         }
-        if (isErr(rightDecoded)) {
-          return err(
-            new DecodeFailure('Expected one of the union members.', {
-              cause: value,
-            }),
-          ) as DecodeOutput<TValue, TError, TMode>;
+        if (isErr(leftDecoded)) {
+          const rightDecoded = right.decode(value) as MaybeDecodeOutput<B, ERight>;
+          if (isPromiseLike(rightDecoded)) {
+            return decodeRightUnionAsync(value, rightDecoded) as DecodeOutput<
+              TValue,
+              TError,
+              TMode
+            >;
+          }
+          if (isErr(rightDecoded)) {
+            return err(
+              new DecodeFailure('Expected one of the union members.', {
+                cause: value,
+              }),
+            ) as DecodeOutput<TValue, TError, TMode>;
+          }
+          return rightDecoded as DecodeOutput<TValue, TError, TMode>;
         }
-        return rightDecoded as DecodeOutput<TValue, TError, TMode>;
-      }
-      return leftDecoded as DecodeOutput<TValue, TError, TMode>;
-    },
-    (value) => {
-      const leftDecoded = left.validateDecode(value) as MaybeDecodeOutput<A, readonly DecodeIssue[]>;
-      if (isPromiseLike(leftDecoded)) {
-        return validateUnionAsync(value, leftDecoded, right) as DecodeOutput<
-          TValue,
-          readonly DecodeIssue[],
-          TMode
+        return leftDecoded as DecodeOutput<TValue, TError, TMode>;
+      },
+      (value) => {
+        const leftDecoded = left.validateDecode(value) as MaybeDecodeOutput<
+          A,
+          readonly DecodeIssue[]
         >;
-      }
-      if (!isErr(leftDecoded)) {
-        return leftDecoded as DecodeOutput<TValue, readonly DecodeIssue[], TMode>;
-      }
+        if (isPromiseLike(leftDecoded)) {
+          return validateUnionAsync(value, leftDecoded, right) as DecodeOutput<
+            TValue,
+            readonly DecodeIssue[],
+            TMode
+          >;
+        }
+        if (!isErr(leftDecoded)) {
+          return leftDecoded as DecodeOutput<TValue, readonly DecodeIssue[], TMode>;
+        }
 
-      const rightDecoded = right.validateDecode(value) as MaybeDecodeOutput<B, readonly DecodeIssue[]>;
-      if (isPromiseLike(rightDecoded)) {
-        return validateRightUnionAsync(leftDecoded.error, rightDecoded, value) as DecodeOutput<
+        const rightDecoded = right.validateDecode(value) as MaybeDecodeOutput<
+          B,
+          readonly DecodeIssue[]
+        >;
+        if (isPromiseLike(rightDecoded)) {
+          return validateRightUnionAsync(leftDecoded.error, rightDecoded, value) as DecodeOutput<
+            TValue,
+            readonly DecodeIssue[],
+            TMode
+          >;
+        }
+        if (!isErr(rightDecoded)) {
+          return rightDecoded as DecodeOutput<TValue, readonly DecodeIssue[], TMode>;
+        }
+        return err(selectUnionIssues(leftDecoded.error, rightDecoded.error, value)) as DecodeOutput<
           TValue,
           readonly DecodeIssue[],
           TMode
         >;
-      }
-      if (!isErr(rightDecoded)) {
-        return rightDecoded as DecodeOutput<TValue, readonly DecodeIssue[], TMode>;
-      }
-      return err(selectUnionIssues(leftDecoded.error, rightDecoded.error, value)) as DecodeOutput<
-        TValue,
-        readonly DecodeIssue[],
-        TMode
-      >;
+      },
+    ),
+    {
+      mode: () => mergeDecodeRuntimeModes(left, right),
+      root: {
+        kind: 'union',
+        members: [
+          decodeNodeOf(left),
+          decodeNodeOf(right),
+        ],
+      },
     },
-  ), {
-    mode: () => mergeDecodeRuntimeModes(left, right),
-    root: {
-      kind: 'union',
-      members: [
-        decodeNodeOf(left),
-        decodeNodeOf(right),
-      ],
-    },
-  });
+  );
 }
 
 export function map<A, B, E, M extends DecodeMode, TProjected>(
@@ -1248,17 +1357,23 @@ export function map<A, B, E, M extends DecodeMode, TProjected>(
   type TValue = Awaited<TProjected>;
   type TMode = MergeDecodeModes<M | AsyncModeOf<TProjected>>;
 
-  return __attachDecodeMetadata(fromDecode<TValue, E, TMode>(
-    (value) => projectDecode(decoder.decode(value), project) as DecodeOutput<TValue, E, TMode>,
-    (value) => projectDecode(decoder.validateDecode(value), project) as DecodeOutput<
-      TValue,
-      readonly DecodeIssue[],
-      TMode
-    >,
-  ), {
-    mode: decodeModeOf(decoder) === 'async' || __isAsyncCallable(project) ? 'async' : 'sync',
-    root: __cloneNodeWithEffects(decodeNodeOf(decoder), [decodeOpaqueEffect('transform', project)]),
-  });
+  return __attachDecodeMetadata(
+    fromDecode<TValue, E, TMode>(
+      (value) => projectDecode(decoder.decode(value), project) as DecodeOutput<TValue, E, TMode>,
+      (value) =>
+        projectDecode(decoder.validateDecode(value), project) as DecodeOutput<
+          TValue,
+          readonly DecodeIssue[],
+          TMode
+        >,
+    ),
+    {
+      mode: decodeModeOf(decoder) === 'async' || __isAsyncCallable(project) ? 'async' : 'sync',
+      root: __cloneNodeWithEffects(decodeNodeOf(decoder), [
+        decodeOpaqueEffect('transform', project),
+      ]),
+    },
+  );
 }
 
 export function andThen<A, TNext extends Decoder<unknown, E, DecodeMode>, E, M extends DecodeMode>(
@@ -1272,17 +1387,21 @@ export function andThen<A, TNext extends Decoder<unknown, E, DecodeMode>, E, M e
   type TValue = DecoderValue<TNext>;
   type TMode = MergeDecodeModes<M | DecoderModeOf<TNext>>;
 
-  return __attachDecodeMetadata(fromDecode<TValue, E, TMode>(
-    (value) => chainDecode(decoder.decode(value), project) as DecodeOutput<TValue, E, TMode>,
-    (value) => chainValidateDecode(decoder.validateDecode(value), project) as DecodeOutput<
-      TValue,
-      readonly DecodeIssue[],
-      TMode
-    >,
-  ), {
-    mode: decodeModeOf(decoder) === 'async' || __isAsyncCallable(project) ? 'async' : 'sync',
-    root: __cloneNodeWithEffects(decodeNodeOf(decoder), [decodeOpaqueEffect('andThen', project)]),
-  });
+  return __attachDecodeMetadata(
+    fromDecode<TValue, E, TMode>(
+      (value) => chainDecode(decoder.decode(value), project) as DecodeOutput<TValue, E, TMode>,
+      (value) =>
+        chainValidateDecode(decoder.validateDecode(value), project) as DecodeOutput<
+          TValue,
+          readonly DecodeIssue[],
+          TMode
+        >,
+    ),
+    {
+      mode: decodeModeOf(decoder) === 'async' || __isAsyncCallable(project) ? 'async' : 'sync',
+      root: __cloneNodeWithEffects(decodeNodeOf(decoder), [decodeOpaqueEffect('andThen', project)]),
+    },
+  );
 }
 
 export function refine<A, B extends A, E, M extends DecodeMode>(
@@ -1312,22 +1431,33 @@ export function refine<
 ): Decoder<A, E | DecodeFailure, MergeDecodeModes<M | AsyncModeOf<TResult>>> {
   type TMode = MergeDecodeModes<M | AsyncModeOf<TResult>>;
 
-  return __attachDecodeMetadata(fromDecode<A, E | DecodeFailure, TMode>(
-    (value) => refineDecode(decoder.decode(value), predicate, message, value) as DecodeOutput<
-      A,
-      E | DecodeFailure,
-      TMode
-    >,
-    (value) =>
-      refineValidateDecode(decoder.validateDecode(value), predicate, message, value) as DecodeOutput<
-        A,
-        readonly DecodeIssue[],
-        TMode
-      >,
-  ), {
-    mode: decodeModeOf(decoder) === 'async' || __isAsyncCallable(predicate) ? 'async' : 'sync',
-    root: __cloneNodeWithEffects(decodeNodeOf(decoder), [decodeOpaqueEffect('refine', predicate)]),
-  });
+  return __attachDecodeMetadata(
+    fromDecode<A, E | DecodeFailure, TMode>(
+      (value) =>
+        refineDecode(decoder.decode(value), predicate, message, value) as DecodeOutput<
+          A,
+          E | DecodeFailure,
+          TMode
+        >,
+      (value) =>
+        refineValidateDecode(
+          decoder.validateDecode(value),
+          predicate,
+          message,
+          value,
+        ) as DecodeOutput<
+          A,
+          readonly DecodeIssue[],
+          TMode
+        >,
+    ),
+    {
+      mode: decodeModeOf(decoder) === 'async' || __isAsyncCallable(predicate) ? 'async' : 'sync',
+      root: __cloneNodeWithEffects(decodeNodeOf(decoder), [
+        decodeOpaqueEffect('refine', predicate),
+      ]),
+    },
+  );
 }
 
 function defaultValidateDecode<T, E>(
@@ -1408,55 +1538,60 @@ function constrain<A, E, M extends DecodeMode>(
   validate: (value: A) => DecodeIssue | null,
   effect?: MetadataEffect,
 ): Decoder<A, E | DecodeFailure, M> {
-  return __attachDecodeMetadata(fromDecode<A, E | DecodeFailure, M>(
-    (value) => {
-      const decoded = decoder.decode(value);
-      if (isPromiseLike(decoded)) {
-        return decoded.then((resolved) => {
-          if (isErr(resolved)) {
-            return resolved as Result<A, E | DecodeFailure>;
-          }
-          const issue = validate(resolved.value);
-          return issue === null
-            ? ok(resolved.value)
-            : err(new DecodeFailure(issue.message, {
-              cause: issue.input,
-              path: issue.path,
-            }));
-        });
-      }
-      if (isErr(decoded)) {
-        return decoded as Result<A, E | DecodeFailure>;
-      }
-      const issue = validate(decoded.value);
-      return issue === null
-        ? ok(decoded.value)
-        : err(new DecodeFailure(issue.message, {
-          cause: issue.input,
-          path: issue.path,
-        }));
+  return __attachDecodeMetadata(
+    fromDecode<A, E | DecodeFailure, M>(
+      (value) => {
+        const decoded = decoder.decode(value);
+        if (isPromiseLike(decoded)) {
+          return decoded.then((resolved) => {
+            if (isErr(resolved)) {
+              return resolved as Result<A, E | DecodeFailure>;
+            }
+            const issue = validate(resolved.value);
+            return issue === null ? ok(resolved.value) : err(
+              new DecodeFailure(issue.message, {
+                cause: issue.input,
+                path: issue.path,
+              }),
+            );
+          });
+        }
+        if (isErr(decoded)) {
+          return decoded as Result<A, E | DecodeFailure>;
+        }
+        const issue = validate(decoded.value);
+        return issue === null ? ok(decoded.value) : err(
+          new DecodeFailure(issue.message, {
+            cause: issue.input,
+            path: issue.path,
+          }),
+        );
+      },
+      (value) => {
+        const decoded = decoder.validateDecode(value);
+        if (isPromiseLike(decoded)) {
+          return decoded.then((resolved) => {
+            if (isErr(resolved)) {
+              return resolved;
+            }
+            const issue = validate(resolved.value);
+            return issue === null ? ok(resolved.value) : err([issue]);
+          });
+        }
+        if (isErr(decoded)) {
+          return decoded;
+        }
+        const issue = validate(decoded.value);
+        return issue === null ? ok(decoded.value) : err([issue]);
+      },
+    ),
+    {
+      mode: decodeModeOf(decoder),
+      root: effect
+        ? __cloneNodeWithEffects(decodeNodeOf(decoder), [effect])
+        : decodeNodeOf(decoder),
     },
-    (value) => {
-      const decoded = decoder.validateDecode(value);
-      if (isPromiseLike(decoded)) {
-        return decoded.then((resolved) => {
-          if (isErr(resolved)) {
-            return resolved;
-          }
-          const issue = validate(resolved.value);
-          return issue === null ? ok(resolved.value) : err([issue]);
-        });
-      }
-      if (isErr(decoded)) {
-        return decoded;
-      }
-      const issue = validate(decoded.value);
-      return issue === null ? ok(decoded.value) : err([issue]);
-    },
-  ), {
-    mode: decodeModeOf(decoder),
-    root: effect ? __cloneNodeWithEffects(decodeNodeOf(decoder), [effect]) : decodeNodeOf(decoder),
-  });
+  );
 }
 
 function collectUnknownObjectKeys(
@@ -1510,7 +1645,8 @@ function allowsMissingObjectField(
 function allowsUndefinedObjectField(
   decoder: Decoder<unknown, unknown, DecodeMode>,
 ): boolean {
-  return isOptionalDecoder(decoder) || isUndefinedableDecoder(decoder) || isDefaultedDecoder(decoder);
+  return isOptionalDecoder(decoder) || isUndefinedableDecoder(decoder) ||
+    isDefaultedDecoder(decoder);
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -1551,7 +1687,9 @@ function stringMatchesFormat(value: string, expectedFormat: DecodeFormat): boole
     case 'email':
       return /^[^\s@]+@[^\s@]+\.[^\s@]+$/u.test(value);
     case 'uuid':
-      return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(value);
+      return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(
+        value,
+      );
     case 'url':
       try {
         new URL(value);
@@ -1588,8 +1726,10 @@ function chainDecode<A, TValue, E>(
   value: MaybeDecodeOutput<A, E>,
   project: (value: A) => Decoder<TValue, E, DecodeMode>,
 ): MaybeDecodeOutput<TValue, E> {
-  return mapDecodeOutput(value, (decoded) =>
-    isErr(decoded) ? decoded as Result<TValue, E> : project(decoded.value).decode(decoded.value)
+  return mapDecodeOutput(
+    value,
+    (decoded) =>
+      isErr(decoded) ? decoded as Result<TValue, E> : project(decoded.value).decode(decoded.value),
   );
 }
 
@@ -1597,16 +1737,21 @@ function chainValidateDecode<A, TValue, E>(
   value: MaybeDecodeOutput<A, readonly DecodeIssue[]>,
   project: (value: A) => Decoder<TValue, E, DecodeMode>,
 ): MaybeDecodeOutput<TValue, readonly DecodeIssue[]> {
-  return mapDecodeOutput(value, (decoded) =>
-    isErr(decoded) ? decoded as Result<TValue, readonly DecodeIssue[]>
-    : project(decoded.value).validateDecode(decoded.value)
+  return mapDecodeOutput(
+    value,
+    (decoded) =>
+      isErr(decoded)
+        ? decoded as Result<TValue, readonly DecodeIssue[]>
+        : project(decoded.value).validateDecode(decoded.value),
   );
 }
 
 function refineDecode<A, E>(
   value: MaybeDecodeOutput<A, E>,
-  predicate: (value: A, ctx: DecodeRefinementContext) =>
-    DecodeRefinementResult | Promise<DecodeRefinementResult>,
+  predicate: (
+    value: A,
+    ctx: DecodeRefinementContext,
+  ) => DecodeRefinementResult | Promise<DecodeRefinementResult>,
   message: string,
   input: unknown,
 ): MaybeDecodeOutput<A, E | DecodeFailure> {
@@ -1616,27 +1761,33 @@ function refineDecode<A, E>(
       if (isErr(decoded)) {
         return decoded as Result<A, E | DecodeFailure>;
       }
-      return mapMaybeAsync(predicate(decoded.value, context), (result) =>
-        refinementPassed(result)
-          ? ok(decoded.value)
-          : err(decodeFailureFromRefinementResult(result, message, input))
+      return mapMaybeAsync(
+        predicate(decoded.value, context),
+        (result) =>
+          refinementPassed(result)
+            ? ok(decoded.value)
+            : err(decodeFailureFromRefinementResult(result, message, input)),
       );
     });
   }
   if (isErr(value)) {
     return value as Result<A, E | DecodeFailure>;
   }
-  return mapMaybeAsync(predicate(value.value, context), (result) =>
-    refinementPassed(result)
-      ? ok(value.value)
-      : err(decodeFailureFromRefinementResult(result, message, input))
+  return mapMaybeAsync(
+    predicate(value.value, context),
+    (result) =>
+      refinementPassed(result)
+        ? ok(value.value)
+        : err(decodeFailureFromRefinementResult(result, message, input)),
   );
 }
 
 function refineValidateDecode<A>(
   value: MaybeDecodeOutput<A, readonly DecodeIssue[]>,
-  predicate: (value: A, ctx: DecodeRefinementContext) =>
-    DecodeRefinementResult | Promise<DecodeRefinementResult>,
+  predicate: (
+    value: A,
+    ctx: DecodeRefinementContext,
+  ) => DecodeRefinementResult | Promise<DecodeRefinementResult>,
   message: string,
   input: unknown,
 ): MaybeDecodeOutput<A, readonly DecodeIssue[]> {
@@ -1646,20 +1797,24 @@ function refineValidateDecode<A>(
       if (isErr(decoded)) {
         return decoded;
       }
-      return mapMaybeAsync(predicate(decoded.value, context), (result) =>
-        refinementPassed(result)
-          ? ok(decoded.value)
-          : err(decodeIssuesFromRefinementResult(result, message, input))
+      return mapMaybeAsync(
+        predicate(decoded.value, context),
+        (result) =>
+          refinementPassed(result)
+            ? ok(decoded.value)
+            : err(decodeIssuesFromRefinementResult(result, message, input)),
       );
     });
   }
   if (isErr(value)) {
     return value;
   }
-  return mapMaybeAsync(predicate(value.value, context), (result) =>
-    refinementPassed(result)
-      ? ok(value.value)
-      : err(decodeIssuesFromRefinementResult(result, message, input))
+  return mapMaybeAsync(
+    predicate(value.value, context),
+    (result) =>
+      refinementPassed(result)
+        ? ok(value.value)
+        : err(decodeIssuesFromRefinementResult(result, message, input)),
   );
 }
 
@@ -1849,10 +2004,12 @@ async function decodeTupleAsync<const TElements extends TupleShape>(
   decodedValues: unknown[],
   startIndex: number,
   firstPending: Promise<Result<DecoderValue<TElements[number]>, DecoderError<TElements[number]>>>,
-): Promise<Result<
-  { readonly [K in keyof TElements]: DecoderValue<TElements[K]> },
-  DecoderError<TElements[number]> | DecodeFailure
->> {
+): Promise<
+  Result<
+    { readonly [K in keyof TElements]: DecoderValue<TElements[K]> },
+    DecoderError<TElements[number]> | DecodeFailure
+  >
+> {
   const firstDecoded = await firstPending;
   if (isErr(firstDecoded)) {
     return err(
@@ -1888,10 +2045,12 @@ async function validateTupleAsync<const TElements extends TupleShape>(
   issues: DecodeIssue[],
   startIndex: number,
   firstPending: Promise<Result<DecoderValue<TElements[number]>, readonly DecodeIssue[]>>,
-): Promise<Result<
-  { readonly [K in keyof TElements]: DecoderValue<TElements[K]> },
-  readonly DecodeIssue[]
->> {
+): Promise<
+  Result<
+    { readonly [K in keyof TElements]: DecoderValue<TElements[K]> },
+    readonly DecodeIssue[]
+  >
+> {
   const firstDecoded = await firstPending;
   if (isErr(firstDecoded)) {
     issues.push(...prependIssuePaths(firstDecoded.error, startIndex));
@@ -1923,10 +2082,12 @@ async function decodeObjectAsync<TShape extends ObjectShape>(
   decodedObject: Record<string, unknown>,
   startIndex: number,
   firstPending: Promise<Result<unknown, unknown>>,
-): Promise<Result<
-  { readonly [K in keyof TShape]: DecoderValue<TShape[K]> },
-  DecoderError<TShape[keyof TShape]> | DecodeFailure
->> {
+): Promise<
+  Result<
+    { readonly [K in keyof TShape]: DecoderValue<TShape[K]> },
+    DecoderError<TShape[keyof TShape]> | DecodeFailure
+  >
+> {
   const firstKey = keys[startIndex]!;
   const firstDecoded = await firstPending;
   if (isErr(firstDecoded)) {
@@ -1968,7 +2129,11 @@ async function decodeObjectAsync<TShape extends ObjectShape>(
     const decodeInput = hasKey ? rawValue : undefined;
     const decoded = await decoder.decode(decodeInput);
     if (isErr(decoded)) {
-      return err(prependPathIfPossible(decoded.error, key) as DecoderError<TShape[keyof TShape]> | DecodeFailure);
+      return err(
+        prependPathIfPossible(decoded.error, key) as
+          | DecoderError<TShape[keyof TShape]>
+          | DecodeFailure,
+      );
     }
     decodedObject[key] = decoded.value;
   }
@@ -1984,10 +2149,12 @@ async function validateObjectAsync<TShape extends ObjectShape>(
   issues: DecodeIssue[],
   startIndex: number,
   firstPending: Promise<Result<unknown, readonly DecodeIssue[]>>,
-): Promise<Result<
-  { readonly [K in keyof TShape]: DecoderValue<TShape[K]> },
-  readonly DecodeIssue[]
->> {
+): Promise<
+  Result<
+    { readonly [K in keyof TShape]: DecoderValue<TShape[K]> },
+    readonly DecodeIssue[]
+  >
+> {
   const firstKey = keys[startIndex]!;
   const firstDecoded = await firstPending;
   if (isErr(firstDecoded)) {
@@ -2006,18 +2173,22 @@ async function validateObjectAsync<TShape extends ObjectShape>(
     const hasKey = key in record;
     const rawValue = record[key];
     if (!hasKey && !allowsMissingObjectField(decoder)) {
-      issues.push(issueFromDecodeFailure(new DecodeFailure(`Missing field "${key}".`, {
-        cause: record,
-        path: [key],
-      })));
+      issues.push(issueFromDecodeFailure(
+        new DecodeFailure(`Missing field "${key}".`, {
+          cause: record,
+          path: [key],
+        }),
+      ));
       continue;
     }
 
     if (hasKey && rawValue === undefined && !allowsUndefinedObjectField(decoder)) {
-      issues.push(issueFromDecodeFailure(new DecodeFailure(`Missing field "${key}".`, {
-        cause: record,
-        path: [key],
-      })));
+      issues.push(issueFromDecodeFailure(
+        new DecodeFailure(`Missing field "${key}".`, {
+          cause: record,
+          path: [key],
+        }),
+      ));
       continue;
     }
 

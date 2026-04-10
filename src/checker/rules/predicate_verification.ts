@@ -25,8 +25,7 @@ export type PredicateSignatureDeclaration =
   | ts.ArrowFunction
   | ts.MethodDeclaration;
 
-export type SignatureDeclarationWithBody =
-  PredicateSignatureDeclaration;
+export type SignatureDeclarationWithBody = PredicateSignatureDeclaration;
 
 interface ResolvedPredicateContract {
   forbiddenPredicateTypeNode?: ts.TypeNode;
@@ -63,8 +62,9 @@ function getDeclaredPredicateContract(
   }
 
   return {
-    forbiddenPredicateTypeNode:
-      declaration.type && ts.isTypePredicateNode(declaration.type) ? declaration.type.type : undefined,
+    forbiddenPredicateTypeNode: declaration.type && ts.isTypePredicateNode(declaration.type)
+      ? declaration.type.type
+      : undefined,
     predicate,
     signature,
   };
@@ -386,7 +386,8 @@ function classifySupportedPredicateTarget(
 
   const normalizedType = context.checker.getNonNullableType(type);
   if (isExactObjectPredicateTarget(type)) {
-    return context.checker.isArrayType(normalizedType) || context.checker.isTupleType(normalizedType)
+    return context.checker.isArrayType(normalizedType) ||
+        context.checker.isTupleType(normalizedType)
       ? undefined
       : { kind: 'nonNullObject' };
   }
@@ -541,7 +542,8 @@ export function hasPredicateVerificationContract(
   context: AnalysisContext,
   node: PredicateSignatureDeclaration,
 ): boolean {
-  return requiresPredicateVerification(node) || getContextualPredicateContract(context, node) !== undefined;
+  return requiresPredicateVerification(node) ||
+    getContextualPredicateContract(context, node) !== undefined;
 }
 
 function isIdentifierReference(expression: ts.Expression, identifierName: string): boolean {
@@ -1064,12 +1066,12 @@ export function verifyPredicateBody(context: AnalysisContext, check: PredicateCh
   }
 
   return verifyNegativeGuardBody(
-      context,
-      statements,
-      check.parameterName,
-      check.target,
-      'return-false',
-    ) ||
+    context,
+    statements,
+    check.parameterName,
+    check.target,
+    'return-false',
+  ) ||
     verifyNegativeGuardBody(
       context,
       statements,

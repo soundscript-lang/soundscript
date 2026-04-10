@@ -220,7 +220,11 @@ function getProjectHelperReturnedArgument(
         continue;
       }
 
-      const returnedParameterIndex = getReturnedParameterIndex(checker, declaration, returnedExpression);
+      const returnedParameterIndex = getReturnedParameterIndex(
+        checker,
+        declaration,
+        returnedExpression,
+      );
       if (returnedParameterIndex !== undefined) {
         return expression.arguments[returnedParameterIndex];
       }

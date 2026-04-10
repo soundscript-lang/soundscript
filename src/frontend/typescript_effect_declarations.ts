@@ -80,7 +80,9 @@ function getCallableKindKey(node: EffectCallableDeclaration): string | undefined
     if (!name) {
       return undefined;
     }
-    const isStatic = node.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.StaticKeyword) ??
+    const isStatic = node.modifiers?.some((modifier) =>
+      modifier.kind === ts.SyntaxKind.StaticKeyword
+    ) ??
       false;
     return `${isStatic ? 'static-method' : 'method'}:${name}`;
   }
@@ -104,7 +106,9 @@ function getCallableGroupKey(
   return kindKey ? [...ownerPath, kindKey].join('>') : undefined;
 }
 
-function collectCallableSummaryGroups(sourceFile: ts.SourceFile): ReadonlyMap<string, CallableSummaryGroup> {
+function collectCallableSummaryGroups(
+  sourceFile: ts.SourceFile,
+): ReadonlyMap<string, CallableSummaryGroup> {
   const groups = new Map<string, CallableSummaryGroup>();
 
   function visit(node: ts.Node, ownerPath: readonly string[]): void {
@@ -142,7 +146,9 @@ function renderRewriteList(
   forwardedParameter: EffectForwardedParameterFact,
 ): readonly string[] {
   if (forwardedParameter.rewrites.length > 0) {
-    return forwardedParameter.rewrites.map((rewrite) => `{ from: ${rewrite.from}, to: ${rewrite.to} }`);
+    return forwardedParameter.rewrites.map((rewrite) =>
+      `{ from: ${rewrite.from}, to: ${rewrite.to} }`
+    );
   }
   if (forwardedParameter.failureBoundary === 'reject') {
     return ['{ from: fails, to: fails.rejects }'];
@@ -174,7 +180,10 @@ function renderForwardEntry(
   const path = [parameterName, ...forwardedParameter.memberPath].join('.');
   const rewrites = renderRewriteList(forwardedParameter);
   const handledEffects = renderHandledEffects(forwardedParameter);
-  if (rewrites.length === 0 && handledEffects.length === 0 && forwardedParameter.memberPath.length === 0) {
+  if (
+    rewrites.length === 0 && handledEffects.length === 0 &&
+    forwardedParameter.memberPath.length === 0
+  ) {
     return path;
   }
 
@@ -265,7 +274,10 @@ function rewriteRelativeTypeScriptSpecifierText(
       if (ts.isStringLiteralLike(argumentLiteral)) {
         maybeQueueSpecifierRewrite(argumentLiteral);
       }
-    } else if (ts.isExternalModuleReference(node) && node.expression && ts.isStringLiteralLike(node.expression)) {
+    } else if (
+      ts.isExternalModuleReference(node) && node.expression &&
+      ts.isStringLiteralLike(node.expression)
+    ) {
       maybeQueueSpecifierRewrite(node.expression);
     }
     ts.forEachChild(node, visit);
@@ -296,7 +308,9 @@ function expectedDeclarationOutputPath(
   if (!outDir) {
     return undefined;
   }
-  const programSourceFiles = program.getSourceFiles().filter((candidate) => !candidate.isDeclarationFile);
+  const programSourceFiles = program.getSourceFiles().filter((candidate) =>
+    !candidate.isDeclarationFile
+  );
   if (programSourceFiles.length === 0) {
     return undefined;
   }
@@ -307,7 +321,9 @@ function expectedDeclarationOutputPath(
     !programSourceFiles.every((candidate) =>
       normalizePathForComparison(candidate.fileName).startsWith(
         `${normalizePathForComparison(commonSourceDirectory).replace(/[/\\\\]+$/u, '')}/`,
-      ) || normalizePathForComparison(candidate.fileName) === normalizePathForComparison(commonSourceDirectory)
+      ) ||
+      normalizePathForComparison(candidate.fileName) ===
+        normalizePathForComparison(commonSourceDirectory)
     )
   ) {
     const parentDirectory = dirname(commonSourceDirectory);
@@ -344,10 +360,10 @@ export function projectEffectAnnotationsOntoDeclarationText(
 
   function visit(node: ts.Node, ownerPath: readonly string[]): void {
     if (isCallableDeclarationNode(node)) {
-        const key = getCallableGroupKey(node, ownerPath);
-        if (key) {
-          const ordinal = seenByKey.get(key) ?? 0;
-          seenByKey.set(key, ordinal + 1);
+      const key = getCallableGroupKey(node, ownerPath);
+      if (key) {
+        const ordinal = seenByKey.get(key) ?? 0;
+        seenByKey.set(key, ordinal + 1);
         const group = callableGroups.get(key);
         const sourceRecord = group?.implementationDefault ?? group?.records[ordinal];
         if (sourceRecord) {

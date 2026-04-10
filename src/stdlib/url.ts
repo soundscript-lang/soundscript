@@ -23,7 +23,7 @@ export interface URLSearchParams {
 
 export const URLSearchParams: {
   // #[effects(add: [])]
-  new(
+  new (
     init?:
       | Iterable<readonly [string, string]>
       | Record<string, string>
@@ -31,7 +31,7 @@ export const URLSearchParams: {
       | URLSearchParams,
   ): URLSearchParams;
 } = globalThis.URLSearchParams as unknown as {
-  new(
+  new (
     init?:
       | Iterable<readonly [string, string]>
       | Record<string, string>
@@ -61,7 +61,7 @@ export interface URL {
 
 export const URL: {
   // #[effects(add: [fails.throws])]
-  new(url: string, base?: string | URL): URL;
+  new (url: string, base?: string | URL): URL;
 } = globalThis.URL as unknown as {
-  new(url: string, base?: string | URL): URL;
+  new (url: string, base?: string | URL): URL;
 };

@@ -3,7 +3,7 @@ import ts from 'typescript';
 import {
   HOST_DOM_MODULE_SPECIFIER,
   HOST_NODE_MODULE_SPECIFIER,
-} from '../soundscript_runtime_specifiers.ts';
+} from '../project/soundscript_runtime_specifiers.ts';
 import { fromFileUrl } from '../platform/path.ts';
 
 export { HOST_DOM_MODULE_SPECIFIER, HOST_NODE_MODULE_SPECIFIER };

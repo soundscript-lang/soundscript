@@ -1,6 +1,6 @@
-import { fromCompare, type Eq, type Order } from './compare.ts';
+import { type Eq, fromCompare, type Order } from './compare.ts';
 import { Failure } from './failures.ts';
-import { fromHashEq, stringHash, type HashEq } from './hash.ts';
+import { fromHashEq, type HashEq, stringHash } from './hash.ts';
 import { err, ok, type Result } from './result.ts';
 
 type MachineNumericKind =
@@ -126,8 +126,7 @@ export class NumericDivisionByZeroFailure extends Failure {
 
 const MACHINE_KIND_PROPERTY = '__soundscript_numeric_kind';
 
-class MachineNumericBox<Leaf extends MachineNumericKind>
-  implements MachineNumericValue<Leaf> {
+class MachineNumericBox<Leaf extends MachineNumericKind> implements MachineNumericValue<Leaf> {
   readonly __soundscript_numeric_kind: Leaf;
   readonly #key: string;
   readonly #payload: NumericPayload;
@@ -408,15 +407,23 @@ function createIntegerFactory<Leaf extends IntegerLeafKind>(
   minValue: NumericLikeInput,
   maxValue: NumericLikeInput,
 ): IntegerFactory<NumericByKind<Leaf>> {
-  const factory = ((value: NumericLikeInput) =>
-    internMachineNumeric(kind, value)) as IntegerFactory<NumericByKind<Leaf>>;
+  const factory =
+    ((value: NumericLikeInput) => internMachineNumeric(kind, value)) as IntegerFactory<
+      NumericByKind<Leaf>
+    >;
   Object.assign(factory, {
     MAX_VALUE: internMachineNumeric(kind, maxValue),
     MIN_VALUE: internMachineNumeric(kind, minValue),
     compare(left: NumericByKind<Leaf>, right: NumericByKind<Leaf>): number {
       return BIGINT_LEAF_KINDS.has(kind as BigIntLeafKind)
-        ? bigintLeafCompare(left as MachineNumericValue<BigIntLeafKind>, right as MachineNumericValue<BigIntLeafKind>)
-        : numberLeafCompare(left as MachineNumericValue<NumberLeafKind>, right as MachineNumericValue<NumberLeafKind>);
+        ? bigintLeafCompare(
+          left as MachineNumericValue<BigIntLeafKind>,
+          right as MachineNumericValue<BigIntLeafKind>,
+        )
+        : numberLeafCompare(
+          left as MachineNumericValue<NumberLeafKind>,
+          right as MachineNumericValue<NumberLeafKind>,
+        );
     },
     format(value: NumericByKind<Leaf>): string {
       return formatPayload((value as MachineNumericBox<Leaf>).payload());
@@ -480,8 +487,9 @@ function createFloatFactory<Leaf extends FloatLeafKind>(
   minValue: number,
   maxValue: number,
 ): FloatFactory<NumericByKind<Leaf>> {
-  const factory = ((value: NumericLikeInput) =>
-    internMachineNumeric(kind, value)) as FloatFactory<NumericByKind<Leaf>>;
+  const factory = ((value: NumericLikeInput) => internMachineNumeric(kind, value)) as FloatFactory<
+    NumericByKind<Leaf>
+  >;
   Object.assign(factory, {
     MAX_VALUE: internMachineNumeric(kind, maxValue),
     MIN_VALUE: internMachineNumeric(kind, minValue),
@@ -550,7 +558,8 @@ function fitsIntegerKind(kind: IntegerLeafKind, value: unknown): boolean {
 
 function fitsFloat32(value: unknown): boolean {
   const payload = isMachineNumericBox(value) ? value.payload() : value;
-  return typeof payload === 'number' && Number.isFinite(payload) && Math.fround(payload) === payload;
+  return typeof payload === 'number' && Number.isFinite(payload) &&
+    Math.fround(payload) === payload;
 }
 
 function assertIntegerLeafValue<Leaf extends IntegerLeafKind>(
@@ -564,7 +573,9 @@ function assertIntegerLeafValue<Leaf extends IntegerLeafKind>(
   return numeric as MachineNumericBox<Leaf>;
 }
 
-function integerPayloadToBigInt<Leaf extends IntegerLeafKind>(numeric: MachineNumericBox<Leaf>): bigint {
+function integerPayloadToBigInt<Leaf extends IntegerLeafKind>(
+  numeric: MachineNumericBox<Leaf>,
+): bigint {
   const payload = numeric.payload();
   return typeof payload === 'bigint' ? payload : BigInt(payload);
 }
@@ -714,7 +725,10 @@ function applyNumberUnaryOperator(operator: UnaryNumericOperator, value: number)
   }
 }
 
-function applyBigIntUnaryOperator(operator: Exclude<UnaryNumericOperator, '+'>, value: bigint): bigint {
+function applyBigIntUnaryOperator(
+  operator: Exclude<UnaryNumericOperator, '+'>,
+  value: bigint,
+): bigint {
   switch (operator) {
     case '-':
       return -value;
@@ -1163,7 +1177,11 @@ abstract class MachineNumericArrayView<Leaf extends MachineNumericKind>
   protected abstract leafKind(): Leaf;
   protected abstract readFromView(view: DataView, byteOffset: number): NumericByKind<Leaf>;
   protected abstract writeToView(view: DataView, byteOffset: number, value: NumericLikeInput): void;
-  protected abstract constructSubarray(buffer: ArrayBufferLike, byteOffset: number, length: number): MachineNumericArrayView<Leaf>;
+  protected abstract constructSubarray(
+    buffer: ArrayBufferLike,
+    byteOffset: number,
+    length: number,
+  ): MachineNumericArrayView<Leaf>;
 
   protected coerceToLeaf(value: NumericLikeInput): NumericByKind<Leaf> {
     return FACTORY_BY_KIND[this.leafKind()](value) as NumericByKind<Leaf>;
@@ -1356,7 +1374,11 @@ export class I8Array extends MachineNumericArrayView<'i8'> {
     writeI8(view, byteOffset, value);
   }
 
-  protected constructSubarray(buffer: ArrayBufferLike, byteOffset: number, length: number): I8Array {
+  protected constructSubarray(
+    buffer: ArrayBufferLike,
+    byteOffset: number,
+    length: number,
+  ): I8Array {
     return new I8Array(buffer, byteOffset, length);
   }
 
@@ -1396,7 +1418,11 @@ export class U8Array extends MachineNumericArrayView<'u8'> {
     writeU8(view, byteOffset, value);
   }
 
-  protected constructSubarray(buffer: ArrayBufferLike, byteOffset: number, length: number): U8Array {
+  protected constructSubarray(
+    buffer: ArrayBufferLike,
+    byteOffset: number,
+    length: number,
+  ): U8Array {
     return new U8Array(buffer, byteOffset, length);
   }
 
@@ -1438,7 +1464,11 @@ export class I16Array extends MachineNumericArrayView<'i16'> {
     writeI16(view, byteOffset, value, this._littleEndian);
   }
 
-  protected constructSubarray(buffer: ArrayBufferLike, byteOffset: number, length: number): I16Array {
+  protected constructSubarray(
+    buffer: ArrayBufferLike,
+    byteOffset: number,
+    length: number,
+  ): I16Array {
     return new I16Array(buffer, byteOffset, length, this._littleEndian);
   }
 
@@ -1481,7 +1511,11 @@ export class U16Array extends MachineNumericArrayView<'u16'> {
     writeU16(view, byteOffset, value, this._littleEndian);
   }
 
-  protected constructSubarray(buffer: ArrayBufferLike, byteOffset: number, length: number): U16Array {
+  protected constructSubarray(
+    buffer: ArrayBufferLike,
+    byteOffset: number,
+    length: number,
+  ): U16Array {
     return new U16Array(buffer, byteOffset, length, this._littleEndian);
   }
 
@@ -1524,7 +1558,11 @@ export class I32Array extends MachineNumericArrayView<'i32'> {
     writeI32(view, byteOffset, value, this._littleEndian);
   }
 
-  protected constructSubarray(buffer: ArrayBufferLike, byteOffset: number, length: number): I32Array {
+  protected constructSubarray(
+    buffer: ArrayBufferLike,
+    byteOffset: number,
+    length: number,
+  ): I32Array {
     return new I32Array(buffer, byteOffset, length, this._littleEndian);
   }
 
@@ -1567,7 +1605,11 @@ export class U32Array extends MachineNumericArrayView<'u32'> {
     writeU32(view, byteOffset, value, this._littleEndian);
   }
 
-  protected constructSubarray(buffer: ArrayBufferLike, byteOffset: number, length: number): U32Array {
+  protected constructSubarray(
+    buffer: ArrayBufferLike,
+    byteOffset: number,
+    length: number,
+  ): U32Array {
     return new U32Array(buffer, byteOffset, length, this._littleEndian);
   }
 
@@ -1611,7 +1653,11 @@ export class I64Array extends MachineNumericArrayView<'i64'> {
     writeI64(view, byteOffset, value, this._littleEndian);
   }
 
-  protected constructSubarray(buffer: ArrayBufferLike, byteOffset: number, length: number): I64Array {
+  protected constructSubarray(
+    buffer: ArrayBufferLike,
+    byteOffset: number,
+    length: number,
+  ): I64Array {
     return new I64Array(buffer, byteOffset, length, this._littleEndian);
   }
 
@@ -1654,7 +1700,11 @@ export class U64Array extends MachineNumericArrayView<'u64'> {
     writeU64(view, byteOffset, value, this._littleEndian);
   }
 
-  protected constructSubarray(buffer: ArrayBufferLike, byteOffset: number, length: number): U64Array {
+  protected constructSubarray(
+    buffer: ArrayBufferLike,
+    byteOffset: number,
+    length: number,
+  ): U64Array {
     return new U64Array(buffer, byteOffset, length, this._littleEndian);
   }
 
@@ -1698,7 +1748,11 @@ export class F32Array extends MachineNumericArrayView<'f32'> {
     writeF32(view, byteOffset, value, this._littleEndian);
   }
 
-  protected constructSubarray(buffer: ArrayBufferLike, byteOffset: number, length: number): F32Array {
+  protected constructSubarray(
+    buffer: ArrayBufferLike,
+    byteOffset: number,
+    length: number,
+  ): F32Array {
     return new F32Array(buffer, byteOffset, length, this._littleEndian);
   }
 
@@ -1741,7 +1795,11 @@ export class F64Array extends MachineNumericArrayView<'f64'> {
     writeF64(view, byteOffset, value, this._littleEndian);
   }
 
-  protected constructSubarray(buffer: ArrayBufferLike, byteOffset: number, length: number): F64Array {
+  protected constructSubarray(
+    buffer: ArrayBufferLike,
+    byteOffset: number,
+    length: number,
+  ): F64Array {
     return new F64Array(buffer, byteOffset, length, this._littleEndian);
   }
 

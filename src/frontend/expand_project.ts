@@ -14,7 +14,7 @@ import {
   loadConfig,
   resolveExpansionEnabled,
   type RuntimeTarget,
-} from '../config.ts';
+} from '../project/config.ts';
 import { createBuiltinExpandedProgram } from './builtin_macro_support.ts';
 import {
   createMacroDebugSnapshot,

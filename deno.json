@@ -53,20 +53,24 @@
   },
   "exclude": [
     ".worktrees/",
-    "src/bundled/sound-libs/"
+    "src/bundled/sound-libs/",
+    "src/bundled/typescript/",
+    "tests/test262/cases/raw/"
   ],
   "nodeModulesDir": "auto",
   "tasks": {
     "build": "deno compile --allow-env --allow-read --allow-run --allow-write --output ./bin/soundscript src/main.ts && deno run -A scripts/release/stage_cli_runtime_support.ts ./bin",
     "dev": "deno run src/main.ts",
-    "check": "deno check src/main.ts src/cli.ts src/lsp_main.ts src/stdlib/*.ts",
+    "check": "deno check src/main.ts src/cli/cli.ts src/lsp_main.ts src/stdlib/*.ts",
     "fmt": "deno fmt",
     "fmt:check": "deno fmt --check",
     "lint": "deno lint",
     "lsp": "deno run --allow-env --allow-read src/lsp_main.ts",
     "smoke:cli": "deno run -A scripts/release/cli_smoke.ts ./bin/soundscript",
+    "test:layout": "deno test --allow-read tests/repo/layout_test.ts",
+    "test:repo": "deno test --allow-read tests/repo",
     "test": "deno test --allow-env --allow-read --allow-write --allow-run",
-    "verify": "deno fmt --check && deno lint && deno task check && deno task test"
+    "verify": "deno fmt --check && deno lint && deno task check && deno task test:layout && deno task test"
   },
   "fmt": {
     "useTabs": false,

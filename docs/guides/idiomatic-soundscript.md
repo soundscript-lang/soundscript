@@ -93,11 +93,10 @@ through the service layer.
 
 ## `Try` Versus `isErr`
 
-Use `Try(...)` when you are already in a `Result`-returning flow and want the early-return
-behavior.
+Use `Try(...)` when you are already in a `Result`-returning flow and want the early-return behavior.
 
 ```ts
-import { Try, ok, type Result } from 'sts:prelude';
+import { ok, type Result, Try } from 'sts:prelude';
 
 declare function loadUser(): Result<User, Error>;
 
@@ -114,8 +113,9 @@ not fit the macro's return-contract expectations.
 import { isErr, ok, type Result } from 'sts:prelude';
 
 function formatCount(input: string): string {
-  const parsed: Result<number, Error> =
-    Number.isFinite(Number(input)) ? ok(Number(input)) : { tag: 'err', error: new Error('bad count') };
+  const parsed: Result<number, Error> = Number.isFinite(Number(input))
+    ? ok(Number(input))
+    : { tag: 'err', error: new Error('bad count') };
 
   if (isErr(parsed)) {
     return parsed.error.message;
@@ -134,7 +134,7 @@ Use `JsonValue` for plain JSON and `JsonLikeValue` when the data can still conta
 `undefined` before encoding.
 
 ```ts
-import { isJsonValue, parseJson, type JsonValue } from 'sts:json';
+import { isJsonValue, type JsonValue, parseJson } from 'sts:json';
 
 function loadRecord(text: string): JsonValue | undefined {
   const parsed = parseJson(text);
@@ -174,5 +174,5 @@ const config = unwrapOrThrow(loadConfig());
 
 If a helper can stay small, readonly, and local, it usually should.
 
-That keeps the sound path obvious and avoids growing a general-purpose utility layer that nobody
-can remember.
+That keeps the sound path obvious and avoids growing a general-purpose utility layer that nobody can
+remember.

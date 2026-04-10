@@ -3271,9 +3271,13 @@ function propertyNameText(name: ts.PropertyName): string | undefined {
   return undefined;
 }
 
-function parseSound1019WritablePropertyName(diagnostic: CodeActionDiagnosticInput): string | undefined {
+function parseSound1019WritablePropertyName(
+  diagnostic: CodeActionDiagnosticInput,
+): string | undefined {
   const primaryMessage = diagnostic.message?.split('\n\n')[0];
-  const match = primaryMessage?.match(/^Writable property '([^']+)' is invariant in soundscript\.$/u);
+  const match = primaryMessage?.match(
+    /^Writable property '([^']+)' is invariant in soundscript\.$/u,
+  );
   return match?.[1];
 }
 
@@ -3315,8 +3319,11 @@ function findTypedDeclarationAncestor(
     node,
     (
       current,
-    ): current is ts.ParameterDeclaration | ts.PropertyDeclaration | ts.PropertySignature |
-      ts.VariableDeclaration =>
+    ): current is
+      | ts.ParameterDeclaration
+      | ts.PropertyDeclaration
+      | ts.PropertySignature
+      | ts.VariableDeclaration =>
       (
         ts.isVariableDeclaration(current) ||
         ts.isParameter(current) ||
@@ -3692,8 +3699,18 @@ function createFlowCaptureLocalCodeAction(
   }
 
   const bodyMatches = [
-    ...collectMatchingFlowCaptureExpressions(ifStatement.thenStatement, sourceFile, text, narrowedValue),
-    ...collectMatchingFlowCaptureExpressions(ifStatement.elseStatement, sourceFile, text, narrowedValue),
+    ...collectMatchingFlowCaptureExpressions(
+      ifStatement.thenStatement,
+      sourceFile,
+      text,
+      narrowedValue,
+    ),
+    ...collectMatchingFlowCaptureExpressions(
+      ifStatement.elseStatement,
+      sourceFile,
+      text,
+      narrowedValue,
+    ),
   ];
   if (bodyMatches.length === 0) {
     return undefined;
@@ -3733,7 +3750,8 @@ function createFlowCaptureLocalCodeAction(
   ];
 
   return {
-    title: `Capture \`${narrowedValue}\` into \`${captureName}\` before the ${boundaryLabel} boundary`,
+    title:
+      `Capture \`${narrowedValue}\` into \`${captureName}\` before the ${boundaryLabel} boundary`,
     kind: 'quickfix',
     edit: {
       changes: {
@@ -3775,7 +3793,11 @@ function createReadonlyArrayTypeCodeAction(
   const declaration = findTypedDeclarationAncestor(current) ??
     (
       diagnosticOffsets
-        ? findBestTypedDeclarationForRange(sourceFile, diagnosticOffsets.start, diagnosticOffsets.end)
+        ? findBestTypedDeclarationForRange(
+          sourceFile,
+          diagnosticOffsets.start,
+          diagnosticOffsets.end,
+        )
         : undefined
     );
   if (!declaration?.type || !isSupportedReadonlyArrayTypeNode(declaration.type)) {
@@ -3847,13 +3869,21 @@ function createReadonlyWritablePropertyCodeAction(
       const typedDeclaration = findTypedDeclarationAncestor(current) ??
         (
           diagnosticOffsets
-            ? findBestTypedDeclarationForRange(sourceFile, diagnosticOffsets.start, diagnosticOffsets.end)
+            ? findBestTypedDeclarationForRange(
+              sourceFile,
+              diagnosticOffsets.start,
+              diagnosticOffsets.end,
+            )
             : undefined
         );
       if (!typedDeclaration?.type) {
         return undefined;
       }
-      return resolveLocalWritablePropertyDeclaration(sourceFile, typedDeclaration.type, propertyName);
+      return resolveLocalWritablePropertyDeclaration(
+        sourceFile,
+        typedDeclaration.type,
+        propertyName,
+      );
     })();
 
   if (!targetDeclaration || targetDeclaration.getSourceFile().fileName !== sourceFile.fileName) {

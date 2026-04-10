@@ -11,6 +11,7 @@ import {
   COMPARE_STDLIB_DECLARATION_FILE,
   COMPARE_STDLIB_DECLARATION_TEXT,
   COMPARE_STDLIB_MODULE_SPECIFIER,
+  DEBUG_STDLIB_DECLARATION_TEXT,
   DECODE_STDLIB_DECLARATION_FILE,
   DECODE_STDLIB_DECLARATION_TEXT,
   DECODE_STDLIB_MODULE_SPECIFIER,
@@ -32,14 +33,13 @@ import {
   NUMERICS_STDLIB_DECLARATION_FILE,
   NUMERICS_STDLIB_DECLARATION_TEXT,
   NUMERICS_STDLIB_MODULE_SPECIFIER,
-  DEBUG_STDLIB_DECLARATION_TEXT,
   RANDOM_STDLIB_DECLARATION_FILE,
   RANDOM_STDLIB_DECLARATION_TEXT,
   RANDOM_STDLIB_MODULE_SPECIFIER,
+  resolveStdlibDeclarationRuntimePath,
   RESULT_STDLIB_DECLARATION_FILE,
   RESULT_STDLIB_DECLARATION_TEXT,
   RESULT_STDLIB_MODULE_SPECIFIER,
-  resolveStdlibDeclarationRuntimePath,
   STDLIB_DECLARATION_FILE,
   STDLIB_DECLARATION_TEXT,
   STDLIB_MODULE_SPECIFIER,
@@ -120,11 +120,17 @@ Deno.test('std package support resolves root and stdlib leaf specifiers to virtu
 });
 
 Deno.test('std package support root text is generated from stdlib sources', () => {
-  assertStringIncludes(STDLIB_DECLARATION_TEXT, "export type { Err, None, Ok, Option, Result, Some } from 'sts:result';");
+  assertStringIncludes(
+    STDLIB_DECLARATION_TEXT,
+    "export type { Err, None, Ok, Option, Result, Some } from 'sts:result';",
+  );
 });
 
 Deno.test('std package support preserves inferred effects in generated debug declarations', () => {
-  assertStringIncludes(DEBUG_STDLIB_DECLARATION_TEXT, '// #[effects(add: [fails.throws], unknown: [direct])]');
+  assertStringIncludes(
+    DEBUG_STDLIB_DECLARATION_TEXT,
+    '// #[effects(add: [fails.throws], unknown: [direct])]',
+  );
   assertStringIncludes(DEBUG_STDLIB_DECLARATION_TEXT, '// #[effects(add: [host.ffi])]');
 });
 
@@ -146,7 +152,7 @@ Deno.test('std package support rewrites generated relative stdlib declaration im
 
 Deno.test('stdlib source tree no longer carries checked-in .d.ts files', async () => {
   const declarationFileNames: string[] = [];
-  for await (const entry of Deno.readDir(new URL('../stdlib/', import.meta.url))) {
+  for await (const entry of Deno.readDir(new URL('../stdlib', import.meta.url))) {
     if (entry.isFile && entry.name.endsWith('.d.ts')) {
       declarationFileNames.push(entry.name);
     }
@@ -183,7 +189,7 @@ Deno.test('std package support resolves nested stdlib declaration runtime paths 
     const resolved = resolveStdlibDeclarationRuntimePath(
       '/missing/source/tree/src/stdlib/host/dom.d.ts',
       {
-      execPath,
+        execPath,
       },
     );
 

@@ -40,7 +40,9 @@ Deno.test('import_family writes default JS fixtures and exact upstream assertion
 
     const result = await importFamily(specPath);
     const fixturePath = join(destinationRoot, 'from-string.js');
-    const manifest = JSON.parse(await Deno.readTextFile(candidateManifestPath)) as Array<Record<string, unknown>>;
+    const manifest = JSON.parse(await Deno.readTextFile(candidateManifestPath)) as Array<
+      Record<string, unknown>
+    >;
 
     assertEquals(result.family, 'array-from');
     assertEquals(result.mode, 'positive');
@@ -101,7 +103,9 @@ Deno.test('import_family writes adapter directories when adapterSource is provid
       await Deno.readTextFile(join(destinationRoot, 'typed-empty', 'index.ts')),
       'import { raw } from "./raw.js";\nexport function main(): readonly number[] { return raw(); }\n',
     );
-    const manifest = JSON.parse(await Deno.readTextFile(candidateManifestPath)) as Array<Record<string, unknown>>;
+    const manifest = JSON.parse(await Deno.readTextFile(candidateManifestPath)) as Array<
+      Record<string, unknown>
+    >;
     assertEquals(manifest[0]?.test, 'cases/raw/typed/typed-empty');
   } finally {
     await Deno.remove(tempDirectory, { recursive: true }).catch(() => {});
@@ -147,7 +151,9 @@ Deno.test('import_family emits module-completion candidates without entry or arg
       await Deno.readTextFile(join(destinationRoot, 'S15.1.2.3_A1_T1.js')),
       'assert.sameValue(parseFloat("0"), 0, "parseFloat returns zero for zero.");\n',
     );
-    const manifest = JSON.parse(await Deno.readTextFile(candidateManifestPath)) as Array<Record<string, unknown>>;
+    const manifest = JSON.parse(await Deno.readTextFile(candidateManifestPath)) as Array<
+      Record<string, unknown>
+    >;
     assertEquals(manifest[0]?.test, 'cases/raw/original/S15.1.2.3_A1_T1.js');
     assertEquals(manifest[0]?.execution, 'module');
     assertEquals(manifest[0]?.completion, { kind: 'normal' });

@@ -11,11 +11,12 @@ import type {
 } from './macro_api.ts';
 import { formatMacroSignature, tryReadMacroSignature } from './macro_api.ts';
 
-type SignatureValidationContext = Pick<
-  MacroContext,
-  'declarationSpan' | 'error' | 'hasBlock' | 'invocation' | 'name' | 'syntax'
-> &
-  Partial<MacroContext>;
+type SignatureValidationContext =
+  & Pick<
+    MacroContext,
+    'declarationSpan' | 'error' | 'hasBlock' | 'invocation' | 'name' | 'syntax'
+  >
+  & Partial<MacroContext>;
 
 export function validateMacroInvocationSignature<
   Signature extends MacroSignature | undefined,

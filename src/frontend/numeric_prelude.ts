@@ -289,7 +289,9 @@ export function prependMachineNumericPrelude(text: string): string {
     return text;
   }
 
-  return `import type { ${usedTypeNames.join(', ')} } from '${MACHINE_NUMERICS_MODULE_SPECIFIER}';\n${text}`;
+  return `import type { ${
+    usedTypeNames.join(', ')
+  } } from '${MACHINE_NUMERICS_MODULE_SPECIFIER}';\n${text}`;
 }
 
 export function prependMachineNumericSourcePrelude(fileName: string, text: string): string {
@@ -348,7 +350,9 @@ export function prependMachineNumericSourcePrelude(fileName: string, text: strin
   const orderedTypeNames = MACHINE_NUMERIC_TYPE_NAMES.filter((name) =>
     usedTypeNames.has(name) && !existingTypeImports.has(name)
   );
-  const missingValueNames = MACHINE_NUMERIC_VALUE_NAMES.filter((name) => !existingValueImports.has(name));
+  const missingValueNames = MACHINE_NUMERIC_VALUE_NAMES.filter((name) =>
+    !existingValueImports.has(name)
+  );
 
   if (orderedTypeNames.length > 0) {
     preambleLines.push(

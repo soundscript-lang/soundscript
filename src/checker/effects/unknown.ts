@@ -167,7 +167,11 @@ export function getEffectSummaryUnknownReasonsForSignature(
 ): readonly EffectUnknownReasonFact[] {
   return mergeEffectUnknownReasons(
     summary.unknownDirectReasons,
-    unknownReasonsForForwardedParametersAtSignature(context, signature, summary.forwardedParameters),
+    unknownReasonsForForwardedParametersAtSignature(
+      context,
+      signature,
+      summary.forwardedParameters,
+    ),
   );
 }
 

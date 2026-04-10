@@ -1,4 +1,6 @@
 // #[interop]
+import { document } from 'host:dom';
+// #[interop]
 import { createRoot } from 'react-dom/client';
 
 let root: ReturnType<typeof createRoot> | undefined = undefined;
