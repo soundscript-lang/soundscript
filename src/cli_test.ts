@@ -3112,6 +3112,116 @@ Deno.test('runCli node materializes a mixed .ts/.sts app through a temporary tra
   assertStringIncludes(result.output, '42');
 });
 
+Deno.test('runCli node preserves leading Node.js flags ahead of the materialized entry', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            target: 'ES2022',
+            module: 'ESNext',
+          },
+          include: ['src/**/*.sts'],
+        },
+        null,
+        2,
+      ),
+    },
+    {
+      path: 'src/main.sts',
+      contents: 'export const answer = 42;\n',
+    },
+  ], { legacySoundMode: false });
+
+  let seenArgs: string[] = [];
+  const result = await runCli(
+    ['node', '--watch', '--import', './preload.mjs', join(tempDirectory, 'src/main.sts'), 'alpha'],
+    tempDirectory,
+    {
+      runSubprocess: async (_command, args) => {
+        seenArgs = [...args];
+        return {
+          exitCode: 0,
+          output: '42\n',
+        };
+      },
+    },
+  );
+
+  assertEquals(result.exitCode, 0);
+  assertEquals(seenArgs.includes('--watch'), true);
+  assertEquals(seenArgs.includes('--import'), true);
+  assertEquals(seenArgs.includes('./preload.mjs'), true);
+  assertEquals(seenArgs.includes('--enable-source-maps'), true);
+  assertEquals(seenArgs.at(-1), 'alpha');
+  const entryArg = seenArgs.find((arg) => arg.endsWith('/src/main.js'));
+  assertEquals(typeof entryArg, 'string');
+  assertEquals(seenArgs.indexOf(entryArg!), seenArgs.lastIndexOf(entryArg!));
+  assertEquals(seenArgs.indexOf(entryArg!) > seenArgs.indexOf('./preload.mjs'), true);
+});
+
+Deno.test('runCli node accepts Node CLI flags before the entry file', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            target: 'ES2022',
+            module: 'ESNext',
+          },
+          include: ['src/**/*.sts', 'src/**/*.ts'],
+        },
+        null,
+        2,
+      ),
+    },
+    {
+      path: 'preload.mjs',
+      contents: 'export {};\n',
+    },
+    {
+      path: 'src/main.sts',
+      contents: 'export const answer = 42;\n',
+    },
+  ], { legacySoundMode: false });
+
+  let seenArgs: string[] = [];
+  const result = await runCli(
+    [
+      'node',
+      '--import',
+      join(tempDirectory, 'preload.mjs'),
+      '--inspect',
+      join(tempDirectory, 'src/main.sts'),
+      'alpha',
+      'beta',
+    ],
+    tempDirectory,
+    {
+      runSubprocess: async (_command, args) => {
+        seenArgs = [...args];
+        return {
+          exitCode: 0,
+          output: 'ok\n',
+        };
+      },
+    },
+  );
+
+  assertEquals(result.exitCode, 0, result.output);
+  assertEquals(seenArgs[0], '--import');
+  assertEquals(seenArgs[1], join(tempDirectory, 'preload.mjs'));
+  assertEquals(seenArgs[2], '--inspect');
+  assertEquals(seenArgs[3], '--enable-source-maps');
+  assertStringIncludes(seenArgs[4]!, '/src/main.js');
+  assertEquals(seenArgs[5], 'alpha');
+  assertEquals(seenArgs[6], 'beta');
+});
+
 Deno.test('runCli node materializes access to installed runtime packages for temp graph execution', async () => {
   const tempDirectory = await createTempProject([
     {

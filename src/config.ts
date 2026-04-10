@@ -78,6 +78,7 @@ export interface BuildCommand {
 export interface NodeCommand {
   kind: 'node';
   entryPath: string;
+  nodeArgs: string[];
   forwardedArgs: string[];
   workingDirectory: string;
 }
@@ -219,6 +220,142 @@ function isRuntimeTarget(value: string): value is RuntimeTarget {
     value === 'wasm-browser' ||
     value === 'wasm-node' ||
     value === 'wasm-wasi';
+}
+
+const NODE_OPTIONS_WITH_VALUE: ReadonlySet<string> = new Set([
+  '-C',
+  '-e',
+  '-p',
+  '-r',
+  '--build-snapshot-config',
+  '--conditions',
+  '--cpu-prof-dir',
+  '--cpu-prof-interval',
+  '--cpu-prof-name',
+  '--debug-port',
+  '--diagnostic-dir',
+  '--disable-proto',
+  '--disable-warning',
+  '--dns-result-order',
+  '--env-file',
+  '--env-file-if-exists',
+  '--eval',
+  '--experimental-config-file',
+  '--experimental-loader',
+  '--experimental-sea-config',
+  '--heap-prof-dir',
+  '--heap-prof-interval',
+  '--heap-prof-name',
+  '--heapsnapshot-near-heap-limit',
+  '--heapsnapshot-signal',
+  '--icu-data-dir',
+  '--import',
+  '--input-type',
+  '--inspect-publish-uid',
+  '--localstorage-file',
+  '--loader',
+  '--max-http-header-size',
+  '--max-old-space-size-percentage',
+  '--network-family-autoselection-attempt-timeout',
+  '--openssl-config',
+  '--redirect-warnings',
+  '--report-dir',
+  '--report-directory',
+  '--report-filename',
+  '--report-signal',
+  '--require',
+  '--run',
+  '--secure-heap',
+  '--secure-heap-min',
+  '--snapshot-blob',
+  '--test-concurrency',
+  '--test-coverage-branches',
+  '--test-coverage-exclude',
+  '--test-coverage-functions',
+  '--test-coverage-include',
+  '--test-coverage-lines',
+  '--test-global-setup',
+  '--test-isolation',
+  '--test-name-pattern',
+  '--test-reporter',
+  '--test-reporter-destination',
+  '--test-rerun-failures',
+  '--test-shard',
+  '--test-skip-pattern',
+  '--test-timeout',
+  '--title',
+  '--tls-cipher-list',
+  '--tls-keylog',
+  '--trace-event-categories',
+  '--trace-event-file-pattern',
+  '--trace-require-module',
+  '--unhandled-rejections',
+  '--use-largepages',
+  '--v8-pool-size',
+  '--watch-kill-signal',
+  '--watch-path',
+]);
+
+function nodeOptionConsumesNextArg(argument: string): boolean {
+  return !argument.includes('=') && NODE_OPTIONS_WITH_VALUE.has(argument);
+}
+
+function parseNodeCommandArgs(
+  args: readonly string[],
+  workingDirectory: string,
+): NodeCommand | InvalidCommand {
+  const nodeArgs: string[] = [];
+  let consumeNextAsNodeOptionValue = false;
+
+  for (let index = 1; index < args.length; index += 1) {
+    const argument = args[index]!;
+    if (consumeNextAsNodeOptionValue) {
+      nodeArgs.push(argument);
+      consumeNextAsNodeOptionValue = false;
+      continue;
+    }
+
+    if (argument === '--') {
+      const entryArgument = args[index + 1];
+      if (!entryArgument || entryArgument.startsWith('-')) {
+        return {
+          kind: 'invalid',
+          message: 'Missing entry file for node.',
+        };
+      }
+
+      return {
+        kind: 'node',
+        entryPath: ts.sys.resolvePath(
+          isAbsolute(entryArgument) ? entryArgument : join(workingDirectory, entryArgument),
+        ),
+        nodeArgs,
+        forwardedArgs: [...args.slice(index + 2)],
+        workingDirectory,
+      };
+    }
+
+    if (argument.startsWith('-')) {
+      nodeArgs.push(argument);
+      consumeNextAsNodeOptionValue = nodeOptionConsumesNextArg(argument);
+      continue;
+    }
+
+    return {
+      kind: 'node',
+      entryPath: ts.sys.resolvePath(
+        isAbsolute(argument) ? argument : join(workingDirectory, argument),
+      ),
+      nodeArgs,
+      forwardedArgs: [...args.slice(index + 1)],
+      workingDirectory,
+    };
+  }
+
+  return {
+    kind: 'invalid',
+    message: 'Missing entry file for node.',
+  };
 }
 
 function createRemovedExternsDiagnostic(projectPath: string): ts.Diagnostic {
@@ -474,22 +611,7 @@ export function parseCommand(args: readonly string[], workingDirectory: string):
   }
 
   if (subcommand === 'node') {
-    const entryArgument = args[1];
-    if (!entryArgument || entryArgument.startsWith('-')) {
-      return {
-        kind: 'invalid',
-        message: 'Missing entry file for node.',
-      };
-    }
-
-    return {
-      kind: 'node',
-      entryPath: ts.sys.resolvePath(
-        isAbsolute(entryArgument) ? entryArgument : join(workingDirectory, entryArgument),
-      ),
-      forwardedArgs: [...args.slice(2)],
-      workingDirectory,
-    };
+    return parseNodeCommandArgs(args, workingDirectory);
   }
 
   if (subcommand === 'deno') {

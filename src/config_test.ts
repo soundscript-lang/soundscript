@@ -103,7 +103,23 @@ Deno.test('parseCommand accepts node subcommand with forwarded args', () => {
   assertEquals(command, {
     kind: 'node',
     entryPath: '/tmp/workspace/src/main.sts',
+    nodeArgs: [],
     forwardedArgs: ['--', 'alpha', 'beta'],
+    workingDirectory: '/tmp/workspace',
+  });
+});
+
+Deno.test('parseCommand accepts node subcommand with leading Node.js flags', () => {
+  const command = parseCommand(
+    ['node', '--watch', '--import', './preload.mjs', './src/main.sts', 'alpha'],
+    '/tmp/workspace',
+  );
+
+  assertEquals(command, {
+    kind: 'node',
+    entryPath: '/tmp/workspace/src/main.sts',
+    nodeArgs: ['--watch', '--import', './preload.mjs'],
+    forwardedArgs: ['alpha'],
     workingDirectory: '/tmp/workspace',
   });
 });

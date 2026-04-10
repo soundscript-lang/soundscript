@@ -327,7 +327,7 @@ function renderHelp(): string {
     '  soundscript expand [--project <path>] [--target <js-browser|js-node|wasm-browser|wasm-node|wasm-wasi>] --file <path> [--stage <rewrite|prepared|expanded|projected>] [--trace]',
     '  soundscript explain <code> [--format <text|json|ndjson>]',
     '  soundscript lsp',
-    '  soundscript node <entry> [-- <args...>]',
+    '  soundscript node [node-options...] <entry> [-- <args...>]',
     '  soundscript [--help] [--version]',
     '',
     'Commands:',
@@ -369,6 +369,7 @@ function renderHelp(): string {
     '  soundscript explain SOUND1002',
     '  soundscript lsp',
     '  soundscript node src/main.sts',
+    '  soundscript node --inspect src/main.sts',
     '',
     'Global options:',
     '  -h, --help     Show this help text.',
@@ -966,6 +967,12 @@ function maybeResolveLocalCliPath(argument: string, workingDirectory: string): s
   return pathExists(resolved) ? resolved : undefined;
 }
 
+function ensureNodeSourceMapsFlag(nodeArgs: readonly string[]): string[] {
+  return nodeArgs.includes('--enable-source-maps')
+    ? [...nodeArgs]
+    : [...nodeArgs, '--enable-source-maps'];
+}
+
 async function runSubprocess(
   command: string,
   args: readonly string[],
@@ -1010,7 +1017,7 @@ async function runNodeCommand(
 
     const subprocess = await runSubprocessFn(
       'node',
-      ['--enable-source-maps', entryOutputPath, ...command.forwardedArgs],
+      [...ensureNodeSourceMapsFlag(command.nodeArgs), entryOutputPath, ...command.forwardedArgs],
       command.workingDirectory,
     );
     return {
