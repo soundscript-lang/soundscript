@@ -12,8 +12,12 @@ import {
   field,
   format,
   integer,
+  jsonArray,
+  jsonObject,
+  jsonValue,
   lazy,
   literal,
+  mapError,
   max,
   maxLength,
   min,
@@ -146,6 +150,88 @@ Deno.test('decode preprocess runs before structural decode and supports async he
   assertTaggedEquals(Stringified.decode(42), { tag: 'ok', value: '42' });
   assertTaggedEquals(await Uppercased.decode('hello'), { tag: 'ok', value: 'HELLO' });
   assertTaggedEquals(await Uppercased.validateDecode('hello'), { tag: 'ok', value: 'HELLO' });
+});
+
+Deno.test('decode json helpers validate recursive JSON structures', () => {
+  assertTaggedEquals(jsonValue.decode({
+    nested: {
+      count: 1,
+      ok: true,
+    },
+    tags: ['a', null],
+  }), {
+    tag: 'ok',
+    value: {
+      nested: {
+        count: 1,
+        ok: true,
+      },
+      tags: ['a', null],
+    },
+  });
+  assertTaggedEquals(jsonObject.decode({ nested: { id: 'node-1' } }), {
+    tag: 'ok',
+    value: { nested: { id: 'node-1' } },
+  });
+  assertTaggedEquals(jsonArray.decode([{ id: 'node-1' }, false, null]), {
+    tag: 'ok',
+    value: [{ id: 'node-1' }, false, null],
+  });
+
+  const badValue = jsonValue.validateDecode({ nested: { missing: undefined } });
+  const badObject = jsonObject.validateDecode(['not', 'an', 'object'] as never);
+  const badArray = jsonArray.validateDecode({ not: 'an array' } as never);
+
+  assertEquals(isErr(badValue), true);
+  if (isOk(badValue)) {
+    throw new Error('expected invalid json value failure');
+  }
+  assertEquals(badValue.error[0]?.code, 'decode_failure');
+
+  assertEquals(isErr(badObject), true);
+  if (isOk(badObject)) {
+    throw new Error('expected invalid json object failure');
+  }
+  assertEquals(badObject.error[0]?.message, 'Expected JSON object.');
+
+  assertEquals(isErr(badArray), true);
+  if (isOk(badArray)) {
+    throw new Error('expected invalid json array failure');
+  }
+  assertEquals(badArray.error[0]?.message, 'Expected JSON array.');
+});
+
+Deno.test('decode mapError remaps sync and async decode failures while leaving validateDecode untouched', async () => {
+  const SyncMapped = mapError(
+    string,
+    (error: DecodeFailure) => ({ code: 'mapped', message: error.message }),
+  );
+  const AsyncMapped = mapError(
+    preprocess(number, async (value) => value),
+    (error: DecodeFailure) => ({ code: 'mapped_async', message: error.message }),
+  );
+
+  assertTaggedEquals(SyncMapped.decode(12), {
+    error: {
+      code: 'mapped',
+      message: 'Expected string.',
+    },
+    tag: 'err',
+  });
+  assertTaggedEquals(await AsyncMapped.decode('nope'), {
+    error: {
+      code: 'mapped_async',
+      message: 'Expected number.',
+    },
+    tag: 'err',
+  });
+
+  const validated = await AsyncMapped.validateDecode('nope');
+  assertEquals(isErr(validated), true);
+  if (isOk(validated)) {
+    throw new Error('expected validateDecode failure');
+  }
+  assertEquals(validated.error[0]?.code, 'decode_failure');
 });
 
 Deno.test('decode scalar constraint helpers validate numbers, lengths, patterns, and formats', () => {

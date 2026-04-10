@@ -15,12 +15,19 @@ import type {
   MacroReflectedTypeShape,
   MacroSyntaxNode,
   MacroTypeAliasDeclSyntax,
+  TypeSyntax,
 } from './macro_api.ts';
 import { macroSignature } from './macro_api.ts';
 import { attachMacroFactoryMetadata } from './macro_api_internal.ts';
 import { inferDeriveHelperMode } from './derive_helper_mode.ts';
 import { semanticLookupNodeForContext } from './macro_context_internal.ts';
+import { getInternalChecker } from './macro_type_internal.ts';
 import { getHostDeclaration, getHostNode } from './macro_syntax_internal.ts';
+import {
+  JSON_STDLIB_DECLARATION_FILE,
+  resolveStdlibDeclarationRuntimePath,
+} from './std_package_support.ts';
+import { resolveAliasedSymbol } from './value_binding_internal.ts';
 
 const DERIVE_MACRO_FILE_NAME = fromFileUrl(import.meta.url);
 const DERIVE_SIGNATURE = macroSignature.oneOf(
@@ -110,6 +117,7 @@ interface TaggedDerivedVariant<TField> {
 }
 
 const CLASS_DECODE_VALUE_PLACEHOLDER = '__sts_decoded_value__';
+const JSON_STDLIB_RUNTIME_FILE = resolveStdlibDeclarationRuntimePath(JSON_STDLIB_DECLARATION_FILE);
 
 function attachDeriveFactory<T extends () => MacroDefinition>(factory: T): T {
   return attachMacroFactoryMetadata(factory, {
@@ -248,6 +256,317 @@ function primitiveKindForTypeText(typeText: string): PrimitiveFieldKind | null {
       return normalized as PrimitiveFieldKind;
     default:
       return null;
+  }
+}
+
+type StdlibJsonHelperKind = 'jsonArray' | 'jsonObject' | 'jsonValue';
+
+function normalizeFileNameForComparison(fileName: string): string {
+  return fileName.replace(/\\/gu, '/');
+}
+
+function isJsonStdlibFile(fileName: string): boolean {
+  const normalized = normalizeFileNameForComparison(fileName);
+  return normalized === normalizeFileNameForComparison(JSON_STDLIB_DECLARATION_FILE) ||
+    normalized === normalizeFileNameForComparison(JSON_STDLIB_RUNTIME_FILE) ||
+    /(?:^|\/)@soundscript\/soundscript\/json\.d\.ts$/u.test(normalized) ||
+    /(?:^|\/)(?:src\/stdlib|stdlib)\/json(?:\.d)?\.ts$/u.test(normalized);
+}
+
+function stdlibJsonHelperKindForSymbol(
+  checker: ts.TypeChecker,
+  symbol: ts.Symbol,
+): StdlibJsonHelperKind | null {
+  const resolved = resolveAliasedSymbol(checker, symbol);
+  if (!(resolved.declarations ?? []).some((declaration) =>
+    isJsonStdlibFile(declaration.getSourceFile().fileName)
+  )) {
+    return null;
+  }
+
+  switch (resolved.getName()) {
+    case 'JsonArray':
+      return 'jsonArray';
+    case 'JsonObject':
+      return 'jsonObject';
+    case 'JsonValue':
+      return 'jsonValue';
+    default:
+      return null;
+  }
+}
+
+function stdlibJsonHelperKindByName(name: string): StdlibJsonHelperKind | null {
+  switch (name) {
+    case 'JsonArray':
+      return 'jsonArray';
+    case 'JsonObject':
+      return 'jsonObject';
+    case 'JsonValue':
+      return 'jsonValue';
+    default:
+      return null;
+  }
+}
+
+function stdlibJsonHelperKindFromImportTypeNode(
+  typeNode: ts.TypeNode,
+): StdlibJsonHelperKind | null {
+  if (!ts.isImportTypeNode(typeNode)) {
+    return null;
+  }
+  if (!ts.isLiteralTypeNode(typeNode.argument) || !ts.isStringLiteral(typeNode.argument.literal)) {
+    return null;
+  }
+  if (typeNode.argument.literal.text !== 'sts:json' || !typeNode.qualifier) {
+    return null;
+  }
+  return ts.isIdentifier(typeNode.qualifier)
+    ? stdlibJsonHelperKindByName(typeNode.qualifier.text)
+    : ts.isQualifiedName(typeNode.qualifier) && ts.isIdentifier(typeNode.qualifier.right)
+    ? stdlibJsonHelperKindByName(typeNode.qualifier.right.text)
+    : null;
+}
+
+function stdlibJsonHelperKindFromSourceImport(
+  typeNode: ts.TypeNode,
+  sourceFile: ts.SourceFile = typeNode.getSourceFile(),
+): StdlibJsonHelperKind | null {
+  const normalized = unwrapParenthesizedTypeNode(typeNode);
+  if (!normalized) {
+    return null;
+  }
+  const directImportType = stdlibJsonHelperKindFromImportTypeNode(normalized);
+  if (directImportType) {
+    return directImportType;
+  }
+
+  let localName: string | null = null;
+  let namespaceName: string | null = null;
+  let qualifiedName: string | null = null;
+  if (ts.isTypeReferenceNode(normalized)) {
+    if (ts.isIdentifier(normalized.typeName)) {
+      localName = normalized.typeName.text;
+    } else if (
+      ts.isQualifiedName(normalized.typeName) &&
+      ts.isIdentifier(normalized.typeName.left) &&
+      ts.isIdentifier(normalized.typeName.right)
+    ) {
+      namespaceName = normalized.typeName.left.text;
+      qualifiedName = normalized.typeName.right.text;
+    }
+  }
+  if (!localName && !(namespaceName && qualifiedName)) {
+    return null;
+  }
+
+  for (const statement of sourceFile.statements) {
+    if (
+      !ts.isImportDeclaration(statement) ||
+      !ts.isStringLiteral(statement.moduleSpecifier) ||
+      statement.moduleSpecifier.text !== 'sts:json'
+    ) {
+      continue;
+    }
+    const importClause = statement.importClause;
+    if (!importClause) {
+      continue;
+    }
+    if (
+      namespaceName &&
+      importClause.namedBindings &&
+      ts.isNamespaceImport(importClause.namedBindings) &&
+      importClause.namedBindings.name.text === namespaceName
+    ) {
+      return stdlibJsonHelperKindByName(qualifiedName!);
+    }
+    if (
+      localName &&
+      importClause.namedBindings &&
+      ts.isNamedImports(importClause.namedBindings)
+    ) {
+      for (const element of importClause.namedBindings.elements) {
+        const importedName = element.propertyName?.text ?? element.name.text;
+        if (element.name.text === localName) {
+          return stdlibJsonHelperKindByName(importedName);
+        }
+      }
+    }
+  }
+
+  return null;
+}
+
+function stdlibJsonHelperKindFromTypeReferenceNode(
+  typeNode: ts.TypeNode,
+): StdlibJsonHelperKind | null {
+  const normalized = unwrapParenthesizedTypeNode(typeNode);
+  if (!normalized || !ts.isTypeReferenceNode(normalized)) {
+    return null;
+  }
+  return ts.isIdentifier(normalized.typeName)
+    ? stdlibJsonHelperKindByName(normalized.typeName.text)
+    : null;
+}
+
+function hostTypeNode(node: MacroSyntaxNode | null | undefined): ts.TypeNode | null {
+  if (!node) {
+    return null;
+  }
+  const hostNode = getHostNode(node);
+  return hostNode && ts.isTypeNode(hostNode) ? hostNode : null;
+}
+
+function explicitTypeNodeForSyntaxNode(node: MacroSyntaxNode): ts.TypeNode | null {
+  const candidate = node as MacroSyntaxNode & { explicitType?: () => TypeSyntax | null };
+  if (typeof candidate.explicitType === 'function') {
+    const explicitTypeNode = hostTypeNode(candidate.explicitType());
+    if (explicitTypeNode) {
+      return explicitTypeNode;
+    }
+  }
+  const hostNode = getHostNode(node);
+  const typedHostNode = hostNode as (ts.Node & { type?: ts.TypeNode | undefined }) | null;
+  return typedHostNode?.type && ts.isTypeNode(typedHostNode.type)
+    ? typedHostNode.type
+    : null;
+}
+
+function unwrapParenthesizedTypeNode(typeNode: ts.TypeNode | null | undefined): ts.TypeNode | null {
+  let current = typeNode ?? null;
+  while (current && ts.isParenthesizedTypeNode(current)) {
+    current = current.type;
+  }
+  return current;
+}
+
+function getTypeReferenceTargetSymbol(
+  checker: ts.TypeChecker,
+  node: ts.TypeNode,
+): ts.Symbol | null {
+  if (ts.isTypeReferenceNode(node)) {
+    return checker.getSymbolAtLocation(node.typeName) ?? null;
+  }
+  if (ts.isImportTypeNode(node) && node.qualifier) {
+    return checker.getSymbolAtLocation(node.qualifier) ?? null;
+  }
+  return null;
+}
+
+function getTypeReferenceArgumentNodes(node: ts.TypeNode): readonly ts.TypeNode[] | undefined {
+  if (ts.isTypeReferenceNode(node)) {
+    return node.typeArguments;
+  }
+  if (ts.isImportTypeNode(node)) {
+    return node.typeArguments;
+  }
+  return undefined;
+}
+
+function arrayElementTypeNode(typeNode: ts.TypeNode | null | undefined): ts.TypeNode | null {
+  const normalized = unwrapParenthesizedTypeNode(typeNode);
+  if (!normalized) {
+    return null;
+  }
+  if (ts.isArrayTypeNode(normalized)) {
+    return normalized.elementType;
+  }
+  if (
+    ts.isTypeReferenceNode(normalized) &&
+    ts.isIdentifier(normalized.typeName) &&
+    (normalized.typeName.text === 'Array' || normalized.typeName.text === 'ReadonlyArray')
+  ) {
+    return normalized.typeArguments?.[0] ?? null;
+  }
+  return null;
+}
+
+function tupleElementTypeNodes(typeNode: ts.TypeNode | null | undefined): readonly ts.TypeNode[] | null {
+  const normalized = unwrapParenthesizedTypeNode(typeNode);
+  return normalized && ts.isTupleTypeNode(normalized) ? normalized.elements : null;
+}
+
+function typeArgumentNodeAt(
+  typeNode: ts.TypeNode | null | undefined,
+  index: number,
+): ts.TypeNode | null {
+  const normalized = unwrapParenthesizedTypeNode(typeNode);
+  return normalized ? getTypeReferenceArgumentNodes(normalized)?.[index] ?? null : null;
+}
+
+function unionMemberTypeNodes(typeNode: ts.TypeNode | null | undefined): readonly ts.TypeNode[] | null {
+  const normalized = unwrapParenthesizedTypeNode(typeNode);
+  return normalized && ts.isUnionTypeNode(normalized) ? normalized.types : null;
+}
+
+function isNullTypeNode(typeNode: ts.TypeNode | null | undefined): boolean {
+  const normalized = unwrapParenthesizedTypeNode(typeNode);
+  return normalized ? ts.isLiteralTypeNode(normalized) && normalized.literal.kind === ts.SyntaxKind.NullKeyword : false;
+}
+
+function isUndefinedTypeNode(typeNode: ts.TypeNode | null | undefined): boolean {
+  const normalized = unwrapParenthesizedTypeNode(typeNode);
+  return normalized?.kind === ts.SyntaxKind.UndefinedKeyword;
+}
+
+function stdlibJsonHelperKindForTypeNode(
+  ctx: DeriveContext,
+  scopeNode: MacroSyntaxNode,
+  typeNode: ts.TypeNode | null | undefined,
+  visiting: Set<string> = new Set(),
+): StdlibJsonHelperKind | null {
+  const normalized = unwrapParenthesizedTypeNode(typeNode);
+  if (!normalized) {
+    return null;
+  }
+  const lookupSourceFile = semanticLookupNodeForContext(ctx, scopeNode)?.getSourceFile();
+  const importedHelperKind = stdlibJsonHelperKindFromSourceImport(
+    normalized,
+    lookupSourceFile ?? normalized.getSourceFile(),
+  );
+  if (importedHelperKind) {
+    return importedHelperKind;
+  }
+
+  const helperKindFromReference = stdlibJsonHelperKindFromTypeReferenceNode(normalized);
+  if (helperKindFromReference) {
+    return helperKindFromReference;
+  }
+
+  if (ts.isTypeReferenceNode(normalized) && ts.isIdentifier(normalized.typeName)) {
+    const localName = normalized.typeName.text;
+    if (visiting.has(localName)) {
+      return null;
+    }
+    const localDeclaration = ctx.semantics.localDeclaration(localName, scopeNode)?.asTypeAlias();
+    if (localDeclaration) {
+      visiting.add(localName);
+      const aliasTypeNode = hostTypeNode(localDeclaration.type);
+      if (aliasTypeNode) {
+        const aliasHelperKind = stdlibJsonHelperKindForTypeNode(
+          ctx,
+          localDeclaration,
+          aliasTypeNode,
+          visiting,
+        );
+        if (aliasHelperKind) {
+          return aliasHelperKind;
+        }
+      }
+      visiting.delete(localName);
+    }
+  }
+
+  if (!ts.isTypeReferenceNode(normalized)) {
+    return null;
+  }
+
+  try {
+    const checker = getInternalChecker(ctx.semantics.undefinedType());
+    const symbol = getTypeReferenceTargetSymbol(checker, normalized);
+    return symbol ? stdlibJsonHelperKindForSymbol(checker, symbol) : null;
+  } catch {
+    return null;
   }
 }
 
@@ -637,31 +956,76 @@ function localNamedReferenceNeedsTypedRecursivePath(
   if (name === ownerTypeName) {
     return true;
   }
+  const localDeclaration = localDeclarationForNamedReference(ctx, scopeNode, name);
+  if (!localDeclaration) {
+    return false;
+  }
+  const participatesInRecursiveCycle = localDeclarationReachesTypeName(
+    ctx,
+    localDeclaration,
+    ownerTypeName,
+    macroName,
+  );
+  if (!participatesInRecursiveCycle) {
+    return false;
+  }
   switch (macroName) {
     case 'decode':
-      return ctx.semantics.localDeclarationHasAnnotation(name, 'decode', scopeNode) &&
-        !ctx.semantics.valueBindingInScope(expectedCompanionName(name, 'decode'));
+      return ctx.semantics.localDeclarationHasAnnotation(name, 'decode', scopeNode);
     case 'encode':
-      return ctx.semantics.localDeclarationHasAnnotation(name, 'encode', scopeNode) &&
-        !ctx.semantics.valueBindingInScope(expectedCompanionName(name, 'encode'));
+      return ctx.semantics.localDeclarationHasAnnotation(name, 'encode', scopeNode);
     case 'codec': {
-      const codecCompanionName = expectedCompanionName(name, 'codec');
-      if (
-        ctx.semantics.localDeclarationHasAnnotation(name, 'codec', scopeNode) &&
-        !ctx.semantics.valueBindingInScope(codecCompanionName)
-      ) {
+      if (ctx.semantics.localDeclarationHasAnnotation(name, 'codec', scopeNode)) {
         return true;
       }
-      const decodeCompanionName = expectedCompanionName(name, 'decode');
-      const encodeCompanionName = expectedCompanionName(name, 'encode');
       return ctx.semantics.localDeclarationHasAnnotation(name, 'decode', scopeNode) &&
-        ctx.semantics.localDeclarationHasAnnotation(name, 'encode', scopeNode) &&
-        (
-          !ctx.semantics.valueBindingInScope(decodeCompanionName) ||
-          !ctx.semantics.valueBindingInScope(encodeCompanionName)
-        );
+        ctx.semantics.localDeclarationHasAnnotation(name, 'encode', scopeNode);
     }
   }
+}
+
+function localDeclarationReachesTypeName(
+  ctx: DeriveContext,
+  declaration: MacroClassDeclSyntax | MacroInterfaceDeclSyntax | MacroTypeAliasDeclSyntax,
+  targetTypeName: string,
+  macroName: 'decode' | 'encode' | 'codec',
+  visiting: Set<string> = new Set(),
+): boolean {
+  const declarationName = declarationTypeName(declaration);
+  if (!visiting.add(declarationName)) {
+    return false;
+  }
+
+  const declarationShape = ctx.reflect.declarationShape(declaration);
+  if (declarationShape.kind !== 'objectLike') {
+    return false;
+  }
+  const shape = declarationShape;
+  const referencedNames = collectTypedRecursiveLocalReferenceNames(
+    ctx,
+    {
+      kind: 'object',
+      fields: shape.fields,
+      text: shape.text,
+    } satisfies MacroReflectedTypeShape,
+    declarationName,
+    macroName,
+    declaration,
+  );
+  for (const referencedName of referencedNames) {
+    if (referencedName === targetTypeName) {
+      return true;
+    }
+    const localDeclaration = findLocalDeclarationByName(ctx, declaration, referencedName);
+    if (
+      localDeclaration &&
+      localDeclarationReachesTypeName(ctx, localDeclaration, targetTypeName, macroName, visiting)
+    ) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 function localNamedReferenceParticipatesInMacro(
@@ -1295,8 +1659,37 @@ function localDeclarationForNamedReference(
   scopeNode: MacroSyntaxNode,
   name: string,
 ): MacroClassDeclSyntax | MacroInterfaceDeclSyntax | MacroTypeAliasDeclSyntax | null {
-  const declaration = asMacroDeclarationNode(scopeNode);
-  return declaration ? findLocalDeclarationByName(ctx, declaration, name) : null;
+  const localDeclaration = ctx.semantics.localDeclaration(name, scopeNode);
+  return localDeclaration?.asClass() ?? localDeclaration?.asInterface() ?? localDeclaration?.asTypeAlias() ??
+    null;
+}
+
+function localStructuralAliasForNamedReference(
+  ctx: DeriveContext,
+  name: string,
+  scopeNode: MacroSyntaxNode,
+  macroName: 'decode' | 'encode' | 'codec',
+): { readonly shape: MacroReflectedTypeShape; readonly typeNode: ts.TypeNode | null } | null {
+  const localDeclaration = localDeclarationForNamedReference(ctx, scopeNode, name)?.asTypeAlias();
+  if (!localDeclaration || localDeclaration.typeParameters.length > 0) {
+    return null;
+  }
+  const relevantAnnotationNames = macroName === 'decode'
+    ? ['decode', 'codec']
+    : macroName === 'encode'
+    ? ['encode', 'codec']
+    : ['codec', 'decode', 'encode'];
+  if (
+    relevantAnnotationNames.some((annotationName) =>
+      ctx.semantics.localDeclarationHasAnnotation(name, annotationName, scopeNode)
+    )
+  ) {
+    return null;
+  }
+  return {
+    shape: ctx.reflect.typeShape(localDeclaration.type),
+    typeNode: hostTypeNode(localDeclaration.type),
+  };
 }
 
 function localNamedDecodeCallbackTypeText(
@@ -1343,6 +1736,38 @@ function localNamedEncodeCallbackTypeText(
   return mode === 'async'
     ? `import('sts:encode').Encoder<${name}, import('sts:json').JsonLikeValue, unknown, "async">`
     : null;
+}
+
+function selfNamedDecodeCallbackTypeText(
+  ctx: DeriveContext,
+  name: string,
+  scopeNode: MacroSyntaxNode,
+  macroName: 'codec' | 'decode',
+): string {
+  const localDeclaration = localDeclarationForNamedReference(ctx, scopeNode, name);
+  if (!localDeclaration || ctx.reflect.declarationShape(localDeclaration).kind !== 'objectLike') {
+    return `import('sts:decode').Decoder<${name}>`;
+  }
+  const mode = recursiveDeclarationDecodeMode(ctx, localDeclaration, macroName);
+  return mode === 'async'
+    ? `import('sts:decode').Decoder<${name}, unknown, "async">`
+    : `import('sts:decode').Decoder<${name}>`;
+}
+
+function selfNamedEncodeCallbackTypeText(
+  ctx: DeriveContext,
+  name: string,
+  scopeNode: MacroSyntaxNode,
+  macroName: 'codec' | 'encode',
+): string {
+  const localDeclaration = localDeclarationForNamedReference(ctx, scopeNode, name);
+  if (!localDeclaration || ctx.reflect.declarationShape(localDeclaration).kind !== 'objectLike') {
+    return `import('sts:encode').Encoder<${name}, import('sts:json').JsonLikeValue>`;
+  }
+  const mode = recursiveDeclarationEncodeMode(ctx, localDeclaration, macroName);
+  return mode === 'async'
+    ? `import('sts:encode').Encoder<${name}, import('sts:json').JsonLikeValue, unknown, "async">`
+    : `import('sts:encode').Encoder<${name}, import('sts:json').JsonLikeValue>`;
 }
 
 function recursiveEncodedFieldWireName(
@@ -1483,20 +1908,11 @@ function escapeRegExpText(text: string): string {
 
 function rewriteRecursiveLazyInvocation(
   text: string,
-  callbackTypeText: string,
-  callbackValueText: string,
-  lazyTypeArgumentsText: string,
+  _callbackTypeText: string,
+  _callbackValueText: string,
+  _lazyTypeArgumentsText: string,
 ): string {
-  const pattern = new RegExp(
-    `([A-Za-z_$][A-Za-z0-9_$]*)\\(\\(\\): ${escapeRegExpText(callbackTypeText)} => ${
-      escapeRegExpText(callbackValueText)
-    }\\)`,
-    'g',
-  );
-  return text.replace(
-    pattern,
-    `$1<${lazyTypeArgumentsText}>(() => ${callbackValueText})`,
-  );
+  return text;
 }
 
 function discriminatedUnionDeclarationShape(
@@ -1804,12 +2220,24 @@ function decomposeNullishUnion(
   };
 }
 
+function literalUnionMembers(
+  shape: MacroReflectedTypeShape,
+): readonly Extract<MacroReflectedTypeShape, { readonly kind: 'literal' }>[] | null {
+  return shape.kind === 'union' &&
+      shape.members.length > 0 &&
+      shape.members.every((member) => member.kind === 'literal')
+    ? shape.members as readonly Extract<MacroReflectedTypeShape, { readonly kind: 'literal' }>[]
+    : null;
+}
+
 function decodeHelperTextFromShape(
   ctx: DeriveContext,
   shape: MacroReflectedTypeShape,
   ownerTypeName: string,
   scopeNode: MacroSyntaxNode,
   errorNode: MacroSyntaxNode,
+  typeNode?: ts.TypeNode | null,
+  aliasVisiting: Set<string> = new Set(),
 ): string | null {
   switch (shape.kind) {
     case 'primitive':
@@ -1821,6 +2249,34 @@ function decodeHelperTextFromShape(
     case 'undefined':
       return ctx.runtime.named('sts:decode', 'undefinedValue').text();
     case 'named': {
+      if (!aliasVisiting.has(shape.name)) {
+        const localAlias = localStructuralAliasForNamedReference(
+          ctx,
+          shape.name,
+          scopeNode,
+          'decode',
+        );
+        if (localAlias) {
+          aliasVisiting.add(shape.name);
+          const helperText = decodeHelperTextFromShape(
+            ctx,
+            localAlias.shape,
+            ownerTypeName,
+            scopeNode,
+            errorNode,
+            localAlias.typeNode,
+            aliasVisiting,
+          );
+          aliasVisiting.delete(shape.name);
+          if (helperText) {
+            return helperText;
+          }
+        }
+      }
+      const stdlibJsonHelperKind = stdlibJsonHelperKindForTypeNode(ctx, scopeNode, typeNode);
+      if (stdlibJsonHelperKind) {
+        return ctx.runtime.named('sts:decode', stdlibJsonHelperKind).text();
+      }
       if (shape.typeArguments.length > 0 || !/^[A-Za-z_$][A-Za-z0-9_$]*$/u.test(shape.name)) {
         return null;
       }
@@ -1833,7 +2289,9 @@ function decodeHelperTextFromShape(
         { kind: 'named', typeName: shape.name },
       );
       if (shape.name === ownerTypeName) {
-        return `${ctx.runtime.named('sts:decode', 'lazy').text()}((): import('sts:decode').Decoder<${shape.name}> => ${shape.name}Decoder)`;
+        return `${ctx.runtime.named('sts:decode', 'lazy').text()}((): ${
+          selfNamedDecodeCallbackTypeText(ctx, shape.name, scopeNode, 'decode')
+        } => ${shape.name}Decoder)`;
       }
       const localCallbackTypeText = localNamedDecodeCallbackTypeText(
         ctx,
@@ -1847,12 +2305,29 @@ function decodeHelperTextFromShape(
         : `${ctx.runtime.named('sts:decode', 'lazy').text()}(() => ${shape.name}Decoder)`;
     }
     case 'array': {
-      const element = decodeHelperTextFromShape(ctx, shape.element, ownerTypeName, scopeNode, errorNode);
+      const element = decodeHelperTextFromShape(
+        ctx,
+        shape.element,
+        ownerTypeName,
+        scopeNode,
+        errorNode,
+        arrayElementTypeNode(typeNode),
+        aliasVisiting,
+      );
       return element ? `${ctx.runtime.named('sts:decode', 'array').text()}(${element})` : null;
     }
     case 'tuple': {
-      const elements = shape.elements.map((element) =>
-        decodeHelperTextFromShape(ctx, element, ownerTypeName, scopeNode, errorNode)
+      const elementTypeNodes = tupleElementTypeNodes(typeNode);
+      const elements = shape.elements.map((element, index) =>
+        decodeHelperTextFromShape(
+          ctx,
+          element,
+          ownerTypeName,
+          scopeNode,
+          errorNode,
+          elementTypeNodes?.[index] ?? null,
+          aliasVisiting,
+        )
       );
       return elements.every((element) => element !== null)
         ? `${ctx.runtime.named('sts:decode', 'tuple').text()}(${
@@ -1861,12 +2336,36 @@ function decodeHelperTextFromShape(
         : null;
     }
     case 'option': {
-      const value = decodeHelperTextFromShape(ctx, shape.value, ownerTypeName, scopeNode, errorNode);
+      const value = decodeHelperTextFromShape(
+        ctx,
+        shape.value,
+        ownerTypeName,
+        scopeNode,
+        errorNode,
+        typeArgumentNodeAt(typeNode, 0),
+        aliasVisiting,
+      );
       return value ? `${ctx.runtime.named('sts:decode', 'option').text()}(${value})` : null;
     }
     case 'result': {
-      const okType = decodeHelperTextFromShape(ctx, shape.ok, ownerTypeName, scopeNode, errorNode);
-      const errType = decodeHelperTextFromShape(ctx, shape.err, ownerTypeName, scopeNode, errorNode);
+      const okType = decodeHelperTextFromShape(
+        ctx,
+        shape.ok,
+        ownerTypeName,
+        scopeNode,
+        errorNode,
+        typeArgumentNodeAt(typeNode, 0),
+        aliasVisiting,
+      );
+      const errType = decodeHelperTextFromShape(
+        ctx,
+        shape.err,
+        ownerTypeName,
+        scopeNode,
+        errorNode,
+        typeArgumentNodeAt(typeNode, 1),
+        aliasVisiting,
+      );
       return okType && errType
         ? `${ctx.runtime.named('sts:decode', 'result').text()}(${okType}, ${errType})`
         : null;
@@ -1875,7 +2374,15 @@ function decodeHelperTextFromShape(
       if (shape.key.kind !== 'primitive' || shape.key.primitiveKind !== 'string') {
         return null;
       }
-      const value = decodeHelperTextFromShape(ctx, shape.value, ownerTypeName, scopeNode, errorNode);
+      const value = decodeHelperTextFromShape(
+        ctx,
+        shape.value,
+        ownerTypeName,
+        scopeNode,
+        errorNode,
+        typeArgumentNodeAt(typeNode, 1),
+        aliasVisiting,
+      );
       return value ? `${ctx.runtime.named('sts:decode', 'readonlyRecord').text()}(${value})` : null;
     }
     case 'object':
@@ -1884,12 +2391,42 @@ function decodeHelperTextFromShape(
       return fields ? nestedDecodeHelperTextFromFields(ctx, ownerTypeName, scopeNode, fields) : null;
     }
     case 'union': {
+      const literalMembers = literalUnionMembers(shape);
+      if (literalMembers) {
+        const members = literalMembers.map((member) =>
+          decodeHelperTextFromShape(
+            ctx,
+            member,
+            ownerTypeName,
+            scopeNode,
+            errorNode,
+            null,
+            aliasVisiting,
+          )
+        );
+        return members.every((member) => member !== null)
+          ? foldUnionText(
+            ctx.runtime.named('sts:decode', 'union').text(),
+            members as readonly string[],
+          )
+          : null;
+      }
       const nullishUnion = decomposeNullishUnion(shape);
       if (!nullishUnion) {
         return null;
       }
       let text = nullishUnion.base
-        ? decodeHelperTextFromShape(ctx, nullishUnion.base, ownerTypeName, scopeNode, errorNode)
+        ? decodeHelperTextFromShape(
+          ctx,
+          nullishUnion.base,
+          ownerTypeName,
+          scopeNode,
+          errorNode,
+          unionMemberTypeNodes(typeNode)?.find((member) =>
+            !isNullTypeNode(member) && !isUndefinedTypeNode(member)
+          ) ?? null,
+          aliasVisiting,
+        )
         : nullishUnion.includesNull
         ? `${ctx.runtime.named('sts:decode', 'literal').text()}(null)`
         : ctx.runtime.named('sts:decode', 'undefinedValue').text();
@@ -1915,6 +2452,8 @@ function encodeHelperTextFromShape(
   ownerTypeName: string,
   scopeNode: MacroSyntaxNode,
   errorNode: MacroSyntaxNode,
+  typeNode?: ts.TypeNode | null,
+  aliasVisiting: Set<string> = new Set(),
 ): string | null {
   switch (shape.kind) {
     case 'primitive':
@@ -1926,6 +2465,34 @@ function encodeHelperTextFromShape(
     case 'undefined':
       return ctx.runtime.named('sts:encode', 'undefinedEncoder').text();
     case 'named': {
+      if (!aliasVisiting.has(shape.name)) {
+        const localAlias = localStructuralAliasForNamedReference(
+          ctx,
+          shape.name,
+          scopeNode,
+          'encode',
+        );
+        if (localAlias) {
+          aliasVisiting.add(shape.name);
+          const helperText = encodeHelperTextFromShape(
+            ctx,
+            localAlias.shape,
+            ownerTypeName,
+            scopeNode,
+            errorNode,
+            localAlias.typeNode,
+            aliasVisiting,
+          );
+          aliasVisiting.delete(shape.name);
+          if (helperText) {
+            return helperText;
+          }
+        }
+      }
+      const stdlibJsonHelperKind = stdlibJsonHelperKindForTypeNode(ctx, scopeNode, typeNode);
+      if (stdlibJsonHelperKind) {
+        return ctx.runtime.named('sts:encode', stdlibJsonHelperKind).text();
+      }
       if (shape.typeArguments.length > 0 || !/^[A-Za-z_$][A-Za-z0-9_$]*$/u.test(shape.name)) {
         return null;
       }
@@ -1938,7 +2505,9 @@ function encodeHelperTextFromShape(
         { kind: 'named', typeName: shape.name },
       );
       if (shape.name === ownerTypeName) {
-        return `${ctx.runtime.named('sts:encode', 'lazy').text()}((): import('sts:encode').Encoder<${shape.name}, import('sts:json').JsonLikeValue> => ${shape.name}Encoder)`;
+        return `${ctx.runtime.named('sts:encode', 'lazy').text()}((): ${
+          selfNamedEncodeCallbackTypeText(ctx, shape.name, scopeNode, 'encode')
+        } => ${shape.name}Encoder)`;
       }
       const localCallbackTypeText = localNamedEncodeCallbackTypeText(
         ctx,
@@ -1952,12 +2521,29 @@ function encodeHelperTextFromShape(
         : `${ctx.runtime.named('sts:encode', 'lazy').text()}(() => ${shape.name}Encoder)`;
     }
     case 'array': {
-      const element = encodeHelperTextFromShape(ctx, shape.element, ownerTypeName, scopeNode, errorNode);
+      const element = encodeHelperTextFromShape(
+        ctx,
+        shape.element,
+        ownerTypeName,
+        scopeNode,
+        errorNode,
+        arrayElementTypeNode(typeNode),
+        aliasVisiting,
+      );
       return element ? `${ctx.runtime.named('sts:encode', 'array').text()}(${element})` : null;
     }
     case 'tuple': {
-      const elements = shape.elements.map((element) =>
-        encodeHelperTextFromShape(ctx, element, ownerTypeName, scopeNode, errorNode)
+      const elementTypeNodes = tupleElementTypeNodes(typeNode);
+      const elements = shape.elements.map((element, index) =>
+        encodeHelperTextFromShape(
+          ctx,
+          element,
+          ownerTypeName,
+          scopeNode,
+          errorNode,
+          elementTypeNodes?.[index] ?? null,
+          aliasVisiting,
+        )
       );
       return elements.every((element) => element !== null)
         ? `${ctx.runtime.named('sts:encode', 'tuple').text()}(${
@@ -1966,12 +2552,36 @@ function encodeHelperTextFromShape(
         : null;
     }
     case 'option': {
-      const value = encodeHelperTextFromShape(ctx, shape.value, ownerTypeName, scopeNode, errorNode);
+      const value = encodeHelperTextFromShape(
+        ctx,
+        shape.value,
+        ownerTypeName,
+        scopeNode,
+        errorNode,
+        typeArgumentNodeAt(typeNode, 0),
+        aliasVisiting,
+      );
       return value ? `${ctx.runtime.named('sts:encode', 'option').text()}(${value})` : null;
     }
     case 'result': {
-      const okType = encodeHelperTextFromShape(ctx, shape.ok, ownerTypeName, scopeNode, errorNode);
-      const errType = encodeHelperTextFromShape(ctx, shape.err, ownerTypeName, scopeNode, errorNode);
+      const okType = encodeHelperTextFromShape(
+        ctx,
+        shape.ok,
+        ownerTypeName,
+        scopeNode,
+        errorNode,
+        typeArgumentNodeAt(typeNode, 0),
+        aliasVisiting,
+      );
+      const errType = encodeHelperTextFromShape(
+        ctx,
+        shape.err,
+        ownerTypeName,
+        scopeNode,
+        errorNode,
+        typeArgumentNodeAt(typeNode, 1),
+        aliasVisiting,
+      );
       return okType && errType
         ? `${ctx.runtime.named('sts:encode', 'result').text()}(${okType}, ${errType})`
         : null;
@@ -1980,7 +2590,15 @@ function encodeHelperTextFromShape(
       if (shape.key.kind !== 'primitive' || shape.key.primitiveKind !== 'string') {
         return null;
       }
-      const value = encodeHelperTextFromShape(ctx, shape.value, ownerTypeName, scopeNode, errorNode);
+      const value = encodeHelperTextFromShape(
+        ctx,
+        shape.value,
+        ownerTypeName,
+        scopeNode,
+        errorNode,
+        typeArgumentNodeAt(typeNode, 1),
+        aliasVisiting,
+      );
       return value ? `${ctx.runtime.named('sts:encode', 'record').text()}(${value})` : null;
     }
     case 'object':
@@ -1989,12 +2607,28 @@ function encodeHelperTextFromShape(
       return fields ? nestedEncodeHelperTextFromFields(ctx, ownerTypeName, scopeNode, fields) : null;
     }
     case 'union': {
+      const literalMembers = literalUnionMembers(shape);
+      if (literalMembers) {
+        return `${ctx.runtime.named('sts:encode', 'fromEncode').text()}((value: ${shape.text}) => ${
+          ctx.runtime.named('sts:result', 'ok').text()
+        }(value))`;
+      }
       const nullishUnion = decomposeNullishUnion(shape);
       if (!nullishUnion) {
         return null;
       }
       let text = nullishUnion.base
-        ? encodeHelperTextFromShape(ctx, nullishUnion.base, ownerTypeName, scopeNode, errorNode)
+        ? encodeHelperTextFromShape(
+          ctx,
+          nullishUnion.base,
+          ownerTypeName,
+          scopeNode,
+          errorNode,
+          unionMemberTypeNodes(typeNode)?.find((member) =>
+            !isNullTypeNode(member) && !isUndefinedTypeNode(member)
+          ) ?? null,
+          aliasVisiting,
+        )
         : nullishUnion.includesNull
         ? `${ctx.runtime.named('sts:encode', 'literal').text()}(null)`
         : ctx.runtime.named('sts:encode', 'undefinedEncoder').text();
@@ -2020,6 +2654,8 @@ function codecHelperTextsFromShape(
   ownerTypeName: string,
   scopeNode: MacroSyntaxNode,
   errorNode: MacroSyntaxNode,
+  typeNode?: ts.TypeNode | null,
+  aliasVisiting: Set<string> = new Set(),
 ): { readonly decodeText: string; readonly encodeText: string } | null {
   switch (shape.kind) {
     case 'primitive':
@@ -2043,6 +2679,37 @@ function codecHelperTextsFromShape(
         encodeText: ctx.runtime.named('sts:encode', 'undefinedEncoder').text(),
       };
     case 'named': {
+      if (!aliasVisiting.has(shape.name)) {
+        const localAlias = localStructuralAliasForNamedReference(
+          ctx,
+          shape.name,
+          scopeNode,
+          'codec',
+        );
+        if (localAlias) {
+          aliasVisiting.add(shape.name);
+          const helperTexts = codecHelperTextsFromShape(
+            ctx,
+            localAlias.shape,
+            ownerTypeName,
+            scopeNode,
+            errorNode,
+            localAlias.typeNode,
+            aliasVisiting,
+          );
+          aliasVisiting.delete(shape.name);
+          if (helperTexts) {
+            return helperTexts;
+          }
+        }
+      }
+      const stdlibJsonHelperKind = stdlibJsonHelperKindForTypeNode(ctx, scopeNode, typeNode);
+      if (stdlibJsonHelperKind) {
+        return {
+          decodeText: ctx.runtime.named('sts:decode', stdlibJsonHelperKind).text(),
+          encodeText: ctx.runtime.named('sts:encode', stdlibJsonHelperKind).text(),
+        };
+      }
       if (shape.typeArguments.length > 0 || !/^[A-Za-z_$][A-Za-z0-9_$]*$/u.test(shape.name)) {
         return null;
       }
@@ -2072,12 +2739,16 @@ function codecHelperTextsFromShape(
         );
         return {
           decodeText: shape.name === ownerTypeName
-            ? `${ctx.runtime.named('sts:decode', 'lazy').text()}((): import('sts:decode').Decoder<${shape.name}> => ${sideCompanions.decodeCompanionName})`
+            ? `${ctx.runtime.named('sts:decode', 'lazy').text()}((): ${
+              selfNamedDecodeCallbackTypeText(ctx, shape.name, scopeNode, 'codec')
+            } => ${sideCompanions.decodeCompanionName})`
             : localDecodeCallbackTypeText
             ? `${ctx.runtime.named('sts:decode', 'lazy').text()}((): ${localDecodeCallbackTypeText} => ${sideCompanions.decodeCompanionName})`
             : `${ctx.runtime.named('sts:decode', 'lazy').text()}(() => ${sideCompanions.decodeCompanionName})`,
           encodeText: shape.name === ownerTypeName
-            ? `${ctx.runtime.named('sts:encode', 'lazy').text()}((): import('sts:encode').Encoder<${shape.name}, import('sts:json').JsonLikeValue> => ${sideCompanions.encodeCompanionName})`
+            ? `${ctx.runtime.named('sts:encode', 'lazy').text()}((): ${
+              selfNamedEncodeCallbackTypeText(ctx, shape.name, scopeNode, 'codec')
+            } => ${sideCompanions.encodeCompanionName})`
             : localEncodeCallbackTypeText
             ? `${ctx.runtime.named('sts:encode', 'lazy').text()}((): ${localEncodeCallbackTypeText} => ${sideCompanions.encodeCompanionName})`
             : `${ctx.runtime.named('sts:encode', 'lazy').text()}(() => ${sideCompanions.encodeCompanionName})`,
@@ -2099,19 +2770,31 @@ function codecHelperTextsFromShape(
       );
       return {
         decodeText: shape.name === ownerTypeName
-          ? `${ctx.runtime.named('sts:decode', 'lazy').text()}((): import('sts:decode').Decoder<${shape.name}> => ${shape.name}Codec)`
+          ? `${ctx.runtime.named('sts:decode', 'lazy').text()}((): ${
+            selfNamedDecodeCallbackTypeText(ctx, shape.name, scopeNode, 'codec')
+          } => ${shape.name}Codec)`
           : localDecodeCallbackTypeText
           ? `${ctx.runtime.named('sts:decode', 'lazy').text()}((): ${localDecodeCallbackTypeText} => ${shape.name}Codec)`
           : `${ctx.runtime.named('sts:decode', 'lazy').text()}(() => ${shape.name}Codec)`,
         encodeText: shape.name === ownerTypeName
-          ? `${ctx.runtime.named('sts:encode', 'lazy').text()}((): import('sts:encode').Encoder<${shape.name}, import('sts:json').JsonLikeValue> => ${shape.name}Codec)`
+          ? `${ctx.runtime.named('sts:encode', 'lazy').text()}((): ${
+            selfNamedEncodeCallbackTypeText(ctx, shape.name, scopeNode, 'codec')
+          } => ${shape.name}Codec)`
           : localEncodeCallbackTypeText
           ? `${ctx.runtime.named('sts:encode', 'lazy').text()}((): ${localEncodeCallbackTypeText} => ${shape.name}Codec)`
           : `${ctx.runtime.named('sts:encode', 'lazy').text()}(() => ${shape.name}Codec)`,
       };
     }
     case 'array': {
-      const element = codecHelperTextsFromShape(ctx, shape.element, ownerTypeName, scopeNode, errorNode);
+      const element = codecHelperTextsFromShape(
+        ctx,
+        shape.element,
+        ownerTypeName,
+        scopeNode,
+        errorNode,
+        arrayElementTypeNode(typeNode),
+        aliasVisiting,
+      );
       return element
         ? {
           decodeText: `${ctx.runtime.named('sts:decode', 'array').text()}(${element.decodeText})`,
@@ -2120,8 +2803,17 @@ function codecHelperTextsFromShape(
         : null;
     }
     case 'tuple': {
-      const elements = shape.elements.map((element) =>
-        codecHelperTextsFromShape(ctx, element, ownerTypeName, scopeNode, errorNode)
+      const elementTypeNodes = tupleElementTypeNodes(typeNode);
+      const elements = shape.elements.map((element, index) =>
+        codecHelperTextsFromShape(
+          ctx,
+          element,
+          ownerTypeName,
+          scopeNode,
+          errorNode,
+          elementTypeNodes?.[index] ?? null,
+          aliasVisiting,
+        )
       );
       if (!elements.every((element) => element !== null)) {
         return null;
@@ -2137,7 +2829,15 @@ function codecHelperTextsFromShape(
       };
     }
     case 'option': {
-      const value = codecHelperTextsFromShape(ctx, shape.value, ownerTypeName, scopeNode, errorNode);
+      const value = codecHelperTextsFromShape(
+        ctx,
+        shape.value,
+        ownerTypeName,
+        scopeNode,
+        errorNode,
+        typeArgumentNodeAt(typeNode, 0),
+        aliasVisiting,
+      );
       return value
         ? {
           decodeText: `${ctx.runtime.named('sts:decode', 'option').text()}(${value.decodeText})`,
@@ -2146,8 +2846,24 @@ function codecHelperTextsFromShape(
         : null;
     }
     case 'result': {
-      const okType = codecHelperTextsFromShape(ctx, shape.ok, ownerTypeName, scopeNode, errorNode);
-      const errType = codecHelperTextsFromShape(ctx, shape.err, ownerTypeName, scopeNode, errorNode);
+      const okType = codecHelperTextsFromShape(
+        ctx,
+        shape.ok,
+        ownerTypeName,
+        scopeNode,
+        errorNode,
+        typeArgumentNodeAt(typeNode, 0),
+        aliasVisiting,
+      );
+      const errType = codecHelperTextsFromShape(
+        ctx,
+        shape.err,
+        ownerTypeName,
+        scopeNode,
+        errorNode,
+        typeArgumentNodeAt(typeNode, 1),
+        aliasVisiting,
+      );
       return okType && errType
         ? {
           decodeText: `${ctx.runtime.named('sts:decode', 'result').text()}(${okType.decodeText}, ${errType.decodeText})`,
@@ -2159,7 +2875,15 @@ function codecHelperTextsFromShape(
       if (shape.key.kind !== 'primitive' || shape.key.primitiveKind !== 'string') {
         return null;
       }
-      const value = codecHelperTextsFromShape(ctx, shape.value, ownerTypeName, scopeNode, errorNode);
+      const value = codecHelperTextsFromShape(
+        ctx,
+        shape.value,
+        ownerTypeName,
+        scopeNode,
+        errorNode,
+        typeArgumentNodeAt(typeNode, 1),
+        aliasVisiting,
+      );
       return value
         ? {
           decodeText: `${ctx.runtime.named('sts:decode', 'readonlyRecord').text()}(${value.decodeText})`,
@@ -2173,12 +2897,49 @@ function codecHelperTextsFromShape(
       return fields ? nestedCodecHelperTextsFromFields(ctx, ownerTypeName, scopeNode, fields) : null;
     }
     case 'union': {
+      const literalMembers = literalUnionMembers(shape);
+      if (literalMembers) {
+        const members = literalMembers.map((member) =>
+          codecHelperTextsFromShape(
+            ctx,
+            member,
+            ownerTypeName,
+            scopeNode,
+            errorNode,
+            null,
+            aliasVisiting,
+          )
+        );
+        if (!members.every((member) => member !== null)) {
+          return null;
+        }
+        const resolved = members as readonly { readonly decodeText: string; readonly encodeText: string }[];
+        return {
+          decodeText: foldUnionText(
+            ctx.runtime.named('sts:decode', 'union').text(),
+            resolved.map((member) => member.decodeText),
+          ),
+          encodeText: `${ctx.runtime.named('sts:encode', 'fromEncode').text()}((value: ${shape.text}) => ${
+            ctx.runtime.named('sts:result', 'ok').text()
+          }(value))`,
+        };
+      }
       const nullishUnion = decomposeNullishUnion(shape);
       if (!nullishUnion) {
         return null;
       }
       let texts = nullishUnion.base
-        ? codecHelperTextsFromShape(ctx, nullishUnion.base, ownerTypeName, scopeNode, errorNode)
+        ? codecHelperTextsFromShape(
+          ctx,
+          nullishUnion.base,
+          ownerTypeName,
+          scopeNode,
+          errorNode,
+          unionMemberTypeNodes(typeNode)?.find((member) =>
+            !isNullTypeNode(member) && !isUndefinedTypeNode(member)
+          ) ?? null,
+          aliasVisiting,
+        )
         : nullishUnion.includesNull
         ? {
           decodeText: `${ctx.runtime.named('sts:decode', 'literal').text()}(null)`,
@@ -3147,12 +3908,14 @@ function decodeFieldFromReflectedShape(
     if (viaIdentifier) {
       return viaIdentifier;
     }
+    const typeNode = explicitTypeNodeForSyntaxNode(field.node);
     const helperText = decodeHelperTextFromShape(
       ctx,
       field.type,
       ownerTypeName,
       scopeNode,
       field.node,
+      typeNode,
     );
     if (!helperText) {
       ctx.error(decodeLikeUnsupportedFieldMessage('decode'), field.node);
@@ -3212,6 +3975,7 @@ function encodeFieldFromReflectedShape(
       ownerTypeName,
       scopeNode,
       field.node,
+      explicitTypeNodeForSyntaxNode(field.node),
     );
     if (!helperText) {
       ctx.error(decodeLikeUnsupportedFieldMessage('encode'), field.node);
@@ -3268,6 +4032,7 @@ function codecFieldFromReflectedShape(
       ownerTypeName,
       scopeNode,
       field.node,
+      explicitTypeNodeForSyntaxNode(field.node),
     );
     if (!helperTexts) {
       ctx.error(decodeLikeUnsupportedFieldMessage('codec'), field.node);
@@ -3952,6 +4717,7 @@ function fieldFromDecodeMember(
       ownerTypeName,
       scopeNode,
       member,
+      hostTypeNode(explicitType),
     );
     if (!helperText) {
       ctx.error(decodeLikeUnsupportedFieldMessage('decode'), member);
@@ -4022,6 +4788,7 @@ function fieldFromDecodeClassField(
       ownerTypeName,
       scopeNode,
       field,
+      hostTypeNode(explicitType),
     );
     if (!helperText) {
       ctx.error(decodeLikeUnsupportedFieldMessage('decode'), field);
@@ -4245,19 +5012,20 @@ function fieldFromEncodeMember(
   if (!explicitType) {
     ctx.error(decodeLikeUnsupportedFieldMessage('encode'), member);
   }
+  const reflectedType = ctx.reflect.typeShape(explicitType);
 
   const encoderText = (() => {
     if (viaIdentifier) {
       return viaIdentifier;
     }
 
-    const reflectedType = ctx.reflect.typeShape(explicitType);
     const helperText = encodeHelperTextFromShape(
       ctx,
       reflectedType,
       ownerTypeName,
       scopeNode,
       member,
+      hostTypeNode(explicitType),
     );
     if (!helperText) {
       ctx.error(decodeLikeUnsupportedFieldMessage('encode'), member);
@@ -4312,19 +5080,20 @@ function fieldFromEncodeClassField(
   if (!explicitType) {
     ctx.error(decodeLikeUnsupportedFieldMessage('encode'), field);
   }
+  const reflectedType = ctx.reflect.typeShape(explicitType);
 
   const encoderText = (() => {
     if (viaIdentifier) {
       return viaIdentifier;
     }
 
-    const reflectedType = ctx.reflect.typeShape(explicitType);
     const helperText = encodeHelperTextFromShape(
       ctx,
       reflectedType,
       ownerTypeName,
       scopeNode,
       field,
+      hostTypeNode(explicitType),
     );
     if (!helperText) {
       ctx.error(decodeLikeUnsupportedFieldMessage('encode'), field);
@@ -4395,19 +5164,20 @@ function fieldFromCodecMember(
   if (!explicitType) {
     ctx.error(decodeLikeUnsupportedFieldMessage('codec'), member);
   }
+  const reflectedType = ctx.reflect.typeShape(explicitType);
 
   const helperTexts = (() => {
     if (viaIdentifier) {
       return { decodeText: viaIdentifier, encodeText: viaIdentifier };
     }
 
-    const reflectedType = ctx.reflect.typeShape(explicitType);
     const helperTexts = codecHelperTextsFromShape(
       ctx,
       reflectedType,
       ownerTypeName,
       scopeNode,
       member,
+      hostTypeNode(explicitType),
     );
     if (!helperTexts) {
       ctx.error(decodeLikeUnsupportedFieldMessage('codec'), member);
@@ -4475,19 +5245,20 @@ function fieldFromCodecClassField(
   if (!explicitType) {
     ctx.error(decodeLikeUnsupportedFieldMessage('codec'), field);
   }
+  const reflectedType = ctx.reflect.typeShape(explicitType);
 
   const helperTexts = (() => {
     if (viaIdentifier) {
       return { decodeText: viaIdentifier, encodeText: viaIdentifier };
     }
 
-    const reflectedType = ctx.reflect.typeShape(explicitType);
     const helperTexts = codecHelperTextsFromShape(
       ctx,
       reflectedType,
       ownerTypeName,
       scopeNode,
       field,
+      hostTypeNode(explicitType),
     );
     if (!helperTexts) {
       ctx.error(decodeLikeUnsupportedFieldMessage('codec'), field);
@@ -5034,7 +5805,7 @@ function taggedEncodeVariantShapeText(
       ),
     ].join(',\n')
   }
-  }`;
+}`;
 }
 
 function taggedCodecDecodeVariantText(
@@ -5313,6 +6084,34 @@ export function decode(): MacroDefinition<typeof DECODE_SIGNATURE> {
             `,
           );
         }
+        if (!declaration.type.asObjectLiteral()) {
+          const typeName = declarationTypeName(declaration);
+          const helperText = decodeHelperTextFromShape(
+            ctx,
+            ctx.reflect.typeShape(declaration.type),
+            typeName,
+            declaration,
+            declaration,
+            hostTypeNode(declaration.type),
+          );
+          if (helperText) {
+            const decoderText = wrapDecodeDeclarationText(
+              ctx,
+              helperText,
+              declarationAnnotations,
+              declaration,
+              typeName,
+            );
+            const companionName = `${typeName}Decoder`;
+            return ctx.output.stmt(
+              ctx.quote.stmt`
+                export const ${companionName} = ${
+                withNamedMetadataText(ctx, decoderText, typeName, {})
+              };
+              `,
+            );
+          }
+        }
       }
 
       const { fields, instantiateText, typeName } = collectDecodeFields(ctx, decoded);
@@ -5474,7 +6273,7 @@ export function encode(): MacroDefinition<typeof DECODE_SIGNATURE> {
           }).join('\n');
           const encoderText = wrapEncodeDeclarationText(
             ctx,
-            `${encodeFromEncode}((value: ${typeName}) => {
+            `${encodeFromEncode}((value: ${typeName}): import('sts:result').Result<import('sts:json').JsonLikeValue, import('sts:encode').EncodeFailure> | Promise<import('sts:result').Result<import('sts:json').JsonLikeValue, import('sts:encode').EncodeFailure>> => {
                 switch (${propertyAccessText('value', discriminantName)}) {
                   ${switchCases}
                   default:
@@ -5493,6 +6292,34 @@ export function encode(): MacroDefinition<typeof DECODE_SIGNATURE> {
             };
             `,
           );
+        }
+        if (!declaration.type.asObjectLiteral()) {
+          const typeName = declarationTypeName(declaration);
+          const helperText = encodeHelperTextFromShape(
+            ctx,
+            ctx.reflect.typeShape(declaration.type),
+            typeName,
+            declaration,
+            declaration,
+            hostTypeNode(declaration.type),
+          );
+          if (helperText) {
+            const encoderText = wrapEncodeDeclarationText(
+              ctx,
+              helperText,
+              declarationAnnotations,
+              declaration,
+              typeName,
+            );
+            const companionName = `${typeName}Encoder`;
+            return ctx.output.stmt(
+              ctx.quote.stmt`
+                export const ${companionName} = ${
+                withNamedMetadataText(ctx, encoderText, typeName, {})
+              };
+              `,
+            );
+          }
         }
       }
 
@@ -5662,7 +6489,7 @@ export function codec(): MacroDefinition<typeof DECODE_SIGNATURE> {
           }).join('\n');
           const encoderText = wrapEncodeDeclarationText(
             ctx,
-            `${encodeFromEncode}((value: ${typeName}) => {
+            `${encodeFromEncode}((value: ${typeName}): import('sts:result').Result<import('sts:json').JsonLikeValue, import('sts:encode').EncodeFailure> | Promise<import('sts:result').Result<import('sts:json').JsonLikeValue, import('sts:encode').EncodeFailure>> => {
                   switch (${propertyAccessText('value', discriminantName)}) {
                     ${switchCases}
                     default:
@@ -5689,6 +6516,50 @@ export function codec(): MacroDefinition<typeof DECODE_SIGNATURE> {
             };
             `,
           );
+        }
+        if (!declaration.type.asObjectLiteral()) {
+          const typeName = declarationTypeName(declaration);
+          const helperTexts = codecHelperTextsFromShape(
+            ctx,
+            ctx.reflect.typeShape(declaration.type),
+            typeName,
+            declaration,
+            declaration,
+            hostTypeNode(declaration.type),
+          );
+          if (helperTexts) {
+            const createCodec = ctx.runtime.named('sts:codec', 'codec').text();
+            const decoderText = wrapDecodeDeclarationText(
+              ctx,
+              helperTexts.decodeText,
+              declarationAnnotations,
+              declaration,
+              typeName,
+            );
+            const encoderText = wrapEncodeDeclarationText(
+              ctx,
+              helperTexts.encodeText,
+              declarationAnnotations,
+              declaration,
+              typeName,
+            );
+            const companionName = `${typeName}Codec`;
+            return ctx.output.stmt(
+              ctx.quote.stmt`
+                export const ${companionName} = ${
+                withNamedMetadataText(
+                  ctx,
+                  `${createCodec}(
+                    ${decoderText},
+                    ${encoderText},
+                  )`,
+                  typeName,
+                  {},
+                )
+              };
+              `,
+            );
+          }
         }
       }
 

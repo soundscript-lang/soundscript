@@ -13,8 +13,12 @@ import {
   type EncodeMode,
   encoderContravariant,
   fromEncode,
+  jsonArray,
+  jsonObject,
+  jsonValue,
   lazy,
   literal,
+  mapError,
   nullable,
   numberEncoder,
   object,
@@ -213,6 +217,94 @@ Deno.test('encode lazy resolves the underlying helper at encode time', () => {
 
   assertTaggedEquals(encoder.encode('ok'), { tag: 'ok', value: 'ok' });
   assertEquals(calls, 1);
+});
+
+Deno.test('encode json helpers validate recursive JSON structures', () => {
+  assertTaggedEquals(jsonValue.encode({
+    nested: {
+      count: 1,
+      ok: true,
+    },
+    tags: ['a', null],
+  }), {
+    tag: 'ok',
+    value: {
+      nested: {
+        count: 1,
+        ok: true,
+      },
+      tags: ['a', null],
+    },
+  });
+  assertTaggedEquals(jsonObject.encode({ nested: { id: 'node-1' } }), {
+    tag: 'ok',
+    value: { nested: { id: 'node-1' } },
+  });
+  assertTaggedEquals(jsonArray.encode([{ id: 'node-1' }, false, null]), {
+    tag: 'ok',
+    value: [{ id: 'node-1' }, false, null],
+  });
+
+  const badValue = jsonValue.validateEncode({ nested: { missing: undefined } } as never);
+  const badObject = jsonObject.validateEncode(['not', 'an', 'object'] as never);
+  const badArray = jsonArray.validateEncode({ not: 'an array' } as never);
+
+  assertEquals(isErr(badValue), true);
+  if (isOk(badValue)) {
+    throw new Error('expected invalid json value failure');
+  }
+  assertEquals(badValue.error[0]?.code, 'encode_failure');
+
+  assertEquals(isErr(badObject), true);
+  if (isOk(badObject)) {
+    throw new Error('expected invalid json object failure');
+  }
+  assertEquals(badObject.error[0]?.message, 'Expected JSON object.');
+
+  assertEquals(isErr(badArray), true);
+  if (isOk(badArray)) {
+    throw new Error('expected invalid json array failure');
+  }
+  assertEquals(badArray.error[0]?.message, 'Expected JSON array.');
+});
+
+Deno.test('encode mapError remaps sync and async encode failures while leaving validateEncode untouched', async () => {
+  const Rejecting = fromEncode((value: string) =>
+    value.length > 0 ? ok(value) : err(new EncodeFailure('Expected non-empty string.', { cause: value }))
+  );
+  const RejectingAsync = fromEncode(async (value: string) =>
+    value.length > 0 ? ok(value) : err(new EncodeFailure('Expected non-empty string.', { cause: value }))
+  );
+  const SyncMapped = mapError(
+    Rejecting,
+    (error: EncodeFailure) => ({ code: 'mapped', message: error.message }),
+  );
+  const AsyncMapped = mapError(
+    RejectingAsync,
+    (error: EncodeFailure) => ({ code: 'mapped_async', message: error.message }),
+  );
+
+  assertTaggedEquals(SyncMapped.encode(''), {
+    error: {
+      code: 'mapped',
+      message: 'Expected non-empty string.',
+    },
+    tag: 'err',
+  });
+  assertTaggedEquals(await AsyncMapped.encode(''), {
+    error: {
+      code: 'mapped_async',
+      message: 'Expected non-empty string.',
+    },
+    tag: 'err',
+  });
+
+  const validated = await AsyncMapped.validateEncode('');
+  assertEquals(isErr(validated), true);
+  if (isOk(validated)) {
+    throw new Error('expected validateEncode failure');
+  }
+  assertEquals(validated.error[0]?.code, 'encode_failure');
 });
 
 Deno.test('encode option and result encode tagged result-family values', () => {

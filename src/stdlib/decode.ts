@@ -15,6 +15,13 @@ import {
   type KnownConstraint,
   type MetadataEffect,
 } from './metadata.ts';
+import {
+  isJsonObject,
+  isJsonValue,
+  type JsonArray,
+  type JsonObject,
+  type JsonValue,
+} from './json.ts';
 
 export type DecodeMode = 'sync' | 'async';
 export type DecodeFormat = 'email' | 'uuid' | 'url' | 'iso-datetime';
@@ -132,6 +139,43 @@ type ShapeDecodeMode<TShape extends ObjectShape> = MergeDecodeModes<
 type TupleDecodeMode<TElements extends TupleShape> = MergeDecodeModes<
   DecoderModeOf<TElements[number]>
 >;
+
+const jsonStringNode: __InternalMetadataNode = { kind: 'primitive', primitive: 'string' };
+const jsonNumberNode: __InternalMetadataNode = { kind: 'primitive', primitive: 'number' };
+const jsonBooleanNode: __InternalMetadataNode = { kind: 'primitive', primitive: 'boolean' };
+const jsonNullNode: __InternalMetadataNode = { kind: 'null' };
+const jsonObjectNode: __InternalMetadataNode = {
+  key: 'string',
+  kind: 'record',
+  value: {
+    kind: 'ref',
+    target: () => jsonValueNode,
+  },
+};
+const jsonArrayNode: __InternalMetadataNode = {
+  element: {
+    kind: 'ref',
+    target: () => jsonValueNode,
+  },
+  kind: 'array',
+};
+const jsonValueNode: __InternalMetadataNode = {
+  kind: 'union',
+  members: [
+    jsonStringNode,
+    jsonNumberNode,
+    jsonBooleanNode,
+    jsonNullNode,
+    {
+      kind: 'ref',
+      target: () => jsonObjectNode,
+    },
+    {
+      kind: 'ref',
+      target: () => jsonArrayNode,
+    },
+  ],
+};
 
 export function fromDecode<T, E, M extends DecodeMode = 'sync'>(
   decode: (value: unknown) => MaybeDecodeOutput<T, E>,
@@ -308,6 +352,64 @@ export const isoDate: Decoder<Date> = __attachDecodeMetadata(fromDecode((value) 
     primitive: 'string',
   },
 });
+
+export const jsonValue: Decoder<JsonValue> = __attachDecodeMetadata(
+  fromDecode((value) =>
+    isJsonValue(value)
+      ? ok(value)
+      : err(new DecodeFailure('Expected JSON value.', { cause: value }))
+  ),
+  {
+    mode: 'sync',
+    root: jsonValueNode,
+  },
+);
+
+export const jsonObject: Decoder<JsonObject> = __attachDecodeMetadata(
+  fromDecode((value) =>
+    isJsonObject(value)
+      ? ok(value)
+      : err(new DecodeFailure('Expected JSON object.', { cause: value }))
+  ),
+  {
+    mode: 'sync',
+    root: jsonObjectNode,
+  },
+);
+
+export const jsonArray: Decoder<JsonArray> = __attachDecodeMetadata(
+  fromDecode((value) =>
+    Array.isArray(value) && isJsonValue(value)
+      ? ok(value as JsonArray)
+      : err(new DecodeFailure('Expected JSON array.', { cause: value }))
+  ),
+  {
+    mode: 'sync',
+    root: jsonArrayNode,
+  },
+);
+
+export function mapError<T, E1, E2, M extends DecodeMode>(
+  decoder: Decoder<T, E1, M>,
+  project: (error: E1) => E2,
+): Decoder<T, E2, M> {
+  return __attachDecodeMetadata({
+    decode(value: unknown) {
+      const decoded = decoder.decode(value) as MaybeDecodeOutput<T, E1>;
+      if (isPromiseLike(decoded)) {
+        return decoded.then((result) => isErr(result) ? err(project(result.error)) : result) as DecodeOutput<
+          T,
+          E2,
+          M
+        >;
+      }
+      return (isErr(decoded) ? err(project(decoded.error)) : decoded) as DecodeOutput<T, E2, M>;
+    },
+    validateDecode(value: unknown) {
+      return decoder.validateDecode(value) as DecodeOutput<T, readonly DecodeIssue[], M>;
+    },
+  } as Decoder<T, E2, M>, decodeDirectionOf(decoder));
+}
 
 export function lazy<const TDecoder extends Decoder<unknown, unknown, DecodeMode>>(
   getDecoder: () => TDecoder,

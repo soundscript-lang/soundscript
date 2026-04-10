@@ -825,8 +825,17 @@ export function createAdvancedMacroContext(
     }
 
     if (declaration.declarationKind === 'interface') {
-      const fields = declaration.members.map((member) =>
-        buildReflectedFieldFromObjectMember(member, 'interfaceProperty')
+      const interfaceMembers = declaration.members ?? (() => {
+        const hostNode = getHostNode(declaration);
+        if (!hostNode || !ts.isInterfaceDeclaration(hostNode)) {
+          return [] as readonly ts.TypeElement[];
+        }
+        return hostNode.members;
+      })();
+      const fields = interfaceMembers.map((member) =>
+        'memberKind' in member
+          ? buildReflectedFieldFromObjectMember(member, 'interfaceProperty')
+          : buildReflectedFieldFromTypeMember(member, 'interfaceProperty')
       );
       if (!fields.every((field) => field !== null)) {
         return {

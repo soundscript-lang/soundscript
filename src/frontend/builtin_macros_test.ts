@@ -692,8 +692,7 @@ Deno.test('decode macro supports named derived references and arrays', () => {
     '',
   ].join('\n'));
 
-  assertStringIncludes(printed, 'type __sts_GroupDecoderType = import("sts:decode").Decoder<Group>;');
-  assertStringIncludes(printed, 'export const GroupDecoder: __sts_GroupDecoderType = ');
+  assertStringIncludes(printed, 'export const GroupDecoder = ');
   assertStringIncludes(printed, 'lazy as __sts_runtime_named_lazy_');
   assertStringIncludes(printed, 'array as __sts_runtime_named_array_');
   assertStringIncludes(printed, 'owner: __sts_runtime_named_lazy_');
@@ -1228,11 +1227,7 @@ Deno.test('encode macro supports named derived references and arrays', () => {
     '',
   ].join('\n'));
 
-  assertStringIncludes(
-    printed,
-    'type __sts_GroupEncoderType = import("sts:encode").Encoder<Group, __sts_GroupEncodedForEncode>;',
-  );
-  assertStringIncludes(printed, 'export const GroupEncoder: __sts_GroupEncoderType = ');
+  assertStringIncludes(printed, 'export const GroupEncoder = ');
   assertStringIncludes(printed, 'lazy as __sts_runtime_named_lazy_');
   assertStringIncludes(printed, 'array as __sts_runtime_named_array_');
   assertStringIncludes(printed, 'owner: __sts_runtime_named_lazy_');
@@ -1515,11 +1510,7 @@ Deno.test('codec macro supports named derived references and arrays', () => {
     '',
   ].join('\n'));
 
-  assertStringIncludes(
-    printed,
-    'type __sts_GroupCodecType = import("sts:codec").Codec<Group, __sts_GroupEncodedForCodec>;',
-  );
-  assertStringIncludes(printed, 'export const GroupCodec: __sts_GroupCodecType = ');
+  assertStringIncludes(printed, 'export const GroupCodec = ');
   assertStringIncludes(printed, 'lazy as __sts_runtime_named_lazy_');
   assertStringIncludes(printed, 'array as __sts_runtime_named_array_');
   assertStringIncludes(printed, 'owner: __sts_runtime_named_lazy_');
@@ -1527,8 +1518,142 @@ Deno.test('codec macro supports named derived references and arrays', () => {
   assertStringIncludes(printed, '() => UserCodec');
 });
 
-Deno.test('codec macro rejects named derived references when the companion is not in scope', () => {
-  const error = captureStdlibBuiltinMacroError([
+Deno.test('decode and codec macros typecheck ambient JsonObject aliases nullable strings and literal unions', () => {
+  const fileName = '/virtual/index.sts';
+  const files = new Map<string, string>([
+    ...createInstalledStdlibPackageFiles('/virtual').entries(),
+    [
+      fileName,
+      [
+        "import { codec, decode, tagged } from 'sts:derive';",
+        "import type { JsonObject } from 'sts:json';",
+        '',
+        '// #[codec]',
+        'type JsonRecord = JsonObject;',
+        '',
+        '// #[decode]',
+        'type EventEnvelope = {',
+        '  metadata?: JsonObject;',
+        '  originKey?: string | null;',
+        "  outcome: 'accepted' | 'rejected' | 'timed_out' | 'canceled';",
+        '  payload: JsonObject;',
+        '};',
+        '',
+        '// #[codec]',
+        "// #[tagged(discriminant: 'mode')]",
+        'type ResolveRemoteCallbackRequest =',
+        "  | { callbackToken: string; mode: 'completed'; output: JsonObject; tenantId: string }",
+        "  | { callbackToken: string; error: JsonObject; mode: 'failed'; tenantId: string };",
+        '',
+        "const decodedRecord = JsonRecordCodec.decode({ nested: { id: 'node-1' }, ok: true });",
+        "const decodedEvent = EventEnvelopeDecoder.decode({ outcome: 'accepted', payload: { id: 'node-1' } });",
+        "const decodedCallback = ResolveRemoteCallbackRequestCodec.decode({ callbackToken: 'callback-1', mode: 'completed', output: { ok: true }, tenantId: 'tenant-1' });",
+        "const encodedCallback = ResolveRemoteCallbackRequestCodec.encode({ callbackToken: 'callback-1', mode: 'failed', error: { code: 'boom' }, tenantId: 'tenant-1' });",
+        'void decodedRecord;',
+        'void decodedEvent;',
+        'void decodedCallback;',
+        'void encodedCallback;',
+        '',
+      ].join('\n'),
+    ],
+  ]);
+
+  const expanded = expandAndTypecheckBuiltins(files, [fileName]);
+  const expandedFileName = expanded.preparedProgram.toProgramFileName(fileName);
+  const sourceFile = expanded.program.getSourceFile(expandedFileName);
+  assert(sourceFile);
+
+  const printed = printSourceFileForMacroTest(sourceFile);
+  assertStringIncludes(printed, 'export const JsonRecordCodec = ');
+  assertStringIncludes(printed, 'export const EventEnvelopeDecoder = ');
+  assertStringIncludes(printed, 'export const ResolveRemoteCallbackRequestCodec = ');
+});
+
+Deno.test('automations-style object transport contracts typecheck without local scalar helper registries', () => {
+  const fileName = '/virtual/index.sts';
+  const files = new Map<string, string>([
+    ...createInstalledStdlibPackageFiles('/virtual').entries(),
+    [
+      fileName,
+      [
+        "import { codec } from 'sts:derive';",
+        "import type { JsonObject } from 'sts:json';",
+        '',
+        "type DecisionGateResolutionStatus = 'accepted' | 'rejected' | 'timed_out' | 'canceled';",
+        '',
+        '// #[codec]',
+        'interface SubjectRef {',
+        '  readonly id: string;',
+        '  readonly type: string;',
+        '  readonly attributes?: JsonObject;',
+        '}',
+        '',
+        '// #[codec]',
+        'interface EventEnvelope {',
+        '  readonly eventId?: string;',
+        '  readonly eventType: string;',
+        '  readonly idempotencyKey?: string | null;',
+        '  readonly metadata?: JsonObject;',
+        '  readonly occurredAt?: string;',
+        '  readonly originKey?: string | null;',
+        '  readonly payload: JsonObject;',
+        '  readonly refs?: readonly SubjectRef[];',
+        '  readonly source: string;',
+        '  readonly subject?: SubjectRef;',
+        '  readonly tenantId: string;',
+        '}',
+        '',
+        '// #[codec]',
+        'interface ManualInvocationActor {',
+        '  readonly id: string;',
+        '  readonly type: string;',
+        '  readonly attributes?: JsonObject;',
+        '}',
+        '',
+        '// #[codec]',
+        'interface RunCancelRequest {',
+        '  readonly actor?: ManualInvocationActor;',
+        '  readonly reason?: string | null;',
+        '  readonly runId: string;',
+        '  readonly tenantId: string;',
+        '}',
+        '',
+        '// #[codec]',
+        'interface ResolveDecisionGateRequest {',
+        '  readonly gateId: string;',
+        '  readonly outcome: DecisionGateResolutionStatus;',
+        '  readonly payload?: JsonObject;',
+        '  readonly tenantId: string;',
+        '}',
+        '',
+        "const decodedEvent = EventEnvelopeCodec.decode({ eventType: 'triggered', payload: { nested: { ok: true } }, source: 'system', tenantId: 'tenant-1' });",
+        "const encodedEvent = EventEnvelopeCodec.encode({ eventType: 'triggered', payload: { nested: { ok: true } }, source: 'system', tenantId: 'tenant-1' });",
+        "const decodedCancel = RunCancelRequestCodec.decode({ runId: 'run-1', tenantId: 'tenant-1', actor: { id: 'user-1', type: 'manual' } });",
+        "const decodedDecision = ResolveDecisionGateRequestCodec.decode({ gateId: 'gate-1', outcome: 'accepted', tenantId: 'tenant-1' });",
+        'void decodedEvent;',
+        'void encodedEvent;',
+        'void decodedCancel;',
+        'void decodedDecision;',
+        '',
+      ].join('\n'),
+    ],
+  ]);
+
+  const expanded = expandAndTypecheckBuiltins(files, [fileName]);
+  const expandedFileName = expanded.preparedProgram.toProgramFileName(fileName);
+  const sourceFile = expanded.program.getSourceFile(expandedFileName);
+  assert(sourceFile);
+
+  const printed = printSourceFileForMacroTest(sourceFile);
+  assertStringIncludes(printed, 'export const SubjectRefCodec = ');
+  assertStringIncludes(printed, 'export const EventEnvelopeCodec = ');
+  assertStringIncludes(printed, 'export const ManualInvocationActorCodec = ');
+  assertStringIncludes(printed, 'export const RunCancelRequestCodec = ');
+  assertStringIncludes(printed, 'export const ResolveDecisionGateRequestCodec = ');
+});
+
+Deno.test('codec macro structurally lowers same-file named references without requiring a companion', () => {
+  const { printed } = expandWithStdlibBuiltins([
     "import { codec } from 'sts:derive';",
     '',
     'type User = {',
@@ -1542,10 +1667,11 @@ Deno.test('codec macro rejects named derived references when the companion is no
     '',
   ].join('\n'));
 
-  assertEquals(
-    error.message,
-    'codec requires the companion value "UserCodec" to be in scope for named derived types. Add an import or use // #[codec.via(...)] to supply a custom codec.',
-  );
+  assertStringIncludes(printed, 'export const GroupCodec = ');
+  assertStringIncludes(printed, 'owner: (() => {');
+  assertStringIncludes(printed, 'id: __sts_runtime_named_string_');
+  assertStringIncludes(printed, 'id: __sts_runtime_named_stringEncoder_');
+  assertStringIncludes(printed, 'localName: "owner"');
 });
 
 Deno.test('codec macro supports parameterless classes via public instance fields', () => {

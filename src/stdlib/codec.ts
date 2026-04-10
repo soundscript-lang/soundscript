@@ -2,7 +2,11 @@ import { type Bind, type TypeLambda } from 'sts:hkt';
 import {
   boolean as booleanDecoder,
   DecodeFailure,
+  jsonArray as jsonArrayDecoder,
+  jsonObject as jsonObjectDecoder,
+  jsonValue as jsonValueDecoder,
   map as mapDecoder,
+  mapError as mapDecodeErrorValue,
   type DecodeMode,
   type Decoder,
   isoDate as isoDateDecoder,
@@ -18,11 +22,16 @@ import {
   type Encoder,
   type EncodeMode,
   isoDate as isoDateEncoder,
+  jsonArray as jsonArrayEncoder,
+  jsonObject as jsonObjectEncoder,
+  jsonValue as jsonValueEncoder,
+  mapError as mapEncodeErrorValue,
   numberEncoder as numberEncoderValue,
   stringEncoder as stringEncoderValue,
   url as urlEncoder,
 } from 'sts:encode';
 import type { Invariant } from 'sts:typeclasses';
+import type { JsonArray, JsonObject, JsonValue } from 'sts:json';
 import {
   __attachDecodeMetadata,
   __attachEncodeMetadata,
@@ -107,6 +116,42 @@ export function imap<
   );
 }
 
+export function mapDecodeError<
+  T,
+  TEncoded,
+  DE1,
+  DE2,
+  EE,
+  DM extends DecodeMode = 'sync',
+  EM extends EncodeMode = 'sync',
+>(
+  base: Codec<T, TEncoded, DE1, EE, DM, EM>,
+  project: (error: DE1) => DE2,
+): Codec<T, TEncoded, DE2, EE, DM, EM> {
+  return codec(
+    mapDecodeErrorValue(base, project),
+    base,
+  );
+}
+
+export function mapEncodeError<
+  T,
+  TEncoded,
+  DE,
+  EE1,
+  EE2,
+  DM extends DecodeMode = 'sync',
+  EM extends EncodeMode = 'sync',
+>(
+  base: Codec<T, TEncoded, DE, EE1, DM, EM>,
+  project: (error: EE1) => EE2,
+): Codec<T, TEncoded, DE, EE2, DM, EM> {
+  return codec(
+    base,
+    mapEncodeErrorValue(base, project),
+  );
+}
+
 export function codecInvariant<TEncoded, DE = DecodeFailure, EE = EncodeFailure>(): Invariant<
   Bind<Bind<Bind<CodecF, [EE]>, [DE]>, [TEncoded]>
 > {
@@ -118,5 +163,8 @@ export function codecInvariant<TEncoded, DE = DecodeFailure, EE = EncodeFailure>
 export const stringCodec: Codec<string, string> = codec(stringDecoder, stringEncoderValue);
 export const numberCodec: Codec<number, number> = codec(numberDecoder, numberEncoderValue);
 export const booleanCodec: Codec<boolean, boolean> = codec(booleanDecoder, booleanEncoderValue);
+export const jsonValue: Codec<JsonValue, JsonValue> = codec(jsonValueDecoder, jsonValueEncoder);
+export const jsonObject: Codec<JsonObject, JsonObject> = codec(jsonObjectDecoder, jsonObjectEncoder);
+export const jsonArray: Codec<JsonArray, JsonArray> = codec(jsonArrayDecoder, jsonArrayEncoder);
 export const url: Codec<UrlLike, string> = codec(urlDecoder, urlEncoder);
 export const isoDate: Codec<Date, string> = codec(isoDateDecoder, isoDateEncoder);

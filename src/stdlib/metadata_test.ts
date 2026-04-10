@@ -6,7 +6,10 @@ import {
   defaulted,
   type DecodeMode,
   type Decoder,
+  jsonObject,
+  jsonValue,
   lazy,
+  mapError as mapDecodeError,
   minLength,
   object,
   optional,
@@ -198,4 +201,40 @@ Deno.test('metadataOf exposes both directions for codecs', () => {
     throw new Error('expected primitive encode root');
   }
   assertEquals(encodeRoot.primitive, 'string');
+});
+
+Deno.test('metadataOf exposes recursive graphs for json helpers', () => {
+  const valueMetadata = expectMetadata(jsonValue);
+  const objectMetadata = expectMetadata(jsonObject);
+
+  const valueRoot = valueMetadata.decode?.nodes[valueMetadata.decode.root];
+  const objectRoot = objectMetadata.decode?.nodes[objectMetadata.decode.root];
+
+  assertEquals(valueRoot?.kind, 'union');
+  assertEquals(objectRoot?.kind, 'record');
+  assertEquals(
+    Object.values(valueMetadata.decode?.nodes ?? {}).some((node) => node.kind === 'ref'),
+    true,
+  );
+});
+
+Deno.test('metadataOf preserves shape and mode through decode mapError wrappers', () => {
+  const AsyncWrapped = mapDecodeError(
+    preprocess(string, async (value) => String(value)),
+    (error: Error | { readonly message: string }) => new Error(error.message),
+  );
+  const metadata = expectMetadata(AsyncWrapped);
+  const root = metadata.decode?.nodes[metadata.decode.root];
+
+  assertEquals(metadata.decode?.mode, 'async');
+  assertEquals(root, {
+    effects: [{
+      async: true,
+      effect: 'preprocess',
+      helperName: null,
+      kind: 'opaque',
+    }],
+    kind: 'primitive',
+    primitive: 'string',
+  });
 });

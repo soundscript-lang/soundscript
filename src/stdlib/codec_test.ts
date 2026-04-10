@@ -1,14 +1,20 @@
 import { assertEquals } from '@std/assert';
 
-import { isErr, isOk, ok } from '@soundscript/soundscript/result';
+import { err, isErr, isOk, ok } from '@soundscript/soundscript/result';
 
 import { string } from './decode.ts';
+import { fromEncode } from './encode.ts';
 import {
   codec,
   codecInvariant,
   contramap,
   imap,
   isoDate,
+  jsonArray,
+  jsonObject,
+  jsonValue,
+  mapDecodeError,
+  mapEncodeError,
   numberEncoder,
   stringCodec,
   stringEncoder,
@@ -93,4 +99,49 @@ Deno.test('codec url decodes URL strings to URL values and encodes back to href'
   }
   assertEquals(decoded.value.href, 'https://example.com/path?q=1');
   assertEquals(encoded, ok('https://example.com/path?q=1'));
+});
+
+Deno.test('codec json helpers expose both decode and encode for recursive JSON values', () => {
+  const value = {
+    nested: {
+      count: 1,
+      ok: true,
+    },
+    tags: ['a', null],
+  };
+
+  assertEquals(jsonValue.decode(value), ok(value));
+  assertEquals(jsonValue.encode(value), ok(value));
+  assertEquals(jsonObject.decode({ nested: { id: 'node-1' } }), ok({ nested: { id: 'node-1' } }));
+  assertEquals(jsonArray.encode([{ id: 'node-1' }, false, null]), ok([{ id: 'node-1' }, false, null]));
+});
+
+Deno.test('codec mapDecodeError and mapEncodeError remap only the selected direction', () => {
+  const MappedDecode = mapDecodeError(
+    stringCodec,
+    (error: unknown) => ({
+      code: 'mapped_decode',
+      message: error instanceof Error
+        ? error.message
+        : typeof error === 'object' && error !== null && 'message' in error &&
+            typeof error.message === 'string'
+        ? error.message
+        : String(error),
+    }),
+  );
+  const RejectingCodec = codec(
+    string,
+    fromEncode((value: string) =>
+      value.length > 0 ? ok(value) : err(new Error('boom'))
+    ),
+  );
+  const MappedEncode = mapEncodeError(RejectingCodec, (error: unknown) => ({
+    code: 'mapped_encode',
+    message: error instanceof Error ? error.message : String(error),
+  }));
+
+  assertEquals(MappedDecode.decode(12), err({ code: 'mapped_decode', message: 'Expected string.' }));
+  assertEquals(MappedDecode.encode('ok'), ok('ok'));
+  assertEquals(MappedEncode.decode('ok'), ok('ok'));
+  assertEquals(MappedEncode.encode(''), err({ code: 'mapped_encode', message: 'boom' }));
 });

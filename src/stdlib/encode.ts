@@ -16,6 +16,13 @@ import {
   __setEncodeMode,
   type MetadataEffect,
 } from './metadata.ts';
+import {
+  isJsonObject,
+  isJsonValue,
+  type JsonArray,
+  type JsonObject,
+  type JsonValue,
+} from './json.ts';
 
 export type EncodeMode = 'sync' | 'async';
 export type ObjectKeyPolicy = 'strip' | 'strict' | 'passthrough';
@@ -143,6 +150,43 @@ type StatefulEncoder<T, TEncoded = unknown, E = EncodeFailure, M extends EncodeM
       state: EncodeState,
     ) => MaybeEncodeOutput<TEncoded, readonly EncodeIssue[]>;
   };
+
+const jsonStringNode: __InternalMetadataNode = { kind: 'primitive', primitive: 'string' };
+const jsonNumberNode: __InternalMetadataNode = { kind: 'primitive', primitive: 'number' };
+const jsonBooleanNode: __InternalMetadataNode = { kind: 'primitive', primitive: 'boolean' };
+const jsonNullNode: __InternalMetadataNode = { kind: 'null' };
+const jsonObjectNode: __InternalMetadataNode = {
+  key: 'string',
+  kind: 'record',
+  value: {
+    kind: 'ref',
+    target: () => jsonValueNode,
+  },
+};
+const jsonArrayNode: __InternalMetadataNode = {
+  element: {
+    kind: 'ref',
+    target: () => jsonValueNode,
+  },
+  kind: 'array',
+};
+const jsonValueNode: __InternalMetadataNode = {
+  kind: 'union',
+  members: [
+    jsonStringNode,
+    jsonNumberNode,
+    jsonBooleanNode,
+    jsonNullNode,
+    {
+      kind: 'ref',
+      target: () => jsonObjectNode,
+    },
+    {
+      kind: 'ref',
+      target: () => jsonArrayNode,
+    },
+  ],
+};
 
 export interface EncoderF extends TypeLambda {
   readonly type: Encoder<this['Args'][2], this['Args'][1], this['Args'][0]>;
@@ -303,6 +347,64 @@ export const isoDate: Encoder<Date, string> = __attachEncodeMetadata(fromEncode(
     primitive: 'string',
   },
 });
+
+export const jsonValue: Encoder<JsonValue, JsonValue> = __attachEncodeMetadata(
+  fromEncode((value) =>
+    isJsonValue(value)
+      ? ok(value)
+      : err(new EncodeFailure('Expected JSON value.', { cause: value }))
+  ),
+  {
+    mode: 'sync',
+    root: jsonValueNode,
+  },
+);
+
+export const jsonObject: Encoder<JsonObject, JsonObject> = __attachEncodeMetadata(
+  fromEncode((value) =>
+    isJsonObject(value)
+      ? ok(value)
+      : err(new EncodeFailure('Expected JSON object.', { cause: value }))
+  ),
+  {
+    mode: 'sync',
+    root: jsonObjectNode,
+  },
+);
+
+export const jsonArray: Encoder<JsonArray, JsonArray> = __attachEncodeMetadata(
+  fromEncode((value) =>
+    Array.isArray(value) && isJsonValue(value)
+      ? ok(value as JsonArray)
+      : err(new EncodeFailure('Expected JSON array.', { cause: value }))
+  ),
+  {
+    mode: 'sync',
+    root: jsonArrayNode,
+  },
+);
+
+export function mapError<T, TEncoded, E1, E2, M extends EncodeMode>(
+  encoder: Encoder<T, TEncoded, E1, M>,
+  project: (error: E1) => E2,
+): Encoder<T, TEncoded, E2, M> {
+  return __attachEncodeMetadata({
+    encode(value: T) {
+      const encoded = encoder.encode(value) as MaybeEncodeOutput<TEncoded, E1>;
+      if (isPromiseLike(encoded)) {
+        return encoded.then((result) => isErr(result) ? err(project(result.error)) : result) as EncodeOutput<
+          TEncoded,
+          E2,
+          M
+        >;
+      }
+      return (isErr(encoded) ? err(project(encoded.error)) : encoded) as EncodeOutput<TEncoded, E2, M>;
+    },
+    validateEncode(value: T) {
+      return encoder.validateEncode(value) as EncodeOutput<TEncoded, readonly EncodeIssue[], M>;
+    },
+  } as Encoder<T, TEncoded, E2, M>, encodeDirectionOf(encoder));
+}
 
 export function refine<T, TEncoded, E, M extends EncodeMode>(
   encoder: Encoder<T, TEncoded, E, M>,
