@@ -4,9 +4,9 @@
 
 This document defines the canonical specification surface for `soundscript`.
 
-It records the current product thesis, architecture direction, soundness and interop policy,
-stdlib and hint responsibilities, tooling surfaces, and validation expectations. Normative
-statements in `Current Spec` describe the canonical design target for this repository.
+It records the current product thesis, architecture direction, soundness and interop policy, stdlib
+and hint responsibilities, tooling surfaces, and validation expectations. Normative statements in
+`Current Spec` describe the canonical design target for this repository.
 `Current Implementation Status Snapshot` states what exists today.
 `Planned Extensions And Open Gaps` records future work.
 
@@ -128,11 +128,11 @@ The canonical policy matrix is:
 - **Keep, but only as isolated runtime families or builtin-owned protocols:** `Map`, `Set`,
   compiler-owned `Promise` semantics, `async` / `await`, `RegExp`, exceptions, generators, class
   inheritance through `class` syntax, callable values as a distinct function family with a
-  restricted builtin surface, and builtin iterator surfaces from modeled runtime families when
-  their support does not impose protocol or object-model costs on unrelated code
-- **Keep on supporting targets only:** weak and finalization families such as `WeakMap`,
-  `WeakSet`, `WeakRef`, and `FinalizationRegistry`, plus host globals and APIs that are available
-  only when the current target and extern environment honestly support them
+  restricted builtin surface, and builtin iterator surfaces from modeled runtime families when their
+  support does not impose protocol or object-model costs on unrelated code
+- **Keep on supporting targets only:** weak and finalization families such as `WeakMap`, `WeakSet`,
+  `WeakRef`, and `FinalizationRegistry`, plus host globals and APIs that are available only when the
+  current target and extern environment honestly support them
 - **Interop-boundary only:** JS package or host surfaces after `.d.ts` projection has degraded only
   the unsound or overly dynamic positions to boundary types, reflective reads that necessarily
   produce dynamic values, and callbacks that cross between Wasm and JS
@@ -434,8 +434,8 @@ broader platform surface:
   - `TextEncoder`, `TextDecoder` and `sts:text`
   - `crypto.getRandomValues` and `sts:random`
 
-These portable globals are intended on all five targets, including `wasm-wasi`, when backed
-honestly by direct host support, JS glue, or WASI/component imports.
+These portable globals are intended on all five targets, including `wasm-wasi`, when backed honestly
+by direct host support, JS glue, or WASI/component imports.
 
 Non-portable host access belongs in explicit capability modules:
 
@@ -468,10 +468,10 @@ The canonical end-state annotation surface is **site-local only**:
 - `// #[interop]` attached to the immediately following import boundary
 
 Current compiler-visible annotations use this same comment-attached `// #[...]` form rather than
-decorator-like spellings. The implemented builtin surface includes `// #[extern]`,
-`// #[interop]`, `// #[unsafe]`, `// #[variance(...)]`, `// #[newtype]`, and `// #[value]`.
-Future additions such as `// #[effects(...)]`, `// #[noescape]`, and `// #[inline]` should extend
-that same surface instead of inventing a second annotation syntax.
+decorator-like spellings. The implemented builtin surface includes `// #[extern]`, `// #[interop]`,
+`// #[unsafe]`, `// #[variance(...)]`, `// #[newtype]`, and `// #[value]`. Future additions such as
+`// #[effects(...)]`, `// #[noescape]`, and `// #[inline]` should extend that same surface instead
+of inventing a second annotation syntax.
 
 Annotation blocks are not region-scoped. They stay attached to the immediate next supported node
 because broader regions are harder to audit and make it easier for unrelated proof overrides to
@@ -488,9 +488,9 @@ accumulate silently.
 
 `#[unsafe]` waives one local proof-override expression chain, not one AST node. A chain is a
 contiguous wrapper sequence around one underlying expression, currently ordinary `as` assertions and
-postfix non-null assertions, with parentheses or `satisfies` wrappers in between. Sibling
-assertions remain separate sites even when they appear in the same statement, object literal, array
-literal, or argument list.
+postfix non-null assertions, with parentheses or `satisfies` wrappers in between. Sibling assertions
+remain separate sites even when they appear in the same statement, object literal, array literal, or
+argument list.
 
 Local definite-assignment assertions such as `// #[unsafe] let cache!: Cache` are also local proof
 override sites. Class-field definite-assignment assertions remain rejected in v1 because the
@@ -774,8 +774,8 @@ shared diagnostics and artifact pipeline.
 
 The current editor-facing tooling is also broader than diagnostics-only. The repo now includes an
 LSP path with diagnostics, hover, signature help, definition, references, rename, completions,
-document symbols, formatting, semantic tokens, and code actions / quick fixes over the same
-analysis core.
+document symbols, formatting, semantic tokens, and code actions / quick fixes over the same analysis
+core.
 
 Expansion-enabled source processing also improves some boundary ergonomics without changing the
 underlying host model. The canonical current case is exception normalization: local code may still
@@ -819,9 +819,9 @@ The canonical defer list names the feature families that remain intentionally na
 in the experimental compile path even though the checker or JS-facing toolchain paths may already
 accept broader source.
 
-The current compiler already owns ordinary-object `in` checks, `Object.keys` / `values` /
-`entries`, `Object.fromEntries`, `Object.assign`, and ordinary-object spread on the supported
-object paths. The defer list below is about the broader families that remain incomplete.
+The current compiler already owns ordinary-object `in` checks, `Object.keys` / `values` / `entries`,
+`Object.fromEntries`, `Object.assign`, and ordinary-object spread on the supported object paths. The
+defer list below is about the broader families that remain incomplete.
 
 The canonical defer list is:
 
@@ -830,8 +830,7 @@ The canonical defer list is:
 - full `#[value]` lowering and value-runtime ownership in the compile backend
 - dynamic computed property access beyond the current specialized / fallback object subset
 - broader `instanceof` coverage beyond the current compiler-owned class-layout slice
-- broader object rest/spread/copy/enumeration support beyond the current owned ordinary-object
-  paths
+- broader object rest/spread/copy/enumeration support beyond the current owned ordinary-object paths
 - dense array builtin/runtime ownership beyond the current owned lowering subset
 - builtin iterator and generator families beyond the current `for...of`, owned `Map` / `Set`, and
   ordinary-object iterable support
@@ -863,8 +862,7 @@ The canonical public v1 macro authoring model is:
 
 - user-authored macro modules are `.macro.sts` modules
 - macros are imported explicitly; there are no ambient global user macros
-- macro factories are named exported zero-arg functions annotated with
-  `// #[macro(call|tag|decl)]`
+- macro factories are named exported zero-arg functions annotated with `// #[macro(call|tag|decl)]`
 - the factory returns a descriptor object containing `expand(...)` and optional tooling hooks such
   as `hover`, `format`, `semanticTokens`, `bindings`, or `fragments`
 - user macro modules compile through a dedicated compile-time macro target
@@ -924,9 +922,9 @@ The intended determinism model is:
   code
 
 The current implementation enforces this with a restricted worker-backed compile-time evaluator.
-That worker does not get ambient filesystem access. The current implementation still grants a
-small fixed env allowlist required by the TypeScript compiler bootstrap. A future subprocess
-sandbox may strengthen the enforcement boundary further without changing the public macro API.
+That worker does not get ambient filesystem access. The current implementation still grants a small
+fixed env allowlist required by the TypeScript compiler bootstrap. A future subprocess sandbox may
+strengthen the enforcement boundary further without changing the public macro API.
 
 Builtin and compiler-owned experimental macro families may support broader frontend syntaxes or DSL
 forms, but those do not change the stable user-authored macro authoring model above.
@@ -975,8 +973,8 @@ For compile targets that are in scope, checker/compiler parity is part of the cl
 accepted fully Soundscript-authored programs must either lower successfully or be rejected by an
 explicit compiler-owned target-availability diagnostic.
 
-The maintained owner ledger for that claim lives in `docs/soundness-ownership-ledger.md`,
-including the owning suites and matrix axes for each currently owned semantic family.
+The maintained owner ledger for that claim lives in `docs/soundness-ownership-ledger.md`, including
+the owning suites and matrix axes for each currently owned semantic family.
 
 ### Current Implementation Status Snapshot
 
@@ -991,10 +989,10 @@ Implemented:
   import checks, null-prototype enforcement, relation checks, flow checks, type-guard validation,
   overload validation, async-surface policy, foreign-boundary checks, `#[value]` validation, and
   universal-policy analysis
-- the checker enforces a substantial portion of the canonical ban list directly, including
-  `eval`, `Function` constructor, `Proxy`, broad prototype mutation, descriptor mutation,
-  object-meta mutation, reflective key/descriptor introspection, user-defined symbol creation,
-  user-authored symbol hooks, broad implicit coercion bans, primitive wrapper construction bans,
+- the checker enforces a substantial portion of the canonical ban list directly, including `eval`,
+  `Function` constructor, `Proxy`, broad prototype mutation, descriptor mutation, object-meta
+  mutation, reflective key/descriptor introspection, user-defined symbol creation, user-authored
+  symbol hooks, broad implicit coercion bans, primitive wrapper construction bans,
   PromiseLike/thenable bans, receiver-sensitive callable extraction/rebinding bans,
   construction-time dispatch and `this` escape bans, field read-before-initialization bans, and the
   main callable-mutation paths that would treat functions as ordinary extensible objects
@@ -1004,26 +1002,25 @@ Implemented:
   projected declarations and relation checks, and `#[value]` is implemented as a restricted class
   form with dedicated checker rules plus JS emit/runtime support
 - the repo now includes a substantial machine-numerics slice: `sts:numerics`, exact machine leaf
-  types and families, contextual literals, same-leaf arithmetic checks, machine-storage views,
-  JSON integration, projected-declaration support, and frontend/runtime test coverage
+  types and families, contextual literals, same-leaf arithmetic checks, machine-storage views, JSON
+  integration, projected-declaration support, and frontend/runtime test coverage
 - the public/tooling surface is broader than an analysis-only CLI: the repo ships `init`, `check`,
   `build`, `expand`, experimental `compile`, `node`, `deno`, `explain`, and `lsp`, with
   machine-readable `json` / `ndjson` output on the main project commands
-- the LSP surface is broader than diagnostics-only and now includes diagnostics, hover,
-  signature help, definition, references, rename, completions, document symbols, formatting,
-  semantic tokens, and code actions / quick fixes over the shared analysis core
-- the builtin/runtime module surface under `sts:*` is implemented, with the stable v1 core
-  centered on `sts:prelude`, `sts:result`, `sts:match`, `sts:failures`, `sts:url`, `sts:fetch`,
-  `sts:text`, `sts:random`, `sts:json`, `sts:compare`, `sts:hash`, `sts:decode`, `sts:encode`,
-  `sts:codec`, `sts:derive`, `sts:async`, `sts:hkt`, `sts:typeclasses`, and `sts:macros`, plus
-  implemented experimental builtin modules such as `sts:numerics`, `sts:value`, and
-  `sts:experimental/*`
+- the LSP surface is broader than diagnostics-only and now includes diagnostics, hover, signature
+  help, definition, references, rename, completions, document symbols, formatting, semantic tokens,
+  and code actions / quick fixes over the shared analysis core
+- the builtin/runtime module surface under `sts:*` is implemented, with the stable v1 core centered
+  on `sts:prelude`, `sts:result`, `sts:match`, `sts:failures`, `sts:url`, `sts:fetch`, `sts:text`,
+  `sts:random`, `sts:json`, `sts:compare`, `sts:hash`, `sts:decode`, `sts:encode`, `sts:codec`,
+  `sts:derive`, `sts:async`, `sts:hkt`, `sts:typeclasses`, and `sts:macros`, plus implemented
+  experimental builtin modules such as `sts:numerics`, `sts:value`, and `sts:experimental/*`
 - the macro system is implemented as a real compile-time surface with declaration, rewrite,
   control-flow, branch, and fragment macro support, restricted worker-backed macro evaluation,
-  target/runtime semantics hooks, and editor hooks for hover, semantic tokens, formatting,
-  bindings, and fragments
-- the experimental compiler path is real code: `soundscript compile` calls into a Wasm/WAT
-  toolchain with dedicated tests covering strings, arrays, `Map`, `Set`, `Promise`, object
+  target/runtime semantics hooks, and editor hooks for hover, semantic tokens, formatting, bindings,
+  and fragments
+- the experimental compiler path is real code: `soundscript compile` calls into a Wasm/WAT toolchain
+  with dedicated tests covering strings, arrays, `Map`, `Set`, `Promise`, object
   specialization/fallback, tagged boundaries, macro-expanded input, and JS boundary adaptation
 - the repo already includes a manifest-driven selective `test262` harness with asserted versus
   backlog tracking and isolated subprocess execution
@@ -1074,8 +1071,8 @@ guarantees.
 - projected JS package interop: finish defining how `.d.ts` surfaces are projected, where boundary
   types appear, and how wrappers recover stronger sound APIs without trust-based boundary recovery
 - explicit null-prototype object types: broaden the current `BareObject` slice into a more complete
-  non-ordinary object model for user-authored and builtin-produced null-prototype values, instead
-  of leaving the remaining edges reject-oriented or under-specified
+  non-ordinary object model for user-authored and builtin-produced null-prototype values, instead of
+  leaving the remaining edges reject-oriented or under-specified
 - explicit dynamic-boundary values: define the checker, typing, and runtime story for opaque host
   values that replace unrestricted `any`
 - target-aware runtime-family availability: finish making weak/finalization families, ambient host
@@ -1092,6 +1089,6 @@ guarantees.
 
 ## Document Status And Supporting Docs
 
-`SPEC.md` is the canonical current design authority for `soundscript`. Supporting documents may
-record rationale, implementation plans, narrower design detail, or historical context, but they do
-not override the current normative spec recorded here.
+`docs/architecture/spec.md` is the canonical current design authority for `soundscript`. Supporting
+documents may record rationale, implementation plans, narrower design detail, or historical context,
+but they do not override the current normative spec recorded here.

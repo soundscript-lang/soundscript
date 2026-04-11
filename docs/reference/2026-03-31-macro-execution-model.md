@@ -6,7 +6,7 @@ It is the detailed reference companion to:
 
 - [Macro Authoring](../macro-authoring.md)
 - [soundscript V1 User Contract](../v1-user-contract.md)
-- [SPEC](../../SPEC.md)
+- [SPEC](../architecture/spec.md)
 
 ## Short Version
 
@@ -20,8 +20,8 @@ The current macro model is:
 
 The correct mental model is therefore:
 
-> A soundscript macro is a `.macro.sts` compile-time plugin module compiled through a special
-> macro target and evaluated in a restricted environment with explicit capabilities.
+> A soundscript macro is a `.macro.sts` compile-time plugin module compiled through a special macro
+> target and evaluated in a restricted environment with explicit capabilities.
 
 This is closer to Rust proc-macro crates than to ordinary Deno scripts or general TypeScript
 plugins.

@@ -2,15 +2,15 @@
 
 > Status: `reference` Scope: Supporting design rationale for non-ordinary-object handling,
 > boundary-only dynamic values, and builtin-produced null-prototype values. Last reviewed:
-> `2026-03-09` Superseded by: `SPEC.md` See also:
+> `2026-03-09` Superseded by: `docs/architecture/spec.md` See also:
 > `docs/reference/2026-03-07-javascript-soundness-hazard-rubric-design.md`
 >
-> Note: `SPEC.md` now records the canonical current design. This file remains useful as rationale
-> for non-ordinary-object handling, module-namespace policy, and future dynamic-boundary follow-up
-> detail; it is not the normative design source. Some concrete policy calls in this note have been
-> superseded, especially around null-prototype handling: the current repo already models a
-> `BareObject` family for `Object.create(null)`, `extends null`, `RegExp` groups, and preserved
-> `Object.groupBy` results.
+> Note: `docs/architecture/spec.md` now records the canonical current design. This file remains
+> useful as rationale for non-ordinary-object handling, module-namespace policy, and future
+> dynamic-boundary follow-up detail; it is not the normative design source. Some concrete policy
+> calls in this note have been superseded, especially around null-prototype handling: the current
+> repo already models a `BareObject` family for `Object.create(null)`, `extends null`, `RegExp`
+> groups, and preserved `Object.groupBy` results.
 
 ## Goal
 
@@ -137,14 +137,14 @@ a general boundary mechanism.
 ## Policy Matrix
 
 | Category                                   | Examples                                                                                | Tier 1 treatment                                                    | Assignable to plain `object` in soundscript | Default use without explicit boundary |
-| ------------------------------------------ | --------------------------------------------------------------------------------------- | ------------------------------------------------------------------- | ------------------------------------------ | ------------------------------------- |
-| Boundary-only null-prototype builtins      | `Object.groupBy` and similar fresh null-prototype builtin containers                    | Explicit dynamic or opaque boundary value                           | No                                         | No                                    |
-| `Proxy` and proxy-mediated values          | `new Proxy(...)` and any surfaced proxy-returning boundary                              | Ban outright by default                                             | No                                         | No                                    |
-| Reflective dynamic descriptor/read results | descriptor objects or reflection-driven values whose semantics are not modeled honestly | Explicit dynamic or opaque boundary value when support is justified | No, unless later modeled precisely         | No                                    |
-| Module namespace objects                   | `import * as ns from "./mod"` from sound code                                           | Separate non-ordinary category                                      | Prefer no                                  | Yes, for namespace-specific reads     |
-| Special regex arrays                       | `RegExpExecArray`, `RegExpMatchArray`                                                   | Precisely modeled                                                   | Yes                                        | Yes                                   |
-| Typed arrays and views                     | `Uint8Array`, `DataView`, `ArrayBufferView`                                             | Precisely modeled                                                   | Yes                                        | Yes                                   |
-| Ordinary functions/callables               | ordinary function values and callable objects with known types                          | Precisely modeled                                                   | Yes                                        | Yes                                   |
+| ------------------------------------------ | --------------------------------------------------------------------------------------- | ------------------------------------------------------------------- | ------------------------------------------- | ------------------------------------- |
+| Boundary-only null-prototype builtins      | `Object.groupBy` and similar fresh null-prototype builtin containers                    | Explicit dynamic or opaque boundary value                           | No                                          | No                                    |
+| `Proxy` and proxy-mediated values          | `new Proxy(...)` and any surfaced proxy-returning boundary                              | Ban outright by default                                             | No                                          | No                                    |
+| Reflective dynamic descriptor/read results | descriptor objects or reflection-driven values whose semantics are not modeled honestly | Explicit dynamic or opaque boundary value when support is justified | No, unless later modeled precisely          | No                                    |
+| Module namespace objects                   | `import * as ns from "./mod"` from sound code                                           | Separate non-ordinary category                                      | Prefer no                                   | Yes, for namespace-specific reads     |
+| Special regex arrays                       | `RegExpExecArray`, `RegExpMatchArray`                                                   | Precisely modeled                                                   | Yes                                         | Yes                                   |
+| Typed arrays and views                     | `Uint8Array`, `DataView`, `ArrayBufferView`                                             | Precisely modeled                                                   | Yes                                         | Yes                                   |
+| Ordinary functions/callables               | ordinary function values and callable objects with known types                          | Precisely modeled                                                   | Yes                                         | Yes                                   |
 
 ## Operation Matrix
 
@@ -262,5 +262,5 @@ In short:
 - keep regex arrays, typed arrays, views, and ordinary functions in the precisely modeled bucket
 - preserve the invariant that plain `object` does not silently hide boundary-only exotic categories
 
-That rationale explains why `SPEC.md` now preserves an ordinary-object invariant for plain `object`
-without overstating what the checker can already model soundly.
+That rationale explains why `docs/architecture/spec.md` now preserves an ordinary-object invariant
+for plain `object` without overstating what the checker can already model soundly.

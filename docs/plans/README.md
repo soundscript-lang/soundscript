@@ -2,7 +2,7 @@
 
 `docs/plans/` holds the remaining open plans.
 
-These files should not outrank `SPEC.md` or `ROADMAP.md`.
+These files should not outrank `docs/architecture/spec.md` or `docs/project/roadmap.md`.
 
 Superseded planning records have been removed from the working tree. Use Git history when you need
 older context that no longer matches the current implementation.

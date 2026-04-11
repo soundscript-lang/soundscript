@@ -1,8 +1,8 @@
 # Docs Index
 
-Start with `SPEC.md` for the canonical current design and specification surface.
+Start with `docs/architecture/spec.md` for the canonical current design and specification surface.
 
-Use `ROADMAP.md` for roadmap, milestones, and sequencing.
+Use `docs/project/roadmap.md` for roadmap, milestones, and sequencing.
 
 For the release-facing stable surface, start with `docs/v1-user-contract.md`.
 

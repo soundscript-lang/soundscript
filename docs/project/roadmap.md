@@ -10,9 +10,9 @@ isProject: false
 
 This document is the canonical roadmap for `soundscript`.
 
-For the canonical current design and specification surface, start with `SPEC.md`. `ROADMAP.md`
-tracks project direction, milestones, sequencing, and major workstreams; it does not replace the
-normative policy and design details captured in `SPEC.md`.
+For the canonical current design and specification surface, start with `docs/architecture/spec.md`.
+`docs/project/roadmap.md` tracks project direction, milestones, sequencing, and major workstreams;
+it does not replace the normative policy and design details captured in `docs/architecture/spec.md`.
 
 This roadmap answers four high-level questions:
 
@@ -24,9 +24,9 @@ This roadmap answers four high-level questions:
 
 ## Active Planning Surface
 
-Use `SPEC.md` as the canonical current design authority, use this roadmap for high-level direction
-and milestone planning, and use `docs/README.md` to find the current execution plans, narrow
-follow-up design notes, and supporting reference material.
+Use `docs/architecture/spec.md` as the canonical current design authority, use this roadmap for
+high-level direction and milestone planning, and use `docs/README.md` to find the current execution
+plans, narrow follow-up design notes, and supporting reference material.
 
 Open planning lives in `docs/plans/`.
 
@@ -64,8 +64,8 @@ Implemented and shipping in the repo today:
 
 - one shared analysis pipeline used by the CLI, project services, LSP, editor projection, runtime
   materialization, and compiler entry points
-- mixed `.ts` / `.sts` projects, projected `.sts` surfaces for `.ts` consumers, and
-  source-published package recheck through `package.json#soundscript.exports`
+- mixed `.ts` / `.sts` projects, projected `.sts` surfaces for `.ts` consumers, and source-published
+  package recheck through `package.json#soundscript.exports`
 - CLI commands for `init`, `check`, `build`, `expand`, experimental `compile`, `node`, `deno`,
   `explain`, and `lsp`, plus machine-readable `json` / `ndjson` output on the main project commands
 - a broad LSP/editor surface with diagnostics, hover, signature help, definition, references,
@@ -75,12 +75,12 @@ Implemented and shipping in the repo today:
 - implemented `sts:*` builtin modules, with the stable v1 core centered on `sts:prelude`,
   `sts:result`, `sts:match`, `sts:failures`, `sts:url`, `sts:fetch`, `sts:text`, `sts:random`,
   `sts:json`, `sts:compare`, `sts:hash`, `sts:decode`, `sts:encode`, `sts:codec`, `sts:derive`,
-  `sts:async`, `sts:hkt`, `sts:typeclasses`, and `sts:macros`, plus implemented experimental
-  builtin modules such as `sts:numerics`, `sts:value`, and `sts:experimental/*`
+  `sts:async`, `sts:hkt`, `sts:typeclasses`, and `sts:macros`, plus implemented experimental builtin
+  modules such as `sts:numerics`, `sts:value`, and `sts:experimental/*`
 - a real macro system with declaration, rewrite, control-flow, branch, and fragment macros,
   restricted compile-time execution, and real editor / fragment tooling hooks
-- implemented experimental language work including class nominality, `#[newtype]`, `#[value]`, and
-  a substantial machine-numerics slice
+- implemented experimental language work including class nominality, `#[newtype]`, `#[value]`, and a
+  substantial machine-numerics slice
 - a real experimental Wasm/WAT compiler path with dedicated test coverage for strings, arrays,
   `Map`, `Set`, `Promise`, object specialization/fallback, tagged boundaries, and macro-expanded
   input
@@ -99,7 +99,7 @@ This roadmap tracks:
 - active planning links for still-open work
 
 For the current normative policy surface, trust model, runtime-boundary rules, stdlib typing
-posture, and tooling semantics, see `SPEC.md`.
+posture, and tooling semantics, see `docs/architecture/spec.md`.
 
 ## High-Level Milestones
 
@@ -116,19 +116,19 @@ Continue closing the highest-value unsoundness categories in syntax, provenance,
 semantics, flow invalidation, explicit interop-boundary enforcement, and explicit proof-override
 auditing.
 
-This milestone also includes making the policy matrix and canonical ban/defer ownership in `SPEC.md`
-explicit and enforceable, including the ordinary-object invariant for plain `object`, the current
-null-prototype and `BareObject` widening policy plus other non-ordinary object rules, the exact
-proof-override surface, the site-local-only end-state for `#[unsafe]`, the rule that `x!` remains
-unsafe-only, the restriction that unsafe casts and guards may strengthen claims only along modeled
-runtime distinctions, the ban on checker-reset cast laundering such as `as unknown as T`, and the
-separation between local checker-proof escapes and JS interop projection, even though foreign
-imports in both interop modes now require explicit `// #[interop]` as a declaration-boundary
-acknowledgment. It also includes the exact-match-only policy for generic class instances and the
-retirement of TypeScript-only `private` / `protected` class members, the ban on broad implicit
-coercion in ordinary control flow and operators, the retirement of primitive wrapper objects, and
-the rule that callable values remain a distinct restricted runtime family rather than ordinary
-extensible objects.
+This milestone also includes making the policy matrix and canonical ban/defer ownership in
+`docs/architecture/spec.md` explicit and enforceable, including the ordinary-object invariant for
+plain `object`, the current null-prototype and `BareObject` widening policy plus other non-ordinary
+object rules, the exact proof-override surface, the site-local-only end-state for `#[unsafe]`, the
+rule that `x!` remains unsafe-only, the restriction that unsafe casts and guards may strengthen
+claims only along modeled runtime distinctions, the ban on checker-reset cast laundering such as
+`as unknown as T`, and the separation between local checker-proof escapes and JS interop projection,
+even though foreign imports in both interop modes now require explicit `// #[interop]` as a
+declaration-boundary acknowledgment. It also includes the exact-match-only policy for generic class
+instances and the retirement of TypeScript-only `private` / `protected` class members, the ban on
+broad implicit coercion in ordinary control flow and operators, the retirement of primitive wrapper
+objects, and the rule that callable values remain a distinct restricted runtime family rather than
+ordinary extensible objects.
 
 That now also includes making two narrower checker rules part of the explicit policy contract:
 
@@ -153,8 +153,7 @@ This includes:
 
 - honest treatment of host objects and callbacks
 - one checker interop policy across targets
-- flat public targets with explicit runtime-adapter behavior instead of a hidden `js` / `wasm`
-  split
+- flat public targets with explicit runtime-adapter behavior instead of a hidden `js` / `wasm` split
 - direct JS module imports/exports on `js-browser` and `js-node`
 - Wasm plus generated JS wrapper/glue on `wasm-browser` and `wasm-node`
 - `// #[interop]` on foreign imports
@@ -189,15 +188,16 @@ This includes:
   - small composable leaf modules
   - explicit capability modules for non-portable host access
 - versioned hint and metadata validation
-- lowering-visible hints aligned with the canonical performance-hint list in `SPEC.md`
+- lowering-visible hints aligned with the canonical performance-hint list in
+  `docs/architecture/spec.md`
 - language-owned machine numerics and nominal/newtype/value annotations as part of the
   checker-to-lowering contract, not as compiler-magic stdlib modules
 - a small stdlib-v2 library surface centered on `json` and `compare`, distinct from the
   language-owned numerics and nominal workstreams
 - explicit target-mode, extern-pack, and runtime-adapter assumptions
 - compiler-owned builtin/runtime-family ownership for the wasm target beyond the current
-  object/string/array/`Map`/`Set` substrate, with explicit boundaries for weak/finalization
-  families and remaining builtin coverage
+  object/string/array/`Map`/`Set` substrate, with explicit boundaries for weak/finalization families
+  and remaining builtin coverage
 - a stable path from accepted source to lowered output without hidden policy gaps
 
 ### Milestone E: Secondary standalone support becomes honest
@@ -256,8 +256,8 @@ The main open workstreams are:
 - validation, performance, and release-gate hardening, including config fidelity, caching, and
   broader evidence
 
-Each workstream should keep detailed current design in `SPEC.md` or focused active docs rather than
-restate it here.
+Each workstream should keep detailed current design in `docs/architecture/spec.md` or focused active
+docs rather than restate it here.
 
 ## Compiler And Runtime Direction
 
@@ -283,8 +283,8 @@ The relevant directions carried forward are:
 - target-mode differences should be localized and documented rather than scattered implicitly
   through the pipeline
 - compiler-visible hints and metadata should stay versioned, narrow, and validated rather than
-  growing into hidden coupling; the canonical performance-hint list in `SPEC.md` remains part of
-  that contract surface
+  growing into hidden coupling; the canonical performance-hint list in `docs/architecture/spec.md`
+  remains part of that contract surface
 - builtin families that are semantically ownable should move into compiler-owned runtime families
   rather than stay permanent host shims; weak/finalization APIs remain host-owned on supporting
   targets and unavailable on `wasm-wasi`, while host IO and Web platform surfaces remain explicit
@@ -353,7 +353,7 @@ be stable.
 
 ## Related Documents
 
-- `SPEC.md`
+- `docs/architecture/spec.md`
 - `docs/README.md`
 - `docs/plans/2026-04-01-effect-system-v1-plan.md`
 - `docs/plans/2026-03-29-runtime-target-platform-and-interop-plan.md`

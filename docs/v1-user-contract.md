@@ -50,10 +50,10 @@ modules. Those areas remain experimental and are intentionally kept out of the s
 local runtime wrappers expect `@soundscript/soundscript` to be installed in the current project or
 an ancestor workspace, because emitted temp-graph modules import the runtime package.
 
-The strong soundness claim discussed in `SPEC.md` is narrower than the full stable v1 product
-surface. It applies only to fully Soundscript-authored `.sts` code, including source-published
-`.sts` packages analyzed from source, and it excludes JS/TS interop, foreign `.d.ts`, and
-`// #[unsafe]` proof overrides. The maintained ownership ledger for that claim lives in
+The strong soundness claim discussed in `docs/architecture/spec.md` is narrower than the full stable
+v1 product surface. It applies only to fully Soundscript-authored `.sts` code, including
+source-published `.sts` packages analyzed from source, and it excludes JS/TS interop, foreign
+`.d.ts`, and `// #[unsafe]` proof overrides. The maintained ownership ledger for that claim lives in
 `docs/soundness-ownership-ledger.md`.
 
 ## Not Part Of Stable V1
@@ -197,8 +197,8 @@ Weak and finalization families are target-aware rather than globally banned:
 - unavailable where the active runtime does not
 - host-owned runtime families rather than compiler-owned portable runtime guarantees
 
-The canonical current checker policy surface lives in `SPEC.md`; this document only summarizes the
-stable v1 contract.
+The canonical current checker policy surface lives in `docs/architecture/spec.md`; this document
+only summarizes the stable v1 contract.
 
 ## Scope Of The Strong Soundness Claim
 
@@ -240,9 +240,9 @@ JavaScript and TypeScript value model. A few rough edges remain part of the hone
 - `number` is still the JavaScript `number` type, including `NaN`, `Infinity`, and `-0`; the repo
   also contains experimental machine numerics work, but it is not part of the stable v1 surface.
 - v1 still relies heavily on structural typing for interfaces, object types, and many readonly
-  view/container surfaces. Class targets are the shipped nominal exception; `// #[newtype]`
-  remains outside the stable default v1 feature contract, and `// #[value]` follows its own
-  owned JS-lowering plus explicit compiler-gate rules recorded in the soundness ownership ledger.
+  view/container surfaces. Class targets are the shipped nominal exception; `// #[newtype]` remains
+  outside the stable default v1 feature contract, and `// #[value]` follows its own owned
+  JS-lowering plus explicit compiler-gate rules recorded in the soundness ownership ledger.
 
 These are not hidden checker escapes. They are part of the platform model that soundscript v1 adopts
 and documents explicitly.
