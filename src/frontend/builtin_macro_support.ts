@@ -50,6 +50,7 @@ import { MacroError } from './macro_errors.ts';
 import {
   collectNamedMacroDefinitions,
   collectNamedMacroExports,
+  type CollectNamedMacroExportsOptions,
   type LoadedNamedMacroExports,
 } from './macro_loader.ts';
 import type { IndexedMacroPlaceholder } from './macro_index.ts';
@@ -663,12 +664,14 @@ export function getAlwaysAvailableBuiltinMacroDefinitions(): ReadonlyMap<string,
 }
 
 export function getAlwaysAvailableBuiltinMacroExports(
-  preparedProgram: PreparedProgram,
+  preparedProgram?: PreparedProgram,
+  options: CollectNamedMacroExportsOptions = {},
 ): LoadedNamedMacroExports {
   return collectNamedMacroExports(
     STDLIB_MODULE_SPECIFIER,
     { Defer, Match, todo, Try, unreachable },
     preparedProgram,
+    options,
   );
 }
 
@@ -686,7 +689,8 @@ export function getAlwaysAvailableBuiltinMacroSiteKinds(): ReadonlyMap<
 }
 
 export function getBuiltinMacroExportsBySpecifier(
-  preparedProgram: PreparedProgram,
+  preparedProgram?: PreparedProgram,
+  options: CollectNamedMacroExportsOptions = {},
 ): ReadonlyMap<string, LoadedNamedMacroExports> {
   return withBuiltinRuntimeSpecifierAliases<LoadedNamedMacroExports>([
     [
@@ -695,6 +699,7 @@ export function getBuiltinMacroExportsBySpecifier(
         HKT_STDLIB_MODULE_SPECIFIER,
         { hkt: hktMacro },
         preparedProgram,
+        options,
       ),
     ],
     [
@@ -703,6 +708,7 @@ export function getBuiltinMacroExportsBySpecifier(
         TYPECLASSES_STDLIB_MODULE_SPECIFIER,
         { Do },
         preparedProgram,
+        options,
       ),
     ],
     [
@@ -718,6 +724,7 @@ export function getBuiltinMacroExportsBySpecifier(
           tagged: taggedMacro,
         },
         preparedProgram,
+        options,
       ),
     ],
     [
@@ -726,6 +733,7 @@ export function getBuiltinMacroExportsBySpecifier(
         RESULT_STDLIB_MODULE_SPECIFIER,
         { Try },
         preparedProgram,
+        options,
       ),
     ],
     [
@@ -734,6 +742,7 @@ export function getBuiltinMacroExportsBySpecifier(
         MATCH_STDLIB_MODULE_SPECIFIER,
         { Match },
         preparedProgram,
+        options,
       ),
     ],
     [
@@ -742,6 +751,7 @@ export function getBuiltinMacroExportsBySpecifier(
         MATCH_STDLIB_MODULE_SPECIFIER,
         { Match },
         preparedProgram,
+        options,
       ),
     ],
     [
@@ -750,6 +760,7 @@ export function getBuiltinMacroExportsBySpecifier(
         THUNK_STDLIB_MODULE_SPECIFIER,
         { lazy, memo },
         preparedProgram,
+        options,
       ),
     ],
     [
@@ -758,6 +769,7 @@ export function getBuiltinMacroExportsBySpecifier(
         STDLIB_MODULE_SPECIFIER,
         { Defer, Match, todo, Try, unreachable },
         preparedProgram,
+        options,
       ),
     ],
     [
@@ -766,6 +778,7 @@ export function getBuiltinMacroExportsBySpecifier(
         SQL_STDLIB_MODULE_SPECIFIER,
         { sql },
         preparedProgram,
+        options,
       ),
     ],
     [
@@ -774,6 +787,7 @@ export function getBuiltinMacroExportsBySpecifier(
         CSS_STDLIB_MODULE_SPECIFIER,
         { css },
         preparedProgram,
+        options,
       ),
     ],
     [
@@ -782,6 +796,7 @@ export function getBuiltinMacroExportsBySpecifier(
         GRAPHQL_STDLIB_MODULE_SPECIFIER,
         { graphql },
         preparedProgram,
+        options,
       ),
     ],
     [
@@ -790,6 +805,7 @@ export function getBuiltinMacroExportsBySpecifier(
         DEBUG_STDLIB_MODULE_SPECIFIER,
         { assert: assertMacro, log },
         preparedProgram,
+        options,
       ),
     ],
   ]);
@@ -1111,8 +1127,8 @@ export function createBuiltinExpandedProgram(
     { always: true },
   );
 
-  const annotatedProgram = mapsEqual(annotatedOverrides, originalOverrides)
-    || programMatchesOverrides(preparedProgram, annotatedOverrides)
+  const annotatedProgram = mapsEqual(annotatedOverrides, originalOverrides) ||
+      programMatchesOverrides(preparedProgram, annotatedOverrides)
     ? preparedProgram
     : measureCheckerTiming(
       'project.prepare.builtin.annotatedProgram',

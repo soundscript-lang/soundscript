@@ -1,6 +1,12 @@
 import ts from 'typescript';
 
 import { dirname, isAbsolute, join } from './platform/path.ts';
+import {
+  isLocalSoundscriptSourceFile,
+  isSoundscriptSourceFile,
+  isTypeScriptFamilySoundscriptAliasFile,
+  normalizeConfiguredSoundscriptFileNames,
+} from './soundscript_files.ts';
 
 export type OutputFormat = 'json' | 'ndjson' | 'text';
 export type InitMode = 'existing' | 'new';
@@ -15,6 +21,7 @@ export type RuntimeBackend = 'js' | 'wasm';
 export type RuntimeHost = 'browser' | 'node' | 'wasi';
 
 export interface SoundscriptConfig {
+  include?: readonly string[];
   target: RuntimeTarget;
 }
 
@@ -75,14 +82,6 @@ export interface BuildCommand {
   workingDirectory: string;
 }
 
-export interface NodeCommand {
-  kind: 'node';
-  entryPath: string;
-  nodeArgs: string[];
-  forwardedArgs: string[];
-  workingDirectory: string;
-}
-
 export interface DenoCommand {
   denoSubcommand: 'run' | 'test';
   forwardedArgs: string[];
@@ -137,14 +136,17 @@ export type ParsedCommand =
   | ExplainCommand
   | InitCommand
   | LspCommand
-  | NodeCommand
   | VersionCommand;
 
 export interface LoadedConfig {
   commandLine: ts.ParsedCommandLine;
+  configuredSoundscriptRootNames: readonly string[];
   diagnostics: ts.Diagnostic[];
   runtime: RuntimeContext;
   soundscript: SoundscriptConfig;
+  soundscriptConfiguredFileNames: ReadonlySet<string>;
+  soundscriptRootNames: readonly string[];
+  isSoundscriptSourceFile(fileName: string): boolean;
 }
 
 interface FileSystemEntries {
@@ -192,6 +194,7 @@ export function normalizeSoundCompilerOptions(
 
 const DEFAULT_RUNTIME_TARGET: RuntimeTarget = 'js-node';
 const DEFAULT_SOUNDSCRIPT_CONFIG: SoundscriptConfig = {
+  include: [],
   target: DEFAULT_RUNTIME_TARGET,
 };
 const DEFAULT_CORE_LIBS = ['lib.es2024.d.ts'] as const;
@@ -220,142 +223,6 @@ function isRuntimeTarget(value: string): value is RuntimeTarget {
     value === 'wasm-browser' ||
     value === 'wasm-node' ||
     value === 'wasm-wasi';
-}
-
-const NODE_OPTIONS_WITH_VALUE: ReadonlySet<string> = new Set([
-  '-C',
-  '-e',
-  '-p',
-  '-r',
-  '--build-snapshot-config',
-  '--conditions',
-  '--cpu-prof-dir',
-  '--cpu-prof-interval',
-  '--cpu-prof-name',
-  '--debug-port',
-  '--diagnostic-dir',
-  '--disable-proto',
-  '--disable-warning',
-  '--dns-result-order',
-  '--env-file',
-  '--env-file-if-exists',
-  '--eval',
-  '--experimental-config-file',
-  '--experimental-loader',
-  '--experimental-sea-config',
-  '--heap-prof-dir',
-  '--heap-prof-interval',
-  '--heap-prof-name',
-  '--heapsnapshot-near-heap-limit',
-  '--heapsnapshot-signal',
-  '--icu-data-dir',
-  '--import',
-  '--input-type',
-  '--inspect-publish-uid',
-  '--localstorage-file',
-  '--loader',
-  '--max-http-header-size',
-  '--max-old-space-size-percentage',
-  '--network-family-autoselection-attempt-timeout',
-  '--openssl-config',
-  '--redirect-warnings',
-  '--report-dir',
-  '--report-directory',
-  '--report-filename',
-  '--report-signal',
-  '--require',
-  '--run',
-  '--secure-heap',
-  '--secure-heap-min',
-  '--snapshot-blob',
-  '--test-concurrency',
-  '--test-coverage-branches',
-  '--test-coverage-exclude',
-  '--test-coverage-functions',
-  '--test-coverage-include',
-  '--test-coverage-lines',
-  '--test-global-setup',
-  '--test-isolation',
-  '--test-name-pattern',
-  '--test-reporter',
-  '--test-reporter-destination',
-  '--test-rerun-failures',
-  '--test-shard',
-  '--test-skip-pattern',
-  '--test-timeout',
-  '--title',
-  '--tls-cipher-list',
-  '--tls-keylog',
-  '--trace-event-categories',
-  '--trace-event-file-pattern',
-  '--trace-require-module',
-  '--unhandled-rejections',
-  '--use-largepages',
-  '--v8-pool-size',
-  '--watch-kill-signal',
-  '--watch-path',
-]);
-
-function nodeOptionConsumesNextArg(argument: string): boolean {
-  return !argument.includes('=') && NODE_OPTIONS_WITH_VALUE.has(argument);
-}
-
-function parseNodeCommandArgs(
-  args: readonly string[],
-  workingDirectory: string,
-): NodeCommand | InvalidCommand {
-  const nodeArgs: string[] = [];
-  let consumeNextAsNodeOptionValue = false;
-
-  for (let index = 1; index < args.length; index += 1) {
-    const argument = args[index]!;
-    if (consumeNextAsNodeOptionValue) {
-      nodeArgs.push(argument);
-      consumeNextAsNodeOptionValue = false;
-      continue;
-    }
-
-    if (argument === '--') {
-      const entryArgument = args[index + 1];
-      if (!entryArgument || entryArgument.startsWith('-')) {
-        return {
-          kind: 'invalid',
-          message: 'Missing entry file for node.',
-        };
-      }
-
-      return {
-        kind: 'node',
-        entryPath: ts.sys.resolvePath(
-          isAbsolute(entryArgument) ? entryArgument : join(workingDirectory, entryArgument),
-        ),
-        nodeArgs,
-        forwardedArgs: [...args.slice(index + 2)],
-        workingDirectory,
-      };
-    }
-
-    if (argument.startsWith('-')) {
-      nodeArgs.push(argument);
-      consumeNextAsNodeOptionValue = nodeOptionConsumesNextArg(argument);
-      continue;
-    }
-
-    return {
-      kind: 'node',
-      entryPath: ts.sys.resolvePath(
-        isAbsolute(argument) ? argument : join(workingDirectory, argument),
-      ),
-      nodeArgs,
-      forwardedArgs: [...args.slice(index + 1)],
-      workingDirectory,
-    };
-  }
-
-  return {
-    kind: 'invalid',
-    message: 'Missing entry file for node.',
-  };
 }
 
 function createRemovedExternsDiagnostic(projectPath: string): ts.Diagnostic {
@@ -391,7 +258,11 @@ function parseSoundscriptConfig(rawConfig: unknown): SoundscriptConfig {
       isRuntimeTarget(soundscriptSection.target)
     ? soundscriptSection.target
     : DEFAULT_RUNTIME_TARGET;
+  const configuredInclude = Array.isArray(soundscriptSection?.include)
+    ? soundscriptSection.include.filter((value): value is string => typeof value === 'string')
+    : [];
   return {
+    include: configuredInclude,
     target: configuredTarget,
   };
 }
@@ -401,6 +272,7 @@ function applyRuntimeConfigOverrides(
   overrides: RuntimeConfigOverrides = {},
 ): SoundscriptConfig {
   return {
+    include: [...(soundscript.include ?? [])],
     target: overrides.target ?? soundscript.target,
   };
 }
@@ -463,10 +335,6 @@ function applyDefaultRuntimeTypes(
   };
 }
 
-function isSoundCompilerOptionRootName(fileName: string): boolean {
-  return fileName.endsWith('.sts') || fileName.endsWith('.sts.ts');
-}
-
 function applySoundCompilerOptionBaseline(
   commandLine: ts.ParsedCommandLine,
 ): ts.ParsedCommandLine {
@@ -477,15 +345,14 @@ function applySoundCompilerOptionBaseline(
 }
 
 function shouldApplySoundCompilerOptionBaseline(
-  projectPath: string,
-  commandLine: ts.ParsedCommandLine,
+  soundscriptRootNames: readonly string[],
+  configuredSoundscriptFileNames: ReadonlySet<string>,
   additionalRootNames: readonly string[] = [],
 ): boolean {
   return [
-    ...commandLine.fileNames,
-    ...collectConfiguredSoundscriptRootNames(projectPath, commandLine),
+    ...soundscriptRootNames,
     ...additionalRootNames,
-  ].some(isSoundCompilerOptionRootName);
+  ].some((fileName) => isLocalSoundscriptSourceFile(fileName, configuredSoundscriptFileNames));
 }
 
 export function normalizeRuntimeContext(
@@ -519,7 +386,7 @@ export function resolveExpansionEnabled(
   return requestedExpansionEnabled ?? true;
 }
 
-function collectConfiguredSoundscriptRootNames(
+function collectAuthoredSoundscriptRootNames(
   projectPath: string,
   commandLine: ts.ParsedCommandLine,
 ): string[] {
@@ -535,7 +402,7 @@ function collectConfiguredSoundscriptRootNames(
   const explicitSoundscriptFiles = (rawConfig?.files ?? [])
     .map((fileName) => isAbsolute(fileName) ? fileName : join(basePath, fileName))
     .map((fileName) => ts.sys.resolvePath(fileName))
-    .filter((fileName) => fileName.endsWith('.sts'));
+    .filter(isSoundscriptSourceFile);
   const includePatterns = rawConfig?.include
     ? [...rawConfig.include]
     : rawConfig?.files
@@ -561,11 +428,78 @@ function collectConfiguredSoundscriptRootNames(
   return [...new Set([...explicitSoundscriptFiles, ...matchedSoundscriptFiles])].sort();
 }
 
+function collectConfiguredSoundscriptAliasRootNames(
+  projectPath: string,
+  commandLine: ts.ParsedCommandLine,
+  soundscript: SoundscriptConfig,
+): string[] {
+  if ((soundscript.include?.length ?? 0) === 0) {
+    return [];
+  }
+
+  const matchFilesApi = ts as typeof ts & SoundscriptMatchFilesApi;
+  const systemApi = ts.sys as SoundscriptSystemApi;
+  const basePath = dirname(projectPath);
+  const realpath = ts.sys.realpath?.bind(ts.sys) ?? ((path: string) => path);
+  const rawConfig = commandLine.raw as {
+    exclude?: readonly string[];
+  } | undefined;
+  const excludePatterns = rawConfig?.exclude
+    ? [...rawConfig.exclude]
+    : ['node_modules', 'bower_components', 'jspm_packages', '.git'];
+  const matchedFiles = matchFilesApi.matchFiles(
+    basePath,
+    ['.ts', '.tsx', '.mts', '.cts'],
+    excludePatterns,
+    [...(soundscript.include ?? [])],
+    ts.sys.useCaseSensitiveFileNames,
+    basePath,
+    undefined,
+    systemApi.getAccessibleFileSystemEntries.bind(ts.sys),
+    realpath,
+  );
+
+  return [...new Set(matchedFiles.filter(isTypeScriptFamilySoundscriptAliasFile))].sort();
+}
+
+function collectConfiguredSoundscriptRootNames(
+  projectPath: string,
+  commandLine: ts.ParsedCommandLine,
+  soundscript: SoundscriptConfig,
+): {
+  configuredSoundscriptRootNames: readonly string[];
+  soundscriptConfiguredFileNames: ReadonlySet<string>;
+  soundscriptRootNames: readonly string[];
+} {
+  const authoredSoundscriptRootNames = collectAuthoredSoundscriptRootNames(projectPath, commandLine);
+  const configuredSoundscriptRootNames = collectConfiguredSoundscriptAliasRootNames(
+    projectPath,
+    commandLine,
+    soundscript,
+  );
+  const soundscriptConfiguredFileNames = normalizeConfiguredSoundscriptFileNames(
+    configuredSoundscriptRootNames,
+  );
+  const soundscriptRootNames = [
+    ...new Set([
+      ...authoredSoundscriptRootNames,
+      ...configuredSoundscriptRootNames,
+    ]),
+  ].sort();
+
+  return {
+    configuredSoundscriptRootNames,
+    soundscriptConfiguredFileNames,
+    soundscriptRootNames,
+  };
+}
+
 export function collectSoundscriptRootNames(
   projectPath: string,
   loadedConfig: LoadedConfig,
 ): string[] {
-  return collectConfiguredSoundscriptRootNames(projectPath, loadedConfig.commandLine);
+  void projectPath;
+  return [...loadedConfig.soundscriptRootNames];
 }
 
 export function getConfigFileParsingDiagnostics(
@@ -599,8 +533,7 @@ export function parseCommand(args: readonly string[], workingDirectory: string):
     subcommand !== 'expand' &&
     subcommand !== 'explain' &&
     subcommand !== 'init' &&
-    subcommand !== 'lsp' &&
-    subcommand !== 'node'
+    subcommand !== 'lsp'
   ) {
     return {
       kind: 'invalid',
@@ -608,10 +541,6 @@ export function parseCommand(args: readonly string[], workingDirectory: string):
         ? 'A subcommand is required before command options.'
         : `Unknown subcommand: ${subcommand}`,
     };
-  }
-
-  if (subcommand === 'node') {
-    return parseNodeCommandArgs(args, workingDirectory);
   }
 
   if (subcommand === 'deno') {
@@ -1007,17 +936,31 @@ export function loadConfig(
       runtime,
       {},
     );
+    const soundscriptRoots = collectConfiguredSoundscriptRootNames(
+      projectPath,
+      normalizedCommandLine,
+      soundscript,
+    );
     return {
       commandLine: shouldApplySoundCompilerOptionBaseline(
-          projectPath,
-          normalizedCommandLine,
+          soundscriptRoots.soundscriptRootNames,
+          soundscriptRoots.soundscriptConfiguredFileNames,
           additionalRootNames,
         )
         ? applySoundCompilerOptionBaseline(normalizedCommandLine)
         : normalizedCommandLine,
+      configuredSoundscriptRootNames: soundscriptRoots.configuredSoundscriptRootNames,
       diagnostics: [configFile.error],
+      isSoundscriptSourceFile(fileName: string): boolean {
+        return isLocalSoundscriptSourceFile(
+          fileName,
+          soundscriptRoots.soundscriptConfiguredFileNames,
+        );
+      },
       runtime,
       soundscript,
+      soundscriptConfiguredFileNames: soundscriptRoots.soundscriptConfiguredFileNames,
+      soundscriptRootNames: soundscriptRoots.soundscriptRootNames,
     };
   }
 
@@ -1040,16 +983,30 @@ export function loadConfig(
     configFile.config,
   );
   const configDiagnostics = collectSoundscriptConfigDiagnostics(configFile.config, projectPath);
+  const soundscriptRoots = collectConfiguredSoundscriptRootNames(
+    projectPath,
+    normalizedCommandLine,
+    soundscript,
+  );
   return {
     commandLine: shouldApplySoundCompilerOptionBaseline(
-        projectPath,
-        normalizedCommandLine,
+        soundscriptRoots.soundscriptRootNames,
+        soundscriptRoots.soundscriptConfiguredFileNames,
         additionalRootNames,
       )
       ? applySoundCompilerOptionBaseline(normalizedCommandLine)
       : normalizedCommandLine,
+    configuredSoundscriptRootNames: soundscriptRoots.configuredSoundscriptRootNames,
     diagnostics: [...commandLine.errors, ...configDiagnostics],
+    isSoundscriptSourceFile(fileName: string): boolean {
+      return isLocalSoundscriptSourceFile(
+        fileName,
+        soundscriptRoots.soundscriptConfiguredFileNames,
+      );
+    },
     runtime,
     soundscript,
+    soundscriptConfiguredFileNames: soundscriptRoots.soundscriptConfiguredFileNames,
+    soundscriptRootNames: soundscriptRoots.soundscriptRootNames,
   };
 }

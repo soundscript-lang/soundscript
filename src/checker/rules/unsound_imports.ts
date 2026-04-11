@@ -92,12 +92,14 @@ function collectUnsoundImportOrigins(context: AnalysisContext): UnsafeValueOrigi
           continue;
         }
 
-        if (!bindingInfos.some((info) => isUnsoundImportedModule(sourceFile, info.resolution))) {
+        if (
+          !bindingInfos.some((info) => isUnsoundImportedModule(context, sourceFile, info.resolution))
+        ) {
           continue;
         }
 
         for (const info of bindingInfos) {
-          if (!isUnsoundImportedModule(sourceFile, info.resolution)) {
+          if (!isUnsoundImportedModule(context, sourceFile, info.resolution)) {
             continue;
           }
 
@@ -113,7 +115,7 @@ function collectUnsoundImportOrigins(context: AnalysisContext): UnsafeValueOrigi
     context.traverse(sourceFile, (node) => {
       if (ts.isCallExpression(node) && isRequireCall(node)) {
         const resolution = resolveImportedModule(context, node.arguments[0], sourceFile);
-        if (!isUnsoundImportedModule(sourceFile, resolution)) {
+        if (!isUnsoundImportedModule(context, sourceFile, resolution)) {
           return;
         }
 
@@ -144,7 +146,7 @@ function collectUnsoundImportOrigins(context: AnalysisContext): UnsafeValueOrigi
       }
 
       const resolution = resolveImportedModule(context, node.arguments[0], sourceFile);
-      if (!isUnsoundImportedModule(sourceFile, resolution)) {
+      if (!isUnsoundImportedModule(context, sourceFile, resolution)) {
         return;
       }
 
@@ -211,7 +213,7 @@ export function runUnsoundImportRules(context: AnalysisContext): SoundDiagnostic
         ) {
           const resolution = resolveImportedModule(context, statement.moduleSpecifier, sourceFile);
           if (
-            isUnsoundImportedModule(sourceFile, resolution) &&
+            isUnsoundImportedModule(context, sourceFile, resolution) &&
             !hasDirectInteropAnnotation(context, statement)
           ) {
             diagnostics.push(createUnsoundImportDiagnostic(statement.moduleSpecifier));
@@ -228,7 +230,7 @@ export function runUnsoundImportRules(context: AnalysisContext): SoundDiagnostic
           sourceFile,
         );
         if (
-          isUnsoundImportedModule(sourceFile, resolution) &&
+          isUnsoundImportedModule(context, sourceFile, resolution) &&
           !hasDirectInteropAnnotation(context, statement)
         ) {
           diagnostics.push(createUnsoundImportDiagnostic(statement.moduleReference.expression));
@@ -239,7 +241,7 @@ export function runUnsoundImportRules(context: AnalysisContext): SoundDiagnostic
     context.traverse(sourceFile, (node) => {
       if (ts.isCallExpression(node) && isRequireCall(node)) {
         const resolution = resolveImportedModule(context, node.arguments[0], sourceFile);
-        if (isUnsoundImportedModule(sourceFile, resolution) &&
+        if (isUnsoundImportedModule(context, sourceFile, resolution) &&
           !hasDirectInteropAnnotation(context, node)) {
           diagnostics.push(createUnsoundImportDiagnostic(node.arguments[0]));
           return;
@@ -253,7 +255,7 @@ export function runUnsoundImportRules(context: AnalysisContext): SoundDiagnostic
         ts.isStringLiteral(node.arguments[0])
       ) {
         const resolution = resolveImportedModule(context, node.arguments[0], sourceFile);
-        if (isUnsoundImportedModule(sourceFile, resolution) &&
+        if (isUnsoundImportedModule(context, sourceFile, resolution) &&
           !hasDirectInteropAnnotation(context, node)) {
           diagnostics.push(createUnsoundImportDiagnostic(node.arguments[0]));
           return;

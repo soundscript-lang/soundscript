@@ -50,6 +50,16 @@ export class MacroError extends Error {
   }
 }
 
+export class SemanticMacroExpansionRequiredError extends Error {
+  readonly capability: string;
+
+  constructor(capability: string) {
+    super(`Macro expansion requires full semantic services for ${capability}.`);
+    this.name = 'SemanticMacroExpansionRequiredError';
+    this.capability = capability;
+  }
+}
+
 export function createMacroError(
   resolved: ResolvedMacroPlaceholder,
   message: string,

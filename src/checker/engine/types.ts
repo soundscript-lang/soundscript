@@ -500,6 +500,7 @@ export interface AnalysisContext {
   readonly exportSummaries: ExportSummaryQueries;
   readonly facts: AnalysisFactQueries;
   isGeneratedNode(node: ts.Node): boolean;
+  isSoundscriptSourceFile(fileName: string): boolean;
   readonly program: ts.Program;
   readonly runtime: RuntimeContext;
   readonly workingDirectory: string;
@@ -513,6 +514,7 @@ export interface AnalysisContext {
 
 export interface CreateAnalysisContextOptions {
   isGeneratedNode?: (node: ts.Node) => boolean;
+  isSoundscriptSourceFile?: (fileName: string) => boolean;
   includeSourceFile?: (sourceFile: ts.SourceFile) => boolean;
   program: ts.Program;
   runtime?: RuntimeContext;

@@ -1,12 +1,19 @@
 import ts from 'typescript';
 
 import { createSoundStdlibCompilerHost } from '../bundled/sound_stdlib.ts';
-import { loadConfig } from '../config.ts';
+import { loadConfig, type LoadedConfig } from '../config.ts';
+import {
+  getAlwaysAvailableBuiltinMacroDefinitions,
+  getAlwaysAvailableBuiltinMacroExports,
+  getBuiltinMacroDefinitionsBySpecifier,
+  getBuiltinMacroExportsBySpecifier,
+  getBuiltinMacroFactoriesBySpecifier,
+} from '../frontend/builtin_macro_support.ts';
+import { SemanticMacroExpansionRequiredError } from '../frontend/macro_errors.ts';
+import { createProjectMacroEnvironment } from '../frontend/project_macro_support.ts';
 import { dirname, join } from '../platform/path.ts';
-import { createBuiltinExpandedProgram } from '../frontend/builtin_macro_support.ts';
-import { isSoundscriptSourceFile, toSourceFileName } from '../frontend/project_frontend.ts';
+import { createPreparedProgram, toSourceFileName } from '../frontend/project_frontend.ts';
 import { resolveSoundScriptAwareModule } from '../soundscript_packages.ts';
-import { loadRuntimeProgramConfig } from './project_roots.ts';
 import { type RuntimeTransformArtifact, transpileTypeScriptModuleToEsm } from './transform.ts';
 
 const PROJECT_CONFIG_CANDIDATES = ['tsconfig.soundscript.json', 'tsconfig.json'] as const;
@@ -14,6 +21,7 @@ const LOCAL_CODE_EXTENSIONS = ['.sts', '.ts', '.tsx', '.mts', '.cts', '.jsx'] as
 
 interface TransformProjectContext {
   readonly compilerOptions: ts.CompilerOptions;
+  readonly loadedConfig: LoadedConfig;
   readonly projectPath: string;
 }
 
@@ -64,7 +72,7 @@ function isTypeScriptLikeFile(fileName: string): boolean {
 }
 
 function isTransformableRuntimeFile(fileName: string): boolean {
-  return isSoundscriptSourceFile(fileName) || isTypeScriptLikeFile(fileName);
+  return fileName.endsWith('.sts') || isTypeScriptLikeFile(fileName);
 }
 
 function resolvePathWithExtensions(basePath: string): string | undefined {
@@ -125,23 +133,6 @@ function findNearestProjectPath(startPath: string): string | undefined {
   }
 }
 
-function createExpandedProgram(
-  projectPath: string,
-  extraRootNames: readonly string[] = [],
-) {
-  const runtimeConfig = loadRuntimeProgramConfig(projectPath, extraRootNames);
-  return createBuiltinExpandedProgram({
-    baseHost: createSoundStdlibCompilerHost(
-      runtimeConfig.loadedConfig.commandLine.options,
-      dirname(projectPath),
-    ),
-    configFileParsingDiagnostics: runtimeConfig.configFileParsingDiagnostics,
-    options: runtimeConfig.loadedConfig.commandLine.options,
-    projectReferences: runtimeConfig.loadedConfig.commandLine.projectReferences,
-    rootNames: runtimeConfig.rootNames,
-  });
-}
-
 function getProjectContext(
   fileName: string,
   explicitProjectPath: string | undefined,
@@ -154,65 +145,180 @@ function getProjectContext(
   const loadedConfig = loadConfig(projectPath);
   return {
     compilerOptions: loadedConfig.commandLine.options,
+    loadedConfig,
     projectPath,
   };
 }
 
-function getExpandedProgramForSourceFile(
-  sourceFileName: string,
-  explicitProjectPath: string | undefined,
-): { expandedProgram: ReturnType<typeof createExpandedProgram>; projectPath: string } {
-  const projectPath = explicitProjectPath ?? findNearestProjectPath(sourceFileName);
-  if (!projectPath) {
-    throw new Error(
-      `Could not find a tsconfig.soundscript.json or tsconfig.json for ${sourceFileName}.`,
-    );
-  }
+function createPreparedRuntimeProgram(
+  projectContext: TransformProjectContext,
+  rootNames: readonly string[],
+) {
+  return createPreparedProgram({
+    baseHost: createSoundStdlibCompilerHost(
+      projectContext.loadedConfig.commandLine.options,
+      dirname(projectContext.projectPath),
+    ),
+    configuredSoundscriptFileNames: projectContext.loadedConfig.soundscriptConfiguredFileNames,
+    options: projectContext.loadedConfig.commandLine.options,
+    projectReferences: projectContext.loadedConfig.commandLine.projectReferences,
+    rootNames,
+    runtime: projectContext.loadedConfig.runtime,
+  });
+}
 
-  const expandedProgram = createExpandedProgram(projectPath, [sourceFileName]);
-  const programFileName = expandedProgram.preparedProgram.toProgramFileName(sourceFileName);
-  const sourceFile = expandedProgram.program.getSourceFile(programFileName);
-  if (!sourceFile) {
-    throw new Error(`Missing expanded source file for ${sourceFileName}.`);
+function expandPreparedRuntimeProgram(
+  preparedProgram: ReturnType<typeof createPreparedRuntimeProgram>,
+  options: { readonly deferToSemanticExpansion: boolean },
+): ReadonlyMap<string, ts.SourceFile> {
+  const macroEnvironment = createProjectMacroEnvironment(
+    preparedProgram,
+    getBuiltinMacroDefinitionsBySpecifier(),
+    getBuiltinMacroExportsBySpecifier(
+      options.deferToSemanticExpansion ? undefined : preparedProgram,
+      { deferToSemanticExpansion: options.deferToSemanticExpansion },
+    ),
+    getBuiltinMacroFactoriesBySpecifier(),
+    getAlwaysAvailableBuiltinMacroDefinitions(),
+    getAlwaysAvailableBuiltinMacroExports(
+      options.deferToSemanticExpansion ? undefined : preparedProgram,
+      { deferToSemanticExpansion: options.deferToSemanticExpansion },
+    ),
+    { deferToSemanticExpansion: options.deferToSemanticExpansion },
+  );
+  try {
+    return macroEnvironment.expandPreparedProgram();
+  } finally {
+    macroEnvironment.dispose();
   }
-
-  return { expandedProgram, projectPath };
 }
 
 export function createOnDemandTransformer(
   options: OnDemandTransformerOptions = {},
 ): SyncOnDemandTransformer {
+  const soundscriptCache = new Map<string, OnDemandTransformResult>();
   const typeScriptCache = new Map<string, OnDemandTransformResult>();
 
-  function transformModuleSync(fileName: string): OnDemandTransformResult {
-    if (isSoundscriptSourceFile(fileName)) {
-      const { expandedProgram, projectPath } = getExpandedProgramForSourceFile(
-        fileName,
-        options.projectPath,
-      );
-      try {
-        const programFileName = expandedProgram.preparedProgram.toProgramFileName(fileName);
-        const sourceFile = expandedProgram.program.getSourceFile(programFileName);
-        if (!sourceFile) {
-          throw new Error(`Missing expanded source file for ${fileName}.`);
-        }
-        const artifact = transpileTypeScriptModuleToEsm(
-          fileName,
-          `${fileName}.js`,
-          ts.createPrinter().printFile(sourceFile),
-          {
-            module: ts.ModuleKind.ES2022,
-            moduleSpecifierMode: 'preserve',
-            target: ts.ScriptTarget.ES2022,
-          },
-        );
-        return {
-          ...artifact,
-          projectPath,
-        };
-      } finally {
-        expandedProgram.dispose();
+  function createFastSoundscriptTransform(
+    fileName: string,
+    projectContext: TransformProjectContext,
+    sourceText: string,
+  ): OnDemandTransformResult | null {
+    const sourceHash = ts.sys.createHash?.(sourceText) ?? sourceText;
+    const cacheKey = `${projectContext.projectPath}\u0000fast\u0000${fileName}\u0000${sourceHash}`;
+    const cached = soundscriptCache.get(cacheKey);
+    if (cached) {
+      return cached;
+    }
+
+    const preparedProgram = createPreparedRuntimeProgram(projectContext, [fileName]);
+    try {
+      const preparedSource = preparedProgram.preparedHost.getPreparedSourceFile(fileName);
+      if ((preparedSource?.rewriteResult.macrosById.size ?? 0) > 0) {
+        return null;
       }
+      const artifact = transpileTypeScriptModuleToEsm(
+        fileName,
+        `${fileName}.js`,
+        preparedSource?.rewrittenText ?? sourceText,
+        {
+          module: ts.ModuleKind.ES2022,
+          moduleSpecifierMode: 'preserve',
+          target: ts.ScriptTarget.ES2022,
+        },
+      );
+      const result = {
+        ...artifact,
+        projectPath: projectContext.projectPath,
+      };
+      soundscriptCache.set(cacheKey, result);
+      return result;
+    } finally {
+      preparedProgram.dispose();
+    }
+  }
+
+  function transformModuleSync(fileName: string): OnDemandTransformResult {
+    const projectContext = getProjectContext(fileName, options.projectPath);
+    if (projectContext && projectContext.loadedConfig.isSoundscriptSourceFile(fileName)) {
+      const sourceText = ts.sys.readFile(fileName);
+      if (sourceText === undefined) {
+        throw new Error(`Could not read source file ${fileName}.`);
+      }
+      const sourceHash = ts.sys.createHash?.(sourceText) ?? sourceText;
+      const fullCacheKey =
+        `${projectContext.projectPath}\u0000full\u0000${fileName}\u0000${sourceHash}`;
+      const cachedFull = soundscriptCache.get(fullCacheKey);
+      if (cachedFull) {
+        return cachedFull;
+      }
+      const fastTransformed = createFastSoundscriptTransform(fileName, projectContext, sourceText);
+      if (fastTransformed) {
+        return fastTransformed;
+      }
+      const deferredCacheKey =
+        `${projectContext.projectPath}\u0000deferred\u0000${fileName}\u0000${sourceHash}`;
+      const cachedDeferred = soundscriptCache.get(deferredCacheKey);
+      if (cachedDeferred) {
+        return cachedDeferred;
+      }
+      const preparedProgram = createPreparedRuntimeProgram(projectContext, [fileName]);
+      try {
+        const transpileExpanded = (
+          expandedFiles: ReadonlyMap<string, ts.SourceFile>,
+        ): OnDemandTransformResult => {
+          const programFileName = preparedProgram.toProgramFileName(fileName);
+          const sourceFile = expandedFiles.get(programFileName) ??
+            preparedProgram.program.getSourceFile(programFileName);
+          if (!sourceFile) {
+            throw new Error(`Missing expanded source file for ${fileName}.`);
+          }
+          const artifact = transpileTypeScriptModuleToEsm(
+            fileName,
+            `${fileName}.js`,
+            ts.createPrinter().printFile(sourceFile),
+            {
+              module: ts.ModuleKind.ES2022,
+              moduleSpecifierMode: 'preserve',
+              target: ts.ScriptTarget.ES2022,
+            },
+          );
+          return {
+            ...artifact,
+            projectPath: projectContext.projectPath,
+          };
+        };
+
+        try {
+          const result = transpileExpanded(
+            expandPreparedRuntimeProgram(preparedProgram, {
+              deferToSemanticExpansion: true,
+            }),
+          );
+          soundscriptCache.set(deferredCacheKey, result);
+          return result;
+        } catch (error) {
+          if (!(error instanceof SemanticMacroExpansionRequiredError)) {
+            throw error;
+          }
+        }
+
+        const result = transpileExpanded(
+          expandPreparedRuntimeProgram(preparedProgram, {
+            deferToSemanticExpansion: false,
+          }),
+        );
+        soundscriptCache.set(fullCacheKey, result);
+        return result;
+      } finally {
+        preparedProgram.dispose();
+      }
+    }
+
+    if (!projectContext && fileName.endsWith('.sts')) {
+      throw new Error(
+        `Could not find a tsconfig.soundscript.json or tsconfig.json for ${fileName}.`,
+      );
     }
 
     if (!isTypeScriptLikeFile(fileName)) {
@@ -224,7 +330,7 @@ export function createOnDemandTransformer(
       throw new Error(`Could not read source file ${fileName}.`);
     }
 
-    const projectPath = getProjectContext(fileName, options.projectPath)?.projectPath ??
+    const projectPath = projectContext?.projectPath ??
       options.projectPath ??
       findNearestProjectPath(fileName) ??
       (options.workingDirectory ? join(options.workingDirectory, 'tsconfig.json') : fileName);
@@ -281,7 +387,9 @@ export function createOnDemandTransformer(
     },
 
     shouldTransformFile(fileName: string): boolean {
-      return isTransformableRuntimeFile(fileName);
+      const projectContext = getProjectContext(fileName, options.projectPath);
+      return projectContext?.loadedConfig.isSoundscriptSourceFile(fileName) ??
+        isTransformableRuntimeFile(fileName);
     },
 
     transformModule(fileName: string): Promise<OnDemandTransformResult> {

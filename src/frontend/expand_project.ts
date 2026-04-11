@@ -173,6 +173,7 @@ export async function expandProject(options: ExpandProjectOptions): Promise<Expa
       loadedConfig.diagnostics,
       soundscriptRootNames,
     ),
+    configuredSoundscriptFileNames: loadedConfig.soundscriptConfiguredFileNames,
     expansionEnabled,
     options: loadedConfig.commandLine.options,
     projectReferences: loadedConfig.commandLine.projectReferences,

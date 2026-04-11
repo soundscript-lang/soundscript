@@ -121,7 +121,7 @@ async function ensureRuntimeNodeModules(
       endLine: 1,
       endColumn: 1,
       hint:
-        'Install @soundscript/soundscript in this project or an ancestor workspace before using soundscript node or soundscript deno.',
+        'Install @soundscript/soundscript in this project or an ancestor workspace before using soundscript deno.',
     };
   }
 
@@ -298,6 +298,7 @@ function createExpandedProgram(projectPath: string, extraRootNames: readonly str
       dirname(projectPath),
     ),
     configFileParsingDiagnostics: runtimeConfig.configFileParsingDiagnostics,
+    configuredSoundscriptFileNames: runtimeConfig.loadedConfig.soundscriptConfiguredFileNames,
     options: runtimeConfig.loadedConfig.commandLine.options,
     projectReferences: runtimeConfig.loadedConfig.commandLine.projectReferences,
     rootNames: runtimeConfig.rootNames,

@@ -79,21 +79,37 @@ For CI or tooling:
 ```bash
 ./bin/soundscript check --project tsconfig.soundscript.json --format json
 ./bin/soundscript check --project tsconfig.soundscript.json --format ndjson
-./bin/soundscript node src/main.sts
 ./bin/soundscript deno run src/main.sts
 ./bin/soundscript explain SOUND1002
 ```
 
-`soundscript node` and `soundscript deno` expect `@soundscript/soundscript` to be installed in the
-current project or an ancestor workspace, because the temporary transformed graph imports the
-runtime package.
+For local Node execution, use `@soundscript/register`:
+
+```bash
+node --import @soundscript/register src/main.sts
+```
+
+You can also opt selected `.ts` / `.tsx` / `.mts` / `.cts` files into local soundscript behavior
+without renaming them:
+
+```json
+{
+  "soundscript": {
+    "include": ["src/**/*.ts", "src/**/*.tsx"]
+  }
+}
+```
+
+`@soundscript/register` and `soundscript deno` expect `@soundscript/soundscript` to be installed in
+the current project or an ancestor workspace, because the transformed graph imports the runtime
+package.
 
 For published libraries, the intended package shape is:
 
 - ordinary ESM `js + d.ts` for TypeScript and runtime consumers
 - shipped authored `.sts` source under `package.json#soundscript.exports`
 - `soundscript build` as the canonical package emit flow
-- `soundscript node` and `soundscript deno` as local runtime wrappers for mixed `.ts/.sts` apps
+- `@soundscript/register` and `soundscript deno` as local runtime wrappers for mixed `.ts/.sts` apps
 - explicit adapter packages for local source-driven apps and bundlers: `@soundscript/register`,
   `@soundscript/bun-plugin`, `@soundscript/vite`, and `@soundscript/webpack-loader`
 - source maps back to original `.sts` so stack traces and debuggers stay on authored source
@@ -264,7 +280,6 @@ The main commands are:
 - `soundscript check`
 - `soundscript build`
 - `soundscript expand`
-- `soundscript node`
 - `soundscript deno`
 - `soundscript explain`
 - `soundscript lsp`

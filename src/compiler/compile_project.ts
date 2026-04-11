@@ -254,6 +254,7 @@ function createProgram(options: CompileProjectOptions): {
       loadedConfig.diagnostics,
       soundscriptRootNames,
     ),
+    configuredSoundscriptFileNames: loadedConfig.soundscriptConfiguredFileNames,
     numericLoweringTarget: 'wasm',
     options: loadedConfig.commandLine.options,
     projectReferences: loadedConfig.commandLine.projectReferences,
@@ -549,7 +550,7 @@ export function compileProject(options: CompileProjectOptions): CompileProjectRe
           code: COMPILER_DIAGNOSTIC_CODES.valueClassesRequireJsEmit,
           message: COMPILER_DIAGNOSTIC_MESSAGES.valueClassesRequireJsEmit,
           hint:
-            'Use `soundscript build`, `soundscript node`, or another JS emit path for `#[value]`, or remove the annotation before compiling to Wasm.',
+            'Use `soundscript build`, `@soundscript/register`, or another JS emit path for `#[value]`, or remove the annotation before compiling to Wasm.',
         }),
       ], diagnosticPreparedFiles);
       return {

@@ -326,6 +326,7 @@ function getProjectedPreparedSource(
       loadedConfig.diagnostics,
       rootNames,
     ),
+    configuredSoundscriptFileNames: loadedConfig.soundscriptConfiguredFileNames,
     expansionEnabled: resolvedExpansionEnabled,
     fileOverrides,
     options: loadedConfig.commandLine.options,

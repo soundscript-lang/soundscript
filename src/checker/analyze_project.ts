@@ -79,11 +79,13 @@ export interface PreparedAnalysisProject {
   analyzeOptions: AnalyzeProjectOptions;
   configReuseSignature: string;
   configuredSoundscriptRootNames: readonly string[];
+  isSoundscriptSourceFile(fileName: string): boolean;
   localProjectedDeclarationOverrides: ReadonlyMap<string, string> | undefined;
   packageSourcePolicyContentSignature: string;
   packageSourcePolicyCompilerHostReuseState: PreparedCompilerHostReuseState | undefined;
   packageSourcePolicyView: PreparedAnalysisView | null;
   soundscriptRootContentSignature: string;
+  soundscriptConfiguredFileNames: ReadonlySet<string>;
   soundscriptRootDiscoverySignature: string;
   stsCompilerHostReuseState: PreparedCompilerHostReuseState | undefined;
   soundscriptFileOverridesSignature: string;
@@ -180,6 +182,7 @@ function createSoundscriptRootDiscoverySignature(
     explicitFiles,
     includePatterns.join('\u0001'),
     excludePatterns.join('\u0001'),
+    (loadedConfig.soundscript.include ?? []).join('\u0001'),
   ].join('\u0002');
 }
 
@@ -296,6 +299,7 @@ function collectReachableSoundscriptDependencyFiles(
   rootNames: readonly string[],
   compilerOptions: ts.CompilerOptions,
   fileOverrides: ReadonlyMap<string, string> | undefined,
+  isSoundscriptFile: (fileName: string) => boolean,
 ): readonly string[] {
   const host = createModuleResolutionHostWithOverrides(fileOverrides);
   const visited = new Set<string>();
@@ -303,7 +307,7 @@ function collectReachableSoundscriptDependencyFiles(
 
   function visit(fileName: string): void {
     const sourceFileName = ts.sys.resolvePath(toSourceFileName(fileName));
-    if (!isSoundscriptSourceFile(sourceFileName) || visited.has(sourceFileName)) {
+    if (!isSoundscriptFile(sourceFileName) || visited.has(sourceFileName)) {
       return;
     }
 
@@ -350,6 +354,7 @@ function createSoundscriptRootContentSignature(
   rootNames: readonly string[],
   compilerOptions: ts.CompilerOptions,
   fileOverrides: ReadonlyMap<string, string> | undefined,
+  isSoundscriptFile: (fileName: string) => boolean,
 ): string {
   const host = createModuleResolutionHostWithOverrides(fileOverrides);
   const declarationRootNames = rootNames
@@ -357,7 +362,12 @@ function createSoundscriptRootContentSignature(
     .filter(isDeclarationRootFileName);
 
   return [...new Set([
-    ...collectReachableSoundscriptDependencyFiles(rootNames, compilerOptions, fileOverrides),
+    ...collectReachableSoundscriptDependencyFiles(
+      rootNames,
+      compilerOptions,
+      fileOverrides,
+      isSoundscriptFile,
+    ),
     ...declarationRootNames,
   ])]
     .sort()
@@ -717,7 +727,7 @@ function shouldAnalyzeSoundscriptSourceFile(
   preparedProgram: PreparedProgram,
 ): boolean {
   const sourceFileName = toSourceFileName(sourceFile.fileName);
-  return isSoundscriptSourceFile(sourceFileName) &&
+  return preparedProgram.isSoundscriptSourceFile(sourceFileName) &&
     !isInstalledSoundStdlibSourceFileName(sourceFileName) &&
     !isMacroAuthoringSourceFile(sourceFile, preparedProgram);
 }
@@ -755,9 +765,12 @@ function shouldAnalyzeProjectSoundscriptSourceFile(
     !isSupplementalPackageSourceCandidate(sourceFileName, projectPackageJsonPath);
 }
 
-function shouldAnalyzeTypescriptViewSourceFile(sourceFile: ts.SourceFile): boolean {
+function shouldAnalyzeTypescriptViewSourceFile(
+  sourceFile: ts.SourceFile,
+  isSoundscriptFile: (fileName: string) => boolean,
+): boolean {
   const sourceFileName = toSourceFileName(sourceFile.fileName);
-  if (isSoundscriptSourceFile(sourceFileName)) {
+  if (isSoundscriptFile(sourceFileName)) {
     return false;
   }
 
@@ -881,6 +894,7 @@ function prepareAnalysisView(
     allowSupplementalDiagnosticPrograms: true,
     baseHost,
     configFileParsingDiagnostics,
+    configuredSoundscriptFileNames: loadedConfig.soundscriptConfiguredFileNames,
     fileOverrides: options.fileOverrides ?? new Map(),
     oldProgram,
     options: loadedConfig.commandLine.options,
@@ -912,6 +926,7 @@ function prepareAnalysisView(
       : (sourceFile) =>
         !sourceFileHasTopLevelMacroReplacements(sourceFile) &&
         !hasGeneratedTopLevelStatements(sourceFile, isGeneratedNode),
+    isSoundscriptSourceFile: expandedProgram.analysisPreparedProgram.isSoundscriptSourceFile,
     isGeneratedNode,
     program,
     runtime: loadedConfig.runtime,
@@ -1477,6 +1492,7 @@ function getFileScopedAnalysisContext(
     includeSourceFile: (candidate) =>
       matchesPreparedAnalysisFilePath(toSourceFileName(candidate.fileName), filePath) &&
       !isMacroAuthoringSourceFile(candidate, preparedView.analysisPreparedProgram),
+    isSoundscriptSourceFile: preparedView.analysisPreparedProgram.isSoundscriptSourceFile,
     isGeneratedNode: createPreparedProgramGeneratedNodeDetector(
       preparedView.analysisPreparedProgram,
     ),
@@ -1702,11 +1718,11 @@ export function prepareProjectAnalysis(
         ),
         options.additionalRootNames,
       );
-      const soundscriptRootNames = allRootNames.filter(isSoundscriptSourceFile);
+      const soundscriptRootNames = allRootNames.filter(loadedConfig.isSoundscriptSourceFile);
       const declarationRootNames = allRootNames.filter(isDeclarationRootFileName);
       const stsProgramRootNames = combineRootNames(soundscriptRootNames, declarationRootNames);
       const typescriptRootNames = allRootNames.filter((fileName) =>
-        !isSoundscriptSourceFile(fileName) && !isDeclarationRootFileName(fileName)
+        !loadedConfig.isSoundscriptSourceFile(fileName) && !isDeclarationRootFileName(fileName)
       );
       const configFileParsingDiagnostics = getConfigFileParsingDiagnostics(
         loadedConfig.diagnostics,
@@ -1714,12 +1730,13 @@ export function prepareProjectAnalysis(
       );
       const soundscriptFileOverridesSignature = createFileOverrideSignature(
         options.fileOverrides,
-        isSoundscriptSourceFile,
+        loadedConfig.isSoundscriptSourceFile,
       );
       const soundscriptRootContentSignature = createSoundscriptRootContentSignature(
         stsProgramRootNames,
         loadedConfig.commandLine.options,
         options.fileOverrides,
+        loadedConfig.isSoundscriptSourceFile,
       );
       const canReuseConfigArtifacts = reusableProject !== undefined &&
         reusableProject.analyzeOptions.projectPath === options.projectPath &&
@@ -1779,12 +1796,14 @@ export function prepareProjectAnalysis(
           analyzeOptions: { ...options },
           configReuseSignature,
           configuredSoundscriptRootNames,
+          isSoundscriptSourceFile: loadedConfig.isSoundscriptSourceFile,
           localProjectedDeclarationOverrides,
           packageSourcePolicyContentSignature: '',
           packageSourcePolicyCompilerHostReuseState: canReuseConfigArtifacts
             ? reusableProject?.packageSourcePolicyCompilerHostReuseState
             : undefined,
           packageSourcePolicyView: null,
+          soundscriptConfiguredFileNames: loadedConfig.soundscriptConfiguredFileNames,
           soundscriptRootContentSignature,
           soundscriptRootDiscoverySignature,
           stsCompilerHostReuseState: stsView?.preparedProgram.preparedHost.reuseState,
@@ -1812,12 +1831,14 @@ export function prepareProjectAnalysis(
           analyzeOptions: { ...options },
           configReuseSignature,
           configuredSoundscriptRootNames,
+          isSoundscriptSourceFile: loadedConfig.isSoundscriptSourceFile,
           localProjectedDeclarationOverrides: undefined,
           packageSourcePolicyContentSignature: '',
           packageSourcePolicyCompilerHostReuseState: canReuseConfigArtifacts
             ? reusableProject?.packageSourcePolicyCompilerHostReuseState
             : undefined,
           packageSourcePolicyView: null,
+          soundscriptConfiguredFileNames: loadedConfig.soundscriptConfiguredFileNames,
           soundscriptRootContentSignature,
           soundscriptRootDiscoverySignature,
           stsCompilerHostReuseState: stsView?.preparedProgram.preparedHost.reuseState,
@@ -1870,7 +1891,11 @@ export function prepareProjectAnalysis(
                 dirname(options.projectPath),
               ),
               configFileParsingDiagnostics,
-              (sourceFile) => shouldAnalyzeTypescriptViewSourceFile(sourceFile),
+              (sourceFile) =>
+                shouldAnalyzeTypescriptViewSourceFile(
+                  sourceFile,
+                  loadedConfig.isSoundscriptSourceFile,
+                ),
               localProjectedDeclarationOverrides,
               false,
               'full',
@@ -1896,6 +1921,7 @@ export function prepareProjectAnalysis(
           packageProjectedDeclarationRootNames,
           loadedConfig.commandLine.options,
           options.fileOverrides,
+          loadedConfig.isSoundscriptSourceFile,
         );
       const packageProjectedDeclarationOverrides = measureCheckerTiming(
         'project.prepare.packageProjection',
@@ -1913,6 +1939,7 @@ export function prepareProjectAnalysis(
               dirname(options.projectPath),
             ),
             configFileParsingDiagnostics: [],
+            configuredSoundscriptFileNames: loadedConfig.soundscriptConfiguredFileNames,
             fileOverrides: options.fileOverrides ?? new Map(),
             options: loadedConfig.commandLine.options,
             projectReferences: loadedConfig.commandLine.projectReferences,
@@ -1957,6 +1984,7 @@ export function prepareProjectAnalysis(
         analyzeOptions: { ...options },
         configReuseSignature,
         configuredSoundscriptRootNames,
+        isSoundscriptSourceFile: loadedConfig.isSoundscriptSourceFile,
         localProjectedDeclarationOverrides,
         packageSourcePolicyContentSignature,
         packageSourcePolicyCompilerHostReuseState: canReusePackageSourcePolicyView
@@ -1992,6 +2020,7 @@ export function prepareProjectAnalysis(
               ),
             { always: true },
           ),
+        soundscriptConfiguredFileNames: loadedConfig.soundscriptConfiguredFileNames,
         soundscriptRootContentSignature,
         soundscriptRootDiscoverySignature,
         stsCompilerHostReuseState: stsView?.preparedProgram.preparedHost.reuseState,
@@ -2016,7 +2045,11 @@ export function prepareProjectAnalysis(
                   typescriptRootNames,
                   ts.createCompilerHost(loadedConfig.commandLine.options),
                   configFileParsingDiagnostics,
-                  (sourceFile) => shouldAnalyzeTypescriptViewSourceFile(sourceFile),
+                  (sourceFile) =>
+                    shouldAnalyzeTypescriptViewSourceFile(
+                      sourceFile,
+                      loadedConfig.isSoundscriptSourceFile,
+                    ),
                   projectedDeclarationOverrides,
                   false,
                   'full',
@@ -2045,7 +2078,7 @@ export function getPreparedAnalysisViewForFile(
   preparedProject: PreparedAnalysisProject,
   filePath: string,
 ): PreparedAnalysisView | null {
-  if (isSoundscriptSourceFile(filePath)) {
+  if (preparedProject.isSoundscriptSourceFile(filePath)) {
     const packageSourceView = preparedProject.packageSourcePolicyView;
     if (
       packageSourceView &&
@@ -2081,7 +2114,7 @@ function getPreparedAnalysisSupplementalViewsForFile(
     supplementalViews.push(view);
   };
 
-  if (isSoundscriptSourceFile(filePath)) {
+  if (preparedProject.isSoundscriptSourceFile(filePath)) {
     addView(preparedProject.packageSourcePolicyView);
     return supplementalViews;
   }

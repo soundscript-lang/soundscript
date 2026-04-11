@@ -7,7 +7,11 @@ import {
   parseMacroSyntaxNodeForDefinition,
   validateMacroInvocationSignature,
 } from './macro_definition_support.ts';
-import { createMacroError, MacroError } from './macro_errors.ts';
+import {
+  createMacroError,
+  MacroError,
+  SemanticMacroExpansionRequiredError,
+} from './macro_errors.ts';
 import { isMacroOutput, isMacroValueRewriteOutput, type MacroOutput } from './macro_output.ts';
 import type { ExpandMacroPlaceholder, MacroExpansionResult } from './macro_expander.ts';
 import { createAdvancedMacroContext } from './macro_advanced_context.ts';
@@ -46,12 +50,17 @@ export function lowerMacroOutput(output: MacroOutput): MacroExpansionResult {
   }
 }
 
+export interface CreateExpandMacroPlaceholderOptions {
+  deferToSemanticExpansion?: boolean;
+}
+
 export function createExpandMacroPlaceholderFromDefinition<
   Signature extends MacroSignature | undefined,
 >(
   definition: MacroDefinition<Signature>,
   macroName: string,
   preparedProgram?: PreparedProgram,
+  options: CreateExpandMacroPlaceholderOptions = {},
 ): ExpandMacroPlaceholder {
   return (resolved) => {
     try {
@@ -65,16 +74,22 @@ export function createExpandMacroPlaceholderFromDefinition<
           definitionMetadata.moduleFileName,
         )
         : null;
-      const compilerHost = preparedProgram?.preparedHost.host as MacroSandboxAwareCompilerHost | undefined;
+      const compilerHost = preparedProgram?.preparedHost.host as
+        | MacroSandboxAwareCompilerHost
+        | undefined;
       const hostAccess = preparedProgram && definitionMetadata?.moduleFileName
         ? createHostAccess({
           env: compilerHost?.soundscriptEnvSnapshot?.(),
-          fileExists: preparedProgram.preparedHost.host.fileExists.bind(preparedProgram.preparedHost.host),
+          fileExists: preparedProgram.preparedHost.host.fileExists.bind(
+            preparedProgram.preparedHost.host,
+          ),
           macroFileName: definitionMetadata.moduleFileName,
           projectDirectory: preparedProgram.preparedHost.host.getCurrentDirectory?.() ??
             ts.sys.getCurrentDirectory(),
           readBytes: compilerHost?.soundscriptReadBytes?.bind(compilerHost),
-          readFile: preparedProgram.preparedHost.host.readFile.bind(preparedProgram.preparedHost.host),
+          readFile: preparedProgram.preparedHost.host.readFile.bind(
+            preparedProgram.preparedHost.host,
+          ),
         })
         : undefined;
       const baseContext = preparedProgram
@@ -85,6 +100,8 @@ export function createExpandMacroPlaceholderFromDefinition<
           runtimeResolver,
           hostAccess,
         )
+        : options.deferToSemanticExpansion
+        ? createDeferredAdvancedContext(createMacroContext(resolved, runtimeResolver))
         : createUnsupportedAdvancedContext(createMacroContext(resolved, runtimeResolver));
       const decodedSignature = validateMacroInvocationSignature(definition, baseContext);
       validateDeclarationMacroPlacement(resolved, baseContext);
@@ -111,7 +128,10 @@ export function createExpandMacroPlaceholderFromDefinition<
       }
       return lowered;
     } catch (error) {
-      if (error instanceof MacroError) {
+      if (
+        error instanceof MacroError ||
+        error instanceof SemanticMacroExpansionRequiredError
+      ) {
         throw error;
       }
 
@@ -439,6 +459,182 @@ function createUnsupportedAdvancedContext(
         throw new Error(
           'This macro requires semantic queries, but no prepared program was available.',
         );
+      },
+    },
+  };
+}
+
+function createDeferredAdvancedContext(
+  baseContext: BaseMacroContext,
+): Parameters<MacroDefinition['expand']>[0] {
+  const requiresSemanticExpansion = (capability: string): never => {
+    throw new SemanticMacroExpansionRequiredError(capability);
+  };
+
+  return {
+    ...baseContext,
+    controlFlow: {
+      deferCleanup() {
+        return requiresSemanticExpansion('controlFlow.deferCleanup');
+      },
+      freshBinding(): string {
+        return requiresSemanticExpansion('controlFlow.freshBinding');
+      },
+      placement() {
+        return requiresSemanticExpansion('controlFlow.placement');
+      },
+      rewriteWithValue() {
+        return requiresSemanticExpansion('controlFlow.rewriteWithValue');
+      },
+    },
+    host: {
+      env: {
+        get() {
+          return requiresSemanticExpansion('host.env.get');
+        },
+        require() {
+          return requiresSemanticExpansion('host.env.require');
+        },
+      },
+      fs: {
+        exists() {
+          return requiresSemanticExpansion('host.fs.exists');
+        },
+        readBytes() {
+          return requiresSemanticExpansion('host.fs.readBytes');
+        },
+        readText() {
+          return requiresSemanticExpansion('host.fs.readText');
+        },
+      },
+    },
+    reflect: {
+      declarationShape() {
+        return requiresSemanticExpansion('reflect.declarationShape');
+      },
+      declarationShapeData() {
+        return requiresSemanticExpansion('reflect.declarationShapeData');
+      },
+      typeShape() {
+        return requiresSemanticExpansion('reflect.typeShape');
+      },
+      typeShapeData() {
+        return requiresSemanticExpansion('reflect.typeShapeData');
+      },
+    },
+    runtime: {
+      backend: baseContext.runtime.backend,
+      default() {
+        return requiresSemanticExpansion('runtime.default');
+      },
+      host: baseContext.runtime.host,
+      named() {
+        return requiresSemanticExpansion('runtime.named');
+      },
+      namespace() {
+        return requiresSemanticExpansion('runtime.namespace');
+      },
+      target: baseContext.runtime.target,
+    },
+    semantics: {
+      argExpanded() {
+        return requiresSemanticExpansion('semantics.argExpanded');
+      },
+      argType() {
+        return requiresSemanticExpansion('semantics.argType');
+      },
+      awaitedType() {
+        return requiresSemanticExpansion('semantics.awaitedType');
+      },
+      classDeclarationOfType() {
+        return requiresSemanticExpansion('semantics.classDeclarationOfType');
+      },
+      classifyCanonicalFailureType() {
+        return requiresSemanticExpansion('semantics.classifyCanonicalFailureType');
+      },
+      classifyCanonicalResultCarrierType() {
+        return requiresSemanticExpansion('semantics.classifyCanonicalResultCarrierType');
+      },
+      classifyCanonicalResultType() {
+        return requiresSemanticExpansion('semantics.classifyCanonicalResultType');
+      },
+      classifyTryCarrierType() {
+        return requiresSemanticExpansion('semantics.classifyTryCarrierType');
+      },
+      exprType() {
+        return requiresSemanticExpansion('semantics.exprType');
+      },
+      enclosingFunction() {
+        return requiresSemanticExpansion('semantics.enclosingFunction');
+      },
+      enclosingFunctionCanonicalResult() {
+        return requiresSemanticExpansion('semantics.enclosingFunctionCanonicalResult');
+      },
+      finiteCases() {
+        return requiresSemanticExpansion('semantics.finiteCases');
+      },
+      isAssignable() {
+        return requiresSemanticExpansion('semantics.isAssignable');
+      },
+      localDeclaration() {
+        return requiresSemanticExpansion('semantics.localDeclaration');
+      },
+      localDeclarationHasAnnotation() {
+        return requiresSemanticExpansion('semantics.localDeclarationHasAnnotation');
+      },
+      nullType() {
+        return requiresSemanticExpansion('semantics.nullType');
+      },
+      parameterType() {
+        return requiresSemanticExpansion('semantics.parameterType');
+      },
+      primaryExprEnclosingFunction() {
+        return requiresSemanticExpansion('semantics.primaryExprEnclosingFunction');
+      },
+      primaryExprEnclosingFunctionCanonicalResult() {
+        return requiresSemanticExpansion('semantics.primaryExprEnclosingFunctionCanonicalResult');
+      },
+      primaryExprExpanded() {
+        return requiresSemanticExpansion('semantics.primaryExprExpanded');
+      },
+      primaryExprPrelude() {
+        return requiresSemanticExpansion('semantics.primaryExprPrelude');
+      },
+      primaryExprCanonicalResultCarrier() {
+        return requiresSemanticExpansion('semantics.primaryExprCanonicalResultCarrier');
+      },
+      primaryExprCanonicalResult() {
+        return requiresSemanticExpansion('semantics.primaryExprCanonicalResult');
+      },
+      primaryExprContainsMacroInvocations() {
+        return requiresSemanticExpansion('semantics.primaryExprContainsMacroInvocations');
+      },
+      primaryExprTryCarrier() {
+        return requiresSemanticExpansion('semantics.primaryExprTryCarrier');
+      },
+      primaryExprType() {
+        return requiresSemanticExpansion('semantics.primaryExprType');
+      },
+      readSet() {
+        return requiresSemanticExpansion('semantics.readSet');
+      },
+      undefinedType() {
+        return requiresSemanticExpansion('semantics.undefinedType');
+      },
+      valueBindingCallableInScope() {
+        return requiresSemanticExpansion('semantics.valueBindingCallableInScope');
+      },
+      valueBindingPromiseLikeInScope() {
+        return requiresSemanticExpansion('semantics.valueBindingPromiseLikeInScope');
+      },
+      valueBindingTypeInScope() {
+        return requiresSemanticExpansion('semantics.valueBindingTypeInScope');
+      },
+      valueBindingInScope() {
+        return requiresSemanticExpansion('semantics.valueBindingInScope');
+      },
+      writeSet() {
+        return requiresSemanticExpansion('semantics.writeSet');
       },
     },
   };

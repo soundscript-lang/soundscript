@@ -94,33 +94,15 @@ Deno.test('parseCommand accepts runtime target override for compile-style comman
   });
 });
 
-Deno.test('parseCommand accepts node subcommand with forwarded args', () => {
+Deno.test('parseCommand rejects removed node subcommand', () => {
   const command = parseCommand(
     ['node', './src/main.sts', '--', 'alpha', 'beta'],
     '/tmp/workspace',
   );
 
   assertEquals(command, {
-    kind: 'node',
-    entryPath: '/tmp/workspace/src/main.sts',
-    nodeArgs: [],
-    forwardedArgs: ['--', 'alpha', 'beta'],
-    workingDirectory: '/tmp/workspace',
-  });
-});
-
-Deno.test('parseCommand accepts node subcommand with leading Node.js flags', () => {
-  const command = parseCommand(
-    ['node', '--watch', '--import', './preload.mjs', './src/main.sts', 'alpha'],
-    '/tmp/workspace',
-  );
-
-  assertEquals(command, {
-    kind: 'node',
-    entryPath: '/tmp/workspace/src/main.sts',
-    nodeArgs: ['--watch', '--import', './preload.mjs'],
-    forwardedArgs: ['alpha'],
-    workingDirectory: '/tmp/workspace',
+    kind: 'invalid',
+    message: 'Unknown subcommand: node',
   });
 });
 
@@ -199,6 +181,7 @@ Deno.test('loadConfig parses soundscript runtime target and rejects removed exte
   const loadedConfig = loadConfig(projectPath);
 
   assertEquals(loadedConfig.soundscript, {
+    include: [],
     target: 'wasm-node',
   });
   assertEquals(loadedConfig.runtime, {
@@ -239,6 +222,7 @@ Deno.test('loadConfig applies runtime target overrides over tsconfig soundscript
   const loadedConfig = loadConfig(projectPath, { target: 'wasm-browser' });
 
   assertEquals(loadedConfig.soundscript, {
+    include: [],
     target: 'wasm-browser',
   });
   assertEquals(loadedConfig.runtime, {
@@ -374,4 +358,46 @@ Deno.test('loadConfig preserves pure TypeScript compiler options when no soundsc
   assertEquals(loadedConfig.commandLine.options.experimentalDecorators, true);
   assertEquals(loadedConfig.commandLine.options.jsx, ts.JsxEmit.Preserve);
   assertEquals(loadedConfig.commandLine.options.strict, false);
+});
+
+Deno.test('loadConfig parses soundscript.include and treats matching TypeScript files as soundscript roots', async () => {
+  const tempDirectory = await Deno.makeTempDir({ prefix: 'soundscript-config-include-' });
+  const projectPath = join(tempDirectory, 'tsconfig.json');
+  await Deno.mkdir(join(tempDirectory, 'src'), { recursive: true });
+  await Deno.writeTextFile(join(tempDirectory, 'src/index.ts'), 'export const value = 1;\n');
+  await Deno.writeTextFile(join(tempDirectory, 'src/view.tsx'), 'export const view = <div />;\n');
+  await Deno.writeTextFile(join(tempDirectory, 'src/types.d.ts'), 'export interface Value {}\n');
+  await Deno.writeTextFile(join(tempDirectory, 'src/helper.js'), 'export const helper = 1;\n');
+  await Deno.writeTextFile(
+    projectPath,
+    JSON.stringify(
+      {
+        compilerOptions: {
+          jsx: 'preserve',
+          module: 'ESNext',
+          strict: false,
+          target: 'ES2022',
+        },
+        include: ['src/**/*'],
+        soundscript: {
+          include: ['src/**/*.ts', 'src/**/*.tsx', 'src/**/*.d.ts', 'src/**/*.js'],
+        },
+      },
+      null,
+      2,
+    ),
+  );
+
+  const loadedConfig = loadConfig(projectPath);
+
+  assertEquals(loadedConfig.soundscript.include, ['src/**/*.ts', 'src/**/*.tsx', 'src/**/*.d.ts', 'src/**/*.js']);
+  assertEquals(
+    loadedConfig.soundscriptRootNames,
+    [
+      join(tempDirectory, 'src/index.ts'),
+      join(tempDirectory, 'src/view.tsx'),
+    ],
+  );
+  assertEquals(loadedConfig.commandLine.options.jsx, ts.JsxEmit.ReactJSX);
+  assertEquals(loadedConfig.commandLine.options.strict, true);
 });

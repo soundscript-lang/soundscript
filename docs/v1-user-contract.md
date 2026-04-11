@@ -10,7 +10,7 @@ soundscript v1 is the sound-checking and incremental-adoption product surface:
 - mixed `.ts` / `.sts` projects
 - the CLI checker and language server
 - `soundscript build` for package emission
-- `soundscript node` and `soundscript deno` for local runtime wrappers
+- `@soundscript/register` and `soundscript deno` for local runtime wrappers
 - the VS Code extension
 - import-scoped macros authored through the compiler-provided `sts:macros` builtin module, with
   user-authored macro modules written in `.macro.sts`

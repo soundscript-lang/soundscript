@@ -4,6 +4,18 @@ import { normalizeRuntimeContext, type RuntimeContext } from '../config.ts';
 import type { MergedDiagnostic } from '../checker/diagnostics.ts';
 import { dirname, join } from '../platform/path.ts';
 import {
+  isLocalSoundscriptSourceFile,
+  isProjectedSoundscriptDeclarationFile,
+  isSoundscriptMacroSourceFile,
+  isSoundscriptSourceFile,
+  SOUNDSCRIPT_DECLARATION_SUFFIX,
+  SOUNDSCRIPT_PROGRAM_SUFFIX,
+  toProgramFileName,
+  toProjectedDeclarationFileName,
+  toProjectedDeclarationSourceFileName,
+  toSourceFileName,
+} from '../soundscript_files.ts';
+import {
   SOUND_DIAGNOSTIC_CODES,
   SOUND_DIAGNOSTIC_MESSAGES,
 } from '../checker/engine/diagnostic_codes.ts';
@@ -62,8 +74,6 @@ const MACRO_HELPER_PREAMBLE = [
   '',
 ].join('\n');
 
-const SOUNDSCRIPT_PROGRAM_SUFFIX = '.sts.ts';
-const SOUNDSCRIPT_DECLARATION_SUFFIX = '.sts.d.ts';
 const PROJECTED_DECLARATION_EMIT_CACHE_LIMIT = 32;
 
 interface ProjectedDeclarationEmitCacheSource {
@@ -84,33 +94,15 @@ const projectedDeclarationEmitCache = new Map<
 >();
 const projectedDeclarationPrinter = ts.createPrinter({ newLine: ts.NewLineKind.LineFeed });
 
-export function isSoundscriptSourceFile(fileName: string): boolean {
-  return fileName.endsWith('.sts');
-}
-
-export function isSoundscriptMacroSourceFile(fileName: string): boolean {
-  return fileName.endsWith('.macro.sts');
-}
-
-export function toProgramFileName(fileName: string): string {
-  return isSoundscriptSourceFile(fileName) ? `${fileName}.ts` : fileName;
-}
-
-export function toProjectedDeclarationFileName(fileName: string): string {
-  return isSoundscriptSourceFile(fileName) ? `${fileName}.d.ts` : fileName;
-}
-
-export function isProjectedSoundscriptDeclarationFile(fileName: string): boolean {
-  return fileName.endsWith(SOUNDSCRIPT_DECLARATION_SUFFIX);
-}
-
-export function toSourceFileName(fileName: string): string {
-  return fileName.endsWith(SOUNDSCRIPT_PROGRAM_SUFFIX) ? fileName.slice(0, -3) : fileName;
-}
-
-export function toProjectedDeclarationSourceFileName(fileName: string): string {
-  return isProjectedSoundscriptDeclarationFile(fileName) ? fileName.slice(0, -5) : fileName;
-}
+export {
+  isProjectedSoundscriptDeclarationFile,
+  isSoundscriptMacroSourceFile,
+  isSoundscriptSourceFile,
+  toProgramFileName,
+  toProjectedDeclarationFileName,
+  toProjectedDeclarationSourceFileName,
+  toSourceFileName,
+};
 
 function isDeclarationFileName(fileName: string): boolean {
   return fileName.endsWith('.d.ts') || fileName.endsWith('.d.mts') || fileName.endsWith('.d.cts');
@@ -241,8 +233,9 @@ function injectPreludeImports(
   fileName: string,
   sourceText: string,
   rewrittenText: string,
+  isSoundscriptFile: (fileName: string) => boolean = isSoundscriptSourceFile,
 ): string {
-  if (!isSoundscriptSourceFile(fileName) || isInstalledRuntimeStdlibSourceFile(fileName)) {
+  if (!isSoundscriptFile(fileName) || isInstalledRuntimeStdlibSourceFile(fileName)) {
     return rewrittenText;
   }
 
@@ -310,9 +303,10 @@ function createUniqueGeneratedBindingName(
 function lowerJsxSyntaxToRuntimeCalls(
   fileName: string,
   rewrittenText: string,
+  isSoundscriptFile: (fileName: string) => boolean = isSoundscriptSourceFile,
 ): string {
   if (
-    !isSoundscriptSourceFile(fileName) ||
+    !isSoundscriptFile(fileName) ||
     !rewrittenText.includes('<')
   ) {
     return rewrittenText;
@@ -799,6 +793,7 @@ export interface CreatePreparedProgramOptions {
   alwaysAvailableMacroSiteKinds?: ReadonlyMap<string, ImportedMacroSiteKind>;
   baseHost: ts.CompilerHost;
   configFileParsingDiagnostics?: readonly ts.Diagnostic[];
+  configuredSoundscriptFileNames?: ReadonlySet<string>;
   expansionEnabled?: boolean;
   fileOverrides?: ReadonlyMap<string, string>;
   invalidateModuleResolutions?: boolean;
@@ -819,8 +814,10 @@ export interface CreatePreparedProgramOptions {
 export type { ImportedMacroSiteKind };
 
 export interface PreparedProgram {
+  configuredSoundscriptFileNames: ReadonlySet<string>;
   dispose(clearReuseState?: boolean): void;
   frontendDiagnostics(): readonly MergedDiagnostic[];
+  isSoundscriptSourceFile(fileName: string): boolean;
   options: ts.CompilerOptions;
   placeholderIndex(): MacroPlaceholderIndex;
   preparedHost: PreparedCompilerHost;
@@ -890,6 +887,7 @@ export function isUnsoundImportedModuleForTypeProjection(
   containingFile: string,
   compilerOptions: ts.CompilerOptions,
   host: ts.ModuleResolutionHost,
+  isSoundscriptFile: (fileName: string) => boolean = isSoundscriptSourceFile,
 ): boolean {
   const resolvedModule = resolveSoundScriptAwareModule(
     moduleSpecifier,
@@ -919,9 +917,9 @@ export function isUnsoundImportedModuleForTypeProjection(
   const importedSourceFileName = toProjectedDeclarationSourceFileName(
     toSourceFileName(importedFileName),
   );
-  return isSoundscriptSourceFile(containingFile) &&
+  return isSoundscriptFile(containingFile) &&
     EXPLICIT_FOREIGN_SOURCE_EXTENSION_PATTERN.test(moduleSpecifier) &&
-    !isSoundscriptSourceFile(importedSourceFileName) &&
+    !isSoundscriptFile(importedSourceFileName) &&
     !importedIsTrustedPackageArtifact;
 }
 
@@ -965,6 +963,7 @@ export function collectProjectedUnknownValueExportNames(
   containingFile: string,
   compilerOptions: ts.CompilerOptions,
   host: ts.ModuleResolutionHost,
+  isSoundscriptFile: (fileName: string) => boolean = isSoundscriptSourceFile,
 ): ReadonlySet<string> {
   if (
     !isUnsoundImportedModuleForTypeProjection(
@@ -972,6 +971,7 @@ export function collectProjectedUnknownValueExportNames(
       containingFile,
       compilerOptions,
       host,
+      isSoundscriptFile,
     )
   ) {
     return new Set();
@@ -1189,8 +1189,9 @@ function rewriteForeignTypeImportsToUnknown(
     string,
     ReadonlyMap<string, ImportedMacroSiteKind>
   >,
+  isSoundscriptFile: (fileName: string) => boolean = isSoundscriptSourceFile,
 ): string {
-  if (!isSoundscriptSourceFile(fileName)) {
+  if (!isSoundscriptFile(fileName)) {
     return sourceText;
   }
 
@@ -1235,6 +1236,7 @@ function rewriteForeignTypeImportsToUnknown(
         fileName,
         compilerOptions,
         host,
+        isSoundscriptFile,
       )
     ) {
       continue;
@@ -1249,6 +1251,7 @@ function rewriteForeignTypeImportsToUnknown(
         fileName,
         compilerOptions,
         host,
+        isSoundscriptFile,
       );
       projectedUnknownValueExportNamesBySpecifier.set(
         statement.moduleSpecifier.text,
@@ -1656,7 +1659,7 @@ function collectProjectedDeclarationEmitSources(
       fileName: toSourceFileName(sourceFile.fileName),
       text: sourceFile.text,
     }))
-    .filter((sourceFile) => isSoundscriptSourceFile(sourceFile.fileName))
+    .filter((sourceFile) => preparedProgram.isSoundscriptSourceFile(sourceFile.fileName))
     .sort((left, right) => left.fileName.localeCompare(right.fileName));
 }
 
@@ -2012,9 +2015,9 @@ export function emitProjectedDeclarations(
       ) => {
         const sourceFileName = sourceFiles
           ?.map((sourceFile) => preparedProgram.toSourceFileName(sourceFile.fileName))
-          .find((sourceFileName) => isSoundscriptSourceFile(sourceFileName)) ??
+          .find((sourceFileName) => preparedProgram.isSoundscriptSourceFile(sourceFileName)) ??
           toProjectedDeclarationSourceFileName(fileName);
-        if (isSoundscriptSourceFile(sourceFileName)) {
+        if (preparedProgram.isSoundscriptSourceFile(sourceFileName)) {
           const rewrittenNewtypes = rewriteProjectedDeclarationNewtypes(
             preparedProgram,
             sourceFileName,
@@ -3291,6 +3294,7 @@ export function prepareSourceFile(
   > = new Map(),
   alwaysAvailableMacroSiteKinds: ReadonlyMap<string, ImportedMacroSiteKind> = new Map(),
   preserveMacroAuthoring = false,
+  isSoundscriptFile: (fileName: string) => boolean = isSoundscriptSourceFile,
 ): PreparedSourceFile {
   const rewriteInputText = !preserveMacroAuthoring && sourceTextLooksLikeMacroModule(text)
     ? stripMacroFactoryAuthoringFromText(fileName, text)
@@ -3365,7 +3369,8 @@ export function prepareSourceFile(
   const finalRewrittenText = diagnostics.length === 0
     ? lowerJsxSyntaxToRuntimeCalls(
       fileName,
-      injectPreludeImports(fileName, text, rewrittenText),
+      injectPreludeImports(fileName, text, rewrittenText, isSoundscriptFile),
+      isSoundscriptFile,
     )
     : rewrittenText;
 
@@ -3388,6 +3393,7 @@ export function createPreparedCompilerHost(
     baseHost.getCurrentDirectory?.() ?? ts.sys.getCurrentDirectory(),
   ),
   compilerOptions: ts.CompilerOptions = {},
+  configuredSoundscriptFileNames: ReadonlySet<string> = new Set(),
   importedMacroSiteKindsBySpecifier: ReadonlyMap<
     string,
     ReadonlyMap<string, ImportedMacroSiteKind>
@@ -3399,6 +3405,8 @@ export function createPreparedCompilerHost(
 ): PreparedCompilerHost {
   const preparedFiles = new Map<string, PreparedSourceFile>();
   const macroPreparationByFile = new Map<string, boolean>();
+  const isConfiguredSoundscriptFile = (fileName: string): boolean =>
+    isLocalSoundscriptSourceFile(toSourceFileName(fileName), configuredSoundscriptFileNames);
   const currentDirectory = baseHost.getCurrentDirectory?.() ?? ts.sys.getCurrentDirectory();
   const projectedDeclarationPresenceSignature = createProjectedDeclarationPresenceSignature(
     projectedDeclarationOverrides,
@@ -3613,7 +3621,7 @@ export function createPreparedCompilerHost(
       ReadonlyMap<string, ImportedMacroSiteKind>
     >,
   ): boolean {
-    if (isSoundscriptSourceFile(fileName)) {
+    if (isConfiguredSoundscriptFile(fileName)) {
       return true;
     }
 
@@ -3695,6 +3703,7 @@ export function createPreparedCompilerHost(
         importedMacroSiteKinds,
         alwaysAvailableMacroSiteKinds,
         preserveMacroAuthoring,
+        isConfiguredSoundscriptFile,
       )
       : {
         diagnostics: [],
@@ -3703,7 +3712,7 @@ export function createPreparedCompilerHost(
         rewrittenText: sourceText,
       };
 
-    const rewrittenWithNumericPrelude = isSoundscriptSourceFile(sourceFileName) &&
+    const rewrittenWithNumericPrelude = isConfiguredSoundscriptFile(sourceFileName) &&
         !isInstalledRuntimeStdlibSourceFile(sourceFileName)
       ? prependMachineNumericSourcePrelude(sourceFileName, prepared.rewrittenText)
       : prepared.rewrittenText;
@@ -3713,6 +3722,7 @@ export function createPreparedCompilerHost(
       compilerOptions,
       createModuleResolutionHost(),
       importedMacroSiteKinds,
+      isConfiguredSoundscriptFile,
     );
     const finalizedPrepared = rewrittenWithProjectedTypeImports === prepared.rewrittenText
       ? prepared
@@ -4085,12 +4095,14 @@ function serializeMacroSiteKinds(
 export function createPreparedProgram(
   options: CreatePreparedProgramOptions,
 ): PreparedProgram {
+  const configuredSoundscriptFileNames = options.configuredSoundscriptFileNames ?? new Set();
   const preparedHost = createPreparedCompilerHost(
     options.baseHost,
     options.fileOverrides ?? new Map(),
     options.projectedDeclarationOverrides ?? new Map(),
     options.reusableCompilerHostState,
     options.options,
+    configuredSoundscriptFileNames,
     options.importedMacroSiteKindsBySpecifier ?? new Map(),
     options.expansionEnabled ?? true,
     options.alwaysAvailableMacroSiteKinds ?? new Map(),
@@ -4107,6 +4119,7 @@ export function createPreparedProgram(
   });
 
   return {
+    configuredSoundscriptFileNames,
     dispose(clearReuseState = false): void {
       preparedHost.dispose();
       if (clearReuseState) {
@@ -4115,6 +4128,9 @@ export function createPreparedProgram(
     },
     frontendDiagnostics(): readonly MergedDiagnostic[] {
       return preparedHost.frontendDiagnostics();
+    },
+    isSoundscriptSourceFile(fileName: string): boolean {
+      return isLocalSoundscriptSourceFile(fileName, configuredSoundscriptFileNames);
     },
     options: options.options,
     placeholderIndex(): MacroPlaceholderIndex {

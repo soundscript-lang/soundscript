@@ -48,6 +48,7 @@ export function createAnalysisContext(options: CreateAnalysisContextOptions): An
   const runtime = options.runtime ?? normalizeRuntimeContext({
     target: 'js-node',
   });
+  const isSoundscriptSourceFile = options.isSoundscriptSourceFile ?? (() => false);
   let nextNodeId = 1;
   let nextSymbolId = 1;
 
@@ -287,6 +288,7 @@ export function createAnalysisContext(options: CreateAnalysisContextOptions): An
         );
       },
     },
+    isSoundscriptSourceFile,
     isGeneratedNode(node: ts.Node): boolean {
       const cached = generatedNodeCache.get(node);
       if (cached !== undefined) {

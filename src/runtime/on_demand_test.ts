@@ -270,3 +270,198 @@ Deno.test('createOnDemandTransformer resolves shipped package source through sou
   assertStringIncludes(transformed.code, 'export const pkgValue = 41;');
   assertStringIncludes(transformed.mapText, '/node_modules/example-pkg/src/index.sts');
 });
+
+Deno.test('createOnDemandTransformer treats configured TypeScript files from soundscript.include as soundscript sources', async () => {
+  const root = await Deno.makeTempDir({ prefix: 'soundscript-on-demand-include-' });
+  await writeProjectFile(
+    root,
+    'tsconfig.json',
+    JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          target: 'ES2022',
+          module: 'ESNext',
+          moduleResolution: 'Bundler',
+        },
+        include: ['src/**/*.ts'],
+        soundscript: {
+          include: ['src/**/*.ts'],
+        },
+      },
+      null,
+      2,
+    ),
+  );
+  await writeProjectFile(
+    root,
+    'src/main.ts',
+    [
+      'export const value = some(41);',
+      '',
+    ].join('\n'),
+  );
+
+  const transformer = createOnDemandTransformer({ workingDirectory: root });
+  const mainPath = join(root, 'src/main.ts');
+
+  assertEquals(transformer.shouldTransformFile(mainPath), true);
+  const transformed = await transformer.transformModule(mainPath);
+  assertStringIncludes(transformed.code, "from '@soundscript/soundscript';");
+  assertStringIncludes(transformed.code, 'export const value = some(41);');
+});
+
+Deno.test('createOnDemandTransformer expands macros in configured TypeScript files selected by soundscript.include', async () => {
+  const root = await Deno.makeTempDir({ prefix: 'soundscript-on-demand-include-macro-' });
+  await writeProjectFile(
+    root,
+    'tsconfig.json',
+    JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+          moduleResolution: 'Bundler',
+        },
+        include: ['src/**/*'],
+        soundscript: {
+          include: ['src/**/*.ts'],
+        },
+      },
+      null,
+      2,
+    ),
+  );
+  await writeProjectFile(
+    root,
+    'src/macros.macro.sts',
+    [
+      "import { macroSignature } from 'sts:macros';",
+      '',
+      '// #[macro(call)]',
+      'export function Twice() {',
+      '  return {',
+      '    signature: macroSignature.of(macroSignature.expr("value")),',
+      '    expand(ctx: any, signature: any) {',
+      '      if (!signature) {',
+      "        throw new Error('expected signature');",
+      '      }',
+      '      return ctx.output.expr(ctx.quote.expr`(${signature.args.value}) * 2`);',
+      '    },',
+      '  };',
+      '}',
+      '',
+    ].join('\n'),
+  );
+  await writeProjectFile(
+    root,
+    'src/demo.ts',
+    [
+      "import { Twice } from './macros.macro';",
+      'const value = 1;',
+      'export const doubled = Twice(value);',
+      '',
+    ].join('\n'),
+  );
+
+  const transformer = createOnDemandTransformer({ workingDirectory: root });
+  const transformed = await transformer.transformModule(join(root, 'src/demo.ts'));
+  assertStringIncludes(transformed.code, 'export const doubled = (value) * 2;');
+  assertEquals(transformed.code.includes('__sts_macro_expr('), false);
+});
+
+Deno.test('createOnDemandTransformer transparently falls back for semantic macros in configured TypeScript files', async () => {
+  const root = await Deno.makeTempDir({ prefix: 'soundscript-on-demand-include-semantic-' });
+  await writeProjectFile(
+    root,
+    'tsconfig.json',
+    JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+          moduleResolution: 'Bundler',
+        },
+        include: ['src/**/*'],
+        soundscript: {
+          include: ['src/**/*.ts'],
+        },
+      },
+      null,
+      2,
+    ),
+  );
+  await writeProjectFile(
+    root,
+    'src/macros.macro.sts',
+    [
+      "import { macroSignature } from 'sts:macros';",
+      '',
+      '// #[macro(call)]',
+      'export function TypeName() {',
+      '  return {',
+      '    signature: macroSignature.of(macroSignature.expr("value")),',
+      '    expand(ctx: any) {',
+      "      const typeText = ctx.semantics.argType(0)?.displayText ?? 'unknown';",
+      '      return ctx.output.expr(ctx.build.stringLiteral(typeText));',
+      '    },',
+      '  };',
+      '}',
+      '',
+    ].join('\n'),
+  );
+  await writeProjectFile(
+    root,
+    'src/demo.ts',
+    [
+      "import { TypeName } from './macros.macro';",
+      'declare function readValue(): Promise<number>;',
+      'export const typeName = TypeName(readValue());',
+      '',
+    ].join('\n'),
+  );
+
+  const transformer = createOnDemandTransformer({ workingDirectory: root });
+  const transformed = await transformer.transformModule(join(root, 'src/demo.ts'));
+
+  assertStringIncludes(transformed.code, 'export const typeName = "Promise<number>";');
+  assertEquals(transformed.code.includes('__sts_macro_expr('), false);
+});
+
+Deno.test('createOnDemandTransformer leaves unmatched TypeScript files on the ordinary TypeScript path', async () => {
+  const root = await Deno.makeTempDir({ prefix: 'soundscript-on-demand-unmatched-ts-' });
+  await writeProjectFile(
+    root,
+    'tsconfig.json',
+    JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          target: 'ES2022',
+          module: 'ESNext',
+          moduleResolution: 'Bundler',
+        },
+        include: ['src/**/*.ts'],
+      },
+      null,
+      2,
+    ),
+  );
+  await writeProjectFile(
+    root,
+    'src/main.ts',
+    [
+      'export const value = some(41);',
+      '',
+    ].join('\n'),
+  );
+
+  const transformer = createOnDemandTransformer({ workingDirectory: root });
+  const transformed = await transformer.transformModule(join(root, 'src/main.ts'));
+  assertEquals(transformed.code.includes("from 'sts:prelude';"), false);
+  assertStringIncludes(transformed.code, 'export const value = some(41);');
+});

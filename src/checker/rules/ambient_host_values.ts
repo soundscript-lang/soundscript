@@ -1,6 +1,6 @@
 import ts from 'typescript';
 
-import { isSoundscriptSourceFile, toSourceFileName } from '../../frontend/project_frontend.ts';
+import { toSourceFileName } from '../../frontend/project_frontend.ts';
 import { SOUND_DIAGNOSTIC_CODES, SOUND_DIAGNOSTIC_MESSAGES } from '../engine/diagnostic_codes.ts';
 import type { AnalysisContext } from '../engine/types.ts';
 import { getNodeDiagnosticRange, type SoundDiagnostic } from '../diagnostics.ts';
@@ -95,7 +95,7 @@ export function runAmbientHostValueRules(context: AnalysisContext): SoundDiagnos
   const diagnostics: SoundDiagnostic[] = [];
 
   context.forEachSourceFile((sourceFile) => {
-    if (!isSoundscriptSourceFile(toSourceFileName(sourceFile.fileName))) {
+    if (!context.isSoundscriptSourceFile(toSourceFileName(sourceFile.fileName))) {
       return;
     }
 

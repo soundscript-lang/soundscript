@@ -6,7 +6,7 @@ import {
   isForeignResolvedModule,
   resolveSoundScriptAwareModule,
 } from '../../soundscript_packages.ts';
-import { isSoundscriptSourceFile, toSourceFileName } from '../../frontend/project_frontend.ts';
+import { toSourceFileName } from '../../frontend/project_frontend.ts';
 
 export interface ImportedModuleResolution {
   importedSourceFile?: ts.SourceFile;
@@ -82,6 +82,7 @@ export function resolveImportedModule(
 }
 
 export function isUnsoundImportedModule(
+  context: AnalysisContext,
   containingSourceFile: ts.SourceFile,
   resolution: ImportedModuleResolution,
 ): boolean {
@@ -99,9 +100,9 @@ export function isUnsoundImportedModule(
     return !importedIsTrustedPackageArtifact;
   }
 
-  return isSoundscriptSourceFile(toSourceFileName(containingSourceFile.fileName)) &&
+  return context.isSoundscriptSourceFile(toSourceFileName(containingSourceFile.fileName)) &&
     !!importedSourceFile &&
-    !isSoundscriptSourceFile(toSourceFileName(importedFileName)) &&
+    !context.isSoundscriptSourceFile(toSourceFileName(importedFileName)) &&
     !importedIsTrustedPackageArtifact;
 }
 
@@ -207,5 +208,7 @@ export function getDirectUnsoundImportNamespaceExpression(
   }
 
   const resolution = resolveImportedModule(context, moduleSpecifier, current.getSourceFile());
-  return isUnsoundImportedModule(current.getSourceFile(), resolution) ? current : undefined;
+  return isUnsoundImportedModule(context, current.getSourceFile(), resolution)
+    ? current
+    : undefined;
 }

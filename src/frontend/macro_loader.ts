@@ -6,7 +6,10 @@ import {
   getLoadedMacroDefinitionMetadata,
   getMacroFactoryMetadata,
 } from './macro_api_internal.ts';
-import { createExpandMacroPlaceholderFromDefinition } from './macro_backend_adapter.ts';
+import {
+  createExpandMacroPlaceholderFromDefinition,
+  type CreateExpandMacroPlaceholderOptions,
+} from './macro_backend_adapter.ts';
 import { createExpandAdvancedMacroPlaceholderFromDefinition } from './macro_advanced_backend_adapter.ts';
 import {
   expandPreparedProgramWithFileRegistries,
@@ -41,6 +44,10 @@ export interface CollectNamedMacroDefinitionsOptions {
   readonly moduleFileName?: string;
   readonly scannedFactoryExports?: ReadonlyMap<string, ScannedMacroFactoryExport>;
   readonly sourceText?: string;
+}
+
+export interface CollectNamedMacroExportsOptions extends CollectNamedMacroDefinitionsOptions {
+  readonly deferToSemanticExpansion?: boolean;
 }
 
 function isMacroDefinitionDescriptor(value: unknown): value is MacroDefinition {
@@ -199,6 +206,7 @@ function macroModuleFromDefinitions(
   specifier: string,
   definitions: ReadonlyMap<string, MacroDefinition>,
   preparedProgram?: PreparedProgram,
+  options: CreateExpandMacroPlaceholderOptions = {},
 ): MacroModule {
   const expanders: Record<string, MacroModule['expanders'][string]> = {};
   const advancedExpanders: Record<string, NonNullable<MacroModule['advancedExpanders']>[string]> =
@@ -215,6 +223,7 @@ function macroModuleFromDefinitions(
       definition,
       macroName,
       preparedProgram,
+      options,
     );
     if (preparedProgram) {
       advancedExpanders[macroName] = createExpandAdvancedMacroPlaceholderFromDefinition(
@@ -263,8 +272,8 @@ export async function expandPreparedProgramWithLoadedModules(
 export function collectNamedMacroExports(
   specifier: string,
   loaded: unknown,
-  preparedProgram: PreparedProgram,
-  options: CollectNamedMacroDefinitionsOptions = {},
+  preparedProgram?: PreparedProgram,
+  options: CollectNamedMacroExportsOptions = {},
 ): LoadedNamedMacroExports {
   const rewrite = new Map<string, MacroModule['expanders'][string]>();
   const advanced = new Map<string, NonNullable<MacroModule['advancedExpanders']>[string]>();
@@ -275,12 +284,16 @@ export function collectNamedMacroExports(
   ) {
     rewrite.set(
       exportName,
-      createExpandMacroPlaceholderFromDefinition(definition, exportName, preparedProgram),
+      createExpandMacroPlaceholderFromDefinition(definition, exportName, preparedProgram, {
+        deferToSemanticExpansion: options.deferToSemanticExpansion,
+      }),
     );
-    advanced.set(
-      exportName,
-      createExpandAdvancedMacroPlaceholderFromDefinition(preparedProgram, definition, exportName),
-    );
+    if (preparedProgram) {
+      advanced.set(
+        exportName,
+        createExpandAdvancedMacroPlaceholderFromDefinition(preparedProgram, definition, exportName),
+      );
+    }
     const definitionMetadata = getLoadedMacroDefinitionMetadata(definition);
     if (definitionMetadata) {
       siteKindsByExport.set(
@@ -399,7 +412,7 @@ function collectImportedMacroBindingsForFile(
     ts.ScriptTarget.Latest,
     true,
     originalFileName.endsWith('.sts') || originalFileName.endsWith('.tsx') ||
-        originalFileName.endsWith('.jsx')
+      originalFileName.endsWith('.jsx')
       ? ts.ScriptKind.TSX
       : originalFileName.endsWith('.js') || originalFileName.endsWith('.mjs') ||
           originalFileName.endsWith('.cjs')

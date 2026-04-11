@@ -288,7 +288,7 @@ soundscript encountered an unexpected internal failure. Internal tool failures a
 ## SOUNDSCRIPT_RUNTIME_NO_ENTRY
 
 The runtime wrappers were asked to materialize and run without an entry file. Pass a concrete local
-entry path to `soundscript node` or `soundscript deno run`.
+entry path to `soundscript deno run`.
 
 ## SOUNDSCRIPT_RUNTIME_NO_PROJECT
 
@@ -298,8 +298,8 @@ entry file. Run inside a soundscript project, or create one with `soundscript in
 ## SOUNDSCRIPT_RUNTIME_PACKAGE_MISSING
 
 The runtime wrappers could not find an installed `@soundscript/soundscript` package in the current
-project or an ancestor workspace. Install the runtime package before using `soundscript node` or
-`soundscript deno`.
+project or an ancestor workspace. Install the runtime package before using `@soundscript/register`
+or `soundscript deno`.
 
 ## SOUNDSCRIPT_MACRO_PARSE
 

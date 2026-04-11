@@ -25,7 +25,6 @@ import {
   type DenoCommand,
   type EditorProjectCommand,
   type InitCommand,
-  type NodeCommand,
   type OutputFormat,
   parseCommand,
 } from './config.ts';
@@ -327,7 +326,6 @@ function renderHelp(): string {
     '  soundscript expand [--project <path>] [--target <js-browser|js-node|wasm-browser|wasm-node|wasm-wasi>] --file <path> [--stage <rewrite|prepared|expanded|projected>] [--trace]',
     '  soundscript explain <code> [--format <text|json|ndjson>]',
     '  soundscript lsp',
-    '  soundscript node [node-options...] <entry> [-- <args...>]',
     '  soundscript [--help] [--version]',
     '',
     'Commands:',
@@ -339,7 +337,6 @@ function renderHelp(): string {
     '  expand        Expand macros and emit base TypeScript files.',
     '  explain       Explain a soundscript diagnostic code.',
     '  lsp           Start the language server over stdio.',
-    '  node          Run Node against a temporary transformed graph.',
     '',
     'Command options:',
     '  --mode         Init mode: new (default) or existing.',
@@ -354,7 +351,7 @@ function renderHelp(): string {
     '',
     'Experimental:',
     '  soundscript compile and runtime target overrides, especially Wasm targets, are not part of stable v1.',
-    '  soundscript node and soundscript deno require @soundscript/soundscript in the current project or an ancestor workspace.',
+    '  soundscript deno requires @soundscript/soundscript in the current project or an ancestor workspace.',
     '',
     'Examples:',
     '  soundscript init',
@@ -368,8 +365,6 @@ function renderHelp(): string {
     '  soundscript deno run src/main.sts',
     '  soundscript explain SOUND1002',
     '  soundscript lsp',
-    '  soundscript node src/main.sts',
-    '  soundscript node --inspect src/main.sts',
     '',
     'Global options:',
     '  -h, --help     Show this help text.',
@@ -967,69 +962,12 @@ function maybeResolveLocalCliPath(argument: string, workingDirectory: string): s
   return pathExists(resolved) ? resolved : undefined;
 }
 
-function ensureNodeSourceMapsFlag(nodeArgs: readonly string[]): string[] {
-  return nodeArgs.includes('--enable-source-maps')
-    ? [...nodeArgs]
-    : [...nodeArgs, '--enable-source-maps'];
-}
-
 async function runSubprocess(
   command: string,
   args: readonly string[],
   cwd: string,
 ): Promise<{ exitCode: number; output: string }> {
   return await runCommand(command, args, cwd);
-}
-
-async function runNodeCommand(
-  command: NodeCommand,
-  runSubprocessFn: (
-    command: string,
-    args: readonly string[],
-    cwd: string,
-  ) => Promise<{ exitCode: number; output: string }>,
-): Promise<CliResult> {
-  const tempDirectory = await createTempDirectory('soundscript-node-');
-  try {
-    const materialized = await materializeRuntimeGraph({
-      entryPaths: [command.entryPath],
-      outDir: tempDirectory,
-      workingDirectory: command.workingDirectory,
-    });
-    if (materialized.exitCode !== 0 || !materialized.artifacts) {
-      return {
-        exitCode: materialized.exitCode,
-        output: materialized.output,
-        diagnostics: materialized.diagnostics,
-        projectPath: command.entryPath,
-        workingDirectory: command.workingDirectory,
-      };
-    }
-
-    const entryOutputPath = materialized.artifacts.entryOutputPaths[0];
-    if (!entryOutputPath) {
-      return createCliFailureResult('text', 'cli', command.workingDirectory, {
-        code: 'SOUNDSCRIPT_RUNTIME_NO_ENTRY',
-        message: 'Runtime materialization did not produce an entry output.',
-        projectPath: materialized.artifacts.projectPath,
-      });
-    }
-
-    const subprocess = await runSubprocessFn(
-      'node',
-      [...ensureNodeSourceMapsFlag(command.nodeArgs), entryOutputPath, ...command.forwardedArgs],
-      command.workingDirectory,
-    );
-    return {
-      exitCode: subprocess.exitCode,
-      output: subprocess.output,
-      diagnostics: [],
-      projectPath: materialized.artifacts.projectPath,
-      workingDirectory: command.workingDirectory,
-    };
-  } finally {
-    await removePath(tempDirectory).catch(() => undefined);
-  }
 }
 
 function replaceLocalDenoEntryArgs(
@@ -1208,8 +1146,6 @@ export function runCli(
       });
     case 'init':
       return initializeProject(command, workingDirectory);
-    case 'node':
-      return runNodeCommand(command, runSubprocessFn);
     case 'deno':
       return runDenoCommand(command, runSubprocessFn);
     case 'explain': {

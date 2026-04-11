@@ -1463,7 +1463,7 @@ const DIAGNOSTIC_REFERENCES = {
         applicability: 'manual',
         title: 'Pass an entry file',
         message:
-          'Provide a concrete `.sts`, `.ts`, or JavaScript entry path when running `soundscript node` or `soundscript deno run`.',
+          'Provide a concrete `.sts`, `.ts`, or JavaScript entry path when running `soundscript deno run`.',
       },
     ],
   },
@@ -1493,7 +1493,7 @@ const DIAGNOSTIC_REFERENCES = {
         applicability: 'manual',
         title: 'Install the runtime package',
         message:
-          'Install `@soundscript/soundscript` in the project or an ancestor workspace before using `soundscript node` or `soundscript deno`.',
+          'Install `@soundscript/soundscript` in the project or an ancestor workspace before using `soundscript deno` or `@soundscript/register`.',
       },
     ],
   },

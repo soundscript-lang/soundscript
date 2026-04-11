@@ -764,7 +764,6 @@ The current CLI surface is no longer text-only. The repo now ships:
 - `soundscript build`
 - `soundscript expand`
 - experimental `soundscript compile`
-- `soundscript node`
 - `soundscript deno`
 - `soundscript explain`
 - `soundscript lsp`

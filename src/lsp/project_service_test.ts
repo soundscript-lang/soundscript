@@ -144,6 +144,45 @@ Deno.test('project service reuses prepared sts-local analysis state across open-
   );
 });
 
+Deno.test('project service analyzes configured TypeScript files from soundscript.include as soundscript', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.ts'],
+        soundscript: {
+          include: ['src/**/*.ts'],
+        },
+      },
+      null,
+      2,
+    ),
+    'src/demo.ts': 'console.log(42);\n',
+  });
+
+  const session = new SessionState();
+  const uri = toFileUrl(join(tempDirectory, 'src/demo.ts')).href;
+  session.open({
+    uri,
+    languageId: 'typescript',
+    version: 1,
+    text: 'console.log(42);\n',
+  });
+
+  const analyzed = await analyzeOpenDocument(uri, session);
+  assert(analyzed !== null);
+  assertEquals(analyzed.diagnostics.some((diagnostic) => diagnostic.code === 'SOUND1039'), true);
+
+  const preparedProject = getPreparedProjectForTest(uri, session, 'sts-local');
+  assert(preparedProject !== null);
+  assertEquals(preparedProject.isSoundscriptSourceFile(join(tempDirectory, 'src/demo.ts')), true);
+});
+
 Deno.test('project service keeps full and sts-local prepared state cached independently', async () => {
   const tempDirectory = await createTempProject({
     'tsconfig.json': JSON.stringify(

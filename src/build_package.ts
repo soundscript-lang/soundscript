@@ -202,6 +202,7 @@ function createPackageBuildProgram(options: BuildProjectOptions) {
       loadedConfig.diagnostics,
       soundscriptRootNames,
     ),
+    configuredSoundscriptFileNames: loadedConfig.soundscriptConfiguredFileNames,
     options: {
       ...loadedConfig.commandLine.options,
       declaration: true,
@@ -504,7 +505,7 @@ export async function buildProject(options: BuildProjectOptions): Promise<BuildP
         relative(dirname(outputJsPath), outputMapPath).replaceAll('\\', '/')
       }`;
 
-      const artifact = isSoundscriptSourceFile(sourceFileName)
+      const artifact = builtProgram.preparedProgram.isSoundscriptSourceFile(sourceFileName)
         ? (() => {
           const preparedFile = builtProgram.diagnosticPreparedFiles.get(sourceFileName) ??
             builtProgram.analysisPreparedProgram.preparedHost.getPreparedSourceFile(

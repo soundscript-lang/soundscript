@@ -25,6 +25,7 @@ import {
   type PreparedSourceFile,
   toProjectedDeclarationSourceFileName,
 } from '../frontend/project_frontend.ts';
+import { loadConfig } from '../config.ts';
 import { formatSoundscriptText } from '../frontend/format_soundscript.ts';
 import {
   isElaboratedBigIntTypeImportName,
@@ -372,6 +373,7 @@ function createProjectDocumentsKey(
 function createStsDocumentsKey(
   projectPath: string,
   documents: readonly OpenDocument[],
+  isSoundscriptFile: (filePath: string) => boolean,
 ): string {
   const projectDirectory = dirname(projectPath);
   const withTrailingSlash = projectDirectory.endsWith('/')
@@ -385,7 +387,7 @@ function createStsDocumentsKey(
         return false;
       }
 
-      return filePath === projectPath || isSoundscriptSourceFile(filePath);
+      return filePath === projectPath || isSoundscriptFile(filePath);
     })
     .map((document) => `${document.uri}:${document.version}`)
     .sort()
@@ -404,10 +406,12 @@ function getProjectContext(
 
   const documents = session.getAll();
   const additionalRootNames = collectAdditionalRootNames(projectPath, documents);
+  const loadedConfig = loadConfig(projectPath);
+  const isProjectSoundscriptFile = loadedConfig.isSoundscriptSourceFile;
   const documentsKey = createProjectDocumentsKey(projectPath, documents);
-  const stsDocumentsKey = createStsDocumentsKey(projectPath, documents);
+  const stsDocumentsKey = createStsDocumentsKey(projectPath, documents, isProjectSoundscriptFile);
   const projectContextCache = getProjectContextCache(session);
-  const mode = requestedMode === 'sts-local' && isSoundscriptSourceFile(filePath)
+  const mode = requestedMode === 'sts-local' && isProjectSoundscriptFile(filePath)
     ? 'sts-local'
     : 'full';
   const cached = projectContextCache.get(projectContextCacheKey(projectPath, mode));
@@ -490,7 +494,7 @@ export function getPreparedProjectForTest(
 function getPreparedProjectContext(
   filePath: string,
   session: SessionState,
-  mode: 'full' | 'sts-local' = isSoundscriptSourceFile(filePath) ? 'sts-local' : 'full',
+  mode: 'full' | 'sts-local' = 'sts-local',
 ): PreparedAnalysisView | null {
   const entry = getProjectContext(filePath, session, mode);
   if (!entry) {
@@ -559,12 +563,8 @@ function getFileLocalAnalyzedProjectContext(
   filePath: string,
   session: SessionState,
 ): ReturnType<typeof analyzePreparedProjectForFile> | null {
-  if (!isSoundscriptSourceFile(filePath)) {
-    return null;
-  }
-
   const entry = getProjectContext(filePath, session, 'sts-local');
-  if (!entry) {
+  if (!entry || entry.context.mode !== 'sts-local') {
     return null;
   }
 
@@ -7428,11 +7428,15 @@ export function formatOpenDocument(
   }
 
   const filePath = fromFileUrl(uri);
-  if (!isSoundscriptSourceFile(filePath) && document.languageId !== 'soundscript') {
+  const projectEntry = getProjectContext(filePath, session, 'sts-local');
+  const isProjectSoundscriptFile = projectEntry?.context.mode === 'sts-local';
+  if (!isProjectSoundscriptFile && document.languageId !== 'soundscript') {
     return null;
   }
 
-  const preparedProject = getPreparedProjectContext(filePath, session);
+  const preparedProject = projectEntry
+    ? getPreparedAnalysisViewForFile(projectEntry.context.preparedProject, filePath)
+    : getPreparedProjectContext(filePath, session);
   const sourceFile = preparedProject
     ? preparedProject.preparedProgram.program.getSourceFile(
       preparedProject.preparedProgram.toProgramFileName(filePath),
