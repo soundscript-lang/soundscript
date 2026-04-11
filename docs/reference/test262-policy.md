@@ -50,14 +50,15 @@ red, but they must always carry provenance:
 
 ## Raw Import Policy
 
-New automated raw imports should default to `test/test262/cases/raw/*.js`.
+New automated raw imports should default to `tests/test262/cases/raw/*.js`.
 
 - prefer direct JS fixtures first
 - prefer near-verbatim raw upstream scripts when module execution is enough to express the intended
   assertion honestly
 - only synthesize a typed adapter directory when the raw JS fixture is otherwise semantically direct
   and the current failure is a known harness/type-shape issue
-- keep candidate import manifests outside the committed manifest until the probe step classifies them
+- keep candidate import manifests outside the committed manifest until the probe step classifies
+  them
 - positive-lane imports should be either green or red for an explicitly allowed blocker
 - negative-lane imports should assert the exact failure reason they are expected to keep producing
 

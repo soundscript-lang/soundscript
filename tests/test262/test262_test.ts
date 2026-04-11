@@ -11,7 +11,7 @@ interface ManifestEntryShape {
     sources: readonly {
       path: string;
       assertion: string;
-  }[];
+    }[];
   };
   execution?: 'module';
   entry?: string;
@@ -58,14 +58,15 @@ interface AssertedOutcomeShape {
   diagnostics?: readonly string[];
 }
 
-const manifestPath = join(Deno.cwd(), 'test', 'test262', 'manifest.json');
-const recentAssertedTestsPath = join(Deno.cwd(), 'test', 'test262', 'recent-asserted-tests.json');
+const manifestPath = join(Deno.cwd(), 'tests', 'test262', 'manifest.json');
+const recentAssertedTestsPath = join(Deno.cwd(), 'tests', 'test262', 'recent-asserted-tests.json');
 const tempRoot = Deno.env.get('TMPDIR') ?? Deno.env.get('TMP') ?? Deno.env.get('TEMP') ?? '/tmp';
-const runManifestScriptPath = join(Deno.cwd(), 'test', 'test262', 'run_manifest.ts');
+const runManifestScriptPath = join(Deno.cwd(), 'tests', 'test262', 'run_manifest.ts');
 const manifestBatchSize = 100;
 
 function isAssertedEntry(entry: ManifestEntryShape): boolean {
-  return entry.expected !== undefined || entry.failure !== undefined || entry.completion !== undefined;
+  return entry.expected !== undefined || entry.failure !== undefined ||
+    entry.completion !== undefined;
 }
 
 async function countTest262ProjectTempDirs(): Promise<number> {
@@ -80,7 +81,7 @@ async function countTest262ProjectTempDirs(): Promise<number> {
 
 async function countBatchManifestScratchFiles(): Promise<number> {
   let count = 0;
-  for await (const entry of Deno.readDir(join(Deno.cwd(), 'test', 'test262'))) {
+  for await (const entry of Deno.readDir(join(Deno.cwd(), 'tests', 'test262'))) {
     if (
       entry.isFile && entry.name.startsWith('temp-manifest-batch-') && entry.name.endsWith('.json')
     ) {
@@ -99,7 +100,7 @@ async function removeTest262ProjectTempDirs(): Promise<void> {
 }
 
 async function removeBatchManifestScratchFiles(): Promise<void> {
-  const directory = join(Deno.cwd(), 'test', 'test262');
+  const directory = join(Deno.cwd(), 'tests', 'test262');
   for await (const entry of Deno.readDir(directory)) {
     if (
       entry.isFile && entry.name.startsWith('temp-manifest-batch-') && entry.name.endsWith('.json')
@@ -136,7 +137,7 @@ async function runManifestInSubprocessBatches(
     for (let index = 0; index < assertedEntries.length; index += manifestBatchSize) {
       const batchEntries = assertedEntries.slice(index, index + manifestBatchSize);
       const batchManifestPath = await Deno.makeTempFile({
-        dir: join(Deno.cwd(), 'test', 'test262'),
+        dir: join(Deno.cwd(), 'tests', 'test262'),
         prefix: `temp-manifest-batch-${String(index / manifestBatchSize).padStart(4, '0')}-`,
         suffix: '.json',
       });
@@ -183,7 +184,7 @@ async function loadRecentAssertedTests(): Promise<Set<string>> {
 }
 
 Deno.test('test262 harness loads the seeded manifest', async () => {
-  const { loadManifest } = await import('./test262/harness.ts');
+  const { loadManifest } = await import('./harness.ts');
 
   const manifest = await loadManifest(manifestPath) as ManifestEntryShape[];
   const executable = manifest.filter((entry) => isAssertedEntry(entry));
@@ -201,7 +202,7 @@ Deno.test('test262 harness loads the seeded manifest', async () => {
 });
 
 Deno.test('test262 harness rejects partial executable fields on tracked entries', async () => {
-  const { loadManifest } = await import('./test262/harness.ts');
+  const { loadManifest } = await import('./harness.ts');
   const tempDirectory = await Deno.makeTempDir({ prefix: 'sound-test262-invalid-' });
   const invalidManifestPath = join(tempDirectory, 'manifest.json');
 
@@ -230,9 +231,9 @@ Deno.test('test262 harness rejects partial executable fields on tracked entries'
 });
 
 Deno.test('test262 harness executes asserted cases and keeps compile-blocked tracked cases pending', async () => {
-  const { runManifest } = await import('./test262/harness.ts');
+  const { runManifest } = await import('./harness.ts');
   const manifestFile = await Deno.makeTempFile({
-    dir: join(Deno.cwd(), 'test', 'test262'),
+    dir: join(Deno.cwd(), 'tests', 'test262'),
     prefix: 'temp-manifest-',
     suffix: '.json',
   });
@@ -278,7 +279,7 @@ Deno.test('test262 harness executes asserted cases and keeps compile-blocked tra
 });
 
 Deno.test('test262 harness rejects malformed failure expectations', async () => {
-  const { loadManifest } = await import('./test262/harness.ts');
+  const { loadManifest } = await import('./harness.ts');
   const tempDirectory = await Deno.makeTempDir({ prefix: 'sound-test262-invalid-failure-' });
   const invalidManifestPath = join(tempDirectory, 'manifest.json');
 
@@ -320,7 +321,7 @@ Deno.test('test262 harness rejects malformed failure expectations', async () => 
 });
 
 Deno.test('test262 harness rejects malformed module-completion expectations', async () => {
-  const { loadManifest } = await import('./test262/harness.ts');
+  const { loadManifest } = await import('./harness.ts');
   const tempDirectory = await Deno.makeTempDir({ prefix: 'sound-test262-invalid-module-' });
   const invalidManifestPath = join(tempDirectory, 'manifest.json');
 
@@ -358,9 +359,9 @@ Deno.test('test262 harness rejects malformed module-completion expectations', as
 });
 
 Deno.test('test262 harness keeps asserted compile failures red instead of pending', async () => {
-  const { runManifest } = await import('./test262/harness.ts');
+  const { runManifest } = await import('./harness.ts');
   const manifestFile = await Deno.makeTempFile({
-    dir: join(Deno.cwd(), 'test', 'test262'),
+    dir: join(Deno.cwd(), 'tests', 'test262'),
     prefix: 'temp-manifest-',
     suffix: '.json',
   });
@@ -400,7 +401,7 @@ Deno.test('test262 harness keeps asserted compile failures red instead of pendin
 });
 
 Deno.test('test262 harness passes module-completion assertions for empty raw modules', async () => {
-  const { runManifest } = await import('./test262/harness.ts');
+  const { runManifest } = await import('./harness.ts');
   const tempDirectory = await Deno.makeTempDir({ prefix: 'sound-test262-module-completion-' });
   const manifestFile = join(tempDirectory, 'manifest.json');
   const caseFile = join(tempDirectory, 'cases', 'raw', 'empty.js');
@@ -436,7 +437,7 @@ Deno.test('test262 harness passes module-completion assertions for empty raw mod
 });
 
 Deno.test('test262 harness passes exact compile-failure assertions for raw module cases', async () => {
-  const { runManifest } = await import('./test262/harness.ts');
+  const { runManifest } = await import('./harness.ts');
   const tempDirectory = await Deno.makeTempDir({ prefix: 'sound-test262-module-failure-' });
   const manifestFile = join(tempDirectory, 'manifest.json');
   const caseFile = join(tempDirectory, 'cases', 'raw', 'top-level-const.js');
@@ -473,9 +474,9 @@ Deno.test('test262 harness passes exact compile-failure assertions for raw modul
 });
 
 Deno.test('test262 harness cleans up per-case temp projects after execution', async () => {
-  const { runManifest } = await import('./test262/harness.ts');
+  const { runManifest } = await import('./harness.ts');
   const manifestFile = await Deno.makeTempFile({
-    dir: join(Deno.cwd(), 'test', 'test262'),
+    dir: join(Deno.cwd(), 'tests', 'test262'),
     prefix: 'temp-manifest-',
     suffix: '.json',
   });
@@ -515,7 +516,7 @@ Deno.test('test262 harness cleans up per-case temp projects after execution', as
 });
 
 Deno.test('test262 harness materializes file-backed .js cases into src/index.js', async () => {
-  const { materializeCaseProject } = await import('./test262/harness.ts');
+  const { materializeCaseProject } = await import('./harness.ts');
   const tempDirectory = await Deno.makeTempDir({ prefix: 'sound-test262-js-case-' });
   const manifestFile = join(tempDirectory, 'manifest.json');
   const caseFile = join(tempDirectory, 'cases', 'raw', 'simple.js');
@@ -543,7 +544,7 @@ Deno.test('test262 harness materializes file-backed .js cases into src/index.js'
 });
 
 Deno.test('test262 harness materializes absolute file-backed case paths', async () => {
-  const { materializeCaseProject } = await import('./test262/harness.ts');
+  const { materializeCaseProject } = await import('./harness.ts');
   const tempDirectory = await Deno.makeTempDir({ prefix: 'sound-test262-absolute-case-' });
   const manifestFile = join(tempDirectory, 'manifest.json');
   const caseFile = join(tempDirectory, 'cases', 'raw', 'absolute.js');
@@ -568,7 +569,7 @@ Deno.test('test262 harness materializes absolute file-backed case paths', async 
 });
 
 Deno.test('test262 harness materializes directory-backed cases with mixed .js and .ts files', async () => {
-  const { materializeCaseProject } = await import('./test262/harness.ts');
+  const { materializeCaseProject } = await import('./harness.ts');
   const tempDirectory = await Deno.makeTempDir({ prefix: 'sound-test262-mixed-case-' });
   const manifestFile = join(tempDirectory, 'manifest.json');
   const caseDirectory = join(tempDirectory, 'cases', 'raw', 'mixed');
@@ -576,8 +577,14 @@ Deno.test('test262 harness materializes directory-backed cases with mixed .js an
   try {
     await Deno.mkdir(caseDirectory, { recursive: true });
     await Deno.writeTextFile(manifestFile, JSON.stringify([]));
-    await Deno.writeTextFile(join(caseDirectory, 'index.ts'), 'export function main(): number { return helper(); }\n');
-    await Deno.writeTextFile(join(caseDirectory, 'helper.js'), 'export function helper() { return 5; }\n');
+    await Deno.writeTextFile(
+      join(caseDirectory, 'index.ts'),
+      'export function main(): number { return helper(); }\n',
+    );
+    await Deno.writeTextFile(
+      join(caseDirectory, 'helper.js'),
+      'export function helper() { return 5; }\n',
+    );
 
     const projectDirectory = await materializeCaseProject(manifestFile, 'cases/raw/mixed');
     try {
@@ -598,7 +605,7 @@ Deno.test('test262 harness materializes directory-backed cases with mixed .js an
 });
 
 Deno.test('test262 harness cleans up temp projects when case materialization fails', async () => {
-  const { runManifest } = await import('./test262/harness.ts');
+  const { runManifest } = await import('./harness.ts');
   const tempDirectory = await Deno.makeTempDir({ prefix: 'sound-test262-missing-case-' });
   const manifestFile = join(tempDirectory, 'manifest.json');
   await removeTest262ProjectTempDirs();
@@ -641,9 +648,9 @@ Deno.test('test262 harness cleans up temp projects when case materialization fai
 });
 
 Deno.test('test262 harness carries asserted undefined expectations through failures', async () => {
-  const { runManifest } = await import('./test262/harness.ts');
+  const { runManifest } = await import('./harness.ts');
   const manifestFile = await Deno.makeTempFile({
-    dir: join(Deno.cwd(), 'test', 'test262'),
+    dir: join(Deno.cwd(), 'tests', 'test262'),
     prefix: 'temp-manifest-',
     suffix: '.json',
   });
@@ -684,7 +691,7 @@ Deno.test('test262 harness carries asserted undefined expectations through failu
 });
 
 Deno.test('test262 harness executes asserted .js fixtures through the same pipeline', async () => {
-  const { runManifest } = await import('./test262/harness.ts');
+  const { runManifest } = await import('./harness.ts');
   const tempDirectory = await Deno.makeTempDir({ prefix: 'sound-test262-js-manifest-' });
   const manifestFile = join(tempDirectory, 'manifest.json');
   const caseFile = join(tempDirectory, 'cases', 'raw', 'literal.js');
@@ -697,7 +704,8 @@ Deno.test('test262 harness executes asserted .js fixtures through the same pipel
       JSON.stringify([
         {
           test: 'cases/raw/literal.js',
-          note: 'JS fixtures should run through the same compile and execution path as TS fixtures.',
+          note:
+            'JS fixtures should run through the same compile and execution path as TS fixtures.',
           provenance: {
             kind: 'local',
             detail: 'Harness regression fixture for allowJs temp projects.',
@@ -718,9 +726,9 @@ Deno.test('test262 harness executes asserted .js fixtures through the same pipel
 });
 
 Deno.test('test262 harness passes exact compile-failure assertions', async () => {
-  const { runManifest } = await import('./test262/harness.ts');
+  const { runManifest } = await import('./harness.ts');
   const manifestFile = await Deno.makeTempFile({
-    dir: join(Deno.cwd(), 'test', 'test262'),
+    dir: join(Deno.cwd(), 'tests', 'test262'),
     prefix: 'temp-manifest-',
     suffix: '.json',
   });
@@ -761,9 +769,9 @@ Deno.test('test262 harness passes exact compile-failure assertions', async () =>
 });
 
 Deno.test('test262 harness fails exact compile-failure assertions on the wrong diagnostic code', async () => {
-  const { runManifest } = await import('./test262/harness.ts');
+  const { runManifest } = await import('./harness.ts');
   const manifestFile = await Deno.makeTempFile({
-    dir: join(Deno.cwd(), 'test', 'test262'),
+    dir: join(Deno.cwd(), 'tests', 'test262'),
     prefix: 'temp-manifest-',
     suffix: '.json',
   });
@@ -804,9 +812,9 @@ Deno.test('test262 harness fails exact compile-failure assertions on the wrong d
 });
 
 Deno.test('test262 harness passes exact runtime-failure assertions', async () => {
-  const { runManifest } = await import('./test262/harness.ts');
+  const { runManifest } = await import('./harness.ts');
   const manifestFile = await Deno.makeTempFile({
-    dir: join(Deno.cwd(), 'test', 'test262'),
+    dir: join(Deno.cwd(), 'tests', 'test262'),
     prefix: 'temp-manifest-',
     suffix: '.json',
   });
@@ -838,16 +846,19 @@ Deno.test('test262 harness passes exact runtime-failure assertions', async () =>
       source: 'runtime',
       messageIncludes: 'Expected exported function "missing"',
     });
-    assertEquals((results[0]?.diagnostics ?? [])[0]?.includes('runtime:Expected exported function "missing"'), true);
+    assertEquals(
+      (results[0]?.diagnostics ?? [])[0]?.includes('runtime:Expected exported function "missing"'),
+      true,
+    );
   } finally {
     await Deno.remove(manifestFile).catch(() => {});
   }
 });
 
 Deno.test('test262 harness fails exact runtime-failure assertions on the wrong message', async () => {
-  const { runManifest } = await import('./test262/harness.ts');
+  const { runManifest } = await import('./harness.ts');
   const manifestFile = await Deno.makeTempFile({
-    dir: join(Deno.cwd(), 'test', 'test262'),
+    dir: join(Deno.cwd(), 'tests', 'test262'),
     prefix: 'temp-manifest-',
     suffix: '.json',
   });
@@ -879,14 +890,17 @@ Deno.test('test262 harness fails exact runtime-failure assertions on the wrong m
       source: 'runtime',
       messageIncludes: 'Ambiguous exported function',
     });
-    assertEquals((results[0]?.diagnostics ?? [])[0]?.includes('runtime:Expected exported function "missing"'), true);
+    assertEquals(
+      (results[0]?.diagnostics ?? [])[0]?.includes('runtime:Expected exported function "missing"'),
+      true,
+    );
   } finally {
     await Deno.remove(manifestFile).catch(() => {});
   }
 });
 
 Deno.test('test262 harness rejects asserted entries without provenance', async () => {
-  const { loadManifest } = await import('./test262/harness.ts');
+  const { loadManifest } = await import('./harness.ts');
   const tempDirectory = await Deno.makeTempDir({ prefix: 'sound-test262-missing-provenance-' });
   const invalidManifestPath = join(tempDirectory, 'manifest.json');
 
@@ -917,20 +931,20 @@ Deno.test('test262 harness rejects asserted entries without provenance', async (
 });
 
 Deno.test('test262 harness materializes directory-backed cases into a multi-file temp project', async () => {
-  const { materializeCaseProject } = await import('./test262/harness.ts');
+  const { materializeCaseProject } = await import('./harness.ts');
 
   const projectDirectory = await materializeCaseProject(manifestPath, 'cases/pass-now/import-call');
   try {
     assertEquals(
       await Deno.readTextFile(join(projectDirectory, 'src', 'index.ts')),
       await Deno.readTextFile(
-        join(Deno.cwd(), 'test', 'test262', 'cases', 'pass-now', 'import-call', 'index.ts'),
+        join(Deno.cwd(), 'tests', 'test262', 'cases', 'pass-now', 'import-call', 'index.ts'),
       ),
     );
     assertEquals(
       await Deno.readTextFile(join(projectDirectory, 'src', 'helpers.ts')),
       await Deno.readTextFile(
-        join(Deno.cwd(), 'test', 'test262', 'cases', 'pass-now', 'import-call', 'helpers.ts'),
+        join(Deno.cwd(), 'tests', 'test262', 'cases', 'pass-now', 'import-call', 'helpers.ts'),
       ),
     );
   } finally {
@@ -941,7 +955,7 @@ Deno.test('test262 harness materializes directory-backed cases into a multi-file
 Deno.test('test262 manifest batches execute correctly in isolated subprocesses', async () => {
   await removeBatchManifestScratchFiles();
   await removeTest262ProjectTempDirs();
-  const { loadManifest } = await import('./test262/harness.ts');
+  const { loadManifest } = await import('./harness.ts');
   const manifest = await loadManifest(manifestPath) as ManifestEntryShape[];
   const batchScratchBefore = await countBatchManifestScratchFiles();
   const tempProjectsBefore = await countTest262ProjectTempDirs();
@@ -967,7 +981,7 @@ Deno.test('test262 manifest batches execute correctly in isolated subprocesses',
 });
 
 Deno.test('test262 harness executes the focused regression subset and keeps recent migrations asserted', async () => {
-  const { loadManifest } = await import('./test262/harness.ts');
+  const { loadManifest } = await import('./harness.ts');
 
   await removeBatchManifestScratchFiles();
   await removeTest262ProjectTempDirs();

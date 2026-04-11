@@ -5,7 +5,7 @@ import { probeFamily } from './probe_family.ts';
 
 Deno.test('probe_family classifies positive cases as green, right_red, or needs_adapter', async () => {
   const manifestPath = await Deno.makeTempFile({
-    dir: join(Deno.cwd(), 'test', 'test262'),
+    dir: join(Deno.cwd(), 'tests', 'test262'),
     prefix: 'temp-probe-family-',
     suffix: '.json',
   });
@@ -87,7 +87,7 @@ Deno.test('probe_family classifies positive cases as green, right_red, or needs_
 
 Deno.test('probe_family classifies negative cases using exact failure matching', async () => {
   const manifestPath = await Deno.makeTempFile({
-    dir: join(Deno.cwd(), 'test', 'test262'),
+    dir: join(Deno.cwd(), 'tests', 'test262'),
     prefix: 'temp-probe-family-',
     suffix: '.json',
   });
@@ -152,7 +152,8 @@ Deno.test('probe_family classifies module-completion cases as right_red when all
       JSON.stringify([
         {
           test: 'cases/raw/top-level.js',
-          note: 'Module-completion positive cases should classify clean compiler blockers as right_red.',
+          note:
+            'Module-completion positive cases should classify clean compiler blockers as right_red.',
           provenance: {
             kind: 'local',
             detail: 'Probe regression fixture.',

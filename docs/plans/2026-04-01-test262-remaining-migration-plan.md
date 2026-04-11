@@ -15,7 +15,7 @@ This plan does **not** cover compiler/runtime implementation work to turn assert
 
 ## Current Baseline
 
-Current corpus state in `test/test262/manifest.json`:
+Current corpus state in `tests/test262/manifest.json`:
 
 - `2503` tracked total cases
 - `1691` asserted cases
@@ -53,10 +53,10 @@ Each migration batch should execute in this order:
 4. Probe the batch through the real harness before asserting.
 5. Assert every case in that family whose expectation and provenance are honest.
 6. Leave only provenance-blocked cases pending.
-7. Update the asserted-count gate in `test/test262_test.ts`.
+7. Update the asserted-count gate in `tests/test262/test262_test.ts`.
 8. Verify with:
-   - `deno test -A --unstable-worker-options test/test262_test.ts --filter 'test262 harness loads the seeded manifest'`
-   - `deno test -A --unstable-worker-options test/test262_test.ts --filter 'test262 manifest batches execute correctly in isolated subprocesses'`
+   - `deno test -A --unstable-worker-options tests/test262/test262_test.ts --filter 'test262 harness loads the seeded manifest'`
+   - `deno test -A --unstable-worker-options tests/test262/test262_test.ts --filter 'test262 manifest batches execute correctly in isolated subprocesses'`
    - `git diff --check`
    - `find "${TMPDIR:-/tmp}" -maxdepth 1 -type d -name 'sound-test262-project-*' | wc -l`
 9. Commit and push after every verified batch.

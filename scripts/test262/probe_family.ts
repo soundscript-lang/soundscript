@@ -3,8 +3,8 @@ import type {
   Test262CaseResult,
   Test262ExpectedFailure,
   Test262ManifestEntry,
-} from '../../test/test262/harness.ts';
-import { loadManifest } from '../../test/test262/harness.ts';
+} from '../../tests/test262/harness.ts';
+import { loadManifest } from '../../tests/test262/harness.ts';
 import {
   matchesExpectedFailure,
   parseCandidateManifestEntryMetadata,
@@ -90,7 +90,7 @@ function classifyNegativeResult(
 
 async function runManifestInSubprocess(manifestPath: string): Promise<Test262CaseResult[]> {
   const command = new Deno.Command(Deno.execPath(), {
-    args: ['run', '-A', resolveRepoPath('test/test262/run_manifest.ts'), manifestPath],
+    args: ['run', '-A', resolveRepoPath('tests/test262/run_manifest.ts'), manifestPath],
     cwd: Deno.cwd(),
     stdout: 'piped',
     stderr: 'piped',
@@ -111,7 +111,10 @@ export async function probeFamily(manifestPath: string): Promise<ProbeFamilyRepo
   const rawManifest = JSON.parse(await Deno.readTextFile(resolvedManifestPath)) as unknown[];
   const results = await runManifestInSubprocess(resolvedManifestPath);
 
-  if (!Array.isArray(rawManifest) || rawManifest.length !== manifest.length || results.length !== manifest.length) {
+  if (
+    !Array.isArray(rawManifest) || rawManifest.length !== manifest.length ||
+    results.length !== manifest.length
+  ) {
     throw new Error('Candidate manifest shape drifted during probing.');
   }
 
@@ -162,7 +165,10 @@ if (import.meta.main) {
   const report = await probeFamily(options.manifestPath);
 
   if (options.outputPath) {
-    await Deno.writeTextFile(resolveRepoPath(options.outputPath), JSON.stringify(report, null, 2) + '\n');
+    await Deno.writeTextFile(
+      resolveRepoPath(options.outputPath),
+      JSON.stringify(report, null, 2) + '\n',
+    );
   } else {
     console.log(JSON.stringify(report, null, 2));
   }
