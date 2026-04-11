@@ -56,4 +56,9 @@ These are the docs that currently describe unfinished work or release-hardening 
 - `docs/reference/2026-03-29-machine-numerics-reference.md`
 - `docs/reference/2026-03-30-js-value-types-plan.md`
 - `docs/reference/2026-03-31-macro-execution-model.md`
-- `docs/reference/test262-policy.md`
+
+## Project Docs
+
+- `docs/project/layout.md`
+- `docs/project/roadmap.md`
+- `docs/project/test262-policy.md`
