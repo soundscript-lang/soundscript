@@ -3,7 +3,7 @@
 ## Goal
 
 Record the remaining **JS-host interop** work for `wasm-browser` and `wasm-node` as a concrete
-companion to `docs/plans/2026-04-05-remaining-compiler-roadmap.md`.
+companion to `docs/plans/compiler-roadmap.md`.
 
 This addendum exists because the remaining compiler roadmap correctly identifies host-boundary
 generalization as a major blocker, but the JS-host slice needs its own explicit sequencing and
@@ -40,7 +40,7 @@ This addendum does not cover:
 ## Current Direction
 
 This plan inherits the target split already established in
-`docs/plans/2026-03-29-runtime-target-platform-and-interop-plan.md`:
+`docs/plans/runtime-target-platform-and-interop.md`:
 
 - `js-browser` and `js-node`
   - direct JS module imports/exports
@@ -381,10 +381,10 @@ Recommended execution order inside the broader remaining compiler roadmap:
 7. browser/node parity close-out
 
 This work should run primarily as the JS-host-specific implementation of workstream 2 and part of
-workstream 3 from `docs/plans/2026-04-05-remaining-compiler-roadmap.md`.
+workstream 3 from `docs/plans/compiler-roadmap.md`.
 
 ## Related Plans
 
-- `docs/plans/2026-04-05-remaining-compiler-roadmap.md`
-- `docs/plans/2026-03-29-runtime-target-platform-and-interop-plan.md`
-- `docs/plans/2026-03-29-wasm-async-runtime-and-host-integration-plan.md`
+- `docs/plans/compiler-roadmap.md`
+- `docs/plans/runtime-target-platform-and-interop.md`
+- `docs/plans/wasm-async-runtime-and-host-integration.md`

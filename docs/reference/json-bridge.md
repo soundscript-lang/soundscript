@@ -146,4 +146,4 @@ Host JSON APIs may still be used internally for ordinary fast paths, but correct
 handling belongs to `sts:json` itself.
 
 For a practical overview of how JSON boundaries fit into service code, see
-[Idiomatic SoundScript](./guides/idiomatic-soundscript.md).
+[Idiomatic SoundScript](../guides/idiomatic-soundscript.md).

@@ -32,6 +32,9 @@ The intended end state is:
   corpora.
 - `docs/README.md` is the docs hub, with material split by purpose under `docs/reference/`,
   `docs/guides/`, `docs/architecture/`, `docs/plans/`, and `docs/project/`.
+- only `docs/README.md` and `docs/diagnostics.md` should live at docs root
+- use stable topic slugs for active docs; do not encode dates in active plan or reference
+  filenames
 - `examples/` contains only genuine runnable examples with a clear teaching purpose.
 - `media/brand/` becomes the single source of truth for checked-in brand assets.
 

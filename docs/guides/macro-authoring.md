@@ -147,7 +147,7 @@ annotations. This is the supported way to build declaration-shape-driven macros 
 TypeScript syntax directly.
 
 For a practical library-building walkthrough using `ctx.reflect` plus raw annotation reflection, see
-[Building Annotation-Driven Libraries](./guides/building-annotation-driven-libraries.md).
+[Building Annotation-Driven Libraries](./building-annotation-driven-libraries.md).
 
 ## Minimal Example
 
@@ -499,11 +499,11 @@ Not part of the stable public macro surface:
 
 ## Related Docs
 
-- [Annotation Spec](./annotation-spec.md)
-- [JSON Bridge](./json-bridge.md)
-- [Idiomatic SoundScript](./guides/idiomatic-soundscript.md)
-- [Derive Macros](./derive-macros.md)
-- [soundscript V1 User Contract](./v1-user-contract.md)
+- [Annotation Spec](../reference/annotation-spec.md)
+- [JSON Bridge](../reference/json-bridge.md)
+- [Idiomatic SoundScript](./idiomatic-soundscript.md)
+- [Derive Macros](../reference/derive-macros.md)
+- [soundscript V1 User Contract](../reference/v1-user-contract.md)
 - Soundstage packages now live in the separate Soundstage repository.
-- [Macro Authoring Example](../examples/macro-authoring/README.md)
-- [Macro Authoring User Macro Example](../examples/macro-authoring/src/user_macro_module.macro.sts)
+- [Macro Authoring Example](../../examples/macro-authoring/README.md)
+- [Macro Authoring User Macro Example](../../examples/macro-authoring/src/user_macro_module.macro.sts)

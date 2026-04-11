@@ -3,7 +3,7 @@
 > Status: `reference` Scope: Supporting design rationale for non-ordinary-object handling,
 > boundary-only dynamic values, and builtin-produced null-prototype values. Last reviewed:
 > `2026-03-09` Superseded by: `docs/architecture/spec.md` See also:
-> `docs/reference/2026-03-07-javascript-soundness-hazard-rubric-design.md`
+> `docs/architecture/javascript-soundness-hazard-rubric.md`
 >
 > Note: `docs/architecture/spec.md` now records the canonical current design. This file remains
 > useful as rationale for non-ordinary-object handling, module-namespace policy, and future

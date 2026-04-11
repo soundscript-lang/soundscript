@@ -327,8 +327,8 @@ The following are intentionally out of scope for the current annotation system:
 
 ## Related Docs
 
-- [Advanced Effects Guide](./guides/advanced-effects.md)
-- [Macro Authoring](./macro-authoring.md)
-- [Nominal Types, Newtypes, And Class Identity](./reference/2026-03-27-nominal-types-newtypes-and-class-identity.md)
-- [JS Value Types Plan](./reference/2026-03-30-js-value-types-plan.md)
+- [Advanced Effects Guide](../guides/advanced-effects.md)
+- [Macro Authoring](../guides/macro-authoring.md)
+- [Nominal Types, Newtypes, And Class Identity](../plans/nominal-types-and-class-identity.md)
+- [JS Value Types Plan](../plans/js-value-types.md)
 - [soundscript V1 User Contract](./v1-user-contract.md)

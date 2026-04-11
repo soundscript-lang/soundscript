@@ -4,8 +4,8 @@ This note records the current macro execution model as implemented for v1 harden
 
 It is the detailed reference companion to:
 
-- [Macro Authoring](../macro-authoring.md)
-- [soundscript V1 User Contract](../v1-user-contract.md)
+- [Macro Authoring](../guides/macro-authoring.md)
+- [soundscript V1 User Contract](../reference/v1-user-contract.md)
 - [SPEC](../architecture/spec.md)
 
 ## Short Version

@@ -39,9 +39,9 @@ The stable stdlib surface is intentionally small:
 - `sts:typeclasses` owning `Functor`, `Applicative`, `Monad`, `AsyncMonad`, and `Do`
 
 For a module-by-module overview of the stable and experimental builtin surfaces, see
-[docs/reference/builtin-modules.md](docs/reference/builtin-modules.md). For a practical guide to
+[docs/reference/builtin-modules.md](./builtin-modules.md). For a practical guide to
 readonly-first code, `Try`, validation, and JSON boundaries, see
-[docs/guides/idiomatic-soundscript.md](docs/guides/idiomatic-soundscript.md).
+[docs/guides/idiomatic-soundscript.md](../guides/idiomatic-soundscript.md).
 
 ## Runtime Contract
 
@@ -54,7 +54,7 @@ The strong soundness claim discussed in `docs/architecture/spec.md` is narrower 
 v1 product surface. It applies only to fully Soundscript-authored `.sts` code, including
 source-published `.sts` packages analyzed from source, and it excludes JS/TS interop, foreign
 `.d.ts`, and `// #[unsafe]` proof overrides. The maintained ownership ledger for that claim lives in
-`docs/soundness-ownership-ledger.md`.
+`docs/project/soundness-ownership-ledger.md`.
 
 ## Not Part Of Stable V1
 
@@ -220,7 +220,7 @@ It does not apply to:
 For compile targets that are in scope, checker/compiler parity is part of the contract: accepted
 fully Soundscript-authored programs must either compile successfully or fail with an explicit
 compiler-owned target-availability diagnostic. The maintained ownership record for those families
-lives in `docs/soundness-ownership-ledger.md`.
+lives in `docs/project/soundness-ownership-ledger.md`.
 
 ## Remaining Rough Edges
 
@@ -272,7 +272,7 @@ excluded from the stable v1 contract.
 When users do opt into the experimental compiler, the current compile-target contract is still
 explicit rather than best-effort: representative checker-accepted Soundscript families must either
 compile successfully or reject with the intended compiler-owned diagnostic or target gate described
-in `docs/soundness-ownership-ledger.md`.
+in `docs/project/soundness-ownership-ledger.md`.
 
 For automation and editor integrations, the CLI supports `text`, `json`, and `ndjson` output for
 `build`, `check`, and `expand`, plus `soundscript explain <code>` for soundscript-owned diagnostics.

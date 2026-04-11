@@ -64,9 +64,9 @@ ownership is confirmed.
 
 ## CLI And Docs
 
-1. Keep `README.md`, `docs/v1-user-contract.md`, `docs/diagnostics.md`, and
-   `docs/soundness-ownership-ledger.md` aligned with the shipped v1 surface.
-2. Keep `docs/macro-authoring.md` aligned with the shipped public macro surface.
+1. Keep `README.md`, `docs/reference/v1-user-contract.md`, `docs/diagnostics.md`, and
+   `docs/project/soundness-ownership-ledger.md` aligned with the shipped v1 surface.
+2. Keep `docs/guides/macro-authoring.md` aligned with the shipped public macro surface.
 3. If any canonical language or tooling reference changed in this repo, update the mirrored public
    reference page in the website repo (`https://github.com/soundscript-lang/website`) before
    release.

@@ -3,7 +3,7 @@
 This guide is for library authors and teams that want to design their own effect taxonomies, not
 just consume the standard `fails` / `suspend` / `mut` / `host` umbrellas.
 
-The canonical surface is still [`docs/annotation-spec.md`](../annotation-spec.md). This guide is
+The canonical surface is still [`docs/reference/annotation-spec.md`](../reference/annotation-spec.md). This guide is
 about how to use that surface well.
 
 ## Mental Model
@@ -178,5 +178,5 @@ So the practical naming rule is:
 
 ## Related Docs
 
-- [Annotation Spec](../annotation-spec.md)
-- [2026-04-01 Effect System V1 Plan](../plans/2026-04-01-effect-system-v1-plan.md)
+- [Annotation Spec](../reference/annotation-spec.md)
+- [Effect System V1 Plan](../plans/effect-system-v1.md)

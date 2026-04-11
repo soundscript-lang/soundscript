@@ -32,16 +32,16 @@ Open planning lives in `docs/plans/`.
 
 The current active planning set is:
 
-- `docs/plans/2026-03-22-beta-to-v1-prd-roadmap.md`
-- `docs/plans/2026-04-01-effect-system-v1-plan.md`
-- `docs/plans/2026-03-29-runtime-target-platform-and-interop-plan.md`
-- `docs/plans/2026-03-29-wasm-async-runtime-and-host-integration-plan.md`
-- `docs/plans/2026-04-01-test262-remaining-migration-plan.md`
+- `docs/plans/beta-to-v1-roadmap.md`
+- `docs/plans/effect-system-v1.md`
+- `docs/plans/runtime-target-platform-and-interop.md`
+- `docs/plans/wasm-async-runtime-and-host-integration.md`
+- `docs/plans/test262-migration.md`
 
 Key supporting rationale lives in `docs/reference/`, especially:
 
-- `docs/reference/2026-03-07-javascript-soundness-hazard-rubric-design.md`
-- `docs/reference/2026-03-07-exotic-object-quarantine-design.md`
+- `docs/architecture/javascript-soundness-hazard-rubric.md`
+- `docs/architecture/exotic-object-quarantine.md`
 
 ## Product Direction
 
@@ -247,7 +247,7 @@ The main open workstreams are:
   runtime-family ownership, `#[value]`, machine numerics, and the wider compiler subset
 - docs-first runtime target, extern-pack, and platform clarification for the public target/runtime
   matrix
-- beta/v1 hardening work from `docs/plans/2026-03-22-beta-to-v1-prd-roadmap.md`, especially
+- beta/v1 hardening work from `docs/plans/beta-to-v1-roadmap.md`, especially
   performance, config fidelity, Node typings, docs/examples, and release confidence gates
 - remaining stdlib hardening and package/interop work, especially around projected declaration
   boundaries and wrapper recovery
@@ -355,11 +355,11 @@ be stable.
 
 - `docs/architecture/spec.md`
 - `docs/README.md`
-- `docs/plans/2026-04-01-effect-system-v1-plan.md`
-- `docs/plans/2026-03-29-runtime-target-platform-and-interop-plan.md`
-- `docs/plans/2026-03-29-wasm-async-runtime-and-host-integration-plan.md`
-- `docs/reference/2026-03-27-nominal-types-newtypes-and-class-identity.md`
-- `docs/reference/2026-03-30-js-value-types-plan.md`
+- `docs/plans/effect-system-v1.md`
+- `docs/plans/runtime-target-platform-and-interop.md`
+- `docs/plans/wasm-async-runtime-and-host-integration.md`
+- `docs/plans/nominal-types-and-class-identity.md`
+- `docs/plans/js-value-types.md`
 
 ## Summary
 

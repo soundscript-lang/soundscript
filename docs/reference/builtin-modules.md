@@ -95,4 +95,4 @@ For most application code, start with this order:
 ## See Also
 
 - [Idiomatic SoundScript](../guides/idiomatic-soundscript.md)
-- [V1 User Contract](../v1-user-contract.md)
+- [V1 User Contract](./v1-user-contract.md)

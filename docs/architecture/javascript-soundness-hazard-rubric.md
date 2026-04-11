@@ -3,7 +3,7 @@
 > Status: `reference` Scope: Supporting design rationale for how `soundscript` classifies JavaScript
 > soundness hazards into keep-and-model, interop-boundary-only, ban, or conservative-typing
 > responses. Last reviewed: `2026-03-09` Superseded by: `docs/architecture/spec.md` See also:
-> `docs/reference/2026-03-07-exotic-object-quarantine-design.md`
+> `docs/architecture/exotic-object-quarantine.md`
 >
 > Note: `docs/architecture/spec.md` now records the canonical current design. This file remains
 > useful as supporting rationale and prioritization context; it is not the normative design source.

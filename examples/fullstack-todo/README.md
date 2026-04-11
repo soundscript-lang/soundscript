@@ -2,16 +2,16 @@
 
 This example is the first checked-in fullstack skeleton that uses both Soundscript Wasm targets:
 
-- [src/server.sts](/Users/jakemccloskey/repos/soundscript-lang/soundscript/examples/fullstack-todo/src/server.sts) is a real `wasm-node` SSR entry using real `express`, real `react-dom/server`, and real `react-router`.
-- [src/client.sts](/Users/jakemccloskey/repos/soundscript-lang/soundscript/examples/fullstack-todo/src/client.sts) is a real `wasm-browser` root entry using real `react-dom/client` and real `react-router-dom`.
-- [src/app.sts](/Users/jakemccloskey/repos/soundscript-lang/soundscript/examples/fullstack-todo/src/app.sts) is shared between both entries.
+- [src/server.sts](./src/server.sts) is a real `wasm-node` SSR entry using real `express`, real `react-dom/server`, and real `react-router`.
+- [src/client.sts](./src/client.sts) is a real `wasm-browser` root entry using real `react-dom/client` and real `react-router-dom`.
+- [src/app.sts](./src/app.sts) is shared between both entries.
 
 ## Run It
 
 1. Install the example packages:
 
 ```bash
-cd /Users/jakemccloskey/repos/soundscript-lang/soundscript/examples/fullstack-todo
+cd examples/fullstack-todo
 npm install
 ```
 

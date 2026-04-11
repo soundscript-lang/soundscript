@@ -248,7 +248,7 @@ runtime semantics. The main remaining rough edges are:
   platform model
 
 The release-facing contract for those boundaries is in
-[docs/v1-user-contract.md](docs/v1-user-contract.md).
+[docs/reference/v1-user-contract.md](docs/reference/v1-user-contract.md).
 
 ## Example
 
@@ -359,4 +359,4 @@ Start here:
 - [docs/architecture/spec.md](docs/architecture/spec.md)
 - [docs/project/roadmap.md](docs/project/roadmap.md)
 - [docs/README.md](docs/README.md)
-- [docs/v1-user-contract.md](docs/v1-user-contract.md)
+- [docs/reference/v1-user-contract.md](docs/reference/v1-user-contract.md)

@@ -972,7 +972,7 @@ For compile targets that are in scope, checker/compiler parity is part of the cl
 accepted fully Soundscript-authored programs must either lower successfully or be rejected by an
 explicit compiler-owned target-availability diagnostic.
 
-The maintained owner ledger for that claim lives in `docs/soundness-ownership-ledger.md`, including
+The maintained owner ledger for that claim lives in `docs/project/soundness-ownership-ledger.md`, including
 the owning suites and matrix axes for each currently owned semantic family.
 
 ### Current Implementation Status Snapshot
