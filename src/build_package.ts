@@ -23,7 +23,10 @@ import {
   toSourceFileName,
 } from './frontend/project_frontend.ts';
 import { captureTypeScriptDeclarationOutputs } from './frontend/typescript_effect_declarations.ts';
-import { loadSoundScriptPackageInfo, type SoundScriptPackageInfo } from './soundscript_packages.ts';
+import {
+  loadSoundScriptPackageInfo,
+  type SoundScriptPackageInfo,
+} from './project/soundscript_packages.ts';
 import {
   copyFile,
   fileExistsSync,
@@ -37,7 +40,7 @@ import {
   transpilePreparedSoundscriptModuleToEsm,
   transpileTypeScriptModuleToEsm,
 } from './runtime/transform.ts';
-import { SOUNDSCRIPT_RUNTIME_PACKAGE_NAME } from './soundscript_runtime_specifiers.ts';
+import { SOUNDSCRIPT_RUNTIME_PACKAGE_NAME } from './project/soundscript_runtime_specifiers.ts';
 
 const DECLARATION_CAPTURE_OUT_DIR = '/__soundscript_build_types__';
 

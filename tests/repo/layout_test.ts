@@ -120,3 +120,21 @@ Deno.test('diagnostic helpers move out of src root once reorganized', () => {
     'src/diagnostics/diagnostic_reference.ts is missing.',
   );
 });
+
+Deno.test('project helpers move out of src root once reorganized', () => {
+  const srcRootFiles = listFileNames(SRC_ROOT);
+
+  for (
+    const fileName of [
+      'soundscript_files.ts',
+      'soundscript_packages.ts',
+      'soundscript_runtime_specifiers.ts',
+    ]
+  ) {
+    assert(!srcRootFiles.includes(fileName), `${fileName} should live under src/project/.`);
+    assert(
+      Deno.statSync(join(SRC_ROOT, 'project', fileName)).isFile,
+      `src/project/${fileName} is missing.`,
+    );
+  }
+});

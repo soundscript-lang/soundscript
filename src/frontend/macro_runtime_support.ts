@@ -3,7 +3,7 @@ import ts from 'typescript';
 import {
   builtinRuntimeImportSpecifier,
   isBuiltinRuntimeModuleSpecifier,
-} from '../soundscript_runtime_specifiers.ts';
+} from '../project/soundscript_runtime_specifiers.ts';
 import { dirname, join, normalize, relative } from '../platform/path.ts';
 import type { MacroRuntimeImportRequest } from './macro_output.ts';
 import type { PreparedProgram } from './project_frontend.ts';

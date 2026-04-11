@@ -18,8 +18,8 @@ import {
   STS_HASH_MODULE_SPECIFIER,
   STS_HKT_MODULE_SPECIFIER,
   STS_JSON_MODULE_SPECIFIER,
-  STS_METADATA_MODULE_SPECIFIER,
   STS_MATCH_MODULE_SPECIFIER,
+  STS_METADATA_MODULE_SPECIFIER,
   STS_NUMERICS_MODULE_SPECIFIER,
   STS_PRELUDE_MODULE_SPECIFIER,
   STS_RANDOM_MODULE_SPECIFIER,
@@ -29,7 +29,7 @@ import {
   STS_TYPECLASSES_MODULE_SPECIFIER,
   STS_URL_MODULE_SPECIFIER,
   STS_VALUE_MODULE_SPECIFIER,
-} from '../soundscript_runtime_specifiers.ts';
+} from '../project/soundscript_runtime_specifiers.ts';
 import { captureTypeScriptDeclarationOutputs } from './typescript_effect_declarations.ts';
 import {
   HOST_DOM_DECLARATION_FILE,
@@ -282,7 +282,10 @@ function getGeneratedStdlibDeclarationTexts(): ReadonlyMap<string, string> {
   const sourceFileBySpecifier = new Map<string, string>([
     [STDLIB_MODULE_SPECIFIER, toStdlibSourceFilePath(STDLIB_DECLARATION_FILE)],
     [HKT_STDLIB_MODULE_SPECIFIER, toStdlibSourceFilePath(HKT_STDLIB_DECLARATION_FILE)],
-    [TYPECLASSES_STDLIB_MODULE_SPECIFIER, toStdlibSourceFilePath(TYPECLASSES_STDLIB_DECLARATION_FILE)],
+    [
+      TYPECLASSES_STDLIB_MODULE_SPECIFIER,
+      toStdlibSourceFilePath(TYPECLASSES_STDLIB_DECLARATION_FILE),
+    ],
     [RESULT_STDLIB_MODULE_SPECIFIER, toStdlibSourceFilePath(RESULT_STDLIB_DECLARATION_FILE)],
     [VALUE_STDLIB_MODULE_SPECIFIER, toStdlibSourceFilePath(VALUE_STDLIB_DECLARATION_FILE)],
     [MATCH_STDLIB_MODULE_SPECIFIER, toStdlibSourceFilePath(MATCH_STDLIB_DECLARATION_FILE)],
@@ -306,10 +309,12 @@ function getGeneratedStdlibDeclarationTexts(): ReadonlyMap<string, string> {
     [GRAPHQL_STDLIB_MODULE_SPECIFIER, toStdlibSourceFilePath(GRAPHQL_STDLIB_DECLARATION_FILE)],
     ...(
       fileExists(toStdlibSourceFilePath(COMPONENT_STDLIB_DECLARATION_FILE))
-        ? [[
-          COMPONENT_STDLIB_MODULE_SPECIFIER,
-          toStdlibSourceFilePath(COMPONENT_STDLIB_DECLARATION_FILE),
-        ] as const]
+        ? [
+          [
+            COMPONENT_STDLIB_MODULE_SPECIFIER,
+            toStdlibSourceFilePath(COMPONENT_STDLIB_DECLARATION_FILE),
+          ] as const,
+        ]
         : []
     ),
     [DEBUG_STDLIB_MODULE_SPECIFIER, toStdlibSourceFilePath(DEBUG_STDLIB_DECLARATION_FILE)],

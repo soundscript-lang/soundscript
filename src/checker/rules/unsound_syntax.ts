@@ -14,7 +14,7 @@ import {
   type UnsupportedFeatureDiagnosticText,
   type UnsupportedFeatureKind,
 } from '../unsupported_feature_messages.ts';
-import { isForeignSourceFile } from '../../soundscript_packages.ts';
+import { isForeignSourceFile } from '../../project/soundscript_packages.ts';
 
 import {
   getResolvedBuiltinSignatureInfo,
@@ -181,8 +181,7 @@ function createThrowNonErrorDiagnostic(
         `The thrown value has type '${thrownType}', but soundscript only permits \`Error\`-family throws.`,
         `Example: ${example}`,
       ],
-      hint:
-        'Wrap the payload in `Error` or a concrete `Error` subclass before throwing.',
+      hint: 'Wrap the payload in `Error` or a concrete `Error` subclass before throwing.',
     },
   );
 }
@@ -227,7 +226,9 @@ function getAmbientRuntimeDeclarationInfo(
     const firstDeclaration = node.declarationList.declarations[0];
     return {
       kind: 'const declaration',
-      name: firstDeclaration && ts.isIdentifier(firstDeclaration.name) ? firstDeclaration.name.text : undefined,
+      name: firstDeclaration && ts.isIdentifier(firstDeclaration.name)
+        ? firstDeclaration.name.text
+        : undefined,
     };
   }
 
@@ -267,7 +268,9 @@ function createAmbientRuntimeRequiresExternDiagnostic(
         example,
       },
       notes: [
-        `This local ambient runtime declaration introduces \`${info.name ?? 'this name'}\` without a site-local extern boundary.`,
+        `This local ambient runtime declaration introduces \`${
+          info.name ?? 'this name'
+        }\` without a site-local extern boundary.`,
         `Example: ${example}`,
       ],
       hint:
@@ -297,7 +300,9 @@ function createAmbientRuntimeExportDiagnostic(
         replacementFamily: 'ambient_surface_split_or_real_implementation',
         evidence: [
           { label: 'declarationKind', value: declarationInfo.kind },
-          ...(declarationInfo.name ? [{ label: 'declarationName', value: declarationInfo.name }] : []),
+          ...(declarationInfo.name
+            ? [{ label: 'declarationName', value: declarationInfo.name }]
+            : []),
           { label: 'exportForm', value: info.exportForm },
         ],
         counterexample:
@@ -305,7 +310,9 @@ function createAmbientRuntimeExportDiagnostic(
         example,
       },
       notes: [
-        `This ambient runtime declaration exports \`${declarationInfo.name ?? 'this name'}\` from a soundscript module even though there is no local implementation.`,
+        `This ambient runtime declaration exports \`${
+          declarationInfo.name ?? 'this name'
+        }\` from a soundscript module even though there is no local implementation.`,
         `Example: ${example}`,
       ],
       hint:
@@ -913,7 +920,8 @@ function typeHasFunctionLikeBrand(
 
   const normalized = checker.getBaseTypeOfLiteralType(type);
   if (
-    hasFunctionLikeTypeName(normalized.aliasSymbol) || hasFunctionLikeTypeName(normalized.getSymbol())
+    hasFunctionLikeTypeName(normalized.aliasSymbol) ||
+    hasFunctionLikeTypeName(normalized.getSymbol())
   ) {
     return true;
   }
@@ -1285,8 +1293,12 @@ function getAmbientRuntimeExportDiagnostic(
     ) {
       const declarationNode = symbol.declarations
         ?.filter((declaration) => declaration.getSourceFile() === node.getSourceFile())
-        .map((declaration) => getAmbientRuntimeDeclarationFromSymbolDeclaration(context, declaration))
-        .find((declaration): declaration is AmbientRuntimeDeclarationNode => declaration !== undefined);
+        .map((declaration) =>
+          getAmbientRuntimeDeclarationFromSymbolDeclaration(context, declaration)
+        )
+        .find((declaration): declaration is AmbientRuntimeDeclarationNode =>
+          declaration !== undefined
+        );
       if (declarationNode) {
         return {
           declarationNode,
@@ -1314,8 +1326,12 @@ function getAmbientRuntimeExportDiagnostic(
     ) {
       const declarationNode = symbol.declarations
         ?.filter((declaration) => declaration.getSourceFile() === node.getSourceFile())
-        .map((declaration) => getAmbientRuntimeDeclarationFromSymbolDeclaration(context, declaration))
-        .find((declaration): declaration is AmbientRuntimeDeclarationNode => declaration !== undefined);
+        .map((declaration) =>
+          getAmbientRuntimeDeclarationFromSymbolDeclaration(context, declaration)
+        )
+        .find((declaration): declaration is AmbientRuntimeDeclarationNode =>
+          declaration !== undefined
+        );
       if (declarationNode) {
         return {
           declarationNode,
@@ -2003,7 +2019,10 @@ function getUnsupportedFeatureDiagnostic(
       node,
     );
     if (bannedPrimitiveConversionHookCallNode) {
-      return unsupportedFeature(bannedPrimitiveConversionHookCallNode, 'primitiveConversionHookCall');
+      return unsupportedFeature(
+        bannedPrimitiveConversionHookCallNode,
+        'primitiveConversionHookCall',
+      );
     }
 
     if (
@@ -2450,7 +2469,9 @@ export function runUnsoundSyntaxRules(context: AnalysisContext): SoundDiagnostic
         node,
       );
       if (ambientRequiresExternDeclaration) {
-        diagnostics.push(createAmbientRuntimeRequiresExternDiagnostic(ambientRequiresExternDeclaration));
+        diagnostics.push(
+          createAmbientRuntimeRequiresExternDiagnostic(ambientRequiresExternDeclaration),
+        );
         return;
       }
 

@@ -6,7 +6,7 @@ import {
   isSoundscriptSourceFile,
   isTypeScriptFamilySoundscriptAliasFile,
   normalizeConfiguredSoundscriptFileNames,
-} from './soundscript_files.ts';
+} from './project/soundscript_files.ts';
 
 export type OutputFormat = 'json' | 'ndjson' | 'text';
 export type InitMode = 'existing' | 'new';
@@ -471,7 +471,10 @@ function collectConfiguredSoundscriptRootNames(
   soundscriptConfiguredFileNames: ReadonlySet<string>;
   soundscriptRootNames: readonly string[];
 } {
-  const authoredSoundscriptRootNames = collectAuthoredSoundscriptRootNames(projectPath, commandLine);
+  const authoredSoundscriptRootNames = collectAuthoredSoundscriptRootNames(
+    projectPath,
+    commandLine,
+  );
   const configuredSoundscriptRootNames = collectConfiguredSoundscriptAliasRootNames(
     projectPath,
     commandLine,

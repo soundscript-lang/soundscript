@@ -1,11 +1,11 @@
 import ts from 'typescript';
 
-import { resolveHostDeclarationFile } from './frontend/host_declaration_resolution.ts';
+import { resolveHostDeclarationFile } from '../frontend/host_declaration_resolution.ts';
 import {
   isSoundscriptProtocolSpecifier,
   SOUNDSCRIPT_RUNTIME_PACKAGE_NAME,
 } from './soundscript_runtime_specifiers.ts';
-import { dirname, isAbsolute, join, normalize } from './platform/path.ts';
+import { dirname, isAbsolute, join, normalize } from '../platform/path.ts';
 
 export interface SoundScriptPackageExportInfo {
   exportKey: string;

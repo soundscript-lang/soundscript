@@ -5,7 +5,7 @@ import { dirname, join } from '../platform/path.ts';
 import { SOUND_DIAGNOSTIC_CODES } from '../checker/engine/diagnostic_codes.ts';
 import { describeUnsupportedFeature } from '../checker/unsupported_feature_messages.ts';
 import * as publicMacroApi from '../macros.ts';
-import { getSoundScriptPackageExportInfoForResolvedModule } from '../soundscript_packages.ts';
+import { getSoundScriptPackageExportInfoForResolvedModule } from '../project/soundscript_packages.ts';
 
 import type { MacroDefinition } from './macro_api.ts';
 import { getLoadedMacroDefinitionMetadata } from './macro_api_internal.ts';
