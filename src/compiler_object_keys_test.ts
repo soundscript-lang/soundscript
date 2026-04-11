@@ -36,11 +36,12 @@ import {
 } from './compiler_test_helpers.ts';
 
 const compilerObjectKeysTest = createIsolatedTestRegistrar(import.meta.url);
+const compilerSmokeProject = 'tests/fixtures/projects/compiler-smoke';
 
 compilerObjectKeysTest(
   'compileProject compiles the checked-in compiler smoke example with honest specialized, fallback, and Object.keys evidence',
   async () => {
-    const moduleIR = lowerCheckedInProjectToCompilerIR('examples/compiler-smoke');
+    const moduleIR = lowerCheckedInProjectToCompilerIR(compilerSmokeProject);
     const pairToBag = moduleIR.functions.find((func) => func.name === 'pairToBag');
     const observeBagBoundary = moduleIR.functions.find((func) =>
       func.name === 'observeBagBoundary'
@@ -71,7 +72,7 @@ compilerObjectKeysTest(
     ): operation is CompilerRuntimeAdaptObjectValueIR =>
       operation.kind === 'adapt_value' && operation.family === 'object'
     );
-    const { projectDirectory, result } = compileCheckedInProject('examples/compiler-smoke');
+    const { projectDirectory, result } = compileCheckedInProject(compilerSmokeProject);
 
     assertEquals(
       pairToBag?.heapResultRepresentation,
