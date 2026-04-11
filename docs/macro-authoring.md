@@ -505,5 +505,5 @@ Not part of the stable public macro surface:
 - [Derive Macros](./derive-macros.md)
 - [soundscript V1 User Contract](./v1-user-contract.md)
 - Soundstage packages now live in the separate Soundstage repository.
-- [Manual Macro Example](../examples/manual-test/README.md)
-- [Manual User Macro Example](../examples/manual-test/src/user_macro_module.macro.sts)
+- [Macro Authoring Example](../examples/macro-authoring/README.md)
+- [Macro Authoring User Macro Example](../examples/macro-authoring/src/user_macro_module.macro.sts)

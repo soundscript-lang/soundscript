@@ -31,9 +31,9 @@ async function createTempProject(files: Readonly<Record<string, string>>): Promi
 
 const REPO_ROOT = dirname(dirname(dirname(fromFileUrl(import.meta.url))));
 
-async function stageManualExampleProject(): Promise<string> {
-  const sourceDirectory = join(REPO_ROOT, 'examples/manual-test');
-  const tempDirectory = await Deno.makeTempDir({ prefix: 'soundscript-manual-example-' });
+async function stageMacroAuthoringExampleProject(): Promise<string> {
+  const sourceDirectory = join(REPO_ROOT, 'examples/macro-authoring');
+  const tempDirectory = await Deno.makeTempDir({ prefix: 'soundscript-macro-authoring-' });
 
   for await (const entry of Deno.readDir(sourceDirectory)) {
     const sourcePath = join(sourceDirectory, entry.name);
@@ -50,7 +50,7 @@ async function stageManualExampleProject(): Promise<string> {
       continue;
     }
 
-    if (!entry.isFile || entry.name === 'manual_macros_test.ts') {
+    if (!entry.isFile) {
       continue;
     }
 
@@ -603,8 +603,8 @@ Deno.test('analyzeProject keeps pure .ts projects on ordinary TS semantics', asy
   assertEquals(result.diagnostics, []);
 });
 
-Deno.test('analyzeProject keeps the checked-in manual example editor-clean', async () => {
-  const tempDirectory = await stageManualExampleProject();
+Deno.test('analyzeProject keeps the checked-in macro authoring example editor-clean', async () => {
+  const tempDirectory = await stageMacroAuthoringExampleProject();
   const result = await analyzeProject({
     projectPath: join(tempDirectory, 'tsconfig.json'),
     workingDirectory: tempDirectory,

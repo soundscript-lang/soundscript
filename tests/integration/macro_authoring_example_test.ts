@@ -7,10 +7,11 @@ import {
   writeInstalledStdlibPackage,
 } from '../../src/test_installed_stdlib.ts';
 
-const EXAMPLE_DIRECTORY = dirname(fromFileUrl(import.meta.url));
+const REPO_ROOT = dirname(dirname(dirname(fromFileUrl(import.meta.url))));
+const EXAMPLE_DIRECTORY = join(REPO_ROOT, 'examples', 'macro-authoring');
 
 async function stageExampleProject(): Promise<string> {
-  const workspace = await Deno.makeTempDir({ prefix: 'soundscript-manual-example-' });
+  const workspace = await Deno.makeTempDir({ prefix: 'soundscript-macro-authoring-' });
 
   for await (const entry of Deno.readDir(EXAMPLE_DIRECTORY)) {
     const sourcePath = join(EXAMPLE_DIRECTORY, entry.name);
@@ -26,7 +27,7 @@ async function stageExampleProject(): Promise<string> {
       continue;
     }
 
-    if (!entry.isFile || entry.name === 'manual_macros_test.ts') {
+    if (!entry.isFile) {
       continue;
     }
 
@@ -41,13 +42,13 @@ async function stageExampleProject(): Promise<string> {
   return workspace;
 }
 
-Deno.test('manual macro example expands and runs Try under Deno', async () => {
-  const outDir = await Deno.makeTempDir({ prefix: 'soundscript-manual-macros-' });
+Deno.test('macro authoring example expands and runs Try under Deno', async () => {
+  const outDir = await Deno.makeTempDir({ prefix: 'soundscript-macro-authoring-stdlib-' });
   const workspace = await stageExampleProject();
 
   const result = await expandProject({
     outDir,
-    projectPath: join(workspace, 'tsconfig.macros.json'),
+    projectPath: join(workspace, 'tsconfig.json'),
     workingDirectory: workspace,
   });
 
@@ -65,13 +66,13 @@ Deno.test('manual macro example expands and runs Try under Deno', async () => {
   assertEquals(emittedModule.describeDivision(9, 3), 'ok');
 });
 
-Deno.test('manual user-defined macro example expands and runs through sts:macros', async () => {
-  const outDir = await Deno.makeTempDir({ prefix: 'soundscript-manual-user-macros-' });
+Deno.test('macro authoring example expands and runs user-defined macros through sts:macros', async () => {
+  const outDir = await Deno.makeTempDir({ prefix: 'soundscript-macro-authoring-user-' });
   const workspace = await stageExampleProject();
 
   const result = await expandProject({
     outDir,
-    projectPath: join(workspace, 'tsconfig.macros.json'),
+    projectPath: join(workspace, 'tsconfig.json'),
     workingDirectory: workspace,
   });
 
