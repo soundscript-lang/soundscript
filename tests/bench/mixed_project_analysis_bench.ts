@@ -7,7 +7,7 @@ import { join } from '@std/path';
 import {
   analyzePreparedProject,
   prepareProjectAnalysis,
-} from '../src/checker/analyze_project.ts';
+} from '../../src/checker/analyze_project.ts';
 
 const STS_FILE_COUNT = 12;
 const TS_FILE_COUNT = 24;

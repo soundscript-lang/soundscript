@@ -54,11 +54,11 @@ copied to `src/index.ts` or `src/index.js`, matching the original extension.
 
 ## Runtime substrate evidence
 
-`test/runtime_substrate_bench.ts` is a scaffold for future heap/runtime substrate evidence only.
+`tests/bench/runtime_substrate_bench.ts` is a scaffold for future heap/runtime substrate evidence only.
 
 - Semantic-equivalence evidence should come from real `test262`-style cases that can be exercised
   through both specialized and fallback paths with the same observable outcome.
-- Performance evidence should come from `deno bench test/runtime_substrate_bench.ts`, recorded with
+- Performance evidence should come from `deno bench tests/bench/runtime_substrate_bench.ts`, recorded with
   raw output plus machine/runtime details.
 - Only like-for-like benchmark variants are comparable. A fixed-layout object path should only be
   compared against another object path modeling the same operation under a different runtime layout.
