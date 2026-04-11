@@ -32,12 +32,12 @@ import {
   getDiagnosticDocsUrl,
   type MachineDiagnostic,
   toMachineDiagnostic,
-} from './diagnostic_metadata.ts';
+} from './diagnostics/diagnostic_metadata.ts';
 import {
   type DiagnosticRepairExample,
   type DiagnosticSuggestion,
   getDiagnosticReference,
-} from './diagnostic_reference.ts';
+} from './diagnostics/diagnostic_reference.ts';
 import {
   createTempDirectory,
   fileExistsSync,

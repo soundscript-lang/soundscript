@@ -4,6 +4,7 @@ import { fromFileUrl, join } from '@std/path';
 const REPO_ROOT = fromFileUrl(new URL('../../', import.meta.url));
 const DOCS_ROOT = join(REPO_ROOT, 'docs');
 const EXAMPLES_ROOT = join(REPO_ROOT, 'examples');
+const SRC_ROOT = join(REPO_ROOT, 'src');
 const STABLE_DOC_FILENAME = /^\d{4}-\d{2}-\d{2}-/;
 const LOCAL_ABSOLUTE_MARKDOWN_LINK = /\]\((?:file:\/\/)?\/Users\/[^)]+\)/;
 
@@ -97,4 +98,25 @@ Deno.test('repo docs avoid local absolute markdown links', () => {
   );
 
   assertEquals(failures, []);
+});
+
+Deno.test('diagnostic helpers move out of src root once reorganized', () => {
+  const srcRootFiles = listFileNames(SRC_ROOT);
+
+  assert(
+    !srcRootFiles.includes('diagnostic_metadata.ts'),
+    'diagnostic_metadata.ts should live under src/diagnostics/.',
+  );
+  assert(
+    !srcRootFiles.includes('diagnostic_reference.ts'),
+    'diagnostic_reference.ts should live under src/diagnostics/.',
+  );
+  assert(
+    Deno.statSync(join(SRC_ROOT, 'diagnostics', 'diagnostic_metadata.ts')).isFile,
+    'src/diagnostics/diagnostic_metadata.ts is missing.',
+  );
+  assert(
+    Deno.statSync(join(SRC_ROOT, 'diagnostics', 'diagnostic_reference.ts')).isFile,
+    'src/diagnostics/diagnostic_reference.ts is missing.',
+  );
 });

@@ -1,6 +1,6 @@
-import { relative } from './platform/path.ts';
+import { relative } from '../platform/path.ts';
 
-import type { MergedDiagnostic } from './checker/diagnostics.ts';
+import type { MergedDiagnostic } from '../checker/diagnostics.ts';
 import { type DiagnosticSuggestion, getDiagnosticReference } from './diagnostic_reference.ts';
 
 export const DIAGNOSTICS_DOCS_BASE_URL =
