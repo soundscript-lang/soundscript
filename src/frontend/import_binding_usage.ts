@@ -1,6 +1,9 @@
 import ts from 'typescript';
 
-import { createAnnotationLookup, type ParsedAnnotationValue } from '../annotation_syntax.ts';
+import {
+  createAnnotationLookup,
+  type ParsedAnnotationValue,
+} from '../language/annotation_syntax.ts';
 import type { SourceSpan } from './macro_types.ts';
 
 export type ImportedBindingUsage = 'compileTimeOnly' | 'mixed' | 'runtimeOnly';
@@ -209,7 +212,9 @@ function stripImportedBindings(
     let keptNamedBindings = namedBindings;
 
     if (namedBindings && ts.isNamespaceImport(namedBindings)) {
-      keptNamedBindings = strippedImportNames.has(namedBindings.name.text) ? undefined : namedBindings;
+      keptNamedBindings = strippedImportNames.has(namedBindings.name.text)
+        ? undefined
+        : namedBindings;
     }
 
     if (namedBindings && ts.isNamedImports(namedBindings)) {

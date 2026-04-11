@@ -21,7 +21,7 @@ import {
 } from '../checker/engine/diagnostic_codes.ts';
 import { describeUnsupportedFeature } from '../checker/unsupported_feature_messages.ts';
 import { measureCheckerTiming } from '../checker/timing.ts';
-import { BUILTIN_DIRECTIVE_NAMES, createAnnotationLookup } from '../annotation_syntax.ts';
+import { BUILTIN_DIRECTIVE_NAMES, createAnnotationLookup } from '../language/annotation_syntax.ts';
 import {
   getSoundScriptPackageExportInfoForResolvedModule,
   isForeignPackageSourceFile,

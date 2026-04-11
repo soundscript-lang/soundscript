@@ -1,6 +1,6 @@
 import ts from 'typescript';
 
-import { createAnnotationLookup } from '../annotation_syntax.ts';
+import { createAnnotationLookup } from '../language/annotation_syntax.ts';
 import { normalizeRuntimeContext, type RuntimeContext } from '../config.ts';
 import { pathExistsSync, readBytesSync, readTextFileSync, runtimeEnv } from '../platform/host.ts';
 import { dirname, isAbsolute, join, normalize } from '../platform/path.ts';

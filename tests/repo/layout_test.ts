@@ -157,3 +157,15 @@ Deno.test('editor helpers move out of src root once reorganized', () => {
     );
   }
 });
+
+Deno.test('language helpers move out of src root once reorganized', () => {
+  const srcRootFiles = listFileNames(SRC_ROOT);
+
+  for (const fileName of ['annotation_syntax.ts', 'value_deep_safe.ts']) {
+    assert(!srcRootFiles.includes(fileName), `${fileName} should live under src/language/.`);
+    assert(
+      Deno.statSync(join(SRC_ROOT, 'language', fileName)).isFile,
+      `src/language/${fileName} is missing.`,
+    );
+  }
+});

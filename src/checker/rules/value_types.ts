@@ -1,11 +1,11 @@
 import ts from 'typescript';
 
-import type { ParsedAnnotation } from '../../annotation_syntax.ts';
+import type { ParsedAnnotation } from '../../language/annotation_syntax.ts';
 import {
   deepValueClassDeclarationIsValid,
   resolveAliasedSymbol,
   typeNodeIsDeepSafe,
-} from '../../value_deep_safe.ts';
+} from '../../language/value_deep_safe.ts';
 import { SOUND_DIAGNOSTIC_CODES, SOUND_DIAGNOSTIC_MESSAGES } from '../engine/diagnostic_codes.ts';
 import type { AnalysisContext } from '../engine/types.ts';
 import type { SoundDiagnostic } from '../diagnostics.ts';
@@ -73,7 +73,8 @@ function declarationIsValidDeepValueClass(
 ): boolean {
   return deepValueClassDeclarationIsValid(declaration, {
     checker: context.checker,
-    hasDeepValueAnnotation: (innerDeclaration) => declarationIsDeepValueClass(context, innerDeclaration),
+    hasDeepValueAnnotation: (innerDeclaration) =>
+      declarationIsDeepValueClass(context, innerDeclaration),
   });
 }
 
@@ -219,10 +220,13 @@ function validateConstructorShape(
 
   if (deep) {
     for (const field of fields) {
-      if (field.type && !typeNodeIsDeepSafe(field.type, {
-        checker: context.checker,
-        isDeepValueClassDeclaration: (declaration) => declarationIsValidDeepValueClass(context, declaration),
-      })) {
+      if (
+        field.type && !typeNodeIsDeepSafe(field.type, {
+          checker: context.checker,
+          isDeepValueClassDeclaration: (declaration) =>
+            declarationIsValidDeepValueClass(context, declaration),
+        })
+      ) {
         diagnostics.push(
           createDiagnostic(
             sourceFile,

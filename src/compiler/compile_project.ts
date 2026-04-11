@@ -1,7 +1,7 @@
 import ts from 'typescript';
 import { dirname, relative } from '../platform/path.ts';
 
-import { createAnnotationLookup } from '../annotation_syntax.ts';
+import { createAnnotationLookup } from '../language/annotation_syntax.ts';
 import { createSoundStdlibCompilerHost } from '../bundled/sound_stdlib.ts';
 import {
   type CompilerDiagnostic,
@@ -150,16 +150,17 @@ function remapPreparedDiagnosticRange<T extends MergedDiagnostic | DiagnosticRel
       filePath: remappedFilePath,
     } as T;
     if (hasRelatedInformation(diagnostic)) {
-      (remappedDiagnostic as MergedDiagnostic).relatedInformation = diagnostic.relatedInformation?.map(
-        (relatedInformation) =>
-          remapPreparedDiagnosticRange(
-            relatedInformation,
-            relatedInformation.filePath
-              ? diagnosticPreparedFiles.get(toSourceFileName(relatedInformation.filePath))
-              : undefined,
-            diagnosticPreparedFiles,
-          ),
-      );
+      (remappedDiagnostic as MergedDiagnostic).relatedInformation = diagnostic.relatedInformation
+        ?.map(
+          (relatedInformation) =>
+            remapPreparedDiagnosticRange(
+              relatedInformation,
+              relatedInformation.filePath
+                ? diagnosticPreparedFiles.get(toSourceFileName(relatedInformation.filePath))
+                : undefined,
+              diagnosticPreparedFiles,
+            ),
+        );
     }
     return remappedDiagnostic;
   }
@@ -189,18 +190,19 @@ function remapPreparedDiagnosticRange<T extends MergedDiagnostic | DiagnosticRel
     endColumn: mappedEnd.character + 1,
   } as T;
   if (hasRelatedInformation(diagnostic)) {
-    (remappedDiagnostic as MergedDiagnostic).relatedInformation = diagnostic.relatedInformation?.map(
-      (relatedInformation) => {
-        const relatedPreparedFile = relatedInformation.filePath
-          ? diagnosticPreparedFiles.get(toSourceFileName(relatedInformation.filePath))
-          : undefined;
-        return remapPreparedDiagnosticRange(
-          relatedInformation,
-          relatedPreparedFile,
-          diagnosticPreparedFiles,
-        );
-      },
-    );
+    (remappedDiagnostic as MergedDiagnostic).relatedInformation = diagnostic.relatedInformation
+      ?.map(
+        (relatedInformation) => {
+          const relatedPreparedFile = relatedInformation.filePath
+            ? diagnosticPreparedFiles.get(toSourceFileName(relatedInformation.filePath))
+            : undefined;
+          return remapPreparedDiagnosticRange(
+            relatedInformation,
+            relatedPreparedFile,
+            diagnosticPreparedFiles,
+          );
+        },
+      );
   }
   return remappedDiagnostic;
 }

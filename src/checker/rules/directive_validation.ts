@@ -1,6 +1,9 @@
 import ts from 'typescript';
 
-import { BUILTIN_DIRECTIVE_NAMES, type AnnotationLookup } from '../../annotation_syntax.ts';
+import {
+  type AnnotationLookup,
+  BUILTIN_DIRECTIVE_NAMES,
+} from '../../language/annotation_syntax.ts';
 import { SOUND_DIAGNOSTIC_CODES, SOUND_DIAGNOSTIC_MESSAGES } from '../engine/diagnostic_codes.ts';
 import type {
   AnalysisContext,
@@ -80,9 +83,7 @@ function resolveReferencedTypeSymbol(
     | ts.TypeReferenceNode,
 ): ts.Symbol | undefined {
   const symbol = ts.isImportTypeNode(typeNode)
-    ? typeNode.qualifier
-      ? context.checker.getSymbolAtLocation(typeNode.qualifier)
-      : undefined
+    ? typeNode.qualifier ? context.checker.getSymbolAtLocation(typeNode.qualifier) : undefined
     : ts.isTypeReferenceNode(typeNode)
     ? context.checker.getSymbolAtLocation(typeNode.typeName)
     : ts.isTypeQueryNode(typeNode)
@@ -92,7 +93,9 @@ function resolveReferencedTypeSymbol(
     return undefined;
   }
 
-  return (symbol.flags & ts.SymbolFlags.Alias) !== 0 ? context.checker.getAliasedSymbol(symbol) : symbol;
+  return (symbol.flags & ts.SymbolFlags.Alias) !== 0
+    ? context.checker.getAliasedSymbol(symbol)
+    : symbol;
 }
 
 function signatureCarriesProofOracle(
@@ -102,7 +105,7 @@ function signatureCarriesProofOracle(
 ): boolean {
   const signature = context.checker.getSignatureFromDeclaration(declaration);
   return (signature !== undefined &&
-      context.checker.getTypePredicateOfSignature(signature) !== undefined) ||
+    context.checker.getTypePredicateOfSignature(signature) !== undefined) ||
     (!!declaration.type &&
       typeNodeCarriesProofOracle(context, declaration.type, seenSymbols));
 }
@@ -122,23 +125,29 @@ function symbolCarriesProofOracle(
       continue;
     }
 
-    if (ts.isTypeAliasDeclaration(declaration) &&
-      typeNodeCarriesProofOracle(context, declaration.type, seenSymbols)) {
+    if (
+      ts.isTypeAliasDeclaration(declaration) &&
+      typeNodeCarriesProofOracle(context, declaration.type, seenSymbols)
+    ) {
       return true;
     }
 
-    if ((ts.isInterfaceDeclaration(declaration) || ts.isClassDeclaration(declaration)) &&
-      declarationMembersCarryProofOracle(context, declaration.members, seenSymbols)) {
+    if (
+      (ts.isInterfaceDeclaration(declaration) || ts.isClassDeclaration(declaration)) &&
+      declarationMembersCarryProofOracle(context, declaration.members, seenSymbols)
+    ) {
       return true;
     }
 
-    if ((ts.isInterfaceDeclaration(declaration) || ts.isClassDeclaration(declaration)) &&
+    if (
+      (ts.isInterfaceDeclaration(declaration) || ts.isClassDeclaration(declaration)) &&
       declaration.heritageClauses?.some((clause) =>
         clause.types.some((type) => {
           const symbol = resolveReferencedTypeSymbol(context, type);
           return !!symbol && symbolCarriesProofOracle(context, symbol, seenSymbols);
         })
-      )) {
+      )
+    ) {
       return true;
     }
   }
@@ -233,7 +242,8 @@ function typeNodeCarriesProofOracle(
   }
 
   if (
-    ts.isTypeReferenceNode(typeNode) || ts.isImportTypeNode(typeNode) || ts.isTypeQueryNode(typeNode)
+    ts.isTypeReferenceNode(typeNode) || ts.isImportTypeNode(typeNode) ||
+    ts.isTypeQueryNode(typeNode)
   ) {
     const symbol = resolveReferencedTypeSymbol(context, typeNode);
     return !!symbol && symbolCarriesProofOracle(context, symbol, seenSymbols);
@@ -262,11 +272,11 @@ function classDeclarationCarriesProofOracle(
 ): boolean {
   return declarationMembersCarryProofOracle(context, targetNode.members, new Set<ts.Symbol>()) ||
     targetNode.heritageClauses?.some((clause) =>
-      clause.types.some((type) => {
-        const symbol = resolveReferencedTypeSymbol(context, type);
-        return !!symbol && symbolCarriesProofOracle(context, symbol, new Set<ts.Symbol>());
-      })
-    ) === true;
+        clause.types.some((type) => {
+          const symbol = resolveReferencedTypeSymbol(context, type);
+          return !!symbol && symbolCarriesProofOracle(context, symbol, new Set<ts.Symbol>());
+        })
+      ) === true;
 }
 
 function isExternTargetNode(
@@ -332,11 +342,9 @@ function splitMacroOwnedAnnotationName(annotationName: string): { owner: string 
   }
 
   const owner = annotationName.slice(0, dotIndex);
-  return BUILTIN_DIRECTIVE_NAMES.has(owner)
-    ? null
-    : {
-      owner,
-    };
+  return BUILTIN_DIRECTIVE_NAMES.has(owner) ? null : {
+    owner,
+  };
 }
 
 function createUnknownAnnotationMessage(annotation: ParsedAnnotation): string {
@@ -383,8 +391,7 @@ function createMalformedAnnotationDiagnostic(
         `Parser detail: ${parseError}`,
         `Example: ${example}`,
       ],
-      hint:
-        'Rewrite the malformed comment as a complete `// #[...]` annotation, or remove it.',
+      hint: 'Rewrite the malformed comment as a complete `// #[...]` annotation, or remove it.',
     },
   );
 }
@@ -467,8 +474,7 @@ function createDuplicateAnnotationDiagnostic(
         `\`${label}\` appears ${occurrenceCount} times in the same attached annotation block.`,
         `Example: ${example}`,
       ],
-      hint:
-        'Keep a single annotation entry for each name in the attached block.',
+      hint: 'Keep a single annotation entry for each name in the attached block.',
     },
   );
 }
@@ -497,7 +503,9 @@ function createAnnotationArgumentsNotSupportedDiagnostic(
   annotation: ParsedAnnotation,
 ): SoundDiagnostic {
   const label = `#[${annotation.name}]`;
-  const argumentsText = annotation.argumentsText !== undefined ? `(${annotation.argumentsText})` : '()';
+  const argumentsText = annotation.argumentsText !== undefined
+    ? `(${annotation.argumentsText})`
+    : '()';
   const supportedForm = describeSupportedAnnotationArguments(annotation.name);
   const example = annotation.name === 'effects'
     ? 'Use `#[effects(forbid: [fails])]` on a bodyful callable, `#[effects(add: [host.io], forward: [callback])]` on a declaration-only callable, or `#[effects(forbid: [fails])]` on a function-valued parameter.'
@@ -648,7 +656,10 @@ function findMacroOwnedAnnotationOwner(targetNode: ts.Node): ts.Node | undefined
   return undefined;
 }
 
-function createInvalidMacroOwnedAnnotationTargetMessage(annotationName: string, ownerName: string): string {
+function createInvalidMacroOwnedAnnotationTargetMessage(
+  annotationName: string,
+  ownerName: string,
+): string {
   return `${SOUND_DIAGNOSTIC_MESSAGES.invalidAnnotationTarget} \`#[${annotationName}]\` must attach to a declaration annotated with \`#[${ownerName}]\` or to a supported member inside one.`;
 }
 
@@ -693,8 +704,10 @@ function describeAnnotationTargetNode(targetNode: ts.Node | undefined): string {
     return 'variable declaration';
   }
 
-  if (ts.isImportDeclaration(targetNode) || ts.isImportClause(targetNode) ||
-    ts.isImportEqualsDeclaration(targetNode)) {
+  if (
+    ts.isImportDeclaration(targetNode) || ts.isImportClause(targetNode) ||
+    ts.isImportEqualsDeclaration(targetNode)
+  ) {
     return 'import declaration';
   }
 
@@ -906,7 +919,11 @@ function validateAnnotationBlock(
     }
 
     if (annotation.name === 'effects') {
-      const effectValidationError = validateEffectsAnnotation(context, block.targetNode, annotation);
+      const effectValidationError = validateEffectsAnnotation(
+        context,
+        block.targetNode,
+        annotation,
+      );
       if (effectValidationError) {
         diagnostics.push(
           createInvalidEffectAnnotationDiagnostic(

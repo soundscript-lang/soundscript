@@ -1,6 +1,6 @@
 import ts from 'typescript';
 
-import { BUILTIN_DIRECTIVE_NAMES, createAnnotationLookup } from '../annotation_syntax.ts';
+import { BUILTIN_DIRECTIVE_NAMES, createAnnotationLookup } from '../language/annotation_syntax.ts';
 import { scanMacroCandidates } from './macro_scanner.ts';
 import type {
   MacroGeneratedSpan,
@@ -75,7 +75,10 @@ function scriptKindForFile(fileName: string): ts.ScriptKind {
 
 function collectImportedMacroBindings(
   sourceFile: ts.SourceFile,
-  importedMacroSiteKindsBySpecifier: ReadonlyMap<string, ReadonlyMap<string, ImportedMacroSiteKind>>,
+  importedMacroSiteKindsBySpecifier: ReadonlyMap<
+    string,
+    ReadonlyMap<string, ImportedMacroSiteKind>
+  >,
 ): ImportedMacroBindings {
   const callNames = new Set<string>();
   const tagNames = new Set<string>();
@@ -201,7 +204,11 @@ function isMacroDeclarationTarget(
 function findAnnotationSites(
   annotationLookup: ReturnType<typeof createAnnotationLookup>,
   sourceFile: ts.SourceFile,
-  node: ts.ClassDeclaration | ts.FunctionDeclaration | ts.InterfaceDeclaration | ts.TypeAliasDeclaration,
+  node:
+    | ts.ClassDeclaration
+    | ts.FunctionDeclaration
+    | ts.InterfaceDeclaration
+    | ts.TypeAliasDeclaration,
   annotationNames: ReadonlySet<string>,
 ): readonly MacroSite[] {
   if (annotationNames.size === 0) {
@@ -209,9 +216,10 @@ function findAnnotationSites(
   }
 
   const block = annotationLookup.getAttachedAnnotationBlock(node);
-  const matchedAnnotations = block?.annotations.filter((annotation) =>
-    annotation.nameRange && annotationNames.has(annotation.name)
-  ) ?? [];
+  const matchedAnnotations =
+    block?.annotations.filter((annotation) =>
+      annotation.nameRange && annotationNames.has(annotation.name)
+    ) ?? [];
   if (!block || matchedAnnotations.length === 0) {
     return [];
   }
@@ -246,7 +254,10 @@ function findAnnotationSites(
 
 function collectMacroSites(
   sourceFile: ts.SourceFile,
-  importedMacroSiteKindsBySpecifier: ReadonlyMap<string, ReadonlyMap<string, ImportedMacroSiteKind>>,
+  importedMacroSiteKindsBySpecifier: ReadonlyMap<
+    string,
+    ReadonlyMap<string, ImportedMacroSiteKind>
+  >,
   alwaysAvailableMacroSiteKinds: ReadonlyMap<string, ImportedMacroSiteKind>,
 ): readonly MacroSite[] {
   const bindings = collectImportedMacroBindings(sourceFile, importedMacroSiteKindsBySpecifier);
@@ -405,7 +416,10 @@ function buildRewriteResult(
 export function rewriteMacroSource(
   fileName: string,
   text: string,
-  importedMacroSiteKindsBySpecifier: ReadonlyMap<string, ReadonlyMap<string, ImportedMacroSiteKind>> = new Map(),
+  importedMacroSiteKindsBySpecifier: ReadonlyMap<
+    string,
+    ReadonlyMap<string, ImportedMacroSiteKind>
+  > = new Map(),
   alwaysAvailableMacroSiteKinds: ReadonlyMap<string, ImportedMacroSiteKind> = new Map(),
 ): RewriteResult {
   const legacyHashes = scanMacroCandidates(fileName, text).hashes.filter((hash) =>

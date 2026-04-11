@@ -1,6 +1,6 @@
 import ts from 'typescript';
 
-import { type AnnotationLookup, createAnnotationLookup } from '../../annotation_syntax.ts';
+import { type AnnotationLookup, createAnnotationLookup } from '../../language/annotation_syntax.ts';
 import { normalizeRuntimeContext } from '../../config.ts';
 import { isForeignSourceFile } from '../../project/soundscript_packages.ts';
 import { createAnalysisFactStore } from './facts.ts';

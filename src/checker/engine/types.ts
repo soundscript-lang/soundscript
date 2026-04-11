@@ -1,5 +1,8 @@
 import ts from 'typescript';
-import type { AnnotationLookup, ParsedAnnotationArgument } from '../../annotation_syntax.ts';
+import type {
+  AnnotationLookup,
+  ParsedAnnotationArgument,
+} from '../../language/annotation_syntax.ts';
 import type { RuntimeContext } from '../../config.ts';
 export type {
   AnnotationLookup,
@@ -9,7 +12,7 @@ export type {
   ParsedAnnotationEntry,
   ParsedAnnotationParseError,
   ParsedTypeScriptPragma,
-} from '../../annotation_syntax.ts';
+} from '../../language/annotation_syntax.ts';
 
 export type AnalysisFactKind =
   | 'symbolProvenance'

@@ -164,7 +164,9 @@ function constructorShapeIsValid(
   for (const [index, field] of fields.entries()) {
     const parameter = constructor.parameters[index];
     const statement = statements[index];
-    if (!parameter || !statement || !ts.isIdentifier(field.name) || !ts.isIdentifier(parameter.name)) {
+    if (
+      !parameter || !statement || !ts.isIdentifier(field.name) || !ts.isIdentifier(parameter.name)
+    ) {
       return false;
     }
 

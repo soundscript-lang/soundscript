@@ -1,6 +1,6 @@
 import ts from 'typescript';
 
-import type { ParsedAnnotation, ParsedAnnotationValue } from '../../annotation_syntax.ts';
+import type { ParsedAnnotation, ParsedAnnotationValue } from '../../language/annotation_syntax.ts';
 import type { AnalysisContext, EffectNameFact, EffectRewriteFact } from '../engine/types.ts';
 import { isPublicEffectName } from './masks.ts';
 import { normalizeEffectNames } from './names.ts';
