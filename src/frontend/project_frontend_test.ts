@@ -12,7 +12,7 @@ import {
   VALUE_ROUTES,
   type ValueMode,
 } from '../../tests/support/value_matrix.ts';
-import { createInstalledStdlibPackageFiles } from '../test_installed_stdlib.ts';
+import { createInstalledStdlibPackageFiles } from '../../tests/support/test_installed_stdlib.ts';
 import { transpilePreparedSoundscriptModuleToEsm } from '../runtime/transform.ts';
 import { createBuiltinExpandedProgram as createBuiltinExpandedProgramRaw } from './builtin_macro_support.ts';
 import { installTestDisposableCleanup } from './builtin_expanded_program_test_cleanup.ts';

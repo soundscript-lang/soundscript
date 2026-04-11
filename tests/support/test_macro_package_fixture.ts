@@ -1,4 +1,4 @@
-import { join } from './platform/path.ts';
+import { join } from '../../src/platform/path.ts';
 
 export interface TestMacroPackageFile {
   readonly contents: string;

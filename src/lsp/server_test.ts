@@ -5,7 +5,7 @@ import { createServer } from './server.ts';
 import {
   maybeNormalizeTsconfigForInstalledStdlib,
   writeInstalledStdlibPackage,
-} from '../test_installed_stdlib.ts';
+} from '../../tests/support/test_installed_stdlib.ts';
 import { createMemoryTransportPair } from './transport.ts';
 
 const SEMANTIC_TOKEN_TYPES = [
@@ -1708,7 +1708,8 @@ Deno.test('LSP server preserves trusted value imports from local .ts modules in 
 Deno.test('LSP server projects mixed value imports from local .ts modules to unknown at use sites in reduced bridge mode', async () => {
   const workspace = await createWorkspace();
   await writeWorkspaceFiles(workspace, {
-    'src/types.ts': 'export interface Environment {}\nexport const literalSchema: any = {};\nexport const a: any = 1;\n',
+    'src/types.ts':
+      'export interface Environment {}\nexport const literalSchema: any = {};\nexport const a: any = 1;\n',
   });
 
   const { client, startPromise } = await initializeServer(workspace, {
@@ -1794,7 +1795,8 @@ Deno.test('LSP server does not report stray any diagnostics for projected local 
     250,
     'Timed out waiting for reduced-bridge .sts publishDiagnostics before projected local .ts value diagnostics.',
   );
-  const diagnostics = (notification.params as { diagnostics?: Array<{ code?: string }> }).diagnostics ?? [];
+  const diagnostics =
+    (notification.params as { diagnostics?: Array<{ code?: string }> }).diagnostics ?? [];
   assertEquals(diagnostics.some((diagnostic) => diagnostic.code === 'SOUND1001'), false);
 
   await shutdownServer(client, startPromise);
@@ -1860,7 +1862,8 @@ Deno.test('LSP server projects value import bindings from local .ts modules to u
 Deno.test('LSP server projects mixed value import bindings from local .ts modules to unknown in reduced bridge mode', async () => {
   const workspace = await createWorkspace();
   await writeWorkspaceFiles(workspace, {
-    'src/types.ts': 'export interface Environment {}\nexport const literalSchema: any = {};\nexport const a: any = 1;\n',
+    'src/types.ts':
+      'export interface Environment {}\nexport const literalSchema: any = {};\nexport const a: any = 1;\n',
   });
 
   const { client, startPromise } = await initializeServer(workspace, {
@@ -7151,8 +7154,10 @@ Deno.test('LSP server publishes structured diagnostic metadata in data', async (
   assertEquals(params.diagnostics[0]?.data?.metadata?.rule, 'unsound_import_boundary');
   assertEquals(params.diagnostics[0]?.data?.metadata?.replacementFamily, 'interop_boundary');
   assertEquals(params.diagnostics[0]?.data?.metadata?.fixability, 'boundary_annotation');
-  assertEquals(params.diagnostics[0]?.data?.hint, 
-    'Add `// #[interop]` immediately above the import boundary and validate the imported value before it flows deeper into soundscript.');
+  assertEquals(
+    params.diagnostics[0]?.data?.hint,
+    'Add `// #[interop]` immediately above the import boundary and validate the imported value before it flows deeper into soundscript.',
+  );
   assertEquals(params.diagnostics[0]?.data?.notes, [
     'Values imported from ordinary `.ts`, JavaScript, or declaration-only modules remain outside checked soundscript code until an explicit interop boundary acknowledges the trust boundary.',
     'Example: // #[interop]\nimport { value } from "./lib";',
@@ -7299,7 +7304,10 @@ Deno.test('LSP server publishes receiver-sensitive diagnostic metadata in data',
   assertEquals(params.diagnostics[0]?.code, 'SOUND1035');
   assertEquals(params.diagnostics[0]?.data?.metadata?.rule, 'receiver_sensitive_callable_value');
   assertEquals(params.diagnostics[0]?.data?.metadata?.primarySymbol, 'read');
-  assertEquals(params.diagnostics[0]?.data?.metadata?.replacementFamily, 'receiver_preserving_wrapper');
+  assertEquals(
+    params.diagnostics[0]?.data?.metadata?.replacementFamily,
+    'receiver_preserving_wrapper',
+  );
   assertEquals(params.diagnostics[0]?.data?.metadata?.fixability, 'local_rewrite');
   assertEquals(
     params.diagnostics[0]?.data?.hint,
@@ -7476,7 +7484,10 @@ Deno.test('LSP server publishes ambient extern diagnostic metadata in data', asy
   assertEquals(params.diagnostics[0]?.code, 'SOUND1029');
   assertEquals(params.diagnostics[0]?.data?.metadata?.rule, 'ambient_runtime_requires_extern');
   assertEquals(params.diagnostics[0]?.data?.metadata?.primarySymbol, 'envName');
-  assertEquals(params.diagnostics[0]?.data?.metadata?.replacementFamily, 'site_local_extern_boundary');
+  assertEquals(
+    params.diagnostics[0]?.data?.metadata?.replacementFamily,
+    'site_local_extern_boundary',
+  );
   assertEquals(params.diagnostics[0]?.data?.metadata?.fixability, 'boundary_annotation');
   assertEquals(
     params.diagnostics[0]?.data?.hint,

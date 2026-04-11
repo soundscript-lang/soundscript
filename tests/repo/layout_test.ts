@@ -169,3 +169,21 @@ Deno.test('language helpers move out of src root once reorganized', () => {
     );
   }
 });
+
+Deno.test('test support helpers do not live under src root', () => {
+  const srcRootFiles = listFileNames(SRC_ROOT);
+
+  for (
+    const fileName of [
+      'test_installed_stdlib.ts',
+      'test_installed_stdlib_test.ts',
+      'test_macro_package_fixture.ts',
+    ]
+  ) {
+    assert(!srcRootFiles.includes(fileName), `${fileName} should not live under src/.`);
+    assert(
+      Deno.statSync(join(REPO_ROOT, 'tests', 'support', fileName)).isFile,
+      `tests/support/${fileName} is missing.`,
+    );
+  }
+});

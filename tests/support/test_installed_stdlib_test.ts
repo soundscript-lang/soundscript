@@ -7,7 +7,9 @@ import {
 } from './test_installed_stdlib.ts';
 
 const textDecoder = new TextDecoder();
-const typescriptCliPath = fromFileUrl(new URL('../node_modules/typescript/bin/tsc', import.meta.url));
+const typescriptCliPath = fromFileUrl(
+  new URL('../../node_modules/typescript/bin/tsc', import.meta.url),
+);
 
 interface CommandResult {
   code: number;
@@ -209,7 +211,7 @@ Deno.test('installed stdlib package declarations resolve from plain TypeScript N
       "import { copyJsonRecord, emptyJsonRecord, isJsonObject, mergeJsonRecords, type JsonValue } from '@soundscript/soundscript/json';",
       "import { collect, err, mapErr, ok, some, tapErr, unwrapOr, unwrapOrElse, unwrapOrThrow, type Result } from '@soundscript/soundscript/result';",
       '',
-      'const decodedName = defaulted(optional(string), \'anon\').decode(undefined);',
+      "const decodedName = defaulted(optional(string), 'anon').decode(undefined);",
       "const decodedRecord = readonlyRecord(nullable(string)).decode({ first: 'ok', second: null });",
       'const sourceJson: Readonly<Record<string, JsonValue>> = { feature: true };',
       'const copiedJson = copyJsonRecord(sourceJson);',

@@ -7,7 +7,7 @@ import { runEditorDiagnosticsWorker } from './editor_diagnostics_worker.ts';
 import {
   maybeNormalizeTsconfigForInstalledStdlib,
   writeInstalledStdlibPackage,
-} from '../test_installed_stdlib.ts';
+} from '../../tests/support/test_installed_stdlib.ts';
 
 interface SerializedWorkerDiagnostic {
   code: string;

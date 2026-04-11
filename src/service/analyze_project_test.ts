@@ -19,7 +19,7 @@ import {
 import {
   maybeNormalizeTsconfigForInstalledStdlib,
   writeInstalledStdlibPackage,
-} from '../test_installed_stdlib.ts';
+} from '../../tests/support/test_installed_stdlib.ts';
 
 async function createTempProject(files: Readonly<Record<string, string>>): Promise<string> {
   const tempDirectory = await Deno.makeTempDir({ prefix: 'sound-ts-service-' });

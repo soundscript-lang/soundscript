@@ -4,8 +4,8 @@ import { dirname, join } from '@std/path';
 import {
   loadTestMacroPackageFiles,
   TEST_MACRO_PACKAGE_NAME,
-} from '../test_macro_package_fixture.ts';
-import { writeInstalledStdlibPackage } from '../test_installed_stdlib.ts';
+} from '../../tests/support/test_macro_package_fixture.ts';
+import { writeInstalledStdlibPackage } from '../../tests/support/test_installed_stdlib.ts';
 import { materializeRuntimeGraph } from './materialize.ts';
 
 async function writeProjectFile(

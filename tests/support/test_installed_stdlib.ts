@@ -1,4 +1,4 @@
-import { basename, dirname, join } from './platform/path.ts';
+import { basename, dirname, join } from '../../src/platform/path.ts';
 
 import {
   ASYNC_STDLIB_DECLARATION_TEXT,
@@ -26,10 +26,10 @@ import {
   TYPECLASSES_STDLIB_DECLARATION_TEXT,
   URL_STDLIB_DECLARATION_TEXT,
   VALUE_STDLIB_DECLARATION_TEXT,
-} from './frontend/std_package_support.ts';
-import { SQL_STDLIB_DECLARATION_TEXT } from './frontend/sql_stdlib_support.ts';
-import { rewriteModuleSpecifiersForEmit } from './runtime/transform.ts';
-import { transpileTypeScriptModuleToEsm } from './runtime/transform.ts';
+} from '../../src/frontend/std_package_support.ts';
+import { SQL_STDLIB_DECLARATION_TEXT } from '../../src/frontend/sql_stdlib_support.ts';
+import { rewriteModuleSpecifiersForEmit } from '../../src/runtime/transform.ts';
+import { transpileTypeScriptModuleToEsm } from '../../src/runtime/transform.ts';
 
 const STABLE_RUNTIME_MODULES = [
   ['hkt', HKT_STDLIB_DECLARATION_TEXT],
@@ -105,7 +105,7 @@ function createStdlibPackageJsonText(): string {
 }
 
 function readRepoStdlibSource(fileName: string): string {
-  return Deno.readTextFileSync(new URL(`./stdlib/${fileName}`, import.meta.url));
+  return Deno.readTextFileSync(new URL(`../../src/stdlib/${fileName}`, import.meta.url));
 }
 
 function createPublishedStdlibSource(packageRoot: string, relativeFileName: string): string {
@@ -118,7 +118,7 @@ function createPublishedStdlibSource(packageRoot: string, relativeFileName: stri
 
 function readPublishedStdlibRuntime(fileName: string): string {
   const publishedRuntimeUrl = new URL(
-    `../dist/npm/soundscript-canonical/${fileName}`,
+    `../../dist/npm/soundscript-canonical/${fileName}`,
     import.meta.url,
   );
   try {

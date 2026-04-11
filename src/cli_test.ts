@@ -6,11 +6,11 @@ import { runCli, VERSION } from './cli.ts';
 import {
   loadTestMacroPackageFiles,
   TEST_MACRO_PACKAGE_NAME,
-} from './test_macro_package_fixture.ts';
+} from '../tests/support/test_macro_package_fixture.ts';
 import {
   maybeNormalizeTsconfigForInstalledStdlib,
   writeInstalledStdlibPackage,
-} from './test_installed_stdlib.ts';
+} from '../tests/support/test_installed_stdlib.ts';
 
 interface TempProjectFile {
   path: string;

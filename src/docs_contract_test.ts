@@ -1,6 +1,6 @@
 import { assert, assertStringIncludes } from '@std/assert';
 
-import { createInstalledStdlibPackageFiles } from './test_installed_stdlib.ts';
+import { createInstalledStdlibPackageFiles } from '../tests/support/test_installed_stdlib.ts';
 
 function readRepoText(relativePath: string): string {
   return Deno.readTextFileSync(new URL(`../${relativePath}`, import.meta.url));

@@ -5,7 +5,7 @@ import { expandProject } from '../../src/frontend/expand_project.ts';
 import {
   maybeNormalizeTsconfigForInstalledStdlib,
   writeInstalledStdlibPackage,
-} from '../../src/test_installed_stdlib.ts';
+} from '../support/test_installed_stdlib.ts';
 
 const REPO_ROOT = dirname(dirname(dirname(fromFileUrl(import.meta.url))));
 const EXAMPLE_DIRECTORY = join(REPO_ROOT, 'examples', 'macro-authoring');
