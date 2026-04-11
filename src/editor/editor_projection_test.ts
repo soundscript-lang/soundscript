@@ -193,6 +193,60 @@ Deno.test('projectEditorFile includes projected sibling soundscript modules for 
   assert(importedModule.rewriteStage);
 });
 
+Deno.test('projectEditorFile includes projected sibling configured TypeScript alias modules for cross-file imports', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+          moduleResolution: 'bundler',
+          allowImportingTsExtensions: true,
+        },
+        include: ['src/**/*.ts'],
+        soundscript: {
+          include: ['src/**/*.ts'],
+        },
+      },
+      null,
+      2,
+    ),
+    'src/macros.ts': [
+      'export function safeDivide(dividend: number, divisor: number): Result<number, string> {',
+      '  if (divisor === 0) {',
+      "    return err('divide_by_zero');",
+      '  }',
+      '',
+      '  return ok(dividend / divisor);',
+      '}',
+      '',
+    ].join('\n'),
+    'src/import-example.ts': [
+      "import { safeDivide } from './macros.ts';",
+      '',
+      'const result = safeDivide(10, 0);',
+      '',
+    ].join('\n'),
+  });
+
+  const projection = projectEditorFile({
+    filePath: join(tempDirectory, 'src/import-example.ts'),
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+  });
+
+  const importedModule = projection.virtualModules.find((module) =>
+    module.sourceFileName === join(tempDirectory, 'src/macros.ts')
+  );
+  assert(importedModule);
+  assertEquals(importedModule.fileName, join(tempDirectory, 'src/macros.ts'));
+  assertStringIncludes(importedModule.text, 'export function safeDivide');
+  assertStringIncludes(importedModule.text, "from 'sts:prelude'");
+  assertStringIncludes(importedModule.originalText ?? '', 'export function safeDivide');
+  assert(importedModule.rewriteStage);
+});
+
 Deno.test('collectVirtualStdlibModules uses declaration entries instead of reading source-tree files', () => {
   const modules = collectVirtualStdlibModules(
     [

@@ -162,7 +162,7 @@ function collectProjectedDependencyModules(
     );
     if (
       sourceFileName === rootSourceFileName ||
-      !sourceFileName.endsWith('.sts')
+      !expandedProgram.analysisPreparedProgram.isSoundscriptSourceFile(sourceFileName)
     ) {
       continue;
     }
