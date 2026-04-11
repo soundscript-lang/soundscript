@@ -44,7 +44,7 @@ function createUserDefinedTwiceMacroText(): string {
 async function loadRuntimeReferencesStackOverflowFixture(): Promise<string> {
   return await Deno.readTextFile(
     new URL(
-      '../test-fixtures/runtime-references-stack-overflow/runtime-references.sts',
+      '../tests/fixtures/runtime-references-stack-overflow/runtime-references.sts',
       import.meta.url,
     ),
   );

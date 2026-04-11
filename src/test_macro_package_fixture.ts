@@ -8,7 +8,8 @@ export interface TestMacroPackageFile {
 export const TEST_MACRO_PACKAGE_NAME = '@soundscript/test-macro-package';
 
 const TEST_MACRO_PACKAGE_FIXTURE_ROOT = join(
-  'test-fixtures',
+  'tests',
+  'fixtures',
   'packages',
   'test-macro-package',
 );
