@@ -1,4 +1,4 @@
-import { fixture, type FixtureCase } from '../../tests/support/harness.ts';
+import { fixture, type FixtureCase } from '../support/harness.ts';
 
 type NoInferMatrixKind = 'newtype' | 'nominalClass' | 'genericClass';
 type NoInferMatrixCarrier = 'direct' | 'array' | 'readonlyArray' | 'tuple' | 'readonlyTuple';

@@ -1,4 +1,4 @@
-import { fixture, type FixtureCase } from '../../tests/support/harness.ts';
+import { fixture, type FixtureCase } from '../support/harness.ts';
 
 export const syntaxFixtures: readonly FixtureCase[] = [
   fixture(

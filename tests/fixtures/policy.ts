@@ -1,4 +1,4 @@
-import { fixture, type FixtureCase } from '../../tests/support/harness.ts';
+import { fixture, type FixtureCase } from '../support/harness.ts';
 
 type BareObjectSummaryFamily = 'groupBy' | 'regexpGroups' | 'regexpIndicesGroups';
 type BareObjectSummaryExportStyle = 'named' | 'default';
