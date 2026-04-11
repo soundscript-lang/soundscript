@@ -2629,6 +2629,77 @@ Deno.test('runCli build emits package artifacts and machine-readable output', as
   );
 });
 
+Deno.test(
+  'runCli build rejects published soundscript source closures that depend on configured TypeScript files',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'package.json',
+        contents: JSON.stringify(
+          {
+            name: 'sound-pkg',
+            version: '1.0.0',
+            soundscript: {
+              version: 1,
+              exports: {
+                '.': { source: './src/index.sts' },
+              },
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.sts', 'src/**/*.ts'],
+            soundscript: {
+              include: ['src/**/*.ts'],
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/index.sts',
+        contents: [
+          "import { helper } from './helper';",
+          'export const value = helper;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/helper.ts',
+        contents: 'export const helper = some(41);\n',
+      },
+    ], { legacySoundMode: false });
+
+    const outDir = join(tempDirectory, 'dist-package');
+    const result = await runCli([
+      'build',
+      '--project',
+      join(tempDirectory, 'tsconfig.json'),
+      '--out-dir',
+      outDir,
+      '--format',
+      'json',
+    ]);
+
+    assertEquals(result.exitCode, 1);
+    assertStringIncludes(result.output, 'SOUNDSCRIPT_BUILD_INVALID_EXPORT');
+    assertStringIncludes(result.output, './src/index.sts');
+    assertStringIncludes(result.output, 'published package surface');
+  },
+);
+
 Deno.test('runCli check and build avoid internal errors for recursive runtime reference helpers', async () => {
   const tempDirectory = await createTempProject([
     {
@@ -3002,6 +3073,63 @@ Deno.test('runCli build fails when soundscript.exports points to a missing sourc
   assertEquals(result.exitCode, 1);
   assertStringIncludes(result.output, 'SOUNDSCRIPT_BUILD_INVALID_EXPORT');
   assertStringIncludes(result.output, 'src/missing-macros.ts');
+  assertStringIncludes(result.output, 'published package surface');
+});
+
+Deno.test('runCli build rejects configured TypeScript files as published soundscript exports', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'package.json',
+      contents: JSON.stringify(
+        {
+          name: 'sound-pkg',
+          version: '1.0.0',
+          soundscript: {
+            version: 1,
+            exports: {
+              '.': { source: './src/index.ts' },
+            },
+          },
+        },
+        null,
+        2,
+      ),
+    },
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            target: 'ES2022',
+            module: 'ESNext',
+          },
+          include: ['src/**/*.ts'],
+          soundscript: {
+            include: ['src/**/*.ts'],
+          },
+        },
+        null,
+        2,
+      ),
+    },
+    {
+      path: 'src/index.ts',
+      contents: 'export const value = some(1);\n',
+    },
+  ], { legacySoundMode: false });
+
+  const result = await runCli([
+    'build',
+    '--project',
+    join(tempDirectory, 'tsconfig.json'),
+    '--out-dir',
+    join(tempDirectory, 'dist-package'),
+  ]);
+
+  assertEquals(result.exitCode, 1);
+  assertStringIncludes(result.output, 'SOUNDSCRIPT_BUILD_INVALID_EXPORT');
+  assertStringIncludes(result.output, './src/index.ts');
   assertStringIncludes(result.output, 'published package surface');
 });
 
@@ -6577,6 +6705,60 @@ Deno.test('runCli expand writes expanded output for import-scoped user-defined m
   assertEquals(result.diagnostics, []);
 });
 
+Deno.test('runCli expand writes expanded output for configured TypeScript files selected by soundscript.include', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+          },
+          include: ['src/**/*.ts', 'src/**/*.sts'],
+          soundscript: {
+            include: ['src/**/*.ts'],
+          },
+        },
+        null,
+        2,
+      ),
+    },
+    {
+      path: 'src/macros/twice.macro.sts',
+      contents: createUserDefinedTwiceMacroText(),
+    },
+    {
+      path: 'src/index.ts',
+      contents: [
+        "import { Twice } from './macros/twice.macro';",
+        'export const doubled = Twice(21);',
+        '',
+      ].join('\n'),
+    },
+  ], { legacySoundMode: false });
+
+  const outDir = join(tempDirectory, 'expanded-ts');
+  const result = await runCli([
+    'expand',
+    '--project',
+    join(tempDirectory, 'tsconfig.json'),
+    '--out-dir',
+    outDir,
+  ]);
+
+  assertEquals(result.exitCode, 0, result.output);
+  assertStringIncludes(result.output, 'Expanded TypeScript');
+  assertStringIncludes(result.output, 'src/index.ts');
+
+  const expanded = await Deno.readTextFile(join(outDir, 'src/index.ts'));
+  assertStringIncludes(expanded, 'export const doubled = (21) * 2;');
+  assertEquals(expanded.includes('__sts_macro_expr('), false);
+  assertEquals(result.diagnostics, []);
+});
+
 Deno.test('runCli expand supports installed sts:prelude Try macros', async () => {
   const tempDirectory = await createTempProject([
     {
@@ -6631,7 +6813,7 @@ Deno.test('runCli expand supports installed sts:prelude Try macros', async () =>
   assertEquals(result.diagnostics, []);
 });
 
-Deno.test('runCli check expand and node support a package-authored macro surface', async () => {
+Deno.test('runCli check expand and deno support a package-authored macro surface', async () => {
   const macroPackageFiles = await loadTestMacroPackageFiles();
   const tempDirectory = await createTempProject([
     {
@@ -6691,12 +6873,12 @@ Deno.test('runCli check expand and node support a package-authored macro surface
   assertStringIncludes(expandResult.output, 'export const doubled = (21) * 2;');
   assertEquals(expandResult.output.includes('__sts_macro_stmt'), false);
 
-  const nodeResult = await runCli(
-    ['node', join(tempDirectory, 'src/run.ts')],
+  const denoResult = await runCli(
+    ['deno', 'run', join(tempDirectory, 'src/run.ts')],
     tempDirectory,
   );
-  assertEquals(nodeResult.exitCode, 0);
-  assertStringIncludes(nodeResult.output, '42');
+  assertEquals(denoResult.exitCode, 0, denoResult.output);
+  assertStringIncludes(denoResult.output, '42');
 });
 
 Deno.test('runCli expand lets package-authored macros consume built-in and custom annotations through public reflection', async () => {
