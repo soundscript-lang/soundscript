@@ -116,7 +116,7 @@ Deno.test('materializeRuntimeGraph resolves runtime packages from the nearest an
         2,
       ),
     );
-    await writeProjectFile(projectRoot, 'src/main.sts', "console.log('ok');\n");
+    await writeProjectFile(projectRoot, 'src/main.sts', 'export const answer = 1;\n');
 
     const result = await materializeRuntimeGraph({
       entryPaths: [join(projectRoot, 'src/main.sts')],
@@ -157,7 +157,7 @@ Deno.test('materializeRuntimeGraph reports a missing installed runtime package',
         2,
       ),
     );
-    await writeProjectFile(root, 'src/main.sts', "console.log('ok');\n");
+    await writeProjectFile(root, 'src/main.sts', 'export const answer = 1;\n');
 
     const result = await materializeRuntimeGraph({
       entryPaths: [join(root, 'src/main.sts')],

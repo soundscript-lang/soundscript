@@ -2,7 +2,6 @@ import { assertEquals, assertStringIncludes } from '@std/assert';
 import { dirname, join } from '@std/path';
 import ts from 'typescript';
 
-import { createSoundStdlibCompilerHost } from '../bundled/sound_stdlib.ts';
 import type { CompilerModuleIR } from './ir.ts';
 import { lowerProgramToCompilerIR } from './lower.ts';
 import { emitCompilerModuleToWat } from './wat_emitter.ts';
@@ -49,6 +48,7 @@ import type {
   CompilerRuntimeTaggedValueRepresentationIR,
 } from './runtime_ir.ts';
 import { loadConfig } from '../project/config.ts';
+import { createStdPackageCompilerHost } from '../frontend/std_package_support.ts';
 
 const EXPECTED_ORDINARY_OBJECT_PROTOTYPE_OWN_PROPERTY_KEYS = [
   '__defineGetter__',
@@ -81,7 +81,7 @@ async function createTempProject(
 
 function createCompilerProgram(projectPath: string): ts.Program {
   const loadedConfig = loadConfig(projectPath);
-  const host = createSoundStdlibCompilerHost(loadedConfig.commandLine.options);
+  const host = createStdPackageCompilerHost(loadedConfig.commandLine.options);
   return ts.createProgram({
     host,
     rootNames: loadedConfig.commandLine.fileNames,

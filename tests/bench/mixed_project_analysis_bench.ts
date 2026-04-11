@@ -12,8 +12,8 @@ import {
 const STS_FILE_COUNT = 12;
 const TS_FILE_COUNT = 24;
 const UPDATED_TS_TEXT = [
-  'import { value0 } from "../../test/lib0";',
-  'import { value1 } from "../../test/lib1";',
+  'import { value0 } from "./lib0.sts";',
+  'import { value1 } from "./lib1.sts";',
   'const combined = value0 + value1 + 1;',
   'void combined;',
   '',
@@ -79,8 +79,8 @@ function createWorkspace(): string {
     Deno.writeTextFileSync(
       filePath,
       [
-        `import { value${left}, makeValue${left} } from "../../test/lib${left}";`,
-        `import { value${right} } from "../../test/lib${right}";`,
+        `import { value${left}, makeValue${left} } from "./lib${left}.sts";`,
+        `import { value${right} } from "./lib${right}.sts";`,
         `const local${index} = makeValue${left}("consumer-${index}");`,
         `const total${index}: number = value${left} + value${right};`,
         `void local${index};`,

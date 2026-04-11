@@ -8,8 +8,10 @@ type _EventSource = typeof globalThis extends { onmessage: unknown } ? {} : undi
 type _EventSourceInit = typeof globalThis extends { onmessage: unknown } ? {} : undici.EventSourceInit;
 type _FormData = typeof globalThis extends { onmessage: unknown } ? {} : undici.FormData;
 type _Headers = typeof globalThis extends { onmessage: unknown } ? {} : undici.Headers;
-type _MessageEvent = typeof globalThis extends { onmessage: unknown } ? {} : undici.MessageEvent;
-type _MessageEventInit = typeof globalThis extends { onmessage: unknown } ? {} : undici.MessageEventInit;
+type _MessageEvent<T = unknown> = typeof globalThis extends { onmessage: unknown } ? {}
+  : undici.MessageEvent<T>;
+type _MessageEventInit<T = unknown> = typeof globalThis extends { onmessage: unknown } ? {}
+  : undici.MessageEventInit<T>;
 type _Request = typeof globalThis extends { onmessage: unknown } ? {} : undici.Request;
 type _RequestInit = typeof globalThis extends { onmessage: unknown } ? {} : undici.RequestInit;
 type _Response = typeof globalThis extends { onmessage: unknown } ? {} : undici.Response;
@@ -39,11 +41,11 @@ declare global {
     interface Headers extends _Headers {}
     var Headers: typeof globalThis extends { onmessage: unknown; Headers: infer T } ? T : typeof undici.Headers;
 
-    interface MessageEvent extends _MessageEvent {}
+    interface MessageEvent<T = unknown> extends _MessageEvent<T> {}
     var MessageEvent: typeof globalThis extends { onmessage: unknown; MessageEvent: infer T } ? T
         : typeof undici.MessageEvent;
 
-    interface MessageEventInit extends _MessageEventInit {}
+    interface MessageEventInit<T = unknown> extends _MessageEventInit<T> {}
 
     interface Request extends _Request {}
     var Request: typeof globalThis extends { onmessage: unknown; Request: infer T } ? T : typeof undici.Request;

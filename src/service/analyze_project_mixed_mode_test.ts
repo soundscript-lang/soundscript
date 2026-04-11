@@ -272,7 +272,7 @@ Deno.test('analyzeProject reports abstract numeric family arithmetic at original
     ]),
     [
       ['SOUNDSCRIPT_NUMERIC_ABSTRACT_FAMILY', join(tempDirectory, 'src/sound.sts'), 4, 16],
-      ['SOUNDSCRIPT_NUMERIC_ABSTRACT_FAMILY', join(tempDirectory, 'src/sound.sts'), 6, 21],
+      ['SOUNDSCRIPT_NUMERIC_ABSTRACT_FAMILY', join(tempDirectory, 'src/sound.sts'), 6, 19],
     ],
   );
 });
@@ -433,7 +433,7 @@ Deno.test('analyzeProject reports abstract numeric family unary plus at original
     ]),
     [
       ['SOUNDSCRIPT_NUMERIC_ABSTRACT_FAMILY', join(tempDirectory, 'src/sound.sts'), 3, 16],
-      ['SOUNDSCRIPT_NUMERIC_ABSTRACT_FAMILY', join(tempDirectory, 'src/sound.sts'), 5, 21],
+      ['SOUNDSCRIPT_NUMERIC_ABSTRACT_FAMILY', join(tempDirectory, 'src/sound.sts'), 5, 19],
     ],
   );
 });
@@ -492,10 +492,10 @@ Deno.test('analyzeProject reports remaining abstract numeric family unary and up
       ['SOUNDSCRIPT_NUMERIC_ABSTRACT_FAMILY', join(tempDirectory, 'src/sound.sts'), 4, 18],
       ['SOUNDSCRIPT_NUMERIC_ABSTRACT_FAMILY', join(tempDirectory, 'src/sound.sts'), 5, 1],
       ['SOUNDSCRIPT_NUMERIC_ABSTRACT_FAMILY', join(tempDirectory, 'src/sound.sts'), 6, 1],
-      ['SOUNDSCRIPT_NUMERIC_ABSTRACT_FAMILY', join(tempDirectory, 'src/sound.sts'), 8, 28],
-      ['SOUNDSCRIPT_NUMERIC_ABSTRACT_FAMILY', join(tempDirectory, 'src/sound.sts'), 9, 29],
-      ['SOUNDSCRIPT_NUMERIC_ABSTRACT_FAMILY', join(tempDirectory, 'src/sound.sts'), 10, 5],
-      ['SOUNDSCRIPT_NUMERIC_ABSTRACT_FAMILY', join(tempDirectory, 'src/sound.sts'), 11, 5],
+      ['SOUNDSCRIPT_NUMERIC_ABSTRACT_FAMILY', join(tempDirectory, 'src/sound.sts'), 8, 26],
+      ['SOUNDSCRIPT_NUMERIC_ABSTRACT_FAMILY', join(tempDirectory, 'src/sound.sts'), 9, 27],
+      ['SOUNDSCRIPT_NUMERIC_ABSTRACT_FAMILY', join(tempDirectory, 'src/sound.sts'), 10, 3],
+      ['SOUNDSCRIPT_NUMERIC_ABSTRACT_FAMILY', join(tempDirectory, 'src/sound.sts'), 11, 3],
     ],
   );
 });
@@ -974,6 +974,7 @@ Deno.test(
             noEmit: true,
             target: 'ES2022',
             module: 'ESNext',
+            lib: ['DOM', 'ES2022'],
           },
           include: ['src/**/*.sts'],
         },
@@ -981,6 +982,9 @@ Deno.test(
         2,
       ),
       'src/index.sts': [
+        '// #[interop]',
+        'import { document } from "host:dom";',
+        '',
         'export function main(): Element | null {',
         "  return document.getElementById('app');",
         '}',
@@ -3960,8 +3964,8 @@ Deno.test('analyzeProject does not report stray any diagnostics for projected lo
     'src/index.sts': [
       '// #[interop]',
       'import { literalSchema, a } from "./types.ts";',
-      'console.log(literalSchema);',
-      'console.log(a);',
+      'void literalSchema;',
+      'void a;',
       '',
     ].join('\n'),
   });
@@ -3997,8 +4001,8 @@ Deno.test(
       'src/index.sts': [
         '// #[interop]',
         'import { literalSchema, a } from "./types.ts";',
-        'console.log(literalSchema);',
-        'console.log(a);',
+        'void literalSchema;',
+        'void a;',
         '',
       ].join('\n'),
     });
@@ -4051,17 +4055,17 @@ Deno.test(
         '// #[interop]',
         'import { type Environment, literalSchema, answer, a } from "./types.ts";',
         '',
-        'console.log(literalSchema);',
-        'console.log(answer);',
-        'console.log(a);',
+        'void literalSchema;',
+        'void answer;',
+        'void a;',
         '',
         'const env: Environment = { mode: "dev" };',
-        'console.log(env.mode);',
+        'void env.mode;',
         '',
         'try {',
         '  throw new Error("boom");',
         '} catch (err) {',
-        '  console.log(err);',
+        '  void err;',
         '}',
         '',
         'class B {',

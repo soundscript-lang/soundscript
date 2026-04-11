@@ -97,7 +97,7 @@ function createImportedSimpleValueProgram(
       files: {
         'box.sts': createSimpleValueClassSource(mode, 'named'),
         'index.sts': [
-          'import { Box } from "../../test/box.sts";',
+          'import { Box } from "./box.sts";',
           '',
           'const same = new Box(1) === new Box(1);',
           'void same;',
@@ -114,7 +114,7 @@ function createImportedSimpleValueProgram(
       files: {
         'box.sts': createSimpleValueClassSource(mode, 'default'),
         'index.sts': [
-          'import Box from "../../test/box.sts";',
+          'import Box from "./box.sts";',
           '',
           'const same = new Box(1) === new Box(1);',
           'void same;',
@@ -129,9 +129,9 @@ function createImportedSimpleValueProgram(
     entryFile: 'index.sts',
     files: {
       'box.sts': createSimpleValueClassSource(mode, 'named'),
-      'barrel.sts': 'export { Box } from "../../test/box.sts";\n',
+      'barrel.sts': 'export { Box } from "./box.sts";\n',
       'index.sts': [
-        'import { Box } from "../../test/barrel.sts";',
+        'import { Box } from "./barrel.sts";',
         '',
         'const same = new Box(1) === new Box(1);',
         'void same;',
@@ -206,11 +206,11 @@ function createDeepValueProgram(route: ValueRoute, validLeaf: boolean): ValueMat
       files: {
         'leaf.sts': createDeepLeafSource(validLeaf, 'named'),
         'box.sts': createDeepBoxSource(
-          'import { Leaf } from "../../test/leaf.sts";',
+          'import { Leaf } from "./leaf.sts";',
           'Leaf',
           'named',
         ),
-        'index.sts': 'import { Box } from "../../test/box.sts";\nvoid Box;\n',
+        'index.sts': 'import { Box } from "./box.sts";\nvoid Box;\n',
       },
     };
   }
@@ -222,11 +222,11 @@ function createDeepValueProgram(route: ValueRoute, validLeaf: boolean): ValueMat
       files: {
         'leaf.sts': createDeepLeafSource(validLeaf, 'default'),
         'box.sts': createDeepBoxSource(
-          'import Leaf from "../../test/leaf.sts";',
+          'import Leaf from "./leaf.sts";',
           'Leaf',
           'default',
         ),
-        'index.sts': 'import Box from "../../test/box.sts";\nvoid Box;\n',
+        'index.sts': 'import Box from "./box.sts";\nvoid Box;\n',
       },
     };
   }
@@ -236,14 +236,14 @@ function createDeepValueProgram(route: ValueRoute, validLeaf: boolean): ValueMat
     entryFile: 'index.sts',
     files: {
       'leaf.sts': createDeepLeafSource(validLeaf, 'default'),
-      'leaf_barrel.sts': 'export { default as Leaf } from "../../test/leaf.sts";\n',
+      'leaf_barrel.sts': 'export { default as Leaf } from "./leaf.sts";\n',
       'box.sts': createDeepBoxSource(
-        'import { Leaf } from "../../test/leaf_barrel.sts";',
+        'import { Leaf } from "./leaf_barrel.sts";',
         'Leaf',
         'named',
       ),
-      'box_barrel.sts': 'export { Box } from "../../test/box.sts";\n',
-      'index.sts': 'import { Box } from "../../test/box_barrel.sts";\nvoid Box;\n',
+      'box_barrel.sts': 'export { Box } from "./box.sts";\n',
+      'index.sts': 'import { Box } from "./box_barrel.sts";\nvoid Box;\n',
     },
   };
 }

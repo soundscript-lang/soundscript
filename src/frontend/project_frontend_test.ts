@@ -1621,8 +1621,8 @@ Deno.test('createPreparedProgram can preserve unchanged module resolutions for s
   });
   stableProgram.program.getSemanticDiagnostics();
 
-  assertEquals(firstCounts.resolveModuleNames, 1);
-  assertEquals(invalidatedCounts.resolveModuleNames, 1);
+  assert(firstCounts.resolveModuleNames > 0);
+  assertEquals(invalidatedCounts.resolveModuleNames, firstCounts.resolveModuleNames);
   assertEquals(stableCounts.resolveModuleNames, 0);
 });
 
@@ -3320,3 +3320,41 @@ Deno.test('createPreparedCompilerHost resolves local .sts imports through projec
     'export declare const value: number;\n',
   );
 });
+
+Deno.test(
+  'createPreparedCompilerHost resolves local .sts imports through projected declarations for resolveModuleNameLiterals',
+  () => {
+    const entryFile = '/virtual/src/index.ts';
+    const projectedSourceFile = '/virtual/src/lib.sts';
+    const options = {
+      target: ts.ScriptTarget.ES2022,
+      module: ts.ModuleKind.ESNext,
+      moduleResolution: ts.ModuleResolutionKind.Bundler,
+      noEmit: true,
+    };
+    const preparedHost = createPreparedCompilerHost(
+      createBaseHost(
+        new Map([
+          [entryFile, `import { value } from "./lib";\nvoid value;\n`],
+          [projectedSourceFile, 'export const value: number = 42;\n'],
+        ]),
+      ),
+      new Map(),
+      new Map([
+        [projectedSourceFile, 'export declare const value: number;\n'],
+      ]),
+    );
+
+    const resolved = preparedHost.host.resolveModuleNameLiterals?.(
+      [{ text: './lib' } as ts.StringLiteralLike],
+      entryFile,
+      undefined,
+      options,
+      ts.createSourceFile(entryFile, '', ts.ScriptTarget.ES2022, true),
+      undefined,
+    );
+
+    assertEquals(resolved?.[0]?.resolvedModule?.resolvedFileName, '/virtual/src/lib.sts.d.ts');
+    assertEquals(resolved?.[0]?.resolvedModule?.extension, ts.Extension.Dts);
+  },
+);

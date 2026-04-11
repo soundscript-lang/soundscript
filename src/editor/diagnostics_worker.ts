@@ -1,15 +1,8 @@
 import { dirname } from '../platform/path.ts';
 import { runtimeStdinReadable, runtimeStdoutWritable } from '../platform/host.ts';
 
-import {
-  analyzePreparedProject,
-  disposePreparedAnalysisProject,
-  filterAnalyzedDiagnosticsForFile,
-  type PreparedAnalysisProject,
-  prepareProjectAnalysis,
-} from '../checker/analyze_project.ts';
+import { analyzeProject, filterAnalyzedDiagnosticsForFile } from '../checker/analyze_project.ts';
 import type { MergedDiagnostic } from '../checker/diagnostics.ts';
-import type { AnalyzeProjectResult } from '../service/types.ts';
 import { isSoundscriptSourceFile } from '../frontend/project_frontend.ts';
 
 interface JsonRpcLikeRequest {
@@ -23,14 +16,8 @@ interface SyncedDocument {
   version: number;
 }
 
-interface WorkerProjectState {
-  analyzedProject?: AnalyzeProjectResult;
-  preparedProject?: PreparedAnalysisProject;
-}
-
 interface WorkerContext {
   documents: Map<string, SyncedDocument>;
-  projects: Map<string, WorkerProjectState>;
 }
 
 interface DiagnosticsWorkerOptions {
@@ -52,7 +39,6 @@ interface SerializedWorkerDiagnostic {
 function createWorkerContext(): WorkerContext {
   return {
     documents: new Map(),
-    projects: new Map(),
   };
 }
 
@@ -163,22 +149,12 @@ async function handleRequest(
 
       const fileOverrides = fileOverridesForProject(context, projectPath);
       const additionalRootNames = additionalRootNamesForProject(context, projectPath);
-      const cachedProject = context.projects.get(projectPath);
-      const preparedProject = prepareProjectAnalysis(
-        {
-          additionalRootNames,
-          fileOverrides,
-          projectPath,
-          workingDirectory: dirname(projectPath),
-        },
-        cachedProject?.preparedProject,
-      );
-      disposePreparedAnalysisProject(cachedProject?.preparedProject, preparedProject);
-      const analyzedProject = cachedProject?.preparedProject === preparedProject &&
-          cachedProject.analyzedProject
-        ? cachedProject.analyzedProject
-        : analyzePreparedProject(preparedProject);
-      context.projects.set(projectPath, { preparedProject, analyzedProject });
+      const analyzedProject = analyzeProject({
+        additionalRootNames,
+        fileOverrides,
+        projectPath,
+        workingDirectory: dirname(projectPath),
+      });
       return {
         diagnostics: filterAnalyzedDiagnosticsForFile(analyzedProject.diagnostics, filePath)
           .map((diagnostic) => serializeDiagnostic(diagnostic)),

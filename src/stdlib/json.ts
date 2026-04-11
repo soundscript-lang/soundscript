@@ -669,6 +669,7 @@ function stringifyJsonLikeInternal(
         case 'reject':
           throw new TypeError('Encountered bigint while stringifying JSON-like data.');
       }
+      return undefined;
     case 'undefined':
       return position === 'array' ? 'null' : undefined;
     case 'object':

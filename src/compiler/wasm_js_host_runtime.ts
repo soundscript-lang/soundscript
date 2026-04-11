@@ -1,3 +1,4 @@
+import process from 'node:process';
 const SOUNDSCRIPT_CLASS_TAG = '__soundscript_class_tag__';
 const SOUNDSCRIPT_CLASS_CONSTRUCT = '__soundscript_class_construct';
 const SOUNDSCRIPT_CLASS_BASE_CONSTRUCTOR = '__soundscript_class_base_constructor';
@@ -195,7 +196,7 @@ function createJsHostImports(
         if (typeof instance !== 'object' || instance === null) {
           return false;
         }
-        return wrapper.prototype.isPrototypeOf(instance);
+        return Object.prototype.isPrototypeOf.call(wrapper.prototype, instance);
       },
     });
     Object.defineProperty(wrapper.prototype, 'constructor', {
@@ -374,7 +375,7 @@ function createJsHostImports(
         if (!Array.isArray(value)) {
           throw new TypeError('Expected JS array for soundscript_array.get_boolean.');
         }
-        return Boolean(value[Number(index)]) ? 1 : 0;
+        return value[Number(index)] ? 1 : 0;
       },
       push: (target: unknown, value: unknown) => {
         if (!Array.isArray(target)) {

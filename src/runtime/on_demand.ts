@@ -1,6 +1,5 @@
 import ts from 'typescript';
 
-import { createSoundStdlibCompilerHost } from '../bundled/sound_stdlib.ts';
 import {
   collectSoundscriptRootNames,
   getConfigFileParsingDiagnostics,
@@ -9,6 +8,7 @@ import {
 import { dirname, join } from '../platform/path.ts';
 import { createBuiltinExpandedProgram } from '../frontend/builtin_macro_support.ts';
 import { isSoundscriptSourceFile, toSourceFileName } from '../frontend/project_frontend.ts';
+import { createStdPackageCompilerHost } from '../frontend/std_package_support.ts';
 import { resolveSoundScriptAwareModule } from '../project/soundscript_packages.ts';
 import { type RuntimeTransformArtifact, transpileTypeScriptModuleToEsm } from './transform.ts';
 
@@ -135,7 +135,7 @@ function createExpandedProgram(
   const loadedConfig = loadConfig(projectPath);
   const soundscriptRootNames = collectSoundscriptRootNames(projectPath, loadedConfig);
   return createBuiltinExpandedProgram({
-    baseHost: createSoundStdlibCompilerHost(
+    baseHost: createStdPackageCompilerHost(
       loadedConfig.commandLine.options,
       dirname(projectPath),
     ),

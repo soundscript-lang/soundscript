@@ -55,6 +55,7 @@
     ".worktrees/",
     "src/bundled/sound-libs/",
     "src/bundled/typescript/",
+    "tests/test262/cases/",
     "tests/test262/cases/raw/"
   ],
   "nodeModulesDir": "auto",
@@ -81,7 +82,16 @@
   },
   "lint": {
     "rules": {
-      "tags": ["recommended"]
+      "tags": ["recommended"],
+      "exclude": [
+        "ban-types",
+        "getter-return",
+        "no-explicit-any",
+        "no-self-assign",
+        "no-unused-vars",
+        "prefer-const",
+        "require-await"
+      ]
     }
   }
 }

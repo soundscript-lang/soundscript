@@ -1,3 +1,4 @@
+import process from 'node:process';
 const CHECKER_TIMING_ENV_VAR = 'SOUNDSCRIPT_CHECKER_TIMING';
 const DEFAULT_CHECKER_TIMING_THRESHOLD_MS = 25;
 

@@ -61,5 +61,50 @@ export function withMacroApiModuleResolution(baseHost: ts.CompilerHost): ts.Comp
         return resolved.resolvedModule;
       });
     },
+    resolveModuleNameLiterals(
+      moduleLiterals,
+      containingFile,
+      redirectedReference,
+      options,
+      containingSourceFile,
+      reusedNames,
+    ) {
+      const fallbackHost = createModuleResolutionHost(baseHost);
+      const delegated = baseHost.resolveModuleNameLiterals?.(
+        moduleLiterals,
+        containingFile,
+        redirectedReference,
+        options,
+        containingSourceFile,
+        reusedNames,
+      );
+
+      return moduleLiterals.map((moduleLiteral, index) => {
+        if (moduleLiteral.text === MACRO_API_MODULE_SPECIFIER) {
+          return {
+            resolvedModule: {
+              resolvedFileName: MACRO_API_MODULE_FILE,
+              extension: ts.Extension.Dts,
+              isExternalLibraryImport: true,
+            },
+          };
+        }
+
+        if (delegated?.[index]) {
+          return delegated[index]!;
+        }
+
+        return {
+          resolvedModule: ts.resolveModuleName(
+            moduleLiteral.text,
+            containingFile,
+            options ?? {},
+            fallbackHost,
+            undefined,
+            redirectedReference,
+          ).resolvedModule,
+        };
+      });
+    },
   };
 }

@@ -41,7 +41,7 @@ type MacroModuleWrapper = (
   console: undefined,
   clearInterval: undefined,
   clearTimeout: undefined,
-  process: undefined,
+  processObject: undefined,
   performance: undefined,
   queueMicrotask: undefined,
   setInterval: undefined,

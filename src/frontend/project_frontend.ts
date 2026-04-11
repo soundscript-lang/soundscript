@@ -1223,10 +1223,6 @@ function rewriteForeignTypeImportsToUnknown(
       continue;
     }
 
-    if (hasDirectAnnotationComment(sourceFile, statement, 'interop')) {
-      continue;
-    }
-
     if (importedMacroSiteKindsBySpecifier.get(statement.moduleSpecifier.text)?.size) {
       continue;
     }
@@ -3846,26 +3842,29 @@ export function createPreparedCompilerHost(
     reusedNames?: string[],
     redirectedReference?: ts.ResolvedProjectReference,
     options?: ts.CompilerOptions,
-  ): (ts.ResolvedModule | undefined)[] {
+  ): (ts.ResolvedModuleFull | undefined)[] {
     const sourceContainingFile = toSourceFileName(containingFile);
+    const moduleResolutionHost = createModuleResolutionHost();
+    const compilerOptions = options ?? {};
     const baseResolvedModules = baseHost.resolveModuleNames?.(
       moduleNames,
       sourceContainingFile,
       reusedNames,
       redirectedReference,
-      options ?? {},
-    );
-    const moduleResolutionHost = createModuleResolutionHost();
+      compilerOptions,
+    ) as (ts.ResolvedModuleFull | undefined)[] | undefined;
 
-    return moduleNames.map((moduleName, index) => {
+    const resolvePreparedModuleName = (
+      moduleName: string,
+      baseResolved: ts.ResolvedModuleFull | undefined,
+    ): ts.ResolvedModuleFull | undefined => {
       const preferredSoundscript = resolvePreferredSoundscriptModule(
         moduleName,
         sourceContainingFile,
-        options ?? {},
+        compilerOptions,
         moduleResolutionHost,
         redirectedReference,
       );
-      const baseResolved = baseResolvedModules?.[index];
       if (preferredSoundscript) {
         const installedRuntimeDeclarationPath = installedRuntimeStdlibDeclarationPath(
           preferredSoundscript.resolvedFileName,
@@ -3937,7 +3936,7 @@ export function createPreparedCompilerHost(
       const resolvedModule = ts.resolveModuleName(
         moduleName,
         sourceContainingFile,
-        options ?? {},
+        compilerOptions,
         moduleResolutionHost,
         reusableState.moduleResolutionCache,
         redirectedReference,
@@ -3947,7 +3946,7 @@ export function createPreparedCompilerHost(
         return resolvePreferredSoundscriptModule(
           moduleName,
           sourceContainingFile,
-          options ?? {},
+          compilerOptions,
           moduleResolutionHost,
           redirectedReference,
         );
@@ -3988,7 +3987,49 @@ export function createPreparedCompilerHost(
           resolvedFileName: toProgramFileName(remapped.resolvedFileName),
         }
         : remapped;
-    });
+    };
+
+    return moduleNames.map((moduleName, index) =>
+      resolvePreparedModuleName(moduleName, baseResolvedModules?.[index])
+    );
+  }
+
+  function resolveModuleNameLiterals(
+    moduleLiterals: readonly ts.StringLiteralLike[],
+    containingFile: string,
+    redirectedReference: ts.ResolvedProjectReference | undefined,
+    options: ts.CompilerOptions,
+    containingSourceFile: ts.SourceFile,
+    reusedNames: readonly ts.StringLiteralLike[] | undefined,
+  ): readonly ts.ResolvedModuleWithFailedLookupLocations[] {
+    const delegated = baseHost.resolveModuleNameLiterals?.(
+      moduleLiterals,
+      containingFile,
+      redirectedReference,
+      options,
+      containingSourceFile,
+      reusedNames,
+    ) ?? baseHost.resolveModuleNames?.(
+      moduleLiterals.map((moduleLiteral) => moduleLiteral.text),
+      toSourceFileName(containingFile),
+      reusedNames?.map((moduleLiteral) => moduleLiteral.text),
+      redirectedReference,
+      options,
+      containingSourceFile,
+    )?.map((resolvedModule) => ({
+      resolvedModule,
+    }));
+
+    return resolveModuleNames(
+      moduleLiterals.map((moduleLiteral) => moduleLiteral.text),
+      containingFile,
+      reusedNames?.map((moduleLiteral) => moduleLiteral.text),
+      redirectedReference,
+      options,
+    ).map((resolvedModule, index) => ({
+      ...(delegated?.[index] ?? {}),
+      resolvedModule,
+    }));
   }
 
   return {
@@ -4062,6 +4103,7 @@ export function createPreparedCompilerHost(
         const sourceFileName = toSourceFileName(fileName);
         return getPreparedSourceFile(fileName)?.rewrittenText ?? baseHost.readFile(sourceFileName);
       },
+      resolveModuleNameLiterals,
       resolveModuleNames,
     },
     reuseState: reusableState,

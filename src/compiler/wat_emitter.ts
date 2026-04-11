@@ -1554,13 +1554,6 @@ function forEachExpressionChild(
     case 'owned_tagged_array_shift':
       visit(expression.array);
       break;
-    case 'owned_string_array_unshift':
-    case 'owned_number_array_unshift':
-    case 'owned_boolean_array_unshift':
-    case 'owned_tagged_array_unshift':
-      visit(expression.array);
-      visit(expression.value);
-      break;
     case 'owned_string_array_element':
     case 'owned_heap_array_element':
     case 'owned_number_array_element':
@@ -1578,7 +1571,6 @@ function forEachExpressionChild(
       visit(expression.index);
       break;
     case 'owned_heap_array_reverse':
-    case 'owned_heap_array_fill':
     case 'owned_string_array_reverse':
     case 'owned_number_array_reverse':
     case 'owned_boolean_array_reverse':
@@ -1650,7 +1642,6 @@ function forEachExpressionChild(
       }
       break;
     case 'owned_heap_array_push':
-    case 'owned_heap_array_unshift':
     case 'owned_string_array_push':
     case 'owned_number_array_push':
     case 'owned_boolean_array_push':
@@ -4017,6 +4008,10 @@ function moduleUsesOwnedArrayHostParamBoundary(module: CompilerModuleIR): boolea
 }
 
 function moduleUsesOwnedArrayHostResultBoundary(module: CompilerModuleIR): boolean {
+  const specializedUsage = collectHostBoundarySpecializedObjectUsageWithHostClosures(
+    module,
+    createSpecializedObjectLayouts(module.runtime),
+  );
   return module.functions.some((func) =>
     func.closureFunctionId === undefined && func.resultType === 'owned_array_ref'
   ) ||
@@ -4029,19 +4024,9 @@ function moduleUsesOwnedArrayHostResultBoundary(module: CompilerModuleIR): boole
       ) &&
         hasHostFallbackObjectResultBoundary(func);
     }) ||
-    module.runtime?.representations.some((representation) =>
-      representation.kind === 'specialized_object_representation' &&
-      representation.fields.some((field) => field.valueType === 'owned_array_ref') &&
-      module.functions.some((func) =>
-        getHostAdaptableSpecializedObjectResultRepresentation(
-            func,
-            createSpecializedObjectLayouts(module.runtime),
-          )?.name === representation.name ||
-        getHostTaggedHeapNullableSpecializedResultRepresentation(
-            func,
-            createSpecializedObjectLayouts(module.runtime),
-          )?.representation.name === representation.name
-      )
+    [...specializedUsage.values()].some((usage) =>
+      (usage.needsParamCopyBack || usage.needsResultBoundary) &&
+      usage.layout.fields.some((field) => field.valueType === 'owned_array_ref')
     ) ||
     (module.runtime?.representations.some((representation) =>
       representation.kind === 'specialized_object_representation' &&
@@ -4096,6 +4081,10 @@ function moduleUsesOwnedNumberArrayHostParamBoundary(module: CompilerModuleIR): 
 }
 
 function moduleUsesOwnedNumberArrayHostResultBoundary(module: CompilerModuleIR): boolean {
+  const specializedUsage = collectHostBoundarySpecializedObjectUsageWithHostClosures(
+    module,
+    createSpecializedObjectLayouts(module.runtime),
+  );
   return module.functions.some((func) =>
     func.closureFunctionId === undefined && func.resultType === 'owned_number_array_ref'
   ) ||
@@ -4108,19 +4097,9 @@ function moduleUsesOwnedNumberArrayHostResultBoundary(module: CompilerModuleIR):
       ) &&
         hasHostFallbackObjectResultBoundary(func);
     }) ||
-    module.runtime?.representations.some((representation) =>
-      representation.kind === 'specialized_object_representation' &&
-      representation.fields.some((field) => field.valueType === 'owned_number_array_ref') &&
-      module.functions.some((func) =>
-        getHostAdaptableSpecializedObjectResultRepresentation(
-            func,
-            createSpecializedObjectLayouts(module.runtime),
-          )?.name === representation.name ||
-        getHostTaggedHeapNullableSpecializedResultRepresentation(
-            func,
-            createSpecializedObjectLayouts(module.runtime),
-          )?.representation.name === representation.name
-      )
+    [...specializedUsage.values()].some((usage) =>
+      (usage.needsParamCopyBack || usage.needsResultBoundary) &&
+      usage.layout.fields.some((field) => field.valueType === 'owned_number_array_ref')
     ) ||
     (module.runtime?.representations.some((representation) =>
       representation.kind === 'specialized_object_representation' &&
@@ -4175,6 +4154,10 @@ function moduleUsesOwnedBooleanArrayHostParamBoundary(module: CompilerModuleIR):
 }
 
 function moduleUsesOwnedBooleanArrayHostResultBoundary(module: CompilerModuleIR): boolean {
+  const specializedUsage = collectHostBoundarySpecializedObjectUsageWithHostClosures(
+    module,
+    createSpecializedObjectLayouts(module.runtime),
+  );
   return module.functions.some((func) =>
     func.closureFunctionId === undefined && func.resultType === 'owned_boolean_array_ref'
   ) ||
@@ -4187,19 +4170,9 @@ function moduleUsesOwnedBooleanArrayHostResultBoundary(module: CompilerModuleIR)
       ) &&
         hasHostFallbackObjectResultBoundary(func);
     }) ||
-    module.runtime?.representations.some((representation) =>
-      representation.kind === 'specialized_object_representation' &&
-      representation.fields.some((field) => field.valueType === 'owned_boolean_array_ref') &&
-      module.functions.some((func) =>
-        getHostAdaptableSpecializedObjectResultRepresentation(
-            func,
-            createSpecializedObjectLayouts(module.runtime),
-          )?.name === representation.name ||
-        getHostTaggedHeapNullableSpecializedResultRepresentation(
-            func,
-            createSpecializedObjectLayouts(module.runtime),
-          )?.representation.name === representation.name
-      )
+    [...specializedUsage.values()].some((usage) =>
+      (usage.needsParamCopyBack || usage.needsResultBoundary) &&
+      usage.layout.fields.some((field) => field.valueType === 'owned_boolean_array_ref')
     ) ||
     (module.runtime?.representations.some((representation) =>
       representation.kind === 'specialized_object_representation' &&
@@ -4289,8 +4262,9 @@ function moduleUsesOwnedHeapArrayHostResultBoundary(module: CompilerModuleIR): b
       return fallbackProperties.heapArrayProperties.size > 0 &&
         (hasHostFallbackObjectResultBoundary(func) ||
           hasHostTaggedHeapNullableFallbackResultBoundary(func));
-    }) || [...specializedUsage.values()].some((usage) =>
-      usage.needsResultBoundary &&
+    }) ||
+    [...specializedUsage.values()].some((usage) =>
+      (usage.needsParamCopyBack || usage.needsResultBoundary) &&
       usage.layout.fields.some((field) => field.valueType === 'owned_heap_array_ref')
     ) || moduleUsesHostClosureBoundaryToHostType(module, 'owned_heap_array_ref');
 }
@@ -4339,6 +4313,10 @@ function moduleUsesOwnedTaggedArrayHostParamCopyBack(module: CompilerModuleIR): 
 
 function moduleUsesOwnedTaggedArrayHostResultBoundary(module: CompilerModuleIR): boolean {
   const layouts = createSpecializedObjectLayouts(module.runtime);
+  const specializedUsage = collectHostBoundarySpecializedObjectUsageWithHostClosures(
+    module,
+    layouts,
+  );
   return module.functions.some((func) =>
     func.closureFunctionId === undefined && func.resultType === 'owned_tagged_array_ref'
   ) || module.functions.some((func) => {
@@ -4349,20 +4327,11 @@ function moduleUsesOwnedTaggedArrayHostResultBoundary(module: CompilerModuleIR):
   }) ||
     (moduleUsesGenericFallbackObjectResultBoundary(module) &&
       moduleUsesOwnedTaggedArrayRuntime(module)) ||
-    module.runtime?.representations.some((representation) =>
-      representation.kind === 'specialized_object_representation' &&
-      representation.fields.some((field) => field.valueType === 'owned_tagged_array_ref') &&
-      module.functions.some((func) =>
-        getHostAdaptableSpecializedObjectResultRepresentation(
-            func,
-            layouts,
-          )?.name === representation.name ||
-        getHostTaggedHeapNullableSpecializedResultRepresentation(
-            func,
-            layouts,
-          )?.representation.name === representation.name
-      )
-    ) || moduleUsesHostClosureBoundaryToHostType(module, 'owned_tagged_array_ref') ||
+    [...specializedUsage.values()].some((usage) =>
+      (usage.needsParamCopyBack || usage.needsResultBoundary) &&
+      usage.layout.fields.some((field) => field.valueType === 'owned_tagged_array_ref')
+    ) || moduleUsesSpecializedHostMethodArrayFieldSyncBoundary(module, 'owned_tagged_array_ref') ||
+    moduleUsesHostClosureBoundaryToHostType(module, 'owned_tagged_array_ref') ||
     getClassStaticTaggedArrayFields(module).length > 0 ||
     moduleUsesGeneratorStepClosureHostBridge(module);
 }
@@ -7698,6 +7667,38 @@ function emitStringRuntimeImports(module: CompilerModuleIR): string[] {
     moduleUsesGeneratorStepClosureHostBridge(module);
   const usesHostPromiseResultBoundary = moduleUsesHostPromiseResultBridge(module) ||
     moduleUsesGeneratorStepClosureHostBridge(module);
+  const hostClosureBoundarySignatures = getHostClosureBoundarySignatures(module);
+  const usesHostClosureBoundary = hostClosureBoundarySignatures.length > 0;
+  const hostClosureUsesTaggedNumberBoundary = hostClosureBoundarySignatures.some((
+    { signature, needsParamBoundary, needsResultBoundary },
+  ) =>
+    (needsParamBoundary || needsResultBoundary) &&
+    (
+      signature.paramTaggedPrimitiveKinds?.some((kinds) => kinds?.includesNumber === true) ===
+        true ||
+      signature.resultTaggedPrimitiveKinds?.includesNumber === true
+    )
+  );
+  const hostClosureUsesTaggedBooleanBoundary = hostClosureBoundarySignatures.some((
+    { signature, needsParamBoundary, needsResultBoundary },
+  ) =>
+    (needsParamBoundary || needsResultBoundary) &&
+    (
+      signature.paramTaggedPrimitiveKinds?.some((kinds) => kinds?.includesBoolean === true) ===
+        true ||
+      signature.resultTaggedPrimitiveKinds?.includesBoolean === true
+    )
+  );
+  const hostClosureUsesTaggedUndefinedBoundary = hostClosureBoundarySignatures.some((
+    { signature, needsParamBoundary, needsResultBoundary },
+  ) =>
+    (needsParamBoundary || needsResultBoundary) &&
+    (
+      signature.paramTaggedPrimitiveKinds?.some((kinds) => kinds?.includesUndefined === true) ===
+        true ||
+      signature.resultTaggedPrimitiveKinds?.includesUndefined === true
+    )
+  );
   const usesOwnedNumberArrayJoinRuntime = moduleUsesOwnedNumberArrayJoin(module);
   const usesOwnedBooleanArrayJoinRuntime = moduleUsesOwnedBooleanArrayJoin(module);
   const usesStringCodePointAt = moduleUsesStringCodePointAtRuntime(module);
@@ -7720,6 +7721,7 @@ function emitStringRuntimeImports(module: CompilerModuleIR): string[] {
   const usesHostFallbackObjectBoundary = moduleUsesHostFallbackObjectBoundary(module);
   const usesSyncTryCatchRuntime = moduleUsesSyncTryCatchRuntime(module);
   const usesTaggedPrimitiveHostParamBoundary = taggedHostBoundaryUsage.usesHostBoundary ||
+    usesHostClosureBoundary ||
     usesHostFallbackObjectBoundary ||
     usesHostPromiseParamBoundary ||
     usesHostPromiseResultBoundary ||
@@ -7804,6 +7806,7 @@ function emitStringRuntimeImports(module: CompilerModuleIR): string[] {
     usesHostPromiseResultBoundary ||
     usesTaggedThrowRuntime;
   const usesTaggedPrimitiveHostParamNumberBoundary = taggedHostBoundaryUsage.usesNumberBoundary ||
+    hostClosureUsesTaggedNumberBoundary ||
     usesTaggedArrayHostParamNumberBoundary ||
     usesHostFallbackObjectBoundary ||
     usesHostPromiseParamBoundary ||
@@ -7811,6 +7814,7 @@ function emitStringRuntimeImports(module: CompilerModuleIR): string[] {
     usesTaggedThrowRuntime ||
     usesSyncTryCatchRuntime;
   const usesTaggedPrimitiveHostResultNumberBoundary = taggedHostBoundaryUsage.usesNumberBoundary ||
+    hostClosureUsesTaggedNumberBoundary ||
     usesTaggedArrayHostParamNumberBoundary ||
     usesTaggedArrayHostResultNumberBoundary ||
     usesOwnedNumberArrayJoinRuntime ||
@@ -7818,6 +7822,7 @@ function emitStringRuntimeImports(module: CompilerModuleIR): string[] {
     usesHostPromiseResultBoundary ||
     usesTaggedThrowRuntime;
   const usesTaggedPrimitiveHostParamBooleanBoundary = taggedHostBoundaryUsage.usesBooleanBoundary ||
+    hostClosureUsesTaggedBooleanBoundary ||
     usesTaggedArrayHostParamBooleanBoundary ||
     usesHostFallbackObjectBoundary ||
     usesHostPromiseParamBoundary ||
@@ -7825,7 +7830,8 @@ function emitStringRuntimeImports(module: CompilerModuleIR): string[] {
     usesTaggedThrowRuntime ||
     usesSyncTryCatchRuntime;
   const usesTaggedPrimitiveHostResultBooleanBoundary =
-    taggedHostBoundaryUsage.usesBooleanBoundary || usesTaggedArrayHostParamBooleanBoundary ||
+    taggedHostBoundaryUsage.usesBooleanBoundary || hostClosureUsesTaggedBooleanBoundary ||
+    usesTaggedArrayHostParamBooleanBoundary ||
     usesTaggedArrayHostResultBooleanBoundary ||
     usesOwnedBooleanArrayJoinRuntime ||
     usesHostFallbackObjectBoundary ||
@@ -7833,6 +7839,7 @@ function emitStringRuntimeImports(module: CompilerModuleIR): string[] {
     usesTaggedThrowRuntime;
   const usesTaggedPrimitiveHostResultUndefinedBoundary =
     taggedHostBoundaryUsage.usesUndefinedBoundary ||
+    hostClosureUsesTaggedUndefinedBoundary ||
     usesTaggedArrayHostParamUndefinedBoundary ||
     usesTaggedArrayHostResultUndefinedBoundary ||
     usesHostFallbackObjectBoundary ||
@@ -8595,24 +8602,19 @@ function emitObjectRuntimeImports(
         field.valueType === 'owned_tagged_array_ref' && field.heapRepresentation !== undefined
       )
     );
+  const hasHostObjectUsage = [...usageByRepresentationName.values()].length > 0;
+  const hasFallbackUsage = fallbackUsage !== undefined;
 
-  const needsEmpty =
-    [...usageByRepresentationName.values()].some((usage) => usage.needsResultBoundary) ||
-    fallbackUsage?.needsResultBoundary === true ||
+  const needsEmpty = hasHostObjectUsage ||
+    hasFallbackUsage ||
     usesHostPromiseErrorBridge ||
     usesHostClosureDynamicObjectBridge ||
     usesTaggedThrowBuiltinErrorBridge ||
     usesSyncTryCatch;
-  const needsSame =
-    [...usageByRepresentationName.values()].some((usage) => usage.needsParamBoundary) ||
+  const needsSame = hasHostObjectUsage ||
+    hasFallbackUsage ||
     hostSpecializedHeapFieldsNeedSame ||
-    hostSpecializedTaggedArrayFieldsNeedSame ||
-    fallbackUsage?.needsParamBoundary === true ||
-    (fallbackUsage?.needsResultBoundary === true &&
-      (hostFallbackHeapProperties.size > 0 ||
-        [...hostFallbackTaggedArrayProperties.values()].some((property) =>
-          property.representation !== undefined
-        )));
+    hostSpecializedTaggedArrayFieldsNeedSame;
   const needsClassTagGetter =
     [...usageByRepresentationName.values()].some((usage) =>
       usage.needsParamBoundary &&
@@ -8634,16 +8636,11 @@ function emitObjectRuntimeImports(
     needsConstructorFieldSurface ||
     hostFallbackClassConstructorProperties.size > 0;
   const needsClassPrototypeSync = needsClassTagSetter;
-  const needsIdentityLookup =
-    [...usageByRepresentationName.values()].some((usage) => usage.needsResultBoundary) ||
-    hostSpecializedTaggedArrayFieldsNeedIdentityLookup ||
-    (fallbackUsage?.needsResultBoundary === true &&
-      [...hostFallbackTaggedArrayProperties.values()].some((property) =>
-        property.representation !== undefined
-      )) ||
-    fallbackUsage?.needsResultBoundary === true;
-  const needsIdentityRemember = [...usageByRepresentationName.values()].length > 0 ||
-    fallbackUsage !== undefined;
+  const needsIdentityLookup = hasHostObjectUsage ||
+    hasFallbackUsage ||
+    hostSpecializedTaggedArrayFieldsNeedIdentityLookup;
+  const needsIdentityRemember = hasHostObjectUsage ||
+    hasFallbackUsage;
   const getterImports = new Map<string, string>();
   const setterImports = new Map<string, string>();
   const hasImports = new Map<string, string>();
@@ -19361,10 +19358,6 @@ function getExpressionValueType(expression: CompilerExpressionIR): CompilerValue
     case 'owned_string_array_join':
     case 'owned_number_array_join':
     case 'owned_boolean_array_join':
-    case 'owned_string_array_unshift':
-    case 'owned_number_array_unshift':
-    case 'owned_boolean_array_unshift':
-    case 'owned_tagged_array_unshift':
     case 'owned_string_array_push':
     case 'owned_number_array_push':
     case 'owned_boolean_array_push':
@@ -20618,30 +20611,6 @@ function emitExpression(
         ...emitExpression(expression.array, level, runtime),
         ...emitExpression(expression.value, level, runtime),
         `${indent(level)}call $owned_tagged_array_push`,
-      ];
-    case 'owned_string_array_unshift':
-      return [
-        ...emitExpression(expression.array, level, runtime),
-        ...emitExpression(expression.value, level, runtime),
-        `${indent(level)}call $owned_string_array_unshift`,
-      ];
-    case 'owned_number_array_unshift':
-      return [
-        ...emitExpression(expression.array, level, runtime),
-        ...emitExpression(expression.value, level, runtime),
-        `${indent(level)}call $owned_number_array_unshift`,
-      ];
-    case 'owned_boolean_array_unshift':
-      return [
-        ...emitExpression(expression.array, level, runtime),
-        ...emitExpression(expression.value, level, runtime),
-        `${indent(level)}call $owned_boolean_array_unshift`,
-      ];
-    case 'owned_tagged_array_unshift':
-      return [
-        ...emitExpression(expression.array, level, runtime),
-        ...emitExpression(expression.value, level, runtime),
-        `${indent(level)}call $owned_tagged_array_unshift`,
       ];
     case 'owned_heap_array_reverse':
       return [

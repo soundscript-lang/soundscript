@@ -645,7 +645,7 @@ Deno.test('LSP server responds to hover using ordinary TypeScript types for .ts 
 
   assertEquals(result?.contents?.kind, 'markdown');
   assertEquals(result?.contents?.value.includes('```ts'), true);
-  assertEquals(result?.contents?.value.includes('const dict: any'), true);
+  assertEquals(result?.contents?.value.includes('const dict: BareObject'), true);
 
   await shutdownServer(client, startPromise);
 });
@@ -2560,7 +2560,7 @@ Deno.test('LSP server shows builtin annotation hover docs', async () => {
 Deno.test('LSP server shows imported declaration macro docs on annotation hovers', async () => {
   const workspace = await createWorkspace();
   await writeWorkspaceFiles(workspace, {
-    'src/macros/derive.sts': createUserDefinedDeriveMacroText(),
+    'src/macros/derive.macro.sts': createUserDefinedDeriveMacroText(),
   });
   const { client, startPromise } = await initializeServer(workspace, {
     capabilityMode: 'editor-bridge',
@@ -2568,7 +2568,7 @@ Deno.test('LSP server shows imported declaration macro docs on annotation hovers
 
   const uri = `file://${workspace}/src/index.sts`;
   const lines = [
-    "import { derive } from './macros/derive';",
+    "import { derive } from './macros/derive.macro';",
     '// #[derive]',
     'export class User { id: string; }',
     '',
@@ -7691,9 +7691,9 @@ Deno.test(
       '//     return value;',
       '// }',
       '',
-      'console.log(literalSchema)',
+      'void literalSchema;',
       '',
-      'console.log(a)',
+      'void a;',
       '',
       'class B {',
       '    type: string;',
@@ -8507,79 +8507,72 @@ Deno.test('LSP server adds #[interop] at destructured dynamic import boundaries 
   await shutdownServer(client, startPromise);
 });
 
-Deno.test('LSP server adds #[interop] at import-equals boundaries from use-site diagnostics', async () => {
-  const workspace = await createWorkspace();
-  await writeWorkspaceFiles(workspace, {
-    'src/lib.ts': 'export const value = 1;\n',
-    'src/index.sts': [
-      'import lib = require("./lib");',
-      'const exact: number = lib.value;',
-      '',
-    ].join('\n'),
-  });
-
-  const { client, startPromise } = await initializeServer(workspace);
-  const uri = `file://${workspace}/src/index.sts`;
-  await client.sendNotification('textDocument/didOpen', {
-    textDocument: {
-      uri,
-      languageId: 'soundscript',
-      version: 1,
-      text: [
+Deno.test(
+  'LSP server does not offer interop boundary fixes for unsupported import-equals syntax',
+  async () => {
+    const workspace = await createWorkspace();
+    await writeWorkspaceFiles(workspace, {
+      'src/lib.ts': 'export const value = 1;\n',
+      'src/index.sts': [
         'import lib = require("./lib");',
         'const exact: number = lib.value;',
         '',
       ].join('\n'),
-    },
-  });
+    });
 
-  const notification = await withTimeout(
-    client.readNotification('textDocument/publishDiagnostics'),
-    250,
-    'Timed out waiting for import-equals diagnostics before codeAction.',
-  );
-  const params = notification.params as {
-    diagnostics: Array<{
-      code?: string;
-      data?: {
-        metadata?: {
-          rule?: string;
-        };
-      };
-      range: {
-        end: { character: number; line: number };
-        start: { character: number; line: number };
-      };
-    }>;
-    uri: string;
-  };
-
-  const useSiteDiagnostic = params.diagnostics.find((diagnostic) =>
-    diagnostic.code === 'SOUND1005' && diagnostic.range.start.line === 1
-  );
-  assertEquals(useSiteDiagnostic?.data?.metadata?.rule, 'unsound_import_boundary');
-
-  const codeActionResult = await requestCodeActions(
-    client,
-    uri,
-    useSiteDiagnostic ? [useSiteDiagnostic] : [],
-    'Timed out waiting for import-equals codeAction response.',
-  );
-
-  assertEquals(codeActionResult?.[0]?.title, 'Add #[interop] boundary');
-  assertEquals(
-    codeActionResult?.[0]?.edit?.changes?.[uri]?.[0],
-    {
-      newText: '// #[interop]\n',
-      range: {
-        start: { line: 0, character: 0 },
-        end: { line: 0, character: 0 },
+    const { client, startPromise } = await initializeServer(workspace);
+    const uri = `file://${workspace}/src/index.sts`;
+    await client.sendNotification('textDocument/didOpen', {
+      textDocument: {
+        uri,
+        languageId: 'soundscript',
+        version: 1,
+        text: [
+          'import lib = require("./lib");',
+          'const exact: number = lib.value;',
+          '',
+        ].join('\n'),
       },
-    },
-  );
+    });
 
-  await shutdownServer(client, startPromise);
-});
+    const notification = await withTimeout(
+      client.readNotification('textDocument/publishDiagnostics'),
+      250,
+      'Timed out waiting for import-equals diagnostics before codeAction.',
+    );
+    const params = notification.params as {
+      diagnostics: Array<{
+        code?: string;
+        data?: {
+          metadata?: {
+            rule?: string;
+          };
+        };
+        range: {
+          end: { character: number; line: number };
+          start: { character: number; line: number };
+        };
+      }>;
+      uri: string;
+    };
+
+    assertEquals(params.diagnostics.map((diagnostic) => diagnostic.code), ['TS1202', 'TS1294']);
+
+    const codeActionResult = await requestCodeActions(
+      client,
+      uri,
+      params.diagnostics,
+      'Timed out waiting for import-equals codeAction response.',
+    );
+
+    assertEquals(
+      codeActionResult?.some((action) => action.title === 'Add #[interop] boundary') ?? false,
+      false,
+    );
+
+    await shutdownServer(client, startPromise);
+  },
+);
 
 Deno.test('LSP server offers a quick fix to replace `var` with `let`', async () => {
   const workspace = await createWorkspace();

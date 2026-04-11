@@ -78,12 +78,12 @@ function collectDeclaredModulesInDirectory(directoryPath: string): string[] {
     const sourceText = Deno.readTextFileSync(filePath);
     const sourceFile = ts.createSourceFile(filePath, sourceText, ts.ScriptTarget.Latest, true);
 
-    function visit(node: ts.Node): void {
+    const visit = (node: ts.Node): void => {
       if (ts.isModuleDeclaration(node) && ts.isStringLiteral(node.name)) {
         modules.add(node.name.text);
       }
       ts.forEachChild(node, visit);
-    }
+    };
 
     visit(sourceFile);
   }

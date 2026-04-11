@@ -170,7 +170,7 @@ Deno.test('projectEditorFile includes projected sibling soundscript modules for 
       '',
     ].join('\n'),
     'src/import-example.sts': [
-      "import { safeDivide } from '../macros.sts';",
+      "import { safeDivide } from './macros.sts';",
       '',
       'const result = safeDivide(10, 0);',
       '',

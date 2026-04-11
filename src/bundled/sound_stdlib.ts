@@ -16,6 +16,7 @@ const SOUND_STDLIB_FILE_NAMES = [
   'lib.decorators.d.ts',
   'lib.decorators.legacy.d.ts',
   'lib.dom.d.ts',
+  'lib.dom.iterable.d.ts',
   'lib.dom.asynciterable.d.ts',
   'lib.es5.d.ts',
   'lib.es2015.d.ts',

@@ -2,6 +2,10 @@ import { assertEquals, assertStringIncludes } from '@std/assert';
 import ts from 'typescript';
 
 import {
+  createSoundStdlibCompilerHost,
+  resolveBundledTypesDirectory,
+} from '../bundled/sound_stdlib.ts';
+import {
   ASYNC_STDLIB_DECLARATION_FILE,
   ASYNC_STDLIB_DECLARATION_TEXT,
   ASYNC_STDLIB_MODULE_SPECIFIER,
@@ -118,6 +122,34 @@ Deno.test('std package support resolves root and stdlib leaf specifiers to virtu
   assertEquals(asyncResolved?.resolvedFileName, ASYNC_STDLIB_DECLARATION_FILE);
   assertEquals(numericsResolved?.resolvedFileName, NUMERICS_STDLIB_DECLARATION_FILE);
 });
+
+Deno.test(
+  'std package support preserves bundled type-module resolution for resolveModuleNameLiterals',
+  () => {
+    const compilerOptions = {
+      module: ts.ModuleKind.ESNext,
+      target: ts.ScriptTarget.ES2022,
+      types: ['node'],
+    };
+    const host = withStdPackageModuleResolution(createSoundStdlibCompilerHost(compilerOptions));
+    const containingFile = `${resolveBundledTypesDirectory()}/node/http.d.ts`;
+    const resolved = host.resolveModuleNameLiterals?.(
+      [{ text: 'undici-types' } as ts.StringLiteralLike],
+      containingFile,
+      undefined,
+      compilerOptions,
+      ts.createSourceFile(containingFile, '', ts.ScriptTarget.ES2022, true),
+      undefined,
+    );
+
+    assertEquals(
+      resolved?.[0]?.resolvedModule?.resolvedFileName.endsWith(
+        '/node_modules/undici-types/index.d.ts',
+      ),
+      true,
+    );
+  },
+);
 
 Deno.test('std package support root text is generated from stdlib sources', () => {
   assertStringIncludes(

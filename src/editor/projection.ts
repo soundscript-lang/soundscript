@@ -1,8 +1,8 @@
 import { dirname } from '../platform/path.ts';
 import ts from 'typescript';
 
-import { createSoundStdlibCompilerHost } from '../bundled/sound_stdlib.ts';
 import {
+  collectSoundscriptRootNames,
   getConfigFileParsingDiagnostics,
   loadConfig,
   resolveExpansionEnabled,
@@ -18,7 +18,10 @@ import {
   mapProgramPositionToSource,
   mapProgramRangeToSource,
 } from '../frontend/project_frontend.ts';
-import { getStdlibDeclarationEntriesBySpecifier } from '../frontend/std_package_support.ts';
+import {
+  createStdPackageCompilerHost,
+  getStdlibDeclarationEntriesBySpecifier,
+} from '../frontend/std_package_support.ts';
 
 export interface EditorProjectionOptions {
   expansionEnabled?: boolean;
@@ -320,9 +323,15 @@ function getProjectedPreparedSource(
     expansionEnabled,
     loadedConfig.soundscript,
   );
-  const rootNames = [filePath];
+  const rootNames = [
+    ...new Set([
+      ...loadedConfig.commandLine.fileNames,
+      ...collectSoundscriptRootNames(projectPath, loadedConfig),
+      filePath,
+    ]),
+  ];
   const expandedProgram = createBuiltinExpandedProgram({
-    baseHost: createSoundStdlibCompilerHost(
+    baseHost: createStdPackageCompilerHost(
       loadedConfig.commandLine.options,
       dirname(projectPath),
     ),

@@ -1553,7 +1553,7 @@ function rewriteRecursiveLazyInvocation(
   text: string,
   callbackTypeText: string,
   callbackValueText: string,
-  lazyTypeArgumentsText: string,
+  _lazyTypeArgumentsText: string,
 ): string {
   const pattern = new RegExp(
     `([A-Za-z_$][A-Za-z0-9_$]*)\\(\\(\\): ${escapeRegExpText(callbackTypeText)} => ${
@@ -1563,7 +1563,7 @@ function rewriteRecursiveLazyInvocation(
   );
   return text.replace(
     pattern,
-    `$1<${lazyTypeArgumentsText}>(() => ${callbackValueText})`,
+    `$1((): ${callbackTypeText} => ${callbackValueText})`,
   );
 }
 
@@ -1900,11 +1900,6 @@ function decodeHelperTextFromShape(
         errorNode,
         { kind: 'named', typeName: shape.name },
       );
-      if (shape.name === ownerTypeName) {
-        return `${
-          ctx.runtime.named('sts:decode', 'lazy').text()
-        }((): import('sts:decode').Decoder<${shape.name}> => ${shape.name}Decoder)`;
-      }
       const localCallbackTypeText = localNamedDecodeCallbackTypeText(
         ctx,
         shape.name,
@@ -1912,6 +1907,15 @@ function decodeHelperTextFromShape(
         scopeNode,
         'decode',
       );
+      if (shape.name === ownerTypeName) {
+        return localCallbackTypeText
+          ? `${
+            ctx.runtime.named('sts:decode', 'lazy').text()
+          }((): ${localCallbackTypeText} => ${shape.name}Decoder)`
+          : `${
+            ctx.runtime.named('sts:decode', 'lazy').text()
+          }((): import('sts:decode').Decoder<${shape.name}> => ${shape.name}Decoder)`;
+      }
       return localCallbackTypeText
         ? `${
           ctx.runtime.named('sts:decode', 'lazy').text()
@@ -2035,11 +2039,6 @@ function encodeHelperTextFromShape(
         errorNode,
         { kind: 'named', typeName: shape.name },
       );
-      if (shape.name === ownerTypeName) {
-        return `${
-          ctx.runtime.named('sts:encode', 'lazy').text()
-        }((): import('sts:encode').Encoder<${shape.name}, import('sts:json').JsonLikeValue> => ${shape.name}Encoder)`;
-      }
       const localCallbackTypeText = localNamedEncodeCallbackTypeText(
         ctx,
         shape.name,
@@ -2047,6 +2046,15 @@ function encodeHelperTextFromShape(
         scopeNode,
         'encode',
       );
+      if (shape.name === ownerTypeName) {
+        return localCallbackTypeText
+          ? `${
+            ctx.runtime.named('sts:encode', 'lazy').text()
+          }((): ${localCallbackTypeText} => ${shape.name}Encoder)`
+          : `${
+            ctx.runtime.named('sts:encode', 'lazy').text()
+          }((): import('sts:encode').Encoder<${shape.name}, import('sts:json').JsonLikeValue> => ${shape.name}Encoder)`;
+      }
       return localCallbackTypeText
         ? `${
           ctx.runtime.named('sts:encode', 'lazy').text()
@@ -2204,9 +2212,13 @@ function codecHelperTextsFromShape(
         );
         return {
           decodeText: shape.name === ownerTypeName
-            ? `${
-              ctx.runtime.named('sts:decode', 'lazy').text()
-            }((): import('sts:decode').Decoder<${shape.name}> => ${sideCompanions.decodeCompanionName})`
+            ? localDecodeCallbackTypeText
+              ? `${
+                ctx.runtime.named('sts:decode', 'lazy').text()
+              }((): ${localDecodeCallbackTypeText} => ${sideCompanions.decodeCompanionName})`
+              : `${
+                ctx.runtime.named('sts:decode', 'lazy').text()
+              }((): import('sts:decode').Decoder<${shape.name}> => ${sideCompanions.decodeCompanionName})`
             : localDecodeCallbackTypeText
             ? `${
               ctx.runtime.named('sts:decode', 'lazy').text()
@@ -2215,9 +2227,13 @@ function codecHelperTextsFromShape(
               ctx.runtime.named('sts:decode', 'lazy').text()
             }(() => ${sideCompanions.decodeCompanionName})`,
           encodeText: shape.name === ownerTypeName
-            ? `${
-              ctx.runtime.named('sts:encode', 'lazy').text()
-            }((): import('sts:encode').Encoder<${shape.name}, import('sts:json').JsonLikeValue> => ${sideCompanions.encodeCompanionName})`
+            ? localEncodeCallbackTypeText
+              ? `${
+                ctx.runtime.named('sts:encode', 'lazy').text()
+              }((): ${localEncodeCallbackTypeText} => ${sideCompanions.encodeCompanionName})`
+              : `${
+                ctx.runtime.named('sts:encode', 'lazy').text()
+              }((): import('sts:encode').Encoder<${shape.name}, import('sts:json').JsonLikeValue> => ${sideCompanions.encodeCompanionName})`
             : localEncodeCallbackTypeText
             ? `${
               ctx.runtime.named('sts:encode', 'lazy').text()
@@ -2252,9 +2268,13 @@ function codecHelperTextsFromShape(
           }((): ${localDecodeCallbackTypeText} => ${shape.name}Codec)`
           : `${ctx.runtime.named('sts:decode', 'lazy').text()}(() => ${shape.name}Codec)`,
         encodeText: shape.name === ownerTypeName
-          ? `${
-            ctx.runtime.named('sts:encode', 'lazy').text()
-          }((): import('sts:encode').Encoder<${shape.name}, import('sts:json').JsonLikeValue> => ${shape.name}Codec)`
+          ? localEncodeCallbackTypeText
+            ? `${
+              ctx.runtime.named('sts:encode', 'lazy').text()
+            }((): ${localEncodeCallbackTypeText} => ${shape.name}Codec)`
+            : `${
+              ctx.runtime.named('sts:encode', 'lazy').text()
+            }((): import('sts:encode').Encoder<${shape.name}, import('sts:json').JsonLikeValue> => ${shape.name}Codec)`
           : localEncodeCallbackTypeText
           ? `${
             ctx.runtime.named('sts:encode', 'lazy').text()

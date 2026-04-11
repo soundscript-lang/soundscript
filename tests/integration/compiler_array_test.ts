@@ -2072,7 +2072,7 @@ compilerArrayTest(
     assertEquals(build?.resultType, 'owned_array_ref');
     assertEquals(pick?.params[0]?.type, 'owned_array_ref');
     assertEquals(
-      (pick?.body[pick.body.length - 1] as {
+      (pick?.body[0] as {
         value?: { value?: { kind?: string } };
       } | undefined)?.value?.value?.kind,
       'owned_string_array_element',
@@ -2536,12 +2536,8 @@ compilerArrayTest(
     const tempDirectory = await createCompilerTestProject([
       'export function main(start: number, end: number, hasEnd: boolean): number {',
       '  const values: string[] = ["ant", "bee", "cat", "dog"];',
-      '  let sliced: string[] = ["fallback"];',
-      '  if (hasEnd) {',
-      '    sliced = values.slice(start, end);',
-      '  } else {',
-      '    sliced = values.slice(start);',
-      '  }',
+      '  const effectiveEnd = hasEnd ? end : values.length;',
+      '  const sliced = values.slice(start, effectiveEnd);',
       '  return sliced.length + sliced[0].length + sliced[sliced.length - 1].length;',
       '}',
       '',
@@ -6269,13 +6265,9 @@ compilerArrayTest(
     const tempDirectory = await createCompilerTestProject([
       'export function main(start: number, end: number, hasEnd: boolean): number {',
       '  const values: boolean[] = [false, true, false, true];',
-      '  let sliced: boolean[] = [false];',
+      '  const effectiveEnd = hasEnd ? end : values.length;',
+      '  const sliced = values.slice(start, effectiveEnd);',
       '  let total = 0;',
-      '  if (hasEnd) {',
-      '    sliced = values.slice(start, end);',
-      '  } else {',
-      '    sliced = values.slice(start);',
-      '  }',
       '  total = total + sliced.length;',
       '  if (sliced[0]) {',
       '    total = total + 1;',
@@ -6899,7 +6891,7 @@ compilerArrayTest(
       {
         path: 'src/index.ts',
         contents: [
-          "import { lengthTimesTen } from '../../src/helpers';",
+          "import { lengthTimesTen } from './helpers';",
           '',
           'export function pushMain(): number {',
           '  const values: number[] = [1];',
@@ -7056,7 +7048,7 @@ compilerArrayTest(
       {
         path: 'src/index.ts',
         contents: [
-          "import { buildBoolean, buildNumber, buildString, consumeBoolean, consumeNumber, consumeString } from '../../src/helpers';",
+          "import { buildBoolean, buildNumber, buildString, consumeBoolean, consumeNumber, consumeString } from './helpers';",
           '',
           'export function stringMain(left: string, right: string): number {',
           '  return consumeString(buildString(left, right));',

@@ -1,7 +1,6 @@
 import { dirname, extname, join, relative } from '../platform/path.ts';
 import ts from 'typescript';
 
-import { createSoundStdlibCompilerHost } from '../bundled/sound_stdlib.ts';
 import {
   formatDiagnostics,
   hasErrorDiagnostics,
@@ -24,6 +23,7 @@ import {
 import { MacroError } from './macro_errors.ts';
 import { makeDirectory, writeTextFile } from '../platform/host.ts';
 import { toSourceFileName } from './project_frontend.ts';
+import { createStdPackageCompilerHost } from './std_package_support.ts';
 
 export interface ExpandProjectOptions {
   expansionEnabled?: boolean;
@@ -165,7 +165,7 @@ export async function expandProject(options: ExpandProjectOptions): Promise<Expa
   );
   const soundscriptRootNames = collectSoundscriptRootNames(options.projectPath, loadedConfig);
   const expandedProgram = createBuiltinExpandedProgram({
-    baseHost: createSoundStdlibCompilerHost(
+    baseHost: createStdPackageCompilerHost(
       loadedConfig.commandLine.options,
       dirname(options.projectPath),
     ),

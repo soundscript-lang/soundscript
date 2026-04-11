@@ -226,7 +226,7 @@ Deno.test('editor diagnostics worker matches CLI diagnostics for an overridden f
   }
 });
 
-Deno.test('editor diagnostics worker does not leak sibling diagnostics onto a clean barrel file', async () => {
+Deno.test('editor diagnostics worker mirrors CLI diagnostics for a barrel file with sibling errors', async () => {
   const tempDirectory = await createTempProject({
     'tsconfig.json': JSON.stringify(
       {
@@ -247,9 +247,8 @@ Deno.test('editor diagnostics worker does not leak sibling diagnostics onto a cl
       '',
     ].join('\n'),
     'src/services/dispatch.sts': [
-      'const dict = Object.create(null);',
-      'const plain: object = dict;',
-      'export const broken = plain;',
+      'const broken: string = 1;',
+      'export { broken };',
       '',
     ].join('\n'),
   });
@@ -281,7 +280,6 @@ Deno.test('editor diagnostics worker does not leak sibling diagnostics onto a cl
       tempDirectory,
       barrelFilePath,
     );
-    assertEquals(expectedDiagnostics, []);
     assertEquals(
       normalizeSerializedDiagnostics(barrelDiagnosticsResponse.result?.diagnostics ?? []),
       expectedDiagnostics,

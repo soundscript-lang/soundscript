@@ -1594,7 +1594,7 @@ Deno.test('machine numerics reject arithmetic on abstract numeric families until
     ]),
     [
       ['SOUNDSCRIPT_NUMERIC_ABSTRACT_FAMILY', 4, 16],
-      ['SOUNDSCRIPT_NUMERIC_ABSTRACT_FAMILY', 6, 21],
+      ['SOUNDSCRIPT_NUMERIC_ABSTRACT_FAMILY', 6, 19],
     ],
   );
 });
@@ -1746,7 +1746,7 @@ Deno.test('machine numerics reject unary plus on abstract numeric families until
     ]),
     [
       ['SOUNDSCRIPT_NUMERIC_ABSTRACT_FAMILY', 3, 16],
-      ['SOUNDSCRIPT_NUMERIC_ABSTRACT_FAMILY', 5, 21],
+      ['SOUNDSCRIPT_NUMERIC_ABSTRACT_FAMILY', 5, 19],
     ],
   );
 });
@@ -1802,10 +1802,10 @@ Deno.test('machine numerics reject remaining unary and update operators on abstr
       ['SOUNDSCRIPT_NUMERIC_ABSTRACT_FAMILY', 4, 18],
       ['SOUNDSCRIPT_NUMERIC_ABSTRACT_FAMILY', 5, 1],
       ['SOUNDSCRIPT_NUMERIC_ABSTRACT_FAMILY', 6, 1],
-      ['SOUNDSCRIPT_NUMERIC_ABSTRACT_FAMILY', 8, 28],
-      ['SOUNDSCRIPT_NUMERIC_ABSTRACT_FAMILY', 9, 29],
-      ['SOUNDSCRIPT_NUMERIC_ABSTRACT_FAMILY', 10, 5],
-      ['SOUNDSCRIPT_NUMERIC_ABSTRACT_FAMILY', 11, 5],
+      ['SOUNDSCRIPT_NUMERIC_ABSTRACT_FAMILY', 8, 26],
+      ['SOUNDSCRIPT_NUMERIC_ABSTRACT_FAMILY', 9, 27],
+      ['SOUNDSCRIPT_NUMERIC_ABSTRACT_FAMILY', 10, 3],
+      ['SOUNDSCRIPT_NUMERIC_ABSTRACT_FAMILY', 11, 3],
     ],
   );
 });

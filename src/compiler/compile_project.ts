@@ -2,7 +2,6 @@ import ts from 'typescript';
 import { dirname, relative } from '../platform/path.ts';
 
 import { createAnnotationLookup } from '../language/annotation_syntax.ts';
-import { createSoundStdlibCompilerHost } from '../bundled/sound_stdlib.ts';
 import {
   type CompilerDiagnostic,
   type DiagnosticRelatedInformation,
@@ -35,6 +34,7 @@ import {
   type PreparedSourceFile,
   toSourceFileName,
 } from '../frontend/project_frontend.ts';
+import { createStdPackageCompilerHost } from '../frontend/std_package_support.ts';
 import { CompilerUnsupportedError } from './errors.ts';
 import { lowerProgramToCompilerIR, validateHonestHeapBoundarySurfaces } from './lower.ts';
 import {
@@ -248,7 +248,7 @@ function createProgram(options: CompileProjectOptions): {
   const loadedConfig = loadConfig(options.projectPath, { target: options.target });
   const soundscriptRootNames = collectSoundscriptRootNames(options.projectPath, loadedConfig);
   const expandedProgram = createBuiltinExpandedProgram({
-    baseHost: createSoundStdlibCompilerHost(
+    baseHost: createStdPackageCompilerHost(
       loadedConfig.commandLine.options,
       dirname(options.projectPath),
     ),

@@ -598,95 +598,108 @@ function inferHelperModeFromCallExpression(
   };
 
   switch (helper.module) {
-    case 'decode': {
-      switch (helper.name) {
-        case 'array':
-        case 'nullable':
-        case 'optional':
-        case 'option':
-        case 'readonlyRecord':
-        case 'undefinedable':
-          return inferArgMode(0);
-        case 'defaulted':
-          return combineHelperModes([
-            inferArgMode(0),
-            callableExpressionReturnsPromiseLike(checker, callExpression.arguments[1]!)
-              ? 'async'
-              : 'sync',
-          ]);
-        case 'lazy':
-          return inferThunkMode(0);
-        case 'map':
-        case 'refine':
-        case 'preprocess':
-          return combineHelperModes([
-            inferArgMode(0),
-            callableExpressionReturnsPromiseLike(checker, callExpression.arguments[1]!)
-              ? 'async'
-              : 'sync',
-          ]);
-        case 'object':
-        case 'passthroughObject':
-        case 'strictObject':
-          return helperModeFromShapeLiteral(checker, callExpression.arguments[0], direction, state);
-        case 'result':
-        case 'union':
-          return combineHelperModes([inferArgMode(0), inferArgMode(1)]);
-        case 'tuple':
-          return combineHelperModes(
-            callExpression.arguments.map((argument) =>
-              inferHelperModeFromExpression(checker, argument, direction, state)
-            ),
-          );
-        default:
-          return null;
-      }
-    }
-    case 'encode': {
-      switch (helper.name) {
-        case 'array':
-        case 'nullable':
-        case 'optional':
-        case 'option':
-        case 'record':
-        case 'undefinedable':
-          return inferArgMode(0);
-        case 'contramap':
-        case 'refine':
-          return combineHelperModes([
-            inferArgMode(0),
-            callableExpressionReturnsPromiseLike(checker, callExpression.arguments[1]!)
-              ? 'async'
-              : 'sync',
-          ]);
-        case 'lazy':
-          return inferThunkMode(0);
-        case 'object':
-        case 'passthroughObject':
-        case 'strictObject':
-          return helperModeFromShapeLiteral(checker, callExpression.arguments[0], direction, state);
-        case 'result':
-          return combineHelperModes([inferArgMode(0), inferArgMode(1)]);
-        case 'tuple':
-          return combineHelperModes(
-            callExpression.arguments.map((argument) =>
-              inferHelperModeFromExpression(checker, argument, direction, state)
-            ),
-          );
-        default:
-          return null;
-      }
-    }
-    case 'codec': {
-      switch (helper.name) {
-        case 'codec':
-          return direction === 'decode' ? inferArgMode(0) : inferArgMode(1);
-        case 'imap':
-          return inferArgMode(0);
-        default:
-          return null;
-      }
-    }
+    case 'decode':
+      return (() => {
+        switch (helper.name) {
+          case 'array':
+          case 'nullable':
+          case 'optional':
+          case 'option':
+          case 'readonlyRecord':
+          case 'undefinedable':
+            return inferArgMode(0);
+          case 'defaulted':
+            return combineHelperModes([
+              inferArgMode(0),
+              callableExpressionReturnsPromiseLike(checker, callExpression.arguments[1]!)
+                ? 'async'
+                : 'sync',
+            ]);
+          case 'lazy':
+            return inferThunkMode(0);
+          case 'map':
+          case 'refine':
+          case 'preprocess':
+            return combineHelperModes([
+              inferArgMode(0),
+              callableExpressionReturnsPromiseLike(checker, callExpression.arguments[1]!)
+                ? 'async'
+                : 'sync',
+            ]);
+          case 'object':
+          case 'passthroughObject':
+          case 'strictObject':
+            return helperModeFromShapeLiteral(
+              checker,
+              callExpression.arguments[0],
+              direction,
+              state,
+            );
+          case 'result':
+          case 'union':
+            return combineHelperModes([inferArgMode(0), inferArgMode(1)]);
+          case 'tuple':
+            return combineHelperModes(
+              callExpression.arguments.map((argument) =>
+                inferHelperModeFromExpression(checker, argument, direction, state)
+              ),
+            );
+          default:
+            return null;
+        }
+      })();
+    case 'encode':
+      return (() => {
+        switch (helper.name) {
+          case 'array':
+          case 'nullable':
+          case 'optional':
+          case 'option':
+          case 'record':
+          case 'undefinedable':
+            return inferArgMode(0);
+          case 'contramap':
+          case 'refine':
+            return combineHelperModes([
+              inferArgMode(0),
+              callableExpressionReturnsPromiseLike(checker, callExpression.arguments[1]!)
+                ? 'async'
+                : 'sync',
+            ]);
+          case 'lazy':
+            return inferThunkMode(0);
+          case 'object':
+          case 'passthroughObject':
+          case 'strictObject':
+            return helperModeFromShapeLiteral(
+              checker,
+              callExpression.arguments[0],
+              direction,
+              state,
+            );
+          case 'result':
+            return combineHelperModes([inferArgMode(0), inferArgMode(1)]);
+          case 'tuple':
+            return combineHelperModes(
+              callExpression.arguments.map((argument) =>
+                inferHelperModeFromExpression(checker, argument, direction, state)
+              ),
+            );
+          default:
+            return null;
+        }
+      })();
+    case 'codec':
+      return (() => {
+        switch (helper.name) {
+          case 'codec':
+            return direction === 'decode' ? inferArgMode(0) : inferArgMode(1);
+          case 'imap':
+            return inferArgMode(0);
+          default:
+            return null;
+        }
+      })();
   }
 }
 

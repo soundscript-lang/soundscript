@@ -177,7 +177,7 @@ export function assert${typeName}(value: unknown): asserts value is string {
           wave: 'fuzz-broad-corpus',
           source: `// @sound-test: reject
 // @sound-lib: dts
-import { unsafeValue } from "../../test/lib";
+import { unsafeValue } from "./lib";
 
 export const observed = unsafeValue;
 `,

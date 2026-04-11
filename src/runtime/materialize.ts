@@ -1,7 +1,6 @@
 import { dirname, extname, join, relative } from '../platform/path.ts';
 import ts from 'typescript';
 
-import { createSoundStdlibCompilerHost } from '../bundled/sound_stdlib.ts';
 import {
   formatDiagnostics,
   hasErrorDiagnostics,
@@ -17,6 +16,7 @@ import {
 import { createBuiltinExpandedProgram } from '../frontend/builtin_macro_support.ts';
 import { MacroError } from '../frontend/macro_errors.ts';
 import { isSoundscriptSourceFile } from '../frontend/project_frontend.ts';
+import { createStdPackageCompilerHost } from '../frontend/std_package_support.ts';
 import {
   copyFile,
   createSymlink,
@@ -299,7 +299,7 @@ function createExpandedProgram(projectPath: string) {
   const loadedConfig = loadConfig(projectPath);
   const soundscriptRootNames = collectSoundscriptRootNames(projectPath, loadedConfig);
   return createBuiltinExpandedProgram({
-    baseHost: createSoundStdlibCompilerHost(
+    baseHost: createStdPackageCompilerHost(
       loadedConfig.commandLine.options,
       dirname(projectPath),
     ),

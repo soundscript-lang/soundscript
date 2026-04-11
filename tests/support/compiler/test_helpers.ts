@@ -2,7 +2,6 @@ import { assertEquals } from '@std/assert';
 import { dirname, fromFileUrl, join } from '../../../src/platform/path.ts';
 import ts from 'typescript';
 
-import { createSoundStdlibCompilerHost } from '../../../src/bundled/sound_stdlib.ts';
 import { compileProject } from '../../../src/compiler/compile_project.ts';
 import type { CompilerModuleIR } from '../../../src/compiler/ir.ts';
 import { lowerProgramToCompilerIR } from '../../../src/compiler/lower.ts';
@@ -17,6 +16,7 @@ import type {
 } from '../../../src/compiler/runtime_ir.ts';
 import { loadConfig } from '../../../src/project/config.ts';
 import { instantiateSoundscriptWasmModule } from '../../../src/compiler/wasm_js_host_runtime.ts';
+import { createStdPackageCompilerHost } from '../../../src/frontend/std_package_support.ts';
 
 export interface TempProjectFile {
   path: string;
@@ -251,7 +251,7 @@ export async function invokeCompiledEntry(
 
 export function createCompilerProgram(projectPath: string): ts.Program {
   const loadedConfig = loadConfig(projectPath);
-  const host = createSoundStdlibCompilerHost(loadedConfig.commandLine.options);
+  const host = createStdPackageCompilerHost(loadedConfig.commandLine.options);
   return ts.createProgram({
     host,
     rootNames: loadedConfig.commandLine.fileNames,

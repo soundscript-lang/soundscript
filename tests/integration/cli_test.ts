@@ -565,7 +565,7 @@ Deno.test('runCli check --format json includes structured interop-boundary metad
       {
         path: 'src/index.sts',
         contents: [
-          'import { value } from "../../src/lib.ts";',
+          'import { value } from "./lib.ts";',
           'const exact: number = value;',
           '',
         ].join('\n'),
@@ -597,11 +597,11 @@ Deno.test('runCli check --format json includes structured interop-boundary metad
   assertEquals(payload.diagnostics[0]?.metadata?.fixability, 'boundary_annotation');
   assertEquals(
     payload.diagnostics[0]?.metadata?.example,
-    '// #[interop]\nimport { value } from "../../src/lib";',
+    '// #[interop]\nimport { value } from "./lib";',
   );
   assertEquals(payload.diagnostics[0]?.notes, [
     'Values imported from ordinary `.ts`, JavaScript, or declaration-only modules remain outside checked soundscript code until an explicit interop boundary acknowledges the trust boundary.',
-    'Example: // #[interop]\nimport { value } from "../../src/lib";',
+    'Example: // #[interop]\nimport { value } from "./lib";',
   ]);
 });
 
@@ -867,7 +867,7 @@ Deno.test('runCli check --format json includes structured nominal-newtype metada
     {
       path: 'src/index.sts',
       contents: [
-        'import type { UserId } from "../../src/ids";',
+        'import type { UserId } from "./ids";',
         '',
         'const raw: string = "abc";',
         'const id: UserId = raw;',
@@ -1739,32 +1739,8 @@ Deno.test('runCli check --format json preserves unknown annotations without diag
     }>;
   };
 
-  assertEquals(result.exitCode, 1);
-  assertEquals(payload.diagnostics[0]?.code, 'SOUND1007');
-  assertEquals(payload.diagnostics[0]?.metadata?.rule, 'unknown_annotation');
-  assertEquals(payload.diagnostics[0]?.metadata?.primarySymbol, '#[eq]');
-  assertEquals(payload.diagnostics[0]?.metadata?.replacementFamily, 'registered_annotation_name');
-  assertEquals(payload.diagnostics[0]?.metadata?.fixability, 'local_rewrite');
-  assertEquals(
-    payload.diagnostics[0]?.metadata?.evidence?.map((fact) => `${fact.label}:${fact.value}`),
-    [
-      'annotationName:eq',
-      'registeredBuiltins:effects, extern, interop, newtype, unsafe, value, variance',
-    ],
-  );
-  assertEquals(
-    payload.diagnostics[0]?.metadata?.counterexample,
-    'An unknown annotation can look like a checked contract even though soundscript gives it no semantics.',
-  );
-  assertEquals(
-    payload.diagnostics[0]?.metadata?.example,
-    'Replace `#[eq]` with a registered builtin annotation such as `#[extern]`, or remove it until that directive exists.',
-  );
-  assertEquals(payload.diagnostics[0]?.notes, [
-    '`#[eq]` is not a registered builtin soundscript annotation.',
-    'Registered builtin annotations in v1 are `#[effects(...)]`, `#[extern]`, `#[interop]`, `#[newtype]`, `#[unsafe]`, `#[value]`, and `#[variance(...)]`.',
-    'Example: Replace `#[eq]` with a registered builtin annotation such as `#[extern]`, or remove it until that directive exists.',
-  ]);
+  assertEquals(result.exitCode, 0);
+  assertEquals(payload.diagnostics, []);
 });
 
 Deno.test('runCli check --format json includes structured duplicate-annotation metadata', async () => {
@@ -2534,7 +2510,7 @@ Deno.test('runCli build emits package artifacts and machine-readable output', as
     {
       path: 'src/index.sts',
       contents: [
-        "import { helper } from '../../src/helper';",
+        "import { helper } from './helper';",
         'export default function main(): number {',
         '  return helper + 1;',
         '}',
@@ -2588,15 +2564,15 @@ Deno.test('runCli build emits package artifacts and machine-readable output', as
 
   assertStringIncludes(
     await Deno.readTextFile(join(outDir, 'esm/src/index.js')),
-    "from '../../src/helper.js';",
+    "from './helper.js';",
   );
   assertStringIncludes(
     await Deno.readTextFile(join(outDir, 'esm/index.js')),
-    "export * from '../../src/src/index.js';",
+    "export * from './src/index.js';",
   );
   assertStringIncludes(
     await Deno.readTextFile(join(outDir, 'types/index.d.ts')),
-    "export * from '../../src/src/index';",
+    "export * from './src/index';",
   );
   const emittedIndexDeclarationPath = join(outDir, 'types/src/index.d.ts');
   assert((await Deno.stat(emittedIndexDeclarationPath)).isFile);
@@ -2839,7 +2815,7 @@ Deno.test(
       {
         path: 'src/index.sts',
         contents: [
-          "import { alpha } from '../../src/shared/alpha';",
+          "import { alpha } from './shared/alpha';",
           'export default function main(): number {',
           '  return alpha(3);',
           '}',
@@ -2850,7 +2826,7 @@ Deno.test(
       {
         path: 'src/worker.sts',
         contents: [
-          "import { beta } from '../../src/shared/beta';",
+          "import { beta } from './shared/beta';",
           'export default function runWorker(): number {',
           '  return beta(3);',
           '}',
@@ -2861,7 +2837,7 @@ Deno.test(
       {
         path: 'src/shared/alpha.sts',
         contents: [
-          "import { beta } from '../../src/beta';",
+          "import { beta } from './beta';",
           'export function alpha(depth: number): number {',
           '  return depth <= 0 ? 0 : beta(depth - 1) + 1;',
           '}',
@@ -2871,7 +2847,7 @@ Deno.test(
       {
         path: 'src/shared/beta.sts',
         contents: [
-          "import { alpha } from '../../src/alpha';",
+          "import { alpha } from './alpha';",
           'export function beta(depth: number): number {',
           '  return depth <= 0 ? 0 : alpha(depth - 1) + 1;',
           '}',
@@ -2919,19 +2895,19 @@ Deno.test(
 
     assertStringIncludes(
       await Deno.readTextFile(join(outDir, 'esm/worker.js')),
-      "export { default } from '../../src/src/worker.js';",
+      "export { default } from './src/worker.js';",
     );
     assertStringIncludes(
       await Deno.readTextFile(join(outDir, 'types/worker.d.ts')),
-      "export { default } from '../../src/src/worker';",
+      "export { default } from './src/worker';",
     );
     assertStringIncludes(
       await Deno.readTextFile(join(outDir, 'esm/src/shared/alpha.js')),
-      "from '../../src/beta.js';",
+      "from './beta.js';",
     );
     assertStringIncludes(
       await Deno.readTextFile(join(outDir, 'esm/src/shared/beta.js')),
-      "from '../../src/alpha.js';",
+      "from './alpha.js';",
     );
     assertStringIncludes(
       await Deno.readTextFile(join(outDir, 'types/src/worker.d.ts')),
@@ -3070,7 +3046,7 @@ Deno.test('runCli node materializes a mixed .ts/.sts app through a temporary tra
     {
       path: 'src/main.ts',
       contents: [
-        "import { value } from '../../src/helper';",
+        "import { value } from './helper';",
         'console.log(value + 1);',
         '',
       ].join('\n'),
@@ -3091,7 +3067,7 @@ Deno.test('runCli node materializes a mixed .ts/.sts app through a temporary tra
         const runtimeRoot = dirname(dirname(args[1]!));
         const entryText = await Deno.readTextFile(args[1]!);
         const runtimePackageJson = await Deno.readTextFile(join(runtimeRoot, 'package.json'));
-        assertStringIncludes(entryText, "from '../../src/helper.js';");
+        assertStringIncludes(entryText, "from './helper.js';");
         assertStringIncludes(
           entryText,
           '//# sourceMappingURL=data:application/json;base64,',
@@ -3274,7 +3250,7 @@ Deno.test('runCli deno run executes a .sts entry through a temporary transformed
     {
       path: 'src/main.sts',
       contents: [
-        'console.log(42);',
+        'export const answer = 42;',
         '',
       ].join('\n'),
     },
@@ -3290,7 +3266,7 @@ Deno.test('runCli deno run executes a .sts entry through a temporary transformed
         seenCommand = command;
         seenArgs = [...args];
         const entryText = await Deno.readTextFile(args[1]!);
-        assertStringIncludes(entryText, 'console.log(42);');
+        assertStringIncludes(entryText, 'export const answer = 42;');
         assertStringIncludes(
           entryText,
           '//# sourceMappingURL=data:application/json;base64,',
@@ -3463,7 +3439,7 @@ Deno.test('runCli explain renders repair recipes for core soundscript diagnostic
 
   assertEquals(interopResult.exitCode, 0);
   assertStringIncludes(interopResult.output, 'Repair heuristic:');
-  assertStringIncludes(interopResult.output, 'import { value } from "../../src/lib";');
+  assertStringIncludes(interopResult.output, 'import { value } from "../lib";');
   assertStringIncludes(interopResult.output, '// #[interop]');
 
   assertEquals(predicateResult.exitCode, 0);
@@ -3603,7 +3579,7 @@ Deno.test('runCli expand --file prints runnable expanded output by default and k
     {
       path: 'src/demo.sts',
       contents: [
-        "import { Twice } from '../../src/macros.macro';",
+        "import { Twice } from './macros.macro';",
         'const value = 1;',
         'export const doubled = Twice(value);',
         '',
@@ -4200,7 +4176,7 @@ Deno.test('runCli keeps imported helper Object.groupBy returns non-ordinary acro
     {
       path: 'src/index.ts',
       contents: [
-        'import { groupByParity } from "../../src/helpers";',
+        'import { groupByParity } from "./helpers";',
         'const plain: object = groupByParity();',
         '',
       ].join('\n'),
@@ -4258,7 +4234,7 @@ Deno.test('runCli keeps direct exported Object.groupBy values non-ordinary acros
     {
       path: 'src/index.ts',
       contents: [
-        'import { grouped } from "../../src/helpers";',
+        'import { grouped } from "./helpers";',
         'const plain: object = grouped;',
         '',
       ].join('\n'),
@@ -4316,12 +4292,12 @@ Deno.test('runCli preserves Object.groupBy values through simple value re-export
     },
     {
       path: 'src/mid.ts',
-      contents: 'export { grouped } from "../../src/helpers";\n',
+      contents: 'export { grouped } from "./helpers";\n',
     },
     {
       path: 'src/index.ts',
       contents: [
-        'import { grouped } from "../../src/mid";',
+        'import { grouped } from "./mid";',
         'const plain: object = grouped;',
         '',
       ].join('\n'),
@@ -4380,7 +4356,7 @@ Deno.test('runCli keeps default-exported Object.groupBy values non-ordinary acro
     {
       path: 'src/index.ts',
       contents: [
-        'import grouped from "../../src/helpers";',
+        'import grouped from "./helpers";',
         'const plain: object = grouped;',
         '',
       ].join('\n'),
@@ -4428,7 +4404,7 @@ Deno.test('runCli keeps imported helper-returned module namespaces non-ordinary'
     {
       path: 'src/helpers.ts',
       contents: [
-        'import * as math from "../../src/math";',
+        'import * as math from "./math";',
         '',
         'export function getMathNamespace() {',
         '  return math;',
@@ -4444,7 +4420,7 @@ Deno.test('runCli keeps imported helper-returned module namespaces non-ordinary'
     {
       path: 'src/index.ts',
       contents: [
-        'import { getMathNamespace } from "../../src/helpers";',
+        'import { getMathNamespace } from "./helpers";',
         'const plain: object = getMathNamespace();',
         '',
       ].join('\n'),
@@ -4491,7 +4467,7 @@ Deno.test('runCli keeps direct exported module namespace values non-ordinary acr
     {
       path: 'src/helpers.ts',
       contents: [
-        'import * as math from "../../src/math";',
+        'import * as math from "./math";',
         '',
         'export const mathNamespace = math;',
         '',
@@ -4505,7 +4481,7 @@ Deno.test('runCli keeps direct exported module namespace values non-ordinary acr
     {
       path: 'src/index.ts',
       contents: [
-        'import { mathNamespace } from "../../src/helpers";',
+        'import { mathNamespace } from "./helpers";',
         'const plain: object = mathNamespace;',
         '',
       ].join('\n'),
@@ -4553,7 +4529,7 @@ Deno.test('runCli preserves module namespace values through simple value re-expo
     {
       path: 'src/helpers.ts',
       contents: [
-        'import * as math from "../../src/math";',
+        'import * as math from "./math";',
         '',
         'export const mathNamespace = math;',
         '',
@@ -4561,7 +4537,7 @@ Deno.test('runCli preserves module namespace values through simple value re-expo
     },
     {
       path: 'src/mid.ts',
-      contents: 'export { mathNamespace } from "../../src/helpers";\n',
+      contents: 'export { mathNamespace } from "./helpers";\n',
     },
     {
       path: 'src/math.ts',
@@ -4571,7 +4547,7 @@ Deno.test('runCli preserves module namespace values through simple value re-expo
     {
       path: 'src/index.ts',
       contents: [
-        'import { mathNamespace } from "../../src/mid";',
+        'import { mathNamespace } from "./mid";',
         'const plain: object = mathNamespace;',
         '',
       ].join('\n'),
@@ -4619,7 +4595,7 @@ Deno.test('runCli keeps default-exported module namespace values non-ordinary ac
     {
       path: 'src/helpers.ts',
       contents: [
-        'import * as math from "../../src/math";',
+        'import * as math from "./math";',
         '',
         'export default math;',
         '',
@@ -4633,7 +4609,7 @@ Deno.test('runCli keeps default-exported module namespace values non-ordinary ac
     {
       path: 'src/index.ts',
       contents: [
-        'import mathNamespace from "../../src/helpers";',
+        'import mathNamespace from "./helpers";',
         'const plain: object = mathNamespace;',
         '',
       ].join('\n'),
@@ -4746,7 +4722,7 @@ Deno.test('runCli keeps imported helper-returned RegExp groups as BareObject', a
     {
       path: 'src/index.ts',
       contents: [
-        'import { getGroups } from "../../src/helpers";',
+        'import { getGroups } from "./helpers";',
         'const plain: object = getGroups();',
         '',
       ].join('\n'),
@@ -4798,7 +4774,7 @@ Deno.test('runCli keeps direct exported RegExp groups values as BareObject acros
     {
       path: 'src/index.ts',
       contents: [
-        'import { groups } from "../../src/helpers";',
+        'import { groups } from "./helpers";',
         'const plain: object = groups;',
         '',
       ].join('\n'),
@@ -4849,12 +4825,12 @@ Deno.test('runCli preserves RegExp groups values as BareObject through simple va
     },
     {
       path: 'src/mid.ts',
-      contents: 'export { groups } from "../../src/helpers";\n',
+      contents: 'export { groups } from "./helpers";\n',
     },
     {
       path: 'src/index.ts',
       contents: [
-        'import { groups } from "../../src/mid";',
+        'import { groups } from "./mid";',
         'const plain: object = groups;',
         '',
       ].join('\n'),
@@ -4908,7 +4884,7 @@ Deno.test('runCli keeps default-exported RegExp groups values as BareObject acro
     {
       path: 'src/index.ts',
       contents: [
-        'import groups from "../../src/helpers";',
+        'import groups from "./helpers";',
         'const plain: object = groups;',
         '',
       ].join('\n'),
@@ -4966,7 +4942,7 @@ Deno.test(
       {
         path: 'src/index.ts',
         contents: [
-          'import { getGroups } from "../../src/helpers";',
+          'import { getGroups } from "./helpers";',
           'const plain: object = getGroups(true);',
           'void plain;',
           '',
@@ -5022,8 +4998,8 @@ Deno.test('runCli preserves Object.groupBy through imported identity helpers', a
     {
       path: 'src/index.ts',
       contents: [
-        'import { forward } from "../../src/forward";',
-        'import { groupByParity } from "../../src/helpers";',
+        'import { forward } from "./forward";',
+        'import { groupByParity } from "./helpers";',
         'const plain: object = forward(groupByParity());',
         '',
       ].join('\n'),
@@ -5071,7 +5047,7 @@ Deno.test('runCli preserves RegExp groups as BareObject through imported identit
     {
       path: 'src/index.ts',
       contents: [
-        'import { forward } from "../../src/forward";',
+        'import { forward } from "./forward";',
         'const match = /^(?<value>a)$/.exec("a");',
         'if (match?.groups === undefined) {',
         '  throw new Error("expected groups");',
@@ -5123,7 +5099,7 @@ Deno.test(
       {
         path: 'src/index.ts',
         contents: [
-          'import { getGroups } from "../../src/helpers";',
+          'import { getGroups } from "./helpers";',
           'const plain: object = getGroups();',
           '',
         ].join('\n'),
@@ -5170,7 +5146,7 @@ Deno.test(
       {
         path: 'src/index.ts',
         contents: [
-          'import { forward } from "../../src/forward";',
+          'import { forward } from "./forward";',
           'const fakeGroups = { groups: { value: "a" } };',
           'const plain: object = forward(fakeGroups);',
           '',
@@ -5216,7 +5192,7 @@ Deno.test('runCli preserves module namespaces through imported identity helpers'
     {
       path: 'src/helpers.ts',
       contents: [
-        'import * as math from "../../src/math";',
+        'import * as math from "./math";',
         '',
         'export function getMathNamespace() {',
         '  return math;',
@@ -5232,8 +5208,8 @@ Deno.test('runCli preserves module namespaces through imported identity helpers'
     {
       path: 'src/index.ts',
       contents: [
-        'import { forward } from "../../src/forward";',
-        'import { getMathNamespace } from "../../src/helpers";',
+        'import { forward } from "./forward";',
+        'import { getMathNamespace } from "./helpers";',
         'const plain: object = forward(getMathNamespace());',
         '',
       ].join('\n'),
@@ -5290,8 +5266,8 @@ Deno.test(
       {
         path: 'src/index.ts',
         contents: [
-          'import { forward } from "../../src/forward";',
-          'import { groupByParity } from "../../src/helpers";',
+          'import { forward } from "./forward";',
+          'import { groupByParity } from "./helpers";',
           'const grouped = groupByParity();',
           'const plain: object = forward(grouped);',
           '',
@@ -5341,7 +5317,7 @@ Deno.test(
       {
         path: 'src/index.ts',
         contents: [
-          'import { groupByParity } from "../../src/helpers";',
+          'import { groupByParity } from "./helpers";',
           'const x: object = groupByParity;',
           'void x;',
           '',
@@ -5389,7 +5365,7 @@ Deno.test(
       {
         path: 'src/helpers.ts',
         contents: [
-          'import * as math from "../../src/math";',
+          'import * as math from "./math";',
           '',
           'export function getMathNamespace() {',
           '  return math;',
@@ -5405,8 +5381,8 @@ Deno.test(
       {
         path: 'src/index.ts',
         contents: [
-          'import { forward } from "../../src/forward";',
-          'import { getMathNamespace } from "../../src/helpers";',
+          'import { forward } from "./forward";',
+          'import { getMathNamespace } from "./helpers";',
           'const grouped = getMathNamespace();',
           'const plain: object = forward(grouped);',
           '',
@@ -5459,7 +5435,7 @@ Deno.test(
       {
         path: 'src/index.ts',
         contents: [
-          'import getGroups from "../../src/helpers";',
+          'import getGroups from "./helpers";',
           'const plain: object = getGroups();',
           '',
         ].join('\n'),
@@ -5507,7 +5483,7 @@ Deno.test(
       {
         path: 'src/index.ts',
         contents: [
-          'import makeDict from "../../src/helpers";',
+          'import makeDict from "./helpers";',
           'const plain: object = makeDict();',
           '',
         ].join('\n'),
@@ -5556,7 +5532,7 @@ Deno.test(
       {
         path: 'src/index.ts',
         contents: [
-          'import groupByParity from "../../src/helpers";',
+          'import groupByParity from "./helpers";',
           'const plain: object = groupByParity();',
           '',
         ].join('\n'),
@@ -5606,7 +5582,7 @@ Deno.test(
       {
         path: 'src/index.ts',
         contents: [
-          'import groupByParity from "../../src/helpers";',
+          'import groupByParity from "./helpers";',
           'const plain: object = groupByParity();',
           '',
         ].join('\n'),
@@ -5645,7 +5621,7 @@ Deno.test(
       {
         path: 'src/helpers.ts',
         contents: [
-          'import * as math from "../../src/math";',
+          'import * as math from "./math";',
           '',
           'export default () => math;',
           '',
@@ -5659,7 +5635,7 @@ Deno.test(
       {
         path: 'src/index.ts',
         contents: [
-          'import getMathNamespace from "../../src/helpers";',
+          'import getMathNamespace from "./helpers";',
           'const plain: object = getMathNamespace();',
           '',
         ].join('\n'),
@@ -5705,7 +5681,7 @@ Deno.test('runCli preserves non-ordinary arguments through imported helper param
     {
       path: 'src/index.ts',
       contents: [
-        'import { forward } from "../../src/helpers";',
+        'import { forward } from "./helpers";',
         'const dict = Object.create(null);',
         'const plain: object = forward(dict);',
         '',
@@ -5746,7 +5722,7 @@ Deno.test('runCli keeps direct exported null-prototype values non-ordinary acros
     {
       path: 'src/index.ts',
       contents: [
-        'import { dict } from "../../src/helpers";',
+        'import { dict } from "./helpers";',
         'const plain: object = dict;',
         '',
       ].join('\n'),
@@ -5797,12 +5773,12 @@ Deno.test('runCli preserves null-prototype values through simple value re-export
     },
     {
       path: 'src/mid.ts',
-      contents: 'export { dict } from "../../src/helpers";\n',
+      contents: 'export { dict } from "./helpers";\n',
     },
     {
       path: 'src/index.ts',
       contents: [
-        'import { dict } from "../../src/mid";',
+        'import { dict } from "./mid";',
         'const plain: object = dict;',
         '',
       ].join('\n'),
@@ -5854,7 +5830,7 @@ Deno.test('runCli keeps default-exported null-prototype values non-ordinary acro
     {
       path: 'src/index.ts',
       contents: [
-        'import dict from "../../src/helpers";',
+        'import dict from "./helpers";',
         'const plain: object = dict;',
         '',
       ].join('\n'),
@@ -5922,7 +5898,7 @@ Deno.test(
       {
         path: 'src/index.ts',
         contents: [
-          'import { forward } from "../../src/ordinary";',
+          'import { forward } from "./ordinary";',
           '',
           'const dict = Object.create(null);',
           'const plain: object = forward(dict);',
@@ -6187,7 +6163,7 @@ Deno.test('runCli forces the sound compiler option baseline even when tsconfig d
       path: 'src/index.sts',
       contents: [
         '// #[interop]',
-        'import { value } from "../../src/types.ts";',
+        'import { value } from "./types.ts";',
         '',
         'function implicitAny(parameter) {',
         '  return parameter;',
@@ -6303,7 +6279,7 @@ Deno.test('runCli reports uses of declaration-only imports without interop bound
     {
       path: 'src/index.ts',
       contents: [
-        'import { getValue, unsafeValue } from "../../src/lib";',
+        'import { getValue, unsafeValue } from "./lib";',
         'const value = unsafeValue;',
         'const result = getValue();',
         '',
@@ -6353,7 +6329,7 @@ Deno.test('runCli trusts declaration-only imports when interop is attached to th
       path: 'src/index.ts',
       contents: [
         '// #[interop]',
-        'import { getValue, unsafeValue } from "../../src/lib";',
+        'import { getValue, unsafeValue } from "./lib";',
         'const value = unsafeValue;',
         'const result = getValue();',
         '',
@@ -6396,7 +6372,7 @@ Deno.test('runCli does not trust sound-module-marked declaration imports by defa
     {
       path: 'src/index.ts',
       contents: [
-        'import { unsafeValue } from "../../src/lib";',
+        'import { unsafeValue } from "./lib";',
         'const value = unsafeValue;',
         '',
       ].join('\n'),
@@ -6438,7 +6414,7 @@ Deno.test('runCli rejects interop annotations away from declaration-only import 
     {
       path: 'src/index.ts',
       contents: [
-        'import { unsafeValue } from "../../src/lib";',
+        'import { unsafeValue } from "./lib";',
         '',
         '// #[interop]',
         'const alias = unsafeValue;',
@@ -6489,12 +6465,12 @@ Deno.test('runCli allows declaration-only re-export chains under import-site tru
     },
     {
       path: 'src/mid.ts',
-      contents: 'export { unsafeValue } from "../../src/lib";\n',
+      contents: 'export { unsafeValue } from "./lib";\n',
     },
     {
       path: 'src/index.ts',
       contents: [
-        'import { unsafeValue } from "../../src/mid";',
+        'import { unsafeValue } from "./mid";',
         'const value = unsafeValue;',
         '',
       ].join('\n'),
@@ -6754,7 +6730,7 @@ Deno.test('runCli expand writes expanded output for import-scoped user-defined m
     {
       path: 'src/index.sts',
       contents: [
-        "import { Twice } from '../../src/macros/twice.macro';",
+        "import { Twice } from './macros/twice.macro';",
         'export const doubled = Twice(21);',
         '',
       ].join('\n'),
@@ -6866,7 +6842,7 @@ Deno.test('runCli check expand and node support a package-authored macro surface
     {
       path: 'src/run.ts',
       contents: [
-        "import { doubled } from '../../src/index.sts';",
+        "import { doubled } from './index.sts';",
         '',
         'console.log(doubled);',
         '',

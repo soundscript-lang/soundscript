@@ -1,7 +1,6 @@
 import { dirname, extname, join, relative } from '../platform/path.ts';
 import ts from 'typescript';
 
-import { createSoundStdlibCompilerHost } from '../bundled/sound_stdlib.ts';
 import {
   formatDiagnostics,
   hasErrorDiagnostics,
@@ -22,6 +21,7 @@ import {
   isSoundscriptSourceFile,
   toSourceFileName,
 } from '../frontend/project_frontend.ts';
+import { createStdPackageCompilerHost } from '../frontend/std_package_support.ts';
 import { captureTypeScriptDeclarationOutputs } from '../frontend/typescript_effect_declarations.ts';
 import {
   loadSoundScriptPackageInfo,
@@ -197,7 +197,7 @@ function createPackageBuildProgram(options: BuildProjectOptions) {
   const loadedConfig = loadConfig(options.projectPath, { target: options.target });
   const soundscriptRootNames = collectSoundscriptRootNames(options.projectPath, loadedConfig);
   return createBuiltinExpandedProgram({
-    baseHost: createSoundStdlibCompilerHost(
+    baseHost: createStdPackageCompilerHost(
       loadedConfig.commandLine.options,
       dirname(options.projectPath),
     ),

@@ -20232,6 +20232,9 @@ function annotateCallableSpecializedObjectFieldsForHostBoundary(
           candidate.name === property.getName()
         );
         if (!field) {
+          if (allowAmbientDeclarationFileMethods) {
+            continue;
+          }
           throw new Error(
             `Missing specialized object field metadata for callable property ${property.getName()}.`,
           );
@@ -20269,6 +20272,9 @@ function annotateCallableSpecializedObjectFieldsForHostBoundary(
             candidate.name === property.getName()
           );
           if (!field) {
+            if (allowAmbientDeclarationFileMethods) {
+              continue;
+            }
             throw new Error(
               `Missing specialized object field metadata for tagged callable property ${property.getName()}.`,
             );

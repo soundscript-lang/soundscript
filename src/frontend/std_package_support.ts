@@ -605,10 +605,73 @@ function createModuleResolutionHost(baseHost: ts.CompilerHost): ts.ModuleResolut
 }
 
 export function withStdPackageModuleResolution(baseHost: ts.CompilerHost): ts.CompilerHost {
+  const resolveModuleSpecifier = (
+    moduleName: string,
+    containingFile: string,
+    options: ts.CompilerOptions,
+    redirectedReference: ts.ResolvedProjectReference | undefined,
+    delegatedResolvedModule?: ts.ResolvedModule | undefined,
+  ): ts.ResolvedModuleFull | undefined => {
+    const fallbackHost = createModuleResolutionHost(baseHost);
+    const stdlibDeclarationFile = STDLIB_DECLARATION_FILES.get(moduleName);
+    if (stdlibDeclarationFile) {
+      return {
+        resolvedFileName: stdlibDeclarationFile,
+        extension: ts.Extension.Dts,
+        isExternalLibraryImport: true,
+      };
+    }
+
+    const hostDeclarationFile = resolveHostDeclarationFile(moduleName, options);
+    if (hostDeclarationFile) {
+      return {
+        resolvedFileName: hostDeclarationFile,
+        extension: ts.Extension.Dts,
+        isExternalLibraryImport: true,
+      };
+    }
+
+    const relativeStdlibDeclarationFile = resolveRelativeStdlibDeclarationFile(
+      containingFile,
+      moduleName,
+    );
+    if (relativeStdlibDeclarationFile) {
+      return {
+        resolvedFileName: relativeStdlibDeclarationFile,
+        extension: ts.Extension.Dts,
+        isExternalLibraryImport: true,
+      };
+    }
+
+    const resolved = ts.resolveModuleName(
+      moduleName,
+      containingFile,
+      options,
+      fallbackHost,
+      undefined,
+      redirectedReference,
+    ).resolvedModule;
+    if (resolved && STDLIB_DECLARATION_FILE_SET.has(resolved.resolvedFileName)) {
+      return resolved;
+    }
+
+    return (delegatedResolvedModule as ts.ResolvedModuleFull | undefined) ?? resolved;
+  };
+
   return {
     ...baseHost,
     fileExists(fileName: string): boolean {
       return VIRTUAL_DECLARATION_FILE_SET.has(fileName) || baseHost.fileExists(fileName);
+    },
+    getSourceFile(fileName, languageVersion, onError, shouldCreateNewSourceFile) {
+      if (VIRTUAL_DECLARATION_FILE_SET.has(fileName)) {
+        const text = STDLIB_DECLARATION_TEXTS.get(fileName);
+        if (text !== undefined) {
+          return ts.createSourceFile(fileName, text, languageVersion, true);
+        }
+      }
+
+      return baseHost.getSourceFile(fileName, languageVersion, onError, shouldCreateNewSourceFile);
     },
     readFile(fileName: string): string | undefined {
       if (VIRTUAL_DECLARATION_FILE_SET.has(fileName)) {
@@ -623,7 +686,6 @@ export function withStdPackageModuleResolution(baseHost: ts.CompilerHost): ts.Co
       redirectedReference?: ts.ResolvedProjectReference,
       options?: ts.CompilerOptions,
     ): (ts.ResolvedModule | undefined)[] {
-      const fallbackHost = createModuleResolutionHost(baseHost);
       const delegated = baseHost.resolveModuleNames?.(
         moduleNames,
         containingFile,
@@ -633,54 +695,57 @@ export function withStdPackageModuleResolution(baseHost: ts.CompilerHost): ts.Co
       );
 
       return moduleNames.map((moduleName, index) => {
-        const stdlibDeclarationFile = STDLIB_DECLARATION_FILES.get(moduleName);
-        if (stdlibDeclarationFile) {
-          return {
-            resolvedFileName: stdlibDeclarationFile,
-            extension: ts.Extension.Dts,
-            isExternalLibraryImport: true,
-          };
-        }
-
-        const hostDeclarationFile = resolveHostDeclarationFile(moduleName, options ?? {});
-        if (hostDeclarationFile) {
-          return {
-            resolvedFileName: hostDeclarationFile,
-            extension: ts.Extension.Dts,
-            isExternalLibraryImport: true,
-          };
-        }
-
-        const relativeStdlibDeclarationFile = resolveRelativeStdlibDeclarationFile(
-          containingFile,
-          moduleName,
-        );
-        if (relativeStdlibDeclarationFile) {
-          return {
-            resolvedFileName: relativeStdlibDeclarationFile,
-            extension: ts.Extension.Dts,
-            isExternalLibraryImport: true,
-          };
-        }
-
-        const resolved = ts.resolveModuleName(
+        return resolveModuleSpecifier(
           moduleName,
           containingFile,
           options ?? {},
-          fallbackHost,
-          undefined,
           redirectedReference,
-        ).resolvedModule;
-        if (resolved && STDLIB_DECLARATION_FILE_SET.has(resolved.resolvedFileName)) {
-          return resolved;
-        }
-
-        if (delegated?.[index]) {
-          return delegated[index];
-        }
-
-        return resolved;
+          delegated?.[index],
+        );
       });
     },
+    resolveModuleNameLiterals(
+      moduleLiterals,
+      containingFile,
+      redirectedReference,
+      options,
+      containingSourceFile,
+      reusedNames,
+    ) {
+      const delegated = baseHost.resolveModuleNameLiterals?.(
+        moduleLiterals,
+        containingFile,
+        redirectedReference,
+        options,
+        containingSourceFile,
+        reusedNames,
+      ) ?? baseHost.resolveModuleNames?.(
+        moduleLiterals.map((moduleLiteral) => moduleLiteral.text),
+        containingFile,
+        reusedNames?.map((moduleLiteral) => moduleLiteral.text),
+        redirectedReference,
+        options,
+        containingSourceFile,
+      )?.map((resolvedModule) => ({
+        resolvedModule,
+      }));
+
+      return moduleLiterals.map((moduleLiteral, index) => ({
+        resolvedModule: resolveModuleSpecifier(
+          moduleLiteral.text,
+          containingFile,
+          options,
+          redirectedReference,
+          delegated?.[index]?.resolvedModule,
+        ),
+      }));
+    },
   };
+}
+
+export function createStdPackageCompilerHost(
+  options: ts.CompilerOptions,
+  currentDirectory?: string,
+): ts.CompilerHost {
+  return withStdPackageModuleResolution(createSoundStdlibCompilerHost(options, currentDirectory));
 }

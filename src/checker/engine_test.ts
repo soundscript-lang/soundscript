@@ -2,9 +2,9 @@ import { assertEquals, assertExists, assertStrictEquals } from '@std/assert';
 import { dirname, join } from '@std/path';
 import ts from 'typescript';
 
-import { createSoundStdlibCompilerHost } from '../bundled/sound_stdlib.ts';
 import { getEffectSummaryForDeclaration, INTERNAL_EFFECT_MASKS } from './effects.ts';
 import { createAnalysisContext } from './engine/context.ts';
+import { createStdPackageCompilerHost } from '../frontend/std_package_support.ts';
 
 interface TempProjectFile {
   path: string;
@@ -34,7 +34,7 @@ function loadProgram(projectPath: string): ts.Program {
   );
 
   return ts.createProgram({
-    host: createSoundStdlibCompilerHost(parsedConfig.options, dirname(projectPath)),
+    host: createStdPackageCompilerHost(parsedConfig.options, dirname(projectPath)),
     rootNames: parsedConfig.fileNames,
     options: parsedConfig.options,
     projectReferences: parsedConfig.projectReferences,
@@ -123,7 +123,12 @@ Deno.test('createAnalysisContext exposes stable identities and cached fact queri
   assertExists(functionDeclaration);
   assertExists(functionDeclaration.name);
 
-  assertEquals(visitedSourceFiles.length, 1);
+  assertEquals(
+    visitedSourceFiles.filter((fileName) =>
+      fileName.startsWith(`${tempDirectory}/`) && !fileName.endsWith('.d.ts')
+    ),
+    [sourceFile.fileName],
+  );
   assertEquals(visitedDeclarations, ['Box', 'readBox']);
 
   const symbol = context.checker.getSymbolAtLocation(functionDeclaration.name);
@@ -4190,7 +4195,7 @@ Deno.test('createAnalysisContext records structured effect unknown reasons', asy
     {
       path: 'src/stdlib/json.d.ts',
       contents: [
-        'import type { Decoder } from "../decode";',
+        'import type { Decoder } from "./decode";',
         '',
         '// #[effects(add: [], forward: [decoder.decode])]',
         'export declare function parseAndDecode<T, E>(text: string, decoder: Decoder<T, E>): T | E;',
@@ -4209,7 +4214,7 @@ Deno.test('createAnalysisContext records structured effect unknown reasons', asy
     {
       path: 'src/index.ts',
       contents: [
-        'import { parseAndDecode } from "../stdlib/json";',
+        'import { parseAndDecode } from "./stdlib/json";',
         '',
         'declare function opaqueFrontier(): void;',
         '',
@@ -4856,8 +4861,8 @@ Deno.test('createAnalysisContext summarizes result, json, and debug stdlib helpe
     {
       path: 'src/stdlib/json.d.ts',
       contents: [
-        'import type { Decoder } from "../decode";',
-        'import type { Encoder } from "../encode";',
+        'import type { Decoder } from "./decode";',
+        'import type { Encoder } from "./encode";',
         '',
         '// #[effects(add: [])]',
         'export declare function parseJson(text: string): unknown;',
@@ -4909,11 +4914,11 @@ Deno.test('createAnalysisContext summarizes result, json, and debug stdlib helpe
     {
       path: 'src/index.ts',
       contents: [
-        'import { resultOf } from "../stdlib/result";',
-        'import { parseAndDecode, parseJson, stringifyJson, parseJsonLike, stringifyJsonLike, encodeAndStringify, decodeJson, encodeJson } from "../stdlib/json";',
-        'import type { Decoder } from "../stdlib/decode";',
-        'import type { Encoder } from "../stdlib/encode";',
-        'import { assert, log } from "../stdlib/debug";',
+        'import { resultOf } from "./stdlib/result";',
+        'import { parseAndDecode, parseJson, stringifyJson, parseJsonLike, stringifyJsonLike, encodeAndStringify, decodeJson, encodeJson } from "./stdlib/json";',
+        'import type { Decoder } from "./stdlib/decode";',
+        'import type { Encoder } from "./stdlib/encode";',
+        'import { assert, log } from "./stdlib/debug";',
         '',
         'export function captureJsonFailure(text: string) {',
         '  return resultOf(() => JSON.parse(text));',
@@ -5150,7 +5155,7 @@ Deno.test('createAnalysisContext keeps declaration summaries aligned with source
     {
       path: 'src/source_helpers.ts',
       contents: [
-        'import type { Decoder } from "../shared/decode";',
+        'import type { Decoder } from "./shared/decode";',
         '',
         '// #[effects(add: [host.io, host.node.fs, suspend.await])]',
         'declare function readRemote(path: string): Promise<string>;',
@@ -5191,7 +5196,7 @@ Deno.test('createAnalysisContext keeps declaration summaries aligned with source
     {
       path: 'src/index.ts',
       contents: [
-        'import { logDecl, parseAndDecodeDecl, transactionReadDecl } from "../../vendor/generated_helpers";',
+        'import { logDecl, parseAndDecodeDecl, transactionReadDecl } from "../vendor/generated_helpers";',
         '',
         'void logDecl;',
         'void parseAndDecodeDecl;',

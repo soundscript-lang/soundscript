@@ -1,10 +1,7 @@
 import ts from 'typescript';
 import { dirname, isAbsolute, join } from '../platform/path.ts';
 
-import {
-  createSoundStdlibCompilerHost,
-  resolveBundledTypesDirectory,
-} from '../bundled/sound_stdlib.ts';
+import { resolveBundledTypesDirectory } from '../bundled/sound_stdlib.ts';
 import {
   type BuiltinExpandedTsDiagnosticProgram,
   createBuiltinExpandedProgram,
@@ -33,6 +30,7 @@ import {
   toProjectedDeclarationSourceFileName,
   toSourceFileName,
 } from '../frontend/project_frontend.ts';
+import { createStdPackageCompilerHost } from '../frontend/std_package_support.ts';
 import { collectSoundscriptRootNames, loadConfig } from '../project/config.ts';
 import {
   findNearestPackageJsonPath,
@@ -1745,7 +1743,7 @@ export function prepareProjectAnalysis(
               options,
               loadedConfig,
               stsProgramRootNames,
-              createSoundStdlibCompilerHost(
+              createStdPackageCompilerHost(
                 loadedConfig.commandLine.options,
                 dirname(options.projectPath),
               ),
@@ -1867,7 +1865,7 @@ export function prepareProjectAnalysis(
               options,
               loadedConfig,
               typescriptRootNames,
-              createSoundStdlibCompilerHost(
+              createStdPackageCompilerHost(
                 loadedConfig.commandLine.options,
                 dirname(options.projectPath),
               ),
@@ -1911,7 +1909,7 @@ export function prepareProjectAnalysis(
           }
 
           const expandedProgram = createBuiltinExpandedProgram({
-            baseHost: createSoundStdlibCompilerHost(
+            baseHost: createStdPackageCompilerHost(
               loadedConfig.commandLine.options,
               dirname(options.projectPath),
             ),
@@ -1977,7 +1975,7 @@ export function prepareProjectAnalysis(
                 options,
                 loadedConfig,
                 packageProjectedDeclarationRootNames,
-                createSoundStdlibCompilerHost(
+                createStdPackageCompilerHost(
                   loadedConfig.commandLine.options,
                   dirname(options.projectPath),
                 ),
@@ -2017,7 +2015,10 @@ export function prepareProjectAnalysis(
                   options,
                   loadedConfig,
                   typescriptRootNames,
-                  ts.createCompilerHost(loadedConfig.commandLine.options),
+                  createStdPackageCompilerHost(
+                    loadedConfig.commandLine.options,
+                    dirname(options.projectPath),
+                  ),
                   configFileParsingDiagnostics,
                   (sourceFile) => shouldAnalyzeTypescriptViewSourceFile(sourceFile),
                   projectedDeclarationOverrides,
