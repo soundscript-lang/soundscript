@@ -1,7 +1,7 @@
 # soundscript
 
 <p align="center">
-  <img src="./logo.png" alt="soundscript logo" width="520" />
+  <img src="./media/brand/logo-dark.png" alt="soundscript logo" width="520" />
 </p>
 
 soundscript is a sound checker and language tooling layer for TypeScript projects.
