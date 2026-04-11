@@ -9,7 +9,7 @@ import {
   prefixValueMatrixProgram,
   VALUE_MODES,
   VALUE_ROUTES,
-} from '../../test/value_matrix.ts';
+} from '../../tests/support/value_matrix.ts';
 import {
   analyzePreparedProject,
   analyzePreparedProjectForFile,
@@ -340,38 +340,38 @@ Deno.test('analyzeProject keeps bundled node typings explicit for js-node projec
 Deno.test(
   'analyzeProject keeps bundled node globals and modules explicit even when compilerOptions.types requests node',
   async () => {
-  const tempDirectory = await createTempProject({
-    'tsconfig.json': JSON.stringify(
-      {
-        compilerOptions: {
-          strict: true,
-          noEmit: true,
-          target: 'ES2022',
-          module: 'ESNext',
-          types: ['node'],
+    const tempDirectory = await createTempProject({
+      'tsconfig.json': JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+            types: ['node'],
+          },
+          include: ['src/**/*.sts'],
         },
-        include: ['src/**/*.sts'],
-      },
-      null,
-      2,
-    ),
-    'src/index.sts': [
-      "import { join } from 'node:path';",
-      '',
-      'const cwd: string = process.cwd();',
-      "const path: string = join(cwd, 'dist');",
-      "const bytes: Uint8Array<ArrayBuffer> = Buffer.from('sound');",
-      'void path;',
-      'void bytes;',
-      '',
-    ].join('\n'),
-  });
+        null,
+        2,
+      ),
+      'src/index.sts': [
+        "import { join } from 'node:path';",
+        '',
+        'const cwd: string = process.cwd();',
+        "const path: string = join(cwd, 'dist');",
+        "const bytes: Uint8Array<ArrayBuffer> = Buffer.from('sound');",
+        'void path;',
+        'void bytes;',
+        '',
+      ].join('\n'),
+    });
 
-  const result = await analyzeProject({
-    projectPath: join(tempDirectory, 'tsconfig.json'),
-    target: 'js-node',
-    workingDirectory: tempDirectory,
-  });
+    const result = await analyzeProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      target: 'js-node',
+      workingDirectory: tempDirectory,
+    });
 
     const diagnosticCodes = result.diagnostics.map((diagnostic) => diagnostic.code);
     assertEquals(diagnosticCodes, [
@@ -2159,7 +2159,10 @@ Deno.test(
       workingDirectory: tempDirectory,
     });
 
-    assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1039', 'SOUND1039']);
+    assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), [
+      'SOUND1039',
+      'SOUND1039',
+    ]);
   },
 );
 

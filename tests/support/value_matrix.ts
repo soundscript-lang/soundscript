@@ -151,14 +151,12 @@ function createDeepLeafSource(valid: boolean, exportKind: 'named' | 'default'): 
     '  constructor(x: number) {',
     '    this.x = x;',
     '  }',
-    ...(valid
-      ? []
-      : [
-        '',
-        '  get y(): number {',
-        '    return this.x;',
-        '  }',
-      ]),
+    ...(valid ? [] : [
+      '',
+      '  get y(): number {',
+      '    return this.x;',
+      '  }',
+    ]),
     '}',
     '',
   ].join('\n');

@@ -16,7 +16,7 @@ import {
   prefixValueMatrixProgram,
   VALUE_MODES,
   VALUE_ROUTES,
-} from '../test/value_matrix.ts';
+} from '../tests/support/value_matrix.ts';
 import { compileProject } from './compiler/compile_project.ts';
 import {
   assertWatAvoidsFallbackObjectMembership,
@@ -83,7 +83,12 @@ function getSiblingWorkspaceNodeModulesPath(name: string): string {
 }
 
 function getExampleNodeModulesPath(relativeExampleDirectory: string): string {
-  return join(dirname(fromFileUrl(import.meta.url)), '..', relativeExampleDirectory, 'node_modules');
+  return join(
+    dirname(fromFileUrl(import.meta.url)),
+    '..',
+    relativeExampleDirectory,
+    'node_modules',
+  );
 }
 
 function getExampleProjectPath(relativeExampleDirectory: string): string {
@@ -101,7 +106,9 @@ function readExampleProjectFile(
   relativeExampleDirectory: string,
   relativeFilePath: string,
 ): string {
-  return Deno.readTextFileSync(join(getExampleProjectPath(relativeExampleDirectory), relativeFilePath));
+  return Deno.readTextFileSync(
+    join(getExampleProjectPath(relativeExampleDirectory), relativeFilePath),
+  );
 }
 
 async function linkTempProjectNodeModulesFromSource(
@@ -6684,7 +6691,11 @@ compilerIntegrationTest(
           },
           'react-dom/client': {
             createRoot: (
-              receivedContainer: { children: { length: number }; nodeType: number; tagName: string },
+              receivedContainer: {
+                children: { length: number };
+                nodeType: number;
+                tagName: string;
+              },
             ) => {
               createRootCalls += 1;
               assertStrictEquals(receivedContainer, container);
@@ -6701,7 +6712,7 @@ compilerIntegrationTest(
                 }
               }
               return new Root();
-            }
+            },
           },
         },
       });
@@ -7440,45 +7451,50 @@ compilerIntegrationTest(
     const statusCalls: number[] = [];
     let nextCalls = 0;
 
-	    interface RouterLike {
-	      get(path: string, handler: (req: { url: string }, res: {
-	        status(code: number): unknown;
-	        statusCode: number;
-	      }) => void): RouterLike;
-	    }
+    interface RouterLike {
+      get(
+        path: string,
+        handler: (req: { url: string }, res: {
+          status(code: number): unknown;
+          statusCode: number;
+        }) => void,
+      ): RouterLike;
+    }
 
-	    const router: RouterLike = {
-	      get(path, handler) {
-	        routerGetPaths.push(path);
-	        handler(
+    const router: RouterLike = {
+      get(path, handler) {
+        routerGetPaths.push(path);
+        handler(
           { url: '/status' },
           {
             status(code: number) {
               statusCalls.push(code);
               return this;
             },
-	            statusCode: 200,
-	          },
-	        );
-	        return this;
-	      },
-	    };
+            statusCode: 200,
+          },
+        );
+        return this;
+      },
+    };
 
-	    interface AppLike {
-	      use(first: (
-	        req: { url: string },
-	        res: {
-	          status(code: number): unknown;
-	          statusCode: number;
-	        },
-	        next: () => void,
-	      ) => void): AppLike;
-	    }
+    interface AppLike {
+      use(
+        first: (
+          req: { url: string },
+          res: {
+            status(code: number): unknown;
+            statusCode: number;
+          },
+          next: () => void,
+        ) => void,
+      ): AppLike;
+    }
 
-	    const app: AppLike = {
-	      use(first) {
-	        appUseCalls.push(first);
-	        first(
+    const app: AppLike = {
+      use(first) {
+        appUseCalls.push(first);
+        first(
           { url: '/ping' },
           {
             status(code: number) {
@@ -7487,13 +7503,13 @@ compilerIntegrationTest(
             },
             statusCode: 200,
           },
-	          () => {
-	            nextCalls += 1;
-	          },
-	        );
-	        return this;
-	      },
-	    };
+          () => {
+            nextCalls += 1;
+          },
+        );
+        return this;
+      },
+    };
 
     function express() {
       return app;
@@ -7617,11 +7633,11 @@ compilerIntegrationTest(
       tempDirectory,
       getExampleNodeModulesPath('examples/react-browser-demo'),
       [
-      'react',
-      'react-dom',
-      '@types/react',
-      '@types/react-dom',
-      'csstype',
+        'react',
+        'react-dom',
+        '@types/react',
+        '@types/react-dom',
+        'csstype',
       ],
     );
 

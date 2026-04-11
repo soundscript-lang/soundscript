@@ -9,7 +9,7 @@ import {
   prefixValueMatrixProgram,
   type ValueMode,
   type ValueRoute,
-} from '../value_matrix.ts';
+} from '../../tests/support/value_matrix.ts';
 
 function splitEntryFixtureFiles(
   files: Readonly<Record<string, string>>,
