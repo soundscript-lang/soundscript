@@ -56,7 +56,7 @@ import {
   type MaterializeRuntimeGraphArtifacts,
 } from './runtime/materialize.ts';
 import { runProgram, type RunProgramOptions, type RunProgramResult } from './run_program.ts';
-import { projectEditorFile } from './editor_projection.ts';
+import { projectEditorFile } from './editor/editor_projection.ts';
 
 export const VERSION = '0.1.24';
 const FINDINGS_EXIT_CODE = 1;

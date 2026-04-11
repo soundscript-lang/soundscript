@@ -138,3 +138,22 @@ Deno.test('project helpers move out of src root once reorganized', () => {
     );
   }
 });
+
+Deno.test('editor helpers move out of src root once reorganized', () => {
+  const srcRootFiles = listFileNames(SRC_ROOT);
+
+  for (
+    const fileName of [
+      'editor_projection.ts',
+      'editor_projection_test.ts',
+      'editor_diagnostics_worker.ts',
+      'editor_diagnostics_worker_test.ts',
+    ]
+  ) {
+    assert(!srcRootFiles.includes(fileName), `${fileName} should live under src/editor/.`);
+    assert(
+      Deno.statSync(join(SRC_ROOT, 'editor', fileName)).isFile,
+      `src/editor/${fileName} is missing.`,
+    );
+  }
+});

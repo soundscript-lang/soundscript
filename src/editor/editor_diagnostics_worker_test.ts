@@ -1,13 +1,13 @@
 import { assert, assertEquals } from '@std/assert';
 import { dirname, join } from '@std/path';
 
-import { analyzeProject, filterAnalyzedDiagnosticsForFile } from './checker/analyze_project.ts';
-import type { MergedDiagnostic } from './checker/diagnostics.ts';
+import { analyzeProject, filterAnalyzedDiagnosticsForFile } from '../checker/analyze_project.ts';
+import type { MergedDiagnostic } from '../checker/diagnostics.ts';
 import { runEditorDiagnosticsWorker } from './editor_diagnostics_worker.ts';
 import {
   maybeNormalizeTsconfigForInstalledStdlib,
   writeInstalledStdlibPackage,
-} from './test_installed_stdlib.ts';
+} from '../test_installed_stdlib.ts';
 
 interface SerializedWorkerDiagnostic {
   code: string;
@@ -106,7 +106,9 @@ async function collectExpectedDiagnostics(
     workingDirectory,
   });
   return normalizeSerializedDiagnostics(
-    filterAnalyzedDiagnosticsForFile(analysis.diagnostics, filePath).map(serializeExpectedDiagnostic),
+    filterAnalyzedDiagnosticsForFile(analysis.diagnostics, filePath).map(
+      serializeExpectedDiagnostic,
+    ),
   );
 }
 

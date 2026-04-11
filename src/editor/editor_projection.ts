@@ -1,20 +1,20 @@
-import { dirname } from './platform/path.ts';
+import { dirname } from '../platform/path.ts';
 import ts from 'typescript';
 
-import { createSoundStdlibCompilerHost } from './bundled/sound_stdlib.ts';
-import { getConfigFileParsingDiagnostics, loadConfig, resolveExpansionEnabled } from './config.ts';
-import { createBuiltinExpandedProgram } from './frontend/builtin_macro_support.ts';
+import { createSoundStdlibCompilerHost } from '../bundled/sound_stdlib.ts';
+import { getConfigFileParsingDiagnostics, loadConfig, resolveExpansionEnabled } from '../config.ts';
+import { createBuiltinExpandedProgram } from '../frontend/builtin_macro_support.ts';
 import type {
   PreparedRewriteStage,
   PreparedRewriteStageLineMapping,
   PreparedSourceFile,
-} from './frontend/project_frontend.ts';
+} from '../frontend/project_frontend.ts';
 import {
   mapProgramEnclosingRangeToSource,
   mapProgramPositionToSource,
   mapProgramRangeToSource,
-} from './frontend/project_frontend.ts';
-import { getStdlibDeclarationEntriesBySpecifier } from './frontend/std_package_support.ts';
+} from '../frontend/project_frontend.ts';
+import { getStdlibDeclarationEntriesBySpecifier } from '../frontend/std_package_support.ts';
 
 export interface EditorProjectionOptions {
   expansionEnabled?: boolean;

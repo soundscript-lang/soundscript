@@ -1,5 +1,5 @@
-import { dirname } from './platform/path.ts';
-import { runtimeStdinReadable, runtimeStdoutWritable } from './platform/host.ts';
+import { dirname } from '../platform/path.ts';
+import { runtimeStdinReadable, runtimeStdoutWritable } from '../platform/host.ts';
 
 import {
   analyzePreparedProject,
@@ -7,10 +7,10 @@ import {
   filterAnalyzedDiagnosticsForFile,
   type PreparedAnalysisProject,
   prepareProjectAnalysis,
-} from './checker/analyze_project.ts';
-import type { MergedDiagnostic } from './checker/diagnostics.ts';
-import type { AnalyzeProjectResult } from './service/types.ts';
-import { isSoundscriptSourceFile } from './frontend/project_frontend.ts';
+} from '../checker/analyze_project.ts';
+import type { MergedDiagnostic } from '../checker/diagnostics.ts';
+import type { AnalyzeProjectResult } from '../service/types.ts';
+import { isSoundscriptSourceFile } from '../frontend/project_frontend.ts';
 
 interface JsonRpcLikeRequest {
   id?: number;
