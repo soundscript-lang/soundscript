@@ -8,7 +8,9 @@ Before opening a pull request:
 - run `deno task check`
 - run `deno task build`
 - run `deno task smoke:cli`
-- run `deno test --allow-env --allow-read --allow-run --allow-write scripts/release/prepare_npm_test.ts scripts/release/github_release_assets_test.ts`
+- run
+  `deno test --allow-env --allow-read --allow-run --allow-write scripts/release/prepare_npm_test.ts scripts/release/github_release_assets_test.ts`
+- follow the incremental repository layout policy in `docs/project/layout.md`
 
-For larger changes, open or reference an issue first so the release-facing scope
-is clear before implementation starts.
+For larger changes, open or reference an issue first so the release-facing scope is clear before
+implementation starts.

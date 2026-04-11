@@ -28,6 +28,8 @@ For the actual v1 publish procedure, use `docs/v1-release-checklist.md`.
 
 For diagnostic-code explanations used by machine-readable CLI output, see `docs/diagnostics.md`.
 
+For repository process and cleanup policy, see `docs/project/layout.md`.
+
 Everything else should be read as supporting material:
 
 - `docs/plans/` holds open plans
