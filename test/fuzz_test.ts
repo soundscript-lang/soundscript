@@ -1,6 +1,6 @@
 import { assert, assertEquals } from '@std/assert';
 
-import { runInlineFixture } from './harness.ts';
+import { runInlineFixture } from '../tests/support/harness.ts';
 
 interface FuzzCase {
   name: string;

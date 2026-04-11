@@ -1,6 +1,6 @@
 import { dirname, join } from '@std/path';
 
-import { runCli } from '../src/cli.ts';
+import { runCli } from '../../src/cli.ts';
 
 const SOUND_TEST_PATTERN = /^\/\/\s*@sound-test:\s*(accept|reject)\s*$/m;
 const SOUND_ERROR_PATTERN = /^\/\/\s*@sound-error:\s*((?:SOUND|TS)\d+)\b(?:\s+"([^"]+)")?\s*$/m;

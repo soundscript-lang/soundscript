@@ -1,4 +1,4 @@
-import { fixture, type FixtureCase } from '../harness.ts';
+import { fixture, type FixtureCase } from '../../tests/support/harness.ts';
 
 type NullPrototypeHelperReturnOrigin = 'objectCreateNull' | 'extendsNull' | 'groupBy';
 type NullPrototypeHelperReturnExportStyle = 'named' | 'default';

@@ -1,7 +1,7 @@
 import { assert, assertEquals } from '@std/assert';
 
-import { defineFixtureSuite } from './fixture_assertions.ts';
-import { runFixtureCase } from './harness.ts';
+import { defineFixtureSuite } from '../tests/support/fixture_assertions.ts';
+import { runFixtureCase } from '../tests/support/harness.ts';
 import { nullPrototypeFixtures } from './fixtures/null_prototype.ts';
 
 defineFixtureSuite('fixtures/null-prototype', nullPrototypeFixtures);

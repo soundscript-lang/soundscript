@@ -1,8 +1,8 @@
 import { assert, assertEquals } from '@std/assert';
 
-import { defineFixtureSuite } from './fixture_assertions.ts';
+import { defineFixtureSuite } from '../tests/support/fixture_assertions.ts';
 import { directiveFixtures } from './fixtures/directives.ts';
-import { runFixtureCase } from './harness.ts';
+import { runFixtureCase } from '../tests/support/harness.ts';
 
 defineFixtureSuite('fixtures/directives', directiveFixtures);
 
