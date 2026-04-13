@@ -253,6 +253,7 @@ export interface ProjectMacroEnvironment {
     preserveMissingExpanders?: boolean,
     annotateExpansions?: boolean,
   ): ReadonlyMap<string, ts.SourceFile>;
+  trackedDependencyFiles(): readonly string[];
 }
 
 export interface CreateProjectMacroEnvironmentOptions {
@@ -2775,6 +2776,9 @@ export function createProjectMacroEnvironment(
         }
       }
       return expandedFiles;
+    },
+    trackedDependencyFiles(): readonly string[] {
+      return [...stableReuseState.dependencySourceTextsByFile.keys()].sort();
     },
   };
 }

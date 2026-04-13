@@ -46,7 +46,12 @@ import {
 } from './diagnostics.ts';
 import { SOUND_DIAGNOSTIC_CODES } from './engine/diagnostic_codes.ts';
 import { createAnalysisContext } from './engine/context.ts';
-import { runSoundAnalysis } from './rules/index.ts';
+import {
+  runSoundAnalysis,
+  type SoundAnalysisArtifacts,
+  type SoundAnalysisRuleCache,
+} from './rules/index.ts';
+import type { FlowFileRuleCache } from './rules/flow.ts';
 import {
   runSourceSupplementalPolicyAnalysis,
   runUniversalPolicyAnalysis,
@@ -94,6 +99,23 @@ export interface PreparedAnalysisProject {
   stsView: PreparedAnalysisView | null;
   tsCompilerHostReuseState: PreparedCompilerHostReuseState | undefined;
   tsView: PreparedAnalysisView | null;
+}
+
+export interface PreparedAnalysisProjectFileMetadata {
+  cacheDependencyPaths: readonly string[];
+  diagnosticPaths: readonly string[];
+  filePath: string;
+  fileScopedAnalysis: boolean;
+  view: 'packageSource' | 'sts' | 'ts';
+}
+
+export interface PreparedProjectAnalysisArtifacts {
+  flowByFile: ReadonlyMap<string, FlowFileRuleCache>;
+}
+
+export interface AnalyzePreparedProjectWithArtifactsResult {
+  artifacts: PreparedProjectAnalysisArtifacts;
+  result: AnalyzeProjectResult;
 }
 
 interface AnalyzedProgramResult {
@@ -392,6 +414,125 @@ export class IncrementalProjectSession {
 
     return this.#preparedProject;
   }
+}
+
+export function collectPreparedAnalysisProjectTrackedFilePaths(
+  preparedProject: PreparedAnalysisProject,
+): readonly string[] {
+  const trackedPaths = new Set<string>();
+  const addTrackedPath = (candidateFilePath: string | undefined): void => {
+    if (!candidateFilePath) {
+      return;
+    }
+
+    const normalizedFilePath = ts.sys.resolvePath(toSourceFileName(candidateFilePath));
+    if (!ts.sys.fileExists(normalizedFilePath)) {
+      return;
+    }
+    if (trackedPaths.has(normalizedFilePath)) {
+      return;
+    }
+
+    trackedPaths.add(normalizedFilePath);
+    addTrackedPath(findNearestPackageJsonPath(normalizedFilePath, ts.sys));
+  };
+  const addViewTrackedPaths = (view: PreparedAnalysisView | null): void => {
+    if (!view) {
+      return;
+    }
+
+    for (const sourceFile of view.program.getSourceFiles()) {
+      if (view.program.isSourceFileDefaultLibrary(sourceFile)) {
+        continue;
+      }
+
+      addTrackedPath(view.preparedProgram.toSourceFileName(sourceFile.fileName));
+    }
+    for (const macroDependencyFile of view.macroEnvironment.trackedDependencyFiles()) {
+      addTrackedPath(macroDependencyFile);
+    }
+  };
+
+  addTrackedPath(preparedProject.analyzeOptions.projectPath);
+  addViewTrackedPaths(preparedProject.tsView);
+  addViewTrackedPaths(preparedProject.stsView);
+  addViewTrackedPaths(preparedProject.packageSourcePolicyView);
+
+  return [...trackedPaths].sort();
+}
+
+export function collectPreparedAnalysisProjectFileMetadata(
+  preparedProject: PreparedAnalysisProject,
+): readonly PreparedAnalysisProjectFileMetadata[] {
+  const candidateFilePaths = new Set<string>();
+  const projectPackageJsonPath = findNearestPackageJsonPath(
+    preparedProject.analyzeOptions.projectPath,
+    ts.sys,
+  );
+  const addCandidateFiles = (
+    view: PreparedAnalysisView | null,
+    includeSourceFile: (sourceFile: ts.SourceFile) => boolean,
+  ): void => {
+    if (!view) {
+      return;
+    }
+
+    for (const sourceFile of view.program.getSourceFiles()) {
+      if (view.program.isSourceFileDefaultLibrary(sourceFile) || !includeSourceFile(sourceFile)) {
+        continue;
+      }
+      candidateFilePaths.add(view.preparedProgram.toSourceFileName(sourceFile.fileName));
+    }
+  };
+
+  addCandidateFiles(
+    preparedProject.tsView,
+    (sourceFile) =>
+      shouldAnalyzeTypescriptViewSourceFile(sourceFile, preparedProject.isSoundscriptSourceFile),
+  );
+  addCandidateFiles(
+    preparedProject.stsView,
+    (sourceFile) =>
+      shouldAnalyzeProjectSoundscriptSourceFile(
+        sourceFile,
+        preparedProject.stsView!.analysisPreparedProgram,
+        projectPackageJsonPath,
+      ),
+  );
+  addCandidateFiles(
+    preparedProject.packageSourcePolicyView,
+    (sourceFile) =>
+      shouldAnalyzeSoundscriptSourceFile(
+        sourceFile,
+        preparedProject.packageSourcePolicyView!.analysisPreparedProgram,
+      ) &&
+      isSupplementalPackageSourceCandidate(
+        toSourceFileName(sourceFile.fileName),
+        projectPackageJsonPath,
+      ),
+  );
+
+  return [...candidateFilePaths].sort().flatMap((filePath) => {
+    const view = getPreparedAnalysisViewForFile(preparedProject, filePath);
+    if (!view) {
+      return [];
+    }
+
+    return [{
+      cacheDependencyPaths: collectPreparedProjectCacheDependencyPathsForFile(
+        preparedProject,
+        filePath,
+      ),
+      diagnosticPaths: collectPreparedProjectDiagnosticPathsForFile(preparedProject, filePath),
+      filePath,
+      fileScopedAnalysis: getFileScopedAnalysisContext(view, filePath) !== null,
+      view: view === preparedProject.tsView
+        ? 'ts'
+        : view === preparedProject.packageSourcePolicyView
+        ? 'packageSource'
+        : 'sts',
+    }];
+  });
 }
 
 function combineRootNames(
@@ -1228,8 +1369,14 @@ function prepareAnalysisView(
   };
 }
 
+interface AnalyzePreparedViewOptions {
+  captureArtifacts?: PreparedProjectAnalysisArtifacts;
+  reuseRuleCache?: SoundAnalysisRuleCache;
+}
+
 function analyzePreparedView(
   preparedView: PreparedAnalysisView | null,
+  options: AnalyzePreparedViewOptions = {},
 ): AnalyzedProgramResult {
   if (!preparedView) {
     return {
@@ -1253,6 +1400,11 @@ function analyzePreparedView(
   const soundDiagnostics = hasFrontendErrors ? [] : collectPreparedViewSoundDiagnostics(
     preparedView,
     preparedView.analysisContext,
+    undefined,
+    {
+      captureArtifacts: options.captureArtifacts,
+      reuseRuleCache: options.reuseRuleCache,
+    },
   );
 
   return {
@@ -1293,6 +1445,7 @@ function emitProjectedDeclarationsFailClosed(
 function analyzePreparedViewForFile(
   preparedView: PreparedAnalysisView | null,
   filePath: string,
+  options: AnalyzePreparedViewOptions = {},
 ): AnalyzedProgramResult {
   if (!preparedView) {
     return {
@@ -1336,6 +1489,10 @@ function analyzePreparedViewForFile(
         preparedView,
         fileScopedAnalysisContext,
         filePath,
+        {
+          captureArtifacts: options.captureArtifacts,
+          reuseRuleCache: options.reuseRuleCache,
+        },
       ),
       filePath,
     );
@@ -1352,6 +1509,7 @@ function analyzePreparedViewForFile(
 function analyzePreparedViewForDiagnosticPaths(
   preparedView: PreparedAnalysisView | null,
   diagnosticPaths: readonly string[],
+  options: AnalyzePreparedViewOptions = {},
 ): AnalyzedProgramResult {
   if (!preparedView || diagnosticPaths.length === 0) {
     return {
@@ -1378,9 +1536,15 @@ function analyzePreparedViewForDiagnosticPaths(
     );
   const soundDiagnostics = hasFrontendErrors
     ? []
-    : collectPreparedViewSoundDiagnostics(preparedView, preparedView.analysisContext).filter(
-      (diagnostic) => matchesPreparedAnalysisAnyFilePath(diagnostic.filePath, diagnosticPaths),
-    );
+    : collectPreparedViewSoundDiagnostics(
+      preparedView,
+      preparedView.analysisContext,
+      undefined,
+      {
+        captureArtifacts: options.captureArtifacts,
+        reuseRuleCache: options.reuseRuleCache,
+      },
+    ).filter((diagnostic) => matchesPreparedAnalysisAnyFilePath(diagnostic.filePath, diagnosticPaths));
 
   return {
     frontendDiagnostics,
@@ -1401,7 +1565,7 @@ function retainSoundDiagnosticsAlongsideTsErrors(
   );
 }
 
-function matchesPreparedAnalysisAnyFilePath(
+export function matchesPreparedAnalysisAnyFilePath(
   candidateFilePath: string | undefined,
   expectedFilePaths: readonly string[],
 ): boolean {
@@ -1720,10 +1884,64 @@ function collectPreparedViewUniversalDiagnostics(
   );
 }
 
+interface CollectPreparedViewSoundDiagnosticsOptions {
+  captureArtifacts?: PreparedProjectAnalysisArtifacts;
+  reuseRuleCache?: SoundAnalysisRuleCache;
+}
+
+function createEmptyPreparedProjectAnalysisArtifacts(): PreparedProjectAnalysisArtifacts {
+  return {
+    flowByFile: new Map<string, FlowFileRuleCache>(),
+  };
+}
+
+function mergeSoundAnalysisArtifacts(
+  target: PreparedProjectAnalysisArtifacts,
+  artifacts: SoundAnalysisArtifacts,
+): void {
+  for (const [filePath, cache] of artifacts.flowByFile.entries()) {
+    (target.flowByFile as Map<string, FlowFileRuleCache>).set(filePath, cache);
+  }
+}
+
+function remapFlowRuleCacheToProgramFiles(
+  preparedView: PreparedAnalysisView,
+  ruleCache: SoundAnalysisRuleCache | undefined,
+): SoundAnalysisRuleCache | undefined {
+  if (!ruleCache?.flowByFile || ruleCache.flowByFile.size === 0) {
+    return ruleCache;
+  }
+
+  return {
+    ...ruleCache,
+    flowByFile: new Map(
+      [...ruleCache.flowByFile.entries()].map(([filePath, cache]) => [
+        preparedView.preparedProgram.toProgramFileName(filePath),
+        cache,
+      ]),
+    ),
+  };
+}
+
+function remapSoundAnalysisArtifactsToSourceFiles(
+  preparedView: PreparedAnalysisView,
+  artifacts: SoundAnalysisArtifacts,
+): SoundAnalysisArtifacts {
+  return {
+    flowByFile: new Map(
+      [...artifacts.flowByFile.entries()].map(([filePath, cache]) => [
+        preparedView.preparedProgram.toSourceFileName(filePath),
+        cache,
+      ]),
+    ),
+  };
+}
+
 function collectPreparedViewSoundDiagnostics(
   preparedView: PreparedAnalysisView,
   analysisContext: AnalysisContext,
   filePath?: string,
+  options: CollectPreparedViewSoundDiagnosticsOptions = {},
 ): readonly SoundDiagnostic[] {
   const metadata: Record<string, boolean | number | string | undefined> = {
     fileScoped: filePath !== undefined,
@@ -1737,12 +1955,25 @@ function collectPreparedViewSoundDiagnostics(
     'project.analyze.soundRules',
     metadata,
     () => {
+      const collectedArtifacts = createEmptyPreparedProjectAnalysisArtifacts();
       const diagnostics = remapDiagnostics(
         remapSoundDiagnostics(
-          preparedView.runSound ? runSoundAnalysis(analysisContext) : [],
+          preparedView.runSound
+            ? runSoundAnalysis(analysisContext, {
+              onArtifacts: (artifacts) =>
+                mergeSoundAnalysisArtifacts(
+                  collectedArtifacts,
+                  remapSoundAnalysisArtifactsToSourceFiles(preparedView, artifacts),
+                ),
+              ruleCache: remapFlowRuleCacheToProgramFiles(preparedView, options.reuseRuleCache),
+            })
+            : [],
           preparedView.diagnosticPreparedFiles,
         ),
       );
+      if (options.captureArtifacts) {
+        mergeSoundAnalysisArtifacts(options.captureArtifacts, collectedArtifacts);
+      }
       metadata.diagnostics = diagnostics.length;
       return diagnostics;
     },
@@ -2441,6 +2672,64 @@ export function analyzePreparedProjectForFile(
   preparedProject: PreparedAnalysisProject,
   filePath: string,
 ): AnalyzeProjectResult {
+  return analyzePreparedProjectForFileWithArtifacts(preparedProject, filePath).result;
+}
+
+export function analyzePreparedProjectOwnedDiagnosticsForFile(
+  preparedProject: PreparedAnalysisProject,
+  filePath: string,
+): AnalyzeProjectResult {
+  return analyzePreparedProjectOwnedDiagnosticsForFileWithArtifacts(
+    preparedProject,
+    filePath,
+  ).result;
+}
+
+export function analyzePreparedProjectOwnedDiagnosticsForFileWithArtifacts(
+  preparedProject: PreparedAnalysisProject,
+  filePath: string,
+  reuseArtifacts: PreparedProjectAnalysisArtifacts = createEmptyPreparedProjectAnalysisArtifacts(),
+): AnalyzePreparedProjectWithArtifactsResult {
+  return measureCheckerTiming(
+    'project.analyzePreparedProjectOwnedDiagnosticsForFile',
+    {
+      filePath,
+      hasTsView: preparedProject.tsView !== null,
+      hasStsView: preparedProject.stsView !== null,
+    },
+    () => {
+      const artifacts = createEmptyPreparedProjectAnalysisArtifacts();
+      const flowRuleCache: SoundAnalysisRuleCache = {
+        flowByFile: reuseArtifacts.flowByFile,
+      };
+      const primaryView = getPreparedAnalysisViewForFile(preparedProject, filePath);
+      const primaryAnalysis = analyzePreparedViewForFile(primaryView, filePath, {
+        captureArtifacts: artifacts,
+        reuseRuleCache: flowRuleCache,
+      });
+      const diagnostics = dedupeMergedDiagnostics([
+        ...primaryAnalysis.frontendDiagnostics,
+        ...primaryAnalysis.tsDiagnostics,
+        ...primaryAnalysis.soundDiagnostics,
+      ]);
+
+      return {
+        artifacts,
+        result: {
+          diagnostics,
+          summary: createSummary(diagnostics),
+        },
+      };
+    },
+    { always: true },
+  );
+}
+
+export function analyzePreparedProjectForFileWithArtifacts(
+  preparedProject: PreparedAnalysisProject,
+  filePath: string,
+  reuseArtifacts: PreparedProjectAnalysisArtifacts = createEmptyPreparedProjectAnalysisArtifacts(),
+): AnalyzePreparedProjectWithArtifactsResult {
   return measureCheckerTiming(
     'project.analyzePreparedProjectForFile',
     {
@@ -2449,8 +2738,15 @@ export function analyzePreparedProjectForFile(
       hasStsView: preparedProject.stsView !== null,
     },
     () => {
+      const artifacts = createEmptyPreparedProjectAnalysisArtifacts();
+      const flowRuleCache: SoundAnalysisRuleCache = {
+        flowByFile: reuseArtifacts.flowByFile,
+      };
       const primaryView = getPreparedAnalysisViewForFile(preparedProject, filePath);
-      const primaryAnalysis = analyzePreparedViewForFile(primaryView, filePath);
+      const primaryAnalysis = analyzePreparedViewForFile(primaryView, filePath, {
+        captureArtifacts: artifacts,
+        reuseRuleCache: flowRuleCache,
+      });
       const diagnosticPaths = collectPreparedProjectDiagnosticPathsForFile(
         preparedProject,
         filePath,
@@ -2468,6 +2764,10 @@ export function analyzePreparedProjectForFile(
         ? analyzePreparedViewForDiagnosticPaths(
           primaryView,
           diagnosticPaths,
+          {
+            captureArtifacts: artifacts,
+            reuseRuleCache: flowRuleCache,
+          },
         )
         : {
           frontendDiagnostics: [],
@@ -2475,7 +2775,12 @@ export function analyzePreparedProjectForFile(
           soundDiagnostics: [],
         };
       const supplementalAnalyses = requiresDependencyAnalysis
-        ? supplementalViews.map((view) => analyzePreparedViewForDiagnosticPaths(view, diagnosticPaths))
+        ? supplementalViews.map((view) =>
+          analyzePreparedViewForDiagnosticPaths(view, diagnosticPaths, {
+            captureArtifacts: artifacts,
+            reuseRuleCache: flowRuleCache,
+          })
+        )
         : [];
       const diagnostics = dedupeMergedDiagnostics([
         ...primaryAnalysis.frontendDiagnostics,
@@ -2492,8 +2797,11 @@ export function analyzePreparedProjectForFile(
       ]);
 
       return {
-        diagnostics,
-        summary: createSummary(diagnostics),
+        artifacts,
+        result: {
+          diagnostics,
+          summary: createSummary(diagnostics),
+        },
       };
     },
     { always: true },
@@ -2609,6 +2917,13 @@ function getPreparedViewSourceFileMatch(
 export function analyzePreparedProject(
   preparedProject: PreparedAnalysisProject,
 ): AnalyzeProjectResult {
+  return analyzePreparedProjectWithArtifacts(preparedProject).result;
+}
+
+export function analyzePreparedProjectWithArtifacts(
+  preparedProject: PreparedAnalysisProject,
+  reuseArtifacts: PreparedProjectAnalysisArtifacts = createEmptyPreparedProjectAnalysisArtifacts(),
+): AnalyzePreparedProjectWithArtifactsResult {
   return measureCheckerTiming(
     'project.analyzePreparedProject',
     {
@@ -2616,10 +2931,23 @@ export function analyzePreparedProject(
       hasStsView: preparedProject.stsView !== null,
     },
     () => {
+      const artifacts = createEmptyPreparedProjectAnalysisArtifacts();
+      const flowRuleCache: SoundAnalysisRuleCache = {
+        flowByFile: reuseArtifacts.flowByFile,
+      };
       const analyzedPrograms = [
-        analyzePreparedView(preparedProject.tsView),
-        analyzePreparedView(preparedProject.stsView),
-        analyzePreparedView(preparedProject.packageSourcePolicyView),
+        analyzePreparedView(preparedProject.tsView, {
+          captureArtifacts: artifacts,
+          reuseRuleCache: flowRuleCache,
+        }),
+        analyzePreparedView(preparedProject.stsView, {
+          captureArtifacts: artifacts,
+          reuseRuleCache: flowRuleCache,
+        }),
+        analyzePreparedView(preparedProject.packageSourcePolicyView, {
+          captureArtifacts: artifacts,
+          reuseRuleCache: flowRuleCache,
+        }),
       ];
       const diagnostics = dedupeMergedDiagnostics(analyzedPrograms.flatMap((programResult) => [
         ...programResult.frontendDiagnostics,
@@ -2628,8 +2956,11 @@ export function analyzePreparedProject(
       ]));
 
       return {
-        diagnostics,
-        summary: createSummary(diagnostics),
+        artifacts,
+        result: {
+          diagnostics,
+          summary: createSummary(diagnostics),
+        },
       };
     },
     { always: true },

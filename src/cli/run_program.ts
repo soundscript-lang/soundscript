@@ -3,12 +3,14 @@ import {
   hasErrorDiagnostics,
   type MergedDiagnostic,
 } from '../checker/diagnostics.ts';
-import { analyzeProject } from '../checker/analyze_project.ts';
+import { analyzeProjectWithPersistentCache } from '../checker/checker_cache.ts';
 import type { RuntimeTarget } from '../project/config.ts';
 
 export interface RunProgramOptions {
+  cacheDir?: string;
   projectPath: string;
   target?: RuntimeTarget;
+  useCache?: boolean;
   workingDirectory: string;
 }
 
@@ -19,9 +21,11 @@ export interface RunProgramResult {
 }
 
 export function runProgram(options: RunProgramOptions): RunProgramResult {
-  const analysis = analyzeProject({
+  const analysis = analyzeProjectWithPersistentCache({
+    cacheDir: options.cacheDir,
     projectPath: options.projectPath,
     target: options.target,
+    useCache: options.useCache,
     workingDirectory: options.workingDirectory,
   });
 

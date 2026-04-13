@@ -5,7 +5,10 @@ import { measureCheckerTiming } from '../timing.ts';
 import { runAmbientHostValueRules } from './ambient_host_values.ts';
 import { runAnnotationValidationRules } from './directive_validation.ts';
 import { runEffectRules } from './effects.ts';
-import { runFlowRules } from './flow.ts';
+import {
+  type FlowFileRuleCache,
+  runFlowRules,
+} from './flow.ts';
 import { runNamespaceObjectRules } from './namespace_object.ts';
 import { runNullPrototypeRules } from './null_prototype.ts';
 import { runOverloadRules } from './overloads.ts';
@@ -14,6 +17,19 @@ import { runTypeGuardRules } from './type_guards.ts';
 import { runUnsoundImportRules } from './unsound_imports.ts';
 import { runUnsoundSyntaxRules } from './unsound_syntax.ts';
 import { runValueTypeRules } from './value_types.ts';
+
+export interface SoundAnalysisRuleCache {
+  flowByFile?: ReadonlyMap<string, FlowFileRuleCache>;
+}
+
+export interface SoundAnalysisArtifacts {
+  flowByFile: ReadonlyMap<string, FlowFileRuleCache>;
+}
+
+export interface RunSoundAnalysisOptions {
+  ruleCache?: SoundAnalysisRuleCache;
+  onArtifacts?: (artifacts: SoundAnalysisArtifacts) => void;
+}
 
 function runTimedSoundRule(
   name: string,
@@ -39,8 +55,12 @@ function runTimedSoundRule(
   );
 }
 
-export function runSoundAnalysis(context: AnalysisContext): SoundDiagnostic[] {
-  return [
+export function runSoundAnalysis(
+  context: AnalysisContext,
+  options: RunSoundAnalysisOptions = {},
+): SoundDiagnostic[] {
+  const nextFlowByFile = new Map<string, FlowFileRuleCache>();
+  const diagnostics = [
     ...runTimedSoundRule('directiveValidation', context, runAnnotationValidationRules),
     ...runTimedSoundRule('effects', context, runEffectRules),
     ...runTimedSoundRule('unsoundSyntax', context, runUnsoundSyntaxRules),
@@ -55,8 +75,18 @@ export function runSoundAnalysis(context: AnalysisContext): SoundDiagnostic[] {
       (analysisContext) => ({ ...getRelationMemoStats(analysisContext) }),
     ),
     ...runTimedSoundRule('valueTypes', context, runValueTypeRules),
-    ...runTimedSoundRule('flow', context, runFlowRules),
+    ...runTimedSoundRule(
+      'flow',
+      context,
+      (analysisContext) =>
+        runFlowRules(analysisContext, {
+          cacheByFile: options.ruleCache?.flowByFile,
+          onFileCache: (filePath, cache) => nextFlowByFile.set(filePath, cache),
+        }),
+    ),
     ...runTimedSoundRule('typeGuards', context, runTypeGuardRules),
     ...runTimedSoundRule('overloads', context, runOverloadRules),
   ];
+  options.onArtifacts?.({ flowByFile: nextFlowByFile });
+  return diagnostics;
 }

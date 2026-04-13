@@ -4,6 +4,7 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  renameSync,
   rmSync,
   statSync,
   watch as watchPath,
@@ -170,6 +171,10 @@ export async function removePath(path: string): Promise<void> {
 
 export function removePathSync(path: string): void {
   rmSync(path, { recursive: true, force: true });
+}
+
+export function renamePathSync(fromPath: string, toPath: string): void {
+  renameSync(fromPath, toPath);
 }
 
 export async function readStdinText(): Promise<string> {

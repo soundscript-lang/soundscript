@@ -103,6 +103,8 @@ Deno.test('runCli prints help text', async () => {
   assertStringIncludes(result.output, '--project');
   assertStringIncludes(result.output, '--target');
   assertStringIncludes(result.output, '--format');
+  assertStringIncludes(result.output, '--no-cache');
+  assertStringIncludes(result.output, '--cache-dir');
   assertStringIncludes(result.output, '--watch');
   assertStringIncludes(result.output, '--help');
   assertStringIncludes(result.output, '--version');
@@ -170,6 +172,36 @@ Deno.test('runCli passes runtime target override to runProgram', async () => {
 
   assertEquals(result.exitCode, 0);
   assertEquals(receivedTarget, 'js-browser');
+});
+
+Deno.test('runCli passes cache options to runProgram', async () => {
+  const tempDirectory = await Deno.makeTempDir({ prefix: 'soundscript-check-cache-options-' });
+  const projectPath = join(tempDirectory, 'tsconfig.json');
+  const cacheDir = join(tempDirectory, 'custom-cache');
+  let receivedCacheDir: string | undefined;
+  let receivedUseCache: boolean | undefined;
+
+  await Deno.writeTextFile(projectPath, '{}');
+
+  const result = await runCli(
+    ['check', '--project', projectPath, '--no-cache', '--cache-dir', cacheDir],
+    tempDirectory,
+    {
+      runProgram: (options) => {
+        receivedCacheDir = options.cacheDir;
+        receivedUseCache = options.useCache;
+        return {
+          diagnostics: [],
+          exitCode: 0,
+          output: '',
+        };
+      },
+    },
+  );
+
+  assertEquals(result.exitCode, 0);
+  assertEquals(receivedCacheDir, cacheDir);
+  assertEquals(receivedUseCache, false);
 });
 
 Deno.test('runCli init creates a new project scaffold', async () => {

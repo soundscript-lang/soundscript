@@ -45,10 +45,12 @@ export interface InvalidCommand {
 }
 
 export interface CheckCommand {
+  cacheDir?: string;
   kind: 'check';
   format: OutputFormat;
   projectPath: string;
   target?: RuntimeTarget;
+  useCache: boolean;
   workingDirectory: string;
 }
 
@@ -573,6 +575,8 @@ export function parseCommand(args: readonly string[], workingDirectory: string):
   let explainCode: string | undefined;
   let projectPath: string | undefined;
   let runtimeTarget: RuntimeTarget | undefined;
+  let cacheDir: string | undefined;
+  let useCache = true;
   let watch = false;
 
   for (let index = 1; index < args.length; index += 1) {
@@ -663,6 +667,39 @@ export function parseCommand(args: readonly string[], workingDirectory: string):
         }
 
         runtimeTarget = nextArgument;
+        index += 1;
+        break;
+      }
+      case '--no-cache': {
+        if (subcommand !== 'check') {
+          return {
+            kind: 'invalid',
+            message: '--no-cache is only supported for check.',
+          };
+        }
+
+        useCache = false;
+        break;
+      }
+      case '--cache-dir': {
+        if (subcommand !== 'check') {
+          return {
+            kind: 'invalid',
+            message: '--cache-dir is only supported for check.',
+          };
+        }
+
+        const nextArgument = args[index + 1];
+        if (!nextArgument || nextArgument.startsWith('-')) {
+          return {
+            kind: 'invalid',
+            message: 'Missing value for --cache-dir.',
+          };
+        }
+
+        cacheDir = ts.sys.resolvePath(
+          isAbsolute(nextArgument) ? nextArgument : join(workingDirectory, nextArgument),
+        );
         index += 1;
         break;
       }
@@ -899,10 +936,12 @@ export function parseCommand(args: readonly string[], workingDirectory: string):
 
   if (subcommand === 'check') {
     return {
+      cacheDir,
       kind: 'check',
       format,
       projectPath: projectPath ?? join(workingDirectory, 'tsconfig.json'),
       target: runtimeTarget,
+      useCache,
       workingDirectory,
     };
   }

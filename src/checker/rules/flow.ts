@@ -33,6 +33,23 @@ import {
 import { isConstLocalBindingPath } from './flow_shared.ts';
 import { isInsideSyntheticErrorNormalizationHelper } from './generated_helpers.ts';
 
+export interface FlowRegionRuleCacheEntry {
+  diagnostics: readonly SoundDiagnostic[];
+  kind: 'functionBody' | 'sourceFile';
+  regionIndex: number;
+  signature: string;
+  textHash: string;
+}
+
+export interface FlowFileRuleCache {
+  regions: readonly FlowRegionRuleCacheEntry[];
+}
+
+export interface RunFlowRulesOptions {
+  cacheByFile?: ReadonlyMap<string, FlowFileRuleCache>;
+  onFileCache?: (filePath: string, cache: FlowFileRuleCache) => void;
+}
+
 type InvalidationBoundaryKind =
   | 'alias_or_escape'
   | 'call'
@@ -379,8 +396,8 @@ function analyzeRootRegion(
   context: AnalysisContext,
   regionNode: ts.Node | undefined,
   statements: readonly ts.Statement[],
-  diagnostics: SoundDiagnostic[],
-): void {
+): SoundDiagnostic[] {
+  const diagnostics: SoundDiagnostic[] = [];
   analyzeStatements(
     context,
     regionNode,
@@ -388,20 +405,94 @@ function analyzeRootRegion(
     createInitialState(),
     diagnostics,
   );
+  return diagnostics;
 }
 
-export function runFlowRules(context: AnalysisContext): SoundDiagnostic[] {
+function hashRegionText(text: string): string {
+  return ts.sys.createHash?.(text) ?? text;
+}
+
+function getFunctionLikeRegionSignature(node: ts.FunctionLikeDeclaration): string {
+  const nameText = 'name' in node && node.name ? node.name.getText(node.getSourceFile()) : '';
+  return [
+    ts.SyntaxKind[node.kind],
+    nameText,
+    node.parameters.length,
+    node.typeParameters?.length ?? 0,
+    node.modifiers?.map((modifier) => ts.SyntaxKind[modifier.kind]).join(',') ?? '',
+  ].join('\u0000');
+}
+
+function getSourceFileRegionText(sourceFile: ts.SourceFile): string {
+  return sourceFile.text;
+}
+
+function getFunctionLikeRegionText(node: ts.FunctionLikeDeclaration): string {
+  return node.body?.getFullText(node.getSourceFile()) ?? '';
+}
+
+function canReuseCachedRegion(
+  cachedRegion: FlowRegionRuleCacheEntry | undefined,
+  kind: FlowRegionRuleCacheEntry['kind'],
+  regionIndex: number,
+  signature: string,
+  textHash: string,
+): cachedRegion is FlowRegionRuleCacheEntry {
+  return !!cachedRegion &&
+    cachedRegion.kind === kind &&
+    cachedRegion.regionIndex === regionIndex &&
+    cachedRegion.signature === signature &&
+    cachedRegion.textHash === textHash;
+}
+
+export function runFlowRules(
+  context: AnalysisContext,
+  options: RunFlowRulesOptions = {},
+): SoundDiagnostic[] {
   const diagnostics: SoundDiagnostic[] = [];
 
   context.forEachSourceFile((sourceFile) => {
+    const cachedFile = options.cacheByFile?.get(sourceFile.fileName);
+    const nextRegions: FlowRegionRuleCacheEntry[] = [];
+    let nextRegionIndex = 0;
+    const recordRegion = (
+      kind: FlowRegionRuleCacheEntry['kind'],
+      signature: string,
+      textHash: string,
+      createDiagnostics: () => readonly SoundDiagnostic[],
+    ): void => {
+      const cachedRegion = cachedFile?.regions[nextRegionIndex];
+      const regionDiagnostics = canReuseCachedRegion(
+          cachedRegion,
+          kind,
+          nextRegionIndex,
+          signature,
+          textHash,
+        )
+        ? cachedRegion.diagnostics
+        : [...createDiagnostics()];
+      nextRegions.push({
+        diagnostics: regionDiagnostics,
+        kind,
+        regionIndex: nextRegionIndex,
+        signature,
+        textHash,
+      });
+      diagnostics.push(...regionDiagnostics);
+      nextRegionIndex += 1;
+    };
     const rootStatements = sourceFile.statements.filter((statement) =>
       !context.isGeneratedNode(statement)
     );
-    analyzeRootRegion(
-      context,
-      sourceFile,
-      rootStatements,
-      diagnostics,
+    recordRegion(
+      'sourceFile',
+      'sourceFile',
+      hashRegionText(getSourceFileRegionText(sourceFile)),
+      () => analyzeRootRegion(
+        context,
+        sourceFile,
+        rootStatements,
+      ),
     );
 
     context.traverse(sourceFile, (node) => {
@@ -415,13 +506,19 @@ export function runFlowRules(context: AnalysisContext): SoundDiagnostic[] {
       const bodyStatements = getRootStatements(node.body).filter((statement) =>
         !context.isGeneratedNode(statement)
       );
-      analyzeRootRegion(
-        context,
-        ts.isBlock(node.body) ? node.body : undefined,
-        bodyStatements,
-        diagnostics,
+      recordRegion(
+        'functionBody',
+        getFunctionLikeRegionSignature(node),
+        hashRegionText(getFunctionLikeRegionText(node)),
+        () => analyzeRootRegion(
+          context,
+          ts.isBlock(node.body) ? node.body : undefined,
+          bodyStatements,
+        ),
       );
     });
+
+    options.onFileCache?.(sourceFile.fileName, { regions: nextRegions });
   });
 
   return diagnostics;
