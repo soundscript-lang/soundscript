@@ -800,11 +800,15 @@ export interface CachedExpandedMacroSourceFileEntry {
 export interface PreparedCompilerHostReuseState {
   builtinAnnotatedSourceFiles: Map<string, CachedBuiltinAnnotatedSourceFileEntry>;
   builtinFinalSourceFiles: Map<string, CachedBuiltinFinalSourceFileEntry>;
+  changedProgramSourceFiles: Set<string>;
   expandedMacroSourceFiles: Map<string, CachedExpandedMacroSourceFileEntry>;
   macroModuleArtifactCache: Map<string, CachedMacroModuleArtifactEntry>;
   moduleResolutionCache: ts.ModuleResolutionCache;
   moduleResolutionCacheSignature: string;
+  previousProgramSourceFiles: Set<string>;
   preparedSourceFiles: Map<string, CachedPreparedSourceFileEntry>;
+  programSourceFiles: Set<string>;
+  removedProgramSourceFiles: Set<string>;
   semanticDiagnosticsBuilderProgram: ts.SemanticDiagnosticsBuilderProgram | undefined;
   semanticDiagnosticsOptionSignature: string;
   semanticDiagnosticsProjectReferencesSignature: string;
@@ -871,6 +875,7 @@ export function createPreparedCompilerHostReuseState(
   return {
     builtinAnnotatedSourceFiles: new Map(),
     builtinFinalSourceFiles: new Map(),
+    changedProgramSourceFiles: new Set(),
     expandedMacroSourceFiles: new Map(),
     macroModuleArtifactCache: new Map(),
     moduleResolutionCache: ts.createModuleResolutionCache(
@@ -878,7 +883,10 @@ export function createPreparedCompilerHostReuseState(
       getCanonicalFileName,
     ),
     moduleResolutionCacheSignature: '',
+    previousProgramSourceFiles: new Set(),
     preparedSourceFiles: new Map(),
+    programSourceFiles: new Set(),
+    removedProgramSourceFiles: new Set(),
     semanticDiagnosticsBuilderProgram: undefined,
     semanticDiagnosticsOptionSignature: '',
     semanticDiagnosticsProjectReferencesSignature: '',
@@ -898,9 +906,13 @@ export function clearPreparedCompilerHostReuseState(
 ): void {
   reusableState.builtinAnnotatedSourceFiles.clear();
   reusableState.builtinFinalSourceFiles.clear();
+  reusableState.changedProgramSourceFiles.clear();
   reusableState.expandedMacroSourceFiles.clear();
   reusableState.macroModuleArtifactCache.clear();
   reusableState.preparedSourceFiles.clear();
+  reusableState.previousProgramSourceFiles.clear();
+  reusableState.programSourceFiles.clear();
+  reusableState.removedProgramSourceFiles.clear();
   reusableState.semanticDiagnosticsBuilderProgram = undefined;
   reusableState.semanticDiagnosticsOptionSignature = '';
   reusableState.semanticDiagnosticsProjectReferencesSignature = '';
@@ -3455,6 +3467,13 @@ export function createPreparedCompilerHost(
 ): PreparedCompilerHost {
   const preparedFiles = new Map<string, PreparedSourceFile>();
   const macroPreparationByFile = new Map<string, boolean>();
+  const previousProgramSourceFiles = reusableState.programSourceFiles;
+  const programSourceFiles = new Set<string>();
+  const changedProgramSourceFiles = new Set<string>();
+  reusableState.previousProgramSourceFiles = previousProgramSourceFiles;
+  reusableState.programSourceFiles = programSourceFiles;
+  reusableState.changedProgramSourceFiles = changedProgramSourceFiles;
+  reusableState.removedProgramSourceFiles = new Set<string>();
   const isConfiguredSoundscriptFile = (fileName: string): boolean =>
     isLocalSoundscriptSourceFile(toSourceFileName(fileName), configuredSoundscriptFileNames);
   const currentDirectory = baseHost.getCurrentDirectory?.() ?? ts.sys.getCurrentDirectory();
@@ -3817,6 +3836,7 @@ export function createPreparedCompilerHost(
       scriptKindForSourceFileName(toSourceFileName(fileName)),
     );
     ensureSourceFileVersion(sourceFile, text);
+    changedProgramSourceFiles.add(fileName);
     if (!shouldCreateNewSourceFile) {
       cache.set(fileName, {
         environmentSignature,
@@ -4072,7 +4092,7 @@ export function createPreparedCompilerHost(
       ): ts.SourceFile | undefined {
         const projectedDeclarationText = getProjectedDeclarationText(fileName);
         if (projectedDeclarationText !== undefined) {
-          return getCachedOrCreateSourceFile(
+          const sourceFile = getCachedOrCreateSourceFile(
             reusableState.projectedDeclarationSourceFiles,
             fileName,
             projectedDeclarationText,
@@ -4080,10 +4100,12 @@ export function createPreparedCompilerHost(
             '',
             shouldCreateNewSourceFile,
           );
+          programSourceFiles.add(fileName);
+          return sourceFile;
         }
         const prepared = getPreparedSourceFile(fileName);
         if (prepared !== undefined) {
-          return getCachedOrCreateSourceFile(
+          const sourceFile = getCachedOrCreateSourceFile(
             reusableState.rewrittenSourceFiles,
             fileName,
             prepared.rewrittenText,
@@ -4091,6 +4113,8 @@ export function createPreparedCompilerHost(
             projectedDeclarationPresenceSignature,
             shouldCreateNewSourceFile,
           );
+          programSourceFiles.add(fileName);
+          return sourceFile;
         }
 
         const sourceFileName = toSourceFileName(fileName);
@@ -4100,7 +4124,11 @@ export function createPreparedCompilerHost(
           onError,
           shouldCreateNewSourceFile,
         );
-        return sourceFile ? ensureSourceFileVersion(sourceFile, sourceFile.text) : undefined;
+        if (!sourceFile) {
+          return undefined;
+        }
+        programSourceFiles.add(fileName);
+        return ensureSourceFileVersion(sourceFile, sourceFile.text);
       },
       hasInvalidatedResolutions(): boolean {
         return invalidateModuleResolutions;
@@ -4176,6 +4204,13 @@ export function createPreparedProgram(
     options.projectReferences,
   );
   const program = builderProgram.getProgram();
+  const removedProgramSourceFiles = new Set<string>();
+  for (const previousFileName of preparedHost.reuseState.previousProgramSourceFiles) {
+    if (!preparedHost.reuseState.programSourceFiles.has(previousFileName)) {
+      removedProgramSourceFiles.add(previousFileName);
+    }
+  }
+  preparedHost.reuseState.removedProgramSourceFiles = removedProgramSourceFiles;
   preparedHost.reuseState.semanticDiagnosticsBuilderProgram = builderProgram;
   preparedHost.reuseState.semanticDiagnosticsOptionSignature = optionSignature;
   preparedHost.reuseState.semanticDiagnosticsProjectReferencesSignature =

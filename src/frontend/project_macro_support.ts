@@ -99,7 +99,11 @@ interface ResolvedMacroBindingAuthority {
 }
 
 interface StableProjectMacroEnvironmentReuseState {
+  readonly bindingPlanDependenciesByFile: Map<string, ReadonlySet<string>>;
   readonly bindingPlansByFile: Map<string, CachedPerFileMacroBindingPlanEntry>;
+  readonly dependencySourceTextsByFile: Map<string, string>;
+  readonly dependentFilesByDependencyFile: Map<string, Set<string>>;
+  readonly expandedFilesByMode: Map<string, Map<string, ts.SourceFile>>;
 }
 
 const STABLE_PROJECT_MACRO_ENVIRONMENT_REUSE_STATE = new WeakMap<
@@ -274,7 +278,11 @@ function getStableProjectMacroEnvironmentReuseState(
   }
 
   const nextState: StableProjectMacroEnvironmentReuseState = {
+    bindingPlanDependenciesByFile: new Map(),
     bindingPlansByFile: new Map(),
+    dependencySourceTextsByFile: new Map(),
+    dependentFilesByDependencyFile: new Map(),
+    expandedFilesByMode: new Map(),
   };
   STABLE_PROJECT_MACRO_ENVIRONMENT_REUSE_STATE.set(reuseState, nextState);
   return nextState;
@@ -951,6 +959,81 @@ export function createProjectMacroEnvironment(
     importedBindingUsage: ReadonlyMap<string, ImportedBindingUsage>,
   ): ReadonlyMap<string, ImportedBindingUsage> {
     return new Map(importedBindingUsage);
+  }
+
+  function createExpandedFilesModeKey(
+    preserveRemovedImportStatements: boolean,
+    preserveMissingExpanders: boolean,
+    annotateExpansions: boolean,
+  ): string {
+    return [
+      preserveRemovedImportStatements ? 'preserveImports:1' : 'preserveImports:0',
+      preserveMissingExpanders ? 'preserveMissing:1' : 'preserveMissing:0',
+      annotateExpansions ? 'annotate:1' : 'annotate:0',
+    ].join('\u0003');
+  }
+
+  function isDeclarationFileName(fileName: string): boolean {
+    return fileName.endsWith('.d.ts') || fileName.endsWith('.d.mts') || fileName.endsWith('.d.cts');
+  }
+
+  function isExpandableProgramSourceFile(fileName: string): boolean {
+    return !isDeclarationFileName(toSourceFileName(fileName));
+  }
+
+  function clearCachedBindingPlan(fileName: string): void {
+    const previousDependencies = stableReuseState.bindingPlanDependenciesByFile.get(fileName);
+    if (previousDependencies) {
+      for (const dependencyFile of previousDependencies) {
+        const dependents = stableReuseState.dependentFilesByDependencyFile.get(dependencyFile);
+        if (!dependents) {
+          continue;
+        }
+        dependents.delete(fileName);
+        if (dependents.size === 0) {
+          stableReuseState.dependentFilesByDependencyFile.delete(dependencyFile);
+          stableReuseState.dependencySourceTextsByFile.delete(dependencyFile);
+        }
+      }
+      stableReuseState.bindingPlanDependenciesByFile.delete(fileName);
+    }
+    stableReuseState.bindingPlansByFile.delete(fileName);
+  }
+
+  function storeCachedBindingPlan(
+    fileName: string,
+    cachedPlan: CachedPerFileMacroBindingPlanEntry,
+  ): void {
+    clearCachedBindingPlan(fileName);
+    const dependencies = new Set<string>();
+    for (const [dependencyFileName, sourceText] of cachedPlan.resolutionDependencySourceTexts) {
+      dependencies.add(dependencyFileName);
+      stableReuseState.dependencySourceTextsByFile.set(dependencyFileName, sourceText);
+    }
+    for (const authorityBinding of cachedPlan.authorityBindings) {
+      if (
+        builtinDefinitionsBySpecifier.has(authorityBinding.resolvedFileName) ||
+        builtinExportsBySpecifier.has(authorityBinding.resolvedFileName)
+      ) {
+        continue;
+      }
+      for (
+        const [dependencyFileName, sourceText] of collectDependencySourceTextsForCompilation(
+          authorityBinding.resolvedFileName,
+        )
+      ) {
+        dependencies.add(dependencyFileName);
+        stableReuseState.dependencySourceTextsByFile.set(dependencyFileName, sourceText);
+      }
+    }
+    stableReuseState.bindingPlanDependenciesByFile.set(fileName, dependencies);
+    for (const dependencyFile of dependencies) {
+      const dependents = stableReuseState.dependentFilesByDependencyFile.get(dependencyFile) ??
+        new Set<string>();
+      dependents.add(fileName);
+      stableReuseState.dependentFilesByDependencyFile.set(dependencyFile, dependents);
+    }
+    stableReuseState.bindingPlansByFile.set(fileName, cachedPlan);
   }
 
   function collectCurrentExpansionDependencySignature(
@@ -2212,7 +2295,7 @@ export function createProjectMacroEnvironment(
 
     const macroNames = macroNamesForFile(sourceFile);
     if (macroNames.size === 0) {
-      stableReuseState.bindingPlansByFile.delete(sourceFile.fileName);
+      clearCachedBindingPlan(sourceFile.fileName);
       const emptyBindings = {
         advancedRegistry: new Map<string, AdvancedMacroExpander>(),
         definitions: new Map<string, MacroDefinition>(),
@@ -2404,7 +2487,7 @@ export function createProjectMacroEnvironment(
       registry,
       siteKindsBySpecifier,
     };
-    stableReuseState.bindingPlansByFile.set(
+    storeCachedBindingPlan(
       sourceFile.fileName,
       createCachedPerFileMacroBindingPlanEntry(
         sourceFile,
@@ -2449,9 +2532,14 @@ export function createProjectMacroEnvironment(
       preserveMissingExpanders = false,
       annotateExpansions = false,
     ): ReadonlyMap<string, ts.SourceFile> {
-      const sourceFiles = preparedProgram.program.getSourceFiles().filter((sourceFile) =>
-        !sourceFile.isDeclarationFile
+      const expansionModeKey = createExpandedFilesModeKey(
+        preserveRemovedImportStatements,
+        preserveMissingExpanders,
+        annotateExpansions,
       );
+      const cachedExpandedFiles = stableReuseState.expandedFilesByMode.get(expansionModeKey);
+      const expandedFiles = cachedExpandedFiles ?? new Map<string, ts.SourceFile>();
+      stableReuseState.expandedFilesByMode.set(expansionModeKey, expandedFiles);
       const registriesByFile = new Map<
         string,
         {
@@ -2463,14 +2551,106 @@ export function createProjectMacroEnvironment(
       const bindingUsageByFile = new Map<string, ReadonlyMap<string, ImportedBindingUsage>>();
       const expansionCacheKeyByFile = new Map<string, string>();
       const hasBindingsByFile = new Map<string, boolean>();
-      const expandedFiles = new Map<string, ts.SourceFile>();
       const expansionCache = preparedProgram.preparedHost.reuseState.expandedMacroSourceFiles;
       const macroSourceFiles: ts.SourceFile[] = [];
+      const currentProgramSourceFiles = new Set(
+        [...preparedProgram.preparedHost.reuseState.programSourceFiles].filter(
+          isExpandableProgramSourceFile,
+        ),
+      );
+      const removedProgramSourceFiles = [...preparedProgram.preparedHost.reuseState
+        .removedProgramSourceFiles].filter(isExpandableProgramSourceFile);
+      const affectedSourceFiles = new Set<string>();
 
-      for (const sourceFile of sourceFiles) {
+      for (const removedFileName of removedProgramSourceFiles) {
+        clearCachedBindingPlan(removedFileName);
+        expansionCache.delete(removedFileName);
+        for (const modeExpandedFiles of stableReuseState.expandedFilesByMode.values()) {
+          modeExpandedFiles.delete(removedFileName);
+        }
+        const removedSourcePath = preparedProgram.toSourceFileName(removedFileName);
+        for (
+          const dependentFileName of stableReuseState.dependentFilesByDependencyFile.get(
+            removedSourcePath,
+          ) ?? []
+        ) {
+          if (currentProgramSourceFiles.has(dependentFileName)) {
+            affectedSourceFiles.add(dependentFileName);
+          }
+        }
+      }
+
+      if (!cachedExpandedFiles) {
+        for (const fileName of currentProgramSourceFiles) {
+          affectedSourceFiles.add(fileName);
+        }
+      } else {
+        for (
+          const [dependencyFileName, cachedSourceText] of stableReuseState
+            .dependencySourceTextsByFile
+        ) {
+          let currentSourceText: string | undefined;
+          try {
+            currentSourceText = sourceTextForMacroModule(dependencyFileName);
+          } catch {
+            currentSourceText = undefined;
+          }
+          if (currentSourceText === cachedSourceText) {
+            continue;
+          }
+          for (
+            const dependentFileName of stableReuseState.dependentFilesByDependencyFile.get(
+              dependencyFileName,
+            ) ?? []
+          ) {
+            if (currentProgramSourceFiles.has(dependentFileName)) {
+              affectedSourceFiles.add(dependentFileName);
+            }
+          }
+        }
+        for (
+          const changedFileName of preparedProgram.preparedHost.reuseState.changedProgramSourceFiles
+        ) {
+          if (!isExpandableProgramSourceFile(changedFileName)) {
+            continue;
+          }
+          affectedSourceFiles.add(changedFileName);
+          const changedSourcePath = preparedProgram.toSourceFileName(changedFileName);
+          for (
+            const dependentFileName of stableReuseState.dependentFilesByDependencyFile.get(
+              changedSourcePath,
+            ) ?? []
+          ) {
+            if (currentProgramSourceFiles.has(dependentFileName)) {
+              affectedSourceFiles.add(dependentFileName);
+            }
+          }
+        }
+        for (const fileName of currentProgramSourceFiles) {
+          if (!expandedFiles.has(fileName)) {
+            affectedSourceFiles.add(fileName);
+          }
+        }
+        for (const fileName of currentProgramSourceFiles) {
+          if (!affectedSourceFiles.has(fileName) && expandedFiles.has(fileName)) {
+            macroCacheStats.expandedFileCacheHits += 1;
+          }
+        }
+        if (affectedSourceFiles.size === 0) {
+          return expandedFiles;
+        }
+      }
+
+      for (const fileName of affectedSourceFiles) {
+        const sourceFile = preparedProgram.program.getSourceFile(fileName);
+        if (!sourceFile || sourceFile.isDeclarationFile) {
+          expandedFiles.delete(fileName);
+          continue;
+        }
         const cachedExpandedSourceFile = expansionCache.get(sourceFile.fileName);
         const macroNames = macroNamesForFile(sourceFile);
         if (macroNames.size === 0) {
+          clearCachedBindingPlan(sourceFile.fileName);
           const sourceFileName = preparedProgram.toSourceFileName(sourceFile.fileName);
           const preparedSource = preparedProgram.preparedHost.getPreparedSourceFile(sourceFileName);
           const nonMacroExpansionCacheKey = createNonMacroExpansionCacheKey(
