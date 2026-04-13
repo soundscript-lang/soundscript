@@ -2455,15 +2455,28 @@ export function analyzePreparedProjectForFile(
         preparedProject,
         filePath,
       );
-      const primaryDependencyAnalysis = analyzePreparedViewForDiagnosticPaths(
-        primaryView,
-        diagnosticPaths,
-      );
-      const supplementalAnalyses = getPreparedAnalysisSupplementalViewsForFile(
+      const supplementalViews = getPreparedAnalysisSupplementalViewsForFile(
         preparedProject,
         filePath,
         primaryView,
-      ).map((view) => analyzePreparedViewForDiagnosticPaths(view, diagnosticPaths));
+      );
+      const requiresDependencyAnalysis = supplementalViews.length > 0 ||
+        diagnosticPaths.some((diagnosticPath) =>
+          !matchesPreparedAnalysisFilePath(diagnosticPath, filePath)
+        );
+      const primaryDependencyAnalysis = requiresDependencyAnalysis
+        ? analyzePreparedViewForDiagnosticPaths(
+          primaryView,
+          diagnosticPaths,
+        )
+        : {
+          frontendDiagnostics: [],
+          tsDiagnostics: [],
+          soundDiagnostics: [],
+        };
+      const supplementalAnalyses = requiresDependencyAnalysis
+        ? supplementalViews.map((view) => analyzePreparedViewForDiagnosticPaths(view, diagnosticPaths))
+        : [];
       const diagnostics = dedupeMergedDiagnostics([
         ...primaryAnalysis.frontendDiagnostics,
         ...primaryAnalysis.tsDiagnostics,

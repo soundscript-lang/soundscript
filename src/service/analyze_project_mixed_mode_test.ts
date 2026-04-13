@@ -964,6 +964,77 @@ Deno.test('analyzeProject emits per-phase and per-rule checker timing logs', asy
   }
 });
 
+Deno.test(
+  'analyzePreparedProjectForFile skips redundant dependency analysis for isolated .sts files',
+  async () => {
+    const tempDirectory = await createTempProject({
+      'tsconfig.json': JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+          },
+          include: ['src/**/*.sts'],
+        },
+        null,
+        2,
+      ),
+      'src/index.sts': [
+        'export function add(left: number, right: number): number {',
+        '  return left + right;',
+        '}',
+        '',
+      ].join('\n'),
+    });
+
+    const originalTimingEnv = Deno.env.get('SOUNDSCRIPT_CHECKER_TIMING');
+    const originalError = console.error;
+    const logs: string[] = [];
+    console.error = (...args: unknown[]) => {
+      logs.push(args.map((arg) => String(arg)).join(' '));
+    };
+
+    try {
+      Deno.env.set('SOUNDSCRIPT_CHECKER_TIMING', '1');
+
+      const preparedProject = prepareProjectAnalysis({
+        projectPath: join(tempDirectory, 'tsconfig.json'),
+        workingDirectory: tempDirectory,
+      });
+      const result = analyzePreparedProjectForFile(
+        preparedProject,
+        join(tempDirectory, 'src/index.sts'),
+      );
+
+      assertEquals(result.summary.total, 0);
+      assertEquals(
+        logs.filter((line) => line.includes('[soundscript:checker] project.analyze.tsDiagnostics '))
+          .length,
+        1,
+      );
+      assertEquals(
+        logs.filter((line) => line.includes('[soundscript:checker] project.analyze.universalPolicy '))
+          .length,
+        1,
+      );
+      assertEquals(
+        logs.filter((line) => line.includes('[soundscript:checker] project.analyze.soundRules '))
+          .length,
+        1,
+      );
+    } finally {
+      if (originalTimingEnv === undefined) {
+        Deno.env.delete('SOUNDSCRIPT_CHECKER_TIMING');
+      } else {
+        Deno.env.set('SOUNDSCRIPT_CHECKER_TIMING', originalTimingEnv);
+      }
+      console.error = originalError;
+    }
+  },
+);
+
 Deno.test('analyzeProject logs relation memo hits for repeated generic relation checks', async () => {
   const tempDirectory = await createTempProject({
     'tsconfig.json': JSON.stringify(
