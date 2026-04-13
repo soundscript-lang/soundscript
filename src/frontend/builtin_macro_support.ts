@@ -1,6 +1,6 @@
 import ts from 'typescript';
 
-import { normalizeRuntimeContext } from '../config.ts';
+import { normalizeRuntimeContext } from '../project/config.ts';
 import { hasErrorDiagnostics, type MergedDiagnostic } from '../checker/diagnostics.ts';
 import { measureCheckerTiming } from '../checker/timing.ts';
 import { builtinRuntimeImportSpecifier } from '../project/soundscript_runtime_specifiers.ts';

@@ -3,7 +3,7 @@ import type {
   AnnotationLookup,
   ParsedAnnotationArgument,
 } from '../../language/annotation_syntax.ts';
-import type { RuntimeContext } from '../../config.ts';
+import type { RuntimeContext } from '../../project/config.ts';
 export type {
   AnnotationLookup,
   ParsedAnnotation,

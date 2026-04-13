@@ -15,7 +15,7 @@ import type {
   CompilerRuntimeSetFallbackObjectPropertyIR,
   CompilerRuntimeSpecializedObjectRepresentationIR,
 } from '../../src/compiler/runtime_ir.ts';
-import { loadConfig } from '../../src/config.ts';
+import { loadConfig } from '../../src/project/config.ts';
 import { instantiateSoundscriptWasmModule } from '../../src/compiler/wasm_js_host_runtime.ts';
 
 export interface TempProjectFile {

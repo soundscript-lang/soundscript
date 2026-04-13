@@ -1,5 +1,5 @@
 import { runCli } from './cli/cli.ts';
-import { parseCommand } from './config.ts';
+import { parseCommand } from './project/config.ts';
 import { runEditorDiagnosticsWorker } from './editor/editor_diagnostics_worker.ts';
 import { createServer } from './lsp/server.ts';
 import { createStdioTransport } from './lsp/transport.ts';

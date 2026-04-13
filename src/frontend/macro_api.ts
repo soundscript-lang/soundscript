@@ -1,4 +1,4 @@
-import type { RuntimeBackend, RuntimeHost, RuntimeTarget } from '../config.ts';
+import type { RuntimeBackend, RuntimeHost, RuntimeTarget } from '../project/config.ts';
 import type {
   CanonicalFailureInfo,
   MacroDependencySet,

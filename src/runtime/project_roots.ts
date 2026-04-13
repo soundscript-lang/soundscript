@@ -4,7 +4,7 @@ import {
   collectSoundscriptRootNames,
   getConfigFileParsingDiagnostics,
   loadConfig,
-} from '../config.ts';
+} from '../project/config.ts';
 
 function isDeclarationRootFileName(fileName: string): boolean {
   return fileName.endsWith('.d.ts') || fileName.endsWith('.d.mts') || fileName.endsWith('.d.cts');

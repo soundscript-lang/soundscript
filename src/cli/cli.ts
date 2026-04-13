@@ -27,7 +27,7 @@ import {
   type InitCommand,
   type OutputFormat,
   parseCommand,
-} from '../config.ts';
+} from '../project/config.ts';
 import {
   getDiagnosticDocsUrl,
   type MachineDiagnostic,

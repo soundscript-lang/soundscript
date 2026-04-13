@@ -33,7 +33,7 @@ import {
   toProjectedDeclarationSourceFileName,
   toSourceFileName,
 } from '../frontend/project_frontend.ts';
-import { collectSoundscriptRootNames, loadConfig } from '../config.ts';
+import { collectSoundscriptRootNames, loadConfig } from '../project/config.ts';
 import {
   findNearestPackageJsonPath,
   getSoundScriptPackageInfoForResolvedModule,

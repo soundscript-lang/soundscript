@@ -48,7 +48,7 @@ import type {
   CompilerRuntimeTaggedPayloadLayoutIR,
   CompilerRuntimeTaggedValueRepresentationIR,
 } from './runtime_ir.ts';
-import { loadConfig } from '../config.ts';
+import { loadConfig } from '../project/config.ts';
 
 const EXPECTED_ORDINARY_OBJECT_PROTOTYPE_OWN_PROPERTY_KEYS = [
   '__defineGetter__',

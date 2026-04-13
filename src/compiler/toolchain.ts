@@ -1,7 +1,7 @@
 import { makeDirectorySync, readTextFileSync, removePathSync, writeTextFileSync } from '../platform/host.ts';
 import { dirname, fromFileUrl, join, normalize, relative } from '../platform/path.ts';
 
-import type { RuntimeTarget } from '../config.ts';
+import type { RuntimeTarget } from '../project/config.ts';
 import type { CompilerJsHostImportIR } from './ir.ts';
 import { transpileTypeScriptModuleToEsm } from '../runtime/transform.ts';
 

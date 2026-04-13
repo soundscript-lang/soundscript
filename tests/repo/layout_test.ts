@@ -149,6 +149,20 @@ Deno.test('config test moves out of src root once reorganized', () => {
   );
 });
 
+Deno.test('config module moves out of src root once reorganized', () => {
+  const srcRootFiles = listFileNames(SRC_ROOT);
+
+  assert(!srcRootFiles.includes('config.ts'), 'config.ts should live under src/project/.');
+  assert(
+    Deno.statSync(join(SRC_ROOT, 'project', 'config.ts')).isFile,
+    'src/project/config.ts is missing.',
+  );
+});
+
+Deno.test('src root stays entrypoint-only', () => {
+  assertEquals(listFileNames(SRC_ROOT), ['lsp_main.ts', 'macros.d.ts', 'macros.ts', 'main.ts']);
+});
+
 Deno.test('editor helpers move out of src root once reorganized', () => {
   const srcRootFiles = listFileNames(SRC_ROOT);
 

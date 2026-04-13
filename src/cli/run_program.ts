@@ -4,7 +4,7 @@ import {
   type MergedDiagnostic,
 } from '../checker/diagnostics.ts';
 import { analyzeProject } from '../checker/analyze_project.ts';
-import type { RuntimeTarget } from '../config.ts';
+import type { RuntimeTarget } from '../project/config.ts';
 
 export interface RunProgramOptions {
   projectPath: string;

@@ -1,7 +1,7 @@
 import ts from 'typescript';
 
 import { createSoundStdlibCompilerHost } from '../bundled/sound_stdlib.ts';
-import { loadConfig, type LoadedConfig } from '../config.ts';
+import { loadConfig, type LoadedConfig } from '../project/config.ts';
 import {
   getAlwaysAvailableBuiltinMacroDefinitions,
   getAlwaysAvailableBuiltinMacroExports,

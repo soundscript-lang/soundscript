@@ -8,7 +8,7 @@ import {
 import { dirname } from '@std/path';
 import ts from 'typescript';
 
-import { normalizeRuntimeContext } from '../config.ts';
+import { normalizeRuntimeContext } from '../project/config.ts';
 import { installTestDisposableCleanup } from './builtin_expanded_program_test_cleanup.ts';
 import {
   createPreparedCompilerHostReuseState,

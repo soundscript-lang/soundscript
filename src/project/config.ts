@@ -1,12 +1,12 @@
 import ts from 'typescript';
 
-import { dirname, isAbsolute, join } from './platform/path.ts';
+import { dirname, isAbsolute, join } from '../platform/path.ts';
 import {
   isLocalSoundscriptSourceFile,
   isSoundscriptSourceFile,
   isTypeScriptFamilySoundscriptAliasFile,
   normalizeConfiguredSoundscriptFileNames,
-} from './project/soundscript_files.ts';
+} from './soundscript_files.ts';
 
 export type OutputFormat = 'json' | 'ndjson' | 'text';
 export type InitMode = 'existing' | 'new';

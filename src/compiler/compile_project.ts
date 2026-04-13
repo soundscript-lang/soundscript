@@ -26,7 +26,7 @@ import {
   loadConfig,
   type RuntimeContext,
   type RuntimeTarget,
-} from '../config.ts';
+} from '../project/config.ts';
 import { createBuiltinExpandedProgram } from '../frontend/builtin_macro_support.ts';
 import {
   getLineAndCharacterOfPosition,

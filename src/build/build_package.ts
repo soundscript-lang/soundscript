@@ -14,7 +14,7 @@ import {
   getConfigFileParsingDiagnostics,
   loadConfig,
   type RuntimeTarget,
-} from '../config.ts';
+} from '../project/config.ts';
 import { createBuiltinExpandedProgram } from '../frontend/builtin_macro_support.ts';
 import { MacroError } from '../frontend/macro_errors.ts';
 import {

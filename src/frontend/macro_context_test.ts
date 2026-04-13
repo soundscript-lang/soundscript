@@ -1,6 +1,6 @@
 import { assert, assertEquals } from '@std/assert';
 
-import { normalizeRuntimeContext } from '../config.ts';
+import { normalizeRuntimeContext } from '../project/config.ts';
 import { createAdvancedMacroContext } from './macro_advanced_context.ts';
 import { createMacroContext } from './macro_context.ts';
 import { MacroError } from './macro_errors.ts';

@@ -1,6 +1,6 @@
 import ts from 'typescript';
 
-import { normalizeRuntimeContext, type RuntimeContext } from '../config.ts';
+import { normalizeRuntimeContext, type RuntimeContext } from '../project/config.ts';
 import type { MergedDiagnostic } from '../checker/diagnostics.ts';
 import { dirname, join } from '../platform/path.ts';
 import {

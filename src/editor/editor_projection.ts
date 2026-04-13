@@ -2,7 +2,7 @@ import { dirname } from '../platform/path.ts';
 import ts from 'typescript';
 
 import { createSoundStdlibCompilerHost } from '../bundled/sound_stdlib.ts';
-import { getConfigFileParsingDiagnostics, loadConfig, resolveExpansionEnabled } from '../config.ts';
+import { getConfigFileParsingDiagnostics, loadConfig, resolveExpansionEnabled } from '../project/config.ts';
 import { createBuiltinExpandedProgram } from '../frontend/builtin_macro_support.ts';
 import type {
   PreparedRewriteStage,

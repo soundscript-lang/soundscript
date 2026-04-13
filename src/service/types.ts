@@ -1,5 +1,5 @@
 import type { MergedDiagnostic } from '../checker/diagnostics.ts';
-import type { RuntimeTarget } from '../config.ts';
+import type { RuntimeTarget } from '../project/config.ts';
 
 export interface AnalyzeProjectOptions {
   additionalRootNames?: readonly string[];

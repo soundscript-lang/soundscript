@@ -25,7 +25,7 @@ import {
   type PreparedSourceFile,
   toProjectedDeclarationSourceFileName,
 } from '../frontend/project_frontend.ts';
-import { loadConfig } from '../config.ts';
+import { loadConfig } from '../project/config.ts';
 import { formatSoundscriptText } from '../frontend/format_soundscript.ts';
 import {
   isElaboratedBigIntTypeImportName,
