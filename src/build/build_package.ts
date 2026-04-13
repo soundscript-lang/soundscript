@@ -1,32 +1,32 @@
-import { dirname, extname, join, relative } from './platform/path.ts';
+import { dirname, extname, join, relative } from '../platform/path.ts';
 import ts from 'typescript';
 
-import { createSoundStdlibCompilerHost } from './bundled/sound_stdlib.ts';
+import { createSoundStdlibCompilerHost } from '../bundled/sound_stdlib.ts';
 import {
   formatDiagnostics,
   hasErrorDiagnostics,
   type MergedDiagnostic,
   toMergedDiagnostic,
-} from './checker/diagnostics.ts';
-import { analyzeProject } from './checker/analyze_project.ts';
+} from '../checker/diagnostics.ts';
+import { analyzeProject } from '../checker/analyze_project.ts';
 import {
   collectSoundscriptRootNames,
   getConfigFileParsingDiagnostics,
   loadConfig,
   type RuntimeTarget,
-} from './config.ts';
-import { createBuiltinExpandedProgram } from './frontend/builtin_macro_support.ts';
-import { MacroError } from './frontend/macro_errors.ts';
+} from '../config.ts';
+import { createBuiltinExpandedProgram } from '../frontend/builtin_macro_support.ts';
+import { MacroError } from '../frontend/macro_errors.ts';
 import {
   emitProjectedDeclarations,
   isSoundscriptSourceFile,
   toSourceFileName,
-} from './frontend/project_frontend.ts';
-import { captureTypeScriptDeclarationOutputs } from './frontend/typescript_effect_declarations.ts';
+} from '../frontend/project_frontend.ts';
+import { captureTypeScriptDeclarationOutputs } from '../frontend/typescript_effect_declarations.ts';
 import {
   loadSoundScriptPackageInfo,
   type SoundScriptPackageInfo,
-} from './project/soundscript_packages.ts';
+} from '../project/soundscript_packages.ts';
 import {
   copyFile,
   fileExistsSync,
@@ -34,13 +34,13 @@ import {
   readTextFileSync,
   removePath,
   writeTextFile,
-} from './platform/host.ts';
+} from '../platform/host.ts';
 import {
   rewriteModuleSpecifiersForEmit,
   transpilePreparedSoundscriptModuleToEsm,
   transpileTypeScriptModuleToEsm,
-} from './runtime/transform.ts';
-import { SOUNDSCRIPT_RUNTIME_PACKAGE_NAME } from './project/soundscript_runtime_specifiers.ts';
+} from '../runtime/transform.ts';
+import { SOUNDSCRIPT_RUNTIME_PACKAGE_NAME } from '../project/soundscript_runtime_specifiers.ts';
 
 const DECLARATION_CAPTURE_OUT_DIR = '/__soundscript_build_types__';
 

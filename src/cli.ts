@@ -6,7 +6,7 @@ import {
   type BuildProjectArtifacts,
   type BuildProjectOptions,
   type BuildProjectResult,
-} from './build_package.ts';
+} from './build/build_package.ts';
 import { formatDiagnostics, type MergedDiagnostic } from './checker/diagnostics.ts';
 import {
   type CompileArtifacts,

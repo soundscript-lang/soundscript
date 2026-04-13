@@ -206,3 +206,16 @@ Deno.test('compiler test support does not live under src root', () => {
     );
   }
 });
+
+Deno.test('build helpers move out of src root once reorganized', () => {
+  const srcRootFiles = listFileNames(SRC_ROOT);
+
+  assert(
+    !srcRootFiles.includes('build_package.ts'),
+    'build_package.ts should live under src/build/.',
+  );
+  assert(
+    Deno.statSync(join(SRC_ROOT, 'build', 'build_package.ts')).isFile,
+    'src/build/build_package.ts is missing.',
+  );
+});
