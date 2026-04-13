@@ -1907,9 +1907,23 @@ export function getEffectCompositionForCallLike(
   let unknownReasons = summary.unknownDirectReasons;
   for (const forwardedParameter of summary.forwardedParameters) {
     const argument = expression.arguments?.[forwardedParameter.parameterIndex];
+    if (!argument) {
+      const argumentLabel = forwardedParameter.parameterName
+        ? [forwardedParameter.parameterName, ...forwardedParameter.memberPath].join('.')
+        : forwardedParameter.memberPath.length > 0
+        ? `<param ${forwardedParameter.parameterIndex + 1}>.${
+          forwardedParameter.memberPath.join('.')
+        }`
+        : `<param ${forwardedParameter.parameterIndex + 1}>`;
+      unknownReasons = mergeEffectUnknownReasons(
+        unknownReasons,
+        [createEffectUnknownReason('unresolvedForwardedCallback', argumentLabel)],
+      );
+      continue;
+    }
     const forwarded = getSummaryForCallablePath(
       context,
-      argument!,
+      argument,
       forwardedParameter.memberPath,
     );
     if (!forwarded) {

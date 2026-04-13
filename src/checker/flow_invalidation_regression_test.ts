@@ -198,6 +198,50 @@ Deno.test(
 );
 
 Deno.test(
+  'analyzeProject does not crash when omitted optional forwarded callbacks appear in narrowed control flow',
+  async () => {
+    const tempDirectory = await createTempProject({
+      'tsconfig.json': JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+          },
+          include: ['src/**/*.sts'],
+        },
+        null,
+        2,
+      ),
+      'src/index.sts': [
+        'function invokeMaybe(callback?: () => void): void {',
+        '  if (callback !== undefined) {',
+        '    callback();',
+        '  }',
+        '}',
+        '',
+        'export function use(value: string | number): number {',
+        '  if (typeof value === "number") {',
+        '    invokeMaybe();',
+        '    return value + 1;',
+        '  }',
+        '  return value.length;',
+        '}',
+        '',
+      ].join('\n'),
+    });
+
+    const result = await analyzeProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), []);
+  },
+);
+
+Deno.test(
   'analyzeProject invalidates narrowing for conservative fresh-local builder paths',
   async () => {
     const tempDirectory = await createTempProject({
