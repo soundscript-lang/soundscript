@@ -1,13 +1,13 @@
 import { assertEquals, assertFalse, assertStringIncludes } from '@std/assert';
 
-import { compileProject } from './compiler/compile_project.ts';
+import { compileProject } from '../../src/compiler/compile_project.ts';
 import {
   compileCheckedInProject,
   readWatArtifactForProject,
-} from '../tests/support/compiler_test_helpers.ts';
-import { dirname, fromFileUrl, join } from './platform/path.ts';
+} from '../support/compiler_test_helpers.ts';
+import { fromFileUrl, join } from '../../src/platform/path.ts';
 
-const REPO_ROOT = dirname(dirname(fromFileUrl(import.meta.url)));
+const REPO_ROOT = fromFileUrl(new URL('../../', import.meta.url));
 
 function exampleDirectory(relativeExampleDirectory: string): string {
   return join(REPO_ROOT, 'examples', relativeExampleDirectory);

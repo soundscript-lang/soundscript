@@ -246,12 +246,14 @@ Deno.test('cli implementation moves out of src root once reorganized', () => {
 Deno.test('repo contract tests move out of src root once reorganized', () => {
   const srcRootFiles = listFileNames(SRC_ROOT);
 
-  assert(
-    !srcRootFiles.includes('docs_contract_test.ts'),
-    'docs_contract_test.ts should live under tests/integration/.',
-  );
-  assert(
-    Deno.statSync(join(REPO_ROOT, 'tests', 'integration', 'docs_contract_test.ts')).isFile,
-    'tests/integration/docs_contract_test.ts is missing.',
-  );
+  for (const fileName of ['docs_contract_test.ts', 'compiler_example_contract_test.ts']) {
+    assert(
+      !srcRootFiles.includes(fileName),
+      `${fileName} should live under tests/integration/.`,
+    );
+    assert(
+      Deno.statSync(join(REPO_ROOT, 'tests', 'integration', fileName)).isFile,
+      `tests/integration/${fileName} is missing.`,
+    );
+  }
 });
