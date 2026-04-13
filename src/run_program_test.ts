@@ -2,7 +2,8 @@ import { assert, assertEquals } from '@std/assert';
 import { dirname, join } from '@std/path';
 
 import { resolveCheckerCacheDirectory } from './checker/checker_cache.ts';
-import { runProgram } from './run_program.ts';
+import type { MergedDiagnostic } from './checker/diagnostics.ts';
+import { runProgram } from './cli/run_program.ts';
 import {
   maybeNormalizeTsconfigForInstalledStdlib,
   writeInstalledStdlibPackage,
@@ -137,7 +138,7 @@ Deno.test('runProgram invalidates cached checker results when a tracked file cha
     projectPath,
     workingDirectory: tempDirectory,
   });
-  assert(firstResult.diagnostics.some((diagnostic) => diagnostic.code === 'TS2322'));
+  assert(firstResult.diagnostics.some((diagnostic: MergedDiagnostic) => diagnostic.code === 'TS2322'));
 
   await Deno.writeTextFile(sourcePath, 'export const broken: number = 1;\n');
 
@@ -405,7 +406,7 @@ Deno.test('runProgram refreshes dependent .sts files when a changed dependency s
   });
 
   assertEquals(secondResult.exitCode, 1);
-  assert(secondResult.diagnostics.some((diagnostic) =>
+  assert(secondResult.diagnostics.some((diagnostic: MergedDiagnostic) =>
     diagnostic.filePath === dependentFilePath && diagnostic.code === 'TS2345'
   ));
 });

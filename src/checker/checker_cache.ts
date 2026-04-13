@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 
 import ts from 'typescript';
 
-import { collectSoundscriptRootNames, loadConfig, type RuntimeTarget } from '../config.ts';
+import { collectSoundscriptRootNames, loadConfig, type RuntimeTarget } from '../project/config.ts';
 import { emitProjectedDeclarations } from '../frontend/project_frontend.ts';
 import {
   basename,
@@ -161,7 +161,7 @@ function createSoundscriptRootDiscoverySignature(
 function createConfigDiagnosticsSignature(
   loadedConfig: ReturnType<typeof loadConfig>,
 ): string {
-  return loadedConfig.diagnostics.map((diagnostic) =>
+  return loadedConfig.diagnostics.map((diagnostic: ts.Diagnostic) =>
     [
       diagnostic.code,
       String(diagnostic.category),
