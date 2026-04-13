@@ -264,7 +264,8 @@ const cases: GeneratorCompilerCase[] = [
     },
   },
   {
-    name: 'compileProject exports sync generator yield star over local Promise arrays as host iterators',
+    name:
+      'compileProject exports sync generator yield star over local Promise arrays as host iterators',
     exportName: 'iterate',
     source: [
       'export function* iterate(): Generator<Promise<number>, number, unknown> {',
@@ -286,8 +287,10 @@ const cases: GeneratorCompilerCase[] = [
       const second = (iterator as Iterator<Promise<number>, number, unknown>).next();
       const third = (iterator as Iterator<Promise<number>, number, unknown>).next();
       const fourth = (iterator as Iterator<Promise<number>, number, unknown>).next();
-      if (!(first.value instanceof Promise) || !(second.value instanceof Promise) ||
-        !(third.value instanceof Promise)) {
+      if (
+        !(first.value instanceof Promise) || !(second.value instanceof Promise) ||
+        !(third.value instanceof Promise)
+      ) {
         throw new Error('Expected yielded Promise-array values to bridge to host Promises.');
       }
       assertEquals(await first.value, 3);
@@ -330,7 +333,8 @@ const cases: GeneratorCompilerCase[] = [
     },
   },
   {
-    name: 'compileProject exports sync generator yield star over iterator-valued locals as host iterators',
+    name:
+      'compileProject exports sync generator yield star over iterator-valued locals as host iterators',
     exportName: 'iterate',
     source: [
       'export function* iterate(): Generator<number, number, unknown> {',
@@ -359,7 +363,8 @@ const cases: GeneratorCompilerCase[] = [
     },
   },
   {
-    name: 'compileProject exports sync generator yield star through sync generator delegates as host iterators',
+    name:
+      'compileProject exports sync generator yield star through sync generator delegates as host iterators',
     exportName: 'outer',
     source: [
       'function* inner(): Generator<number, number, number> {',
@@ -394,7 +399,8 @@ const cases: GeneratorCompilerCase[] = [
     },
   },
   {
-    name: 'compileProject exports sync generator throw delegation through yield star as host iterators',
+    name:
+      'compileProject exports sync generator throw delegation through yield star as host iterators',
     exportName: 'outer',
     source: [
       'function* inner(): Generator<number, number, number> {',
@@ -433,7 +439,8 @@ const cases: GeneratorCompilerCase[] = [
     },
   },
   {
-    name: 'compileProject exports sync generator return delegation through yield star as host iterators',
+    name:
+      'compileProject exports sync generator return delegation through yield star as host iterators',
     exportName: 'outer',
     source: [
       'function* inner(): Generator<number, number, number> {',
@@ -1061,7 +1068,8 @@ const cases: GeneratorCompilerCase[] = [
     ].join('\n'),
   },
   {
-    name: 'compileProject lowers sync generator for let continue statements and preserves outer locals',
+    name:
+      'compileProject lowers sync generator for let continue statements and preserves outer locals',
     expected: 1323,
     source: [
       'function* iterate(): Generator<number, number, unknown> {',
@@ -1088,7 +1096,8 @@ const cases: GeneratorCompilerCase[] = [
     ].join('\n'),
   },
   {
-    name: 'compileProject lowers sync generator for let continue through finally and preserves outer locals',
+    name:
+      'compileProject lowers sync generator for let continue through finally and preserves outer locals',
     expected: 15503731,
     source: [
       'function* iterate(): Generator<number, number, unknown> {',
@@ -1153,7 +1162,8 @@ const cases: GeneratorCompilerCase[] = [
     ].join('\n'),
   },
   {
-    name: 'compileProject hoists local function declarations inside sync generators across yield boundaries',
+    name:
+      'compileProject hoists local function declarations inside sync generators across yield boundaries',
     expected: 222,
     source: [
       'function* iterate(): Generator<number, number, number> {',
@@ -1174,7 +1184,8 @@ const cases: GeneratorCompilerCase[] = [
     ].join('\n'),
   },
   {
-    name: 'compileProject preserves hoisted local function captures over persisted generator locals',
+    name:
+      'compileProject preserves hoisted local function captures over persisted generator locals',
     expected: 22,
     source: [
       'function* iterate(): Generator<number, number, number> {',
@@ -1196,7 +1207,8 @@ const cases: GeneratorCompilerCase[] = [
     ].join('\n'),
   },
   {
-    name: 'compileProject hoists block-scoped local function declarations inside sync generators across yield boundaries',
+    name:
+      'compileProject hoists block-scoped local function declarations inside sync generators across yield boundaries',
     expected: 24,
     source: [
       'function* iterate(): Generator<number, number, number> {',
@@ -1794,8 +1806,8 @@ const cases: GeneratorCompilerCase[] = [
     source: [
       'function* iterate(): Generator<number, number, unknown> {',
       '  try {',
-        '    yield 1;',
-        '    yield 2;',
+      '    yield 1;',
+      '    yield 2;',
       '  } finally {',
       '    yield 7;',
       '  }',
@@ -2131,7 +2143,8 @@ const cases: GeneratorCompilerCase[] = [
     ].join('\n'),
   },
   {
-    name: 'compileProject rethrows uncaught authored builtin Error throws from sync generators to host',
+    name:
+      'compileProject rethrows uncaught authored builtin Error throws from sync generators to host',
     expectedThrow: { name: 'Error', message: 'boom' },
     source: [
       'function* iterate(): Generator<number, number, unknown> {',

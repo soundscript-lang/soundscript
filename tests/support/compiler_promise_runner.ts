@@ -52,7 +52,9 @@ async function runPromiseCompilerCase(testCase: PromiseCompilerCase): Promise<vo
 async function main(): Promise<void> {
   const caseFilter = Deno.env.get('SOUNDSCRIPT_PROMISE_CASE');
   const caseFiltersValue = Deno.env.get('SOUNDSCRIPT_PROMISE_CASES');
-  const caseFilters = caseFiltersValue ? new Set(JSON.parse(caseFiltersValue) as string[]) : undefined;
+  const caseFilters = caseFiltersValue
+    ? new Set(JSON.parse(caseFiltersValue) as string[])
+    : undefined;
   const cases: PromiseCompilerCase[] = [
     {
       name: 'compileProject executes Promise.all over direct fulfilled Promise array literals',
@@ -273,13 +275,16 @@ async function main(): Promise<void> {
         }
         const result = exported();
         if (!(result instanceof Promise)) {
-          throw new Error('Expected exported async assignment-subexpression function to return a host Promise.');
+          throw new Error(
+            'Expected exported async assignment-subexpression function to return a host Promise.',
+          );
         }
         assertEquals(await result, 110);
       },
     },
     {
-      name: 'compileProject lowers local async functions that await fulfilled compiler-owned Promises',
+      name:
+        'compileProject lowers local async functions that await fulfilled compiler-owned Promises',
       expectedObserved: 23,
       reducer: 'last',
       source: [
@@ -318,7 +323,8 @@ async function main(): Promise<void> {
       ].join('\n'),
     },
     {
-      name: 'compileProject lowers straight-line async awaited reassignment through persisted frame locals',
+      name:
+        'compileProject lowers straight-line async awaited reassignment through persisted frame locals',
       expectedObserved: 23,
       reducer: 'last',
       source: [
@@ -338,7 +344,8 @@ async function main(): Promise<void> {
       ].join('\n'),
     },
     {
-      name: 'compileProject lowers async variable declarations with await subexpressions on the frame path',
+      name:
+        'compileProject lowers async variable declarations with await subexpressions on the frame path',
       expectedObserved: 24,
       reducer: 'last',
       source: [
@@ -356,9 +363,10 @@ async function main(): Promise<void> {
         '',
       ].join('\n'),
     },
-  {
-    name: 'compileProject hoists local function declarations inside local async functions across await boundaries',
-    expectedObserved: 23,
+    {
+      name:
+        'compileProject hoists local function declarations inside local async functions across await boundaries',
+      expectedObserved: 23,
       reducer: 'last',
       source: [
         'export function main(callback: (value: number) => number): number {',
@@ -402,7 +410,8 @@ async function main(): Promise<void> {
       ].join('\n'),
     },
     {
-      name: 'compileProject hoists block-scoped local function declarations inside local async functions across await boundaries',
+      name:
+        'compileProject hoists block-scoped local function declarations inside local async functions across await boundaries',
       expectedObserved: 24,
       reducer: 'last',
       source: [
@@ -447,7 +456,8 @@ async function main(): Promise<void> {
       ].join('\n'),
     },
     {
-      name: 'compileProject hoists local function declarations inside exported async functions across await boundaries',
+      name:
+        'compileProject hoists local function declarations inside exported async functions across await boundaries',
       source: [
         'export async function main(): Promise<number> {',
         '  function addTwo(value: number): number {',
@@ -656,7 +666,8 @@ async function main(): Promise<void> {
       ].join('\n'),
     },
     {
-      name: 'compileProject lowers final async try/finally with return inside finally after rejection',
+      name:
+        'compileProject lowers final async try/finally with return inside finally after rejection',
       expectedObserved: 23,
       reducer: 'last',
       source: [
@@ -1300,7 +1311,9 @@ async function main(): Promise<void> {
       run: async (exported) => {
         const result = exported();
         if (!(result instanceof Promise)) {
-          throw new Error('Expected exported async numeric conditional return to return a host Promise.');
+          throw new Error(
+            'Expected exported async numeric conditional return to return a host Promise.',
+          );
         }
         assertEquals(await result, 1);
       },
@@ -1316,7 +1329,9 @@ async function main(): Promise<void> {
       run: async (exported) => {
         const result = exported();
         if (!(result instanceof Promise)) {
-          throw new Error('Expected exported async return-await-subexpression to return a host Promise.');
+          throw new Error(
+            'Expected exported async return-await-subexpression to return a host Promise.',
+          );
         }
         assertEquals(await result, 42);
       },
@@ -1380,7 +1395,9 @@ async function main(): Promise<void> {
       run: async (exported) => {
         const result = exported();
         if (!(result instanceof Promise)) {
-          throw new Error('Expected exported async iterator-local for-of loop to return a host Promise.');
+          throw new Error(
+            'Expected exported async iterator-local for-of loop to return a host Promise.',
+          );
         }
         assertEquals(await result, 6);
       },
@@ -1405,7 +1422,9 @@ async function main(): Promise<void> {
       run: async (exported) => {
         const result = exported();
         if (!(result instanceof Promise)) {
-          throw new Error('Expected exported async owned-array for-of loop to return a host Promise.');
+          throw new Error(
+            'Expected exported async owned-array for-of loop to return a host Promise.',
+          );
         }
         assertEquals(await result, 8);
       },
@@ -1427,7 +1446,9 @@ async function main(): Promise<void> {
       run: async (exported) => {
         const result = exported();
         if (!(result instanceof Promise)) {
-          throw new Error('Expected exported async owned-string-array for-of loop to return a host Promise.');
+          throw new Error(
+            'Expected exported async owned-string-array for-of loop to return a host Promise.',
+          );
         }
         assertEquals(await result, 12);
       },
@@ -1449,7 +1470,9 @@ async function main(): Promise<void> {
       run: async (exported) => {
         const result = exported();
         if (!(result instanceof Promise)) {
-          throw new Error('Expected exported async owned-boolean-array for-of loop to return a host Promise.');
+          throw new Error(
+            'Expected exported async owned-boolean-array for-of loop to return a host Promise.',
+          );
         }
         assertEquals(await result, 101);
       },
@@ -1471,7 +1494,9 @@ async function main(): Promise<void> {
       run: async (exported) => {
         const result = exported();
         if (!(result instanceof Promise)) {
-          throw new Error('Expected exported async owned-tagged-array for-of loop to return a host Promise.');
+          throw new Error(
+            'Expected exported async owned-tagged-array for-of loop to return a host Promise.',
+          );
         }
         assertEquals(await result, 294);
       },
@@ -1566,7 +1591,9 @@ async function main(): Promise<void> {
       run: async (exported) => {
         const result = exported();
         if (!(result instanceof Promise)) {
-          throw new Error('Expected exported async for loop with continue to return a host Promise.');
+          throw new Error(
+            'Expected exported async for loop with continue to return a host Promise.',
+          );
         }
         assertEquals(await result, 3);
       },
@@ -2105,7 +2132,9 @@ async function main(): Promise<void> {
       run: async (exported) => {
         const result = exported();
         if (!(result instanceof Promise)) {
-          throw new Error('Expected exported async ambient import with params to return a host Promise.');
+          throw new Error(
+            'Expected exported async ambient import with params to return a host Promise.',
+          );
         }
         assertEquals(await result, 22);
       },
@@ -2126,7 +2155,9 @@ async function main(): Promise<void> {
       run: async (exported) => {
         const result = exported();
         if (!(result instanceof Promise)) {
-          throw new Error('Expected exported async ambient string import to return a host Promise.');
+          throw new Error(
+            'Expected exported async ambient string import to return a host Promise.',
+          );
         }
         assertEquals(await result, 22);
       },
@@ -2142,12 +2173,15 @@ async function main(): Promise<void> {
         '',
       ].join('\n'),
       hostFunctions: {
-        'src/index.ts:fetchNumber': async (input: unknown) => Number(await (input as Promise<unknown>)) + 2,
+        'src/index.ts:fetchNumber': async (input: unknown) =>
+          Number(await (input as Promise<unknown>)) + 2,
       },
       run: async (exported) => {
         const result = exported();
         if (!(result instanceof Promise)) {
-          throw new Error('Expected exported async ambient Promise-param import to return a host Promise.');
+          throw new Error(
+            'Expected exported async ambient Promise-param import to return a host Promise.',
+          );
         }
         assertEquals(await result, 22);
       },
@@ -2174,7 +2208,8 @@ async function main(): Promise<void> {
       },
     },
     {
-      name: 'compileProject propagates rejected host Promise parameters through exported Promise boundaries',
+      name:
+        'compileProject propagates rejected host Promise parameters through exported Promise boundaries',
       source: [
         'async function compute(input: Promise<number>): Promise<number> {',
         '  return await input;',
@@ -2471,7 +2506,8 @@ async function main(): Promise<void> {
       },
     },
     {
-      name: 'compileProject bridges exported async builtin Error catch rethrow to host Promise rejection',
+      name:
+        'compileProject bridges exported async builtin Error catch rethrow to host Promise rejection',
       source: [
         'export async function main(): Promise<number> {',
         '  try {',
@@ -2488,7 +2524,9 @@ async function main(): Promise<void> {
       run: async (exported) => {
         const result = exported();
         if (!(result instanceof Promise)) {
-          throw new Error('Expected exported async builtin Error rethrow to return a host Promise.');
+          throw new Error(
+            'Expected exported async builtin Error rethrow to return a host Promise.',
+          );
         }
         const observed = await result.then(() => 0, () => 22);
         assertEquals(observed, 22);
@@ -2513,13 +2551,16 @@ async function main(): Promise<void> {
       run: async (exported) => {
         const result = exported();
         if (!(result instanceof Promise)) {
-          throw new Error('Expected exported async Error-narrowing function to return a host Promise.');
+          throw new Error(
+            'Expected exported async Error-narrowing function to return a host Promise.',
+          );
         }
         assertEquals(await result, 6);
       },
     },
     {
-      name: 'compileProject bridges host Promise builtin Error catch rethrow through exported async functions',
+      name:
+        'compileProject bridges host Promise builtin Error catch rethrow through exported async functions',
       source: [
         'export async function main(input: Promise<number>): Promise<number> {',
         '  try {',
@@ -2536,7 +2577,9 @@ async function main(): Promise<void> {
       run: async (exported) => {
         const result = exported(Promise.reject(new Error('boom')));
         if (!(result instanceof Promise)) {
-          throw new Error('Expected exported async host Promise Error rethrow to return a host Promise.');
+          throw new Error(
+            'Expected exported async host Promise Error rethrow to return a host Promise.',
+          );
         }
         const observed = await result.then(() => 0, () => 22);
         assertEquals(observed, 22);
@@ -2695,7 +2738,8 @@ async function main(): Promise<void> {
       },
     },
     {
-      name: 'compileProject exports uncaught async generator builtin Error throws as rejected host Promises',
+      name:
+        'compileProject exports uncaught async generator builtin Error throws as rejected host Promises',
       exportName: 'iterate',
       source: [
         'export async function* iterate(): AsyncGenerator<number, number, unknown> {',
@@ -2726,7 +2770,8 @@ async function main(): Promise<void> {
       },
     },
     {
-      name: 'compileProject exports uncaught async generator throw Error calls as rejected host Promises',
+      name:
+        'compileProject exports uncaught async generator throw Error calls as rejected host Promises',
       exportName: 'iterate',
       source: [
         'export async function* iterate(): AsyncGenerator<number, number, number> {',
@@ -2783,7 +2828,8 @@ async function main(): Promise<void> {
       },
     },
     {
-      name: 'compileProject exports async generator yield star over local Promise arrays as host iterators',
+      name:
+        'compileProject exports async generator yield star over local Promise arrays as host iterators',
       exportName: 'iterate',
       source: [
         'export async function* iterate(): AsyncGenerator<number, number, unknown> {',
@@ -2809,7 +2855,8 @@ async function main(): Promise<void> {
       },
     },
     {
-      name: 'compileProject exports async generator throw through array yield star as rejected host Promises',
+      name:
+        'compileProject exports async generator throw through array yield star as rejected host Promises',
       exportName: 'iterate',
       source: [
         'export async function* iterate(): AsyncGenerator<number, number, unknown> {',
@@ -2862,7 +2909,9 @@ async function main(): Promise<void> {
       run: async (exported) => {
         const iterator = exported();
         if ((typeof iterator !== 'object' && typeof iterator !== 'function') || iterator === null) {
-          throw new Error('Expected exported async generator wrapper to return an iterator object.');
+          throw new Error(
+            'Expected exported async generator wrapper to return an iterator object.',
+          );
         }
         const first = await (iterator as AsyncIterator<number, number, unknown>).next();
         const second = await (iterator as AsyncIterator<number, number, unknown>).next();
@@ -2871,7 +2920,8 @@ async function main(): Promise<void> {
       },
     },
     {
-      name: 'compileProject exports async generator class methods with super calls as host iterators',
+      name:
+        'compileProject exports async generator class methods with super calls as host iterators',
       exportName: 'iterateFromBox',
       source: [
         'class Base {',
@@ -2896,7 +2946,9 @@ async function main(): Promise<void> {
       run: async (exported) => {
         const iterator = exported();
         if ((typeof iterator !== 'object' && typeof iterator !== 'function') || iterator === null) {
-          throw new Error('Expected exported async generator wrapper to return an iterator object.');
+          throw new Error(
+            'Expected exported async generator wrapper to return an iterator object.',
+          );
         }
         const first = await (iterator as AsyncIterator<number, number, unknown>).next();
         const second = await (iterator as AsyncIterator<number, number, unknown>).next();
@@ -2923,7 +2975,9 @@ async function main(): Promise<void> {
       run: async (exported) => {
         const iterator = exported();
         if ((typeof iterator !== 'object' && typeof iterator !== 'function') || iterator === null) {
-          throw new Error('Expected exported async generator wrapper to return an iterator object.');
+          throw new Error(
+            'Expected exported async generator wrapper to return an iterator object.',
+          );
         }
         const first = await (iterator as AsyncIterator<number, number, unknown>).next();
         const second = await (iterator as AsyncIterator<number, number, unknown>).next();
@@ -2932,7 +2986,8 @@ async function main(): Promise<void> {
       },
     },
     {
-      name: 'compileProject exports async generator yield star over iterator-valued locals as host iterators',
+      name:
+        'compileProject exports async generator yield star over iterator-valued locals as host iterators',
       exportName: 'iterate',
       source: [
         'export async function* iterate(): AsyncGenerator<number, number, unknown> {',
@@ -2958,7 +3013,8 @@ async function main(): Promise<void> {
       },
     },
     {
-      name: 'compileProject exports async generator yield star through async generator delegates as host iterators',
+      name:
+        'compileProject exports async generator yield star through async generator delegates as host iterators',
       exportName: 'iterate',
       source: [
         'async function* inner(): AsyncGenerator<number, number, unknown> {',
@@ -2987,7 +3043,8 @@ async function main(): Promise<void> {
       },
     },
     {
-      name: 'compileProject exports async generator yield star through Promise-yielding sync generator delegates as host iterators',
+      name:
+        'compileProject exports async generator yield star through Promise-yielding sync generator delegates as host iterators',
       exportName: 'iterate',
       source: [
         'function* inner(): Generator<Promise<number>, number, unknown> {',
@@ -3154,7 +3211,8 @@ async function main(): Promise<void> {
       },
     },
     {
-      name: 'compileProject exports async generators with for-await over Promise-yielding sync generators',
+      name:
+        'compileProject exports async generators with for-await over Promise-yielding sync generators',
       exportName: 'outer',
       source: [
         'function* iterate(): Generator<Promise<number>, number, unknown> {',
@@ -3243,7 +3301,8 @@ async function main(): Promise<void> {
       },
     },
     {
-      name: 'compileProject exports async generator return delegation through async generators as host iterators',
+      name:
+        'compileProject exports async generator return delegation through async generators as host iterators',
       exportName: 'outer',
       source: [
         'async function* inner(): AsyncGenerator<number, number, number> {',
@@ -3276,7 +3335,8 @@ async function main(): Promise<void> {
       },
     },
     {
-      name: 'compileProject exports async generator yield star resume delegation through async generators as host iterators',
+      name:
+        'compileProject exports async generator yield star resume delegation through async generators as host iterators',
       exportName: 'outer',
       source: [
         'async function* inner(): AsyncGenerator<number, number, number> {',
@@ -3308,7 +3368,8 @@ async function main(): Promise<void> {
       },
     },
     {
-      name: 'compileProject exports async generator throw delegation through async generator delegates as host iterators',
+      name:
+        'compileProject exports async generator throw delegation through async generator delegates as host iterators',
       exportName: 'outer',
       source: [
         'async function* inner(): AsyncGenerator<number, number, number> {',
@@ -3344,7 +3405,8 @@ async function main(): Promise<void> {
       },
     },
     {
-      name: 'compileProject exports async generator external return through finally cleanup yield await',
+      name:
+        'compileProject exports async generator external return through finally cleanup yield await',
       exportName: 'iterate',
       source: [
         'export async function* iterate(): AsyncGenerator<number, number, unknown> {',
@@ -3372,7 +3434,8 @@ async function main(): Promise<void> {
       },
     },
     {
-      name: 'compileProject exports async generator return delegation through awaited async generators with finally cleanup',
+      name:
+        'compileProject exports async generator return delegation through awaited async generators with finally cleanup',
       exportName: 'outer',
       source: [
         'async function* inner(): AsyncGenerator<number, number, number> {',
@@ -3524,7 +3587,9 @@ async function main(): Promise<void> {
       run: async (exported) => {
         const result = exported();
         if (!(result instanceof Promise)) {
-          throw new Error('Expected exported awaited async generator consumer to return a host Promise.');
+          throw new Error(
+            'Expected exported awaited async generator consumer to return a host Promise.',
+          );
         }
         assertEquals(await result, 232);
       },
@@ -3550,7 +3615,9 @@ async function main(): Promise<void> {
       run: async (exported) => {
         const result = exported();
         if (!(result instanceof Promise)) {
-          throw new Error('Expected exported sequential async generator consumer to return a host Promise.');
+          throw new Error(
+            'Expected exported sequential async generator consumer to return a host Promise.',
+          );
         }
         assertEquals(await result, 247);
       },
@@ -3575,7 +3642,9 @@ async function main(): Promise<void> {
       run: async (exported) => {
         const result = exported();
         if (!(result instanceof Promise)) {
-          throw new Error('Expected exported post-yield async generator consumer to return a host Promise.');
+          throw new Error(
+            'Expected exported post-yield async generator consumer to return a host Promise.',
+          );
         }
         assertEquals(await result, 32);
       },
@@ -3608,7 +3677,9 @@ async function main(): Promise<void> {
       run: async (exported) => {
         const result = exported();
         if (!(result instanceof Promise)) {
-          throw new Error('Expected exported caught async generator consumer to return a host Promise.');
+          throw new Error(
+            'Expected exported caught async generator consumer to return a host Promise.',
+          );
         }
         assertEquals(await result, 232);
       },
@@ -3632,7 +3703,9 @@ async function main(): Promise<void> {
       run: async (exported) => {
         const result = exported();
         if (!(result instanceof Promise)) {
-          throw new Error('Expected exported yield-await async generator consumer to return a host Promise.');
+          throw new Error(
+            'Expected exported yield-await async generator consumer to return a host Promise.',
+          );
         }
         assertEquals(await result, 222);
       },
@@ -3656,7 +3729,9 @@ async function main(): Promise<void> {
       run: async (exported) => {
         const result = exported();
         if (!(result instanceof Promise)) {
-          throw new Error('Expected exported yield-await-subexpression async generator consumer to return a host Promise.');
+          throw new Error(
+            'Expected exported yield-await-subexpression async generator consumer to return a host Promise.',
+          );
         }
         assertEquals(await result, 233);
       },
@@ -3681,7 +3756,9 @@ async function main(): Promise<void> {
       run: async (exported) => {
         const result = exported();
         if (!(result instanceof Promise)) {
-          throw new Error('Expected exported async-generator await-subexpression consumer to return a host Promise.');
+          throw new Error(
+            'Expected exported async-generator await-subexpression consumer to return a host Promise.',
+          );
         }
         assertEquals(await result, 232);
       },
@@ -3705,7 +3782,9 @@ async function main(): Promise<void> {
       run: async (exported) => {
         const result = exported();
         if (!(result instanceof Promise)) {
-          throw new Error('Expected exported return-await async generator consumer to return a host Promise.');
+          throw new Error(
+            'Expected exported return-await async generator consumer to return a host Promise.',
+          );
         }
         assertEquals(await result, 32);
       },
@@ -3727,7 +3806,9 @@ async function main(): Promise<void> {
       run: async (exported) => {
         const result = exported();
         if (!(result instanceof Promise)) {
-          throw new Error('Expected exported async-generator return-await-subexpression consumer to return a host Promise.');
+          throw new Error(
+            'Expected exported async-generator return-await-subexpression consumer to return a host Promise.',
+          );
         }
         assertEquals(await result, 22);
       },
@@ -3981,13 +4062,16 @@ async function main(): Promise<void> {
       run: async (exported) => {
         const result = exported();
         if (!(result instanceof Promise)) {
-          throw new Error('Expected exported async generator yield* consumer to return a host Promise.');
+          throw new Error(
+            'Expected exported async generator yield* consumer to return a host Promise.',
+          );
         }
         assertEquals(await result, 1357);
       },
     },
     {
-      name: 'compileProject lowers async generator return delegation through async generators with finally cleanup',
+      name:
+        'compileProject lowers async generator return delegation through async generators with finally cleanup',
       source: [
         'async function* inner(): AsyncGenerator<number, number, number> {',
         '  try {',
@@ -4027,7 +4111,8 @@ async function main(): Promise<void> {
       },
     },
     {
-      name: 'compileProject lowers async generator yield star resume delegation through async generators',
+      name:
+        'compileProject lowers async generator yield star resume delegation through async generators',
       source: [
         'async function* inner(): AsyncGenerator<number, number, number> {',
         '  const received = yield 10;',
@@ -4143,13 +4228,16 @@ async function main(): Promise<void> {
       run: async (exported) => {
         const result = exported();
         if (!(result instanceof Promise)) {
-          throw new Error('Expected exported async generator yield* throw consumer to return a host Promise.');
+          throw new Error(
+            'Expected exported async generator yield* throw consumer to return a host Promise.',
+          );
         }
         assertEquals(await result, 3071111);
       },
     },
     {
-      name: 'compileProject rejects host Promises for async generator throw through array yield star',
+      name:
+        'compileProject rejects host Promises for async generator throw through array yield star',
       source: [
         'async function* outer(): AsyncGenerator<number, number, unknown> {',
         '  yield* [3, 5, 7];',
@@ -4167,7 +4255,9 @@ async function main(): Promise<void> {
       run: async (exported) => {
         const result = exported();
         if (!(result instanceof Promise)) {
-          throw new Error('Expected exported async generator array yield* throw consumer to return a host Promise.');
+          throw new Error(
+            'Expected exported async generator array yield* throw consumer to return a host Promise.',
+          );
         }
         await result.then(
           () => {
@@ -4175,7 +4265,9 @@ async function main(): Promise<void> {
           },
           (reason) => {
             if ((typeof reason !== 'object' && typeof reason !== 'function') || reason === null) {
-              throw new Error('Expected async generator array yield* throw to reject with an object.');
+              throw new Error(
+                'Expected async generator array yield* throw to reject with an object.',
+              );
             }
             const errorLike = reason as Record<string, unknown>;
             assertEquals(errorLike.name, 'TypeError');
@@ -4257,7 +4349,9 @@ async function main(): Promise<void> {
       run: async (exported) => {
         const result = exported();
         if (!(result instanceof Promise)) {
-          throw new Error('Expected exported async generator caught array yield* throw consumer to return a host Promise.');
+          throw new Error(
+            'Expected exported async generator caught array yield* throw consumer to return a host Promise.',
+          );
         }
         assertEquals(await result, 3861);
       },
@@ -4321,7 +4415,9 @@ async function main(): Promise<void> {
       run: async (exported) => {
         const result = exported();
         if (!(result instanceof Promise)) {
-          throw new Error('Expected exported async generator return consumer to return a host Promise.');
+          throw new Error(
+            'Expected exported async generator return consumer to return a host Promise.',
+          );
         }
         assertEquals(await result, 17);
       },
@@ -4349,7 +4445,9 @@ async function main(): Promise<void> {
       run: async (exported) => {
         const result = exported();
         if (!(result instanceof Promise)) {
-          throw new Error('Expected exported async generator throw consumer to return a host Promise.');
+          throw new Error(
+            'Expected exported async generator throw consumer to return a host Promise.',
+          );
         }
         assertEquals(await result, 17);
       },
@@ -4373,7 +4471,9 @@ async function main(): Promise<void> {
       run: async (exported) => {
         const result = exported();
         if (!(result instanceof Promise)) {
-          throw new Error('Expected uncaught async generator throw consumer to return a host Promise.');
+          throw new Error(
+            'Expected uncaught async generator throw consumer to return a host Promise.',
+          );
         }
         await result.then(
           () => {
@@ -4386,7 +4486,8 @@ async function main(): Promise<void> {
       },
     },
     {
-      name: 'compileProject rejects host Promises for uncaught async generator builtin Error throw calls',
+      name:
+        'compileProject rejects host Promises for uncaught async generator builtin Error throw calls',
       source: [
         'async function* iterate(): AsyncGenerator<number, number, unknown> {',
         '  yield 1;',
@@ -4404,7 +4505,9 @@ async function main(): Promise<void> {
       run: async (exported) => {
         const result = exported();
         if (!(result instanceof Promise)) {
-          throw new Error('Expected uncaught async generator builtin Error throw consumer to return a host Promise.');
+          throw new Error(
+            'Expected uncaught async generator builtin Error throw consumer to return a host Promise.',
+          );
         }
         await result.then(
           () => {
@@ -4412,7 +4515,9 @@ async function main(): Promise<void> {
           },
           (reason) => {
             if ((typeof reason !== 'object' && typeof reason !== 'function') || reason === null) {
-              throw new Error('Expected uncaught async generator builtin Error throw to reject with an object.');
+              throw new Error(
+                'Expected uncaught async generator builtin Error throw to reject with an object.',
+              );
             }
             const errorLike = reason as Record<string, unknown>;
             assertEquals(errorLike.name, 'Error');
@@ -4450,7 +4555,9 @@ async function main(): Promise<void> {
       run: async (exported) => {
         const result = exported();
         if (!(result instanceof Promise)) {
-          throw new Error('Expected exported awaited async generator super-method consumer to return a host Promise.');
+          throw new Error(
+            'Expected exported awaited async generator super-method consumer to return a host Promise.',
+          );
         }
         assertEquals(await result, 36);
       },
@@ -4477,7 +4584,9 @@ async function main(): Promise<void> {
       run: async (exported) => {
         const result = exported();
         if (!(result instanceof Promise)) {
-          throw new Error('Expected exported async generator class-method consumer to return a host Promise.');
+          throw new Error(
+            'Expected exported async generator class-method consumer to return a host Promise.',
+          );
         }
         assertEquals(await result, 57);
       },
@@ -4503,13 +4612,16 @@ async function main(): Promise<void> {
       run: async (exported) => {
         const result = exported();
         if (!(result instanceof Promise)) {
-          throw new Error('Expected exported async generator object-literal method consumer to return a host Promise.');
+          throw new Error(
+            'Expected exported async generator object-literal method consumer to return a host Promise.',
+          );
         }
         assertEquals(await result, 36);
       },
     },
     {
-      name: 'compileProject lowers async generator static class methods with static this field reads',
+      name:
+        'compileProject lowers async generator static class methods with static this field reads',
       source: [
         'class Box {',
         '  static seed = 4;',
@@ -4530,7 +4642,9 @@ async function main(): Promise<void> {
       run: async (exported) => {
         const result = exported();
         if (!(result instanceof Promise)) {
-          throw new Error('Expected exported async generator static method consumer to return a host Promise.');
+          throw new Error(
+            'Expected exported async generator static method consumer to return a host Promise.',
+          );
         }
         assertEquals(await result, 57);
       },
@@ -4561,7 +4675,9 @@ async function main(): Promise<void> {
       run: async (exported) => {
         const result = exported();
         if (!(result instanceof Promise)) {
-          throw new Error('Expected exported async generator finally consumer to return a host Promise.');
+          throw new Error(
+            'Expected exported async generator finally consumer to return a host Promise.',
+          );
         }
         assertEquals(await result, 172);
       },
@@ -4593,7 +4709,9 @@ async function main(): Promise<void> {
       run: async (exported) => {
         const result = exported();
         if (!(result instanceof Promise)) {
-          throw new Error('Expected exported async generator external return consumer to return a host Promise.');
+          throw new Error(
+            'Expected exported async generator external return consumer to return a host Promise.',
+          );
         }
         assertEquals(await result, 175);
       },
@@ -4624,7 +4742,9 @@ async function main(): Promise<void> {
       run: async (exported) => {
         const result = exported();
         if (!(result instanceof Promise)) {
-          throw new Error('Expected exported async generator yield-await finally consumer to return a host Promise.');
+          throw new Error(
+            'Expected exported async generator yield-await finally consumer to return a host Promise.',
+          );
         }
         assertEquals(await result, 172);
       },
@@ -4655,7 +4775,9 @@ async function main(): Promise<void> {
       run: async (exported) => {
         const result = exported();
         if (!(result instanceof Promise)) {
-          throw new Error('Expected exported async generator while-loop consumer to return a host Promise.');
+          throw new Error(
+            'Expected exported async generator while-loop consumer to return a host Promise.',
+          );
         }
         assertEquals(await result, 234);
       },
@@ -4685,13 +4807,16 @@ async function main(): Promise<void> {
       run: async (exported) => {
         const result = exported();
         if (!(result instanceof Promise)) {
-          throw new Error('Expected exported async generator for-of consumer to return a host Promise.');
+          throw new Error(
+            'Expected exported async generator for-of consumer to return a host Promise.',
+          );
         }
         assertEquals(await result, 234);
       },
     },
     {
-      name: 'compileProject lowers async generator yield star through awaited async generator delegates',
+      name:
+        'compileProject lowers async generator yield star through awaited async generator delegates',
       source: [
         'async function* inner(): AsyncGenerator<number, number, unknown> {',
         '  yield await Promise.resolve(3);',
@@ -4715,7 +4840,9 @@ async function main(): Promise<void> {
       run: async (exported) => {
         const result = exported();
         if (!(result instanceof Promise)) {
-          throw new Error('Expected exported awaited async-yield* consumer to return a host Promise.');
+          throw new Error(
+            'Expected exported awaited async-yield* consumer to return a host Promise.',
+          );
         }
         assertEquals(await result, 37);
       },
@@ -4756,7 +4883,9 @@ async function main(): Promise<void> {
       run: async (exported) => {
         const result = exported();
         if (!(result instanceof Promise)) {
-          throw new Error('Expected exported awaited async-yield* throw consumer to return a host Promise.');
+          throw new Error(
+            'Expected exported awaited async-yield* throw consumer to return a host Promise.',
+          );
         }
         assertEquals(await result, 3071111);
       },
@@ -4784,13 +4913,16 @@ async function main(): Promise<void> {
       run: async (exported) => {
         const result = exported();
         if (!(result instanceof Promise)) {
-          throw new Error('Expected exported awaited async generator class-method consumer to return a host Promise.');
+          throw new Error(
+            'Expected exported awaited async generator class-method consumer to return a host Promise.',
+          );
         }
         assertEquals(await result, 36);
       },
     },
     {
-      name: 'compileProject lowers async generator object literal methods with this reads across await',
+      name:
+        'compileProject lowers async generator object literal methods with this reads across await',
       source: [
         'export async function main(): Promise<number> {',
         '  const bag = {',
@@ -4811,13 +4943,16 @@ async function main(): Promise<void> {
       run: async (exported) => {
         const result = exported();
         if (!(result instanceof Promise)) {
-          throw new Error('Expected exported awaited async generator object-literal method consumer to return a host Promise.');
+          throw new Error(
+            'Expected exported awaited async generator object-literal method consumer to return a host Promise.',
+          );
         }
         assertEquals(await result, 36);
       },
     },
     {
-      name: 'compileProject hoists local function declarations inside async generators across await',
+      name:
+        'compileProject hoists local function declarations inside async generators across await',
       source: [
         'async function* iterate(): AsyncGenerator<number, number, unknown> {',
         '  let total = 1;',
@@ -4840,13 +4975,16 @@ async function main(): Promise<void> {
       run: async (exported) => {
         const result = exported();
         if (!(result instanceof Promise)) {
-          throw new Error('Expected exported async generator hoist consumer to return a host Promise.');
+          throw new Error(
+            'Expected exported async generator hoist consumer to return a host Promise.',
+          );
         }
         assertEquals(await result, 23);
       },
     },
     {
-      name: 'compileProject hoists block-scoped local function declarations inside async generators across await',
+      name:
+        'compileProject hoists block-scoped local function declarations inside async generators across await',
       source: [
         'async function* iterate(): AsyncGenerator<number, number, unknown> {',
         '  if (true) {',
@@ -4872,13 +5010,16 @@ async function main(): Promise<void> {
       run: async (exported) => {
         const result = exported();
         if (!(result instanceof Promise)) {
-          throw new Error('Expected exported async generator block hoist consumer to return a host Promise.');
+          throw new Error(
+            'Expected exported async generator block hoist consumer to return a host Promise.',
+          );
         }
         assertEquals(await result, 34);
       },
     },
     {
-      name: 'compileProject lowers async generator external return through finally cleanup yield await',
+      name:
+        'compileProject lowers async generator external return through finally cleanup yield await',
       source: [
         'async function* iterate(): AsyncGenerator<number, number, unknown> {',
         '  try {',
@@ -4904,7 +5045,9 @@ async function main(): Promise<void> {
       run: async (exported) => {
         const result = exported();
         if (!(result instanceof Promise)) {
-          throw new Error('Expected exported async generator external yield-await finally consumer to return a host Promise.');
+          throw new Error(
+            'Expected exported async generator external yield-await finally consumer to return a host Promise.',
+          );
         }
         assertEquals(await result, 175);
       },
@@ -4943,7 +5086,9 @@ async function main(): Promise<void> {
       run: async (exported) => {
         const result = exported();
         if (!(result instanceof Promise)) {
-          throw new Error('Expected exported awaited async-yield* return consumer to return a host Promise.');
+          throw new Error(
+            'Expected exported awaited async-yield* return consumer to return a host Promise.',
+          );
         }
         assertEquals(await result, 3951);
       },
@@ -4974,13 +5119,16 @@ async function main(): Promise<void> {
       run: async (exported) => {
         const result = exported();
         if (!(result instanceof Promise)) {
-          throw new Error('Expected exported async generator for-let consumer to return a host Promise.');
+          throw new Error(
+            'Expected exported async generator for-let consumer to return a host Promise.',
+          );
         }
         assertEquals(await result, 134);
       },
     },
     {
-      name: 'compileProject preserves outer locals across async generator for let loop await scoping',
+      name:
+        'compileProject preserves outer locals across async generator for let loop await scoping',
       source: [
         'async function* iterate(): AsyncGenerator<number, number, unknown> {',
         '  let current = 9;',
@@ -5004,7 +5152,9 @@ async function main(): Promise<void> {
       run: async (exported) => {
         const result = exported();
         if (!(result instanceof Promise)) {
-          throw new Error('Expected exported async generator for-let scope consumer to return a host Promise.');
+          throw new Error(
+            'Expected exported async generator for-let scope consumer to return a host Promise.',
+          );
         }
         assertEquals(await result, 129);
       },
@@ -5036,7 +5186,9 @@ async function main(): Promise<void> {
       run: async (exported) => {
         const result = exported();
         if (!(result instanceof Promise)) {
-          throw new Error('Expected exported async generator Error-catch consumer to return a host Promise.');
+          throw new Error(
+            'Expected exported async generator Error-catch consumer to return a host Promise.',
+          );
         }
         assertEquals(await result, 56);
       },
@@ -5067,7 +5219,9 @@ async function main(): Promise<void> {
       run: async (exported) => {
         const result = exported();
         if (!(result instanceof Promise)) {
-          throw new Error('Expected exported async generator narrowing consumer to return a host Promise.');
+          throw new Error(
+            'Expected exported async generator narrowing consumer to return a host Promise.',
+          );
         }
         assertEquals(await result, 56);
       },
@@ -5163,7 +5317,9 @@ async function main(): Promise<void> {
       run: async (exported) => {
         const result = exported();
         if (!(result instanceof Promise)) {
-          throw new Error('Expected exported sync-generator for-await consumer to return a host Promise.');
+          throw new Error(
+            'Expected exported sync-generator for-await consumer to return a host Promise.',
+          );
         }
         assertEquals(await result, 46);
       },
@@ -5240,13 +5396,16 @@ async function main(): Promise<void> {
       run: async (exported) => {
         const result = exported();
         if (!(result instanceof Promise)) {
-          throw new Error('Expected exported iterator-local for-await consumer to return a host Promise.');
+          throw new Error(
+            'Expected exported iterator-local for-await consumer to return a host Promise.',
+          );
         }
         assertEquals(await result, 357);
       },
     },
     {
-      name: 'compileProject lowers for await of over Promise-yielding sync generator iterator locals',
+      name:
+        'compileProject lowers for await of over Promise-yielding sync generator iterator locals',
       source: [
         'function* iterate(): Generator<Promise<number>, number, unknown> {',
         '  yield Promise.resolve(3);',
@@ -5316,7 +5475,9 @@ async function main(): Promise<void> {
       run: async (exported) => {
         const result = exported();
         if (!(result instanceof Promise)) {
-          throw new Error('Expected exported for-await iterator-local consumer to return a host Promise.');
+          throw new Error(
+            'Expected exported for-await iterator-local consumer to return a host Promise.',
+          );
         }
         assertEquals(await result, 46);
       },
@@ -5354,7 +5515,9 @@ async function main(): Promise<void> {
       run: async (exported) => {
         const result = exported();
         if (!(result instanceof Promise)) {
-          throw new Error('Expected exported for-await finally-control consumer to return a host Promise.');
+          throw new Error(
+            'Expected exported for-await finally-control consumer to return a host Promise.',
+          );
         }
         assertEquals(await result, 1929);
       },
@@ -5422,7 +5585,9 @@ async function main(): Promise<void> {
       run: async (exported) => {
         const result = exported();
         if (!(result instanceof Promise)) {
-          throw new Error('Expected exported async-generator for-await consumer to return a host Promise.');
+          throw new Error(
+            'Expected exported async-generator for-await consumer to return a host Promise.',
+          );
         }
         assertEquals(await result, 374);
       },
@@ -5452,7 +5617,9 @@ async function main(): Promise<void> {
       run: async (exported) => {
         const result = exported();
         if (!(result instanceof Promise)) {
-          throw new Error('Expected exported async-generator array for-await consumer to return a host Promise.');
+          throw new Error(
+            'Expected exported async-generator array for-await consumer to return a host Promise.',
+          );
         }
         assertEquals(await result, 374);
       },
@@ -5519,13 +5686,16 @@ async function main(): Promise<void> {
       run: async (exported) => {
         const result = exported();
         if (!(result instanceof Promise)) {
-          throw new Error('Expected exported async-generator sync-generator for-await consumer to return a host Promise.');
+          throw new Error(
+            'Expected exported async-generator sync-generator for-await consumer to return a host Promise.',
+          );
         }
         assertEquals(await result, 1243);
       },
     },
     {
-      name: 'compileProject lowers for await of over Promise-yielding sync generators inside async generators',
+      name:
+        'compileProject lowers for await of over Promise-yielding sync generators inside async generators',
       source: [
         'function* iterate(): Generator<Promise<number>, number, unknown> {',
         '  yield Promise.resolve(1);',
@@ -5586,7 +5756,9 @@ async function main(): Promise<void> {
       run: async (exported) => {
         const result = exported();
         if (!(result instanceof Promise)) {
-          throw new Error('Expected exported async-generator iterator-local for-await consumer to return a host Promise.');
+          throw new Error(
+            'Expected exported async-generator iterator-local for-await consumer to return a host Promise.',
+          );
         }
         assertEquals(await result, 1243);
       },
@@ -5616,7 +5788,9 @@ async function main(): Promise<void> {
       run: async (exported) => {
         const result = exported();
         if (!(result instanceof Promise)) {
-          throw new Error('Expected exported async-generator string for-await consumer to return a host Promise.');
+          throw new Error(
+            'Expected exported async-generator string for-await consumer to return a host Promise.',
+          );
         }
         assertEquals(await result, 1364);
       },
@@ -5652,7 +5826,9 @@ async function main(): Promise<void> {
       run: async (exported) => {
         const result = exported();
         if (!(result instanceof Promise)) {
-          throw new Error('Expected exported async-generator iterator-local consumer to return a host Promise.');
+          throw new Error(
+            'Expected exported async-generator iterator-local consumer to return a host Promise.',
+          );
         }
         assertEquals(await result, 1243);
       },
@@ -5697,7 +5873,9 @@ async function main(): Promise<void> {
       run: async (exported) => {
         const result = exported();
         if (!(result instanceof Promise)) {
-          throw new Error('Expected exported async-generator finally-control consumer to return a host Promise.');
+          throw new Error(
+            'Expected exported async-generator finally-control consumer to return a host Promise.',
+          );
         }
         assertEquals(await result, 120199);
       },
@@ -5856,7 +6034,9 @@ async function main(): Promise<void> {
         const two = exported('two');
         const three = exported('other');
         if (!(one instanceof Promise) || !(two instanceof Promise) || !(three instanceof Promise)) {
-          throw new Error('Expected exported async string switch function to return host Promises.');
+          throw new Error(
+            'Expected exported async string switch function to return host Promises.',
+          );
         }
         assertEquals(await one, 110);
         assertEquals(await two, 240);
@@ -5890,7 +6070,9 @@ async function main(): Promise<void> {
         const two = exported(2);
         const three = exported(3);
         if (!(one instanceof Promise) || !(two instanceof Promise) || !(three instanceof Promise)) {
-          throw new Error('Expected exported async switch subexpression function to return host Promises.');
+          throw new Error(
+            'Expected exported async switch subexpression function to return host Promises.',
+          );
         }
         assertEquals(await one, 110);
         assertEquals(await two, 240);
@@ -5898,7 +6080,8 @@ async function main(): Promise<void> {
       },
     },
     {
-      name: 'compileProject lowers async string switch statements with await subexpression assignments',
+      name:
+        'compileProject lowers async string switch statements with await subexpression assignments',
       source: [
         'export async function main(flag: string): Promise<number> {',
         '  let total = 1;',
@@ -6022,7 +6205,8 @@ async function main(): Promise<void> {
       },
     },
     {
-      name: 'compileProject lowers async generator switch statements with await subexpression assignments',
+      name:
+        'compileProject lowers async generator switch statements with await subexpression assignments',
       source: [
         'export async function* iterate(flag: number): AsyncGenerator<number, number, unknown> {',
         '  let total = 1;',
@@ -6065,7 +6249,8 @@ async function main(): Promise<void> {
       },
     },
     {
-      name: 'compileProject lowers async generator string switch statements with await subexpression assignments',
+      name:
+        'compileProject lowers async generator string switch statements with await subexpression assignments',
       source: [
         'export async function* iterate(flag: string): AsyncGenerator<number, number, unknown> {',
         '  let total = 1;',
@@ -6088,7 +6273,9 @@ async function main(): Promise<void> {
       exportName: 'iterate',
       run: async (exported) => {
         if (typeof exported !== 'function') {
-          throw new Error('Expected exported async generator string switch subexpression function.');
+          throw new Error(
+            'Expected exported async generator string switch subexpression function.',
+          );
         }
         const oneIterator = exported('one');
         const twoIterator = exported('two');
@@ -6139,7 +6326,9 @@ async function main(): Promise<void> {
         }
         const result = exported();
         if (!(result instanceof Promise)) {
-          throw new Error('Expected exported async protected switch function to return a host Promise.');
+          throw new Error(
+            'Expected exported async protected switch function to return a host Promise.',
+          );
         }
         assertEquals(await result, 223);
       },

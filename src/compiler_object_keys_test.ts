@@ -10,7 +10,7 @@ import {
   assertWatUsesDistinctSpecializedObjectKeysHelperSymbols,
   compileTempProject,
   createCompilerTestProject,
-} from './compiler_object_test_helpers.ts';
+} from '../tests/support/compiler_object_test_helpers.ts';
 import type {
   CompilerRuntimeAdaptObjectValueIR,
   CompilerRuntimeAllocateFallbackObjectIR,
@@ -33,7 +33,7 @@ import {
   readWatArtifact,
   readWatArtifactForProject,
   resolveQualifiedExportName,
-} from './compiler_test_helpers.ts';
+} from '../tests/support/compiler_test_helpers.ts';
 
 const compilerObjectKeysTest = createIsolatedTestRegistrar(import.meta.url);
 const compilerSmokeProject = 'tests/fixtures/projects/compiler-smoke';

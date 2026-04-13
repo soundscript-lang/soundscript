@@ -187,3 +187,22 @@ Deno.test('test support helpers do not live under src root', () => {
     );
   }
 });
+
+Deno.test('compiler test support does not live under src root', () => {
+  const srcRootFiles = listFileNames(SRC_ROOT);
+
+  for (
+    const fileName of [
+      'compiler_test_helpers.ts',
+      'compiler_object_test_helpers.ts',
+      'compiler_generator_runner.ts',
+      'compiler_promise_runner.ts',
+    ]
+  ) {
+    assert(!srcRootFiles.includes(fileName), `${fileName} should not live under src/.`);
+    assert(
+      Deno.statSync(join(REPO_ROOT, 'tests', 'support', fileName)).isFile,
+      `tests/support/${fileName} is missing.`,
+    );
+  }
+});

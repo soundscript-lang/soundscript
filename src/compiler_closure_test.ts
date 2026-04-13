@@ -7,7 +7,7 @@ import {
   createTempProject,
   instantiateCompiledModuleInJs,
   resolveQualifiedExportName,
-} from './compiler_test_helpers.ts';
+} from '../tests/support/compiler_test_helpers.ts';
 
 const compilerClosureTest = createIsolatedTestRegistrar(import.meta.url);
 
@@ -2773,31 +2773,34 @@ compilerClosureTest(
   },
 );
 
-compilerClosureTest('compileProject keeps extracted class methods unsupported for now', async () => {
-  const tempDirectory = await createClosureProject([
-    'class Box {',
-    '  offset = 5;',
-    '',
-    '  run(value: number): number {',
-    '    return value + this.offset;',
-    '  }',
-    '}',
-    '',
-    'export function main(value: number): number {',
-    '  const box = new Box();',
-    '  const run = box.run;',
-    '  return run(value);',
-    '}',
-    '',
-  ].join('\n'));
+compilerClosureTest(
+  'compileProject keeps extracted class methods unsupported for now',
+  async () => {
+    const tempDirectory = await createClosureProject([
+      'class Box {',
+      '  offset = 5;',
+      '',
+      '  run(value: number): number {',
+      '    return value + this.offset;',
+      '  }',
+      '}',
+      '',
+      'export function main(value: number): number {',
+      '  const box = new Box();',
+      '  const run = box.run;',
+      '  return run(value);',
+      '}',
+      '',
+    ].join('\n'));
 
-  const result = compileProject({
-    projectPath: join(tempDirectory, 'tsconfig.json'),
-    workingDirectory: tempDirectory,
-  });
-  assertEquals(result.exitCode, 1);
-  assertEquals(result.diagnostics.some((diagnostic) => diagnostic.code === 'SOUND1035'), true);
-});
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+    assertEquals(result.exitCode, 1);
+    assertEquals(result.diagnostics.some((diagnostic) => diagnostic.code === 'SOUND1035'), true);
+  },
+);
 
 compilerClosureTest(
   'compileProject passes class instances with owned scalar array fields through internal helpers',

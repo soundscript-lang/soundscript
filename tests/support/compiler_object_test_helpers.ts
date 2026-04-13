@@ -1,6 +1,6 @@
 import { assertEquals, assertMatch, assertStringIncludes } from '@std/assert';
 
-import { compileProject } from './compiler/compile_project.ts';
+import { compileProject } from '../../src/compiler/compile_project.ts';
 import { createTempProject } from './compiler_test_helpers.ts';
 
 export function assertWatDeclaresFallbackObjectType(watOutput: string): void {
@@ -28,7 +28,9 @@ export function assertWatCallsSpecializedObjectKeysListing(
 }
 
 export function assertWatUsesDistinctSpecializedObjectKeysHelperSymbols(watOutput: string): void {
-  const helperNames = [...watOutput.matchAll(/\$([A-Za-z0-9_]*list_specialized_object_keys__[A-Za-z0-9_]+)/g)]
+  const helperNames = [
+    ...watOutput.matchAll(/\$([A-Za-z0-9_]*list_specialized_object_keys__[A-Za-z0-9_]+)/g),
+  ]
     .map((match) => match[1]);
   assertEquals(new Set(helperNames).size, 2);
 }
@@ -59,8 +61,14 @@ export function assertWatContainsWeightedHundredsTensOnesResult(watOutput: strin
 
 export function assertWatStaysOnSpecializedObjectLowering(watOutput: string): void {
   assertStringIncludes(watOutput, 'struct.new $object_shape_left_required_f64_right_required_f64');
-  assertStringIncludes(watOutput, 'struct.get $object_shape_left_required_f64_right_required_f64 1');
-  assertStringIncludes(watOutput, 'struct.get $object_shape_left_required_f64_right_required_f64 0');
+  assertStringIncludes(
+    watOutput,
+    'struct.get $object_shape_left_required_f64_right_required_f64 1',
+  );
+  assertStringIncludes(
+    watOutput,
+    'struct.get $object_shape_left_required_f64_right_required_f64 0',
+  );
 }
 
 export async function createCompilerTestProject(indexSource: string): Promise<string> {

@@ -1,7 +1,10 @@
 import { assertEquals, assertFalse, assertStringIncludes } from '@std/assert';
 
 import { compileProject } from './compiler/compile_project.ts';
-import { compileCheckedInProject, readWatArtifactForProject } from './compiler_test_helpers.ts';
+import {
+  compileCheckedInProject,
+  readWatArtifactForProject,
+} from '../tests/support/compiler_test_helpers.ts';
 import { dirname, fromFileUrl, join } from './platform/path.ts';
 
 const REPO_ROOT = dirname(dirname(fromFileUrl(import.meta.url)));
@@ -35,8 +38,7 @@ async function assertSourceDirectoryHasOnlyStsAndTypesFiles(
   );
 
   for (const filePath of files) {
-    const allowed =
-      filePath.endsWith('.sts') ||
+    const allowed = filePath.endsWith('.sts') ||
       filePath.endsWith('.d.ts') ||
       allowedExtraFiles.has(filePath);
     assertEquals(
@@ -54,21 +56,57 @@ async function assertBootstrapEntryStaysBootstrapOnly(
 ): Promise<void> {
   const contents = await Deno.readTextFile(filePath);
 
-  assertStringIncludes(contents, "compileProject");
+  assertStringIncludes(contents, 'compileProject');
   assertStringIncludes(contents, '.instantiate(');
   assertStringIncludes(contents, expectedStartCall);
-  assertFalse(contents.includes("from 'express'"), `${exampleName} bootstrap should not import express directly`);
-  assertFalse(contents.includes('from "express"'), `${exampleName} bootstrap should not import express directly`);
-  assertFalse(contents.includes("from 'react'"), `${exampleName} bootstrap should not import react directly`);
-  assertFalse(contents.includes('from "react"'), `${exampleName} bootstrap should not import react directly`);
-  assertFalse(contents.includes('react-dom'), `${exampleName} bootstrap should not import react-dom directly`);
-  assertFalse(contents.includes('react-router'), `${exampleName} bootstrap should not import react-router directly`);
-  assertFalse(contents.includes('sequelize'), `${exampleName} bootstrap should not import sequelize directly`);
-  assertFalse(contents.includes('createRoot('), `${exampleName} bootstrap should not own React mounting logic`);
-  assertFalse(contents.includes('hydrateRoot('), `${exampleName} bootstrap should not own hydration logic`);
-  assertFalse(contents.includes('renderToString('), `${exampleName} bootstrap should not own SSR rendering logic`);
-  assertFalse(contents.includes('app.get('), `${exampleName} bootstrap should not define express routes`);
-  assertFalse(contents.includes('app.use('), `${exampleName} bootstrap should not define express middleware`);
+  assertFalse(
+    contents.includes("from 'express'"),
+    `${exampleName} bootstrap should not import express directly`,
+  );
+  assertFalse(
+    contents.includes('from "express"'),
+    `${exampleName} bootstrap should not import express directly`,
+  );
+  assertFalse(
+    contents.includes("from 'react'"),
+    `${exampleName} bootstrap should not import react directly`,
+  );
+  assertFalse(
+    contents.includes('from "react"'),
+    `${exampleName} bootstrap should not import react directly`,
+  );
+  assertFalse(
+    contents.includes('react-dom'),
+    `${exampleName} bootstrap should not import react-dom directly`,
+  );
+  assertFalse(
+    contents.includes('react-router'),
+    `${exampleName} bootstrap should not import react-router directly`,
+  );
+  assertFalse(
+    contents.includes('sequelize'),
+    `${exampleName} bootstrap should not import sequelize directly`,
+  );
+  assertFalse(
+    contents.includes('createRoot('),
+    `${exampleName} bootstrap should not own React mounting logic`,
+  );
+  assertFalse(
+    contents.includes('hydrateRoot('),
+    `${exampleName} bootstrap should not own hydration logic`,
+  );
+  assertFalse(
+    contents.includes('renderToString('),
+    `${exampleName} bootstrap should not own SSR rendering logic`,
+  );
+  assertFalse(
+    contents.includes('app.get('),
+    `${exampleName} bootstrap should not define express routes`,
+  );
+  assertFalse(
+    contents.includes('app.use('),
+    `${exampleName} bootstrap should not define express middleware`,
+  );
 }
 
 async function assertBrowserCompileSucceeds(
@@ -83,7 +121,11 @@ async function assertBrowserCompileSucceeds(
 
   assertEquals(result.exitCode, 0, `${exampleName} browser compile should succeed`);
   assertEquals(result.diagnostics, [], `${exampleName} browser compile should be clean`);
-  assertEquals(Boolean(result.artifacts?.wrapperPath), true, `${exampleName} browser compile should emit a wrapper`);
+  assertEquals(
+    Boolean(result.artifacts?.wrapperPath),
+    true,
+    `${exampleName} browser compile should emit a wrapper`,
+  );
 }
 
 async function assertWatOmitsPromiseRuntimeAndHostBridge(
@@ -129,7 +171,10 @@ Deno.test(
     const bootstrapPath = join(projectDirectory, 'src/bootstrap.js');
     const bootstrapContents = await Deno.readTextFile(bootstrapPath);
 
-    assertStringIncludes(bootstrapContents, "import instantiate from '../soundscript-out/module.js';");
+    assertStringIncludes(
+      bootstrapContents,
+      "import instantiate from '../soundscript-out/module.js';",
+    );
     assertStringIncludes(bootstrapContents, "resolveExport(exports, 'start')");
     assertStringIncludes(bootstrapContents, 'start();');
     assertFalse(bootstrapContents.includes('createRoot('));

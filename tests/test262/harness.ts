@@ -1,10 +1,7 @@
 import { dirname, extname, isAbsolute, join } from '@std/path';
 
-import {
-  compileProject,
-  type CompileProjectResult,
-} from '../../src/compiler/compile_project.ts';
-import { instantiateCompiledModuleInJs } from '../../src/compiler_test_helpers.ts';
+import { compileProject, type CompileProjectResult } from '../../src/compiler/compile_project.ts';
+import { instantiateCompiledModuleInJs } from '../support/compiler_test_helpers.ts';
 
 export type Test262ManifestValue =
   | Test262UndefinedValue
@@ -225,7 +222,9 @@ function parseExpectedFailure(value: unknown): Test262ExpectedFailure {
     };
   }
 
-  throw new Error('Manifest field "failure.source" must be "ts", "sound", "compiler", or "runtime".');
+  throw new Error(
+    'Manifest field "failure.source" must be "ts", "sound", "compiler", or "runtime".',
+  );
 }
 
 function parseUpstreamSources(value: unknown): readonly Test262UpstreamSource[] {
@@ -280,10 +279,14 @@ function valuesEqual(left: Test262ManifestValue, right: Test262ManifestValue): b
 }
 
 type ParsedExecutableFields =
-  | (Pick<Test262EntryAssertedEntryBase, 'entry' | 'args'> &
-    ({ expected: Test262ManifestValue } | { failure: Test262ExpectedFailure }))
-  | ({ execution: 'module' } &
-    ({ completion: Test262NormalCompletion } | { failure: Test262ExpectedFailure }));
+  | (
+    & Pick<Test262EntryAssertedEntryBase, 'entry' | 'args'>
+    & ({ expected: Test262ManifestValue } | { failure: Test262ExpectedFailure })
+  )
+  | (
+    & { execution: 'module' }
+    & ({ completion: Test262NormalCompletion } | { failure: Test262ExpectedFailure })
+  );
 
 function parseExecutableFields(
   entry: Record<string, unknown>,
@@ -588,7 +591,7 @@ async function resolveQualifiedExportName(
   projectDirectory: string,
   entry: string,
   test: string,
-) : Promise<string> {
+): Promise<string> {
   const wat = await Deno.readTextFile(getWatPath(projectDirectory));
   const exportNames = [...wat.matchAll(/\(export "([^"]+)"\)/g)].map((match) => match[1]);
 

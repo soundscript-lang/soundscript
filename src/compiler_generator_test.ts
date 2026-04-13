@@ -10,7 +10,7 @@ async function listGeneratorCaseNames(): Promise<string[]> {
       '--allow-read',
       '--allow-write',
       '--allow-run',
-      'src/compiler_generator_runner.ts',
+      'tests/support/compiler_generator_runner.ts',
     ],
     env: {
       ...Deno.env.toObject(),
@@ -38,7 +38,7 @@ async function runGeneratorCaseBatch(caseNames: readonly string[]): Promise<void
       '--allow-read',
       '--allow-write',
       '--allow-run',
-      'src/compiler_generator_runner.ts',
+      'tests/support/compiler_generator_runner.ts',
     ],
     env: {
       ...Deno.env.toObject(),
@@ -53,7 +53,9 @@ async function runGeneratorCaseBatch(caseNames: readonly string[]): Promise<void
   assertEquals(
     result.success,
     true,
-    `compiler_generator_runner.ts batch failed: ${caseNames.join(', ')}.\nstdout:\n${stdout}\nstderr:\n${stderr}`,
+    `compiler_generator_runner.ts batch failed: ${
+      caseNames.join(', ')
+    }.\nstdout:\n${stdout}\nstderr:\n${stderr}`,
   );
 }
 

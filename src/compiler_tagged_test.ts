@@ -22,7 +22,7 @@ import {
   lowerTempProjectToCompilerIR,
   readWatArtifact,
   resolveQualifiedExportName,
-} from './compiler_test_helpers.ts';
+} from '../tests/support/compiler_test_helpers.ts';
 
 const compilerTaggedTest = createIsolatedTestRegistrar(import.meta.url);
 
@@ -775,7 +775,10 @@ compilerTaggedTest(
       throw new Error('Expected recursive fallback class-constructor property metadata.');
     }
     assertEquals(metadata.arrayProperties.get('numbers'), 'owned_number_array_ref');
-    assertEquals(metadata.heapArrayProperties.get('items')?.kind, 'specialized_object_representation');
+    assertEquals(
+      metadata.heapArrayProperties.get('items')?.kind,
+      'specialized_object_representation',
+    );
     assertEquals(metadata.taggedArrayProperties.get('mixed'), {
       name: 'mixed',
       representation: undefined,
@@ -890,25 +893,29 @@ compilerTaggedTest(
     assertStringIncludes(watOutput, 'call $owned_heap_array_to_host_array__');
     assertStringIncludes(
       watOutput,
-      `call $${getHostArrayToOwnedTaggedArrayHelperName({
-        includesBoolean: undefined,
-        includesNull: undefined,
-        includesNumber: true,
-        includesString: true,
-        includesUndefined: undefined,
-        representation: undefined,
-      })}`,
+      `call $${
+        getHostArrayToOwnedTaggedArrayHelperName({
+          includesBoolean: undefined,
+          includesNull: undefined,
+          includesNumber: true,
+          includesString: true,
+          includesUndefined: undefined,
+          representation: undefined,
+        })
+      }`,
     );
     assertStringIncludes(
       watOutput,
-      `call $${getOwnedTaggedArrayToHostHelperName({
-        includesBoolean: undefined,
-        includesNull: undefined,
-        includesNumber: true,
-        includesString: true,
-        includesUndefined: undefined,
-        representation: undefined,
-      })}`,
+      `call $${
+        getOwnedTaggedArrayToHostHelperName({
+          includesBoolean: undefined,
+          includesNull: undefined,
+          includesNumber: true,
+          includesString: true,
+          includesUndefined: undefined,
+          representation: undefined,
+        })
+      }`,
     );
   },
 );
@@ -1145,7 +1152,10 @@ compilerTaggedTest(
 
     assertStringIncludes(watOutput, '"has:value"');
     assertStringIncludes(watOutput, '"has:nested"');
-    assertStringIncludes(watOutput, '__soundscript_host_promise_reject_object_property_0_to_dynamic');
+    assertStringIncludes(
+      watOutput,
+      '__soundscript_host_promise_reject_object_property_0_to_dynamic',
+    );
   },
 );
 

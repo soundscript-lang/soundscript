@@ -30,7 +30,7 @@ import {
   assertWatUsesDistinctSpecializedObjectKeysHelperSymbols,
   compileTempProject,
   createCompilerTestProject,
-} from './compiler_object_test_helpers.ts';
+} from '../tests/support/compiler_object_test_helpers.ts';
 import type {
   CompilerRuntimeAdaptObjectValueIR,
   CompilerRuntimeAllocateFallbackObjectIR,
@@ -58,7 +58,7 @@ import {
   readWatArtifactForProject,
   resolveQualifiedExportName,
   type TempProjectFile,
-} from './compiler_test_helpers.ts';
+} from '../tests/support/compiler_test_helpers.ts';
 
 const compilerIntegrationTest = createIsolatedTestRegistrar(import.meta.url);
 

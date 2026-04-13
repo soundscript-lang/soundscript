@@ -1,6 +1,9 @@
 import { assertEquals, assertStrictEquals, assertStringIncludes } from '@std/assert';
 
-import { compileTempProject, createCompilerTestProject } from './compiler_object_test_helpers.ts';
+import {
+  compileTempProject,
+  createCompilerTestProject,
+} from '../tests/support/compiler_object_test_helpers.ts';
 import {
   createIsolatedTestRegistrar,
   createTempProject,
@@ -9,7 +12,7 @@ import {
   lowerTempProjectToCompilerIR,
   readWatArtifact,
   resolveQualifiedExportName,
-} from './compiler_test_helpers.ts';
+} from '../tests/support/compiler_test_helpers.ts';
 
 const compilerArrayTest = createIsolatedTestRegistrar(import.meta.url);
 

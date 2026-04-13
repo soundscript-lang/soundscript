@@ -10,7 +10,7 @@ async function listPromiseCaseNames(): Promise<string[]> {
       '--allow-read',
       '--allow-write',
       '--allow-run',
-      'src/compiler_promise_runner.ts',
+      'tests/support/compiler_promise_runner.ts',
     ],
     env: {
       ...Deno.env.toObject(),
@@ -38,7 +38,7 @@ async function runPromiseCaseBatch(caseNames: readonly string[]): Promise<void> 
       '--allow-read',
       '--allow-write',
       '--allow-run',
-      'src/compiler_promise_runner.ts',
+      'tests/support/compiler_promise_runner.ts',
     ],
     env: {
       ...Deno.env.toObject(),
@@ -53,7 +53,9 @@ async function runPromiseCaseBatch(caseNames: readonly string[]): Promise<void> 
   assertEquals(
     result.success,
     true,
-    `compiler_promise_runner.ts batch failed: ${caseNames.join(', ')}.\nstdout:\n${stdout}\nstderr:\n${stderr}`,
+    `compiler_promise_runner.ts batch failed: ${
+      caseNames.join(', ')
+    }.\nstdout:\n${stdout}\nstderr:\n${stderr}`,
   );
 }
 

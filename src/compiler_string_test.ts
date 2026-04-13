@@ -8,7 +8,7 @@ import {
   instantiateCompiledModuleInJs,
   readWatArtifact,
   resolveQualifiedExportName,
-} from './compiler_test_helpers.ts';
+} from '../tests/support/compiler_test_helpers.ts';
 
 const compilerStringTest = createIsolatedTestRegistrar(import.meta.url);
 

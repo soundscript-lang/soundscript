@@ -1,11 +1,11 @@
 import { assertEquals } from '@std/assert';
-import { dirname, fromFileUrl, join } from './platform/path.ts';
+import { dirname, fromFileUrl, join } from '../../src/platform/path.ts';
 import ts from 'typescript';
 
-import { createSoundStdlibCompilerHost } from './bundled/sound_stdlib.ts';
-import { compileProject } from './compiler/compile_project.ts';
-import type { CompilerModuleIR } from './compiler/ir.ts';
-import { lowerProgramToCompilerIR } from './compiler/lower.ts';
+import { createSoundStdlibCompilerHost } from '../../src/bundled/sound_stdlib.ts';
+import { compileProject } from '../../src/compiler/compile_project.ts';
+import type { CompilerModuleIR } from '../../src/compiler/ir.ts';
+import { lowerProgramToCompilerIR } from '../../src/compiler/lower.ts';
 import type {
   CompilerRuntimeAdaptObjectValueIR,
   CompilerRuntimeAllocateFallbackObjectIR,
@@ -14,16 +14,16 @@ import type {
   CompilerRuntimeGetSpecializedObjectFieldIR,
   CompilerRuntimeSetFallbackObjectPropertyIR,
   CompilerRuntimeSpecializedObjectRepresentationIR,
-} from './compiler/runtime_ir.ts';
-import { loadConfig } from './config.ts';
-import { instantiateSoundscriptWasmModule } from './compiler/wasm_js_host_runtime.ts';
+} from '../../src/compiler/runtime_ir.ts';
+import { loadConfig } from '../../src/config.ts';
+import { instantiateSoundscriptWasmModule } from '../../src/compiler/wasm_js_host_runtime.ts';
 
 export interface TempProjectFile {
   path: string;
   contents: string;
 }
 
-const REPO_ROOT = dirname(dirname(fromFileUrl(import.meta.url)));
+const REPO_ROOT = dirname(dirname(dirname(fromFileUrl(import.meta.url))));
 const SOUNDSCRIPT_ISOLATED_TESTS = 'SOUNDSCRIPT_ISOLATED_TESTS';
 const SOUNDSCRIPT_ISOLATED_TEST_BATCH_SIZE = 'SOUNDSCRIPT_ISOLATED_TEST_BATCH_SIZE';
 const DEFAULT_ISOLATED_TEST_BATCH_SIZE = 8;
