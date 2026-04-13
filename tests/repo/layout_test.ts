@@ -379,3 +379,16 @@ Deno.test('compiler integration test moves out of src root once reorganized', ()
     'src/compiler/compiler_test.ts is missing.',
   );
 });
+
+Deno.test('compiler integration tests do not depend on sibling workspaces', () => {
+  const compilerTestSource = Deno.readTextFileSync(join(SRC_ROOT, 'compiler', 'compiler_test.ts'));
+
+  assert(
+    !compilerTestSource.includes('getSiblingWorkspaceNodeModulesPath('),
+    'compiler_test.ts should source package fixtures from this repo, not sibling workspaces.',
+  );
+  assert(
+    !compilerTestSource.includes("getSiblingWorkspaceNodeModulesPath('website')"),
+    'compiler_test.ts should not depend on the sibling website checkout.',
+  );
+});

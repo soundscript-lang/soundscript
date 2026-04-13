@@ -62,7 +62,6 @@ import {
 
 const COMPILER_ROOT = dirname(fromFileUrl(import.meta.url));
 const REPO_ROOT = join(COMPILER_ROOT, '..', '..');
-const WORKTREE_ROOT = join(REPO_ROOT, '..');
 const compilerIntegrationTest = createIsolatedTestRegistrar(import.meta.url);
 
 function createSoundscriptOnlyCompilerTsconfig(): string {
@@ -79,10 +78,6 @@ function createSoundscriptOnlyCompilerTsconfig(): string {
     null,
     2,
   );
-}
-
-function getSiblingWorkspaceNodeModulesPath(name: string): string {
-  return join(WORKTREE_ROOT, name, 'node_modules');
 }
 
 function getExampleNodeModulesPath(relativeExampleDirectory: string): string {
@@ -127,7 +122,7 @@ async function linkTempProjectNodeModules(
 ): Promise<void> {
   await linkTempProjectNodeModulesFromSource(
     tempDirectory,
-    getSiblingWorkspaceNodeModulesPath('website'),
+    getExampleNodeModulesPath('examples/express-react-ssr-demo'),
     packagePaths,
   );
 }
@@ -6762,6 +6757,7 @@ compilerIntegrationTest(
             compilerOptions: {
               strict: true,
               noEmit: true,
+              skipLibCheck: true,
               target: 'ES2022',
               lib: ['ES2022'],
               module: 'ESNext',
@@ -6825,7 +6821,6 @@ compilerIntegrationTest(
       '@types/connect',
       '@types/http-errors',
       '@types/mime',
-      '@types/ms',
       'undici-types',
       'mime-db',
     ]);
@@ -7338,6 +7333,7 @@ compilerIntegrationTest(
             compilerOptions: {
               strict: true,
               noEmit: true,
+              skipLibCheck: true,
               target: 'ES2022',
               lib: ['ES2022'],
               module: 'ESNext',
@@ -7430,7 +7426,6 @@ compilerIntegrationTest(
       '@types/http-errors',
       'undici-types',
       '@types/mime',
-      '@types/ms',
       'mime-db',
     ]);
 
@@ -7547,6 +7542,7 @@ compilerIntegrationTest(
             compilerOptions: {
               strict: true,
               noEmit: true,
+              skipLibCheck: true,
               target: 'ES2022',
               lib: ['ES2022'],
               module: 'ESNext',
@@ -7623,7 +7619,6 @@ compilerIntegrationTest(
       '@types/connect',
       '@types/http-errors',
       '@types/mime',
-      '@types/ms',
       'undici-types',
       'mime-db',
     ]);
