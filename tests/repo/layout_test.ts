@@ -366,3 +366,16 @@ Deno.test('compiler object keys test moves out of src root once reorganized', ()
     'src/compiler/object_keys_test.ts is missing.',
   );
 });
+
+Deno.test('compiler integration test moves out of src root once reorganized', () => {
+  const srcRootFiles = listFileNames(SRC_ROOT);
+
+  assert(
+    !srcRootFiles.includes('compiler_test.ts'),
+    'compiler_test.ts should live under src/compiler/.',
+  );
+  assert(
+    Deno.statSync(join(SRC_ROOT, 'compiler', 'compiler_test.ts')).isFile,
+    'src/compiler/compiler_test.ts is missing.',
+  );
+});

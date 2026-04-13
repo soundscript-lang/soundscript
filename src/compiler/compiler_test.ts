@@ -16,8 +16,8 @@ import {
   prefixValueMatrixProgram,
   VALUE_MODES,
   VALUE_ROUTES,
-} from '../tests/support/value_matrix.ts';
-import { compileProject } from './compiler/compile_project.ts';
+} from '../../tests/support/value_matrix.ts';
+import { compileProject } from './compile_project.ts';
 import {
   assertWatAvoidsFallbackObjectMembership,
   assertWatCallsFallbackObjectGeneralize,
@@ -30,7 +30,7 @@ import {
   assertWatUsesDistinctSpecializedObjectKeysHelperSymbols,
   compileTempProject,
   createCompilerTestProject,
-} from '../tests/support/compiler_object_test_helpers.ts';
+} from '../../tests/support/compiler_object_test_helpers.ts';
 import type {
   CompilerRuntimeAdaptObjectValueIR,
   CompilerRuntimeAllocateFallbackObjectIR,
@@ -41,7 +41,7 @@ import type {
   CompilerRuntimeHasSpecializedObjectOwnPropertyIR,
   CompilerRuntimeRepresentationRefIR,
   CompilerRuntimeSetFallbackObjectPropertyIR,
-} from './compiler/runtime_ir.ts';
+} from './runtime_ir.ts';
 import {
   assertExecutableOrdinaryObjectLowering,
   assertFallbackObjectRuntimeOperations,
@@ -58,8 +58,11 @@ import {
   readWatArtifactForProject,
   resolveQualifiedExportName,
   type TempProjectFile,
-} from '../tests/support/compiler_test_helpers.ts';
+} from '../../tests/support/compiler_test_helpers.ts';
 
+const COMPILER_ROOT = dirname(fromFileUrl(import.meta.url));
+const REPO_ROOT = join(COMPILER_ROOT, '..', '..');
+const WORKTREE_ROOT = join(REPO_ROOT, '..');
 const compilerIntegrationTest = createIsolatedTestRegistrar(import.meta.url);
 
 function createSoundscriptOnlyCompilerTsconfig(): string {
@@ -79,20 +82,15 @@ function createSoundscriptOnlyCompilerTsconfig(): string {
 }
 
 function getSiblingWorkspaceNodeModulesPath(name: string): string {
-  return join(dirname(fromFileUrl(import.meta.url)), '..', '..', name, 'node_modules');
+  return join(WORKTREE_ROOT, name, 'node_modules');
 }
 
 function getExampleNodeModulesPath(relativeExampleDirectory: string): string {
-  return join(
-    dirname(fromFileUrl(import.meta.url)),
-    '..',
-    relativeExampleDirectory,
-    'node_modules',
-  );
+  return join(REPO_ROOT, relativeExampleDirectory, 'node_modules');
 }
 
 function getExampleProjectPath(relativeExampleDirectory: string): string {
-  return join(dirname(fromFileUrl(import.meta.url)), '..', relativeExampleDirectory);
+  return join(REPO_ROOT, relativeExampleDirectory);
 }
 
 function listExampleSourceJsFiles(relativeExampleDirectory: string): string[] {
