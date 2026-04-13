@@ -3,7 +3,7 @@ import { assertEquals, assertStrictEquals, assertStringIncludes } from '@std/ass
 import {
   compileTempProject,
   createCompilerTestProject,
-} from '../tests/support/compiler_object_test_helpers.ts';
+} from '../../tests/support/compiler_object_test_helpers.ts';
 import {
   createIsolatedTestRegistrar,
   createTempProject,
@@ -12,7 +12,7 @@ import {
   lowerTempProjectToCompilerIR,
   readWatArtifact,
   resolveQualifiedExportName,
-} from '../tests/support/compiler_test_helpers.ts';
+} from '../../tests/support/compiler_test_helpers.ts';
 
 const compilerArrayTest = createIsolatedTestRegistrar(import.meta.url);
 
