@@ -139,6 +139,16 @@ Deno.test('project helpers move out of src root once reorganized', () => {
   }
 });
 
+Deno.test('config test moves out of src root once reorganized', () => {
+  const srcRootFiles = listFileNames(SRC_ROOT);
+
+  assert(!srcRootFiles.includes('config_test.ts'), 'config_test.ts should live under src/project/.');
+  assert(
+    Deno.statSync(join(SRC_ROOT, 'project', 'config_test.ts')).isFile,
+    'src/project/config_test.ts is missing.',
+  );
+});
+
 Deno.test('editor helpers move out of src root once reorganized', () => {
   const srcRootFiles = listFileNames(SRC_ROOT);
 

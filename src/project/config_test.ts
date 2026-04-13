@@ -2,7 +2,7 @@ import { assertEquals } from '@std/assert';
 import { join } from '@std/path';
 import ts from 'typescript';
 
-import { loadConfig, parseCommand } from './config.ts';
+import { loadConfig, parseCommand } from '../config.ts';
 
 Deno.test('parseCommand accepts lsp subcommand', () => {
   const command = parseCommand(['lsp'], '/tmp/workspace');
