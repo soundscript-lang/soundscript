@@ -314,3 +314,16 @@ Deno.test('compiler string test moves out of src root once reorganized', () => {
     'src/compiler/string_test.ts is missing.',
   );
 });
+
+Deno.test('compiler closure test moves out of src root once reorganized', () => {
+  const srcRootFiles = listFileNames(SRC_ROOT);
+
+  assert(
+    !srcRootFiles.includes('compiler_closure_test.ts'),
+    'compiler_closure_test.ts should live under src/compiler/.',
+  );
+  assert(
+    Deno.statSync(join(SRC_ROOT, 'compiler', 'closure_test.ts')).isFile,
+    'src/compiler/closure_test.ts is missing.',
+  );
+});

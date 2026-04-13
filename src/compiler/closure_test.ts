@@ -1,13 +1,13 @@
 import { assertEquals, assertStrictEquals } from '@std/assert';
 import { join } from '@std/path';
 
-import { compileProject } from './compiler/compile_project.ts';
+import { compileProject } from './compile_project.ts';
 import {
   createIsolatedTestRegistrar,
   createTempProject,
   instantiateCompiledModuleInJs,
   resolveQualifiedExportName,
-} from '../tests/support/compiler_test_helpers.ts';
+} from '../../tests/support/compiler_test_helpers.ts';
 
 const compilerClosureTest = createIsolatedTestRegistrar(import.meta.url);
 
