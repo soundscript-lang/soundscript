@@ -555,45 +555,65 @@ export function defaulted<
 export function defaulted<
   TDecoder extends Decoder<unknown, unknown, DecodeMode>,
   TValue = Exclude<DecoderValue<TDecoder>, undefined>,
-  TFallback extends TValue | Promise<TValue> = TValue | Promise<TValue>,
 >(
   decoder: TDecoder & Decoder<TValue | undefined, DecoderError<TDecoder>, DecoderModeOf<TDecoder>>,
-  fallback: TValue | (() => TFallback),
-): Decoder<
-  TValue,
-  DecoderError<TDecoder>,
-  MergeDecodeModes<DecoderModeOf<TDecoder> | AsyncModeOf<TFallback>>
-> {
+  fallback: TValue | (() => TValue | Promise<TValue>),
+): Decoder<TValue, DecoderError<TDecoder>, DecodeMode> {
   type T = TValue;
   type E = DecoderError<TDecoder>;
-  type M = DecoderModeOf<TDecoder>;
-  type TMode = MergeDecodeModes<M | AsyncModeOf<TFallback>>;
+  const typedDecoder = decoder as Decoder<T | undefined, E, DecodeMode>;
   const resolveFallback = (): T | Promise<T> =>
     typeof fallback === 'function'
-      ? (fallback as () => TFallback)()
+      ? (fallback as () => T | Promise<T>)()
       : fallback;
+
+  const mapDefaultedDecode = (
+    decoded: Result<T | undefined, E>,
+  ): MaybeDecodeOutput<T, E> => {
+    if (isErr(decoded)) {
+      return decoded as Result<T, E>;
+    }
+
+    if (decoded.value === undefined) {
+      return mapMaybeAsync(resolveFallback(), (resolved): Result<T, E> => ok(resolved));
+    }
+
+    return ok(decoded.value);
+  };
+
+  const mapDefaultedValidation = (
+    decoded: Result<T | undefined, readonly DecodeIssue[]>,
+  ): MaybeDecodeOutput<T, readonly DecodeIssue[]> => {
+    if (isErr(decoded)) {
+      return decoded as Result<T, readonly DecodeIssue[]>;
+    }
+
+    if (decoded.value === undefined) {
+      return mapMaybeAsync(
+        resolveFallback(),
+        (resolved): Result<T, readonly DecodeIssue[]> => ok(resolved),
+      );
+    }
+
+    return ok(decoded.value);
+  };
 
   return __attachDecodeMetadata({
     __soundscriptDefaulted: true,
     decode(value) {
-      return mapDecodeOutput(decoder.decode(value), (decoded) =>
-        isErr(decoded)
-          ? decoded as Result<T, E>
-          : decoded.value === undefined
-          ? mapMaybeAsync(resolveFallback(), (resolved) => ok(resolved))
-          : ok(decoded.value)
-      ) as DecodeOutput<T, E, TMode>;
+      return mapDecodeOutput(typedDecoder.decode(value), mapDefaultedDecode) as DecodeOutput<
+        T,
+        E,
+        DecodeMode
+      >;
     },
     validateDecode(value) {
-      return mapDecodeOutput(decoder.validateDecode(value), (decoded) =>
-        isErr(decoded)
-          ? decoded as Result<T, readonly DecodeIssue[]>
-          : decoded.value === undefined
-          ? mapMaybeAsync(resolveFallback(), (resolved) => ok(resolved))
-          : ok(decoded.value)
-      ) as DecodeOutput<T, readonly DecodeIssue[], TMode>;
+      return mapDecodeOutput(
+        typedDecoder.validateDecode(value),
+        mapDefaultedValidation,
+      ) as DecodeOutput<T, readonly DecodeIssue[], DecodeMode>;
     },
-  } as DefaultedDecoder<T, E, TMode>, {
+  } as DefaultedDecoder<T, E, DecodeMode>, {
     mode: () => decodeModeOf(decoder) === 'async' || typeof fallback === 'function' && __isAsyncCallable(fallback)
       ? 'async'
       : 'sync',
