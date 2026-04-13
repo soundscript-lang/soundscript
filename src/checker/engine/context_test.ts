@@ -2,9 +2,9 @@ import { assertEquals, assertExists, assertStrictEquals } from '@std/assert';
 import { dirname, join } from '@std/path';
 import ts from 'typescript';
 
-import { createSoundStdlibCompilerHost } from './bundled/sound_stdlib.ts';
-import { getEffectSummaryForDeclaration, INTERNAL_EFFECT_MASKS } from './checker/effects.ts';
-import { createAnalysisContext } from './checker/engine/context.ts';
+import { createSoundStdlibCompilerHost } from '../../bundled/sound_stdlib.ts';
+import { getEffectSummaryForDeclaration, INTERNAL_EFFECT_MASKS } from '../effects.ts';
+import { createAnalysisContext } from './context.ts';
 
 interface TempProjectFile {
   path: string;

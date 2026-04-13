@@ -262,3 +262,16 @@ Deno.test('repo contract tests move out of src root once reorganized', () => {
     );
   }
 });
+
+Deno.test('checker engine tests move out of src root once reorganized', () => {
+  const srcRootFiles = listFileNames(SRC_ROOT);
+
+  assert(
+    !srcRootFiles.includes('engine_test.ts'),
+    'engine_test.ts should live under src/checker/engine/.',
+  );
+  assert(
+    Deno.statSync(join(SRC_ROOT, 'checker', 'engine', 'context_test.ts')).isFile,
+    'src/checker/engine/context_test.ts is missing.',
+  );
+});
