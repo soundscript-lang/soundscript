@@ -1,9 +1,9 @@
 import { assert, assertStringIncludes } from '@std/assert';
 
-import { createInstalledStdlibPackageFiles } from '../tests/support/test_installed_stdlib.ts';
+import { createInstalledStdlibPackageFiles } from '../support/test_installed_stdlib.ts';
 
 function readRepoText(relativePath: string): string {
-  return Deno.readTextFileSync(new URL(`../${relativePath}`, import.meta.url));
+  return Deno.readTextFileSync(new URL(`../../${relativePath}`, import.meta.url));
 }
 
 Deno.test('builtin module reference stays aligned with exported runtime modules', () => {

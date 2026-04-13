@@ -53,6 +53,8 @@ The stable `sts:*` surface stays focused and composable.
   and `validateEncode(...)`.
 - `sts:codec` owns codec contracts and adapter helpers, including explicit conversion helpers such
   as `codec.isoDate` and `codec.url`.
+- `sts:metadata` owns derive metadata inspection helpers such as `metadataOf(...)` and
+  `attachMetadata(...)`.
 - `sts:async` owns `Task<T, E>` and result-first async helpers.
 - `sts:compare` owns `Eq`, `Order`, and comparator composition helpers.
 - `sts:hash` owns hashing and equality-key protocols.
