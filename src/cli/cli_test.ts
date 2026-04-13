@@ -1,16 +1,16 @@
 import { assert, assertEquals, assertRejects, assertStringIncludes } from '@std/assert';
 import { dirname, join } from '@std/path';
 
-import { compileProject } from './compiler/compile_project.ts';
-import { runCli, VERSION } from './cli/cli.ts';
+import { compileProject } from '../compiler/compile_project.ts';
+import { runCli, VERSION } from './cli.ts';
 import {
   loadTestMacroPackageFiles,
   TEST_MACRO_PACKAGE_NAME,
-} from '../tests/support/test_macro_package_fixture.ts';
+} from '../../tests/support/test_macro_package_fixture.ts';
 import {
   maybeNormalizeTsconfigForInstalledStdlib,
   writeInstalledStdlibPackage,
-} from '../tests/support/test_installed_stdlib.ts';
+} from '../../tests/support/test_installed_stdlib.ts';
 
 interface TempProjectFile {
   path: string;
@@ -44,7 +44,7 @@ function createUserDefinedTwiceMacroText(): string {
 async function loadRuntimeReferencesStackOverflowFixture(): Promise<string> {
   return await Deno.readTextFile(
     new URL(
-      '../tests/fixtures/runtime-references-stack-overflow/runtime-references.sts',
+      '../../tests/fixtures/runtime-references-stack-overflow/runtime-references.sts',
       import.meta.url,
     ),
   );
