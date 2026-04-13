@@ -209,6 +209,110 @@ Deno.test(
   },
 );
 
+Deno.test(
+  'createProjectMacroEnvironment reuses unchanged expanded source files for files with no macro invocations',
+  () => {
+    const fileName = '/virtual/index.sts';
+    const macroFile = '/virtual/macros/defs.macro.sts';
+    const preparedProgram = createPreparedProgram({
+      baseHost: createBaseHost(
+        new Map([
+          [fileName, "import { Foo } from './macros/defs.macro';\nexport const value = Foo;\n"],
+          [macroFile, createTopLevelMacroText('')],
+        ]),
+      ),
+      options: {
+        target: ts.ScriptTarget.ES2022,
+        module: ts.ModuleKind.ESNext,
+        moduleResolution: ts.ModuleResolutionKind.Bundler,
+        noEmit: true,
+      },
+      reusableCompilerHostState: createPreparedCompilerHostReuseState('/virtual'),
+      rootNames: [fileName],
+    });
+    const environment = createProjectMacroEnvironment(
+      preparedProgram,
+      new Map(),
+      new Map(),
+      new Map(),
+      new Map(),
+    );
+
+    try {
+      const programFileName = preparedProgram.toProgramFileName(fileName);
+      const firstExpanded = environment.expandPreparedProgram().get(programFileName);
+      const secondExpanded = environment.expandPreparedProgram().get(programFileName);
+
+      assert(firstExpanded);
+      assert(secondExpanded);
+      assertStrictEquals(secondExpanded, firstExpanded);
+    } finally {
+      environment.dispose();
+    }
+  },
+);
+
+Deno.test('createProjectMacroEnvironment reuses unchanged macro expansion results', () => {
+  const fileName = '/virtual/index.sts';
+  const macroFile = '/virtual/macros/defs.macro.sts';
+  const preparedProgram = createPreparedProgram({
+    baseHost: createBaseHost(
+      new Map([
+        [fileName, "import { Foo } from './macros/defs.macro';\nexport const value = Foo();\n"],
+        [
+          macroFile,
+          [
+            "import 'sts:macros';",
+            '',
+            'let expansionCount = 0;',
+            '',
+            '// #[macro(call)]',
+            'export function Foo() {',
+            '  return {',
+            '    expand(ctx) {',
+            '      expansionCount += 1;',
+            '      return ctx.output.expr(ctx.quote.expr`${expansionCount}`);',
+            '    },',
+            '  };',
+            '}',
+            '',
+          ].join('\n'),
+        ],
+      ]),
+    ),
+    options: {
+      target: ts.ScriptTarget.ES2022,
+      module: ts.ModuleKind.ESNext,
+      moduleResolution: ts.ModuleResolutionKind.Bundler,
+      noEmit: true,
+    },
+    reusableCompilerHostState: createPreparedCompilerHostReuseState('/virtual'),
+    rootNames: [fileName],
+  });
+  const environment = createProjectMacroEnvironment(
+    preparedProgram,
+    new Map(),
+    new Map(),
+    new Map(),
+    new Map(),
+  );
+
+  try {
+    const programFileName = preparedProgram.toProgramFileName(fileName);
+    const firstExpanded = environment.expandPreparedProgram().get(programFileName);
+    const secondExpanded = environment.expandPreparedProgram().get(programFileName);
+
+    assert(firstExpanded);
+    assert(secondExpanded);
+    assertEquals(
+      ts.createPrinter().printFile(secondExpanded),
+      ts.createPrinter().printFile(firstExpanded),
+    );
+  } finally {
+    environment.dispose();
+  }
+});
+
 Deno.test('createProjectMacroEnvironment reuses unchanged macro module evaluation and invalidates changed helper modules', () => {
   const fileName = '/virtual/index.sts';
   const macroFile = '/virtual/macros/defs.macro.sts';
@@ -294,6 +398,161 @@ Deno.test('createProjectMacroEnvironment reuses unchanged macro module evaluatio
   assert(secondPrepared);
   assertStrictEquals(secondPrepared, firstPrepared);
 });
+
+Deno.test(
+  'createProjectMacroEnvironment reuses unchanged per-file binding plans across unrelated .sts edits',
+  () => {
+    const changedFile = '/virtual/changed.sts';
+    const stableFile = '/virtual/stable.sts';
+    const macroFile = '/virtual/macros/defs.macro.sts';
+    const reuseState = createPreparedCompilerHostReuseState('/virtual');
+    const macroSource = [
+      "import 'sts:macros';",
+      '',
+      '// #[macro(call)]',
+      'export function Foo() {',
+      '  return {',
+      '    expand(ctx) {',
+      '      return ctx.output.expr(ctx.quote.expr`1`);',
+      '    },',
+      '  };',
+      '}',
+      '',
+    ].join('\n');
+    const createProgram = (changedValue: number, oldProgram?: ts.Program) =>
+      createPreparedProgram({
+        baseHost: createBaseHost(
+          new Map([
+            [
+              changedFile,
+              `import { Foo } from './macros/defs.macro';\nexport const changed = ${changedValue};\nexport const value = Foo();\n`,
+            ],
+            [
+              stableFile,
+              "import { Foo } from './macros/defs.macro';\nexport const value = Foo();\n",
+            ],
+            [macroFile, macroSource],
+          ]),
+        ),
+        oldProgram,
+        options: {
+          target: ts.ScriptTarget.ES2022,
+          module: ts.ModuleKind.ESNext,
+          moduleResolution: ts.ModuleResolutionKind.Bundler,
+          noEmit: true,
+        },
+        reusableCompilerHostState: reuseState,
+        rootNames: [changedFile, stableFile],
+      });
+
+    const firstProgram = createProgram(1);
+    const firstEnvironment = createProjectMacroEnvironment(
+      firstProgram,
+      new Map(),
+      new Map(),
+      new Map(),
+      new Map(),
+    );
+    firstEnvironment.expandPreparedProgram();
+    firstEnvironment.dispose();
+
+    const secondProgram = createProgram(2, firstProgram.program);
+    const secondEnvironment = createProjectMacroEnvironment(
+      secondProgram,
+      new Map(),
+      new Map(),
+      new Map(),
+      new Map(),
+    );
+    try {
+      secondEnvironment.expandPreparedProgram();
+      const stats = secondEnvironment.cacheStats();
+      assertEquals(stats.bindingPlanCacheHits, 0);
+      assertEquals(stats.bindingPlanCacheMisses, 0);
+      assertEquals(stats.bindingPlanCacheInvalidations, 1);
+      assertEquals(stats.expandedFileCacheHits, 2);
+      assertEquals(stats.expandedFileCacheMisses, 0);
+      assertEquals(stats.expandedFileCacheInvalidations, 1);
+    } finally {
+      secondEnvironment.dispose();
+    }
+  },
+);
+
+Deno.test(
+  'createProjectMacroEnvironment invalidates cached binding plans when macro helper dependencies change',
+  () => {
+    const fileName = '/virtual/index.sts';
+    const macroFile = '/virtual/macros/defs.macro.sts';
+    const helperFile = '/virtual/macros/helper.macro.sts';
+    const reuseState = createPreparedCompilerHostReuseState('/virtual');
+    const macroSource = [
+      "import 'sts:macros';",
+      "import { helperValue } from './helper.macro';",
+      '',
+      '// #[macro(call)]',
+      'export function Foo() {',
+      '  return {',
+      '    expand(ctx) {',
+      '      return ctx.output.expr(ctx.quote.expr`${helperValue}`);',
+      '    },',
+      '  };',
+      '}',
+      '',
+    ].join('\n');
+    const createProgram = (helperValue: number, oldProgram?: ts.Program) =>
+      createPreparedProgram({
+        baseHost: createBaseHost(
+          new Map([
+            [fileName, "import { Foo } from './macros/defs.macro';\nexport const value = Foo();\n"],
+            [macroFile, macroSource],
+            [helperFile, `export const helperValue = ${helperValue};\n`],
+          ]),
+        ),
+        oldProgram,
+        options: {
+          target: ts.ScriptTarget.ES2022,
+          module: ts.ModuleKind.ESNext,
+          moduleResolution: ts.ModuleResolutionKind.Bundler,
+          noEmit: true,
+        },
+        reusableCompilerHostState: reuseState,
+        rootNames: [fileName],
+      });
+
+    const firstProgram = createProgram(1);
+    const firstEnvironment = createProjectMacroEnvironment(
+      firstProgram,
+      new Map(),
+      new Map(),
+      new Map(),
+      new Map(),
+    );
+    firstEnvironment.expandPreparedProgram();
+    firstEnvironment.dispose();
+
+    const secondProgram = createProgram(2, firstProgram.program);
+    const secondEnvironment = createProjectMacroEnvironment(
+      secondProgram,
+      new Map(),
+      new Map(),
+      new Map(),
+      new Map(),
+    );
+    try {
+      secondEnvironment.expandPreparedProgram();
+      const stats = secondEnvironment.cacheStats();
+      assertEquals(stats.bindingPlanCacheHits, 0);
+      assertEquals(stats.bindingPlanCacheMisses, 0);
+      assertEquals(stats.bindingPlanCacheInvalidations, 1);
+      assertEquals(stats.expandedFileCacheHits, 1);
+      assertEquals(stats.expandedFileCacheMisses, 0);
+      assertEquals(stats.expandedFileCacheInvalidations, 2);
+    } finally {
+      secondEnvironment.dispose();
+    }
+  },
+);
 
 Deno.test('createProjectMacroEnvironment reparses remote statement expansions using the caller source file script kind', () => {
   const fileName = '/virtual/index.sts';
@@ -398,20 +657,23 @@ Deno.test('createProjectMacroEnvironment exposes portable ctx.host env and file 
 });
 
 Deno.test('createProjectMacroEnvironment keeps globalThis builtins in the macro vm realm', () => {
-  const printed = printExpandedFile(createMacroPreparedProgram([
-    "import 'sts:macros';",
-    '',
-    '// #[macro(call)]',
-    'export function Foo() {',
-    '  return {',
-    '    expand(ctx: any) {',
-    "      const sameRealm = globalThis.Array === Array;",
-    "      return ctx.output.expr(ctx.build.stringLiteral(sameRealm ? 'same' : 'different'));",
-    '    },',
-    '  };',
-    '}',
-    '',
-  ].join('\n')), '/virtual/index.sts');
+  const printed = printExpandedFile(
+    createMacroPreparedProgram([
+      "import 'sts:macros';",
+      '',
+      '// #[macro(call)]',
+      'export function Foo() {',
+      '  return {',
+      '    expand(ctx: any) {',
+      '      const sameRealm = globalThis.Array === Array;',
+      "      return ctx.output.expr(ctx.build.stringLiteral(sameRealm ? 'same' : 'different'));",
+      '    },',
+      '  };',
+      '}',
+      '',
+    ].join('\n')),
+    '/virtual/index.sts',
+  );
 
   assertStringIncludes(printed, 'export const value = "same";');
 });
@@ -432,7 +694,7 @@ Deno.test('createProjectMacroEnvironment exposes ctx.runtime target and extern m
             'export function Foo() {',
             '  return {',
             '    expand(ctx) {',
-            "      return ctx.output.expr(ctx.build.stringLiteral(`${ctx.runtime.target}:${ctx.runtime.backend}:${ctx.runtime.host}`));",
+            '      return ctx.output.expr(ctx.build.stringLiteral(`${ctx.runtime.target}:${ctx.runtime.backend}:${ctx.runtime.host}`));',
             '    },',
             '  };',
             '}',
@@ -733,7 +995,10 @@ Deno.test(
     const preparedProgram = createPreparedProgram({
       baseHost: createBaseHost(
         new Map([
-          [fileName, 'import { augment } from "sound-pkg";\n// #[augment]\nexport class Registry {}\n'],
+          [
+            fileName,
+            'import { augment } from "sound-pkg";\n// #[augment]\nexport class Registry {}\n',
+          ],
           [
             '/virtual/node_modules/sound-pkg/package.json',
             JSON.stringify(
@@ -750,9 +1015,15 @@ Deno.test(
               2,
             ),
           ],
-          ['/virtual/node_modules/sound-pkg/dist/index.d.ts', 'export declare const augment: unique symbol;\n'],
+          [
+            '/virtual/node_modules/sound-pkg/dist/index.d.ts',
+            'export declare const augment: unique symbol;\n',
+          ],
           ['/virtual/node_modules/sound-pkg/src/index.sts', 'export { augment } from "./mid";\n'],
-          ['/virtual/node_modules/sound-pkg/src/mid.sts', 'export { augment } from "./macros/augment.macro";\n'],
+          [
+            '/virtual/node_modules/sound-pkg/src/mid.sts',
+            'export { augment } from "./macros/augment.macro";\n',
+          ],
           [
             '/virtual/node_modules/sound-pkg/src/macros/augment.macro.sts',
             [

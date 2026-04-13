@@ -93,6 +93,18 @@ interface NewtypeIdentity {
 }
 
 const populatedNullPrototypeExportSummaries = new WeakSet<AnalysisContext>();
+const NO_RELATION_MISMATCH = Symbol('NO_RELATION_MISMATCH');
+
+type RelationMemoKind = 'callable' | 'relation';
+type CachedRelationMismatch = RelationMismatch | typeof NO_RELATION_MISMATCH;
+
+interface RelationMemoState {
+  caches: Record<RelationMemoKind, Map<string, CachedRelationMismatch>>;
+  hits: number;
+  misses: number;
+}
+
+const relationMemoStateByContext = new WeakMap<AnalysisContext, RelationMemoState>();
 
 interface TargetClassIdentitySet {
   identities: readonly GenericClassIdentity[];
@@ -126,6 +138,12 @@ type VarianceAnnotationKeyword = 'in' | 'independent' | 'inout' | 'out';
 interface RecursiveGenericRelationResult {
   handled: boolean;
   mismatch?: RelationMismatch;
+}
+
+export interface RelationMemoStats {
+  memoEntries: number;
+  memoHits: number;
+  memoMisses: number;
 }
 
 interface ParsedVarianceAnnotationEntry {
@@ -866,6 +884,89 @@ function getRelationTypePairKey(
   const targetTypeId = (normalizedTargetType as ts.Type & { id?: number }).id ??
     context.checker.typeToString(normalizedTargetType);
   return `${relationFamily}:${sourceTypeId}->${targetTypeId}`;
+}
+
+function getExactRelationTypeKey(
+  context: AnalysisContext,
+  type: ts.Type,
+): string {
+  return String((type as ts.Type & { id?: number }).id ?? context.checker.typeToString(type));
+}
+
+function getRelationMemoState(context: AnalysisContext): RelationMemoState {
+  let state = relationMemoStateByContext.get(context);
+  if (!state) {
+    state = {
+      caches: {
+        callable: new Map(),
+        relation: new Map(),
+      },
+      hits: 0,
+      misses: 0,
+    };
+    relationMemoStateByContext.set(context, state);
+  }
+
+  return state;
+}
+
+function getRelationMemoKey(
+  context: AnalysisContext,
+  kind: RelationMemoKind,
+  sourceType: ts.Type,
+  targetType: ts.Type,
+  relationSite: ts.Node | undefined,
+): string {
+  const relationSourceFile = relationSite?.getSourceFile();
+  return `${kind}:${getExactRelationTypeKey(context, sourceType)}->${
+    getExactRelationTypeKey(context, targetType)
+  }:${relationSourceFile?.fileName ?? 'none'}`;
+}
+
+function memoizeRelationMismatchResult(
+  context: AnalysisContext,
+  kind: RelationMemoKind,
+  sourceType: ts.Type,
+  targetType: ts.Type,
+  relationSite: ts.Node | undefined,
+  compute: () => RelationMismatch | undefined,
+): RelationMismatch | undefined {
+  const state = getRelationMemoState(context);
+  const cache = state.caches[kind];
+  const cacheKey = getRelationMemoKey(
+    context,
+    kind,
+    sourceType,
+    targetType,
+    relationSite,
+  );
+  const cached = cache.get(cacheKey);
+  if (cached !== undefined) {
+    state.hits += 1;
+    return cached === NO_RELATION_MISMATCH ? undefined : cached;
+  }
+
+  state.misses += 1;
+  const result = compute();
+  cache.set(cacheKey, result ?? NO_RELATION_MISMATCH);
+  return result;
+}
+
+export function getRelationMemoStats(context: AnalysisContext): RelationMemoStats {
+  const state = relationMemoStateByContext.get(context);
+  if (!state) {
+    return {
+      memoEntries: 0,
+      memoHits: 0,
+      memoMisses: 0,
+    };
+  }
+
+  return {
+    memoEntries: state.caches.callable.size + state.caches.relation.size,
+    memoHits: state.hits,
+    memoMisses: state.misses,
+  };
 }
 
 const relationTypeNodeVisitIds = new WeakMap<ts.Node, number>();
@@ -2031,50 +2132,63 @@ function classifyUnsoundCallableSignatureRelation(
   if (visitedPairs.has(pairKey)) {
     return undefined;
   }
+  const canMemoize = visitedPairs.size === 0;
   visitedPairs.add(pairKey);
+  const compute = (): RelationMismatch | undefined => {
+    for (const kind of [ts.SignatureKind.Call, ts.SignatureKind.Construct] as const) {
+      const sourceSignatures = getRelevantSignatures(context, normalizedSourceType, kind);
+      const targetSignatures = getRelevantSignatures(context, normalizedTargetType, kind);
+      if (sourceSignatures.length === 0 || targetSignatures.length === 0) {
+        continue;
+      }
 
-  for (const kind of [ts.SignatureKind.Call, ts.SignatureKind.Construct] as const) {
-    const sourceSignatures = getRelevantSignatures(context, normalizedSourceType, kind);
-    const targetSignatures = getRelevantSignatures(context, normalizedTargetType, kind);
-    if (sourceSignatures.length === 0 || targetSignatures.length === 0) {
-      continue;
-    }
+      if (
+        sourceSignatures.every((signature) => !isUserAuthoredSignature(signature)) &&
+        targetSignatures.every((signature) => !isUserAuthoredSignature(signature))
+      ) {
+        continue;
+      }
 
-    if (
-      sourceSignatures.every((signature) => !isUserAuthoredSignature(signature)) &&
-      targetSignatures.every((signature) => !isUserAuthoredSignature(signature))
-    ) {
-      continue;
-    }
-
-    for (const targetSignature of targetSignatures) {
-      let firstMismatch: RelationMismatch | undefined;
-      let foundSafeSource = false;
-      for (const sourceSignature of sourceSignatures) {
-        const mismatch = classifyUnsoundSignatureRelation(
-          context,
-          sourceType,
-          targetType,
-          sourceSignature,
-          targetSignature,
-          relationSite,
-          visitedPairs,
-        );
-        if (!mismatch) {
-          foundSafeSource = true;
-          break;
+      for (const targetSignature of targetSignatures) {
+        let firstMismatch: RelationMismatch | undefined;
+        let foundSafeSource = false;
+        for (const sourceSignature of sourceSignatures) {
+          const mismatch = classifyUnsoundSignatureRelation(
+            context,
+            sourceType,
+            targetType,
+            sourceSignature,
+            targetSignature,
+            relationSite,
+            visitedPairs,
+          );
+          if (!mismatch) {
+            foundSafeSource = true;
+            break;
+          }
+          firstMismatch ??= mismatch;
         }
-        firstMismatch ??= mismatch;
-      }
 
-      if (!foundSafeSource) {
-        return firstMismatch ??
-          createCallableParameterVarianceMismatch(context, sourceType, targetType);
+        if (!foundSafeSource) {
+          return firstMismatch ??
+            createCallableParameterVarianceMismatch(context, sourceType, targetType);
+        }
       }
     }
-  }
 
-  return undefined;
+    return undefined;
+  };
+
+  return canMemoize
+    ? memoizeRelationMismatchResult(
+      context,
+      'callable',
+      sourceType,
+      targetType,
+      relationSite,
+      compute,
+    )
+    : compute();
 }
 
 function isTupleType(context: AnalysisContext, type: ts.Type): boolean {
@@ -9258,18 +9372,148 @@ function classifyUnsoundRelation(
   if (visitedPairs.has(pairKey)) {
     return undefined;
   }
+  const canMemoize = visitedPairs.size === 0;
   visitedPairs.add(pairKey);
 
-  const sourceHasCallableSignatures =
-    context.checker.getSignaturesOfType(normalizedSourceType, ts.SignatureKind.Call).length > 0 ||
-    context.checker.getSignaturesOfType(normalizedSourceType, ts.SignatureKind.Construct).length >
-      0;
-  const targetHasCallableSignatures =
-    context.checker.getSignaturesOfType(normalizedTargetType, ts.SignatureKind.Call).length > 0 ||
-    context.checker.getSignaturesOfType(normalizedTargetType, ts.SignatureKind.Construct).length >
-      0;
+  const compute = (): RelationMismatch | undefined => {
+    const sourceHasCallableSignatures =
+      context.checker.getSignaturesOfType(normalizedSourceType, ts.SignatureKind.Call).length >
+        0 ||
+      context.checker.getSignaturesOfType(
+          normalizedSourceType,
+          ts.SignatureKind.Construct,
+        ).length > 0;
+    const targetHasCallableSignatures =
+      context.checker.getSignaturesOfType(normalizedTargetType, ts.SignatureKind.Call).length >
+        0 ||
+      context.checker.getSignaturesOfType(
+          normalizedTargetType,
+          ts.SignatureKind.Construct,
+        ).length > 0;
 
-  if (!sourceHasCallableSignatures && !targetHasCallableSignatures) {
+    if (!sourceHasCallableSignatures && !targetHasCallableSignatures) {
+      const mutableTupleMismatch = classifyUnsoundMutableTupleRelation(
+        context,
+        normalizedSourceType,
+        normalizedTargetType,
+      );
+      if (mutableTupleMismatch) {
+        return mutableTupleMismatch;
+      }
+      if (
+        isTupleType(context, normalizedSourceType) &&
+        isTupleType(context, normalizedTargetType) &&
+        !isReadonlyTupleType(context, normalizedSourceType) &&
+        !isReadonlyTupleType(context, normalizedTargetType)
+      ) {
+        return undefined;
+      }
+
+      const mutableArrayMismatch = classifyUnsoundMutableArrayRelation(
+        context,
+        normalizedSourceType,
+        normalizedTargetType,
+      );
+      if (mutableArrayMismatch) {
+        return mutableArrayMismatch;
+      }
+      if (
+        isArrayType(context, normalizedSourceType) &&
+        isArrayType(context, normalizedTargetType) &&
+        !isReadonlyArrayLikeType(context, normalizedSourceType) &&
+        !isReadonlyArrayLikeType(context, normalizedTargetType)
+      ) {
+        return undefined;
+      }
+
+      const nominalNewtypeMismatch = classifyUnsoundNominalNewtypeRelation(
+        context,
+        normalizedSourceType,
+        normalizedTargetType,
+        relationSite,
+      );
+      if (nominalNewtypeMismatch) {
+        return nominalNewtypeMismatch;
+      }
+
+      const synthesizedTypeNodeAliasMismatch = classifySynthesizedTypeNodeGenericAliasRelation(
+        context,
+        normalizedSourceType,
+        normalizedTargetType,
+      );
+      if (synthesizedTypeNodeAliasMismatch) {
+        return synthesizedTypeNodeAliasMismatch;
+      }
+
+      const recursiveGenericResult = analyzeRecursiveGenericRelation(
+        context,
+        normalizedSourceType,
+        normalizedTargetType,
+        undefined,
+        visitedPairs,
+      );
+      if (recursiveGenericResult.handled) {
+        return recursiveGenericResult.mismatch;
+      }
+
+      const nominalClassMismatch = classifyUnsoundNominalClassRelation(
+        context,
+        normalizedSourceType,
+        normalizedTargetType,
+      );
+      if (nominalClassMismatch) {
+        return nominalClassMismatch;
+      }
+
+      return classifyUnsoundCompositeCallablePropertyRelation(
+        context,
+        normalizedSourceType,
+        normalizedTargetType,
+        undefined,
+        visitedPairs,
+      ) ??
+        classifyUnsoundWritablePropertyRelation(
+          context,
+          normalizedSourceType,
+          normalizedTargetType,
+          undefined,
+          visitedPairs,
+        ) ??
+        classifyUnsoundCallableSignatureRelation(
+          context,
+          normalizedSourceType,
+          normalizedTargetType,
+          undefined,
+          visitedPairs,
+        ) ??
+        classifyUnsoundWritableIndexSignatureRelation(
+          context,
+          normalizedSourceType,
+          normalizedTargetType,
+        ) ??
+        classifyUnsoundMutableMapOrSetRelation(
+          context,
+          normalizedSourceType,
+          normalizedTargetType,
+        ) ??
+        classifyUnsoundGenericClassInstanceRelation(
+          context,
+          normalizedSourceType,
+          normalizedTargetType,
+        );
+    }
+
+    const callableMismatch = classifyUnsoundCallableSignatureRelation(
+      context,
+      normalizedSourceType,
+      normalizedTargetType,
+      undefined,
+      visitedPairs,
+    );
+    if (callableMismatch) {
+      return callableMismatch;
+    }
+
     const mutableTupleMismatch = classifyUnsoundMutableTupleRelation(
       context,
       normalizedSourceType,
@@ -9347,21 +9591,14 @@ function classifyUnsoundRelation(
       context,
       normalizedSourceType,
       normalizedTargetType,
-      undefined,
+      relationSite,
       visitedPairs,
     ) ??
       classifyUnsoundWritablePropertyRelation(
         context,
         normalizedSourceType,
         normalizedTargetType,
-        undefined,
-        visitedPairs,
-      ) ??
-      classifyUnsoundCallableSignatureRelation(
-        context,
-        normalizedSourceType,
-        normalizedTargetType,
-        undefined,
+        relationSite,
         visitedPairs,
       ) ??
       classifyUnsoundWritableIndexSignatureRelation(
@@ -9379,121 +9616,18 @@ function classifyUnsoundRelation(
         normalizedSourceType,
         normalizedTargetType,
       );
-  }
+  };
 
-  const callableMismatch = classifyUnsoundCallableSignatureRelation(
-    context,
-    normalizedSourceType,
-    normalizedTargetType,
-    undefined,
-    visitedPairs,
-  );
-  if (callableMismatch) {
-    return callableMismatch;
-  }
-
-  const mutableTupleMismatch = classifyUnsoundMutableTupleRelation(
-    context,
-    normalizedSourceType,
-    normalizedTargetType,
-  );
-  if (mutableTupleMismatch) {
-    return mutableTupleMismatch;
-  }
-  if (
-    isTupleType(context, normalizedSourceType) &&
-    isTupleType(context, normalizedTargetType) &&
-    !isReadonlyTupleType(context, normalizedSourceType) &&
-    !isReadonlyTupleType(context, normalizedTargetType)
-  ) {
-    return undefined;
-  }
-
-  const mutableArrayMismatch = classifyUnsoundMutableArrayRelation(
-    context,
-    normalizedSourceType,
-    normalizedTargetType,
-  );
-  if (mutableArrayMismatch) {
-    return mutableArrayMismatch;
-  }
-  if (
-    isArrayType(context, normalizedSourceType) &&
-    isArrayType(context, normalizedTargetType) &&
-    !isReadonlyArrayLikeType(context, normalizedSourceType) &&
-    !isReadonlyArrayLikeType(context, normalizedTargetType)
-  ) {
-    return undefined;
-  }
-
-  const nominalNewtypeMismatch = classifyUnsoundNominalNewtypeRelation(
-    context,
-    normalizedSourceType,
-    normalizedTargetType,
-    relationSite,
-  );
-  if (nominalNewtypeMismatch) {
-    return nominalNewtypeMismatch;
-  }
-
-  const synthesizedTypeNodeAliasMismatch = classifySynthesizedTypeNodeGenericAliasRelation(
-    context,
-    normalizedSourceType,
-    normalizedTargetType,
-  );
-  if (synthesizedTypeNodeAliasMismatch) {
-    return synthesizedTypeNodeAliasMismatch;
-  }
-
-  const recursiveGenericResult = analyzeRecursiveGenericRelation(
-    context,
-    normalizedSourceType,
-    normalizedTargetType,
-    undefined,
-    visitedPairs,
-  );
-  if (recursiveGenericResult.handled) {
-    return recursiveGenericResult.mismatch;
-  }
-
-  const nominalClassMismatch = classifyUnsoundNominalClassRelation(
-    context,
-    normalizedSourceType,
-    normalizedTargetType,
-  );
-  if (nominalClassMismatch) {
-    return nominalClassMismatch;
-  }
-
-  return classifyUnsoundCompositeCallablePropertyRelation(
-    context,
-    normalizedSourceType,
-    normalizedTargetType,
-    relationSite,
-    visitedPairs,
-  ) ??
-    classifyUnsoundWritablePropertyRelation(
+  return canMemoize
+    ? memoizeRelationMismatchResult(
       context,
-      normalizedSourceType,
-      normalizedTargetType,
+      'relation',
+      sourceType,
+      targetType,
       relationSite,
-      visitedPairs,
-    ) ??
-    classifyUnsoundWritableIndexSignatureRelation(
-      context,
-      normalizedSourceType,
-      normalizedTargetType,
-    ) ??
-    classifyUnsoundMutableMapOrSetRelation(
-      context,
-      normalizedSourceType,
-      normalizedTargetType,
-    ) ??
-    classifyUnsoundGenericClassInstanceRelation(
-      context,
-      normalizedSourceType,
-      normalizedTargetType,
-    );
+      compute,
+    )
+    : compute();
 }
 
 function toRelationDiagnosticDetails(mismatch: RelationMismatch): RelationDiagnosticDetails {

@@ -502,6 +502,19 @@ function buildDiagnosticPreparedSourceFile(
   };
 }
 
+function createPlaceholderSignature(
+  placeholdersById: ReadonlyMap<number, IndexedMacroPlaceholder>,
+  augmentPlaceholderIds: ReadonlySet<number>,
+): string {
+  if (placeholdersById.size === 0 && augmentPlaceholderIds.size === 0) {
+    return '';
+  }
+
+  const placeholderIds = [...placeholdersById.keys()].sort((left, right) => left - right).join(',');
+  const augmentIds = [...augmentPlaceholderIds].sort((left, right) => left - right).join(',');
+  return `${placeholderIds}|${augmentIds}`;
+}
+
 export function getBuiltinMacroDefinitionsBySpecifier(): ReadonlyMap<
   string,
   ReadonlyMap<string, MacroDefinition>
@@ -1083,10 +1096,25 @@ export function createBuiltinExpandedProgram(
   const annotatedOverrides = new Map(originalOverrides);
   const placeholdersByFile = new Map<string, Map<number, IndexedMacroPlaceholder>>();
   const augmentPlaceholderIdsByFile = new Map<string, Set<number>>();
+  let annotatedChangedFileCount = 0;
+  const annotatedOverrideTimingMetadata: Record<string, number> = {
+    ...timingMetadata,
+    changedFiles: 0,
+    macroExpansionFiles: 0,
+    builtinImportFiles: 0,
+    rebuiltFiles: 0,
+    reusedFiles: 0,
+    unchangedFiles: 0,
+  };
   measureCheckerTiming(
     'project.prepare.builtin.annotatedOverrides',
-    timingMetadata,
+    annotatedOverrideTimingMetadata,
     () => {
+      const annotatedArtifactCache = preparedProgram.preparedHost.reuseState
+        .builtinAnnotatedSourceFiles;
+      let unchangedFiles = 0;
+      let rebuiltFiles = 0;
+      let reusedFiles = 0;
       for (const placeholder of preparedProgram.placeholderIndex().entries()) {
         const filePlaceholders = placeholdersByFile.get(placeholder.fileName) ?? new Map();
         filePlaceholders.set(placeholder.id, placeholder);
@@ -1115,14 +1143,36 @@ export function createBuiltinExpandedProgram(
         const importsBuiltinMacros = sourceFileImportsBuiltinMacros(
           preparedProgram.program.getSourceFile(fileName),
         );
+        if (containsMacroSyntax) {
+          annotatedOverrideTimingMetadata.macroExpansionFiles += 1;
+        }
+        if (importsBuiltinMacros) {
+          annotatedOverrideTimingMetadata.builtinImportFiles += 1;
+        }
         if (!containsMacroSyntax && !importsBuiltinMacros) {
+          annotatedArtifactCache.delete(sourceFileName);
+          unchangedFiles += 1;
           continue;
         }
-        annotatedOverrides.set(
-          sourceFileName,
-          repairBuiltinMacroModuleSpecifiers(printer.printFile(sourceFile)),
-        );
+        annotatedChangedFileCount += 1;
+        const cachedAnnotatedArtifact = annotatedArtifactCache.get(sourceFileName);
+        if (cachedAnnotatedArtifact?.sourceText === sourceFile.text) {
+          reusedFiles += 1;
+          annotatedOverrides.set(sourceFileName, cachedAnnotatedArtifact.rewrittenText);
+          continue;
+        }
+        const rewrittenText = repairBuiltinMacroModuleSpecifiers(printer.printFile(sourceFile));
+        rebuiltFiles += 1;
+        annotatedOverrides.set(sourceFileName, rewrittenText);
+        annotatedArtifactCache.set(sourceFileName, {
+          rewrittenText,
+          sourceText: sourceFile.text,
+        });
       }
+      annotatedOverrideTimingMetadata.changedFiles = annotatedChangedFileCount;
+      annotatedOverrideTimingMetadata.rebuiltFiles = rebuiltFiles;
+      annotatedOverrideTimingMetadata.reusedFiles = reusedFiles;
+      annotatedOverrideTimingMetadata.unchangedFiles = unchangedFiles;
     },
     { always: true },
   );
@@ -1132,7 +1182,10 @@ export function createBuiltinExpandedProgram(
     ? preparedProgram
     : measureCheckerTiming(
       'project.prepare.builtin.annotatedProgram',
-      timingMetadata,
+      {
+        ...timingMetadata,
+        changedFiles: annotatedChangedFileCount,
+      },
       () =>
         trackPreparedProgram(createPreparedProgram({
           ...supportedOptions,
@@ -1186,16 +1239,32 @@ export function createBuiltinExpandedProgram(
   );
 
   const finalOverrides = new Map(numericOverrides);
+  let finalChangedFileCount = 0;
   const normalizedFiles = measureCheckerTiming(
     'project.prepare.builtin.errorNormalization',
     timingMetadata,
     () => normalizeErrorBoundariesInProgram(numericsProgram.program).changedFiles,
     { always: true },
   );
+  const finalOverrideTimingMetadata: Record<string, number> = {
+    ...timingMetadata,
+    changedFiles: 0,
+    macroExpansionFiles: 0,
+    postRewriteFiles: 0,
+    numericNormalizationFiles: 0,
+    errorNormalizationFiles: 0,
+    rebuiltFiles: 0,
+    reusedFiles: 0,
+    unchangedFiles: 0,
+  };
   measureCheckerTiming(
     'project.prepare.builtin.finalOverrides',
-    timingMetadata,
+    finalOverrideTimingMetadata,
     () => {
+      const finalArtifactCache = preparedProgram.preparedHost.reuseState.builtinFinalSourceFiles;
+      let unchangedFiles = 0;
+      let rebuiltFiles = 0;
+      let reusedFiles = 0;
       for (const sourceFile of numericsProgram.program.getSourceFiles()) {
         if (sourceFile.isDeclarationFile) {
           continue;
@@ -1209,6 +1278,18 @@ export function createBuiltinExpandedProgram(
         );
         const normalized = normalizedFiles.get(sourceFile.fileName);
         const numericNormalized = numericallyAffectedFiles.has(sourceFile.fileName);
+        if (containsMacroSyntax) {
+          finalOverrideTimingMetadata.macroExpansionFiles += 1;
+        }
+        if (preparedSource?.postRewriteStage) {
+          finalOverrideTimingMetadata.postRewriteFiles += 1;
+        }
+        if (numericNormalized) {
+          finalOverrideTimingMetadata.numericNormalizationFiles += 1;
+        }
+        if (normalized) {
+          finalOverrideTimingMetadata.errorNormalizationFiles += 1;
+        }
         if (
           !containsMacroSyntax &&
           !importsBuiltinMacros &&
@@ -1216,8 +1297,32 @@ export function createBuiltinExpandedProgram(
           !numericNormalized &&
           !preparedSource?.postRewriteStage
         ) {
+          finalArtifactCache.delete(sourceFileName);
+          unchangedFiles += 1;
           continue;
         }
+        finalChangedFileCount += 1;
+        const placeholderSignature = createPlaceholderSignature(
+          placeholdersByFile.get(sourceFileName) ?? new Map(),
+          augmentPlaceholderIdsByFile.get(sourceFileName) ?? new Set(),
+        );
+        const normalizedText = normalized?.rewriteStage.rewrittenText;
+        const cachedFinalArtifact = finalArtifactCache.get(sourceFileName);
+        if (
+          cachedFinalArtifact?.sourceText === sourceFile.text &&
+          cachedFinalArtifact.preparedOriginalText === preparedSource?.originalText &&
+          cachedFinalArtifact.preparedRewrittenText === preparedSource?.rewrittenText &&
+          cachedFinalArtifact.normalizedText === normalizedText &&
+          cachedFinalArtifact.placeholderSignature === placeholderSignature
+        ) {
+          if (cachedFinalArtifact.diagnosticPreparedFile) {
+            diagnosticPreparedFiles.set(sourceFileName, cachedFinalArtifact.diagnosticPreparedFile);
+          }
+          finalOverrides.set(sourceFileName, cachedFinalArtifact.finalOverrideText);
+          reusedFiles += 1;
+          continue;
+        }
+        rebuiltFiles += 1;
 
         const finalText = normalized
           ? normalized.rewriteStage.rewrittenText
@@ -1227,6 +1332,8 @@ export function createBuiltinExpandedProgram(
               preparedSource?.postRewriteStage
           ? sourceFile.text
           : repairBuiltinMacroModuleSpecifiers(printer.printFile(sourceFile));
+        let diagnosticPreparedFile: PreparedSourceFile | undefined;
+        let finalOverrideText = finalText;
         if (containsMacroSyntax && preparedSource) {
           const { cleanedProgramText, preparedFile } = buildDiagnosticPreparedSourceFile(
             preparedSource,
@@ -1235,13 +1342,24 @@ export function createBuiltinExpandedProgram(
             augmentPlaceholderIdsByFile.get(sourceFileName) ?? new Set(),
             true,
           );
+          diagnosticPreparedFile = preparedFile;
+          finalOverrideText = cleanedProgramText;
           diagnosticPreparedFiles.set(sourceFileName, preparedFile);
           finalOverrides.set(sourceFileName, cleanedProgramText);
+          finalArtifactCache.set(sourceFileName, {
+            diagnosticPreparedFile,
+            finalOverrideText,
+            normalizedText,
+            placeholderSignature,
+            preparedOriginalText: preparedSource?.originalText,
+            preparedRewrittenText: preparedSource?.rewrittenText,
+            sourceText: sourceFile.text,
+          });
           continue;
         }
 
         if (preparedSource && finalText !== preparedSource.rewrittenText) {
-          diagnosticPreparedFiles.set(sourceFileName, {
+          diagnosticPreparedFile = {
             diagnostics: [],
             originalText: preparedSource.originalText,
             postRewriteStage: buildRewriteStageFromTexts(
@@ -1251,12 +1369,27 @@ export function createBuiltinExpandedProgram(
             ),
             rewriteResult: preparedSource.rewriteResult,
             rewrittenText: finalText,
-          });
+          };
+          diagnosticPreparedFiles.set(sourceFileName, diagnosticPreparedFile);
         } else if (preparedSource?.postRewriteStage) {
+          diagnosticPreparedFile = preparedSource;
           diagnosticPreparedFiles.set(sourceFileName, preparedSource);
         }
         finalOverrides.set(sourceFileName, finalText);
+        finalArtifactCache.set(sourceFileName, {
+          diagnosticPreparedFile,
+          finalOverrideText,
+          normalizedText,
+          placeholderSignature,
+          preparedOriginalText: preparedSource?.originalText,
+          preparedRewrittenText: preparedSource?.rewrittenText,
+          sourceText: sourceFile.text,
+        });
       }
+      finalOverrideTimingMetadata.changedFiles = finalChangedFileCount;
+      finalOverrideTimingMetadata.rebuiltFiles = rebuiltFiles;
+      finalOverrideTimingMetadata.reusedFiles = reusedFiles;
+      finalOverrideTimingMetadata.unchangedFiles = unchangedFiles;
     },
     { always: true },
   );
@@ -1338,6 +1471,7 @@ export function createBuiltinExpandedProgram(
         'project.prepare.builtin.supplementalTsDiagnosticsProgram',
         {
           ...timingMetadata,
+          changedFiles: finalChangedFileCount,
           fileCount: supplementalFilePaths.length,
         },
         () =>
@@ -1377,7 +1511,10 @@ export function createBuiltinExpandedProgram(
 
   const expandedProgram = measureCheckerTiming(
     'project.prepare.builtin.finalProgram',
-    timingMetadata,
+    {
+      ...timingMetadata,
+      changedFiles: finalChangedFileCount,
+    },
     () =>
       trackPreparedProgram(createPreparedProgram({
         ...supportedOptions,

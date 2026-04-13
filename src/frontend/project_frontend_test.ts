@@ -1451,6 +1451,64 @@ Deno.test('createPreparedProgram reuses unchanged SourceFiles when a prior progr
   assertStrictEquals(secondSourceFile, firstSourceFile);
 });
 
+Deno.test(
+  'createPreparedProgram reuses unchanged SourceFiles from stored builder state without explicit oldProgram',
+  () => {
+    const fileName = '/virtual/index.ts';
+    const reuseState = createPreparedCompilerHostReuseState();
+    const options = {
+      options: {
+        target: ts.ScriptTarget.ES2022,
+        module: ts.ModuleKind.ESNext,
+        noEmit: true,
+      },
+      rootNames: [fileName],
+    } as const;
+
+    const firstProgram = createPreparedProgram({
+      ...options,
+      baseHost: createBaseHost(new Map([[fileName, 'export const value = 1;\n']])),
+      reusableCompilerHostState: reuseState,
+    });
+    const secondProgram = createPreparedProgram({
+      ...options,
+      baseHost: createBaseHost(new Map([[fileName, 'export const value = 1;\n']])),
+      reusableCompilerHostState: reuseState,
+    });
+
+    const firstSourceFile = firstProgram.program.getSourceFile(fileName);
+    const secondSourceFile = secondProgram.program.getSourceFile(fileName);
+
+    assert(firstSourceFile);
+    assert(secondSourceFile);
+    assertStrictEquals(secondSourceFile, firstSourceFile);
+  },
+);
+
+Deno.test('createPreparedProgram stores a semantic diagnostics builder in reuse state', () => {
+  const fileName = '/virtual/index.ts';
+  const reuseState = createPreparedCompilerHostReuseState() as
+    & ReturnType<
+      typeof createPreparedCompilerHostReuseState
+    >
+    & {
+      semanticDiagnosticsBuilderProgram?: unknown;
+    };
+
+  createPreparedProgram({
+    baseHost: createBaseHost(new Map([[fileName, 'export const value = 1;\n']])),
+    options: {
+      target: ts.ScriptTarget.ES2022,
+      module: ts.ModuleKind.ESNext,
+      noEmit: true,
+    },
+    reusableCompilerHostState: reuseState,
+    rootNames: [fileName],
+  });
+
+  assert(reuseState.semanticDiagnosticsBuilderProgram);
+});
+
 Deno.test('createPreparedProgram reuses unchanged .ts SourceFiles when projected declaration text changes', () => {
   const consumerFileName = '/virtual/consumer.ts';
   const projectedFileName = '/virtual/producer.sts';
@@ -1937,6 +1995,80 @@ Deno.test('createBuiltinExpandedProgram keeps the final rebuilt program when err
       ),
       true,
     );
+  } finally {
+    if (originalTimingEnv === undefined) {
+      Deno.env.delete('SOUNDSCRIPT_CHECKER_TIMING');
+    } else {
+      Deno.env.set('SOUNDSCRIPT_CHECKER_TIMING', originalTimingEnv);
+    }
+    console.error = originalError;
+  }
+});
+
+Deno.test('createBuiltinExpandedProgram reuses unchanged builtin rewrite artifacts across .sts edits', () => {
+  const changedFileName = '/virtual/changed.sts';
+  const stableFileName = '/virtual/stable.sts';
+  const originalTimingEnv = Deno.env.get('SOUNDSCRIPT_CHECKER_TIMING');
+  const originalError = console.error;
+  const logs: string[] = [];
+  const reuseState = createPreparedCompilerHostReuseState('/virtual');
+  const createFixtureText = (value: number) =>
+    [
+      "import { ok } from 'sts:prelude';",
+      `export const value = ok(${value});`,
+      'try {',
+      '  throw new Error("boom");',
+      '} catch (error) {',
+      '  console.log(error.message);',
+      '}',
+      '',
+    ].join('\n');
+  const createExpandedProgram = (changedValue: number, oldProgram?: ts.Program) =>
+    createBuiltinExpandedProgram({
+      baseHost: createBaseHost(
+        new Map([
+          [changedFileName, createFixtureText(changedValue)],
+          [stableFileName, createFixtureText(2)],
+        ]),
+      ),
+      oldProgram,
+      options: {
+        target: ts.ScriptTarget.ES2022,
+        module: ts.ModuleKind.ESNext,
+        moduleResolution: ts.ModuleResolutionKind.Bundler,
+        noEmit: true,
+        strict: true,
+      },
+      reusableCompilerHostState: reuseState,
+      rootNames: [changedFileName, stableFileName],
+    });
+
+  console.error = (...args: unknown[]) => {
+    logs.push(args.map((arg) => String(arg)).join(' '));
+  };
+
+  try {
+    Deno.env.set('SOUNDSCRIPT_CHECKER_TIMING', '1');
+
+    const firstExpanded = createExpandedProgram(1);
+    logs.length = 0;
+
+    const secondExpanded = createExpandedProgram(3, firstExpanded.analysisPreparedProgram.program);
+    assertEquals(ts.getPreEmitDiagnostics(secondExpanded.program), []);
+
+    const annotatedOverridesLog = logs.find((line) =>
+      line.includes('[soundscript:checker] project.prepare.builtin.annotatedOverrides ')
+    );
+    const finalOverridesLog = logs.find((line) =>
+      line.includes('[soundscript:checker] project.prepare.builtin.finalOverrides ')
+    );
+
+    assert(annotatedOverridesLog);
+    assert(finalOverridesLog);
+    assertStringIncludes(annotatedOverridesLog, 'reusedFiles=1');
+    assertStringIncludes(annotatedOverridesLog, 'rebuiltFiles=1');
+    assertStringIncludes(finalOverridesLog, 'reusedFiles=1');
+    assertStringIncludes(finalOverridesLog, 'rebuiltFiles=1');
   } finally {
     if (originalTimingEnv === undefined) {
       Deno.env.delete('SOUNDSCRIPT_CHECKER_TIMING');

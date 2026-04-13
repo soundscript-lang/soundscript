@@ -42,6 +42,7 @@ import {
   isProjectedSoundscriptDeclarationFile,
   isSoundscriptMacroSourceFile,
   isSoundscriptSourceFile,
+  type PreparedCompilerHostReuseState,
   type PreparedProgram,
   toProjectedDeclarationSourceFileName,
   toSourceFileName,
@@ -58,9 +59,29 @@ type AdvancedMacroExpander = LoadedNamedMacroExports['advanced'] extends
 interface PerFileMacroBindings {
   readonly advancedRegistry: ReadonlyMap<string, AdvancedMacroExpander>;
   readonly definitions: ReadonlyMap<string, MacroDefinition>;
+  readonly expansionDependencySignature: string;
   readonly importedBindingUsage: ReadonlyMap<string, ImportedBindingUsage>;
   readonly registry: ReadonlyMap<string, RewriteMacroExpander>;
   readonly siteKindsBySpecifier: ReadonlyMap<string, ReadonlyMap<string, ImportedMacroSiteKind>>;
+}
+
+interface PlannedMacroBindingEntry {
+  readonly authorityExportName: string;
+  readonly localName: string;
+  readonly resolvedFileName: string;
+  readonly siteKind: ImportedMacroSiteKind | undefined;
+  readonly specifier: string;
+  readonly specifierExportName: string;
+}
+
+interface CachedPerFileMacroBindingPlanEntry {
+  readonly authorityBindings: readonly PlannedMacroBindingEntry[];
+  readonly expansionDependencySignature: string;
+  readonly importedBindingUsage: ReadonlyMap<string, ImportedBindingUsage>;
+  readonly preparedOriginalText: string | undefined;
+  readonly preparedRewrittenText: string | undefined;
+  readonly resolutionDependencySourceTexts: ReadonlyMap<string, string>;
+  readonly sourceText: string;
 }
 
 interface MutableEvaluatedModule {
@@ -72,9 +93,19 @@ interface MutableEvaluatedModule {
 }
 
 interface ResolvedMacroBindingAuthority {
+  readonly dependencyFiles: ReadonlySet<string>;
   readonly exportName: string;
   readonly resolvedFileName: string;
 }
+
+interface StableProjectMacroEnvironmentReuseState {
+  readonly bindingPlansByFile: Map<string, CachedPerFileMacroBindingPlanEntry>;
+}
+
+const STABLE_PROJECT_MACRO_ENVIRONMENT_REUSE_STATE = new WeakMap<
+  PreparedCompilerHostReuseState,
+  StableProjectMacroEnvironmentReuseState
+>();
 
 const PRESERVED_IMPORTED_MACRO_BINDINGS = new Set(['Do']);
 const UNSUPPORTED_AMBIENT_MACRO_GLOBALS = new Set([
@@ -190,6 +221,12 @@ function createMacroModuleError(
 }
 
 export interface MacroModuleCacheStats {
+  bindingPlanCacheHits: number;
+  bindingPlanCacheInvalidations: number;
+  bindingPlanCacheMisses: number;
+  expandedFileCacheHits: number;
+  expandedFileCacheInvalidations: number;
+  expandedFileCacheMisses: number;
   evaluatedModules: number;
   moduleCacheHits: number;
   moduleCacheInvalidations: number;
@@ -226,6 +263,21 @@ type MacroMutableContainerKind =
 
 function isLoadableMacroModuleFile(fileName: string): boolean {
   return isSoundscriptMacroSourceFile(fileName);
+}
+
+function getStableProjectMacroEnvironmentReuseState(
+  reuseState: PreparedCompilerHostReuseState,
+): StableProjectMacroEnvironmentReuseState {
+  const cached = STABLE_PROJECT_MACRO_ENVIRONMENT_REUSE_STATE.get(reuseState);
+  if (cached) {
+    return cached;
+  }
+
+  const nextState: StableProjectMacroEnvironmentReuseState = {
+    bindingPlansByFile: new Map(),
+  };
+  STABLE_PROJECT_MACRO_ENVIRONMENT_REUSE_STATE.set(reuseState, nextState);
+  return nextState;
 }
 
 function unwrapMacroTransparentExpression(expression: ts.Expression): ts.Expression {
@@ -832,6 +884,7 @@ export function createProjectMacroEnvironment(
     string,
     ResolvedMacroBindingAuthority | null
   >();
+  const macroModuleExpansionDependencySignatureCache = new Map<string, string>();
   const macroModuleEvaluator = createMacroVmModuleEvaluator();
   const macroNamesByFile = new Map<string, ReadonlySet<string>>();
   const bindingsByFile = new Map<string, PerFileMacroBindings>();
@@ -839,6 +892,12 @@ export function createProjectMacroEnvironment(
     preparedProgram.preparedHost.host.getCurrentDirectory?.() ?? ts.sys.getCurrentDirectory(),
   );
   const macroCacheStats: MacroModuleCacheStats = {
+    bindingPlanCacheHits: 0,
+    bindingPlanCacheInvalidations: 0,
+    bindingPlanCacheMisses: 0,
+    expandedFileCacheHits: 0,
+    expandedFileCacheInvalidations: 0,
+    expandedFileCacheMisses: 0,
     evaluatedModules: 0,
     moduleCacheHits: 0,
     moduleCacheInvalidations: 0,
@@ -847,6 +906,9 @@ export function createProjectMacroEnvironment(
   const alwaysAvailableMacroSiteKinds = buildAlwaysAvailableMacroSiteKinds(
     alwaysAvailableDefinitions,
     alwaysAvailableExports,
+  );
+  const stableReuseState = getStableProjectMacroEnvironmentReuseState(
+    preparedProgram.preparedHost.reuseState,
   );
 
   function macroNamesForFile(sourceFile: ts.SourceFile): ReadonlySet<string> {
@@ -865,6 +927,225 @@ export function createProjectMacroEnvironment(
 
     macroNamesByFile.set(sourceFile.fileName, names);
     return names;
+  }
+
+  function serializeDependencySourceTexts(
+    dependencySourceTexts: ReadonlyMap<string, string>,
+  ): string {
+    return [...dependencySourceTexts.entries()]
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([fileName, text]) => `${fileName}\u0001${text.length}\u0001${text}`)
+      .join('\u0002');
+  }
+
+  function serializeImportedBindingUsage(
+    importedBindingUsage: ReadonlyMap<string, ImportedBindingUsage>,
+  ): string {
+    return [...importedBindingUsage.entries()]
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([localName, usage]) => `${localName}\u0001${usage}`)
+      .join('\u0002');
+  }
+
+  function cloneImportedBindingUsage(
+    importedBindingUsage: ReadonlyMap<string, ImportedBindingUsage>,
+  ): ReadonlyMap<string, ImportedBindingUsage> {
+    return new Map(importedBindingUsage);
+  }
+
+  function collectCurrentExpansionDependencySignature(
+    authorityBindings: readonly PlannedMacroBindingEntry[],
+  ): string {
+    const dependencySignatures = new Set<string>();
+    for (const authorityBinding of authorityBindings) {
+      if (
+        builtinDefinitionsBySpecifier.has(authorityBinding.resolvedFileName) ||
+        builtinExportsBySpecifier.has(authorityBinding.resolvedFileName)
+      ) {
+        continue;
+      }
+      dependencySignatures.add(
+        expansionDependencySignatureForMacroModule(authorityBinding.resolvedFileName),
+      );
+    }
+    return [...dependencySignatures].sort().join('\u0004');
+  }
+
+  function isCachedMacroBindingPlanValid(
+    sourceFile: ts.SourceFile,
+    cachedPlan: CachedPerFileMacroBindingPlanEntry,
+  ): boolean {
+    const sourceFileName = preparedProgram.toSourceFileName(sourceFile.fileName);
+    const preparedSource = preparedProgram.preparedHost.getPreparedSourceFile(sourceFileName);
+    if (
+      cachedPlan.sourceText !== sourceFile.text ||
+      cachedPlan.preparedOriginalText !== preparedSource?.originalText ||
+      cachedPlan.preparedRewrittenText !== preparedSource?.rewrittenText
+    ) {
+      return false;
+    }
+
+    try {
+      for (const [dependencyFileName, sourceText] of cachedPlan.resolutionDependencySourceTexts) {
+        if (sourceTextForMacroModule(dependencyFileName) !== sourceText) {
+          return false;
+        }
+      }
+    } catch {
+      return false;
+    }
+
+    return collectCurrentExpansionDependencySignature(cachedPlan.authorityBindings) ===
+      cachedPlan.expansionDependencySignature;
+  }
+
+  function createCachedPerFileMacroBindingPlanEntry(
+    sourceFile: ts.SourceFile,
+    authorityBindings: readonly PlannedMacroBindingEntry[],
+    expansionDependencySignature: string,
+    importedBindingUsage: ReadonlyMap<string, ImportedBindingUsage>,
+    resolutionDependencyFiles: ReadonlySet<string>,
+  ): CachedPerFileMacroBindingPlanEntry {
+    const sourceFileName = preparedProgram.toSourceFileName(sourceFile.fileName);
+    const preparedSource = preparedProgram.preparedHost.getPreparedSourceFile(sourceFileName);
+    const resolutionDependencySourceTexts = new Map<string, string>();
+    for (const dependencyFileName of resolutionDependencyFiles) {
+      resolutionDependencySourceTexts.set(
+        dependencyFileName,
+        sourceTextForMacroModule(dependencyFileName),
+      );
+    }
+
+    return {
+      authorityBindings: [...authorityBindings],
+      expansionDependencySignature,
+      importedBindingUsage: cloneImportedBindingUsage(importedBindingUsage),
+      preparedOriginalText: preparedSource?.originalText,
+      preparedRewrittenText: preparedSource?.rewrittenText,
+      resolutionDependencySourceTexts,
+      sourceText: sourceFile.text,
+    };
+  }
+
+  function materializeBindingsFromCachedPlan(
+    cachedPlan: CachedPerFileMacroBindingPlanEntry,
+  ): PerFileMacroBindings {
+    const definitions = new Map<string, MacroDefinition>();
+    const registry = new Map<string, RewriteMacroExpander>();
+    const advancedRegistry = new Map<string, AdvancedMacroExpander>();
+    const siteKindsBySpecifier = new Map<string, Map<string, ImportedMacroSiteKind>>();
+
+    for (const [macroName, definition] of alwaysAvailableDefinitions.entries()) {
+      definitions.set(macroName, definition);
+      const alwaysAvailableRewrite = alwaysAvailableExports.rewrite.get(macroName);
+      const alwaysAvailableAdvanced = alwaysAvailableExports.advanced.get(macroName);
+      if (alwaysAvailableRewrite) {
+        registry.set(macroName, alwaysAvailableRewrite);
+      }
+      if (alwaysAvailableAdvanced) {
+        advancedRegistry.set(macroName, alwaysAvailableAdvanced);
+      }
+    }
+
+    for (const authorityBinding of cachedPlan.authorityBindings) {
+      const availableDefinitions = builtinDefinitionsBySpecifier.get(authorityBinding.resolvedFileName) ??
+        definitionsForResolvedModule(authorityBinding.resolvedFileName);
+      const availableExports = builtinExportsBySpecifier.get(authorityBinding.resolvedFileName) ??
+        exportsForResolvedModule(authorityBinding.resolvedFileName);
+      const definition = availableDefinitions.get(authorityBinding.authorityExportName);
+      if (!definition) {
+        continue;
+      }
+
+      definitions.set(authorityBinding.localName, definition);
+      if (authorityBinding.siteKind) {
+        let siteKindsForSpecifier = siteKindsBySpecifier.get(authorityBinding.specifier);
+        if (!siteKindsForSpecifier) {
+          siteKindsForSpecifier = new Map();
+          siteKindsBySpecifier.set(authorityBinding.specifier, siteKindsForSpecifier);
+        }
+        siteKindsForSpecifier.set(authorityBinding.specifierExportName, authorityBinding.siteKind);
+      }
+      const rewriteExpander = availableExports.rewrite.get(authorityBinding.authorityExportName);
+      const advancedExpander = availableExports.advanced.get(authorityBinding.authorityExportName);
+      if (rewriteExpander) {
+        registry.set(authorityBinding.localName, rewriteExpander);
+      }
+      if (advancedExpander) {
+        advancedRegistry.set(authorityBinding.localName, advancedExpander);
+      }
+    }
+
+    return {
+      advancedRegistry,
+      definitions,
+      expansionDependencySignature: cachedPlan.expansionDependencySignature,
+      importedBindingUsage: cachedPlan.importedBindingUsage,
+      registry,
+      siteKindsBySpecifier,
+    };
+  }
+
+  function expansionDependencySignatureForMacroModule(fileName: string): string {
+    const cached = macroModuleExpansionDependencySignatureCache.get(fileName);
+    if (cached !== undefined) {
+      return cached;
+    }
+
+    const signature = serializeDependencySourceTexts(
+      collectDependencySourceTextsForCompilation(fileName),
+    );
+    macroModuleExpansionDependencySignatureCache.set(fileName, signature);
+    return signature;
+  }
+
+  function createExpansionCacheKey(
+    sourceFile: ts.SourceFile,
+    bindings: PerFileMacroBindings,
+    preserveRemovedImportStatements: boolean,
+    preserveMissingExpanders: boolean,
+    annotateExpansions: boolean,
+  ): string {
+    return createExpansionCacheKeyFromPreparedState(
+      sourceFile,
+      bindings.expansionDependencySignature,
+      bindings.importedBindingUsage,
+      preserveRemovedImportStatements,
+      preserveMissingExpanders,
+      annotateExpansions,
+    );
+  }
+
+  function createExpansionCacheKeyFromPreparedState(
+    sourceFile: ts.SourceFile,
+    expansionDependencySignature: string,
+    importedBindingUsage: ReadonlyMap<string, ImportedBindingUsage>,
+    preserveRemovedImportStatements: boolean,
+    preserveMissingExpanders: boolean,
+    annotateExpansions: boolean,
+    preparedSource = preparedProgram.preparedHost.getPreparedSourceFile(
+      preparedProgram.toSourceFileName(sourceFile.fileName),
+    ),
+  ): string {
+    return [
+      preserveRemovedImportStatements ? 'preserveImports:1' : 'preserveImports:0',
+      preserveMissingExpanders ? 'preserveMissing:1' : 'preserveMissing:0',
+      annotateExpansions ? 'annotate:1' : 'annotate:0',
+      preparedSource?.originalText ?? sourceFile.text,
+      preparedSource?.rewrittenText ?? sourceFile.text,
+      expansionDependencySignature,
+      serializeImportedBindingUsage(importedBindingUsage),
+    ].join('\u0003');
+  }
+
+  function createNonMacroExpansionCacheKey(
+    sourceFile: ts.SourceFile,
+    preparedSource: ReturnType<PreparedProgram['preparedHost']['getPreparedSourceFile']>,
+  ): string {
+    return [
+      'plain',
+      preparedSource?.originalText ?? sourceFile.text,
+    ].join('\u0003');
   }
 
   function resolveImport(
@@ -1785,13 +2066,18 @@ export function createProjectMacroEnvironment(
     try {
       const builtinDefinitions = builtinDefinitionsBySpecifier.get(fileName);
       if (builtinDefinitions?.has(exportName)) {
-        const authority = { exportName, resolvedFileName: fileName };
+        const authority = {
+          dependencyFiles: new Set<string>(),
+          exportName,
+          resolvedFileName: fileName,
+        };
         resolvedMacroBindingAuthorityCache.set(cacheKey, authority);
         return authority;
       }
 
+      const dependencyFiles = new Set<string>([fileName]);
       if (definitionsForResolvedModule(fileName).has(exportName)) {
-        const authority = { exportName, resolvedFileName: fileName };
+        const authority = { dependencyFiles, exportName, resolvedFileName: fileName };
         resolvedMacroBindingAuthorityCache.set(cacheKey, authority);
         return authority;
       }
@@ -1828,8 +2114,16 @@ export function createProjectMacroEnvironment(
         if (!statement.exportClause) {
           const authority = resolveMacroBindingAuthority(resolved, exportName, visiting);
           if (authority) {
-            resolvedMacroBindingAuthorityCache.set(cacheKey, authority);
-            return authority;
+            for (const dependencyFile of authority.dependencyFiles) {
+              dependencyFiles.add(dependencyFile);
+            }
+            const resolvedAuthority = {
+              dependencyFiles,
+              exportName: authority.exportName,
+              resolvedFileName: authority.resolvedFileName,
+            };
+            resolvedMacroBindingAuthorityCache.set(cacheKey, resolvedAuthority);
+            return resolvedAuthority;
           }
           continue;
         }
@@ -1845,8 +2139,16 @@ export function createProjectMacroEnvironment(
           const sourceName = element.propertyName?.text ?? element.name.text;
           const authority = resolveMacroBindingAuthority(resolved, sourceName, visiting);
           if (authority) {
-            resolvedMacroBindingAuthorityCache.set(cacheKey, authority);
-            return authority;
+            for (const dependencyFile of authority.dependencyFiles) {
+              dependencyFiles.add(dependencyFile);
+            }
+            const resolvedAuthority = {
+              dependencyFiles,
+              exportName: authority.exportName,
+              resolvedFileName: authority.resolvedFileName,
+            };
+            resolvedMacroBindingAuthorityCache.set(cacheKey, resolvedAuthority);
+            return resolvedAuthority;
           }
         }
       }
@@ -1881,8 +2183,16 @@ export function createProjectMacroEnvironment(
 
           const authority = resolveMacroBindingAuthority(resolved, binding.exportName, visiting);
           if (authority) {
-            resolvedMacroBindingAuthorityCache.set(cacheKey, authority);
-            return authority;
+            for (const dependencyFile of authority.dependencyFiles) {
+              dependencyFiles.add(dependencyFile);
+            }
+            const resolvedAuthority = {
+              dependencyFiles,
+              exportName: authority.exportName,
+              resolvedFileName: authority.resolvedFileName,
+            };
+            resolvedMacroBindingAuthorityCache.set(cacheKey, resolvedAuthority);
+            return resolvedAuthority;
           }
         }
       }
@@ -1902,9 +2212,11 @@ export function createProjectMacroEnvironment(
 
     const macroNames = macroNamesForFile(sourceFile);
     if (macroNames.size === 0) {
+      stableReuseState.bindingPlansByFile.delete(sourceFile.fileName);
       const emptyBindings = {
         advancedRegistry: new Map<string, AdvancedMacroExpander>(),
         definitions: new Map<string, MacroDefinition>(),
+        expansionDependencySignature: '',
         importedBindingUsage: new Map<string, ImportedBindingUsage>(),
         registry: new Map<string, RewriteMacroExpander>(),
         siteKindsBySpecifier: new Map<string, Map<string, ImportedMacroSiteKind>>(),
@@ -1913,10 +2225,26 @@ export function createProjectMacroEnvironment(
       return emptyBindings;
     }
 
+    const cachedBindingPlan = stableReuseState.bindingPlansByFile.get(sourceFile.fileName);
+    if (cachedBindingPlan && isCachedMacroBindingPlanValid(sourceFile, cachedBindingPlan)) {
+      macroCacheStats.bindingPlanCacheHits += 1;
+      const plannedBindings = materializeBindingsFromCachedPlan(cachedBindingPlan);
+      bindingsByFile.set(sourceFile.fileName, plannedBindings);
+      return plannedBindings;
+    }
+    if (cachedBindingPlan) {
+      macroCacheStats.bindingPlanCacheInvalidations += 1;
+    } else {
+      macroCacheStats.bindingPlanCacheMisses += 1;
+    }
+
     const definitions = new Map<string, MacroDefinition>();
     const registry = new Map<string, RewriteMacroExpander>();
     const advancedRegistry = new Map<string, AdvancedMacroExpander>();
     const siteKindsBySpecifier = new Map<string, Map<string, ImportedMacroSiteKind>>();
+    const expansionDependencySignatures = new Set<string>();
+    const authorityBindings: PlannedMacroBindingEntry[] = [];
+    const resolutionDependencyFiles = new Set<string>();
 
     for (const macroName of macroNames) {
       const alwaysAvailableDefinition = alwaysAvailableDefinitions.get(macroName);
@@ -1974,6 +2302,9 @@ export function createProjectMacroEnvironment(
       if (!resolved || resolved === MACRO_API_MODULE_SPECIFIER) {
         continue;
       }
+      if (!builtinDefinitions && !builtinExports) {
+        resolutionDependencyFiles.add(resolved);
+      }
 
       if (!builtinDefinitions && !builtinExports && !isLikelyMacroModule(resolved)) {
         continue;
@@ -1981,7 +2312,7 @@ export function createProjectMacroEnvironment(
 
       for (const { localName, exportName } of candidateBindings) {
         const authority = builtinDefinitions
-          ? { exportName, resolvedFileName: specifier }
+          ? { dependencyFiles: new Set<string>(), exportName, resolvedFileName: specifier }
           : resolveMacroBindingAuthority(resolved, exportName);
         if (!authority) {
           continue;
@@ -1992,6 +2323,14 @@ export function createProjectMacroEnvironment(
         ) ?? null;
         const authorityBuiltinExports = builtinExportsBySpecifier.get(authority.resolvedFileName) ??
           null;
+        if (!authorityBuiltinDefinitions && !authorityBuiltinExports) {
+          for (const dependencyFileName of authority.dependencyFiles) {
+            resolutionDependencyFiles.add(dependencyFileName);
+          }
+          expansionDependencySignatures.add(
+            expansionDependencySignatureForMacroModule(authority.resolvedFileName),
+          );
+        }
         const availableDefinitions = authorityBuiltinDefinitions ?? builtinDefinitions ??
           definitionsForResolvedModule(authority.resolvedFileName);
         const availableExports = authorityBuiltinExports ?? builtinExports ??
@@ -2002,8 +2341,10 @@ export function createProjectMacroEnvironment(
         }
 
         definitions.set(localName, definition);
+        let siteKind: ImportedMacroSiteKind | undefined;
         const definitionMetadata = getLoadedMacroDefinitionMetadata(definition);
         if (definitionMetadata) {
+          siteKind = macroSiteKindForFactoryForm(definitionMetadata.form);
           let siteKindsForSpecifier = siteKindsBySpecifier.get(specifier);
           if (!siteKindsForSpecifier) {
             siteKindsForSpecifier = new Map();
@@ -2011,9 +2352,17 @@ export function createProjectMacroEnvironment(
           }
           siteKindsForSpecifier.set(
             exportName,
-            macroSiteKindForFactoryForm(definitionMetadata.form),
+            siteKind,
           );
         }
+        authorityBindings.push({
+          authorityExportName: authority.exportName,
+          localName,
+          resolvedFileName: authority.resolvedFileName,
+          siteKind,
+          specifier,
+          specifierExportName: exportName,
+        });
         const rewriteExpander = availableExports.rewrite.get(authority.exportName);
         const advancedExpander = availableExports.advanced.get(authority.exportName);
         if (rewriteExpander) {
@@ -2050,10 +2399,21 @@ export function createProjectMacroEnvironment(
     const loaded = {
       advancedRegistry,
       definitions,
+      expansionDependencySignature: [...expansionDependencySignatures].sort().join('\u0004'),
       importedBindingUsage,
       registry,
       siteKindsBySpecifier,
     };
+    stableReuseState.bindingPlansByFile.set(
+      sourceFile.fileName,
+      createCachedPerFileMacroBindingPlanEntry(
+        sourceFile,
+        authorityBindings,
+        loaded.expansionDependencySignature,
+        importedBindingUsage,
+        resolutionDependencyFiles,
+      ),
+    );
     bindingsByFile.set(sourceFile.fileName, loaded);
     return loaded;
   }
@@ -2101,36 +2461,94 @@ export function createProjectMacroEnvironment(
         }
       >();
       const bindingUsageByFile = new Map<string, ReadonlyMap<string, ImportedBindingUsage>>();
+      const expansionCacheKeyByFile = new Map<string, string>();
       const hasBindingsByFile = new Map<string, boolean>();
       const expandedFiles = new Map<string, ts.SourceFile>();
+      const expansionCache = preparedProgram.preparedHost.reuseState.expandedMacroSourceFiles;
       const macroSourceFiles: ts.SourceFile[] = [];
 
       for (const sourceFile of sourceFiles) {
+        const cachedExpandedSourceFile = expansionCache.get(sourceFile.fileName);
         const macroNames = macroNamesForFile(sourceFile);
         if (macroNames.size === 0) {
           const sourceFileName = preparedProgram.toSourceFileName(sourceFile.fileName);
           const preparedSource = preparedProgram.preparedHost.getPreparedSourceFile(sourceFileName);
-          expandedFiles.set(
-            sourceFile.fileName,
-            preparedSource
-              ? ts.createSourceFile(
-                sourceFile.fileName,
-                preparedSource.originalText,
-                preparedProgram.options.target ?? ts.ScriptTarget.Latest,
-                true,
-                scriptKindForHostFile(sourceFile.fileName),
-              )
-              : sourceFile,
+          const nonMacroExpansionCacheKey = createNonMacroExpansionCacheKey(
+            sourceFile,
+            preparedSource,
           );
+          if (cachedExpandedSourceFile?.cacheKey === nonMacroExpansionCacheKey) {
+            macroCacheStats.expandedFileCacheHits += 1;
+            expandedFiles.set(sourceFile.fileName, cachedExpandedSourceFile.sourceFile);
+            continue;
+          }
+          if (cachedExpandedSourceFile) {
+            macroCacheStats.expandedFileCacheInvalidations += 1;
+          } else {
+            macroCacheStats.expandedFileCacheMisses += 1;
+          }
+          const expandedSourceFile = preparedSource
+            ? ts.createSourceFile(
+              sourceFile.fileName,
+              preparedSource.originalText,
+              preparedProgram.options.target ?? ts.ScriptTarget.Latest,
+              true,
+              scriptKindForHostFile(sourceFile.fileName),
+            )
+            : sourceFile;
+          expandedFiles.set(sourceFile.fileName, expandedSourceFile);
+          expansionCache.set(sourceFile.fileName, {
+            cacheKey: nonMacroExpansionCacheKey,
+            sourceFile: expandedSourceFile,
+          });
           continue;
         }
 
+        const cachedBindingPlan = stableReuseState.bindingPlansByFile.get(sourceFile.fileName);
+        if (cachedExpandedSourceFile && cachedBindingPlan &&
+          isCachedMacroBindingPlanValid(sourceFile, cachedBindingPlan)) {
+          const sourceFileName = preparedProgram.toSourceFileName(sourceFile.fileName);
+          const preparedSource = preparedProgram.preparedHost.getPreparedSourceFile(sourceFileName);
+          const cachedExpansionCacheKey = createExpansionCacheKeyFromPreparedState(
+            sourceFile,
+            cachedBindingPlan.expansionDependencySignature,
+            cachedBindingPlan.importedBindingUsage,
+            preserveRemovedImportStatements,
+            preserveMissingExpanders,
+            annotateExpansions,
+            preparedSource,
+          );
+          if (cachedExpandedSourceFile.cacheKey === cachedExpansionCacheKey) {
+            macroCacheStats.expandedFileCacheHits += 1;
+            expandedFiles.set(sourceFile.fileName, cachedExpandedSourceFile.sourceFile);
+            continue;
+          }
+        }
+
         const bindings = bindingsForSourceFile(sourceFile);
+        const expansionCacheKey = createExpansionCacheKey(
+          sourceFile,
+          bindings,
+          preserveRemovedImportStatements,
+          preserveMissingExpanders,
+          annotateExpansions,
+        );
+        if (cachedExpandedSourceFile?.cacheKey === expansionCacheKey) {
+          macroCacheStats.expandedFileCacheHits += 1;
+          expandedFiles.set(sourceFile.fileName, cachedExpandedSourceFile.sourceFile);
+          continue;
+        }
+        if (cachedExpandedSourceFile) {
+          macroCacheStats.expandedFileCacheInvalidations += 1;
+        } else {
+          macroCacheStats.expandedFileCacheMisses += 1;
+        }
         registriesByFile.set(sourceFile.fileName, {
           registry: bindings.registry,
           advancedRegistry: bindings.advancedRegistry,
           siteKindsBySpecifier: bindings.siteKindsBySpecifier,
         });
+        expansionCacheKeyByFile.set(sourceFile.fileName, expansionCacheKey);
         bindingUsageByFile.set(sourceFile.fileName, bindings.importedBindingUsage);
         hasBindingsByFile.set(sourceFile.fileName, hasResolvedMacroBindings(bindings));
         macroSourceFiles.push(sourceFile);
@@ -2146,32 +2564,35 @@ export function createProjectMacroEnvironment(
         )
         : new Map<string, ts.SourceFile>();
       for (const [fileName, sourceFile] of expanded.entries()) {
+        let finalExpandedSourceFile: ts.SourceFile;
         if (!hasBindingsByFile.get(fileName)) {
           const sourceFileName = preparedProgram.toSourceFileName(fileName);
           const preparedSource = preparedProgram.preparedHost.getPreparedSourceFile(sourceFileName);
-          expandedFiles.set(
-            fileName,
-            preparedSource
-              ? ts.createSourceFile(
-                fileName,
-                preparedSource.originalText,
-                preparedProgram.options.target ?? ts.ScriptTarget.Latest,
-                true,
-                scriptKindForHostFile(fileName),
-              )
-              : sourceFile,
-          );
-          continue;
-        }
-
-        expandedFiles.set(
-          fileName,
-          stripCompileTimeOnlyImportedBindings(
+          finalExpandedSourceFile = preparedSource
+            ? ts.createSourceFile(
+              fileName,
+              preparedSource.originalText,
+              preparedProgram.options.target ?? ts.ScriptTarget.Latest,
+              true,
+              scriptKindForHostFile(fileName),
+            )
+            : sourceFile;
+        } else {
+          finalExpandedSourceFile = stripCompileTimeOnlyImportedBindings(
             sourceFile,
             bindingUsageByFile.get(fileName) ?? new Map(),
             preserveRemovedImportStatements,
-          ),
-        );
+          );
+        }
+
+        expandedFiles.set(fileName, finalExpandedSourceFile);
+        const expansionCacheKey = expansionCacheKeyByFile.get(fileName);
+        if (expansionCacheKey !== undefined) {
+          expansionCache.set(fileName, {
+            cacheKey: expansionCacheKey,
+            sourceFile: finalExpandedSourceFile,
+          });
+        }
       }
       return expandedFiles;
     },

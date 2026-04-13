@@ -772,16 +772,43 @@ interface CachedSourceFileEntry {
   text: string;
 }
 
+interface CachedBuiltinAnnotatedSourceFileEntry {
+  rewrittenText: string;
+  sourceText: string;
+}
+
+interface CachedBuiltinFinalSourceFileEntry {
+  diagnosticPreparedFile: PreparedSourceFile | undefined;
+  finalOverrideText: string;
+  normalizedText: string | undefined;
+  placeholderSignature: string;
+  preparedOriginalText: string | undefined;
+  preparedRewrittenText: string | undefined;
+  sourceText: string;
+}
+
 export interface CachedMacroModuleArtifactEntry {
   dependencySourceTexts: ReadonlyMap<string, string>;
   javaScriptText: string;
 }
 
+export interface CachedExpandedMacroSourceFileEntry {
+  cacheKey: string;
+  sourceFile: ts.SourceFile;
+}
+
 export interface PreparedCompilerHostReuseState {
+  builtinAnnotatedSourceFiles: Map<string, CachedBuiltinAnnotatedSourceFileEntry>;
+  builtinFinalSourceFiles: Map<string, CachedBuiltinFinalSourceFileEntry>;
+  expandedMacroSourceFiles: Map<string, CachedExpandedMacroSourceFileEntry>;
   macroModuleArtifactCache: Map<string, CachedMacroModuleArtifactEntry>;
   moduleResolutionCache: ts.ModuleResolutionCache;
   moduleResolutionCacheSignature: string;
   preparedSourceFiles: Map<string, CachedPreparedSourceFileEntry>;
+  semanticDiagnosticsBuilderProgram: ts.SemanticDiagnosticsBuilderProgram | undefined;
+  semanticDiagnosticsOptionSignature: string;
+  semanticDiagnosticsProjectReferencesSignature: string;
+  semanticDiagnosticsRootNamesSignature: string;
   projectedDeclarationBuilderProgram: ts.EmitAndSemanticDiagnosticsBuilderProgram | undefined;
   projectedDeclarationOutputs: ReadonlyMap<string, string> | undefined;
   projectedDeclarationOptionSignature: string;
@@ -842,6 +869,9 @@ export function createPreparedCompilerHostReuseState(
     ? (fileName: string) => fileName
     : (fileName: string) => fileName.toLowerCase();
   return {
+    builtinAnnotatedSourceFiles: new Map(),
+    builtinFinalSourceFiles: new Map(),
+    expandedMacroSourceFiles: new Map(),
     macroModuleArtifactCache: new Map(),
     moduleResolutionCache: ts.createModuleResolutionCache(
       currentDirectory,
@@ -849,6 +879,10 @@ export function createPreparedCompilerHostReuseState(
     ),
     moduleResolutionCacheSignature: '',
     preparedSourceFiles: new Map(),
+    semanticDiagnosticsBuilderProgram: undefined,
+    semanticDiagnosticsOptionSignature: '',
+    semanticDiagnosticsProjectReferencesSignature: '',
+    semanticDiagnosticsRootNamesSignature: '',
     projectedDeclarationBuilderProgram: undefined,
     projectedDeclarationOutputs: undefined,
     projectedDeclarationOptionSignature: '',
@@ -862,8 +896,15 @@ export function createPreparedCompilerHostReuseState(
 export function clearPreparedCompilerHostReuseState(
   reusableState: PreparedCompilerHostReuseState,
 ): void {
+  reusableState.builtinAnnotatedSourceFiles.clear();
+  reusableState.builtinFinalSourceFiles.clear();
+  reusableState.expandedMacroSourceFiles.clear();
   reusableState.macroModuleArtifactCache.clear();
   reusableState.preparedSourceFiles.clear();
+  reusableState.semanticDiagnosticsBuilderProgram = undefined;
+  reusableState.semanticDiagnosticsOptionSignature = '';
+  reusableState.semanticDiagnosticsProjectReferencesSignature = '';
+  reusableState.semanticDiagnosticsRootNamesSignature = '';
   reusableState.projectedDeclarationBuilderProgram = undefined;
   reusableState.projectedDeclarationOutputs = undefined;
   reusableState.projectedDeclarationProgram = undefined;
@@ -4114,14 +4155,32 @@ export function createPreparedProgram(
     options.preserveMacroAuthoring ?? false,
     options.invalidateModuleResolutions ?? true,
   );
-  const program = ts.createProgram({
-    oldProgram: options.oldProgram,
-    host: preparedHost.host,
-    rootNames: options.rootNames.map(toProgramFileName),
-    options: options.options,
-    projectReferences: options.projectReferences,
-    configFileParsingDiagnostics: options.configFileParsingDiagnostics,
-  });
+  const rootNames = options.rootNames.map(toProgramFileName);
+  const optionSignature = stableStringify(options.options);
+  const rootNamesSignature = rootNames.join('\u0000');
+  const projectReferencesSignature = stableStringify(options.projectReferences ?? []);
+  const canIncrementallyReuseSemanticDiagnostics =
+    preparedHost.reuseState.semanticDiagnosticsOptionSignature === optionSignature &&
+    preparedHost.reuseState.semanticDiagnosticsRootNamesSignature === rootNamesSignature &&
+    preparedHost.reuseState.semanticDiagnosticsProjectReferencesSignature ===
+      projectReferencesSignature;
+  // Use the semantic builder path so successive internal rebuilds can retain checker state.
+  const builderProgram = ts.createSemanticDiagnosticsBuilderProgram(
+    rootNames,
+    options.options,
+    preparedHost.host,
+    canIncrementallyReuseSemanticDiagnostics
+      ? preparedHost.reuseState.semanticDiagnosticsBuilderProgram
+      : undefined,
+    options.configFileParsingDiagnostics,
+    options.projectReferences,
+  );
+  const program = builderProgram.getProgram();
+  preparedHost.reuseState.semanticDiagnosticsBuilderProgram = builderProgram;
+  preparedHost.reuseState.semanticDiagnosticsOptionSignature = optionSignature;
+  preparedHost.reuseState.semanticDiagnosticsProjectReferencesSignature =
+    projectReferencesSignature;
+  preparedHost.reuseState.semanticDiagnosticsRootNamesSignature = rootNamesSignature;
 
   return {
     configuredSoundscriptFileNames,

@@ -5,11 +5,10 @@ import type { MergedDiagnostic } from '../checker/diagnostics.ts';
 import {
   analyzePreparedProject,
   analyzePreparedProjectForFile,
-  disposePreparedAnalysisProject,
   getPreparedAnalysisViewForFile,
+  IncrementalProjectSession,
   type PreparedAnalysisProject,
   type PreparedAnalysisView,
-  prepareProjectAnalysis,
 } from '../checker/analyze_project.ts';
 import type { MacroModuleCacheStats } from '../frontend/project_macro_support.ts';
 import {
@@ -220,11 +219,10 @@ export interface PrepareRenameResult {
 
 interface CachedProjectContext {
   additionalRootNames: readonly string[];
-  analyzedResultByFile: Map<string, ReturnType<typeof analyzePreparedProjectForFile>>;
+  analysisSession: IncrementalProjectSession;
   documentsKey: string;
   mode: 'full' | 'sts-local';
   stsDocumentsKey: string;
-  analyzedResult?: ReturnType<typeof analyzePreparedProject>;
   preparedProject: PreparedAnalysisProject;
 }
 
@@ -256,6 +254,12 @@ function aggregateMacroCacheStats(
   preparedProject: PreparedAnalysisProject,
 ): MacroModuleCacheStats {
   const aggregated: MacroModuleCacheStats = {
+    bindingPlanCacheHits: 0,
+    bindingPlanCacheInvalidations: 0,
+    bindingPlanCacheMisses: 0,
+    expandedFileCacheHits: 0,
+    expandedFileCacheInvalidations: 0,
+    expandedFileCacheMisses: 0,
     evaluatedModules: 0,
     moduleCacheHits: 0,
     moduleCacheInvalidations: 0,
@@ -267,6 +271,12 @@ function aggregateMacroCacheStats(
       continue;
     }
 
+    aggregated.bindingPlanCacheHits += view.macroCacheStats.bindingPlanCacheHits;
+    aggregated.bindingPlanCacheInvalidations += view.macroCacheStats.bindingPlanCacheInvalidations;
+    aggregated.bindingPlanCacheMisses += view.macroCacheStats.bindingPlanCacheMisses;
+    aggregated.expandedFileCacheHits += view.macroCacheStats.expandedFileCacheHits;
+    aggregated.expandedFileCacheInvalidations += view.macroCacheStats.expandedFileCacheInvalidations;
+    aggregated.expandedFileCacheMisses += view.macroCacheStats.expandedFileCacheMisses;
     aggregated.evaluatedModules += view.macroCacheStats.evaluatedModules;
     aggregated.moduleCacheHits += view.macroCacheStats.moduleCacheHits;
     aggregated.moduleCacheInvalidations += view.macroCacheStats.moduleCacheInvalidations;
@@ -442,21 +452,22 @@ function getProjectContext(
   }
 
   const prepareStart = performance.now();
+  const analysisSession = cached?.analysisSession ?? new IncrementalProjectSession();
   const context: CachedProjectContext = {
     additionalRootNames,
-    analyzedResultByFile: new Map(),
+    analysisSession,
     documentsKey,
     mode,
     stsDocumentsKey,
-    preparedProject: prepareProjectAnalysis(
+    preparedProject: analysisSession.prepare(
       {
         additionalRootNames,
         projectPath,
         workingDirectory: dirname(projectPath),
         fileOverrides: toFileOverrideMap(documents),
       },
-      canReusePreparedProject ? reusableContext.preparedProject : undefined,
       { deferTypescriptView: mode === 'sts-local' },
+      canReusePreparedProject ? reusableContext.preparedProject : undefined,
     ),
   };
   const macroCacheStats = aggregateMacroCacheStats(context.preparedProject);
@@ -470,6 +481,12 @@ function getProjectContext(
       cache: canReusePreparedProject
         ? reusableContext === cached ? 'incremental-rebuild' : 'cross-mode-rebuild'
         : 'rebuild',
+      macroBindingPlanHits: macroCacheStats.bindingPlanCacheHits,
+      macroBindingPlanMisses: macroCacheStats.bindingPlanCacheMisses,
+      macroBindingPlanInvalidations: macroCacheStats.bindingPlanCacheInvalidations,
+      macroExpandedFileHits: macroCacheStats.expandedFileCacheHits,
+      macroExpandedFileMisses: macroCacheStats.expandedFileCacheMisses,
+      macroExpandedFileInvalidations: macroCacheStats.expandedFileCacheInvalidations,
       macroCacheHits: macroCacheStats.moduleCacheHits,
       macroCacheMisses: macroCacheStats.moduleCacheMisses,
       macroCacheInvalidations: macroCacheStats.moduleCacheInvalidations,
@@ -477,7 +494,6 @@ function getProjectContext(
     },
     { always: true },
   );
-  disposePreparedAnalysisProject(cached?.preparedProject, context.preparedProject);
   projectContextCache.set(projectContextCacheKey(projectPath, mode), context);
   return { context, projectPath };
 }
@@ -546,17 +562,20 @@ function getAnalyzedProjectContext(
     return null;
   }
 
-  entry.context.analyzedResult ??= measureLspTiming(
-    'project.analyze',
-    {
-      projectPath: entry.projectPath,
-      rootFiles: (entry.context.preparedProject.tsView?.program.getRootFileNames().length ?? 0) +
-        (entry.context.preparedProject.stsView?.program.getRootFileNames().length ?? 0),
-    },
-    () => analyzePreparedProject(entry.context.preparedProject),
-    { always: true },
-  );
-  return entry.context.analyzedResult;
+  if (!entry.context.analysisSession.hasAnalyzedProject()) {
+    return measureLspTiming(
+      'project.analyze',
+      {
+        projectPath: entry.projectPath,
+        rootFiles: (entry.context.preparedProject.tsView?.program.getRootFileNames().length ?? 0) +
+          (entry.context.preparedProject.stsView?.program.getRootFileNames().length ?? 0),
+      },
+      () => entry.context.analysisSession.analyzeProject(),
+      { always: true },
+    );
+  }
+
+  return entry.context.analysisSession.analyzeProject();
 }
 
 function getFileLocalAnalyzedProjectContext(
@@ -564,27 +583,28 @@ function getFileLocalAnalyzedProjectContext(
   session: SessionState,
 ): ReturnType<typeof analyzePreparedProjectForFile> | null {
   const entry = getProjectContext(filePath, session, 'sts-local');
-  if (!entry || entry.context.mode !== 'sts-local') {
+  if (!entry) {
     return null;
   }
 
-  const cached = entry.context.analyzedResultByFile.get(filePath);
-  if (cached) {
-    return cached;
+  if (!entry.context.analysisSession.hasAnalyzedFile(filePath)) {
+    return measureLspTiming(
+      'project.analyzeFile',
+      {
+        filePath,
+        projectPath: entry.projectPath,
+        rootFiles: entry.context.mode === 'sts-local'
+          ? entry.context.preparedProject.stsView?.program.getRootFileNames().length ?? 0
+          : (entry.context.preparedProject.tsView?.program.getRootFileNames().length ?? 0) +
+            (entry.context.preparedProject.stsView?.program.getRootFileNames().length ?? 0),
+        mode: entry.context.mode,
+      },
+      () => entry.context.analysisSession.analyzeFile(filePath),
+      { always: true },
+    );
   }
 
-  const analyzedResult = measureLspTiming(
-    'project.analyzeFile',
-    {
-      filePath,
-      projectPath: entry.projectPath,
-      rootFiles: entry.context.preparedProject.stsView?.program.getRootFileNames().length ?? 0,
-    },
-    () => analyzePreparedProjectForFile(entry.context.preparedProject, filePath),
-    { always: true },
-  );
-  entry.context.analyzedResultByFile.set(filePath, analyzedResult);
-  return analyzedResult;
+  return entry.context.analysisSession.analyzeFile(filePath);
 }
 
 function getCollectedResolvedMacroPlaceholders(
@@ -3271,9 +3291,13 @@ function propertyNameText(name: ts.PropertyName): string | undefined {
   return undefined;
 }
 
-function parseSound1019WritablePropertyName(diagnostic: CodeActionDiagnosticInput): string | undefined {
+function parseSound1019WritablePropertyName(
+  diagnostic: CodeActionDiagnosticInput,
+): string | undefined {
   const primaryMessage = diagnostic.message?.split('\n\n')[0];
-  const match = primaryMessage?.match(/^Writable property '([^']+)' is invariant in soundscript\.$/u);
+  const match = primaryMessage?.match(
+    /^Writable property '([^']+)' is invariant in soundscript\.$/u,
+  );
   return match?.[1];
 }
 
@@ -3315,8 +3339,11 @@ function findTypedDeclarationAncestor(
     node,
     (
       current,
-    ): current is ts.ParameterDeclaration | ts.PropertyDeclaration | ts.PropertySignature |
-      ts.VariableDeclaration =>
+    ): current is
+      | ts.ParameterDeclaration
+      | ts.PropertyDeclaration
+      | ts.PropertySignature
+      | ts.VariableDeclaration =>
       (
         ts.isVariableDeclaration(current) ||
         ts.isParameter(current) ||
@@ -3692,8 +3719,18 @@ function createFlowCaptureLocalCodeAction(
   }
 
   const bodyMatches = [
-    ...collectMatchingFlowCaptureExpressions(ifStatement.thenStatement, sourceFile, text, narrowedValue),
-    ...collectMatchingFlowCaptureExpressions(ifStatement.elseStatement, sourceFile, text, narrowedValue),
+    ...collectMatchingFlowCaptureExpressions(
+      ifStatement.thenStatement,
+      sourceFile,
+      text,
+      narrowedValue,
+    ),
+    ...collectMatchingFlowCaptureExpressions(
+      ifStatement.elseStatement,
+      sourceFile,
+      text,
+      narrowedValue,
+    ),
   ];
   if (bodyMatches.length === 0) {
     return undefined;
@@ -3733,7 +3770,8 @@ function createFlowCaptureLocalCodeAction(
   ];
 
   return {
-    title: `Capture \`${narrowedValue}\` into \`${captureName}\` before the ${boundaryLabel} boundary`,
+    title:
+      `Capture \`${narrowedValue}\` into \`${captureName}\` before the ${boundaryLabel} boundary`,
     kind: 'quickfix',
     edit: {
       changes: {
@@ -3775,7 +3813,11 @@ function createReadonlyArrayTypeCodeAction(
   const declaration = findTypedDeclarationAncestor(current) ??
     (
       diagnosticOffsets
-        ? findBestTypedDeclarationForRange(sourceFile, diagnosticOffsets.start, diagnosticOffsets.end)
+        ? findBestTypedDeclarationForRange(
+          sourceFile,
+          diagnosticOffsets.start,
+          diagnosticOffsets.end,
+        )
         : undefined
     );
   if (!declaration?.type || !isSupportedReadonlyArrayTypeNode(declaration.type)) {
@@ -3847,13 +3889,21 @@ function createReadonlyWritablePropertyCodeAction(
       const typedDeclaration = findTypedDeclarationAncestor(current) ??
         (
           diagnosticOffsets
-            ? findBestTypedDeclarationForRange(sourceFile, diagnosticOffsets.start, diagnosticOffsets.end)
+            ? findBestTypedDeclarationForRange(
+              sourceFile,
+              diagnosticOffsets.start,
+              diagnosticOffsets.end,
+            )
             : undefined
         );
       if (!typedDeclaration?.type) {
         return undefined;
       }
-      return resolveLocalWritablePropertyDeclaration(sourceFile, typedDeclaration.type, propertyName);
+      return resolveLocalWritablePropertyDeclaration(
+        sourceFile,
+        typedDeclaration.type,
+        propertyName,
+      );
     })();
 
   if (!targetDeclaration || targetDeclaration.getSourceFile().fileName !== sourceFile.fileName) {
@@ -7046,20 +7096,21 @@ export function analyzeOpenDocument(
 ): AnalyzedDocument {
   return measureDocumentOperation('request.diagnostics', uri, () => {
     const filePath = fromFileUrl(uri);
-    const analyzedResult = getAnalyzedProjectContext(filePath, session);
-    if (!analyzedResult) {
-      return {
-        diagnostics: [createNoProjectDiagnostic(filePath)],
-        filePath,
-        uri,
-      };
-    }
-
     try {
-      const diagnostics = [
-        ...analyzedResult.diagnostics,
-        ...(getFileLocalAnalyzedProjectContext(filePath, session)?.diagnostics ?? []),
-      ].filter((diagnostic) => diagnostic.filePath === filePath);
+      const fileLocalAnalyzedResult = getFileLocalAnalyzedProjectContext(filePath, session);
+      const analyzedResult = fileLocalAnalyzedResult ??
+        getAnalyzedProjectContext(filePath, session);
+      if (!analyzedResult) {
+        return {
+          diagnostics: [createNoProjectDiagnostic(filePath)],
+          filePath,
+          uri,
+        };
+      }
+
+      const diagnostics = analyzedResult.diagnostics.filter((diagnostic) =>
+        diagnostic.filePath === filePath
+      );
       const uniqueDiagnostics = new Map<string, MergedDiagnostic>();
       for (const diagnostic of diagnostics) {
         const key = [

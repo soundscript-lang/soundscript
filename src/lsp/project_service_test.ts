@@ -123,7 +123,9 @@ Deno.test('project service reuses prepared sts-local analysis state across open-
   assert(initialPreparedProject.stsView !== null);
   const otherSourcePath = join(tempDirectory, 'src/other.sts');
   assert(
-    initialPreparedProject.stsView.preparedProgram.preparedHost.getPreparedSourceFile(otherSourcePath) !==
+    initialPreparedProject.stsView.preparedProgram.preparedHost.getPreparedSourceFile(
+      otherSourcePath,
+    ) !==
       undefined,
   );
 
@@ -139,8 +141,12 @@ Deno.test('project service reuses prepared sts-local analysis state across open-
     initialPreparedProject.stsCompilerHostReuseState,
   );
   assertEquals(
-    updatedPreparedProject.stsView.preparedProgram.preparedHost.getPreparedSourceFile(otherSourcePath),
-    initialPreparedProject.stsView.preparedProgram.preparedHost.getPreparedSourceFile(otherSourcePath),
+    updatedPreparedProject.stsView.preparedProgram.preparedHost.getPreparedSourceFile(
+      otherSourcePath,
+    ),
+    initialPreparedProject.stsView.preparedProgram.preparedHost.getPreparedSourceFile(
+      otherSourcePath,
+    ),
   );
 });
 
@@ -223,6 +229,139 @@ Deno.test('project service keeps full and sts-local prepared state cached indepe
   const localPreparedProjectAfterFull = getPreparedProjectForTest(uri, session, 'sts-local');
   assert(localPreparedProjectAfterFull !== null);
   assert(Object.is(localPreparedProjectAfterFull, initialLocalPreparedProject));
+});
+
+Deno.test('project service uses file-local analysis for soundscript document diagnostics', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/demo.sts': [
+      'const dict = Object.create(null);',
+      'const plain: object = dict;',
+      'export const value = plain;',
+      '',
+    ].join('\n'),
+  });
+
+  const session = new SessionState();
+  const uri = toFileUrl(join(tempDirectory, 'src/demo.sts')).href;
+  session.open({
+    uri,
+    languageId: 'soundscript',
+    version: 1,
+    text: [
+      'const dict = Object.create(null);',
+      'const plain: object = dict;',
+      'export const value = plain;',
+      '',
+    ].join('\n'),
+  });
+
+  const originalTimingEnv = Deno.env.get('SOUNDSCRIPT_LSP_TIMING');
+  const originalError = console.error;
+  const logs: string[] = [];
+  console.error = (...args: unknown[]) => {
+    logs.push(args.map((arg) => String(arg)).join(' '));
+  };
+
+  try {
+    Deno.env.set('SOUNDSCRIPT_LSP_TIMING', '1');
+
+    const analyzed = analyzeOpenDocument(uri, session);
+    assertEquals(analyzed.diagnostics.length > 0, true);
+    assertEquals(
+      logs.some((line) => line.includes('[soundscript:lsp] project.analyzeFile ')),
+      true,
+    );
+    assertEquals(
+      logs.some((line) => line.includes('[soundscript:lsp] project.analyze ')),
+      false,
+    );
+  } finally {
+    if (originalTimingEnv === undefined) {
+      Deno.env.delete('SOUNDSCRIPT_LSP_TIMING');
+    } else {
+      Deno.env.set('SOUNDSCRIPT_LSP_TIMING', originalTimingEnv);
+    }
+    console.error = originalError;
+  }
+});
+
+Deno.test('project service uses file-local analysis for TypeScript document diagnostics', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.ts', 'src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/demo.ts': [
+      'const value: string = 1;',
+      'export { value };',
+      '',
+    ].join('\n'),
+    'src/helper.sts': 'export const helper = 1;\n',
+  });
+
+  const session = new SessionState();
+  const uri = toFileUrl(join(tempDirectory, 'src/demo.ts')).href;
+  session.open({
+    uri,
+    languageId: 'typescript',
+    version: 1,
+    text: [
+      'const value: string = 1;',
+      'export { value };',
+      '',
+    ].join('\n'),
+  });
+
+  const originalTimingEnv = Deno.env.get('SOUNDSCRIPT_LSP_TIMING');
+  const originalError = console.error;
+  const logs: string[] = [];
+  console.error = (...args: unknown[]) => {
+    logs.push(args.map((arg) => String(arg)).join(' '));
+  };
+
+  try {
+    Deno.env.set('SOUNDSCRIPT_LSP_TIMING', '1');
+
+    const analyzed = analyzeOpenDocument(uri, session);
+    assertEquals(analyzed.diagnostics.map((diagnostic) => diagnostic.code), ['TS2322']);
+    assertEquals(
+      logs.some((line) => line.includes('[soundscript:lsp] project.analyzeFile ')),
+      true,
+    );
+    assertEquals(
+      logs.some((line) => line.includes('[soundscript:lsp] project.analyze ')),
+      false,
+    );
+  } finally {
+    if (originalTimingEnv === undefined) {
+      Deno.env.delete('SOUNDSCRIPT_LSP_TIMING');
+    } else {
+      Deno.env.set('SOUNDSCRIPT_LSP_TIMING', originalTimingEnv);
+    }
+    console.error = originalError;
+  }
 });
 
 Deno.test('project service allows pure type-only .sts imports from local .ts modules', async () => {
@@ -349,7 +488,11 @@ Deno.test('project service offers a SOUND1020 quick fix to capture narrowed memb
   assertEquals(analyzed.diagnostics[0]?.metadata?.primarySymbol, 'box.value');
   assertEquals(analyzed.diagnostics[0]?.metadata?.secondarySymbol, 'call');
 
-  const actions = codeActionsOpenDocument(uri, toCodeActionDiagnostics(analyzed.diagnostics), session);
+  const actions = codeActionsOpenDocument(
+    uri,
+    toCodeActionDiagnostics(analyzed.diagnostics),
+    session,
+  );
   const action = actions?.find((entry) =>
     entry.title === 'Capture `box.value` into `boxValue` before the call boundary'
   );
@@ -417,7 +560,11 @@ Deno.test('project service offers a SOUND1020 quick fix to capture narrowed memb
   assertEquals(analyzed.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1020']);
   assertEquals(analyzed.diagnostics[0]?.metadata?.secondarySymbol, 'suspension');
 
-  const actions = codeActionsOpenDocument(uri, toCodeActionDiagnostics(analyzed.diagnostics), session);
+  const actions = codeActionsOpenDocument(
+    uri,
+    toCodeActionDiagnostics(analyzed.diagnostics),
+    session,
+  );
   const action = actions?.find((entry) =>
     entry.title === 'Capture `box.value` into `boxValue` before the await boundary'
   );
@@ -618,7 +765,11 @@ Deno.test('project service suffixes captured SOUND1020 locals when the preferred
   const session = openSessionDocument(uri, text);
   const analyzed = analyzeOpenDocument(uri, session);
 
-  const actions = codeActionsOpenDocument(uri, toCodeActionDiagnostics(analyzed.diagnostics), session);
+  const actions = codeActionsOpenDocument(
+    uri,
+    toCodeActionDiagnostics(analyzed.diagnostics),
+    session,
+  );
   const action = actions?.find((entry) =>
     entry.title === 'Capture `box.value` into `boxValue2` before the call boundary'
   );
@@ -668,7 +819,11 @@ Deno.test('project service offers a SOUND1019 quick fix to make widened array ty
   const analyzed = analyzeOpenDocument(uri, session);
 
   assertEquals(analyzed.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1019']);
-  const actions = codeActionsOpenDocument(uri, toCodeActionDiagnostics(analyzed.diagnostics), session);
+  const actions = codeActionsOpenDocument(
+    uri,
+    toCodeActionDiagnostics(analyzed.diagnostics),
+    session,
+  );
   const action = actions?.find((entry) => entry.title === 'Make array type readonly');
   assert(action);
   assertEquals(action.edit?.changes?.[uri]?.[0], {
@@ -715,7 +870,11 @@ Deno.test('project service offers a SOUND1019 quick fix to rewrite Array<T> as R
   const session = openSessionDocument(uri, text);
   const analyzed = analyzeOpenDocument(uri, session);
 
-  const actions = codeActionsOpenDocument(uri, toCodeActionDiagnostics(analyzed.diagnostics), session);
+  const actions = codeActionsOpenDocument(
+    uri,
+    toCodeActionDiagnostics(analyzed.diagnostics),
+    session,
+  );
   const action = actions?.find((entry) => entry.title === 'Make array type readonly');
   assert(action);
   assertEquals(action.edit?.changes?.[uri]?.[0], {
@@ -760,8 +919,15 @@ Deno.test('project service offers a SOUND1019 quick fix to make writable target 
   const analyzed = analyzeOpenDocument(uri, session);
 
   assertEquals(analyzed.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1019']);
-  assertEquals(analyzed.diagnostics[0]?.message, "Writable property 'animals' is invariant in soundscript.");
-  const actions = codeActionsOpenDocument(uri, toCodeActionDiagnostics(analyzed.diagnostics), session);
+  assertEquals(
+    analyzed.diagnostics[0]?.message,
+    "Writable property 'animals' is invariant in soundscript.",
+  );
+  const actions = codeActionsOpenDocument(
+    uri,
+    toCodeActionDiagnostics(analyzed.diagnostics),
+    session,
+  );
   const action = actions?.find((entry) => entry.title === "Make 'animals' readonly");
   assert(action);
   assertEquals(action.edit?.changes?.[uri]?.[0], {
@@ -847,7 +1013,11 @@ Deno.test('project service skips SOUND1019 readonly quick fixes when the mutable
   const analyzed = analyzeOpenDocument(uri, session);
 
   assertEquals(analyzed.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1019']);
-  const actions = codeActionsOpenDocument(uri, toCodeActionDiagnostics(analyzed.diagnostics), session);
+  const actions = codeActionsOpenDocument(
+    uri,
+    toCodeActionDiagnostics(analyzed.diagnostics),
+    session,
+  );
   const action = actions?.find((entry) => entry.title === "Make 'animals' readonly");
   assertEquals(action, undefined);
 });

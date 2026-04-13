@@ -116,6 +116,284 @@ interface PrepareProjectAnalysisOptions {
   deferTypescriptView?: boolean;
 }
 
+interface AnalyzeProjectOptionsSnapshot {
+  additionalRootNames: readonly string[];
+  fileOverrides: ReadonlyMap<string, string>;
+  projectPath: string;
+  target: AnalyzeProjectOptions['target'];
+  workingDirectory: string;
+}
+
+interface CachedFileAnalysisResult {
+  cacheDependencyPaths: readonly string[];
+  result: AnalyzeProjectResult;
+  supportsSelectiveReuse: boolean;
+}
+
+function cloneFileOverrides(
+  fileOverrides: ReadonlyMap<string, string> | undefined,
+): ReadonlyMap<string, string> {
+  return new Map(fileOverrides ?? []);
+}
+
+function snapshotAnalyzeProjectOptions(
+  options: AnalyzeProjectOptions,
+): AnalyzeProjectOptionsSnapshot {
+  return {
+    additionalRootNames: [...(options.additionalRootNames ?? [])],
+    fileOverrides: cloneFileOverrides(options.fileOverrides),
+    projectPath: options.projectPath,
+    target: options.target,
+    workingDirectory: options.workingDirectory,
+  };
+}
+
+function fileOverridesEqual(
+  left: ReadonlyMap<string, string>,
+  right: ReadonlyMap<string, string>,
+): boolean {
+  if (left.size !== right.size) {
+    return false;
+  }
+
+  for (const [filePath, text] of left.entries()) {
+    if (right.get(filePath) !== text) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+function analyzeProjectOptionsEqual(
+  left: AnalyzeProjectOptionsSnapshot,
+  right: AnalyzeProjectOptions,
+): boolean {
+  return left.projectPath === right.projectPath &&
+    left.workingDirectory === right.workingDirectory &&
+    left.target === right.target &&
+    rootNamesEqual(left.additionalRootNames, right.additionalRootNames ?? []) &&
+    fileOverridesEqual(left.fileOverrides, cloneFileOverrides(right.fileOverrides));
+}
+
+function prepareProjectAnalysisOptionsEqual(
+  left: PrepareProjectAnalysisOptions,
+  right: PrepareProjectAnalysisOptions,
+): boolean {
+  return (left.deferTypescriptView ?? false) === (right.deferTypescriptView ?? false);
+}
+
+function collectChangedFileOverridePaths(
+  left: ReadonlyMap<string, string>,
+  right: ReadonlyMap<string, string>,
+): readonly string[] {
+  const changedPaths = new Set<string>();
+  for (const filePath of new Set([...left.keys(), ...right.keys()])) {
+    if (left.get(filePath) !== right.get(filePath)) {
+      changedPaths.add(filePath);
+    }
+  }
+
+  return [...changedPaths];
+}
+
+function canRetainCachedFileAnalysisResult(
+  filePath: string,
+  cachedResult: CachedFileAnalysisResult,
+  changedOverridePaths: readonly string[],
+  previousOptions: AnalyzeProjectOptionsSnapshot,
+  nextOptions: AnalyzeProjectOptionsSnapshot,
+  previousPrepareOptions: PrepareProjectAnalysisOptions,
+  nextPrepareOptions: PrepareProjectAnalysisOptions,
+  previousPreparedProject: PreparedAnalysisProject,
+  nextPreparedProject: PreparedAnalysisProject,
+): boolean {
+  if (!cachedResult.supportsSelectiveReuse) {
+    return false;
+  }
+
+  if (
+    !prepareProjectAnalysisOptionsEqual(previousPrepareOptions, nextPrepareOptions) ||
+    previousOptions.projectPath !== nextOptions.projectPath ||
+    previousOptions.workingDirectory !== nextOptions.workingDirectory ||
+    previousOptions.target !== nextOptions.target ||
+    !rootNamesEqual(previousOptions.additionalRootNames, nextOptions.additionalRootNames) ||
+    previousPreparedProject.configReuseSignature !== nextPreparedProject.configReuseSignature ||
+    previousPreparedProject.soundscriptRootDiscoverySignature !==
+      nextPreparedProject.soundscriptRootDiscoverySignature
+  ) {
+    return false;
+  }
+
+  if (changedOverridePaths.length === 0) {
+    return false;
+  }
+
+  if (
+    changedOverridePaths.some((changedFilePath) =>
+      !isPreparedAnalysisProjectSourceFile(nextPreparedProject, changedFilePath)
+    )
+  ) {
+    return false;
+  }
+
+  return !changedOverridePaths.some((changedFilePath) =>
+    matchesPreparedAnalysisAnyFilePath(changedFilePath, cachedResult.cacheDependencyPaths)
+  );
+}
+
+function isPreparedAnalysisProjectSourceFile(
+  preparedProject: PreparedAnalysisProject,
+  filePath: string,
+): boolean {
+  const preparedView = getPreparedAnalysisViewForFile(preparedProject, filePath);
+  return preparedView !== null && getPreparedViewSourceFileMatch(preparedView, filePath) !== null;
+}
+
+export class IncrementalProjectSession {
+  #analyzedProject: AnalyzeProjectResult | null = null;
+  #analyzedResultsByFile = new Map<string, CachedFileAnalysisResult>();
+  #optionsSnapshot: AnalyzeProjectOptionsSnapshot | null = null;
+  #prepareOptions: PrepareProjectAnalysisOptions = {};
+  #preparedProject: PreparedAnalysisProject | null = null;
+
+  get preparedProject(): PreparedAnalysisProject | null {
+    return this.#preparedProject;
+  }
+
+  hasAnalyzedFile(filePath: string): boolean {
+    return this.#analyzedResultsByFile.has(filePath);
+  }
+
+  hasAnalyzedProject(): boolean {
+    return this.#analyzedProject !== null;
+  }
+
+  analyzeFile(filePath: string): AnalyzeProjectResult {
+    const cached = this.#analyzedResultsByFile.get(filePath);
+    if (cached) {
+      return cached.result;
+    }
+
+    const preparedProject = this.#requirePreparedProject();
+    const result = analyzePreparedProjectForFile(preparedProject, filePath);
+    this.#analyzedResultsByFile.set(filePath, {
+      cacheDependencyPaths: collectPreparedProjectCacheDependencyPathsForFile(
+        preparedProject,
+        filePath,
+      ),
+      result,
+      supportsSelectiveReuse: true,
+    });
+    return result;
+  }
+
+  analyzeProject(): AnalyzeProjectResult {
+    this.#analyzedProject ??= analyzePreparedProject(this.#requirePreparedProject());
+    return this.#analyzedProject;
+  }
+
+  dispose(): void {
+    disposePreparedAnalysisProject(this.#preparedProject);
+    this.#analyzedProject = null;
+    this.#analyzedResultsByFile.clear();
+    this.#optionsSnapshot = null;
+    this.#prepareOptions = {};
+    this.#preparedProject = null;
+  }
+
+  prepare(
+    options: AnalyzeProjectOptions,
+    prepareOptions: PrepareProjectAnalysisOptions = {},
+    reusableProject?: PreparedAnalysisProject,
+  ): PreparedAnalysisProject {
+    if (
+      this.#preparedProject &&
+      this.#optionsSnapshot &&
+      analyzeProjectOptionsEqual(this.#optionsSnapshot, options) &&
+      prepareProjectAnalysisOptionsEqual(this.#prepareOptions, prepareOptions)
+    ) {
+      return this.#preparedProject;
+    }
+
+    const previousPreparedProject = this.#preparedProject;
+    const previousOptionsSnapshot = this.#optionsSnapshot;
+    const previousPrepareOptions = this.#prepareOptions;
+    const preparedProject = prepareProjectAnalysis(
+      options,
+      previousPreparedProject ?? reusableProject,
+      prepareOptions,
+    );
+    const nextOptionsSnapshot = snapshotAnalyzeProjectOptions(options);
+
+    this.#preparedProject = preparedProject;
+    this.#optionsSnapshot = nextOptionsSnapshot;
+    this.#prepareOptions = { ...prepareOptions };
+    this.#invalidateAnalysisCaches(
+      previousPreparedProject,
+      previousOptionsSnapshot,
+      previousPrepareOptions,
+      nextOptionsSnapshot,
+      prepareOptions,
+    );
+    disposePreparedAnalysisProject(previousPreparedProject, preparedProject);
+    return preparedProject;
+  }
+
+  #invalidateAnalysisCaches(
+    previousPreparedProject: PreparedAnalysisProject | null,
+    previousOptionsSnapshot: AnalyzeProjectOptionsSnapshot | null,
+    previousPrepareOptions: PrepareProjectAnalysisOptions,
+    nextOptionsSnapshot: AnalyzeProjectOptionsSnapshot,
+    nextPrepareOptions: PrepareProjectAnalysisOptions,
+  ): void {
+    this.#analyzedProject = null;
+
+    if (!previousPreparedProject || !previousOptionsSnapshot || !this.#preparedProject) {
+      this.#analyzedResultsByFile.clear();
+      return;
+    }
+
+    const changedOverridePaths = collectChangedFileOverridePaths(
+      previousOptionsSnapshot.fileOverrides,
+      nextOptionsSnapshot.fileOverrides,
+    );
+    if (changedOverridePaths.length === 0) {
+      this.#analyzedResultsByFile.clear();
+      return;
+    }
+
+    const retainedResultsByFile = new Map<string, CachedFileAnalysisResult>();
+    for (const [filePath, cachedResult] of this.#analyzedResultsByFile.entries()) {
+      if (
+        canRetainCachedFileAnalysisResult(
+          filePath,
+          cachedResult,
+          changedOverridePaths,
+          previousOptionsSnapshot,
+          nextOptionsSnapshot,
+          previousPrepareOptions,
+          nextPrepareOptions,
+          previousPreparedProject,
+          this.#preparedProject,
+        )
+      ) {
+        retainedResultsByFile.set(filePath, cachedResult);
+      }
+    }
+
+    this.#analyzedResultsByFile = retainedResultsByFile;
+  }
+
+  #requirePreparedProject(): PreparedAnalysisProject {
+    if (!this.#preparedProject) {
+      throw new Error('IncrementalProjectSession.prepare() must be called before analysis.');
+    }
+
+    return this.#preparedProject;
+  }
+}
+
 function combineRootNames(
   rootNames: readonly string[],
   additionalRootNames: readonly string[] = [],
@@ -1132,9 +1410,14 @@ function matchesPreparedAnalysisAnyFilePath(
   );
 }
 
-function collectPreparedViewFrontendDiagnosticPaths(
+interface CollectPreparedViewDependencyPathOptions {
+  includeNonDeclarationTypeScriptDependencies?: boolean;
+}
+
+function collectPreparedViewDependencyPaths(
   preparedView: PreparedAnalysisView,
   filePath: string,
+  options: CollectPreparedViewDependencyPathOptions = {},
 ): readonly string[] {
   const diagnosticPaths = new Set<string>();
   const addDiagnosticPath = (candidateFilePath: string): void => {
@@ -1234,15 +1517,17 @@ function collectPreparedViewFrontendDiagnosticPaths(
       const resolvedSourcePath = preparedView.preparedProgram.toSourceFileName(
         resolvedModule.resolvedFileName,
       );
-      if (
-        !isSoundscriptSourceFile(resolvedSourcePath) &&
-        !isProjectedSoundscriptDeclarationFile(resolvedSourcePath)
-      ) {
+      const dependencySourceFile = getTraversalSourceFile(program, resolvedSourcePath);
+      const shouldIncludeDependency = isSoundscriptSourceFile(resolvedSourcePath) ||
+        isProjectedSoundscriptDeclarationFile(resolvedSourcePath) ||
+        (options.includeNonDeclarationTypeScriptDependencies === true &&
+          dependencySourceFile !== null &&
+          !dependencySourceFile.isDeclarationFile);
+      if (!shouldIncludeDependency) {
         continue;
       }
 
       addDiagnosticPath(resolvedSourcePath);
-      const dependencySourceFile = getTraversalSourceFile(program, resolvedSourcePath);
       if (dependencySourceFile) {
         visit(programKey, program, dependencySourceFile);
       }
@@ -1253,6 +1538,13 @@ function collectPreparedViewFrontendDiagnosticPaths(
     visit(traversalRoot.key, traversalRoot.program, traversalRoot.sourceFile);
   }
   return [...diagnosticPaths];
+}
+
+function collectPreparedViewFrontendDiagnosticPaths(
+  preparedView: PreparedAnalysisView,
+  filePath: string,
+): readonly string[] {
+  return collectPreparedViewDependencyPaths(preparedView, filePath);
 }
 
 function getStaticSourceFileModuleSpecifiers(sourceFile: ts.SourceFile): readonly string[] {
@@ -1530,6 +1822,12 @@ function applyMacroCacheStatsToMetadata(
   metadata: Record<string, string | number>,
   macroCacheStats: MacroModuleCacheStats,
 ): void {
+  metadata.macroBindingPlanHits = macroCacheStats.bindingPlanCacheHits;
+  metadata.macroBindingPlanMisses = macroCacheStats.bindingPlanCacheMisses;
+  metadata.macroBindingPlanInvalidations = macroCacheStats.bindingPlanCacheInvalidations;
+  metadata.macroExpandedFileHits = macroCacheStats.expandedFileCacheHits;
+  metadata.macroExpandedFileMisses = macroCacheStats.expandedFileCacheMisses;
+  metadata.macroExpandedFileInvalidations = macroCacheStats.expandedFileCacheInvalidations;
   metadata.macroCacheHits = macroCacheStats.moduleCacheHits;
   metadata.macroCacheMisses = macroCacheStats.moduleCacheMisses;
   metadata.macroCacheInvalidations = macroCacheStats.moduleCacheInvalidations;
@@ -1586,6 +1884,12 @@ function aggregateMacroCacheStats(
   preparedProject: PreparedAnalysisProject,
 ): MacroModuleCacheStats {
   const aggregated: MacroModuleCacheStats = {
+    bindingPlanCacheHits: 0,
+    bindingPlanCacheInvalidations: 0,
+    bindingPlanCacheMisses: 0,
+    expandedFileCacheHits: 0,
+    expandedFileCacheInvalidations: 0,
+    expandedFileCacheMisses: 0,
     evaluatedModules: 0,
     moduleCacheHits: 0,
     moduleCacheInvalidations: 0,
@@ -1603,6 +1907,12 @@ function aggregateMacroCacheStats(
       continue;
     }
 
+    aggregated.bindingPlanCacheHits += view.macroCacheStats.bindingPlanCacheHits;
+    aggregated.bindingPlanCacheInvalidations += view.macroCacheStats.bindingPlanCacheInvalidations;
+    aggregated.bindingPlanCacheMisses += view.macroCacheStats.bindingPlanCacheMisses;
+    aggregated.expandedFileCacheHits += view.macroCacheStats.expandedFileCacheHits;
+    aggregated.expandedFileCacheInvalidations += view.macroCacheStats.expandedFileCacheInvalidations;
+    aggregated.expandedFileCacheMisses += view.macroCacheStats.expandedFileCacheMisses;
     aggregated.evaluatedModules += view.macroCacheStats.evaluatedModules;
     aggregated.moduleCacheHits += view.macroCacheStats.moduleCacheHits;
     aggregated.moduleCacheInvalidations += view.macroCacheStats.moduleCacheInvalidations;
@@ -2141,9 +2451,10 @@ export function analyzePreparedProjectForFile(
     () => {
       const primaryView = getPreparedAnalysisViewForFile(preparedProject, filePath);
       const primaryAnalysis = analyzePreparedViewForFile(primaryView, filePath);
-      const diagnosticPaths = primaryView
-        ? collectPreparedViewFrontendDiagnosticPaths(primaryView, filePath)
-        : [filePath];
+      const diagnosticPaths = collectPreparedProjectDiagnosticPathsForFile(
+        preparedProject,
+        filePath,
+      );
       const primaryDependencyAnalysis = analyzePreparedViewForDiagnosticPaths(
         primaryView,
         diagnosticPaths,
@@ -2174,6 +2485,28 @@ export function analyzePreparedProjectForFile(
     },
     { always: true },
   );
+}
+
+function collectPreparedProjectDiagnosticPathsForFile(
+  preparedProject: PreparedAnalysisProject,
+  filePath: string,
+): readonly string[] {
+  const primaryView = getPreparedAnalysisViewForFile(preparedProject, filePath);
+  return primaryView
+    ? collectPreparedViewFrontendDiagnosticPaths(primaryView, filePath)
+    : [filePath];
+}
+
+function collectPreparedProjectCacheDependencyPathsForFile(
+  preparedProject: PreparedAnalysisProject,
+  filePath: string,
+): readonly string[] {
+  const primaryView = getPreparedAnalysisViewForFile(preparedProject, filePath);
+  return primaryView
+    ? collectPreparedViewDependencyPaths(primaryView, filePath, {
+      includeNonDeclarationTypeScriptDependencies: true,
+    })
+    : [filePath];
 }
 
 function collectPreparedAnalysisFilePathCandidates(filePath: string): readonly string[] {

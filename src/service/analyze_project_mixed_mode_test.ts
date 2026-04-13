@@ -1,4 +1,10 @@
-import { assert, assertEquals, assertStringIncludes } from '@std/assert';
+import {
+  assert,
+  assertEquals,
+  assertNotStrictEquals,
+  assertStrictEquals,
+  assertStringIncludes,
+} from '@std/assert';
 import { dirname, fromFileUrl, join, relative } from '@std/path';
 
 import {
@@ -6,6 +12,7 @@ import {
   analyzePreparedProjectForFile,
   analyzeProject,
   getPreparedAnalysisViewForFile,
+  IncrementalProjectSession,
   prepareProjectAnalysis,
 } from '../checker/analyze_project.ts';
 import {
@@ -956,6 +963,282 @@ Deno.test('analyzeProject emits per-phase and per-rule checker timing logs', asy
     console.error = originalError;
   }
 });
+
+Deno.test('analyzeProject logs relation memo hits for repeated generic relation checks', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/index.sts': [
+      'type Box<T> = { value: T };',
+      '',
+      'declare const stringBox: Box<string>;',
+      '',
+      'const first: Box<string | number> = stringBox;',
+      'const second: Box<string | number> = stringBox;',
+      'const third: Box<string | number> = stringBox;',
+      '',
+    ].join('\n'),
+  });
+
+  const originalTimingEnv = Deno.env.get('SOUNDSCRIPT_CHECKER_TIMING');
+  const originalError = console.error;
+  const logs: string[] = [];
+  console.error = (...args: unknown[]) => {
+    logs.push(args.map((arg) => String(arg)).join(' '));
+  };
+
+  try {
+    Deno.env.set('SOUNDSCRIPT_CHECKER_TIMING', '1');
+
+    analyzeProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+    const relationLog = logs.find((line) =>
+      line.includes('[soundscript:checker] project.analyze.sound.rule.relations ')
+    );
+    assert(relationLog);
+    assertStringIncludes(relationLog, 'memoHits=');
+    assertStringIncludes(relationLog, 'memoMisses=');
+
+    const memoHitsMatch = /memoHits=(\d+)/.exec(relationLog);
+    assert(memoHitsMatch);
+    assert(Number(memoHitsMatch[1]) > 0);
+  } finally {
+    if (originalTimingEnv === undefined) {
+      Deno.env.delete('SOUNDSCRIPT_CHECKER_TIMING');
+    } else {
+      Deno.env.set('SOUNDSCRIPT_CHECKER_TIMING', originalTimingEnv);
+    }
+    console.error = originalError;
+  }
+});
+
+Deno.test(
+  'IncrementalProjectSession reuses unaffected .sts file analysis across unrelated override changes',
+  async () => {
+    const tempDirectory = await createTempProject({
+      'tsconfig.json': JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+          },
+          include: ['src/**/*.sts'],
+        },
+        null,
+        2,
+      ),
+      'src/index.sts': 'export const value = 1;\n',
+      'src/other.sts': 'export const other = 1;\n',
+    });
+
+    const projectPath = join(tempDirectory, 'tsconfig.json');
+    const indexFilePath = join(tempDirectory, 'src/index.sts');
+    const otherFilePath = join(tempDirectory, 'src/other.sts');
+    const session = new IncrementalProjectSession();
+
+    session.prepare(
+      {
+        projectPath,
+        workingDirectory: tempDirectory,
+      },
+      { deferTypescriptView: true },
+    );
+    const initialIndexResult = session.analyzeFile(indexFilePath);
+
+    session.prepare(
+      {
+        fileOverrides: new Map([[otherFilePath, 'export const other = 2;\n']]),
+        projectPath,
+        workingDirectory: tempDirectory,
+      },
+      { deferTypescriptView: true },
+    );
+    const reusedIndexResult = session.analyzeFile(indexFilePath);
+    assertStrictEquals(reusedIndexResult, initialIndexResult);
+
+    session.prepare(
+      {
+        fileOverrides: new Map([[indexFilePath, 'export const value = 2;\n']]),
+        projectPath,
+        workingDirectory: tempDirectory,
+      },
+      { deferTypescriptView: true },
+    );
+    const rebuiltIndexResult = session.analyzeFile(indexFilePath);
+    assertNotStrictEquals(rebuiltIndexResult, reusedIndexResult);
+  },
+);
+
+Deno.test(
+  'IncrementalProjectSession reuses unaffected .ts file analysis across unrelated .sts override changes',
+  async () => {
+    const tempDirectory = await createTempProject({
+      'tsconfig.json': JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+          },
+          include: ['src/**/*.ts', 'src/**/*.sts'],
+        },
+        null,
+        2,
+      ),
+      'src/index.ts': 'import { helper } from "./helper.sts";\nexport const value = helper;\n',
+      'src/helper.sts': 'export const helper = 1;\n',
+      'src/other.sts': 'export const other = 1;\n',
+    });
+
+    const projectPath = join(tempDirectory, 'tsconfig.json');
+    const indexFilePath = join(tempDirectory, 'src/index.ts');
+    const helperFilePath = join(tempDirectory, 'src/helper.sts');
+    const otherFilePath = join(tempDirectory, 'src/other.sts');
+    const session = new IncrementalProjectSession();
+
+    session.prepare({
+      projectPath,
+      workingDirectory: tempDirectory,
+    });
+    const initialIndexResult = session.analyzeFile(indexFilePath);
+
+    session.prepare({
+      fileOverrides: new Map([[otherFilePath, 'export const other = 2;\n']]),
+      projectPath,
+      workingDirectory: tempDirectory,
+    });
+    const reusedIndexResult = session.analyzeFile(indexFilePath);
+    assertStrictEquals(reusedIndexResult, initialIndexResult);
+
+    session.prepare({
+      fileOverrides: new Map([[helperFilePath, 'export const helper = "broken";\n']]),
+      projectPath,
+      workingDirectory: tempDirectory,
+    });
+    const rebuiltIndexResult = session.analyzeFile(indexFilePath);
+    assertNotStrictEquals(rebuiltIndexResult, reusedIndexResult);
+  },
+);
+
+Deno.test(
+  'IncrementalProjectSession reuses unaffected .ts file analysis across unrelated .ts override changes',
+  async () => {
+    const tempDirectory = await createTempProject({
+      'tsconfig.json': JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+          },
+          include: ['src/**/*.ts'],
+        },
+        null,
+        2,
+      ),
+      'src/index.ts': 'import { helper } from "./helper";\nexport const value = helper;\n',
+      'src/helper.ts': 'export const helper = 1;\n',
+      'src/other.ts': 'export const other = 1;\n',
+    });
+
+    const projectPath = join(tempDirectory, 'tsconfig.json');
+    const indexFilePath = join(tempDirectory, 'src/index.ts');
+    const helperFilePath = join(tempDirectory, 'src/helper.ts');
+    const otherFilePath = join(tempDirectory, 'src/other.ts');
+    const session = new IncrementalProjectSession();
+
+    session.prepare({
+      projectPath,
+      workingDirectory: tempDirectory,
+    });
+    const initialIndexResult = session.analyzeFile(indexFilePath);
+
+    session.prepare({
+      fileOverrides: new Map([[otherFilePath, 'export const other = 2;\n']]),
+      projectPath,
+      workingDirectory: tempDirectory,
+    });
+    const reusedIndexResult = session.analyzeFile(indexFilePath);
+    assertStrictEquals(reusedIndexResult, initialIndexResult);
+
+    session.prepare({
+      fileOverrides: new Map([[helperFilePath, 'export const helper = "broken";\n']]),
+      projectPath,
+      workingDirectory: tempDirectory,
+    });
+    const rebuiltIndexResult = session.analyzeFile(indexFilePath);
+    assertNotStrictEquals(rebuiltIndexResult, reusedIndexResult);
+  },
+);
+
+Deno.test(
+  'IncrementalProjectSession reuses unaffected .sts file analysis across unrelated .ts override changes',
+  async () => {
+    const tempDirectory = await createTempProject({
+      'tsconfig.json': JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+          },
+          include: ['src/**/*.ts', 'src/**/*.sts'],
+        },
+        null,
+        2,
+      ),
+      'src/index.sts': 'import { helper } from "./helper";\nexport const value = helper;\n',
+      'src/helper.ts': 'export const helper = 1;\n',
+      'src/other.ts': 'export const other = 1;\n',
+    });
+
+    const projectPath = join(tempDirectory, 'tsconfig.json');
+    const indexFilePath = join(tempDirectory, 'src/index.sts');
+    const helperFilePath = join(tempDirectory, 'src/helper.ts');
+    const otherFilePath = join(tempDirectory, 'src/other.ts');
+    const session = new IncrementalProjectSession();
+
+    session.prepare({
+      projectPath,
+      workingDirectory: tempDirectory,
+    });
+    const initialIndexResult = session.analyzeFile(indexFilePath);
+
+    session.prepare({
+      fileOverrides: new Map([[otherFilePath, 'export const other = 2;\n']]),
+      projectPath,
+      workingDirectory: tempDirectory,
+    });
+    const reusedIndexResult = session.analyzeFile(indexFilePath);
+    assertStrictEquals(reusedIndexResult, initialIndexResult);
+
+    session.prepare({
+      fileOverrides: new Map([[helperFilePath, 'export const helper = "broken";\n']]),
+      projectPath,
+      workingDirectory: tempDirectory,
+    });
+    const rebuiltIndexResult = session.analyzeFile(indexFilePath);
+    assertNotStrictEquals(rebuiltIndexResult, reusedIndexResult);
+  },
+);
 
 Deno.test(
   'analyzeProject completes explicit declaration-backed DOM return relations without diagnostics',

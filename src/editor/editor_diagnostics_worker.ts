@@ -2,14 +2,10 @@ import { dirname } from '../platform/path.ts';
 import { runtimeStdinReadable, runtimeStdoutWritable } from '../platform/host.ts';
 
 import {
-  analyzePreparedProject,
-  disposePreparedAnalysisProject,
   filterAnalyzedDiagnosticsForFile,
-  type PreparedAnalysisProject,
-  prepareProjectAnalysis,
+  IncrementalProjectSession,
 } from '../checker/analyze_project.ts';
 import type { MergedDiagnostic } from '../checker/diagnostics.ts';
-import type { AnalyzeProjectResult } from '../service/types.ts';
 import { isSoundscriptSourceFile } from '../frontend/project_frontend.ts';
 
 interface JsonRpcLikeRequest {
@@ -24,8 +20,7 @@ interface SyncedDocument {
 }
 
 interface WorkerProjectState {
-  analyzedProject?: AnalyzeProjectResult;
-  preparedProject?: PreparedAnalysisProject;
+  analysisSession: IncrementalProjectSession;
 }
 
 interface WorkerContext {
@@ -163,22 +158,19 @@ async function handleRequest(
 
       const fileOverrides = fileOverridesForProject(context, projectPath);
       const additionalRootNames = additionalRootNamesForProject(context, projectPath);
-      const cachedProject = context.projects.get(projectPath);
-      const preparedProject = prepareProjectAnalysis(
+      const cachedProject = context.projects.get(projectPath) ?? {
+        analysisSession: new IncrementalProjectSession(),
+      };
+      cachedProject.analysisSession.prepare(
         {
           additionalRootNames,
           fileOverrides,
           projectPath,
           workingDirectory: dirname(projectPath),
         },
-        cachedProject?.preparedProject,
       );
-      disposePreparedAnalysisProject(cachedProject?.preparedProject, preparedProject);
-      const analyzedProject = cachedProject?.preparedProject === preparedProject &&
-          cachedProject.analyzedProject
-        ? cachedProject.analyzedProject
-        : analyzePreparedProject(preparedProject);
-      context.projects.set(projectPath, { preparedProject, analyzedProject });
+      const analyzedProject = cachedProject.analysisSession.analyzeFile(filePath);
+      context.projects.set(projectPath, cachedProject);
       return {
         diagnostics: filterAnalyzedDiagnosticsForFile(analyzedProject.diagnostics, filePath)
           .map((diagnostic) => serializeDiagnostic(diagnostic)),
@@ -244,6 +236,9 @@ export async function runEditorDiagnosticsWorker(
       }
     }
   } finally {
+    for (const projectState of context.projects.values()) {
+      projectState.analysisSession.dispose();
+    }
     reader.releaseLock();
     writer.releaseLock();
   }

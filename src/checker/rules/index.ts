@@ -9,7 +9,7 @@ import { runFlowRules } from './flow.ts';
 import { runNamespaceObjectRules } from './namespace_object.ts';
 import { runNullPrototypeRules } from './null_prototype.ts';
 import { runOverloadRules } from './overloads.ts';
-import { runRelationRules } from './relations.ts';
+import { getRelationMemoStats, runRelationRules } from './relations.ts';
 import { runTypeGuardRules } from './type_guards.ts';
 import { runUnsoundImportRules } from './unsound_imports.ts';
 import { runUnsoundSyntaxRules } from './unsound_syntax.ts';
@@ -19,6 +19,7 @@ function runTimedSoundRule(
   name: string,
   context: AnalysisContext,
   runRule: (context: AnalysisContext) => SoundDiagnostic[],
+  getMetadata?: (context: AnalysisContext) => Record<string, number | string>,
 ): SoundDiagnostic[] {
   const metadata: Record<string, number | string> = {
     sourceFiles: context.getSourceFiles().length,
@@ -28,6 +29,9 @@ function runTimedSoundRule(
     metadata,
     () => {
       const diagnostics = runRule(context);
+      if (getMetadata) {
+        Object.assign(metadata, getMetadata(context));
+      }
       metadata.diagnostics = diagnostics.length;
       return diagnostics;
     },
@@ -44,7 +48,12 @@ export function runSoundAnalysis(context: AnalysisContext): SoundDiagnostic[] {
     ...runTimedSoundRule('ambientHostValues', context, runAmbientHostValueRules),
     ...runTimedSoundRule('namespaceObject', context, runNamespaceObjectRules),
     ...runTimedSoundRule('nullPrototype', context, runNullPrototypeRules),
-    ...runTimedSoundRule('relations', context, runRelationRules),
+    ...runTimedSoundRule(
+      'relations',
+      context,
+      runRelationRules,
+      (analysisContext) => ({ ...getRelationMemoStats(analysisContext) }),
+    ),
     ...runTimedSoundRule('valueTypes', context, runValueTypeRules),
     ...runTimedSoundRule('flow', context, runFlowRules),
     ...runTimedSoundRule('typeGuards', context, runTypeGuardRules),
