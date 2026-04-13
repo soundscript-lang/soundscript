@@ -29,9 +29,32 @@ function getTimingEnvValue(): string | undefined {
   return maybeDeno.Deno?.env?.get(CHECKER_TIMING_ENV_VAR);
 }
 
+export function getCheckerTimingEnvValue(name: string): string | undefined {
+  if (typeof process !== 'undefined' && typeof process.env === 'object') {
+    const processValue = process.env[name];
+    if (typeof processValue === 'string') {
+      return processValue;
+    }
+  }
+
+  const maybeDeno = globalThis as {
+    Deno?: {
+      env?: {
+        get(name: string): string | undefined;
+      };
+    };
+  };
+  return maybeDeno.Deno?.env?.get(name);
+}
+
 export function isCheckerTimingEnabled(
   rawValue = getTimingEnvValue(),
 ): boolean {
+  return rawValue === '1' || rawValue === 'true';
+}
+
+export function isCheckerTimingFlagEnabled(name: string): boolean {
+  const rawValue = getCheckerTimingEnvValue(name);
   return rawValue === '1' || rawValue === 'true';
 }
 

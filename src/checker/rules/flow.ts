@@ -13,6 +13,11 @@ import {
   getFreshLocalMutatingCall,
 } from '../effects/fresh_locals.ts';
 import {
+  type CheckerTimingMetadata,
+  isCheckerTimingFlagEnabled,
+  measureCheckerTiming,
+} from '../timing.ts';
+import {
   type FlowFact,
   getFlowChildRegionStructure,
   getFlowRegionStructure,
@@ -49,6 +54,7 @@ export interface RunFlowRulesOptions {
   cacheByFile?: ReadonlyMap<string, FlowFileRuleCache>;
   onFileCache?: (filePath: string, cache: FlowFileRuleCache) => void;
 }
+const FLOW_TIMING_DETAILS_ENV_VAR = 'SOUNDSCRIPT_CHECKER_TIMING_FLOW_DETAILS';
 
 type InvalidationBoundaryKind =
   | 'alias_or_escape'
@@ -61,6 +67,76 @@ interface InvalidationDiagnosticContext {
   boundaryKind: InvalidationBoundaryKind;
   fact?: FlowFact<NormalizedPath>;
   node: ts.Node;
+}
+
+function isDetailedFlowTimingEnabled(): boolean {
+  return isCheckerTimingFlagEnabled(FLOW_TIMING_DETAILS_ENV_VAR);
+}
+
+function getLineNumber(node: ts.Node): number {
+  const sourceFile = node.getSourceFile();
+  return ts.getLineAndCharacterOfPosition(sourceFile, node.getStart(sourceFile)).line + 1;
+}
+
+function getFunctionLikeTimingName(node: ts.SignatureDeclarationBase): string | undefined {
+  if (
+    'name' in node &&
+    node.name &&
+    (
+      ts.isIdentifier(node.name) ||
+      ts.isStringLiteral(node.name) ||
+      ts.isNumericLiteral(node.name) ||
+      ts.isPrivateIdentifier(node.name)
+    )
+  ) {
+    return node.name.text;
+  }
+
+  const parent = node.parent;
+  if (ts.isVariableDeclaration(parent) && ts.isIdentifier(parent.name)) {
+    return parent.name.text;
+  }
+  if (ts.isPropertyAssignment(parent) && ts.isIdentifier(parent.name)) {
+    return parent.name.text;
+  }
+  if (ts.isPropertyDeclaration(parent) && ts.isIdentifier(parent.name)) {
+    return parent.name.text;
+  }
+  if (ts.isParameter(parent) && ts.isIdentifier(parent.name)) {
+    return parent.name.text;
+  }
+
+  return undefined;
+}
+
+function createFlowRegionTimingMetadata(
+  regionKind: 'function' | 'sourceFile',
+  node: ts.Node,
+  statements: readonly ts.Statement[],
+): CheckerTimingMetadata {
+  const sourceFile = node.getSourceFile();
+  const metadata: CheckerTimingMetadata = {
+    regionKind,
+    file: sourceFile.fileName,
+    line: getLineNumber(node),
+    statements: statements.length,
+    syntaxKind: ts.SyntaxKind[node.kind],
+  };
+
+  if (regionKind === 'function' && isFunctionLikeWithBody(node)) {
+    metadata.name = getFunctionLikeTimingName(node) ?? '<anonymous>';
+  }
+
+  return metadata;
+}
+
+function createFlowStatementTimingMetadata(statement: ts.Statement): CheckerTimingMetadata {
+  const sourceFile = statement.getSourceFile() ?? statement.parent?.getSourceFile();
+  return {
+    file: sourceFile?.fileName ?? '<synthetic>',
+    line: sourceFile ? getLineNumber(statement) : 0,
+    syntaxKind: ts.SyntaxKind[statement.kind],
+  };
 }
 
 function boundaryKindLabel(kind: InvalidationBoundaryKind): string {
@@ -307,69 +383,89 @@ function analyzeStatements(
     if (context.isGeneratedNode(statement)) {
       continue;
     }
-
-    const sequentialAnalysis = materializeConditionStructures(
-      context,
-      entry.sequentialConditions,
-      state,
-      FLOW_FACT_ENVIRONMENT,
-    );
-    if (sequentialAnalysis.invalidatingNode) {
-      diagnostics.push(
-        createDiagnostic(context, {
-          node: sequentialAnalysis.invalidatingNode,
-          fact: sequentialAnalysis.invalidatedFact,
-          boundaryKind: classifyBoundaryKind(sequentialAnalysis.invalidatingNode),
-        }),
-      );
-    }
-    const activeSequentialFacts = [...inheritedFacts, ...sequentialAnalysis.facts]
-      .filter(factRequiresBoundaryInvalidation);
-    const invalidatingNode = findInvalidation(context, statement, activeSequentialFacts, state);
-    if (invalidatingNode) {
-      diagnostics.push(createDiagnostic(context, invalidatingNode));
-    }
-
-    if (ts.isVariableStatement(statement)) {
-      for (const declaration of statement.declarationList.declarations) {
-        recordVariableAliases(context, declaration, state);
-      }
-    } else if (ts.isExpressionStatement(statement)) {
-      recordExecutedExpressionAliases(context, statement.expression, state);
-    }
-
-    const branchState = prepareChildRegionState(context, statement, state);
-    const childRegions = getFlowChildRegionStructure(context, statement).entries;
-    for (const childRegion of childRegions) {
-      const conditionAnalysis = materializeConditionStructures(
+    const analyzeEntry = () => {
+      const sequentialAnalysis = materializeConditionStructures(
         context,
-        childRegion.entryConditions,
-        branchState,
+        entry.sequentialConditions,
+        state,
         FLOW_FACT_ENVIRONMENT,
       );
-      if (conditionAnalysis.invalidatingNode) {
+      if (sequentialAnalysis.invalidatingNode) {
         diagnostics.push(
           createDiagnostic(context, {
-            node: conditionAnalysis.invalidatingNode,
-            fact: conditionAnalysis.invalidatedFact,
-            boundaryKind: classifyBoundaryKind(conditionAnalysis.invalidatingNode),
+            node: sequentialAnalysis.invalidatingNode,
+            fact: sequentialAnalysis.invalidatedFact,
+            boundaryKind: classifyBoundaryKind(sequentialAnalysis.invalidatingNode),
           }),
         );
       }
+      const activeSequentialFacts = [...inheritedFacts, ...sequentialAnalysis.facts]
+        .filter(factRequiresBoundaryInvalidation);
+      const invalidatingNode = findInvalidation(context, statement, activeSequentialFacts, state);
+      if (invalidatingNode) {
+        diagnostics.push(createDiagnostic(context, invalidatingNode));
+      }
 
-      analyzeStatements(
-        context,
-        childRegion.regionNode,
-        childRegion.statements,
-        cloneState(branchState),
-        diagnostics,
-        [...activeSequentialFacts, ...conditionAnalysis.facts],
-        {
-          treatBreakAsExit: childRegion.treatBreakAsExit || options.treatBreakAsExit,
-          treatContinueAsExit: childRegion.treatContinueAsExit || options.treatContinueAsExit,
-        },
-      );
-    }
+      if (ts.isVariableStatement(statement)) {
+        for (const declaration of statement.declarationList.declarations) {
+          recordVariableAliases(context, declaration, state);
+        }
+      } else if (ts.isExpressionStatement(statement)) {
+        recordExecutedExpressionAliases(context, statement.expression, state);
+      }
+
+      const branchState = prepareChildRegionState(context, statement, state);
+      const childRegions = getFlowChildRegionStructure(context, statement).entries;
+      const childRegionCount = childRegions.length;
+      for (const childRegion of childRegions) {
+        const conditionAnalysis = materializeConditionStructures(
+          context,
+          childRegion.entryConditions,
+          branchState,
+          FLOW_FACT_ENVIRONMENT,
+        );
+        if (conditionAnalysis.invalidatingNode) {
+          diagnostics.push(
+            createDiagnostic(context, {
+              node: conditionAnalysis.invalidatingNode,
+              fact: conditionAnalysis.invalidatedFact,
+              boundaryKind: classifyBoundaryKind(conditionAnalysis.invalidatingNode),
+            }),
+          );
+        }
+
+        analyzeStatements(
+          context,
+          childRegion.regionNode,
+          childRegion.statements,
+          cloneState(branchState),
+          diagnostics,
+          [...activeSequentialFacts, ...conditionAnalysis.facts],
+          {
+            treatBreakAsExit: childRegion.treatBreakAsExit || options.treatBreakAsExit,
+            treatContinueAsExit: childRegion.treatContinueAsExit || options.treatContinueAsExit,
+          },
+        );
+      }
+
+      return childRegionCount;
+    };
+
+    const diagnosticsBefore = diagnostics.length;
+    const timingMetadata = createFlowStatementTimingMetadata(statement);
+    measureCheckerTiming(
+      'project.analyze.sound.rule.flow.statement',
+      timingMetadata,
+      () => {
+        timingMetadata.childRegions = analyzeEntry();
+        timingMetadata.diagnostics = diagnostics.length - diagnosticsBefore;
+      },
+      {
+        always: true,
+        enabled: isDetailedFlowTimingEnabled(),
+        thresholdMs: 5,
+      },
+    );
   }
 }
 
@@ -396,14 +492,35 @@ function analyzeRootRegion(
   context: AnalysisContext,
   regionNode: ts.Node | undefined,
   statements: readonly ts.Statement[],
+  timingMetadata?: CheckerTimingMetadata,
 ): SoundDiagnostic[] {
   const diagnostics: SoundDiagnostic[] = [];
-  analyzeStatements(
-    context,
-    regionNode,
-    statements,
-    createInitialState(),
-    diagnostics,
+  const runAnalysis = () =>
+    analyzeStatements(
+      context,
+      regionNode,
+      statements,
+      createInitialState(),
+      diagnostics,
+    );
+
+  if (!timingMetadata) {
+    runAnalysis();
+    return diagnostics;
+  }
+
+  measureCheckerTiming(
+    'project.analyze.sound.rule.flow.region',
+    timingMetadata,
+    () => {
+      runAnalysis();
+      timingMetadata.diagnostics = diagnostics.length;
+    },
+    {
+      always: true,
+      enabled: isDetailedFlowTimingEnabled(),
+      thresholdMs: 5,
+    },
   );
   return diagnostics;
 }
@@ -492,6 +609,7 @@ export function runFlowRules(
         context,
         sourceFile,
         rootStatements,
+        createFlowRegionTimingMetadata('sourceFile', sourceFile, rootStatements),
       ),
     );
 
@@ -514,6 +632,7 @@ export function runFlowRules(
           context,
           ts.isBlock(node.body) ? node.body : undefined,
           bodyStatements,
+          createFlowRegionTimingMetadata('function', node, bodyStatements),
         ),
       );
     });

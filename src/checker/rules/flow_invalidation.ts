@@ -2093,6 +2093,43 @@ function getFlowInvalidationStructure(
   );
 }
 
+function getTerminalStatementBoundaryRoot(
+  statement: ts.Statement,
+): ts.Expression | undefined {
+  if (
+    (ts.isReturnStatement(statement) || ts.isThrowStatement(statement)) &&
+    statement.expression
+  ) {
+    return unwrapTransparentExpression(statement.expression);
+  }
+
+  return undefined;
+}
+
+function isTerminalStatementBoundaryCandidate(
+  statement: ts.Statement,
+  candidate: Extract<FlowInvalidationCandidateFact, { kind: 'awaitYield' | 'call' | 'new' }>,
+): boolean {
+  const rootExpression = getTerminalStatementBoundaryRoot(statement);
+  if (!rootExpression) {
+    return false;
+  }
+
+  if (candidate.node === rootExpression) {
+    return true;
+  }
+
+  if (
+    ts.isAwaitExpression(rootExpression) &&
+    (candidate.kind === 'call' || candidate.kind === 'new') &&
+    candidate.node === unwrapTransparentExpression(rootExpression.expression)
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
 function parseFlowInvalidationStructure(
   rootNode: ts.Node,
   includeNestedFunctionLikeCandidates: boolean,
@@ -2185,6 +2222,13 @@ export function statementAffectsNarrow(
   for (
     const candidate of getFlowInvalidationStructure(context, statement, 'statement').candidates
   ) {
+    if (
+      (candidate.kind === 'awaitYield' || candidate.kind === 'call' || candidate.kind === 'new') &&
+      isTerminalStatementBoundaryCandidate(statement, candidate)
+    ) {
+      continue;
+    }
+
     if (candidate.kind === 'awaitYield') {
       if (narrowPath.segments.length > 0) {
         return candidate.node;

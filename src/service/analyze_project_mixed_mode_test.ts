@@ -964,6 +964,70 @@ Deno.test('analyzeProject emits per-phase and per-rule checker timing logs', asy
   }
 });
 
+Deno.test('analyzeProject can emit detailed flow region timing logs', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/index.sts': [
+      'export function add(left: number, right: number): number {',
+      '  return left + right;',
+      '}',
+      '',
+    ].join('\n'),
+  });
+
+  const originalTimingEnv = Deno.env.get('SOUNDSCRIPT_CHECKER_TIMING');
+  const originalFlowTimingEnv = Deno.env.get('SOUNDSCRIPT_CHECKER_TIMING_FLOW_DETAILS');
+  const originalError = console.error;
+  const logs: string[] = [];
+  console.error = (...args: unknown[]) => {
+    logs.push(args.map((arg) => String(arg)).join(' '));
+  };
+
+  try {
+    Deno.env.set('SOUNDSCRIPT_CHECKER_TIMING', '1');
+    Deno.env.set('SOUNDSCRIPT_CHECKER_TIMING_FLOW_DETAILS', '1');
+
+    const result = analyzeProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.summary.total, 0);
+    assertEquals(
+      logs.some((line) =>
+        line.includes('[soundscript:checker] project.analyze.sound.rule.flow.region ') &&
+        line.includes('regionKind=function') &&
+        line.includes('name=add')
+      ),
+      true,
+    );
+  } finally {
+    if (originalTimingEnv === undefined) {
+      Deno.env.delete('SOUNDSCRIPT_CHECKER_TIMING');
+    } else {
+      Deno.env.set('SOUNDSCRIPT_CHECKER_TIMING', originalTimingEnv);
+    }
+    if (originalFlowTimingEnv === undefined) {
+      Deno.env.delete('SOUNDSCRIPT_CHECKER_TIMING_FLOW_DETAILS');
+    } else {
+      Deno.env.set('SOUNDSCRIPT_CHECKER_TIMING_FLOW_DETAILS', originalFlowTimingEnv);
+    }
+    console.error = originalError;
+  }
+});
+
 Deno.test(
   'analyzePreparedProjectForFile skips redundant dependency analysis for isolated .sts files',
   async () => {
