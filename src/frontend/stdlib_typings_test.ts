@@ -104,3 +104,84 @@ Deno.test('checked-in stdlib declarations expose callable macro and DSL surfaces
     [],
   );
 });
+
+Deno.test('stdlib object helpers preserve optional properties under exactOptionalPropertyTypes', () => {
+  const fileName = '/virtual/index.ts';
+  const preparedProgram = createPreparedProgramForMacroTest({
+    [fileName]: [
+      "import * as decode from 'sts:decode';",
+      "import * as encode from 'sts:encode';",
+      "import type { Result } from 'sts:result';",
+      '',
+      'type User = {',
+      '  readonly id: string;',
+      '  readonly nickname?: string;',
+      '};',
+      '',
+      'const UserDecoder = decode.object({',
+      '  id: decode.string,',
+      '  nickname: decode.optional(decode.string),',
+      '});',
+      'const UserEncoder = encode.object({',
+      '  id: encode.stringEncoder,',
+      '  nickname: encode.optional(encode.stringEncoder),',
+      '});',
+      '',
+      "const decoded: Result<User, unknown> = UserDecoder.decode({ id: 'user-1' });",
+      "const encoded = UserEncoder.encode({ id: 'user-1' } satisfies User);",
+      'void decoded;',
+      'void encoded;',
+      '',
+    ].join('\n'),
+  }, {
+    compilerOptions: {
+      exactOptionalPropertyTypes: true,
+    },
+  });
+
+  assertEquals(preparedProgram.frontendDiagnostics(), []);
+  assertEquals(
+    ts.getPreEmitDiagnostics(preparedProgram.program).map((diagnostic) => diagnostic.code),
+    [],
+  );
+});
+
+Deno.test('encode contramap preserves sync mode for exact-optional object projections', () => {
+  const fileName = '/virtual/index.ts';
+  const preparedProgram = createPreparedProgramForMacroTest({
+    [fileName]: [
+      "import * as encode from 'sts:encode';",
+      "import type { Result } from 'sts:result';",
+      '',
+      'type User = {',
+      '  readonly id: string;',
+      '  readonly nickname?: string;',
+      '};',
+      '',
+      'const UserEncoder = encode.contramap(',
+      '  encode.object({',
+      '    id: encode.stringEncoder,',
+      '    nickname: encode.optional(encode.stringEncoder),',
+      '  }),',
+      '  (value: User) => ({',
+      '    id: value.id,',
+      '    ...(value.nickname === undefined ? {} : { nickname: value.nickname }),',
+      '  }),',
+      ');',
+      '',
+      "const encoded: Result<{ readonly id: string; readonly nickname?: string }, unknown> = UserEncoder.encode({ id: 'user-1' } satisfies User);",
+      'void encoded;',
+      '',
+    ].join('\n'),
+  }, {
+    compilerOptions: {
+      exactOptionalPropertyTypes: true,
+    },
+  });
+
+  assertEquals(preparedProgram.frontendDiagnostics(), []);
+  assertEquals(
+    ts.getPreEmitDiagnostics(preparedProgram.program).map((diagnostic) => diagnostic.code),
+    [],
+  );
+});

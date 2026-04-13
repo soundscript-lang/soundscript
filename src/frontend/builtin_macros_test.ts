@@ -172,8 +172,9 @@ function captureStdlibBuiltinMacroError(source: string): MacroError {
   throw new Error('Expected stdlib builtin macro expansion to fail.');
 }
 
-function createBaseHost(files: ReadonlyMap<string, string>): ts.CompilerHost {
+function createBaseHost(files: ReadonlyMap<string, string>, compilerOptions: ts.CompilerOptions = {}): ts.CompilerHost {
   const baseHost = ts.createCompilerHost({
+    ...compilerOptions,
     target: ts.ScriptTarget.ES2022,
     module: ts.ModuleKind.ESNext,
     moduleResolution: ts.ModuleResolutionKind.Bundler,
@@ -242,15 +243,20 @@ function formatDiagnostics(
 function expandAndTypecheckBuiltins(
   files: ReadonlyMap<string, string>,
   rootNames: readonly string[],
+  compilerOptions: ts.CompilerOptions = {},
 ) {
+  const options: ts.CompilerOptions = {
+    strict: true,
+    strictNullChecks: true,
+    ...compilerOptions,
+    target: ts.ScriptTarget.ES2022,
+    module: ts.ModuleKind.ESNext,
+    moduleResolution: ts.ModuleResolutionKind.Bundler,
+    noEmit: true,
+  };
   const expanded = createBuiltinExpandedProgram({
-    baseHost: createBaseHost(files),
-    options: {
-      target: ts.ScriptTarget.ES2022,
-      module: ts.ModuleKind.ESNext,
-      moduleResolution: ts.ModuleResolutionKind.Bundler,
-      noEmit: true,
-    },
+    baseHost: createBaseHost(files, options),
+    options,
     rootNames: [...rootNames],
   });
 
@@ -2033,6 +2039,46 @@ Deno.test('decode and codec macros typecheck promise-returning declaration trans
   assertStringIncludes(printed, 'contramap as __sts_runtime_named_contramap_');
   assertStringIncludes(printed, 'normalizeDecoded');
   assertStringIncludes(printed, 'normalizeEncoded');
+});
+
+Deno.test('decode and codec macros preserve optional properties under exactOptionalPropertyTypes', () => {
+  const fileName = '/virtual/index.sts';
+  const files = new Map<string, string>([
+    ...createInstalledStdlibPackageFiles('/virtual').entries(),
+    [
+      fileName,
+      [
+        "import { codec, decode } from 'sts:derive';",
+        "import type { Result } from 'sts:result';",
+        '',
+        '// #[decode]',
+        '// #[codec]',
+        'interface User {',
+        '  id: string;',
+        '  nickname?: string;',
+        '}',
+        '',
+        "const decoded: Result<User, unknown> = UserDecoder.decode({ id: 'user-1' });",
+        "const codecDecoded: Result<User, unknown> = UserCodec.decode({ id: 'user-1' });",
+        "const codecEncoded: Result<{ readonly id: string; readonly nickname?: string }, unknown> = UserCodec.encode({ id: 'user-1' });",
+        'void decoded;',
+        'void codecDecoded;',
+        'void codecEncoded;',
+        '',
+      ].join('\n'),
+    ],
+  ]);
+
+  const expanded = expandAndTypecheckBuiltins(files, [fileName], {
+    exactOptionalPropertyTypes: true,
+  });
+  const expandedFileName = expanded.preparedProgram.toProgramFileName(fileName);
+  const sourceFile = expanded.program.getSourceFile(expandedFileName);
+  assert(sourceFile);
+
+  const printed = printSourceFileForMacroTest(sourceFile);
+  assertStringIncludes(printed, 'export const UserDecoder = ');
+  assertStringIncludes(printed, 'export const UserCodec = ');
 });
 
 Deno.test('recursive derived companions expand across decode encode codec and json bridge usage', () => {

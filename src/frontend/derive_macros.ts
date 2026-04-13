@@ -250,6 +250,27 @@ function decodeDefaultProjectionText(accessText: string, defaultText: string | n
     : `${accessText} === undefined ? (${defaultText}) : ${accessText}`;
 }
 
+type ObjectProjectionField = {
+  readonly keyName: string;
+  readonly optional: boolean;
+  readonly valueText: string;
+};
+
+function objectProjectionText(fields: readonly ObjectProjectionField[]): string {
+  if (fields.length === 0) {
+    return '({})';
+  }
+  return `({
+    ${
+    fields.map((field) =>
+      field.optional
+        ? `...(${field.valueText} === undefined ? {} : { ${propertyKeyText(field.keyName)}: ${field.valueText} })`
+        : `${propertyKeyText(field.keyName)}: ${field.valueText}`
+    ).join(',\n')
+  }
+  })`;
+}
+
 function primitiveKindForTypeText(typeText: string): PrimitiveFieldKind | null {
   const normalized = typeText.trim();
   switch (normalized) {
@@ -3088,6 +3109,159 @@ function codecHelperTextsFromShape(
   }
 }
 
+function wrapDecodeViaHelperText(
+  ctx: DeriveContext,
+  shape: MacroReflectedTypeShape,
+  ownerTypeName: string,
+  scopeNode: MacroSyntaxNode,
+  errorNode: MacroSyntaxNode,
+  helperText: string,
+  typeNode?: ts.TypeNode | null,
+  aliasVisiting: Set<string> = new Set(),
+): string {
+  if (shape.kind === 'named' && !aliasVisiting.has(shape.name)) {
+    const localAlias = localStructuralAliasForNamedReference(
+      ctx,
+      shape.name,
+      scopeNode,
+      'decode',
+    );
+    if (localAlias) {
+      aliasVisiting.add(shape.name);
+      const wrapped = wrapDecodeViaHelperText(
+        ctx,
+        localAlias.shape,
+        ownerTypeName,
+        scopeNode,
+        errorNode,
+        helperText,
+        localAlias.typeNode,
+        aliasVisiting,
+      );
+      aliasVisiting.delete(shape.name);
+      return wrapped;
+    }
+  }
+  if (shape.kind !== 'union') {
+    return helperText;
+  }
+  const nullishUnion = decomposeNullishUnion(shape);
+  if (!nullishUnion) {
+    return helperText;
+  }
+  let text = helperText;
+  if (nullishUnion.includesNull && nullishUnion.base) {
+    text = `${ctx.runtime.named('sts:decode', 'nullable').text()}(${text})`;
+  }
+  if (nullishUnion.includesUndefined) {
+    text = `${ctx.runtime.named('sts:decode', 'undefinedable').text()}(${text})`;
+  }
+  return text;
+}
+
+function wrapEncodeViaHelperText(
+  ctx: DeriveContext,
+  shape: MacroReflectedTypeShape,
+  ownerTypeName: string,
+  scopeNode: MacroSyntaxNode,
+  errorNode: MacroSyntaxNode,
+  helperText: string,
+  typeNode?: ts.TypeNode | null,
+  aliasVisiting: Set<string> = new Set(),
+): string {
+  if (shape.kind === 'named' && !aliasVisiting.has(shape.name)) {
+    const localAlias = localStructuralAliasForNamedReference(
+      ctx,
+      shape.name,
+      scopeNode,
+      'encode',
+    );
+    if (localAlias) {
+      aliasVisiting.add(shape.name);
+      const wrapped = wrapEncodeViaHelperText(
+        ctx,
+        localAlias.shape,
+        ownerTypeName,
+        scopeNode,
+        errorNode,
+        helperText,
+        localAlias.typeNode,
+        aliasVisiting,
+      );
+      aliasVisiting.delete(shape.name);
+      return wrapped;
+    }
+  }
+  if (shape.kind !== 'union') {
+    return helperText;
+  }
+  const nullishUnion = decomposeNullishUnion(shape);
+  if (!nullishUnion) {
+    return helperText;
+  }
+  let text = helperText;
+  if (nullishUnion.includesNull && nullishUnion.base) {
+    text = `${ctx.runtime.named('sts:encode', 'nullable').text()}(${text})`;
+  }
+  if (nullishUnion.includesUndefined) {
+    text = `${ctx.runtime.named('sts:encode', 'undefinedable').text()}(${text})`;
+  }
+  return text;
+}
+
+function wrapCodecViaHelperTexts(
+  ctx: DeriveContext,
+  shape: MacroReflectedTypeShape,
+  ownerTypeName: string,
+  scopeNode: MacroSyntaxNode,
+  errorNode: MacroSyntaxNode,
+  helperTexts: { readonly decodeText: string; readonly encodeText: string },
+  typeNode?: ts.TypeNode | null,
+  aliasVisiting: Set<string> = new Set(),
+): { readonly decodeText: string; readonly encodeText: string } {
+  if (shape.kind === 'named' && !aliasVisiting.has(shape.name)) {
+    const localAlias = localStructuralAliasForNamedReference(
+      ctx,
+      shape.name,
+      scopeNode,
+      'codec',
+    );
+    if (localAlias) {
+      aliasVisiting.add(shape.name);
+      const wrapped = wrapCodecViaHelperTexts(
+        ctx,
+        localAlias.shape,
+        ownerTypeName,
+        scopeNode,
+        errorNode,
+        helperTexts,
+        localAlias.typeNode,
+        aliasVisiting,
+      );
+      aliasVisiting.delete(shape.name);
+      return wrapped;
+    }
+  }
+  if (shape.kind !== 'union') {
+    return helperTexts;
+  }
+  const nullishUnion = decomposeNullishUnion(shape);
+  if (!nullishUnion) {
+    return helperTexts;
+  }
+  let decodeText = helperTexts.decodeText;
+  let encodeText = helperTexts.encodeText;
+  if (nullishUnion.includesNull && nullishUnion.base) {
+    decodeText = `${ctx.runtime.named('sts:decode', 'nullable').text()}(${decodeText})`;
+    encodeText = `${ctx.runtime.named('sts:encode', 'nullable').text()}(${encodeText})`;
+  }
+  if (nullishUnion.includesUndefined) {
+    decodeText = `${ctx.runtime.named('sts:decode', 'undefinedable').text()}(${decodeText})`;
+    encodeText = `${ctx.runtime.named('sts:encode', 'undefinedable').text()}(${encodeText})`;
+  }
+  return { decodeText, encodeText };
+}
+
 function decodeDefaultExpressionText(
   ctx: DeriveContext,
   annotations: readonly MacroAnnotation[],
@@ -4068,7 +4242,15 @@ function decodeFieldFromReflectedShape(
 
   const decoderText = (() => {
     if (viaIdentifier) {
-      return viaIdentifier;
+      return wrapDecodeViaHelperText(
+        ctx,
+        field.type,
+        ownerTypeName,
+        scopeNode,
+        field.node,
+        viaIdentifier,
+        explicitTypeNodeForSyntaxNode(field.node),
+      );
     }
     const typeNode = explicitTypeNodeForSyntaxNode(field.node);
     const helperText = decodeHelperTextFromShape(
@@ -4134,7 +4316,15 @@ function encodeFieldFromReflectedShape(
 
   const encoderText = (() => {
     if (viaIdentifier) {
-      return viaIdentifier;
+      return wrapEncodeViaHelperText(
+        ctx,
+        field.type,
+        ownerTypeName,
+        scopeNode,
+        field.node,
+        viaIdentifier,
+        explicitTypeNodeForSyntaxNode(field.node),
+      );
     }
     const helperText = encodeHelperTextFromShape(
       ctx,
@@ -4196,7 +4386,15 @@ function codecFieldFromReflectedShape(
 
   const helperTexts = (() => {
     if (viaIdentifier) {
-      return { decodeText: viaIdentifier, encodeText: viaIdentifier };
+      return wrapCodecViaHelperTexts(
+        ctx,
+        field.type,
+        ownerTypeName,
+        scopeNode,
+        field.node,
+        { decodeText: viaIdentifier, encodeText: viaIdentifier },
+        explicitTypeNodeForSyntaxNode(field.node),
+      );
     }
     const helperTexts = codecHelperTextsFromShape(
       ctx,
@@ -4477,16 +4675,14 @@ function nestedDecodeHelperTextFromFields(
   const isIdentityProjection = decodedFields.every((field) =>
     field.localName === field.wireName && field.defaultText === null
   );
-  const projectionText = decodedFields.length === 0 ? '{}' : `({
-        ${
-    decodedFields.map((field) =>
-      `${propertyKeyText(field.localName)}: ${
-        decodeDefaultProjectionText(propertyAccessText('value', field.wireName), field.defaultText)
-      }`
-    ).join(',\n')
-  }
-      })`;
-  const helperText = isIdentityProjection ? `${decodeObject}(${shapeText})` : `${decodeMap}(
+  const projectionText = objectProjectionText(decodedFields.map((field) => ({
+    keyName: field.localName,
+    optional: field.optional,
+    valueText: decodeDefaultProjectionText(propertyAccessText('value', field.wireName), field.defaultText),
+  })));
+  const helperText = isIdentityProjection
+    ? `${decodeObject}(${shapeText})`
+    : `${decodeMap}(
     ${decodeObject}(${shapeText}),
     (value) => ${projectionText},
   )`;
@@ -4515,14 +4711,14 @@ function nestedEncodeHelperTextFromFields(
   }
       }`;
   const isIdentityProjection = encodedFields.every((field) => field.localName === field.wireName);
-  const projectionText = encodedFields.length === 0 ? '({})' : `({
-        ${
-    encodedFields.map((field) =>
-      `${propertyKeyText(field.wireName)}: ${propertyAccessText('value', field.localName)}`
-    ).join(',\n')
-  }
-      })`;
-  const helperText = isIdentityProjection ? `${encodeObject}(${shapeText})` : `${encodeContramap}(
+  const projectionText = objectProjectionText(encodedFields.map((field) => ({
+    keyName: field.wireName,
+    optional: field.optional,
+    valueText: propertyAccessText('value', field.localName),
+  })));
+  const helperText = isIdentityProjection
+    ? `${encodeObject}(${shapeText})`
+    : `${encodeContramap}(
     ${encodeObject}(${shapeText}),
     (value) => ${projectionText},
   )`;
@@ -4572,30 +4768,28 @@ function nestedCodecHelperTextsFromFields(
     ? `${decodeObject}(${decodeShapeText})`
     : `${decodeMap}(
       ${decodeObject}(${decodeShapeText}),
-      (value) => ({
-        ${
-      codecFields.map((field) =>
-        `${propertyKeyText(field.localName)}: ${
-          decodeDefaultProjectionText(
-            propertyAccessText('value', field.wireName),
-            field.decodeDefaultText,
-          )
-        }`
-      ).join(',\n')
-    }
-      }),
+      (value) => ${
+      objectProjectionText(codecFields.map((field) => ({
+        keyName: field.localName,
+        optional: field.decodeOptional,
+        valueText: decodeDefaultProjectionText(
+          propertyAccessText('value', field.wireName),
+          field.decodeDefaultText,
+        ),
+      })))
+    },
     )`;
   const encodeHelperText = hasIdentityEncodeProjection
     ? `${encodeObject}(${encodeShapeText})`
     : `${encodeContramap}(
       ${encodeObject}(${encodeShapeText}),
-      (value) => ({
-        ${
-      codecFields.map((field) =>
-        `${propertyKeyText(field.wireName)}: ${propertyAccessText('value', field.localName)}`
-      ).join(',\n')
-    }
-      }),
+      (value) => ${
+      objectProjectionText(codecFields.map((field) => ({
+        keyName: field.wireName,
+        optional: field.optional,
+        valueText: propertyAccessText('value', field.localName),
+      })))
+    },
     )`;
   return {
     decodeText: withDecodeObjectMetadataText(ctx, decodeHelperText, codecFields),
@@ -4675,15 +4869,11 @@ function nestedDecodeHelperText(
   const isIdentityProjection = fields.every((field) =>
     field.localName === field.wireName && field.defaultText === null
   );
-  const projectionText = fields.length === 0 ? '{}' : `({
-        ${
-    fields.map((field) =>
-      `${propertyKeyText(field.localName)}: ${
-        decodeDefaultProjectionText(propertyAccessText('value', field.wireName), field.defaultText)
-      }`
-    ).join(',\n')
-  }
-      })`;
+  const projectionText = objectProjectionText(fields.map((field) => ({
+    keyName: field.localName,
+    optional: field.optional,
+    valueText: decodeDefaultProjectionText(propertyAccessText('value', field.wireName), field.defaultText),
+  })));
   const helperText = isIdentityProjection ? `${decodeObject}(${shapeText})` : `${decodeMap}(
     ${decodeObject}(${shapeText}),
     (value) => ${projectionText},
@@ -4713,13 +4903,11 @@ function nestedEncodeHelperText(
   }
       }`;
   const isIdentityProjection = fields.every((field) => field.localName === field.wireName);
-  const projectionText = fields.length === 0 ? '({})' : `({
-        ${
-    fields.map((field) =>
-      `${propertyKeyText(field.wireName)}: ${propertyAccessText('value', field.localName)}`
-    ).join(',\n')
-  }
-      })`;
+  const projectionText = objectProjectionText(fields.map((field) => ({
+    keyName: field.wireName,
+    optional: field.optional,
+    valueText: propertyAccessText('value', field.localName),
+  })));
   const helperText = isIdentityProjection ? `${encodeObject}(${shapeText})` : `${encodeContramap}(
     ${encodeObject}(${shapeText}),
     (value) => ${projectionText},
@@ -4766,25 +4954,25 @@ function nestedCodecHelperTexts(
     ? `${decodeObject}(${decodeShapeText})`
     : `${decodeMap}(
       ${decodeObject}(${decodeShapeText}),
-      (value) => ({
-        ${
-      fields.map((field) =>
-        `${propertyKeyText(field.localName)}: ${propertyAccessText('value', field.wireName)}`
-      ).join(',\n')
-    }
-      }),
+      (value) => ${
+      objectProjectionText(fields.map((field) => ({
+        keyName: field.localName,
+        optional: field.optional,
+        valueText: propertyAccessText('value', field.wireName),
+      })))
+    },
     )`;
   const encodeHelperText = hasIdentityEncodeProjection
     ? `${encodeObject}(${encodeShapeText})`
     : `${encodeContramap}(
       ${encodeObject}(${encodeShapeText}),
-      (value) => ({
-        ${
-      fields.map((field) =>
-        `${propertyKeyText(field.wireName)}: ${propertyAccessText('value', field.localName)}`
-      ).join(',\n')
-    }
-      }),
+      (value) => ${
+      objectProjectionText(fields.map((field) => ({
+        keyName: field.wireName,
+        optional: field.optional,
+        valueText: propertyAccessText('value', field.localName),
+      })))
+    },
     )`;
   return {
     decodeText: withDecodeObjectMetadataText(ctx, decodeHelperText, fields),
@@ -4877,13 +5065,21 @@ function fieldFromDecodeMember(
   if (!explicitType) {
     ctx.error(decodeLikeUnsupportedFieldMessage('decode'), member);
   }
+  const reflectedType = ctx.reflect.typeShape(explicitType);
 
   const decoderText = (() => {
     if (viaIdentifier) {
-      return viaIdentifier;
+      return wrapDecodeViaHelperText(
+        ctx,
+        reflectedType,
+        ownerTypeName,
+        scopeNode,
+        member,
+        viaIdentifier,
+        hostTypeNode(explicitType),
+      );
     }
 
-    const reflectedType = ctx.reflect.typeShape(explicitType);
     const helperText = decodeHelperTextFromShape(
       ctx,
       reflectedType,
@@ -4948,13 +5144,21 @@ function fieldFromDecodeClassField(
   if (!explicitType) {
     ctx.error(decodeLikeUnsupportedFieldMessage('decode'), field);
   }
+  const reflectedType = ctx.reflect.typeShape(explicitType);
 
   const decoderText = (() => {
     if (viaIdentifier) {
-      return viaIdentifier;
+      return wrapDecodeViaHelperText(
+        ctx,
+        reflectedType,
+        ownerTypeName,
+        scopeNode,
+        field,
+        viaIdentifier,
+        hostTypeNode(explicitType),
+      );
     }
 
-    const reflectedType = ctx.reflect.typeShape(explicitType);
     const helperText = decodeHelperTextFromShape(
       ctx,
       reflectedType,
@@ -5194,7 +5398,15 @@ function fieldFromEncodeMember(
 
   const encoderText = (() => {
     if (viaIdentifier) {
-      return viaIdentifier;
+      return wrapEncodeViaHelperText(
+        ctx,
+        reflectedType,
+        ownerTypeName,
+        scopeNode,
+        member,
+        viaIdentifier,
+        hostTypeNode(explicitType),
+      );
     }
 
     const helperText = encodeHelperTextFromShape(
@@ -5262,7 +5474,15 @@ function fieldFromEncodeClassField(
 
   const encoderText = (() => {
     if (viaIdentifier) {
-      return viaIdentifier;
+      return wrapEncodeViaHelperText(
+        ctx,
+        reflectedType,
+        ownerTypeName,
+        scopeNode,
+        field,
+        viaIdentifier,
+        hostTypeNode(explicitType),
+      );
     }
 
     const helperText = encodeHelperTextFromShape(
@@ -5346,7 +5566,15 @@ function fieldFromCodecMember(
 
   const helperTexts = (() => {
     if (viaIdentifier) {
-      return { decodeText: viaIdentifier, encodeText: viaIdentifier };
+      return wrapCodecViaHelperTexts(
+        ctx,
+        reflectedType,
+        ownerTypeName,
+        scopeNode,
+        member,
+        { decodeText: viaIdentifier, encodeText: viaIdentifier },
+        hostTypeNode(explicitType),
+      );
     }
 
     const helperTexts = codecHelperTextsFromShape(
@@ -5427,7 +5655,15 @@ function fieldFromCodecClassField(
 
   const helperTexts = (() => {
     if (viaIdentifier) {
-      return { decodeText: viaIdentifier, encodeText: viaIdentifier };
+      return wrapCodecViaHelperTexts(
+        ctx,
+        reflectedType,
+        ownerTypeName,
+        scopeNode,
+        field,
+        { decodeText: viaIdentifier, encodeText: viaIdentifier },
+        hostTypeNode(explicitType),
+      );
     }
 
     const helperTexts = codecHelperTextsFromShape(
@@ -5931,19 +6167,24 @@ function taggedDecodeVariantText(
       }`
     ),
   ];
-  const projectionEntries = [
-    `${propertyKeyText(discriminantName)}: ${JSON.stringify(variant.tag)}`,
-    ...variant.fields.map((field) =>
-      `${propertyKeyText(field.localName)}: ${propertyAccessText('value', field.wireName)}`
-    ),
-  ];
   return `${decodeMapText}(
     ${decodeObjectText}({
       ${shapeEntries.join(',\n')}
     }),
-    (value) => ({
-      ${projectionEntries.join(',\n')}
-    }),
+    (value) => ${
+    objectProjectionText([
+      {
+        keyName: discriminantName,
+        optional: false,
+        valueText: JSON.stringify(variant.tag),
+      },
+      ...variant.fields.map((field) => ({
+        keyName: field.localName,
+        optional: field.optional,
+        valueText: propertyAccessText('value', field.wireName),
+      })),
+    ])
+  },
   )`;
 }
 
@@ -5952,16 +6193,18 @@ function taggedEncodeVariantProjectionText(
   variant: TaggedDerivedVariant<EncodedField>,
   receiverName: string,
 ): string {
-  return `({
-    ${
-    [
-      `${propertyKeyText(discriminantName)}: ${JSON.stringify(variant.tag)}`,
-      ...variant.fields.map((field) =>
-        `${propertyKeyText(field.wireName)}: ${propertyAccessText(receiverName, field.localName)}`
-      ),
-    ].join(',\n')
-  }
-  })`;
+  return objectProjectionText([
+    {
+      keyName: discriminantName,
+      optional: false,
+      valueText: JSON.stringify(variant.tag),
+    },
+    ...variant.fields.map((field) => ({
+      keyName: field.wireName,
+      optional: field.optional,
+      valueText: propertyAccessText(receiverName, field.localName),
+    })),
+  ]);
 }
 
 function taggedEncodeVariantShapeText(
@@ -6000,19 +6243,24 @@ function taggedCodecDecodeVariantText(
       }`
     ),
   ];
-  const projectionEntries = [
-    `${propertyKeyText(discriminantName)}: ${JSON.stringify(variant.tag)}`,
-    ...variant.fields.map((field) =>
-      `${propertyKeyText(field.localName)}: ${propertyAccessText('value', field.wireName)}`
-    ),
-  ];
   return `${decodeMapText}(
     ${decodeObjectText}({
       ${shapeEntries.join(',\n')}
     }),
-    (value) => ({
-      ${projectionEntries.join(',\n')}
-    }),
+    (value) => ${
+    objectProjectionText([
+      {
+        keyName: discriminantName,
+        optional: false,
+        valueText: JSON.stringify(variant.tag),
+      },
+      ...variant.fields.map((field) => ({
+        keyName: field.localName,
+        optional: field.decodeOptional,
+        valueText: propertyAccessText('value', field.wireName),
+      })),
+    ])
+  },
   )`;
 }
 
@@ -6041,16 +6289,18 @@ function taggedCodecEncodeVariantProjectionText(
   variant: TaggedDerivedVariant<CodecField>,
   receiverName: string,
 ): string {
-  return `({
-    ${
-    [
-      `${propertyKeyText(discriminantName)}: ${JSON.stringify(variant.tag)}`,
-      ...variant.fields.map((field) =>
-        `${propertyKeyText(field.wireName)}: ${propertyAccessText(receiverName, field.localName)}`
-      ),
-    ].join(',\n')
-  }
-  })`;
+  return objectProjectionText([
+    {
+      keyName: discriminantName,
+      optional: false,
+      valueText: JSON.stringify(variant.tag),
+    },
+    ...variant.fields.map((field) => ({
+      keyName: field.wireName,
+      optional: field.optional,
+      valueText: propertyAccessText(receiverName, field.localName),
+    })),
+  ]);
 }
 
 // #[macro(decl)]
@@ -6309,18 +6559,14 @@ export function decode(): MacroDefinition<typeof DECODE_SIGNATURE> {
       }
           }`;
 
-      const projectionText = fields.length === 0 ? '{}' : `({
-            ${
-        fields.map((field) =>
-          `${propertyKeyText(field.localName)}: ${
-            decodeDefaultProjectionText(
-              propertyAccessText('value', field.wireName),
-              field.defaultText,
-            )
-          }`
-        ).join(',\n')
-      }
-          })`;
+      const projectionText = objectProjectionText(fields.map((field) => ({
+        keyName: field.localName,
+        optional: field.optional,
+        valueText: decodeDefaultProjectionText(
+          propertyAccessText('value', field.wireName),
+          field.defaultText,
+        ),
+      })));
       const finalProjectionText = instantiateText === null
         ? projectionText
         : `(${instantiateText.replace(CLASS_DECODE_VALUE_PLACEHOLDER, projectionText)})`;
@@ -6513,13 +6759,11 @@ export function encode(): MacroDefinition<typeof DECODE_SIGNATURE> {
       }
           }`;
 
-      const projectionText = fields.length === 0 ? '({})' : `({
-            ${
-        fields.map((field) =>
-          `${propertyKeyText(field.wireName)}: ${propertyAccessText('value', field.localName)}`
-        ).join(',\n')
-      }
-          })`;
+      const projectionText = objectProjectionText(fields.map((field) => ({
+        keyName: field.wireName,
+        optional: field.optional,
+        valueText: propertyAccessText('value', field.localName),
+      })));
       const baseEncoderText = withEncodeObjectMetadataText(
         ctx,
         `${contramap}(
@@ -6762,18 +7006,14 @@ export function codec(): MacroDefinition<typeof DECODE_SIGNATURE> {
       }
           }`;
 
-      const decodeProjectionText = fields.length === 0 ? '{}' : `({
-            ${
-        fields.map((field) =>
-          `${propertyKeyText(field.localName)}: ${
-            decodeDefaultProjectionText(
-              propertyAccessText('value', field.wireName),
-              field.decodeDefaultText,
-            )
-          }`
-        ).join(',\n')
-      }
-          })`;
+      const decodeProjectionText = objectProjectionText(fields.map((field) => ({
+        keyName: field.localName,
+        optional: field.decodeOptional,
+        valueText: decodeDefaultProjectionText(
+          propertyAccessText('value', field.wireName),
+          field.decodeDefaultText,
+        ),
+      })));
       const finalDecodeProjectionText = instantiateText === null
         ? decodeProjectionText
         : `(${instantiateText.replace(CLASS_DECODE_VALUE_PLACEHOLDER, decodeProjectionText)})`;
@@ -6788,13 +7028,11 @@ export function codec(): MacroDefinition<typeof DECODE_SIGNATURE> {
       }
           }`;
 
-      const encodeProjectionText = fields.length === 0 ? '({})' : `({
-            ${
-        fields.map((field) =>
-          `${propertyKeyText(field.wireName)}: ${propertyAccessText('value', field.localName)}`
-        ).join(',\n')
-      }
-          })`;
+      const encodeProjectionText = objectProjectionText(fields.map((field) => ({
+        keyName: field.wireName,
+        optional: field.optional,
+        valueText: propertyAccessText('value', field.localName),
+      })));
       const decodeObjectCallText = `${decodeObject}(${decodeShapeText}${
         objectPolicyText ? `, { unknownKeys: ${objectPolicyText} }` : ''
       })`;

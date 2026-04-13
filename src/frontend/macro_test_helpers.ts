@@ -42,20 +42,15 @@ import {
 import { createPreparedProgram } from './project_frontend.ts';
 
 interface CreatePreparedProgramForMacroTestOptions {
+  readonly compilerOptions?: ts.CompilerOptions;
   readonly importedMacroSiteKindsBySpecifier?: ReadonlyMap<
     string,
     ReadonlyMap<string, import('./project_frontend.ts').ImportedMacroSiteKind>
   >;
 }
 
-function createBaseHost(files: ReadonlyMap<string, string>): ts.CompilerHost {
-  const baseHost = ts.createCompilerHost({
-    allowImportingTsExtensions: true,
-    moduleResolution: ts.ModuleResolutionKind.Bundler,
-    target: ts.ScriptTarget.ES2022,
-    module: ts.ModuleKind.ESNext,
-    noEmit: true,
-  });
+function createBaseHost(files: ReadonlyMap<string, string>, compilerOptions: ts.CompilerOptions): ts.CompilerHost {
+  const baseHost = ts.createCompilerHost(compilerOptions);
 
   return withSqlStdlibModuleResolution(
     withErrorStdlibModuleResolution(
@@ -116,21 +111,23 @@ export function createPreparedProgramForMacroTest(
   if (!fileMap.has(SQL_STDLIB_DECLARATION_FILE)) {
     fileMap.set(SQL_STDLIB_DECLARATION_FILE, SQL_STDLIB_DECLARATION_TEXT);
   }
+  const compilerOptions = {
+    allowImportingTsExtensions: true,
+    moduleResolution: ts.ModuleResolutionKind.Bundler,
+    noEmit: true,
+    strict: true,
+    target: ts.ScriptTarget.ES2022,
+    module: ts.ModuleKind.ESNext,
+    ...(options.compilerOptions ?? {}),
+  } satisfies ts.CompilerOptions;
   return createPreparedProgram({
     alwaysAvailableMacroSiteKinds: getAlwaysAvailableBuiltinMacroSiteKinds(),
-    baseHost: createBaseHost(fileMap),
+    baseHost: createBaseHost(fileMap, compilerOptions),
     importedMacroSiteKindsBySpecifier: new Map([
       ...getBuiltinMacroSiteKindsBySpecifier().entries(),
       ...(options.importedMacroSiteKindsBySpecifier ?? new Map()).entries(),
     ]),
-    options: {
-      allowImportingTsExtensions: true,
-      moduleResolution: ts.ModuleResolutionKind.Bundler,
-      noEmit: true,
-      strict: true,
-      target: ts.ScriptTarget.ES2022,
-      module: ts.ModuleKind.ESNext,
-    },
+    options: compilerOptions,
     rootNames: [...fileMap.keys()],
   });
 }

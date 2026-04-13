@@ -112,8 +112,8 @@ type EncoderError<TEncoder> = TEncoder extends Encoder<unknown, unknown, infer E
 type EncoderModeOf<TEncoder> = TEncoder extends Encoder<unknown, unknown, unknown, infer M> ? M
   : never;
 type MergeEncodeModes<M extends EncodeMode> = [M] extends [never] ? 'sync'
-  : [M] extends ['sync'] ? 'sync'
-  : 'async';
+  : 'async' extends M ? 'async'
+  : 'sync';
 type ObjectShape = Record<string, Encoder<unknown, unknown, unknown, EncodeMode>>;
 type TupleShape = readonly Encoder<unknown, unknown, unknown, EncodeMode>[];
 type OptionalShapeKeys<TShape extends ObjectShape> = {
@@ -127,21 +127,24 @@ type ObjectInputOfShape<TShape extends ObjectShape> =
     readonly [K in RequiredShapeKeys<TShape>]: EncoderInput<TShape[K]>;
   }
   & {
-    readonly [K in OptionalShapeKeys<TShape>]?: EncoderInput<TShape[K]>;
+    readonly [K in OptionalShapeKeys<TShape>]?: Exclude<EncoderInput<TShape[K]>, undefined>;
   };
 type ObjectOutputOfShape<TShape extends ObjectShape> =
   & {
     readonly [K in RequiredShapeKeys<TShape>]: EncoderOutputValue<TShape[K]>;
   }
   & {
-    readonly [K in OptionalShapeKeys<TShape>]?: EncoderOutputValue<TShape[K]>;
+    readonly [K in OptionalShapeKeys<TShape>]?: Exclude<EncoderOutputValue<TShape[K]>, undefined>;
   };
-type ShapeEncodeMode<TShape extends ObjectShape> = MergeEncodeModes<
-  EncoderModeOf<TShape[keyof TShape]>
->;
-type TupleEncodeMode<TElements extends TupleShape> = MergeEncodeModes<
-  EncoderModeOf<TElements[number]>
->;
+type ShapeEncodeMode<TShape extends ObjectShape> = true extends {
+  readonly [K in keyof TShape]: EncoderModeOf<TShape[K]> extends 'async' ? true : false;
+}[keyof TShape] ? 'async'
+  : 'sync';
+type TupleEncodeMode<TElements extends TupleShape> = true extends {
+  readonly [K in keyof TElements]: TElements[K] extends Encoder<unknown, unknown, unknown, 'async'> ? true
+    : false;
+}[number] ? 'async'
+  : 'sync';
 type StatefulEncoder<T, TEncoded = unknown, E = EncodeFailure, M extends EncodeMode = 'sync'> =
   Encoder<T, TEncoded, E, M> & {
     [encodeWithStateSymbol]?: (value: T, state: EncodeState) => MaybeEncodeOutput<TEncoded, E>;
@@ -254,14 +257,23 @@ function encodeOpaqueEffect(
   };
 }
 
-export function contramap<A, B, TEncoded, E>(
-  encoder: Encoder<A, TEncoded, E>,
-  project: (value: B) => A,
-): Encoder<B, TEncoded, E>;
-export function contramap<A, B, TEncoded, E, M extends EncodeMode, TProjected extends A | Promise<A>>(
-  encoder: Encoder<A, TEncoded, E, M>,
+export function contramap<TEncoder extends Encoder<unknown, unknown, unknown, EncodeMode>, B>(
+  encoder: TEncoder,
+  project: (value: B) => EncoderInput<TEncoder>,
+): Encoder<B, EncoderOutputValue<TEncoder>, EncoderError<TEncoder>, EncoderModeOf<TEncoder>>;
+export function contramap<
+  TEncoder extends Encoder<unknown, unknown, unknown, EncodeMode>,
+  B,
+  TProjected extends EncoderInput<TEncoder> | Promise<EncoderInput<TEncoder>>,
+>(
+  encoder: TEncoder,
   project: (value: B) => TProjected,
-): Encoder<B, TEncoded, E, MergeEncodeModes<M | AsyncModeOf<TProjected>>>;
+): Encoder<
+  B,
+  EncoderOutputValue<TEncoder>,
+  EncoderError<TEncoder>,
+  MergeEncodeModes<EncoderModeOf<TEncoder> | AsyncModeOf<TProjected>>
+>;
 export function contramap<A, B, TEncoded, E, M extends EncodeMode, TProjected extends A | Promise<A>>(
   encoder: Encoder<A, TEncoded, E, M>,
   project: (value: B) => TProjected,
@@ -289,7 +301,9 @@ export function encoderContravariant<TEncoded, E = EncodeFailure>(): Contravaria
   Bind<Bind<EncoderF, [E]>, [TEncoded]>
 > {
   return {
-    contramap,
+    contramap<A, B>(value: Encoder<A, TEncoded, E, 'sync'>, project: (value: B) => A) {
+      return contramap(value, project);
+    },
   };
 }
 
@@ -802,7 +816,7 @@ export function tuple<const TElements extends TupleShape>(
     (value: TInput, state?: EncodeState) => {
       const values = value as readonly unknown[];
       return withEncodeCycleTracking(state, values, () =>
-        err([issueFromEncodeFailure(new EncodeFailure('Cyclic value encountered during encode.', { cause: values }))]) as EncodeOutput<
+        err([issueFromEncodeFailure(new EncodeFailure('Cyclic value encountered during encode.', { cause: values }))]) as unknown as EncodeOutput<
           TOutput,
           readonly EncodeIssue[],
           TMode
@@ -1110,7 +1124,7 @@ export function object<TShape extends ObjectShape>(
     },
     (value: TInput, state?: EncodeState) => {
       if (!isPlainObject(value)) {
-        return err([issueFromEncodeFailure(new EncodeFailure('Expected object.', { cause: value }))]) as EncodeOutput<
+        return err([issueFromEncodeFailure(new EncodeFailure('Expected object.', { cause: value }))]) as unknown as EncodeOutput<
           TOutput,
           readonly EncodeIssue[],
           TMode
@@ -1118,7 +1132,7 @@ export function object<TShape extends ObjectShape>(
       }
 
       return withEncodeCycleTracking(state, value, () =>
-        err([issueFromEncodeFailure(new EncodeFailure('Cyclic value encountered during encode.', { cause: value }))]) as EncodeOutput<
+        err([issueFromEncodeFailure(new EncodeFailure('Cyclic value encountered during encode.', { cause: value }))]) as unknown as EncodeOutput<
           TOutput,
           readonly EncodeIssue[],
           TMode

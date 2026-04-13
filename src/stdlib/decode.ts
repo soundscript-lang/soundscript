@@ -129,16 +129,32 @@ type DecoderModeOf<TDecoder> = TDecoder extends { decode(value: unknown): infer 
   : 'sync'
   : never;
 type MergeDecodeModes<M extends DecodeMode> = [M] extends [never] ? 'sync'
-  : [M] extends ['sync'] ? 'sync'
-  : 'async';
+  : 'async' extends M ? 'async'
+  : 'sync';
 type ObjectShape = Record<string, Decoder<unknown, unknown, DecodeMode>>;
 type TupleShape = readonly Decoder<unknown, unknown, DecodeMode>[];
-type ShapeDecodeMode<TShape extends ObjectShape> = MergeDecodeModes<
-  DecoderModeOf<TShape[keyof TShape]>
->;
-type TupleDecodeMode<TElements extends TupleShape> = MergeDecodeModes<
-  DecoderModeOf<TElements[number]>
->;
+type OptionalShapeKeys<TShape extends ObjectShape> = {
+  readonly [K in keyof TShape]-?: TShape[K] extends OptionalDecoder<unknown, unknown, DecodeMode>
+    ? K
+    : never;
+}[keyof TShape];
+type RequiredShapeKeys<TShape extends ObjectShape> = Exclude<keyof TShape, OptionalShapeKeys<TShape>>;
+type ObjectValueOfShape<TShape extends ObjectShape> =
+  & {
+    readonly [K in RequiredShapeKeys<TShape>]: DecoderValue<TShape[K]>;
+  }
+  & {
+    readonly [K in OptionalShapeKeys<TShape>]?: Exclude<DecoderValue<TShape[K]>, undefined>;
+  };
+type ShapeDecodeMode<TShape extends ObjectShape> = true extends {
+  readonly [K in keyof TShape]: DecoderModeOf<TShape[K]> extends 'async' ? true : false;
+}[keyof TShape] ? 'async'
+  : 'sync';
+type TupleDecodeMode<TElements extends TupleShape> = true extends {
+  readonly [K in keyof TElements]: TElements[K] extends Decoder<unknown, unknown, 'async'> ? true
+    : false;
+}[number] ? 'async'
+  : 'sync';
 
 const jsonStringNode: __InternalMetadataNode = { kind: 'primitive', primitive: 'string' };
 const jsonNumberNode: __InternalMetadataNode = { kind: 'primitive', primitive: 'number' };
@@ -521,18 +537,36 @@ export function nullable<T, E, M extends DecodeMode>(
   });
 }
 
-export function defaulted<T, E, M extends DecodeMode>(
-  decoder: Decoder<T | undefined, E, M>,
-  fallback: T,
-): Decoder<T, E, M>;
-export function defaulted<T, E, M extends DecodeMode, TFallback extends T | Promise<T>>(
-  decoder: Decoder<T | undefined, E, M>,
+export function defaulted<
+  TDecoder extends Decoder<unknown, unknown, DecodeMode>,
+  TValue = Exclude<DecoderValue<TDecoder>, undefined>,
+>(
+  decoder: TDecoder & Decoder<TValue | undefined, DecoderError<TDecoder>, DecoderModeOf<TDecoder>>,
+  fallback: TValue,
+): Decoder<TValue, DecoderError<TDecoder>, DecoderModeOf<TDecoder>>;
+export function defaulted<
+  TDecoder extends Decoder<unknown, unknown, DecodeMode>,
+  TValue = Exclude<DecoderValue<TDecoder>, undefined>,
+  TFallback extends TValue | Promise<TValue> = TValue | Promise<TValue>,
+>(
+  decoder: TDecoder & Decoder<TValue | undefined, DecoderError<TDecoder>, DecoderModeOf<TDecoder>>,
   fallback: () => TFallback,
-): Decoder<T, E, MergeDecodeModes<M | AsyncModeOf<TFallback>>>;
-export function defaulted<T, E, M extends DecodeMode, TFallback extends T | Promise<T>>(
-  decoder: Decoder<T | undefined, E, M>,
-  fallback: T | (() => TFallback),
-): Decoder<T, E, MergeDecodeModes<M | AsyncModeOf<TFallback>>> {
+): Decoder<TValue, DecoderError<TDecoder>, MergeDecodeModes<DecoderModeOf<TDecoder> | AsyncModeOf<TFallback>>>;
+export function defaulted<
+  TDecoder extends Decoder<unknown, unknown, DecodeMode>,
+  TValue = Exclude<DecoderValue<TDecoder>, undefined>,
+  TFallback extends TValue | Promise<TValue> = TValue | Promise<TValue>,
+>(
+  decoder: TDecoder & Decoder<TValue | undefined, DecoderError<TDecoder>, DecoderModeOf<TDecoder>>,
+  fallback: TValue | (() => TFallback),
+): Decoder<
+  TValue,
+  DecoderError<TDecoder>,
+  MergeDecodeModes<DecoderModeOf<TDecoder> | AsyncModeOf<TFallback>>
+> {
+  type T = TValue;
+  type E = DecoderError<TDecoder>;
+  type M = DecoderModeOf<TDecoder>;
   type TMode = MergeDecodeModes<M | AsyncModeOf<TFallback>>;
   const resolveFallback = (): T | Promise<T> =>
     typeof fallback === 'function'
@@ -953,7 +987,7 @@ export function tuple<const TElements extends TupleShape>(
       if (!Array.isArray(value)) {
         return err([
           issueFromDecodeFailure(new DecodeFailure('Expected tuple.', { cause: value })),
-        ]) as DecodeOutput<TValue, readonly DecodeIssue[], TMode>;
+        ]) as unknown as DecodeOutput<TValue, readonly DecodeIssue[], TMode>;
       }
 
       if (value.length !== elements.length) {
@@ -963,7 +997,7 @@ export function tuple<const TElements extends TupleShape>(
               cause: value,
             }),
           ),
-        ]) as DecodeOutput<TValue, readonly DecodeIssue[], TMode>;
+        ]) as unknown as DecodeOutput<TValue, readonly DecodeIssue[], TMode>;
       }
 
       const decodedValues: unknown[] = [];
@@ -1045,7 +1079,7 @@ export function result<T, EValue, EDecodeValue, EDecodeError, MOk extends Decode
       }),
       (value) => err(value.error) as Result<T, EValue>,
     ),
-  ) as Decoder<
+  ) as unknown as Decoder<
     Result<T, EValue>,
     EDecodeValue | EDecodeError | DecodeFailure,
     MergeDecodeModes<MOk | MErr>
@@ -1056,11 +1090,11 @@ export function object<const TShape extends ObjectShape>(
   shape: TShape,
   options?: DecodeObjectOptions,
 ): Decoder<
-  { readonly [K in keyof TShape]: DecoderValue<TShape[K]> },
+  ObjectValueOfShape<TShape>,
   DecoderError<TShape[keyof TShape]> | DecodeFailure,
   ShapeDecodeMode<TShape>
 > {
-  type TValue = { readonly [K in keyof TShape]: DecoderValue<TShape[K]> };
+  type TValue = ObjectValueOfShape<TShape>;
   type TError = DecoderError<TShape[keyof TShape]> | DecodeFailure;
   type TMode = ShapeDecodeMode<TShape>;
   const keys = Object.keys(shape) as readonly (keyof TShape & string)[];
@@ -1145,7 +1179,7 @@ export function object<const TShape extends ObjectShape>(
       if (!isPlainObject(value)) {
         return err([
           issueFromDecodeFailure(new DecodeFailure('Expected object.', { cause: value })),
-        ]) as DecodeOutput<TValue, readonly DecodeIssue[], TMode>;
+        ]) as unknown as DecodeOutput<TValue, readonly DecodeIssue[], TMode>;
       }
 
       const record = value as Record<string, unknown>;
@@ -1237,7 +1271,7 @@ export function object<const TShape extends ObjectShape>(
 export function strictObject<const TShape extends ObjectShape>(
   shape: TShape,
 ): Decoder<
-  { readonly [K in keyof TShape]: DecoderValue<TShape[K]> },
+  ObjectValueOfShape<TShape>,
   DecoderError<TShape[keyof TShape]> | DecodeFailure,
   ShapeDecodeMode<TShape>
 > {
@@ -1247,7 +1281,7 @@ export function strictObject<const TShape extends ObjectShape>(
 export function passthroughObject<const TShape extends ObjectShape>(
   shape: TShape,
 ): Decoder<
-  { readonly [K in keyof TShape]: DecoderValue<TShape[K]> },
+  ObjectValueOfShape<TShape>,
   DecoderError<TShape[keyof TShape]> | DecodeFailure,
   ShapeDecodeMode<TShape>
 > {
@@ -1259,7 +1293,11 @@ export function field<K extends string, T, E, M extends DecodeMode>(
   decoder: Decoder<T, E, M>,
 ): Decoder<T, E | DecodeFailure, M> {
   const shape = { [key]: decoder } as { readonly [P in K]: Decoder<T, E, M> };
-  return map(object(shape), (value) => value[key]) as Decoder<T, E | DecodeFailure, M>;
+  return map(object(shape), (value) => (value as Readonly<Record<K, T>>)[key]) as Decoder<
+    T,
+    E | DecodeFailure,
+    M
+  >;
 }
 
 export function optionalField<K extends string, T, E, M extends DecodeMode>(
@@ -1269,7 +1307,11 @@ export function optionalField<K extends string, T, E, M extends DecodeMode>(
   const shape = { [key]: optional(decoder) } as unknown as {
     readonly [P in K]: OptionalDecoder<T, E, M>;
   };
-  return map(object(shape), (value) => value[key]) as Decoder<T | undefined, E | DecodeFailure, M>;
+  return map(object(shape), (value) => (value as { readonly [P in K]?: T })[key]) as Decoder<
+    T | undefined,
+    E | DecodeFailure,
+    M
+  >;
 }
 
 export function union<A, B, ELeft, ERight, MLeft extends DecodeMode, MRight extends DecodeMode>(
@@ -2026,7 +2068,7 @@ async function decodeObjectAsync<TShape extends ObjectShape>(
   startIndex: number,
   firstPending: Promise<Result<unknown, unknown>>,
 ): Promise<Result<
-  { readonly [K in keyof TShape]: DecoderValue<TShape[K]> },
+  ObjectValueOfShape<TShape>,
   DecoderError<TShape[keyof TShape]> | DecodeFailure
 >> {
   const firstKey = keys[startIndex]!;
@@ -2075,7 +2117,7 @@ async function decodeObjectAsync<TShape extends ObjectShape>(
     decodedObject[key] = decoded.value;
   }
 
-  return ok(decodedObject as { readonly [K in keyof TShape]: DecoderValue<TShape[K]> });
+  return ok(decodedObject as ObjectValueOfShape<TShape>);
 }
 
 async function validateObjectAsync<TShape extends ObjectShape>(
@@ -2087,7 +2129,7 @@ async function validateObjectAsync<TShape extends ObjectShape>(
   startIndex: number,
   firstPending: Promise<Result<unknown, readonly DecodeIssue[]>>,
 ): Promise<Result<
-  { readonly [K in keyof TShape]: DecoderValue<TShape[K]> },
+  ObjectValueOfShape<TShape>,
   readonly DecodeIssue[]
 >> {
   const firstKey = keys[startIndex]!;
@@ -2134,7 +2176,7 @@ async function validateObjectAsync<TShape extends ObjectShape>(
 
   return issues.length > 0
     ? err(issues)
-    : ok(decodedObject as { readonly [K in keyof TShape]: DecoderValue<TShape[K]> });
+    : ok(decodedObject as ObjectValueOfShape<TShape>);
 }
 
 async function decodeUnionAsync<A, B, ELeft, ERight>(
