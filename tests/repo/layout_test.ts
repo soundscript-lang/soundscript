@@ -219,3 +219,16 @@ Deno.test('build helpers move out of src root once reorganized', () => {
     'src/build/build_package.ts is missing.',
   );
 });
+
+Deno.test('cli run helper moves out of src root once reorganized', () => {
+  const srcRootFiles = listFileNames(SRC_ROOT);
+
+  assert(
+    !srcRootFiles.includes('run_program.ts'),
+    'run_program.ts should live under src/cli/.',
+  );
+  assert(
+    Deno.statSync(join(SRC_ROOT, 'cli', 'run_program.ts')).isFile,
+    'src/cli/run_program.ts is missing.',
+  );
+});

@@ -55,7 +55,7 @@ import {
   materializeRuntimeGraph,
   type MaterializeRuntimeGraphArtifacts,
 } from './runtime/materialize.ts';
-import { runProgram, type RunProgramOptions, type RunProgramResult } from './run_program.ts';
+import { runProgram, type RunProgramOptions, type RunProgramResult } from './cli/run_program.ts';
 import { projectEditorFile } from './editor/editor_projection.ts';
 
 export const VERSION = '0.1.25';

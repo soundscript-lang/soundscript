@@ -2,9 +2,9 @@ import {
   formatDiagnostics,
   hasErrorDiagnostics,
   type MergedDiagnostic,
-} from './checker/diagnostics.ts';
-import { analyzeProject } from './checker/analyze_project.ts';
-import type { RuntimeTarget } from './config.ts';
+} from '../checker/diagnostics.ts';
+import { analyzeProject } from '../checker/analyze_project.ts';
+import type { RuntimeTarget } from '../config.ts';
 
 export interface RunProgramOptions {
   projectPath: string;
