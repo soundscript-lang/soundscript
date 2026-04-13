@@ -288,3 +288,16 @@ Deno.test('compiler generator test moves out of src root once reorganized', () =
     'src/compiler/generator_test.ts is missing.',
   );
 });
+
+Deno.test('compiler promise test moves out of src root once reorganized', () => {
+  const srcRootFiles = listFileNames(SRC_ROOT);
+
+  assert(
+    !srcRootFiles.includes('compiler_promise_test.ts'),
+    'compiler_promise_test.ts should live under src/compiler/.',
+  );
+  assert(
+    Deno.statSync(join(SRC_ROOT, 'compiler', 'promise_test.ts')).isFile,
+    'src/compiler/promise_test.ts is missing.',
+  );
+});
