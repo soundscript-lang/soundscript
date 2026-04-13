@@ -158,7 +158,7 @@ Exit codes are:
 
 ## Release automation
 
-The canonical release version comes from [src/cli.ts](src/cli.ts).
+The canonical release version comes from [src/cli/cli.ts](src/cli/cli.ts).
 
 For a normal public release, bump `VERSION` there, push `main`, then run the `Publish Release`
 GitHub Actions workflow. It will:

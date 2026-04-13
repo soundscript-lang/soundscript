@@ -1,4 +1,4 @@
-import { basename, dirname, join } from './platform/path.ts';
+import { basename, dirname, join } from '../platform/path.ts';
 import ts from 'typescript';
 
 import {
@@ -6,20 +6,20 @@ import {
   type BuildProjectArtifacts,
   type BuildProjectOptions,
   type BuildProjectResult,
-} from './build/build_package.ts';
-import { formatDiagnostics, type MergedDiagnostic } from './checker/diagnostics.ts';
+} from '../build/build_package.ts';
+import { formatDiagnostics, type MergedDiagnostic } from '../checker/diagnostics.ts';
 import {
   type CompileArtifacts,
   compileProject,
   type CompileProjectOptions,
   type CompileProjectResult,
-} from './compiler/compile_project.ts';
+} from '../compiler/compile_project.ts';
 import {
   expandProject,
   type ExpandProjectArtifacts,
   type ExpandProjectOptions,
   type ExpandProjectResult,
-} from './frontend/expand_project.ts';
+} from '../frontend/expand_project.ts';
 import {
   type BuildCommand,
   type DenoCommand,
@@ -27,17 +27,17 @@ import {
   type InitCommand,
   type OutputFormat,
   parseCommand,
-} from './config.ts';
+} from '../config.ts';
 import {
   getDiagnosticDocsUrl,
   type MachineDiagnostic,
   toMachineDiagnostic,
-} from './diagnostics/diagnostic_metadata.ts';
+} from '../diagnostics/diagnostic_metadata.ts';
 import {
   type DiagnosticRepairExample,
   type DiagnosticSuggestion,
   getDiagnosticReference,
-} from './diagnostics/diagnostic_reference.ts';
+} from '../diagnostics/diagnostic_reference.ts';
 import {
   createTempDirectory,
   fileExistsSync,
@@ -50,13 +50,13 @@ import {
   watchFileSystem,
   writeStdout,
   writeTextFile,
-} from './platform/host.ts';
+} from '../platform/host.ts';
 import {
   materializeRuntimeGraph,
   type MaterializeRuntimeGraphArtifacts,
-} from './runtime/materialize.ts';
-import { runProgram, type RunProgramOptions, type RunProgramResult } from './cli/run_program.ts';
-import { projectEditorFile } from './editor/editor_projection.ts';
+} from '../runtime/materialize.ts';
+import { runProgram, type RunProgramOptions, type RunProgramResult } from './run_program.ts';
+import { projectEditorFile } from '../editor/editor_projection.ts';
 
 export const VERSION = '0.1.25';
 const FINDINGS_EXIT_CODE = 1;

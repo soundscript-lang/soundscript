@@ -2,7 +2,7 @@ import { assert, assertEquals, assertRejects, assertStringIncludes } from '@std/
 import { dirname, join } from '@std/path';
 
 import { compileProject } from './compiler/compile_project.ts';
-import { runCli, VERSION } from './cli.ts';
+import { runCli, VERSION } from './cli/cli.ts';
 import {
   loadTestMacroPackageFiles,
   TEST_MACRO_PACKAGE_NAME,

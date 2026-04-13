@@ -232,3 +232,13 @@ Deno.test('cli run helper moves out of src root once reorganized', () => {
     'src/cli/run_program.ts is missing.',
   );
 });
+
+Deno.test('cli implementation moves out of src root once reorganized', () => {
+  const srcRootFiles = listFileNames(SRC_ROOT);
+
+  assert(!srcRootFiles.includes('cli.ts'), 'cli.ts should live under src/cli/.');
+  assert(
+    Deno.statSync(join(SRC_ROOT, 'cli', 'cli.ts')).isFile,
+    'src/cli/cli.ts is missing.',
+  );
+});

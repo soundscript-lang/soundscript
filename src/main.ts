@@ -1,4 +1,4 @@
-import { runCli } from './cli.ts';
+import { runCli } from './cli/cli.ts';
 import { parseCommand } from './config.ts';
 import { runEditorDiagnosticsWorker } from './editor/editor_diagnostics_worker.ts';
 import { createServer } from './lsp/server.ts';
