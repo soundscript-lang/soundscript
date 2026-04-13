@@ -5266,6 +5266,45 @@ Deno.test('Try macro preserves explicit await operands in async functions', asyn
   assert(!printed.includes('await await'));
 });
 
+Deno.test('Try macro accepts local aliases of canonical Result variables', async () => {
+  const { printed } = await expandWithBuiltins([
+    "import { type Result, ok } from 'sts:prelude';",
+    'type AutomationsResult<T> = Result<T, string>;',
+    'declare function fetchValue(): AutomationsResult<number>;',
+    '',
+    'function compute(): Result<number, string> {',
+    '  const fetchResult = fetchValue();',
+    '  const value = Try(fetchResult);',
+    '  return ok(value);',
+    '}',
+    '',
+  ].join('\n'));
+
+  assertStringIncludes(printed, 'const fetchResult = fetchValue();');
+  assertStringIncludes(printed, 'const __sts_attempt_1_1 = fetchResult;');
+  assertStringIncludes(printed, 'if (__sts_runtime_named_isErr_');
+  assertStringIncludes(printed, 'return __sts_attempt_1_1;');
+  assertStringIncludes(printed, 'const value = __sts_attempt_1_1.value;');
+});
+
+Deno.test('Try macro preserves explicit await operands for aliased Result carriers', async () => {
+  const { printed } = await expandWithBuiltins([
+    "import { type Result, ok } from 'sts:prelude';",
+    'type AutomationsResult<T> = Result<T, string>;',
+    'declare function fetchValue(): Promise<AutomationsResult<number>>;',
+    '',
+    'async function compute(): Promise<Result<number, string>> {',
+    '  const value = Try(await fetchValue());',
+    '  return ok(value);',
+    '}',
+    '',
+  ].join('\n'));
+
+  assertStringIncludes(printed, 'const __sts_attempt_1_1 = await fetchValue();');
+  assertStringIncludes(printed, 'if (__sts_runtime_named_isErr_');
+  assert(!printed.includes('await await'));
+});
+
 Deno.test('Try macro rejects generators in v1', async () => {
   const error = await captureTryMacroError([
     "import { type Result, ok } from 'sts:prelude';",

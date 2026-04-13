@@ -1201,17 +1201,59 @@ function classifyCanonicalResultTsType(
   tsType: ts.Type,
 ): CanonicalResultInfo | null {
   const symbol = getTypeSymbol(tsType);
-  if (!symbol) {
+  if (symbol) {
+    if (symbolIsOwnedByResultStdlibModule(checker, symbol, 'Result')) {
+      const typeArguments = getTypeArguments(checker, tsType);
+      if (typeArguments.length !== 2) {
+        return null;
+      }
+
+      const [okType, errType] = typeArguments;
+      return {
+        errType: createMacroType(checker, errType),
+        family: 'result',
+        okType: createMacroType(checker, okType),
+        resultType: createMacroType(checker, tsType),
+      };
+    }
+
+    if (symbolIsOwnedByResultStdlibModule(checker, symbol, 'Option')) {
+      const typeArguments = getTypeArguments(checker, tsType);
+      if (typeArguments.length !== 1) {
+        return null;
+      }
+
+      const [okType] = typeArguments;
+      const voidType = checker.getVoidType();
+      return {
+        errType: createMacroType(checker, voidType),
+        family: 'option',
+        okType: createMacroType(checker, okType),
+        resultType: createMacroType(checker, tsType),
+      };
+    }
+  }
+
+  if ((tsType.flags & ts.TypeFlags.Union) === 0) {
     return null;
   }
 
-  if (symbolIsOwnedByResultStdlibModule(checker, symbol, 'Result')) {
-    const typeArguments = getTypeArguments(checker, tsType);
-    if (typeArguments.length !== 2) {
+  const members = (tsType as ts.UnionType).types;
+  const okMember = members.find((member) => {
+    const memberSymbol = getTypeSymbol(member);
+    return memberSymbol !== undefined && symbolIsOwnedByResultStdlibModule(checker, memberSymbol, 'Ok');
+  });
+  const errMember = members.find((member) => {
+    const memberSymbol = getTypeSymbol(member);
+    return memberSymbol !== undefined && symbolIsOwnedByResultStdlibModule(checker, memberSymbol, 'Err');
+  });
+  if (okMember && errMember) {
+    const [okType] = getTypeArguments(checker, okMember);
+    const [errType] = getTypeArguments(checker, errMember);
+    if (!okType || !errType) {
       return null;
     }
 
-    const [okType, errType] = typeArguments;
     return {
       errType: createMacroType(checker, errType),
       family: 'result',
@@ -1220,13 +1262,20 @@ function classifyCanonicalResultTsType(
     };
   }
 
-  if (symbolIsOwnedByResultStdlibModule(checker, symbol, 'Option')) {
-    const typeArguments = getTypeArguments(checker, tsType);
-    if (typeArguments.length !== 1) {
+  const someMember = members.find((member) => {
+    const memberSymbol = getTypeSymbol(member);
+    return memberSymbol !== undefined && symbolIsOwnedByResultStdlibModule(checker, memberSymbol, 'Some');
+  });
+  const noneMember = members.find((member) => {
+    const memberSymbol = getTypeSymbol(member);
+    return memberSymbol !== undefined && symbolIsOwnedByResultStdlibModule(checker, memberSymbol, 'None');
+  });
+  if (someMember && noneMember) {
+    const [okType] = getTypeArguments(checker, someMember);
+    if (!okType) {
       return null;
     }
 
-    const [okType] = typeArguments;
     const voidType = checker.getVoidType();
     return {
       errType: createMacroType(checker, voidType),

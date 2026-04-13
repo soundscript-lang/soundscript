@@ -333,8 +333,64 @@ Deno.test('createMacroSemantics classifies canonical sts:prelude Result types', 
   const resultInfo = semantics.classifyCanonicalResultType(resultType);
 
   assert(resultInfo);
-  assertEquals(resultInfo.resultType.displayText, 'Result<number, string>');
+  assertEquals(resultInfo.family, 'result');
   assertEquals(resultInfo.okType.displayText, 'number');
+  assertEquals(resultInfo.errType.displayText, 'string');
+});
+
+Deno.test('createMacroSemantics classifies local aliases to canonical Result types', () => {
+  const fileName = '/virtual/index.ts';
+  const preparedProgram = createPreparedProgramForMacroTest({
+    [fileName]: [
+      "import { type Result, ok } from 'sts:prelude';",
+      'type LocalResult<Ok> = Result<Ok, string>;',
+      '',
+      'function compute(): LocalResult<number> {',
+      '  return ok(1);',
+      '}',
+      '',
+    ].join('\n'),
+  });
+
+  const sourceFile = preparedProgram.program.getSourceFile(fileName);
+  assert(sourceFile);
+
+  const semantics = createMacroSemantics(preparedProgram.program);
+  const compute = findFunctionDeclaration(sourceFile, 'compute');
+  const resultType = semantics.typeOfNode(compute.type!);
+  const resultInfo = semantics.classifyCanonicalResultType(resultType);
+
+  assert(resultInfo);
+  assertEquals(resultInfo.family, 'result');
+  assertEquals(resultInfo.okType.displayText, 'number');
+  assertEquals(resultInfo.errType.displayText, 'string');
+});
+
+Deno.test('createMacroSemantics instantiates nested local Result alias type arguments', () => {
+  const fileName = '/virtual/index.ts';
+  const preparedProgram = createPreparedProgramForMacroTest({
+    [fileName]: [
+      "import { type Result, ok } from 'sts:prelude';",
+      'type LocalResult<T> = Result<readonly T[], string>;',
+      '',
+      'function compute(): LocalResult<number> {',
+      '  return ok([1]);',
+      '}',
+      '',
+    ].join('\n'),
+  });
+
+  const sourceFile = preparedProgram.program.getSourceFile(fileName);
+  assert(sourceFile);
+
+  const semantics = createMacroSemantics(preparedProgram.program);
+  const compute = findFunctionDeclaration(sourceFile, 'compute');
+  const resultType = semantics.typeOfNode(compute.type!);
+  const resultInfo = semantics.classifyCanonicalResultType(resultType);
+
+  assert(resultInfo);
+  assertEquals(resultInfo.family, 'result');
+  assertEquals(resultInfo.okType.displayText, 'readonly number[]');
   assertEquals(resultInfo.errType.displayText, 'string');
 });
 
@@ -366,6 +422,33 @@ Deno.test('createMacroSemantics classifies Promise<Result<...>> carriers for asy
   assertEquals(carrier.resultType.displayText, 'Result<number, string>');
   assertEquals(carrier.okType.displayText, 'number');
   assertEquals(carrier.errType.displayText, 'string');
+});
+
+Deno.test('createMacroSemantics classifies local aliases of canonical Result carriers', () => {
+  const fileName = '/virtual/index.ts';
+  const preparedProgram = createPreparedProgramForMacroTest({
+    [fileName]: [
+      "import type { Result } from 'sts:result';",
+      'type AutomationsResult<T> = Result<T, string>;',
+      '',
+      'declare const resultValue: Promise<AutomationsResult<number>>;',
+      '',
+    ].join('\n'),
+  });
+
+  const sourceFile = preparedProgram.program.getSourceFile(fileName);
+  assert(sourceFile);
+
+  const semantics = createMacroSemantics(preparedProgram.program);
+  const resultValue = findVariableDeclaration(sourceFile, 'resultValue');
+  const resultType = semantics.typeOfNode(resultValue.name);
+  const resultInfo = semantics.classifyCanonicalResultCarrierType(resultType);
+
+  assert(resultInfo);
+  assertEquals(resultInfo.requiresAwait, true);
+  assertEquals(resultInfo.family, 'result');
+  assertEquals(resultInfo.okType.displayText, 'number');
+  assertEquals(resultInfo.errType.displayText, 'string');
 });
 
 Deno.test('createMacroSemantics classifies canonical sts:failures Failure types', () => {
