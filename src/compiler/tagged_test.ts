@@ -1,20 +1,20 @@
 import { assertEquals, assertStringIncludes } from '@std/assert';
 import { join } from '@std/path';
 
-import { compileProject } from './compiler/compile_project.ts';
-import { CompilerUnsupportedError } from './compiler/errors.ts';
-import type { CompilerFunctionIR } from './compiler/ir.ts';
+import { compileProject } from './compile_project.ts';
+import { CompilerUnsupportedError } from './errors.ts';
+import type { CompilerFunctionIR } from './ir.ts';
 import {
   getEffectiveFunctionHostFallbackObjectPropertyMetadata,
   getEffectiveHostFallbackObjectPropertyMetadata,
-} from './compiler/host_boundary.ts';
+} from './host_boundary.ts';
 import {
   emitOwnedArrayBoundaryHelpers,
   getHostArrayToOwnedTaggedArrayHelperName,
   getOwnedTaggedArrayToHostHelperName,
-} from './compiler/wat_arrays.ts';
-import { emitCompilerModuleToWat } from './compiler/wat_emitter.ts';
-import { getTaggedHostBoundaryUsage } from './compiler/wat_tagged.ts';
+} from './wat_arrays.ts';
+import { emitCompilerModuleToWat } from './wat_emitter.ts';
+import { getTaggedHostBoundaryUsage } from './wat_tagged.ts';
 import {
   createIsolatedTestRegistrar,
   createTempProject,
@@ -22,7 +22,7 @@ import {
   lowerTempProjectToCompilerIR,
   readWatArtifact,
   resolveQualifiedExportName,
-} from '../tests/support/compiler_test_helpers.ts';
+} from '../../tests/support/compiler_test_helpers.ts';
 
 const compilerTaggedTest = createIsolatedTestRegistrar(import.meta.url);
 
