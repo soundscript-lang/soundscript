@@ -985,20 +985,46 @@ export function analyzeProjectWithPersistentCache(
       : undefined,
   });
   try {
-    const preparedProjectFileMetadata = collectPreparedAnalysisProjectFileMetadata(preparedProject);
-    const preparedProjectTrackedFilePaths = collectPreparedAnalysisProjectTrackedFilePaths(
-      preparedProject,
+    const preparedProjectFileMetadata = measureCheckerTiming(
+      'project.cache.fileMetadata',
+      {
+        projectPath: options.projectPath,
+      },
+      () => collectPreparedAnalysisProjectFileMetadata(preparedProject),
+      { always: true },
+    );
+    const preparedProjectTrackedFilePaths = measureCheckerTiming(
+      'project.cache.trackedFiles',
+      {
+        projectPath: options.projectPath,
+      },
+      () => collectPreparedAnalysisProjectTrackedFilePaths(preparedProject),
+      { always: true },
     );
 
     if (useCache && header && cacheReadResult.kind === 'stale') {
-      const dependencySignatureUpdate = updatePreparedProjectDependencySignatures(
-        preparedProject,
-        preparedProjectFileMetadata,
-        cacheReadResult.changedTrackedFiles,
-        cacheReadResult.manifest.dependencySignatures,
+      const dependencySignatureUpdate = measureCheckerTiming(
+        'project.cache.dependencySignatures',
+        {
+          changedTrackedFiles: cacheReadResult.changedTrackedFiles.length,
+          projectPath: options.projectPath,
+        },
+        () =>
+          updatePreparedProjectDependencySignatures(
+            preparedProject,
+            preparedProjectFileMetadata,
+            cacheReadResult.changedTrackedFiles,
+            cacheReadResult.manifest.dependencySignatures,
+          ),
+        { always: true },
       );
-      const preparedProjectReuseSnapshots = capturePersistentPreparedAnalysisProjectReuseSnapshots(
-        preparedProject,
+      const preparedProjectReuseSnapshots = measureCheckerTiming(
+        'project.cache.prepareArtifacts',
+        {
+          projectPath: options.projectPath,
+        },
+        () => capturePersistentPreparedAnalysisProjectReuseSnapshots(preparedProject),
+        { always: true },
       );
       const incrementalReuse = measureCheckerTiming(
         'project.cache.incremental',
@@ -1076,20 +1102,43 @@ export function analyzeProjectWithPersistentCache(
 
     const analysis = analyzePreparedProjectWithArtifacts(preparedProject);
     if (useCache && header) {
-      const preparedProjectDependencySignatures = createPreparedProjectDependencySignatures(
-        preparedProject,
-        preparedProjectFileMetadata,
+      const preparedProjectDependencySignatures = measureCheckerTiming(
+        'project.cache.dependencySignatures',
+        {
+          changedTrackedFiles: preparedProjectTrackedFilePaths.length,
+          projectPath: options.projectPath,
+        },
+        () =>
+          createPreparedProjectDependencySignatures(
+            preparedProject,
+            preparedProjectFileMetadata,
+          ),
+        { always: true },
       );
-      const preparedProjectReuseSnapshots = capturePersistentPreparedAnalysisProjectReuseSnapshots(
-        preparedProject,
+      const preparedProjectReuseSnapshots = measureCheckerTiming(
+        'project.cache.prepareArtifacts',
+        {
+          projectPath: options.projectPath,
+        },
+        () => capturePersistentPreparedAnalysisProjectReuseSnapshots(preparedProject),
+        { always: true },
       );
-      const manifest = createCheckerCacheManifestFromFullAnalysis(
-        header,
-        preparedProjectFileMetadata,
-        createTrackedFileHashes(preparedProjectTrackedFilePaths),
-        preparedProjectDependencySignatures,
-        preparedProjectReuseSnapshots,
-        analysis,
+      const manifest = measureCheckerTiming(
+        'project.cache.fullManifest',
+        {
+          files: preparedProjectTrackedFilePaths.length,
+          projectPath: options.projectPath,
+        },
+        () =>
+          createCheckerCacheManifestFromFullAnalysis(
+            header,
+            preparedProjectFileMetadata,
+            createTrackedFileHashes(preparedProjectTrackedFilePaths),
+            preparedProjectDependencySignatures,
+            preparedProjectReuseSnapshots,
+            analysis,
+          ),
+        { always: true },
       );
       try {
         measureCheckerTiming(

@@ -1091,6 +1091,38 @@ function createPersistentBuildInfoCompilerOptions(
   };
 }
 
+function createModuleResolutionOptionSignature(
+  options: ts.CompilerOptions | undefined,
+): string {
+  if (!options) {
+    return '{}';
+  }
+
+  return stableStringify({
+    allowArbitraryExtensions: options.allowArbitraryExtensions,
+    allowImportingTsExtensions: options.allowImportingTsExtensions,
+    allowJs: options.allowJs,
+    baseUrl: options.baseUrl,
+    configFilePath: options.configFilePath,
+    customConditions: options.customConditions,
+    jsx: options.jsx,
+    jsxImportSource: options.jsxImportSource,
+    module: options.module,
+    moduleResolution: options.moduleResolution,
+    moduleSuffixes: options.moduleSuffixes,
+    noDtsResolution: options.noDtsResolution,
+    paths: options.paths,
+    pathsBasePath: options.pathsBasePath,
+    preserveSymlinks: options.preserveSymlinks,
+    resolveJsonModule: options.resolveJsonModule,
+    resolvePackageJsonExports: options.resolvePackageJsonExports,
+    resolvePackageJsonImports: options.resolvePackageJsonImports,
+    rootDirs: options.rootDirs,
+    typeRoots: options.typeRoots,
+    types: options.types,
+  });
+}
+
 function summarizeTypeScriptPerformanceMeasures(
   measures: readonly (readonly [string, number])[],
   maxMeasures = 5,
@@ -4383,7 +4415,7 @@ export function createPreparedCompilerHost(
     const unresolvedIndexes: number[] = [];
     const unresolvedModuleNames: string[] = [];
     const redirectedReferenceKey = redirectedReference?.sourceFile.fileName ?? '';
-    const optionSignature = stableStringify(options ?? {});
+    const optionSignature = createModuleResolutionOptionSignature(options);
     const cacheKeys = moduleNames.map((moduleName) =>
       [
         sourceContainingFile,

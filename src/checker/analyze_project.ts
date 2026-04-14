@@ -137,6 +137,10 @@ const fileScopedAnalysisContextCache = new WeakMap<
   PreparedAnalysisView,
   Map<string, AnalysisContext | null>
 >();
+const fileScopedAnalysisEligibilityCache = new WeakMap<
+  PreparedAnalysisView,
+  Map<string, boolean>
+>();
 const IGNORED_GENERATED_TOP_LEVEL_IMPORT_SPECIFIERS = new Set(['sts:prelude']);
 const BUNDLED_TYPES_DIRECTORY = ts.sys.resolvePath(resolveBundledTypesDirectory()).replaceAll(
   '\\',
@@ -655,15 +659,19 @@ export function collectPreparedAnalysisProjectFileMetadata(
     if (!view) {
       return [];
     }
+    const diagnosticPathCollection = collectPreparedViewDependencyPathCollection(view, filePath);
+    const diagnosticPaths = diagnosticPathCollection.paths;
+    const cacheDependencyPaths = diagnosticPathCollection.encounteredNonDeclarationTypeScriptDependency
+      ? collectPreparedViewDependencyPaths(view, filePath, {
+        includeNonDeclarationTypeScriptDependencies: true,
+      })
+      : diagnosticPaths;
 
     return [{
-      cacheDependencyPaths: collectPreparedProjectCacheDependencyPathsForFile(
-        preparedProject,
-        filePath,
-      ),
-      diagnosticPaths: collectPreparedProjectDiagnosticPathsForFile(preparedProject, filePath),
+      cacheDependencyPaths,
+      diagnosticPaths,
       filePath,
-      fileScopedAnalysis: getFileScopedAnalysisContext(view, filePath) !== null,
+      fileScopedAnalysis: supportsFileScopedAnalysisContext(view, filePath),
       view: view === preparedProject.tsView
         ? 'ts'
         : view === preparedProject.packageSourcePolicyView
@@ -1729,12 +1737,26 @@ interface CollectPreparedViewDependencyPathOptions {
   includeNonDeclarationTypeScriptDependencies?: boolean;
 }
 
+interface PreparedViewDependencyPathCollection {
+  encounteredNonDeclarationTypeScriptDependency: boolean;
+  paths: readonly string[];
+}
+
 function collectPreparedViewDependencyPaths(
   preparedView: PreparedAnalysisView,
   filePath: string,
   options: CollectPreparedViewDependencyPathOptions = {},
 ): readonly string[] {
+  return collectPreparedViewDependencyPathCollection(preparedView, filePath, options).paths;
+}
+
+function collectPreparedViewDependencyPathCollection(
+  preparedView: PreparedAnalysisView,
+  filePath: string,
+  options: CollectPreparedViewDependencyPathOptions = {},
+): PreparedViewDependencyPathCollection {
   const diagnosticPaths = new Set<string>();
+  let encounteredNonDeclarationTypeScriptDependency = false;
   const addDiagnosticPath = (candidateFilePath: string): void => {
     for (const variant of collectPreparedAnalysisFilePathCandidates(candidateFilePath)) {
       diagnosticPaths.add(variant);
@@ -1779,7 +1801,10 @@ function collectPreparedViewDependencyPaths(
   );
 
   if (traversalRoots.length === 0) {
-    return [...diagnosticPaths];
+    return {
+      encounteredNonDeclarationTypeScriptDependency,
+      paths: [...diagnosticPaths],
+    };
   }
 
   const visitedSourceFiles = new Set<string>();
@@ -1833,11 +1858,17 @@ function collectPreparedViewDependencyPaths(
         resolvedModule.resolvedFileName,
       );
       const dependencySourceFile = getTraversalSourceFile(program, resolvedSourcePath);
+      const isNonDeclarationTypeScriptDependency = dependencySourceFile !== null &&
+        !dependencySourceFile.isDeclarationFile &&
+        !isSoundscriptSourceFile(resolvedSourcePath) &&
+        !isProjectedSoundscriptDeclarationFile(resolvedSourcePath);
+      if (isNonDeclarationTypeScriptDependency) {
+        encounteredNonDeclarationTypeScriptDependency = true;
+      }
       const shouldIncludeDependency = isSoundscriptSourceFile(resolvedSourcePath) ||
         isProjectedSoundscriptDeclarationFile(resolvedSourcePath) ||
         (options.includeNonDeclarationTypeScriptDependencies === true &&
-          dependencySourceFile !== null &&
-          !dependencySourceFile.isDeclarationFile);
+          isNonDeclarationTypeScriptDependency);
       if (!shouldIncludeDependency) {
         continue;
       }
@@ -1852,7 +1883,10 @@ function collectPreparedViewDependencyPaths(
   for (const traversalRoot of traversalRoots) {
     visit(traversalRoot.key, traversalRoot.program, traversalRoot.sourceFile);
   }
-  return [...diagnosticPaths];
+  return {
+    encounteredNonDeclarationTypeScriptDependency,
+    paths: [...diagnosticPaths],
+  };
 }
 
 function collectPreparedViewFrontendDiagnosticPaths(
@@ -2147,22 +2181,16 @@ function getFileScopedAnalysisContext(
     return cached;
   }
 
+  if (!supportsFileScopedAnalysisContext(preparedView, filePath)) {
+    byFile.set(filePath, null);
+    return null;
+  }
   const sourceFileMatch = getPreparedViewSourceFileMatch(preparedView, filePath);
   if (!sourceFileMatch) {
     byFile.set(filePath, null);
     return null;
   }
   const sourceFile = sourceFileMatch.sourceFile;
-  const preparedSource = preparedView.preparedProgram.preparedHost.getPreparedSourceFile(
-    sourceFileMatch.matchedFilePath,
-  );
-  if (
-    hasTopLevelMacroReplacements(sourceFileMatch.matchedFilePath, preparedSource) ||
-    hasGeneratedTopLevelStatements(sourceFile, preparedView.analysisContext.isGeneratedNode)
-  ) {
-    byFile.set(filePath, null);
-    return null;
-  }
 
   const analysisContext = createAnalysisContext({
     includeSourceFile: (candidate) =>
@@ -2178,6 +2206,37 @@ function getFileScopedAnalysisContext(
   });
   byFile.set(filePath, analysisContext);
   return analysisContext;
+}
+
+function supportsFileScopedAnalysisContext(
+  preparedView: PreparedAnalysisView,
+  filePath: string,
+): boolean {
+  let byFile = fileScopedAnalysisEligibilityCache.get(preparedView);
+  if (!byFile) {
+    byFile = new Map<string, boolean>();
+    fileScopedAnalysisEligibilityCache.set(preparedView, byFile);
+  }
+
+  const cached = byFile.get(filePath);
+  if (cached !== undefined) {
+    return cached;
+  }
+
+  const sourceFileMatch = getPreparedViewSourceFileMatch(preparedView, filePath);
+  if (!sourceFileMatch) {
+    byFile.set(filePath, false);
+    return false;
+  }
+  const sourceFile = sourceFileMatch.sourceFile;
+  const preparedSource = preparedView.preparedProgram.preparedHost.getPreparedSourceFile(
+    sourceFileMatch.matchedFilePath,
+  );
+  const supported =
+    !hasTopLevelMacroReplacements(sourceFileMatch.matchedFilePath, preparedSource) &&
+    !hasGeneratedTopLevelStatements(sourceFile, preparedView.analysisContext.isGeneratedNode);
+  byFile.set(filePath, supported);
+  return supported;
 }
 
 function createSummary(diagnostics: readonly { category: 'error' | 'warning' | 'message' }[]) {

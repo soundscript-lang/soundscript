@@ -292,6 +292,12 @@ Deno.test('runProgram incrementally reuses unaffected cached file results after 
       projectPath,
       workingDirectory: tempDirectory,
     });
+    assert(logs.some((line) => line.includes('[soundscript:checker] project.cache.fileMetadata ')));
+    assert(logs.some((line) => line.includes('[soundscript:checker] project.cache.trackedFiles ')));
+    assert(logs.some((line) =>
+      line.includes('[soundscript:checker] project.cache.dependencySignatures ')
+    ));
+    assert(logs.some((line) => line.includes('[soundscript:checker] project.cache.prepareArtifacts ')));
     assert(logs.some((line) => line.includes('[soundscript:checker] project.cache.incremental ')));
     assert(logs.some((line) =>
       line.includes('[soundscript:checker] project.analyzePreparedProjectOwnedDiagnosticsForFile ')
@@ -651,6 +657,44 @@ Deno.test('runProgram logs TypeScript internal timing summaries when requested',
       Deno.env.set('SOUNDSCRIPT_CHECKER_TS_INTERNAL_TIMING', originalTsInternalTimingEnv);
     }
   }
+});
+
+Deno.test('runProgram logs top-level analysis and formatting timings when requested', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+          },
+          include: ['src/**/*.sts'],
+        },
+        null,
+        2,
+      ),
+    },
+    {
+      path: 'src/index.sts',
+      contents: 'export const value = 1;\n',
+    },
+  ]);
+  const projectPath = join(tempDirectory, 'tsconfig.json');
+
+  withCapturedTimingLogs((logs) => {
+    const result = runProgram({
+      projectPath,
+      workingDirectory: tempDirectory,
+    });
+    assert(logs.some((line) => line.includes('[soundscript:checker] runProgram.analysis ')));
+    assert(logs.some((line) => line.includes('[soundscript:checker] runProgram.formatDiagnostics ')));
+    assert(logs.some((line) => line.includes('[soundscript:checker] runProgram.total ')));
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics.length, 0);
+  });
 });
 
 Deno.test('runProgram hydrates macro prepare artifacts on stale cached runs', async () => {
