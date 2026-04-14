@@ -112,6 +112,7 @@ export interface PreparedAnalysisProject {
 
 export interface PreparedAnalysisProjectFileMetadata {
   cacheDependencyPaths: readonly string[];
+  directDependencyPaths: readonly string[];
   diagnosticPaths: readonly string[];
   filePath: string;
   fileScopedAnalysis: boolean;
@@ -606,9 +607,13 @@ export function collectPreparedAnalysisProjectTrackedFilePaths(
 export function collectPreparedAnalysisProjectFileMetadata(
   preparedProject: PreparedAnalysisProject,
   previousMetadataByFilePath: ReadonlyMap<string, PreparedAnalysisProjectFileMetadata> = new Map(),
+  changedTrackedFiles: readonly string[] = [],
+  previousCandidateFilePaths: readonly string[] = [],
 ): readonly PreparedAnalysisProjectFileMetadata[] {
   const candidateCollectionStartTime = performance.now();
-  const candidateFilePaths = new Set<string>();
+  const candidateFilePaths = previousCandidateFilePaths.length > 0
+    ? new Set(previousCandidateFilePaths)
+    : new Set<string>();
   const projectPackageJsonPath = findNearestPackageJsonPath(
     preparedProject.analyzeOptions.projectPath,
     ts.sys,
@@ -629,32 +634,34 @@ export function collectPreparedAnalysisProjectFileMetadata(
     }
   };
 
-  addCandidateFiles(
-    preparedProject.tsView,
-    (sourceFile) =>
-      shouldAnalyzeTypescriptViewSourceFile(sourceFile, preparedProject.isSoundscriptSourceFile),
-  );
-  addCandidateFiles(
-    preparedProject.stsView,
-    (sourceFile) =>
-      shouldAnalyzeProjectSoundscriptSourceFile(
-        sourceFile,
-        preparedProject.stsView!.analysisPreparedProgram,
-        projectPackageJsonPath,
-      ),
-  );
-  addCandidateFiles(
-    preparedProject.packageSourcePolicyView,
-    (sourceFile) =>
-      shouldAnalyzeSoundscriptSourceFile(
-        sourceFile,
-        preparedProject.packageSourcePolicyView!.analysisPreparedProgram,
-      ) &&
-      isSupplementalPackageSourceCandidate(
-        toSourceFileName(sourceFile.fileName),
-        projectPackageJsonPath,
-      ),
-  );
+  if (previousCandidateFilePaths.length === 0) {
+    addCandidateFiles(
+      preparedProject.tsView,
+      (sourceFile) =>
+        shouldAnalyzeTypescriptViewSourceFile(sourceFile, preparedProject.isSoundscriptSourceFile),
+    );
+    addCandidateFiles(
+      preparedProject.stsView,
+      (sourceFile) =>
+        shouldAnalyzeProjectSoundscriptSourceFile(
+          sourceFile,
+          preparedProject.stsView!.analysisPreparedProgram,
+          projectPackageJsonPath,
+        ),
+    );
+    addCandidateFiles(
+      preparedProject.packageSourcePolicyView,
+      (sourceFile) =>
+        shouldAnalyzeSoundscriptSourceFile(
+          sourceFile,
+          preparedProject.packageSourcePolicyView!.analysisPreparedProgram,
+        ) &&
+        isSupplementalPackageSourceCandidate(
+          toSourceFileName(sourceFile.fileName),
+          projectPackageJsonPath,
+        ),
+    );
+  }
   const candidateCollectionDurationMs = performance.now() - candidateCollectionStartTime;
   let diagnosticPathCollectionDurationMs = 0;
   let cacheDependencyPathCollectionDurationMs = 0;
@@ -675,13 +682,24 @@ export function collectPreparedAnalysisProjectFileMetadata(
       ? 'packageSource'
       : 'sts';
     const previousMetadata = previousMetadataByFilePath.get(filePath);
+    const fileChanged = changedTrackedFiles.some((changedFilePath) =>
+      matchesPreparedAnalysisAnyFilePath(changedFilePath, [filePath])
+    );
+    if (previousMetadata && previousMetadata.view === viewKind && !fileChanged) {
+      return [previousMetadata];
+    }
+
+    const directDependencyPaths = collectPreparedViewDirectDependencyPaths(view, filePath);
+    const fileScopedEligibilityStartTime = performance.now();
+    const fileScopedAnalysis = supportsFileScopedAnalysisContext(view, filePath);
+    fileScopedEligibilityDurationMs += performance.now() - fileScopedEligibilityStartTime;
     if (
       previousMetadata &&
       canReusePreparedAnalysisProjectFileMetadata(
-        view,
         viewKind,
-        filePath,
         previousMetadata,
+        directDependencyPaths,
+        fileScopedAnalysis,
       )
     ) {
       return [previousMetadata];
@@ -700,12 +718,10 @@ export function collectPreparedAnalysisProjectFileMetadata(
       cacheDependencyPathCollectionDurationMs +=
         performance.now() - cacheDependencyPathStartTime;
     }
-    const fileScopedEligibilityStartTime = performance.now();
-    const fileScopedAnalysis = supportsFileScopedAnalysisContext(view, filePath);
-    fileScopedEligibilityDurationMs += performance.now() - fileScopedEligibilityStartTime;
 
     return [{
       cacheDependencyPaths,
+      directDependencyPaths,
       diagnosticPaths,
       filePath,
       fileScopedAnalysis,
@@ -732,29 +748,17 @@ export function collectPreparedAnalysisProjectFileMetadata(
 }
 
 function canReusePreparedAnalysisProjectFileMetadata(
-  view: PreparedAnalysisView,
   viewKind: PreparedAnalysisProjectFileMetadata['view'],
-  filePath: string,
   previousMetadata: PreparedAnalysisProjectFileMetadata,
+  directDependencyPaths: readonly string[],
+  fileScopedAnalysis: boolean,
 ): boolean {
   if (previousMetadata.view !== viewKind) {
     return false;
   }
 
-  const reuseState = view.analysisPreparedProgram.preparedHost.reuseState;
-  const changedOrRemovedFilePaths = [
-    ...reuseState.changedProgramSourceFiles,
-    ...reuseState.removedProgramSourceFiles,
-  ];
-  if (
-    changedOrRemovedFilePaths.some((candidateFilePath) =>
-      matchesPreparedAnalysisAnyFilePath(candidateFilePath, [filePath])
-    )
-  ) {
-    return false;
-  }
-
-  return true;
+  return previousMetadata.fileScopedAnalysis === fileScopedAnalysis &&
+    stringArraysEqual(previousMetadata.directDependencyPaths, directDependencyPaths);
 }
 
 function combineRootNames(
@@ -776,6 +780,11 @@ function rootNamesEqual(left: readonly string[], right: readonly string[]): bool
   }
 
   return true;
+}
+
+function stringArraysEqual(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length &&
+    left.every((value, index) => value === right[index]);
 }
 
 function createFileOverrideSignature(
@@ -1816,6 +1825,75 @@ interface CollectPreparedViewDependencyPathOptions {
 interface PreparedViewDependencyPathCollection {
   encounteredNonDeclarationTypeScriptDependency: boolean;
   paths: readonly string[];
+}
+
+function collectPreparedViewDirectDependencyPaths(
+  preparedView: PreparedAnalysisView,
+  filePath: string,
+): readonly string[] {
+  const directDependencyPaths = new Set<string>();
+  const addDirectDependencyPath = (candidateFilePath: string): void => {
+    for (const variant of collectPreparedAnalysisFilePathCandidates(candidateFilePath)) {
+      directDependencyPaths.add(variant);
+    }
+    if (isSoundscriptSourceFile(candidateFilePath)) {
+      for (
+        const variant of collectPreparedAnalysisFilePathCandidates(
+          toProjectedDeclarationFileName(candidateFilePath),
+        )
+      ) {
+        directDependencyPaths.add(variant);
+      }
+    }
+  };
+
+  const rootSourceFiles: ts.SourceFile[] = [];
+  const addRootSourceFile = (sourceFile: ts.SourceFile | null): void => {
+    if (!sourceFile || rootSourceFiles.some((root) => root.fileName === sourceFile.fileName)) {
+      return;
+    }
+    rootSourceFiles.push(sourceFile);
+  };
+
+  const sourceFileMatch = getPreparedViewSourceFileMatch(preparedView, filePath);
+  addRootSourceFile(sourceFileMatch?.sourceFile ?? null);
+
+  const tsDiagnosticProgramMatch = getPreparedViewTsDiagnosticProgramMatch(preparedView, filePath);
+  addRootSourceFile(tsDiagnosticProgramMatch?.sourceFile ?? null);
+
+  for (const sourceFile of rootSourceFiles) {
+    for (const moduleSpecifier of getStaticSourceFileModuleSpecifiers(sourceFile)) {
+      const resolvedModule = resolveSoundScriptAwareModule(
+        moduleSpecifier,
+        filePath,
+        preparedView.preparedProgram.options,
+        preparedView.preparedProgram.preparedHost.host,
+      );
+      if (!resolvedModule) {
+        continue;
+      }
+
+      const resolvedSourcePath = preparedView.preparedProgram.toSourceFileName(
+        resolvedModule.resolvedFileName,
+      );
+      const dependencySourceFile = preparedView.program.getSourceFile(
+        preparedView.preparedProgram.toProgramFileName(resolvedSourcePath),
+      );
+      const isNonDeclarationTypeScriptDependency = dependencySourceFile !== undefined &&
+        !dependencySourceFile.isDeclarationFile &&
+        !isSoundscriptSourceFile(resolvedSourcePath) &&
+        !isProjectedSoundscriptDeclarationFile(resolvedSourcePath);
+      if (
+        isSoundscriptSourceFile(resolvedSourcePath) ||
+        isProjectedSoundscriptDeclarationFile(resolvedSourcePath) ||
+        isNonDeclarationTypeScriptDependency
+      ) {
+        addDirectDependencyPath(resolvedSourcePath);
+      }
+    }
+  }
+
+  return [...directDependencyPaths].sort();
 }
 
 function collectPreparedViewDependencyPaths(

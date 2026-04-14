@@ -381,6 +381,11 @@ Deno.test('runProgram keeps dependent .sts files cached when a changed dependenc
       workingDirectory: tempDirectory,
     });
     assert(logs.some((line) =>
+      line.includes('[soundscript:checker] project.cache.fileMetadata.breakdown ') &&
+      line.includes('candidateCollectionMs=0') &&
+      line.includes('diagnosticPathCollectionMs=0')
+    ));
+    assert(logs.some((line) =>
       line.includes('[soundscript:checker] project.cache.incremental.result ') &&
       line.includes('refreshedFiles=1') &&
       line.includes('reusedFiles=1')
@@ -924,6 +929,106 @@ Deno.test('runProgram refreshes dependent .sts files when a changed dependency s
   assert(secondResult.diagnostics.some((diagnostic: MergedDiagnostic) =>
     diagnostic.filePath === dependentFilePath && diagnostic.code === 'TS2345'
   ));
+});
+
+Deno.test('runProgram updates cached dependency dependents when an importer drops a dependency', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+          },
+          include: ['src/**/*.sts'],
+        },
+        null,
+        2,
+      ),
+    },
+    {
+      path: 'src/a.sts',
+      contents: [
+        'export function alpha(value: string | number) {',
+        "  if (typeof value === 'string') {",
+        '    return value.length;',
+        '  }',
+        '  return value;',
+        '}',
+        '',
+      ].join('\n'),
+    },
+    {
+      path: 'src/b.sts',
+      contents: [
+        "import { alpha } from './a.sts';",
+        '',
+        'export const beta = alpha(1);',
+        '',
+      ].join('\n'),
+    },
+  ]);
+  const projectPath = join(tempDirectory, 'tsconfig.json');
+  const producerFilePath = join(tempDirectory, 'src/a.sts');
+  const importerFilePath = join(tempDirectory, 'src/b.sts');
+
+  const firstResult = runProgram({
+    projectPath,
+    workingDirectory: tempDirectory,
+  });
+  assertEquals(firstResult.exitCode, 0);
+
+  await Deno.writeTextFile(
+    importerFilePath,
+    [
+      'export const beta = 1;',
+      '',
+    ].join('\n'),
+  );
+
+  const secondResult = runProgram({
+    projectPath,
+    workingDirectory: tempDirectory,
+  });
+  assertEquals(secondResult.exitCode, 0);
+  assertEquals(secondResult.diagnostics.length, 0);
+
+  await Deno.writeTextFile(
+    producerFilePath,
+    [
+      'export function alpha(value: string) {',
+      '  return value.length;',
+      '}',
+      '',
+    ].join('\n'),
+  );
+
+  const thirdResult = withCapturedTimingLogs((logs) => {
+    const result = runProgram({
+      projectPath,
+      workingDirectory: tempDirectory,
+    });
+    assert(logs.some((line) =>
+      line.includes('[soundscript:checker] project.cache.incremental.result ') &&
+      line.includes('refreshedFiles=1') &&
+      line.includes('reusedFiles=1')
+    ));
+    assert(logs.some((line) =>
+      line.includes('[soundscript:checker] project.analyzePreparedProjectOwnedDiagnosticsForFile ') &&
+      line.includes(`filePath=${producerFilePath}`)
+    ));
+    assert(!logs.some((line) =>
+      line.includes('[soundscript:checker] project.analyzePreparedProjectOwnedDiagnosticsForFile ') &&
+      line.includes(`filePath=${importerFilePath}`)
+    ));
+    return result;
+  });
+
+  assertEquals(thirdResult.exitCode, 0);
+  assertEquals(thirdResult.diagnostics.length, 0);
 });
 
 Deno.test('runProgram honors cacheDir override and useCache=false', async () => {
