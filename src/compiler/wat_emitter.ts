@@ -10380,16 +10380,38 @@ function emitHostFallbackObjectBoundaryHelpers(
           ]
           : heapRepresentation !== undefined
           ? [
-            `${indent(3)}local.get $result`,
-            `${indent(3)}i32.const ${propertyKeyId}`,
             `${indent(3)}local.get $value`,
             `${indent(3)}call $${getHostFallbackObjectGetImportFunctionName(propertyName)}`,
-            `${indent(3)}call $${
+            `${indent(3)}local.set $entry_value`,
+            `${indent(3)}local.get $entry_value`,
+            `${indent(3)}call $tagged_type_tag`,
+            `${indent(3)}local.set $entry_tag`,
+            `${indent(3)}local.get $entry_tag`,
+            `${indent(3)}i32.const 4`,
+            `${indent(3)}i32.eq`,
+            `${indent(3)}if`,
+            `${indent(4)}local.get $entry_value`,
+            `${indent(4)}call $${
               heapRepresentation.kind === 'specialized_object_representation'
                 ? getHostObjectToSpecializedHelperName(heapLayout!)
                 : getHostObjectToFallbackHelperName()
             }`,
-            `${indent(3)}call $tag_heap_object`,
+            `${indent(4)}call $tag_heap_object`,
+            `${indent(4)}local.set $entry_tagged`,
+            `${indent(3)}else`,
+            ...emitHostTaggedPrimitiveExternrefToTagged(
+              'entry_value',
+              'entry_tag',
+              'entry_tagged',
+              HOST_FALLBACK_OBJECT_VALUE_KINDS,
+              4,
+              indent,
+            ),
+            `${indent(4)}local.set $entry_tagged`,
+            `${indent(3)}end`,
+            `${indent(3)}local.get $result`,
+            `${indent(3)}i32.const ${propertyKeyId}`,
+            `${indent(3)}local.get $entry_tagged`,
             `${indent(3)}call $set_fallback_object_property`,
           ]
           : [
@@ -10623,67 +10645,88 @@ function emitHostFallbackObjectBoundaryHelpers(
               `${indent(2)}call $${getHostFallbackObjectSetImportFunctionName(propertyName)}`,
             ]
             : heapRepresentation !== undefined
-            ? heapRepresentation.kind === 'specialized_object_representation'
-              ? [
-                `${indent(2)}local.get $value`,
-                `${indent(2)}i32.const ${propertyKeyId}`,
-                `${indent(2)}call $get_fallback_object_property`,
-                `${indent(2)}call $untag_heap_object`,
-                `${indent(2)}local.set $entry_heap`,
-                `${indent(2)}local.get $target`,
-                `${indent(2)}call $${getHostFallbackObjectGetImportFunctionName(propertyName)}`,
-                `${indent(2)}local.set $entry_existing`,
-                `${indent(2)}local.get $entry_heap`,
-                `${indent(2)}call $${getHostObjectLookupCachedImportFunctionName()}`,
-                `${indent(2)}local.set $entry_value`,
-                `${indent(2)}local.get $entry_value`,
-                `${indent(2)}ref.is_null`,
-                `${indent(2)}if`,
-                `${indent(3)}local.get $target`,
-                `${indent(3)}local.get $entry_heap`,
-                `${indent(3)}ref.cast (ref null $${heapLayout!.watTypeId})`,
-                `${indent(3)}call $${getSpecializedObjectToHostHelperName(heapLayout!)}`,
-                `${indent(3)}call $${getHostFallbackObjectSetImportFunctionName(propertyName)}`,
-                `${indent(2)}else`,
-                `${indent(3)}local.get $entry_existing`,
-                `${indent(3)}local.get $entry_value`,
-                `${indent(3)}call $host_object_same`,
-                `${indent(3)}if`,
-                `${indent(4)}local.get $entry_existing`,
-                `${indent(4)}local.get $entry_heap`,
-                `${indent(4)}ref.cast (ref null $${heapLayout!.watTypeId})`,
-                `${indent(4)}call $${getCopySpecializedObjectToHostHelperName(heapLayout!)}`,
-                `${indent(3)}else`,
-                `${indent(4)}local.get $target`,
-                `${indent(4)}local.get $entry_heap`,
-                `${indent(4)}ref.cast (ref null $${heapLayout!.watTypeId})`,
-                `${indent(4)}call $${getSpecializedObjectToHostHelperName(heapLayout!)}`,
-                `${indent(4)}call $${getHostFallbackObjectSetImportFunctionName(propertyName)}`,
-                `${indent(3)}end`,
-                `${indent(2)}end`,
-              ]
-              : [
-                `${indent(2)}local.get $value`,
-                `${indent(2)}i32.const ${propertyKeyId}`,
-                `${indent(2)}call $get_fallback_object_property`,
-                `${indent(2)}call $untag_heap_object`,
-                `${indent(2)}local.tee $entry_heap`,
-                `${indent(2)}call $${getHostObjectLookupCachedImportFunctionName()}`,
-                `${indent(2)}local.set $entry_value`,
-                `${indent(2)}local.get $entry_value`,
-                `${indent(2)}ref.is_null`,
-                `${indent(2)}if`,
-                ...emitGenericHeapObjectToHostSet(
-                  3,
-                  getHostFallbackObjectSetImportFunctionName(propertyName),
-                  'target',
-                ),
-                `${indent(2)}else`,
-                `${indent(3)}local.get $target`,
-                `${indent(3)}local.get $entry_value`,
-                `${indent(3)}call $${getHostFallbackObjectSetImportFunctionName(propertyName)}`,
-                `${indent(2)}end`,
-              ]
+            ? [
+              `${indent(2)}local.get $value`,
+              `${indent(2)}i32.const ${propertyKeyId}`,
+              `${indent(2)}call $get_fallback_object_property`,
+              `${indent(2)}local.set $entry_tagged`,
+              `${indent(2)}local.get $entry_tagged`,
+              `${indent(2)}struct.get $tagged_value 0`,
+              `${indent(2)}local.set $entry_tag`,
+              `${indent(2)}local.get $entry_tag`,
+              `${indent(2)}i32.const 4`,
+              `${indent(2)}i32.eq`,
+              `${indent(2)}if`,
+              ...(heapRepresentation.kind === 'specialized_object_representation'
+                ? [
+                  `${indent(3)}local.get $entry_tagged`,
+                  `${indent(3)}call $untag_heap_object`,
+                  `${indent(3)}local.set $entry_heap`,
+                  `${indent(3)}local.get $target`,
+                  `${indent(3)}call $${getHostFallbackObjectGetImportFunctionName(propertyName)}`,
+                  `${indent(3)}local.set $entry_existing`,
+                  `${indent(3)}local.get $entry_heap`,
+                  `${indent(3)}call $${getHostObjectLookupCachedImportFunctionName()}`,
+                  `${indent(3)}local.set $entry_value`,
+                  `${indent(3)}local.get $entry_value`,
+                  `${indent(3)}ref.is_null`,
+                  `${indent(3)}if`,
+                  `${indent(4)}local.get $target`,
+                  `${indent(4)}local.get $entry_heap`,
+                  `${indent(4)}ref.cast (ref null $${heapLayout!.watTypeId})`,
+                  `${indent(4)}call $${getSpecializedObjectToHostHelperName(heapLayout!)}`,
+                  `${indent(4)}call $${getHostFallbackObjectSetImportFunctionName(propertyName)}`,
+                  `${indent(3)}else`,
+                  `${indent(4)}local.get $entry_existing`,
+                  `${indent(4)}local.get $entry_value`,
+                  `${indent(4)}call $host_object_same`,
+                  `${indent(4)}if`,
+                  `${indent(5)}local.get $entry_existing`,
+                  `${indent(5)}local.get $entry_heap`,
+                  `${indent(5)}ref.cast (ref null $${heapLayout!.watTypeId})`,
+                  `${indent(5)}call $${getCopySpecializedObjectToHostHelperName(heapLayout!)}`,
+                  `${indent(4)}else`,
+                  `${indent(5)}local.get $target`,
+                  `${indent(5)}local.get $entry_heap`,
+                  `${indent(5)}ref.cast (ref null $${heapLayout!.watTypeId})`,
+                  `${indent(5)}call $${getSpecializedObjectToHostHelperName(heapLayout!)}`,
+                  `${indent(5)}call $${getHostFallbackObjectSetImportFunctionName(propertyName)}`,
+                  `${indent(4)}end`,
+                  `${indent(3)}end`,
+                ]
+                : [
+                  `${indent(3)}local.get $entry_tagged`,
+                  `${indent(3)}call $untag_heap_object`,
+                  `${indent(3)}local.tee $entry_heap`,
+                  `${indent(3)}call $${getHostObjectLookupCachedImportFunctionName()}`,
+                  `${indent(3)}local.set $entry_value`,
+                  `${indent(3)}local.get $entry_value`,
+                  `${indent(3)}ref.is_null`,
+                  `${indent(3)}if`,
+                  ...emitGenericHeapObjectToHostSet(
+                    4,
+                    getHostFallbackObjectSetImportFunctionName(propertyName),
+                    'target',
+                  ),
+                  `${indent(3)}else`,
+                  `${indent(4)}local.get $target`,
+                  `${indent(4)}local.get $entry_value`,
+                  `${indent(4)}call $${getHostFallbackObjectSetImportFunctionName(propertyName)}`,
+                  `${indent(3)}end`,
+                ]),
+              `${indent(2)}else`,
+              `${indent(3)}local.get $target`,
+              ...emitTaggedPrimitiveToHostExternref(
+                'entry_tagged',
+                'entry_tag',
+                'entry_value',
+                HOST_FALLBACK_OBJECT_VALUE_KINDS,
+                3,
+                indent,
+              ),
+              `${indent(3)}call $${getHostFallbackObjectSetImportFunctionName(propertyName)}`,
+              `${indent(2)}end`,
+            ]
             : [
               `${indent(2)}local.get $value`,
               `${indent(2)}i32.const ${propertyKeyId}`,
@@ -10878,38 +10921,59 @@ function emitHostFallbackObjectBoundaryHelpers(
               `${indent(3)}call $${getHostFallbackObjectSetImportFunctionName(propertyName)}`,
             ]
             : heapRepresentation !== undefined
-            ? heapRepresentation.kind === 'specialized_object_representation'
-              ? [
-                `${indent(3)}local.get $result`,
-                `${indent(3)}local.get $value`,
-                `${indent(3)}i32.const ${propertyKeyId}`,
-                `${indent(3)}call $get_fallback_object_property`,
-                `${indent(3)}call $untag_heap_object`,
-                `${indent(3)}ref.cast (ref null $${heapLayout!.watTypeId})`,
-                `${indent(3)}call $${getSpecializedObjectToHostHelperName(heapLayout!)}`,
-                `${indent(3)}call $${getHostFallbackObjectSetImportFunctionName(propertyName)}`,
-              ]
-              : [
-                `${indent(3)}local.get $value`,
-                `${indent(3)}i32.const ${propertyKeyId}`,
-                `${indent(3)}call $get_fallback_object_property`,
-                `${indent(3)}call $untag_heap_object`,
-                `${indent(3)}local.tee $entry_heap`,
-                `${indent(3)}call $${getHostObjectLookupCachedImportFunctionName()}`,
-                `${indent(3)}local.tee $entry_value`,
-                `${indent(3)}ref.is_null`,
-                `${indent(3)}if`,
-                ...emitGenericHeapObjectToHostSet(
-                  4,
-                  getHostFallbackObjectSetImportFunctionName(propertyName),
-                  'result',
-                ),
-                `${indent(3)}else`,
-                `${indent(4)}local.get $result`,
-                `${indent(4)}local.get $entry_value`,
-                `${indent(4)}call $${getHostFallbackObjectSetImportFunctionName(propertyName)}`,
-                `${indent(3)}end`,
-              ]
+            ? [
+              `${indent(3)}local.get $value`,
+              `${indent(3)}i32.const ${propertyKeyId}`,
+              `${indent(3)}call $get_fallback_object_property`,
+              `${indent(3)}local.set $entry_tagged`,
+              `${indent(3)}local.get $entry_tagged`,
+              `${indent(3)}struct.get $tagged_value 0`,
+              `${indent(3)}local.set $entry_tag`,
+              `${indent(3)}local.get $entry_tag`,
+              `${indent(3)}i32.const 4`,
+              `${indent(3)}i32.eq`,
+              `${indent(3)}if`,
+              ...(heapRepresentation.kind === 'specialized_object_representation'
+                ? [
+                  `${indent(4)}local.get $result`,
+                  `${indent(4)}local.get $entry_tagged`,
+                  `${indent(4)}call $untag_heap_object`,
+                  `${indent(4)}ref.cast (ref null $${heapLayout!.watTypeId})`,
+                  `${indent(4)}call $${getSpecializedObjectToHostHelperName(heapLayout!)}`,
+                  `${indent(4)}call $${getHostFallbackObjectSetImportFunctionName(propertyName)}`,
+                ]
+                : [
+                  `${indent(4)}local.get $entry_tagged`,
+                  `${indent(4)}call $untag_heap_object`,
+                  `${indent(4)}local.tee $entry_heap`,
+                  `${indent(4)}call $${getHostObjectLookupCachedImportFunctionName()}`,
+                  `${indent(4)}local.tee $entry_value`,
+                  `${indent(4)}ref.is_null`,
+                  `${indent(4)}if`,
+                  ...emitGenericHeapObjectToHostSet(
+                    5,
+                    getHostFallbackObjectSetImportFunctionName(propertyName),
+                    'result',
+                  ),
+                  `${indent(4)}else`,
+                  `${indent(5)}local.get $result`,
+                  `${indent(5)}local.get $entry_value`,
+                  `${indent(5)}call $${getHostFallbackObjectSetImportFunctionName(propertyName)}`,
+                  `${indent(4)}end`,
+                ]),
+              `${indent(3)}else`,
+              `${indent(4)}local.get $result`,
+              ...emitTaggedPrimitiveToHostExternref(
+                'entry_tagged',
+                'entry_tag',
+                'entry_value',
+                HOST_FALLBACK_OBJECT_VALUE_KINDS,
+                4,
+                indent,
+              ),
+              `${indent(4)}call $${getHostFallbackObjectSetImportFunctionName(propertyName)}`,
+              `${indent(3)}end`,
+            ]
             : [
               `${indent(3)}local.get $value`,
               `${indent(3)}i32.const ${propertyKeyId}`,
@@ -19514,6 +19578,52 @@ function expressionCallsFallbackReturningFunction(
   }
 }
 
+function expressionCallsFunctionWithHeapParamRepresentationKind(
+  expression: CompilerExpressionIR,
+  functionsByName: ReadonlyMap<string, CompilerFunctionIR>,
+  kind: CompilerRuntimeRepresentationRefIR<'object'>['kind'],
+): boolean {
+  switch (expression.kind) {
+    case 'call': {
+      const callee = functionsByName.get(expression.callee);
+      if (
+        callee &&
+        [...getEffectiveFunctionHeapParamRepresentationsByName(callee).values()].some((
+          representation,
+        ) => representation.kind === kind)
+      ) {
+        return true;
+      }
+      return expression.args.some((argument) =>
+        expressionCallsFunctionWithHeapParamRepresentationKind(argument, functionsByName, kind)
+      );
+    }
+    case 'binary':
+      return expressionCallsFunctionWithHeapParamRepresentationKind(
+          expression.left,
+          functionsByName,
+          kind,
+        ) ||
+        expressionCallsFunctionWithHeapParamRepresentationKind(
+          expression.right,
+          functionsByName,
+          kind,
+        );
+    default: {
+      let matched = false;
+      forEachExpressionChild(expression, (child) => {
+        if (
+          !matched &&
+          expressionCallsFunctionWithHeapParamRepresentationKind(child, functionsByName, kind)
+        ) {
+          matched = true;
+        }
+      });
+      return matched;
+    }
+  }
+}
+
 function functionCallsFallbackReturningFunction(
   func: CompilerFunctionIR,
   functionsByName: ReadonlyMap<string, CompilerFunctionIR>,
@@ -19542,6 +19652,71 @@ function functionCallsFallbackReturningFunction(
             visitStatements(statement.elseBody);
         case 'while':
           return expressionCallsFallbackReturningFunction(statement.condition, functionsByName) ||
+            visitStatements(statement.body);
+        default:
+          return false;
+      }
+    });
+  return visitStatements(func.body);
+}
+
+function functionCallsFunctionWithHeapParamRepresentationKind(
+  func: CompilerFunctionIR,
+  functionsByName: ReadonlyMap<string, CompilerFunctionIR>,
+  kind: CompilerRuntimeRepresentationRefIR<'object'>['kind'],
+): boolean {
+  const visitStatements = (statements: readonly CompilerStatementIR[]): boolean =>
+    statements.some((statement) => {
+      switch (statement.kind) {
+        case 'expression':
+        case 'global_set':
+        case 'local_set':
+        case 'specialized_object_field_set':
+          return expressionCallsFunctionWithHeapParamRepresentationKind(
+            statement.value,
+            functionsByName,
+            kind,
+          );
+        case 'return':
+          return expressionCallsFunctionWithHeapParamRepresentationKind(
+            statement.value,
+            functionsByName,
+            kind,
+          );
+        case 'owned_heap_array_set':
+        case 'owned_string_array_set':
+        case 'owned_number_array_set':
+        case 'owned_boolean_array_set':
+        case 'owned_tagged_array_set':
+          return expressionCallsFunctionWithHeapParamRepresentationKind(
+              statement.array,
+              functionsByName,
+              kind,
+            ) ||
+            expressionCallsFunctionWithHeapParamRepresentationKind(
+              statement.index,
+              functionsByName,
+              kind,
+            ) ||
+            expressionCallsFunctionWithHeapParamRepresentationKind(
+              statement.value,
+              functionsByName,
+              kind,
+            );
+        case 'if':
+          return expressionCallsFunctionWithHeapParamRepresentationKind(
+              statement.condition,
+              functionsByName,
+              kind,
+            ) ||
+            visitStatements(statement.thenBody) ||
+            visitStatements(statement.elseBody);
+        case 'while':
+          return expressionCallsFunctionWithHeapParamRepresentationKind(
+              statement.condition,
+              functionsByName,
+              kind,
+            ) ||
             visitStatements(statement.body);
         default:
           return false;
@@ -19819,13 +19994,24 @@ function createFunctionBackendRuntimeContext(
     hasHostFallbackObjectResultBoundary(func) ||
     getHostTaggedHeapNullableFallbackParamBoundaryNames(func).length > 0 ||
     hasHostTaggedHeapNullableFallbackResultBoundary(func);
+  const callsFallbackParamBoundaryFunction = functionCallsFunctionWithHeapParamRepresentationKind(
+    func,
+    functionsByName,
+    'fallback_object_representation',
+  );
   const fallbackObjectLayout = (
       functionUsesFallbackRuntime(func, operations) ||
       functionCallsFallbackReturningFunction(func, functionsByName) ||
+      callsFallbackParamBoundaryFunction ||
       hasHostFallbackBoundary
     )
     ? getFallbackObjectLayout(runtime)
     : undefined;
+  const callsDynamicParamBoundaryFunction = functionCallsFunctionWithHeapParamRepresentationKind(
+    func,
+    functionsByName,
+    'dynamic_object_representation',
+  );
   const dynamicObjectLayout = (
       operations.some((operation) =>
         operation.kind === 'allocate_dynamic_object' ||
@@ -19840,6 +20026,7 @@ function createFunctionBackendRuntimeContext(
         operation.kind === 'list_dynamic_object_values' ||
         operation.kind === 'set_dynamic_object_property'
       ) ||
+      callsDynamicParamBoundaryFunction ||
       [...getEffectiveFunctionHeapParamRepresentationsByName(func).values()].some((
         representation,
       ) => representation.kind === 'dynamic_object_representation') ||
@@ -20054,6 +20241,30 @@ function getHeapLocalWatType(
     );
   }
   return `(ref null $${representation.layout.watTypeId})`;
+}
+
+function getHeapParamRepresentationWatType(
+  representation: CompilerRuntimeRepresentationRefIR<'object'>,
+  runtime: FunctionBackendRuntimeContext,
+): string {
+  switch (representation.kind) {
+    case 'fallback_object_representation':
+      if (!runtime.fallbackObjectLayout) {
+        throw createUnsupportedHeapRuntimeBackendError(
+          'Missing fallback object layout for heap param cast.',
+        );
+      }
+      return `(ref null $${runtime.fallbackObjectLayout.watTypeId})`;
+    case 'dynamic_object_representation':
+      if (!runtime.dynamicObjectLayout) {
+        throw createUnsupportedHeapRuntimeBackendError(
+          'Missing dynamic object layout for heap param cast.',
+        );
+      }
+      return `(ref null $${runtime.dynamicObjectLayout.watTypeId})`;
+    case 'specialized_object_representation':
+      return getHeapBoundaryWatType(representation.name, runtime);
+  }
 }
 
 function getNextSpecializedAllocationOp(
@@ -22294,6 +22505,19 @@ function emitExpression(
                 runtime,
               );
             }
+          }
+          if (
+            'type' in argument &&
+            argument.type === 'heap_ref' &&
+            paramRepresentation &&
+            (argument.kind === 'box_get' ||
+              argument.kind === 'untag_heap_object' ||
+              argument.kind === 'heap_null')
+          ) {
+            return [
+              ...emitExpression(argument, level, runtime),
+              `${indent(level)}ref.cast ${getHeapParamRepresentationWatType(paramRepresentation, runtime)}`,
+            ];
           }
           return emitExpression(argument, level, runtime);
         }),

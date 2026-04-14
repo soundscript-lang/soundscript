@@ -2678,6 +2678,8 @@ compilerIntegrationTest(
               target: 'ES2022',
               module: 'ESNext',
               moduleResolution: 'bundler',
+              lib: ['ES2022', 'DOM', 'DOM.Iterable'],
+              skipLibCheck: true,
             },
             include: ['src/**/*.ts'],
             soundscript: {
@@ -2816,6 +2818,8 @@ compilerIntegrationTest(
               target: 'ES2022',
               module: 'ESNext',
               moduleResolution: 'bundler',
+              lib: ['ES2022', 'DOM', 'DOM.Iterable'],
+              skipLibCheck: true,
             },
             include: ['src/**/*.ts'],
             soundscript: {
@@ -4172,6 +4176,8 @@ compilerIntegrationTest(
               target: 'ES2022',
               module: 'ESNext',
               moduleResolution: 'bundler',
+              lib: ['ES2022', 'DOM', 'DOM.Iterable'],
+              skipLibCheck: true,
             },
             include: ['src/**/*.sts'],
             soundscript: {
@@ -4280,6 +4286,8 @@ compilerIntegrationTest(
               target: 'ES2022',
               module: 'ESNext',
               moduleResolution: 'bundler',
+              lib: ['ES2022', 'DOM', 'DOM.Iterable'],
+              skipLibCheck: true,
             },
             include: ['src/**/*.sts'],
             soundscript: {
@@ -4669,6 +4677,8 @@ compilerIntegrationTest(
               target: 'ES2022',
               module: 'ESNext',
               moduleResolution: 'bundler',
+              lib: ['ES2022', 'DOM', 'DOM.Iterable'],
+              skipLibCheck: true,
             },
             include: ['src/**/*.sts'],
             soundscript: {
@@ -6404,13 +6414,8 @@ compilerIntegrationTest(
     const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
     const instantiated = await wrapperModule.instantiate({
       modules: {
-        globalThis: {
-          document: {
-            getElementById(id: string) {
-              assertEquals(id, 'app');
-              return container;
-            },
-          },
+        './dom-host.js': {
+          getAppContainer: () => container,
         },
         'react/jsx-runtime': {
           jsx: (
@@ -6673,6 +6678,499 @@ compilerIntegrationTest(
     assertEquals(bootstrapSource.includes('.render('), false);
     assertEquals(bootstrapSource.includes('addEventListener('), false);
     assertEquals(bootstrapSource.includes('HashRouter'), false);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject supports react-dom/client hydrateRoot with imported jsx results stored in locals',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              skipLibCheck: true,
+              target: 'ES2022',
+              lib: ['ES2022', 'DOM', 'DOM.Iterable'],
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+              allowSyntheticDefaultImports: true,
+            },
+            include: ['src/**/*.sts', 'src/**/*.d.ts'],
+            soundscript: {
+              target: 'wasm-browser',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/framework-types.d.ts',
+        contents: [
+          "declare module 'react/jsx-runtime' {",
+          '  export type Key = string | number | bigint;',
+          '  export type ElementType = string | ((props: any) => unknown);',
+          '  export interface ReactElement {',
+          '    type: ElementType;',
+          '    props: unknown;',
+          '    key: string | null;',
+          '  }',
+          '  export function jsx(type: ElementType, props: unknown, key?: Key): ReactElement;',
+          '}',
+          '',
+          "declare module 'react-dom/client' {",
+          "  type ReactElement = import('react/jsx-runtime').ReactElement;",
+          '  export interface Root {',
+          '    render(children: ReactElement): void;',
+          '    unmount(): void;',
+          '  }',
+          '  export function hydrateRoot(',
+          '    container: Element | DocumentFragment,',
+          '    children: ReactElement,',
+          '  ): Root;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/dom-host.d.ts',
+        contents: 'export declare function getAppContainer(): Element;\n',
+      },
+      {
+        path: 'src/index.sts',
+        contents: [
+          '// #[interop]',
+          "import { jsx } from 'react/jsx-runtime';",
+          '// #[interop]',
+          "import { hydrateRoot } from 'react-dom/client';",
+          '// #[interop]',
+          "import { getAppContainer } from './dom-host.js';",
+          '',
+          'let root: ReturnType<typeof hydrateRoot> | undefined = undefined;',
+          '',
+          'export function start(): void {',
+          "  const element = jsx('main', { children: 'ok' });",
+          '  const currentRoot = root ?? hydrateRoot(getAppContainer(), element);',
+          '  root = currentRoot;',
+          '  currentRoot.unmount();',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const container = { nodeType: 1, tagName: 'DIV' };
+    let hydrateCalls = 0;
+    let unmountCalls = 0;
+    let lastHydrated:
+      | {
+        key: string | null;
+        props: Record<string, unknown>;
+        type: unknown;
+      }
+      | undefined;
+
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate({
+      modules: {
+        './dom-host.js': {
+          getAppContainer: () => container,
+        },
+        'react/jsx-runtime': {
+          jsx: (
+            type: unknown,
+            props: Record<string, unknown>,
+            key?: string | number | bigint,
+          ) => ({ key: key === undefined ? null : String(key), props, type }),
+        },
+        'react-dom/client': {
+          hydrateRoot: (receivedContainer: unknown, children: {
+            key: string | null;
+            props: Record<string, unknown>;
+            type: unknown;
+          }) => {
+            hydrateCalls += 1;
+            assertStrictEquals(receivedContainer, container);
+            lastHydrated = children;
+            return {
+              render() {
+              },
+              unmount() {
+                unmountCalls += 1;
+              },
+            };
+          },
+        },
+      },
+    });
+
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'start');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+
+    assertEquals(await exported(), undefined);
+    assertEquals(hydrateCalls, 1);
+    assertEquals(unmountCalls, 1);
+    assert(lastHydrated);
+    assertEquals(lastHydrated.type, 'main');
+    assertEquals(lastHydrated.props.children, 'ok');
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject supports callback-driven react-dom/client rerenders from JSX callbacks that capture host Element locals',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              skipLibCheck: true,
+              target: 'ES2022',
+              lib: ['ES2022', 'DOM', 'DOM.Iterable'],
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+              allowSyntheticDefaultImports: true,
+            },
+            include: ['src/**/*.sts', 'src/**/*.d.ts'],
+            soundscript: {
+              target: 'wasm-browser',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/framework-types.d.ts',
+        contents: [
+          "declare module 'react/jsx-runtime' {",
+          '  export namespace JSX {',
+          '    export interface IntrinsicElements {',
+          '      button: { children?: string; onClick?: () => void };',
+          '    }',
+          '  }',
+          '  export type Key = string | number | bigint;',
+          '  export type ElementType = string | ((props: any) => unknown);',
+          '  export interface ReactElement {',
+          '    type: ElementType;',
+          '    props: unknown;',
+          '    key: string | null;',
+          '  }',
+          '  export function jsx(type: ElementType, props: unknown, key?: Key): ReactElement;',
+          '}',
+          '',
+          "declare module 'react-dom/client' {",
+          "  type ReactElement = import('react/jsx-runtime').ReactElement;",
+          '  export interface Root {',
+          '    render(children: ReactElement): void;',
+          '  }',
+          '  export function createRoot(container: Element | DocumentFragment): Root;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.sts',
+        contents: [
+          '// #[interop]',
+          "import { createRoot } from 'react-dom/client';",
+          '',
+          'let root: ReturnType<typeof createRoot> | undefined = undefined;',
+          'let clickCount = 0;',
+          '',
+          'function label(): string {',
+          "  return clickCount === 0 ? 'Click me' : 'Clicked';",
+          '}',
+          '',
+          'function view(container: Element) {',
+          '  return <button onClick={() => {',
+          '    clickCount = clickCount + 1;',
+          '    start(container);',
+          '  }}>{label()}</button>;',
+          '}',
+          '',
+          'export function start(container: Element): void {',
+          '  const currentRoot = root ?? createRoot(container);',
+          '  root = currentRoot;',
+          '  currentRoot.render(view(container));',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const container = { nodeType: 1, tagName: 'DIV' };
+    let createRootCalls = 0;
+    let lastRendered:
+      | {
+        key: string | null;
+        props: { children: string; onClick?: () => void };
+        type: string;
+      }
+      | undefined;
+
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate({
+      modules: {
+        'react/jsx-runtime': {
+          jsx: (
+            type: string,
+            props: { children: string; onClick?: () => void },
+          ) => ({ key: null, props, type }),
+        },
+        'react-dom/client': {
+          createRoot(receivedContainer: { nodeType: number; tagName: string }) {
+            createRootCalls += 1;
+            assertStrictEquals(receivedContainer, container);
+            return {
+              render(children: {
+                key: string | null;
+                props: { children: string; onClick?: () => void };
+                type: string;
+              }) {
+                lastRendered = children;
+              },
+            };
+          },
+        },
+      },
+    });
+
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'start');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+
+    assertEquals(await exported(container), undefined);
+    assertEquals(createRootCalls, 1);
+    assert(lastRendered);
+    assertEquals(lastRendered.props.children, 'Click me');
+    assert(lastRendered.props.onClick);
+
+    lastRendered.props.onClick();
+    assertEquals(createRootCalls, 1);
+    assert(lastRendered);
+    assertEquals(lastRendered.props.children, 'Clicked');
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject supports callback-driven react-dom/client wrapper renders through imported HashRouter',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              skipLibCheck: true,
+              target: 'ES2022',
+              lib: ['ES2022', 'DOM', 'DOM.Iterable'],
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+              allowSyntheticDefaultImports: true,
+            },
+            include: ['src/**/*.sts', 'src/**/*.d.ts'],
+            soundscript: {
+              target: 'wasm-browser',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/framework-types.d.ts',
+        contents: [
+          "declare module 'react/jsx-runtime' {",
+          '  export namespace JSX {',
+          '    export interface IntrinsicElements {',
+          '      button: { children?: string; onClick?: () => void };',
+          '    }',
+          '  }',
+          '  export type Key = string | number | bigint;',
+          '  export type ElementType = string | ((props: any) => unknown);',
+          '  export interface ReactElement {',
+          '    type: ElementType;',
+          '    props: unknown;',
+          '    key: string | null;',
+          '  }',
+          '  export function jsx(type: ElementType, props: unknown, key?: Key): ReactElement;',
+          '  export function jsxs(type: ElementType, props: unknown, key?: Key): ReactElement;',
+          '}',
+          '',
+          "declare module 'react-dom/client' {",
+          "  type ReactElement = import('react/jsx-runtime').ReactElement;",
+          '  export interface Root {',
+          '    render(children: ReactElement): void;',
+          '  }',
+          '  export function createRoot(container: Element | DocumentFragment): Root;',
+          '}',
+          '',
+          "declare module 'react-router-dom' {",
+          "  type ReactElement = import('react/jsx-runtime').ReactElement;",
+          '  export function HashRouter(props: { children?: ReactElement }): ReactElement;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.sts',
+        contents: [
+          '// #[interop]',
+          "import { createRoot } from 'react-dom/client';",
+          '// #[interop]',
+          "import { HashRouter } from 'react-router-dom';",
+          '',
+          'let root: ReturnType<typeof createRoot> | undefined = undefined;',
+          'let clickCount = 0;',
+          '',
+          'function label(): string {',
+          "  return clickCount === 0 ? 'Click me' : 'Clicked';",
+          '}',
+          '',
+          'function view(container: Element) {',
+          '  return (',
+          '    <HashRouter>',
+          '      <button onClick={() => {',
+          '        clickCount = clickCount + 1;',
+          '        start(container);',
+          '      }}>{label()}</button>',
+          '    </HashRouter>',
+          '  );',
+          '}',
+          '',
+          'export function start(container: Element): void {',
+          '  const currentRoot = root ?? createRoot(container);',
+          '  root = currentRoot;',
+          '  currentRoot.render(view(container));',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const container = { nodeType: 1, tagName: 'DIV' };
+    let createRootCalls = 0;
+    let lastRendered:
+      | {
+        key: string | null;
+        props: {
+          children: {
+            key: string | null;
+            props: { children: string; onClick?: () => void };
+            type: string;
+          };
+        };
+        type: unknown;
+      }
+      | undefined;
+
+    function jsx(
+      type: unknown,
+      props: Record<string, unknown>,
+      key?: string | number | bigint,
+    ) {
+      return { key: key === undefined ? null : String(key), props, type };
+    }
+
+    function HashRouter(props: Record<string, unknown>) {
+      return { kind: 'HashRouter', props };
+    }
+
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate({
+      modules: {
+        'react/jsx-runtime': {
+          jsx,
+          jsxs: jsx,
+        },
+        'react-router-dom': {
+          HashRouter,
+        },
+        'react-dom/client': {
+          createRoot(receivedContainer: { nodeType: number; tagName: string }) {
+            createRootCalls += 1;
+            assertStrictEquals(receivedContainer, container);
+            return {
+              render(children: {
+                key: string | null;
+                props: {
+                  children: {
+                    key: string | null;
+                    props: { children: string; onClick?: () => void };
+                    type: string;
+                  };
+                };
+                type: unknown;
+              }) {
+                lastRendered = children;
+              },
+            };
+          },
+        },
+      },
+    });
+
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'start');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+
+    assertEquals(await exported(container), undefined);
+    assertEquals(createRootCalls, 1);
+    assert(lastRendered);
+    assertEquals(lastRendered.props.children.props.children, 'Click me');
+    assert(lastRendered.props.children.props.onClick);
+
+    lastRendered.props.children.props.onClick();
+    assertEquals(createRootCalls, 1);
+    assert(lastRendered);
+    assertEquals(lastRendered.props.children.props.children, 'Clicked');
   },
 );
 

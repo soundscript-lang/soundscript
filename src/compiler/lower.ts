@@ -26904,6 +26904,9 @@ function recordDirectBagLocalGeneralization(
   const sourceRepresentation = getHeapObjectRepresentationFromExpression(
     declaration.initializer,
     context,
+  ) ?? getBoundaryObjectRepresentationFromExpression(
+    declaration.initializer,
+    context,
   );
   if (!sourceRepresentation) {
     throw createHeapRuntimeGeneralizationBoundaryError(declaration.type ?? declaration.name, {
