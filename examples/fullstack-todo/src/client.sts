@@ -1,5 +1,5 @@
 // #[interop]
-import { createRoot } from 'react-dom/client';
+import { createRoot, hydrateRoot } from 'react-dom/client';
 // #[interop]
 import { HashRouter } from 'react-router-dom';
 
@@ -53,10 +53,8 @@ function toggleSecondTodo(): void {
   }
 }
 
-export function start(container: Element): void {
-  const currentRoot = root ?? createRoot(container);
-  root = currentRoot;
-  currentRoot.render(
+function App(container: Element) {
+  return (
     <HashRouter>
       <InteractiveAppRoutes
         todos={getTodos()}
@@ -69,6 +67,28 @@ export function start(container: Element): void {
           start(container);
         }}
       />
-    </HashRouter>,
+    </HashRouter>
   );
+}
+
+function renderApp(container: Element): void {
+  const currentRoot = root;
+  if (currentRoot !== undefined) {
+    currentRoot.render(App(container));
+  }
+}
+
+export function start(container: Element): void {
+  const currentRoot = root ?? createRoot(container);
+  root = currentRoot;
+  renderApp(container);
+}
+
+export function hydrate(container: Element): void {
+  const currentRoot = root;
+  if (currentRoot !== undefined) {
+    renderApp(container);
+  } else {
+    root = hydrateRoot(container, App(container));
+  }
 }

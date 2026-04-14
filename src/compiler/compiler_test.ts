@@ -7763,6 +7763,7 @@ compilerIntegrationTest(
 
     const container = { firstChild: { nodeType: 1 }, nodeType: 1, tagName: 'DIV' };
     let createRootCalls = 0;
+    let hydrateRootCalls = 0;
     let lastRendered:
       | {
         key: string | null;
@@ -7814,6 +7815,30 @@ compilerIntegrationTest(
               },
             };
           },
+          hydrateRoot(receivedContainer: {
+            firstChild: { nodeType: number };
+            nodeType: number;
+            tagName: string;
+          }, children: {
+            key: string | null;
+            props: Record<string, unknown>;
+            type: unknown;
+          }) {
+            hydrateRootCalls += 1;
+            assertStrictEquals(receivedContainer, container);
+            lastRendered = children;
+            return {
+              render(nextChildren: {
+                key: string | null;
+                props: Record<string, unknown>;
+                type: unknown;
+              }) {
+                lastRendered = nextChildren;
+              },
+              unmount() {
+              },
+            };
+          },
         },
       },
     });
@@ -7826,6 +7851,7 @@ compilerIntegrationTest(
 
     assertEquals(await startExport(container), undefined);
     assertEquals(createRootCalls, 1);
+    assertEquals(hydrateRootCalls, 0);
     assert(lastRendered);
     assertEquals(typeof lastRendered.type, 'function');
 
@@ -7844,6 +7870,134 @@ compilerIntegrationTest(
 
     assertEquals(await startExport(container), undefined);
     assertEquals(createRootCalls, 1);
+    assertEquals(hydrateRootCalls, 0);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject executes the checked-in fullstack-todo browser client example through react-dom/client hydrateRoot',
+  async () => {
+    const projectDirectory = getExampleProjectPath('examples/fullstack-todo');
+    const result = compileProject({
+      projectPath: join(projectDirectory, 'browser.tsconfig.json'),
+      workingDirectory: projectDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const container = { firstChild: { nodeType: 1 }, nodeType: 1, tagName: 'DIV' };
+    let createRootCalls = 0;
+    let hydrateRootCalls = 0;
+    let lastRendered:
+      | {
+        key: string | null;
+        props: Record<string, unknown>;
+        type: unknown;
+      }
+      | undefined;
+
+    function jsx(
+      type: unknown,
+      props: Record<string, unknown>,
+      key?: string | number | bigint,
+    ) {
+      return { key: key === undefined ? null : String(key), props, type };
+    }
+
+    function HashRouter(props: Record<string, unknown>) {
+      return { kind: 'HashRouter', props };
+    }
+
+    const wrapperModule = await importCompiledWrapperModule(result.artifacts.wrapperPath);
+    const instantiated = await wrapperModule.instantiate({
+      modules: {
+        'react/jsx-runtime': {
+          jsx,
+          jsxs: jsx,
+        },
+        'react-router': await import('npm:react-router@7.14.0'),
+        'react-router-dom': {
+          HashRouter,
+        },
+        'react-dom/client': {
+          createRoot(receivedContainer: {
+            firstChild: { nodeType: number };
+            nodeType: number;
+            tagName: string;
+          }) {
+            createRootCalls += 1;
+            assertStrictEquals(receivedContainer, container);
+            return {
+              render(children: {
+                key: string | null;
+                props: Record<string, unknown>;
+                type: unknown;
+              }) {
+                lastRendered = children;
+              },
+              unmount() {
+              },
+            };
+          },
+          hydrateRoot(receivedContainer: {
+            firstChild: { nodeType: number };
+            nodeType: number;
+            tagName: string;
+          }, children: {
+            key: string | null;
+            props: Record<string, unknown>;
+            type: unknown;
+          }) {
+            hydrateRootCalls += 1;
+            assertStrictEquals(receivedContainer, container);
+            lastRendered = children;
+            return {
+              render(nextChildren: {
+                key: string | null;
+                props: Record<string, unknown>;
+                type: unknown;
+              }) {
+                lastRendered = nextChildren;
+              },
+              unmount() {
+              },
+            };
+          },
+        },
+      },
+    });
+
+    const hydrateName = await resolveQualifiedExportName(projectDirectory, 'hydrate');
+    const hydrateExport = instantiated.exports[hydrateName];
+    if (typeof hydrateExport !== 'function') {
+      throw new Error(`Expected exported function "${hydrateName}".`);
+    }
+
+    assertEquals(await hydrateExport(container), undefined);
+    assertEquals(createRootCalls, 0);
+    assertEquals(hydrateRootCalls, 1);
+    assert(lastRendered);
+    assertEquals(typeof lastRendered.type, 'function');
+
+    const appRoutesElement = lastRendered.props.children as {
+      key: string | null;
+      props: {
+        todos: Array<{ completed: boolean; id: number; title: string }>;
+      };
+      type: unknown;
+    };
+    assertEquals(typeof appRoutesElement.type, 'function');
+    assertEquals(appRoutesElement.key, null);
+    assertEquals(appRoutesElement.props.todos.length, 2);
+    assertEquals(appRoutesElement.props.todos[0]?.title, 'Write compiler tests');
+    assertEquals(appRoutesElement.props.todos[1]?.completed, true);
+
+    assertEquals(await hydrateExport(container), undefined);
+    assertEquals(createRootCalls, 0);
+    assertEquals(hydrateRootCalls, 1);
   },
 );
 
@@ -7869,6 +8023,7 @@ compilerIntegrationTest(
 
     const container = { firstChild: { nodeType: 1 }, nodeType: 1, tagName: 'DIV' };
     let createRootCalls = 0;
+    let hydrateRootCalls = 0;
     let lastRendered: RenderedElement | undefined;
 
     function jsx(
@@ -7976,6 +8131,22 @@ compilerIntegrationTest(
               },
             };
           },
+          hydrateRoot(receivedContainer: {
+            firstChild: { nodeType: number };
+            nodeType: number;
+            tagName: string;
+          }, children: RenderedElement) {
+            hydrateRootCalls += 1;
+            assertStrictEquals(receivedContainer, container);
+            lastRendered = children;
+            return {
+              render(nextChildren: RenderedElement) {
+                lastRendered = nextChildren;
+              },
+              unmount() {
+              },
+            };
+          },
         },
       },
     });
@@ -7988,6 +8159,7 @@ compilerIntegrationTest(
 
     assertEquals(await startExport(container), undefined);
     assertEquals(createRootCalls, 1);
+    assertEquals(hydrateRootCalls, 0);
     assert(lastRendered);
 
     const initialTree = resolveRenderedNode(lastRendered);
@@ -8016,6 +8188,7 @@ compilerIntegrationTest(
     toggleSecondTodo();
 
     assertEquals(createRootCalls, 1);
+    assertEquals(hydrateRootCalls, 0);
     assert(lastRendered);
     const updatedTree = resolveRenderedNode(lastRendered);
     if (!isRenderedElement(updatedTree)) {
