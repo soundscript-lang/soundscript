@@ -91,12 +91,15 @@ function createJsHostImports(
   instanceCell: { instance: WebAssembly.Instance | null },
 ): WebAssembly.Imports {
   const heapIdentityCache = new WeakMap<object, unknown>();
+  const hostToHeapIdentityCache = new WeakMap<object, unknown>();
   const hostParamIdentityCache = new WeakMap<object, Map<string, unknown>>();
   const closureToHostCache = new WeakMap<object, Map<string, Function>>();
   const closureToHostSyncCache = new WeakMap<
     object,
     Map<string, Function | WeakMap<object, Function>>
   >();
+  const hostGeneratorToStepCache = new WeakMap<object, Function>();
+  const hostAsyncGeneratorToStepCache = new WeakMap<object, Function>();
   const hostPromiseToInternalCache = new WeakMap<object, object>();
   const internalPromiseToHostCache = new WeakMap<object, Promise<unknown>>();
   const classConstructorWrappers = new Map<number, Function>();
@@ -423,9 +426,19 @@ function createJsHostImports(
         if (property === 'lookup_cached') {
           return (value: unknown) => heapIdentityCache.get(expectHeapIdentityKey(value)) ?? null;
         }
+        if (property === 'lookup_host_cached') {
+          return (value: unknown) => {
+            const hostKey = getHostIdentityKey(value);
+            return hostKey ? hostToHeapIdentityCache.get(hostKey) ?? null : null;
+          };
+        }
         if (property === 'remember_cached') {
           return (value: unknown, hostValue: unknown) => {
             heapIdentityCache.set(expectHeapIdentityKey(value), hostValue);
+            const hostKey = getHostIdentityKey(hostValue);
+            if (hostKey) {
+              hostToHeapIdentityCache.set(hostKey, value);
+            }
           };
         }
         if (property === 'get_class_tag') {
@@ -554,8 +567,7 @@ function createJsHostImports(
         };
         switch (kind) {
           case 'has':
-            return (value: unknown) =>
-              Number(Reflect.has(expectObjectRecord(value), propertyName));
+            return (value: unknown) => Number(Reflect.has(expectObjectRecord(value), propertyName));
           case 'get_number':
             return (value: unknown) => Number(expectObjectRecord(value)[propertyName]);
           case 'get_boolean':
@@ -594,7 +606,10 @@ function createJsHostImports(
               ) {
                 return;
               }
-              if (Reflect.has(objectRecord, propertyName) && Object.is(objectRecord[propertyName], nextValue)) {
+              if (
+                Reflect.has(objectRecord, propertyName) &&
+                Object.is(objectRecord[propertyName], nextValue)
+              ) {
                 return;
               }
               objectRecord[propertyName] = nextValue;
@@ -821,6 +836,7 @@ function createJsHostImports(
       },
     }),
     soundscript_promise: {
+      is_host: (value: unknown) => value instanceof Promise ? 1 : 0,
       to_internal: (value: unknown, candidate: unknown) => {
         if (!(value instanceof Promise)) {
           throw new TypeError('Expected JS Promise for soundscript_promise.to_internal.');
@@ -877,23 +893,124 @@ function createJsHostImports(
       },
     },
     soundscript_async_generator: {
+      to_step: (iterator: unknown) => {
+        const iteratorKey = getHostIdentityKey(iterator);
+        if (!iteratorKey) {
+          throw new TypeError(
+            'Expected JS async generator object for soundscript_async_generator.to_step.',
+          );
+        }
+        const existing = hostAsyncGeneratorToStepCache.get(iteratorKey);
+        if (existing) {
+          return existing;
+        }
+        const step = (mode: unknown, value?: unknown) => {
+          const methodName = Number(mode) === 1 ? 'return' : Number(mode) === 2 ? 'throw' : 'next';
+          const method = (iterator as Record<string, unknown>)[methodName];
+          if (typeof method !== 'function') {
+            throw new TypeError(`Expected JS async generator ${methodName} method.`);
+          }
+          return method.call(iterator, value);
+        };
+        hostAsyncGeneratorToStepCache.set(iteratorKey, step);
+        return step;
+      },
+      to_internal: (value: unknown, candidate: unknown) => {
+        if (!(value instanceof Promise)) {
+          throw new TypeError(
+            'Expected JS Promise for soundscript_async_generator.to_internal.',
+          );
+        }
+        const candidateKey = expectHeapIdentityKey(candidate);
+        const instance = instanceCell.instance;
+        if (!instance) {
+          throw new Error('Async generator bridge invoked before instantiation completed.');
+        }
+        const fulfill = instance.exports.__soundscript_async_generator_step_bridge_fulfill;
+        const fulfillStringArray =
+          instance.exports.__soundscript_async_generator_step_bridge_fulfill_string_array;
+        const fulfillNumberArray =
+          instance.exports.__soundscript_async_generator_step_bridge_fulfill_number_array;
+        const fulfillBooleanArray =
+          instance.exports.__soundscript_async_generator_step_bridge_fulfill_boolean_array;
+        const fulfillTaggedArray =
+          instance.exports.__soundscript_async_generator_step_bridge_fulfill_tagged_array;
+        const reject = instance.exports.__soundscript_promise_bridge_reject;
+        if (typeof fulfill !== 'function' || typeof reject !== 'function') {
+          throw new Error('Missing async generator bridge helpers.');
+        }
+        value.then(
+          (result) => {
+            if ((typeof result !== 'object' && typeof result !== 'function') || result === null) {
+              throw new TypeError(
+                'Expected async generator step to produce an iterator result object.',
+              );
+            }
+            const iteratorResult = result as Record<string, unknown>;
+            const yieldedValue = Object.hasOwn(iteratorResult, 'value')
+              ? iteratorResult.value
+              : undefined;
+            if (Array.isArray(yieldedValue)) {
+              const done = iteratorResult.done ? 1 : 0;
+              if (yieldedValue.length === 0) {
+                if (typeof fulfillTaggedArray !== 'function') {
+                  throw new Error('Missing async generator tagged-array bridge helper.');
+                }
+                fulfillTaggedArray(candidateKey, done, yieldedValue);
+                return;
+              }
+              if (yieldedValue.every((entry) => typeof entry === 'string')) {
+                if (typeof fulfillStringArray !== 'function') {
+                  throw new Error('Missing async generator string-array bridge helper.');
+                }
+                fulfillStringArray(candidateKey, done, yieldedValue);
+                return;
+              }
+              if (yieldedValue.every((entry) => typeof entry === 'number')) {
+                if (typeof fulfillNumberArray !== 'function') {
+                  throw new Error('Missing async generator number-array bridge helper.');
+                }
+                fulfillNumberArray(candidateKey, done, yieldedValue);
+                return;
+              }
+              if (yieldedValue.every((entry) => typeof entry === 'boolean')) {
+                if (typeof fulfillBooleanArray !== 'function') {
+                  throw new Error('Missing async generator boolean-array bridge helper.');
+                }
+                fulfillBooleanArray(candidateKey, done, yieldedValue);
+                return;
+              }
+              if (typeof fulfillTaggedArray !== 'function') {
+                throw new Error('Missing async generator tagged-array bridge helper.');
+              }
+              fulfillTaggedArray(candidateKey, done, yieldedValue);
+              return;
+            }
+            fulfill(candidateKey, iteratorResult.done ? 1 : 0, yieldedValue);
+          },
+          (error) => {
+            reject(candidateKey, error);
+          },
+        );
+        return candidateKey;
+      },
       wrap: (step: unknown) => {
         if (typeof step !== 'function') {
           throw new TypeError('Expected host-callable async generator step.');
         }
         return {
           next(value?: unknown) {
-            return Promise.resolve(step(0, value)).catch((error) => {
+            return Promise.resolve().then(() => step(0, value)).catch((error) => {
               throw normalizeThrownHostValue(error);
             });
           },
           return(value?: unknown) {
-            return Promise.resolve(step(1, value)).catch((error) => {
+            return Promise.resolve().then(() => step(1, value)).catch((error) => {
               throw normalizeThrownHostValue(error);
             });
           },
           throw(value?: unknown) {
-            return Promise.resolve(step(2, value)).catch((error) => {
+            return Promise.resolve().then(() => step(2, value)).catch((error) => {
               throw normalizeThrownHostValue(error);
             });
           },
@@ -984,6 +1101,30 @@ function createJsHostImports(
       },
     },
     soundscript_generator: {
+      to_step: (iterator: unknown) => {
+        const iteratorKey = getHostIdentityKey(iterator);
+        if (!iteratorKey) {
+          throw new TypeError('Expected JS generator object for soundscript_generator.to_step.');
+        }
+        const existing = hostGeneratorToStepCache.get(iteratorKey);
+        if (existing) {
+          return existing;
+        }
+        const step = (mode: unknown, value?: unknown) => {
+          const methodName = Number(mode) === 1 ? 'return' : Number(mode) === 2 ? 'throw' : 'next';
+          const method = (iterator as Record<string, unknown>)[methodName];
+          if (typeof method !== 'function') {
+            throw new TypeError(`Expected JS generator ${methodName} method.`);
+          }
+          const result = method.call(iterator, value);
+          if ((typeof result !== 'object' && typeof result !== 'function') || result === null) {
+            throw new TypeError('Expected JS generator step to produce an iterator result object.');
+          }
+          return result;
+        };
+        hostGeneratorToStepCache.set(iteratorKey, step);
+        return step;
+      },
       wrap: (step: unknown) => {
         if (typeof step !== 'function') {
           throw new TypeError('Expected host-callable generator step.');

@@ -1568,6 +1568,63 @@ compilerTaggedTest(
 );
 
 compilerTaggedTest(
+  'emitCompilerModuleToWat keeps internal promise runtime without host promise bridges when host interop has no Promise boundary',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts'],
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/host.d.ts',
+        contents: [
+          'export function logValue(value: number): void;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          '// #[interop]',
+          "import { logValue } from './host';",
+          '',
+          'async function computeAsync(): Promise<number> {',
+          '  return Promise.resolve(41);',
+          '}',
+          '',
+          'export function main(): number {',
+          '  logValue(1);',
+          '  computeAsync();',
+          '  return 1;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const moduleIR = lowerTempProjectToCompilerIR(tempDirectory);
+    const watOutput = emitCompilerModuleToWat(moduleIR);
+
+    assertStringIncludes(watOutput, '(func $__soundscript_promise_new_pending');
+    assertEquals(watOutput.includes('$host_promise_to_internal'), false);
+    assertEquals(watOutput.includes('$host_promise_to_host'), false);
+    assertEquals(watOutput.includes('"soundscript_promise"'), false);
+  },
+);
+
+compilerTaggedTest(
   'emitCompilerModuleToWat keeps promise runtime when exported promise params only remain in recursive host boundaries',
   async () => {
     const tempDirectory = await createTempProject([
@@ -1604,6 +1661,58 @@ compilerTaggedTest(
     assertStringIncludes(watOutput, '(func $__soundscript_promise_new_pending');
     assertStringIncludes(watOutput, '(param $value externref)');
     assertStringIncludes(watOutput, 'call $host_promise_to_internal');
+    assertEquals(watOutput.includes('call $host_promise_to_host'), false);
+  },
+);
+
+compilerTaggedTest(
+  'emitCompilerModuleToWat imports host Promise results without host export bridge when promise boundaries are import-only',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts'],
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/host.d.ts',
+        contents: [
+          'export function fetchNumber(): Promise<number>;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          '// #[interop]',
+          "import { fetchNumber } from './host';",
+          '',
+          'export function main(): number {',
+          '  fetchNumber();',
+          '  return 1;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const moduleIR = lowerTempProjectToCompilerIR(tempDirectory);
+    const watOutput = emitCompilerModuleToWat(moduleIR);
+
+    assertStringIncludes(watOutput, '(func $__soundscript_promise_new_pending');
+    assertStringIncludes(watOutput, 'call $host_promise_to_internal');
+    assertEquals(watOutput.includes('call $host_promise_to_host'), false);
   },
 );
 
@@ -1687,6 +1796,7 @@ compilerTaggedTest(
 
     assertStringIncludes(watOutput, '(result externref)');
     assertStringIncludes(watOutput, 'call $host_promise_to_host');
+    assertEquals(watOutput.includes('call $host_promise_to_internal'), false);
   },
 );
 
@@ -1786,6 +1896,72 @@ compilerTaggedTest(
     assertStringIncludes(watOutput, '(func $__soundscript_promise_new_pending');
     assertStringIncludes(watOutput, '(param $value externref)');
     assertStringIncludes(watOutput, 'call $host_promise_to_host');
+  },
+);
+
+compilerTaggedTest(
+  'compileProject keeps host promise bridge untouched when promises stay inside Wasm',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts'],
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          'async function compute(): Promise<number> {',
+          '  return await Promise.resolve(20);',
+          '}',
+          '',
+          'export function main(): number {',
+          '  compute();',
+          '  return 1;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+
+    const instance = await instantiateCompiledModuleInJs(tempDirectory, {
+      imports: {
+        soundscript_promise: {
+          to_internal: () => {
+            throw new Error('Expected no host Promise import bridge usage.');
+          },
+          to_host: () => {
+            throw new Error('Expected no host Promise export bridge usage.');
+          },
+        },
+      },
+    });
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instance.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+
+    assertEquals(exported(), 1);
   },
 );
 

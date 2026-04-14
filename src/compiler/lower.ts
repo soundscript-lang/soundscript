@@ -340,6 +340,94 @@ function isSupportedSimpleObjectBindingPattern(
     );
 }
 
+function getSupportedSimpleFrameBindingIdentifiers(
+  name: ts.BindingName,
+): readonly ts.Identifier[] | undefined {
+  if (ts.isIdentifier(name)) {
+    return [name];
+  }
+  if (isSupportedSimpleArrayBindingPattern(name) || isSupportedSimpleObjectBindingPattern(name)) {
+    return collectBindingIdentifiers(name);
+  }
+  return undefined;
+}
+
+function getSupportedFrameVariableDeclarationBindingInfos(
+  declaration: ts.VariableDeclaration,
+  context: FunctionLoweringContext,
+): ReadonlyArray<{ identifier: ts.Identifier; valueInfo: ResolvedClosureAbiValueIR }> | undefined {
+  if (!declaration.initializer) {
+    return undefined;
+  }
+  const identifiers = getSupportedSimpleFrameBindingIdentifiers(declaration.name);
+  if (!identifiers) {
+    return undefined;
+  }
+  const seenSymbols = new Set<ts.Symbol>();
+  const seenNames = new Set<string>();
+  const bindingInfos: Array<{ identifier: ts.Identifier; valueInfo: ResolvedClosureAbiValueIR }> =
+    [];
+  for (const identifier of identifiers) {
+    const symbol = context.checker.getSymbolAtLocation(identifier);
+    if (symbol) {
+      if (seenSymbols.has(symbol)) {
+        continue;
+      }
+      seenSymbols.add(symbol);
+    } else if (seenNames.has(identifier.text)) {
+      continue;
+    } else {
+      seenNames.add(identifier.text);
+    }
+    bindingInfos.push({
+      identifier,
+      valueInfo: resolveClosureAbiValueType(
+        context.checker,
+        context.checker.getTypeAtLocation(identifier),
+        identifier,
+        context.closures,
+        context.runtime,
+        context.classes,
+      ),
+    });
+  }
+  return bindingInfos;
+}
+
+function createFrameForOfLoopBodyStatements(
+  statement: ts.ForOfStatement,
+  loopValueIdentifier: ts.Identifier,
+): readonly ts.Statement[] {
+  const bodyStatements = ts.isBlock(statement.statement)
+    ? statement.statement.statements
+    : [statement.statement];
+  if (
+    !ts.isVariableDeclarationList(statement.initializer) ||
+    statement.initializer.declarations.length !== 1
+  ) {
+    return bodyStatements;
+  }
+  const loopDeclaration = statement.initializer.declarations[0]!;
+  if (ts.isIdentifier(loopDeclaration.name)) {
+    return bodyStatements;
+  }
+  return [
+    ts.factory.createVariableStatement(
+      undefined,
+      ts.factory.createVariableDeclarationList(
+        [ts.factory.createVariableDeclaration(
+          loopDeclaration.name,
+          loopDeclaration.exclamationToken,
+          loopDeclaration.type,
+          ts.factory.createIdentifier(loopValueIdentifier.text),
+        )],
+        statement.initializer.flags,
+      ),
+    ),
+    ...bodyStatements,
+  ];
+}
+
 function getFunctionParameterRuntimeName(
   parameter: ts.ParameterDeclaration,
   index: number,
@@ -5892,15 +5980,33 @@ function tryLowerOwnedHeapArrayExpression(
             element,
           );
         }
-        const materialized = materializeHeapExpressionToLocal(
-          element,
-          context,
-          'heap_array_element',
-        );
+        const loweredElement = lowerExpression(element, context);
+        const loweredElementType = getLoweredExpressionValueType(loweredElement);
+        if (
+          loweredElementType !== 'heap_ref' &&
+          loweredElementType !== 'owned_heap_array_ref' &&
+          loweredElementType !== 'owned_array_ref' &&
+          loweredElementType !== 'owned_number_array_ref' &&
+          loweredElementType !== 'owned_boolean_array_ref' &&
+          loweredElementType !== 'owned_tagged_array_ref'
+        ) {
+          throw new CompilerUnsupportedError(
+            'Compiler-owned heap arrays currently require heap-like element values in compiler subset.',
+            element,
+          );
+        }
+        const materializedName = loweredElementType === 'heap_ref'
+          ? materializeHeapExpressionToLocal(element, context, 'heap_array_element').name
+          : materializeLoweredExpressionToLocal(
+            loweredElement,
+            context,
+            'heap_array_element',
+            true,
+          );
         return {
           kind: 'local_get',
-          name: materialized.name,
-          type: 'heap_ref',
+          name: materializedName,
+          type: loweredElementType,
         };
       }),
       type: 'owned_heap_array_ref',
@@ -14763,25 +14869,7 @@ function lowerCollectionIteratorObject(
 function lowerCollectionIteratorNextCallFromObject(
   objectName: string,
   representation: CompilerRuntimeDynamicObjectRepresentationRefIR,
-  iteratorTypeInfo: {
-    valuesArrayType:
-      | 'owned_heap_array_ref'
-      | 'owned_array_ref'
-      | 'owned_number_array_ref'
-      | 'owned_boolean_array_ref'
-      | 'owned_tagged_array_ref';
-    elementType:
-      | 'heap_ref'
-      | 'owned_heap_array_ref'
-      | 'owned_array_ref'
-      | 'owned_number_array_ref'
-      | 'owned_boolean_array_ref'
-      | 'owned_string_ref'
-      | 'owned_tagged_array_ref'
-      | 'f64'
-      | 'i32'
-      | 'tagged_ref';
-  },
+  iteratorTypeInfo: FrameForOfCollectionIteratorInfo,
   context: FunctionLoweringContext,
   baseName: string,
 ): CompilerExpressionIR {
@@ -14842,7 +14930,7 @@ function lowerCollectionIteratorNextCallFromObject(
   if (iteratorTypeInfo.elementType === 'heap_ref') {
     context.functionRuntime.heapObjectRepresentationsByLocal.set(
       currentValueName,
-      ensureObjectDynamicRepresentation(context.runtime),
+      iteratorTypeInfo.heapElementRepresentation ?? ensureObjectDynamicRepresentation(context.runtime),
     );
   }
   const nextIndexName = createLocalName('iterator_next_index', context.nextLocalId);
@@ -15153,27 +15241,39 @@ function lowerStringCollectionIteratorNextCallExpression(
 
 function lowerGeneratorStepCallFromObject(
   objectName: string,
-  representation: CompilerRuntimeDynamicObjectRepresentationRefIR,
+  representation:
+    | CompilerRuntimeDynamicObjectRepresentationRefIR
+    | CompilerRuntimeFallbackObjectRepresentationRefIR,
   mode: number,
   argumentValue: CompilerExpressionIR,
   context: FunctionLoweringContext,
 ): CompilerExpressionIR {
   ensureGeneratorRuntimeInfrastructure(context.runtime);
-  const keyStatements: CompilerStatementIR[] = [];
-  const stepKeyName = createOwnedStringLiteralLocal(
-    SOUNDSCRIPT_GENERATOR_INTERNAL_STEP_KEY,
-    context,
-    keyStatements,
-    'generator_step_key',
-  );
-  context.expressionPreludeStatements.push(...keyStatements);
-  const stepClosure = lowerDynamicObjectPropertyReadAsValueType(
-    objectName,
-    representation,
-    stepKeyName,
-    'closure_ref',
-    context,
-  );
+  const stepClosure = representation.kind === 'dynamic_object_representation'
+    ? (() => {
+      const keyStatements: CompilerStatementIR[] = [];
+      const stepKeyName = createOwnedStringLiteralLocal(
+        SOUNDSCRIPT_GENERATOR_INTERNAL_STEP_KEY,
+        context,
+        keyStatements,
+        'generator_step_key',
+      );
+      context.expressionPreludeStatements.push(...keyStatements);
+      return lowerDynamicObjectPropertyReadAsValueType(
+        objectName,
+        representation,
+        stepKeyName,
+        'closure_ref',
+        context,
+      );
+    })()
+    : lowerFallbackObjectPropertyReadAsValueType(
+      objectName,
+      representation,
+      SOUNDSCRIPT_GENERATOR_INTERNAL_STEP_KEY,
+      'closure_ref',
+      context,
+    );
   return {
     kind: 'closure_call',
     callee: stepClosure,
@@ -15191,22 +15291,33 @@ function lowerGeneratorStepCallFromObject(
 
 function lowerGeneratorStepClosureFromObject(
   objectName: string,
-  representation: CompilerRuntimeDynamicObjectRepresentationRefIR,
+  representation:
+    | CompilerRuntimeDynamicObjectRepresentationRefIR
+    | CompilerRuntimeFallbackObjectRepresentationRefIR,
   context: FunctionLoweringContext,
 ): CompilerExpressionIR {
   ensureGeneratorRuntimeInfrastructure(context.runtime);
-  const keyStatements: CompilerStatementIR[] = [];
-  const stepKeyName = createOwnedStringLiteralLocal(
-    SOUNDSCRIPT_GENERATOR_INTERNAL_STEP_KEY,
-    context,
-    keyStatements,
-    'generator_step_key',
-  );
-  context.expressionPreludeStatements.push(...keyStatements);
-  return lowerDynamicObjectPropertyReadAsValueType(
+  if (representation.kind === 'dynamic_object_representation') {
+    const keyStatements: CompilerStatementIR[] = [];
+    const stepKeyName = createOwnedStringLiteralLocal(
+      SOUNDSCRIPT_GENERATOR_INTERNAL_STEP_KEY,
+      context,
+      keyStatements,
+      'generator_step_key',
+    );
+    context.expressionPreludeStatements.push(...keyStatements);
+    return lowerDynamicObjectPropertyReadAsValueType(
+      objectName,
+      representation,
+      stepKeyName,
+      'closure_ref',
+      context,
+    );
+  }
+  return lowerFallbackObjectPropertyReadAsValueType(
     objectName,
     representation,
-    stepKeyName,
+    SOUNDSCRIPT_GENERATOR_INTERNAL_STEP_KEY,
     'closure_ref',
     context,
   );
@@ -16233,6 +16344,7 @@ function tryLowerCollectionForOfIterableExpression(
   arrayValue: CompilerExpressionIR;
   arrayType: OwnedCallbackArrayType;
   elementType: OwnedCallbackElementType;
+  heapElementRepresentation?: CompilerRuntimeRepresentationRefIR<'object'>;
 } | undefined {
   if (ts.isParenthesizedExpression(expression)) {
     return tryLowerCollectionForOfIterableExpression(expression.expression, context);
@@ -23939,6 +24051,18 @@ function getHeapObjectRepresentationFromExpression(
   }
 
   const expressionType = context.checker.getTypeAtLocation(expression);
+  const ambientHostBoundaryRepresentation =
+    getAmbientHostImportedBoundaryRepresentationFromExpression(expression, context);
+  if (
+    ambientHostBoundaryRepresentation &&
+    (
+      isGeneratorObjectType(context.checker, expressionType) ||
+      isAsyncGeneratorObjectType(context.checker, expressionType) ||
+      isIteratorResultObjectType(context.checker, expressionType)
+    )
+  ) {
+    return ambientHostBoundaryRepresentation;
+  }
   if (
     isGeneratorObjectType(context.checker, expressionType) ||
     isAsyncGeneratorObjectType(context.checker, expressionType) ||
@@ -28020,6 +28144,8 @@ function createAmbientHostFunctionHeader(
   let hostTaggedPrimitiveResultKinds: CompilerTaggedPrimitiveBoundaryKindsIR | undefined;
   let hostTaggedHeapResultBoundary: CompilerFunctionHostTaggedHeapNullableBoundaryIR | undefined;
   let promiseResult = false;
+  let hostImportGeneratorResult = false;
+  let hostImportAsyncGeneratorResult = false;
   let resultType: CompilerValueType;
   const callableObjectResultRepresentation = getAmbientHostProjectedCallableObjectBoundaryRepresentation(
     checker,
@@ -28034,6 +28160,16 @@ function createAmbientHostFunctionHeader(
     ensureBuiltinErrorRuntimeInfrastructure(runtime);
     getPromiseFulfilledHandlerSignatureId(closures, runtime);
     promiseResult = true;
+    resultType = 'heap_ref';
+    heapResultRepresentation = ensureObjectDynamicRepresentation(runtime);
+  } else if (isAsyncGeneratorObjectType(checker, returnType)) {
+    ensureGeneratorCallSignatureId(closures, runtime);
+    hostImportAsyncGeneratorResult = true;
+    resultType = 'heap_ref';
+    heapResultRepresentation = ensureObjectDynamicRepresentation(runtime);
+  } else if (isGeneratorObjectType(checker, returnType)) {
+    ensureGeneratorCallSignatureId(closures, runtime);
+    hostImportGeneratorResult = true;
     resultType = 'heap_ref';
     heapResultRepresentation = ensureObjectDynamicRepresentation(runtime);
   } else if (callableObjectResultRepresentation) {
@@ -28170,6 +28306,8 @@ function createAmbientHostFunctionHeader(
     hostImportPromiseParams: hostImportPromiseParams.length > 0
       ? hostImportPromiseParams
       : undefined,
+    hostImportGeneratorResult: hostImportGeneratorResult || undefined,
+    hostImportAsyncGeneratorResult: hostImportAsyncGeneratorResult || undefined,
     heapResultRepresentation,
     params,
     resultType,
@@ -28891,6 +29029,8 @@ function createAmbientHostStaticMethodHeader(
   let heapResultRepresentation: CompilerRuntimeRepresentationRefIR<'object'> | undefined;
   let hostTaggedPrimitiveResultKinds: CompilerTaggedPrimitiveBoundaryKindsIR | undefined;
   let promiseResult = false;
+  let hostImportGeneratorResult = false;
+  let hostImportAsyncGeneratorResult = false;
   let resultType: CompilerValueType;
   const callableObjectResultRepresentation = getAmbientHostProjectedCallableObjectBoundaryRepresentation(
     checker,
@@ -28905,6 +29045,16 @@ function createAmbientHostStaticMethodHeader(
     ensureBuiltinErrorRuntimeInfrastructure(runtime);
     getPromiseFulfilledHandlerSignatureId(closures, runtime);
     promiseResult = true;
+    resultType = 'heap_ref';
+    heapResultRepresentation = ensureObjectDynamicRepresentation(runtime);
+  } else if (isAsyncGeneratorObjectType(checker, returnType)) {
+    ensureGeneratorCallSignatureId(closures, runtime);
+    hostImportAsyncGeneratorResult = true;
+    resultType = 'heap_ref';
+    heapResultRepresentation = ensureObjectDynamicRepresentation(runtime);
+  } else if (isGeneratorObjectType(checker, returnType)) {
+    ensureGeneratorCallSignatureId(closures, runtime);
+    hostImportGeneratorResult = true;
     resultType = 'heap_ref';
     heapResultRepresentation = ensureObjectDynamicRepresentation(runtime);
   } else if (callableObjectResultRepresentation) {
@@ -29002,6 +29152,8 @@ function createAmbientHostStaticMethodHeader(
     hostImportPromiseParams: hostImportPromiseParams.length > 0
       ? hostImportPromiseParams
       : undefined,
+    hostImportGeneratorResult: hostImportGeneratorResult || undefined,
+    hostImportAsyncGeneratorResult: hostImportAsyncGeneratorResult || undefined,
     heapResultRepresentation,
     params,
     resultType,
@@ -29183,6 +29335,8 @@ function createAmbientHostPropertyGetterHeaderWithImportName(
   let heapResultRepresentation: CompilerRuntimeRepresentationRefIR<'object'> | undefined;
   let hostTaggedPrimitiveResultKinds: CompilerTaggedPrimitiveBoundaryKindsIR | undefined;
   let promiseResult = false;
+  let hostImportGeneratorResult = false;
+  let hostImportAsyncGeneratorResult = false;
   let resultType: CompilerValueType;
   const callableObjectResultRepresentation = getAmbientHostProjectedCallableObjectBoundaryRepresentation(
     checker,
@@ -29197,6 +29351,16 @@ function createAmbientHostPropertyGetterHeaderWithImportName(
     ensureBuiltinErrorRuntimeInfrastructure(runtime);
     getPromiseFulfilledHandlerSignatureId(closures, runtime);
     promiseResult = true;
+    resultType = 'heap_ref';
+    heapResultRepresentation = ensureObjectDynamicRepresentation(runtime);
+  } else if (isAsyncGeneratorObjectType(checker, propertyType)) {
+    ensureGeneratorCallSignatureId(closures, runtime);
+    hostImportAsyncGeneratorResult = true;
+    resultType = 'heap_ref';
+    heapResultRepresentation = ensureObjectDynamicRepresentation(runtime);
+  } else if (isGeneratorObjectType(checker, propertyType)) {
+    ensureGeneratorCallSignatureId(closures, runtime);
+    hostImportGeneratorResult = true;
     resultType = 'heap_ref';
     heapResultRepresentation = ensureObjectDynamicRepresentation(runtime);
   } else if (callableObjectResultRepresentation) {
@@ -29288,6 +29452,8 @@ function createAmbientHostPropertyGetterHeaderWithImportName(
       name: hostImportName,
       promiseResult: promiseResult || undefined,
     },
+    hostImportGeneratorResult: hostImportGeneratorResult || undefined,
+    hostImportAsyncGeneratorResult: hostImportAsyncGeneratorResult || undefined,
     heapResultRepresentation,
     params: [],
     resultType,
@@ -31456,7 +31622,7 @@ function lowerFallbackObjectPropertyReadAsValueType(
   objectName: string,
   representation: CompilerRuntimeFallbackObjectRepresentationRefIR,
   propertyKey: string,
-  resultType: 'f64' | 'i32' | 'owned_string_ref' | 'tagged_ref',
+  resultType: CompilerValueType,
   context: FunctionLoweringContext,
 ): CompilerExpressionIR {
   const resultName = createLocalName(propertyKey, context.nextLocalId);
@@ -31506,7 +31672,7 @@ function lowerOrdinaryObjectPropertyReadAsValueType(
   objectName: string,
   representation: CompilerRuntimeObjectRepresentationRef,
   propertyKey: string,
-  resultType: 'f64' | 'i32' | 'owned_string_ref' | 'tagged_ref',
+  resultType: CompilerValueType,
   diagnosticNode: ts.Node,
   context: FunctionLoweringContext,
 ): CompilerExpressionIR {
@@ -31573,7 +31739,7 @@ function lowerSpecializedObjectPropertyReadAsValueType(
   objectName: string,
   representation: CompilerRuntimeSpecializedObjectRepresentationRefIR,
   propertyKey: string,
-  resultType: 'f64' | 'i32' | 'owned_string_ref' | 'tagged_ref',
+  resultType: CompilerValueType,
   diagnosticNode: ts.Node,
   context: FunctionLoweringContext,
 ): CompilerExpressionIR {
@@ -35421,6 +35587,7 @@ interface FrameForOfCollectionIteratorInfo {
     | 'f64'
     | 'i32'
     | 'tagged_ref';
+  heapElementRepresentation?: CompilerRuntimeRepresentationRefIR<'object'>;
 }
 
 const FRAME_OBJECT_KEYS_ITERATOR_INFO: FrameForOfCollectionIteratorInfo = {
@@ -35560,11 +35727,13 @@ function getSupportedFrameForOfSourceInfo(
   }
 
   if (isSupportedOwnedHeapArrayType(context.checker, expressionType)) {
+    const ownedHeapArrayInfo = getOwnedHeapArrayElementAccessInfoForExpression(expression, context);
     return {
       kind: 'collection_iterable',
       iteratorTypeInfo: {
         valuesArrayType: 'owned_heap_array_ref',
-        elementType: getOwnedHeapArrayFrameIteratorElementTypeForExpression(expression, context),
+        elementType: ownedHeapArrayInfo.elementType,
+        heapElementRepresentation: ownedHeapArrayInfo.heapElementRepresentation,
       },
     };
   }
@@ -35927,6 +36096,30 @@ function tryBuildFrameAsyncPlan(
       : persistedBindingsByName.get(identifier.text);
   };
 
+  const getOrCreatePersistedBindingsForVariableDeclaration = (
+    declaration: ts.VariableDeclaration,
+  ): readonly FrameAsyncPersistedBinding[] | undefined => {
+    const bindingInfos = getSupportedFrameVariableDeclarationBindingInfos(declaration, context);
+    if (!bindingInfos) {
+      return undefined;
+    }
+    const bindings: FrameAsyncPersistedBinding[] = [];
+    for (const bindingInfo of bindingInfos) {
+      const binding = getOrCreatePersistedBindingForValueInfo(
+        bindingInfo.identifier,
+        bindingInfo.valueInfo,
+        bindingInfo.identifier,
+      );
+      if (!binding) {
+        return undefined;
+      }
+      if (!bindings.includes(binding)) {
+        bindings.push(binding);
+      }
+    }
+    return bindings;
+  };
+
   const getBlockScopeBindings = (
     blockStatements: readonly ts.Statement[],
     inheritedScopeBindings?: readonly FrameAsyncPersistedBinding[],
@@ -35965,28 +36158,15 @@ function tryBuildFrameAsyncPlan(
         return undefined;
       }
       const declaration = blockStatement.declarationList.declarations[0]!;
-      if (!ts.isIdentifier(declaration.name) || !declaration.initializer) {
+      const persistedBindings = getOrCreatePersistedBindingsForVariableDeclaration(declaration);
+      if (!persistedBindings) {
         return undefined;
       }
-      const valueInfo = resolveClosureAbiValueType(
-        context.checker,
-        context.checker.getTypeAtLocation(declaration.name),
-        declaration.name,
-        context.closures,
-        context.runtime,
-        context.classes,
-      );
-      const persistedBinding = getOrCreatePersistedBindingForValueInfo(
-        declaration.name,
-        valueInfo,
-        declaration.name,
-      );
-      if (!persistedBinding) {
-        return undefined;
-      }
-      if (!blockScopeBindings.includes(persistedBinding)) {
-        blockScopeBindings.push(persistedBinding);
-        addedScopedBinding = true;
+      for (const persistedBinding of persistedBindings) {
+        if (!blockScopeBindings.includes(persistedBinding)) {
+          blockScopeBindings.push(persistedBinding);
+          addedScopedBinding = true;
+        }
       }
     }
     return addedScopedBinding || inheritedScopeBindings !== undefined ? blockScopeBindings : [];
@@ -36168,23 +36348,7 @@ function tryBuildFrameAsyncPlan(
             return undefined;
           }
           const declaration = statement.declarationList.declarations[0]!;
-          if (!ts.isIdentifier(declaration.name) || !declaration.initializer) {
-            return undefined;
-          }
-          const valueInfo = resolveClosureAbiValueType(
-            context.checker,
-            context.checker.getTypeAtLocation(declaration.name),
-            declaration.name,
-            context.closures,
-            context.runtime,
-            context.classes,
-          );
-          const persistedBinding = getOrCreatePersistedBindingForValueInfo(
-            declaration.name,
-            valueInfo,
-            declaration.name,
-          );
-          if (!persistedBinding) {
+          if (!getOrCreatePersistedBindingsForVariableDeclaration(declaration)) {
             return undefined;
           }
           currentStatements.push(statement);
@@ -37115,9 +37279,15 @@ function tryBuildFrameAsyncPlan(
           return undefined;
         }
         const declaration = statement.initializer.declarations[0]!;
-        if (!ts.isIdentifier(declaration.name) || declaration.initializer) {
+        if (
+          !getSupportedSimpleFrameBindingIdentifiers(declaration.name) ||
+          declaration.initializer
+        ) {
           return undefined;
         }
+        const loopBindingIdentifier = ts.isIdentifier(declaration.name)
+          ? declaration.name
+          : ts.factory.createIdentifier(`__async_for_of_value_${nextSyntheticPersistedBindingId++}`);
         const sourceInfo = getSupportedFrameForOfSourceInfo(statement.expression, context);
         if (
           !sourceInfo ||
@@ -37134,7 +37304,7 @@ function tryBuildFrameAsyncPlan(
           context.classes,
         );
         const loopBinding = getOrCreatePersistedBindingForValueInfo(
-          declaration.name,
+          loopBindingIdentifier,
           loopValueInfo,
           declaration.name,
         );
@@ -37174,6 +37344,7 @@ function tryBuildFrameAsyncPlan(
           return undefined;
         }
         const loopScopeBindings = [...(scopeBindings ?? []), loopBinding];
+        const bodyStatements = createFrameForOfLoopBodyStatements(statement, loopBindingIdentifier);
         const headerPc = segments.length;
         segments.push({
           incomingBinding: undefined,
@@ -37200,7 +37371,7 @@ function tryBuildFrameAsyncPlan(
           });
         }
         const bodyPc = buildScopedStatementListSegments(
-          ts.isBlock(statement.statement) ? statement.statement.statements : [statement.statement],
+          bodyStatements,
           undefined,
           advancePc,
           {
@@ -43217,7 +43388,106 @@ function lowerFrameAsyncPersistedVariableStatement(
     return undefined;
   }
   const declaration = statement.declarationList.declarations[0]!;
-  if (!ts.isIdentifier(declaration.name) || !declaration.initializer) {
+  if (!declaration.initializer) {
+    return undefined;
+  }
+
+  if (ts.isArrayBindingPattern(declaration.name)) {
+    const loweredSource = tryLowerOwnedArrayBindingSource(declaration.initializer, context);
+    if (!loweredSource) {
+      return undefined;
+    }
+    const sourcePreludeStatements = consumeExpressionPreludeStatements(context);
+    const sourceName = createLocalName('frame_array_binding_source', context.nextLocalId);
+    context.nextLocalId += 1;
+    context.locals.push({ name: sourceName, type: loweredSource.arrayType });
+    const statements: CompilerStatementIR[] = [
+      ...sourcePreludeStatements,
+      {
+        kind: 'local_set',
+        name: sourceName,
+        value: loweredSource.value,
+      },
+    ];
+    let index = 0;
+    for (const element of declaration.name.elements) {
+      if (ts.isOmittedExpression(element)) {
+        index += 1;
+        continue;
+      }
+      if (!ts.isIdentifier(element.name)) {
+        return undefined;
+      }
+      const bound = lookupSymbol(context, element.name.text);
+      if (!bound || bound.type !== 'box_ref' || !bound.boxedValueType) {
+        return undefined;
+      }
+      if (element.dotDotDotToken) {
+        if (bound.boxedValueType !== loweredSource.arrayType) {
+          return undefined;
+        }
+        statements.push({
+          kind: 'box_set',
+          box: {
+            kind: 'local_get',
+            name: bound.emittedName,
+            type: 'box_ref',
+          },
+          value: createOwnedArraySliceExpression(sourceName, loweredSource.arrayType, index),
+          valueType: loweredSource.arrayType,
+        });
+        continue;
+      }
+      statements.push(
+        ...lowerTaggedBindingAssignmentToSymbol(
+          element.name,
+          bound,
+          createOwnedArrayAtExpression(sourceName, loweredSource.arrayType, index),
+          context,
+          element.initializer,
+        ),
+      );
+      index += 1;
+    }
+    return statements;
+  }
+
+  if (ts.isObjectBindingPattern(declaration.name)) {
+    const loweredSource = tryLowerObjectBindingSource(declaration.initializer, context);
+    if (!loweredSource) {
+      return undefined;
+    }
+    const statements = consumeExpressionPreludeStatements(context);
+    for (const element of declaration.name.elements) {
+      if (!ts.isIdentifier(element.name)) {
+        return undefined;
+      }
+      const bound = lookupSymbol(context, element.name.text);
+      if (!bound || bound.type !== 'box_ref' || !bound.boxedValueType) {
+        return undefined;
+      }
+      const taggedValue = lowerOrdinaryObjectPropertyReadAsValueType(
+        loweredSource.sourceName,
+        loweredSource.representation,
+        getSupportedObjectBindingPropertyNameText(element),
+        'tagged_ref',
+        element.name,
+        context,
+      );
+      statements.push(
+        ...lowerTaggedBindingAssignmentToSymbol(
+          element.name,
+          bound,
+          taggedValue,
+          context,
+          element.initializer,
+        ),
+      );
+    }
+    return statements;
+  }
+
+  if (!ts.isIdentifier(declaration.name)) {
     return undefined;
   }
   const bound = lookupSymbol(context, declaration.name.text);
@@ -45207,6 +45477,30 @@ function tryBuildFrameGeneratorPlan(
     return getOrCreatePersistedBindingForValueInfo(identifier, valueInfo, awaitedExpression);
   };
 
+  const getOrCreatePersistedBindingsForVariableDeclaration = (
+    declaration: ts.VariableDeclaration,
+  ): readonly FrameAsyncPersistedBinding[] | undefined => {
+    const bindingInfos = getSupportedFrameVariableDeclarationBindingInfos(declaration, context);
+    if (!bindingInfos) {
+      return undefined;
+    }
+    const bindings: FrameAsyncPersistedBinding[] = [];
+    for (const bindingInfo of bindingInfos) {
+      const binding = getOrCreatePersistedBindingForValueInfo(
+        bindingInfo.identifier,
+        bindingInfo.valueInfo,
+        bindingInfo.identifier,
+      );
+      if (!binding) {
+        return undefined;
+      }
+      if (!bindings.includes(binding)) {
+        bindings.push(binding);
+      }
+    }
+    return bindings;
+  };
+
   const getBlockScopeBindings = (
     blockStatements: readonly ts.Statement[],
     inheritedScopeBindings?: readonly FrameAsyncPersistedBinding[],
@@ -45245,28 +45539,15 @@ function tryBuildFrameGeneratorPlan(
         return undefined;
       }
       const declaration = blockStatement.declarationList.declarations[0]!;
-      if (!ts.isIdentifier(declaration.name) || !declaration.initializer) {
+      const persistedBindings = getOrCreatePersistedBindingsForVariableDeclaration(declaration);
+      if (!persistedBindings) {
         return undefined;
       }
-      const valueInfo = resolveClosureAbiValueType(
-        context.checker,
-        context.checker.getTypeAtLocation(declaration.name),
-        declaration.name,
-        context.closures,
-        context.runtime,
-        context.classes,
-      );
-      const persistedBinding = getOrCreatePersistedBindingForValueInfo(
-        declaration.name,
-        valueInfo,
-        declaration.name,
-      );
-      if (!persistedBinding) {
-        return undefined;
-      }
-      if (!blockScopeBindings.includes(persistedBinding)) {
-        blockScopeBindings.push(persistedBinding);
-        addedScopedBinding = true;
+      for (const persistedBinding of persistedBindings) {
+        if (!blockScopeBindings.includes(persistedBinding)) {
+          blockScopeBindings.push(persistedBinding);
+          addedScopedBinding = true;
+        }
       }
     }
     return addedScopedBinding || inheritedScopeBindings !== undefined ? blockScopeBindings : [];
@@ -45543,23 +45824,7 @@ function tryBuildFrameGeneratorPlan(
           return undefined;
         }
         const declaration = statement.declarationList.declarations[0]!;
-        if (!ts.isIdentifier(declaration.name) || !declaration.initializer) {
-          return undefined;
-        }
-        const valueInfo = resolveClosureAbiValueType(
-          context.checker,
-          context.checker.getTypeAtLocation(declaration.name),
-          declaration.name,
-          context.closures,
-          context.runtime,
-          context.classes,
-        );
-        const persistedBinding = getOrCreatePersistedBindingForValueInfo(
-          declaration.name,
-          valueInfo,
-          declaration.name,
-        );
-        if (!persistedBinding) {
+        if (!getOrCreatePersistedBindingsForVariableDeclaration(declaration)) {
           return undefined;
         }
         currentStatements.push(statement);
@@ -46639,9 +46904,17 @@ function tryBuildFrameGeneratorPlan(
           return undefined;
         }
         const declaration = statement.initializer.declarations[0]!;
-        if (!ts.isIdentifier(declaration.name) || declaration.initializer) {
+        if (
+          !getSupportedSimpleFrameBindingIdentifiers(declaration.name) ||
+          declaration.initializer
+        ) {
           return undefined;
         }
+        const loopBindingIdentifier = ts.isIdentifier(declaration.name)
+          ? declaration.name
+          : ts.factory.createIdentifier(
+            `__generator_for_of_value_${nextSyntheticPersistedBindingId++}`,
+          );
         const sourceInfo = getSupportedFrameForOfSourceInfo(statement.expression, context);
         if (
           !sourceInfo ||
@@ -46658,7 +46931,7 @@ function tryBuildFrameGeneratorPlan(
           context.classes,
         );
         const loopBinding = getOrCreatePersistedBindingForValueInfo(
-          declaration.name,
+          loopBindingIdentifier,
           loopValueInfo,
           declaration.name,
         );
@@ -46700,6 +46973,7 @@ function tryBuildFrameGeneratorPlan(
           return undefined;
         }
         const loopScopeBindings = [...(scopeBindings ?? []), loopBinding];
+        const bodyStatements = createFrameForOfLoopBodyStatements(statement, loopBindingIdentifier);
         const headerPc = segments.length;
         segments.push({
           incomingBinding: undefined,
@@ -46735,7 +47009,7 @@ function tryBuildFrameGeneratorPlan(
           });
         }
         const bodyPc = buildScopedStatementListSegments(
-          ts.isBlock(statement.statement) ? statement.statement.statements : [statement.statement],
+          bodyStatements,
           undefined,
           advancePc,
           {
@@ -47133,6 +47407,14 @@ function lowerFrameGeneratorIteratorResult(
 function getGeneratorCallSignatureId(
   context: FunctionLoweringContext,
 ): number {
+  return ensureGeneratorCallSignatureId(context.closures, context.runtime);
+}
+
+function ensureGeneratorCallSignatureId(
+  closures: ModuleClosureLoweringState,
+  runtime: ModuleRuntimeLoweringState,
+): number {
+  ensureGeneratorRuntimeInfrastructure(runtime);
   return getClosureSignatureId(
     [
       { type: 'f64' },
@@ -47145,14 +47427,14 @@ function getGeneratorCallSignatureId(
           includesString: true,
           includesUndefined: true,
         },
-        heapRepresentation: ensureObjectDynamicRepresentation(context.runtime),
+        heapRepresentation: ensureObjectDynamicRepresentation(runtime),
       },
     ],
     {
       type: 'heap_ref',
-      heapRepresentation: ensureObjectDynamicRepresentation(context.runtime),
+      heapRepresentation: ensureObjectDynamicRepresentation(runtime),
     },
-    context.closures,
+    closures,
   );
 }
 
@@ -47956,7 +48238,7 @@ function lowerGeneratorFunctionLikeBody(
         kind: 'expression',
         value: createPromiseThenWithHandlersExpression(
           awaitedPromise,
-          lowerFrameGeneratorResumeClosure(
+          lowerFrameGeneratorDirectResumeClosure(
             segment.terminal.nextPc,
             generatorObjectLocalName,
             generatorRepresentation,
@@ -47966,7 +48248,7 @@ function lowerGeneratorFunctionLikeBody(
             stepContext,
           ),
           segment.terminal.rejectPc !== undefined
-            ? lowerFrameGeneratorResumeClosure(
+            ? lowerFrameGeneratorDirectResumeClosure(
               segment.terminal.rejectPc,
               generatorObjectLocalName,
               generatorRepresentation,
@@ -48114,9 +48396,12 @@ function lowerGeneratorFunctionLikeBody(
         )
         : undefined;
       const delegateNextPc = segment.terminal.nextPc;
-      const delegateRepresentation = ensureObjectDynamicRepresentation(context.runtime);
+      const delegateResultRepresentation = ensureObjectDynamicRepresentation(context.runtime);
       const buildGeneratorDelegateAdvanceStatements = (
         delegateObjectName: string,
+        delegateObjectRepresentation:
+          | CompilerRuntimeDynamicObjectRepresentationRefIR
+          | CompilerRuntimeFallbackObjectRepresentationRefIR,
       ): CompilerStatementIR[] => {
         const delegateResultName = createLocalName(
           'generator_delegate_result',
@@ -48126,12 +48411,12 @@ function lowerGeneratorFunctionLikeBody(
         stepContext.locals.push({ name: delegateResultName, type: 'heap_ref' });
         stepContext.functionRuntime.heapObjectRepresentationsByLocal.set(
           delegateResultName,
-          delegateRepresentation,
+          delegateResultRepresentation,
         );
         const assignDelegateResult = (mode: number): CompilerStatementIR[] => {
           const delegateStepResult = lowerGeneratorStepCallFromObject(
             delegateObjectName,
-            delegateRepresentation,
+            delegateObjectRepresentation,
             mode,
             {
               kind: 'local_get',
@@ -48151,14 +48436,14 @@ function lowerGeneratorFunctionLikeBody(
         };
         const delegateDone = lowerDynamicObjectPropertyReadAsValueType(
           delegateResultName,
-          delegateRepresentation,
+          delegateResultRepresentation,
           iteratorResultDoneKeyName,
           'i32',
           stepContext,
         );
         const delegateValue = lowerDynamicObjectPropertyReadAsValueType(
           delegateResultName,
-          delegateRepresentation,
+          delegateResultRepresentation,
           iteratorResultValueKeyName,
           'tagged_ref',
           stepContext,
@@ -48296,6 +48581,9 @@ function lowerGeneratorFunctionLikeBody(
       };
       const buildAsyncGeneratorDelegateAdvanceStatements = (
         delegateObjectName: string,
+        delegateObjectRepresentation:
+          | CompilerRuntimeDynamicObjectRepresentationRefIR
+          | CompilerRuntimeFallbackObjectRepresentationRefIR,
       ): CompilerStatementIR[] => {
         ensurePromiseRuntimeInfrastructure(context.runtime);
         stepContext.currentFunction.usesAsyncGeneratorHostStepBridge = true;
@@ -48326,7 +48614,7 @@ function lowerGeneratorFunctionLikeBody(
             args: [
               lowerGeneratorStepClosureFromObject(
                 delegateObjectName,
-                delegateRepresentation,
+                delegateObjectRepresentation,
                 stepContext,
               ),
               {
@@ -48425,7 +48713,7 @@ function lowerGeneratorFunctionLikeBody(
                 stepContext,
               ),
               segment.throwPc !== undefined
-                ? lowerFrameGeneratorResumeClosure(
+                ? lowerFrameGeneratorDirectResumeClosure(
                   segment.throwPc,
                   generatorObjectLocalName,
                   generatorRepresentation,
@@ -48435,7 +48723,7 @@ function lowerGeneratorFunctionLikeBody(
                   stepContext,
                 )
                 : segment.throwFinalizerPc !== undefined
-                ? lowerFrameGeneratorResumeClosure(
+                ? lowerFrameGeneratorDirectResumeClosure(
                   segment.throwFinalizerPc,
                   generatorObjectLocalName,
                   generatorRepresentation,
@@ -48459,25 +48747,7 @@ function lowerGeneratorFunctionLikeBody(
       };
       const buildCollectionDelegateAdvanceStatements = (
         delegateObjectName: string,
-        iteratorTypeInfo: {
-          valuesArrayType:
-            | 'owned_heap_array_ref'
-            | 'owned_array_ref'
-            | 'owned_number_array_ref'
-            | 'owned_boolean_array_ref'
-            | 'owned_tagged_array_ref';
-          elementType:
-            | 'heap_ref'
-            | 'owned_heap_array_ref'
-            | 'owned_array_ref'
-            | 'owned_number_array_ref'
-            | 'owned_boolean_array_ref'
-            | 'owned_string_ref'
-            | 'owned_tagged_array_ref'
-            | 'f64'
-            | 'i32'
-            | 'tagged_ref';
-        },
+        iteratorTypeInfo: FrameForOfCollectionIteratorInfo,
       ): CompilerStatementIR[] => {
         const buildCollectionReturnStatements = (): CompilerStatementIR[] => {
           const returnResult = lowerFrameGeneratorIteratorResult(
@@ -48524,7 +48794,7 @@ function lowerGeneratorFunctionLikeBody(
         const buildCollectionNextStatements = (): CompilerStatementIR[] => {
           const delegateResult = lowerCollectionIteratorNextCallFromObject(
             delegateObjectName,
-            delegateRepresentation,
+            delegateObjectRepresentation as CompilerRuntimeDynamicObjectRepresentationRefIR,
             iteratorTypeInfo,
             stepContext,
             'generator_delegate_iterator',
@@ -48537,14 +48807,14 @@ function lowerGeneratorFunctionLikeBody(
           );
           const delegateDone = lowerDynamicObjectPropertyReadAsValueType(
             delegateResultName,
-            delegateRepresentation,
+            delegateResultRepresentation,
             iteratorResultDoneKeyName,
             'i32',
             stepContext,
           );
           const delegateValue = lowerDynamicObjectPropertyReadAsValueType(
             delegateResultName,
-            delegateRepresentation,
+            delegateResultRepresentation,
             iteratorResultValueKeyName,
             'tagged_ref',
             stepContext,
@@ -48729,26 +48999,9 @@ function lowerGeneratorFunctionLikeBody(
         stepDelegateKeyName,
         stepContext,
       );
-      const activeDelegate = lowerDynamicObjectPropertyReadAsValueType(
-        generatorObjectLocalName,
-        generatorRepresentation,
-        stepDelegateKeyName,
-        'heap_ref',
-        stepContext,
-      );
-      if (activeDelegate.kind !== 'local_get') {
-        throw new Error('Expected active generator delegate to materialize as a local.');
-      }
-      const activeDelegateName = createLocalName(
-        'generator_active_delegate',
-        stepContext.nextLocalId,
-      );
-      stepContext.nextLocalId += 1;
-      stepContext.locals.push({ name: activeDelegateName, type: 'heap_ref' });
-      stepContext.functionRuntime.heapObjectRepresentationsByLocal.set(
-        activeDelegateName,
-        delegateRepresentation,
-      );
+      let delegateObjectRepresentation:
+        | CompilerRuntimeDynamicObjectRepresentationRefIR
+        | CompilerRuntimeFallbackObjectRepresentationRefIR;
       let buildDelegateAdvanceStatements: (delegateObjectName: string) => CompilerStatementIR[];
       let initializedDelegateName: string;
       let initializedDelegatePreludeStatements: CompilerStatementIR[];
@@ -48757,41 +49010,32 @@ function lowerGeneratorFunctionLikeBody(
           segment.terminal.expression,
           stepContext,
           'generator_delegate',
-          delegateRepresentation,
         );
-        if (initializedDelegate.representation?.kind !== 'dynamic_object_representation') {
+        if (
+          initializedDelegate.representation?.kind !== 'dynamic_object_representation' &&
+          initializedDelegate.representation?.kind !== 'fallback_object_representation'
+        ) {
           throw new CompilerUnsupportedError(
-            'yield* currently requires compiler-owned generator delegates in compiler subset.',
+            'yield* currently requires generator delegates with ordinary object boundaries in compiler subset.',
             segment.terminal.expression,
           );
         }
+        delegateObjectRepresentation = initializedDelegate.representation;
         buildDelegateAdvanceStatements = asyncGeneratorDelegateTypeInfo
-          ? buildAsyncGeneratorDelegateAdvanceStatements
-          : buildGeneratorDelegateAdvanceStatements;
+          ? (delegateObjectName) =>
+            buildAsyncGeneratorDelegateAdvanceStatements(
+              delegateObjectName,
+              delegateObjectRepresentation,
+            )
+          : (delegateObjectName) =>
+            buildGeneratorDelegateAdvanceStatements(delegateObjectName, delegateObjectRepresentation);
         initializedDelegateName = initializedDelegate.name;
         initializedDelegatePreludeStatements = consumeExpressionPreludeStatements(stepContext);
       } else {
+        delegateObjectRepresentation = ensureObjectDynamicRepresentation(context.runtime);
         let delegateIteratorExpression: CompilerExpressionIR | undefined;
         let iteratorTypeInfo:
-          | {
-            valuesArrayType:
-              | 'owned_heap_array_ref'
-              | 'owned_array_ref'
-              | 'owned_number_array_ref'
-              | 'owned_boolean_array_ref'
-              | 'owned_tagged_array_ref';
-            elementType:
-              | 'heap_ref'
-              | 'owned_heap_array_ref'
-              | 'owned_array_ref'
-              | 'owned_number_array_ref'
-              | 'owned_boolean_array_ref'
-              | 'owned_string_ref'
-              | 'owned_tagged_array_ref'
-              | 'f64'
-              | 'i32'
-              | 'tagged_ref';
-          }
+          | FrameForOfCollectionIteratorInfo
           | undefined;
         const existingIteratorTypeInfo = getSupportedCollectionIteratorTypeInfo(
           context.checker,
@@ -48839,6 +49083,7 @@ function lowerGeneratorFunctionLikeBody(
           iteratorTypeInfo = {
             valuesArrayType: collectionIterable.arrayType,
             elementType: collectionIterable.elementType,
+            heapElementRepresentation: collectionIterable.heapElementRepresentation,
           };
           delegateIteratorExpression = lowerCollectionIteratorObject(
             collectionIterable.arrayValue,
@@ -48854,18 +49099,21 @@ function lowerGeneratorFunctionLikeBody(
             stepContext,
           );
           if (ownedHeapArray) {
-            const elementType = getOwnedHeapArrayFrameIteratorElementTypeForExpression(
+            const elementAccessInfo = getOwnedHeapArrayElementAccessInfoForExpression(
               segment.terminal.expression,
               stepContext,
             );
             iteratorTypeInfo = {
               valuesArrayType: 'owned_heap_array_ref',
-              elementType,
+              elementType: elementAccessInfo.elementType,
+              heapElementRepresentation: elementAccessInfo.elementType === 'heap_ref'
+                ? elementAccessInfo.heapElementRepresentation
+                : undefined,
             };
             delegateIteratorExpression = lowerCollectionIteratorObject(
               ownedHeapArray,
               'owned_heap_array_ref',
-              elementType,
+              elementAccessInfo.elementType,
               stepContext,
               'generator_delegate_iterator',
             );
@@ -48961,7 +49209,7 @@ function lowerGeneratorFunctionLikeBody(
         stepContext.locals.push({ name: initializedDelegateName, type: 'heap_ref' });
         stepContext.functionRuntime.heapObjectRepresentationsByLocal.set(
           initializedDelegateName,
-          delegateRepresentation,
+          delegateObjectRepresentation,
         );
         stepContext.expressionPreludeStatements.push({
           kind: 'local_set',
@@ -48972,6 +49220,27 @@ function lowerGeneratorFunctionLikeBody(
         buildDelegateAdvanceStatements = (delegateObjectName: string) =>
           buildCollectionDelegateAdvanceStatements(delegateObjectName, iteratorTypeInfo);
       }
+
+      const activeDelegate = lowerDynamicObjectPropertyReadAsValueType(
+        generatorObjectLocalName,
+        generatorRepresentation,
+        stepDelegateKeyName,
+        'heap_ref',
+        stepContext,
+      );
+      if (activeDelegate.kind !== 'local_get') {
+        throw new Error('Expected active generator delegate to materialize as a local.');
+      }
+      const activeDelegateName = createLocalName(
+        'generator_active_delegate',
+        stepContext.nextLocalId,
+      );
+      stepContext.nextLocalId += 1;
+      stepContext.locals.push({ name: activeDelegateName, type: 'heap_ref' });
+      stepContext.functionRuntime.heapObjectRepresentationsByLocal.set(
+        activeDelegateName,
+        delegateObjectRepresentation,
+      );
 
       const activeDelegateThenBody: CompilerStatementIR[] = [
         {
@@ -49478,7 +49747,7 @@ function lowerGeneratorFunctionLikeBody(
                     kind: 'expression',
                     value: createPromiseThenWithHandlersExpression(
                       awaitedPromise,
-                      lowerFrameGeneratorResumeClosure(
+                      lowerFrameGeneratorDirectResumeClosure(
                         segment.terminal.awaitValuePc,
                         generatorObjectLocalName,
                         generatorRepresentation,
@@ -49488,7 +49757,7 @@ function lowerGeneratorFunctionLikeBody(
                         stepContext,
                       ),
                       segment.terminal.rejectPc !== undefined
-                        ? lowerFrameGeneratorResumeClosure(
+                        ? lowerFrameGeneratorDirectResumeClosure(
                           segment.terminal.rejectPc,
                           generatorObjectLocalName,
                           generatorRepresentation,
@@ -49790,7 +50059,7 @@ function lowerGeneratorFunctionLikeBody(
         kind: 'expression',
         value: createPromiseThenWithHandlersExpression(
           awaitedPromise,
-          lowerFrameGeneratorResumeClosure(
+          lowerFrameGeneratorDirectResumeClosure(
             segment.terminal.nextPc,
             generatorObjectLocalName,
             generatorRepresentation,
@@ -49799,7 +50068,7 @@ function lowerGeneratorFunctionLikeBody(
             { completionCode: segment.terminal.completionCode },
             stepContext,
           ),
-          lowerFrameGeneratorResumeClosure(
+          lowerFrameGeneratorDirectResumeClosure(
             segment.terminal.nextPc,
             generatorObjectLocalName,
             generatorRepresentation,
@@ -57847,6 +58116,7 @@ function lowerForOfStatement(
     arrayValue = collectionIterable.arrayValue;
     arrayType = collectionIterable.arrayType;
     elementType = collectionIterable.elementType;
+    heapElementRepresentation = collectionIterable.heapElementRepresentation;
   }
 
   const ownedHeapArray = tryLowerOwnedHeapArrayExpression(statement.expression, context);

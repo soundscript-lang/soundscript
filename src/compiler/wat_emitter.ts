@@ -21,38 +21,38 @@ import type {
 } from './ir.ts';
 import { CompilerUnsupportedError } from './errors.ts';
 import {
+  getEffectiveFunctionHeapParamRepresentation,
+  getEffectiveFunctionHeapParamRepresentationsByName,
+  getEffectiveFunctionHeapResultRepresentation,
+  getEffectiveFunctionHostFallbackObjectPropertyMetadata,
   getEffectiveHostClassConstructorParamsByName,
   getEffectiveHostClassConstructorResultTagId,
   getEffectiveHostClosureParamsByName,
   getEffectiveHostClosureResultSignatureId,
   getEffectiveHostExportPromiseParamNames,
   getEffectiveHostFallbackObjectParamBoundaryNames,
-  hasEffectiveHostFallbackObjectResultBoundary,
-  getEffectiveFunctionHeapParamRepresentation,
-  getEffectiveFunctionHeapParamRepresentationsByName,
-  getEffectiveFunctionHeapResultRepresentation,
   getEffectiveHostFallbackObjectPropertyMetadata,
-  getEffectiveFunctionHostFallbackObjectPropertyMetadata,
   getEffectiveHostHeapArrayParamsByName,
   getEffectiveHostHeapArrayResultRepresentation,
   getEffectiveHostImportPromiseParamNames,
-  getEffectiveModuleHostObjectPropertyMetadata,
   getEffectiveHostTaggedArrayParamsByName,
   getEffectiveHostTaggedArrayResultKinds,
   getEffectiveHostTaggedHeapNullableParamsByName,
   getEffectiveHostTaggedHeapNullableResultBoundary,
   getEffectiveHostTaggedPrimitiveParamsByName,
   getEffectiveHostTaggedPrimitiveResultKinds,
-  hasEffectiveHostExportPromiseResult,
-  hasEffectiveHostImportPromiseResult,
+  getEffectiveModuleHostObjectPropertyMetadata,
   getHostClassConstructorBoundary,
   getHostClosureBoundary,
   getHostPromiseBoundary,
   getHostTaggedBoundary,
   getHostTaggedHeapNullableBoundary,
   getHostTaggedPrimitiveKinds,
-  visitHostBoundary,
+  hasEffectiveHostExportPromiseResult,
+  hasEffectiveHostFallbackObjectResultBoundary,
+  hasEffectiveHostImportPromiseResult,
   visitFunctionFallbackObjectBoundaryFields,
+  visitHostBoundary,
 } from './host_boundary.ts';
 import {
   createSpecializedObjectKeysHelperName,
@@ -151,9 +151,14 @@ const SOUNDSCRIPT_ASYNC_GENERATOR_TAGGED_TO_HOST_HELPER_NAME =
 const SOUNDSCRIPT_ASYNC_GENERATOR_STEP_BRIDGE_FULFILL_TAGGED_HELPER_NAME =
   '__soundscript_async_generator_step_bridge_fulfill_tagged';
 const SOUNDSCRIPT_HOST_SYNC_GENERATOR_WRAP_IMPORT_NAME = '$host_sync_generator_wrap';
+const SOUNDSCRIPT_HOST_SYNC_GENERATOR_TO_STEP_IMPORT_NAME = '$host_sync_generator_to_step';
 const SOUNDSCRIPT_HOST_ASYNC_GENERATOR_WRAP_IMPORT_NAME = '$host_async_generator_wrap';
+const SOUNDSCRIPT_HOST_ASYNC_GENERATOR_TO_STEP_IMPORT_NAME = '$host_async_generator_to_step';
+const SOUNDSCRIPT_HOST_ASYNC_GENERATOR_TO_INTERNAL_IMPORT_NAME =
+  '$host_async_generator_to_internal';
 const SOUNDSCRIPT_HOST_PROMISE_TO_HOST_IMPORT_NAME = '$host_promise_to_host';
 const SOUNDSCRIPT_HOST_PROMISE_TO_INTERNAL_IMPORT_NAME = '$host_promise_to_internal';
+const SOUNDSCRIPT_HOST_PROMISE_IS_HOST_IMPORT_NAME = '$host_promise_is_host';
 const SOUNDSCRIPT_HOST_ASYNC_GENERATOR_STEP_IMPORT_NAME = '$host_async_generator_step';
 const SOUNDSCRIPT_HOST_TRY_TAGGED_IMPORT_NAME = '$host_try_tagged';
 const SOUNDSCRIPT_HOST_TRY_RESULT_THREW_IMPORT_NAME = '$host_try_result_threw';
@@ -2081,10 +2086,13 @@ function moduleUsesHostPromiseParamBridge(module: CompilerModuleIR): boolean {
     (
       (func.hostImport !== undefined || func.exportName.length > 0) &&
       (
-        [...getEffectiveFunctionHeapParamRepresentationsByName(func).values()].some((representation) =>
-          moduleRepresentationUsesPromiseBridge(module, representation)
-        ) ||
-        moduleRepresentationUsesPromiseBridge(module, getEffectiveFunctionHeapResultRepresentation(func))
+        [...getEffectiveFunctionHeapParamRepresentationsByName(func).values()].some((
+          representation,
+        ) => moduleRepresentationUsesPromiseBridge(module, representation)) ||
+        moduleRepresentationUsesPromiseBridge(
+          module,
+          getEffectiveFunctionHeapResultRepresentation(func),
+        )
       )
     )
   );
@@ -2097,10 +2105,13 @@ function moduleUsesHostPromiseResultBridge(module: CompilerModuleIR): boolean {
     (
       (func.hostImport !== undefined || func.exportName.length > 0) &&
       (
-        [...getEffectiveFunctionHeapParamRepresentationsByName(func).values()].some((representation) =>
-          moduleRepresentationUsesPromiseBridge(module, representation)
-        ) ||
-        moduleRepresentationUsesPromiseBridge(module, getEffectiveFunctionHeapResultRepresentation(func))
+        [...getEffectiveFunctionHeapParamRepresentationsByName(func).values()].some((
+          representation,
+        ) => moduleRepresentationUsesPromiseBridge(module, representation)) ||
+        moduleRepresentationUsesPromiseBridge(
+          module,
+          getEffectiveFunctionHeapResultRepresentation(func),
+        )
       )
     )
   );
@@ -2114,12 +2125,21 @@ function moduleUsesAsyncGeneratorHostResultBridge(module: CompilerModuleIR): boo
   return module.functions.some((func) => func.hostAsyncGeneratorResult === true);
 }
 
+function moduleUsesAsyncGeneratorHostImportBridge(module: CompilerModuleIR): boolean {
+  return module.functions.some((func) => func.hostImportAsyncGeneratorResult === true);
+}
+
+function moduleUsesSyncGeneratorHostImportBridge(module: CompilerModuleIR): boolean {
+  return module.functions.some((func) => func.hostImportGeneratorResult === true);
+}
+
 function moduleUsesSyncGeneratorHostResultBridge(module: CompilerModuleIR): boolean {
   return module.functions.some((func) => func.hostGeneratorResult === true);
 }
 
 function moduleUsesGeneratorStepClosureHostBridge(module: CompilerModuleIR): boolean {
   return moduleUsesAsyncGeneratorHostStepBridge(module) ||
+    moduleUsesSyncGeneratorHostImportBridge(module) ||
     moduleUsesSyncGeneratorHostResultBridge(module) ||
     moduleUsesAsyncGeneratorHostResultBridge(module);
 }
@@ -3421,8 +3441,8 @@ function moduleUsesHostClosureDynamicObjectBridge(module: CompilerModuleIR): boo
     (
       needsResultBoundary &&
       signature.paramHeapRepresentations?.some((representation) =>
-        representation?.kind === 'dynamic_object_representation'
-      ) === true
+          representation?.kind === 'dynamic_object_representation'
+        ) === true
     )
   );
 }
@@ -4277,15 +4297,16 @@ function moduleUsesOwnedHeapArrayHostResultBoundary(module: CompilerModuleIR): b
     func.resultType === 'owned_heap_array_ref' &&
     getEffectiveHostHeapArrayResultRepresentation(func) !== undefined
   ) || (moduleUsesGenericFallbackObjectResultBoundary(module) &&
-      moduleUsesOwnedHeapArrayRuntime(module)) || module.functions.some((func) => {
-    const fallbackProperties = getEffectiveFunctionHostFallbackObjectPropertyMetadata(func);
-    return fallbackProperties.heapArrayProperties.size > 0 &&
-      (hasHostFallbackObjectResultBoundary(func) ||
-        hasHostTaggedHeapNullableFallbackResultBoundary(func));
-  }) || [...specializedUsage.values()].some((usage) =>
-    usage.needsResultBoundary &&
-    usage.layout.fields.some((field) => field.valueType === 'owned_heap_array_ref')
-  ) || moduleUsesHostClosureBoundaryToHostType(module, 'owned_heap_array_ref');
+    moduleUsesOwnedHeapArrayRuntime(module)) ||
+    module.functions.some((func) => {
+      const fallbackProperties = getEffectiveFunctionHostFallbackObjectPropertyMetadata(func);
+      return fallbackProperties.heapArrayProperties.size > 0 &&
+        (hasHostFallbackObjectResultBoundary(func) ||
+          hasHostTaggedHeapNullableFallbackResultBoundary(func));
+    }) || [...specializedUsage.values()].some((usage) =>
+      usage.needsResultBoundary &&
+      usage.layout.fields.some((field) => field.valueType === 'owned_heap_array_ref')
+    ) || moduleUsesHostClosureBoundaryToHostType(module, 'owned_heap_array_ref');
 }
 
 function moduleUsesOwnedTaggedArrayHostParamBoundary(module: CompilerModuleIR): boolean {
@@ -5659,6 +5680,10 @@ function getHostObjectLookupCachedImportFunctionName(): string {
   return 'host_object_lookup_cached';
 }
 
+function getHostObjectLookupHostCachedImportFunctionName(): string {
+  return 'host_object_lookup_host_cached';
+}
+
 function getHostObjectRememberCachedImportFunctionName(): string {
   return 'host_object_remember_cached';
 }
@@ -6826,7 +6851,8 @@ function collectHostBoundarySpecializedObjectUsage(
       hostTaggedArrayResultKinds?.representation?.kind === 'specialized_object_representation'
     ) {
       recordUsage(
-        hostTaggedArrayResultKinds.representation as CompilerRuntimeSpecializedObjectRepresentationRefIR,
+        hostTaggedArrayResultKinds
+          .representation as CompilerRuntimeSpecializedObjectRepresentationRefIR,
         { needsResultBoundary: true },
       );
     }
@@ -7169,6 +7195,73 @@ function collectHostBoundarySpecializedObjectUsageWithHostClosures(
       }
     }
   }
+  if (moduleUsesGeneratorStepClosureHostBridge(module)) {
+    const functionsByName = new Map(module.functions.map((func) => [func.name, func] as const));
+    const fallbackObjectLayout = getFallbackObjectLayout(module.runtime);
+    const dynamicObjectLayout = getDynamicObjectLayout(module.runtime);
+    for (const layout of layoutsByRepresentationName.values()) {
+      if (!isHostAdaptableSpecializedObjectLayout(layout)) {
+        continue;
+      }
+      recordUsage(layout.representation, { needsResultBoundary: true });
+    }
+    for (const func of module.functions) {
+      if (func.usesAsyncGeneratorHostStepBridge !== true) {
+        continue;
+      }
+      const operations = getRuntimeOperationsForFunction(func, module.runtime);
+      const inferredHeapLocalRepresentations = inferHeapLocalRepresentations(
+        func,
+        operations,
+        collectDynamicAllocationsByLocal(operations),
+        collectSpecializedAllocationsByLocal(operations),
+        collectFallbackAllocationsByLocal(operations),
+        layoutsByRepresentationName,
+        fallbackObjectLayout,
+        dynamicObjectLayout,
+        functionsByName,
+      );
+      const runtimeOperationRepresentations: CompilerRuntimeRepresentationRefIR<'object'>[] = [];
+      for (const operation of operations) {
+        if (
+          typeof operation === 'object' &&
+          operation !== null &&
+          'representation' in operation &&
+          typeof operation.representation === 'object' &&
+          operation.representation !== null &&
+          'kind' in operation.representation
+        ) {
+          runtimeOperationRepresentations.push(
+            operation.representation as CompilerRuntimeRepresentationRefIR<'object'>,
+          );
+        }
+      }
+      const runtimeRepresentations = [
+        ...(func.heapLocalRepresentations?.map((entry) => entry.representation) ?? []),
+        ...(func.heapParamRepresentations ?? []),
+        ...(func.heapResultRepresentation ? [func.heapResultRepresentation] : []),
+        ...runtimeOperationRepresentations,
+        ...[...inferredHeapLocalRepresentations.values()]
+          .filter((representation): representation is Extract<BackendHeapRepresentation, { kind: 'specialized' }> =>
+            representation.kind === 'specialized'
+          )
+          .map((representation) => representation.layout.representation),
+      ].filter((
+        representation,
+      ): representation is CompilerRuntimeRepresentationRefIR<'object'> =>
+        typeof representation === 'object' && representation !== null && 'kind' in representation
+      );
+      for (const representation of runtimeRepresentations) {
+        if (representation.kind !== 'specialized_object_representation') {
+          continue;
+        }
+        recordUsage(
+          representation as CompilerRuntimeSpecializedObjectRepresentationRefIR,
+          { needsResultBoundary: true },
+        );
+      }
+    }
+  }
   let changed = true;
   while (changed) {
     changed = false;
@@ -7333,8 +7426,16 @@ function getHostDynamicBuiltinErrorHelperName(): string {
   return '__soundscript_dynamic_builtin_error_to_host';
 }
 
+function getHostDynamicObjectToHostHelperName(): string {
+  return '__soundscript_dynamic_object_to_host';
+}
+
 function getHostBuiltinErrorToDynamicHelperName(): string {
   return '__soundscript_host_builtin_error_to_dynamic';
+}
+
+function getHostIteratorResultToDynamicHelperName(): string {
+  return '__soundscript_host_iterator_result_to_dynamic';
 }
 
 function getHostPromiseRejectObjectToDynamicHelperName(): string {
@@ -7346,10 +7447,15 @@ function getHostObjectPropertyPathKey(propertyPath: readonly string[]): string {
 }
 
 function emitPromiseRuntimeImports(module: CompilerModuleIR): string[] {
-  if (!moduleUsesHostPromiseBridge(module)) {
+  if (!moduleUsesHostPromiseBridge(module) && !moduleUsesAsyncGeneratorHostImportBridge(module)) {
     return [];
   }
   return [
+    ...(moduleUsesAsyncGeneratorHostImportBridge(module)
+      ? [
+        `(import "soundscript_promise" "is_host" (func ${SOUNDSCRIPT_HOST_PROMISE_IS_HOST_IMPORT_NAME} (param externref) (result i32)))`,
+      ]
+      : []),
     `(import "soundscript_promise" "to_host" (func ${SOUNDSCRIPT_HOST_PROMISE_TO_HOST_IMPORT_NAME} (param (ref null eq)) (result externref)))`,
     `(import "soundscript_promise" "to_internal" (func ${SOUNDSCRIPT_HOST_PROMISE_TO_INTERNAL_IMPORT_NAME} (param externref) (param (ref null eq)) (result (ref null eq))))`,
   ];
@@ -7357,12 +7463,19 @@ function emitPromiseRuntimeImports(module: CompilerModuleIR): string[] {
 
 function emitAsyncGeneratorRuntimeImports(module: CompilerModuleIR): string[] {
   if (
+    !moduleUsesAsyncGeneratorHostImportBridge(module) &&
     !moduleUsesAsyncGeneratorHostStepBridge(module) &&
     !moduleUsesAsyncGeneratorHostResultBridge(module)
   ) {
     return [];
   }
   return [
+    ...(moduleUsesAsyncGeneratorHostImportBridge(module)
+      ? [
+        `(import "soundscript_async_generator" "to_step" (func ${SOUNDSCRIPT_HOST_ASYNC_GENERATOR_TO_STEP_IMPORT_NAME} (param externref) (result externref)))`,
+        `(import "soundscript_async_generator" "to_internal" (func ${SOUNDSCRIPT_HOST_ASYNC_GENERATOR_TO_INTERNAL_IMPORT_NAME} (param externref) (param (ref null eq)) (result (ref null eq))))`,
+      ]
+      : []),
     `(import "soundscript_async_generator" "step" (func ${SOUNDSCRIPT_HOST_ASYNC_GENERATOR_STEP_IMPORT_NAME} (param externref) (param f64) (param externref) (param (ref null eq))))`,
     ...(moduleUsesAsyncGeneratorHostResultBridge(module)
       ? [
@@ -7373,11 +7486,23 @@ function emitAsyncGeneratorRuntimeImports(module: CompilerModuleIR): string[] {
 }
 
 function emitSyncGeneratorRuntimeImports(module: CompilerModuleIR): string[] {
-  if (!moduleUsesSyncGeneratorHostResultBridge(module)) {
+  if (
+    !moduleUsesSyncGeneratorHostImportBridge(module) &&
+    !moduleUsesSyncGeneratorHostResultBridge(module)
+  ) {
     return [];
   }
   return [
-    `(import "soundscript_generator" "wrap" (func ${SOUNDSCRIPT_HOST_SYNC_GENERATOR_WRAP_IMPORT_NAME} (param externref) (result externref)))`,
+    ...(moduleUsesSyncGeneratorHostImportBridge(module)
+      ? [
+        `(import "soundscript_generator" "to_step" (func ${SOUNDSCRIPT_HOST_SYNC_GENERATOR_TO_STEP_IMPORT_NAME} (param externref) (result externref)))`,
+      ]
+      : []),
+    ...(moduleUsesSyncGeneratorHostResultBridge(module)
+      ? [
+        `(import "soundscript_generator" "wrap" (func ${SOUNDSCRIPT_HOST_SYNC_GENERATOR_WRAP_IMPORT_NAME} (param externref) (result externref)))`,
+      ]
+      : []),
   ];
 }
 
@@ -7410,8 +7535,8 @@ function moduleNeedsTaggedValueRuntime(module: CompilerModuleIR): boolean {
     module,
   );
   return module.runtime?.representations.some((representation) =>
-      representation.kind === 'tagged_value_representation'
-    ) === true ||
+        representation.kind === 'tagged_value_representation'
+      ) === true ||
     getTaggedHostBoundaryUsage(module).usesHostBoundary ||
     specializedTaggedArrayFieldBoundaryUsage.usesParamBoundary ||
     specializedTaggedArrayFieldBoundaryUsage.usesResultBoundary ||
@@ -7459,7 +7584,9 @@ function emitTaggedValueHelpers(
     ) || specializedTaggedArrayFieldBoundaryUsage.usesParamStringBoundary ||
     specializedTaggedArrayFieldBoundaryUsage.usesResultStringBoundary;
   const usesTaggedArrayHostResultStringBoundary =
-    module.functions.some((func) => getEffectiveHostTaggedArrayResultKinds(func)?.includesString === true) ||
+    module.functions.some((func) =>
+      getEffectiveHostTaggedArrayResultKinds(func)?.includesString === true
+    ) ||
     specializedTaggedArrayFieldBoundaryUsage.usesResultStringBoundary;
   const usesTaggedPrimitiveHostStringBoundary = taggedHostBoundaryUsage.usesStringBoundary ||
     usesHostFallbackObjectBoundary ||
@@ -7732,7 +7859,9 @@ function emitStringRuntimeImports(module: CompilerModuleIR): string[] {
     ) || specializedTaggedArrayFieldBoundaryUsage.usesParamStringBoundary ||
     classStaticTaggedArrayFields.some((field) => field.includesString);
   const usesTaggedArrayHostResultStringBoundary =
-    module.functions.some((func) => getEffectiveHostTaggedArrayResultKinds(func)?.includesString === true) ||
+    module.functions.some((func) =>
+      getEffectiveHostTaggedArrayResultKinds(func)?.includesString === true
+    ) ||
     specializedTaggedArrayFieldBoundaryUsage.usesResultStringBoundary ||
     classStaticTaggedArrayFields.some((field) => field.includesString);
   const usesTaggedArrayHostParamNumberBoundary =
@@ -7743,7 +7872,9 @@ function emitStringRuntimeImports(module: CompilerModuleIR): string[] {
     ) || specializedTaggedArrayFieldBoundaryUsage.usesParamNumberBoundary ||
     classStaticTaggedArrayFields.some((field) => field.includesNumber);
   const usesTaggedArrayHostResultNumberBoundary =
-    module.functions.some((func) => getEffectiveHostTaggedArrayResultKinds(func)?.includesNumber === true) ||
+    module.functions.some((func) =>
+      getEffectiveHostTaggedArrayResultKinds(func)?.includesNumber === true
+    ) ||
     specializedTaggedArrayFieldBoundaryUsage.usesResultNumberBoundary ||
     classStaticTaggedArrayFields.some((field) => field.includesNumber);
   const usesTaggedArrayHostParamBooleanBoundary =
@@ -7754,7 +7885,9 @@ function emitStringRuntimeImports(module: CompilerModuleIR): string[] {
     ) || specializedTaggedArrayFieldBoundaryUsage.usesParamBooleanBoundary ||
     classStaticTaggedArrayFields.some((field) => field.includesBoolean);
   const usesTaggedArrayHostResultBooleanBoundary =
-    module.functions.some((func) => getEffectiveHostTaggedArrayResultKinds(func)?.includesBoolean === true) ||
+    module.functions.some((func) =>
+      getEffectiveHostTaggedArrayResultKinds(func)?.includesBoolean === true
+    ) ||
     specializedTaggedArrayFieldBoundaryUsage.usesResultBooleanBoundary ||
     classStaticTaggedArrayFields.some((field) => field.includesBoolean);
   const usesTaggedArrayHostParamUndefinedBoundary =
@@ -7765,7 +7898,9 @@ function emitStringRuntimeImports(module: CompilerModuleIR): string[] {
     ) || specializedTaggedArrayFieldBoundaryUsage.usesParamUndefinedBoundary ||
     classStaticTaggedArrayFields.some((field) => field.includesUndefined);
   const usesTaggedArrayHostResultUndefinedBoundary =
-    module.functions.some((func) => getEffectiveHostTaggedArrayResultKinds(func)?.includesUndefined === true) ||
+    module.functions.some((func) =>
+      getEffectiveHostTaggedArrayResultKinds(func)?.includesUndefined === true
+    ) ||
     specializedTaggedArrayFieldBoundaryUsage.usesResultUndefinedBoundary ||
     classStaticTaggedArrayFields.some((field) => field.includesUndefined);
   const usesTaggedPrimitiveHostParamStringBoundary = taggedHostBoundaryUsage.usesStringBoundary ||
@@ -8623,9 +8758,12 @@ function emitObjectRuntimeImports(
       [...hostFallbackTaggedArrayProperties.values()].some((property) =>
         property.representation !== undefined
       )) ||
-    fallbackUsage?.needsResultBoundary === true;
+    fallbackUsage?.needsResultBoundary === true ||
+    moduleUsesGeneratorStepClosureHostBridge(module);
+  const needsHostIdentityReverseLookup = moduleUsesGeneratorStepClosureHostBridge(module);
   const needsIdentityRemember = [...usageByRepresentationName.values()].length > 0 ||
-    fallbackUsage !== undefined;
+    fallbackUsage !== undefined ||
+    moduleUsesGeneratorStepClosureHostBridge(module);
   const getterImports = new Map<string, string>();
   const setterImports = new Map<string, string>();
   const hasImports = new Map<string, string>();
@@ -8705,7 +8843,28 @@ function emitObjectRuntimeImports(
       } (param externref) (param externref)))`,
     );
   }
-  if (moduleUsesGeneratorStepClosureHostBridge(module)) {
+  if (
+    moduleUsesSyncGeneratorHostImportBridge(module) ||
+    moduleUsesAsyncGeneratorHostImportBridge(module)
+  ) {
+    getterImports.set(
+      'get_tagged:value',
+      `(import "soundscript_object" "get_tagged:${getHostObjectPropertyToken('value')}" (func $${
+        getHostObjectImportFunctionName('get_tagged', 'value')
+      } (param externref) (result externref)))`,
+    );
+    getterImports.set(
+      'get_tagged:done',
+      `(import "soundscript_object" "get_tagged:${getHostObjectPropertyToken('done')}" (func $${
+        getHostObjectImportFunctionName('get_tagged', 'done')
+      } (param externref) (result externref)))`,
+    );
+  }
+  if (
+    moduleUsesGeneratorStepClosureHostBridge(module) ||
+    usesHostClosureDynamicObjectBridge ||
+    moduleUsesHostPromiseResultBridge(module)
+  ) {
     setterImports.set(
       'set_tagged:value',
       `(import "soundscript_object" "set_tagged:${getHostObjectPropertyToken('value')}" (func $${
@@ -9090,6 +9249,11 @@ function emitObjectRuntimeImports(
         `(import "soundscript_object" "lookup_cached" (func $${getHostObjectLookupCachedImportFunctionName()} (param (ref null eq)) (result externref)))`,
       ]
       : []),
+    ...(needsHostIdentityReverseLookup
+      ? [
+        `(import "soundscript_object" "lookup_host_cached" (func $${getHostObjectLookupHostCachedImportFunctionName()} (param externref) (result (ref null eq))))`,
+      ]
+      : []),
     ...(needsIdentityRemember
       ? [
         `(import "soundscript_object" "remember_cached" (func $${getHostObjectRememberCachedImportFunctionName()} (param (ref null eq)) (param externref)))`,
@@ -9297,6 +9461,7 @@ function emitHostSpecializedObjectBoundaryHelpers(
       .map((func) => [func.closureFunctionId!, func]),
   );
   const fallbackObjectLayout = getFallbackObjectLayout(module.runtime);
+  const needsGeneratorStepHostResultHelpers = moduleUsesGeneratorStepClosureHostBridge(module);
 
   return [...usageByRepresentationName.values()]
     .sort((left, right) =>
@@ -9568,7 +9733,7 @@ function emitHostSpecializedObjectBoundaryHelpers(
           ')',
         );
       }
-      if (usage.needsResultBoundary) {
+      if (usage.needsResultBoundary || needsGeneratorStepHostResultHelpers) {
         const emitSubtypeResultDispatch = (index: number): string[] => {
           const subtypeLayout = subtypeLayouts[index];
           if (!subtypeLayout) {
@@ -9861,14 +10026,28 @@ function emitHostFallbackObjectBoundaryHelpers(
   fallbackPropertyKeyIdsByKey: ReadonlyMap<string, number>,
   layoutsByRepresentationName: ReadonlyMap<string, BackendSpecializedObjectLayout>,
 ): string[] {
-  const usage = collectHostBoundaryFallbackObjectUsageWithHostClosures(module);
-  if (!usage || !layout) {
+  const needsGeneratorStepHostResultHelpers = moduleUsesGeneratorStepClosureHostBridge(module);
+  const usage = collectHostBoundaryFallbackObjectUsageWithHostClosures(module) ?? {
+    needsParamBoundary: false,
+    needsParamCopyBack: false,
+    needsResultBoundary: false,
+  };
+  if (
+    !layout ||
+    (
+      !usage.needsParamBoundary &&
+      !usage.needsParamCopyBack &&
+      !usage.needsResultBoundary &&
+      !needsGeneratorStepHostResultHelpers
+    )
+  ) {
     return [];
   }
-  const specializedUsageByRepresentationName = collectHostBoundarySpecializedObjectUsageWithHostClosures(
-    module,
-    layoutsByRepresentationName,
-  );
+  const specializedUsageByRepresentationName =
+    collectHostBoundarySpecializedObjectUsageWithHostClosures(
+      module,
+      layoutsByRepresentationName,
+    );
   const genericHeapResultLayouts = [...specializedUsageByRepresentationName.values()]
     .filter(({ needsResultBoundary }) => needsResultBoundary)
     .map(({ layout }) => layout)
@@ -9913,9 +10092,7 @@ function emitHostFallbackObjectBoundaryHelpers(
   ): string[] => {
     const emitArrayDispatch = (index: number): string[] => {
       const arrayKinds = [
-        ...(usesHeapArrayRuntime
-          ? [{ kind: 'heap' as const, watTypeId: 'owned_heap_array' }]
-          : []),
+        ...(usesHeapArrayRuntime ? [{ kind: 'heap' as const, watTypeId: 'owned_heap_array' }] : []),
         ...(usesStringArrayResultBoundary
           ? [{ kind: 'string' as const, watTypeId: 'owned_string_array' }]
           : []),
@@ -9941,6 +10118,10 @@ function emitHostFallbackObjectBoundaryHelpers(
           `${indent(level + 1)}call $${
             candidateKind.kind === 'heap'
               ? 'generic_owned_heap_array_to_host_array'
+              : candidateKind.kind === 'tagged'
+              ? getOwnedTaggedArrayToHostHelperName(
+                ASYNC_GENERATOR_HOST_TAGGED_ARRAY_BRIDGE_KINDS,
+              )
               : getOwnedArrayToHostHelperName(candidateKind.kind)
           }`,
           `${indent(level + 1)}call $${setterImportName}`,
@@ -10075,7 +10256,9 @@ function emitHostFallbackObjectBoundaryHelpers(
             `${indent(3)}local.get $result`,
             `${indent(3)}i32.const ${propertyKeyId}`,
             `${indent(3)}local.get $value`,
-            `${indent(3)}call $${getHostFallbackObjectGetImportFunctionName(propertyName, 'get_closure')}`,
+            `${indent(3)}call $${
+              getHostFallbackObjectGetImportFunctionName(propertyName, 'get_closure')
+            }`,
             `${indent(3)}call $host_externref_to_closure_${closureSignatureId}`,
             `${indent(3)}call $tag_heap_object`,
             `${indent(3)}call $set_fallback_object_property`,
@@ -10226,7 +10409,12 @@ function emitHostFallbackObjectBoundaryHelpers(
     );
   }
 
-  if (usage.needsParamCopyBack || needsMethodSyncCopyBack || usage.needsResultBoundary) {
+  if (
+    usage.needsParamCopyBack ||
+    needsMethodSyncCopyBack ||
+    usage.needsResultBoundary ||
+    needsGeneratorStepHostResultHelpers
+  ) {
     lines.push(
       `(func $${getCopyFallbackObjectToHostHelperName()} (param $target externref) (param $value (ref null $${layout.watTypeId}))`,
       `${indent(1)}(local $entry_tag i32)`,
@@ -10274,7 +10462,9 @@ function emitHostFallbackObjectBoundaryHelpers(
                       getHostFallbackMethodSyncExportName(propertyName),
                     )
                   }`,
-                  `${indent(2)}call $${getHostFallbackObjectSetImportFunctionName(propertyName, 'set_closure')}`,
+                  `${indent(2)}call $${
+                    getHostFallbackObjectSetImportFunctionName(propertyName, 'set_closure')
+                  }`,
                 ]
                 : [
                   `${indent(2)}local.get $target`,
@@ -10283,7 +10473,9 @@ function emitHostFallbackObjectBoundaryHelpers(
                   `${indent(2)}call $get_fallback_object_property`,
                   `${indent(2)}call $untag_heap_object`,
                   `${indent(2)}call $host_closure_to_host_${closureSignatureId}`,
-                  `${indent(2)}call $${getHostFallbackObjectSetImportFunctionName(propertyName, 'set_closure')}`,
+                  `${indent(2)}call $${
+                    getHostFallbackObjectSetImportFunctionName(propertyName, 'set_closure')
+                  }`,
                 ]),
             ]
             : classConstructorTagId !== undefined
@@ -10504,7 +10696,7 @@ function emitHostFallbackObjectBoundaryHelpers(
     );
   }
 
-  if (usage.needsParamBoundary || usage.needsResultBoundary) {
+  if (usage.needsParamBoundary || usage.needsResultBoundary || needsGeneratorStepHostResultHelpers) {
     lines.push(
       `(func $${getFallbackObjectToHostHelperName()} (param $value (ref null $${layout.watTypeId})) (result externref)`,
       `${indent(1)}(local $result externref)`,
@@ -10560,7 +10752,9 @@ function emitHostFallbackObjectBoundaryHelpers(
                       getHostFallbackMethodSyncExportName(propertyName),
                     )
                   }`,
-                  `${indent(3)}call $${getHostFallbackObjectSetImportFunctionName(propertyName, 'set_closure')}`,
+                  `${indent(3)}call $${
+                    getHostFallbackObjectSetImportFunctionName(propertyName, 'set_closure')
+                  }`,
                 ]
                 : [
                   `${indent(3)}local.get $result`,
@@ -10569,7 +10763,9 @@ function emitHostFallbackObjectBoundaryHelpers(
                   `${indent(3)}call $get_fallback_object_property`,
                   `${indent(3)}call $untag_heap_object`,
                   `${indent(3)}call $host_closure_to_host_${closureSignatureId}`,
-                  `${indent(3)}call $${getHostFallbackObjectSetImportFunctionName(propertyName, 'set_closure')}`,
+                  `${indent(3)}call $${
+                    getHostFallbackObjectSetImportFunctionName(propertyName, 'set_closure')
+                  }`,
                 ]),
             ]
             : classConstructorTagId !== undefined
@@ -11060,28 +11256,33 @@ function emitArrayRuntimeImports(module: CompilerModuleIR): string[] {
 
 function emitOwnedArrayTypes(module: CompilerModuleIR): string[] {
   const lines: string[] = [];
-  const usesOwnedStringArrayRepresentation = module.runtime?.representations.some((representation) =>
-    representation.kind === 'specialized_object_representation' &&
-    (
-      representation.fields.some((field) => field.valueType === 'owned_array_ref') ||
-      (representation.hostStaticFields?.some((field) => field.valueKind === 'string_array') ?? false)
-    )
-  ) ?? false;
-  const usesOwnedNumberArrayRepresentation = module.runtime?.representations.some((representation) =>
-    representation.kind === 'specialized_object_representation' &&
-    (
-      representation.fields.some((field) => field.valueType === 'owned_number_array_ref') ||
-      (representation.hostStaticFields?.some((field) => field.valueKind === 'number_array') ?? false)
-    )
-  ) ?? false;
-  const usesOwnedBooleanArrayRepresentation = module.runtime?.representations.some((representation) =>
-    representation.kind === 'specialized_object_representation' &&
-    (
-      representation.fields.some((field) => field.valueType === 'owned_boolean_array_ref') ||
-      (representation.hostStaticFields?.some((field) => field.valueKind === 'boolean_array') ??
-        false)
-    )
-  ) ?? false;
+  const usesOwnedStringArrayRepresentation =
+    module.runtime?.representations.some((representation) =>
+      representation.kind === 'specialized_object_representation' &&
+      (
+        representation.fields.some((field) => field.valueType === 'owned_array_ref') ||
+        (representation.hostStaticFields?.some((field) => field.valueKind === 'string_array') ??
+          false)
+      )
+    ) ?? false;
+  const usesOwnedNumberArrayRepresentation =
+    module.runtime?.representations.some((representation) =>
+      representation.kind === 'specialized_object_representation' &&
+      (
+        representation.fields.some((field) => field.valueType === 'owned_number_array_ref') ||
+        (representation.hostStaticFields?.some((field) => field.valueKind === 'number_array') ??
+          false)
+      )
+    ) ?? false;
+  const usesOwnedBooleanArrayRepresentation =
+    module.runtime?.representations.some((representation) =>
+      representation.kind === 'specialized_object_representation' &&
+      (
+        representation.fields.some((field) => field.valueType === 'owned_boolean_array_ref') ||
+        (representation.hostStaticFields?.some((field) => field.valueKind === 'boolean_array') ??
+          false)
+      )
+    ) ?? false;
   if (
     moduleUsesObjectKeysArrayRuntime(module) ||
     usesOwnedStringArrayRepresentation ||
@@ -16136,6 +16337,8 @@ function emitPromiseRuntimeHelpers(
     stringLiteralIdsByText,
     SOUNDSCRIPT_PROMISE_INTERNAL_BRAND_KEY,
   );
+  const layoutsByRepresentationName = createSpecializedObjectLayouts(module.runtime);
+  const fallbackObjectLayout = getFallbackObjectLayout(module.runtime);
   const onFulfilledKeyLiteralId = getRequiredStringLiteralId(
     stringLiteralIdsByText,
     SOUNDSCRIPT_PROMISE_INTERNAL_ON_FULFILLED_KEY,
@@ -17033,6 +17236,67 @@ function emitPromiseRuntimeHelpers(
         `${indent(4)}local.set $value__host`,
         `${indent(4)}br $value__host_done`,
         `${indent(3)}end`,
+        ...(() => {
+          const candidateLayouts = [...layoutsByRepresentationName.values()]
+            .sort((left, right) => left.watTypeId.localeCompare(right.watTypeId));
+          const emitFallbackDispatch = (): string[] =>
+            fallbackObjectLayout
+              ? [
+                `${indent(3)}local.get $value`,
+                `${indent(3)}call $untag_heap_object`,
+                `${indent(3)}call $${getHostObjectLookupCachedImportFunctionName()}`,
+                `${indent(3)}local.tee $value__host`,
+                `${indent(3)}ref.is_null`,
+                `${indent(3)}if`,
+                `${indent(4)}local.get $value`,
+                `${indent(4)}call $untag_heap_object`,
+                `${indent(4)}ref.test (ref null $${fallbackObjectLayout.watTypeId})`,
+                `${indent(4)}if`,
+                `${indent(5)}local.get $value`,
+                `${indent(5)}call $untag_heap_object`,
+                `${indent(5)}ref.cast (ref null $${fallbackObjectLayout.watTypeId})`,
+                `${indent(5)}call $${getFallbackObjectToHostHelperName()}`,
+                `${indent(5)}local.set $value__host`,
+                `${indent(5)}br $value__host_done`,
+                `${indent(4)}end`,
+                `${indent(3)}else`,
+                `${indent(4)}br $value__host_done`,
+                `${indent(3)}end`,
+              ]
+              : [
+                `${indent(3)}local.get $value`,
+                `${indent(3)}call $untag_heap_object`,
+                `${indent(3)}call $${getHostObjectLookupCachedImportFunctionName()}`,
+                `${indent(3)}local.tee $value__host`,
+                `${indent(3)}ref.is_null`,
+                `${indent(3)}if`,
+                `${indent(3)}else`,
+                `${indent(4)}br $value__host_done`,
+                `${indent(3)}end`,
+              ];
+          const emitSpecializedDispatch = (index: number): string[] => {
+            const candidateLayout = candidateLayouts[index];
+            if (!candidateLayout) {
+              return emitFallbackDispatch();
+            }
+            return [
+              `${indent(3)}local.get $value`,
+              `${indent(3)}call $untag_heap_object`,
+              `${indent(3)}ref.test (ref null $${candidateLayout.watTypeId})`,
+              `${indent(3)}if`,
+              `${indent(4)}local.get $value`,
+              `${indent(4)}call $untag_heap_object`,
+              `${indent(4)}ref.cast (ref null $${candidateLayout.watTypeId})`,
+              `${indent(4)}call $${getSpecializedObjectToHostHelperName(candidateLayout)}`,
+              `${indent(4)}local.set $value__host`,
+              `${indent(4)}br $value__host_done`,
+              `${indent(3)}else`,
+              ...emitSpecializedDispatch(index + 1),
+              `${indent(3)}end`,
+            ];
+          };
+          return emitSpecializedDispatch(0);
+        })(),
         `${indent(3)}unreachable`,
         `${indent(2)}end`,
         ...emitTaggedPrimitiveToHostExternref(
@@ -17102,6 +17366,7 @@ function emitPromiseRuntimeHelpers(
         `(func $${SOUNDSCRIPT_ASYNC_GENERATOR_STEP_BRIDGE_FULFILL_EXPORT_NAME} (export "${SOUNDSCRIPT_ASYNC_GENERATOR_STEP_BRIDGE_FULFILL_EXPORT_NAME}") (param $promise (ref null eq)) (param $done i32) (param $value externref)`,
         `${indent(1)}(local $value__host_tag i32)`,
         `${indent(1)}(local $value__host_tagged (ref null $tagged_value))`,
+        `${indent(1)}(local $value__cached (ref null eq))`,
         ...(usesHostPromiseErrorBridge
           ? [
             `${indent(1)}(local $value__message externref)`,
@@ -17109,34 +17374,52 @@ function emitPromiseRuntimeHelpers(
             `${indent(1)}(local $value__error_object (ref null $${layout.watTypeId}))`,
           ]
           : []),
+        `${indent(1)}local.get $value`,
+        `${indent(1)}call $${getHostObjectLookupHostCachedImportFunctionName()}`,
+        `${indent(1)}local.tee $value__cached`,
+        `${indent(1)}ref.is_null`,
+        `${indent(1)}if`,
         ...(usesHostPromiseErrorBridge
           ? [
-            `${indent(1)}local.get $value`,
-            `${indent(1)}call $tagged_type_tag`,
-            `${indent(1)}local.set $value__host_tag`,
-            `${indent(1)}block $value__host_bridge_done`,
-            `${indent(2)}local.get $value__host_tag`,
-            `${indent(2)}i32.const 4`,
-            `${indent(2)}i32.eq`,
-            `${indent(2)}if`,
-            `${indent(4)}local.get $value`,
-            `${indent(4)}call $${getHostObjectImportFunctionName('get_tagged', 'message')}`,
-            `${indent(4)}local.tee $value__message`,
-            `${indent(4)}call $tagged_type_tag`,
-            `${indent(4)}local.set $value__message_tag`,
-            `${indent(4)}local.get $value__message_tag`,
-            `${indent(4)}i32.const 3`,
-            `${indent(4)}i32.eq`,
-            `${indent(4)}if`,
-            `${indent(6)}local.get $value`,
-            `${indent(6)}call $${getHostBuiltinErrorToDynamicHelperName()}`,
-            `${indent(6)}local.set $value__error_object`,
-            `${indent(6)}local.get $value__error_object`,
-            `${indent(6)}call $tag_heap_object`,
-            `${indent(6)}local.set $value__host_tagged`,
-            `${indent(6)}br $value__host_bridge_done`,
-            `${indent(4)}end`,
+            `${indent(2)}local.get $value`,
+            `${indent(2)}call $tagged_type_tag`,
+            `${indent(2)}local.set $value__host_tag`,
+            `${indent(2)}block $value__host_bridge_done`,
+            `${indent(3)}local.get $value__host_tag`,
+            `${indent(3)}i32.const 4`,
+            `${indent(3)}i32.eq`,
+            `${indent(3)}if`,
+            `${indent(5)}local.get $value`,
+            `${indent(5)}call $${getHostObjectImportFunctionName('get_tagged', 'message')}`,
+            `${indent(5)}local.tee $value__message`,
+            `${indent(5)}call $tagged_type_tag`,
+            `${indent(5)}local.set $value__message_tag`,
+            `${indent(5)}local.get $value__message_tag`,
+            `${indent(5)}i32.const 3`,
+            `${indent(5)}i32.eq`,
+            `${indent(5)}if`,
+            `${indent(7)}local.get $value`,
+            `${indent(7)}call $${getHostBuiltinErrorToDynamicHelperName()}`,
+            `${indent(7)}local.set $value__error_object`,
+            `${indent(7)}local.get $value__error_object`,
+            `${indent(7)}call $tag_heap_object`,
+            `${indent(7)}local.set $value__host_tagged`,
+            `${indent(7)}br $value__host_bridge_done`,
+            `${indent(5)}end`,
+            `${indent(3)}end`,
+            ...emitHostTaggedPrimitiveExternrefToTagged(
+              'value',
+              'value__host_tag',
+              'value__host_tagged',
+              hostPromiseBridgeKinds,
+              3,
+              indent,
+            ),
+            `${indent(3)}local.set $value__host_tagged`,
+            `${indent(3)}br $value__host_bridge_done`,
             `${indent(2)}end`,
+          ]
+          : [
             ...emitHostTaggedPrimitiveExternrefToTagged(
               'value',
               'value__host_tag',
@@ -17146,19 +17429,12 @@ function emitPromiseRuntimeHelpers(
               indent,
             ),
             `${indent(2)}local.set $value__host_tagged`,
-            `${indent(2)}br $value__host_bridge_done`,
-            `${indent(1)}end`,
-            `${indent(1)}local.get $value__host_tagged`,
-          ]
-          : emitHostTaggedPrimitiveExternrefToTagged(
-            'value',
-            'value__host_tag',
-            'value__host_tagged',
-            hostPromiseBridgeKinds,
-            1,
-            indent,
-          )),
-        `${indent(1)}local.set $value__host_tagged`,
+          ]),
+        `${indent(1)}else`,
+        `${indent(2)}local.get $value__cached`,
+        `${indent(2)}call $tag_heap_object`,
+        `${indent(2)}local.set $value__host_tagged`,
+        `${indent(1)}end`,
         `${indent(1)}local.get $promise`,
         `${indent(1)}local.get $done`,
         `${indent(1)}local.get $value__host_tagged`,
@@ -17581,6 +17857,8 @@ function emitPromiseRuntimeHelpers(
 function emitHostBuiltinErrorBridgeHelpers(
   module: CompilerModuleIR,
   layout?: BackendDynamicObjectRuntimeLayout,
+  layoutsByRepresentationName: ReadonlyMap<string, BackendSpecializedObjectLayout> = new Map(),
+  fallbackObjectLayout?: BackendFallbackObjectRuntimeLayout,
 ): string[] {
   const usesHostErrorBridge = moduleUsesHostPromiseParamBridge(module) ||
     moduleUsesHostPromiseResultBridge(module) ||
@@ -17795,6 +18073,127 @@ function emitHostBuiltinErrorBridgeHelpers(
     `${indent(2)}call $${getHostObjectImportFunctionName('set_tagged', 'cause')}`,
     `${indent(1)}end`,
     `${indent(1)}local.get $result`,
+    ')',
+  ];
+}
+
+function emitHostDynamicObjectBridgeHelpers(
+  module: CompilerModuleIR,
+  layout?: BackendDynamicObjectRuntimeLayout,
+  layoutsByRepresentationName: ReadonlyMap<string, BackendSpecializedObjectLayout> = new Map(),
+  fallbackObjectLayout?: BackendFallbackObjectRuntimeLayout,
+): string[] {
+  const usesHostDynamicObjectToHostBridge = moduleUsesHostPromiseResultBridge(module) ||
+    moduleUsesGeneratorStepClosureHostBridge(module) ||
+    moduleUsesHostClosureDynamicObjectBridge(module);
+  if (!usesHostDynamicObjectToHostBridge || !layout) {
+    return [];
+  }
+  const usesIteratorResultObjectShape = moduleUsesGeneratorStepClosureHostBridge(module);
+  const stringLiteralIdsByText = createStringLiteralIds(module);
+  const builtinErrorBrandKeyLiteralId = getRequiredStringLiteralId(
+    stringLiteralIdsByText,
+    SOUNDSCRIPT_BUILTIN_ERROR_INTERNAL_BRAND_KEY,
+  );
+  const iteratorResultValueLiteralId = usesIteratorResultObjectShape
+    ? getRequiredStringLiteralId(stringLiteralIdsByText, 'value')
+    : undefined;
+  const iteratorResultDoneLiteralId = usesIteratorResultObjectShape
+    ? getRequiredStringLiteralId(stringLiteralIdsByText, 'done')
+    : undefined;
+  const promiseBrandKeyLiteralId = moduleUsesHostPromiseBridge(module)
+    ? getRequiredStringLiteralId(stringLiteralIdsByText, SOUNDSCRIPT_PROMISE_INTERNAL_BRAND_KEY)
+    : undefined;
+  return [
+    `(func $${getHostDynamicObjectToHostHelperName()} (param $value (ref null $${layout.watTypeId})) (result externref)`,
+    ...(usesIteratorResultObjectShape ? [`${indent(1)}(local $result externref)`] : []),
+    `${indent(1)}(local $promise_brand_tagged (ref null $tagged_value))`,
+    `${indent(1)}(local $error_brand_tagged (ref null $tagged_value))`,
+    ...(usesIteratorResultObjectShape
+      ? [
+        `${indent(1)}(local $iterator_value_tagged (ref null $tagged_value))`,
+        `${indent(1)}(local $iterator_value_tag i32)`,
+        `${indent(1)}(local $iterator_value externref)`,
+        `${indent(1)}(local $iterator_done_tagged (ref null $tagged_value))`,
+        `${indent(1)}(local $iterator_done_tag i32)`,
+        `${indent(1)}(local $iterator_done externref)`,
+      ]
+      : []),
+    ...(promiseBrandKeyLiteralId !== undefined
+      ? [
+        `${indent(1)}local.get $value`,
+        `${indent(1)}call $owned_string_literal_${promiseBrandKeyLiteralId}`,
+        `${indent(1)}call $get_dynamic_object_property`,
+        `${indent(1)}local.set $promise_brand_tagged`,
+        `${indent(1)}local.get $promise_brand_tagged`,
+        `${indent(1)}struct.get $tagged_value 0`,
+        `${indent(1)}i32.const 1`,
+        `${indent(1)}i32.eq`,
+        `${indent(1)}if`,
+        `${indent(2)}local.get $promise_brand_tagged`,
+        `${indent(2)}call $untag_boolean`,
+        `${indent(2)}if`,
+        `${indent(3)}local.get $value`,
+        `${indent(3)}call ${SOUNDSCRIPT_HOST_PROMISE_TO_HOST_IMPORT_NAME}`,
+        `${indent(3)}return`,
+        `${indent(2)}end`,
+        `${indent(1)}end`,
+      ]
+      : []),
+    `${indent(1)}local.get $value`,
+    `${indent(1)}call $owned_string_literal_${builtinErrorBrandKeyLiteralId}`,
+    `${indent(1)}call $get_dynamic_object_property`,
+    `${indent(1)}local.set $error_brand_tagged`,
+    `${indent(1)}local.get $error_brand_tagged`,
+    `${indent(1)}struct.get $tagged_value 0`,
+    `${indent(1)}i32.const 3`,
+    `${indent(1)}i32.eq`,
+    `${indent(1)}if`,
+    `${indent(2)}local.get $value`,
+    `${indent(2)}call $${getHostDynamicBuiltinErrorHelperName()}`,
+    `${indent(2)}return`,
+    `${indent(1)}end`,
+    ...(usesIteratorResultObjectShape
+      ? [
+        `${indent(1)}call $host_object_empty`,
+        `${indent(1)}local.set $result`,
+        `${indent(1)}local.get $value`,
+        `${indent(1)}call $owned_string_literal_${iteratorResultValueLiteralId!}`,
+        `${indent(1)}call $get_dynamic_object_property`,
+        `${indent(1)}local.set $iterator_value_tagged`,
+        `${indent(1)}local.get $iterator_value_tagged`,
+        `${indent(1)}call $${SOUNDSCRIPT_ASYNC_GENERATOR_TAGGED_TO_HOST_HELPER_NAME}`,
+        `${indent(1)}local.set $iterator_value`,
+        `${indent(1)}local.get $result`,
+        `${indent(1)}local.get $iterator_value`,
+        `${indent(1)}call $${getHostObjectImportFunctionName('set_tagged', 'value')}`,
+        `${indent(1)}local.get $value`,
+        `${indent(1)}call $owned_string_literal_${iteratorResultDoneLiteralId!}`,
+        `${indent(1)}call $get_dynamic_object_property`,
+        `${indent(1)}local.set $iterator_done_tagged`,
+        ...emitTaggedPrimitiveToHostExternref(
+          'iterator_done_tagged',
+          'iterator_done_tag',
+          'iterator_done',
+          {
+            includesBoolean: true,
+            includesNull: false,
+            includesNumber: false,
+            includesString: false,
+            includesUndefined: false,
+          },
+          1,
+          indent,
+        ),
+        `${indent(1)}local.set $iterator_done`,
+        `${indent(1)}local.get $result`,
+        `${indent(1)}local.get $iterator_done`,
+        `${indent(1)}call $${getHostObjectImportFunctionName('set_tagged', 'done')}`,
+        `${indent(1)}local.get $result`,
+      ]
+      : [
+        `${indent(1)}call $host_object_empty`,
+      ]),
     ')',
   ];
 }
@@ -18592,7 +18991,9 @@ function functionUsesFallbackRuntime(
   func: CompilerFunctionIR,
   operations: readonly CompilerRuntimeFunctionIR['operations'][number][],
 ): boolean {
-  if (getEffectiveFunctionHeapResultRepresentation(func)?.kind === 'fallback_object_representation') {
+  if (
+    getEffectiveFunctionHeapResultRepresentation(func)?.kind === 'fallback_object_representation'
+  ) {
     return true;
   }
   if (
@@ -18621,7 +19022,11 @@ function expressionCallsFallbackReturningFunction(
   switch (expression.kind) {
     case 'call': {
       const callee = functionsByName.get(expression.callee);
-      if (callee && getEffectiveFunctionHeapResultRepresentation(callee)?.kind === 'fallback_object_representation') {
+      if (
+        callee &&
+        getEffectiveFunctionHeapResultRepresentation(callee)?.kind ===
+          'fallback_object_representation'
+      ) {
         return true;
       }
       return expression.args.some((argument: CompilerExpressionIR) =>
@@ -18969,13 +19374,14 @@ function createFunctionBackendRuntimeContext(
         operation.kind === 'list_dynamic_object_values' ||
         operation.kind === 'set_dynamic_object_property'
       ) ||
-      [...getEffectiveFunctionHeapParamRepresentationsByName(func).values()].some((representation) =>
-        representation.kind === 'dynamic_object_representation'
-      ) ||
+      [...getEffectiveFunctionHeapParamRepresentationsByName(func).values()].some((
+        representation,
+      ) => representation.kind === 'dynamic_object_representation') ||
       (func.heapLocalRepresentations ?? []).some((boundary) =>
         boundary.representation.kind === 'dynamic_object_representation'
       ) ||
-      getEffectiveFunctionHeapResultRepresentation(func)?.kind === 'dynamic_object_representation' ||
+      getEffectiveFunctionHeapResultRepresentation(func)?.kind ===
+        'dynamic_object_representation' ||
       statementsUseStringHelper(func.body, isPromiseRuntimeHelperCall)
     )
     ? getDynamicObjectLayout(runtime)
@@ -22088,6 +22494,7 @@ function getFunctionResultWatType(
 }
 
 function emitHostImportedFunctionWrapper(
+  module: CompilerModuleIR,
   func: CompilerFunctionIR,
   runtime: FunctionBackendRuntimeContext,
 ): string[] {
@@ -22103,6 +22510,20 @@ function emitHostImportedFunctionWrapper(
   const hostTaggedPrimitiveResultKinds = getEffectiveHostTaggedPrimitiveResultKinds(func);
   const hostClosureResultSignatureId = getEffectiveHostClosureResultSignatureId(func);
   const hasHostPromiseResult = hasEffectiveHostImportPromiseResult(func);
+  const hasHostGeneratorResult = func.hostImportGeneratorResult === true;
+  const hasHostAsyncGeneratorResult = func.hostImportAsyncGeneratorResult === true;
+  const generatorStepSignature = hasHostGeneratorResult || hasHostAsyncGeneratorResult
+    ? getGeneratorStepClosureSignature(module)
+    : undefined;
+  const generatorStepKeyLiteralId = hasHostGeneratorResult || hasHostAsyncGeneratorResult
+    ? getRequiredStringLiteralId(
+      createStringLiteralIds(module),
+      SOUNDSCRIPT_GENERATOR_INTERNAL_STEP_KEY,
+    )
+    : undefined;
+  if ((hasHostGeneratorResult || hasHostAsyncGeneratorResult) && !generatorStepSignature) {
+    throw new Error('Missing generator step signature for host-imported generator bridge.');
+  }
   return [
     [
       `(func $${func.name}`,
@@ -22120,6 +22541,19 @@ function emitHostImportedFunctionWrapper(
         `${indent(1)}(local $result__callback_value externref)`,
         `${indent(1)}(local $result__callback_tag i32)`,
         `${indent(1)}(local $result__callback_tagged (ref null $tagged_value))`,
+      ]
+      : []),
+    ...(hasHostGeneratorResult || hasHostAsyncGeneratorResult
+      ? [
+        `${indent(1)}(local $result__generator_step (ref null $closure))`,
+        `${indent(1)}(local $result__generator_object (ref null $${
+          runtime.dynamicObjectLayout?.watTypeId ??
+            (() => {
+              throw createUnsupportedHeapRuntimeBackendError(
+                'Missing dynamic object layout for host-imported generator bridge.',
+              );
+            })()
+        }))`,
       ]
       : []),
     ...func.params.flatMap((param) => {
@@ -22165,6 +22599,24 @@ function emitHostImportedFunctionWrapper(
             runtime,
           )
         }`,
+      ]
+      : hasHostGeneratorResult || hasHostAsyncGeneratorResult
+      ? [
+        `${indent(1)}call ${
+          hasHostAsyncGeneratorResult
+            ? SOUNDSCRIPT_HOST_ASYNC_GENERATOR_TO_STEP_IMPORT_NAME
+            : SOUNDSCRIPT_HOST_SYNC_GENERATOR_TO_STEP_IMPORT_NAME
+        }`,
+        `${indent(1)}call $host_externref_to_closure_${generatorStepSignature!.id}`,
+        `${indent(1)}local.set $result__generator_step`,
+        `${indent(1)}call $allocate_dynamic_object`,
+        `${indent(1)}local.set $result__generator_object`,
+        `${indent(1)}local.get $result__generator_object`,
+        `${indent(1)}call $owned_string_literal_${generatorStepKeyLiteralId!}`,
+        `${indent(1)}local.get $result__generator_step`,
+        `${indent(1)}call $tag_heap_object`,
+        `${indent(1)}call $set_dynamic_object_property`,
+        `${indent(1)}local.get $result__generator_object`,
       ]
       : hostTaggedPrimitiveResultKinds !== undefined
       ? emitHostClosureBoundaryResultToInternal(
@@ -22693,7 +23145,7 @@ function emitInternalClosureTaggedPrimitiveAndHeapToHost(
           getLayoutForRepresentationName(heapRepresentation.name, layoutsByRepresentationName),
         )
         : heapRepresentation.kind === 'dynamic_object_representation'
-        ? getHostDynamicBuiltinErrorHelperName()
+        ? getHostDynamicObjectToHostHelperName()
         : getFallbackObjectToHostHelperName()
     }`,
     `${indent(level + 3)}local.set $${externrefLocalName}`,
@@ -22951,6 +23403,15 @@ function emitInternalClosureBoundaryParamToHost(
               getLayoutForRepresentationName(heapRepresentation.name, layoutsByRepresentationName)
                 .watTypeId
             })`
+            : heapRepresentation.kind === 'dynamic_object_representation'
+            ? `(ref null $${
+              dynamicObjectLayout?.watTypeId ??
+                (() => {
+                  throw createUnsupportedHeapRuntimeBackendError(
+                    'Missing dynamic object layout for internal-to-host closure param.',
+                  );
+                })()
+            })`
             : `(ref null $${
               fallbackObjectLayout?.watTypeId ??
                 (() => {
@@ -22965,6 +23426,8 @@ function emitInternalClosureBoundaryParamToHost(
             ? getSpecializedObjectToHostHelperName(
               getLayoutForRepresentationName(heapRepresentation.name, layoutsByRepresentationName),
             )
+            : heapRepresentation.kind === 'dynamic_object_representation'
+            ? getHostDynamicObjectToHostHelperName()
             : getFallbackObjectToHostHelperName()
         }`,
       ];
@@ -23255,7 +23718,8 @@ function functionNeedsHostExportWrapper(
     return false;
   }
   const hostLengthViewParamNames = new Set(func.hostLengthViewParams ?? []);
-  const effectiveHeapParamRepresentationsByName = getEffectiveFunctionHeapParamRepresentationsByName(func);
+  const effectiveHeapParamRepresentationsByName =
+    getEffectiveFunctionHeapParamRepresentationsByName(func);
   const hostObjectParamBoundaryCount =
     [...effectiveHeapParamRepresentationsByName.entries()].filter(([name, representation]) =>
       !hostLengthViewParamNames.has(name) &&
@@ -24857,9 +25321,7 @@ function emitHostExportWrapper(
           1,
         )
         : [
-          `${indent(1)}call $${
-            getOwnedTaggedArrayToHostHelperName(hostTaggedArrayResultKinds)
-          }`,
+          `${indent(1)}call $${getOwnedTaggedArrayToHostHelperName(hostTaggedArrayResultKinds)}`,
         ]
       : func.resultType === 'owned_heap_array_ref' && hostHeapArrayResultRepresentation
       ? needsHostSyncScratch
@@ -25054,6 +25516,11 @@ function emitClosureCallHelpers(
       .filter(({ signatureId }) => signatureId !== module.syncTryCatchClosureSignatureId)
       .map(({ signatureId, signature }) => [signatureId, signature]),
   );
+  const generatorStepSignature = moduleUsesGeneratorStepClosureHostBridge(module)
+    ? getGeneratorStepClosureSignature(module)
+    : undefined;
+  const usesSyncGeneratorHostImportBridge = moduleUsesSyncGeneratorHostImportBridge(module);
+  const usesAsyncGeneratorHostImportBridge = moduleUsesAsyncGeneratorHostImportBridge(module);
   const closureFunctionsBySignature = new Map<number, CompilerFunctionIR[]>();
   for (const func of module.functions) {
     if (func.closureFunctionId === undefined || func.closureSignatureId === undefined) {
@@ -25099,6 +25566,9 @@ function emitClosureCallHelpers(
   return signatures.flatMap((signature) => {
     const funcs = closureFunctionsBySignature.get(signature.id) ?? [];
     const sourceParamBoundaries = getHostClosureSourceParamBoundaries(signature);
+    const isHostImportedGeneratorStepSignature =
+      (usesSyncGeneratorHostImportBridge || usesAsyncGeneratorHostImportBridge) &&
+      generatorStepSignature?.id === signature.id;
     const closureCallLocals = [
       ...signature.params.flatMap((param, argIndex) =>
         param === 'tagged_ref'
@@ -25177,16 +25647,18 @@ function emitClosureCallHelpers(
             )
         ),
         `${indent(2)}call $host_closure_call_${signature.id}`,
-        ...emitHostClosureBoundaryResultToInternal(
-          signature.resultType,
-          signature.resultClassConstructorTagId,
-          signature.resultClosureSignatureId,
-          signature.resultTaggedPrimitiveKinds,
-          signature.resultHeapRepresentation,
-          signature.resultHeapArrayRepresentation,
-          2,
-          layoutsByRepresentationName,
-        ),
+        ...(isHostImportedGeneratorStepSignature
+          ? [`${indent(2)}call $${getHostIteratorResultToDynamicHelperName()}`]
+          : emitHostClosureBoundaryResultToInternal(
+            signature.resultType,
+            signature.resultClassConstructorTagId,
+            signature.resultClosureSignatureId,
+            signature.resultTaggedPrimitiveKinds,
+            signature.resultHeapRepresentation,
+            signature.resultHeapArrayRepresentation,
+            2,
+            layoutsByRepresentationName,
+          )),
         `${indent(1)}else`,
         ...emitCase(0),
         `${indent(1)}end`,
@@ -25699,6 +26171,108 @@ function emitSyncTryCatchHelper(
   ];
 }
 
+function emitHostSyncGeneratorImportHelpers(
+  module: CompilerModuleIR,
+  dynamicObjectLayout?: BackendDynamicObjectRuntimeLayout,
+): string[] {
+  const usesSyncGeneratorHostImportBridge = moduleUsesSyncGeneratorHostImportBridge(module);
+  const usesAsyncGeneratorHostImportBridge = moduleUsesAsyncGeneratorHostImportBridge(module);
+  if (
+    (!usesSyncGeneratorHostImportBridge && !usesAsyncGeneratorHostImportBridge) ||
+    !dynamicObjectLayout
+  ) {
+    return [];
+  }
+  const stringLiteralIdsByText = createStringLiteralIds(module);
+  const valueLiteralId = getRequiredStringLiteralId(stringLiteralIdsByText, 'value');
+  const doneLiteralId = getRequiredStringLiteralId(stringLiteralIdsByText, 'done');
+  return [
+    `(func $${getHostIteratorResultToDynamicHelperName()} (param $value externref) (result (ref null $${dynamicObjectLayout.watTypeId}))`,
+    ...(usesAsyncGeneratorHostImportBridge
+      ? [
+        `${indent(1)}(local $host_promise_candidate (ref null $${dynamicObjectLayout.watTypeId}))`,
+        `${indent(1)}(local $host_promise_result (ref null eq))`,
+      ]
+      : []),
+    `${indent(1)}(local $result (ref null $${dynamicObjectLayout.watTypeId}))`,
+    `${indent(1)}(local $iterator_value externref)`,
+    `${indent(1)}(local $iterator_value_tag i32)`,
+    `${indent(1)}(local $iterator_value_tagged (ref null $tagged_value))`,
+    `${indent(1)}(local $iterator_done externref)`,
+    `${indent(1)}(local $iterator_done_tag i32)`,
+    `${indent(1)}(local $iterator_done_tagged (ref null $tagged_value))`,
+    ...(usesAsyncGeneratorHostImportBridge
+      ? [
+        `${indent(1)}local.get $value`,
+        `${indent(1)}call ${SOUNDSCRIPT_HOST_PROMISE_IS_HOST_IMPORT_NAME}`,
+        `${indent(1)}if`,
+        `${indent(2)}call $${SOUNDSCRIPT_PROMISE_NEW_PENDING_HELPER_NAME}`,
+        `${indent(2)}local.set $host_promise_candidate`,
+        `${indent(2)}local.get $value`,
+        `${indent(2)}local.get $host_promise_candidate`,
+        `${indent(2)}call ${SOUNDSCRIPT_HOST_ASYNC_GENERATOR_TO_INTERNAL_IMPORT_NAME}`,
+        `${indent(2)}local.set $host_promise_result`,
+        `${indent(2)}local.get $host_promise_result`,
+        `${indent(2)}ref.cast (ref null $${dynamicObjectLayout.watTypeId})`,
+        `${indent(2)}return`,
+        `${indent(1)}end`,
+      ]
+      : []),
+    `${indent(1)}call $allocate_dynamic_object`,
+    `${indent(1)}local.set $result`,
+    `${indent(1)}local.get $value`,
+    `${indent(1)}call $${getHostObjectImportFunctionName('get_tagged', 'value')}`,
+    `${indent(1)}local.tee $iterator_value`,
+    `${indent(1)}call $tagged_type_tag`,
+    `${indent(1)}local.set $iterator_value_tag`,
+    ...emitHostTaggedPrimitiveExternrefToTagged(
+      'iterator_value',
+      'iterator_value_tag',
+      'iterator_value_tagged',
+      {
+        includesBoolean: true,
+        includesNull: true,
+        includesNumber: true,
+        includesString: false,
+        includesUndefined: true,
+      },
+      1,
+      indent,
+    ),
+    `${indent(1)}local.set $iterator_value_tagged`,
+    `${indent(1)}local.get $result`,
+    `${indent(1)}call $owned_string_literal_${valueLiteralId}`,
+    `${indent(1)}local.get $iterator_value_tagged`,
+    `${indent(1)}call $set_dynamic_object_property`,
+    `${indent(1)}local.get $value`,
+    `${indent(1)}call $${getHostObjectImportFunctionName('get_tagged', 'done')}`,
+    `${indent(1)}local.tee $iterator_done`,
+    `${indent(1)}call $tagged_type_tag`,
+    `${indent(1)}local.set $iterator_done_tag`,
+    ...emitHostTaggedPrimitiveExternrefToTagged(
+      'iterator_done',
+      'iterator_done_tag',
+      'iterator_done_tagged',
+      {
+        includesBoolean: true,
+        includesNull: false,
+        includesNumber: false,
+        includesString: false,
+        includesUndefined: false,
+      },
+      1,
+      indent,
+    ),
+    `${indent(1)}local.set $iterator_done_tagged`,
+    `${indent(1)}local.get $result`,
+    `${indent(1)}call $owned_string_literal_${doneLiteralId}`,
+    `${indent(1)}local.get $iterator_done_tagged`,
+    `${indent(1)}call $set_dynamic_object_property`,
+    `${indent(1)}local.get $result`,
+    ')',
+  ];
+}
+
 function emitHostClosureInvokeExports(
   module: CompilerModuleIR,
   layoutsByRepresentationName: ReadonlyMap<string, BackendSpecializedObjectLayout>,
@@ -25918,7 +26492,7 @@ function emitFunction(
     stringRuntimeLayout,
   );
   if (functionIsHostImported(func)) {
-    return emitHostImportedFunctionWrapper(func, runtime);
+    return emitHostImportedFunctionWrapper(module, func, runtime);
   }
   assertFunctionIsBackendLowerable(func);
   const header = [
@@ -26064,6 +26638,7 @@ export function emitCompilerModuleToWat(module: CompilerModuleIR): string {
       )
     ) ?? false;
   const fallbackObjectLayout = (moduleUsesHostFallbackObjectBoundary(module) ||
+      moduleUsesGeneratorStepClosureHostBridge(module) ||
       module.functions.some((func) =>
         functionUsesFallbackRuntime(func, getRuntimeOperationsForFunction(func, module.runtime)) ||
         functionCallsFallbackReturningFunction(func, functionsByName)
@@ -26199,7 +26774,9 @@ export function emitCompilerModuleToWat(module: CompilerModuleIR): string {
           representation.kind === 'specialized_object_representation' &&
           (
             representation.fields.some((field) => field.valueType === 'owned_boolean_array_ref') ||
-            (representation.hostStaticFields?.some((field) => field.valueKind === 'boolean_array') ??
+            (representation.hostStaticFields?.some((field) =>
+              field.valueKind === 'boolean_array'
+            ) ??
               false)
           )
         ) ?? false) ||
@@ -26388,10 +26965,22 @@ export function emitCompilerModuleToWat(module: CompilerModuleIR): string {
       stringRuntimeLayout,
     ).map((line) => `${indent(1)}${line}`),
     ...((!usesPromiseRuntime || moduleUsesSyncTryCatchRuntime(module))
-      ? emitHostBuiltinErrorBridgeHelpers(module, dynamicObjectLayout).map((line) =>
-        `${indent(1)}${line}`
-      )
+      ? emitHostBuiltinErrorBridgeHelpers(
+        module,
+        dynamicObjectLayout,
+        layoutsByRepresentationName,
+        fallbackObjectLayout,
+      ).map((line) => `${indent(1)}${line}`)
       : []),
+    ...emitHostDynamicObjectBridgeHelpers(
+      module,
+      dynamicObjectLayout,
+      layoutsByRepresentationName,
+      fallbackObjectLayout,
+    ).map((line) => `${indent(1)}${line}`),
+    ...emitHostSyncGeneratorImportHelpers(module, dynamicObjectLayout).map((line) =>
+      `${indent(1)}${line}`
+    ),
     ...emitHostClosureInvokeExports(
       module,
       layoutsByRepresentationName,

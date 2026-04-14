@@ -1528,6 +1528,8 @@ export interface CompilerFunctionIR {
   hostAsyncGeneratorResult?: boolean;
   usesAsyncGeneratorHostStepBridge?: boolean;
   hostImportPromiseParams?: readonly string[];
+  hostImportGeneratorResult?: boolean;
+  hostImportAsyncGeneratorResult?: boolean;
   hostLengthViewParams?: readonly string[];
   hostLengthViewResult?: boolean;
   hostParamBoundaries?: readonly CompilerHostParamBoundaryIR[];

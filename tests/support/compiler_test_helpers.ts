@@ -196,11 +196,13 @@ export async function instantiateCompiledModuleInJs(
   tempDirectory: string,
   options?: {
     hostFunctions?: Record<string, (...args: unknown[]) => unknown>;
+    imports?: WebAssembly.Imports;
   },
 ): Promise<WebAssembly.Instance> {
   const wasmBytes = await readCompiledWasmBytes(tempDirectory);
   return await instantiateSoundscriptWasmModule(wasmBytes, {
     hostFunctions: options?.hostFunctions,
+    imports: options?.imports,
   });
 }
 

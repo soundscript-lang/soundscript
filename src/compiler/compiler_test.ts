@@ -6621,6 +6621,45 @@ compilerIntegrationTest(
 );
 
 compilerIntegrationTest(
+  'checked-in sync-only Wasm flagship examples omit promise runtime and host promise bridges',
+  async () => {
+    for (
+      const exampleName of [
+        'examples/react-browser-demo',
+        'examples/express-react-ssr-demo',
+        'examples/fullstack-todo',
+      ]
+    ) {
+      const { result, projectDirectory } = compileCheckedInProject(exampleName);
+      assertEquals(result.exitCode, 0, `${exampleName} should compile cleanly`);
+      assertEquals(result.diagnostics, [], `${exampleName} should compile without diagnostics`);
+
+      const watOutput = await readWatArtifactForProject(projectDirectory);
+      assertEquals(
+        watOutput.includes('__soundscript_promise_new_pending'),
+        false,
+        `${exampleName} should not emit internal promise runtime for sync-only example code`,
+      );
+      assertEquals(
+        watOutput.includes('$host_promise_to_internal'),
+        false,
+        `${exampleName} should not emit host promise import bridges without Promise boundaries`,
+      );
+      assertEquals(
+        watOutput.includes('$host_promise_to_host'),
+        false,
+        `${exampleName} should not emit host promise export bridges without Promise boundaries`,
+      );
+      assertEquals(
+        watOutput.includes('"soundscript_promise"'),
+        false,
+        `${exampleName} should not import the shared Promise bridge module`,
+      );
+    }
+  },
+);
+
+compilerIntegrationTest(
   'checked-in react-browser-demo handwritten JS stays on instantiation only',
   async () => {
     const bootstrapSource = readExampleProjectFile(

@@ -2,6 +2,7 @@ import { assertEquals } from '@std/assert';
 
 import { compileTempProject, createCompilerTestProject } from './compiler_object_test_helpers.ts';
 import {
+  createTempProject,
   instantiateCompiledModuleInJs,
   resolveQualifiedExportName,
 } from './compiler_test_helpers.ts';
@@ -9,8 +10,13 @@ import {
 type GeneratorCompilerCase = {
   name: string;
   source: string;
+  extraFiles?: Array<{ path: string; contents: string }>;
   expected?: number;
   expectedThrow?: unknown;
+  instantiateOptions?: {
+    hostFunctions?: Record<string, (...args: unknown[]) => unknown>;
+    imports?: WebAssembly.Imports;
+  };
   run?: (
     exported: unknown,
     instance: WebAssembly.Instance,
@@ -19,13 +25,76 @@ type GeneratorCompilerCase = {
   exportName?: string;
 };
 
+function assertThrownValueMatchesExpected(
+  actual: unknown,
+  expected: unknown,
+  message?: string,
+): void {
+  if (
+    typeof expected === 'object' &&
+    expected !== null &&
+    'name' in expected &&
+    'message' in expected
+  ) {
+    const expectedRecord = expected as Record<string, unknown>;
+    const expectedName = expectedRecord.name;
+    const expectedMessage = expectedRecord.message;
+    if (typeof expectedName === 'string' && typeof expectedMessage === 'string') {
+      if (actual instanceof Error) {
+        assertEquals({ name: actual.name, message: actual.message }, expected, message);
+        return;
+      }
+      if (typeof actual === 'object' && actual !== null) {
+        const actualRecord = actual as Record<string, unknown>;
+        if (typeof actualRecord.name === 'string' && typeof actualRecord.message === 'string') {
+          assertEquals(
+            { name: actualRecord.name, message: actualRecord.message },
+            expected,
+            message,
+          );
+          return;
+        }
+      }
+    }
+  }
+
+  assertEquals(actual, expected, message);
+}
+
 async function runGeneratorCompilerCase(testCase: GeneratorCompilerCase): Promise<void> {
-  const tempDirectory = await createCompilerTestProject(testCase.source);
+  const tempDirectory = testCase.extraFiles
+    ? await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts'],
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/index.ts',
+        contents: testCase.source,
+      },
+      ...testCase.extraFiles,
+    ])
+    : await createCompilerTestProject(testCase.source);
   const result = compileTempProject(tempDirectory);
 
   assertEquals(result.exitCode, 0, testCase.name);
   assertEquals(result.diagnostics, [], testCase.name);
-  const instance = await instantiateCompiledModuleInJs(tempDirectory);
+  const instance = await instantiateCompiledModuleInJs(
+    tempDirectory,
+    testCase.instantiateOptions,
+  );
   const exportName = await resolveQualifiedExportName(tempDirectory, testCase.exportName ?? 'main');
   const exported = instance.exports[exportName];
   if (testCase.run) {
@@ -41,7 +110,7 @@ async function runGeneratorCompilerCase(testCase: GeneratorCompilerCase): Promis
       exported();
     } catch (error) {
       threw = true;
-      assertEquals(error, testCase.expectedThrow, testCase.name);
+      assertThrownValueMatchesExpected(error, testCase.expectedThrow, testCase.name);
     }
     assertEquals(threw, true, `${testCase.name} should throw.`);
     return;
@@ -324,7 +393,7 @@ const cases: GeneratorCompilerCase[] = [
         (iterator as Iterator<number, number, unknown>).throw?.(5);
       } catch (error) {
         threw = true;
-        assertEquals(error, {
+        assertThrownValueMatchesExpected(error, {
           name: 'TypeError',
           message: 'yield* delegate does not support throw',
         });
@@ -396,6 +465,166 @@ const cases: GeneratorCompilerCase[] = [
       assertEquals(second, { value: 8, done: false });
       assertEquals(third, { value: 12, done: false });
       assertEquals(fourth, { value: 13, done: true });
+    },
+  },
+  {
+    name:
+      'compileProject exports sync generator yield star through imported host generator delegates as host iterators',
+    exportName: 'outer',
+    source: [
+      '// #[interop]',
+      "import { iterate } from './host';",
+      '',
+      'export function* outer(): Generator<number, number, unknown> {',
+      '  const delegated = yield* iterate();',
+      '  yield delegated + 10;',
+      '  return delegated + 20;',
+      '}',
+      '',
+    ].join('\n'),
+    extraFiles: [
+      {
+        path: 'src/host.d.ts',
+        contents: [
+          'export declare function iterate(): Generator<number, number, unknown>;',
+          '',
+        ].join('\n'),
+      },
+    ],
+    instantiateOptions: {
+      hostFunctions: {
+        'src/host.d.ts:iterate': function* (): Generator<number, number, unknown> {
+          yield 3;
+          yield 5;
+          return 7;
+        },
+      },
+    },
+    run: (exported) => {
+      if (typeof exported !== 'function') {
+        throw new Error('Expected exported sync generator function.');
+      }
+      const iterator = exported();
+      if ((typeof iterator !== 'object' && typeof iterator !== 'function') || iterator === null) {
+        throw new Error('Expected exported sync generator to return an iterator object.');
+      }
+      const first = (iterator as Iterator<number, number, number>).next();
+      const second = (iterator as Iterator<number, number, number>).next();
+      const third = (iterator as Iterator<number, number, number>).next();
+      const fourth = (iterator as Iterator<number, number, number>).next();
+      assertEquals(first, { value: 3, done: false });
+      assertEquals(second, { value: 5, done: false });
+      assertEquals(third, { value: 17, done: false });
+      assertEquals(fourth, { value: 27, done: true });
+    },
+  },
+  {
+    name:
+      'compileProject exports sync generator throw delegation through imported host generator delegates as host iterators',
+    exportName: 'outer',
+    source: [
+      '// #[interop]',
+      "import { iterate } from './host';",
+      '',
+      'export function* outer(): Generator<number, number, number> {',
+      '  const delegated = yield* iterate();',
+      '  yield delegated + 1;',
+      '  return delegated + 2;',
+      '}',
+      '',
+    ].join('\n'),
+    extraFiles: [
+      {
+        path: 'src/host.d.ts',
+        contents: [
+          'export declare function iterate(): Generator<number, number, number>;',
+          '',
+        ].join('\n'),
+      },
+    ],
+    instantiateOptions: {
+      hostFunctions: {
+        'src/host.d.ts:iterate': function* (): Generator<number, number, number> {
+          try {
+            yield 3;
+            return 8;
+          } catch {
+            yield 7;
+            return 9;
+          }
+        },
+      },
+    },
+    run: (exported) => {
+      if (typeof exported !== 'function') {
+        throw new Error('Expected exported sync generator function.');
+      }
+      const iterator = exported();
+      if ((typeof iterator !== 'object' && typeof iterator !== 'function') || iterator === null) {
+        throw new Error('Expected exported sync generator to return an iterator object.');
+      }
+      const first = (iterator as Iterator<number, number, number>).next();
+      const second = (iterator as Iterator<number, number, number>).throw?.(5);
+      const third = (iterator as Iterator<number, number, number>).next();
+      const fourth = (iterator as Iterator<number, number, number>).next();
+      assertEquals(first, { value: 3, done: false });
+      assertEquals(second, { value: 7, done: false });
+      assertEquals(third, { value: 10, done: false });
+      assertEquals(fourth, { value: 11, done: true });
+    },
+  },
+  {
+    name:
+      'compileProject exports sync generator return delegation through imported host generator delegates as host iterators',
+    exportName: 'outer',
+    source: [
+      '// #[interop]',
+      "import { iterate } from './host';",
+      '',
+      'export function* outer(): Generator<number, number, number> {',
+      '  const delegated = yield* iterate();',
+      '  return delegated + 1;',
+      '}',
+      '',
+    ].join('\n'),
+    extraFiles: [
+      {
+        path: 'src/host.d.ts',
+        contents: [
+          'export declare function iterate(): Generator<number, number, number>;',
+          '',
+        ].join('\n'),
+      },
+    ],
+    instantiateOptions: {
+      hostFunctions: {
+        'src/host.d.ts:iterate': function* (): Generator<number, number, number> {
+          try {
+            yield 3;
+            yield 5;
+            return 7;
+          } finally {
+            yield 9;
+          }
+        },
+      },
+    },
+    run: (exported) => {
+      if (typeof exported !== 'function') {
+        throw new Error('Expected exported sync generator function.');
+      }
+      const iterator = exported();
+      if ((typeof iterator !== 'object' && typeof iterator !== 'function') || iterator === null) {
+        throw new Error('Expected exported sync generator to return an iterator object.');
+      }
+      const first = (iterator as Iterator<number, number, number>).next();
+      const second = (iterator as Iterator<number, number, number>).return?.(4);
+      const third = (iterator as Iterator<number, number, number>).next();
+      const fourth = (iterator as Iterator<number, number, number>).next();
+      assertEquals(first, { value: 3, done: false });
+      assertEquals(second, { value: 9, done: false });
+      assertEquals(third, { value: 5, done: true });
+      assertEquals(fourth, { value: undefined, done: true });
     },
   },
   {
@@ -607,7 +836,7 @@ const cases: GeneratorCompilerCase[] = [
         (iterator as Iterator<number, number, unknown>).next();
       } catch (error) {
         threw = true;
-        assertEquals(error, { name: 'Error', message: 'boom' });
+        assertThrownValueMatchesExpected(error, { name: 'Error', message: 'boom' });
       }
       assertEquals(threw, true, 'Expected exported sync generator next() to rethrow Error.');
     },
@@ -637,7 +866,7 @@ const cases: GeneratorCompilerCase[] = [
         (iterator as Iterator<number, number, number>).throw?.(new Error('boom'));
       } catch (error) {
         threw = true;
-        assertEquals(error, { name: 'Error', message: 'boom' });
+        assertThrownValueMatchesExpected(error, { name: 'Error', message: 'boom' });
       }
       assertEquals(threw, true, 'Expected exported sync generator throw(Error) to rethrow.');
     },
@@ -1460,6 +1689,28 @@ const cases: GeneratorCompilerCase[] = [
       ' + ((second.done ? 0 : second.value) * 100)' +
       ' + ((third.done ? 0 : third.value) * 10)' +
       ' + (fourth.done ? fourth.value : 0);',
+      '}',
+      '',
+    ].join('\n'),
+  },
+  {
+    name: 'compileProject lowers sync generator yield star over local object arrays',
+    expected: 24689,
+    source: [
+      'function* outer(): Generator<{ left: number; right: number }, number, unknown> {',
+      '  const values = [{ left: 2, right: 4 }, { left: 6, right: 8 }];',
+      '  yield* values;',
+      '  return 9;',
+      '}',
+      '',
+      'export function main(): number {',
+      '  const iterator = outer();',
+      '  const first = iterator.next();',
+      '  const second = iterator.next();',
+      '  const third = iterator.next();',
+      '  const firstValue = first.done ? 0 : (first.value.left * 10) + first.value.right;',
+      '  const secondValue = second.done ? 0 : (second.value.left * 10) + second.value.right;',
+      '  return (firstValue * 1000) + (secondValue * 10) + (third.done ? third.value : 0);',
       '}',
       '',
     ].join('\n'),
