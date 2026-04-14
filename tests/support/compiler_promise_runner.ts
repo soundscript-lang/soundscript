@@ -5629,6 +5629,76 @@ async function main(): Promise<void> {
       },
     },
     {
+      name: 'compileProject lowers for await identifier bindings over imported host async generator objects',
+      source: [
+        'declare function iterate(): AsyncGenerator<{ left: number; right: number }, number, unknown>;',
+        '',
+        'export async function main(): Promise<number> {',
+        '  let total = 0;',
+        '  for await (const value of iterate()) {',
+        '    total = (total * 100) + (value.left * 10) + value.right;',
+        '  }',
+        '  return total;',
+        '}',
+        '',
+      ].join('\n'),
+      hostFunctions: {
+        'src/index.ts:iterate': async function* (): AsyncGenerator<
+          { left: number; right: number },
+          number,
+          unknown
+        > {
+          yield { left: 2, right: 4 };
+          yield { left: 6, right: 8 };
+          return 9;
+        },
+      },
+      run: async (exported) => {
+        const result = exported();
+        if (!(result instanceof Promise)) {
+          throw new Error(
+            'Expected exported imported-host async-generator object-identifier for-await consumer to return a host Promise.',
+          );
+        }
+        assertEquals(await result, 2468);
+      },
+    },
+    {
+      name: 'compileProject lowers for await object binding over imported host async generator objects',
+      source: [
+        'declare function iterate(): AsyncGenerator<{ left: number; right: number }, number, unknown>;',
+        '',
+        'export async function main(): Promise<number> {',
+        '  let total = 0;',
+        '  for await (const { left, right } of iterate()) {',
+        '    total = (total * 100) + (left * 10) + right;',
+        '  }',
+        '  return total;',
+        '}',
+        '',
+      ].join('\n'),
+      hostFunctions: {
+        'src/index.ts:iterate': async function* (): AsyncGenerator<
+          { left: number; right: number },
+          number,
+          unknown
+        > {
+          yield { left: 2, right: 4 };
+          yield { left: 6, right: 8 };
+          return 9;
+        },
+      },
+      run: async (exported) => {
+        const result = exported();
+        if (!(result instanceof Promise)) {
+          throw new Error(
+            'Expected exported imported-host async-generator object-binding for-await consumer to return a host Promise.',
+          );
+        }
+        assertEquals(await result, 2468);
+      },
+    },
+    {
       name: 'compileProject lowers for await of over local number arrays',
       source: [
         'export async function main(): Promise<number> {',
@@ -6083,6 +6153,51 @@ async function main(): Promise<void> {
         if (!(result instanceof Promise)) {
           throw new Error(
             'Expected exported async-generator object-binding for-await consumer to return a host Promise.',
+          );
+        }
+        assertEquals(await result, 760);
+      },
+    },
+    {
+      name:
+        'compileProject lowers for await object binding over imported host async generator objects inside async generators',
+      source: [
+        'declare function iterate(): AsyncGenerator<{ left: number; right: number }, number, unknown>;',
+        '',
+        'async function* outer(): AsyncGenerator<number, number, unknown> {',
+        '  let total = 0;',
+        '  for await (const { left, right } of iterate()) {',
+        '    yield left + right;',
+        '    total = total + left + right;',
+        '  }',
+        '  return total;',
+        '}',
+        '',
+        'export async function main(): Promise<number> {',
+        '  const iterator = outer();',
+        '  const first = await iterator.next();',
+        '  const second = await iterator.next();',
+        '  const third = await iterator.next();',
+        '  return (first.done ? 0 : first.value) * 100 + (second.done ? 0 : second.value) * 10 + (third.done ? third.value : 0);',
+        '}',
+        '',
+      ].join('\n'),
+      hostFunctions: {
+        'src/index.ts:iterate': async function* (): AsyncGenerator<
+          { left: number; right: number },
+          number,
+          unknown
+        > {
+          yield { left: 2, right: 4 };
+          yield { left: 6, right: 8 };
+          return 9;
+        },
+      },
+      run: async (exported) => {
+        const result = exported();
+        if (!(result instanceof Promise)) {
+          throw new Error(
+            'Expected exported imported-host async-generator object-binding for-await consumer inside async generators to return a host Promise.',
           );
         }
         assertEquals(await result, 760);

@@ -7434,6 +7434,10 @@ function getHostBuiltinErrorToDynamicHelperName(): string {
   return '__soundscript_host_builtin_error_to_dynamic';
 }
 
+function getHostAsyncGeneratorYieldObjectToDynamicHelperName(): string {
+  return '__soundscript_host_async_generator_yield_object_to_dynamic';
+}
+
 function getHostIteratorResultToDynamicHelperName(): string {
   return '__soundscript_host_iterator_result_to_dynamic';
 }
@@ -8648,12 +8652,35 @@ function emitObjectRuntimeImports(
     hostPromiseRejectObjectPropertyMetadata?.propertyNames ?? [];
   const hostPromiseRejectObjectNestedPropertyNames =
     hostPromiseRejectObjectPropertyMetadata?.nestedPropertyNames ?? [];
+  const hostAsyncGeneratorYieldObjectPropertyMetadata = getEffectiveModuleHostObjectPropertyMetadata(
+    module.hostAsyncGeneratorYieldObjectBoundary,
+    module.hostAsyncGeneratorYieldObjectPropertyNames,
+    module.hostAsyncGeneratorYieldObjectNestedPropertyNames,
+  );
+  const hostAsyncGeneratorYieldObjectPropertyNames =
+    hostAsyncGeneratorYieldObjectPropertyMetadata?.propertyNames ?? [];
+  const hostAsyncGeneratorYieldObjectNestedPropertyNames =
+    hostAsyncGeneratorYieldObjectPropertyMetadata?.nestedPropertyNames ?? [];
+  const usesHostAsyncGeneratorYieldObjectBridge =
+    hostAsyncGeneratorYieldObjectPropertyNames.length > 0;
+  const hostAsyncGeneratorYieldHostPropertyNames = [
+    ...new Set([
+      ...hostAsyncGeneratorYieldObjectPropertyNames,
+      ...hostAsyncGeneratorYieldObjectNestedPropertyNames.flatMap((entry) =>
+        entry.nestedPropertyNames
+      ),
+    ]),
+  ];
   const bridgedHostObjectPropertyNames = [
     ...new Set([
       ...syncTryHostObjectPropertyNames,
       ...syncTryHostObjectNestedPropertyNames.flatMap((entry) => entry.nestedPropertyNames),
       ...hostPromiseRejectObjectPropertyNames,
       ...hostPromiseRejectObjectNestedPropertyNames.flatMap((entry) => entry.nestedPropertyNames),
+      ...hostAsyncGeneratorYieldObjectPropertyNames,
+      ...hostAsyncGeneratorYieldObjectNestedPropertyNames.flatMap((entry) =>
+        entry.nestedPropertyNames
+      ),
     ]),
   ];
   const hostMapValueKinds = new Set(
@@ -8676,7 +8703,8 @@ function emitObjectRuntimeImports(
     !usesHostPromiseErrorBridge &&
     !usesHostClosureDynamicObjectBridge &&
     !usesTaggedThrowBuiltinErrorBridge &&
-    !usesSyncTryCatch
+    !usesSyncTryCatch &&
+    !usesHostAsyncGeneratorYieldObjectBridge
   ) {
     return [];
   }
@@ -8842,6 +8870,18 @@ function emitObjectRuntimeImports(
         getHostObjectImportFunctionName('set_tagged', 'cause')
       } (param externref) (param externref)))`,
     );
+  }
+  if (hostAsyncGeneratorYieldHostPropertyNames.length > 0) {
+    for (const propertyName of hostAsyncGeneratorYieldHostPropertyNames) {
+      setterImports.set(
+        `set_tagged:${propertyName}`,
+        `(import "soundscript_object" "set_tagged:${
+          getHostObjectPropertyToken(propertyName)
+        }" (func $${
+          getHostObjectImportFunctionName('set_tagged', propertyName)
+        } (param externref) (param externref)))`,
+      );
+    }
   }
   if (
     moduleUsesSyncGeneratorHostImportBridge(module) ||
@@ -16586,6 +16626,351 @@ function emitPromiseRuntimeHelpers(
         `${indent(2)}end`,
       ];
     });
+  const hostAsyncGeneratorYieldObjectPropertyMetadata = getEffectiveModuleHostObjectPropertyMetadata(
+    module.hostAsyncGeneratorYieldObjectBoundary,
+    module.hostAsyncGeneratorYieldObjectPropertyNames,
+    module.hostAsyncGeneratorYieldObjectNestedPropertyNames,
+  );
+  const hostAsyncGeneratorYieldObjectPropertyNames =
+    hostAsyncGeneratorYieldObjectPropertyMetadata?.propertyNames ?? [];
+  const hostAsyncGeneratorYieldObjectNestedPropertyEntries =
+    hostAsyncGeneratorYieldObjectPropertyMetadata?.nestedPropertyNames ?? [];
+  const hostAsyncGeneratorYieldObjectNestedPropertyHelperIndexesByPathKey = new Map(
+    hostAsyncGeneratorYieldObjectNestedPropertyEntries.map((entry, index) =>
+      [
+        getHostObjectPropertyPathKey(entry.propertyPath),
+        index,
+      ] as const
+    ),
+  );
+  const usesHostAsyncGeneratorYieldObjectBridge =
+    hostAsyncGeneratorYieldObjectPropertyNames.length > 0;
+  const getHostAsyncGeneratorYieldObjectPropertyToDynamicHelperName = (index: number) =>
+    `__soundscript_host_async_generator_yield_object_property_${index}_to_dynamic`;
+  const getHostAsyncGeneratorYieldObjectPropertyToHostHelperName = (index: number) =>
+    `__soundscript_host_async_generator_yield_object_property_${index}_to_host`;
+  const getHostAsyncGeneratorYieldObjectToHostHelperName = () =>
+    '__soundscript_host_async_generator_yield_object_to_host';
+  const hostAsyncGeneratorYieldObjectPropertyLocals =
+    hostAsyncGeneratorYieldObjectPropertyNames.flatMap((propertyName, index) => {
+      const helperIndex = hostAsyncGeneratorYieldObjectNestedPropertyHelperIndexesByPathKey.get(
+        getHostObjectPropertyPathKey([propertyName]),
+      );
+      return [
+        `${indent(1)}(local $host_async_generator_prop_${index} externref)`,
+        `${indent(1)}(local $host_async_generator_prop_${index}_tag i32)`,
+        `${indent(1)}(local $host_async_generator_prop_${index}_tagged (ref null $tagged_value))`,
+        ...(helperIndex !== undefined
+          ? [
+            `${indent(1)}(local $host_async_generator_prop_${index}_object (ref null $${layout.watTypeId}))`,
+          ]
+          : []),
+      ];
+    });
+  const hostAsyncGeneratorYieldObjectNestedPropertyHelpers =
+    hostAsyncGeneratorYieldObjectNestedPropertyEntries.flatMap((entry, index) => {
+      const nestedPropertyLocals = entry.nestedPropertyNames.flatMap((
+        nestedPropertyName,
+        nestedIndex,
+      ) => {
+        const childHelperIndex =
+          hostAsyncGeneratorYieldObjectNestedPropertyHelperIndexesByPathKey.get(
+            getHostObjectPropertyPathKey([...entry.propertyPath, nestedPropertyName]),
+          );
+        return [
+          `${indent(1)}(local $nested_async_generator_prop_${nestedIndex} externref)`,
+          `${indent(1)}(local $nested_async_generator_prop_${nestedIndex}_tag i32)`,
+          `${indent(1)}(local $nested_async_generator_prop_${nestedIndex}_tagged (ref null $tagged_value))`,
+          ...(childHelperIndex !== undefined
+            ? [
+              `${indent(1)}(local $nested_async_generator_prop_${nestedIndex}_object (ref null $${layout.watTypeId}))`,
+            ]
+            : []),
+        ];
+      });
+      const nestedPropertyCopyStatements = entry.nestedPropertyNames.flatMap((
+        nestedPropertyName,
+        nestedIndex,
+      ) => {
+        const childHelperIndex =
+          hostAsyncGeneratorYieldObjectNestedPropertyHelperIndexesByPathKey.get(
+            getHostObjectPropertyPathKey([...entry.propertyPath, nestedPropertyName]),
+          );
+        const nestedPropertyLiteralId = getRequiredStringLiteralId(
+          stringLiteralIdsByText,
+          nestedPropertyName,
+        );
+        const nestedPropLocalName = `nested_async_generator_prop_${nestedIndex}`;
+        const nestedPropTagLocalName = `nested_async_generator_prop_${nestedIndex}_tag`;
+        const nestedPropTaggedLocalName = `nested_async_generator_prop_${nestedIndex}_tagged`;
+        const nestedPropObjectLocalName = `nested_async_generator_prop_${nestedIndex}_object`;
+        return [
+          `${indent(1)}local.get $value`,
+          `${indent(1)}call $${getHostObjectImportFunctionName('has', nestedPropertyName)}`,
+          `${indent(1)}if`,
+          `${indent(2)}local.get $value`,
+          `${indent(2)}call $${getHostObjectImportFunctionName('get_tagged', nestedPropertyName)}`,
+          `${indent(2)}local.tee $${nestedPropLocalName}`,
+          `${indent(2)}call $tagged_type_tag`,
+          `${indent(2)}local.set $${nestedPropTagLocalName}`,
+          `${indent(2)}local.get $${nestedPropTagLocalName}`,
+          `${indent(2)}i32.const 4`,
+          `${indent(2)}i32.eq`,
+          `${indent(2)}if`,
+          ...(childHelperIndex !== undefined
+            ? [
+              `${indent(3)}local.get $${nestedPropLocalName}`,
+              `${indent(3)}call $${
+                getHostAsyncGeneratorYieldObjectPropertyToDynamicHelperName(childHelperIndex)
+              }`,
+              `${indent(3)}local.set $${nestedPropObjectLocalName}`,
+              `${indent(3)}local.get $${nestedPropObjectLocalName}`,
+              `${indent(3)}call $tag_heap_object`,
+              `${indent(3)}local.set $${nestedPropTaggedLocalName}`,
+            ]
+            : [
+              `${indent(3)}call $tag_undefined`,
+              `${indent(3)}local.set $${nestedPropTaggedLocalName}`,
+            ]),
+          `${indent(2)}else`,
+          ...emitHostTaggedPrimitiveExternrefToTagged(
+            nestedPropLocalName,
+            nestedPropTagLocalName,
+            nestedPropTaggedLocalName,
+            {
+              includesBoolean: true,
+              includesNull: true,
+              includesNumber: true,
+              includesString: true,
+              includesUndefined: true,
+            },
+            3,
+            indent,
+          ),
+          `${indent(3)}local.set $${nestedPropTaggedLocalName}`,
+          `${indent(2)}end`,
+          `${indent(2)}local.get $result`,
+          `${indent(2)}call $owned_string_literal_${nestedPropertyLiteralId}`,
+          `${indent(2)}local.get $${nestedPropTaggedLocalName}`,
+          `${indent(2)}call $set_dynamic_object_property`,
+          `${indent(1)}end`,
+        ];
+      });
+      return [
+        `(func $${
+          getHostAsyncGeneratorYieldObjectPropertyToDynamicHelperName(index)
+        } (param $value externref) (result (ref null $${layout.watTypeId}))`,
+        ...nestedPropertyLocals,
+        `${indent(1)}(local $result (ref null $${layout.watTypeId}))`,
+        `${indent(1)}call $allocate_dynamic_object`,
+        `${indent(1)}local.set $result`,
+        ...nestedPropertyCopyStatements,
+        `${indent(1)}local.get $result`,
+        ')',
+      ];
+    });
+  const hostAsyncGeneratorYieldObjectPropertyCopyStatements =
+    hostAsyncGeneratorYieldObjectPropertyNames.flatMap((propertyName, index) => {
+      const propertyLiteralId = getRequiredStringLiteralId(stringLiteralIdsByText, propertyName);
+      const propLocalName = `host_async_generator_prop_${index}`;
+      const propTagLocalName = `host_async_generator_prop_${index}_tag`;
+      const propTaggedLocalName = `host_async_generator_prop_${index}_tagged`;
+      const propObjectLocalName = `host_async_generator_prop_${index}_object`;
+      const helperIndex = hostAsyncGeneratorYieldObjectNestedPropertyHelperIndexesByPathKey.get(
+        getHostObjectPropertyPathKey([propertyName]),
+      );
+      return [
+        `${indent(1)}local.get $value`,
+        `${indent(1)}call $${getHostObjectImportFunctionName('has', propertyName)}`,
+        `${indent(1)}if`,
+        `${indent(2)}local.get $value`,
+        `${indent(2)}call $${getHostObjectImportFunctionName('get_tagged', propertyName)}`,
+        `${indent(2)}local.tee $${propLocalName}`,
+        `${indent(2)}call $tagged_type_tag`,
+        `${indent(2)}local.set $${propTagLocalName}`,
+        `${indent(2)}local.get $${propTagLocalName}`,
+        `${indent(2)}i32.const 4`,
+        `${indent(2)}i32.eq`,
+        `${indent(2)}if`,
+        ...(helperIndex !== undefined
+          ? [
+            `${indent(3)}local.get $${propLocalName}`,
+            `${indent(3)}call $${getHostAsyncGeneratorYieldObjectPropertyToDynamicHelperName(helperIndex)}`,
+            `${indent(3)}local.set $${propObjectLocalName}`,
+            `${indent(3)}local.get $${propObjectLocalName}`,
+            `${indent(3)}call $tag_heap_object`,
+            `${indent(3)}local.set $${propTaggedLocalName}`,
+          ]
+          : [
+            `${indent(3)}call $tag_undefined`,
+            `${indent(3)}local.set $${propTaggedLocalName}`,
+          ]),
+        `${indent(2)}else`,
+        ...emitHostTaggedPrimitiveExternrefToTagged(
+          propLocalName,
+          propTagLocalName,
+          propTaggedLocalName,
+          {
+            includesBoolean: true,
+            includesNull: true,
+            includesNumber: true,
+            includesString: true,
+            includesUndefined: true,
+          },
+          3,
+          indent,
+        ),
+        `${indent(3)}local.set $${propTaggedLocalName}`,
+        `${indent(2)}end`,
+        `${indent(2)}local.get $result`,
+        `${indent(2)}call $owned_string_literal_${propertyLiteralId}`,
+        `${indent(2)}local.get $${propTaggedLocalName}`,
+        `${indent(2)}call $set_dynamic_object_property`,
+        `${indent(1)}end`,
+      ];
+    });
+  const hostAsyncGeneratorYieldObjectHostPropertyLocals =
+    hostAsyncGeneratorYieldObjectPropertyNames.flatMap((_propertyName, index) => [
+      `${indent(1)}(local $host_async_generator_host_prop_${index}_tagged (ref null $tagged_value))`,
+      `${indent(1)}(local $host_async_generator_host_prop_${index}_tag i32)`,
+      `${indent(1)}(local $host_async_generator_host_prop_${index}_value externref)`,
+    ]);
+  const hostAsyncGeneratorYieldObjectNestedPropertyToHostHelpers =
+    hostAsyncGeneratorYieldObjectNestedPropertyEntries.flatMap((entry, index) => {
+      const nestedPropertyLocals = entry.nestedPropertyNames.flatMap((_nestedPropertyName, nestedIndex) => [
+        `${indent(1)}(local $nested_async_generator_host_prop_${nestedIndex}_tagged (ref null $tagged_value))`,
+        `${indent(1)}(local $nested_async_generator_host_prop_${nestedIndex}_tag i32)`,
+        `${indent(1)}(local $nested_async_generator_host_prop_${nestedIndex}_value externref)`,
+      ]);
+      const nestedPropertyCopyStatements = entry.nestedPropertyNames.flatMap((
+        nestedPropertyName,
+        nestedIndex,
+      ) => {
+        const childHelperIndex =
+          hostAsyncGeneratorYieldObjectNestedPropertyHelperIndexesByPathKey.get(
+            getHostObjectPropertyPathKey([...entry.propertyPath, nestedPropertyName]),
+          );
+        const nestedPropertyLiteralId = getRequiredStringLiteralId(
+          stringLiteralIdsByText,
+          nestedPropertyName,
+        );
+        const nestedPropTaggedLocalName = `nested_async_generator_host_prop_${nestedIndex}_tagged`;
+        const nestedPropTagLocalName = `nested_async_generator_host_prop_${nestedIndex}_tag`;
+        const nestedPropValueLocalName = `nested_async_generator_host_prop_${nestedIndex}_value`;
+        return [
+          `${indent(1)}local.get $value`,
+          `${indent(1)}call $owned_string_literal_${nestedPropertyLiteralId}`,
+          `${indent(1)}call $get_dynamic_object_property`,
+          `${indent(1)}local.tee $${nestedPropTaggedLocalName}`,
+          `${indent(1)}struct.get $tagged_value 0`,
+          `${indent(1)}local.set $${nestedPropTagLocalName}`,
+          `${indent(1)}local.get $${nestedPropTagLocalName}`,
+          `${indent(1)}i32.const 4`,
+          `${indent(1)}i32.eq`,
+          `${indent(1)}if`,
+          ...(childHelperIndex !== undefined
+            ? [
+              `${indent(2)}local.get $${nestedPropTaggedLocalName}`,
+              `${indent(2)}call $untag_heap_object`,
+              `${indent(2)}ref.cast (ref null $${layout.watTypeId})`,
+              `${indent(2)}call $${
+                getHostAsyncGeneratorYieldObjectPropertyToHostHelperName(childHelperIndex)
+              }`,
+              `${indent(2)}local.set $${nestedPropValueLocalName}`,
+            ]
+            : [
+              `${indent(2)}call $tagged_undefined_value`,
+              `${indent(2)}local.set $${nestedPropValueLocalName}`,
+            ]),
+          `${indent(1)}else`,
+          ...emitTaggedPrimitiveToHostExternref(
+            nestedPropTaggedLocalName,
+            nestedPropTagLocalName,
+            nestedPropValueLocalName,
+            {
+              includesBoolean: true,
+              includesNull: true,
+              includesNumber: true,
+              includesString: true,
+              includesUndefined: true,
+            },
+            2,
+            indent,
+          ),
+          `${indent(2)}local.set $${nestedPropValueLocalName}`,
+          `${indent(1)}end`,
+          `${indent(1)}local.get $result`,
+          `${indent(1)}local.get $${nestedPropValueLocalName}`,
+          `${indent(1)}call $${getHostObjectImportFunctionName('set_tagged', nestedPropertyName)}`,
+        ];
+      });
+      return [
+        `(func $${
+          getHostAsyncGeneratorYieldObjectPropertyToHostHelperName(index)
+        } (param $value (ref null $${layout.watTypeId})) (result externref)`,
+        ...nestedPropertyLocals,
+        `${indent(1)}(local $result externref)`,
+        `${indent(1)}call $host_object_empty`,
+        `${indent(1)}local.set $result`,
+        ...nestedPropertyCopyStatements,
+        `${indent(1)}local.get $result`,
+        ')',
+      ];
+    });
+  const hostAsyncGeneratorYieldObjectPropertyToHostStatements =
+    hostAsyncGeneratorYieldObjectPropertyNames.flatMap((propertyName, index) => {
+      const propertyLiteralId = getRequiredStringLiteralId(stringLiteralIdsByText, propertyName);
+      const helperIndex = hostAsyncGeneratorYieldObjectNestedPropertyHelperIndexesByPathKey.get(
+        getHostObjectPropertyPathKey([propertyName]),
+      );
+      const propTaggedLocalName = `host_async_generator_host_prop_${index}_tagged`;
+      const propTagLocalName = `host_async_generator_host_prop_${index}_tag`;
+      const propValueLocalName = `host_async_generator_host_prop_${index}_value`;
+      return [
+        `${indent(1)}local.get $value`,
+        `${indent(1)}call $owned_string_literal_${propertyLiteralId}`,
+        `${indent(1)}call $get_dynamic_object_property`,
+        `${indent(1)}local.tee $${propTaggedLocalName}`,
+        `${indent(1)}struct.get $tagged_value 0`,
+        `${indent(1)}local.set $${propTagLocalName}`,
+        `${indent(1)}local.get $${propTagLocalName}`,
+        `${indent(1)}i32.const 4`,
+        `${indent(1)}i32.eq`,
+        `${indent(1)}if`,
+        ...(helperIndex !== undefined
+          ? [
+            `${indent(2)}local.get $${propTaggedLocalName}`,
+            `${indent(2)}call $untag_heap_object`,
+            `${indent(2)}ref.cast (ref null $${layout.watTypeId})`,
+            `${indent(2)}call $${getHostAsyncGeneratorYieldObjectPropertyToHostHelperName(helperIndex)}`,
+            `${indent(2)}local.set $${propValueLocalName}`,
+          ]
+          : [
+            `${indent(2)}call $tagged_undefined_value`,
+            `${indent(2)}local.set $${propValueLocalName}`,
+          ]),
+        `${indent(1)}else`,
+        ...emitTaggedPrimitiveToHostExternref(
+          propTaggedLocalName,
+          propTagLocalName,
+          propValueLocalName,
+          {
+            includesBoolean: true,
+            includesNull: true,
+            includesNumber: true,
+            includesString: true,
+            includesUndefined: true,
+          },
+          2,
+          indent,
+        ),
+        `${indent(2)}local.set $${propValueLocalName}`,
+        `${indent(1)}end`,
+        `${indent(1)}local.get $result`,
+        `${indent(1)}local.get $${propValueLocalName}`,
+        `${indent(1)}call $${getHostObjectImportFunctionName('set_tagged', propertyName)}`,
+      ];
+    });
   if (usesHostPromiseResultBridge && !promiseHandlerSignature) {
     throw new Error('Missing promise handler signature for host Promise result bridge.');
   }
@@ -17147,6 +17532,9 @@ function emitPromiseRuntimeHelpers(
         `${indent(1)}(local $value__tag i32)`,
         `${indent(1)}(local $value__host externref)`,
         `${indent(1)}(local $value__dynamic (ref null $${layout.watTypeId}))`,
+        ...(moduleUsesBuiltinErrorRuntime(module)
+          ? [`${indent(1)}(local $value__error_brand_tagged (ref null $tagged_value))`]
+          : []),
         `${indent(1)}local.get $value`,
         `${indent(1)}struct.get $tagged_value 0`,
         `${indent(1)}local.set $value__tag`,
@@ -17184,9 +17572,20 @@ function emitPromiseRuntimeHelpers(
             `${indent(4)}local.get $value`,
             `${indent(4)}call $untag_heap_object`,
             `${indent(4)}ref.cast (ref null $${layout.watTypeId})`,
-            `${indent(4)}call $${getHostDynamicBuiltinErrorHelperName()}`,
-            `${indent(4)}local.set $value__host`,
-            `${indent(4)}br $value__host_done`,
+            `${indent(4)}local.tee $value__dynamic`,
+            `${indent(4)}call $owned_string_literal_${builtinErrorBrandKeyLiteralId!}`,
+            `${indent(4)}call $get_dynamic_object_property`,
+            `${indent(4)}local.set $value__error_brand_tagged`,
+            `${indent(4)}local.get $value__error_brand_tagged`,
+            `${indent(4)}struct.get $tagged_value 0`,
+            `${indent(4)}i32.const 3`,
+            `${indent(4)}i32.eq`,
+            `${indent(4)}if`,
+            `${indent(5)}local.get $value__dynamic`,
+            `${indent(5)}call $${getHostDynamicBuiltinErrorHelperName()}`,
+            `${indent(5)}local.set $value__host`,
+            `${indent(5)}br $value__host_done`,
+            `${indent(4)}end`,
             `${indent(3)}end`,
           ]
           : []),
@@ -17236,6 +17635,30 @@ function emitPromiseRuntimeHelpers(
         `${indent(4)}local.set $value__host`,
         `${indent(4)}br $value__host_done`,
         `${indent(3)}end`,
+        ...(usesHostAsyncGeneratorYieldObjectBridge
+          ? [
+            `${indent(3)}local.get $value`,
+            `${indent(3)}call $untag_heap_object`,
+            `${indent(3)}call $${getHostObjectLookupCachedImportFunctionName()}`,
+            `${indent(3)}local.tee $value__host`,
+            `${indent(3)}ref.is_null`,
+            `${indent(3)}if`,
+            `${indent(4)}local.get $value`,
+            `${indent(4)}call $untag_heap_object`,
+            `${indent(4)}ref.test (ref null $${layout.watTypeId})`,
+            `${indent(4)}if`,
+            `${indent(5)}local.get $value`,
+            `${indent(5)}call $untag_heap_object`,
+            `${indent(5)}ref.cast (ref null $${layout.watTypeId})`,
+            `${indent(5)}call $${getHostAsyncGeneratorYieldObjectToHostHelperName()}`,
+            `${indent(5)}local.set $value__host`,
+            `${indent(5)}br $value__host_done`,
+            `${indent(4)}end`,
+            `${indent(3)}else`,
+            `${indent(4)}br $value__host_done`,
+            `${indent(3)}end`,
+          ]
+          : []),
         ...(() => {
           const candidateLayouts = [...layoutsByRepresentationName.values()]
             .sort((left, right) => left.watTypeId.localeCompare(right.watTypeId));
@@ -17321,6 +17744,32 @@ function emitPromiseRuntimeHelpers(
       : []),
     ...(usesAsyncGeneratorHostStepBridge
       ? [
+        ...hostAsyncGeneratorYieldObjectNestedPropertyToHostHelpers,
+        ...(usesHostAsyncGeneratorYieldObjectBridge
+          ? [
+            `(func $${getHostAsyncGeneratorYieldObjectToHostHelperName()} (param $value (ref null $${layout.watTypeId})) (result externref)`,
+            ...hostAsyncGeneratorYieldObjectHostPropertyLocals,
+            `${indent(1)}(local $result externref)`,
+            `${indent(1)}call $host_object_empty`,
+            `${indent(1)}local.set $result`,
+            ...hostAsyncGeneratorYieldObjectPropertyToHostStatements,
+            `${indent(1)}local.get $result`,
+            ')',
+          ]
+          : []),
+        ...hostAsyncGeneratorYieldObjectNestedPropertyHelpers,
+        ...(usesHostAsyncGeneratorYieldObjectBridge
+          ? [
+            `(func $${getHostAsyncGeneratorYieldObjectToDynamicHelperName()} (param $value externref) (result (ref null $${layout.watTypeId}))`,
+            ...hostAsyncGeneratorYieldObjectPropertyLocals,
+            `${indent(1)}(local $result (ref null $${layout.watTypeId}))`,
+            `${indent(1)}call $allocate_dynamic_object`,
+            `${indent(1)}local.set $result`,
+            ...hostAsyncGeneratorYieldObjectPropertyCopyStatements,
+            `${indent(1)}local.get $result`,
+            ')',
+          ]
+          : []),
         `(func $${SOUNDSCRIPT_ASYNC_GENERATOR_STEP_BRIDGE_FULFILL_TAGGED_HELPER_NAME} (param $promise (ref null eq)) (param $done i32) (param $value (ref null $tagged_value))`,
         `${indent(1)}(local $target (ref null $${layout.watTypeId}))`,
         `${indent(1)}(local $result (ref null $${layout.watTypeId}))`,
@@ -17367,6 +17816,11 @@ function emitPromiseRuntimeHelpers(
         `${indent(1)}(local $value__host_tag i32)`,
         `${indent(1)}(local $value__host_tagged (ref null $tagged_value))`,
         `${indent(1)}(local $value__cached (ref null eq))`,
+        ...(usesHostAsyncGeneratorYieldObjectBridge
+          ? [
+            `${indent(1)}(local $value__object (ref null $${layout.watTypeId}))`,
+          ]
+          : []),
         ...(usesHostPromiseErrorBridge
           ? [
             `${indent(1)}(local $value__message externref)`,
@@ -17389,23 +17843,35 @@ function emitPromiseRuntimeHelpers(
             `${indent(3)}i32.const 4`,
             `${indent(3)}i32.eq`,
             `${indent(3)}if`,
-            `${indent(5)}local.get $value`,
-            `${indent(5)}call $${getHostObjectImportFunctionName('get_tagged', 'message')}`,
-            `${indent(5)}local.tee $value__message`,
-            `${indent(5)}call $tagged_type_tag`,
-            `${indent(5)}local.set $value__message_tag`,
-            `${indent(5)}local.get $value__message_tag`,
-            `${indent(5)}i32.const 3`,
-            `${indent(5)}i32.eq`,
-            `${indent(5)}if`,
-            `${indent(7)}local.get $value`,
-            `${indent(7)}call $${getHostBuiltinErrorToDynamicHelperName()}`,
-            `${indent(7)}local.set $value__error_object`,
-            `${indent(7)}local.get $value__error_object`,
-            `${indent(7)}call $tag_heap_object`,
-            `${indent(7)}local.set $value__host_tagged`,
-            `${indent(7)}br $value__host_bridge_done`,
-            `${indent(5)}end`,
+            ...(usesHostAsyncGeneratorYieldObjectBridge
+              ? [
+                `${indent(5)}local.get $value`,
+                `${indent(5)}call $${getHostAsyncGeneratorYieldObjectToDynamicHelperName()}`,
+                `${indent(5)}local.set $value__object`,
+                `${indent(5)}local.get $value__object`,
+                `${indent(5)}call $tag_heap_object`,
+                `${indent(5)}local.set $value__host_tagged`,
+                `${indent(5)}br $value__host_bridge_done`,
+              ]
+              : [
+                `${indent(5)}local.get $value`,
+                `${indent(5)}call $${getHostObjectImportFunctionName('get_tagged', 'message')}`,
+                `${indent(5)}local.tee $value__message`,
+                `${indent(5)}call $tagged_type_tag`,
+                `${indent(5)}local.set $value__message_tag`,
+                `${indent(5)}local.get $value__message_tag`,
+                `${indent(5)}i32.const 3`,
+                `${indent(5)}i32.eq`,
+                `${indent(5)}if`,
+                `${indent(7)}local.get $value`,
+                `${indent(7)}call $${getHostBuiltinErrorToDynamicHelperName()}`,
+                `${indent(7)}local.set $value__error_object`,
+                `${indent(7)}local.get $value__error_object`,
+                `${indent(7)}call $tag_heap_object`,
+                `${indent(7)}local.set $value__host_tagged`,
+                `${indent(7)}br $value__host_bridge_done`,
+                `${indent(5)}end`,
+              ]),
             `${indent(3)}end`,
             ...emitHostTaggedPrimitiveExternrefToTagged(
               'value',

@@ -1582,6 +1582,9 @@ export interface CompilerModuleIR {
   hostPromiseRejectObjectBoundary?: CompilerHostBoundaryObjectIR;
   hostPromiseRejectObjectPropertyNames?: readonly string[];
   hostPromiseRejectObjectNestedPropertyNames?: readonly CompilerHostObjectNestedPropertyNamesIR[];
+  hostAsyncGeneratorYieldObjectBoundary?: CompilerHostBoundaryObjectIR;
+  hostAsyncGeneratorYieldObjectPropertyNames?: readonly string[];
+  hostAsyncGeneratorYieldObjectNestedPropertyNames?: readonly CompilerHostObjectNestedPropertyNamesIR[];
   functions: CompilerFunctionIR[];
   jsHostImports?: readonly CompilerJsHostImportIR[];
   moduleGlobals?: readonly CompilerModuleGlobalIR[];

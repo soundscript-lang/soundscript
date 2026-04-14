@@ -468,6 +468,11 @@ interface ModuleRuntimeLoweringState {
   syncTryCatchHostObjectNestedPropertyNames: Map<string, HostObjectNestedPropertyNamesState>;
   hostPromiseRejectObjectPropertyNames: Set<string>;
   hostPromiseRejectObjectNestedPropertyNames: Map<string, HostObjectNestedPropertyNamesState>;
+  hostAsyncGeneratorYieldObjectPropertyNames: Set<string>;
+  hostAsyncGeneratorYieldObjectNestedPropertyNames: Map<
+    string,
+    HostObjectNestedPropertyNamesState
+  >;
   functions: CompilerRuntimeFunctionIR[];
   nextClassStaticFieldId: number;
   nextClassTagId: number;
@@ -498,6 +503,8 @@ interface FunctionRuntimeLoweringState {
   syncTryCatchTaggedNestedObjectLocals: Map<string, readonly string[]>;
   hostPromiseRejectTaggedObjectLocals: Set<string>;
   hostPromiseRejectTaggedNestedObjectLocals: Map<string, readonly string[]>;
+  hostAsyncGeneratorYieldObjectLocals: Set<string>;
+  hostAsyncGeneratorYieldNestedObjectLocals: Map<string, readonly string[]>;
   operations: CompilerRuntimeOperationIR[];
   nextOwnedArrayAliasGroupId: number;
 }
@@ -532,6 +539,8 @@ function createModuleRuntimeLoweringState(): ModuleRuntimeLoweringState {
     syncTryCatchHostObjectNestedPropertyNames: new Map(),
     hostPromiseRejectObjectPropertyNames: new Set(),
     hostPromiseRejectObjectNestedPropertyNames: new Map(),
+    hostAsyncGeneratorYieldObjectPropertyNames: new Set(),
+    hostAsyncGeneratorYieldObjectNestedPropertyNames: new Map(),
     functions: [],
     nextClassStaticFieldId: 0,
     nextClassTagId: 1,
@@ -551,6 +560,8 @@ function createFunctionRuntimeLoweringState(): FunctionRuntimeLoweringState {
     syncTryCatchTaggedNestedObjectLocals: new Map(),
     hostPromiseRejectTaggedObjectLocals: new Set(),
     hostPromiseRejectTaggedNestedObjectLocals: new Map(),
+    hostAsyncGeneratorYieldObjectLocals: new Set(),
+    hostAsyncGeneratorYieldNestedObjectLocals: new Map(),
     operations: [],
     nextOwnedArrayAliasGroupId: 0,
   };
@@ -9674,6 +9685,11 @@ function tryLowerObjectBindingSource(
     sourceName = materialized.name;
     sourceRepresentation = materialized.representation;
   }
+  propagateHostAsyncGeneratorYieldObjectLocalFromExpression(
+    sourceName,
+    expression,
+    context,
+  );
   if (
     representation.kind === 'fallback_object_representation' &&
     sourceRepresentation?.kind === 'specialized_object_representation'
@@ -10299,6 +10315,7 @@ function lowerObjectBindingPatternIntoScope(
   for (const element of pattern.elements) {
     const name = element.name;
     const propertyKey = getSupportedObjectBindingPropertyNameText(element);
+    const propertyType = context.checker.getTypeAtLocation(name);
     if (!ts.isIdentifier(name)) {
       continue;
     }
@@ -10322,6 +10339,17 @@ function lowerObjectBindingPatternIntoScope(
       type: capturedByClosure ? 'box_ref' : 'tagged_ref',
       boxedValueType: capturedByClosure ? 'tagged_ref' : undefined,
     });
+    recordHostTaggedObjectPropertyNameFromLocal(sourceName, propertyKey, context);
+    if (isSupportedHeapLocalType(context.checker, propertyType)) {
+      const localInfo = getHostTaggedObjectLocalInfo(sourceName, context);
+      if (localInfo) {
+        recordHostTaggedObjectNestedLocal(
+          emittedName,
+          extendHostObjectPropertyPath(localInfo.propertyPath, propertyKey),
+          context,
+        );
+      }
+    }
 
     const extractedName = createLocalName(`${name.text}_property`, context.nextLocalId);
     context.nextLocalId += 1;
@@ -22597,7 +22625,10 @@ function consumeExpressionPreludeStatements(
   return statements;
 }
 
-type HostTaggedObjectExpressionKind = 'sync_try_catch' | 'host_promise_reject';
+type HostTaggedObjectExpressionKind =
+  | 'sync_try_catch'
+  | 'host_promise_reject'
+  | 'host_async_generator_yield';
 
 interface HostTaggedObjectExpressionInfo {
   kind: HostTaggedObjectExpressionKind;
@@ -22640,7 +22671,9 @@ function getHostTaggedObjectIdentifierInfo(
   const emittedName = bound.emittedName;
   if (
     bound.type !== 'tagged_ref' &&
-    (bound.type !== 'box_ref' || bound.boxedValueType !== 'tagged_ref')
+    bound.type !== 'heap_ref' &&
+    (bound.type !== 'box_ref' ||
+      (bound.boxedValueType !== 'tagged_ref' && bound.boxedValueType !== 'heap_ref'))
   ) {
     return undefined;
   }
@@ -22664,6 +22697,17 @@ function getHostTaggedObjectIdentifierInfo(
     return {
       kind: 'host_promise_reject',
       propertyPath: hostPromiseRejectNestedRootPropertyName,
+    };
+  }
+  if (context.functionRuntime.hostAsyncGeneratorYieldObjectLocals.has(emittedName)) {
+    return { kind: 'host_async_generator_yield' };
+  }
+  const hostAsyncGeneratorYieldNestedRootPropertyName = context.functionRuntime
+    .hostAsyncGeneratorYieldNestedObjectLocals.get(emittedName);
+  if (hostAsyncGeneratorYieldNestedRootPropertyName !== undefined) {
+    return {
+      kind: 'host_async_generator_yield',
+      propertyPath: hostAsyncGeneratorYieldNestedRootPropertyName,
     };
   }
   return undefined;
@@ -22766,7 +22810,9 @@ function recordNestedHostObjectPropertyName(
 ): void {
   const map = kind === 'sync_try_catch'
     ? context.runtime.syncTryCatchHostObjectNestedPropertyNames
-    : context.runtime.hostPromiseRejectObjectNestedPropertyNames;
+    : kind === 'host_promise_reject'
+    ? context.runtime.hostPromiseRejectObjectNestedPropertyNames
+    : context.runtime.hostAsyncGeneratorYieldObjectNestedPropertyNames;
   const propertyPathKey = getHostObjectPropertyPathKey(propertyPath);
   const entry = map.get(propertyPathKey) ?? {
     propertyPath: [...propertyPath],
@@ -22798,7 +22844,82 @@ function recordHostTaggedObjectPropertyName(
     recordSyncTryCatchHostObjectPropertyName(propertyName, context);
   } else if (info.kind === 'host_promise_reject') {
     recordHostPromiseRejectObjectPropertyName(propertyName, context);
+  } else if (info.kind === 'host_async_generator_yield') {
+    context.runtime.hostAsyncGeneratorYieldObjectPropertyNames.add(propertyName);
   }
+}
+
+function getHostTaggedObjectLocalInfo(
+  localName: string,
+  context: FunctionLoweringContext,
+): HostTaggedObjectExpressionInfo | undefined {
+  if (context.functionRuntime.hostAsyncGeneratorYieldObjectLocals.has(localName)) {
+    return { kind: 'host_async_generator_yield' };
+  }
+  const propertyPath = context.functionRuntime.hostAsyncGeneratorYieldNestedObjectLocals.get(
+    localName,
+  );
+  return propertyPath === undefined
+    ? undefined
+    : {
+      kind: 'host_async_generator_yield',
+      propertyPath,
+    };
+}
+
+function recordHostTaggedObjectPropertyNameFromLocal(
+  localName: string,
+  propertyName: string,
+  context: FunctionLoweringContext,
+): void {
+  const info = getHostTaggedObjectLocalInfo(localName, context);
+  if (!info) {
+    return;
+  }
+  if (info.propertyPath !== undefined) {
+    recordNestedHostObjectPropertyName(
+      info.kind,
+      info.propertyPath,
+      propertyName,
+      context,
+    );
+    return;
+  }
+  context.runtime.hostAsyncGeneratorYieldObjectPropertyNames.add(propertyName);
+}
+
+function recordHostTaggedObjectNestedLocal(
+  localName: string,
+  propertyPath: readonly string[],
+  context: FunctionLoweringContext,
+): void {
+  context.functionRuntime.hostAsyncGeneratorYieldNestedObjectLocals.set(localName, propertyPath);
+}
+
+function markHostAsyncGeneratorYieldObjectLocal(
+  localName: string,
+  context: FunctionLoweringContext,
+): void {
+  context.functionRuntime.hostAsyncGeneratorYieldObjectLocals.add(localName);
+}
+
+function propagateHostAsyncGeneratorYieldObjectLocalFromExpression(
+  localName: string,
+  expression: ts.Expression,
+  context: FunctionLoweringContext,
+): void {
+  if (getHostTaggedObjectLocalInfo(localName, context)) {
+    return;
+  }
+  const info = getHostTaggedObjectExpressionInfo(expression, context);
+  if (!info || info.kind !== 'host_async_generator_yield') {
+    return;
+  }
+  if (info.propertyPath !== undefined) {
+    recordHostTaggedObjectNestedLocal(localName, info.propertyPath, context);
+    return;
+  }
+  markHostAsyncGeneratorYieldObjectLocal(localName, context);
 }
 
 function createHostTaggedObjectBoundary(
@@ -35600,6 +35721,9 @@ type FrameForOfSourceInfo =
     kind: 'async_generator';
   }
   | {
+    kind: 'host_async_generator';
+  }
+  | {
     kind: 'generator';
   }
   | {
@@ -35624,7 +35748,11 @@ function getSupportedFrameForOfSourceInfo(
   }
   const expressionType = context.checker.getTypeAtLocation(expression);
   if (getSupportedAsyncGeneratorTypeInfo(context.checker, expressionType)) {
-    return { kind: 'async_generator' };
+    return {
+      kind: hasAmbientHostImportedFunctionCallBoundary(expression, context)
+        ? 'host_async_generator'
+        : 'async_generator',
+    };
   }
   if (getSupportedGeneratorTypeInfo(context.checker, expressionType)) {
     return { kind: 'generator' };
@@ -35751,6 +35879,10 @@ function getSupportedFrameForOfSourceInfo(
   return undefined;
 }
 
+function isFrameAsyncGeneratorSourceInfo(sourceInfo: FrameForOfSourceInfo): boolean {
+  return sourceInfo.kind === 'async_generator' || sourceInfo.kind === 'host_async_generator';
+}
+
 function getSupportedFrameForInSourceInfo(
   expression: ts.Expression,
   context: FunctionLoweringContext,
@@ -35814,7 +35946,7 @@ function lowerFrameForOfIteratorSourceExpression(
   baseName: string,
 ): CompilerExpressionIR {
   if (
-    sourceInfo.kind === 'async_generator' ||
+    isFrameAsyncGeneratorSourceInfo(sourceInfo) ||
     sourceInfo.kind === 'generator' ||
     sourceInfo.kind === 'collection_iterator'
   ) {
@@ -35886,7 +36018,7 @@ function lowerFrameForOfIteratorAdvanceFromObject(
   context: FunctionLoweringContext,
   baseName: string,
 ): CompilerExpressionIR {
-  if (sourceInfo.kind === 'async_generator') {
+  if (isFrameAsyncGeneratorSourceInfo(sourceInfo)) {
     ensurePromiseRuntimeInfrastructure(context.runtime);
     ensureBuiltinErrorRuntimeInfrastructure(context.runtime);
     context.currentFunction.usesAsyncGeneratorHostStepBridge = true;
@@ -35967,6 +36099,7 @@ type FrameAsyncSegmentTerminal =
   }
   | {
     kind: 'for_of_branch';
+    sourceInfo: FrameForOfSourceInfo;
     resultBinding: FrameAsyncPersistedBinding;
     loopBinding: FrameAsyncPersistedBinding;
     thenPc: number;
@@ -37291,7 +37424,7 @@ function tryBuildFrameAsyncPlan(
         const sourceInfo = getSupportedFrameForOfSourceInfo(statement.expression, context);
         if (
           !sourceInfo ||
-          (statement.awaitModifier ? false : sourceInfo.kind === 'async_generator')
+          (statement.awaitModifier ? false : isFrameAsyncGeneratorSourceInfo(sourceInfo))
         ) {
           return undefined;
         }
@@ -37303,9 +37436,16 @@ function tryBuildFrameAsyncPlan(
           context.runtime,
           context.classes,
         );
+        const effectiveLoopValueInfo = sourceInfo.kind === 'host_async_generator' &&
+            loopValueInfo.type === 'heap_ref'
+          ? {
+            ...loopValueInfo,
+            heapRepresentation: ensureObjectDynamicRepresentation(context.runtime),
+          }
+          : loopValueInfo;
         const loopBinding = getOrCreatePersistedBindingForValueInfo(
           loopBindingIdentifier,
-          loopValueInfo,
+          effectiveLoopValueInfo,
           declaration.name,
         );
         if (!loopBinding) {
@@ -37359,7 +37499,7 @@ function tryBuildFrameAsyncPlan(
           statements: [],
           terminal: { kind: 'implicit' },
         });
-        const awaitValuePc = statement.awaitModifier && sourceInfo.kind !== 'async_generator'
+        const awaitValuePc = statement.awaitModifier && !isFrameAsyncGeneratorSourceInfo(sourceInfo)
           ? segments.length
           : undefined;
         if (awaitValuePc !== undefined) {
@@ -37416,23 +37556,24 @@ function tryBuildFrameAsyncPlan(
           },
         };
         segments[headerPc] = {
-          incomingBinding: statement.awaitModifier && sourceInfo.kind === 'async_generator'
+          incomingBinding: statement.awaitModifier && isFrameAsyncGeneratorSourceInfo(sourceInfo)
             ? resultBinding
             : undefined,
           scopedBindings: loopScopeBindings,
           statements: [],
           terminal: {
             kind: 'for_of_branch',
+            sourceInfo,
             resultBinding,
             loopBinding,
             thenPc: bodyPc,
             elsePc: continuationPc,
             awaitValuePc,
-            rejectPc: statement.awaitModifier && sourceInfo.kind !== 'async_generator'
+            rejectPc: statement.awaitModifier && !isFrameAsyncGeneratorSourceInfo(sourceInfo)
               ? protectedTargets?.throwPc ?? protectedTargets?.finalizerPc
               : undefined,
             rejectStoresCompletionCode: statement.awaitModifier &&
-                sourceInfo.kind !== 'async_generator' &&
+                !isFrameAsyncGeneratorSourceInfo(sourceInfo) &&
                 protectedTargets?.throwPc === undefined &&
                 protectedTargets?.finalizerPc !== undefined
               ? FRAME_ASYNC_COMPLETION_THROW
@@ -43466,14 +43607,31 @@ function lowerFrameAsyncPersistedVariableStatement(
       if (!bound || bound.type !== 'box_ref' || !bound.boxedValueType) {
         return undefined;
       }
+      const propertyKey = getSupportedObjectBindingPropertyNameText(element);
+      recordHostTaggedObjectPropertyNameFromLocal(
+        loweredSource.sourceName,
+        propertyKey,
+        context,
+      );
+      if (bound.boxedValueType === 'heap_ref') {
+        const localInfo = getHostTaggedObjectLocalInfo(loweredSource.sourceName, context);
+        if (localInfo) {
+          recordHostTaggedObjectNestedLocal(
+            bound.emittedName,
+            extendHostObjectPropertyPath(localInfo.propertyPath, propertyKey),
+            context,
+          );
+        }
+      }
       const taggedValue = lowerOrdinaryObjectPropertyReadAsValueType(
         loweredSource.sourceName,
         loweredSource.representation,
-        getSupportedObjectBindingPropertyNameText(element),
+        propertyKey,
         'tagged_ref',
         element.name,
         context,
       );
+      statements.push(...consumeExpressionPreludeStatements(context));
       statements.push(
         ...lowerTaggedBindingAssignmentToSymbol(
           element.name,
@@ -44692,7 +44850,7 @@ function lowerFrameAsyncFunctionLikeBody(
         },
         valueType: 'heap_ref',
       });
-      if (segment.terminal.sourceInfo.kind === 'async_generator') {
+      if (isFrameAsyncGeneratorSourceInfo(segment.terminal.sourceInfo)) {
         ensurePromiseRuntimeInfrastructure(context.runtime);
         ensureBuiltinErrorRuntimeInfrastructure(context.runtime);
         stepContext.currentFunction.usesAsyncGeneratorHostStepBridge = true;
@@ -44824,7 +44982,7 @@ function lowerFrameAsyncFunctionLikeBody(
         iteratorRepresentation,
       );
       thenBody.push(...consumeExpressionPreludeStatements(stepContext));
-      if (segment.terminal.sourceInfo.kind === 'async_generator') {
+      if (isFrameAsyncGeneratorSourceInfo(segment.terminal.sourceInfo)) {
         ensurePromiseRuntimeInfrastructure(context.runtime);
         ensureBuiltinErrorRuntimeInfrastructure(context.runtime);
         stepContext.currentFunction.usesAsyncGeneratorHostStepBridge = true;
@@ -44965,6 +45123,12 @@ function lowerFrameAsyncFunctionLikeBody(
         'tagged_ref',
         stepContext,
       );
+      if (
+        segment.terminal.sourceInfo.kind === 'host_async_generator' &&
+        loopBound.boxedValueType === 'heap_ref'
+      ) {
+        markHostAsyncGeneratorYieldObjectLocal(loopBound.emittedName, stepContext);
+      }
       thenBody.push(...consumeExpressionPreludeStatements(stepContext));
       thenBody.push({
         kind: 'if',
@@ -46918,7 +47082,7 @@ function tryBuildFrameGeneratorPlan(
         const sourceInfo = getSupportedFrameForOfSourceInfo(statement.expression, context);
         if (
           !sourceInfo ||
-          (statement.awaitModifier ? !isAsyncGenerator : sourceInfo.kind === 'async_generator')
+          (statement.awaitModifier ? !isAsyncGenerator : isFrameAsyncGeneratorSourceInfo(sourceInfo))
         ) {
           return undefined;
         }
@@ -46930,9 +47094,16 @@ function tryBuildFrameGeneratorPlan(
           context.runtime,
           context.classes,
         );
+        const effectiveLoopValueInfo = sourceInfo.kind === 'host_async_generator' &&
+            loopValueInfo.type === 'heap_ref'
+          ? {
+            ...loopValueInfo,
+            heapRepresentation: ensureObjectDynamicRepresentation(context.runtime),
+          }
+          : loopValueInfo;
         const loopBinding = getOrCreatePersistedBindingForValueInfo(
           loopBindingIdentifier,
-          loopValueInfo,
+          effectiveLoopValueInfo,
           declaration.name,
         );
         if (!loopBinding) {
@@ -46994,7 +47165,7 @@ function tryBuildFrameGeneratorPlan(
           statements: [],
           terminal: { kind: 'implicit' },
         });
-        const awaitValuePc = statement.awaitModifier && sourceInfo.kind !== 'async_generator'
+        const awaitValuePc = statement.awaitModifier && !isFrameAsyncGeneratorSourceInfo(sourceInfo)
           ? segments.length
           : undefined;
         if (awaitValuePc !== undefined) {
@@ -47060,7 +47231,7 @@ function tryBuildFrameGeneratorPlan(
           },
         };
         segments[headerPc] = {
-          incomingBinding: statement.awaitModifier && sourceInfo.kind === 'async_generator'
+          incomingBinding: statement.awaitModifier && isFrameAsyncGeneratorSourceInfo(sourceInfo)
             ? resultBinding
             : undefined,
           scopedBindings: loopScopeBindings,
@@ -47070,16 +47241,17 @@ function tryBuildFrameGeneratorPlan(
           statements: [],
           terminal: {
             kind: 'for_of_branch',
+            sourceInfo,
             resultBinding,
             loopBinding,
             thenPc: bodyPc,
             elsePc: continuationPc,
             awaitValuePc,
-            rejectPc: statement.awaitModifier && sourceInfo.kind !== 'async_generator'
+            rejectPc: statement.awaitModifier && !isFrameAsyncGeneratorSourceInfo(sourceInfo)
               ? protectedTargets?.throwPc ?? protectedTargets?.finalizerPc
               : undefined,
             rejectStoresCompletionCode: statement.awaitModifier &&
-                sourceInfo.kind !== 'async_generator' &&
+                !isFrameAsyncGeneratorSourceInfo(sourceInfo) &&
                 protectedTargets?.throwPc === undefined &&
                 protectedTargets?.finalizerPc !== undefined
               ? FRAME_GENERATOR_COMPLETION_THROW
@@ -49324,7 +49496,7 @@ function lowerGeneratorFunctionLikeBody(
         },
         valueType: 'heap_ref',
       });
-      if (segment.terminal.sourceInfo.kind === 'async_generator') {
+      if (isFrameAsyncGeneratorSourceInfo(segment.terminal.sourceInfo)) {
         ensurePromiseRuntimeInfrastructure(context.runtime);
         ensureBuiltinErrorRuntimeInfrastructure(context.runtime);
         stepContext.currentFunction.usesAsyncGeneratorHostStepBridge = true;
@@ -49503,7 +49675,7 @@ function lowerGeneratorFunctionLikeBody(
         iteratorRepresentation,
       );
       thenBody.push(...consumeExpressionPreludeStatements(stepContext));
-      if (segment.terminal.sourceInfo.kind === 'async_generator') {
+      if (isFrameAsyncGeneratorSourceInfo(segment.terminal.sourceInfo)) {
         ensurePromiseRuntimeInfrastructure(context.runtime);
         ensureBuiltinErrorRuntimeInfrastructure(context.runtime);
         stepContext.currentFunction.usesAsyncGeneratorHostStepBridge = true;
@@ -49688,6 +49860,12 @@ function lowerGeneratorFunctionLikeBody(
         'tagged_ref',
         stepContext,
       );
+      if (
+        segment.terminal.sourceInfo.kind === 'host_async_generator' &&
+        loopBound.boxedValueType === 'heap_ref'
+      ) {
+        markHostAsyncGeneratorYieldObjectLocal(loopBound.emittedName, stepContext);
+      }
       thenBody.push(...consumeExpressionPreludeStatements(stepContext));
       const awaitValueTargetPromiseName = segment.terminal.awaitValuePc !== undefined
         ? createLocalName('generator_for_await_value_promise', stepContext.nextLocalId)
@@ -57093,12 +57271,14 @@ function lowerVariableStatement(
       ? getHostTaggedObjectPropertyAccessInfo(declaration.initializer, context)
       : undefined;
     if (
-      type === 'tagged_ref' &&
+      (type === 'tagged_ref' || type === 'heap_ref') &&
       hostTaggedObjectPropertyAccessInfo?.propertyPath !== undefined
     ) {
       const nestedLocals = hostTaggedObjectPropertyAccessInfo.kind === 'sync_try_catch'
         ? context.functionRuntime.syncTryCatchTaggedNestedObjectLocals
-        : context.functionRuntime.hostPromiseRejectTaggedNestedObjectLocals;
+        : hostTaggedObjectPropertyAccessInfo.kind === 'host_promise_reject'
+        ? context.functionRuntime.hostPromiseRejectTaggedNestedObjectLocals
+        : context.functionRuntime.hostAsyncGeneratorYieldNestedObjectLocals;
       nestedLocals.set(
         emittedName,
         hostTaggedObjectPropertyAccessInfo.propertyPath,
@@ -61803,6 +61983,20 @@ export function lowerProgramToCompilerIR(
       : undefined,
     hostPromiseRejectObjectNestedPropertyNames: serializeNestedHostObjectPropertyNames(
       runtime.hostPromiseRejectObjectNestedPropertyNames,
+    ),
+    hostAsyncGeneratorYieldObjectBoundary: createHostTaggedObjectBoundary(
+      runtime.hostAsyncGeneratorYieldObjectPropertyNames,
+      runtime.hostAsyncGeneratorYieldObjectNestedPropertyNames,
+      runtime,
+    ),
+    hostAsyncGeneratorYieldObjectPropertyNames:
+      runtime.hostAsyncGeneratorYieldObjectPropertyNames.size > 0
+        ? [...runtime.hostAsyncGeneratorYieldObjectPropertyNames].sort((left, right) =>
+          left.localeCompare(right)
+        )
+        : undefined,
+    hostAsyncGeneratorYieldObjectNestedPropertyNames: serializeNestedHostObjectPropertyNames(
+      runtime.hostAsyncGeneratorYieldObjectNestedPropertyNames,
     ),
     functions: [
       ...loweredFunctions,
