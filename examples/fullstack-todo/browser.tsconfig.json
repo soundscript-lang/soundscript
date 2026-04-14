@@ -15,7 +15,8 @@
   },
   "include": [
     "src/app.sts",
-    "src/client.sts"
+    "src/client.sts",
+    "src/**/*.d.ts"
   ],
   "soundscript": {
     "target": "wasm-browser"

@@ -7009,11 +7009,7 @@ compilerIntegrationTest(
 compilerIntegrationTest(
   'compileProject compiles the checked-in express-react-ssr-demo browser client example with react-router-dom',
   async () => {
-    const projectDirectory = join(
-      dirname(fromFileUrl(import.meta.url)),
-      '..',
-      'examples/express-react-ssr-demo',
-    );
+    const projectDirectory = getExampleProjectPath('examples/express-react-ssr-demo');
     const result = compileProject({
       projectPath: join(projectDirectory, 'browser.tsconfig.json'),
       workingDirectory: projectDirectory,
@@ -7029,11 +7025,7 @@ compilerIntegrationTest(
 compilerIntegrationTest(
   'compileProject executes the checked-in express-react-ssr-demo browser client example through react-router-dom and react-dom/client',
   async () => {
-    const projectDirectory = join(
-      dirname(fromFileUrl(import.meta.url)),
-      '..',
-      'examples/express-react-ssr-demo',
-    );
+    const projectDirectory = getExampleProjectPath('examples/express-react-ssr-demo');
     const result = compileProject({
       projectPath: join(projectDirectory, 'browser.tsconfig.json'),
       workingDirectory: projectDirectory,
@@ -7240,11 +7232,7 @@ compilerIntegrationTest(
 compilerIntegrationTest(
   'compileProject compiles the checked-in fullstack-todo browser client example with react-router-dom browser roots',
   async () => {
-    const projectDirectory = join(
-      dirname(fromFileUrl(import.meta.url)),
-      '..',
-      'examples/fullstack-todo',
-    );
+    const projectDirectory = getExampleProjectPath('examples/fullstack-todo');
     const result = compileProject({
       projectPath: join(projectDirectory, 'browser.tsconfig.json'),
       workingDirectory: projectDirectory,
@@ -7260,11 +7248,7 @@ compilerIntegrationTest(
 compilerIntegrationTest(
   'compileProject executes the checked-in fullstack-todo browser client example through react-dom/client createRoot',
   async () => {
-    const projectDirectory = join(
-      dirname(fromFileUrl(import.meta.url)),
-      '..',
-      'examples/fullstack-todo',
-    );
+    const projectDirectory = getExampleProjectPath('examples/fullstack-todo');
     const result = compileProject({
       projectPath: join(projectDirectory, 'browser.tsconfig.json'),
       workingDirectory: projectDirectory,
@@ -10991,6 +10975,116 @@ compilerIntegrationTest(
       ),
       false,
     );
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject keeps imported host async generator yield-object bridges pay-for-play',
+  async () => {
+    const compileImportedHostAsyncGeneratorWat = async (
+      iterateDeclaration: string,
+      iterateImplementation: string,
+      mainSource: string,
+    ): Promise<string> => {
+      const tempDirectory = await createTempProject([
+        {
+          path: 'tsconfig.json',
+          contents: JSON.stringify(
+            {
+              compilerOptions: {
+                strict: true,
+                noEmit: true,
+                target: 'ES2022',
+                module: 'ESNext',
+              },
+              include: ['src/**/*.ts'],
+              soundscript: {
+                target: 'wasm-node',
+              },
+            },
+            null,
+            2,
+          ),
+        },
+        {
+          path: 'src/iterate-host.d.ts',
+          contents: `${iterateDeclaration}\n`,
+        },
+        {
+          path: 'src/iterate-host.js',
+          contents: `${iterateImplementation}\n`,
+        },
+        {
+          path: 'src/index.ts',
+          contents: [
+            '// #[interop]',
+            "import { iterate } from './iterate-host.js';",
+            '',
+            mainSource,
+            '',
+          ].join('\n'),
+        },
+      ]);
+
+      const result = compileProject({
+        projectPath: join(tempDirectory, 'tsconfig.json'),
+        workingDirectory: tempDirectory,
+      });
+      assertEquals(result.exitCode, 0);
+      assertEquals(result.diagnostics, []);
+      return await readWatArtifactForProject(tempDirectory);
+    };
+
+    const primitiveWat = await compileImportedHostAsyncGeneratorWat(
+      'export declare function iterate(): AsyncGenerator<number, number, unknown>;',
+      [
+        'export async function* iterate() {',
+        '  yield 3;',
+        '  return 5;',
+        '}',
+      ].join('\n'),
+      [
+        'export async function main(): Promise<number> {',
+        '  let total = 0;',
+        '  for await (const value of iterate()) {',
+        '    total = (total * 10) + value;',
+        '  }',
+        '  return total;',
+        '}',
+      ].join('\n'),
+    );
+    assertFalse(
+      primitiveWat.includes('__soundscript_host_async_generator_yield_object_to_dynamic'),
+    );
+    assertFalse(primitiveWat.includes('"has:left"'));
+    assertFalse(primitiveWat.includes('"get_tagged:left"'));
+    assertFalse(primitiveWat.includes('"set_tagged:left"'));
+
+    const objectWat = await compileImportedHostAsyncGeneratorWat(
+      'export declare function iterate(): AsyncGenerator<{ left: number; right: number }, number, unknown>;',
+      [
+        'export async function* iterate() {',
+        '  yield { left: 2, right: 4 };',
+        '  return 6;',
+        '}',
+      ].join('\n'),
+      [
+        'export async function main(): Promise<number> {',
+        '  let total = 0;',
+        '  for await (const { left, right } of iterate()) {',
+        '    total = (total * 100) + (left * 10) + right;',
+        '  }',
+        '  return total;',
+        '}',
+      ].join('\n'),
+    );
+    assertStringIncludes(
+      objectWat,
+      '__soundscript_host_async_generator_yield_object_to_dynamic',
+    );
+    assertStringIncludes(objectWat, '"has:left"');
+    assertStringIncludes(objectWat, '"get_tagged:left"');
+    assertStringIncludes(objectWat, '"set_tagged:left"');
   },
 );
 

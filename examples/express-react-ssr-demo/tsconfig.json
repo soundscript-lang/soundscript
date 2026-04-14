@@ -11,11 +11,7 @@
     ],
     "module": "ESNext",
     "moduleResolution": "bundler",
-    "allowSyntheticDefaultImports": true,
-    "types": [
-      "node",
-      "express"
-    ]
+    "allowSyntheticDefaultImports": true
   },
   "include": [
     "src/app.sts",

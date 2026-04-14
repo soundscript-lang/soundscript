@@ -36063,6 +36063,12 @@ function lowerFrameForOfIteratorAdvanceFromObject(
     );
   }
 
+  if (
+    sourceInfo.kind !== 'collection_iterator' &&
+    sourceInfo.kind !== 'collection_iterable'
+  ) {
+    throw new Error(`Unsupported frame for...of iterator source kind: ${sourceInfo.kind}.`);
+  }
   return lowerCollectionIteratorNextCallFromObject(
     objectName,
     representation,
@@ -37375,6 +37381,7 @@ function tryBuildFrameAsyncPlan(
           statements: [],
           terminal: {
             kind: 'for_of_branch',
+            sourceInfo,
             resultBinding,
             loopBinding,
             thenPc: bodyPc,
@@ -45455,6 +45462,7 @@ type FrameGeneratorSegmentTerminal =
   }
   | {
     kind: 'for_of_branch';
+    sourceInfo: FrameForOfSourceInfo;
     resultBinding: FrameAsyncPersistedBinding;
     loopBinding: FrameAsyncPersistedBinding;
     thenPc: number;
@@ -47028,6 +47036,7 @@ function tryBuildFrameGeneratorPlan(
           statements: [],
           terminal: {
             kind: 'for_of_branch',
+            sourceInfo,
             resultBinding,
             loopBinding,
             thenPc: bodyPc,

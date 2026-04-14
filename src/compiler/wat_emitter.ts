@@ -3436,13 +3436,13 @@ function moduleUsesHostClosureDynamicObjectBridge(module: CompilerModuleIR): boo
   ) =>
     (
       needsParamBoundary &&
-      signature.resultHeapRepresentation?.kind === 'dynamic_object_representation'
-    ) ||
-    (
-      needsResultBoundary &&
       signature.paramHeapRepresentations?.some((representation) =>
           representation?.kind === 'dynamic_object_representation'
         ) === true
+    ) ||
+    (
+      needsResultBoundary &&
+      signature.resultHeapRepresentation?.kind === 'dynamic_object_representation'
     )
   );
 }
