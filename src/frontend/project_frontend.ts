@@ -23,6 +23,11 @@ import { describeUnsupportedFeature } from '../checker/unsupported_feature_messa
 import { measureCheckerTiming } from '../checker/timing.ts';
 import { BUILTIN_DIRECTIVE_NAMES, createAnnotationLookup } from '../language/annotation_syntax.ts';
 import {
+  makeDirectorySync,
+  pathExistsSync,
+  readTextFileSync,
+} from '../platform/host.ts';
+import {
   getSoundScriptPackageExportInfoForResolvedModule,
   isForeignPackageSourceFile,
   isForeignResolvedModule,
@@ -62,6 +67,7 @@ import { scanMacroCandidates } from './macro_scanner.ts';
 import type {
   HashDiagnostic,
   MacroParseDiagnostic,
+  ParsedMacroInvocation,
   MacroReplacement,
   RewriteResult,
 } from './macro_types.ts';
@@ -93,6 +99,14 @@ const projectedDeclarationEmitCache = new Map<
   readonly ProjectedDeclarationEmitCacheEntry[]
 >();
 const projectedDeclarationPrinter = ts.createPrinter({ newLine: ts.NewLineKind.LineFeed });
+const tsBuildInfoInternals = ts as typeof ts & {
+  createBuilderProgramUsingIncrementalBuildInfo?: (
+    buildInfo: unknown,
+    buildInfoPath: string,
+    host: ts.CompilerHost,
+  ) => ts.BuilderProgram;
+  getBuildInfo?: (buildInfoPath: string, buildInfoText: string) => unknown;
+};
 
 export {
   isProjectedSoundscriptDeclarationFile,
@@ -797,6 +811,73 @@ export interface CachedExpandedMacroSourceFileEntry {
   sourceFile: ts.SourceFile;
 }
 
+interface PersistentRewriteResultSnapshot {
+  diagnostics: readonly (HashDiagnostic | MacroParseDiagnostic)[];
+  generatedSpans: RewriteResult['generatedSpans'];
+  macrosById: readonly (readonly [number, ParsedMacroInvocation])[];
+  replacements: RewriteResult['replacements'];
+  rewrittenText: string;
+}
+
+interface PersistentPreparedSourceFileSnapshot {
+  diagnostics: readonly MergedDiagnostic[];
+  originalText: string;
+  postRewriteStage?: PreparedRewriteStage;
+  rewriteResult: PersistentRewriteResultSnapshot;
+  rewrittenText: string;
+}
+
+interface PersistentCachedPreparedSourceFileEntrySnapshot {
+  environmentSignature: string;
+  expansionEnabled: boolean;
+  importedMacroSiteKindsSignature: string;
+  prepared: PersistentPreparedSourceFileSnapshot;
+  preserveMacroAuthoring: boolean;
+  sourceText: string;
+}
+
+interface PersistentCachedBuiltinFinalSourceFileEntrySnapshot {
+  diagnosticPreparedFile: PersistentPreparedSourceFileSnapshot | undefined;
+  finalOverrideText: string;
+  normalizedText: string | undefined;
+  placeholderSignature: string;
+  preparedOriginalText: string | undefined;
+  preparedRewrittenText: string | undefined;
+  sourceText: string;
+}
+
+interface PersistentCachedExpandedMacroSourceFileEntrySnapshot {
+  cacheKey: string;
+  fileName: string;
+  text: string;
+}
+
+interface PersistentCachedSourceFileEntrySnapshot {
+  environmentSignature?: string;
+  fileName: string;
+  text: string;
+}
+
+export interface PersistentPreparedCompilerHostReuseSnapshot {
+  builtinAnnotatedSourceFiles: readonly (readonly [string, CachedBuiltinAnnotatedSourceFileEntry])[];
+  builtinFinalSourceFiles: readonly (
+    readonly [string, PersistentCachedBuiltinFinalSourceFileEntrySnapshot]
+  )[];
+  expandedMacroSourceFiles: readonly (
+    readonly [string, PersistentCachedExpandedMacroSourceFileEntrySnapshot]
+  )[];
+  preparedSourceFiles: readonly (
+    readonly [string, PersistentCachedPreparedSourceFileEntrySnapshot]
+  )[];
+  projectedDeclarationOptionSignature: string;
+  projectedDeclarationOutputs?: readonly (readonly [string, string])[];
+  projectedDeclarationRootNamesSignature: string;
+  projectedDeclarationSourceFiles: readonly (
+    readonly [string, PersistentCachedSourceFileEntrySnapshot]
+  )[];
+  rewrittenSourceFiles: readonly (readonly [string, PersistentCachedSourceFileEntrySnapshot])[];
+}
+
 export interface PreparedCompilerHostReuseState {
   builtinAnnotatedSourceFiles: Map<string, CachedBuiltinAnnotatedSourceFileEntry>;
   builtinFinalSourceFiles: Map<string, CachedBuiltinFinalSourceFileEntry>;
@@ -809,6 +890,7 @@ export interface PreparedCompilerHostReuseState {
   preparedSourceFiles: Map<string, CachedPreparedSourceFileEntry>;
   programSourceFiles: Set<string>;
   removedProgramSourceFiles: Set<string>;
+  semanticDiagnosticsBuildInfoPath: string;
   semanticDiagnosticsBuilderProgram: ts.SemanticDiagnosticsBuilderProgram | undefined;
   semanticDiagnosticsOptionSignature: string;
   semanticDiagnosticsProjectReferencesSignature: string;
@@ -836,6 +918,8 @@ export interface CreatePreparedProgramOptions {
   >;
   oldProgram?: ts.Program;
   options: ts.CompilerOptions;
+  persistentProjectedDeclarationBuildInfoPath?: string;
+  persistentSemanticDiagnosticsBuildInfoPath?: string;
   projectReferences?: readonly ts.ProjectReference[];
   projectedDeclarationOverrides?: ReadonlyMap<string, string>;
   preserveMacroAuthoring?: boolean;
@@ -854,6 +938,8 @@ export interface PreparedProgram {
   options: ts.CompilerOptions;
   placeholderIndex(): MacroPlaceholderIndex;
   preparedHost: PreparedCompilerHost;
+  persistentProjectedDeclarationBuildInfoPath?: string;
+  persistentSemanticDiagnosticsBuildInfoPath?: string;
   program: ts.Program;
   runtime: RuntimeContext;
   rootNames: readonly string[];
@@ -865,6 +951,191 @@ export interface PreparedProgram {
 const DEFAULT_PREPARED_PROGRAM_RUNTIME = normalizeRuntimeContext({
   target: 'js-node',
 });
+
+function serializeRewriteResult(
+  rewriteResult: RewriteResult,
+): PersistentRewriteResultSnapshot {
+  return {
+    diagnostics: rewriteResult.diagnostics,
+    generatedSpans: rewriteResult.generatedSpans,
+    macrosById: [...rewriteResult.macrosById.entries()],
+    replacements: rewriteResult.replacements,
+    rewrittenText: rewriteResult.rewrittenText,
+  };
+}
+
+function restoreRewriteResult(
+  snapshot: PersistentRewriteResultSnapshot,
+): RewriteResult {
+  return {
+    diagnostics: snapshot.diagnostics,
+    generatedSpans: snapshot.generatedSpans,
+    macrosById: new Map(snapshot.macrosById),
+    replacements: snapshot.replacements,
+    rewrittenText: snapshot.rewrittenText,
+  };
+}
+
+function serializePreparedSourceFile(
+  preparedSourceFile: PreparedSourceFile,
+): PersistentPreparedSourceFileSnapshot {
+  return {
+    diagnostics: preparedSourceFile.diagnostics,
+    originalText: preparedSourceFile.originalText,
+    postRewriteStage: preparedSourceFile.postRewriteStage,
+    rewriteResult: serializeRewriteResult(preparedSourceFile.rewriteResult),
+    rewrittenText: preparedSourceFile.rewrittenText,
+  };
+}
+
+function restorePreparedSourceFile(
+  snapshot: PersistentPreparedSourceFileSnapshot,
+): PreparedSourceFile {
+  return {
+    diagnostics: snapshot.diagnostics,
+    originalText: snapshot.originalText,
+    postRewriteStage: snapshot.postRewriteStage,
+    rewriteResult: restoreRewriteResult(snapshot.rewriteResult),
+    rewrittenText: snapshot.rewrittenText,
+  };
+}
+
+function createPersistentExpandedMacroSourceFile(
+  fileName: string,
+  text: string,
+): ts.SourceFile {
+  return ensureSourceFileVersion(
+    ts.createSourceFile(
+      fileName,
+      text,
+      ts.ScriptTarget.Latest,
+      true,
+      scriptKindForSourceFileName(toSourceFileName(fileName)),
+    ),
+    text,
+  );
+}
+
+function serializeCachedSourceFileEntry(
+  entry: CachedSourceFileEntry,
+): PersistentCachedSourceFileEntrySnapshot {
+  return {
+    environmentSignature: entry.environmentSignature,
+    fileName: entry.sourceFile.fileName,
+    text: entry.text,
+  };
+}
+
+function restoreCachedSourceFileEntry(
+  snapshot: PersistentCachedSourceFileEntrySnapshot,
+): CachedSourceFileEntry {
+  return {
+    environmentSignature: snapshot.environmentSignature,
+    sourceFile: createPersistentExpandedMacroSourceFile(snapshot.fileName, snapshot.text),
+    text: snapshot.text,
+  };
+}
+
+function createPersistentBuildInfoCompilerOptions(
+  options: ts.CompilerOptions,
+  buildInfoPath: string | undefined,
+): ts.CompilerOptions {
+  if (!buildInfoPath) {
+    return options;
+  }
+
+  return {
+    ...options,
+    incremental: true,
+    tsBuildInfoFile: buildInfoPath,
+  };
+}
+
+function createPersistentBuilderProgramSeed(
+  operation: string,
+  buildInfoPath: string | undefined,
+  host: ts.CompilerHost,
+): ts.BuilderProgram | undefined {
+  if (!buildInfoPath) {
+    return undefined;
+  }
+
+  const metadata = {
+    path: buildInfoPath,
+    status: 'missing',
+  };
+  return measureCheckerTiming(
+    operation,
+    metadata,
+    () => {
+      if (
+        !tsBuildInfoInternals.getBuildInfo ||
+        !tsBuildInfoInternals.createBuilderProgramUsingIncrementalBuildInfo
+      ) {
+        metadata.status = 'unsupported';
+        return undefined;
+      }
+      if (!pathExistsSync(buildInfoPath)) {
+        metadata.status = 'missing';
+        return undefined;
+      }
+      try {
+        const buildInfoText = readTextFileSync(buildInfoPath);
+        const buildInfo = tsBuildInfoInternals.getBuildInfo(buildInfoPath, buildInfoText);
+        if (!buildInfo) {
+          metadata.status = 'invalid';
+          return undefined;
+        }
+        metadata.status = 'seeded';
+        return tsBuildInfoInternals.createBuilderProgramUsingIncrementalBuildInfo(
+          buildInfo,
+          buildInfoPath,
+          host,
+        );
+      } catch {
+        metadata.status = 'invalid';
+        return undefined;
+      }
+    },
+    { always: true },
+  );
+}
+
+function writePersistentBuilderProgramBuildInfo(
+  operation: string,
+  buildInfoPath: string | undefined,
+  builderProgram: ts.BuilderProgram | undefined,
+): void {
+  if (!buildInfoPath) {
+    return;
+  }
+
+  const metadata = {
+    path: buildInfoPath,
+    status: 'skipped',
+  };
+  measureCheckerTiming(
+    operation,
+    metadata,
+    () => {
+      const emitBuildInfo = (builderProgram as ts.BuilderProgram & {
+        emitBuildInfo?: () => void;
+      } | undefined)?.emitBuildInfo;
+      if (!emitBuildInfo) {
+        metadata.status = 'unsupported';
+        return;
+      }
+      try {
+        makeDirectorySync(dirname(buildInfoPath));
+        emitBuildInfo.call(builderProgram);
+        metadata.status = 'written';
+      } catch {
+        metadata.status = 'failed';
+      }
+    },
+    { always: true },
+  );
+}
 
 export function createPreparedCompilerHostReuseState(
   currentDirectory = ts.sys.getCurrentDirectory(),
@@ -887,6 +1158,7 @@ export function createPreparedCompilerHostReuseState(
     preparedSourceFiles: new Map(),
     programSourceFiles: new Set(),
     removedProgramSourceFiles: new Set(),
+    semanticDiagnosticsBuildInfoPath: '',
     semanticDiagnosticsBuilderProgram: undefined,
     semanticDiagnosticsOptionSignature: '',
     semanticDiagnosticsProjectReferencesSignature: '',
@@ -913,6 +1185,7 @@ export function clearPreparedCompilerHostReuseState(
   reusableState.previousProgramSourceFiles.clear();
   reusableState.programSourceFiles.clear();
   reusableState.removedProgramSourceFiles.clear();
+  reusableState.semanticDiagnosticsBuildInfoPath = '';
   reusableState.semanticDiagnosticsBuilderProgram = undefined;
   reusableState.semanticDiagnosticsOptionSignature = '';
   reusableState.semanticDiagnosticsProjectReferencesSignature = '';
@@ -2022,7 +2295,10 @@ export function emitProjectedDeclarations(
 ): ReadonlyMap<string, string> {
   const metadata: Record<string, string | number> = {
     cache: 'miss',
+    emittedFiles: 0,
+    mode: 'full',
     rootNames: rootNames.length,
+    seededOutputs: 0,
   };
   return measureCheckerTiming(
     'project.emitProjectedDeclarations',
@@ -2038,33 +2314,52 @@ export function emitProjectedDeclarations(
       );
       if (cachedDeclarations) {
         metadata.cache = 'hit';
+        metadata.mode = 'cached';
         return cachedDeclarations;
       }
 
       const reusableState = preparedProgram.preparedHost.reuseState;
-      const canIncrementallyReuseDeclarations =
+      const hasMatchingProjectedDeclarationOutputs =
         reusableState.projectedDeclarationOptionSignature === optionSignature &&
-        reusableState.projectedDeclarationRootNamesSignature === rootNamesSignature;
-      const declarationBuilderProgram = ts.createEmitAndSemanticDiagnosticsBuilderProgram(
-        rootNames.map(toProgramFileName),
+        reusableState.projectedDeclarationOutputs !== undefined &&
+        rootNames.every((rootName) => reusableState.projectedDeclarationOutputs!.has(rootName));
+      const projectedDeclarationCompilerOptions = createPersistentBuildInfoCompilerOptions(
         {
           ...preparedProgram.options,
           declaration: true,
           emitDeclarationOnly: true,
           noEmit: false,
         },
+        preparedProgram.persistentProjectedDeclarationBuildInfoPath,
+      );
+      const declarationBuilderSeed =
+        reusableState.projectedDeclarationBuilderProgram ??
+        createPersistentBuilderProgramSeed(
+          'project.emitProjectedDeclarations.buildInfoSeed',
+          preparedProgram.persistentProjectedDeclarationBuildInfoPath,
+          preparedProgram.preparedHost.host,
+        );
+      const canIncrementallyReuseDeclarations =
+        hasMatchingProjectedDeclarationOutputs &&
+        declarationBuilderSeed !== undefined;
+      metadata.mode = canIncrementallyReuseDeclarations ? 'incremental' : 'full';
+      metadata.seededOutputs = hasMatchingProjectedDeclarationOutputs
+        ? reusableState.projectedDeclarationOutputs!.size
+        : 0;
+      const declarationBuilderProgram = ts.createEmitAndSemanticDiagnosticsBuilderProgram(
+        rootNames.map(toProgramFileName),
+        projectedDeclarationCompilerOptions,
         preparedProgram.preparedHost.host,
-        canIncrementallyReuseDeclarations
-          ? reusableState.projectedDeclarationBuilderProgram
-          : undefined,
+        declarationBuilderSeed as ts.EmitAndSemanticDiagnosticsBuilderProgram | undefined,
       );
       const declarationProgram = declarationBuilderProgram.getProgram();
       reusableState.projectedDeclarationBuilderProgram = declarationBuilderProgram;
       reusableState.projectedDeclarationOptionSignature = optionSignature;
       reusableState.projectedDeclarationProgram = declarationProgram;
       reusableState.projectedDeclarationRootNamesSignature = rootNamesSignature;
+      let emittedFiles = 0;
       const projectedDeclarations = canIncrementallyReuseDeclarations
-        ? new Map(reusableState.projectedDeclarationOutputs ?? [])
+        ? new Map(reusableState.projectedDeclarationOutputs)
         : new Map<string, string>();
       const writeFile: ts.WriteFileCallback = (
         fileName,
@@ -2073,6 +2368,7 @@ export function emitProjectedDeclarations(
         _onError,
         sourceFiles,
       ) => {
+        emittedFiles += 1;
         const sourceFileName = sourceFiles
           ?.map((sourceFile) => preparedProgram.toSourceFileName(sourceFile.fileName))
           .find((sourceFileName) => preparedProgram.isSoundscriptSourceFile(sourceFileName)) ??
@@ -2109,6 +2405,12 @@ export function emitProjectedDeclarations(
           true,
         );
       }
+      metadata.emittedFiles = emittedFiles;
+      writePersistentBuilderProgramBuildInfo(
+        'project.emitProjectedDeclarations.buildInfoWrite',
+        preparedProgram.persistentProjectedDeclarationBuildInfoPath,
+        declarationBuilderProgram,
+      );
       reusableState.projectedDeclarationOutputs = projectedDeclarations;
       setCachedProjectedDeclarations(optionSignature, rootNames, sources, projectedDeclarations);
       return projectedDeclarations;
@@ -4192,14 +4494,35 @@ export function createPreparedProgram(
     preparedHost.reuseState.semanticDiagnosticsRootNamesSignature === rootNamesSignature &&
     preparedHost.reuseState.semanticDiagnosticsProjectReferencesSignature ===
       projectReferencesSignature;
+  const requestedSemanticDiagnosticsBuildInfoPath =
+    options.persistentSemanticDiagnosticsBuildInfoPath ?? '';
+  const canReuseActiveSemanticDiagnosticsBuilder =
+    canIncrementallyReuseSemanticDiagnostics &&
+    preparedHost.reuseState.semanticDiagnosticsBuildInfoPath ===
+      requestedSemanticDiagnosticsBuildInfoPath;
+  const semanticDiagnosticsCompilerOptions = createPersistentBuildInfoCompilerOptions(
+    options.options,
+    options.persistentSemanticDiagnosticsBuildInfoPath,
+  );
+  const semanticDiagnosticsPersistentBuilderSeed = !canReuseActiveSemanticDiagnosticsBuilder
+    ? createPersistentBuilderProgramSeed(
+      'project.prepare.semanticBuildInfoSeed',
+      options.persistentSemanticDiagnosticsBuildInfoPath,
+      preparedHost.host,
+    )
+    : undefined;
+  const semanticDiagnosticsBuilderSeed = canReuseActiveSemanticDiagnosticsBuilder
+    ? preparedHost.reuseState.semanticDiagnosticsBuilderProgram
+    : semanticDiagnosticsPersistentBuilderSeed ??
+      (canIncrementallyReuseSemanticDiagnostics
+        ? preparedHost.reuseState.semanticDiagnosticsBuilderProgram
+        : undefined);
   // Use the semantic builder path so successive internal rebuilds can retain checker state.
   const builderProgram = ts.createSemanticDiagnosticsBuilderProgram(
     rootNames,
-    options.options,
+    semanticDiagnosticsCompilerOptions,
     preparedHost.host,
-    canIncrementallyReuseSemanticDiagnostics
-      ? preparedHost.reuseState.semanticDiagnosticsBuilderProgram
-      : undefined,
+    semanticDiagnosticsBuilderSeed as ts.SemanticDiagnosticsBuilderProgram | undefined,
     options.configFileParsingDiagnostics,
     options.projectReferences,
   );
@@ -4211,6 +4534,8 @@ export function createPreparedProgram(
     }
   }
   preparedHost.reuseState.removedProgramSourceFiles = removedProgramSourceFiles;
+  preparedHost.reuseState.semanticDiagnosticsBuildInfoPath =
+    requestedSemanticDiagnosticsBuildInfoPath;
   preparedHost.reuseState.semanticDiagnosticsBuilderProgram = builderProgram;
   preparedHost.reuseState.semanticDiagnosticsOptionSignature = optionSignature;
   preparedHost.reuseState.semanticDiagnosticsProjectReferencesSignature =
@@ -4232,6 +4557,8 @@ export function createPreparedProgram(
       return isLocalSoundscriptSourceFile(fileName, configuredSoundscriptFileNames);
     },
     options: options.options,
+    persistentProjectedDeclarationBuildInfoPath: options.persistentProjectedDeclarationBuildInfoPath,
+    persistentSemanticDiagnosticsBuildInfoPath: options.persistentSemanticDiagnosticsBuildInfoPath,
     placeholderIndex(): MacroPlaceholderIndex {
       return preparedHost.getMacroPlaceholderIndex();
     },
@@ -4243,4 +4570,104 @@ export function createPreparedProgram(
     toProjectedDeclarationFileName,
     toSourceFileName,
   };
+}
+
+export function persistPreparedProgramBuildInfo(preparedProgram: PreparedProgram): void {
+  writePersistentBuilderProgramBuildInfo(
+    'project.prepare.semanticBuildInfoWrite',
+    preparedProgram.persistentSemanticDiagnosticsBuildInfoPath,
+    preparedProgram.preparedHost.reuseState.semanticDiagnosticsBuilderProgram,
+  );
+}
+
+export function capturePersistentPreparedCompilerHostReuseSnapshot(
+  reuseState: PreparedCompilerHostReuseState,
+): PersistentPreparedCompilerHostReuseSnapshot {
+  return {
+    builtinAnnotatedSourceFiles: [...reuseState.builtinAnnotatedSourceFiles.entries()],
+    builtinFinalSourceFiles: [...reuseState.builtinFinalSourceFiles.entries()].map((
+      [fileName, entry],
+    ) => [
+      fileName,
+      {
+        ...entry,
+        diagnosticPreparedFile: entry.diagnosticPreparedFile
+          ? serializePreparedSourceFile(entry.diagnosticPreparedFile)
+          : undefined,
+      },
+    ] as const),
+    expandedMacroSourceFiles: [...reuseState.expandedMacroSourceFiles.entries()].map((
+      [fileName, entry],
+    ) => [
+      fileName,
+      {
+        cacheKey: entry.cacheKey,
+        fileName: entry.sourceFile.fileName,
+        text: entry.sourceFile.text,
+      },
+    ] as const),
+    preparedSourceFiles: [...reuseState.preparedSourceFiles.entries()].map(([fileName, entry]) => [
+      fileName,
+      {
+        ...entry,
+        prepared: serializePreparedSourceFile(entry.prepared),
+      },
+    ] as const),
+    projectedDeclarationOptionSignature: reuseState.projectedDeclarationOptionSignature,
+    projectedDeclarationOutputs: reuseState.projectedDeclarationOutputs
+      ? [...reuseState.projectedDeclarationOutputs.entries()]
+      : undefined,
+    projectedDeclarationRootNamesSignature: reuseState.projectedDeclarationRootNamesSignature,
+    projectedDeclarationSourceFiles: [...reuseState.projectedDeclarationSourceFiles.entries()].map(
+      ([fileName, entry]) => [fileName, serializeCachedSourceFileEntry(entry)] as const,
+    ),
+    rewrittenSourceFiles: [...reuseState.rewrittenSourceFiles.entries()].map(([fileName, entry]) =>
+      [fileName, serializeCachedSourceFileEntry(entry)] as const
+    ),
+  };
+}
+
+export function hydratePersistentPreparedCompilerHostReuseSnapshot(
+  snapshot: PersistentPreparedCompilerHostReuseSnapshot,
+  currentDirectory = ts.sys.getCurrentDirectory(),
+): PreparedCompilerHostReuseState {
+  const reuseState = createPreparedCompilerHostReuseState(currentDirectory);
+
+  for (const [fileName, entry] of snapshot.builtinAnnotatedSourceFiles) {
+    reuseState.builtinAnnotatedSourceFiles.set(fileName, entry);
+  }
+  for (const [fileName, entry] of snapshot.builtinFinalSourceFiles) {
+    reuseState.builtinFinalSourceFiles.set(fileName, {
+      ...entry,
+      diagnosticPreparedFile: entry.diagnosticPreparedFile
+        ? restorePreparedSourceFile(entry.diagnosticPreparedFile)
+        : undefined,
+    });
+  }
+  for (const [fileName, entry] of snapshot.expandedMacroSourceFiles) {
+    reuseState.expandedMacroSourceFiles.set(fileName, {
+      cacheKey: entry.cacheKey,
+      sourceFile: createPersistentExpandedMacroSourceFile(entry.fileName, entry.text),
+    });
+  }
+  for (const [fileName, entry] of snapshot.preparedSourceFiles) {
+    reuseState.preparedSourceFiles.set(fileName, {
+      ...entry,
+      prepared: restorePreparedSourceFile(entry.prepared),
+    });
+  }
+  reuseState.projectedDeclarationOptionSignature = snapshot.projectedDeclarationOptionSignature;
+  reuseState.projectedDeclarationOutputs = snapshot.projectedDeclarationOutputs
+    ? new Map(snapshot.projectedDeclarationOutputs)
+    : undefined;
+  reuseState.projectedDeclarationRootNamesSignature =
+    snapshot.projectedDeclarationRootNamesSignature;
+  for (const [fileName, entry] of snapshot.projectedDeclarationSourceFiles) {
+    reuseState.projectedDeclarationSourceFiles.set(fileName, restoreCachedSourceFileEntry(entry));
+  }
+  for (const [fileName, entry] of snapshot.rewrittenSourceFiles) {
+    reuseState.rewrittenSourceFiles.set(fileName, restoreCachedSourceFileEntry(entry));
+  }
+
+  return reuseState;
 }

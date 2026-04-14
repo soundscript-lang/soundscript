@@ -17,11 +17,13 @@ import { transpilePreparedSoundscriptModuleToEsm } from '../runtime/transform.ts
 import { createBuiltinExpandedProgram as createBuiltinExpandedProgramRaw } from './builtin_macro_support.ts';
 import { installTestDisposableCleanup } from './builtin_expanded_program_test_cleanup.ts';
 import {
+  capturePersistentPreparedCompilerHostReuseSnapshot,
   clearProjectedDeclarationEmitCacheForTest,
   createPreparedCompilerHost as createPreparedCompilerHostRaw,
   createPreparedCompilerHostReuseState,
   createPreparedProgram as createPreparedProgramRaw,
   emitProjectedDeclarations,
+  hydratePersistentPreparedCompilerHostReuseSnapshot,
   type ImportedMacroSiteKind,
   mapProgramRangeToSource,
 } from './project_frontend.ts';
@@ -1562,6 +1564,81 @@ Deno.test('createPreparedProgram reuses unchanged .ts SourceFiles when projected
   assertStrictEquals(secondConsumerSource, firstConsumerSource);
   assert(firstProjectedSource !== secondProjectedSource);
 });
+
+Deno.test(
+  'createPreparedProgram reuses hydrated rewritten and projected declaration SourceFiles from a persistent snapshot',
+  () => {
+    const consumerFileName = '/virtual/consumer.ts';
+    const projectedFileName = '/virtual/producer.sts';
+    const initialReuseState = createPreparedCompilerHostReuseState();
+    const baseHost = createBaseHost(
+      new Map([
+        [
+          consumerFileName,
+          'import { value } from "./producer";\nconst exact: number = value;\nvoid exact;\n',
+        ],
+        [projectedFileName, 'export const value = 1;\n'],
+      ]),
+    );
+    const options = {
+      options: {
+        target: ts.ScriptTarget.ES2022,
+        module: ts.ModuleKind.ESNext,
+        noEmit: true,
+        strict: true,
+      },
+      rootNames: [consumerFileName, projectedFileName],
+    } as const;
+
+    createPreparedProgram({
+      ...options,
+      baseHost,
+      projectedDeclarationOverrides: new Map([
+        [projectedFileName, 'export declare const value: number;\n'],
+      ]),
+      reusableCompilerHostState: initialReuseState,
+    });
+    const snapshot = capturePersistentPreparedCompilerHostReuseSnapshot(initialReuseState);
+    const hydratedReuseState = hydratePersistentPreparedCompilerHostReuseSnapshot(snapshot);
+    const hydratedRewrittenSourceBeforeCreate = hydratedReuseState.rewrittenSourceFiles.get(
+      `${projectedFileName}.ts`,
+    )?.sourceFile;
+    const hydratedProjectedSourceBeforeCreate = hydratedReuseState.projectedDeclarationSourceFiles
+      .get(`${projectedFileName}.d.ts`)?.sourceFile;
+    const secondProgram = createPreparedProgram({
+      ...options,
+      baseHost,
+      projectedDeclarationOverrides: new Map([
+        [projectedFileName, 'export declare const value: number;\n'],
+      ]),
+      reusableCompilerHostState: hydratedReuseState,
+    });
+
+    const hydratedRewrittenSource = hydratedReuseState.rewrittenSourceFiles.get(
+      secondProgram.toProgramFileName(projectedFileName),
+    )?.sourceFile;
+    const hydratedProjectedSource = hydratedReuseState.projectedDeclarationSourceFiles.get(
+      secondProgram.toProjectedDeclarationFileName(projectedFileName),
+    )?.sourceFile;
+    const secondRewrittenSource = secondProgram.program.getSourceFile(
+      secondProgram.toProgramFileName(projectedFileName),
+    );
+    const secondProjectedSource = secondProgram.program.getSourceFile(
+      secondProgram.toProjectedDeclarationFileName(projectedFileName),
+    );
+
+    assert(hydratedRewrittenSourceBeforeCreate);
+    assert(hydratedProjectedSourceBeforeCreate);
+    assert(hydratedRewrittenSource);
+    assert(hydratedProjectedSource);
+    assert(secondRewrittenSource);
+    assert(secondProjectedSource);
+    assertStrictEquals(hydratedRewrittenSource, hydratedRewrittenSourceBeforeCreate);
+    assertStrictEquals(hydratedProjectedSource, hydratedProjectedSourceBeforeCreate);
+    assertStrictEquals(secondRewrittenSource, hydratedRewrittenSource);
+    assertStrictEquals(secondProjectedSource, hydratedProjectedSource);
+  },
+);
 
 Deno.test('createPreparedProgram can preserve unchanged module resolutions for stable internal rebuilds', () => {
   function createCountingResolveHost(

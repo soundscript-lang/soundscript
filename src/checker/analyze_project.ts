@@ -9,8 +9,13 @@ import {
   type BuiltinExpandedTsDiagnosticProgram,
   createBuiltinExpandedProgram,
 } from '../frontend/builtin_macro_support.ts';
+import {
+  capturePersistentProjectMacroEnvironmentReuseSnapshot,
+  hydratePersistentProjectMacroEnvironmentReuseSnapshot,
+} from '../frontend/project_macro_support.ts';
 import type {
   MacroModuleCacheStats,
+  PersistentProjectMacroEnvironmentReuseSnapshot,
   ProjectMacroEnvironment,
 } from '../frontend/project_macro_support.ts';
 import {
@@ -19,13 +24,17 @@ import {
 } from '../frontend/macro_factory_support.ts';
 import {
   clearPreparedCompilerHostReuseState,
+  capturePersistentPreparedCompilerHostReuseSnapshot,
   emitProjectedDeclarations,
   getLineAndCharacterOfPosition,
   getPositionOfLineAndCharacter,
+  hydratePersistentPreparedCompilerHostReuseSnapshot,
   isProjectedSoundscriptDeclarationFile,
   isSoundscriptSourceFile,
   mapProgramEnclosingRangeToSource,
   mapProgramPositionToSource,
+  persistPreparedProgramBuildInfo,
+  type PersistentPreparedCompilerHostReuseSnapshot,
   type PreparedCompilerHostReuseState,
   type PreparedProgram,
   type PreparedSourceFile,
@@ -136,6 +145,131 @@ const BUNDLED_TYPES_DIRECTORY = ts.sys.resolvePath(resolveBundledTypesDirectory(
 
 interface PrepareProjectAnalysisOptions {
   deferTypescriptView?: boolean;
+  persistentBuildInfoDirectory?: string;
+  persistentReuseSnapshots?: PersistentPreparedAnalysisProjectReuseSnapshots;
+}
+
+type PreparePersistentBuildInfoKey = 'package-projection' | 'package-source-policy' | 'sts' | 'ts';
+
+export interface PersistentPreparedAnalysisViewReuseSnapshot {
+  compilerHost: PersistentPreparedCompilerHostReuseSnapshot;
+  macroEnvironment: PersistentProjectMacroEnvironmentReuseSnapshot;
+}
+
+export interface PersistentPreparedAnalysisProjectReuseSnapshots {
+  packageSourcePolicy?: PersistentPreparedAnalysisViewReuseSnapshot;
+  sts?: PersistentPreparedAnalysisViewReuseSnapshot;
+  ts?: PersistentPreparedAnalysisViewReuseSnapshot;
+}
+
+function createPreparePersistentBuildInfoPath(
+  persistentBuildInfoDirectory: string | undefined,
+  key: PreparePersistentBuildInfoKey | undefined,
+  kind: 'declarations' | 'semantic',
+): string | undefined {
+  if (!persistentBuildInfoDirectory || !key) {
+    return undefined;
+  }
+
+  return join(persistentBuildInfoDirectory, `${key}.${kind}.tsbuildinfo`);
+}
+
+function mergePersistentPreparedCompilerHostReuseSnapshotEntries<T>(
+  ...entryGroups: readonly (readonly (readonly [string, T])[])[]
+): readonly (readonly [string, T])[] {
+  return [...new Map(entryGroups.flatMap((entries) => entries)).entries()];
+}
+
+function mergePersistentPreparedCompilerHostReuseSnapshots(
+  base: PersistentPreparedCompilerHostReuseSnapshot,
+  overlay: PersistentPreparedCompilerHostReuseSnapshot,
+): PersistentPreparedCompilerHostReuseSnapshot {
+  return {
+    builtinAnnotatedSourceFiles: mergePersistentPreparedCompilerHostReuseSnapshotEntries(
+      base.builtinAnnotatedSourceFiles,
+      overlay.builtinAnnotatedSourceFiles,
+    ),
+    builtinFinalSourceFiles: mergePersistentPreparedCompilerHostReuseSnapshotEntries(
+      base.builtinFinalSourceFiles,
+      overlay.builtinFinalSourceFiles,
+    ),
+    expandedMacroSourceFiles: mergePersistentPreparedCompilerHostReuseSnapshotEntries(
+      base.expandedMacroSourceFiles,
+      overlay.expandedMacroSourceFiles,
+    ),
+    preparedSourceFiles: mergePersistentPreparedCompilerHostReuseSnapshotEntries(
+      base.preparedSourceFiles,
+      overlay.preparedSourceFiles,
+    ),
+    projectedDeclarationOptionSignature: overlay.projectedDeclarationOptionSignature ||
+      base.projectedDeclarationOptionSignature,
+    projectedDeclarationOutputs: overlay.projectedDeclarationOutputs ??
+      base.projectedDeclarationOutputs,
+    projectedDeclarationRootNamesSignature: overlay.projectedDeclarationRootNamesSignature ||
+      base.projectedDeclarationRootNamesSignature,
+    projectedDeclarationSourceFiles: mergePersistentPreparedCompilerHostReuseSnapshotEntries(
+      base.projectedDeclarationSourceFiles,
+      overlay.projectedDeclarationSourceFiles,
+    ),
+    rewrittenSourceFiles: mergePersistentPreparedCompilerHostReuseSnapshotEntries(
+      base.rewrittenSourceFiles,
+      overlay.rewrittenSourceFiles,
+    ),
+  };
+}
+
+function capturePersistentPreparedAnalysisViewReuseSnapshot(
+  view: PreparedAnalysisView | null,
+): PersistentPreparedAnalysisViewReuseSnapshot | undefined {
+  if (!view) {
+    return undefined;
+  }
+
+  const preparedReuseState = view.preparedProgram.preparedHost.reuseState;
+  const analysisReuseState = view.analysisPreparedProgram.preparedHost.reuseState;
+  const compilerHostSnapshot = analysisReuseState === preparedReuseState
+    ? capturePersistentPreparedCompilerHostReuseSnapshot(preparedReuseState)
+    : mergePersistentPreparedCompilerHostReuseSnapshots(
+      capturePersistentPreparedCompilerHostReuseSnapshot(preparedReuseState),
+      capturePersistentPreparedCompilerHostReuseSnapshot(analysisReuseState),
+    );
+  return {
+    compilerHost: compilerHostSnapshot,
+    macroEnvironment: capturePersistentProjectMacroEnvironmentReuseSnapshot(
+      preparedReuseState,
+    ),
+  };
+}
+
+export function capturePersistentPreparedAnalysisProjectReuseSnapshots(
+  preparedProject: PreparedAnalysisProject,
+): PersistentPreparedAnalysisProjectReuseSnapshots {
+  return {
+    packageSourcePolicy: capturePersistentPreparedAnalysisViewReuseSnapshot(
+      preparedProject.packageSourcePolicyView,
+    ),
+    sts: capturePersistentPreparedAnalysisViewReuseSnapshot(preparedProject.stsView),
+    ts: capturePersistentPreparedAnalysisViewReuseSnapshot(preparedProject.tsView),
+  };
+}
+
+function hydratePersistentPreparedAnalysisViewReuseSnapshot(
+  snapshot: PersistentPreparedAnalysisViewReuseSnapshot | undefined,
+  currentDirectory: string,
+): PreparedCompilerHostReuseState | undefined {
+  if (!snapshot) {
+    return undefined;
+  }
+
+  const reuseState = hydratePersistentPreparedCompilerHostReuseSnapshot(
+    snapshot.compilerHost,
+    currentDirectory,
+  );
+  hydratePersistentProjectMacroEnvironmentReuseSnapshot(
+    reuseState,
+    snapshot.macroEnvironment,
+  );
+  return reuseState;
 }
 
 interface AnalyzeProjectOptionsSnapshot {
@@ -1306,6 +1440,8 @@ function prepareAnalysisView(
   universalPolicyScope: 'full' | 'sourceSupplemental' = 'full',
   reusableCompilerHostState?: PreparedCompilerHostReuseState,
   oldProgram?: ts.Program,
+  persistentBuildInfoKey?: PreparePersistentBuildInfoKey,
+  persistentBuildInfoDirectory?: string,
 ): PreparedAnalysisView | null {
   if (rootNames.length === 0) {
     return null;
@@ -1319,12 +1455,23 @@ function prepareAnalysisView(
     fileOverrides: options.fileOverrides ?? new Map(),
     oldProgram,
     options: loadedConfig.commandLine.options,
+    persistentProjectedDeclarationBuildInfoPath: createPreparePersistentBuildInfoPath(
+      persistentBuildInfoDirectory,
+      persistentBuildInfoKey,
+      'declarations',
+    ),
+    persistentSemanticDiagnosticsBuildInfoPath: createPreparePersistentBuildInfoPath(
+      persistentBuildInfoDirectory,
+      persistentBuildInfoKey,
+      'semantic',
+    ),
     projectReferences: loadedConfig.commandLine.projectReferences,
     projectedDeclarationOverrides,
     runtime: loadedConfig.runtime,
     reusableCompilerHostState,
     rootNames,
   });
+  persistPreparedProgramBuildInfo(expandedProgram.analysisPreparedProgram);
   const program = expandedProgram.program;
   const isGeneratedNode = createPreparedProgramGeneratedNodeDetector(
     expandedProgram.analysisPreparedProgram,
@@ -2238,6 +2385,7 @@ export function prepareProjectAnalysis(
         { target: options.target },
         options.additionalRootNames,
       );
+      const projectDirectory = dirname(options.projectPath);
       const projectPackageJsonPath = findNearestPackageJsonPath(options.projectPath, ts.sys);
       const configReuseSignature = createProjectConfigReuseSignature(
         options.projectPath,
@@ -2284,6 +2432,22 @@ export function prepareProjectAnalysis(
       const canReuseConfigArtifacts = reusableProject !== undefined &&
         reusableProject.analyzeOptions.projectPath === options.projectPath &&
         reusableProject.configReuseSignature === configReuseSignature;
+      const persistentReuseSnapshots = !canReuseConfigArtifacts
+        ? prepareOptions.persistentReuseSnapshots
+        : undefined;
+      const persistentStsCompilerHostReuseState = hydratePersistentPreparedAnalysisViewReuseSnapshot(
+        persistentReuseSnapshots?.sts,
+        projectDirectory,
+      );
+      const persistentTsCompilerHostReuseState = hydratePersistentPreparedAnalysisViewReuseSnapshot(
+        persistentReuseSnapshots?.ts,
+        projectDirectory,
+      );
+      const persistentPackageSourcePolicyCompilerHostReuseState =
+        hydratePersistentPreparedAnalysisViewReuseSnapshot(
+          persistentReuseSnapshots?.packageSourcePolicy,
+          projectDirectory,
+        );
       const canReuseStsArtifacts = canReuseConfigArtifacts &&
         rootNamesEqual(reusableProject.stsProgramRootNames, stsProgramRootNames) &&
         reusableProject.soundscriptRootContentSignature === soundscriptRootContentSignature &&
@@ -2317,8 +2481,12 @@ export function prepareProjectAnalysis(
               undefined,
               true,
               'full',
-              canReuseConfigArtifacts ? reusableProject?.stsCompilerHostReuseState : undefined,
+              canReuseConfigArtifacts
+                ? reusableProject?.stsCompilerHostReuseState
+                : persistentStsCompilerHostReuseState,
               canReuseConfigArtifacts ? reusableProject?.stsView?.program : undefined,
+              'sts',
+              prepareOptions.persistentBuildInfoDirectory,
             );
             if (preparedView) {
               applyMacroCacheStatsToMetadata(metadata, preparedView.macroCacheStats);
@@ -2344,7 +2512,7 @@ export function prepareProjectAnalysis(
           packageSourcePolicyContentSignature: '',
           packageSourcePolicyCompilerHostReuseState: canReuseConfigArtifacts
             ? reusableProject?.packageSourcePolicyCompilerHostReuseState
-            : undefined,
+            : persistentPackageSourcePolicyCompilerHostReuseState,
           packageSourcePolicyView: null,
           soundscriptConfiguredFileNames: loadedConfig.soundscriptConfiguredFileNames,
           soundscriptRootContentSignature,
@@ -2356,7 +2524,7 @@ export function prepareProjectAnalysis(
           stsView,
           tsCompilerHostReuseState: canReuseConfigArtifacts
             ? reusableProject?.tsCompilerHostReuseState
-            : undefined,
+            : persistentTsCompilerHostReuseState,
           tsView: null,
         };
         applyMacroCacheStatsToMetadata(prepareMetadata, aggregateMacroCacheStats(preparedProject));
@@ -2379,7 +2547,7 @@ export function prepareProjectAnalysis(
           packageSourcePolicyContentSignature: '',
           packageSourcePolicyCompilerHostReuseState: canReuseConfigArtifacts
             ? reusableProject?.packageSourcePolicyCompilerHostReuseState
-            : undefined,
+            : persistentPackageSourcePolicyCompilerHostReuseState,
           packageSourcePolicyView: null,
           soundscriptConfiguredFileNames: loadedConfig.soundscriptConfiguredFileNames,
           soundscriptRootContentSignature,
@@ -2391,7 +2559,7 @@ export function prepareProjectAnalysis(
           stsView,
           tsCompilerHostReuseState: canReuseConfigArtifacts
             ? reusableProject?.tsCompilerHostReuseState
-            : undefined,
+            : persistentTsCompilerHostReuseState,
           tsView: null,
         };
         applyMacroCacheStatsToMetadata(prepareMetadata, aggregateMacroCacheStats(preparedProject));
@@ -2442,8 +2610,12 @@ export function prepareProjectAnalysis(
               localProjectedDeclarationOverrides,
               false,
               'full',
-              canReuseConfigArtifacts ? reusableProject?.tsCompilerHostReuseState : undefined,
+              canReuseConfigArtifacts
+                ? reusableProject?.tsCompilerHostReuseState
+                : persistentTsCompilerHostReuseState,
               canReuseConfigArtifacts ? reusableProject?.tsView?.program : undefined,
+              'ts',
+              prepareOptions.persistentBuildInfoDirectory,
             );
             if (preparedView) {
               applyMacroCacheStatsToMetadata(metadata, preparedView.macroCacheStats);
@@ -2486,12 +2658,23 @@ export function prepareProjectAnalysis(
             configuredSoundscriptFileNames: loadedConfig.soundscriptConfiguredFileNames,
             fileOverrides: options.fileOverrides ?? new Map(),
             options: loadedConfig.commandLine.options,
+            persistentProjectedDeclarationBuildInfoPath: createPreparePersistentBuildInfoPath(
+              prepareOptions.persistentBuildInfoDirectory,
+              'package-projection',
+              'declarations',
+            ),
+            persistentSemanticDiagnosticsBuildInfoPath: createPreparePersistentBuildInfoPath(
+              prepareOptions.persistentBuildInfoDirectory,
+              'package-projection',
+              'semantic',
+            ),
             projectReferences: loadedConfig.commandLine.projectReferences,
             projectedDeclarationOverrides: localProjectedDeclarationOverrides,
             runtime: loadedConfig.runtime,
             rootNames: packageProjectedDeclarationRootNames,
           });
           try {
+            persistPreparedProgramBuildInfo(expandedProgram.analysisPreparedProgram);
             return emitProjectedDeclarations(
               expandedProgram.analysisPreparedProgram,
               packageProjectedDeclarationRootNames,
@@ -2533,7 +2716,7 @@ export function prepareProjectAnalysis(
         packageSourcePolicyContentSignature,
         packageSourcePolicyCompilerHostReuseState: canReusePackageSourcePolicyView
           ? reusableProject?.packageSourcePolicyCompilerHostReuseState
-          : undefined,
+          : persistentPackageSourcePolicyCompilerHostReuseState,
         packageSourcePolicyView: canReusePackageSourcePolicyView
           ? reusableProject?.packageSourcePolicyView ?? null
           : measureCheckerTiming(
@@ -2554,13 +2737,15 @@ export function prepareProjectAnalysis(
                 shouldAnalyzeSoundscriptSourceFile,
                 localProjectedDeclarationOverrides,
                 true,
-                'sourceSupplemental',
-                canReusePackageSourcePolicyView
-                  ? reusableProject?.packageSourcePolicyCompilerHostReuseState
-                  : undefined,
-                canReusePackageSourcePolicyView
-                  ? reusableProject?.packageSourcePolicyView?.program
-                  : undefined,
+                  'sourceSupplemental',
+                  canReusePackageSourcePolicyView
+                    ? reusableProject?.packageSourcePolicyCompilerHostReuseState
+                    : persistentPackageSourcePolicyCompilerHostReuseState,
+                  canReusePackageSourcePolicyView
+                    ? reusableProject?.packageSourcePolicyView?.program
+                    : undefined,
+                'package-source-policy',
+                prepareOptions.persistentBuildInfoDirectory,
               ),
             { always: true },
           ),
@@ -2598,8 +2783,11 @@ export function prepareProjectAnalysis(
                   false,
                   'full',
                   preliminaryTsView?.preparedProgram.preparedHost.reuseState ??
-                    reusableProject?.tsCompilerHostReuseState,
+                    reusableProject?.tsCompilerHostReuseState ??
+                    persistentTsCompilerHostReuseState,
                   preliminaryTsView?.program,
+                  'ts',
+                  prepareOptions.persistentBuildInfoDirectory,
                 );
                 if (preparedView) {
                   applyMacroCacheStatsToMetadata(metadata, preparedView.macroCacheStats);

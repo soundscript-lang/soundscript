@@ -106,6 +106,33 @@ interface StableProjectMacroEnvironmentReuseState {
   readonly expandedFilesByMode: Map<string, Map<string, ts.SourceFile>>;
 }
 
+interface PersistentCachedPerFileMacroBindingPlanEntrySnapshot {
+  authorityBindings: readonly PlannedMacroBindingEntry[];
+  expansionDependencySignature: string;
+  importedBindingUsage: readonly (readonly [string, ImportedBindingUsage])[];
+  preparedOriginalText: string | undefined;
+  preparedRewrittenText: string | undefined;
+  resolutionDependencySourceTexts: readonly (readonly [string, string])[];
+  sourceText: string;
+}
+
+interface PersistentExpandedFilesByModeEntrySnapshot {
+  fileName: string;
+  text: string;
+}
+
+export interface PersistentProjectMacroEnvironmentReuseSnapshot {
+  bindingPlanDependenciesByFile: readonly (readonly [string, readonly string[]])[];
+  bindingPlansByFile: readonly (
+    readonly [string, PersistentCachedPerFileMacroBindingPlanEntrySnapshot]
+  )[];
+  dependencySourceTextsByFile: readonly (readonly [string, string])[];
+  dependentFilesByDependencyFile: readonly (readonly [string, readonly string[]])[];
+  expandedFilesByMode: readonly (
+    readonly [string, readonly (readonly [string, PersistentExpandedFilesByModeEntrySnapshot])[]]
+  )[];
+}
+
 const STABLE_PROJECT_MACRO_ENVIRONMENT_REUSE_STATE = new WeakMap<
   PreparedCompilerHostReuseState,
   StableProjectMacroEnvironmentReuseState
@@ -287,6 +314,108 @@ function getStableProjectMacroEnvironmentReuseState(
   };
   STABLE_PROJECT_MACRO_ENVIRONMENT_REUSE_STATE.set(reuseState, nextState);
   return nextState;
+}
+
+function serializeCachedPerFileMacroBindingPlanEntry(
+  entry: CachedPerFileMacroBindingPlanEntry,
+): PersistentCachedPerFileMacroBindingPlanEntrySnapshot {
+  return {
+    authorityBindings: entry.authorityBindings,
+    expansionDependencySignature: entry.expansionDependencySignature,
+    importedBindingUsage: [...entry.importedBindingUsage.entries()],
+    preparedOriginalText: entry.preparedOriginalText,
+    preparedRewrittenText: entry.preparedRewrittenText,
+    resolutionDependencySourceTexts: [...entry.resolutionDependencySourceTexts.entries()],
+    sourceText: entry.sourceText,
+  };
+}
+
+function restoreCachedPerFileMacroBindingPlanEntry(
+  snapshot: PersistentCachedPerFileMacroBindingPlanEntrySnapshot,
+): CachedPerFileMacroBindingPlanEntry {
+  return {
+    authorityBindings: snapshot.authorityBindings,
+    expansionDependencySignature: snapshot.expansionDependencySignature,
+    importedBindingUsage: new Map(snapshot.importedBindingUsage),
+    preparedOriginalText: snapshot.preparedOriginalText,
+    preparedRewrittenText: snapshot.preparedRewrittenText,
+    resolutionDependencySourceTexts: new Map(snapshot.resolutionDependencySourceTexts),
+    sourceText: snapshot.sourceText,
+  };
+}
+
+export function capturePersistentProjectMacroEnvironmentReuseSnapshot(
+  reuseState: PreparedCompilerHostReuseState,
+): PersistentProjectMacroEnvironmentReuseSnapshot {
+  const stableReuseState = getStableProjectMacroEnvironmentReuseState(reuseState);
+  return {
+    bindingPlanDependenciesByFile: [...stableReuseState.bindingPlanDependenciesByFile.entries()]
+      .map(([fileName, dependencies]) => [fileName, [...dependencies].sort()] as const),
+    bindingPlansByFile: [...stableReuseState.bindingPlansByFile.entries()].map((
+      [fileName, entry],
+    ) => [fileName, serializeCachedPerFileMacroBindingPlanEntry(entry)] as const),
+    dependencySourceTextsByFile: [...stableReuseState.dependencySourceTextsByFile.entries()],
+    dependentFilesByDependencyFile: [...stableReuseState.dependentFilesByDependencyFile.entries()]
+      .map(([fileName, dependents]) => [fileName, [...dependents].sort()] as const),
+    expandedFilesByMode: [...stableReuseState.expandedFilesByMode.entries()].map((
+      [modeKey, expandedFiles],
+    ) => [
+      modeKey,
+      [...expandedFiles.entries()].map(([fileName, sourceFile]) => [
+        fileName,
+        {
+          fileName: sourceFile.fileName,
+          text: sourceFile.text,
+        },
+      ] as const),
+    ] as const),
+  };
+}
+
+export function hydratePersistentProjectMacroEnvironmentReuseSnapshot(
+  reuseState: PreparedCompilerHostReuseState,
+  snapshot: PersistentProjectMacroEnvironmentReuseSnapshot,
+): void {
+  const stableReuseState = getStableProjectMacroEnvironmentReuseState(reuseState);
+  stableReuseState.bindingPlanDependenciesByFile.clear();
+  stableReuseState.bindingPlansByFile.clear();
+  stableReuseState.dependencySourceTextsByFile.clear();
+  stableReuseState.dependentFilesByDependencyFile.clear();
+  stableReuseState.expandedFilesByMode.clear();
+
+  for (const [fileName, dependencies] of snapshot.bindingPlanDependenciesByFile) {
+    stableReuseState.bindingPlanDependenciesByFile.set(fileName, new Set(dependencies));
+  }
+  for (const [fileName, sourceText] of snapshot.dependencySourceTextsByFile) {
+    stableReuseState.dependencySourceTextsByFile.set(fileName, sourceText);
+  }
+  for (const [fileName, dependents] of snapshot.dependentFilesByDependencyFile) {
+    stableReuseState.dependentFilesByDependencyFile.set(fileName, new Set(dependents));
+  }
+  for (const [fileName, entry] of snapshot.bindingPlansByFile) {
+    stableReuseState.bindingPlansByFile.set(
+      fileName,
+      restoreCachedPerFileMacroBindingPlanEntry(entry),
+    );
+  }
+
+  for (const [modeKey, expandedFiles] of snapshot.expandedFilesByMode) {
+    stableReuseState.expandedFilesByMode.set(
+      modeKey,
+      new Map(
+        expandedFiles.map(([fileName, entry]) => [
+          fileName,
+          ts.createSourceFile(
+            entry.fileName,
+            entry.text,
+            ts.ScriptTarget.Latest,
+            true,
+            scriptKindForHostFile(entry.fileName),
+          ),
+        ]),
+      ),
+    );
+  }
 }
 
 function unwrapMacroTransparentExpression(expression: ts.Expression): ts.Expression {

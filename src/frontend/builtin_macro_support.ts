@@ -65,6 +65,7 @@ import {
   getLineAndCharacterOfPosition,
   type ImportedMacroSiteKind,
   mapProgramRangeToSource,
+  persistPreparedProgramBuildInfo,
   type PreparedProgram,
   type PreparedSourceFile,
   toSourceFileName,
@@ -110,6 +111,24 @@ export interface CreateBuiltinExpandedProgramOptions extends CreatePreparedProgr
 }
 
 const NUMERIC_NORMALIZATION_MAX_PASSES = 8;
+
+function withPersistentSemanticBuildInfoStage(
+  options: CreatePreparedProgramOptions,
+  stage: 'annotated' | 'final' | 'initial',
+): CreatePreparedProgramOptions {
+  const buildInfoPath = options.persistentSemanticDiagnosticsBuildInfoPath;
+  if (!buildInfoPath) {
+    return options;
+  }
+
+  return {
+    ...options,
+    persistentSemanticDiagnosticsBuildInfoPath: buildInfoPath.replace(
+      /\.tsbuildinfo$/u,
+      `.${stage}.tsbuildinfo`,
+    ),
+  };
+}
 
 function repairBuiltinMacroModuleSpecifiers(text: string): string {
   return text;
@@ -1032,12 +1051,17 @@ export function createBuiltinExpandedProgram(
   const timingMetadata = {
     rootCount: supportedOptions.rootNames.length,
   };
+  const initialPreparedProgramOptions = withPersistentSemanticBuildInfoStage(
+    supportedOptions,
+    'initial',
+  );
   const preparedProgram = measureCheckerTiming(
     'project.prepare.builtin.initialProgram',
     timingMetadata,
-    () => trackPreparedProgram(createPreparedProgram(supportedOptions)),
+    () => trackPreparedProgram(createPreparedProgram(initialPreparedProgramOptions)),
     { always: true },
   );
+  persistPreparedProgramBuildInfo(preparedProgram);
   const diagnosticPreparedFiles = new Map<string, PreparedSourceFile>();
   const frontendDiagnostics: MergedDiagnostic[] = [...preparedProgram.frontendDiagnostics()];
   const macroEnvironment = measureCheckerTiming(
@@ -1188,7 +1212,7 @@ export function createBuiltinExpandedProgram(
       },
       () =>
         trackPreparedProgram(createPreparedProgram({
-          ...supportedOptions,
+          ...withPersistentSemanticBuildInfoStage(supportedOptions, 'annotated'),
           fileOverrides: annotatedOverrides,
           invalidateModuleResolutions: false,
           oldProgram: preparedProgram.program,
@@ -1196,6 +1220,7 @@ export function createBuiltinExpandedProgram(
       { always: true },
     );
   if (annotatedProgram !== preparedProgram) {
+    persistPreparedProgramBuildInfo(annotatedProgram);
     frontendDiagnostics.push(...annotatedProgram.frontendDiagnostics());
   }
 
@@ -1224,11 +1249,12 @@ export function createBuiltinExpandedProgram(
         }
 
         const nextNumericsProgram = trackPreparedProgram(createPreparedProgram({
-          ...supportedOptions,
+          ...withPersistentSemanticBuildInfoStage(supportedOptions, 'final'),
           fileOverrides: numericOverrides,
           invalidateModuleResolutions: false,
           oldProgram: numericsProgram.program,
         }));
+        persistPreparedProgramBuildInfo(nextNumericsProgram);
         if (nextNumericsProgram !== numericsProgram) {
           frontendDiagnostics.push(...nextNumericsProgram.frontendDiagnostics());
         }
@@ -1474,14 +1500,14 @@ export function createBuiltinExpandedProgram(
           changedFiles: finalChangedFileCount,
           fileCount: supplementalFilePaths.length,
         },
-        () =>
-          trackPreparedProgram(createPreparedProgram({
-            ...supportedOptions,
-            fileOverrides: finalOverrides,
-            invalidateModuleResolutions: false,
-            oldProgram: numericsProgram.program,
-            rootNames: supplementalFilePaths,
-          })),
+          () =>
+            trackPreparedProgram(createPreparedProgram({
+              ...withPersistentSemanticBuildInfoStage(supportedOptions, 'final'),
+              fileOverrides: finalOverrides,
+              invalidateModuleResolutions: false,
+              oldProgram: numericsProgram.program,
+              rootNames: supplementalFilePaths,
+            })),
         { always: true },
       );
       supplementalTsDiagnosticPrograms = [
@@ -1517,13 +1543,14 @@ export function createBuiltinExpandedProgram(
     },
     () =>
       trackPreparedProgram(createPreparedProgram({
-        ...supportedOptions,
+        ...withPersistentSemanticBuildInfoStage(supportedOptions, 'final'),
         fileOverrides: finalOverrides,
         invalidateModuleResolutions: false,
         oldProgram: numericsProgram.program,
       })),
     { always: true },
   );
+  persistPreparedProgramBuildInfo(expandedProgram);
   frontendDiagnostics.push(...expandedProgram.frontendDiagnostics());
   collectBuiltinFrontendDiagnosticsForProgram(expandedProgram);
 

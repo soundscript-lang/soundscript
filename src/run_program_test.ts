@@ -51,6 +51,11 @@ function withCapturedTimingLogs<T>(run: (logs: string[]) => T): T {
   }
 }
 
+function getTimingMetric(line: string, key: string): number | undefined {
+  const match = line.match(new RegExp(`${key}=(\\d+)`, 'u'));
+  return match ? Number(match[1]) : undefined;
+}
+
 Deno.test('runProgram caches unchanged checker results by default', async () => {
   const tempDirectory = await createTempProject([
     {
@@ -103,6 +108,66 @@ Deno.test('runProgram caches unchanged checker results by default', async () => 
   assertEquals(secondResult.diagnostics, firstResult.diagnostics);
   assertEquals(secondResult.output, firstResult.output);
   assertEquals(secondResult.exitCode, firstResult.exitCode);
+});
+
+Deno.test('runProgram persists checker build info files by default', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+          },
+          include: ['src/**/*.sts'],
+        },
+        null,
+        2,
+      ),
+    },
+    {
+      path: 'src/a.sts',
+      contents: [
+        'export function alpha(value: string | number) {',
+        "  if (typeof value === 'string') {",
+        '    return value.length;',
+        '  }',
+        '  return value;',
+        '}',
+        '',
+      ].join('\n'),
+    },
+    {
+      path: 'src/b.sts',
+      contents: [
+        "import { alpha } from './a.sts';",
+        '',
+        'export const beta = alpha(1);',
+        '',
+      ].join('\n'),
+    },
+  ]);
+  const projectPath = join(tempDirectory, 'tsconfig.json');
+  const cacheDirectory = resolveCheckerCacheDirectory(projectPath);
+  const buildInfoDirectory = join(cacheDirectory, 'buildinfo');
+
+  const result = runProgram({
+    projectPath,
+    workingDirectory: tempDirectory,
+  });
+  assertEquals(result.exitCode, 0);
+
+  assertEquals(
+    (await Deno.stat(join(buildInfoDirectory, 'sts.semantic.initial.tsbuildinfo'))).isFile,
+    true,
+  );
+  assertEquals(
+    (await Deno.stat(join(buildInfoDirectory, 'sts.declarations.tsbuildinfo'))).isFile,
+    true,
+  );
 });
 
 Deno.test('runProgram invalidates cached checker results when a tracked file changes', async () => {
@@ -327,6 +392,313 @@ Deno.test('runProgram keeps dependent .sts files cached when a changed dependenc
 
   assertEquals(secondResult.exitCode, 0);
   assertEquals(secondResult.diagnostics.length, 0);
+});
+
+Deno.test('runProgram emits projected declarations only for the changed .sts file when its dependency signature is unchanged', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+          },
+          include: ['src/**/*.sts'],
+        },
+        null,
+        2,
+      ),
+    },
+    {
+      path: 'src/a.sts',
+      contents: [
+        'export function alpha(value: string | number) {',
+        "  if (typeof value === 'string') {",
+        '    return value.length;',
+        '  }',
+        '  return value;',
+        '}',
+        '',
+      ].join('\n'),
+    },
+    {
+      path: 'src/b.sts',
+      contents: [
+        "import { alpha } from './a.sts';",
+        '',
+        'export const beta = alpha(1);',
+        '',
+      ].join('\n'),
+    },
+  ]);
+  const projectPath = join(tempDirectory, 'tsconfig.json');
+  const editedFilePath = join(tempDirectory, 'src/a.sts');
+
+  const firstResult = runProgram({
+    projectPath,
+    workingDirectory: tempDirectory,
+  });
+  assertEquals(firstResult.exitCode, 0);
+
+  await Deno.writeTextFile(
+    editedFilePath,
+    [
+      'export function alpha(value: string | number) {',
+      "  if (typeof value === 'string') {",
+      '    return value.length;',
+      '  }',
+      '  return value;',
+      '}',
+      '',
+      '// comment-only edit',
+      '',
+    ].join('\n'),
+  );
+
+  withCapturedTimingLogs((logs) => {
+    const result = runProgram({
+      projectPath,
+      workingDirectory: tempDirectory,
+    });
+    assert(logs.some((line) =>
+      line.includes('[soundscript:checker] project.emitProjectedDeclarations ') &&
+      line.includes('rootNames=1')
+    ));
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics.length, 0);
+  });
+});
+
+Deno.test('runProgram seeds checker build info on stale cached runs', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+          },
+          include: ['src/**/*.sts'],
+        },
+        null,
+        2,
+      ),
+    },
+    {
+      path: 'src/a.sts',
+      contents: [
+        'export function alpha(value: string | number) {',
+        "  if (typeof value === 'string') {",
+        '    return value.length;',
+        '  }',
+        '  return value;',
+        '}',
+        '',
+      ].join('\n'),
+    },
+    {
+      path: 'src/b.sts',
+      contents: [
+        "import { alpha } from './a.sts';",
+        '',
+        'export const beta = alpha(1);',
+        '',
+      ].join('\n'),
+    },
+  ]);
+  const projectPath = join(tempDirectory, 'tsconfig.json');
+  const editedFilePath = join(tempDirectory, 'src/a.sts');
+
+  const firstResult = runProgram({
+    projectPath,
+    workingDirectory: tempDirectory,
+  });
+  assertEquals(firstResult.exitCode, 0);
+
+  await Deno.writeTextFile(
+    editedFilePath,
+    [
+      'export function alpha(value: string | number) {',
+      "  if (typeof value === 'string') {",
+      '    return value.length;',
+      '  }',
+      '  return value;',
+      '}',
+      '',
+      '// comment-only edit',
+      '',
+    ].join('\n'),
+  );
+
+  withCapturedTimingLogs((logs) => {
+    const result = runProgram({
+      projectPath,
+      workingDirectory: tempDirectory,
+    });
+    const projectedDeclarationsLog = logs.find((line) =>
+      line.includes('[soundscript:checker] project.emitProjectedDeclarations ')
+    );
+    assert(logs.some((line) =>
+      line.includes('[soundscript:checker] project.prepare.semanticBuildInfoSeed ') &&
+      line.includes('status=seeded') &&
+      line.includes('sts.semantic.initial.tsbuildinfo')
+    ));
+    assert(logs.some((line) =>
+      line.includes('[soundscript:checker] project.emitProjectedDeclarations.buildInfoSeed ') &&
+      line.includes('status=seeded') &&
+      line.includes('sts.declarations.tsbuildinfo')
+    ));
+    assert(projectedDeclarationsLog);
+    assert(projectedDeclarationsLog.includes('mode=incremental'));
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics.length, 0);
+  });
+});
+
+Deno.test('runProgram hydrates macro prepare artifacts on stale cached runs', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+            moduleResolution: 'bundler',
+          },
+          include: ['src/**/*.ts', 'src/**/*.sts'],
+        },
+        null,
+        2,
+      ),
+    },
+    {
+      path: 'src/macros.macro.sts',
+      contents: [
+        "import 'sts:macros';",
+        '',
+        '// #[macro(call)]',
+        'export function Foo() {',
+        '  return {',
+        '    expand(ctx: any) {',
+        '      return ctx.output.expr(ctx.quote.expr`1`);',
+        '    },',
+        '  };',
+        '}',
+        '',
+      ].join('\n'),
+    },
+    {
+      path: 'src/demo.sts',
+      contents: [
+        "import { Foo } from './macros.macro';",
+        'export const value = Foo();',
+        '',
+      ].join('\n'),
+    },
+    {
+      path: 'src/other.sts',
+      contents: 'export const other = 1;\n',
+    },
+  ]);
+  const projectPath = join(tempDirectory, 'tsconfig.json');
+  const editedFilePath = join(tempDirectory, 'src/other.sts');
+
+  const firstResult = runProgram({
+    projectPath,
+    workingDirectory: tempDirectory,
+  });
+  assertEquals(firstResult.exitCode, 0);
+
+  await Deno.writeTextFile(
+    editedFilePath,
+    'export const other = 1;\n// unrelated cached edit\n',
+  );
+
+  withCapturedTimingLogs((logs) => {
+    const result = runProgram({
+      projectPath,
+      workingDirectory: tempDirectory,
+    });
+    const prepareLog = logs.find((line) =>
+      line.includes('[soundscript:checker] project.prepareProjectAnalysis ')
+    );
+    const projectedDeclarationsLog = logs.find((line) =>
+      line.includes('[soundscript:checker] project.emitProjectedDeclarations ')
+    );
+    assert(prepareLog);
+    assert(projectedDeclarationsLog);
+    assert((getTimingMetric(prepareLog, 'macroBindingPlanHits') ?? 0) > 0);
+    assert((getTimingMetric(prepareLog, 'macroExpandedFileHits') ?? 0) > 0);
+    assert(projectedDeclarationsLog.includes('mode=incremental'));
+    assert((getTimingMetric(projectedDeclarationsLog, 'seededOutputs') ?? 0) > 0);
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics.length, 0);
+  });
+});
+
+Deno.test('runProgram persists rewritten and projected declaration source-file prepare artifacts', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+            moduleResolution: 'bundler',
+          },
+          include: ['src/**/*.ts', 'src/**/*.sts'],
+        },
+        null,
+        2,
+      ),
+    },
+    {
+      path: 'src/consumer.ts',
+      contents: [
+        'import { value } from "./producer.sts";',
+        'const exact: number = value;',
+        'void exact;',
+        '',
+      ].join('\n'),
+    },
+    {
+      path: 'src/producer.sts',
+      contents: 'export const value = 1;\n',
+    },
+  ]);
+  const projectPath = join(tempDirectory, 'tsconfig.json');
+  const cacheDirectory = resolveCheckerCacheDirectory(projectPath);
+
+  const result = runProgram({
+    projectPath,
+    workingDirectory: tempDirectory,
+  });
+  assertEquals(result.exitCode, 0);
+
+  const manifest = JSON.parse(await Deno.readTextFile(join(cacheDirectory, 'manifest.json'))) as {
+    prepareArtifacts?: {
+      sts?: { compilerHost?: { rewrittenSourceFiles?: readonly unknown[] } };
+      ts?: { compilerHost?: { projectedDeclarationSourceFiles?: readonly unknown[] } };
+    };
+  };
+
+  assert((manifest.prepareArtifacts?.sts?.compilerHost?.rewrittenSourceFiles?.length ?? 0) > 0);
+  assert(
+    (manifest.prepareArtifacts?.ts?.compilerHost?.projectedDeclarationSourceFiles?.length ?? 0) >
+      0,
+  );
 });
 
 Deno.test('runProgram refreshes dependent .sts files when a changed dependency signature changes', async () => {

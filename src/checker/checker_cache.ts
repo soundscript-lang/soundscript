@@ -4,6 +4,7 @@ import ts from 'typescript';
 
 import { collectSoundscriptRootNames, loadConfig, type RuntimeTarget } from '../project/config.ts';
 import { emitProjectedDeclarations } from '../frontend/project_frontend.ts';
+import { resolveSoundScriptAwareModule } from '../project/soundscript_packages.ts';
 import {
   basename,
   dirname,
@@ -21,6 +22,7 @@ import type { AnalyzeProjectOptions, AnalyzeProjectResult } from '../service/typ
 import {
   analyzePreparedProjectWithArtifacts,
   analyzePreparedProjectOwnedDiagnosticsForFileWithArtifacts,
+  capturePersistentPreparedAnalysisProjectReuseSnapshots,
   collectPreparedAnalysisProjectFileMetadata,
   collectPreparedAnalysisProjectTrackedFilePaths,
   disposePreparedAnalysisProject,
@@ -28,6 +30,7 @@ import {
   matchesPreparedAnalysisAnyFilePath,
   prepareProjectAnalysis,
   type AnalyzePreparedProjectWithArtifactsResult,
+  type PersistentPreparedAnalysisProjectReuseSnapshots,
   type PreparedAnalysisProject,
   type PreparedAnalysisProjectFileMetadata,
   type PreparedProjectAnalysisArtifacts,
@@ -36,9 +39,10 @@ import { measureCheckerTiming } from './timing.ts';
 import type { MergedDiagnostic } from './diagnostics.ts';
 import type { FlowFileRuleCache } from './rules/flow.ts';
 
-const CHECKER_CACHE_SCHEMA_VERSION = 3;
+const CHECKER_CACHE_SCHEMA_VERSION = 5;
 const CHECKER_CACHE_ROOT_DIRECTORY = '.soundscript-cache';
 const CHECKER_CACHE_SUBDIRECTORY = 'checker';
+const CHECKER_CACHE_BUILD_INFO_SUBDIRECTORY = 'buildinfo';
 const dependencySignaturePrinter = ts.createPrinter({
   newLine: ts.NewLineKind.LineFeed,
   removeComments: true,
@@ -65,6 +69,7 @@ interface CheckerCacheManifest {
   dependencySignatures: Readonly<Record<string, string>>;
   files: readonly CheckerCacheFileEntry[];
   header: CheckerCacheHeader;
+  prepareArtifacts?: PersistentPreparedAnalysisProjectReuseSnapshots;
   result: AnalyzeProjectResult;
   schemaVersion: number;
   trackedFiles: Readonly<Record<string, string>>;
@@ -90,6 +95,13 @@ interface IncrementalCheckerCacheReuseResult {
   manifest: CheckerCacheManifest;
   refreshedFiles: number;
   reusedFiles: number;
+}
+
+interface DependencySignatureUpdateResult {
+  changedDependencyFiles: readonly string[];
+  dependencySignatureFilesEmitted: number;
+  dependencySignatureWaves: number;
+  dependencySignatures: Readonly<Record<string, string>>;
 }
 
 const UNDEFINED_JSON_SENTINEL_KEY = '__soundscriptUndefined';
@@ -300,12 +312,145 @@ function trackedFilePathKeys(
   return Object.keys(trackedFiles).sort();
 }
 
-function createPreparedProjectDependencySignatures(
-  preparedProject: PreparedAnalysisProject,
+function isDependencySignatureFileMetadata(
+  metadata: PreparedAnalysisProjectFileMetadata,
+): boolean {
+  return metadata.filePath.endsWith('.sts') &&
+    (metadata.view === 'sts' || metadata.view === 'packageSource');
+}
+
+function createDependencySignatureViewByFilePath(
   fileMetadata: readonly PreparedAnalysisProjectFileMetadata[],
+): ReadonlyMap<string, PreparedAnalysisProjectFileMetadata['view']> {
+  return new Map(
+    fileMetadata
+      .filter(isDependencySignatureFileMetadata)
+      .map((metadata) => [metadata.filePath, metadata.view]),
+  );
+}
+
+function getStaticSourceFileModuleSpecifiers(sourceFile: ts.SourceFile): readonly string[] {
+  const moduleSpecifiers: string[] = [];
+
+  for (const statement of sourceFile.statements) {
+    if (
+      (ts.isImportDeclaration(statement) || ts.isExportDeclaration(statement)) &&
+      statement.moduleSpecifier &&
+      ts.isStringLiteral(statement.moduleSpecifier)
+    ) {
+      moduleSpecifiers.push(statement.moduleSpecifier.text);
+      continue;
+    }
+
+    if (
+      ts.isImportEqualsDeclaration(statement) &&
+      ts.isExternalModuleReference(statement.moduleReference) &&
+      ts.isStringLiteral(statement.moduleReference.expression)
+    ) {
+      moduleSpecifiers.push(statement.moduleReference.expression.text);
+    }
+  }
+
+  return moduleSpecifiers;
+}
+
+function collectPreparedViewDependencyDependents(
+  preparedView: PreparedAnalysisProject['stsView'] | PreparedAnalysisProject['packageSourcePolicyView'],
+  filePaths: readonly string[],
+): ReadonlyMap<string, readonly string[]> {
+  if (!preparedView || filePaths.length === 0) {
+    return new Map();
+  }
+
+  const filePathSet = new Set(filePaths);
+  const dependentsByFilePath = new Map<string, Set<string>>();
+  for (const filePath of filePaths) {
+    dependentsByFilePath.set(filePath, new Set());
+  }
+
+  for (const filePath of filePaths) {
+    const sourceFile = preparedView.program.getSourceFile(
+      preparedView.preparedProgram.toProgramFileName(filePath),
+    );
+    if (!sourceFile) {
+      continue;
+    }
+
+    for (const moduleSpecifier of getStaticSourceFileModuleSpecifiers(sourceFile)) {
+      const resolvedModule = resolveSoundScriptAwareModule(
+        moduleSpecifier,
+        filePath,
+        preparedView.preparedProgram.options,
+        preparedView.preparedProgram.preparedHost.host,
+      );
+      if (!resolvedModule) {
+        continue;
+      }
+
+      const dependencyFilePath = preparedView.preparedProgram.toSourceFileName(
+        resolvedModule.resolvedFileName,
+      );
+      if (!filePathSet.has(dependencyFilePath)) {
+        continue;
+      }
+
+      dependentsByFilePath.get(dependencyFilePath)?.add(filePath);
+    }
+  }
+
+  return new Map(
+    [...dependentsByFilePath.entries()].map(([filePath, dependents]) => [
+      filePath,
+      [...dependents].sort(),
+    ]),
+  );
+}
+
+function collectPreparedProjectDependencyDependents(
+  preparedProject: PreparedAnalysisProject,
+  fileViewByFilePath: ReadonlyMap<string, PreparedAnalysisProjectFileMetadata['view']>,
+): ReadonlyMap<string, readonly string[]> {
+  const stsFilePaths = [...fileViewByFilePath.entries()]
+    .filter(([, view]) => view === 'sts')
+    .map(([filePath]) => filePath);
+  const packageSourceFilePaths = [...fileViewByFilePath.entries()]
+    .filter(([, view]) => view === 'packageSource')
+    .map(([filePath]) => filePath);
+  const dependents = new Map<string, Set<string>>();
+
+  const addDependents = (entries: ReadonlyMap<string, readonly string[]>): void => {
+    for (const [filePath, fileDependents] of entries) {
+      const target = dependents.get(filePath) ?? new Set<string>();
+      for (const dependent of fileDependents) {
+        target.add(dependent);
+      }
+      dependents.set(filePath, target);
+    }
+  };
+
+  addDependents(collectPreparedViewDependencyDependents(preparedProject.stsView, stsFilePaths));
+  addDependents(
+    collectPreparedViewDependencyDependents(
+      preparedProject.packageSourcePolicyView,
+      packageSourceFilePaths,
+    ),
+  );
+
+  return new Map(
+    [...dependents.entries()].map(([filePath, fileDependents]) => [
+      filePath,
+      [...fileDependents].sort(),
+    ]),
+  );
+}
+
+function emitPreparedProjectDependencySignatureHashes(
+  preparedProject: PreparedAnalysisProject,
+  fileViewByFilePath: ReadonlyMap<string, PreparedAnalysisProjectFileMetadata['view']>,
+  filePaths: readonly string[],
 ): Readonly<Record<string, string>> {
   const signatures: Record<string, string> = {};
-  const addProjectedDeclarationSignatures = (
+  const emitForView = (
     view: PreparedAnalysisProject['stsView'] | PreparedAnalysisProject['packageSourcePolicyView'],
     viewKind: PreparedAnalysisProjectFileMetadata['view'],
   ): void => {
@@ -313,9 +458,7 @@ function createPreparedProjectDependencySignatures(
       return;
     }
 
-    const rootNames = fileMetadata
-      .filter((metadata) => metadata.view === viewKind && metadata.filePath.endsWith('.sts'))
-      .map((metadata) => metadata.filePath);
+    const rootNames = filePaths.filter((filePath) => fileViewByFilePath.get(filePath) === viewKind);
     if (rootNames.length === 0) {
       return;
     }
@@ -334,10 +477,21 @@ function createPreparedProjectDependencySignatures(
     }
   };
 
-  addProjectedDeclarationSignatures(preparedProject.stsView, 'sts');
-  addProjectedDeclarationSignatures(preparedProject.packageSourcePolicyView, 'packageSource');
-
+  emitForView(preparedProject.stsView, 'sts');
+  emitForView(preparedProject.packageSourcePolicyView, 'packageSource');
   return signatures;
+}
+
+function createPreparedProjectDependencySignatures(
+  preparedProject: PreparedAnalysisProject,
+  fileMetadata: readonly PreparedAnalysisProjectFileMetadata[],
+): Readonly<Record<string, string>> {
+  const fileViewByFilePath = createDependencySignatureViewByFilePath(fileMetadata);
+  return emitPreparedProjectDependencySignatureHashes(
+    preparedProject,
+    fileViewByFilePath,
+    [...fileViewByFilePath.keys()],
+  );
 }
 
 function normalizeProjectedDeclarationTextForDependencySignature(text: string): string {
@@ -355,36 +509,105 @@ function normalizeProjectedDeclarationTextForDependencySignature(text: string): 
   }
 }
 
-function getDependencySignatureForFilePath(
-  dependencySignatures: Readonly<Record<string, string>>,
-  filePath: string,
+function findDependencySignatureFilePath(
+  changedFilePath: string,
+  fileViewByFilePath: ReadonlyMap<string, PreparedAnalysisProjectFileMetadata['view']>,
 ): string | undefined {
-  const directMatch = dependencySignatures[filePath];
-  if (directMatch !== undefined) {
-    return directMatch;
-  }
-
-  for (const [candidateFilePath, signature] of Object.entries(dependencySignatures)) {
-    if (matchesPreparedAnalysisAnyFilePath(filePath, [candidateFilePath])) {
-      return signature;
+  for (const filePath of fileViewByFilePath.keys()) {
+    if (matchesPreparedAnalysisAnyFilePath(changedFilePath, [filePath])) {
+      return filePath;
     }
   }
 
   return undefined;
 }
 
-function collectChangedDependencyFilePaths(
+function updatePreparedProjectDependencySignatures(
+  preparedProject: PreparedAnalysisProject,
+  fileMetadata: readonly PreparedAnalysisProjectFileMetadata[],
   changedTrackedFiles: readonly string[],
   previousDependencySignatures: Readonly<Record<string, string>>,
-  nextDependencySignatures: Readonly<Record<string, string>>,
-): readonly string[] {
-  return changedTrackedFiles.filter((filePath) => {
-    const previousSignature = getDependencySignatureForFilePath(previousDependencySignatures, filePath);
-    const nextSignature = getDependencySignatureForFilePath(nextDependencySignatures, filePath);
-    return previousSignature === undefined ||
-      nextSignature === undefined ||
-      previousSignature !== nextSignature;
-  });
+): DependencySignatureUpdateResult {
+  const fileViewByFilePath = createDependencySignatureViewByFilePath(fileMetadata);
+  const dependencyDependents = collectPreparedProjectDependencyDependents(
+    preparedProject,
+    fileViewByFilePath,
+  );
+  const dependencySignatures: Record<string, string> = {
+    ...previousDependencySignatures,
+  };
+  const changedDependencyFiles = new Set<string>();
+  const queuedFilePaths = new Set<string>();
+  let pendingFilePaths: string[] = [];
+  let dependencySignatureFilesEmitted = 0;
+  let dependencySignatureWaves = 0;
+
+  for (const changedTrackedFilePath of changedTrackedFiles) {
+    const dependencyFilePath = findDependencySignatureFilePath(changedTrackedFilePath, fileViewByFilePath);
+    if (!dependencyFilePath) {
+      changedDependencyFiles.add(changedTrackedFilePath);
+      continue;
+    }
+    if (queuedFilePaths.has(dependencyFilePath)) {
+      continue;
+    }
+    queuedFilePaths.add(dependencyFilePath);
+    pendingFilePaths.push(dependencyFilePath);
+  }
+
+  while (pendingFilePaths.length > 0) {
+    const currentWaveFilePaths = pendingFilePaths;
+    pendingFilePaths = [];
+    dependencySignatureWaves += 1;
+
+    const emittedSignatures = emitPreparedProjectDependencySignatureHashes(
+      preparedProject,
+      fileViewByFilePath,
+      currentWaveFilePaths,
+    );
+    dependencySignatureFilesEmitted += currentWaveFilePaths.length;
+
+    for (const filePath of currentWaveFilePaths) {
+      const previousSignature = dependencySignatures[filePath];
+      const nextSignature = emittedSignatures[filePath];
+      const changed = previousSignature !== nextSignature;
+
+      if (nextSignature === undefined) {
+        delete dependencySignatures[filePath];
+      } else {
+        dependencySignatures[filePath] = nextSignature;
+      }
+
+      if (!changed) {
+        continue;
+      }
+
+      changedDependencyFiles.add(filePath);
+      for (const dependentFilePath of dependencyDependents.get(filePath) ?? []) {
+        if (queuedFilePaths.has(dependentFilePath)) {
+          continue;
+        }
+        queuedFilePaths.add(dependentFilePath);
+        pendingFilePaths.push(dependentFilePath);
+      }
+    }
+  }
+
+  const nextDependencySignatures = Object.fromEntries(
+    [...fileViewByFilePath.keys()]
+      .sort()
+      .flatMap((filePath) => {
+        const signature = dependencySignatures[filePath];
+        return signature === undefined ? [] : [[filePath, signature] as const];
+      }),
+  );
+
+  return {
+    changedDependencyFiles: [...changedDependencyFiles].sort(),
+    dependencySignatureFilesEmitted,
+    dependencySignatureWaves,
+    dependencySignatures: nextDependencySignatures,
+  };
 }
 
 function readCheckerCacheManifest(
@@ -505,6 +728,7 @@ function createCheckerCacheManifestFromFullAnalysis(
   preparedProjectFileMetadata: readonly PreparedAnalysisProjectFileMetadata[],
   trackedFiles: Readonly<Record<string, string>>,
   dependencySignatures: Readonly<Record<string, string>>,
+  prepareArtifacts: PersistentPreparedAnalysisProjectReuseSnapshots,
   analysis: AnalyzePreparedProjectWithArtifactsResult,
 ): CheckerCacheManifest {
   const splitDiagnostics = splitDiagnosticsByFileOwnership(
@@ -526,6 +750,7 @@ function createCheckerCacheManifestFromFullAnalysis(
       };
     }),
     header,
+    prepareArtifacts,
     result: analysis.result,
     schemaVersion: CHECKER_CACHE_SCHEMA_VERSION,
     trackedFiles,
@@ -537,6 +762,7 @@ function createIncrementalCheckerCacheManifest(
   header: CheckerCacheHeader,
   trackedFiles: Readonly<Record<string, string>>,
   dependencySignatures: Readonly<Record<string, string>>,
+  prepareArtifacts: PersistentPreparedAnalysisProjectReuseSnapshots,
   files: readonly CheckerCacheFileEntry[],
   unownedDiagnostics: readonly MergedDiagnostic[],
 ): CheckerCacheManifest {
@@ -545,6 +771,7 @@ function createIncrementalCheckerCacheManifest(
     dependencySignatures,
     files,
     header,
+    prepareArtifacts,
     result: combineCachedFileResults(files, unownedDiagnostics),
     schemaVersion: CHECKER_CACHE_SCHEMA_VERSION,
     trackedFiles,
@@ -559,6 +786,16 @@ function createCheckerCacheProjectDirectory(
   const cacheBaseDirectory = cacheDir ??
     join(dirname(projectPath), CHECKER_CACHE_ROOT_DIRECTORY, CHECKER_CACHE_SUBDIRECTORY);
   return join(cacheBaseDirectory, hashPath(projectPath));
+}
+
+function createCheckerCacheBuildInfoDirectory(
+  projectPath: string,
+  cacheDir: string | undefined,
+): string {
+  return join(
+    createCheckerCacheProjectDirectory(projectPath, cacheDir),
+    CHECKER_CACHE_BUILD_INFO_SUBDIRECTORY,
+  );
 }
 
 export function resolveCheckerCacheDirectory(
@@ -611,6 +848,7 @@ function tryReusePartialCheckerCacheManifest(
   preparedProjectFileMetadata: readonly PreparedAnalysisProjectFileMetadata[],
   preparedProjectTrackedFilePaths: readonly string[],
   preparedProjectDependencySignatures: Readonly<Record<string, string>>,
+  prepareArtifacts: PersistentPreparedAnalysisProjectReuseSnapshots,
   analyzeFile: (filePath: string, flowCache: FlowFileRuleCache | undefined) => CheckerCacheFileEntry,
 ): IncrementalCheckerCacheReuseResult | null {
   if (manifest.unownedDiagnostics.length > 0) {
@@ -673,6 +911,7 @@ function tryReusePartialCheckerCacheManifest(
       header,
       createTrackedFileHashes(preparedProjectTrackedFilePaths),
       preparedProjectDependencySignatures,
+      prepareArtifacts,
       nextFiles,
       manifest.unownedDiagnostics,
     ),
@@ -736,29 +975,39 @@ export function analyzeProjectWithPersistentCache(
     return cacheReadResult.result;
   }
 
-  const preparedProject = prepareProjectAnalysis(options);
+  const persistentBuildInfoDirectory = useCache
+    ? createCheckerCacheBuildInfoDirectory(options.projectPath, options.cacheDir)
+    : undefined;
+  const preparedProject = prepareProjectAnalysis(options, undefined, {
+    persistentBuildInfoDirectory,
+    persistentReuseSnapshots: cacheReadResult.kind === 'stale'
+      ? cacheReadResult.manifest.prepareArtifacts
+      : undefined,
+  });
   try {
     const preparedProjectFileMetadata = collectPreparedAnalysisProjectFileMetadata(preparedProject);
     const preparedProjectTrackedFilePaths = collectPreparedAnalysisProjectTrackedFilePaths(
       preparedProject,
     );
-    const preparedProjectDependencySignatures = createPreparedProjectDependencySignatures(
-      preparedProject,
-      preparedProjectFileMetadata,
-    );
 
     if (useCache && header && cacheReadResult.kind === 'stale') {
-      const changedDependencyFiles = collectChangedDependencyFilePaths(
+      const dependencySignatureUpdate = updatePreparedProjectDependencySignatures(
+        preparedProject,
+        preparedProjectFileMetadata,
         cacheReadResult.changedTrackedFiles,
         cacheReadResult.manifest.dependencySignatures,
-        preparedProjectDependencySignatures,
+      );
+      const preparedProjectReuseSnapshots = capturePersistentPreparedAnalysisProjectReuseSnapshots(
+        preparedProject,
       );
       const incrementalReuse = measureCheckerTiming(
         'project.cache.incremental',
         {
           cacheDir: cacheProjectDirectory,
-          changedDependencyFiles: changedDependencyFiles.length,
+          changedDependencyFiles: dependencySignatureUpdate.changedDependencyFiles.length,
           changedTrackedFiles: cacheReadResult.changedTrackedFiles.length,
+          dependencySignatureFilesEmitted: dependencySignatureUpdate.dependencySignatureFilesEmitted,
+          dependencySignatureWaves: dependencySignatureUpdate.dependencySignatureWaves,
           projectPath: options.projectPath,
         },
         () =>
@@ -766,10 +1015,11 @@ export function analyzeProjectWithPersistentCache(
             header,
             cacheReadResult.manifest,
             cacheReadResult.changedTrackedFiles,
-            changedDependencyFiles,
+            dependencySignatureUpdate.changedDependencyFiles,
             preparedProjectFileMetadata,
             preparedProjectTrackedFilePaths,
-            preparedProjectDependencySignatures,
+            dependencySignatureUpdate.dependencySignatures,
+            preparedProjectReuseSnapshots,
             (filePath, flowCache) => {
               const analysis = analyzePreparedProjectOwnedDiagnosticsForFileWithArtifacts(
                 preparedProject,
@@ -826,11 +1076,19 @@ export function analyzeProjectWithPersistentCache(
 
     const analysis = analyzePreparedProjectWithArtifacts(preparedProject);
     if (useCache && header) {
+      const preparedProjectDependencySignatures = createPreparedProjectDependencySignatures(
+        preparedProject,
+        preparedProjectFileMetadata,
+      );
+      const preparedProjectReuseSnapshots = capturePersistentPreparedAnalysisProjectReuseSnapshots(
+        preparedProject,
+      );
       const manifest = createCheckerCacheManifestFromFullAnalysis(
         header,
         preparedProjectFileMetadata,
         createTrackedFileHashes(preparedProjectTrackedFilePaths),
         preparedProjectDependencySignatures,
+        preparedProjectReuseSnapshots,
         analysis,
       );
       try {
