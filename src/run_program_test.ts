@@ -723,13 +723,19 @@ Deno.test('runProgram hydrates macro prepare artifacts on stale cached runs', as
     const prepareLog = logs.find((line) =>
       line.includes('[soundscript:checker] project.prepareProjectAnalysis ')
     );
+    const semanticBuilderHostReuseLog = logs.find((line) =>
+      line.includes('[soundscript:checker] project.prepare.semanticBuilderHostReuse ') &&
+      line.includes('stage=initial')
+    );
     const projectedDeclarationsLog = logs.find((line) =>
       line.includes('[soundscript:checker] project.emitProjectedDeclarations ')
     );
     assert(prepareLog);
+    assert(semanticBuilderHostReuseLog);
     assert(projectedDeclarationsLog);
     assert((getTimingMetric(prepareLog, 'macroBindingPlanHits') ?? 0) > 0);
     assert((getTimingMetric(prepareLog, 'macroExpandedFileHits') ?? 0) > 0);
+    assert((getTimingMetric(semanticBuilderHostReuseLog, 'rewrittenSourceFileCacheHits') ?? 0) > 0);
     assert(projectedDeclarationsLog.includes('mode=incremental'));
     assert((getTimingMetric(projectedDeclarationsLog, 'seededOutputs') ?? 0) > 0);
     assertEquals(result.exitCode, 0);

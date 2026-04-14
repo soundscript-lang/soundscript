@@ -785,6 +785,12 @@ export interface PreparedCompilerHost {
   getMacroPlaceholderIndex(): MacroPlaceholderIndex;
   host: ts.CompilerHost;
   reuseState: PreparedCompilerHostReuseState;
+  sourceFileCacheStats(): {
+    projectedDeclarationHits: number;
+    projectedDeclarationMisses: number;
+    rewrittenHits: number;
+    rewrittenMisses: number;
+  };
 }
 
 interface CachedPreparedSourceFileEntry {
@@ -3872,6 +3878,12 @@ export function createPreparedCompilerHost(
 ): PreparedCompilerHost {
   const preparedFiles = new Map<string, PreparedSourceFile>();
   const macroPreparationByFile = new Map<string, boolean>();
+  const sourceFileCacheStats = {
+    projectedDeclarationHits: 0,
+    projectedDeclarationMisses: 0,
+    rewrittenHits: 0,
+    rewrittenMisses: 0,
+  };
   const previousProgramSourceFiles = reusableState.programSourceFiles;
   const programSourceFiles = new Set<string>();
   const changedProgramSourceFiles = new Set<string>();
@@ -4226,6 +4238,7 @@ export function createPreparedCompilerHost(
 
   function getCachedOrCreateSourceFile(
     cache: Map<string, CachedSourceFileEntry>,
+    cacheKind: 'projectedDeclaration' | 'rewritten',
     fileName: string,
     text: string,
     languageVersion: ts.ScriptTarget | ts.CreateSourceFileOptions,
@@ -4235,8 +4248,19 @@ export function createPreparedCompilerHost(
     if (!shouldCreateNewSourceFile) {
       const cached = cache.get(fileName);
       if (cached?.text === text && cached.environmentSignature === environmentSignature) {
+        if (cacheKind === 'projectedDeclaration') {
+          sourceFileCacheStats.projectedDeclarationHits += 1;
+        } else {
+          sourceFileCacheStats.rewrittenHits += 1;
+        }
         return cached.sourceFile;
       }
+    }
+
+    if (cacheKind === 'projectedDeclaration') {
+      sourceFileCacheStats.projectedDeclarationMisses += 1;
+    } else {
+      sourceFileCacheStats.rewrittenMisses += 1;
     }
 
     const sourceFile = ts.createSourceFile(
@@ -4545,6 +4569,7 @@ export function createPreparedCompilerHost(
         if (projectedDeclarationText !== undefined) {
           const sourceFile = getCachedOrCreateSourceFile(
             reusableState.projectedDeclarationSourceFiles,
+            'projectedDeclaration',
             fileName,
             projectedDeclarationText,
             languageVersion,
@@ -4558,6 +4583,7 @@ export function createPreparedCompilerHost(
         if (prepared !== undefined) {
           const sourceFile = getCachedOrCreateSourceFile(
             reusableState.rewrittenSourceFiles,
+            'rewritten',
             fileName,
             prepared.rewrittenText,
             languageVersion,
@@ -4595,6 +4621,14 @@ export function createPreparedCompilerHost(
       resolveModuleNames,
     },
     reuseState: reusableState,
+    sourceFileCacheStats(): {
+      projectedDeclarationHits: number;
+      projectedDeclarationMisses: number;
+      rewrittenHits: number;
+      rewrittenMisses: number;
+    } {
+      return { ...sourceFileCacheStats };
+    },
   };
 }
 
@@ -4698,6 +4732,27 @@ export function createPreparedProgram(
   preparedHost.reuseState.semanticDiagnosticsProjectReferencesSignature =
     projectReferencesSignature;
   preparedHost.reuseState.semanticDiagnosticsRootNamesSignature = rootNamesSignature;
+  const sourceFileCacheStats = preparedHost.sourceFileCacheStats();
+  logCheckerTiming(
+    'project.prepare.semanticBuilderHostReuse',
+    0,
+    {
+      changedProgramFiles: preparedHost.reuseState.changedProgramSourceFiles.size,
+      projectedDeclarationSourceFileCacheHits: sourceFileCacheStats.projectedDeclarationHits,
+      projectedDeclarationSourceFileCacheMisses: sourceFileCacheStats.projectedDeclarationMisses,
+      programFiles: preparedHost.reuseState.programSourceFiles.size,
+      removedProgramFiles: removedProgramSourceFiles.size,
+      reusedProgramFiles:
+        preparedHost.reuseState.programSourceFiles.size -
+        preparedHost.reuseState.changedProgramSourceFiles.size,
+      rewrittenSourceFileCacheHits: sourceFileCacheStats.rewrittenHits,
+      rewrittenSourceFileCacheMisses: sourceFileCacheStats.rewrittenMisses,
+      rootCount: rootNames.length,
+      seed: semanticDiagnosticsBuilderSeed ? 'yes' : 'no',
+      stage: inferPersistentBuildInfoStage(options.persistentSemanticDiagnosticsBuildInfoPath),
+    },
+    { always: true },
+  );
 
   return {
     configuredSoundscriptFileNames,
