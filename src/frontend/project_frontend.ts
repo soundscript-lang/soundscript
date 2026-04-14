@@ -788,6 +788,8 @@ export interface PreparedCompilerHost {
   sourceFileCacheStats(): {
     projectedDeclarationHits: number;
     projectedDeclarationMisses: number;
+    resolvedModuleMemoHits: number;
+    resolvedModuleMemoMisses: number;
     rewrittenHits: number;
     rewrittenMisses: number;
   };
@@ -880,6 +882,8 @@ interface PersistentCachedSourceFileEntrySnapshot {
   text: string;
 }
 
+type PersistentResolvedModuleSnapshot = ts.ResolvedModule | null;
+
 export interface PersistentPreparedCompilerHostReuseSnapshot {
   builtinAnnotatedSourceFiles: readonly (readonly [string, CachedBuiltinAnnotatedSourceFileEntry])[];
   builtinFinalSourceFiles: readonly (
@@ -897,6 +901,7 @@ export interface PersistentPreparedCompilerHostReuseSnapshot {
   projectedDeclarationSourceFiles: readonly (
     readonly [string, PersistentCachedSourceFileEntrySnapshot]
   )[];
+  resolvedModulesByKey: readonly (readonly [string, PersistentResolvedModuleSnapshot])[];
   rewrittenSourceFiles: readonly (readonly [string, PersistentCachedSourceFileEntrySnapshot])[];
 }
 
@@ -1057,6 +1062,18 @@ function restoreCachedSourceFileEntry(
     sourceFile: createPersistentExpandedMacroSourceFile(snapshot.fileName, snapshot.text),
     text: snapshot.text,
   };
+}
+
+function serializeResolvedModuleSnapshot(
+  resolvedModule: ts.ResolvedModule | null,
+): PersistentResolvedModuleSnapshot {
+  return resolvedModule;
+}
+
+function restoreResolvedModuleSnapshot(
+  snapshot: PersistentResolvedModuleSnapshot,
+): ts.ResolvedModule | null {
+  return snapshot;
 }
 
 function createPersistentBuildInfoCompilerOptions(
@@ -3875,12 +3892,15 @@ export function createPreparedCompilerHost(
   alwaysAvailableMacroSiteKinds: ReadonlyMap<string, ImportedMacroSiteKind> = new Map(),
   preserveMacroAuthoring = false,
   invalidateModuleResolutions = true,
+  reuseResolvedModulesOnInvalidation = false,
 ): PreparedCompilerHost {
   const preparedFiles = new Map<string, PreparedSourceFile>();
   const macroPreparationByFile = new Map<string, boolean>();
   const sourceFileCacheStats = {
     projectedDeclarationHits: 0,
     projectedDeclarationMisses: 0,
+    resolvedModuleMemoHits: 0,
+    resolvedModuleMemoMisses: 0,
     rewrittenHits: 0,
     rewrittenMisses: 0,
   };
@@ -3914,7 +3934,9 @@ export function createPreparedCompilerHost(
       getCanonicalFileName,
     );
     reusableState.moduleResolutionCacheSignature = projectedDeclarationPresenceSignature;
-    reusableState.resolvedModulesByKey.clear();
+    if (!reuseResolvedModulesOnInvalidation) {
+      reusableState.resolvedModulesByKey.clear();
+    }
   }
 
   function getProjectedDeclarationText(fileName: string): string | undefined {
@@ -4355,6 +4377,8 @@ export function createPreparedCompilerHost(
   ): (ts.ResolvedModule | undefined)[] {
     const sourceContainingFile = toSourceFileName(containingFile);
     const moduleResolutionHost = createModuleResolutionHost();
+    const canReuseResolvedModuleMemo = !invalidateModuleResolutions ||
+      reuseResolvedModulesOnInvalidation;
     const resolvedModules: (ts.ResolvedModule | undefined)[] = new Array(moduleNames.length);
     const unresolvedIndexes: number[] = [];
     const unresolvedModuleNames: string[] = [];
@@ -4369,18 +4393,21 @@ export function createPreparedCompilerHost(
       ].join('\u0000')
     );
     for (const [index, cacheKey] of cacheKeys.entries()) {
-      if (invalidateModuleResolutions) {
+      if (!canReuseResolvedModuleMemo) {
         unresolvedIndexes.push(index);
         unresolvedModuleNames.push(moduleNames[index]);
+        sourceFileCacheStats.resolvedModuleMemoMisses += 1;
         continue;
       }
       const cached = reusableState.resolvedModulesByKey.get(cacheKey);
       if (cached !== undefined) {
+        sourceFileCacheStats.resolvedModuleMemoHits += 1;
         resolvedModules[index] = cached ?? undefined;
         continue;
       }
       unresolvedIndexes.push(index);
       unresolvedModuleNames.push(moduleNames[index]);
+      sourceFileCacheStats.resolvedModuleMemoMisses += 1;
     }
     const baseResolvedModules = unresolvedModuleNames.length > 0
       ? baseHost.resolveModuleNames?.(
@@ -4624,6 +4651,8 @@ export function createPreparedCompilerHost(
     sourceFileCacheStats(): {
       projectedDeclarationHits: number;
       projectedDeclarationMisses: number;
+      resolvedModuleMemoHits: number;
+      resolvedModuleMemoMisses: number;
       rewrittenHits: number;
       rewrittenMisses: number;
     } {
@@ -4654,6 +4683,8 @@ function serializeMacroSiteKinds(
 export function createPreparedProgram(
   options: CreatePreparedProgramOptions,
 ): PreparedProgram {
+  const reuseResolvedModulesOnInvalidation = options.oldProgram === undefined &&
+    (options.reusableCompilerHostState?.resolvedModulesByKey.size ?? 0) > 0;
   const configuredSoundscriptFileNames = options.configuredSoundscriptFileNames ?? new Set();
   const preparedHost = createPreparedCompilerHost(
     options.baseHost,
@@ -4667,6 +4698,7 @@ export function createPreparedProgram(
     options.alwaysAvailableMacroSiteKinds ?? new Map(),
     options.preserveMacroAuthoring ?? false,
     options.invalidateModuleResolutions ?? true,
+    reuseResolvedModulesOnInvalidation,
   );
   const rootNames = options.rootNames.map(toProgramFileName);
   const optionSignature = stableStringify(options.options);
@@ -4742,9 +4774,12 @@ export function createPreparedProgram(
       projectedDeclarationSourceFileCacheMisses: sourceFileCacheStats.projectedDeclarationMisses,
       programFiles: preparedHost.reuseState.programSourceFiles.size,
       removedProgramFiles: removedProgramSourceFiles.size,
+      resolvedModuleMemoHits: sourceFileCacheStats.resolvedModuleMemoHits,
+      resolvedModuleMemoMisses: sourceFileCacheStats.resolvedModuleMemoMisses,
       reusedProgramFiles:
         preparedHost.reuseState.programSourceFiles.size -
         preparedHost.reuseState.changedProgramSourceFiles.size,
+      reusedResolvedModuleMemoOnInvalidation: reuseResolvedModulesOnInvalidation,
       rewrittenSourceFileCacheHits: sourceFileCacheStats.rewrittenHits,
       rewrittenSourceFileCacheMisses: sourceFileCacheStats.rewrittenMisses,
       rootCount: rootNames.length,
@@ -4833,6 +4868,9 @@ export function capturePersistentPreparedCompilerHostReuseSnapshot(
     projectedDeclarationSourceFiles: [...reuseState.projectedDeclarationSourceFiles.entries()].map(
       ([fileName, entry]) => [fileName, serializeCachedSourceFileEntry(entry)] as const,
     ),
+    resolvedModulesByKey: [...reuseState.resolvedModulesByKey.entries()].map(([cacheKey, entry]) =>
+      [cacheKey, serializeResolvedModuleSnapshot(entry)] as const
+    ),
     rewrittenSourceFiles: [...reuseState.rewrittenSourceFiles.entries()].map(([fileName, entry]) =>
       [fileName, serializeCachedSourceFileEntry(entry)] as const
     ),
@@ -4876,6 +4914,9 @@ export function hydratePersistentPreparedCompilerHostReuseSnapshot(
     snapshot.projectedDeclarationRootNamesSignature;
   for (const [fileName, entry] of snapshot.projectedDeclarationSourceFiles) {
     reuseState.projectedDeclarationSourceFiles.set(fileName, restoreCachedSourceFileEntry(entry));
+  }
+  for (const [cacheKey, entry] of snapshot.resolvedModulesByKey) {
+    reuseState.resolvedModulesByKey.set(cacheKey, restoreResolvedModuleSnapshot(entry));
   }
   for (const [fileName, entry] of snapshot.rewrittenSourceFiles) {
     reuseState.rewrittenSourceFiles.set(fileName, restoreCachedSourceFileEntry(entry));

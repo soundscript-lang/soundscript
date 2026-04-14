@@ -39,7 +39,7 @@ import { measureCheckerTiming } from './timing.ts';
 import type { MergedDiagnostic } from './diagnostics.ts';
 import type { FlowFileRuleCache } from './rules/flow.ts';
 
-const CHECKER_CACHE_SCHEMA_VERSION = 5;
+const CHECKER_CACHE_SCHEMA_VERSION = 6;
 const CHECKER_CACHE_ROOT_DIRECTORY = '.soundscript-cache';
 const CHECKER_CACHE_SUBDIRECTORY = 'checker';
 const CHECKER_CACHE_BUILD_INFO_SUBDIRECTORY = 'buildinfo';

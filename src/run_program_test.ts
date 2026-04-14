@@ -736,6 +736,7 @@ Deno.test('runProgram hydrates macro prepare artifacts on stale cached runs', as
     assert((getTimingMetric(prepareLog, 'macroBindingPlanHits') ?? 0) > 0);
     assert((getTimingMetric(prepareLog, 'macroExpandedFileHits') ?? 0) > 0);
     assert((getTimingMetric(semanticBuilderHostReuseLog, 'rewrittenSourceFileCacheHits') ?? 0) > 0);
+    assert((getTimingMetric(semanticBuilderHostReuseLog, 'resolvedModuleMemoHits') ?? 0) > 0);
     assert(projectedDeclarationsLog.includes('mode=incremental'));
     assert((getTimingMetric(projectedDeclarationsLog, 'seededOutputs') ?? 0) > 0);
     assertEquals(result.exitCode, 0);

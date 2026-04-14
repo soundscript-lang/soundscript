@@ -211,6 +211,10 @@ function mergePersistentPreparedCompilerHostReuseSnapshots(
       base.projectedDeclarationSourceFiles,
       overlay.projectedDeclarationSourceFiles,
     ),
+    resolvedModulesByKey: mergePersistentPreparedCompilerHostReuseSnapshotEntries(
+      base.resolvedModulesByKey,
+      overlay.resolvedModulesByKey,
+    ),
     rewrittenSourceFiles: mergePersistentPreparedCompilerHostReuseSnapshotEntries(
       base.rewrittenSourceFiles,
       overlay.rewrittenSourceFiles,
