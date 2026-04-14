@@ -532,6 +532,154 @@ Deno.test('prepare_npm --stdlib-only emits canonical project-transform that lowe
   }
 });
 
+Deno.test('prepare_npm --stdlib-only project-transform macro-expands source-published dependency modules under Node', async () => {
+  const { distRoot, tarballPath } = await prepareCanonicalTarball(
+    'soundscript-prepare-project-transform-dependency-node-',
+  );
+  try {
+    const projectRoot = await Deno.makeTempDir({
+      prefix: 'soundscript-project-transform-dependency-node-',
+    });
+    try {
+      await writeProjectFile(
+        projectRoot,
+        'package.json',
+        JSON.stringify(
+          {
+            name: 'project-transform-dependency-smoke',
+            private: true,
+            type: 'module',
+          },
+          null,
+          2,
+        ),
+      );
+      await writeProjectFile(
+        projectRoot,
+        'tsconfig.json',
+        JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+              moduleResolution: 'Bundler',
+            },
+            include: ['src/**/*.sts'],
+          },
+          null,
+          2,
+        ),
+      );
+      await writeProjectFile(
+        projectRoot,
+        'src/main.sts',
+        [
+          "import { encoded } from 'example-pkg';",
+          'export const value = encoded;',
+          '',
+        ].join('\n'),
+      );
+      await installNpmTarballs(projectRoot, [tarballPath]);
+
+      await writeProjectFile(
+        projectRoot,
+        'node_modules/example-pkg/package.json',
+        JSON.stringify(
+          {
+            name: 'example-pkg',
+            version: '1.0.0',
+            type: 'module',
+            soundscript: {
+              version: 1,
+              exports: {
+                '.': { source: './src/index.sts' },
+              },
+            },
+          },
+          null,
+          2,
+        ),
+      );
+      await writeProjectFile(
+        projectRoot,
+        'node_modules/example-pkg/src/contracts.sts',
+        [
+          "import { codec } from 'sts:derive';",
+          '',
+          '// #[codec]',
+          'export interface User {',
+          '  readonly id: string;',
+          '}',
+          '',
+        ].join('\n'),
+      );
+      await writeProjectFile(
+        projectRoot,
+        'node_modules/example-pkg/src/shared.sts',
+        [
+          "import { UserCodec } from './contracts.sts';",
+          "export const encoded = UserCodec.encode({ id: 'user-1' });",
+          '',
+        ].join('\n'),
+      );
+      await writeProjectFile(
+        projectRoot,
+        'node_modules/example-pkg/src/index.sts',
+        "export { encoded } from './shared.sts';\n",
+      );
+
+      const loadResult = await runCommand(
+        'node',
+        [
+          '--input-type=module',
+          '--eval',
+          [
+            "import { dirname, join } from 'node:path';",
+            "import { createOnDemandTransformer } from '@soundscript/soundscript/project-transform';",
+            'const projectRoot = process.cwd();',
+            'const transformer = createOnDemandTransformer({ workingDirectory: projectRoot });',
+            "const entryPath = join(projectRoot, 'src', 'main.sts');",
+            "const packageEntry = transformer.resolveImportSpecifier('example-pkg', entryPath);",
+            "const sharedPath = transformer.resolveImportSpecifier('./shared.sts', packageEntry);",
+            "const contractsPath = transformer.resolveImportSpecifier('./contracts.sts', sharedPath);",
+            'const transformedContracts = transformer.transformModuleSync(contractsPath);',
+            'const transformedShared = transformer.transformModuleSync(sharedPath);',
+            'console.log(JSON.stringify({',
+            '  packageEntry,',
+            '  sharedPath,',
+            '  contractsCode: transformedContracts.code,',
+            '  sharedCode: transformedShared.code,',
+            '}));',
+          ].join('\n'),
+        ],
+        { cwd: projectRoot },
+      );
+      assertEquals(
+        loadResult.success,
+        true,
+        `node project-transform dependency smoke failed.\nstdout:\n${loadResult.stdout}\nstderr:\n${loadResult.stderr}`,
+      );
+      const payload = JSON.parse(loadResult.stdout) as {
+        contractsCode?: string;
+        packageEntry?: string;
+        sharedCode?: string;
+        sharedPath?: string;
+      };
+      assertEquals((payload.packageEntry ?? '').endsWith('/node_modules/example-pkg/src/index.sts'), true);
+      assertEquals((payload.sharedPath ?? '').endsWith('/node_modules/example-pkg/src/shared.sts'), true);
+      assertStringIncludes(payload.contractsCode ?? '', 'export const UserCodec =');
+      assertStringIncludes(payload.sharedCode ?? '', "import { UserCodec } from './contracts.sts';");
+      assertStringIncludes(payload.sharedCode ?? '', "export const encoded = UserCodec.encode({ id: 'user-1' });");
+    } finally {
+      await Deno.remove(projectRoot, { recursive: true }).catch(() => undefined);
+    }
+  } finally {
+    await Deno.remove(distRoot, { recursive: true }).catch(() => undefined);
+  }
+});
+
 Deno.test('prepare_npm --stdlib-only emits runtime stdlib JS that Node can import directly', async () => {
   const { distRoot, tarballPath } = await prepareCanonicalTarball(
     'soundscript-prepare-stdlib-runtime-node-',

@@ -271,6 +271,95 @@ Deno.test('createOnDemandTransformer resolves shipped package source through sou
   assertStringIncludes(transformed.mapText, '/node_modules/example-pkg/src/index.sts');
 });
 
+Deno.test('createOnDemandTransformer macro-expands source-published dependency .sts modules', async () => {
+  const root = await Deno.makeTempDir({ prefix: 'soundscript-on-demand-pkg-derive-' });
+  await writeProjectFile(
+    root,
+    'tsconfig.json',
+    JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          target: 'ES2022',
+          module: 'ESNext',
+          moduleResolution: 'Bundler',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+  );
+  await writeProjectFile(
+    root,
+    'node_modules/example-pkg/package.json',
+    JSON.stringify(
+      {
+        name: 'example-pkg',
+        version: '1.0.0',
+        soundscript: {
+          version: 1,
+          exports: {
+            '.': { source: './src/index.sts' },
+          },
+        },
+      },
+      null,
+      2,
+    ),
+  );
+  await writeProjectFile(
+    root,
+    'node_modules/example-pkg/src/contracts.sts',
+    [
+      "import { codec } from 'sts:derive';",
+      '',
+      '// #[codec]',
+      'export interface User {',
+      '  readonly id: string;',
+      '}',
+      '',
+    ].join('\n'),
+  );
+  await writeProjectFile(
+    root,
+    'node_modules/example-pkg/src/shared.sts',
+    [
+      "import { UserCodec } from './contracts.sts';",
+      "export const encoded = UserCodec.encode({ id: 'user-1' });",
+      '',
+    ].join('\n'),
+  );
+  await writeProjectFile(
+    root,
+    'node_modules/example-pkg/src/index.sts',
+    "export * from './shared.sts';\n",
+  );
+  await writeProjectFile(
+    root,
+    'src/main.sts',
+    [
+      "import { encoded } from 'example-pkg';",
+      'export const value = encoded;',
+      '',
+    ].join('\n'),
+  );
+
+  const transformer = createOnDemandTransformer({ workingDirectory: root });
+  const mainPath = join(root, 'src/main.sts');
+  const packageContractsPath = join(root, 'node_modules/example-pkg/src/contracts.sts');
+  const packageSharedPath = join(root, 'node_modules/example-pkg/src/shared.sts');
+
+  assertEquals(transformer.resolveImportSpecifier('example-pkg', mainPath), join(root, 'node_modules/example-pkg/src/index.sts'));
+
+  const transformedContracts = await transformer.transformModule(packageContractsPath);
+  assertStringIncludes(transformedContracts.code, 'export const UserCodec =');
+
+  const transformedShared = await transformer.transformModule(packageSharedPath);
+  assertStringIncludes(transformedShared.code, "import { UserCodec } from './contracts.sts';");
+  assertStringIncludes(transformedShared.code, "export const encoded = UserCodec.encode({ id: 'user-1' });");
+});
+
 Deno.test('createOnDemandTransformer treats configured TypeScript files from soundscript.include as soundscript sources', async () => {
   const root = await Deno.makeTempDir({ prefix: 'soundscript-on-demand-include-' });
   await writeProjectFile(
