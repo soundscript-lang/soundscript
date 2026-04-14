@@ -788,10 +788,14 @@ export interface PreparedCompilerHost {
   sourceFileCacheStats(): {
     projectedDeclarationHits: number;
     projectedDeclarationMisses: number;
+    projectedDeclarationTopMissedFiles: string;
+    projectedDeclarationMissReasons: string;
     resolvedModuleMemoHits: number;
     resolvedModuleMemoMisses: number;
     rewrittenHits: number;
     rewrittenMisses: number;
+    rewrittenTopMissedFiles: string;
+    rewrittenMissReasons: string;
   };
 }
 
@@ -809,6 +813,12 @@ interface CachedSourceFileEntry {
   sourceFile: ts.SourceFile;
   text: string;
 }
+
+type SourceFileCacheMissReason =
+  | 'environmentChanged'
+  | 'forcedFresh'
+  | 'textChanged'
+  | 'uncached';
 
 interface CachedBuiltinAnnotatedSourceFileEntry {
   rewrittenText: string;
@@ -1144,6 +1154,30 @@ function inferPersistentBuildInfoStage(buildInfoPath: string | undefined): strin
 
   const stageMatch = buildInfoPath.match(/\.([^.]+)\.tsbuildinfo$/u);
   return stageMatch?.[1] ?? 'default';
+}
+
+function formatSourceFileCacheMissCounts(
+  counts: ReadonlyMap<string, number>,
+): string {
+  return [...counts.entries()]
+    .sort(([leftKey, leftCount], [rightKey, rightCount]) =>
+      rightCount - leftCount || leftKey.localeCompare(rightKey)
+    )
+    .map(([key, count]) => `${key}:${count}`)
+    .join('|');
+}
+
+function formatTopMissedSourceFiles(
+  counts: ReadonlyMap<string, number>,
+  limit = 5,
+): string {
+  return [...counts.entries()]
+    .sort(([leftKey, leftCount], [rightKey, rightCount]) =>
+      rightCount - leftCount || leftKey.localeCompare(rightKey)
+    )
+    .slice(0, limit)
+    .map(([fileName, count]) => `${fileName}:${count}`)
+    .join('|');
 }
 
 function measureTypeScriptPerformanceInternals<T>(
@@ -3931,10 +3965,14 @@ export function createPreparedCompilerHost(
   const sourceFileCacheStats = {
     projectedDeclarationHits: 0,
     projectedDeclarationMisses: 0,
+    projectedDeclarationMissFiles: new Map<string, number>(),
+    projectedDeclarationMissReasons: new Map<SourceFileCacheMissReason, number>(),
     resolvedModuleMemoHits: 0,
     resolvedModuleMemoMisses: 0,
     rewrittenHits: 0,
     rewrittenMisses: 0,
+    rewrittenMissFiles: new Map<string, number>(),
+    rewrittenMissReasons: new Map<SourceFileCacheMissReason, number>(),
   };
   const previousProgramSourceFiles = reusableState.programSourceFiles;
   const programSourceFiles = new Set<string>();
@@ -4299,6 +4337,17 @@ export function createPreparedCompilerHost(
     environmentSignature: string,
     shouldCreateNewSourceFile?: boolean,
   ): ts.SourceFile {
+    const recordMiss = (reason: SourceFileCacheMissReason): void => {
+      const fileCounts = cacheKind === 'projectedDeclaration'
+        ? sourceFileCacheStats.projectedDeclarationMissFiles
+        : sourceFileCacheStats.rewrittenMissFiles;
+      const reasonCounts = cacheKind === 'projectedDeclaration'
+        ? sourceFileCacheStats.projectedDeclarationMissReasons
+        : sourceFileCacheStats.rewrittenMissReasons;
+      fileCounts.set(fileName, (fileCounts.get(fileName) ?? 0) + 1);
+      reasonCounts.set(reason, (reasonCounts.get(reason) ?? 0) + 1);
+    };
+
     if (!shouldCreateNewSourceFile) {
       const cached = cache.get(fileName);
       if (cached?.text === text && cached.environmentSignature === environmentSignature) {
@@ -4316,6 +4365,16 @@ export function createPreparedCompilerHost(
     } else {
       sourceFileCacheStats.rewrittenMisses += 1;
     }
+    const cached = cache.get(fileName);
+    recordMiss(
+      shouldCreateNewSourceFile
+        ? 'forcedFresh'
+        : !cached
+        ? 'uncached'
+        : cached.text !== text
+        ? 'textChanged'
+        : 'environmentChanged',
+    );
 
     const sourceFile = ts.createSourceFile(
       fileName,
@@ -4683,12 +4742,35 @@ export function createPreparedCompilerHost(
     sourceFileCacheStats(): {
       projectedDeclarationHits: number;
       projectedDeclarationMisses: number;
+      projectedDeclarationTopMissedFiles: string;
+      projectedDeclarationMissReasons: string;
       resolvedModuleMemoHits: number;
       resolvedModuleMemoMisses: number;
       rewrittenHits: number;
       rewrittenMisses: number;
+      rewrittenTopMissedFiles: string;
+      rewrittenMissReasons: string;
     } {
-      return { ...sourceFileCacheStats };
+      return {
+        projectedDeclarationHits: sourceFileCacheStats.projectedDeclarationHits,
+        projectedDeclarationMisses: sourceFileCacheStats.projectedDeclarationMisses,
+        projectedDeclarationMissReasons: formatSourceFileCacheMissCounts(
+          sourceFileCacheStats.projectedDeclarationMissReasons,
+        ),
+        projectedDeclarationTopMissedFiles: formatTopMissedSourceFiles(
+          sourceFileCacheStats.projectedDeclarationMissFiles,
+        ),
+        resolvedModuleMemoHits: sourceFileCacheStats.resolvedModuleMemoHits,
+        resolvedModuleMemoMisses: sourceFileCacheStats.resolvedModuleMemoMisses,
+        rewrittenHits: sourceFileCacheStats.rewrittenHits,
+        rewrittenMisses: sourceFileCacheStats.rewrittenMisses,
+        rewrittenMissReasons: formatSourceFileCacheMissCounts(
+          sourceFileCacheStats.rewrittenMissReasons,
+        ),
+        rewrittenTopMissedFiles: formatTopMissedSourceFiles(
+          sourceFileCacheStats.rewrittenMissFiles,
+        ),
+      };
     },
   };
 }
@@ -4804,6 +4886,10 @@ export function createPreparedProgram(
       changedProgramFiles: preparedHost.reuseState.changedProgramSourceFiles.size,
       projectedDeclarationSourceFileCacheHits: sourceFileCacheStats.projectedDeclarationHits,
       projectedDeclarationSourceFileCacheMisses: sourceFileCacheStats.projectedDeclarationMisses,
+      projectedDeclarationSourceFileMissReasons:
+        sourceFileCacheStats.projectedDeclarationMissReasons,
+      projectedDeclarationSourceFileTopMissedFiles:
+        sourceFileCacheStats.projectedDeclarationTopMissedFiles,
       programFiles: preparedHost.reuseState.programSourceFiles.size,
       removedProgramFiles: removedProgramSourceFiles.size,
       resolvedModuleMemoHits: sourceFileCacheStats.resolvedModuleMemoHits,
@@ -4814,6 +4900,8 @@ export function createPreparedProgram(
       reusedResolvedModuleMemoOnInvalidation: reuseResolvedModulesOnInvalidation,
       rewrittenSourceFileCacheHits: sourceFileCacheStats.rewrittenHits,
       rewrittenSourceFileCacheMisses: sourceFileCacheStats.rewrittenMisses,
+      rewrittenSourceFileMissReasons: sourceFileCacheStats.rewrittenMissReasons,
+      rewrittenSourceFileTopMissedFiles: sourceFileCacheStats.rewrittenTopMissedFiles,
       rootCount: rootNames.length,
       seed: semanticDiagnosticsBuilderSeed ? 'yes' : 'no',
       stage: inferPersistentBuildInfoStage(options.persistentSemanticDiagnosticsBuildInfoPath),

@@ -38,12 +38,17 @@ import {
 import { measureCheckerTiming } from './timing.ts';
 import type { MergedDiagnostic } from './diagnostics.ts';
 import type { FlowFileRuleCache } from './rules/flow.ts';
+import type { FileDiagnosticRuleCacheEntry } from './rules/index.ts';
 
-const CHECKER_CACHE_SCHEMA_VERSION = 7;
+const CHECKER_CACHE_SCHEMA_VERSION = 8;
 const CHECKER_CACHE_ROOT_DIRECTORY = '.soundscript-cache';
 const CHECKER_CACHE_SUBDIRECTORY = 'checker';
 const CHECKER_CACHE_BUILD_INFO_SUBDIRECTORY = 'buildinfo';
 const dependencySignaturePrinter = ts.createPrinter({
+  newLine: ts.NewLineKind.LineFeed,
+  removeComments: true,
+});
+const sourceSurfaceSignaturePrinter = ts.createPrinter({
   newLine: ts.NewLineKind.LineFeed,
   removeComments: true,
 });
@@ -60,8 +65,11 @@ interface CheckerCacheHeader {
 }
 
 interface CheckerCacheFileEntry extends PreparedAnalysisProjectFileMetadata {
+  effectCache?: FileDiagnosticRuleCacheEntry;
   flowCache?: FlowFileRuleCache;
+  relationCache?: FileDiagnosticRuleCacheEntry;
   result: AnalyzeProjectResult;
+  valueTypeCache?: FileDiagnosticRuleCacheEntry;
 }
 
 interface CheckerCacheManifest {
@@ -73,6 +81,7 @@ interface CheckerCacheManifest {
   prepareArtifacts?: PersistentPreparedAnalysisProjectReuseSnapshots;
   result: AnalyzeProjectResult;
   schemaVersion: number;
+  sourceSurfaceSignatures: Readonly<Record<string, string>>;
   trackedFiles: Readonly<Record<string, string>>;
   unownedDiagnostics: readonly MergedDiagnostic[];
 }
@@ -103,6 +112,12 @@ interface DependencySignatureUpdateResult {
   dependencySignatureFilesEmitted: number;
   dependencySignatureWaves: number;
   dependencySignatures: Readonly<Record<string, string>>;
+}
+
+interface DependencySignatureTrackedFileSelection {
+  changedTrackedFiles: readonly string[];
+  exportedSurfaceChangedFiles: number;
+  exportedSurfaceReusedFiles: number;
 }
 
 const UNDEFINED_JSON_SENTINEL_KEY = '__soundscriptUndefined';
@@ -329,6 +344,127 @@ function createDependencySignatureViewByFilePath(
       .filter(isDependencySignatureFileMetadata)
       .map((metadata) => [metadata.filePath, metadata.view]),
   );
+}
+
+function hasExportLikeModifier(statement: ts.Statement): boolean {
+  return (ts.canHaveModifiers(statement) ? ts.getModifiers(statement) : undefined)?.some((modifier) =>
+    modifier.kind === ts.SyntaxKind.DefaultKeyword ||
+    modifier.kind === ts.SyntaxKind.ExportKeyword
+  ) ?? false;
+}
+
+function getSurfaceSignatureScriptKind(filePath: string): ts.ScriptKind {
+  if (filePath.endsWith('.tsx')) {
+    return ts.ScriptKind.TSX;
+  }
+  if (filePath.endsWith('.jsx')) {
+    return ts.ScriptKind.JSX;
+  }
+  if (filePath.endsWith('.js') || filePath.endsWith('.mjs') || filePath.endsWith('.cjs')) {
+    return ts.ScriptKind.JS;
+  }
+  return ts.ScriptKind.TS;
+}
+
+function createSourceSurfaceSignature(
+  filePath: string,
+  text: string,
+): string {
+  try {
+    const sourceFile = ts.createSourceFile(
+      filePath,
+      text,
+      ts.ScriptTarget.Latest,
+      true,
+      getSurfaceSignatureScriptKind(filePath),
+    );
+
+    const parts: string[] = [];
+    for (const statement of sourceFile.statements) {
+      if (
+        ts.isImportDeclaration(statement) ||
+        ts.isImportEqualsDeclaration(statement) ||
+        ts.isExportAssignment(statement) ||
+        ts.isExportDeclaration(statement)
+      ) {
+        parts.push(sourceSurfaceSignaturePrinter.printNode(ts.EmitHint.Unspecified, statement, sourceFile));
+        continue;
+      }
+      if (!hasExportLikeModifier(statement)) {
+        continue;
+      }
+      parts.push(sourceSurfaceSignaturePrinter.printNode(ts.EmitHint.Unspecified, statement, sourceFile));
+    }
+
+    return hashText(parts.join('\u0000'));
+  } catch {
+    return hashText(text);
+  }
+}
+
+function getPreparedProjectDependencySignatureView(
+  preparedProject: PreparedAnalysisProject,
+  viewKind: PreparedAnalysisProjectFileMetadata['view'],
+): PreparedAnalysisProject['stsView'] | PreparedAnalysisProject['packageSourcePolicyView'] {
+  return viewKind === 'packageSource' ? preparedProject.packageSourcePolicyView : preparedProject.stsView;
+}
+
+function createPreparedProjectSourceSurfaceSignatures(
+  preparedProject: PreparedAnalysisProject,
+  fileMetadata: readonly PreparedAnalysisProjectFileMetadata[],
+): Readonly<Record<string, string>> {
+  const fileViewByFilePath = createDependencySignatureViewByFilePath(fileMetadata);
+  return Object.fromEntries(
+    [...fileViewByFilePath.entries()]
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([filePath, viewKind]) => {
+        const preparedView = getPreparedProjectDependencySignatureView(preparedProject, viewKind);
+        const sourceFile = preparedView?.program.getSourceFile(
+          preparedView.preparedProgram.toProgramFileName(filePath),
+        );
+        const text = sourceFile?.text ?? ts.sys.readFile(filePath) ?? '';
+        return [filePath, createSourceSurfaceSignature(filePath, text)] as const;
+      }),
+  );
+}
+
+function selectTrackedFilesForDependencySignatureUpdate(
+  changedTrackedFiles: readonly string[],
+  fileViewByFilePath: ReadonlyMap<string, PreparedAnalysisProjectFileMetadata['view']>,
+  previousSourceSurfaceSignatures: Readonly<Record<string, string>>,
+  nextSourceSurfaceSignatures: Readonly<Record<string, string>>,
+): DependencySignatureTrackedFileSelection {
+  const selectedTrackedFiles: string[] = [];
+  let exportedSurfaceChangedFiles = 0;
+  let exportedSurfaceReusedFiles = 0;
+
+  for (const changedTrackedFilePath of changedTrackedFiles) {
+    const dependencyFilePath = findDependencySignatureFilePath(changedTrackedFilePath, fileViewByFilePath);
+    if (!dependencyFilePath) {
+      selectedTrackedFiles.push(changedTrackedFilePath);
+      continue;
+    }
+
+    const previousSignature = previousSourceSurfaceSignatures[dependencyFilePath];
+    const nextSignature = nextSourceSurfaceSignatures[dependencyFilePath];
+    if (
+      previousSignature !== undefined &&
+      nextSignature !== undefined &&
+      previousSignature === nextSignature
+    ) {
+      exportedSurfaceReusedFiles += 1;
+      continue;
+    }
+
+    selectedTrackedFiles.push(changedTrackedFilePath);
+    exportedSurfaceChangedFiles += 1;
+  }
+
+  return {
+    changedTrackedFiles: selectedTrackedFiles,
+    exportedSurfaceChangedFiles,
+    exportedSurfaceReusedFiles,
+  };
 }
 
 function getStaticSourceFileModuleSpecifiers(sourceFile: ts.SourceFile): readonly string[] {
@@ -846,10 +982,16 @@ function splitDiagnosticsByFileOwnership(
 
 function createPreparedProjectAnalysisArtifactsByFilePath(
   filePath: string,
+  effectCache: FileDiagnosticRuleCacheEntry | undefined,
   flowCache: FlowFileRuleCache | undefined,
+  relationCache: FileDiagnosticRuleCacheEntry | undefined,
+  valueTypeCache: FileDiagnosticRuleCacheEntry | undefined,
 ): PreparedProjectAnalysisArtifacts {
   return {
+    effectsByFile: effectCache ? new Map([[filePath, effectCache]]) : new Map(),
     flowByFile: flowCache ? new Map([[filePath, flowCache]]) : new Map(),
+    relationsByFile: relationCache ? new Map([[filePath, relationCache]]) : new Map(),
+    valueTypesByFile: valueTypeCache ? new Map([[filePath, valueTypeCache]]) : new Map(),
   };
 }
 
@@ -873,6 +1015,7 @@ function createCheckerCacheManifestFromFullAnalysis(
   dependencyDependents: Readonly<Record<string, readonly string[]>>,
   trackedFiles: Readonly<Record<string, string>>,
   dependencySignatures: Readonly<Record<string, string>>,
+  sourceSurfaceSignatures: Readonly<Record<string, string>>,
   prepareArtifacts: PersistentPreparedAnalysisProjectReuseSnapshots,
   analysis: AnalyzePreparedProjectWithArtifactsResult,
 ): CheckerCacheManifest {
@@ -888,17 +1031,21 @@ function createCheckerCacheManifestFromFullAnalysis(
       const diagnostics = [...(splitDiagnostics.byFile.get(metadata.filePath) ?? [])];
       return {
         ...metadata,
+        effectCache: analysis.artifacts.effectsByFile.get(metadata.filePath),
         flowCache: analysis.artifacts.flowByFile.get(metadata.filePath),
+        relationCache: analysis.artifacts.relationsByFile.get(metadata.filePath),
         result: {
           diagnostics,
           summary: createSummary(diagnostics),
         },
+        valueTypeCache: analysis.artifacts.valueTypesByFile.get(metadata.filePath),
       };
     }),
     header,
     prepareArtifacts,
     result: analysis.result,
     schemaVersion: CHECKER_CACHE_SCHEMA_VERSION,
+    sourceSurfaceSignatures,
     trackedFiles,
     unownedDiagnostics: splitDiagnostics.unowned,
   };
@@ -909,6 +1056,7 @@ function createIncrementalCheckerCacheManifest(
   trackedFiles: Readonly<Record<string, string>>,
   dependencyDependents: Readonly<Record<string, readonly string[]>>,
   dependencySignatures: Readonly<Record<string, string>>,
+  sourceSurfaceSignatures: Readonly<Record<string, string>>,
   prepareArtifacts: PersistentPreparedAnalysisProjectReuseSnapshots,
   files: readonly CheckerCacheFileEntry[],
   unownedDiagnostics: readonly MergedDiagnostic[],
@@ -922,6 +1070,7 @@ function createIncrementalCheckerCacheManifest(
     prepareArtifacts,
     result: combineCachedFileResults(files, unownedDiagnostics),
     schemaVersion: CHECKER_CACHE_SCHEMA_VERSION,
+    sourceSurfaceSignatures,
     trackedFiles,
     unownedDiagnostics,
   };
@@ -997,8 +1146,17 @@ function tryReusePartialCheckerCacheManifest(
   preparedProjectTrackedFilePaths: readonly string[],
   dependencyDependents: Readonly<Record<string, readonly string[]>>,
   preparedProjectDependencySignatures: Readonly<Record<string, string>>,
+  sourceSurfaceSignatures: Readonly<Record<string, string>>,
   prepareArtifacts: PersistentPreparedAnalysisProjectReuseSnapshots,
-  analyzeFile: (filePath: string, flowCache: FlowFileRuleCache | undefined) => CheckerCacheFileEntry,
+  analyzeFile: (
+    filePath: string,
+    caches: {
+      effectCache: FileDiagnosticRuleCacheEntry | undefined;
+      flowCache: FlowFileRuleCache | undefined;
+      relationCache: FileDiagnosticRuleCacheEntry | undefined;
+      valueTypeCache: FileDiagnosticRuleCacheEntry | undefined;
+    },
+  ) => CheckerCacheFileEntry,
 ): IncrementalCheckerCacheReuseResult | null {
   if (manifest.unownedDiagnostics.length > 0) {
     return null;
@@ -1040,8 +1198,11 @@ function tryReusePartialCheckerCacheManifest(
     if (!shouldRefresh) {
       nextFiles.push({
         ...metadata,
+        effectCache: previousFile.effectCache,
         flowCache: previousFile.flowCache,
+        relationCache: previousFile.relationCache,
         result: previousFile.result,
+        valueTypeCache: previousFile.valueTypeCache,
       });
       reusedFiles += 1;
       continue;
@@ -1051,7 +1212,12 @@ function tryReusePartialCheckerCacheManifest(
       return null;
     }
 
-    nextFiles.push(analyzeFile(metadata.filePath, previousFile.flowCache));
+    nextFiles.push(analyzeFile(metadata.filePath, {
+      effectCache: previousFile.effectCache,
+      flowCache: previousFile.flowCache,
+      relationCache: previousFile.relationCache,
+      valueTypeCache: previousFile.valueTypeCache,
+    }));
     refreshedFiles += 1;
   }
 
@@ -1061,6 +1227,7 @@ function tryReusePartialCheckerCacheManifest(
       createTrackedFileHashes(preparedProjectTrackedFilePaths),
       dependencyDependents,
       preparedProjectDependencySignatures,
+      sourceSurfaceSignatures,
       prepareArtifacts,
       nextFiles,
       manifest.unownedDiagnostics,
@@ -1181,6 +1348,19 @@ export function analyzeProjectWithPersistentCache(
     );
 
     if (useCache && header && cacheReadResult.kind === 'stale') {
+      const sourceSurfaceSignatures = measureCheckerTiming(
+        'project.cache.sourceSurfaceSignatures',
+        {
+          changedTrackedFiles: cacheReadResult.changedTrackedFiles.length,
+          projectPath: options.projectPath,
+        },
+        () =>
+          createPreparedProjectSourceSurfaceSignatures(
+            preparedProject,
+            preparedProjectFileMetadata,
+          ),
+        { always: true },
+      );
       const dependencyDependents = measureCheckerTiming(
         'project.cache.dependencyDependents',
         {
@@ -1196,17 +1376,25 @@ export function analyzeProjectWithPersistentCache(
           ),
         { always: true },
       );
+      const dependencySignatureTrackedFiles = selectTrackedFilesForDependencySignatureUpdate(
+        cacheReadResult.changedTrackedFiles,
+        createDependencySignatureViewByFilePath(preparedProjectFileMetadata),
+        cacheReadResult.manifest.sourceSurfaceSignatures ?? {},
+        sourceSurfaceSignatures,
+      );
       const dependencySignatureUpdate = measureCheckerTiming(
         'project.cache.dependencySignatures',
         {
-          changedTrackedFiles: cacheReadResult.changedTrackedFiles.length,
+          changedTrackedFiles: dependencySignatureTrackedFiles.changedTrackedFiles.length,
+          exportedSurfaceChangedFiles: dependencySignatureTrackedFiles.exportedSurfaceChangedFiles,
+          exportedSurfaceReusedFiles: dependencySignatureTrackedFiles.exportedSurfaceReusedFiles,
           projectPath: options.projectPath,
         },
         () =>
           updatePreparedProjectDependencySignatures(
             preparedProject,
             preparedProjectFileMetadata,
-            cacheReadResult.changedTrackedFiles,
+            dependencySignatureTrackedFiles.changedTrackedFiles,
             dependencyDependents,
             cacheReadResult.manifest.dependencySignatures,
           ),
@@ -1228,6 +1416,8 @@ export function analyzeProjectWithPersistentCache(
           changedTrackedFiles: cacheReadResult.changedTrackedFiles.length,
           dependencySignatureFilesEmitted: dependencySignatureUpdate.dependencySignatureFilesEmitted,
           dependencySignatureWaves: dependencySignatureUpdate.dependencySignatureWaves,
+          exportedSurfaceChangedFiles: dependencySignatureTrackedFiles.exportedSurfaceChangedFiles,
+          exportedSurfaceReusedFiles: dependencySignatureTrackedFiles.exportedSurfaceReusedFiles,
           projectPath: options.projectPath,
         },
         () =>
@@ -1240,12 +1430,19 @@ export function analyzeProjectWithPersistentCache(
             preparedProjectTrackedFilePaths,
             dependencyDependents,
             dependencySignatureUpdate.dependencySignatures,
+            sourceSurfaceSignatures,
             preparedProjectReuseSnapshots,
-            (filePath, flowCache) => {
+            (filePath, caches) => {
               const analysis = analyzePreparedProjectOwnedDiagnosticsForFileWithArtifacts(
                 preparedProject,
                 filePath,
-                createPreparedProjectAnalysisArtifactsByFilePath(filePath, flowCache),
+                createPreparedProjectAnalysisArtifactsByFilePath(
+                  filePath,
+                  caches.effectCache,
+                  caches.flowCache,
+                  caches.relationCache,
+                  caches.valueTypeCache,
+                ),
               );
               const ownedDiagnostics = filterAnalyzedDiagnosticsForFile(
                 analysis.result.diagnostics,
@@ -1254,11 +1451,14 @@ export function analyzeProjectWithPersistentCache(
               const metadata = preparedProjectFileMetadata.find((entry) => entry.filePath === filePath)!;
               return {
                 ...metadata,
+                effectCache: analysis.artifacts.effectsByFile.get(filePath),
                 flowCache: analysis.artifacts.flowByFile.get(filePath),
+                relationCache: analysis.artifacts.relationsByFile.get(filePath),
                 result: {
                   diagnostics: ownedDiagnostics,
                   summary: createSummary(ownedDiagnostics),
                 },
+                valueTypeCache: analysis.artifacts.valueTypesByFile.get(filePath),
               };
             },
           ),
@@ -1325,6 +1525,19 @@ export function analyzeProjectWithPersistentCache(
           ),
         { always: true },
       );
+      const sourceSurfaceSignatures = measureCheckerTiming(
+        'project.cache.sourceSurfaceSignatures',
+        {
+          changedTrackedFiles: preparedProjectTrackedFilePaths.length,
+          projectPath: options.projectPath,
+        },
+        () =>
+          createPreparedProjectSourceSurfaceSignatures(
+            preparedProject,
+            preparedProjectFileMetadata,
+          ),
+        { always: true },
+      );
       const preparedProjectReuseSnapshots = measureCheckerTiming(
         'project.cache.prepareArtifacts',
         {
@@ -1346,6 +1559,7 @@ export function analyzeProjectWithPersistentCache(
             dependencyDependents,
             createTrackedFileHashes(preparedProjectTrackedFilePaths),
             preparedProjectDependencySignatures,
+            sourceSurfaceSignatures,
             preparedProjectReuseSnapshots,
             analysis,
           ),
