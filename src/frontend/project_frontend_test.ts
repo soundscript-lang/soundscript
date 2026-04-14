@@ -2156,6 +2156,108 @@ Deno.test('createBuiltinExpandedProgram reuses unchanged builtin rewrite artifac
   }
 });
 
+Deno.test('createBuiltinExpandedProgram reuses stable module resolutions across builtin rebuild stages', () => {
+  function createCountingResolveHost(
+    files: ReadonlyMap<string, string>,
+    counts: { resolveModuleNames: number },
+  ): ts.CompilerHost {
+    const compilerOptions = {
+      target: ts.ScriptTarget.ES2022,
+      module: ts.ModuleKind.ESNext,
+      moduleResolution: ts.ModuleResolutionKind.Bundler,
+      noEmit: true,
+      strict: true,
+    } as const;
+    const baseHost = ts.createCompilerHost(compilerOptions);
+    const moduleResolutionHost: ts.ModuleResolutionHost = {
+      directoryExists: baseHost.directoryExists?.bind(baseHost),
+      fileExists(fileName: string): boolean {
+        return files.has(fileName) || baseHost.fileExists(fileName);
+      },
+      getCurrentDirectory(): string {
+        return '/virtual';
+      },
+      getDirectories: baseHost.getDirectories?.bind(baseHost),
+      readFile(fileName: string): string | undefined {
+        return files.get(fileName) ?? baseHost.readFile(fileName);
+      },
+      realpath: baseHost.realpath?.bind(baseHost),
+      useCaseSensitiveFileNames: () => ts.sys.useCaseSensitiveFileNames,
+    };
+
+    return {
+      ...baseHost,
+      getCurrentDirectory(): string {
+        return '/virtual';
+      },
+      fileExists(fileName: string): boolean {
+        return files.has(fileName) || baseHost.fileExists(fileName);
+      },
+      readFile(fileName: string): string | undefined {
+        return files.get(fileName) ?? baseHost.readFile(fileName);
+      },
+      resolveModuleNames(
+        moduleNames: string[],
+        containingFile: string,
+        reusedNames,
+        redirectedReference,
+        options,
+      ): (ts.ResolvedModule | undefined)[] {
+        counts.resolveModuleNames += 1;
+        return moduleNames.map((moduleName) =>
+          ts.resolveModuleName(
+            moduleName,
+            containingFile,
+            options ?? compilerOptions,
+            moduleResolutionHost,
+            undefined,
+            redirectedReference,
+          ).resolvedModule
+        );
+      },
+    };
+  }
+
+  const fileName = '/virtual/index.sts';
+  const calls: string[] = [];
+  const counts = { resolveModuleNames: 0 };
+  const reuseState = createPreparedCompilerHostReuseState('/virtual');
+  const expandedProgram = createBuiltinExpandedProgram({
+    baseHost: createCountingResolveHost(
+      new Map([
+        [
+          fileName,
+          [
+            "import { ok } from 'sts:prelude';",
+            'export const value = ok(1);',
+            'try {',
+            '  throw new Error("boom");',
+            '} catch (error) {',
+            '  console.log(error.message);',
+            '}',
+            '',
+          ].join('\n'),
+        ],
+      ]),
+      calls,
+      counts,
+    ),
+    options: {
+      target: ts.ScriptTarget.ES2022,
+      module: ts.ModuleKind.ESNext,
+      moduleResolution: ts.ModuleResolutionKind.Bundler,
+      noEmit: true,
+      strict: true,
+    },
+    persistentSemanticDiagnosticsBuildInfoPath: '/virtual/cache/sts.semantic.tsbuildinfo',
+    reusableCompilerHostState: reuseState,
+    rootNames: [fileName],
+  });
+
+  assertEquals(ts.getPreEmitDiagnostics(expandedProgram.program), []);
+  assertEquals(counts.resolveModuleNames, new Set(calls).size);
+});
+
 Deno.test('createBuiltinExpandedProgram can defer normalization-only final rebuilds behind supplemental ts diagnostics', () => {
   const fileName = '/virtual/index.sts';
   const originalTimingEnv = Deno.env.get('SOUNDSCRIPT_CHECKER_TIMING');

@@ -906,6 +906,7 @@ export interface PreparedCompilerHostReuseState {
   preparedSourceFiles: Map<string, CachedPreparedSourceFileEntry>;
   programSourceFiles: Set<string>;
   removedProgramSourceFiles: Set<string>;
+  resolvedModulesByKey: Map<string, ts.ResolvedModule | null>;
   semanticDiagnosticsBuildInfoPath: string;
   semanticDiagnosticsBuilderProgram: ts.SemanticDiagnosticsBuilderProgram | undefined;
   semanticDiagnosticsOptionSignature: string;
@@ -1241,6 +1242,7 @@ export function createPreparedCompilerHostReuseState(
     preparedSourceFiles: new Map(),
     programSourceFiles: new Set(),
     removedProgramSourceFiles: new Set(),
+    resolvedModulesByKey: new Map(),
     semanticDiagnosticsBuildInfoPath: '',
     semanticDiagnosticsBuilderProgram: undefined,
     semanticDiagnosticsOptionSignature: '',
@@ -1268,6 +1270,7 @@ export function clearPreparedCompilerHostReuseState(
   reusableState.previousProgramSourceFiles.clear();
   reusableState.programSourceFiles.clear();
   reusableState.removedProgramSourceFiles.clear();
+  reusableState.resolvedModulesByKey.clear();
   reusableState.semanticDiagnosticsBuildInfoPath = '';
   reusableState.semanticDiagnosticsBuilderProgram = undefined;
   reusableState.semanticDiagnosticsOptionSignature = '';
@@ -3890,11 +3893,17 @@ export function createPreparedCompilerHost(
   const getCanonicalFileName = ts.sys.useCaseSensitiveFileNames
     ? (fileName: string) => fileName
     : (fileName: string) => fileName.toLowerCase();
-  reusableState.moduleResolutionCache = ts.createModuleResolutionCache(
-    currentDirectory,
-    getCanonicalFileName,
-  );
-  reusableState.moduleResolutionCacheSignature = projectedDeclarationPresenceSignature;
+  if (
+    invalidateModuleResolutions ||
+    reusableState.moduleResolutionCacheSignature !== projectedDeclarationPresenceSignature
+  ) {
+    reusableState.moduleResolutionCache = ts.createModuleResolutionCache(
+      currentDirectory,
+      getCanonicalFileName,
+    );
+    reusableState.moduleResolutionCacheSignature = projectedDeclarationPresenceSignature;
+    reusableState.resolvedModulesByKey.clear();
+  }
 
   function getProjectedDeclarationText(fileName: string): string | undefined {
     if (!isProjectedSoundscriptDeclarationFile(fileName)) {
@@ -4321,16 +4330,45 @@ export function createPreparedCompilerHost(
     options?: ts.CompilerOptions,
   ): (ts.ResolvedModule | undefined)[] {
     const sourceContainingFile = toSourceFileName(containingFile);
-    const baseResolvedModules = baseHost.resolveModuleNames?.(
-      moduleNames,
-      sourceContainingFile,
-      reusedNames,
-      redirectedReference,
-      options ?? {},
-    );
     const moduleResolutionHost = createModuleResolutionHost();
+    const resolvedModules: (ts.ResolvedModule | undefined)[] = new Array(moduleNames.length);
+    const unresolvedIndexes: number[] = [];
+    const unresolvedModuleNames: string[] = [];
+    const redirectedReferenceKey = redirectedReference?.sourceFile.fileName ?? '';
+    const optionSignature = stableStringify(options ?? {});
+    const cacheKeys = moduleNames.map((moduleName) =>
+      [
+        sourceContainingFile,
+        moduleName,
+        optionSignature,
+        redirectedReferenceKey,
+      ].join('\u0000')
+    );
+    for (const [index, cacheKey] of cacheKeys.entries()) {
+      if (invalidateModuleResolutions) {
+        unresolvedIndexes.push(index);
+        unresolvedModuleNames.push(moduleNames[index]);
+        continue;
+      }
+      const cached = reusableState.resolvedModulesByKey.get(cacheKey);
+      if (cached !== undefined) {
+        resolvedModules[index] = cached ?? undefined;
+        continue;
+      }
+      unresolvedIndexes.push(index);
+      unresolvedModuleNames.push(moduleNames[index]);
+    }
+    const baseResolvedModules = unresolvedModuleNames.length > 0
+      ? baseHost.resolveModuleNames?.(
+        unresolvedModuleNames,
+        sourceContainingFile,
+        reusedNames,
+        redirectedReference,
+        options ?? {},
+      )
+      : undefined;
 
-    return moduleNames.map((moduleName, index) => {
+    const resolveModuleAtIndex = (moduleName: string, baseResolved?: ts.ResolvedModule) => {
       const preferredSoundscript = resolvePreferredSoundscriptModule(
         moduleName,
         sourceContainingFile,
@@ -4338,7 +4376,6 @@ export function createPreparedCompilerHost(
         moduleResolutionHost,
         redirectedReference,
       );
-      const baseResolved = baseResolvedModules?.[index];
       if (preferredSoundscript) {
         const installedRuntimeDeclarationPath = installedRuntimeStdlibDeclarationPath(
           preferredSoundscript.resolvedFileName,
@@ -4461,7 +4498,19 @@ export function createPreparedCompilerHost(
           resolvedFileName: toProgramFileName(remapped.resolvedFileName),
         }
         : remapped;
-    });
+    };
+
+    for (const [pendingIndex, originalIndex] of unresolvedIndexes.entries()) {
+      const resolvedModule = resolveModuleAtIndex(
+        moduleNames[originalIndex],
+        baseResolvedModules?.[pendingIndex],
+      );
+      const cacheKey = cacheKeys[originalIndex];
+      reusableState.resolvedModulesByKey.set(cacheKey, resolvedModule ?? null);
+      resolvedModules[originalIndex] = resolvedModule;
+    }
+
+    return resolvedModules;
   }
 
   return {
