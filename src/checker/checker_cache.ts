@@ -985,12 +985,26 @@ export function analyzeProjectWithPersistentCache(
       : undefined,
   });
   try {
+    const previousMetadataByFilePath = cacheReadResult.kind === 'stale'
+      ? new Map(
+        cacheReadResult.manifest.files.map((file) => [
+          file.filePath,
+          {
+            cacheDependencyPaths: file.cacheDependencyPaths,
+            diagnosticPaths: file.diagnosticPaths,
+            filePath: file.filePath,
+            fileScopedAnalysis: file.fileScopedAnalysis,
+            view: file.view,
+          },
+        ]),
+      )
+      : new Map();
     const preparedProjectFileMetadata = measureCheckerTiming(
       'project.cache.fileMetadata',
       {
         projectPath: options.projectPath,
       },
-      () => collectPreparedAnalysisProjectFileMetadata(preparedProject),
+      () => collectPreparedAnalysisProjectFileMetadata(preparedProject, previousMetadataByFilePath),
       { always: true },
     );
     const preparedProjectTrackedFilePaths = measureCheckerTiming(

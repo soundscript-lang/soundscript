@@ -605,7 +605,9 @@ export function collectPreparedAnalysisProjectTrackedFilePaths(
 
 export function collectPreparedAnalysisProjectFileMetadata(
   preparedProject: PreparedAnalysisProject,
+  previousMetadataByFilePath: ReadonlyMap<string, PreparedAnalysisProjectFileMetadata> = new Map(),
 ): readonly PreparedAnalysisProjectFileMetadata[] {
+  const candidateCollectionStartTime = performance.now();
   const candidateFilePaths = new Set<string>();
   const projectPackageJsonPath = findNearestPackageJsonPath(
     preparedProject.analyzeOptions.projectPath,
@@ -653,32 +655,106 @@ export function collectPreparedAnalysisProjectFileMetadata(
         projectPackageJsonPath,
       ),
   );
+  const candidateCollectionDurationMs = performance.now() - candidateCollectionStartTime;
+  let diagnosticPathCollectionDurationMs = 0;
+  let cacheDependencyPathCollectionDurationMs = 0;
+  let fileScopedEligibilityDurationMs = 0;
+  let viewLookupDurationMs = 0;
 
-  return [...candidateFilePaths].sort().flatMap((filePath) => {
+  const fileMetadata: PreparedAnalysisProjectFileMetadata[] = [...candidateFilePaths].sort()
+    .flatMap((filePath) => {
+    const viewLookupStartTime = performance.now();
     const view = getPreparedAnalysisViewForFile(preparedProject, filePath);
+    viewLookupDurationMs += performance.now() - viewLookupStartTime;
     if (!view) {
       return [];
     }
+    const viewKind: PreparedAnalysisProjectFileMetadata['view'] = view === preparedProject.tsView
+      ? 'ts'
+      : view === preparedProject.packageSourcePolicyView
+      ? 'packageSource'
+      : 'sts';
+    const previousMetadata = previousMetadataByFilePath.get(filePath);
+    if (
+      previousMetadata &&
+      canReusePreparedAnalysisProjectFileMetadata(
+        view,
+        viewKind,
+        filePath,
+        previousMetadata,
+      )
+    ) {
+      return [previousMetadata];
+    }
+
+    const diagnosticPathStartTime = performance.now();
     const diagnosticPathCollection = collectPreparedViewDependencyPathCollection(view, filePath);
+    diagnosticPathCollectionDurationMs += performance.now() - diagnosticPathStartTime;
     const diagnosticPaths = diagnosticPathCollection.paths;
-    const cacheDependencyPaths = diagnosticPathCollection.encounteredNonDeclarationTypeScriptDependency
-      ? collectPreparedViewDependencyPaths(view, filePath, {
+    let cacheDependencyPaths = diagnosticPaths;
+    if (diagnosticPathCollection.encounteredNonDeclarationTypeScriptDependency) {
+      const cacheDependencyPathStartTime = performance.now();
+      cacheDependencyPaths = collectPreparedViewDependencyPaths(view, filePath, {
         includeNonDeclarationTypeScriptDependencies: true,
-      })
-      : diagnosticPaths;
+      });
+      cacheDependencyPathCollectionDurationMs +=
+        performance.now() - cacheDependencyPathStartTime;
+    }
+    const fileScopedEligibilityStartTime = performance.now();
+    const fileScopedAnalysis = supportsFileScopedAnalysisContext(view, filePath);
+    fileScopedEligibilityDurationMs += performance.now() - fileScopedEligibilityStartTime;
 
     return [{
       cacheDependencyPaths,
       diagnosticPaths,
       filePath,
-      fileScopedAnalysis: supportsFileScopedAnalysisContext(view, filePath),
-      view: view === preparedProject.tsView
-        ? 'ts'
-        : view === preparedProject.packageSourcePolicyView
-        ? 'packageSource'
-        : 'sts',
+      fileScopedAnalysis,
+      view: viewKind,
     }];
   });
+
+  measureCheckerTiming(
+    'project.cache.fileMetadata.breakdown',
+    {
+      cacheDependencyPathCollectionMs: Number(cacheDependencyPathCollectionDurationMs.toFixed(1)),
+      candidateCollectionMs: Number(candidateCollectionDurationMs.toFixed(1)),
+      diagnosticPathCollectionMs: Number(diagnosticPathCollectionDurationMs.toFixed(1)),
+      fileCount: fileMetadata.length,
+      fileScopedEligibilityMs: Number(fileScopedEligibilityDurationMs.toFixed(1)),
+      projectPath: preparedProject.analyzeOptions.projectPath,
+      viewLookupMs: Number(viewLookupDurationMs.toFixed(1)),
+    },
+    () => undefined,
+    { always: true },
+  );
+
+  return fileMetadata;
+}
+
+function canReusePreparedAnalysisProjectFileMetadata(
+  view: PreparedAnalysisView,
+  viewKind: PreparedAnalysisProjectFileMetadata['view'],
+  filePath: string,
+  previousMetadata: PreparedAnalysisProjectFileMetadata,
+): boolean {
+  if (previousMetadata.view !== viewKind) {
+    return false;
+  }
+
+  const reuseState = view.analysisPreparedProgram.preparedHost.reuseState;
+  const changedOrRemovedFilePaths = [
+    ...reuseState.changedProgramSourceFiles,
+    ...reuseState.removedProgramSourceFiles,
+  ];
+  if (
+    changedOrRemovedFilePaths.some((candidateFilePath) =>
+      matchesPreparedAnalysisAnyFilePath(candidateFilePath, [filePath])
+    )
+  ) {
+    return false;
+  }
+
+  return true;
 }
 
 function combineRootNames(
