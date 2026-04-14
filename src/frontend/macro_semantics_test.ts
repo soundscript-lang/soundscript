@@ -429,9 +429,9 @@ Deno.test('createMacroSemantics classifies local aliases of canonical Result car
   const preparedProgram = createPreparedProgramForMacroTest({
     [fileName]: [
       "import type { Result } from 'sts:result';",
-      'type AutomationsResult<T> = Result<T, string>;',
+      'type DomainResult<T> = Result<T, string>;',
       '',
-      'declare const resultValue: Promise<AutomationsResult<number>>;',
+      'declare const resultValue: Promise<DomainResult<number>>;',
       '',
     ].join('\n'),
   });

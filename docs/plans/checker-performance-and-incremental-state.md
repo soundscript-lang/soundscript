@@ -17,13 +17,12 @@ The hard rule for every phase in this plan is:
 
 ## Current Baseline
 
-The current real-project benchmark is:
+The current real-project benchmark is a representative private SoundScript project:
 
-- project: `/Users/jakemccloskey/repos/unthread-web/packages/automations`
 - command:
 
 ```sh
-SOUNDSCRIPT_CHECKER_TIMING=1 deno run --no-check --allow-env --allow-read --allow-run --allow-write src/main.ts check --project /Users/jakemccloskey/repos/unthread-web/packages/automations/tsconfig.soundscript.json
+SOUNDSCRIPT_CHECKER_TIMING=1 deno run --no-check --allow-env --allow-read --allow-run --allow-write src/main.ts check --project /abs/path/to/tsconfig.soundscript.json
 ```
 
 Representative timing shape:
@@ -101,7 +100,7 @@ Required additions:
   - prelude injection
   - numeric normalization
   - error normalization
-- a stable real-project perf harness for the automations package with these cases:
+- a stable real-project perf harness for a representative benchmark project with these cases:
   - cold full check
   - warm no-op rebuild
   - single `.sts` edit
@@ -111,7 +110,7 @@ Required additions:
 Rules:
 
 - do not keep optimizations that help only synthetic tests
-- use the automations harness as the primary acceptance gate for perf work
+- use that benchmark harness as the primary acceptance gate for perf work
 
 ### 2. Quick Wins In The Current Architecture
 
@@ -288,7 +287,7 @@ The main benefit is warm CLI latency for repeated checks and scripting workflows
 
 After the quick-win phase:
 
-- cold full automations check under `2.5s`
+- cold full benchmark-project check under `2.5s`
 - prepare under `2.0s`
 - analyze under `0.7s`
 
@@ -301,7 +300,7 @@ After the shared in-memory incremental phase:
 - full-project warm refresh after one file change under `500ms`
 
 These are targets, not release gates by themselves. The important rule is that each phase should
-show a real win on the automations benchmark before more complexity is kept.
+show a real win on the representative benchmark before more complexity is kept.
 
 ## Test And Validation Plan
 
@@ -324,7 +323,7 @@ Required validation categories:
 - builtin artifact-cache tests proving unchanged macro consumers reuse exact outputs
 - LSP/session tests proving warm request reuse and correct dependent invalidation
 
-Perf validation must include the real automations project and not just synthetic fixture projects.
+Perf validation must include the real benchmark project and not just synthetic fixture projects.
 
 ## Defaults And Non-Goals
 

@@ -1575,7 +1575,7 @@ Deno.test('decode and codec macros typecheck ambient JsonObject aliases nullable
   assertStringIncludes(printed, 'export const ResolveRemoteCallbackRequestCodec = ');
 });
 
-Deno.test('automations-style object transport contracts typecheck without local scalar helper registries', () => {
+Deno.test('object transport contracts typecheck without local scalar helper registries', () => {
   const fileName = '/virtual/index.sts';
   const files = new Map<string, string>([
     ...createInstalledStdlibPackageFiles('/virtual').entries(),
@@ -5315,8 +5315,8 @@ Deno.test('Try macro preserves explicit await operands in async functions', asyn
 Deno.test('Try macro accepts local aliases of canonical Result variables', async () => {
   const { printed } = await expandWithBuiltins([
     "import { type Result, ok } from 'sts:prelude';",
-    'type AutomationsResult<T> = Result<T, string>;',
-    'declare function fetchValue(): AutomationsResult<number>;',
+    'type DomainResult<T> = Result<T, string>;',
+    'declare function fetchValue(): DomainResult<number>;',
     '',
     'function compute(): Result<number, string> {',
     '  const fetchResult = fetchValue();',
@@ -5336,8 +5336,8 @@ Deno.test('Try macro accepts local aliases of canonical Result variables', async
 Deno.test('Try macro preserves explicit await operands for aliased Result carriers', async () => {
   const { printed } = await expandWithBuiltins([
     "import { type Result, ok } from 'sts:prelude';",
-    'type AutomationsResult<T> = Result<T, string>;',
-    'declare function fetchValue(): Promise<AutomationsResult<number>>;',
+    'type DomainResult<T> = Result<T, string>;',
+    'declare function fetchValue(): Promise<DomainResult<number>>;',
     '',
     'async function compute(): Promise<Result<number, string>> {',
     '  const value = Try(await fetchValue());',
