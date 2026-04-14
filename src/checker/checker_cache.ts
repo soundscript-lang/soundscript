@@ -128,6 +128,11 @@ export interface PersistentCheckerRunOptions extends AnalyzeProjectOptions {
   useCache?: boolean;
 }
 
+export interface PersistentCheckerAnalysisWithReuseResult {
+  prepareArtifacts?: PersistentPreparedAnalysisProjectReuseSnapshots;
+  result: AnalyzeProjectResult;
+}
+
 function stableStringify(value: unknown): string {
   if (value === null || typeof value !== 'object') {
     return JSON.stringify(value);
@@ -1260,9 +1265,9 @@ function writeCheckerCacheManifest(
   }
 }
 
-export function analyzeProjectWithPersistentCache(
+export function analyzeProjectWithPersistentCacheForReuse(
   options: PersistentCheckerRunOptions,
-): AnalyzeProjectResult {
+): PersistentCheckerAnalysisWithReuseResult {
   const useCache = options.useCache ?? true;
   const cacheProjectDirectory = createCheckerCacheProjectDirectory(options.projectPath, options.cacheDir);
   const header = useCache
@@ -1289,7 +1294,10 @@ export function analyzeProjectWithPersistentCache(
     : { kind: 'miss' } as CheckerCacheReadResult;
 
   if (cacheReadResult.kind === 'hit') {
-    return cacheReadResult.result;
+    return {
+      prepareArtifacts: cacheReadResult.manifest.prepareArtifacts,
+      result: cacheReadResult.result,
+    };
   }
 
   const persistentBuildInfoDirectory = useCache
@@ -1491,7 +1499,10 @@ export function analyzeProjectWithPersistentCache(
         } catch {
           // Cache write failures must not change checker behavior.
         }
-        return incrementalReuse.manifest.result;
+        return {
+          prepareArtifacts: incrementalReuse.manifest.prepareArtifacts,
+          result: incrementalReuse.manifest.result,
+        };
       }
     }
 
@@ -1579,10 +1590,22 @@ export function analyzeProjectWithPersistentCache(
       } catch {
         // Cache write failures must not change checker behavior.
       }
+      return {
+        prepareArtifacts: preparedProjectReuseSnapshots,
+        result: analysis.result,
+      };
     }
 
-    return analysis.result;
+    return {
+      result: analysis.result,
+    };
   } finally {
     disposePreparedAnalysisProject(preparedProject);
   }
+}
+
+export function analyzeProjectWithPersistentCache(
+  options: PersistentCheckerRunOptions,
+): AnalyzeProjectResult {
+  return analyzeProjectWithPersistentCacheForReuse(options).result;
 }

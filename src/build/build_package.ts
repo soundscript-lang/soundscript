@@ -17,7 +17,7 @@ import {
   prepareProjectAnalysis,
 } from '../checker/analyze_project.ts';
 import {
-  analyzeProjectWithPersistentCache,
+  analyzeProjectWithPersistentCacheForReuse,
   resolveCheckerCacheDirectory,
 } from '../checker/checker_cache.ts';
 import { logCheckerTiming, measureCheckerTiming } from '../checker/timing.ts';
@@ -823,18 +823,18 @@ export async function buildProject(options: BuildProjectOptions): Promise<BuildP
       projectPath: options.projectPath,
     },
     () =>
-      analyzeProjectWithPersistentCache({
+      analyzeProjectWithPersistentCacheForReuse({
         projectPath: options.projectPath,
         target: options.target,
         workingDirectory: options.workingDirectory,
       }),
     { always: true },
   );
-  if (hasErrorDiagnostics(analysis.diagnostics)) {
+  if (hasErrorDiagnostics(analysis.result.diagnostics)) {
     return {
-      diagnostics: analysis.diagnostics,
+      diagnostics: analysis.result.diagnostics,
       exitCode: 1,
-      output: formatDiagnostics(analysis.diagnostics, options.workingDirectory),
+      output: formatDiagnostics(analysis.result.diagnostics, options.workingDirectory),
     };
   }
   const buildCacheReadMetadata: Record<string, string> = {
@@ -861,7 +861,7 @@ export async function buildProject(options: BuildProjectOptions): Promise<BuildP
     undefined,
     {
       persistentBuildInfoDirectory: createBuildCacheBuildInfoDirectory(options.projectPath),
-      persistentReuseSnapshots: buildCacheReadResult.prepareArtifacts,
+      persistentReuseSnapshots: buildCacheReadResult.prepareArtifacts ?? analysis.prepareArtifacts,
     },
   );
   try {

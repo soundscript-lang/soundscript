@@ -620,6 +620,10 @@ export function collectPreparedAnalysisProjectFileMetadata(
   changedTrackedFiles: readonly string[] = [],
   previousCandidateFilePaths: readonly string[] = [],
 ): readonly PreparedAnalysisProjectFileMetadata[] {
+  const dependencyTraversalCaches = new WeakMap<
+    PreparedAnalysisView,
+    PreparedViewDependencyTraversalCache
+  >();
   const candidateCollectionStartTime = performance.now();
   const candidateFilePaths = previousCandidateFilePaths.length > 0
     ? new Set(previousCandidateFilePaths)
@@ -716,15 +720,25 @@ export function collectPreparedAnalysisProjectFileMetadata(
     }
 
     const diagnosticPathStartTime = performance.now();
-    const diagnosticPathCollection = collectPreparedViewDependencyPathCollection(view, filePath);
+    const diagnosticPathCollection = collectPreparedViewDependencyPathCollection(
+      view,
+      filePath,
+      {},
+      getPreparedViewDependencyTraversalCache(dependencyTraversalCaches, view),
+    );
     diagnosticPathCollectionDurationMs += performance.now() - diagnosticPathStartTime;
     const diagnosticPaths = diagnosticPathCollection.paths;
     let cacheDependencyPaths = diagnosticPaths;
     if (diagnosticPathCollection.encounteredNonDeclarationTypeScriptDependency) {
       const cacheDependencyPathStartTime = performance.now();
-      cacheDependencyPaths = collectPreparedViewDependencyPaths(view, filePath, {
-        includeNonDeclarationTypeScriptDependencies: true,
-      });
+      cacheDependencyPaths = collectPreparedViewDependencyPaths(
+        view,
+        filePath,
+        {
+          includeNonDeclarationTypeScriptDependencies: true,
+        },
+        getPreparedViewDependencyTraversalCache(dependencyTraversalCaches, view),
+      );
       cacheDependencyPathCollectionDurationMs +=
         performance.now() - cacheDependencyPathStartTime;
     }
@@ -1844,6 +1858,54 @@ interface PreparedViewDependencyPathCollection {
   paths: readonly string[];
 }
 
+interface PreparedViewResolvedDependency {
+  dependencySourceFile: ts.SourceFile | null;
+  isNonDeclarationTypeScriptDependency: boolean;
+  resolvedSourcePath: string;
+}
+
+interface PreparedViewDependencyTraversalProgramCache {
+  resolvedDependenciesBySourcePath: Map<string, readonly PreparedViewResolvedDependency[]>;
+  traversalSourceFileByPath: Map<string, ts.SourceFile | null>;
+}
+
+interface PreparedViewDependencyTraversalCache {
+  programCaches: Map<string, PreparedViewDependencyTraversalProgramCache>;
+}
+
+function createPreparedViewDependencyTraversalCache(): PreparedViewDependencyTraversalCache {
+  return {
+    programCaches: new Map(),
+  };
+}
+
+function getPreparedViewDependencyTraversalCache(
+  caches: WeakMap<PreparedAnalysisView, PreparedViewDependencyTraversalCache>,
+  preparedView: PreparedAnalysisView,
+): PreparedViewDependencyTraversalCache {
+  let cache = caches.get(preparedView);
+  if (!cache) {
+    cache = createPreparedViewDependencyTraversalCache();
+    caches.set(preparedView, cache);
+  }
+  return cache;
+}
+
+function getPreparedViewDependencyTraversalProgramCache(
+  cache: PreparedViewDependencyTraversalCache,
+  programKey: string,
+): PreparedViewDependencyTraversalProgramCache {
+  let programCache = cache.programCaches.get(programKey);
+  if (!programCache) {
+    programCache = {
+      resolvedDependenciesBySourcePath: new Map(),
+      traversalSourceFileByPath: new Map(),
+    };
+    cache.programCaches.set(programKey, programCache);
+  }
+  return programCache;
+}
+
 function collectPreparedViewDirectDependencyPaths(
   preparedView: PreparedAnalysisView,
   filePath: string,
@@ -1917,14 +1979,21 @@ function collectPreparedViewDependencyPaths(
   preparedView: PreparedAnalysisView,
   filePath: string,
   options: CollectPreparedViewDependencyPathOptions = {},
+  traversalCache: PreparedViewDependencyTraversalCache = createPreparedViewDependencyTraversalCache(),
 ): readonly string[] {
-  return collectPreparedViewDependencyPathCollection(preparedView, filePath, options).paths;
+  return collectPreparedViewDependencyPathCollection(
+    preparedView,
+    filePath,
+    options,
+    traversalCache,
+  ).paths;
 }
 
 function collectPreparedViewDependencyPathCollection(
   preparedView: PreparedAnalysisView,
   filePath: string,
   options: CollectPreparedViewDependencyPathOptions = {},
+  traversalCache: PreparedViewDependencyTraversalCache = createPreparedViewDependencyTraversalCache(),
 ): PreparedViewDependencyPathCollection {
   const diagnosticPaths = new Set<string>();
   let encounteredNonDeclarationTypeScriptDependency = false;
@@ -1980,14 +2049,21 @@ function collectPreparedViewDependencyPathCollection(
 
   const visitedSourceFiles = new Set<string>();
   const getTraversalSourceFile = (
+    programKey: string,
     program: ts.Program,
     candidateFilePath: string,
   ): ts.SourceFile | null => {
+    const programCache = getPreparedViewDependencyTraversalProgramCache(traversalCache, programKey);
+    if (programCache.traversalSourceFileByPath.has(candidateFilePath)) {
+      return programCache.traversalSourceFileByPath.get(candidateFilePath) ?? null;
+    }
+
     for (const candidate of collectPreparedAnalysisFilePathCandidates(candidateFilePath)) {
       const sourceFile = program.getSourceFile(
         preparedView.preparedProgram.toProgramFileName(candidate),
       );
       if (sourceFile) {
+        programCache.traversalSourceFileByPath.set(candidateFilePath, sourceFile);
         return sourceFile;
       }
 
@@ -1997,12 +2073,63 @@ function collectPreparedViewDependencyPathCollection(
           preparedView.preparedProgram.toProgramFileName(projectedCandidate),
         );
         if (projectedSourceFile) {
+          programCache.traversalSourceFileByPath.set(candidateFilePath, projectedSourceFile);
           return projectedSourceFile;
         }
       }
     }
 
+    programCache.traversalSourceFileByPath.set(candidateFilePath, null);
     return null;
+  };
+
+  const getResolvedDependencies = (
+    programKey: string,
+    program: ts.Program,
+    sourceFile: ts.SourceFile,
+  ): readonly PreparedViewResolvedDependency[] => {
+    const sourceFilePath = preparedView.preparedProgram.toSourceFileName(sourceFile.fileName);
+    const programCache = getPreparedViewDependencyTraversalProgramCache(traversalCache, programKey);
+    const cachedDependencies = programCache.resolvedDependenciesBySourcePath.get(sourceFilePath);
+    if (cachedDependencies) {
+      return cachedDependencies;
+    }
+
+    const resolvedDependencies = getStaticSourceFileModuleSpecifiers(sourceFile).flatMap(
+      (moduleSpecifier) => {
+        const resolvedModule = resolveSoundScriptAwareModule(
+          moduleSpecifier,
+          sourceFilePath,
+          preparedView.preparedProgram.options,
+          preparedView.preparedProgram.preparedHost.host,
+        );
+        if (!resolvedModule) {
+          return [];
+        }
+
+        const resolvedSourcePath = preparedView.preparedProgram.toSourceFileName(
+          resolvedModule.resolvedFileName,
+        );
+        const dependencySourceFile = getTraversalSourceFile(
+          programKey,
+          program,
+          resolvedSourcePath,
+        );
+        const isNonDeclarationTypeScriptDependency = dependencySourceFile !== null &&
+          !dependencySourceFile.isDeclarationFile &&
+          !isSoundscriptSourceFile(resolvedSourcePath) &&
+          !isProjectedSoundscriptDeclarationFile(resolvedSourcePath);
+
+        return [{
+          dependencySourceFile,
+          isNonDeclarationTypeScriptDependency,
+          resolvedSourcePath,
+        }];
+      },
+    );
+
+    programCache.resolvedDependenciesBySourcePath.set(sourceFilePath, resolvedDependencies);
+    return resolvedDependencies;
   };
 
   const visit = (programKey: string, program: ts.Program, sourceFile: ts.SourceFile): void => {
@@ -2014,25 +2141,12 @@ function collectPreparedViewDependencyPathCollection(
     visitedSourceFiles.add(visitKey);
     addDiagnosticPath(sourceFilePath);
 
-    for (const moduleSpecifier of getStaticSourceFileModuleSpecifiers(sourceFile)) {
-      const resolvedModule = resolveSoundScriptAwareModule(
-        moduleSpecifier,
-        sourceFilePath,
-        preparedView.preparedProgram.options,
-        preparedView.preparedProgram.preparedHost.host,
-      );
-      if (!resolvedModule) {
-        continue;
-      }
-
-      const resolvedSourcePath = preparedView.preparedProgram.toSourceFileName(
-        resolvedModule.resolvedFileName,
-      );
-      const dependencySourceFile = getTraversalSourceFile(program, resolvedSourcePath);
-      const isNonDeclarationTypeScriptDependency = dependencySourceFile !== null &&
-        !dependencySourceFile.isDeclarationFile &&
-        !isSoundscriptSourceFile(resolvedSourcePath) &&
-        !isProjectedSoundscriptDeclarationFile(resolvedSourcePath);
+    for (const dependency of getResolvedDependencies(programKey, program, sourceFile)) {
+      const {
+        dependencySourceFile,
+        isNonDeclarationTypeScriptDependency,
+        resolvedSourcePath,
+      } = dependency;
       if (isNonDeclarationTypeScriptDependency) {
         encounteredNonDeclarationTypeScriptDependency = true;
       }

@@ -362,6 +362,74 @@ function factRequiresBoundaryInvalidation(
     fact.kind !== 'typeof';
 }
 
+function containsPotentialBoundaryCandidate(node: ts.Node): boolean {
+  let found = false;
+
+  const visit = (current: ts.Node): void => {
+    if (found) {
+      return;
+    }
+
+    if (
+      ts.isCallExpression(current) ||
+      ts.isNewExpression(current) ||
+      ts.isAwaitExpression(current) ||
+      ts.isYieldExpression(current) ||
+      ts.isDeleteExpression(current) ||
+      ts.isPrefixUnaryExpression(current) ||
+      ts.isPostfixUnaryExpression(current) ||
+      (
+        ts.isBinaryExpression(current) &&
+        current.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+        current.operatorToken.kind <= ts.SyntaxKind.LastAssignment
+      )
+    ) {
+      found = true;
+      return;
+    }
+
+    if (ts.isFunctionLike(current) && current !== node) {
+      return;
+    }
+
+    ts.forEachChild(current, visit);
+  };
+
+  visit(node);
+  return found;
+}
+
+function isTerminalWrapperBlock(statement: ts.Statement): boolean {
+  if (!ts.isBlock(statement) || statement.statements.length === 0) {
+    return false;
+  }
+
+  const finalStatement = statement.statements.at(-1);
+  if (
+    !finalStatement ||
+    (!ts.isReturnStatement(finalStatement) && !ts.isThrowStatement(finalStatement))
+  ) {
+    return false;
+  }
+
+  return statement.statements.slice(0, -1).every((childStatement) => {
+    if (!ts.isVariableStatement(childStatement)) {
+      return false;
+    }
+
+    return childStatement.declarationList.declarations.every((declaration) =>
+      declaration.initializer ? !containsPotentialBoundaryCandidate(declaration.initializer) : true
+    );
+  });
+}
+
+function shouldSkipDirectInvalidationCheck(statement: ts.Statement): boolean {
+  // Terminal wrapper blocks are immediately re-analyzed through their child region. Re-scanning
+  // the whole subtree here duplicates work for large switch dispatch functions whose cases only
+  // build a small local object before returning.
+  return isTerminalWrapperBlock(statement);
+}
+
 function analyzeStatements(
   context: AnalysisContext,
   regionNode: ts.Node | undefined,
@@ -401,9 +469,11 @@ function analyzeStatements(
       }
       const activeSequentialFacts = [...inheritedFacts, ...sequentialAnalysis.facts]
         .filter(factRequiresBoundaryInvalidation);
-      const invalidatingNode = findInvalidation(context, statement, activeSequentialFacts, state);
-      if (invalidatingNode) {
-        diagnostics.push(createDiagnostic(context, invalidatingNode));
+      if (!shouldSkipDirectInvalidationCheck(statement)) {
+        const invalidatingNode = findInvalidation(context, statement, activeSequentialFacts, state);
+        if (invalidatingNode) {
+          diagnostics.push(createDiagnostic(context, invalidatingNode));
+        }
       }
 
       if (ts.isVariableStatement(statement)) {
