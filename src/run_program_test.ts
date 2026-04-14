@@ -561,6 +561,98 @@ Deno.test('runProgram seeds checker build info on stale cached runs', async () =
   });
 });
 
+Deno.test('runProgram logs TypeScript internal timing summaries when requested', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+          },
+          include: ['src/**/*.sts'],
+        },
+        null,
+        2,
+      ),
+    },
+    {
+      path: 'src/a.sts',
+      contents: [
+        'export function alpha(value: string | number) {',
+        "  if (typeof value === 'string') {",
+        '    return value.length;',
+        '  }',
+        '  return value;',
+        '}',
+        '',
+      ].join('\n'),
+    },
+    {
+      path: 'src/b.sts',
+      contents: [
+        "import { alpha } from './a.sts';",
+        '',
+        'export const beta = alpha(1);',
+        '',
+      ].join('\n'),
+    },
+  ]);
+  const projectPath = join(tempDirectory, 'tsconfig.json');
+  const editedFilePath = join(tempDirectory, 'src/a.sts');
+  const originalTsInternalTimingEnv = Deno.env.get('SOUNDSCRIPT_CHECKER_TS_INTERNAL_TIMING');
+
+  const firstResult = runProgram({
+    projectPath,
+    workingDirectory: tempDirectory,
+  });
+  assertEquals(firstResult.exitCode, 0);
+
+  await Deno.writeTextFile(
+    editedFilePath,
+    [
+      'export function alpha(value: string | number) {',
+      "  if (typeof value === 'string') {",
+      '    return value.length;',
+      '  }',
+      '  return value;',
+      '}',
+      '',
+      '// comment-only edit',
+      '',
+    ].join('\n'),
+  );
+
+  try {
+    Deno.env.set('SOUNDSCRIPT_CHECKER_TS_INTERNAL_TIMING', '1');
+    withCapturedTimingLogs((logs) => {
+      const result = runProgram({
+        projectPath,
+        workingDirectory: tempDirectory,
+      });
+      assert(logs.some((line) =>
+        line.includes('[soundscript:checker] project.prepare.semanticBuilderInternals ') &&
+        line.includes('measureCount=')
+      ));
+      assert(logs.some((line) =>
+        line.includes('[soundscript:checker] project.emitProjectedDeclarations.emitInternals ') &&
+        line.includes('measureCount=')
+      ));
+      assertEquals(result.exitCode, 0);
+      assertEquals(result.diagnostics.length, 0);
+    });
+  } finally {
+    if (originalTsInternalTimingEnv === undefined) {
+      Deno.env.delete('SOUNDSCRIPT_CHECKER_TS_INTERNAL_TIMING');
+    } else {
+      Deno.env.set('SOUNDSCRIPT_CHECKER_TS_INTERNAL_TIMING', originalTsInternalTimingEnv);
+    }
+  }
+});
+
 Deno.test('runProgram hydrates macro prepare artifacts on stale cached runs', async () => {
   const tempDirectory = await createTempProject([
     {

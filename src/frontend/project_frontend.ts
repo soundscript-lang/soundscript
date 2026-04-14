@@ -20,7 +20,12 @@ import {
   SOUND_DIAGNOSTIC_MESSAGES,
 } from '../checker/engine/diagnostic_codes.ts';
 import { describeUnsupportedFeature } from '../checker/unsupported_feature_messages.ts';
-import { measureCheckerTiming } from '../checker/timing.ts';
+import {
+  isCheckerTimingFlagEnabled,
+  logCheckerTiming,
+  measureCheckerTiming,
+  type CheckerTimingMetadata,
+} from '../checker/timing.ts';
 import { BUILTIN_DIRECTIVE_NAMES, createAnnotationLookup } from '../language/annotation_syntax.ts';
 import {
   makeDirectorySync,
@@ -99,6 +104,7 @@ const projectedDeclarationEmitCache = new Map<
   readonly ProjectedDeclarationEmitCacheEntry[]
 >();
 const projectedDeclarationPrinter = ts.createPrinter({ newLine: ts.NewLineKind.LineFeed });
+const CHECKER_TS_INTERNAL_TIMING_ENV_VAR = 'SOUNDSCRIPT_CHECKER_TS_INTERNAL_TIMING';
 const tsBuildInfoInternals = ts as typeof ts & {
   createBuilderProgramUsingIncrementalBuildInfo?: (
     buildInfo: unknown,
@@ -107,6 +113,16 @@ const tsBuildInfoInternals = ts as typeof ts & {
   ) => ts.BuilderProgram;
   getBuildInfo?: (buildInfoPath: string, buildInfoText: string) => unknown;
 };
+const tsPerformance = (ts as typeof ts & {
+  performance?: {
+    clearMarks(name?: string): void;
+    clearMeasures(name?: string): void;
+    disable(): void;
+    enable(): void;
+    forEachMeasure(callback: (name: string, duration: number) => void): void;
+    isEnabled?(): boolean;
+  };
+}).performance;
 
 export {
   isProjectedSoundscriptDeclarationFile,
@@ -1049,6 +1065,73 @@ function createPersistentBuildInfoCompilerOptions(
     incremental: true,
     tsBuildInfoFile: buildInfoPath,
   };
+}
+
+function summarizeTypeScriptPerformanceMeasures(
+  measures: readonly (readonly [string, number])[],
+  maxMeasures = 5,
+): string | undefined {
+  if (measures.length === 0) {
+    return undefined;
+  }
+
+  return measures
+    .slice(0, maxMeasures)
+    .map(([name, duration]) => `${name}:${duration.toFixed(1)}`)
+    .join('|');
+}
+
+function inferPersistentBuildInfoStage(buildInfoPath: string | undefined): string {
+  if (!buildInfoPath) {
+    return 'default';
+  }
+
+  const stageMatch = buildInfoPath.match(/\.([^.]+)\.tsbuildinfo$/u);
+  return stageMatch?.[1] ?? 'default';
+}
+
+function measureTypeScriptPerformanceInternals<T>(
+  operation: string,
+  metadata: CheckerTimingMetadata,
+  fn: () => T,
+): T {
+  if (!tsPerformance || !isCheckerTimingFlagEnabled(CHECKER_TS_INTERNAL_TIMING_ENV_VAR)) {
+    return fn();
+  }
+
+  const wasEnabled = tsPerformance.isEnabled?.() ?? false;
+  if (!wasEnabled) {
+    tsPerformance.enable();
+  }
+  tsPerformance.clearMarks();
+  tsPerformance.clearMeasures();
+  const start = performance.now();
+  try {
+    return fn();
+  } finally {
+    const measures: Array<readonly [string, number]> = [];
+    tsPerformance.forEachMeasure((name, duration) => {
+      measures.push([name, duration] as const);
+    });
+    measures.sort((left, right) => right[1] - left[1]);
+    const measuredTotalMs = measures.reduce((total, [, duration]) => total + duration, 0);
+    logCheckerTiming(
+      operation,
+      performance.now() - start,
+      {
+        ...metadata,
+        measureCount: measures.length,
+        measuredTotalMs: Number(measuredTotalMs.toFixed(1)),
+        topMeasures: summarizeTypeScriptPerformanceMeasures(measures),
+      },
+      { always: true },
+    );
+    tsPerformance.clearMarks();
+    tsPerformance.clearMeasures();
+    if (!wasEnabled) {
+      tsPerformance.disable();
+    }
+  }
 }
 
 function createPersistentBuilderProgramSeed(
@@ -2346,11 +2429,19 @@ export function emitProjectedDeclarations(
       metadata.seededOutputs = hasMatchingProjectedDeclarationOutputs
         ? reusableState.projectedDeclarationOutputs!.size
         : 0;
-      const declarationBuilderProgram = ts.createEmitAndSemanticDiagnosticsBuilderProgram(
-        rootNames.map(toProgramFileName),
-        projectedDeclarationCompilerOptions,
-        preparedProgram.preparedHost.host,
-        declarationBuilderSeed as ts.EmitAndSemanticDiagnosticsBuilderProgram | undefined,
+      const declarationBuilderProgram = measureTypeScriptPerformanceInternals(
+        'project.emitProjectedDeclarations.builderInternals',
+        {
+          mode: canIncrementallyReuseDeclarations ? 'incremental' : 'full',
+          rootNames: rootNames.length,
+          seed: declarationBuilderSeed ? 'yes' : 'no',
+        },
+        () => ts.createEmitAndSemanticDiagnosticsBuilderProgram(
+          rootNames.map(toProgramFileName),
+          projectedDeclarationCompilerOptions,
+          preparedProgram.preparedHost.host,
+          declarationBuilderSeed as ts.EmitAndSemanticDiagnosticsBuilderProgram | undefined,
+        ),
       );
       const declarationProgram = declarationBuilderProgram.getProgram();
       reusableState.projectedDeclarationBuilderProgram = declarationBuilderProgram;
@@ -2393,18 +2484,27 @@ export function emitProjectedDeclarations(
           );
         }
       };
-      if (canIncrementallyReuseDeclarations) {
-        while (declarationBuilderProgram.emitNextAffectedFile(writeFile, undefined, true)) {
-          // Keep draining affected declaration outputs until the builder reports completion.
-        }
-      } else {
-        declarationProgram.emit(
-          undefined,
-          writeFile,
-          undefined,
-          true,
-        );
-      }
+      measureTypeScriptPerformanceInternals(
+        'project.emitProjectedDeclarations.emitInternals',
+        {
+          mode: canIncrementallyReuseDeclarations ? 'incremental' : 'full',
+          rootNames: rootNames.length,
+        },
+        () => {
+          if (canIncrementallyReuseDeclarations) {
+            while (declarationBuilderProgram.emitNextAffectedFile(writeFile, undefined, true)) {
+              // Keep draining affected declaration outputs until the builder reports completion.
+            }
+          } else {
+            declarationProgram.emit(
+              undefined,
+              writeFile,
+              undefined,
+              true,
+            );
+          }
+        },
+      );
       metadata.emittedFiles = emittedFiles;
       writePersistentBuilderProgramBuildInfo(
         'project.emitProjectedDeclarations.buildInfoWrite',
@@ -4518,13 +4618,21 @@ export function createPreparedProgram(
         ? preparedHost.reuseState.semanticDiagnosticsBuilderProgram
         : undefined);
   // Use the semantic builder path so successive internal rebuilds can retain checker state.
-  const builderProgram = ts.createSemanticDiagnosticsBuilderProgram(
-    rootNames,
-    semanticDiagnosticsCompilerOptions,
-    preparedHost.host,
-    semanticDiagnosticsBuilderSeed as ts.SemanticDiagnosticsBuilderProgram | undefined,
-    options.configFileParsingDiagnostics,
-    options.projectReferences,
+  const builderProgram = measureTypeScriptPerformanceInternals(
+    'project.prepare.semanticBuilderInternals',
+    {
+      rootCount: rootNames.length,
+      seed: semanticDiagnosticsBuilderSeed ? 'yes' : 'no',
+      stage: inferPersistentBuildInfoStage(options.persistentSemanticDiagnosticsBuildInfoPath),
+    },
+    () => ts.createSemanticDiagnosticsBuilderProgram(
+      rootNames,
+      semanticDiagnosticsCompilerOptions,
+      preparedHost.host,
+      semanticDiagnosticsBuilderSeed as ts.SemanticDiagnosticsBuilderProgram | undefined,
+      options.configFileParsingDiagnostics,
+      options.projectReferences,
+    ),
   );
   const program = builderProgram.getProgram();
   const removedProgramSourceFiles = new Set<string>();
