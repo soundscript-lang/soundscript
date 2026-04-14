@@ -3,16 +3,72 @@ import { createRoot } from 'react-dom/client';
 // #[interop]
 import { HashRouter } from 'react-router-dom';
 
-import { AppRoutes, createInitialTodos } from './app.sts';
+import { InteractiveAppRoutes, createInitialTodos } from './app.sts';
+
+interface Todo {
+  id: number;
+  title: string;
+  completed: boolean;
+}
+
+type TodoList = [Todo, Todo];
 
 let root: ReturnType<typeof createRoot> | undefined = undefined;
+let firstTodoCompleted = false;
+let secondTodoCompleted = true;
+
+function getTodos(): TodoList {
+  const initialTodos = createInitialTodos();
+  const firstTodo = initialTodos[0];
+  const secondTodo = initialTodos[1];
+  return [
+    {
+      id: firstTodo.id,
+      title: firstTodo.title,
+      completed: firstTodoCompleted,
+    },
+    {
+      id: secondTodo.id,
+      title: secondTodo.title,
+      completed: secondTodoCompleted,
+    },
+  ];
+}
+
+function toggleFirstTodo(): void {
+  const currentCompleted = firstTodoCompleted;
+  if (currentCompleted) {
+    firstTodoCompleted = false;
+  } else {
+    firstTodoCompleted = true;
+  }
+}
+
+function toggleSecondTodo(): void {
+  const currentCompleted = secondTodoCompleted;
+  if (currentCompleted) {
+    secondTodoCompleted = false;
+  } else {
+    secondTodoCompleted = true;
+  }
+}
 
 export function start(container: Element): void {
   const currentRoot = root ?? createRoot(container);
   root = currentRoot;
   currentRoot.render(
     <HashRouter>
-      <AppRoutes todos={createInitialTodos()} />
+      <InteractiveAppRoutes
+        todos={getTodos()}
+        onToggleFirstTodo={() => {
+          toggleFirstTodo();
+          start(container);
+        }}
+        onToggleSecondTodo={() => {
+          toggleSecondTodo();
+          start(container);
+        }}
+      />
     </HashRouter>,
   );
 }

@@ -24,25 +24,89 @@ export function createInitialTodos(): TodoList {
   ];
 }
 
-function TodoPage(props: { todos: TodoList }) {
+interface TodoPageProps {
+  todos: TodoList;
+}
+
+interface InteractiveTodoPageProps extends TodoPageProps {
+  onToggleFirstTodo: () => void;
+  onToggleSecondTodo: () => void;
+}
+
+function TodoPage(props: TodoPageProps) {
   const firstTodo = props.todos[0];
   const secondTodo = props.todos[1];
-  const completedLabel = secondTodo.completed ? 'done' : 'open';
+  const firstCompletedLabel = firstTodo.completed ? 'done' : 'open';
+  const secondCompletedLabel = secondTodo.completed ? 'done' : 'open';
   return (
     <main>
       <h1>Todos</h1>
       <p>{firstTodo.title}</p>
-      <p>{completedLabel}</p>
+      <p>{firstCompletedLabel}</p>
+      <p>{secondTodo.title}</p>
+      <p>{secondCompletedLabel}</p>
       <p>{props.todos.length}</p>
     </main>
   );
 }
 
-export function AppRoutes(props: { todos: TodoList }) {
+function InteractiveTodoPage(props: InteractiveTodoPageProps) {
+  const firstTodo = props.todos[0];
+  const secondTodo = props.todos[1];
+  const firstCompletedLabel = firstTodo.completed ? 'done' : 'open';
+  const secondCompletedLabel = secondTodo.completed ? 'done' : 'open';
+  return (
+    <main>
+      <h1>Todos</h1>
+      <p>{firstTodo.title}</p>
+      <p>{firstCompletedLabel}</p>
+      <button onClick={props.onToggleFirstTodo}>Toggle first todo</button>
+      <p>{secondTodo.title}</p>
+      <p>{secondCompletedLabel}</p>
+      <button onClick={props.onToggleSecondTodo}>Toggle second todo</button>
+      <p>{props.todos.length}</p>
+    </main>
+  );
+}
+
+export function AppRoutes(props: TodoPageProps) {
   return (
     <Routes>
-      <Route path="/" element={<TodoPage todos={props.todos} />} />
-      <Route path="/todos" element={<TodoPage todos={props.todos} />} />
+      <Route
+        path="/"
+        element={<TodoPage todos={props.todos} />}
+      />
+      <Route
+        path="/todos"
+        element={<TodoPage todos={props.todos} />}
+      />
+    </Routes>
+  );
+}
+
+export function InteractiveAppRoutes(props: InteractiveTodoPageProps) {
+  return (
+    <Routes>
+      <Route
+        path="/"
+        element={(
+          <InteractiveTodoPage
+            todos={props.todos}
+            onToggleFirstTodo={props.onToggleFirstTodo}
+            onToggleSecondTodo={props.onToggleSecondTodo}
+          />
+        )}
+      />
+      <Route
+        path="/todos"
+        element={(
+          <InteractiveTodoPage
+            todos={props.todos}
+            onToggleFirstTodo={props.onToggleFirstTodo}
+            onToggleSecondTodo={props.onToggleSecondTodo}
+          />
+        )}
+      />
     </Routes>
   );
 }

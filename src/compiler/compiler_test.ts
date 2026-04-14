@@ -104,6 +104,10 @@ function readExampleProjectFile(
   );
 }
 
+async function importCompiledWrapperModule(wrapperPath: string) {
+  return await import(`file://${wrapperPath}?cacheBust=${crypto.randomUUID()}`);
+}
+
 async function linkTempProjectNodeModulesFromSource(
   tempDirectory: string,
   sourceNodeModulesDirectory: string,
@@ -2778,7 +2782,7 @@ compilerIntegrationTest(
     assert(result.artifacts);
     assert(result.artifacts.wrapperPath);
 
-    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const wrapperModule = await importCompiledWrapperModule(result.artifacts.wrapperPath);
     const instantiated = await wrapperModule.instantiate({
       modules: {
         'react/jsx-runtime': {
@@ -2861,7 +2865,7 @@ compilerIntegrationTest(
     assert(result.artifacts);
     assert(result.artifacts.wrapperPath);
 
-    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const wrapperModule = await importCompiledWrapperModule(result.artifacts.wrapperPath);
     const instantiated = await wrapperModule.instantiate({
       hostFunctions: {
         'src/host.d.ts:fetchNumber': async (input: Promise<number>) => (await input) + 2,
@@ -2939,7 +2943,7 @@ compilerIntegrationTest(
     assert(result.artifacts);
     assert(result.artifacts.wrapperPath);
 
-    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const wrapperModule = await importCompiledWrapperModule(result.artifacts.wrapperPath);
     const instantiated = await wrapperModule.instantiate({
       modules: {
         'react/jsx-runtime': {
@@ -3021,7 +3025,7 @@ compilerIntegrationTest(
     assert(result.artifacts);
     assert(result.artifacts.wrapperPath);
 
-    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const wrapperModule = await importCompiledWrapperModule(result.artifacts.wrapperPath);
     const instantiated = await wrapperModule.instantiate({
       modules: {
         'react/jsx-runtime': {
@@ -3103,7 +3107,7 @@ compilerIntegrationTest(
     assert(result.artifacts);
     assert(result.artifacts.wrapperPath);
 
-    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const wrapperModule = await importCompiledWrapperModule(result.artifacts.wrapperPath);
     const instantiated = await wrapperModule.instantiate({
       modules: {
         'react/jsx-runtime': {
@@ -3185,7 +3189,7 @@ compilerIntegrationTest(
     assert(result.artifacts);
     assert(result.artifacts.wrapperPath);
 
-    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const wrapperModule = await importCompiledWrapperModule(result.artifacts.wrapperPath);
     const instantiated = await wrapperModule.instantiate();
     const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
     const exported = instantiated.exports[exportName];
@@ -3263,7 +3267,7 @@ compilerIntegrationTest(
     assert(result.artifacts);
     assert(result.artifacts.wrapperPath);
 
-    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const wrapperModule = await importCompiledWrapperModule(result.artifacts.wrapperPath);
     const instantiated = await wrapperModule.instantiate({
       modules: {
         hostpkg: {
@@ -3347,7 +3351,7 @@ compilerIntegrationTest(
     assert(result.artifacts);
     assert(result.artifacts.wrapperPath);
 
-    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const wrapperModule = await importCompiledWrapperModule(result.artifacts.wrapperPath);
     const instantiated = await wrapperModule.instantiate({
       modules: {
         hostpkg: {
@@ -3554,7 +3558,7 @@ compilerIntegrationTest(
     assert(result.artifacts);
     assert(result.artifacts.wrapperPath);
 
-    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const wrapperModule = await importCompiledWrapperModule(result.artifacts.wrapperPath);
     const instantiated = await wrapperModule.instantiate({
       modules: {
         'react/jsx-runtime': {
@@ -3717,7 +3721,7 @@ compilerIntegrationTest(
     assert(result.artifacts);
     assert(result.artifacts.wrapperPath);
 
-    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const wrapperModule = await importCompiledWrapperModule(result.artifacts.wrapperPath);
     const instantiated = await wrapperModule.instantiate({
       modules: {
         'react/jsx-runtime': {
@@ -7467,7 +7471,7 @@ compilerIntegrationTest(
     const reactJsxRuntimeModule = await import('npm:react@19.2.4/jsx-runtime');
     const reactDomServerModule = await import('npm:react-dom@19.2.4/server');
     const reactRouterModule = await import('npm:react-router@7.14.0');
-    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const wrapperModule = await importCompiledWrapperModule(result.artifacts.wrapperPath);
     const instantiated = await wrapperModule.instantiate({
       modules: {
         express: {
@@ -7564,7 +7568,7 @@ compilerIntegrationTest(
       return { kind: 'HashRouter', props };
     }
 
-    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const wrapperModule = await importCompiledWrapperModule(result.artifacts.wrapperPath);
     const instantiated = await wrapperModule.instantiate({
       modules: {
         'react/jsx-runtime': {
@@ -7686,7 +7690,7 @@ compilerIntegrationTest(
     const reactJsxRuntimeModule = await import('npm:react@19.2.4/jsx-runtime');
     const reactDomServerModule = await import('npm:react-dom@19.2.4/server');
     const reactRouterModule = await import('npm:react-router@7.14.0');
-    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const wrapperModule = await importCompiledWrapperModule(result.artifacts.wrapperPath);
     const instantiated = await wrapperModule.instantiate({
       modules: {
         express: {
@@ -7779,7 +7783,7 @@ compilerIntegrationTest(
       return { kind: 'HashRouter', props };
     }
 
-    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const wrapperModule = await importCompiledWrapperModule(result.artifacts.wrapperPath);
     const instantiated = await wrapperModule.instantiate({
       modules: {
         'react/jsx-runtime': {
@@ -7840,6 +7844,194 @@ compilerIntegrationTest(
 
     assertEquals(await startExport(container), undefined);
     assertEquals(createRootCalls, 1);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject executes the checked-in fullstack-todo browser client example through routed todo mutation callbacks',
+  async () => {
+    const projectDirectory = getExampleProjectPath('examples/fullstack-todo');
+    const result = compileProject({
+      projectPath: join(projectDirectory, 'browser.tsconfig.json'),
+      workingDirectory: projectDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    type RenderedElement = {
+      key: string | null;
+      props: Record<string, unknown>;
+      type: unknown;
+    };
+
+    const container = { firstChild: { nodeType: 1 }, nodeType: 1, tagName: 'DIV' };
+    let createRootCalls = 0;
+    let lastRendered: RenderedElement | undefined;
+
+    function jsx(
+      type: unknown,
+      props: Record<string, unknown>,
+      key?: string | number | bigint,
+    ): RenderedElement {
+      return { key: key === undefined ? null : String(key), props, type };
+    }
+
+    function isRenderedElement(value: unknown): value is RenderedElement {
+      return typeof value === 'object' && value !== null && 'props' in value && 'type' in value;
+    }
+
+    function resolveRenderedNode(value: unknown): unknown {
+      if (Array.isArray(value)) {
+        return value.map((entry) => resolveRenderedNode(entry));
+      }
+      if (!isRenderedElement(value)) {
+        return value;
+      }
+      if (typeof value.type === 'function') {
+        return resolveRenderedNode(value.type(value.props));
+      }
+      return {
+        ...value,
+        props: {
+          ...value.props,
+          children: resolveRenderedNode(value.props.children),
+        },
+      } satisfies RenderedElement;
+    }
+
+    function collectText(value: unknown, result: string[] = []): string[] {
+      if (typeof value === 'string') {
+        result.push(value);
+        return result;
+      }
+      if (typeof value === 'number' || typeof value === 'bigint') {
+        result.push(String(value));
+        return result;
+      }
+      if (Array.isArray(value)) {
+        for (const entry of value) {
+          collectText(entry, result);
+        }
+        return result;
+      }
+      if (isRenderedElement(value)) {
+        collectText(value.props.children, result);
+      }
+      return result;
+    }
+
+    function collectButtons(value: unknown, result: RenderedElement[] = []): RenderedElement[] {
+      if (Array.isArray(value)) {
+        for (const entry of value) {
+          collectButtons(entry, result);
+        }
+        return result;
+      }
+      if (!isRenderedElement(value)) {
+        return result;
+      }
+      if (value.type === 'button') {
+        result.push(value);
+      }
+      collectButtons(value.props.children, result);
+      return result;
+    }
+
+    const wrapperModule = await importCompiledWrapperModule(result.artifacts.wrapperPath);
+    const instantiated = await wrapperModule.instantiate({
+      modules: {
+        'react/jsx-runtime': {
+          jsx,
+          jsxs: jsx,
+        },
+        'react-router': {
+          Route(props: Record<string, unknown>) {
+            return props.element;
+          },
+          Routes(props: Record<string, unknown>) {
+            return Array.isArray(props.children) ? props.children[0] : props.children;
+          },
+        },
+        'react-router-dom': {
+          HashRouter(props: Record<string, unknown>) {
+            return props.children;
+          },
+        },
+        'react-dom/client': {
+          createRoot(receivedContainer: {
+            firstChild: { nodeType: number };
+            nodeType: number;
+            tagName: string;
+          }) {
+            createRootCalls += 1;
+            assertStrictEquals(receivedContainer, container);
+            return {
+              render(children: RenderedElement) {
+                lastRendered = children;
+              },
+              unmount() {
+              },
+            };
+          },
+        },
+      },
+    });
+
+    const startName = await resolveQualifiedExportName(projectDirectory, 'start');
+    const startExport = instantiated.exports[startName];
+    if (typeof startExport !== 'function') {
+      throw new Error(`Expected exported function "${startName}".`);
+    }
+
+    assertEquals(await startExport(container), undefined);
+    assertEquals(createRootCalls, 1);
+    assert(lastRendered);
+
+    const initialTree = resolveRenderedNode(lastRendered);
+    if (!isRenderedElement(initialTree)) {
+      throw new Error('Expected fullstack todo render to resolve to an intrinsic element.');
+    }
+    assertEquals(initialTree.type, 'main');
+    assertEquals(collectText(initialTree), [
+      'Todos',
+      'Write compiler tests',
+      'open',
+      'Toggle first todo',
+      'Ship the Wasm SSR todo app',
+      'done',
+      'Toggle second todo',
+      '2',
+    ]);
+
+    const initialButtons = collectButtons(initialTree);
+    assertEquals(initialButtons.length, 2);
+    const toggleSecondTodo = initialButtons[1]?.props.onClick;
+    if (typeof toggleSecondTodo !== 'function') {
+      throw new Error('Expected second todo button callback.');
+    }
+
+    toggleSecondTodo();
+
+    assertEquals(createRootCalls, 1);
+    assert(lastRendered);
+    const updatedTree = resolveRenderedNode(lastRendered);
+    if (!isRenderedElement(updatedTree)) {
+      throw new Error('Expected updated fullstack todo render to resolve to an intrinsic element.');
+    }
+    assertEquals(updatedTree.type, 'main');
+    assertEquals(collectText(updatedTree), [
+      'Todos',
+      'Write compiler tests',
+      'open',
+      'Toggle first todo',
+      'Ship the Wasm SSR todo app',
+      'open',
+      'Toggle second todo',
+      '2',
+    ]);
   },
 );
 
