@@ -1,5 +1,6 @@
 import ts from 'typescript';
 
+import { measureCheckerTiming } from '../checker/timing.ts';
 import { createSoundStdlibCompilerHost } from '../bundled/sound_stdlib.ts';
 import { loadConfig, type LoadedConfig } from '../project/config.ts';
 import {
@@ -39,6 +40,7 @@ import {
 
 const PROJECT_CONFIG_CANDIDATES = ['tsconfig.soundscript.json', 'tsconfig.json'] as const;
 const LOCAL_CODE_EXTENSIONS = ['.sts', '.ts', '.tsx', '.mts', '.cts', '.jsx'] as const;
+const MAX_CACHED_SEMANTIC_RUNTIME_PROGRAMS = 4;
 
 interface TransformProjectContext {
   readonly compilerOptions: ts.CompilerOptions;
@@ -51,10 +53,10 @@ interface TransformProjectSession {
   preparedProgram?: PreparedProgram;
   preparedRoots: Set<string>;
   projectContext: TransformProjectContext;
-  semanticClosureRoots: readonly string[];
-  semanticClosureSignature?: string;
-  semanticProgram?: BuiltinRuntimeProgram;
-  semanticRequiredFiles: Set<string>;
+  semanticClosureRootsBySignature: Map<string, readonly string[]>;
+  semanticLastUsedSignature?: string;
+  semanticProgramsBySignature: Map<string, BuiltinRuntimeProgram>;
+  semanticRequiredSourceHashes: Map<string, string>;
 }
 
 export type OnDemandTransformMode =
@@ -315,28 +317,60 @@ function createIsolatedPreparedRuntimeProgram(
 function createDeferredRuntimeExpansion(
   preparedProgram: PreparedProgram,
 ): DeferredRuntimeExpansion {
-  const macroEnvironment = createProjectMacroEnvironment(
-    preparedProgram,
-    getBuiltinMacroDefinitionsBySpecifier(),
-    getBuiltinMacroExportsBySpecifier(undefined, { deferToSemanticExpansion: true }),
-    getBuiltinMacroFactoriesBySpecifier(),
-    getAlwaysAvailableBuiltinMacroDefinitions(),
-    getAlwaysAvailableBuiltinMacroExports(undefined, { deferToSemanticExpansion: true }),
-    { deferToSemanticExpansion: true },
-  );
-  try {
-    const expandedFiles = macroEnvironment.expandPreparedProgram();
-    return {
-      expandedFiles,
-      macroEnvironment,
-      preparedProgram,
-      dispose(): void {
+  return measureCheckerTiming(
+    'runtime.onDemand.deferredExpansion',
+    { rootCount: preparedProgram.program.getRootFileNames().length },
+    () => {
+      const macroEnvironment = createProjectMacroEnvironment(
+        preparedProgram,
+        getBuiltinMacroDefinitionsBySpecifier(),
+        getBuiltinMacroExportsBySpecifier(undefined, { deferToSemanticExpansion: true }),
+        getBuiltinMacroFactoriesBySpecifier(),
+        getAlwaysAvailableBuiltinMacroDefinitions(),
+        getAlwaysAvailableBuiltinMacroExports(undefined, { deferToSemanticExpansion: true }),
+        { deferToSemanticExpansion: true },
+      );
+      try {
+        const expandedFiles = macroEnvironment.expandPreparedProgram();
+        return {
+          expandedFiles,
+          macroEnvironment,
+          preparedProgram,
+          dispose(): void {
+            macroEnvironment.dispose();
+          },
+        };
+      } catch (error) {
         macroEnvironment.dispose();
-      },
-    };
-  } catch (error) {
-    macroEnvironment.dispose();
-    throw error;
+        throw error;
+      }
+    },
+    { always: true },
+  );
+}
+
+function disposeSemanticPrograms(session: TransformProjectSession): void {
+  for (const program of session.semanticProgramsBySignature.values()) {
+    program.dispose();
+  }
+  session.semanticProgramsBySignature.clear();
+  session.semanticClosureRootsBySignature.clear();
+  session.semanticLastUsedSignature = undefined;
+}
+
+function trimSemanticProgramCache(session: TransformProjectSession): void {
+  while (session.semanticProgramsBySignature.size > MAX_CACHED_SEMANTIC_RUNTIME_PROGRAMS) {
+    const oldestSignature = session.semanticProgramsBySignature.keys().next().value;
+    if (!oldestSignature) {
+      break;
+    }
+    const oldestProgram = session.semanticProgramsBySignature.get(oldestSignature);
+    oldestProgram?.dispose();
+    session.semanticProgramsBySignature.delete(oldestSignature);
+    session.semanticClosureRootsBySignature.delete(oldestSignature);
+    if (session.semanticLastUsedSignature === oldestSignature) {
+      session.semanticLastUsedSignature = undefined;
+    }
   }
 }
 
@@ -465,8 +499,9 @@ export function createOnDemandTransformer(
     const session: TransformProjectSession = {
       preparedRoots: new Set(),
       projectContext,
-      semanticClosureRoots: [],
-      semanticRequiredFiles: new Set(),
+      semanticClosureRootsBySignature: new Map(),
+      semanticProgramsBySignature: new Map(),
+      semanticRequiredSourceHashes: new Map(),
     };
     projectSessionsByPath.set(projectContext.projectPath, session);
     return session;
@@ -477,23 +512,26 @@ export function createOnDemandTransformer(
     fileNames: readonly string[],
   ): BuiltinRuntimeProgram {
     const closure = collectRuntimeSemanticClosure(session.projectContext, fileNames);
-    const currentProgram = session.semanticProgram;
-    if (
-      currentProgram &&
-      session.semanticClosureSignature === closure.signature
-    ) {
-      return currentProgram;
+    const cachedProgram = session.semanticProgramsBySignature.get(closure.signature);
+    if (cachedProgram) {
+      session.semanticProgramsBySignature.delete(closure.signature);
+      session.semanticProgramsBySignature.set(closure.signature, cachedProgram);
+      session.semanticLastUsedSignature = closure.signature;
+      return cachedProgram;
     }
 
+    const previousProgram = session.semanticLastUsedSignature
+      ? session.semanticProgramsBySignature.get(session.semanticLastUsedSignature)
+      : undefined;
     const nextProgram = createRuntimeSemanticProgram(
       session.projectContext,
       closure.rootNames,
-      currentProgram,
+      previousProgram,
     );
-    session.semanticProgram?.dispose();
-    session.semanticProgram = nextProgram;
-    session.semanticClosureRoots = closure.rootNames;
-    session.semanticClosureSignature = closure.signature;
+    session.semanticProgramsBySignature.set(closure.signature, nextProgram);
+    session.semanticClosureRootsBySignature.set(closure.signature, closure.rootNames);
+    session.semanticLastUsedSignature = closure.signature;
+    trimSemanticProgramCache(session);
     return nextProgram;
   }
 
@@ -591,6 +629,7 @@ export function createOnDemandTransformer(
         }
 
         if (preparedFile.rewriteResult.macrosById.size === 0) {
+          session.semanticRequiredSourceHashes.delete(fileName);
           const result = transpilePreparedSourceFile(
             preparedProgram,
             fileName,
@@ -601,26 +640,32 @@ export function createOnDemandTransformer(
           return result;
         }
 
-        try {
-          const deferredExpansion = ensureDeferredExpansionForPreparedProgram(session);
-          return transpileDeferredExpandedSourceFile(
-            deferredExpansion,
-            fileName,
-            projectContext.projectPath,
-            runtimeTypeScriptSupport,
-          );
-        } catch (error) {
-          if (!(error instanceof SemanticMacroExpansionRequiredError)) {
-            throw error;
+        const knownSemanticSourceHash = session.semanticRequiredSourceHashes.get(fileName);
+        if (knownSemanticSourceHash !== undefined && knownSemanticSourceHash !== sourceHash) {
+          session.semanticRequiredSourceHashes.delete(fileName);
+        }
+
+        if (session.semanticRequiredSourceHashes.get(fileName) !== sourceHash) {
+          try {
+            const deferredExpansion = ensureDeferredExpansionForPreparedProgram(session);
+            session.semanticRequiredSourceHashes.delete(fileName);
+            return transpileDeferredExpandedSourceFile(
+              deferredExpansion,
+              fileName,
+              projectContext.projectPath,
+              runtimeTypeScriptSupport,
+            );
+          } catch (error) {
+            if (!(error instanceof SemanticMacroExpansionRequiredError)) {
+              throw error;
+            }
+            session.semanticRequiredSourceHashes.set(fileName, sourceHash);
           }
-          session.semanticRequiredFiles.clear();
-          session.semanticRequiredFiles.add(error.fileName);
-          session.semanticRequiredFiles.add(fileName);
         }
 
         const expandedProgram = ensureSemanticRuntimeProgramForFile(
           session,
-          [...new Set([fileName, ...session.semanticRequiredFiles])],
+          [fileName],
         );
         return transpileExpandedSourceFile(
           expandedProgram,
