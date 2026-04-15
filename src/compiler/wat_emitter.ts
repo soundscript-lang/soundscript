@@ -6752,7 +6752,8 @@ function collectHostBoundarySpecializedObjectUsage(
         if (
           valueBoundary.heapBoundary?.kind === 'array' &&
           valueBoundary.heapBoundary.carrierType === 'owned_tagged_array_ref' &&
-          valueBoundary.heapBoundary.elementBoundary.representation?.kind ===
+          valueBoundary.heapBoundary.elementBoundary.kind === 'object' &&
+          valueBoundary.heapBoundary.elementBoundary.representation.kind ===
             'specialized_object_representation'
         ) {
           recordUsage(
@@ -6776,7 +6777,8 @@ function collectHostBoundarySpecializedObjectUsage(
         }
         if (
           valueBoundary.carrierType === 'owned_tagged_array_ref' &&
-          valueBoundary.elementBoundary.representation?.kind ===
+          valueBoundary.elementBoundary.kind === 'object' &&
+          valueBoundary.elementBoundary.representation.kind ===
             'specialized_object_representation'
         ) {
           recordUsage(
@@ -19576,7 +19578,8 @@ function inferHeapLocalRepresentations(
       case 'adapt_value':
         if (
           operation.family === 'object' &&
-          operation.toRepresentation.kind === 'fallback_object_representation'
+          operation.toRepresentation.kind === 'fallback_object_representation' &&
+          operation.fallbackMaterialization
         ) {
           fallbackPinnedLocals.add(operation.valueName);
           fallbackPinnedLocals.add(operation.fallbackMaterialization.resultName);

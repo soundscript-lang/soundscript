@@ -18778,7 +18778,7 @@ function recordAmbientHostFallbackBoundarySyncRequest(
   }
   runtime.ambientHostFallbackBoundarySyncRequests.set(requestKey, {
     contextNode,
-    construct: header.hostImport.construct,
+    construct: header.hostImport.construct === true,
     hostImportName: header.hostImport.name,
     representationNames: new Set([representation.name]),
   });
@@ -18797,8 +18797,13 @@ function maybeSyncAmbientHostFallbackBoundaryFieldsFromRepresentation(
     const classInstantiation = getMaterializableClassInstantiation(expression, context);
     if (
       !classInstantiation ||
-      classInstantiation.declaration.body ||
       !classInstantiation.declaration.name
+    ) {
+      return undefined;
+    }
+    if (
+      !classInstantiation.declaration.getSourceFile().isDeclarationFile &&
+      !hasModifier(classInstantiation.declaration, ts.SyntaxKind.DeclareKeyword)
     ) {
       return undefined;
     }
@@ -22153,6 +22158,10 @@ function createHostBoundaryFromResolvedClosureAbiValue(
         kind: 'string',
         owned: true,
       };
+    case 'string_ref':
+      return {
+        kind: 'string',
+      };
     case 'closure_ref':
       if (value.closureSignatureId === undefined) {
         throw new Error('Missing closure signature id for Promise bridge boundary.');
@@ -22161,6 +22170,14 @@ function createHostBoundaryFromResolvedClosureAbiValue(
         kind: 'closure',
         signatureId: value.closureSignatureId,
       };
+    case 'class_constructor_ref':
+      throw new CompilerUnsupportedError(
+        'Class-constructor host boundaries currently require class tag metadata.',
+      );
+    case 'box_ref':
+      throw new CompilerUnsupportedError(
+        'Opaque boxed host boundaries are not supported in compiler subset.',
+      );
     case 'heap_ref':
       if (value.promiseValueBoundary) {
         return {
@@ -31135,7 +31152,11 @@ function createAmbientHostTopLevelPropertyGetterHeader(
 
 function getDeclarationSymbol(
   checker: ts.TypeChecker,
-  declaration: ts.FunctionDeclaration | ts.ClassDeclaration,
+  declaration:
+    | ts.FunctionDeclaration
+    | ts.ClassDeclaration
+    | ts.MethodDeclaration
+    | ts.VariableDeclaration,
 ): ts.Symbol {
   return getNamedDeclarationSymbol(checker, declaration);
 }
@@ -31145,13 +31166,20 @@ function getNamedDeclarationSymbol(
   declaration:
     | ts.FunctionDeclaration
     | ts.ClassDeclaration
-    | ts.MethodDeclaration,
+    | ts.MethodDeclaration
+    | ts.VariableDeclaration,
 ): ts.Symbol {
   const name = declaration.name;
   if (!name) {
     throw new CompilerUnsupportedError(
       'Unnamed declarations are not supported in compiler subset.',
       declaration,
+    );
+  }
+  if (ts.isVariableDeclaration(declaration) && !ts.isIdentifier(name)) {
+    throw new CompilerUnsupportedError(
+      'Only identifier-named variable declarations are supported in compiler subset.',
+      name,
     );
   }
 
