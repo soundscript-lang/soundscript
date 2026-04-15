@@ -1174,6 +1174,13 @@ function getKnownClosureSignatureIdFromExpression(
     return getKnownClosureSignatureIdFromExpression(expression.expression, context);
   }
   if (ts.isPropertyAccessExpression(expression)) {
+    const localMethodSignatureId = getKnownLocalMethodClosureSignatureIdForPropertyAccess(
+      expression,
+      context,
+    );
+    if (localMethodSignatureId !== undefined) {
+      return localMethodSignatureId;
+    }
     const ambientHostProperty = getAmbientHostImportedPropertyBinding(expression, context);
     if (ambientHostProperty?.header.closureSignatureId !== undefined) {
       return ambientHostProperty.header.closureSignatureId;
@@ -1223,10 +1230,87 @@ function getKnownClosureSignatureIdFromExpression(
   return undefined;
 }
 
+function getLocalMethodClosureSignatureIdFromFunctionIds(
+  methodClosureFunctionIds: readonly number[] | undefined,
+  context: FunctionLoweringContext,
+  expression: ts.PropertyAccessExpression,
+): number | undefined {
+  if ((methodClosureFunctionIds?.length ?? 0) === 0) {
+    return undefined;
+  }
+  const signatureIds = [...new Set(methodClosureFunctionIds!.map((functionId) => {
+    const liftedFunction = context.closures.liftedFunctions.find((candidate) =>
+      candidate.closureFunctionId === functionId
+    );
+    if (liftedFunction?.closureSignatureId === undefined) {
+      throw new CompilerUnsupportedError(
+        'Specialized object method fields require lifted closure signature metadata.',
+        expression,
+      );
+    }
+    return liftedFunction.closureSignatureId;
+  }))];
+  if (signatureIds.length > 1) {
+    throw new CompilerUnsupportedError(
+      'Fixed-layout object method fields do not yet support conflicting internal closure signatures on the same property.',
+      expression,
+    );
+  }
+  return signatureIds[0];
+}
+
+function getKnownLocalMethodClosureSignatureIdForPropertyAccess(
+  expression: ts.PropertyAccessExpression,
+  context: FunctionLoweringContext,
+): number | undefined {
+  const propertyReceiverRepresentation =
+    getBoundaryObjectRepresentationFromExpression(expression.expression, context) ??
+    getHeapObjectRepresentationFromExpression(expression.expression, context);
+  if (propertyReceiverRepresentation?.kind === 'specialized_object_representation') {
+    const field = getFieldsForSpecializedObjectRepresentation(
+      context.runtime,
+      propertyReceiverRepresentation,
+    ).find((candidate) => candidate.name === expression.name.text);
+    return getLocalMethodClosureSignatureIdFromFunctionIds(
+      field?.methodClosureFunctionIds,
+      context,
+      expression,
+    );
+  }
+  if (propertyReceiverRepresentation?.kind === 'fallback_object_representation') {
+    const receiverHostBoundary = getHostBoundaryFromExpression(expression.expression, context);
+    if (receiverHostBoundary?.kind === 'object') {
+      const property = receiverHostBoundary.fields?.find((field) => field.name === expression.name.text);
+      const localMethodSignatureId = getLocalMethodClosureSignatureIdFromFunctionIds(
+        property?.methodClosureFunctionIds,
+        context,
+        expression,
+      );
+      if (localMethodSignatureId !== undefined) {
+        return localMethodSignatureId;
+      }
+    }
+    return getLocalMethodClosureSignatureIdFromFunctionIds(
+      findCurrentFunctionFallbackBoundaryFieldByName(context.currentFunction, expression.name.text)
+        ?.methodClosureFunctionIds,
+      context,
+      expression,
+    );
+  }
+  return undefined;
+}
+
 function getKnownHostMethodClosureSignatureIdForPropertyAccess(
   expression: ts.PropertyAccessExpression,
   context: FunctionLoweringContext,
 ): number | undefined {
+  const localMethodSignatureId = getKnownLocalMethodClosureSignatureIdForPropertyAccess(
+    expression,
+    context,
+  );
+  if (localMethodSignatureId !== undefined) {
+    return localMethodSignatureId;
+  }
   const receiverBoundaryRepresentation = getBoundaryObjectRepresentationFromExpression(
     expression.expression,
     context,
@@ -55397,7 +55481,8 @@ function lowerCallExpression(
   context: FunctionLoweringContext,
   allowClassConstructorResult = false,
 ): CompilerExpressionIR {
-  const ignoredResult = ts.isExpressionStatement(expression.parent);
+  const ignoredResult = expression.parent !== undefined &&
+    ts.isExpressionStatement(expression.parent);
   const promiseAllCall = lowerPromiseAllCallExpression(expression, context);
   if (promiseAllCall) {
     return promiseAllCall;
@@ -56539,10 +56624,12 @@ function lowerCallExpression(
   const calleeDeclaration = resolvedCallee?.symbol.getDeclarations()?.find(
     ts.isFunctionDeclaration,
   );
+  const expressionSourceFile = expression.getSourceFile();
   if (
     !resolvedCallee?.throughAlias &&
     calleeDeclaration &&
-    calleeDeclaration.getSourceFile().fileName !== expression.getSourceFile().fileName
+    expressionSourceFile &&
+    calleeDeclaration.getSourceFile().fileName !== expressionSourceFile.fileName
   ) {
     throw new CompilerUnsupportedError(
       'Cross-file calls must go through a relative named import.',
@@ -56846,7 +56933,7 @@ function maybeRecordFallbackBoundaryCallablePropertyAccess(
       context.runtime,
       context.classes,
       {
-        skipResultCallableHeapFieldAnnotation: invocationCall
+        skipResultCallableHeapFieldAnnotation: invocationCall?.parent !== undefined
           ? ts.isExpressionStatement(invocationCall.parent)
           : false,
       },
@@ -56864,7 +56951,7 @@ function maybeRecordFallbackBoundaryCallablePropertyAccess(
       context.closures,
       context.classes,
       {
-        skipResultHeapBoundaryAnnotation: invocationCall
+        skipResultHeapBoundaryAnnotation: invocationCall?.parent !== undefined
           ? ts.isExpressionStatement(invocationCall.parent)
           : false,
       },

@@ -7654,8 +7654,12 @@ compilerIntegrationTest(
     const registeredPostPaths: string[] = [];
     let sentHtml = '';
     let getTodosHandler:
-      | ((req: { params: { id: string }; url: string }, res: ResponseLike) => void)
+      | ((req: { params: { id: string }; url: string }, res: ResponseLike) => void | Promise<void>)
       | undefined;
+    let defineCalls = 0;
+    let syncCalls = 0;
+    let createCalls = 0;
+    let findAllCalls = 0;
 
     interface ResponseLike {
       send(html: string): ResponseLike;
@@ -7672,13 +7676,59 @@ compilerIntegrationTest(
     interface AppLike {
       get(
         path: string,
-        handler: (req: { params: { id: string }; url: string }, res: ResponseLike) => void,
+        handler:
+          (req: { params: { id: string }; url: string }, res: ResponseLike) => void | Promise<void>,
       ): AppLike;
       post(
         path: string,
-        handler: (req: { params: { id: string }; url: string }, res: ResponseLike) => void,
+        handler:
+          (req: { params: { id: string }; url: string }, res: ResponseLike) => void | Promise<void>,
       ): AppLike;
       listen(port: number): { close(): void };
+    }
+
+    class FakeTodoModel {
+      values: Record<string, unknown>;
+
+      constructor(values: Record<string, unknown>) {
+        this.values = { ...values };
+      }
+
+      getDataValue(key: string): unknown {
+        return this.values[key];
+      }
+    }
+
+    function createSequelizeModule() {
+      let rows: FakeTodoModel[] = [];
+
+      class Sequelize {
+        define(_modelName: string, _attributes: Record<string, unknown>) {
+          defineCalls += 1;
+          return {
+            async create(values: Record<string, unknown>): Promise<FakeTodoModel> {
+              createCalls += 1;
+              const row = new FakeTodoModel(values);
+              rows.push(row);
+              return row;
+            },
+            async findAll(): Promise<FakeTodoModel[]> {
+              findAllCalls += 1;
+              return rows;
+            },
+          };
+        }
+
+        async sync(options?: Record<string, unknown>): Promise<this> {
+          syncCalls += 1;
+          if (options?.force === true) {
+            rows = [];
+          }
+          return this;
+        }
+      }
+
+      return { Sequelize };
     }
 
     const app: AppLike = {
@@ -7732,6 +7782,7 @@ compilerIntegrationTest(
         'react/jsx-runtime': reactJsxRuntimeModule,
         'react-dom/server': reactDomServerModule,
         'react-router': reactRouterModule,
+        sequelize: createSequelizeModule(),
       },
     });
 
@@ -7759,12 +7810,16 @@ compilerIntegrationTest(
     assertEquals(registeredPostPaths, ['/api/todos/:id/toggle']);
     assertEquals(listenedPort, 4325);
     assert(getTodosHandler);
-    getTodosHandler({ params: { id: '' }, url: '/todos' }, createResponse());
+    await getTodosHandler({ params: { id: '' }, url: '/todos' }, createResponse());
     assertStringIncludes(sentHtml, '<!doctype html>');
     assertStringIncludes(sentHtml, 'Todos');
     assertStringIncludes(sentHtml, 'Write compiler tests');
     assertStringIncludes(sentHtml, 'done');
     assertStringIncludes(sentHtml, 'open');
+    assert(defineCalls >= 1);
+    assert(syncCalls >= 1);
+    assert(createCalls >= 2);
+    assert(findAllCalls >= 2);
   },
 );
 
@@ -7788,12 +7843,16 @@ compilerIntegrationTest(
       toggledId: string;
     }> = [];
     let getTodosHandler:
-      | ((req: { params: { id: string }; url: string }, res: ResponseLike) => void)
+      | ((req: { params: { id: string }; url: string }, res: ResponseLike) => void | Promise<void>)
       | undefined;
     let postToggleHandler:
-      | ((req: { params: { id: string }; url: string }, res: ResponseLike) => void)
+      | ((req: { params: { id: string }; url: string }, res: ResponseLike) => void | Promise<void>)
       | undefined;
     let sentHtml = '';
+    let defineCalls = 0;
+    let syncCalls = 0;
+    let createCalls = 0;
+    let findAllCalls = 0;
 
     interface ResponseLike {
       send(html: string): ResponseLike;
@@ -7810,13 +7869,59 @@ compilerIntegrationTest(
     interface AppLike {
       get(
         path: string,
-        handler: (req: { params: { id: string }; url: string }, res: ResponseLike) => void,
+        handler:
+          (req: { params: { id: string }; url: string }, res: ResponseLike) => void | Promise<void>,
       ): AppLike;
       post(
         path: string,
-        handler: (req: { params: { id: string }; url: string }, res: ResponseLike) => void,
+        handler:
+          (req: { params: { id: string }; url: string }, res: ResponseLike) => void | Promise<void>,
       ): AppLike;
       listen(port: number): { close(): void };
+    }
+
+    class FakeTodoModel {
+      values: Record<string, unknown>;
+
+      constructor(values: Record<string, unknown>) {
+        this.values = { ...values };
+      }
+
+      getDataValue(key: string): unknown {
+        return this.values[key];
+      }
+    }
+
+    function createSequelizeModule() {
+      let rows: FakeTodoModel[] = [];
+
+      class Sequelize {
+        define(_modelName: string, _attributes: Record<string, unknown>) {
+          defineCalls += 1;
+          return {
+            async create(values: Record<string, unknown>): Promise<FakeTodoModel> {
+              createCalls += 1;
+              const row = new FakeTodoModel(values);
+              rows.push(row);
+              return row;
+            },
+            async findAll(): Promise<FakeTodoModel[]> {
+              findAllCalls += 1;
+              return rows;
+            },
+          };
+        }
+
+        async sync(options?: Record<string, unknown>): Promise<this> {
+          syncCalls += 1;
+          if (options?.force === true) {
+            rows = [];
+          }
+          return this;
+        }
+      }
+
+      return { Sequelize };
     }
 
     function createResponse(): ResponseLike {
@@ -7873,6 +7978,7 @@ compilerIntegrationTest(
         'react/jsx-runtime': reactJsxRuntimeModule,
         'react-dom/server': reactDomServerModule,
         'react-router': reactRouterModule,
+        sequelize: createSequelizeModule(),
       },
     });
 
@@ -7894,10 +8000,10 @@ compilerIntegrationTest(
     assert(getTodosHandler);
     assert(postToggleHandler);
 
-    getTodosHandler({ params: { id: '' }, url: '/todos' }, createResponse());
+    await getTodosHandler({ params: { id: '' }, url: '/todos' }, createResponse());
     assertStringIncludes(sentHtml, 'open');
 
-    postToggleHandler(
+    await postToggleHandler(
       { params: { id: '1' }, url: '/api/todos/1/toggle' },
       createResponse(),
     );
@@ -7915,6 +8021,10 @@ compilerIntegrationTest(
     assertStringIncludes(mutatedHtml, 'Write compiler tests');
     assertStringIncludes(mutatedHtml, 'Ship the Wasm SSR todo app');
     assertFalse(mutatedHtml.includes('open'));
+    assert(defineCalls >= 1);
+    assert(syncCalls >= 2);
+    assert(createCalls >= 4);
+    assert(findAllCalls >= 3);
   },
 );
 

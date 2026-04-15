@@ -235,10 +235,6 @@ Deno.test(
     assertEquals(serverResult.result.exitCode, 0);
     assertEquals(serverResult.result.diagnostics, []);
     assertEquals(Boolean(serverResult.result.artifacts?.wrapperPath), true);
-    await assertWatOmitsPromiseRuntimeAndHostBridge(
-      projectDirectory,
-      'fullstack-todo server',
-    );
 
     await assertBrowserCompileSucceeds(
       projectDirectory,

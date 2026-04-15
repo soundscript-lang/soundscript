@@ -18,8 +18,14 @@ interface MinimalResponse {
 }
 
 interface MinimalApp {
-  get(path: string, handler: (req: MinimalRequest, res: MinimalResponse) => void): void;
-  post(path: string, handler: (req: MinimalRequest, res: MinimalResponse) => void): void;
+  get(
+    path: string,
+    handler: (req: MinimalRequest, res: MinimalResponse) => Promise<void>,
+  ): void;
+  post(
+    path: string,
+    handler: (req: MinimalRequest, res: MinimalResponse) => Promise<void>,
+  ): void;
   listen(port: number): void;
 }
 
@@ -29,8 +35,11 @@ declare module 'express' {
   interface Response extends MinimalResponse {}
 
   interface ExpressApp {
-    get(path: string, handler: (req: Request, res: Response) => void): ExpressApp;
-    post(path: string, handler: (req: Request, res: Response) => void): ExpressApp;
+    get(path: string, handler: (req: Request, res: Response) => Promise<void>): ExpressApp;
+    post(
+      path: string,
+      handler: (req: Request, res: Response) => Promise<void>,
+    ): ExpressApp;
     listen(port: number): unknown;
   }
 

@@ -4,66 +4,139 @@ import express from 'express';
 import { renderToString } from 'react-dom/server';
 // #[interop]
 import { StaticRouter } from 'react-router';
+// #[interop]
+import { Sequelize } from 'sequelize';
 
 import {
   AppRoutes,
-  createTodos,
+  createInitialTodos,
   toggleTodoByRouteId,
 } from './app.sts';
 
-let firstTodoCompleted = false;
-let secondTodoCompleted = true;
+type TodoList = ReturnType<typeof createInitialTodos>;
 
-function createApp(): MinimalApp {
-  const app = express();
-  return {
-    get(path, handler) {
-      app.get(path, handler);
-    },
-    post(path, handler) {
-      app.post(path, handler);
-    },
-    listen(port) {
-      app.listen(port);
-    },
+function createSequelizeStore() {
+  return new Sequelize({
+    dialect: 'sqlite',
+    storage: 'fullstack-todo.sqlite',
+    logging: false,
+  });
+}
+
+type SequelizeStore = ReturnType<typeof createSequelizeStore>;
+
+let seededTodos = false;
+
+async function replaceTodos(todos: TodoList): Promise<void> {
+  const nextSequelizeStore = createSequelizeStore();
+  const todoAttributes: TodoAttributes = {
+    title: 'STRING',
+    completed: 'BOOLEAN',
   };
+  const nextTodoModelStore = nextSequelizeStore.define('Todo', todoAttributes);
+  await nextSequelizeStore.sync({ force: true });
+  const firstTodo = todos[0];
+  const secondTodo = todos[1];
+  await nextTodoModelStore.create({
+    title: firstTodo.title,
+    completed: firstTodo.completed,
+  });
+  await nextTodoModelStore.create({
+    title: secondTodo.title,
+    completed: secondTodo.completed,
+  });
+  seededTodos = true;
 }
 
-function getTodos() {
-  return createTodos(firstTodoCompleted, secondTodoCompleted);
+async function ensureTodosSeeded(): Promise<void> {
+  const currentSeededTodos = seededTodos;
+  if (currentSeededTodos) {
+    return;
+  }
+  await replaceTodos(createInitialTodos());
 }
 
-function setTodoCompletionState(firstCompleted: boolean, secondCompleted: boolean): void {
-  firstTodoCompleted = firstCompleted;
-  secondTodoCompleted = secondCompleted;
+async function getTodos(): Promise<TodoList> {
+  await ensureTodosSeeded();
+  const nextSequelizeStore = createSequelizeStore();
+  const todoAttributes: TodoAttributes = {
+    title: 'STRING',
+    completed: 'BOOLEAN',
+  };
+  const nextTodoModelStore = nextSequelizeStore.define('Todo', todoAttributes);
+  const rows = await nextTodoModelStore.findAll();
+  const fallbackTodos = createInitialTodos();
+  const firstRow = rows[0];
+  const secondRow = rows[1];
+  if (firstRow === undefined || secondRow === undefined) {
+    return fallbackTodos;
+  }
+  const firstTitle = firstRow.getDataValue('title');
+  const firstCompleted = firstRow.getDataValue('completed');
+  const secondTitle = secondRow.getDataValue('title');
+  const secondCompleted = secondRow.getDataValue('completed');
+  let firstTodoTitle = fallbackTodos[0].title;
+  if (typeof firstTitle === 'string') {
+    firstTodoTitle = firstTitle;
+  }
+  let firstTodoCompleted = fallbackTodos[0].completed;
+  if (typeof firstCompleted === 'boolean') {
+    firstTodoCompleted = firstCompleted;
+  }
+  let secondTodoTitle = fallbackTodos[1].title;
+  if (typeof secondTitle === 'string') {
+    secondTodoTitle = secondTitle;
+  }
+  let secondTodoCompleted = fallbackTodos[1].completed;
+  if (typeof secondCompleted === 'boolean') {
+    secondTodoCompleted = secondCompleted;
+  }
+  return [
+    {
+      id: fallbackTodos[0].id,
+      title: firstTodoTitle,
+      completed: firstTodoCompleted,
+    },
+    {
+      id: fallbackTodos[1].id,
+      title: secondTodoTitle,
+      completed: secondTodoCompleted,
+    },
+  ];
 }
 
-function App(path: string) {
+function App(path: string, todos: TodoList) {
   return (
     <StaticRouter location={path}>
-      <AppRoutes todos={getTodos()} />
+      <AppRoutes todos={todos} />
     </StaticRouter>
   );
 }
 
-export function renderPage(url: string): string {
-  return '<!doctype html>' + renderToString(App(url));
+export async function renderPage(url: string): Promise<string> {
+  return '<!doctype html>' + renderToString(App(url, await getTodos()));
 }
 
-export function start(port: number): void {
-  const app = createApp();
-  app.get('/todos', (req, res) => {
-    res.send(renderPage(req.url));
+async function handleGetTodos(req: MinimalRequest, res: MinimalResponse): Promise<void> {
+  const html = await renderPage(req.url);
+  res.send(html);
+}
+
+async function handleToggleTodo(req: MinimalRequest, res: MinimalResponse): Promise<void> {
+  const nextTodos = toggleTodoByRouteId(await getTodos(), req.params.id);
+  await replaceTodos(nextTodos);
+  const response = res.status(200);
+  response.json({
+    firstCompleted: nextTodos[0].completed,
+    secondCompleted: nextTodos[1].completed,
+    toggledId: req.params.id,
   });
-  app.post('/api/todos/:id/toggle', (req, res) => {
-    const nextTodos = toggleTodoByRouteId(getTodos(), req.params.id);
-    setTodoCompletionState(nextTodos[0].completed, nextTodos[1].completed);
-    const response = res.status(200);
-    response.json({
-      firstCompleted: nextTodos[0].completed,
-      secondCompleted: nextTodos[1].completed,
-      toggledId: req.params.id,
-    });
-  });
+}
+
+export async function start(port: number): Promise<void> {
+  await replaceTodos(createInitialTodos());
+  const app = express();
+  app.get('/todos', handleGetTodos);
+  app.post('/api/todos/:id/toggle', handleToggleTodo);
   app.listen(port);
 }
