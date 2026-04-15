@@ -4120,6 +4120,139 @@ compilerIntegrationTest(
 );
 
 compilerIntegrationTest(
+  'compileProject supports cached imported host objects in top-level mutable tagged module globals',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              skipLibCheck: true,
+              target: 'ES2022',
+              lib: ['ES2022'],
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+              allowSyntheticDefaultImports: true,
+            },
+            include: ['src/**/*.sts', 'src/**/*.d.ts'],
+            soundscript: {
+              target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/db-types.d.ts',
+        contents: [
+          "declare module 'db' {",
+          '  export interface RecordLike {',
+          '    getValue(key: string): unknown;',
+          '  }',
+          '  export interface RecordApi {',
+          '    createRecord(): RecordLike;',
+          '  }',
+          '  export interface Driver {',
+          '    createRecordApi(): RecordApi;',
+          '  }',
+          '  export function createDriver(): Driver;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.sts',
+        contents: [
+          '// #[interop]',
+          "import { createDriver } from 'db';",
+          '',
+          'type Driver = ReturnType<typeof createDriver>;',
+          '',
+          'let cachedDriver: Driver | undefined = undefined;',
+          '',
+          'function getDriver(): Driver {',
+          '  const currentDriver = cachedDriver;',
+          '  if (currentDriver !== undefined) {',
+          '    return currentDriver;',
+          '  }',
+          '  const nextDriver = createDriver();',
+          '  cachedDriver = nextDriver;',
+          '  return nextDriver;',
+          '}',
+          '',
+          'export function main(): string {',
+          '  const record = getDriver().createRecordApi().createRecord();',
+          "  const title = record.getValue('title');",
+          "  if (typeof title !== 'string') {",
+          "    return 'bad-title';",
+          '  }',
+          '  return title;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    let createDriverCalls = 0;
+
+    class RecordLike {
+      values: Record<string, unknown>;
+
+      constructor(values: Record<string, unknown>) {
+        this.values = { ...values };
+      }
+
+      getValue(key: string): unknown {
+        return this.values[key];
+      }
+    }
+
+    const wrapperModule = await importCompiledWrapperModule(result.artifacts.wrapperPath);
+    const instantiated = await wrapperModule.instantiate({
+      modules: {
+        db: {
+          createDriver() {
+            createDriverCalls += 1;
+            return {
+              createRecordApi() {
+                return {
+                  createRecord() {
+                    return new RecordLike({ title: `cached-${createDriverCalls}` });
+                  },
+                };
+              },
+            };
+          },
+        },
+      },
+    });
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+
+    assertEquals(exported(), 'cached-1');
+    assertEquals(exported(), 'cached-1');
+    assertEquals(createDriverCalls, 1);
+  },
+);
+
+compilerIntegrationTest(
   'compileProject keeps top-level mutable module globals pay-for-play',
   async () => {
     const tempDirectory = await createTempProject([
@@ -13532,6 +13665,70 @@ compilerIntegrationTest(
       ),
       false,
     );
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject keeps unused ambient async host imports pay-for-play',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts', 'src/**/*.d.ts'],
+            soundscript: {
+              target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/db.d.ts',
+        contents: [
+          "declare module 'db' {",
+          '  export function readAsync(): Promise<number>;',
+          '  export function readSync(): number;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          '// #[interop]',
+          "import { readAsync, readSync } from 'db';",
+          '',
+          'type _UnusedAsyncImport = typeof readAsync;',
+          '',
+          'export function main(): number {',
+          '  return readSync();',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+
+    const watOutput = await readWatArtifactForProject(tempDirectory);
+    assertEquals(watOutput.includes('__soundscript_promise_new_pending'), false);
+    assertEquals(watOutput.includes('$host_promise_to_internal'), false);
+    assertEquals(watOutput.includes('$host_promise_to_host'), false);
+    assertEquals(watOutput.includes('"soundscript_promise"'), false);
   },
 );
 

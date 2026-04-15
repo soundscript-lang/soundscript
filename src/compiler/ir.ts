@@ -1518,6 +1518,7 @@ export interface CompilerFunctionIR {
     construct?: boolean;
     promiseResult?: boolean;
   };
+  hostImportCallUsed?: boolean;
   hostImportValueUsed?: boolean;
   heapLocalRepresentations?: CompilerFunctionHeapBoundaryIR[];
   heapParamRepresentations?: CompilerFunctionHeapBoundaryIR[];

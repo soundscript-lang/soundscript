@@ -4178,6 +4178,12 @@ function getHostImportedValueFunctionName(func: CompilerFunctionIR): string {
   return `${func.name}__host_import_value`;
 }
 
+function markHostImportCallUsed(func: CompilerFunctionIR): void {
+  if (func.hostImport) {
+    func.hostImportCallUsed = true;
+  }
+}
+
 function tryLowerAmbientHostImportExternrefValueExpression(
   expression: ts.Expression,
   context: FunctionLoweringContext,
@@ -54891,6 +54897,7 @@ function lowerDirectNamedInvocation(
   context: FunctionLoweringContext,
   invocationParameters: readonly ts.ParameterDeclaration[] | undefined = calleeDeclaration?.parameters,
 ): CompilerExpressionIR {
+  markHostImportCallUsed(callee);
   const suppliedArguments = expression.arguments ?? [];
   const minimumArgumentCount = invocationParameters
     ? getMinimumArgumentCountForParameters(invocationParameters)
@@ -57033,6 +57040,7 @@ function lowerPropertyAccessExpression(
   }
   const ambientHostProperty = getAmbientHostImportedPropertyBinding(expression, context);
   if (ambientHostProperty) {
+    markHostImportCallUsed(ambientHostProperty.header);
     return {
       kind: 'call',
       callee: ambientHostProperty.header.name,
@@ -58077,6 +58085,7 @@ function lowerExpression(
       context,
     );
     if (ambientHostProperty) {
+      markHostImportCallUsed(ambientHostProperty.header);
       return {
         kind: 'call',
         callee: ambientHostProperty.header.name,
@@ -58560,6 +58569,7 @@ function lowerVariableStatement(
       ? getAmbientHostImportedPropertyBinding(declaration.initializer, context)
       : undefined;
     if (ambientHostPropertyAlias) {
+      markHostImportCallUsed(ambientHostPropertyAlias.header);
       if (existingBinding) {
         throw new CompilerUnsupportedError(
           'Duplicate local bindings are not supported.',
@@ -63691,6 +63701,41 @@ export function lowerProgramToCompilerIR(
           compareHostObjectPropertyPaths(left.propertyPath, right.propertyPath)
         )
       : undefined;
+  const includedImportedHostHeaders = [...importedHostDeclarations.keys()].flatMap((symbol) => {
+    const header = functionHeaders.get(symbol);
+    if (!header) {
+      throw new CompilerUnsupportedError(
+        'Unable to resolve imported host function header.',
+        importedHostDeclarations.get(symbol)?.declaration ?? program.getSourceFiles()[0],
+      );
+    }
+    return header.hostImportCallUsed === true || header.hostImportValueUsed === true
+      ? [header]
+      : [];
+  });
+  const includedJsHostImports = importedHostDeclarations.size > 0
+    ? [...importedHostDeclarations.entries()].flatMap(([symbol, binding]) => {
+      const header = functionHeaders.get(symbol);
+      if (!header?.hostImport) {
+        throw new CompilerUnsupportedError(
+          'Unable to resolve imported host binding metadata.',
+          binding.declaration,
+        );
+      }
+      if (header.hostImportCallUsed !== true && header.hostImportValueUsed !== true) {
+        return [];
+      }
+      return [{
+        hostImportName: header.hostImport.name,
+        bindingKind: binding.bindingKind,
+        importKind: binding.importKind,
+        importerModulePath: normalizeModulePath(projectRoot, binding.importingSourceFileName),
+        moduleSpecifier: binding.moduleSpecifier,
+        exportName: binding.exportName,
+        memberName: binding.memberName,
+      } satisfies CompilerJsHostImportIR];
+    })
+    : undefined;
 
   return {
     closureSignatures: closures.signatures.length > 0 ? closures.signatures : undefined,
@@ -63737,39 +63782,11 @@ export function lowerProgramToCompilerIR(
     ),
     functions: [
       ...loweredFunctions,
-      ...[...importedHostDeclarations.keys()].map((symbol) => {
-        const header = functionHeaders.get(symbol);
-        if (!header) {
-          throw new CompilerUnsupportedError(
-            'Unable to resolve imported host function header.',
-            importedHostDeclarations.get(symbol)?.declaration ?? program.getSourceFiles()[0],
-          );
-        }
-        return header;
-      }),
+      ...includedImportedHostHeaders,
       ...runtime.classStaticInitializerFunctions,
       ...closures.liftedFunctions,
     ],
-    jsHostImports: importedHostDeclarations.size > 0
-      ? [...importedHostDeclarations.entries()].map(([symbol, binding]) => {
-        const header = functionHeaders.get(symbol);
-        if (!header?.hostImport) {
-          throw new CompilerUnsupportedError(
-            'Unable to resolve imported host binding metadata.',
-            binding.declaration,
-          );
-        }
-        return {
-          hostImportName: header.hostImport.name,
-          bindingKind: binding.bindingKind,
-          importKind: binding.importKind,
-          importerModulePath: normalizeModulePath(projectRoot, binding.importingSourceFileName),
-          moduleSpecifier: binding.moduleSpecifier,
-          exportName: binding.exportName,
-          memberName: binding.memberName,
-        } satisfies CompilerJsHostImportIR;
-      })
-      : undefined,
+    jsHostImports: includedJsHostImports,
     moduleGlobals: moduleGlobalsBySourceFileName.size > 0
       ? [...moduleGlobalsBySourceFileName.values()].flat()
       : undefined,
