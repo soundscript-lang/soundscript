@@ -2237,12 +2237,18 @@ export function statementAffectsNarrow(
 
     if (candidate.kind === 'assignment') {
       const leftPath = getInvalidationPath(context, candidate.left, state, 'mutation');
-      if (leftPath && assignmentAffectsNarrow(context, candidate.node, leftPath, narrowPath)) {
+      const directNarrowRewrite = leftPath !== undefined && pathsMatch(leftPath, narrowPath);
+      if (
+        leftPath &&
+        !directNarrowRewrite &&
+        assignmentAffectsNarrow(context, candidate.node, leftPath, narrowPath)
+      ) {
         return candidate.left;
       }
 
       if (
         leftPath &&
+        !directNarrowRewrite &&
         !isLocalBindingPath(leftPath) &&
         escapingExpressionAffectsNarrow(context, candidate.right, narrowPath, state)
       ) {

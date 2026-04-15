@@ -7449,6 +7449,10 @@ function createFallbackPropertyKeyIds(
       for (const key of representation.prototypeMembership.inheritedPropertyKeys) {
         keys.add(key);
       }
+    } else if (representation.kind === 'specialized_object_representation') {
+      for (const field of representation.fields) {
+        keys.add(field.name);
+      }
     }
   }
   for (const runtimeFunction of runtime?.functions ?? []) {
@@ -19889,6 +19893,12 @@ function inferHeapLocalRepresentations(
         nextRepresentation = existingRepresentation;
       }
       if (
+        existingRepresentation?.kind === 'specialized' &&
+        nextRepresentation.kind === 'fallback'
+      ) {
+        nextRepresentation = existingRepresentation;
+      }
+      if (
         existingRepresentation &&
         (
           existingRepresentation.kind !== nextRepresentation.kind ||
@@ -20759,6 +20769,15 @@ function getRuntimeHeapRepresentationForExpression(
     case 'box_get':
       return expression.type === 'heap_ref' && expression.box.kind === 'local_get'
         ? runtime.boxedHeapRepresentations.get(expression.box.name)
+        : undefined;
+    case 'untag_heap_object':
+      return expression.type === 'heap_ref' && expression.heapRepresentation
+        ? getHeapRepresentationForBoundary(
+          expression.heapRepresentation,
+          runtime.layoutsByRepresentationName,
+          runtime.fallbackObjectLayout,
+          runtime.dynamicObjectLayout,
+        )
         : undefined;
     case 'class_static_field_get':
       return expression.type === 'heap_ref' && expression.heapRepresentation
@@ -21826,6 +21845,103 @@ function emitGeneralizeSpecializedHeapRefToFallback(
       level,
       runtime,
     ),
+    ...(leaveOnStack ? [`${indent(level)}local.get $${targetLocalName}`] : []),
+  ];
+}
+
+function emitFallbackObjectFieldValueAsSpecializedField(
+  sourceObjectName: string,
+  field: BackendSpecializedObjectFieldLayout,
+  level: number,
+  runtime: FunctionBackendRuntimeContext,
+): string[] {
+  const lines = [
+    `${indent(level)}local.get $${sourceObjectName}`,
+    `${indent(level)}i32.const ${getFallbackPropertyKeyId(field.name, runtime)}`,
+    `${indent(level)}call $get_fallback_object_property`,
+  ];
+  switch (field.valueType) {
+    case 'f64':
+      return [...lines, `${indent(level)}call $untag_number`];
+    case 'i32':
+      return [...lines, `${indent(level)}call $untag_boolean`];
+    case 'tagged_ref':
+      return lines;
+    case 'heap_ref':
+      if (!field.heapRepresentation) {
+        throw createUnsupportedHeapRuntimeBackendError(
+          `Missing heap representation metadata for specialized field ${field.name}.`,
+        );
+      }
+      return [
+        ...lines,
+        `${indent(level)}call $untag_heap_object`,
+        `${indent(level)}ref.cast ${getHeapBoundaryWatType(field.heapRepresentation.name, runtime)}`,
+      ];
+    case 'class_constructor_ref':
+      return [...lines, `${indent(level)}call $untag_heap_object`];
+    case 'closure_ref':
+      return [
+        ...lines,
+        `${indent(level)}call $untag_heap_object`,
+        `${indent(level)}ref.cast (ref null $closure)`,
+      ];
+    case 'owned_heap_array_ref':
+      return [
+        ...lines,
+        `${indent(level)}call $untag_heap_object`,
+        `${indent(level)}ref.cast (ref null $owned_heap_array)`,
+      ];
+    case 'owned_array_ref':
+      return [
+        ...lines,
+        `${indent(level)}call $untag_heap_object`,
+        `${indent(level)}ref.cast (ref null $owned_string_array)`,
+      ];
+    case 'owned_number_array_ref':
+      return [
+        ...lines,
+        `${indent(level)}call $untag_heap_object`,
+        `${indent(level)}ref.cast (ref null $owned_number_array)`,
+      ];
+    case 'owned_boolean_array_ref':
+      return [
+        ...lines,
+        `${indent(level)}call $untag_heap_object`,
+        `${indent(level)}ref.cast (ref null $owned_boolean_array)`,
+      ];
+    case 'owned_tagged_array_ref':
+      return [
+        ...lines,
+        `${indent(level)}call $untag_heap_object`,
+        `${indent(level)}ref.cast (ref null $owned_tagged_array)`,
+      ];
+    default: {
+      const exhaustiveCheck: never = field.valueType;
+      throw createUnsupportedHeapRuntimeBackendError(
+        `Unsupported specialized fallback materialization field type ${exhaustiveCheck}.`,
+      );
+    }
+  }
+}
+
+function emitMaterializeFallbackHeapRefToSpecialized(
+  sourceObjectName: string,
+  targetLayout: BackendSpecializedObjectLayout,
+  targetLocalName: string,
+  leaveOnStack: boolean,
+  level: number,
+  runtime: FunctionBackendRuntimeContext,
+): string[] {
+  return [
+    ...(targetLayout.classTagId === undefined
+      ? []
+      : [`${indent(level)}i32.const ${targetLayout.classTagId}`]),
+    ...targetLayout.fields.flatMap((field) =>
+      emitFallbackObjectFieldValueAsSpecializedField(sourceObjectName, field, level, runtime)
+    ),
+    `${indent(level)}struct.new $${targetLayout.watTypeId}`,
+    `${indent(level)}local.set $${targetLocalName}`,
     ...(leaveOnStack ? [`${indent(level)}local.get $${targetLocalName}`] : []),
   ];
 }
@@ -23337,6 +23453,38 @@ function emitStatement(
       }
       if (runtime.heapLocalNames.has(statement.name)) {
         const targetRepresentation = getHeapRepresentationForLocal(statement.name, runtime);
+        const sourceRepresentation = getRuntimeHeapRepresentationForExpression(statement.value, runtime);
+        if (
+          targetRepresentation.kind === 'specialized' &&
+          sourceRepresentation?.kind === 'fallback'
+        ) {
+          runtime.initializedLocalNames.add(statement.name);
+          const sourceObjectName = statement.value.kind === 'local_get' && statement.value.type === 'heap_ref'
+            ? statement.value.name
+            : runtime.fallbackScratchLocalName;
+          if (!sourceObjectName) {
+            throw createUnsupportedHeapRuntimeBackendError(
+              'Missing fallback scratch local for fallback-to-specialized materialization.',
+            );
+          }
+          return [
+            ...(sourceObjectName === runtime.fallbackScratchLocalName
+              ? [
+                ...emitExpression(statement.value, level, runtime),
+                `${indent(level)}local.set $${sourceObjectName}`,
+              ]
+              : []),
+            ...emitMaterializeFallbackHeapRefToSpecialized(
+              sourceObjectName,
+              targetRepresentation.layout,
+              statement.name,
+              false,
+              level,
+              runtime,
+            ),
+            ...emitPendingFallbackWriteOperations(level, runtime),
+          ];
+        }
         switch (statement.value.kind) {
           case 'heap_placeholder': {
             if (targetRepresentation.kind === 'specialized') {
@@ -23922,27 +24070,32 @@ function emitHostImportedFunction(func: CompilerFunctionIR): string[] {
   const hostTaggedPrimitiveResultKinds = getEffectiveHostTaggedPrimitiveResultKinds(func);
   const hasHostPromiseResult = hasEffectiveHostImportPromiseResult(func);
   return [
-    `(import "${hostImport.module}" "${hostImport.name}" (func $${
-      getHostImportedRawFunctionName(func)
-    }${
-      func.params.map((param) =>
-        ` (param $${param.name} ${
-          hostImportPromiseParamNames.has(param.name) || hostClosureParamsByName.has(param.name) ||
-            hostTaggedPrimitiveParamsByName.has(param.name) ||
-            param.type === 'owned_string_ref' || param.type === 'heap_ref'
+    ...(func.hostImportCallUsed
+      ? [
+        `(import "${hostImport.module}" "${hostImport.name}" (func $${
+          getHostImportedRawFunctionName(func)
+        }${
+          func.params.map((param) =>
+            ` (param $${param.name} ${
+              hostImportPromiseParamNames.has(param.name) ||
+                  hostClosureParamsByName.has(param.name) ||
+                  hostTaggedPrimitiveParamsByName.has(param.name) ||
+                  param.type === 'owned_string_ref' || param.type === 'heap_ref'
+                ? 'externref'
+                : getWatValueType(param.type)
+            })`
+          ).join('')
+        } (result ${
+          hasHostPromiseResult ||
+            hostClosureResultSignatureId !== undefined ||
+            hostTaggedPrimitiveResultKinds !== undefined ||
+            func.resultType === 'heap_ref' || func.resultType === 'closure_ref' ||
+            func.resultType === 'string_ref'
             ? 'externref'
-            : getWatValueType(param.type)
-        })`
-      ).join('')
-    } (result ${
-      hasHostPromiseResult ||
-        hostClosureResultSignatureId !== undefined ||
-        hostTaggedPrimitiveResultKinds !== undefined ||
-        func.resultType === 'heap_ref' || func.resultType === 'closure_ref' ||
-        func.resultType === 'string_ref'
-        ? 'externref'
-        : getWatValueType(func.resultType)
-    })))`,
+            : getWatValueType(func.resultType)
+        })))`,
+      ]
+      : []),
     ...(func.hostImportValueUsed
       ? [
         `(import "${hostImport.module}" "${hostImport.name}__value" (func $${
@@ -28167,7 +28320,7 @@ function emitFunction(
     stringRuntimeLayout,
   );
   if (functionIsHostImported(func)) {
-    return emitHostImportedFunctionWrapper(module, func, runtime);
+    return func.hostImportCallUsed ? emitHostImportedFunctionWrapper(module, func, runtime) : [];
   }
   assertFunctionIsBackendLowerable(func);
   const header = [

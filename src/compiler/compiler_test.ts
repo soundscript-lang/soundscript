@@ -323,6 +323,409 @@ compilerIntegrationTest(
 );
 
 compilerIntegrationTest(
+  'compileProject preserves imported host function values through local aliases',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              skipLibCheck: true,
+              target: 'ES2022',
+              lib: ['ES2022'],
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+              allowSyntheticDefaultImports: true,
+            },
+            include: ['src/**/*.ts', 'src/**/*.d.ts'],
+            soundscript: {
+              target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/db-types.d.ts',
+        contents: [
+          "declare module 'db' {",
+          '  export function add(left: number, right: number): number;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          '// #[interop]',
+          "import { add } from 'db';",
+          '',
+          'export function main(): number {',
+          '  const fn = add;',
+          '  return fn(3, 4);',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const wrapperModule = await importCompiledWrapperModule(result.artifacts.wrapperPath);
+    const instantiated = await wrapperModule.instantiate({
+      modules: {
+        db: {
+          add(left: number, right: number) {
+            return left + right;
+          },
+        },
+      },
+    });
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+
+    assertEquals(exported(), 7);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject supports cached imported host constructor objects through helper returns and tagged globals',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              skipLibCheck: true,
+              target: 'ES2022',
+              lib: ['ES2022'],
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+              allowSyntheticDefaultImports: true,
+            },
+            include: ['src/**/*.ts', 'src/**/*.d.ts'],
+            soundscript: {
+              target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/db-types.d.ts',
+        contents: [
+          "declare module 'db' {",
+          '  export class Store {',
+          '    constructor(value: number);',
+          '    getValue(): number;',
+          '  }',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          '// #[interop]',
+          "import { Store } from 'db';",
+          '',
+          'let cached: Store | undefined = undefined;',
+          '',
+          'function createStore(): Store {',
+          '  return new Store(7);',
+          '}',
+          '',
+          'function getStore(): Store {',
+          '  const current = cached;',
+          '  if (current !== undefined) {',
+          '    return current;',
+          '  }',
+          '  const next = createStore();',
+          '  cached = next;',
+          '  return next;',
+          '}',
+          '',
+          'export function main(): number {',
+          '  return getStore().getValue();',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    let constructed = 0;
+    const wrapperModule = await importCompiledWrapperModule(result.artifacts.wrapperPath);
+    const instantiated = await wrapperModule.instantiate({
+      modules: {
+        db: {
+          Store: class Store {
+            readonly value: number;
+
+            constructor(value: number) {
+              constructed += 1;
+              this.value = value;
+            }
+
+            getValue(): number {
+              return this.value;
+            }
+          },
+        },
+      },
+    });
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+
+    assertEquals(exported(), 7);
+    assertEquals(exported(), 7);
+    assertEquals(constructed, 1);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject supports direct cached imported host constructor globals without snapshot locals',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              skipLibCheck: true,
+              target: 'ES2022',
+              lib: ['ES2022'],
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+              allowSyntheticDefaultImports: true,
+            },
+            include: ['src/**/*.ts', 'src/**/*.d.ts'],
+            soundscript: {
+              target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/db-types.d.ts',
+        contents: [
+          "declare module 'db' {",
+          '  export class Store {',
+          '    constructor(value: number);',
+          '    getValue(): number;',
+          '  }',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          '// #[interop]',
+          "import { Store } from 'db';",
+          '',
+          'let cached: Store | undefined = undefined;',
+          '',
+          'export function main(): number {',
+          '  if (cached === undefined) {',
+          '    cached = new Store(7);',
+          '  }',
+          '  return cached.getValue();',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    let constructed = 0;
+    const wrapperModule = await importCompiledWrapperModule(result.artifacts.wrapperPath);
+    const instantiated = await wrapperModule.instantiate({
+      modules: {
+        db: {
+          Store: class Store {
+            readonly value: number;
+
+            constructor(value: number) {
+              constructed += 1;
+              this.value = value;
+            }
+
+            getValue(): number {
+              return this.value;
+            }
+          },
+        },
+      },
+    });
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+
+    assertEquals(exported(), 7);
+    assertEquals(exported(), 7);
+    assertEquals(constructed, 1);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject keeps value-only imported host functions pay-for-play',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              skipLibCheck: true,
+              target: 'ES2022',
+              lib: ['ES2022'],
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+              allowSyntheticDefaultImports: true,
+            },
+            include: ['src/**/*.ts', 'src/**/*.d.ts'],
+            soundscript: {
+              target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/db-types.d.ts',
+        contents: [
+          "declare module 'db' {",
+          '  export function add(left: number, right: number): number;',
+          '  export function invoke(fn: string | ((left: number, right: number) => number)): number;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          '// #[interop]',
+          "import { add, invoke } from 'db';",
+          '',
+          'export function main(): number {',
+          '  return invoke(add);',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const watOutput = await readWatArtifactForProject(tempDirectory);
+    assertEquals(
+      watOutput.includes(
+        '(import "soundscript_host_function" "src/db-types.d.ts:add" (func $add__host_import',
+      ),
+      false,
+    );
+    assertStringIncludes(
+      watOutput,
+      '(import "soundscript_host_function" "src/db-types.d.ts:add__value" (func $add__host_import_value',
+    );
+    assertStringIncludes(
+      watOutput,
+      '(import "soundscript_host_function" "src/db-types.d.ts:invoke" (func $invoke__host_import',
+    );
+    assertEquals(
+      watOutput.includes('(func $add (param $left f64) (param $right f64) (result f64)'),
+      false,
+    );
+    const wrapperSource = await Deno.readTextFile(result.artifacts.wrapperPath);
+    assertStringIncludes(wrapperSource, '"hostImportCallUsed": false');
+    assertStringIncludes(wrapperSource, '"hostImportValueUsed": true');
+    assertStringIncludes(wrapperSource, '"hostImportCallUsed": true');
+
+    const wrapperModule = await importCompiledWrapperModule(result.artifacts.wrapperPath);
+    const instantiated = await wrapperModule.instantiate({
+      modules: {
+        db: {
+          add(left: number, right: number) {
+            return left + right;
+          },
+          invoke(fn: string | ((left: number, right: number) => number)) {
+            if (typeof fn !== 'function') {
+              return -1;
+            }
+            return fn(3, 4) as number;
+          },
+        },
+      },
+    });
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+
+    assertEquals(exported(), 7);
+  },
+);
+
+compilerIntegrationTest(
   'compileProject executes object binding patterns with defaults over ordinary objects',
   async () => {
     const tempDirectory = await createCompilerTestProject([
@@ -6798,6 +7201,43 @@ compilerIntegrationTest(
         `${exampleName} should not import the shared Promise bridge module`,
       );
     }
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject emits compiler-owned async runtime without host promise bridges',
+  async () => {
+    const tempDirectory = await createCompilerTestProject([
+      'async function read(): Promise<number> {',
+      '  return 3;',
+      '}',
+      '',
+      'export function main(): number {',
+      '  read();',
+      '  return 7;',
+      '}',
+      '',
+    ].join('\n'));
+
+    const result = compileTempProject(tempDirectory);
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+
+    const watOutput = await readWatArtifactForProject(tempDirectory);
+    assertEquals(watOutput.includes('__soundscript_promise_new_pending'), true);
+    assertEquals(watOutput.includes('$host_promise_to_internal'), false);
+    assertEquals(watOutput.includes('$host_promise_to_host'), false);
+    assertEquals(watOutput.includes('"soundscript_promise"'), false);
+
+    const instance = await instantiateCompiledModuleInJs(tempDirectory);
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instance.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+
+    assertEquals(exported(), 7);
   },
 );
 

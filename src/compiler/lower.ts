@@ -516,6 +516,7 @@ interface ModuleRuntimeLoweringState {
     string,
     HostObjectNestedPropertyNamesState
   >;
+  ambientHostFallbackBoundarySyncRequests: Map<string, AmbientHostFallbackBoundarySyncRequest>;
   functions: CompilerRuntimeFunctionIR[];
   nextClassStaticFieldId: number;
   nextClassTagId: number;
@@ -525,6 +526,13 @@ interface ModuleRuntimeLoweringState {
 interface HostObjectNestedPropertyNamesState {
   propertyPath: readonly string[];
   nestedPropertyNames: Set<string>;
+}
+
+interface AmbientHostFallbackBoundarySyncRequest {
+  contextNode: ts.Node;
+  construct: boolean;
+  hostImportName: string;
+  representationNames: Set<string>;
 }
 
 const HOST_TAGGED_OBJECT_VALUE_BOUNDARY_KINDS: CompilerTaggedPrimitiveBoundaryKindsIR = {
@@ -584,6 +592,7 @@ function createModuleRuntimeLoweringState(): ModuleRuntimeLoweringState {
     hostPromiseRejectObjectNestedPropertyNames: new Map(),
     hostAsyncGeneratorYieldObjectPropertyNames: new Set(),
     hostAsyncGeneratorYieldObjectNestedPropertyNames: new Map(),
+    ambientHostFallbackBoundarySyncRequests: new Map(),
     functions: [],
     nextClassStaticFieldId: 0,
     nextClassTagId: 1,
@@ -4008,6 +4017,12 @@ function lowerExpressionAsValueType(
     ) {
       return {
         kind: 'untag_heap_object',
+        heapRepresentation: getAmbientHostImportedBoundaryRepresentationFromExpression(
+            expression,
+            context,
+          ) ??
+          (ts.isIdentifier(expression) ? lookupSymbol(context, expression.text)?.heapRepresentation : undefined) ??
+          getHeapObjectRepresentationFromExpression(expression, context),
         value: lowered,
         type: 'heap_ref',
       };
@@ -5524,6 +5539,7 @@ function lowerDirectFunctionValueExpression(
   adapterIdentity: string,
   context: FunctionLoweringContext,
 ): CompilerExpressionIR | undefined {
+  markHostImportCallUsed(callee);
   const functionType = context.checker.getTypeAtLocation(expression);
   if (context.checker.getSignaturesOfType(functionType, ts.SignatureKind.Call).length === 0) {
     return undefined;
@@ -18745,6 +18761,112 @@ function createHostBoundaryField(
   };
 }
 
+function recordAmbientHostFallbackBoundarySyncRequest(
+  header: CompilerFunctionIR,
+  representation: CompilerRuntimeSpecializedObjectRepresentationRefIR,
+  contextNode: ts.Node,
+  runtime: ModuleRuntimeLoweringState,
+): void {
+  if (!header.hostImport) {
+    return;
+  }
+  const requestKey = `${header.hostImport.construct ? 'construct' : 'call'}:${header.hostImport.name}`;
+  const existing = runtime.ambientHostFallbackBoundarySyncRequests.get(requestKey);
+  if (existing) {
+    existing.representationNames.add(representation.name);
+    return;
+  }
+  runtime.ambientHostFallbackBoundarySyncRequests.set(requestKey, {
+    contextNode,
+    construct: header.hostImport.construct,
+    hostImportName: header.hostImport.name,
+    representationNames: new Set([representation.name]),
+  });
+}
+
+function maybeSyncAmbientHostFallbackBoundaryFieldsFromRepresentation(
+  expression: ts.Expression,
+  representation: CompilerRuntimeObjectRepresentationRef | undefined,
+  context: FunctionLoweringContext,
+): void {
+  if (representation?.kind !== 'specialized_object_representation') {
+    return;
+  }
+  const ambientHostHeader = getAmbientHostImportedHeaderFromExpression(expression, context);
+  const directConstructorHeader = (() => {
+    const classInstantiation = getMaterializableClassInstantiation(expression, context);
+    if (
+      !classInstantiation ||
+      classInstantiation.declaration.body ||
+      !classInstantiation.declaration.name
+    ) {
+      return undefined;
+    }
+    const header = context.functions.get(
+      getDeclarationSymbol(context.checker, classInstantiation.declaration),
+    );
+    return header?.hostImport?.construct ? header : undefined;
+  })();
+  const canonicalHeader = ambientHostHeader?.hostImport
+    ? ambientHostHeader
+    : directConstructorHeader;
+  if (!canonicalHeader?.hostImport) {
+    return;
+  }
+  recordAmbientHostFallbackBoundarySyncRequest(
+    canonicalHeader,
+    representation,
+    expression,
+    context.runtime,
+  );
+}
+
+function flushAmbientHostFallbackBoundarySyncRequests(
+  functionHeaders: ReadonlyMap<ts.Symbol, CompilerFunctionIR>,
+  runtime: ModuleRuntimeLoweringState,
+): void {
+  for (const request of runtime.ambientHostFallbackBoundarySyncRequests.values()) {
+    const candidateHeaders = [...new Set(
+      [...functionHeaders.values()].filter((candidate) =>
+        candidate.hostImport?.name === request.hostImportName &&
+        candidate.hostImport.construct === request.construct &&
+        candidate.heapResultRepresentation?.kind === 'fallback_object_representation'
+      ),
+    )];
+    for (const header of candidateHeaders) {
+      const fallbackRepresentation =
+        header.heapResultRepresentation as CompilerRuntimeFallbackObjectRepresentationRefIR;
+      for (const representationName of request.representationNames) {
+        const representation = runtime.representations.find((
+          candidate,
+        ): candidate is CompilerRuntimeSpecializedObjectRepresentationIR =>
+          candidate.kind === 'specialized_object_representation' &&
+          candidate.name === representationName
+        );
+        if (!representation) {
+          continue;
+        }
+        for (const field of representation.fields) {
+          if (!field.boundary) {
+            continue;
+          }
+          upsertCurrentFunctionFallbackBoundaryField(
+            header,
+            createHostBoundaryField(
+              field.name,
+              field.optional,
+              field.boundary,
+              field.methodClosureFunctionIds,
+            ),
+            request.contextNode,
+            fallbackRepresentation,
+          );
+        }
+      }
+    }
+  }
+}
+
 function mergeHostBoundaryFieldMethodClosureFunctionIds(
   target: CompilerHostBoundaryFieldIR,
   source: CompilerHostBoundaryFieldIR,
@@ -24594,6 +24716,11 @@ function materializeHeapExpressionToLocal(
   const sourceRepresentation = getHeapObjectRepresentationFromExpression(expression, context);
   const boundaryRepresentation = getBoundaryObjectRepresentationFromExpression(expression, context);
   const representation = preferredRepresentation ?? sourceRepresentation ?? boundaryRepresentation;
+  maybeSyncAmbientHostFallbackBoundaryFieldsFromRepresentation(
+    expression,
+    representation,
+    context,
+  );
   const loweredExpression = representation
     ? lowerExpressionAsValueType(expression, 'heap_ref', context)
     : lowerExpression(expression, context);
@@ -24710,6 +24837,11 @@ function forceMaterializeHeapExpressionToLocal(
   const sourceRepresentation = getHeapObjectRepresentationFromExpression(expression, context);
   const boundaryRepresentation = getBoundaryObjectRepresentationFromExpression(expression, context);
   const representation = preferredRepresentation ?? sourceRepresentation ?? boundaryRepresentation;
+  maybeSyncAmbientHostFallbackBoundaryFieldsFromRepresentation(
+    expression,
+    representation,
+    context,
+  );
   const loweredExpression = representation
     ? lowerExpressionAsValueType(expression, 'heap_ref', context)
     : lowerExpression(expression, context);
@@ -25058,6 +25190,9 @@ function getHeapObjectRepresentationFromExpression(
       return getNarrowedTaggedHeapRepresentation(context.checker.getTypeAtLocation(expression));
     }
     if (bound.type === 'tagged_ref') {
+      if (bound.heapRepresentation) {
+        return bound.heapRepresentation;
+      }
       return getNarrowedTaggedHeapRepresentation(context.checker.getTypeAtLocation(expression));
     }
     return undefined;
@@ -58833,7 +58968,16 @@ function lowerVariableStatement(
       : declaration.initializer
       ? ownedStringAliasValue
         ? undefined
-        : lowerExpressionAsValueType(declaration.initializer, type, context)
+        : (() => {
+          if (type === 'heap_ref') {
+            maybeSyncAmbientHostFallbackBoundaryFieldsFromRepresentation(
+              declaration.initializer,
+              declarationRepresentation,
+              context,
+            );
+          }
+          return lowerExpressionAsValueType(declaration.initializer, type, context);
+        })()
       : type === 'tagged_ref'
       ? { kind: 'undefined_literal', type: 'tagged_ref' }
       : undefined;
@@ -59722,6 +59866,25 @@ function lowerExpressionStatement(
       return lowerHeapAssignmentStatement(expression.left, symbol, expression.right, context);
     }
     if (symbol.globalName) {
+      if (symbol.type === 'tagged_ref') {
+        const assignedHeapRepresentation = isSupportedHeapLocalType(
+            context.checker,
+            context.checker.getTypeAtLocation(expression.right),
+          )
+          ? getAmbientHostImportedBoundaryRepresentationFromExpression(
+              expression.right,
+              context,
+            ) ??
+            getHeapObjectRepresentationFromExpression(expression.right, context) ??
+            getBoundaryObjectRepresentationFromExpression(expression.right, context)
+          : undefined;
+        symbol.heapRepresentation = assignedHeapRepresentation;
+        symbol.hostBoundary = getHostBoundaryFromExpression(expression.right, context);
+        symbol.ambientHostSourceHeader = getAmbientHostImportedHeaderFromExpression(
+          expression.right,
+          context,
+        );
+      }
       const adaptedValue = lowerExpressionAsValueType(
         expression.right,
         symbol.type,
@@ -61249,6 +61412,12 @@ function lowerStatement(
             );
           }
         }
+        maybeSyncAmbientHostFallbackBoundaryFieldsFromRepresentation(
+          statement.expression,
+          context.functionRuntime.heapObjectRepresentationsByLocal.get(tempName) ??
+            resultRepresentation,
+          context,
+        );
         returnStatements.push({
           kind: 'local_set',
           name: tempName,
@@ -63686,6 +63855,7 @@ export function lowerProgramToCompilerIR(
       runtime,
     });
   });
+  flushAmbientHostFallbackBoundarySyncRequests(functionHeaders, runtime);
   const serializeNestedHostObjectPropertyNames = (
     propertyNamesByPathKey: ReadonlyMap<string, HostObjectNestedPropertyNamesState>,
   ) =>
@@ -63727,6 +63897,8 @@ export function lowerProgramToCompilerIR(
       }
       return [{
         hostImportName: header.hostImport.name,
+        hostImportCallUsed: header.hostImportCallUsed === true,
+        hostImportValueUsed: header.hostImportValueUsed === true,
         bindingKind: binding.bindingKind,
         importKind: binding.importKind,
         importerModulePath: normalizeModulePath(projectRoot, binding.importingSourceFileName),

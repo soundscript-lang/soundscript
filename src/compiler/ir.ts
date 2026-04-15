@@ -1015,6 +1015,7 @@ export interface CompilerUntagOwnedStringIR {
 
 export interface CompilerUntagHeapObjectIR {
   kind: 'untag_heap_object';
+  heapRepresentation?: CompilerRuntimeRepresentationRefIR<'object'>;
   value: CompilerExpressionIR;
   type:
     | 'heap_ref'
@@ -1601,6 +1602,8 @@ export interface CompilerHostObjectNestedPropertyNamesIR {
 
 export interface CompilerJsHostImportIR {
   hostImportName: string;
+  hostImportCallUsed: boolean;
+  hostImportValueUsed: boolean;
   bindingKind: 'function' | 'constructor' | 'static_method' | 'property';
   importKind: 'default' | 'named' | 'global';
   importerModulePath: string;
