@@ -675,6 +675,151 @@ Deno.test('analyzeProject keeps pure .ts projects on ordinary TS semantics', asy
   assertEquals(result.diagnostics, []);
 });
 
+Deno.test('analyzeProject keeps pure .ts projects on local node type semantics', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'NodeNext',
+          moduleResolution: 'NodeNext',
+          types: ['node'],
+        },
+        include: ['src/**/*.ts'],
+      },
+      null,
+      2,
+    ),
+    'node_modules/@types/node/package.json': JSON.stringify(
+      {
+        name: '@types/node',
+        version: '1.0.0',
+        types: './index.d.ts',
+      },
+      null,
+      2,
+    ),
+    'node_modules/@types/node/index.d.ts': [
+      "declare module 'node:test' {",
+      '  export const __hostParitySentinel: 42;',
+      '}',
+      '',
+    ].join('\n'),
+    'src/index.ts': [
+      "import { __hostParitySentinel } from 'node:test';",
+      'const exact: 42 = __hostParitySentinel;',
+      'void exact;',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics, []);
+});
+
+Deno.test('analyzeProject keeps pure .ts projects on local declaration-root semantics', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.ts'],
+      },
+      null,
+      2,
+    ),
+    'src/globals.d.ts': 'type ObjectOf<T> = { [key: string]: T };\n',
+    'src/index.ts': [
+      'const value: ObjectOf<number> = { answer: 42 };',
+      'void value;',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics, []);
+});
+
+Deno.test('analyzeProject preserves pure .ts nodenext package conditions', async () => {
+  const tempDirectory = await createTempProject({
+    'package.json': JSON.stringify({ type: 'module' }, null, 2),
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'NodeNext',
+          moduleResolution: 'NodeNext',
+        },
+        include: ['src/**/*.ts'],
+      },
+      null,
+      2,
+    ),
+    'node_modules/dual-pkg/package.json': JSON.stringify(
+      {
+        name: 'dual-pkg',
+        exports: {
+          '.': {
+            require: {
+              types: './index.d.ts',
+              default: './index.js',
+            },
+            types: './index.d.mts',
+            default: './index.mjs',
+          },
+        },
+      },
+      null,
+      2,
+    ),
+    'node_modules/dual-pkg/index.d.mts': [
+      'declare class DualPkg {',
+      '  constructor(options: { apiKey: string });',
+      '}',
+      'export default DualPkg;',
+      '',
+    ].join('\n'),
+    'node_modules/dual-pkg/index.d.ts': [
+      'declare namespace DualPkg {',
+      '  interface Options {',
+      '    apiKey: string;',
+      '  }',
+      '}',
+      'export = DualPkg;',
+      '',
+    ].join('\n'),
+    'src/index.ts': [
+      "import DualPkg from 'dual-pkg';",
+      "const client = new DualPkg({ apiKey: 'test' });",
+      'void client;',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics, []);
+});
+
 Deno.test('analyzeProject keeps the checked-in macro authoring example editor-clean', async () => {
   const tempDirectory = await stageMacroAuthoringExampleProject();
   const result = await analyzeProject({
@@ -2552,6 +2697,74 @@ Deno.test('analyzeProject uses projected surfaces for source-published SoundScri
 
   assertEquals(result.diagnostics, []);
 });
+
+Deno.test(
+  'analyzeProject uses projected surfaces for soundscript.exports packages in pure .ts projects',
+  async () => {
+    const tempDirectory = await createTempProject({
+      'tsconfig.json': JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+            moduleResolution: 'Bundler',
+          },
+          include: ['src/**/*.ts'],
+        },
+        null,
+        2,
+      ),
+      'src/index.ts': [
+        'import { value } from "sound-pkg";',
+        'const exact: number = value;',
+        'void exact;',
+        '',
+      ].join('\n'),
+      'node_modules/sound-pkg/package.json': JSON.stringify(
+        {
+          name: 'sound-pkg',
+          version: '1.0.0',
+          type: 'module',
+          types: './dist/index.d.ts',
+          exports: {
+            '.': {
+              types: './dist/index.d.ts',
+              import: './dist/index.js',
+            },
+          },
+          soundscript: {
+            version: 1,
+            exports: {
+              '.': {
+                source: './soundscript/src/index.sts',
+              },
+            },
+          },
+        },
+        null,
+        2,
+      ),
+      'node_modules/sound-pkg/dist/index.d.ts': 'export declare const value: number;\n',
+      'node_modules/sound-pkg/dist/index.js': 'export const value = 1;\n',
+      'node_modules/sound-pkg/soundscript/src/index.sts': [
+        "import type { EncodeMode } from 'sts:encode';",
+        'const broken: string = 1;',
+        'export const value: number = 1;',
+        'export type _Mode = EncodeMode;',
+        '',
+      ].join('\n'),
+    });
+
+    const result = await analyzeProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.diagnostics, []);
+  },
+);
 
 Deno.test(
   'analyzePreparedProjectForFile suppresses raw ts diagnostics for source-published package files in pure .ts projects',

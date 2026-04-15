@@ -943,6 +943,7 @@ export interface PreparedCompilerHostReuseState {
 }
 
 export interface CreatePreparedProgramOptions {
+  allowSoundscriptProgramFileResolution?: boolean;
   alwaysAvailableMacroSiteKinds?: ReadonlyMap<string, ImportedMacroSiteKind>;
   baseHost: ts.CompilerHost;
   configFileParsingDiagnostics?: readonly ts.Diagnostic[];
@@ -3959,6 +3960,7 @@ export function createPreparedCompilerHost(
   preserveMacroAuthoring = false,
   invalidateModuleResolutions = true,
   reuseResolvedModulesOnInvalidation = false,
+  allowSoundscriptProgramFileResolution = true,
 ): PreparedCompilerHost {
   const preparedFiles = new Map<string, PreparedSourceFile>();
   const macroPreparationByFile = new Map<string, boolean>();
@@ -4465,9 +4467,11 @@ export function createPreparedCompilerHost(
     reusedNames?: string[],
     redirectedReference?: ts.ResolvedProjectReference,
     options?: ts.CompilerOptions,
+    containingSourceFile?: ts.SourceFile,
   ): (ts.ResolvedModule | undefined)[] {
     const sourceContainingFile = toSourceFileName(containingFile);
     const moduleResolutionHost = createModuleResolutionHost();
+    const resolutionMode = containingSourceFile?.impliedNodeFormat;
     const canReuseResolvedModuleMemo = !invalidateModuleResolutions ||
       reuseResolvedModulesOnInvalidation;
     const resolvedModules: (ts.ResolvedModule | undefined)[] = new Array(moduleNames.length);
@@ -4507,6 +4511,7 @@ export function createPreparedCompilerHost(
         reusedNames,
         redirectedReference,
         options ?? {},
+        containingSourceFile,
       )
       : undefined;
 
@@ -4545,6 +4550,9 @@ export function createPreparedCompilerHost(
           preferredSoundscript,
           moduleResolutionHost,
         );
+        if (!allowSoundscriptProgramFileResolution) {
+          return undefined;
+        }
         return {
           ...remapped,
           extension: ts.Extension.Ts,
@@ -4577,6 +4585,12 @@ export function createPreparedCompilerHost(
             ),
           };
         }
+        if (
+          !allowSoundscriptProgramFileResolution &&
+          isSoundscriptSourceFile(remapped.resolvedFileName)
+        ) {
+          return baseResolved;
+        }
         return isSoundscriptSourceFile(remapped.resolvedFileName)
           ? {
             ...remapped,
@@ -4593,6 +4607,7 @@ export function createPreparedCompilerHost(
         moduleResolutionHost,
         reusableState.moduleResolutionCache,
         redirectedReference,
+        resolutionMode,
       ).resolvedModule;
 
       const resolvedOrFallback = resolvedModule ?? (() => {
@@ -4632,6 +4647,12 @@ export function createPreparedCompilerHost(
             toSourceFileName(remapped.resolvedFileName),
           ),
         };
+      }
+      if (
+        !allowSoundscriptProgramFileResolution &&
+        isSoundscriptSourceFile(remapped.resolvedFileName)
+      ) {
+        return resolvedModule;
       }
       return isSoundscriptSourceFile(remapped.resolvedFileName)
         ? {
@@ -4813,6 +4834,7 @@ export function createPreparedProgram(
     options.preserveMacroAuthoring ?? false,
     options.invalidateModuleResolutions ?? true,
     reuseResolvedModulesOnInvalidation,
+    options.allowSoundscriptProgramFileResolution ?? true,
   );
   const rootNames = options.rootNames.map(toProgramFileName);
   const optionSignature = stableStringify(options.options);

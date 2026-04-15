@@ -191,7 +191,7 @@ Deno.test('createOnDemandTransformer resolves and transforms local .sts files wi
   assertStringIncludes(transformed.mapText, '/src/main.sts');
 });
 
-Deno.test('createOnDemandTransformer keeps strip-only TypeScript syntax on direct runtime paths', async () => {
+Deno.test('createOnDemandTransformer transpiles .sts runtime files even on strip-types runtimes', async () => {
   const root = await Deno.makeTempDir({ prefix: 'soundscript-on-demand-types-direct-' });
   await writeProjectFile(
     root,
@@ -212,9 +212,22 @@ Deno.test('createOnDemandTransformer keeps strip-only TypeScript syntax on direc
   );
   await writeProjectFile(
     root,
+    'src/types.sts',
+    [
+      'export interface Box {',
+      '  value: number;',
+      '}',
+      '',
+    ].join('\n'),
+  );
+  await writeProjectFile(
+    root,
     'src/main.sts',
     [
-      'export const value: number = 41;',
+      "import type { Box } from './types.sts';",
+      '',
+      'const value: Box = { value: 41 };',
+      'export const answer: number = value.value;',
       '',
     ].join('\n'),
   );
@@ -223,7 +236,9 @@ Deno.test('createOnDemandTransformer keeps strip-only TypeScript syntax on direc
   const transformed = await transformer.transformModule(join(root, 'src/main.sts'));
 
   assertEquals(transformed.transformMode, 'soundscript-prepared');
-  assertStringIncludes(transformed.code, 'export const value: number = 41;');
+  assertEquals(transformed.code.includes('import type'), false);
+  assertEquals(transformed.code.includes(': number'), false);
+  assertStringIncludes(transformed.code, 'export const answer = value.value;');
 });
 
 Deno.test('createOnDemandTransformer avoids the full expanded runtime program for no-macro dependency transforms', async () => {

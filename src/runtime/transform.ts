@@ -245,17 +245,20 @@ export function runtimeRequiresJavaScriptFallback(
   sourceText: string,
   fileName: string,
 ): boolean {
+  if (fileName.endsWith('.sts')) {
+    return true;
+  }
+
   if (/\.[cm]?tsx$/iu.test(fileName) || fileName.endsWith('.jsx')) {
     return true;
   }
 
-  const scriptKind = fileName.endsWith('.sts') ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
   const sourceFile = ts.createSourceFile(
-    fileName.endsWith('.sts') ? `${fileName.slice(0, -4)}.tsx` : fileName,
+    fileName,
     sourceText,
     ts.ScriptTarget.ES2022,
     true,
-    scriptKind,
+    ts.ScriptKind.TS,
   );
   let requiresFallback = false;
 

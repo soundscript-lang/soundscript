@@ -1,4 +1,4 @@
-export const VERSION = '0.1.33';
+export const VERSION = '0.1.34';
 
 export function getSoundscriptToolFingerprint(): string {
   const override = Deno.env.get('SOUNDSCRIPT_CACHE_TOOL_FINGERPRINT');

@@ -420,3 +420,79 @@ export function createBundledTypeCompilerHost(
 
   return host;
 }
+
+export function createProjectCompilerHost(
+  options: ts.CompilerOptions,
+  currentDirectory?: string,
+): ts.CompilerHost {
+  const baseHost = ts.createCompilerHost(options, true);
+  const host: ts.CompilerHost = {
+    ...baseHost,
+    getCurrentDirectory() {
+      return currentDirectory ?? baseHost.getCurrentDirectory();
+    },
+    resolveModuleNames(
+      moduleNames,
+      containingFile,
+      reusedNames,
+      redirectedReference,
+      compilerOptions,
+      containingSourceFile,
+    ) {
+      const delegated = baseHost.resolveModuleNames?.(
+        moduleNames,
+        containingFile,
+        reusedNames,
+        redirectedReference,
+        compilerOptions,
+        containingSourceFile,
+      );
+      const fallbackHost = createModuleResolutionHost(baseHost);
+
+      return moduleNames.map((moduleName, index) => {
+        if (delegated?.[index]) {
+          return delegated[index];
+        }
+        const bundledResolution = resolveBundledTypeModule(moduleName);
+        if (bundledResolution) {
+          return bundledResolution;
+        }
+        return ts.resolveModuleName(
+          moduleName,
+          containingFile,
+          compilerOptions ?? options,
+          fallbackHost,
+          undefined,
+          redirectedReference,
+          containingSourceFile?.impliedNodeFormat,
+        ).resolvedModule;
+      });
+    },
+    resolveTypeReferenceDirectives(
+      typeReferenceDirectiveNames,
+      containingFile,
+      redirectedReference,
+      compilerOptions,
+      containingFileMode,
+    ) {
+      return typeReferenceDirectiveNames.map((typeReferenceDirectiveName) => {
+        const resolved = ts.resolveTypeReferenceDirective(
+          getTypeDirectiveName(typeReferenceDirectiveName),
+          containingFile,
+          compilerOptions,
+          host,
+          redirectedReference,
+          undefined,
+          containingFileMode,
+        ).resolvedTypeReferenceDirective;
+        if (resolved) {
+          return resolved;
+        }
+        return resolveBundledTypeReferenceDirective(
+          getTypeDirectiveName(typeReferenceDirectiveName),
+        );
+      });
+    },
+  };
+  return host;
+}

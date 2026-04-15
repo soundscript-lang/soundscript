@@ -2,7 +2,7 @@ import ts from 'typescript';
 import { dirname, isAbsolute, join } from '../platform/path.ts';
 
 import {
-  createBundledTypeCompilerHost,
+  createProjectCompilerHost,
   createSoundStdlibCompilerHost,
   resolveBundledTypesDirectory,
 } from '../bundled/sound_stdlib.ts';
@@ -1709,7 +1709,8 @@ function prepareHostAnalysisView(
   }
 
   const preparedProgram = createPreparedProgram({
-    baseHost: createBundledTypeCompilerHost(
+    allowSoundscriptProgramFileResolution: false,
+    baseHost: createProjectCompilerHost(
       loadedConfig.commandLine.options,
       dirname(options.projectPath),
     ),
@@ -3223,7 +3224,7 @@ export function prepareProjectAnalysis(
       const declarationRootNames = allRootNames.filter(isDeclarationRootFileName);
       const stsProgramRootNames = combineRootNames(soundscriptRootNames, declarationRootNames);
       const typescriptRootNames = allRootNames.filter((fileName) =>
-        !loadedConfig.isSoundscriptSourceFile(fileName) && !isDeclarationRootFileName(fileName)
+        !loadedConfig.isSoundscriptSourceFile(fileName)
       );
       const configFileParsingDiagnostics = getConfigFileParsingDiagnostics(
         loadedConfig.diagnostics,
