@@ -102,12 +102,32 @@ export const CLI_TARGETS: readonly CliTarget[] = [
   },
 ] as const;
 
-export function parseVersion(root: string = ROOT): string {
-  const cliSource = Deno.readTextFileSync(join(root, 'src', 'cli', 'cli.ts'));
-  const match = cliSource.match(/export const VERSION = '([^']+)'/u);
+function parseVersionFromSource(
+  sourceText: string,
+): string | null {
+  const match = sourceText.match(/export const VERSION = ['"]([^'"]+)['"]/u);
   if (!match) {
-    throw new Error('Could not find VERSION in src/cli/cli.ts.');
+    return null;
   }
 
   return match[1];
+}
+
+export function parseVersion(root: string = ROOT): string {
+  for (const relativePath of ['src/version.ts', 'src/cli/cli.ts']) {
+    const filePath = join(root, relativePath);
+    try {
+      const sourceText = Deno.readTextFileSync(filePath);
+      const version = parseVersionFromSource(sourceText);
+      if (version) {
+        return version;
+      }
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) {
+        throw error;
+      }
+    }
+  }
+
+  throw new Error('Could not find VERSION in src/version.ts or src/cli/cli.ts.');
 }
