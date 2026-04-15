@@ -89,7 +89,7 @@ import {
   MACRO_EXPANSION_START_MARKER_PREFIX,
 } from './macro_expander.ts';
 
-export interface BuiltinExpandedProgram {
+interface BuiltinProgramBase {
   analysisPreparedProgram: PreparedProgram;
   diagnosticPreparedFiles: ReadonlyMap<string, PreparedSourceFile>;
   dispose(): void;
@@ -105,8 +105,26 @@ export interface BuiltinExpandedTsDiagnosticProgram {
   program: ts.Program;
 }
 
+export interface BuiltinEmitProgram extends BuiltinProgramBase {}
+
+export interface BuiltinRuntimeProgram extends BuiltinProgramBase {}
+
+export interface BuiltinDiagnosticProgram extends BuiltinProgramBase {}
+
+export type BuiltinExpandedProgram = BuiltinDiagnosticProgram;
+
 export interface CreateBuiltinExpandedProgramOptions extends CreatePreparedProgramOptions {
   allowSupplementalDiagnosticPrograms?: boolean;
+  numericLoweringTarget?: NumericLoweringTarget;
+}
+
+export interface CreateBuiltinDiagnosticProgramOptions extends CreateBuiltinExpandedProgramOptions {}
+
+export interface CreateBuiltinEmitProgramOptions extends CreatePreparedProgramOptions {
+  numericLoweringTarget?: NumericLoweringTarget;
+}
+
+export interface CreateBuiltinRuntimeProgramOptions extends CreatePreparedProgramOptions {
   numericLoweringTarget?: NumericLoweringTarget;
 }
 
@@ -995,7 +1013,39 @@ export function expandPreparedProgramWithBuiltinsForDiagnostics(
   }
 }
 
-function createBuiltinExpandedProgramResult(
+interface BuiltinProgramStageContext {
+  diagnosticPreparedFiles: Map<string, PreparedSourceFile>;
+  frontendDiagnostics: MergedDiagnostic[];
+  macroEnvironment: ProjectMacroEnvironment;
+  ownedPreparedPrograms: Set<PreparedProgram>;
+  preparedProgram: PreparedProgram;
+  supportedOptions:
+    | CreateBuiltinDiagnosticProgramOptions
+    | CreateBuiltinEmitProgramOptions
+    | CreateBuiltinRuntimeProgramOptions;
+  timingMetadata: {
+    rootCount: number;
+  };
+  trackPreparedProgram(preparedProgram: PreparedProgram): PreparedProgram;
+}
+
+interface BuiltinAnnotatedStageResult {
+  annotatedChangedFileCount: number;
+  annotatedOverrides: Map<string, string>;
+  annotatedProgram: PreparedProgram;
+  augmentPlaceholderIdsByFile: Map<string, Set<number>>;
+  placeholdersByFile: Map<string, Map<number, IndexedMacroPlaceholder>>;
+}
+
+interface BuiltinEmitStagePreparationResult {
+  canReuseAnalysisProgram: boolean;
+  finalChangedFileCount: number;
+  finalOverrides: Map<string, string>;
+  normalizationOnlyDiagnosticFilePaths: readonly string[] | null;
+  numericsProgram: PreparedProgram;
+}
+
+function createBuiltinProgramBaseResult(
   analysisPreparedProgram: PreparedProgram,
   diagnosticPreparedFiles: ReadonlyMap<string, PreparedSourceFile>,
   frontendDiagnostics: readonly MergedDiagnostic[],
@@ -1004,7 +1054,7 @@ function createBuiltinExpandedProgramResult(
   preparedProgram: PreparedProgram,
   program: ts.Program,
   tsDiagnosticPrograms: readonly BuiltinExpandedTsDiagnosticProgram[] = [{ program }],
-): BuiltinExpandedProgram {
+): BuiltinProgramBase {
   return {
     analysisPreparedProgram,
     diagnosticPreparedFiles,
@@ -1034,15 +1084,35 @@ function createBuiltinExpandedProgramResult(
   };
 }
 
-export function createBuiltinExpandedProgram(
-  options: CreateBuiltinExpandedProgramOptions,
-): BuiltinExpandedProgram {
-  const {
-    allowSupplementalDiagnosticPrograms = false,
-    numericLoweringTarget = 'js',
-    ...preparedProgramOptions
-  } = options;
-  const supportedOptions = withBuiltinMacroSupport(preparedProgramOptions);
+function createBuiltinDiagnosticProgramResult(
+  analysisPreparedProgram: PreparedProgram,
+  diagnosticPreparedFiles: ReadonlyMap<string, PreparedSourceFile>,
+  frontendDiagnostics: readonly MergedDiagnostic[],
+  macroEnvironment: ProjectMacroEnvironment,
+  ownedPreparedPrograms: readonly PreparedProgram[],
+  preparedProgram: PreparedProgram,
+  program: ts.Program,
+  tsDiagnosticPrograms: readonly BuiltinExpandedTsDiagnosticProgram[] = [{ program }],
+): BuiltinDiagnosticProgram {
+  return createBuiltinProgramBaseResult(
+    analysisPreparedProgram,
+    diagnosticPreparedFiles,
+    frontendDiagnostics,
+    macroEnvironment,
+    ownedPreparedPrograms,
+    preparedProgram,
+    program,
+    tsDiagnosticPrograms,
+  );
+}
+
+function createBuiltinProgramStageContext(
+  options:
+    | CreateBuiltinDiagnosticProgramOptions
+    | CreateBuiltinEmitProgramOptions
+    | CreateBuiltinRuntimeProgramOptions,
+): BuiltinProgramStageContext {
+  const supportedOptions = withBuiltinMacroSupport(options);
   const ownedPreparedPrograms = new Set<PreparedProgram>();
   const trackPreparedProgram = (preparedProgram: PreparedProgram): PreparedProgram => {
     ownedPreparedPrograms.add(preparedProgram);
@@ -1051,18 +1121,16 @@ export function createBuiltinExpandedProgram(
   const timingMetadata = {
     rootCount: supportedOptions.rootNames.length,
   };
-  const initialPreparedProgramOptions = withPersistentSemanticBuildInfoStage(
-    supportedOptions,
-    'initial',
-  );
   const preparedProgram = measureCheckerTiming(
     'project.prepare.builtin.initialProgram',
     timingMetadata,
-    () => trackPreparedProgram(createPreparedProgram(initialPreparedProgramOptions)),
+    () =>
+      trackPreparedProgram(
+        createPreparedProgram(withPersistentSemanticBuildInfoStage(supportedOptions, 'initial')),
+      ),
     { always: true },
   );
   persistPreparedProgramBuildInfo(preparedProgram);
-  const diagnosticPreparedFiles = new Map<string, PreparedSourceFile>();
   const frontendDiagnostics: MergedDiagnostic[] = [...preparedProgram.frontendDiagnostics()];
   const macroEnvironment = measureCheckerTiming(
     'project.prepare.builtin.macroEnvironment',
@@ -1078,51 +1146,41 @@ export function createBuiltinExpandedProgram(
       ),
     { always: true },
   );
+  return {
+    diagnosticPreparedFiles: new Map<string, PreparedSourceFile>(),
+    frontendDiagnostics,
+    macroEnvironment,
+    ownedPreparedPrograms,
+    preparedProgram,
+    supportedOptions,
+    timingMetadata,
+    trackPreparedProgram,
+  };
+}
 
-  if (hasErrorDiagnostics(frontendDiagnostics)) {
-    return createBuiltinExpandedProgramResult(
-      preparedProgram,
-      diagnosticPreparedFiles,
-      frontendDiagnostics,
-      macroEnvironment,
-      [...ownedPreparedPrograms],
-      preparedProgram,
-      preparedProgram.program,
-    );
-  }
+function expandBuiltinMacrosForContext(
+  context: BuiltinProgramStageContext,
+): ReadonlyMap<string, ts.SourceFile> {
+  return measureCheckerTiming(
+    'project.prepare.builtin.expandMacros',
+    context.timingMetadata,
+    () => context.macroEnvironment.expandPreparedProgram(true, true, true),
+    { always: true },
+  );
+}
 
-  let expandedFiles: ReadonlyMap<string, ts.SourceFile>;
-  try {
-    expandedFiles = measureCheckerTiming(
-      'project.prepare.builtin.expandMacros',
-      timingMetadata,
-      () => macroEnvironment.expandPreparedProgram(true, true, true),
-      { always: true },
-    );
-  } catch (error) {
-    if (error instanceof MacroError) {
-      frontendDiagnostics.push(createBuiltinMacroDiagnostic(error));
-      return createBuiltinExpandedProgramResult(
-        preparedProgram,
-        diagnosticPreparedFiles,
-        frontendDiagnostics,
-        macroEnvironment,
-        [...ownedPreparedPrograms],
-        preparedProgram,
-        preparedProgram.program,
-      );
-    }
-    throw error;
-  }
-
+function createBuiltinAnnotatedStage(
+  context: BuiltinProgramStageContext,
+  expandedFiles: ReadonlyMap<string, ts.SourceFile>,
+): BuiltinAnnotatedStageResult {
   const printer = ts.createPrinter();
-  const originalOverrides = supportedOptions.fileOverrides ?? new Map<string, string>();
+  const originalOverrides = context.supportedOptions.fileOverrides ?? new Map<string, string>();
   const annotatedOverrides = new Map(originalOverrides);
   const placeholdersByFile = new Map<string, Map<number, IndexedMacroPlaceholder>>();
   const augmentPlaceholderIdsByFile = new Map<string, Set<number>>();
   let annotatedChangedFileCount = 0;
   const annotatedOverrideTimingMetadata: Record<string, number> = {
-    ...timingMetadata,
+    ...context.timingMetadata,
     changedFiles: 0,
     macroExpansionFiles: 0,
     builtinImportFiles: 0,
@@ -1134,21 +1192,23 @@ export function createBuiltinExpandedProgram(
     'project.prepare.builtin.annotatedOverrides',
     annotatedOverrideTimingMetadata,
     () => {
-      const annotatedArtifactCache = preparedProgram.preparedHost.reuseState
+      const annotatedArtifactCache = context.preparedProgram.preparedHost.reuseState
         .builtinAnnotatedSourceFiles;
       let unchangedFiles = 0;
       let rebuiltFiles = 0;
       let reusedFiles = 0;
-      for (const placeholder of preparedProgram.placeholderIndex().entries()) {
+      for (const placeholder of context.preparedProgram.placeholderIndex().entries()) {
         const filePlaceholders = placeholdersByFile.get(placeholder.fileName) ?? new Map();
         filePlaceholders.set(placeholder.id, placeholder);
         placeholdersByFile.set(placeholder.fileName, filePlaceholders);
 
-        const sourceFile = preparedProgram.program.getSourceFile(
-          preparedProgram.toProgramFileName(placeholder.fileName),
+        const sourceFile = context.preparedProgram.program.getSourceFile(
+          context.preparedProgram.toProgramFileName(placeholder.fileName),
         );
         const definition = sourceFile
-          ? macroEnvironment.definitionsForFile(sourceFile).get(placeholder.invocation.nameText)
+          ? context.macroEnvironment.definitionsForFile(sourceFile).get(
+            placeholder.invocation.nameText,
+          )
           : undefined;
         const definitionMetadata = definition ? getLoadedMacroDefinitionMetadata(definition) : null;
         const expansionMode = definitionMetadata?.expansionMode ?? definition?.expansionMode;
@@ -1160,12 +1220,15 @@ export function createBuiltinExpandedProgram(
           augmentPlaceholderIdsByFile.set(placeholder.fileName, augmentIds);
         }
       }
+
       for (const [fileName, sourceFile] of expandedFiles.entries()) {
-        const sourceFileName = preparedProgram.toSourceFileName(fileName);
-        const preparedSource = preparedProgram.preparedHost.getPreparedSourceFile(sourceFileName);
+        const sourceFileName = context.preparedProgram.toSourceFileName(fileName);
+        const preparedSource = context.preparedProgram.preparedHost.getPreparedSourceFile(
+          sourceFileName,
+        );
         const containsMacroSyntax = (preparedSource?.rewriteResult.replacements.length ?? 0) > 0;
         const importsBuiltinMacros = sourceFileImportsBuiltinMacros(
-          preparedProgram.program.getSourceFile(fileName),
+          context.preparedProgram.program.getSourceFile(fileName),
         );
         if (containsMacroSyntax) {
           annotatedOverrideTimingMetadata.macroExpansionFiles += 1;
@@ -1202,34 +1265,49 @@ export function createBuiltinExpandedProgram(
   );
 
   const annotatedProgram = mapsEqual(annotatedOverrides, originalOverrides) ||
-      programMatchesOverrides(preparedProgram, annotatedOverrides)
-    ? preparedProgram
+      programMatchesOverrides(context.preparedProgram, annotatedOverrides)
+    ? context.preparedProgram
     : measureCheckerTiming(
       'project.prepare.builtin.annotatedProgram',
       {
-        ...timingMetadata,
+        ...context.timingMetadata,
         changedFiles: annotatedChangedFileCount,
       },
       () =>
-        trackPreparedProgram(createPreparedProgram({
-          ...withPersistentSemanticBuildInfoStage(supportedOptions, 'annotated'),
+        context.trackPreparedProgram(createPreparedProgram({
+          ...withPersistentSemanticBuildInfoStage(context.supportedOptions, 'annotated'),
           fileOverrides: annotatedOverrides,
           invalidateModuleResolutions: false,
-          oldProgram: preparedProgram.program,
+          oldProgram: context.preparedProgram.program,
         })),
       { always: true },
     );
-  if (annotatedProgram !== preparedProgram) {
+  if (annotatedProgram !== context.preparedProgram) {
     persistPreparedProgramBuildInfo(annotatedProgram);
-    frontendDiagnostics.push(...annotatedProgram.frontendDiagnostics());
+    context.frontendDiagnostics.push(...annotatedProgram.frontendDiagnostics());
   }
 
-  let numericsProgram = annotatedProgram;
-  const numericOverrides = new Map(annotatedOverrides);
+  return {
+    annotatedChangedFileCount,
+    annotatedOverrides,
+    annotatedProgram,
+    augmentPlaceholderIdsByFile,
+    placeholdersByFile,
+  };
+}
+
+function createBuiltinEmitStagePreparation(
+  context: BuiltinProgramStageContext,
+  annotatedStage: BuiltinAnnotatedStageResult,
+  numericLoweringTarget: NumericLoweringTarget,
+): BuiltinEmitStagePreparationResult {
+  const printer = ts.createPrinter();
+  let numericsProgram = annotatedStage.annotatedProgram;
+  const numericOverrides = new Map(annotatedStage.annotatedOverrides);
   const numericallyAffectedFiles = new Set<string>();
   measureCheckerTiming(
     'project.prepare.builtin.numericNormalization',
-    timingMetadata,
+    context.timingMetadata,
     () => {
       for (let pass = 0; pass < NUMERIC_NORMALIZATION_MAX_PASSES; pass += 1) {
         const numericNormalizedFiles = normalizeMachineNumericSemanticsInProgram(
@@ -1248,15 +1326,15 @@ export function createBuiltinExpandedProgram(
           );
         }
 
-        const nextNumericsProgram = trackPreparedProgram(createPreparedProgram({
-          ...withPersistentSemanticBuildInfoStage(supportedOptions, 'final'),
+        const nextNumericsProgram = context.trackPreparedProgram(createPreparedProgram({
+          ...withPersistentSemanticBuildInfoStage(context.supportedOptions, 'final'),
           fileOverrides: numericOverrides,
           invalidateModuleResolutions: false,
           oldProgram: numericsProgram.program,
         }));
         persistPreparedProgramBuildInfo(nextNumericsProgram);
         if (nextNumericsProgram !== numericsProgram) {
-          frontendDiagnostics.push(...nextNumericsProgram.frontendDiagnostics());
+          context.frontendDiagnostics.push(...nextNumericsProgram.frontendDiagnostics());
         }
         numericsProgram = nextNumericsProgram;
       }
@@ -1268,12 +1346,12 @@ export function createBuiltinExpandedProgram(
   let finalChangedFileCount = 0;
   const normalizedFiles = measureCheckerTiming(
     'project.prepare.builtin.errorNormalization',
-    timingMetadata,
+    context.timingMetadata,
     () => normalizeErrorBoundariesInProgram(numericsProgram.program).changedFiles,
     { always: true },
   );
   const finalOverrideTimingMetadata: Record<string, number> = {
-    ...timingMetadata,
+    ...context.timingMetadata,
     changedFiles: 0,
     macroExpansionFiles: 0,
     postRewriteFiles: 0,
@@ -1287,7 +1365,8 @@ export function createBuiltinExpandedProgram(
     'project.prepare.builtin.finalOverrides',
     finalOverrideTimingMetadata,
     () => {
-      const finalArtifactCache = preparedProgram.preparedHost.reuseState.builtinFinalSourceFiles;
+      const finalArtifactCache = context.preparedProgram.preparedHost.reuseState
+        .builtinFinalSourceFiles;
       let unchangedFiles = 0;
       let rebuiltFiles = 0;
       let reusedFiles = 0;
@@ -1297,7 +1376,9 @@ export function createBuiltinExpandedProgram(
         }
 
         const sourceFileName = numericsProgram.toSourceFileName(sourceFile.fileName);
-        const preparedSource = preparedProgram.preparedHost.getPreparedSourceFile(sourceFileName);
+        const preparedSource = context.preparedProgram.preparedHost.getPreparedSourceFile(
+          sourceFileName,
+        );
         const containsMacroSyntax = (preparedSource?.rewriteResult.replacements.length ?? 0) > 0;
         const importsBuiltinMacros = sourceFileImportsBuiltinMacros(
           numericsProgram.program.getSourceFile(sourceFile.fileName),
@@ -1329,8 +1410,8 @@ export function createBuiltinExpandedProgram(
         }
         finalChangedFileCount += 1;
         const placeholderSignature = createPlaceholderSignature(
-          placeholdersByFile.get(sourceFileName) ?? new Map(),
-          augmentPlaceholderIdsByFile.get(sourceFileName) ?? new Set(),
+          annotatedStage.placeholdersByFile.get(sourceFileName) ?? new Map(),
+          annotatedStage.augmentPlaceholderIdsByFile.get(sourceFileName) ?? new Set(),
         );
         const normalizedText = normalized?.rewriteStage.rewrittenText;
         const cachedFinalArtifact = finalArtifactCache.get(sourceFileName);
@@ -1342,7 +1423,10 @@ export function createBuiltinExpandedProgram(
           cachedFinalArtifact.placeholderSignature === placeholderSignature
         ) {
           if (cachedFinalArtifact.diagnosticPreparedFile) {
-            diagnosticPreparedFiles.set(sourceFileName, cachedFinalArtifact.diagnosticPreparedFile);
+            context.diagnosticPreparedFiles.set(
+              sourceFileName,
+              cachedFinalArtifact.diagnosticPreparedFile,
+            );
           }
           finalOverrides.set(sourceFileName, cachedFinalArtifact.finalOverrideText);
           reusedFiles += 1;
@@ -1364,13 +1448,13 @@ export function createBuiltinExpandedProgram(
           const { cleanedProgramText, preparedFile } = buildDiagnosticPreparedSourceFile(
             preparedSource,
             finalText,
-            placeholdersByFile.get(sourceFileName) ?? new Map(),
-            augmentPlaceholderIdsByFile.get(sourceFileName) ?? new Set(),
+            annotatedStage.placeholdersByFile.get(sourceFileName) ?? new Map(),
+            annotatedStage.augmentPlaceholderIdsByFile.get(sourceFileName) ?? new Set(),
             true,
           );
           diagnosticPreparedFile = preparedFile;
           finalOverrideText = cleanedProgramText;
-          diagnosticPreparedFiles.set(sourceFileName, preparedFile);
+          context.diagnosticPreparedFiles.set(sourceFileName, preparedFile);
           finalOverrides.set(sourceFileName, cleanedProgramText);
           finalArtifactCache.set(sourceFileName, {
             diagnosticPreparedFile,
@@ -1396,10 +1480,10 @@ export function createBuiltinExpandedProgram(
             rewriteResult: preparedSource.rewriteResult,
             rewrittenText: finalText,
           };
-          diagnosticPreparedFiles.set(sourceFileName, diagnosticPreparedFile);
+          context.diagnosticPreparedFiles.set(sourceFileName, diagnosticPreparedFile);
         } else if (preparedSource?.postRewriteStage) {
           diagnosticPreparedFile = preparedSource;
-          diagnosticPreparedFiles.set(sourceFileName, preparedSource);
+          context.diagnosticPreparedFiles.set(sourceFileName, preparedSource);
         }
         finalOverrides.set(sourceFileName, finalText);
         finalArtifactCache.set(sourceFileName, {
@@ -1420,58 +1504,10 @@ export function createBuiltinExpandedProgram(
     { always: true },
   );
 
-  const collectBuiltinFrontendDiagnosticsForProgram = (
-    targetProgram: PreparedProgram,
-  ): void => {
-    const abstractNumericFamilyDiagnostics = collectAbstractNumericFamilyArithmeticInProgram(
-      targetProgram.program,
-    ).map((diagnostic) =>
-      createAbstractNumericFamilyDiagnostic(
-        diagnostic,
-        diagnosticPreparedFiles.get(toSourceFileName(diagnostic.fileName)) ??
-          targetProgram.preparedHost.getPreparedSourceFile(
-            toSourceFileName(diagnostic.fileName),
-          ),
-        targetProgram.program.getSourceFile(diagnostic.fileName)?.text ?? '',
-      )
-    );
-    frontendDiagnostics.push(...abstractNumericFamilyDiagnostics);
-    const mixedMachineNumericDiagnostics = collectMixedMachineNumericArithmeticInProgram(
-      targetProgram.program,
-    ).map((diagnostic) =>
-      createMixedMachineNumericDiagnostic(
-        diagnostic,
-        diagnosticPreparedFiles.get(toSourceFileName(diagnostic.fileName)) ??
-          targetProgram.preparedHost.getPreparedSourceFile(
-            toSourceFileName(diagnostic.fileName),
-          ),
-        targetProgram.program.getSourceFile(diagnostic.fileName)?.text ?? '',
-      )
-    );
-    frontendDiagnostics.push(...mixedMachineNumericDiagnostics);
-    const sortComparatorDiagnostics = collectSortCallsWithoutComparatorInProgram(
-      targetProgram.program,
-    ).map((diagnostic) =>
-      createSortComparatorRequiredDiagnostic(
-        diagnostic,
-        diagnosticPreparedFiles.get(toSourceFileName(diagnostic.fileName)) ??
-          targetProgram.preparedHost.getPreparedSourceFile(
-            toSourceFileName(diagnostic.fileName),
-          ),
-        targetProgram.program.getSourceFile(diagnostic.fileName)?.text ?? '',
-      )
-    );
-    frontendDiagnostics.push(...sortComparatorDiagnostics);
-  };
-
-  const canReuseAnalysisProgram = programMatchesOverrides(numericsProgram, finalOverrides);
-  let supplementalTsDiagnosticPrograms:
-    | readonly BuiltinExpandedTsDiagnosticProgram[]
-    | undefined;
-  if (!canReuseAnalysisProgram && allowSupplementalDiagnosticPrograms) {
+  let normalizationOnlyDiagnosticFilePaths: readonly string[] | null = null;
+  if (!programMatchesOverrides(numericsProgram, finalOverrides)) {
     const supplementalFilePaths: string[] = [];
     let hasOnlyNormalizedLocalDiffs = true;
-
     for (const [sourceFileName, finalText] of finalOverrides) {
       const programFileName = numericsProgram.toProgramFileName(sourceFileName);
       const sourceFile = numericsProgram.program.getSourceFile(programFileName);
@@ -1479,7 +1515,9 @@ export function createBuiltinExpandedProgram(
         continue;
       }
 
-      const preparedSource = preparedProgram.preparedHost.getPreparedSourceFile(sourceFileName);
+      const preparedSource = context.preparedProgram.preparedHost.getPreparedSourceFile(
+        sourceFileName,
+      );
       const normalizedOnly = normalizedFiles.has(programFileName) &&
         !numericallyAffectedFiles.has(programFileName) &&
         (preparedSource?.rewriteResult.replacements.length ?? 0) === 0 &&
@@ -1488,79 +1526,271 @@ export function createBuiltinExpandedProgram(
         hasOnlyNormalizedLocalDiffs = false;
         break;
       }
-
       supplementalFilePaths.push(sourceFileName);
     }
-
     if (hasOnlyNormalizedLocalDiffs && supplementalFilePaths.length > 0) {
-      const supplementalDiagnosticProgram = measureCheckerTiming(
-        'project.prepare.builtin.supplementalTsDiagnosticsProgram',
-        {
-          ...timingMetadata,
-          changedFiles: finalChangedFileCount,
-          fileCount: supplementalFilePaths.length,
-        },
-          () =>
-            trackPreparedProgram(createPreparedProgram({
-              ...withPersistentSemanticBuildInfoStage(supportedOptions, 'final'),
-              fileOverrides: finalOverrides,
-              invalidateModuleResolutions: false,
-              oldProgram: numericsProgram.program,
-              rootNames: supplementalFilePaths,
-            })),
-        { always: true },
-      );
-      supplementalTsDiagnosticPrograms = [
-        { program: numericsProgram.program },
-        {
-          filePaths: supplementalFilePaths,
-          program: supplementalDiagnosticProgram.program,
-        },
-      ];
+      normalizationOnlyDiagnosticFilePaths = supplementalFilePaths;
     }
   }
 
-  if (canReuseAnalysisProgram || supplementalTsDiagnosticPrograms) {
-    const analysisPreparedProgram = numericsProgram;
-    collectBuiltinFrontendDiagnosticsForProgram(analysisPreparedProgram);
-    return createBuiltinExpandedProgramResult(
+  return {
+    canReuseAnalysisProgram: programMatchesOverrides(numericsProgram, finalOverrides),
+    finalChangedFileCount,
+    finalOverrides,
+    normalizationOnlyDiagnosticFilePaths,
+    numericsProgram,
+  };
+}
+
+function collectBuiltinFrontendDiagnosticsForProgram(
+  context: BuiltinProgramStageContext,
+  targetProgram: PreparedProgram,
+): void {
+  const abstractNumericFamilyDiagnostics = collectAbstractNumericFamilyArithmeticInProgram(
+    targetProgram.program,
+  ).map((diagnostic) =>
+    createAbstractNumericFamilyDiagnostic(
+      diagnostic,
+      context.diagnosticPreparedFiles.get(toSourceFileName(diagnostic.fileName)) ??
+        targetProgram.preparedHost.getPreparedSourceFile(toSourceFileName(diagnostic.fileName)),
+      targetProgram.program.getSourceFile(diagnostic.fileName)?.text ?? '',
+    )
+  );
+  context.frontendDiagnostics.push(...abstractNumericFamilyDiagnostics);
+  const mixedMachineNumericDiagnostics = collectMixedMachineNumericArithmeticInProgram(
+    targetProgram.program,
+  ).map((diagnostic) =>
+    createMixedMachineNumericDiagnostic(
+      diagnostic,
+      context.diagnosticPreparedFiles.get(toSourceFileName(diagnostic.fileName)) ??
+        targetProgram.preparedHost.getPreparedSourceFile(toSourceFileName(diagnostic.fileName)),
+      targetProgram.program.getSourceFile(diagnostic.fileName)?.text ?? '',
+    )
+  );
+  context.frontendDiagnostics.push(...mixedMachineNumericDiagnostics);
+  const sortComparatorDiagnostics = collectSortCallsWithoutComparatorInProgram(
+    targetProgram.program,
+  ).map((diagnostic) =>
+    createSortComparatorRequiredDiagnostic(
+      diagnostic,
+      context.diagnosticPreparedFiles.get(toSourceFileName(diagnostic.fileName)) ??
+        targetProgram.preparedHost.getPreparedSourceFile(toSourceFileName(diagnostic.fileName)),
+      targetProgram.program.getSourceFile(diagnostic.fileName)?.text ?? '',
+    )
+  );
+  context.frontendDiagnostics.push(...sortComparatorDiagnostics);
+}
+
+function createBuiltinFinalProgram(
+  context: BuiltinProgramStageContext,
+  emitStage: BuiltinEmitStagePreparationResult,
+): PreparedProgram {
+  const expandedProgram = measureCheckerTiming(
+    'project.prepare.builtin.finalProgram',
+    {
+      ...context.timingMetadata,
+      changedFiles: emitStage.finalChangedFileCount,
+    },
+    () =>
+      context.trackPreparedProgram(createPreparedProgram({
+        ...withPersistentSemanticBuildInfoStage(context.supportedOptions, 'final'),
+        fileOverrides: emitStage.finalOverrides,
+        invalidateModuleResolutions: false,
+        oldProgram: emitStage.numericsProgram.program,
+      })),
+    { always: true },
+  );
+  persistPreparedProgramBuildInfo(expandedProgram);
+  context.frontendDiagnostics.push(...expandedProgram.frontendDiagnostics());
+  return expandedProgram;
+}
+
+function createSupplementalTsDiagnosticPrograms(
+  context: BuiltinProgramStageContext,
+  emitStage: BuiltinEmitStagePreparationResult,
+): readonly BuiltinExpandedTsDiagnosticProgram[] | undefined {
+  const supplementalFilePaths = emitStage.normalizationOnlyDiagnosticFilePaths;
+  if (!supplementalFilePaths || supplementalFilePaths.length === 0) {
+    return undefined;
+  }
+
+  const supplementalDiagnosticProgram = measureCheckerTiming(
+    'project.prepare.builtin.supplementalTsDiagnosticsProgram',
+    {
+      ...context.timingMetadata,
+      changedFiles: emitStage.finalChangedFileCount,
+      fileCount: supplementalFilePaths.length,
+    },
+    () =>
+      context.trackPreparedProgram(createPreparedProgram({
+        ...withPersistentSemanticBuildInfoStage(context.supportedOptions, 'final'),
+        fileOverrides: emitStage.finalOverrides,
+        invalidateModuleResolutions: false,
+        oldProgram: emitStage.numericsProgram.program,
+        rootNames: supplementalFilePaths,
+      })),
+    { always: true },
+  );
+  return [
+    { program: emitStage.numericsProgram.program },
+    {
+      filePaths: supplementalFilePaths,
+      program: supplementalDiagnosticProgram.program,
+    },
+  ];
+}
+
+function createBuiltinEmitProgramInternal(
+  options: CreateBuiltinEmitProgramOptions | CreateBuiltinRuntimeProgramOptions,
+): BuiltinEmitProgram {
+  const {
+    numericLoweringTarget = 'js',
+    ...preparedProgramOptions
+  } = options;
+  const context = createBuiltinProgramStageContext(preparedProgramOptions);
+  if (hasErrorDiagnostics(context.frontendDiagnostics)) {
+    return createBuiltinProgramBaseResult(
+      context.preparedProgram,
+      context.diagnosticPreparedFiles,
+      context.frontendDiagnostics,
+      context.macroEnvironment,
+      [...context.ownedPreparedPrograms],
+      context.preparedProgram,
+      context.preparedProgram.program,
+    );
+  }
+
+  let expandedFiles: ReadonlyMap<string, ts.SourceFile>;
+  try {
+    expandedFiles = expandBuiltinMacrosForContext(context);
+  } catch (error) {
+    if (error instanceof MacroError) {
+      context.frontendDiagnostics.push(createBuiltinMacroDiagnostic(error));
+      return createBuiltinProgramBaseResult(
+        context.preparedProgram,
+        context.diagnosticPreparedFiles,
+        context.frontendDiagnostics,
+        context.macroEnvironment,
+        [...context.ownedPreparedPrograms],
+        context.preparedProgram,
+        context.preparedProgram.program,
+      );
+    }
+    throw error;
+  }
+
+  const annotatedStage = createBuiltinAnnotatedStage(context, expandedFiles);
+  const emitStage = createBuiltinEmitStagePreparation(
+    context,
+    annotatedStage,
+    numericLoweringTarget,
+  );
+  const analysisPreparedProgram = emitStage.canReuseAnalysisProgram
+    ? emitStage.numericsProgram
+    : createBuiltinFinalProgram(context, emitStage);
+  collectBuiltinFrontendDiagnosticsForProgram(context, analysisPreparedProgram);
+  return createBuiltinProgramBaseResult(
+    analysisPreparedProgram,
+    context.diagnosticPreparedFiles,
+    context.frontendDiagnostics,
+    context.macroEnvironment,
+    [...context.ownedPreparedPrograms],
+    context.preparedProgram,
+    analysisPreparedProgram.program,
+  );
+}
+
+export function createBuiltinDiagnosticProgram(
+  options: CreateBuiltinDiagnosticProgramOptions,
+): BuiltinDiagnosticProgram {
+  const {
+    allowSupplementalDiagnosticPrograms = false,
+    numericLoweringTarget = 'js',
+    ...preparedProgramOptions
+  } = options;
+  const context = createBuiltinProgramStageContext(preparedProgramOptions);
+  if (hasErrorDiagnostics(context.frontendDiagnostics)) {
+    return createBuiltinDiagnosticProgramResult(
+      context.preparedProgram,
+      context.diagnosticPreparedFiles,
+      context.frontendDiagnostics,
+      context.macroEnvironment,
+      [...context.ownedPreparedPrograms],
+      context.preparedProgram,
+      context.preparedProgram.program,
+    );
+  }
+
+  let expandedFiles: ReadonlyMap<string, ts.SourceFile>;
+  try {
+    expandedFiles = expandBuiltinMacrosForContext(context);
+  } catch (error) {
+    if (error instanceof MacroError) {
+      context.frontendDiagnostics.push(createBuiltinMacroDiagnostic(error));
+      return createBuiltinDiagnosticProgramResult(
+        context.preparedProgram,
+        context.diagnosticPreparedFiles,
+        context.frontendDiagnostics,
+        context.macroEnvironment,
+        [...context.ownedPreparedPrograms],
+        context.preparedProgram,
+        context.preparedProgram.program,
+      );
+    }
+    throw error;
+  }
+
+  const annotatedStage = createBuiltinAnnotatedStage(context, expandedFiles);
+  const emitStage = createBuiltinEmitStagePreparation(
+    context,
+    annotatedStage,
+    numericLoweringTarget,
+  );
+  const supplementalTsDiagnosticPrograms = allowSupplementalDiagnosticPrograms
+    ? createSupplementalTsDiagnosticPrograms(context, emitStage)
+    : undefined;
+  if (emitStage.canReuseAnalysisProgram || supplementalTsDiagnosticPrograms) {
+    const analysisPreparedProgram = emitStage.numericsProgram;
+    collectBuiltinFrontendDiagnosticsForProgram(context, analysisPreparedProgram);
+    return createBuiltinDiagnosticProgramResult(
       analysisPreparedProgram,
-      diagnosticPreparedFiles,
-      frontendDiagnostics,
-      macroEnvironment,
-      [...ownedPreparedPrograms],
-      preparedProgram,
+      context.diagnosticPreparedFiles,
+      context.frontendDiagnostics,
+      context.macroEnvironment,
+      [...context.ownedPreparedPrograms],
+      context.preparedProgram,
       analysisPreparedProgram.program,
       supplementalTsDiagnosticPrograms,
     );
   }
 
-  const expandedProgram = measureCheckerTiming(
-    'project.prepare.builtin.finalProgram',
-    {
-      ...timingMetadata,
-      changedFiles: finalChangedFileCount,
-    },
-    () =>
-      trackPreparedProgram(createPreparedProgram({
-        ...withPersistentSemanticBuildInfoStage(supportedOptions, 'final'),
-        fileOverrides: finalOverrides,
-        invalidateModuleResolutions: false,
-        oldProgram: numericsProgram.program,
-      })),
-    { always: true },
-  );
-  persistPreparedProgramBuildInfo(expandedProgram);
-  frontendDiagnostics.push(...expandedProgram.frontendDiagnostics());
-  collectBuiltinFrontendDiagnosticsForProgram(expandedProgram);
-
-  return createBuiltinExpandedProgramResult(
+  const expandedProgram = createBuiltinFinalProgram(context, emitStage);
+  collectBuiltinFrontendDiagnosticsForProgram(context, expandedProgram);
+  return createBuiltinDiagnosticProgramResult(
     expandedProgram,
-    diagnosticPreparedFiles,
-    frontendDiagnostics,
-    macroEnvironment,
-    [...ownedPreparedPrograms],
-    preparedProgram,
+    context.diagnosticPreparedFiles,
+    context.frontendDiagnostics,
+    context.macroEnvironment,
+    [...context.ownedPreparedPrograms],
+    context.preparedProgram,
     expandedProgram.program,
   );
+}
+
+export function createBuiltinEmitProgram(
+  options: CreateBuiltinEmitProgramOptions,
+): BuiltinEmitProgram {
+  return createBuiltinEmitProgramInternal(options);
+}
+
+export function createBuiltinRuntimeProgram(
+  options: CreateBuiltinRuntimeProgramOptions,
+): BuiltinRuntimeProgram {
+  return createBuiltinEmitProgramInternal(options);
+}
+
+export function createBuiltinExpandedProgram(
+  options: CreateBuiltinExpandedProgramOptions,
+): BuiltinExpandedProgram {
+  return createBuiltinDiagnosticProgram(options);
 }

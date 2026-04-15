@@ -8,7 +8,7 @@ import {
   type MergedDiagnostic,
   toMergedDiagnostic,
 } from '../checker/diagnostics.ts';
-import { createBuiltinExpandedProgram } from '../frontend/builtin_macro_support.ts';
+import { createBuiltinRuntimeProgram } from '../frontend/builtin_macro_support.ts';
 import { MacroError } from '../frontend/macro_errors.ts';
 import { isSoundscriptSourceFile } from '../frontend/project_frontend.ts';
 import {
@@ -292,7 +292,7 @@ function createRuntimeMacroDiagnostic(error: MacroError): MergedDiagnostic {
 
 function createExpandedProgram(projectPath: string, extraRootNames: readonly string[] = []) {
   const runtimeConfig = loadRuntimeProgramConfig(projectPath, extraRootNames);
-  return createBuiltinExpandedProgram({
+  return createBuiltinRuntimeProgram({
     baseHost: createSoundStdlibCompilerHost(
       runtimeConfig.loadedConfig.frontierCommandLine.options,
       dirname(projectPath),

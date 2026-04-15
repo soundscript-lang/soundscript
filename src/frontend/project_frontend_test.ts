@@ -14,7 +14,11 @@ import {
 } from '../../tests/support/value_matrix.ts';
 import { createInstalledStdlibPackageFiles } from '../../tests/support/test_installed_stdlib.ts';
 import { transpilePreparedSoundscriptModuleToEsm } from '../runtime/transform.ts';
-import { createBuiltinExpandedProgram as createBuiltinExpandedProgramRaw } from './builtin_macro_support.ts';
+import {
+  createBuiltinEmitProgram as createBuiltinEmitProgramRaw,
+  createBuiltinExpandedProgram as createBuiltinExpandedProgramRaw,
+  createBuiltinRuntimeProgram as createBuiltinRuntimeProgramRaw,
+} from './builtin_macro_support.ts';
 import { installTestDisposableCleanup } from './builtin_expanded_program_test_cleanup.ts';
 import {
   capturePersistentPreparedCompilerHostReuseSnapshot,
@@ -33,6 +37,12 @@ const trackDisposable = installTestDisposableCleanup();
 const createBuiltinExpandedProgram = (
   ...args: Parameters<typeof createBuiltinExpandedProgramRaw>
 ) => trackDisposable(createBuiltinExpandedProgramRaw(...args));
+const createBuiltinEmitProgram = (
+  ...args: Parameters<typeof createBuiltinEmitProgramRaw>
+) => trackDisposable(createBuiltinEmitProgramRaw(...args));
+const createBuiltinRuntimeProgram = (
+  ...args: Parameters<typeof createBuiltinRuntimeProgramRaw>
+) => trackDisposable(createBuiltinRuntimeProgramRaw(...args));
 const createPreparedCompilerHost = (...args: Parameters<typeof createPreparedCompilerHostRaw>) =>
   trackDisposable(createPreparedCompilerHostRaw(...args));
 const createPreparedProgram = (...args: Parameters<typeof createPreparedProgramRaw>) =>
@@ -2541,6 +2551,86 @@ Deno.test('createBuiltinExpandedProgram can defer normalization-only final rebui
       ),
       true,
     );
+  } finally {
+    if (originalTimingEnv === undefined) {
+      Deno.env.delete('SOUNDSCRIPT_CHECKER_TIMING');
+    } else {
+      Deno.env.set('SOUNDSCRIPT_CHECKER_TIMING', originalTimingEnv);
+    }
+    console.error = originalError;
+  }
+});
+
+Deno.test('createBuiltinEmitProgram and createBuiltinRuntimeProgram keep normalization-only final rebuilds in the main program', () => {
+  const fileName = '/virtual/index.sts';
+  const originalTimingEnv = Deno.env.get('SOUNDSCRIPT_CHECKER_TIMING');
+  const originalError = console.error;
+  const logs: string[] = [];
+  console.error = (...args: unknown[]) => {
+    logs.push(args.map((arg) => String(arg)).join(' '));
+  };
+
+  const runAndAssert = (
+    label: string,
+    createProgram: typeof createBuiltinEmitProgram | typeof createBuiltinRuntimeProgram,
+  ): void => {
+    logs.length = 0;
+    const builtinExpanded = createProgram({
+      baseHost: createBaseHost(
+        new Map([
+          [
+            fileName,
+            [
+              'try {',
+              '  throw new Error("boom");',
+              '} catch (error) {',
+              '  console.log(error.message);',
+              '}',
+              '',
+            ].join('\n'),
+          ],
+        ]),
+      ),
+      options: {
+        target: ts.ScriptTarget.ES2022,
+        module: ts.ModuleKind.ESNext,
+        moduleResolution: ts.ModuleResolutionKind.Bundler,
+        noEmit: true,
+        strict: true,
+      },
+      rootNames: [fileName],
+    });
+
+    const analysisSourceFile = builtinExpanded.program.getSourceFile(`${fileName}.ts`);
+    const analysisPrinted = analysisSourceFile
+      ? ts.createPrinter().printFile(analysisSourceFile)
+      : '';
+
+    assert(analysisSourceFile, label);
+    assertStringIncludes(analysisPrinted, '__sts_normalize_error');
+    assertEquals(builtinExpanded.tsDiagnosticPrograms.length, 1, label);
+    assertEquals(
+      logs.some((line) =>
+        line.includes('[soundscript:checker] project.prepare.builtin.finalProgram ')
+      ),
+      true,
+      label,
+    );
+    assertEquals(
+      logs.some((line) =>
+        line.includes(
+          '[soundscript:checker] project.prepare.builtin.supplementalTsDiagnosticsProgram ',
+        )
+      ),
+      false,
+      label,
+    );
+  };
+
+  try {
+    Deno.env.set('SOUNDSCRIPT_CHECKER_TIMING', '1');
+    runAndAssert('emit', createBuiltinEmitProgram);
+    runAndAssert('runtime', createBuiltinRuntimeProgram);
   } finally {
     if (originalTimingEnv === undefined) {
       Deno.env.delete('SOUNDSCRIPT_CHECKER_TIMING');

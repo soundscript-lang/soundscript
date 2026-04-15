@@ -15,7 +15,7 @@ import {
   resolveExpansionEnabled,
   type RuntimeTarget,
 } from '../project/config.ts';
-import { createBuiltinExpandedProgram } from './builtin_macro_support.ts';
+import { createBuiltinDiagnosticProgram } from './builtin_macro_support.ts';
 import {
   createMacroDebugSnapshot,
   type MacroDebugStage,
@@ -112,7 +112,7 @@ function renderExpandOutput(artifacts: ExpandProjectArtifacts, projectPath: stri
 }
 
 function renderExpandedFileDebugOutput(
-  expandedProgram: ReturnType<typeof createBuiltinExpandedProgram>,
+  expandedProgram: ReturnType<typeof createBuiltinDiagnosticProgram>,
   options: ExpandProjectOptions,
 ): ExpandProjectResult {
   const requestedFilePath = options.filePath!;
@@ -169,7 +169,22 @@ export async function expandProject(options: ExpandProjectOptions): Promise<Expa
   );
   const soundscriptRootNames = collectSoundscriptRootNames(options.projectPath, loadedConfig);
   const declarationRootNames = loadedConfig.commandLine.fileNames.filter(isDeclarationRootFileName);
-  const expandedProgram = createBuiltinExpandedProgram({
+  const rootNames = soundscriptRootNames.length > 0
+    ? [
+      ...new Set([
+        ...soundscriptRootNames,
+        ...declarationRootNames,
+      ]),
+    ]
+    : loadedConfig.commandLine.fileNames;
+  const configuredSoundscriptFileNames = soundscriptRootNames.length > 0
+    ? loadedConfig.soundscriptConfiguredFileNames
+    : new Set(
+      rootNames
+        .filter((fileName) => !isDeclarationRootFileName(fileName))
+        .map((fileName) => ts.sys.resolvePath(fileName)),
+    );
+  const expandedProgram = createBuiltinDiagnosticProgram({
     baseHost: createSoundStdlibCompilerHost(
       loadedConfig.frontierCommandLine.options,
       dirname(options.projectPath),
@@ -178,17 +193,12 @@ export async function expandProject(options: ExpandProjectOptions): Promise<Expa
       loadedConfig.diagnostics,
       soundscriptRootNames,
     ),
-    configuredSoundscriptFileNames: loadedConfig.soundscriptConfiguredFileNames,
+    configuredSoundscriptFileNames,
     expansionEnabled,
     options: loadedConfig.frontierCommandLine.options,
     projectReferences: loadedConfig.frontierCommandLine.projectReferences,
     runtime: loadedConfig.runtime,
-    rootNames: [
-      ...new Set([
-        ...soundscriptRootNames,
-        ...declarationRootNames,
-      ]),
-    ],
+    rootNames,
   });
   try {
     const diagnostics: MergedDiagnostic[] = [

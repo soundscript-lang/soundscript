@@ -32,8 +32,8 @@ import {
   type RuntimeTarget,
 } from '../project/config.ts';
 import {
-  type BuiltinExpandedProgram,
-  createBuiltinExpandedProgram,
+  type BuiltinEmitProgram,
+  createBuiltinEmitProgram,
 } from '../frontend/builtin_macro_support.ts';
 import { MacroError } from '../frontend/macro_errors.ts';
 import {
@@ -588,9 +588,9 @@ function createPackageBuildProgramWithLoadedConfig(
   options: BuildProjectOptions,
   loadedConfig: ReturnType<typeof loadConfig>,
   prepareArtifacts?: PersistentPreparedAnalysisProjectReuseSnapshots,
-): BuiltinExpandedProgram {
+): BuiltinEmitProgram {
   const soundscriptRootNames = collectSoundscriptRootNames(options.projectPath, loadedConfig);
-  return createBuiltinExpandedProgram({
+  return createBuiltinEmitProgram({
     baseHost: createSoundStdlibCompilerHost(
       loadedConfig.frontierCommandLine.options,
       dirname(options.projectPath),
@@ -630,7 +630,7 @@ function createPackageBuildProgram(
   options: BuildProjectOptions,
   prepareArtifacts?: PersistentPreparedAnalysisProjectReuseSnapshots,
 ): {
-  readonly builtProgram: BuiltinExpandedProgram;
+  readonly builtProgram: BuiltinEmitProgram;
   readonly loadedConfig: ReturnType<typeof loadConfig>;
 } {
   const loadedConfig = loadConfig(options.projectPath, { target: options.target });
@@ -644,7 +644,7 @@ async function emitPackageBuildOutputs(
   options: BuildProjectOptions,
   packageJson: PackageJsonRecord,
   packageInfo: SoundScriptPackageInfo,
-  builtProgram: BuiltinExpandedProgram,
+  builtProgram: BuiltinEmitProgram,
   {
     validateDiagnostics = true,
   }: {

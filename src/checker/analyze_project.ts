@@ -7,9 +7,9 @@ import {
   resolveBundledTypesDirectory,
 } from '../bundled/sound_stdlib.ts';
 import {
-  type BuiltinExpandedProgram,
+  type BuiltinDiagnosticProgram,
   type BuiltinExpandedTsDiagnosticProgram,
-  createBuiltinExpandedProgram,
+  createBuiltinDiagnosticProgram,
 } from '../frontend/builtin_macro_support.ts';
 import {
   capturePersistentProjectMacroEnvironmentReuseSnapshot,
@@ -1624,7 +1624,7 @@ function prepareAnalysisView(
     return null;
   }
 
-  const expandedProgram = createBuiltinExpandedProgram({
+  const expandedProgram = createBuiltinDiagnosticProgram({
     allowSupplementalDiagnosticPrograms: true,
     baseHost,
     configFileParsingDiagnostics,
@@ -1761,7 +1761,7 @@ function prepareHostAnalysisView(
 export function createPreparedAnalysisProjectFromBuiltinExpandedProgram(
   options: AnalyzeProjectOptions,
   loadedConfig: ReturnType<typeof loadConfig>,
-  expandedProgram: BuiltinExpandedProgram,
+  expandedProgram: BuiltinDiagnosticProgram,
 ): PreparedAnalysisProject {
   const program = expandedProgram.program;
   const analysisPreparedProgram = expandedProgram.analysisPreparedProgram;

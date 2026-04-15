@@ -27,7 +27,7 @@ import {
   type RuntimeContext,
   type RuntimeTarget,
 } from '../project/config.ts';
-import { createBuiltinExpandedProgram } from '../frontend/builtin_macro_support.ts';
+import { createBuiltinDiagnosticProgram } from '../frontend/builtin_macro_support.ts';
 import {
   getLineAndCharacterOfPosition,
   getPositionOfLineAndCharacter,
@@ -252,7 +252,22 @@ function createProgram(options: CompileProjectOptions): {
   const loadedConfig = loadConfig(options.projectPath, { target: options.target });
   const soundscriptRootNames = collectSoundscriptRootNames(options.projectPath, loadedConfig);
   const declarationRootNames = loadedConfig.commandLine.fileNames.filter(isDeclarationRootFileName);
-  const expandedProgram = createBuiltinExpandedProgram({
+  const rootNames = soundscriptRootNames.length > 0
+    ? [
+      ...new Set([
+        ...soundscriptRootNames,
+        ...declarationRootNames,
+      ]),
+    ]
+    : loadedConfig.commandLine.fileNames;
+  const configuredSoundscriptFileNames = soundscriptRootNames.length > 0
+    ? loadedConfig.soundscriptConfiguredFileNames
+    : new Set(
+      rootNames
+        .filter((fileName) => !isDeclarationRootFileName(fileName))
+        .map((fileName) => ts.sys.resolvePath(fileName)),
+    );
+  const expandedProgram = createBuiltinDiagnosticProgram({
     baseHost: createSoundStdlibCompilerHost(
       loadedConfig.frontierCommandLine.options,
       dirname(options.projectPath),
@@ -261,17 +276,12 @@ function createProgram(options: CompileProjectOptions): {
       loadedConfig.diagnostics,
       soundscriptRootNames,
     ),
-    configuredSoundscriptFileNames: loadedConfig.soundscriptConfiguredFileNames,
+    configuredSoundscriptFileNames,
     numericLoweringTarget: 'wasm',
     options: loadedConfig.frontierCommandLine.options,
     projectReferences: loadedConfig.frontierCommandLine.projectReferences,
     runtime: loadedConfig.runtime,
-    rootNames: [
-      ...new Set([
-        ...soundscriptRootNames,
-        ...declarationRootNames,
-      ]),
-    ],
+    rootNames,
   });
 
   return {

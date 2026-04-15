@@ -3,8 +3,8 @@ import ts from 'typescript';
 import { createSoundStdlibCompilerHost } from '../bundled/sound_stdlib.ts';
 import { loadConfig, type LoadedConfig } from '../project/config.ts';
 import {
-  type BuiltinExpandedProgram,
-  createBuiltinExpandedProgram,
+  type BuiltinRuntimeProgram,
+  createBuiltinRuntimeProgram,
   getAlwaysAvailableBuiltinMacroDefinitions,
   getAlwaysAvailableBuiltinMacroExports,
   getBuiltinMacroDefinitionsBySpecifier,
@@ -41,7 +41,7 @@ interface TransformProjectContext {
 
 interface TransformProjectSession {
   deferredExpansion?: DeferredRuntimeExpansion;
-  expandedProgram?: BuiltinExpandedProgram;
+  expandedProgram?: BuiltinRuntimeProgram;
   preparedProgram?: PreparedProgram;
   projectContext: TransformProjectContext;
   requestedRuntimeRoots: Set<string>;
@@ -197,7 +197,7 @@ function preparedProgramIncludesFile(
 }
 
 function getExpandedProgramSourceFile(
-  expandedProgram: BuiltinExpandedProgram,
+  expandedProgram: BuiltinRuntimeProgram,
   fileName: string,
 ): ts.SourceFile | undefined {
   return expandedProgram.program.getSourceFile(
@@ -206,7 +206,7 @@ function getExpandedProgramSourceFile(
 }
 
 function transpileExpandedSourceFile(
-  expandedProgram: BuiltinExpandedProgram,
+  expandedProgram: BuiltinRuntimeProgram,
   fileName: string,
   projectPath: string,
 ): OnDemandTransformResult {
@@ -247,9 +247,9 @@ function resolveProjectPath(
 function createExpandedRuntimeProgram(
   projectContext: TransformProjectContext,
   rootNames: readonly string[],
-  previousProgram?: BuiltinExpandedProgram,
-): BuiltinExpandedProgram {
-  return createBuiltinExpandedProgram({
+  previousProgram?: BuiltinRuntimeProgram,
+): BuiltinRuntimeProgram {
+  return createBuiltinRuntimeProgram({
     baseHost: createSoundStdlibCompilerHost(
       projectContext.loadedConfig.frontierCommandLine.options,
       dirname(projectContext.projectPath),
@@ -448,7 +448,7 @@ export function createOnDemandTransformer(
     session: TransformProjectSession,
     fileName: string,
     sourceText: string,
-  ): BuiltinExpandedProgram {
+  ): BuiltinRuntimeProgram {
     const currentProgram = session.expandedProgram;
     const currentSourceFile = currentProgram && getExpandedProgramSourceFile(currentProgram, fileName);
     if (
