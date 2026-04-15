@@ -253,6 +253,39 @@ export interface ComposedSourceMapResult {
   mapText: string;
 }
 
+function createLineStartSourceMap(
+  generatedText: string,
+  sourcePath: string,
+  sourceText: string,
+  mapSourcePosition: (generatedPosition: number) => number,
+): ComposedSourceMapResult {
+  const generatedLineStarts = computeLineStarts(generatedText);
+  const sourceLineStarts = computeLineStarts(sourceText);
+  const mappings = generatedLineStarts.map((generatedPosition) => {
+    const sourcePosition = Math.min(mapSourcePosition(generatedPosition), sourceText.length);
+    const sourceLineAndColumn = lineAndColumnForPosition(sourceLineStarts, sourcePosition);
+    return [{
+      generatedColumn: 0,
+      originalColumn: sourceLineAndColumn.column,
+      originalLine: sourceLineAndColumn.line,
+      sourceIndex: 0,
+    }];
+  });
+  const map: SourceMapV3 = {
+    mappings: encodeMappings(mappings),
+    names: [],
+    sources: [sourcePath],
+    sourcesContent: [sourceText],
+    version: 3,
+  };
+
+  return {
+    code: stripSourceMappingUrl(generatedText),
+    map,
+    mapText: `${JSON.stringify(map)}\n`,
+  };
+}
+
 export function composeTranspiledSourceMapToOriginal(
   code: string,
   emittedSourceMapText: string,
@@ -309,6 +342,27 @@ export function composeTranspiledSourceMapToOriginal(
     map: composedMap,
     mapText: `${JSON.stringify(composedMap)}\n`,
   };
+}
+
+export function composeRewrittenSourceMapToOriginal(
+  code: string,
+  preparedFile: PreparedSourceFile,
+  sourcePath: string,
+): ComposedSourceMapResult {
+  return createLineStartSourceMap(
+    code,
+    sourcePath,
+    preparedFile.originalText,
+    (generatedPosition) => mapProgramPositionToSource(preparedFile, generatedPosition).position,
+  );
+}
+
+export function createIdentitySourceMap(
+  code: string,
+  sourcePath: string,
+  sourceText: string,
+): ComposedSourceMapResult {
+  return createLineStartSourceMap(code, sourcePath, sourceText, (generatedPosition) => generatedPosition);
 }
 
 export function inlineSourceMapComment(mapText: string): string {

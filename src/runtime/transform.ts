@@ -9,7 +9,9 @@ import {
 import { builtinRuntimeImportSpecifier } from '../project/soundscript_runtime_specifiers.ts';
 
 import {
+  composeRewrittenSourceMapToOriginal,
   composeTranspiledSourceMapToOriginal,
+  createIdentitySourceMap,
   stripTrailingSourceMapComment,
 } from './source_maps.ts';
 
@@ -19,6 +21,23 @@ export interface RuntimeTransformArtifact {
 }
 
 export type ModuleSpecifierMode = 'emit-js' | 'preserve' | 'source-sts';
+export type RuntimeTypeScriptSupport = 'strip' | 'transform' | false;
+
+interface RuntimeProcessLike {
+  env?: Record<string, string | undefined>;
+  execArgv?: readonly string[];
+  features?: {
+    typescript?: RuntimeTypeScriptSupport | string;
+  };
+  versions?: {
+    node?: string;
+  };
+}
+
+interface RuntimeEnvironmentLike {
+  Deno?: unknown;
+  process?: RuntimeProcessLike;
+}
 
 function rewriteRuntimeModuleSpecifier(
   specifier: string,
@@ -150,6 +169,110 @@ export function rewriteModuleSpecifiersForEmit(
   );
 }
 
+function parseNodeVersion(nodeVersion: string | undefined): { major: number; minor: number } | undefined {
+  if (!nodeVersion) {
+    return undefined;
+  }
+  const match = /^v?(\d+)\.(\d+)/u.exec(nodeVersion);
+  if (!match) {
+    return undefined;
+  }
+  return {
+    major: Number(match[1]),
+    minor: Number(match[2]),
+  };
+}
+
+function tokenizeNodeOptions(text: string): string[] {
+  return text.match(/"[^"]*"|'[^']*'|[^\s]+/gu)?.map((token) =>
+    token.replace(/^['"]|['"]$/gu, '')
+  ) ?? [];
+}
+
+function collectRuntimeFlags(processLike: RuntimeProcessLike | undefined): string[] {
+  const flags = [...(processLike?.execArgv ?? [])];
+  const nodeOptions = processLike?.env?.NODE_OPTIONS;
+  if (nodeOptions) {
+    flags.push(...tokenizeNodeOptions(nodeOptions));
+  }
+  return flags;
+}
+
+export function detectRuntimeTypeScriptSupport(
+  runtimeEnvironment: RuntimeEnvironmentLike = globalThis as RuntimeEnvironmentLike,
+): RuntimeTypeScriptSupport {
+  if (runtimeEnvironment.Deno !== undefined) {
+    return 'strip';
+  }
+
+  const processLike = runtimeEnvironment.process;
+  const featureSupport = processLike?.features?.typescript;
+  if (featureSupport === 'strip' || featureSupport === 'transform' || featureSupport === false) {
+    return featureSupport;
+  }
+
+  const runtimeFlags = collectRuntimeFlags(processLike);
+  if (
+    runtimeFlags.includes('--no-strip-types') ||
+    runtimeFlags.includes('--no-experimental-strip-types')
+  ) {
+    return false;
+  }
+  if (runtimeFlags.includes('--experimental-transform-types')) {
+    return 'transform';
+  }
+  if (runtimeFlags.includes('--experimental-strip-types')) {
+    return 'strip';
+  }
+
+  const parsedNodeVersion = parseNodeVersion(processLike?.versions?.node);
+  if (!parsedNodeVersion) {
+    return false;
+  }
+  if (parsedNodeVersion.major >= 24) {
+    return 'strip';
+  }
+  if (parsedNodeVersion.major === 23 && parsedNodeVersion.minor >= 6) {
+    return 'strip';
+  }
+  if (parsedNodeVersion.major === 22 && parsedNodeVersion.minor >= 18) {
+    return 'strip';
+  }
+  return false;
+}
+
+export function runtimeRequiresJavaScriptFallback(
+  sourceText: string,
+  fileName: string,
+): boolean {
+  if (/\.[cm]?tsx$/iu.test(fileName) || fileName.endsWith('.jsx')) {
+    return true;
+  }
+
+  const scriptKind = fileName.endsWith('.sts') ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
+  const sourceFile = ts.createSourceFile(
+    fileName.endsWith('.sts') ? `${fileName.slice(0, -4)}.tsx` : fileName,
+    sourceText,
+    ts.ScriptTarget.ES2022,
+    true,
+    scriptKind,
+  );
+  let requiresFallback = false;
+
+  function visit(node: ts.Node): void {
+    if (
+      ts.isJsxElement(node) || ts.isJsxFragment(node) || ts.isJsxSelfClosingElement(node)
+    ) {
+      requiresFallback = true;
+      return;
+    }
+    ts.forEachChild(node, visit);
+  }
+
+  visit(sourceFile);
+  return requiresFallback;
+}
+
 interface RuntimeTranspileOptions {
   module?: ts.ModuleKind;
   moduleSpecifierMode?: ModuleSpecifierMode;
@@ -233,6 +356,33 @@ function normalizePreparedValueSemantics(
   };
 }
 
+export function emitPreparedSoundscriptModuleDirect(
+  sourceFileName: string,
+  preparedFile: PreparedSourceFile,
+  options: RuntimeTranspileOptions = {},
+): RuntimeTransformArtifact {
+  const runtimePreparedFile = normalizePreparedValueSemantics(
+    sourceFileName,
+    preparedFile,
+    options.valueProgram,
+  );
+  const rewrittenCode = rewriteRuntimeModuleSpecifiers(
+    runtimePreparedFile.rewrittenText,
+    sourceFileName,
+    options.moduleSpecifierMode ?? 'emit-js',
+  );
+  const composed = composeRewrittenSourceMapToOriginal(
+    rewrittenCode,
+    runtimePreparedFile,
+    sourceFileName,
+  );
+
+  return {
+    code: composed.code,
+    mapText: composed.mapText,
+  };
+}
+
 export function transpilePreparedSoundscriptModuleToEsm(
   sourceFileName: string,
   outputFileName: string,
@@ -265,6 +415,23 @@ export function transpilePreparedSoundscriptModuleToEsm(
     sourceFileName,
   );
 
+  return {
+    code: composed.code,
+    mapText: composed.mapText,
+  };
+}
+
+export function emitTypeScriptModuleDirect(
+  sourceFileName: string,
+  sourceText: string,
+  options: RuntimeTranspileOptions = {},
+): RuntimeTransformArtifact {
+  const rewrittenCode = rewriteRuntimeModuleSpecifiers(
+    sourceText,
+    sourceFileName,
+    options.moduleSpecifierMode ?? 'emit-js',
+  );
+  const composed = createIdentitySourceMap(rewrittenCode, sourceFileName, sourceText);
   return {
     code: composed.code,
     mapText: composed.mapText,

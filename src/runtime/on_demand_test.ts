@@ -173,7 +173,43 @@ Deno.test('createOnDemandTransformer resolves and transforms local .sts files wi
   const transformed = await transformer.transformModule(mainPath);
   assertEquals(transformed.transformMode, 'soundscript-prepared');
   assertStringIncludes(transformed.code, "from './helper';");
+  assertStringIncludes(transformed.code, 'export const value = helper + 1;');
   assertStringIncludes(transformed.mapText, '/src/main.sts');
+});
+
+Deno.test('createOnDemandTransformer keeps strip-only TypeScript syntax on direct runtime paths', async () => {
+  const root = await Deno.makeTempDir({ prefix: 'soundscript-on-demand-types-direct-' });
+  await writeProjectFile(
+    root,
+    'tsconfig.json',
+    JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          target: 'ES2022',
+          module: 'ESNext',
+          moduleResolution: 'Bundler',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+  );
+  await writeProjectFile(
+    root,
+    'src/main.sts',
+    [
+      'export const value: number = 41;',
+      '',
+    ].join('\n'),
+  );
+
+  const transformer = createOnDemandTransformer({ workingDirectory: root });
+  const transformed = await transformer.transformModule(join(root, 'src/main.sts'));
+
+  assertEquals(transformed.transformMode, 'soundscript-prepared');
+  assertStringIncludes(transformed.code, 'export const value: number = 41;');
 });
 
 Deno.test('createOnDemandTransformer avoids the full expanded runtime program for no-macro dependency transforms', async () => {
@@ -467,6 +503,40 @@ Deno.test('createOnDemandTransformer treats configured TypeScript files from sou
   assertStringIncludes(transformed.code, 'export const value = some(41);');
 });
 
+Deno.test('createOnDemandTransformer keeps ordinary TypeScript type syntax on the direct TypeScript path', async () => {
+  const root = await Deno.makeTempDir({ prefix: 'soundscript-on-demand-unmatched-types-' });
+  await writeProjectFile(
+    root,
+    'tsconfig.json',
+    JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          target: 'ES2022',
+          module: 'ESNext',
+          moduleResolution: 'Bundler',
+        },
+        include: ['src/**/*.ts'],
+      },
+      null,
+      2,
+    ),
+  );
+  await writeProjectFile(
+    root,
+    'src/main.ts',
+    [
+      'export const value: number = 41;',
+      '',
+    ].join('\n'),
+  );
+
+  const transformer = createOnDemandTransformer({ workingDirectory: root });
+  const transformed = await transformer.transformModule(join(root, 'src/main.ts'));
+  assertEquals(transformed.transformMode, 'typescript');
+  assertStringIncludes(transformed.code, 'export const value: number = 41;');
+});
+
 Deno.test('createOnDemandTransformer expands macros in configured TypeScript files selected by soundscript.include', async () => {
   const root = await Deno.makeTempDir({ prefix: 'soundscript-on-demand-include-macro-' });
   await writeProjectFile(
@@ -623,4 +693,38 @@ Deno.test('createOnDemandTransformer leaves unmatched TypeScript files on the or
   assertEquals(transformed.transformMode, 'typescript');
   assertEquals(transformed.code.includes("from 'sts:prelude';"), false);
   assertStringIncludes(transformed.code, 'export const value = some(41);');
+});
+
+Deno.test('createOnDemandTransformer does not mistake generic arrow functions for JSX on the direct TypeScript path', async () => {
+  const root = await Deno.makeTempDir({ prefix: 'soundscript-on-demand-generic-arrow-' });
+  await writeProjectFile(
+    root,
+    'tsconfig.json',
+    JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          target: 'ES2022',
+          module: 'ESNext',
+          moduleResolution: 'Bundler',
+        },
+        include: ['src/**/*.ts'],
+      },
+      null,
+      2,
+    ),
+  );
+  await writeProjectFile(
+    root,
+    'src/main.ts',
+    [
+      'export const identity = <T>(value: T): T => value;',
+      '',
+    ].join('\n'),
+  );
+
+  const transformer = createOnDemandTransformer({ workingDirectory: root });
+  const transformed = await transformer.transformModule(join(root, 'src/main.ts'));
+  assertEquals(transformed.transformMode, 'typescript');
+  assertStringIncludes(transformed.code, 'export const identity = <T>(value: T): T => value;');
 });

@@ -25,7 +25,11 @@ import {
 } from '../frontend/project_frontend.ts';
 import { resolveSoundScriptAwareModule } from '../project/soundscript_packages.ts';
 import {
+  detectRuntimeTypeScriptSupport,
+  emitPreparedSoundscriptModuleDirect,
+  emitTypeScriptModuleDirect,
   type RuntimeTransformArtifact,
+  runtimeRequiresJavaScriptFallback,
   transpilePreparedSoundscriptModuleToEsm,
   transpileTypeScriptModuleToEsm,
 } from './transform.ts';
@@ -209,22 +213,34 @@ function transpileExpandedSourceFile(
   expandedProgram: BuiltinRuntimeProgram,
   fileName: string,
   projectPath: string,
+  runtimeTypeScriptSupport: ReturnType<typeof detectRuntimeTypeScriptSupport>,
 ): OnDemandTransformResult {
   const sourceFile = getExpandedProgramSourceFile(expandedProgram, fileName);
   if (!sourceFile) {
     throw new Error(`Missing expanded source file for ${fileName}.`);
   }
 
-  const artifact = transpileTypeScriptModuleToEsm(
-    fileName,
-    `${fileName}.js`,
-    ts.createPrinter().printFile(sourceFile),
-    {
-      module: ts.ModuleKind.ES2022,
-      moduleSpecifierMode: 'preserve',
-      target: ts.ScriptTarget.ES2022,
-    },
-  );
+  const sourceText = ts.createPrinter().printFile(sourceFile);
+  const artifact = runtimeTypeScriptSupport !== false &&
+      !runtimeRequiresJavaScriptFallback(sourceText, fileName)
+    ? emitTypeScriptModuleDirect(
+      fileName,
+      sourceText,
+      {
+        moduleSpecifierMode: 'preserve',
+        target: ts.ScriptTarget.ES2022,
+      },
+    )
+    : transpileTypeScriptModuleToEsm(
+      fileName,
+      `${fileName}.js`,
+      sourceText,
+      {
+        module: ts.ModuleKind.ES2022,
+        moduleSpecifierMode: 'preserve',
+        target: ts.ScriptTarget.ES2022,
+      },
+    );
   return {
     ...artifact,
     projectPath,
@@ -342,22 +358,33 @@ function transpilePreparedSourceFile(
   preparedProgram: PreparedProgram,
   fileName: string,
   projectPath: string,
+  runtimeTypeScriptSupport: ReturnType<typeof detectRuntimeTypeScriptSupport>,
 ): OnDemandTransformResult {
   const preparedFile = getPreparedSourceFile(preparedProgram, fileName);
   if (!preparedFile) {
     throw new Error(`Missing prepared source file for ${fileName}.`);
   }
 
-  const artifact = transpilePreparedSoundscriptModuleToEsm(
-    fileName,
-    `${fileName}.js`,
-    preparedFile,
-    {
-      module: ts.ModuleKind.ES2022,
-      moduleSpecifierMode: 'preserve',
-      target: ts.ScriptTarget.ES2022,
-    },
-  );
+  const artifact = runtimeTypeScriptSupport !== false &&
+      !runtimeRequiresJavaScriptFallback(preparedFile.rewrittenText, fileName)
+    ? emitPreparedSoundscriptModuleDirect(
+      fileName,
+      preparedFile,
+      {
+        moduleSpecifierMode: 'preserve',
+        target: ts.ScriptTarget.ES2022,
+      },
+    )
+    : transpilePreparedSoundscriptModuleToEsm(
+      fileName,
+      `${fileName}.js`,
+      preparedFile,
+      {
+        module: ts.ModuleKind.ES2022,
+        moduleSpecifierMode: 'preserve',
+        target: ts.ScriptTarget.ES2022,
+      },
+    );
   return {
     ...artifact,
     projectPath,
@@ -369,6 +396,7 @@ function transpileDeferredExpandedSourceFile(
   expansion: DeferredRuntimeExpansion,
   fileName: string,
   projectPath: string,
+  runtimeTypeScriptSupport: ReturnType<typeof detectRuntimeTypeScriptSupport>,
 ): OnDemandTransformResult {
   const sourceFile = expansion.expandedFiles.get(
     expansion.preparedProgram.toProgramFileName(fileName),
@@ -377,16 +405,27 @@ function transpileDeferredExpandedSourceFile(
     throw new Error(`Missing deferred expanded source file for ${fileName}.`);
   }
 
-  const artifact = transpileTypeScriptModuleToEsm(
-    fileName,
-    `${fileName}.js`,
-    ts.createPrinter().printFile(sourceFile),
-    {
-      module: ts.ModuleKind.ES2022,
-      moduleSpecifierMode: 'preserve',
-      target: ts.ScriptTarget.ES2022,
-    },
-  );
+  const sourceText = ts.createPrinter().printFile(sourceFile);
+  const artifact = runtimeTypeScriptSupport !== false &&
+      !runtimeRequiresJavaScriptFallback(sourceText, fileName)
+    ? emitTypeScriptModuleDirect(
+      fileName,
+      sourceText,
+      {
+        moduleSpecifierMode: 'preserve',
+        target: ts.ScriptTarget.ES2022,
+      },
+    )
+    : transpileTypeScriptModuleToEsm(
+      fileName,
+      `${fileName}.js`,
+      sourceText,
+      {
+        module: ts.ModuleKind.ES2022,
+        moduleSpecifierMode: 'preserve',
+        target: ts.ScriptTarget.ES2022,
+      },
+    );
   return {
     ...artifact,
     projectPath,
@@ -402,6 +441,7 @@ export function createOnDemandTransformer(
   const projectContextByPath = new Map<string, TransformProjectContext>();
   const projectPathByFileName = new Map<string, string | undefined>();
   const projectSessionsByPath = new Map<string, TransformProjectSession>();
+  const runtimeTypeScriptSupport = detectRuntimeTypeScriptSupport();
 
   function getProjectContext(
     fileName: string,
@@ -553,6 +593,7 @@ export function createOnDemandTransformer(
             isolatedPreparedProgram,
             fileName,
             projectContext.projectPath,
+            runtimeTypeScriptSupport,
           );
           soundscriptCache.set(preparedCacheKey, result);
           return result;
@@ -572,6 +613,7 @@ export function createOnDemandTransformer(
             preparedProgram,
             fileName,
             projectContext.projectPath,
+            runtimeTypeScriptSupport,
           );
           soundscriptCache.set(preparedCacheKey, result);
           return result;
@@ -583,6 +625,7 @@ export function createOnDemandTransformer(
             deferredExpansion,
             fileName,
             projectContext.projectPath,
+            runtimeTypeScriptSupport,
           );
         } catch (error) {
           if (!(error instanceof SemanticMacroExpansionRequiredError)) {
@@ -595,6 +638,7 @@ export function createOnDemandTransformer(
           expandedProgram,
           fileName,
           projectContext.projectPath,
+          runtimeTypeScriptSupport,
         );
       } finally {
         projectSessionsByPath.set(projectContext.projectPath, session);
@@ -627,16 +671,26 @@ export function createOnDemandTransformer(
       return cached;
     }
 
-    const artifact = transpileTypeScriptModuleToEsm(
-      fileName,
-      `${fileName}.js`,
-      sourceText,
-      {
-        module: ts.ModuleKind.ES2022,
-        moduleSpecifierMode: 'preserve',
-        target: ts.ScriptTarget.ES2022,
-      },
-    );
+    const artifact = runtimeTypeScriptSupport !== false &&
+        !runtimeRequiresJavaScriptFallback(sourceText, fileName)
+      ? emitTypeScriptModuleDirect(
+        fileName,
+        sourceText,
+        {
+          moduleSpecifierMode: 'preserve',
+          target: ts.ScriptTarget.ES2022,
+        },
+      )
+      : transpileTypeScriptModuleToEsm(
+        fileName,
+        `${fileName}.js`,
+        sourceText,
+        {
+          module: ts.ModuleKind.ES2022,
+          moduleSpecifierMode: 'preserve',
+          target: ts.ScriptTarget.ES2022,
+        },
+      );
     const result = {
       ...artifact,
       projectPath,
