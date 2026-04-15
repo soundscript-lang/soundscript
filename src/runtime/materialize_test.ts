@@ -7,6 +7,8 @@ import {
 } from '../../tests/support/test_macro_package_fixture.ts';
 import { writeInstalledStdlibPackage } from '../../tests/support/test_installed_stdlib.ts';
 import { materializeRuntimeGraph } from './materialize.ts';
+import { materializeWithLegacySemanticRuntimeProgram } from './runtime_semantic_parity_test_support.ts';
+import { stripTrailingSourceMapComment } from './source_maps.ts';
 
 async function writeProjectFile(
   root: string,
@@ -22,6 +24,32 @@ async function writeTestMacroPackage(root: string): Promise<void> {
   for (const file of await loadTestMacroPackageFiles()) {
     await writeProjectFile(root, file.path, file.contents);
   }
+}
+
+async function assertMaterializedEntryMatchesLegacySemanticRuntimeProgram(
+  root: string,
+  outDir: string,
+  relativeEntryPath: string,
+): Promise<void> {
+  const sourceFileName = join(root, relativeEntryPath);
+  const emittedEntryPath = join(
+    outDir,
+    relativeEntryPath.replace(/\.(?:sts|[cm]?tsx?|jsx)$/u, '.js'),
+  );
+  const emittedEntry = await Deno.readTextFile(emittedEntryPath);
+  const legacy = materializeWithLegacySemanticRuntimeProgram(
+    join(root, 'tsconfig.json'),
+    sourceFileName,
+    emittedEntryPath,
+  );
+  const normalize = (text: string) =>
+    stripTrailingSourceMapComment(text)
+      .replace(/\n\/\/# sourceMappingURL=data:application\/json;base64,[A-Za-z0-9+/=]+\s*$/u, '')
+      .trim();
+  assertEquals(
+    normalize(emittedEntry),
+    normalize(legacy.code),
+  );
 }
 
 Deno.test('materializeRuntimeGraph writes a module package boundary and exposes project node_modules', async () => {
@@ -268,6 +296,223 @@ Deno.test('materializeRuntimeGraph ignores unrelated frontier files outside the 
     assertEquals(result.exitCode, 0);
     const emittedEntry = await Deno.readTextFile(join(outDir, 'src/main.js'));
     assertStringIncludes(emittedEntry, 'export const main = 1;');
+  } finally {
+    await Deno.remove(root, { recursive: true }).catch(() => undefined);
+  }
+});
+
+Deno.test('materializeRuntimeGraph preserves syntax-only macro expansion when a sibling macro requires semantics', async () => {
+  const root = await Deno.makeTempDir({ prefix: 'soundscript-materialize-mixed-semantic-' });
+  const outDir = join(root, '.soundscript-out');
+
+  try {
+    await writeProjectFile(
+      root,
+      'tsconfig.json',
+      JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+            moduleResolution: 'Bundler',
+          },
+          include: ['src/**/*.sts'],
+        },
+        null,
+        2,
+      ),
+    );
+    await writeInstalledStdlibPackage(root);
+    await writeProjectFile(
+      root,
+      'src/macros.macro.sts',
+      [
+        "import { macroSignature } from 'sts:macros';",
+        '',
+        '// #[macro(call)]',
+        'export function Twice() {',
+        '  return {',
+        '    signature: macroSignature.of(macroSignature.expr("value")),',
+        '    expand(ctx: any, signature: any) {',
+        '      if (!signature) {',
+        "        throw new Error('expected signature');",
+        '      }',
+        '      return ctx.output.expr(ctx.quote.expr`(${signature.args.value}) * 2`);',
+        '    },',
+        '  };',
+        '}',
+        '',
+        '// #[macro(call)]',
+        'export function TypeName() {',
+        '  return {',
+        '    signature: macroSignature.of(macroSignature.expr("value")),',
+        '    expand(ctx: any) {',
+        "      return ctx.output.expr(ctx.build.stringLiteral(ctx.semantics.argType(0)?.displayText ?? 'unknown'));",
+        '    },',
+        '  };',
+        '}',
+        '',
+      ].join('\n'),
+    );
+    await writeProjectFile(
+      root,
+      'src/main.sts',
+      [
+        "import { Twice, TypeName } from './macros.macro';",
+        'const value = 2;',
+        'declare function readValue(): Promise<number>;',
+        'export const doubled = Twice(value);',
+        'export const valueType = TypeName(readValue());',
+        '',
+      ].join('\n'),
+    );
+
+    const result = await materializeRuntimeGraph({
+      entryPaths: [join(root, 'src/main.sts')],
+      outDir,
+      workingDirectory: root,
+    });
+
+    assertEquals(result.exitCode, 0);
+    const emittedEntry = await Deno.readTextFile(join(outDir, 'src/main.js'));
+    assertStringIncludes(emittedEntry, 'export const doubled = (value) * 2;');
+    assertStringIncludes(emittedEntry, 'export const valueType = "Promise<number>";');
+  } finally {
+    await Deno.remove(root, { recursive: true }).catch(() => undefined);
+  }
+});
+
+Deno.test('materializeRuntimeGraph matches the legacy full semantic runtime program for mixed semantic entries', async () => {
+  const root = await Deno.makeTempDir({ prefix: 'soundscript-materialize-semantic-parity-' });
+  const outDir = join(root, '.soundscript-out');
+
+  try {
+    await writeProjectFile(
+      root,
+      'tsconfig.json',
+      JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+            moduleResolution: 'Bundler',
+          },
+          include: ['src/**/*.sts'],
+        },
+        null,
+        2,
+      ),
+    );
+    await writeInstalledStdlibPackage(root);
+    await writeProjectFile(
+      root,
+      'src/macros.macro.sts',
+      [
+        "import { macroSignature } from 'sts:macros';",
+        '',
+        '// #[macro(call)]',
+        'export function Twice() {',
+        '  return {',
+        '    signature: macroSignature.of(macroSignature.expr("value")),',
+        '    expand(ctx: any, signature: any) {',
+        '      if (!signature) {',
+        "        throw new Error('expected signature');",
+        '      }',
+        '      return ctx.output.expr(ctx.quote.expr`(${signature.args.value}) * 2`);',
+        '    },',
+        '  };',
+        '}',
+        '',
+        '// #[macro(call)]',
+        'export function TypeName() {',
+        '  return {',
+        '    signature: macroSignature.of(macroSignature.expr("value")),',
+        '    expand(ctx: any) {',
+        "      return ctx.output.expr(ctx.build.stringLiteral(ctx.semantics.argType(0)?.displayText ?? 'unknown'));",
+        '    },',
+        '  };',
+        '}',
+        '',
+      ].join('\n'),
+    );
+    await writeProjectFile(
+      root,
+      'src/main.sts',
+      [
+        "import { Twice, TypeName } from './macros.macro';",
+        'const value = 2;',
+        'declare function readValue(): Promise<number>;',
+        'export const doubled = Twice(value);',
+        'export const valueType = TypeName(readValue());',
+        '',
+      ].join('\n'),
+    );
+
+    const result = await materializeRuntimeGraph({
+      entryPaths: [join(root, 'src/main.sts')],
+      outDir,
+      workingDirectory: root,
+    });
+
+    assertEquals(result.exitCode, 0);
+    await assertMaterializedEntryMatchesLegacySemanticRuntimeProgram(root, outDir, 'src/main.sts');
+  } finally {
+    await Deno.remove(root, { recursive: true }).catch(() => undefined);
+  }
+});
+
+Deno.test('materializeRuntimeGraph matches the legacy full semantic runtime program for builtin derive entries', async () => {
+  const root = await Deno.makeTempDir({ prefix: 'soundscript-materialize-derive-parity-' });
+  const outDir = join(root, '.soundscript-out');
+
+  try {
+    await writeProjectFile(
+      root,
+      'tsconfig.json',
+      JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+            moduleResolution: 'Bundler',
+          },
+          include: ['src/**/*.sts'],
+        },
+        null,
+        2,
+      ),
+    );
+    await writeInstalledStdlibPackage(root);
+    await writeProjectFile(
+      root,
+      'src/contracts.sts',
+      [
+        "import { codec } from 'sts:derive';",
+        '',
+        '// #[codec]',
+        'export interface User {',
+        '  readonly id: string;',
+        '}',
+        '',
+        "export const encoded = UserCodec.encode({ id: 'user-1' });",
+        '',
+      ].join('\n'),
+    );
+
+    const result = await materializeRuntimeGraph({
+      entryPaths: [join(root, 'src/contracts.sts')],
+      outDir,
+      workingDirectory: root,
+    });
+
+    assertEquals(result.exitCode, 0);
+    await assertMaterializedEntryMatchesLegacySemanticRuntimeProgram(root, outDir, 'src/contracts.sts');
   } finally {
     await Deno.remove(root, { recursive: true }).catch(() => undefined);
   }

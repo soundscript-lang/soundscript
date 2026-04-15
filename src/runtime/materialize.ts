@@ -3,9 +3,7 @@ import ts from 'typescript';
 
 import {
   formatDiagnostics,
-  hasErrorDiagnostics,
   type MergedDiagnostic,
-  toMergedDiagnostic,
 } from '../checker/diagnostics.ts';
 import { MacroError } from '../frontend/macro_errors.ts';
 import { isSoundscriptSourceFile } from '../frontend/project_frontend.ts';
@@ -25,10 +23,21 @@ import {
 import { loadRuntimeProgramConfig } from './project_roots.ts';
 import {
   collectRuntimeSemanticClosure,
-  createRuntimeSemanticProgram,
 } from './semantic_closure.ts';
+import {
+  createDeferredRuntimeExpansion,
+  createPreparedRuntimeProgram,
+  createSemanticRuntimeExpansion,
+  expandSemanticPlaceholdersOnDeferredSourceFile,
+  finalizeRuntimeExpandedSourceFile,
+  type SemanticRuntimeExpansion,
+} from './runtime_macro_pipeline.ts';
 import { inlineSourceMapComment, stripTrailingSourceMapComment } from './source_maps.ts';
-import { type RuntimeTransformArtifact, transpileTypeScriptModuleToEsm } from './transform.ts';
+import {
+  type RuntimeTransformArtifact,
+  transpilePreparedSoundscriptModuleToEsm,
+  transpileTypeScriptModuleToEsm,
+} from './transform.ts';
 
 const PROJECT_CONFIG_CANDIDATES = ['tsconfig.soundscript.json', 'tsconfig.json'] as const;
 const LOCAL_CODE_EXTENSIONS = [
@@ -293,17 +302,11 @@ function createRuntimeMacroDiagnostic(error: MacroError): MergedDiagnostic {
   };
 }
 
-function transpileExpandedSoundscriptModuleToEsm(
-  expandedProgram: ReturnType<typeof createRuntimeSemanticProgram>,
+function transpileExpandedSourceFileToEsm(
   sourceFileName: string,
   outputPath: string,
+  expandedSourceFile: ts.SourceFile,
 ): RuntimeTransformArtifact {
-  const programFileName = expandedProgram.preparedProgram.toProgramFileName(sourceFileName);
-  const expandedSourceFile = expandedProgram.program.getSourceFile(programFileName);
-  if (!expandedSourceFile) {
-    throw new Error(`Missing expanded source file for ${sourceFileName}.`);
-  }
-
   const printer = ts.createPrinter();
   return transpileTypeScriptModuleToEsm(
     sourceFileName,
@@ -388,140 +391,184 @@ export async function materializeRuntimeGraph(
 
   const runtimeConfig = loadRuntimeProgramConfig(entryProjectPath);
   const reachableRuntimePaths = collectReachableRuntimePaths(options.entryPaths);
-  const semanticSeedPaths = reachableRuntimePaths.filter((fileName) =>
+  const semanticSeedPaths = [...new Set(reachableRuntimePaths.filter((fileName) =>
     runtimeConfig.loadedConfig.isSoundscriptSourceFile(fileName) ||
     isSoundscriptSourceFile(fileName) ||
     isSoundscriptMacroSourceFile(fileName)
-  );
-  const semanticClosure = collectRuntimeSemanticClosure(
-    {
-      configFileParsingDiagnostics: runtimeConfig.configFileParsingDiagnostics,
-      loadedConfig: runtimeConfig.loadedConfig,
-      projectPath: entryProjectPath,
-    },
-    semanticSeedPaths,
-  );
-  const expandedProgram = semanticClosure.rootNames.length > 0
-    ? createRuntimeSemanticProgram(
-      {
-        configFileParsingDiagnostics: runtimeConfig.configFileParsingDiagnostics,
-        loadedConfig: runtimeConfig.loadedConfig,
-        projectPath: entryProjectPath,
-      },
-      semanticClosure.rootNames,
-    )
+  ))].sort();
+  const projectContext = {
+    loadedConfig: runtimeConfig.loadedConfig,
+    projectPath: entryProjectPath,
+  };
+  let preparedProgram = semanticSeedPaths.length > 0
+    ? createPreparedRuntimeProgram(projectContext, semanticSeedPaths)
     : undefined;
-  const frontendDiagnostics: MergedDiagnostic[] = expandedProgram
-    ? [
-      ...expandedProgram.frontendDiagnostics(),
-      ...ts.getPreEmitDiagnostics(expandedProgram.program).map(toMergedDiagnostic),
-    ]
-    : [];
-  if (hasErrorDiagnostics(frontendDiagnostics)) {
-    return {
-      diagnostics: frontendDiagnostics,
-      exitCode: 1,
-      output: formatDiagnostics(frontendDiagnostics, options.workingDirectory),
-    };
-  }
+  let deferredExpansion = preparedProgram
+    ? createDeferredRuntimeExpansion(preparedProgram)
+    : undefined;
+  const semanticExpansionsBySignature = new Map<string, SemanticRuntimeExpansion>();
+  let semanticLastUsedSignature: string | undefined;
 
   try {
-    if (expandedProgram) {
-      void expandedProgram.program.getTypeChecker();
+    await removePath(options.outDir);
+    await makeDirectory(options.outDir);
+
+    const emittedFiles: string[] = [];
+    const writtenSourceFiles = new Set<string>();
+    const projectRoot = dirname(entryProjectPath);
+    await ensureRuntimePackageBoundary(options.outDir);
+    emittedFiles.push(join(options.outDir, 'package.json'));
+    const runtimePackageDiagnostic = await ensureRuntimeNodeModules(projectRoot, options.outDir);
+    if (runtimePackageDiagnostic) {
+      return {
+        diagnostics: [runtimePackageDiagnostic],
+        exitCode: 1,
+        output: formatDiagnostics([runtimePackageDiagnostic], options.workingDirectory),
+      };
     }
-  } catch (error) {
-    const diagnostics = error instanceof MacroError ? [createRuntimeMacroDiagnostic(error)] : [];
-    return {
-      diagnostics,
-      exitCode: 1,
-      output: error instanceof MacroError
-        ? formatDiagnostics(diagnostics, options.workingDirectory)
-        : String(error),
-    };
-  }
+    const queue = [...options.entryPaths];
+    const visited = new Set<string>();
+    const entryOutputPaths: string[] = [];
 
-  await removePath(options.outDir);
-  await makeDirectory(options.outDir);
-
-  const emittedFiles: string[] = [];
-  const writtenSourceFiles = new Set<string>();
-  const projectRoot = dirname(entryProjectPath);
-  await ensureRuntimePackageBoundary(options.outDir);
-  emittedFiles.push(join(options.outDir, 'package.json'));
-  const runtimePackageDiagnostic = await ensureRuntimeNodeModules(projectRoot, options.outDir);
-  if (runtimePackageDiagnostic) {
-    return {
-      diagnostics: [runtimePackageDiagnostic],
-      exitCode: 1,
-      output: formatDiagnostics([runtimePackageDiagnostic], options.workingDirectory),
-    };
-  }
-  const queue = [...options.entryPaths];
-  const visited = new Set<string>();
-  const entryOutputPaths: string[] = [];
-
-  while (queue.length > 0) {
-    const sourceFileName = queue.shift()!;
-    if (visited.has(sourceFileName)) {
-      continue;
-    }
-    visited.add(sourceFileName);
-
-    if (isRuntimeAssetFile(sourceFileName)) {
-      const outputPath = toRuntimeAssetOutputPath(projectRoot, sourceFileName, options.outDir);
-      await makeDirectory(dirname(outputPath));
-      await copyFile(sourceFileName, outputPath);
-      emittedFiles.push(outputPath);
-      continue;
-    }
-
-    if (!isRuntimeCodeFile(sourceFileName)) {
-      continue;
-    }
-
-    const sourceText = readTextFileSync(sourceFileName);
-    const outputPath = toRuntimeCodeOutputPath(projectRoot, sourceFileName, options.outDir);
-    const isFrontierRuntimeFile = runtimeConfig.loadedConfig.isSoundscriptSourceFile(sourceFileName) ||
-      isSoundscriptSourceFile(sourceFileName);
-    const artifact = isFrontierRuntimeFile
-      ? transpileExpandedSoundscriptModuleToEsm(expandedProgram!, sourceFileName, outputPath)
-      : transpileTypeScriptModuleToEsm(sourceFileName, outputPath, sourceText, {
-        module: ts.ModuleKind.ES2022,
-        target: ts.ScriptTarget.ES2022,
-      });
-
-    await makeDirectory(dirname(outputPath));
-    await writeTextFile(
-      outputPath,
-      `${stripTrailingSourceMapComment(artifact.code)}\n${
-        inlineSourceMapComment(artifact.mapText)
-      }\n`,
-    );
-    emittedFiles.push(outputPath);
-    writtenSourceFiles.add(sourceFileName);
-
-    if (options.entryPaths.includes(sourceFileName)) {
-      entryOutputPaths.push(outputPath);
-    }
-
-    for (const specifier of collectModuleSpecifiers(sourceText, sourceFileName)) {
-      const dependencyPath = resolveLocalDependency(sourceFileName, specifier);
-      if (!dependencyPath || writtenSourceFiles.has(dependencyPath)) {
+    while (queue.length > 0) {
+      const sourceFileName = queue.shift()!;
+      if (visited.has(sourceFileName)) {
         continue;
       }
-      queue.push(dependencyPath);
+      visited.add(sourceFileName);
+
+      if (isRuntimeAssetFile(sourceFileName)) {
+        const outputPath = toRuntimeAssetOutputPath(projectRoot, sourceFileName, options.outDir);
+        await makeDirectory(dirname(outputPath));
+        await copyFile(sourceFileName, outputPath);
+        emittedFiles.push(outputPath);
+        continue;
+      }
+
+      if (!isRuntimeCodeFile(sourceFileName)) {
+        continue;
+      }
+
+      const sourceText = readTextFileSync(sourceFileName);
+      const outputPath = toRuntimeCodeOutputPath(projectRoot, sourceFileName, options.outDir);
+      const isFrontierRuntimeFile = runtimeConfig.loadedConfig.isSoundscriptSourceFile(sourceFileName) ||
+        isSoundscriptSourceFile(sourceFileName);
+      const artifact = isFrontierRuntimeFile
+        ? (() => {
+          if (!preparedProgram || !deferredExpansion) {
+            throw new Error(`Missing prepared runtime program for ${sourceFileName}.`);
+          }
+          const programFileName = preparedProgram.toProgramFileName(sourceFileName);
+          const preparedFile = preparedProgram.preparedHost.getPreparedSourceFile(programFileName);
+          if (!preparedFile) {
+            throw new Error(`Missing prepared source file for ${sourceFileName}.`);
+          }
+          if (preparedFile.rewriteResult.macrosById.size === 0) {
+            return transpilePreparedSoundscriptModuleToEsm(
+              sourceFileName,
+              outputPath,
+              preparedFile,
+              {
+                module: ts.ModuleKind.ES2022,
+                moduleSpecifierMode: 'emit-js',
+                target: ts.ScriptTarget.ES2022,
+              },
+            );
+          }
+          const semanticRequiredPlaceholderIds = deferredExpansion.semanticRequiredPlaceholderIdsByFile.get(
+            programFileName,
+          );
+          if (!semanticRequiredPlaceholderIds || semanticRequiredPlaceholderIds.size === 0) {
+            const deferredSourceFile = deferredExpansion.expandedFiles.get(programFileName);
+            if (!deferredSourceFile) {
+              throw new Error(`Missing deferred expanded source file for ${sourceFileName}.`);
+            }
+            return transpileExpandedSourceFileToEsm(
+              sourceFileName,
+              outputPath,
+              finalizeRuntimeExpandedSourceFile(preparedProgram, deferredSourceFile),
+            );
+          }
+
+          const closure = collectRuntimeSemanticClosure(projectContext, [sourceFileName]);
+          let semanticExpansion = semanticExpansionsBySignature.get(closure.signature);
+          if (!semanticExpansion) {
+            const previousExpansion = semanticLastUsedSignature
+              ? semanticExpansionsBySignature.get(semanticLastUsedSignature)
+              : undefined;
+            semanticExpansion = createSemanticRuntimeExpansion(
+              projectContext,
+              closure.rootNames,
+              previousExpansion,
+            );
+            semanticExpansionsBySignature.set(closure.signature, semanticExpansion);
+          }
+          semanticLastUsedSignature = closure.signature;
+          const semanticSourceFile = expandSemanticPlaceholdersOnDeferredSourceFile(
+            deferredExpansion,
+            semanticExpansion,
+            sourceFileName,
+          );
+          return transpileExpandedSourceFileToEsm(
+            sourceFileName,
+            outputPath,
+            semanticSourceFile,
+          );
+        })()
+        : transpileTypeScriptModuleToEsm(sourceFileName, outputPath, sourceText, {
+          module: ts.ModuleKind.ES2022,
+          target: ts.ScriptTarget.ES2022,
+        });
+
+      await makeDirectory(dirname(outputPath));
+      await writeTextFile(
+        outputPath,
+        `${stripTrailingSourceMapComment(artifact.code)}\n${
+          inlineSourceMapComment(artifact.mapText)
+        }\n`,
+      );
+      emittedFiles.push(outputPath);
+      writtenSourceFiles.add(sourceFileName);
+
+      if (options.entryPaths.includes(sourceFileName)) {
+        entryOutputPaths.push(outputPath);
+      }
+
+      for (const specifier of collectModuleSpecifiers(sourceText, sourceFileName)) {
+        const dependencyPath = resolveLocalDependency(sourceFileName, specifier);
+        if (!dependencyPath || writtenSourceFiles.has(dependencyPath)) {
+          continue;
+        }
+        queue.push(dependencyPath);
+      }
+    }
+
+    return {
+      artifacts: {
+        emittedFiles,
+        entryOutputPaths,
+        outDir: options.outDir,
+        projectPath: entryProjectPath,
+      },
+      diagnostics: [],
+      exitCode: 0,
+      output: '',
+    };
+  } catch (error) {
+    if (error instanceof MacroError) {
+      const diagnostics = [createRuntimeMacroDiagnostic(error)];
+      return {
+        diagnostics,
+        exitCode: 1,
+        output: formatDiagnostics(diagnostics, options.workingDirectory),
+      };
+    }
+    throw error;
+  } finally {
+    deferredExpansion?.dispose();
+    preparedProgram?.dispose(false);
+    for (const semanticExpansion of semanticExpansionsBySignature.values()) {
+      semanticExpansion.dispose();
     }
   }
-
-  return {
-    artifacts: {
-      emittedFiles,
-      entryOutputPaths,
-      outDir: options.outDir,
-      projectPath: entryProjectPath,
-    },
-    diagnostics: [],
-    exitCode: 0,
-    output: '',
-  };
 }

@@ -3,6 +3,7 @@ import { dirname, join } from '@std/path';
 
 import { writeInstalledStdlibPackage } from '../../tests/support/test_installed_stdlib.ts';
 import { createOnDemandTransformer } from './on_demand.ts';
+import { transformWithLegacySemanticRuntimeProgram } from './runtime_semantic_parity_test_support.ts';
 
 async function writeProjectFile(
   root: string,
@@ -12,6 +13,19 @@ async function writeProjectFile(
   const filePath = join(root, relativePath);
   await Deno.mkdir(dirname(filePath), { recursive: true }).catch(() => undefined);
   await Deno.writeTextFile(filePath, contents);
+}
+
+async function assertMatchesLegacySemanticRuntimeProgram(
+  transformer: ReturnType<typeof createOnDemandTransformer>,
+  projectPath: string,
+  fileName: string,
+): Promise<void> {
+  const transformed = await transformer.transformModule(fileName);
+  const legacy = transformWithLegacySemanticRuntimeProgram(projectPath, fileName);
+
+  assertEquals(transformed.transformMode, 'soundscript-semantic-macro');
+  assertEquals(transformed.code, legacy.code);
+  assertEquals(transformed.mapText, legacy.mapText);
 }
 
 Deno.test('createOnDemandTransformer expands valid project macros for local .sts files', async () => {
@@ -266,7 +280,7 @@ Deno.test('createOnDemandTransformer avoids the full expanded runtime program fo
   }
 
   const fullExpandedProgramBuilds = logs.filter((line) =>
-    line.includes('project.prepare.builtin.initialProgram')
+    line.includes('runtime.onDemand.semanticPreparedProgram')
   );
   assertEquals(fullExpandedProgramBuilds.length, 0, logs.join('\n'));
 });
@@ -744,14 +758,18 @@ Deno.test('createOnDemandTransformer scopes semantic runtime roots per requested
   }
 
   const semanticProgramRootCounts = logs
-    .filter((line) => line.includes('project.prepare.builtin.initialProgram'))
+    .filter((line) => line.includes('runtime.onDemand.semanticPreparedProgram'))
     .map((line) => {
       const match = /rootCount=(\d+)/u.exec(line);
       return match ? Number(match[1]) : null;
     })
     .filter((value): value is number => value !== null);
+  const semanticEmitRuns = logs
+    .filter((line) => line.includes('runtime.onDemand.semanticEmit '))
+    .length;
 
   assertEquals(semanticProgramRootCounts, [2, 2], logs.join('\n'));
+  assertEquals(semanticEmitRuns, 2, logs.join('\n'));
 });
 
 Deno.test('createOnDemandTransformer reuses cached semantic runtime closures when revisiting a prior semantic file', async () => {
@@ -841,7 +859,7 @@ Deno.test('createOnDemandTransformer reuses cached semantic runtime closures whe
   }
 
   const semanticProgramRootCounts = logs
-    .filter((line) => line.includes('project.prepare.builtin.initialProgram'))
+    .filter((line) => line.includes('runtime.onDemand.semanticPreparedProgram'))
     .map((line) => {
       const match = /rootCount=(\d+)/u.exec(line);
       return match ? Number(match[1]) : null;
@@ -928,8 +946,501 @@ Deno.test('createOnDemandTransformer skips deferred runtime expansion after a fi
   const deferredExpansionRuns = logs
     .filter((line) => line.includes('runtime.onDemand.deferredExpansion '))
     .length;
+  const isolatedPreparedProbeRuns = logs
+    .filter((line) => line.includes('runtime.onDemand.isolatedPreparedProbe '))
+    .length;
+  const semanticEmitRuns = logs
+    .filter((line) => line.includes('runtime.onDemand.semanticEmit '))
+    .length;
 
   assertEquals(deferredExpansionRuns, 1, logs.join('\n'));
+  assertEquals(isolatedPreparedProbeRuns, 1, logs.join('\n'));
+  assertEquals(semanticEmitRuns, 1, logs.join('\n'));
+});
+
+Deno.test('createOnDemandTransformer reuses deferred runtime emit artifacts for stable macro files', async () => {
+  const root = await Deno.makeTempDir({ prefix: 'soundscript-on-demand-deferred-emit-cache-' });
+  await writeProjectFile(
+    root,
+    'tsconfig.json',
+    JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+          moduleResolution: 'Bundler',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+  );
+  await writeProjectFile(
+    root,
+    'src/macros.macro.sts',
+    [
+      "import { macroSignature } from 'sts:macros';",
+      '',
+      '// #[macro(call)]',
+      'export function Twice() {',
+      '  return {',
+      '    signature: macroSignature.of(macroSignature.expr("value")),',
+      '    expand(ctx: any, signature: any) {',
+      '      if (!signature) {',
+      "        throw new Error('expected signature');",
+      '      }',
+      '      return ctx.output.expr(ctx.quote.expr`(${signature.args.value}) * 2`);',
+      '    },',
+      '  };',
+      '}',
+      '',
+    ].join('\n'),
+  );
+  await writeProjectFile(
+    root,
+    'src/demo.sts',
+    [
+      "import { Twice } from './macros.macro';",
+      'const value = 1;',
+      'export const doubled = Twice(value);',
+      '',
+    ].join('\n'),
+  );
+
+  const originalError = console.error;
+  const originalTiming = Deno.env.get('SOUNDSCRIPT_CHECKER_TIMING');
+  const logs: string[] = [];
+  console.error = (...args: unknown[]) => {
+    logs.push(args.map((arg) => String(arg)).join(' '));
+  };
+  Deno.env.set('SOUNDSCRIPT_CHECKER_TIMING', '1');
+
+  try {
+    const transformer = createOnDemandTransformer({ workingDirectory: root });
+    const firstTransformed = await transformer.transformModule(join(root, 'src/demo.sts'));
+    const secondTransformed = await transformer.transformModule(join(root, 'src/demo.sts'));
+
+    assertEquals(firstTransformed.transformMode, 'soundscript-deferred-macro');
+    assertEquals(secondTransformed.transformMode, 'soundscript-deferred-macro');
+    assertStringIncludes(secondTransformed.code, 'export const doubled = (value) * 2;');
+  } finally {
+    console.error = originalError;
+    if (originalTiming === undefined) {
+      Deno.env.delete('SOUNDSCRIPT_CHECKER_TIMING');
+    } else {
+      Deno.env.set('SOUNDSCRIPT_CHECKER_TIMING', originalTiming);
+    }
+  }
+
+  const deferredEmitRuns = logs
+    .filter((line) => line.includes('runtime.onDemand.deferredEmit '))
+    .length;
+  const isolatedPreparedProbeRuns = logs
+    .filter((line) => line.includes('runtime.onDemand.isolatedPreparedProbe '))
+    .length;
+
+  assertEquals(deferredEmitRuns, 1, logs.join('\n'));
+  assertEquals(isolatedPreparedProbeRuns, 1, logs.join('\n'));
+});
+
+Deno.test('createOnDemandTransformer preserves syntax-only macro expansion when a sibling macro in the same file requires semantics', async () => {
+  const root = await Deno.makeTempDir({ prefix: 'soundscript-on-demand-mixed-semantic-' });
+  await writeProjectFile(
+    root,
+    'tsconfig.json',
+    JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+          moduleResolution: 'Bundler',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+  );
+  await writeProjectFile(
+    root,
+    'src/macros.macro.sts',
+    [
+      "import { macroSignature } from 'sts:macros';",
+      '',
+      '// #[macro(call)]',
+      'export function Twice() {',
+      '  return {',
+      '    signature: macroSignature.of(macroSignature.expr("value")),',
+      '    expand(ctx: any, signature: any) {',
+      '      if (!signature) {',
+      "        throw new Error('expected signature');",
+      '      }',
+      '      return ctx.output.expr(ctx.quote.expr`(${signature.args.value}) * 2`);',
+      '    },',
+      '  };',
+      '}',
+      '',
+      '// #[macro(call)]',
+      'export function TypeName() {',
+      '  return {',
+      '    signature: macroSignature.of(macroSignature.expr("value")),',
+      '    expand(ctx: any) {',
+      "      return ctx.output.expr(ctx.build.stringLiteral(ctx.semantics.argType(0)?.displayText ?? 'unknown'));",
+      '    },',
+      '  };',
+      '}',
+      '',
+    ].join('\n'),
+  );
+  await writeProjectFile(
+    root,
+    'src/demo.sts',
+    [
+      "import { Twice, TypeName } from './macros.macro';",
+      'const value = 2;',
+      'declare function readValue(): Promise<number>;',
+      'export const doubled = Twice(value);',
+      'export const valueType = TypeName(readValue());',
+      '',
+    ].join('\n'),
+  );
+
+  const transformer = createOnDemandTransformer({ workingDirectory: root });
+  const transformed = await transformer.transformModule(join(root, 'src/demo.sts'));
+
+  assertEquals(transformed.transformMode, 'soundscript-semantic-macro');
+  assertStringIncludes(transformed.code, 'export const doubled = (value) * 2;');
+  assertStringIncludes(transformed.code, 'export const valueType = "Promise<number>";');
+});
+
+Deno.test('createOnDemandTransformer matches the legacy full semantic runtime program for mixed semantic files', async () => {
+  const root = await Deno.makeTempDir({ prefix: 'soundscript-on-demand-semantic-parity-' });
+  await writeProjectFile(
+    root,
+    'tsconfig.json',
+    JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+          moduleResolution: 'Bundler',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+  );
+  await writeProjectFile(
+    root,
+    'src/macros.macro.sts',
+    [
+      "import { macroSignature } from 'sts:macros';",
+      '',
+      '// #[macro(call)]',
+      'export function Twice() {',
+      '  return {',
+      '    signature: macroSignature.of(macroSignature.expr("value")),',
+      '    expand(ctx: any, signature: any) {',
+      '      if (!signature) {',
+      "        throw new Error('expected signature');",
+      '      }',
+      '      return ctx.output.expr(ctx.quote.expr`(${signature.args.value}) * 2`);',
+      '    },',
+      '  };',
+      '}',
+      '',
+      '// #[macro(call)]',
+      'export function TypeName() {',
+      '  return {',
+      '    signature: macroSignature.of(macroSignature.expr("value")),',
+      '    expand(ctx: any) {',
+      "      return ctx.output.expr(ctx.build.stringLiteral(ctx.semantics.argType(0)?.displayText ?? 'unknown'));",
+      '    },',
+      '  };',
+      '}',
+      '',
+    ].join('\n'),
+  );
+  await writeProjectFile(
+    root,
+    'src/demo.sts',
+    [
+      "import { Twice, TypeName } from './macros.macro';",
+      'const value = 2;',
+      'declare function readValue(): Promise<number>;',
+      'export const doubled = Twice(value);',
+      'export const valueType = TypeName(readValue());',
+      '',
+    ].join('\n'),
+  );
+
+  const fileName = join(root, 'src/demo.sts');
+  const transformer = createOnDemandTransformer({ workingDirectory: root });
+  await assertMatchesLegacySemanticRuntimeProgram(
+    transformer,
+    join(root, 'tsconfig.json'),
+    fileName,
+  );
+});
+
+Deno.test('createOnDemandTransformer matches the legacy full semantic runtime program for included TypeScript frontier files', async () => {
+  const root = await Deno.makeTempDir({ prefix: 'soundscript-on-demand-include-semantic-parity-' });
+  await writeProjectFile(
+    root,
+    'tsconfig.json',
+    JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+          moduleResolution: 'Bundler',
+        },
+        include: ['src/**/*'],
+        soundscript: {
+          include: ['src/**/*.ts'],
+        },
+      },
+      null,
+      2,
+    ),
+  );
+  await writeProjectFile(
+    root,
+    'src/macros.macro.sts',
+    [
+      "import { macroSignature } from 'sts:macros';",
+      '',
+      '// #[macro(call)]',
+      'export function TypeName() {',
+      '  return {',
+      '    signature: macroSignature.of(macroSignature.expr("value")),',
+      '    expand(ctx: any) {',
+      "      return ctx.output.expr(ctx.build.stringLiteral(ctx.semantics.argType(0)?.displayText ?? 'unknown'));",
+      '    },',
+      '  };',
+      '}',
+      '',
+    ].join('\n'),
+  );
+  await writeProjectFile(
+    root,
+    'src/demo.ts',
+    [
+      "import { TypeName } from './macros.macro';",
+      'declare function readValue(): Promise<number>;',
+      'export const typeName = TypeName(readValue());',
+      '',
+    ].join('\n'),
+  );
+
+  const fileName = join(root, 'src/demo.ts');
+  const transformer = createOnDemandTransformer({ workingDirectory: root });
+  await assertMatchesLegacySemanticRuntimeProgram(
+    transformer,
+    join(root, 'tsconfig.json'),
+    fileName,
+  );
+});
+
+Deno.test('createOnDemandTransformer matches the legacy full semantic runtime program for builtin derive frontier files', async () => {
+  const root = await Deno.makeTempDir({ prefix: 'soundscript-on-demand-derive-parity-' });
+  await writeInstalledStdlibPackage(root);
+  await writeProjectFile(
+    root,
+    'tsconfig.json',
+    JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+          moduleResolution: 'Bundler',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+  );
+  await writeProjectFile(
+    root,
+    'src/contracts.sts',
+    [
+      "import { codec } from 'sts:derive';",
+      '',
+      '// #[codec]',
+      'export interface User {',
+      '  readonly id: string;',
+      '}',
+      '',
+      "export const encoded = UserCodec.encode({ id: 'user-1' });",
+      '',
+    ].join('\n'),
+  );
+
+  const fileName = join(root, 'src/contracts.sts');
+  const transformer = createOnDemandTransformer({ workingDirectory: root });
+  await assertMatchesLegacySemanticRuntimeProgram(
+    transformer,
+    join(root, 'tsconfig.json'),
+    fileName,
+  );
+});
+
+Deno.test('createOnDemandTransformer matches the legacy full semantic runtime program for source-published dependency frontier files', async () => {
+  const root = await Deno.makeTempDir({ prefix: 'soundscript-on-demand-package-semantic-parity-' });
+  await writeInstalledStdlibPackage(root);
+  await writeProjectFile(
+    root,
+    'tsconfig.json',
+    JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          target: 'ES2022',
+          module: 'ESNext',
+          moduleResolution: 'Bundler',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+  );
+  await writeProjectFile(
+    root,
+    'node_modules/example-pkg/package.json',
+    JSON.stringify(
+      {
+        name: 'example-pkg',
+        version: '1.0.0',
+        soundscript: {
+          version: 1,
+          exports: {
+            '.': { source: './src/index.sts' },
+          },
+        },
+      },
+      null,
+      2,
+    ),
+  );
+  await writeProjectFile(
+    root,
+    'node_modules/example-pkg/src/contracts.sts',
+    [
+      "import { codec } from 'sts:derive';",
+      '',
+      '// #[codec]',
+      'export interface User {',
+      '  readonly id: string;',
+      '}',
+      '',
+    ].join('\n'),
+  );
+  await writeProjectFile(
+    root,
+    'node_modules/example-pkg/src/index.sts',
+    "export * from './contracts.sts';\n",
+  );
+  await writeProjectFile(
+    root,
+    'src/main.sts',
+    [
+      "import { UserCodec } from 'example-pkg';",
+      "export const encoded = UserCodec.encode({ id: 'user-1' });",
+      '',
+    ].join('\n'),
+  );
+
+  const fileName = join(root, 'node_modules/example-pkg/src/contracts.sts');
+  const transformer = createOnDemandTransformer({ workingDirectory: root });
+  await assertMatchesLegacySemanticRuntimeProgram(
+    transformer,
+    join(root, 'tsconfig.json'),
+    fileName,
+  );
+});
+
+Deno.test('createOnDemandTransformer matches the legacy full semantic runtime program for multi-file semantic closures', async () => {
+  const root = await Deno.makeTempDir({ prefix: 'soundscript-on-demand-multifile-semantic-parity-' });
+  await writeProjectFile(
+    root,
+    'tsconfig.json',
+    JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+          moduleResolution: 'Bundler',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+  );
+  await writeProjectFile(
+    root,
+    'src/macros.macro.sts',
+    [
+      "import { macroSignature } from 'sts:macros';",
+      '',
+      '// #[macro(call)]',
+      'export function TypeName() {',
+      '  return {',
+      '    signature: macroSignature.of(macroSignature.expr("value")),',
+      '    expand(ctx: any) {',
+      "      return ctx.output.expr(ctx.build.stringLiteral(ctx.semantics.argType(0)?.displayText ?? 'unknown'));",
+      '    },',
+      '  };',
+      '}',
+      '',
+    ].join('\n'),
+  );
+  await writeProjectFile(
+    root,
+    'src/model.sts',
+    [
+      'export interface User {',
+      '  readonly id: string;',
+      '}',
+      '',
+      'export declare function readUser(): Promise<User>;',
+      '',
+    ].join('\n'),
+  );
+  await writeProjectFile(
+    root,
+    'src/main.sts',
+    [
+      "import { TypeName } from './macros.macro';",
+      "import { readUser } from './model';",
+      'export const userType = TypeName(readUser());',
+      '',
+    ].join('\n'),
+  );
+
+  const fileName = join(root, 'src/main.sts');
+  const transformer = createOnDemandTransformer({ workingDirectory: root });
+  await assertMatchesLegacySemanticRuntimeProgram(
+    transformer,
+    join(root, 'tsconfig.json'),
+    fileName,
+  );
 });
 
 Deno.test('createOnDemandTransformer leaves unmatched TypeScript files on the ordinary TypeScript path', async () => {
