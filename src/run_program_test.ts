@@ -51,6 +51,20 @@ function withCapturedTimingLogs<T>(run: (logs: string[]) => T): T {
   }
 }
 
+function withToolFingerprintOverride<T>(fingerprint: string, run: () => T): T {
+  const originalFingerprint = Deno.env.get('SOUNDSCRIPT_CACHE_TOOL_FINGERPRINT');
+  Deno.env.set('SOUNDSCRIPT_CACHE_TOOL_FINGERPRINT', fingerprint);
+  try {
+    return run();
+  } finally {
+    if (originalFingerprint === undefined) {
+      Deno.env.delete('SOUNDSCRIPT_CACHE_TOOL_FINGERPRINT');
+    } else {
+      Deno.env.set('SOUNDSCRIPT_CACHE_TOOL_FINGERPRINT', originalFingerprint);
+    }
+  }
+}
+
 function getTimingMetric(line: string, key: string): number | undefined {
   const match = line.match(new RegExp(`${key}=(\\d+)`, 'u'));
   return match ? Number(match[1]) : undefined;
@@ -104,6 +118,61 @@ Deno.test('runProgram caches unchanged checker results by default', async () => 
     assert(!logs.some((line) => line.includes('[soundscript:checker] project.prepareProjectAnalysis ')));
     return result;
   });
+
+  assertEquals(secondResult.diagnostics, firstResult.diagnostics);
+  assertEquals(secondResult.output, firstResult.output);
+  assertEquals(secondResult.exitCode, firstResult.exitCode);
+});
+
+Deno.test('runProgram invalidates checker cache when the tool fingerprint changes', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+          },
+          include: ['src/**/*.sts'],
+        },
+        null,
+        2,
+      ),
+    },
+    {
+      path: 'src/index.sts',
+      contents: [
+        'export const broken: number = "oops";',
+        '',
+      ].join('\n'),
+    },
+  ]);
+  const projectPath = join(tempDirectory, 'tsconfig.json');
+
+  const firstResult = withToolFingerprintOverride('test-fingerprint-a', () =>
+    runProgram({
+      projectPath,
+      workingDirectory: tempDirectory,
+    })
+  );
+  assert(firstResult.diagnostics.length > 0);
+
+  const secondResult = withToolFingerprintOverride('test-fingerprint-b', () =>
+    withCapturedTimingLogs((logs) => {
+      const result = runProgram({
+        projectPath,
+        workingDirectory: tempDirectory,
+      });
+      assert(
+        logs.some((line) => line.includes('[soundscript:checker] project.prepareProjectAnalysis ')),
+        logs.join('\n'),
+      );
+      return result;
+    })
+  );
 
   assertEquals(secondResult.diagnostics, firstResult.diagnostics);
   assertEquals(secondResult.output, firstResult.output);

@@ -39,6 +39,7 @@ import { measureCheckerTiming } from './timing.ts';
 import type { MergedDiagnostic } from './diagnostics.ts';
 import type { FlowFileRuleCache } from './rules/flow.ts';
 import type { FileDiagnosticRuleCacheEntry } from './rules/index.ts';
+import { getSoundscriptToolFingerprint } from '../version.ts';
 
 const CHECKER_CACHE_SCHEMA_VERSION = 8;
 const CHECKER_CACHE_ROOT_DIRECTORY = '.soundscript-cache';
@@ -62,6 +63,7 @@ interface CheckerCacheHeader {
   runtimeTarget: RuntimeTarget;
   soundscriptRootDiscoverySignature: string;
   targetOverride?: RuntimeTarget;
+  toolFingerprint: string;
 }
 
 interface CheckerCacheFileEntry extends PreparedAnalysisProjectFileMetadata {
@@ -235,6 +237,7 @@ function createCheckerCacheHeader(
       loadedConfig,
     ),
     targetOverride: options.target,
+    toolFingerprint: getSoundscriptToolFingerprint(),
   };
 }
 
@@ -245,6 +248,7 @@ function checkerCacheHeadersEqual(
   return left.projectPath === right.projectPath &&
     left.targetOverride === right.targetOverride &&
     left.runtimeTarget === right.runtimeTarget &&
+    left.toolFingerprint === right.toolFingerprint &&
     left.projectFileHash === right.projectFileHash &&
     left.configSignature === right.configSignature &&
     left.configDiagnosticsSignature === right.configDiagnosticsSignature &&
@@ -1263,6 +1267,130 @@ function writeCheckerCacheManifest(
     removePathSync(temporaryPath);
     throw error;
   }
+}
+
+export function writePreparedProjectToPersistentCheckerCache(
+  options: PersistentCheckerRunOptions,
+  preparedProject: PreparedAnalysisProject,
+  analysis: AnalyzePreparedProjectWithArtifactsResult,
+  prepareArtifacts?: PersistentPreparedAnalysisProjectReuseSnapshots,
+): PersistentPreparedAnalysisProjectReuseSnapshots | undefined {
+  const useCache = options.useCache ?? true;
+  if (!useCache) {
+    return prepareArtifacts;
+  }
+
+  const cacheProjectDirectory = createCheckerCacheProjectDirectory(options.projectPath, options.cacheDir);
+  const header = measureCheckerTiming(
+    'project.cache.preflight',
+    {
+      cacheDir: cacheProjectDirectory,
+      projectPath: options.projectPath,
+    },
+    () => createCheckerCacheHeader(options),
+    { always: true },
+  );
+  const preparedProjectTrackedFilePaths = measureCheckerTiming(
+    'project.cache.trackedFiles',
+    {
+      projectPath: options.projectPath,
+    },
+    () => collectPreparedAnalysisProjectTrackedFilePaths(preparedProject),
+    { always: true },
+  );
+  const preparedProjectFileMetadata = measureCheckerTiming(
+    'project.cache.fileMetadata',
+    {
+      projectPath: options.projectPath,
+    },
+    () => collectPreparedAnalysisProjectFileMetadata(preparedProject),
+    { always: true },
+  );
+  const dependencyDependents = measureCheckerTiming(
+    'project.cache.dependencyDependents',
+    {
+      changedTrackedFiles: preparedProjectTrackedFilePaths.length,
+      projectPath: options.projectPath,
+    },
+    () =>
+      serializeDependencyDependents(
+        collectPreparedProjectDependencyDependents(
+          preparedProject,
+          createDependencySignatureViewByFilePath(preparedProjectFileMetadata),
+        ),
+      ),
+    { always: true },
+  );
+  const preparedProjectDependencySignatures = measureCheckerTiming(
+    'project.cache.dependencySignatures',
+    {
+      changedTrackedFiles: preparedProjectTrackedFilePaths.length,
+      projectPath: options.projectPath,
+    },
+    () =>
+      createPreparedProjectDependencySignatures(
+        preparedProject,
+        preparedProjectFileMetadata,
+      ),
+    { always: true },
+  );
+  const sourceSurfaceSignatures = measureCheckerTiming(
+    'project.cache.sourceSurfaceSignatures',
+    {
+      changedTrackedFiles: preparedProjectTrackedFilePaths.length,
+      projectPath: options.projectPath,
+    },
+    () =>
+      createPreparedProjectSourceSurfaceSignatures(
+        preparedProject,
+        preparedProjectFileMetadata,
+      ),
+    { always: true },
+  );
+  const nextPrepareArtifacts = prepareArtifacts ??
+    measureCheckerTiming(
+      'project.cache.prepareArtifacts',
+      {
+        projectPath: options.projectPath,
+      },
+      () => capturePersistentPreparedAnalysisProjectReuseSnapshots(preparedProject),
+      { always: true },
+    );
+  const manifest = measureCheckerTiming(
+    'project.cache.fullManifest',
+    {
+      files: preparedProjectTrackedFilePaths.length,
+      projectPath: options.projectPath,
+    },
+    () =>
+      createCheckerCacheManifestFromFullAnalysis(
+        header,
+        preparedProjectFileMetadata,
+        dependencyDependents,
+        createTrackedFileHashes(preparedProjectTrackedFilePaths),
+        preparedProjectDependencySignatures,
+        sourceSurfaceSignatures,
+        nextPrepareArtifacts,
+        analysis,
+      ),
+    { always: true },
+  );
+  try {
+    measureCheckerTiming(
+      'project.cache.write',
+      {
+        cacheDir: cacheProjectDirectory,
+        files: Object.keys(manifest.trackedFiles).length,
+        projectPath: options.projectPath,
+      },
+      () => writeCheckerCacheManifest(options, manifest),
+      { always: true },
+    );
+  } catch {
+    // Cache write failures must not change checker behavior.
+  }
+
+  return nextPrepareArtifacts;
 }
 
 export function analyzeProjectWithPersistentCacheForReuse(

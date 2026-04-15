@@ -6,6 +6,7 @@ import {
   resolveBundledTypesDirectory,
 } from '../bundled/sound_stdlib.ts';
 import {
+  type BuiltinExpandedProgram,
   type BuiltinExpandedTsDiagnosticProgram,
   createBuiltinExpandedProgram,
 } from '../frontend/builtin_macro_support.ts';
@@ -1637,6 +1638,130 @@ function prepareAnalysisView(
   };
 }
 
+export function createPreparedAnalysisProjectFromBuiltinExpandedProgram(
+  options: AnalyzeProjectOptions,
+  loadedConfig: ReturnType<typeof loadConfig>,
+  expandedProgram: BuiltinExpandedProgram,
+): PreparedAnalysisProject {
+  const program = expandedProgram.program;
+  const analysisPreparedProgram = expandedProgram.analysisPreparedProgram;
+  const preparedProgram = expandedProgram.preparedProgram;
+  const isGeneratedNode = createPreparedProgramGeneratedNodeDetector(analysisPreparedProgram);
+  const remappedFrontendDiagnostics = remapDiagnostics(expandedProgram.frontendDiagnostics());
+  const macroEnvironment = expandedProgram.macroEnvironment;
+  const macroCacheStats = macroEnvironment.cacheStats();
+  const projectPackageJsonPath = findNearestPackageJsonPath(options.projectPath, ts.sys);
+  const soundscriptRootNames = collectSoundscriptRootNames(options.projectPath, loadedConfig);
+  const sourceFileHasTopLevelMacroReplacements = (sourceFile: ts.SourceFile): boolean => {
+    const sourceFileName = analysisPreparedProgram.toSourceFileName(sourceFile.fileName);
+    const preparedSource = preparedProgram.preparedHost.getPreparedSourceFile(sourceFileName);
+    return hasTopLevelMacroReplacements(sourceFileName, preparedSource);
+  };
+  const createView = (
+    includeSourceFile:
+      | ((sourceFile: ts.SourceFile, preparedProgram: PreparedProgram) => boolean)
+      | undefined,
+    runSound: boolean,
+    universalPolicyScope: 'full' | 'sourceSupplemental',
+  ): PreparedAnalysisView => {
+    const analysisContext = createAnalysisContext({
+      includeSourceFile: includeSourceFile
+        ? (sourceFile) =>
+          !sourceFileHasTopLevelMacroReplacements(sourceFile) &&
+          !hasGeneratedTopLevelStatements(sourceFile, isGeneratedNode) &&
+          includeSourceFile(sourceFile, analysisPreparedProgram)
+        : (sourceFile) =>
+          !sourceFileHasTopLevelMacroReplacements(sourceFile) &&
+          !hasGeneratedTopLevelStatements(sourceFile, isGeneratedNode),
+      isSoundscriptSourceFile: analysisPreparedProgram.isSoundscriptSourceFile,
+      isGeneratedNode,
+      program,
+      runtime: loadedConfig.runtime,
+      workingDirectory: options.workingDirectory,
+    });
+
+    return {
+      analysisContext,
+      analysisPreparedProgram,
+      diagnosticPreparedFiles: expandedProgram.diagnosticPreparedFiles,
+      frontendDiagnostics: remappedFrontendDiagnostics,
+      macroEnvironment,
+      macroCacheStats,
+      preparedProgram,
+      program,
+      runSound,
+      tsDiagnosticPrograms: expandedProgram.tsDiagnosticPrograms,
+      universalPolicyScope,
+    };
+  };
+
+  const hasTypescriptCandidates = program.getSourceFiles().some((sourceFile) =>
+    shouldAnalyzeTypescriptViewSourceFile(sourceFile, loadedConfig.isSoundscriptSourceFile)
+  );
+  const hasProjectSoundscriptCandidates = program.getSourceFiles().some((sourceFile) =>
+    shouldAnalyzeProjectSoundscriptSourceFile(
+      sourceFile,
+      analysisPreparedProgram,
+      projectPackageJsonPath,
+    )
+  );
+  const hasSupplementalPackageSourceCandidates = program.getSourceFiles().some((sourceFile) => {
+    const sourceFileName = toSourceFileName(sourceFile.fileName);
+    return shouldAnalyzeSoundscriptSourceFile(sourceFile, analysisPreparedProgram) &&
+      isSupplementalPackageSourceCandidate(sourceFileName, projectPackageJsonPath);
+  });
+
+  return {
+    analyzeOptions: { ...options },
+    configReuseSignature: '',
+    configuredSoundscriptRootNames: soundscriptRootNames,
+    isSoundscriptSourceFile: loadedConfig.isSoundscriptSourceFile,
+    localProjectedDeclarationOverrides: undefined,
+    packageSourcePolicyContentSignature: '',
+    packageSourcePolicyCompilerHostReuseState: analysisPreparedProgram.preparedHost.reuseState,
+    packageSourcePolicyView: hasSupplementalPackageSourceCandidates
+      ? createView(
+        (sourceFile, viewPreparedProgram) =>
+          shouldAnalyzeSoundscriptSourceFile(sourceFile, viewPreparedProgram) &&
+          isSupplementalPackageSourceCandidate(
+            toSourceFileName(sourceFile.fileName),
+            projectPackageJsonPath,
+          ),
+        true,
+        'sourceSupplemental',
+      )
+      : null,
+    soundscriptRootContentSignature: '',
+    soundscriptConfiguredFileNames: loadedConfig.soundscriptConfiguredFileNames,
+    soundscriptRootDiscoverySignature: '',
+    stsCompilerHostReuseState: analysisPreparedProgram.preparedHost.reuseState,
+    soundscriptFileOverridesSignature: '',
+    stsProgramRootNames: soundscriptRootNames,
+    soundscriptRootNames,
+    stsView: hasProjectSoundscriptCandidates
+      ? createView(
+        (sourceFile, viewPreparedProgram) =>
+          shouldAnalyzeProjectSoundscriptSourceFile(
+            sourceFile,
+            viewPreparedProgram,
+            projectPackageJsonPath,
+          ),
+        true,
+        'full',
+      )
+      : null,
+    tsCompilerHostReuseState: analysisPreparedProgram.preparedHost.reuseState,
+    tsView: hasTypescriptCandidates
+      ? createView(
+        (sourceFile) =>
+          shouldAnalyzeTypescriptViewSourceFile(sourceFile, loadedConfig.isSoundscriptSourceFile),
+        false,
+        'full',
+      )
+      : null,
+  };
+}
+
 interface AnalyzePreparedViewOptions {
   captureArtifacts?: PreparedProjectAnalysisArtifacts;
   reuseRuleCache?: SoundAnalysisRuleCache;
@@ -1865,6 +1990,11 @@ interface PreparedViewResolvedDependency {
 }
 
 interface PreparedViewDependencyTraversalProgramCache {
+  dependencyPathCollectionsBySourcePath: Map<string, PreparedViewDependencyPathCollection>;
+  dependencyPathCollectionsWithTypeScriptBySourcePath: Map<
+    string,
+    PreparedViewDependencyPathCollection
+  >;
   resolvedDependenciesBySourcePath: Map<string, readonly PreparedViewResolvedDependency[]>;
   traversalSourceFileByPath: Map<string, ts.SourceFile | null>;
 }
@@ -1898,6 +2028,8 @@ function getPreparedViewDependencyTraversalProgramCache(
   let programCache = cache.programCaches.get(programKey);
   if (!programCache) {
     programCache = {
+      dependencyPathCollectionsBySourcePath: new Map(),
+      dependencyPathCollectionsWithTypeScriptBySourcePath: new Map(),
       resolvedDependenciesBySourcePath: new Map(),
       traversalSourceFileByPath: new Map(),
     };
@@ -1995,11 +2127,9 @@ function collectPreparedViewDependencyPathCollection(
   options: CollectPreparedViewDependencyPathOptions = {},
   traversalCache: PreparedViewDependencyTraversalCache = createPreparedViewDependencyTraversalCache(),
 ): PreparedViewDependencyPathCollection {
-  const diagnosticPaths = new Set<string>();
-  let encounteredNonDeclarationTypeScriptDependency = false;
   const addDiagnosticPath = (candidateFilePath: string): void => {
     for (const variant of collectPreparedAnalysisFilePathCandidates(candidateFilePath)) {
-      diagnosticPaths.add(variant);
+      paths.add(variant);
     }
     if (isSoundscriptSourceFile(candidateFilePath)) {
       for (
@@ -2007,12 +2137,13 @@ function collectPreparedViewDependencyPathCollection(
           toProjectedDeclarationFileName(candidateFilePath),
         )
       ) {
-        diagnosticPaths.add(variant);
+        paths.add(variant);
       }
     }
   };
-
-  addDiagnosticPath(filePath);
+  const includeNonDeclarationTypeScriptDependencies =
+    options.includeNonDeclarationTypeScriptDependencies === true;
+  const paths = new Set<string>();
 
   const traversalRoots: Array<{
     readonly key: string;
@@ -2041,13 +2172,13 @@ function collectPreparedViewDependencyPathCollection(
   );
 
   if (traversalRoots.length === 0) {
+    addDiagnosticPath(filePath);
     return {
-      encounteredNonDeclarationTypeScriptDependency,
-      paths: [...diagnosticPaths],
+      encounteredNonDeclarationTypeScriptDependency: false,
+      paths: [...paths],
     };
   }
 
-  const visitedSourceFiles = new Set<string>();
   const getTraversalSourceFile = (
     programKey: string,
     program: ts.Program,
@@ -2132,14 +2263,57 @@ function collectPreparedViewDependencyPathCollection(
     return resolvedDependencies;
   };
 
-  const visit = (programKey: string, program: ts.Program, sourceFile: ts.SourceFile): void => {
+  const inProgressCollectionKeys = new Set<string>();
+  const collectSourceFilePathCollection = (
+    programKey: string,
+    program: ts.Program,
+    sourceFile: ts.SourceFile,
+  ): PreparedViewDependencyPathCollection => {
     const sourceFilePath = preparedView.preparedProgram.toSourceFileName(sourceFile.fileName);
-    const visitKey = `${programKey}:${sourceFilePath}`;
-    if (visitedSourceFiles.has(visitKey)) {
-      return;
+    const programCache = getPreparedViewDependencyTraversalProgramCache(traversalCache, programKey);
+    const collectionCache = includeNonDeclarationTypeScriptDependencies
+      ? programCache.dependencyPathCollectionsWithTypeScriptBySourcePath
+      : programCache.dependencyPathCollectionsBySourcePath;
+    const cachedCollection = collectionCache.get(sourceFilePath);
+    if (cachedCollection) {
+      return cachedCollection;
     }
-    visitedSourceFiles.add(visitKey);
-    addDiagnosticPath(sourceFilePath);
+    const collectionKey = `${programKey}:${includeNonDeclarationTypeScriptDependencies ? 'all' : 'diagnostic'}:${sourceFilePath}`;
+    if (inProgressCollectionKeys.has(collectionKey)) {
+      const cyclicPaths = new Set<string>();
+      for (const variant of collectPreparedAnalysisFilePathCandidates(sourceFilePath)) {
+        cyclicPaths.add(variant);
+      }
+      if (isSoundscriptSourceFile(sourceFilePath)) {
+        for (
+          const variant of collectPreparedAnalysisFilePathCandidates(
+            toProjectedDeclarationFileName(sourceFilePath),
+          )
+        ) {
+          cyclicPaths.add(variant);
+        }
+      }
+      return {
+        encounteredNonDeclarationTypeScriptDependency: false,
+        paths: [...cyclicPaths],
+      };
+    }
+    inProgressCollectionKeys.add(collectionKey);
+
+    const dependencyPaths = new Set<string>();
+    let encounteredNonDeclarationTypeScriptDependency = false;
+    for (const variant of collectPreparedAnalysisFilePathCandidates(sourceFilePath)) {
+      dependencyPaths.add(variant);
+    }
+    if (isSoundscriptSourceFile(sourceFilePath)) {
+      for (
+        const variant of collectPreparedAnalysisFilePathCandidates(
+          toProjectedDeclarationFileName(sourceFilePath),
+        )
+      ) {
+        dependencyPaths.add(variant);
+      }
+    }
 
     for (const dependency of getResolvedDependencies(programKey, program, sourceFile)) {
       const {
@@ -2158,19 +2332,64 @@ function collectPreparedViewDependencyPathCollection(
         continue;
       }
 
-      addDiagnosticPath(resolvedSourcePath);
+      for (const variant of collectPreparedAnalysisFilePathCandidates(resolvedSourcePath)) {
+        dependencyPaths.add(variant);
+      }
+      if (isSoundscriptSourceFile(resolvedSourcePath)) {
+        for (
+          const variant of collectPreparedAnalysisFilePathCandidates(
+            toProjectedDeclarationFileName(resolvedSourcePath),
+          )
+        ) {
+          dependencyPaths.add(variant);
+        }
+      }
       if (dependencySourceFile) {
-        visit(programKey, program, dependencySourceFile);
+        const nestedCollection = collectSourceFilePathCollection(
+          programKey,
+          program,
+          dependencySourceFile,
+        );
+        if (nestedCollection.encounteredNonDeclarationTypeScriptDependency) {
+          encounteredNonDeclarationTypeScriptDependency = true;
+        }
+        for (const nestedPath of nestedCollection.paths) {
+          dependencyPaths.add(nestedPath);
+        }
       }
     }
+
+    const collection = {
+      encounteredNonDeclarationTypeScriptDependency,
+      paths: [...dependencyPaths],
+    };
+    collectionCache.set(sourceFilePath, collection);
+    inProgressCollectionKeys.delete(collectionKey);
+    return collection;
   };
 
   for (const traversalRoot of traversalRoots) {
-    visit(traversalRoot.key, traversalRoot.program, traversalRoot.sourceFile);
+    const collection = collectSourceFilePathCollection(
+      traversalRoot.key,
+      traversalRoot.program,
+      traversalRoot.sourceFile,
+    );
+    for (const path of collection.paths) {
+      paths.add(path);
+    }
   }
+  addDiagnosticPath(filePath);
+
+  const encounteredNonDeclarationTypeScriptDependency = traversalRoots.some((traversalRoot) =>
+    collectSourceFilePathCollection(
+      traversalRoot.key,
+      traversalRoot.program,
+      traversalRoot.sourceFile,
+    ).encounteredNonDeclarationTypeScriptDependency
+  );
   return {
     encounteredNonDeclarationTypeScriptDependency,
-    paths: [...diagnosticPaths],
+    paths: [...paths],
   };
 }
 

@@ -11,7 +11,10 @@ import {
   toMergedDiagnostic,
 } from '../checker/diagnostics.ts';
 import {
+  analyzePreparedProjectWithArtifacts,
   capturePersistentPreparedAnalysisProjectReuseSnapshots,
+  collectPreparedAnalysisProjectTrackedFilePaths,
+  createPreparedAnalysisProjectFromBuiltinExpandedProgram,
   disposePreparedAnalysisProject,
   type PersistentPreparedAnalysisProjectReuseSnapshots,
   prepareProjectAnalysis,
@@ -19,6 +22,7 @@ import {
 import {
   analyzeProjectWithPersistentCacheForReuse,
   resolveCheckerCacheDirectory,
+  writePreparedProjectToPersistentCheckerCache,
 } from '../checker/checker_cache.ts';
 import { logCheckerTiming, measureCheckerTiming } from '../checker/timing.ts';
 import {
@@ -27,7 +31,10 @@ import {
   loadConfig,
   type RuntimeTarget,
 } from '../project/config.ts';
-import { createBuiltinExpandedProgram } from '../frontend/builtin_macro_support.ts';
+import {
+  type BuiltinExpandedProgram,
+  createBuiltinExpandedProgram,
+} from '../frontend/builtin_macro_support.ts';
 import { MacroError } from '../frontend/macro_errors.ts';
 import {
   emitProjectedDeclarations,
@@ -60,9 +67,10 @@ import {
   transpileTypeScriptModuleToEsm,
 } from '../runtime/transform.ts';
 import { SOUNDSCRIPT_RUNTIME_PACKAGE_NAME } from '../project/soundscript_runtime_specifiers.ts';
+import { getSoundscriptToolFingerprint } from '../version.ts';
 
 const DECLARATION_CAPTURE_OUT_DIR = '/__soundscript_build_types__';
-const BUILD_CACHE_SCHEMA_VERSION = 1;
+const BUILD_CACHE_SCHEMA_VERSION = 2;
 const BUILD_CACHE_MANIFEST_FILE_NAME = 'build-manifest.json';
 const CHECKER_CACHE_MANIFEST_FILE_NAME = 'manifest.json';
 const CHECKER_CACHE_BUILD_INFO_SUBDIRECTORY = 'buildinfo';
@@ -76,6 +84,7 @@ interface BuildCacheHeader {
   runtimeTarget: RuntimeTarget;
   soundscriptRootDiscoverySignature: string;
   targetOverride?: RuntimeTarget;
+  toolFingerprint: string;
 }
 
 interface BuildCacheManifest {
@@ -83,6 +92,7 @@ interface BuildCacheManifest {
   header: BuildCacheHeader;
   prepareArtifacts?: PersistentPreparedAnalysisProjectReuseSnapshots;
   schemaVersion: number;
+  trackedFiles: Readonly<Record<string, string>>;
 }
 
 interface BuildCacheReadResult {
@@ -203,6 +213,20 @@ function createSoundscriptRootDiscoverySignature(
   ].join('\u0002');
 }
 
+function createTrackedFileHashes(trackedFilePaths: readonly string[]): Readonly<Record<string, string>> {
+  return Object.fromEntries(
+    trackedFilePaths.map((filePath) => [filePath, hashText(ts.sys.readFile(filePath) ?? '')]),
+  );
+}
+
+function collectChangedTrackedFilePaths(
+  trackedFiles: Readonly<Record<string, string>>,
+): readonly string[] {
+  return Object.entries(trackedFiles)
+    .filter(([filePath, hash]) => hashText(ts.sys.readFile(filePath) ?? '') !== hash)
+    .map(([filePath]) => filePath);
+}
+
 function createConfigDiagnosticsSignature(
   loadedConfig: ReturnType<typeof loadConfig>,
 ): string {
@@ -244,6 +268,7 @@ function createBuildCacheHeader(options: BuildProjectOptions): BuildCacheHeader 
       loadedConfig,
     ),
     targetOverride: options.target,
+    toolFingerprint: getSoundscriptToolFingerprint(),
   };
 }
 
@@ -251,6 +276,7 @@ function buildCacheHeadersEqual(left: BuildCacheHeader, right: BuildCacheHeader)
   return left.projectPath === right.projectPath &&
     left.targetOverride === right.targetOverride &&
     left.runtimeTarget === right.runtimeTarget &&
+    left.toolFingerprint === right.toolFingerprint &&
     left.projectFileHash === right.projectFileHash &&
     left.configSignature === right.configSignature &&
     left.configDiagnosticsSignature === right.configDiagnosticsSignature &&
@@ -300,7 +326,11 @@ function readBuildCacheResult(
   header: BuildCacheHeader,
 ): BuildCacheReadResult {
   const buildManifest = readBuildCacheManifest(createBuildCacheManifestPath(options.projectPath));
-  if (buildManifest && buildCacheHeadersEqual(buildManifest.header, header)) {
+  if (
+    buildManifest &&
+    buildCacheHeadersEqual(buildManifest.header, header) &&
+    collectChangedTrackedFilePaths(buildManifest.trackedFiles).length === 0
+  ) {
     return {
       prepareArtifacts: buildManifest.prepareArtifacts,
       status: 'hit',
@@ -540,11 +570,11 @@ function createEntryWrapperText(importSpecifier: string, hasDefaultExport: boole
   return lines.join('\n');
 }
 
-function createPackageBuildProgram(
+function createPackageBuildProgramWithLoadedConfig(
   options: BuildProjectOptions,
+  loadedConfig: ReturnType<typeof loadConfig>,
   prepareArtifacts?: PersistentPreparedAnalysisProjectReuseSnapshots,
-) {
-  const loadedConfig = loadConfig(options.projectPath, { target: options.target });
+): BuiltinExpandedProgram {
   const soundscriptRootNames = collectSoundscriptRootNames(options.projectPath, loadedConfig);
   return createBuiltinExpandedProgram({
     baseHost: createSoundStdlibCompilerHost(
@@ -580,6 +610,371 @@ function createPackageBuildProgram(
     runtime: loadedConfig.runtime,
     rootNames: [...new Set([...loadedConfig.commandLine.fileNames, ...soundscriptRootNames])],
   });
+}
+
+function createPackageBuildProgram(
+  options: BuildProjectOptions,
+  prepareArtifacts?: PersistentPreparedAnalysisProjectReuseSnapshots,
+): {
+  readonly builtProgram: BuiltinExpandedProgram;
+  readonly loadedConfig: ReturnType<typeof loadConfig>;
+} {
+  const loadedConfig = loadConfig(options.projectPath, { target: options.target });
+  return {
+    builtProgram: createPackageBuildProgramWithLoadedConfig(options, loadedConfig, prepareArtifacts),
+    loadedConfig,
+  };
+}
+
+async function emitPackageBuildOutputs(
+  options: BuildProjectOptions,
+  packageJson: PackageJsonRecord,
+  packageInfo: SoundScriptPackageInfo,
+  builtProgram: BuiltinExpandedProgram,
+  {
+    validateDiagnostics = true,
+  }: {
+    validateDiagnostics?: boolean;
+  } = {},
+): Promise<BuildProjectResult> {
+  if (validateDiagnostics) {
+    const diagnostics: MergedDiagnostic[] = [
+      ...builtProgram.frontendDiagnostics(),
+      ...ts.getPreEmitDiagnostics(builtProgram.program).map(toMergedDiagnostic),
+    ];
+    if (hasErrorDiagnostics(diagnostics)) {
+      return {
+        diagnostics,
+        exitCode: 1,
+        output: formatDiagnostics(diagnostics, options.workingDirectory),
+      };
+    }
+
+    try {
+      void builtProgram.program.getTypeChecker();
+    } catch (error) {
+      const merged = error instanceof MacroError ? [createMacroDiagnostic(error)] : [];
+      return {
+        diagnostics: merged,
+        exitCode: 1,
+        output: error instanceof MacroError
+          ? formatDiagnostics(merged, options.workingDirectory)
+          : String(error),
+      };
+    }
+  }
+
+  const emptyOutDirStart = performance.now();
+  await emptyDirectory(options.outDir);
+  logCheckerTiming(
+    'project.build.emptyOutDir',
+    performance.now() - emptyOutDirStart,
+    {
+      outDir: options.outDir,
+    },
+    { always: true },
+  );
+  const emittedFiles: string[] = [];
+  const typeOutputs = measureCheckerTiming(
+    'project.build.captureTypeOutputs',
+    {
+      projectPath: options.projectPath,
+    },
+    () => captureTypeScriptDeclarationOutputs(builtProgram.program),
+    { always: true },
+  );
+  const projectedDeclarations = emitProjectedDeclarations(builtProgram.analysisPreparedProgram);
+  const packageRoot = packageInfo.packageRoot;
+
+  const esmEmitMetadata: Record<string, number | string> = {
+    files: 0,
+    soundscriptFiles: 0,
+    transpileMs: 0,
+    typescriptFiles: 0,
+    writeMs: 0,
+  };
+  const esmEmitStart = performance.now();
+  for (const sourceFile of builtProgram.program.getSourceFiles()) {
+    if (sourceFile.isDeclarationFile) {
+      continue;
+    }
+
+    const sourceFileName = toSourceFileName(sourceFile.fileName);
+    if (!isPackageLocalSourceFile(sourceFileName, packageRoot)) {
+      continue;
+    }
+
+    const relativeSourcePath = relative(packageRoot, sourceFileName).replaceAll('\\', '/');
+    const outputJsRelativePath = toJsRelativePath(relativeSourcePath);
+    const outputJsPath = join(options.outDir, 'esm', outputJsRelativePath);
+    const outputMapPath = `${outputJsPath}.map`;
+    const sourceMapComment = `//# sourceMappingURL=${
+      relative(dirname(outputJsPath), outputMapPath).replaceAll('\\', '/')
+    }`;
+
+    const transpileStart = performance.now();
+    const isSoundscriptFile = builtProgram.preparedProgram.isSoundscriptSourceFile(sourceFileName);
+    const artifact = isSoundscriptFile
+      ? (() => {
+        const preparedFile = builtProgram.diagnosticPreparedFiles.get(sourceFileName) ??
+          builtProgram.analysisPreparedProgram.preparedHost.getPreparedSourceFile(sourceFileName);
+        if (!preparedFile) {
+          throw new Error(`Missing prepared source file for ${sourceFileName}.`);
+        }
+        return transpilePreparedSoundscriptModuleToEsm(
+          sourceFileName,
+          outputJsPath,
+          preparedFile,
+          {
+            module: ts.ModuleKind.ES2022,
+            target: ts.ScriptTarget.ES2022,
+            valueProgram: builtProgram.program,
+          },
+        );
+      })()
+      : transpileTypeScriptModuleToEsm(
+        sourceFileName,
+        outputJsPath,
+        sourceFile.text,
+        {
+          module: ts.ModuleKind.ES2022,
+          target: ts.ScriptTarget.ES2022,
+        },
+      );
+    esmEmitMetadata.transpileMs = Number(
+      ((esmEmitMetadata.transpileMs as number) + (performance.now() - transpileStart)).toFixed(1),
+    );
+    esmEmitMetadata.files = (esmEmitMetadata.files as number) + 1;
+    if (isSoundscriptFile) {
+      esmEmitMetadata.soundscriptFiles = (esmEmitMetadata.soundscriptFiles as number) + 1;
+    } else {
+      esmEmitMetadata.typescriptFiles = (esmEmitMetadata.typescriptFiles as number) + 1;
+    }
+
+    const writeStart = performance.now();
+    await writeGeneratedFile(
+      outputJsPath,
+      `${artifact.code}\n${sourceMapComment}\n`,
+      emittedFiles,
+    );
+    await writeGeneratedFile(outputMapPath, artifact.mapText, emittedFiles);
+    esmEmitMetadata.writeMs = Number(
+      ((esmEmitMetadata.writeMs as number) + (performance.now() - writeStart)).toFixed(1),
+    );
+  }
+  logCheckerTiming(
+    'project.build.emitEsmModules',
+    performance.now() - esmEmitStart,
+    esmEmitMetadata,
+    { always: true },
+  );
+
+  const projectedDeclarationWriteMetadata: Record<string, number> = {
+    declarations: 0,
+    rewriteMs: 0,
+    writeMs: 0,
+  };
+  const projectedDeclarationWriteStart = performance.now();
+  for (const [sourceFileName, declarationText] of projectedDeclarations.entries()) {
+    if (!isPackageLocalSourceFile(sourceFileName, packageRoot)) {
+      continue;
+    }
+
+    const relativeSourcePath = relative(packageRoot, sourceFileName).replaceAll('\\', '/');
+    const declarationPath = join(
+      options.outDir,
+      'types',
+      toDeclarationRelativePath(relativeSourcePath),
+    );
+    const rewriteStart = performance.now();
+    const rewrittenText = rewriteModuleSpecifiersForEmit(declarationText, declarationPath);
+    projectedDeclarationWriteMetadata.rewriteMs = Number(
+      (projectedDeclarationWriteMetadata.rewriteMs + (performance.now() - rewriteStart)).toFixed(1),
+    );
+    const writeStart = performance.now();
+    await writeGeneratedFile(declarationPath, rewrittenText, emittedFiles);
+    projectedDeclarationWriteMetadata.writeMs = Number(
+      (projectedDeclarationWriteMetadata.writeMs + (performance.now() - writeStart)).toFixed(1),
+    );
+    projectedDeclarationWriteMetadata.declarations += 1;
+  }
+  logCheckerTiming(
+    'project.build.writeProjectedDeclarations',
+    performance.now() - projectedDeclarationWriteStart,
+    projectedDeclarationWriteMetadata,
+    { always: true },
+  );
+
+  const capturedDeclarationWriteMetadata: Record<string, number> = {
+    declarations: 0,
+    rewriteMs: 0,
+    writeMs: 0,
+  };
+  const capturedDeclarationWriteStart = performance.now();
+  for (const [outputPath, declarationText] of typeOutputs.entries()) {
+    if (
+      !outputPath.startsWith(`${DECLARATION_CAPTURE_OUT_DIR}/`) ||
+      outputPath.endsWith('.sts.d.ts')
+    ) {
+      continue;
+    }
+
+    const relativeOutputPath = relative(DECLARATION_CAPTURE_OUT_DIR, outputPath).replaceAll(
+      '\\',
+      '/',
+    );
+    const destinationPath = join(options.outDir, 'types', relativeOutputPath);
+    const rewriteStart = performance.now();
+    const rewrittenText = rewriteModuleSpecifiersForEmit(declarationText, destinationPath);
+    capturedDeclarationWriteMetadata.rewriteMs = Number(
+      (capturedDeclarationWriteMetadata.rewriteMs + (performance.now() - rewriteStart)).toFixed(1),
+    );
+    const writeStart = performance.now();
+    await writeGeneratedFile(destinationPath, rewrittenText, emittedFiles);
+    capturedDeclarationWriteMetadata.writeMs = Number(
+      (capturedDeclarationWriteMetadata.writeMs + (performance.now() - writeStart)).toFixed(1),
+    );
+    capturedDeclarationWriteMetadata.declarations += 1;
+  }
+  logCheckerTiming(
+    'project.build.writeCapturedTypeOutputs',
+    performance.now() - capturedDeclarationWriteStart,
+    capturedDeclarationWriteMetadata,
+    { always: true },
+  );
+
+  const copiedSourceFiles = new Set<string>();
+  const copySourcesMetadata: Record<string, number> = {
+    copiedFiles: 0,
+    copyMs: 0,
+  };
+  const copySourcesStart = performance.now();
+  for (const sourceFile of builtProgram.program.getSourceFiles()) {
+    if (sourceFile.isDeclarationFile) {
+      continue;
+    }
+
+    const sourceFileName = toSourceFileName(sourceFile.fileName);
+    if (
+      !isPackageLocalSourceFile(sourceFileName, packageRoot) ||
+      copiedSourceFiles.has(sourceFileName)
+    ) {
+      continue;
+    }
+    copiedSourceFiles.add(sourceFileName);
+
+    const relativeSourcePath = relative(packageRoot, sourceFileName).replaceAll('\\', '/');
+    const destinationPath = join(options.outDir, 'soundscript', relativeSourcePath);
+    const copyStart = performance.now();
+    await makeDirectory(dirname(destinationPath));
+    await copyFile(sourceFileName, destinationPath);
+    copySourcesMetadata.copyMs = Number(
+      (copySourcesMetadata.copyMs + (performance.now() - copyStart)).toFixed(1),
+    );
+    copySourcesMetadata.copiedFiles += 1;
+    emittedFiles.push(destinationPath);
+  }
+  logCheckerTiming(
+    'project.build.copySources',
+    performance.now() - copySourcesStart,
+    copySourcesMetadata,
+    { always: true },
+  );
+
+  const sourceEntries = packageInfo.exports.size > 0
+    ? [...packageInfo.exports.entries()]
+    : packageInfo.legacySourceEntryPath
+    ? [['.', packageInfo.legacySourceEntryPath] as const]
+    : [];
+  const entryWrapperMetadata: Record<string, number> = {
+    wrapperFiles: 0,
+    writeMs: 0,
+  };
+  const entryWrapperStart = performance.now();
+  for (const [exportKey, sourceEntryPath] of sourceEntries) {
+    const relativeSourcePath = relative(packageRoot, sourceEntryPath).replaceAll('\\', '/');
+    const wrapperRelativePath = toEntryWrapperRelativePath(exportKey);
+    const sourceJsPath = join(options.outDir, 'esm', toJsRelativePath(relativeSourcePath));
+    const wrapperJsPath = join(options.outDir, 'esm', `${wrapperRelativePath}.js`);
+    const wrapperTypesPath = join(options.outDir, 'types', `${wrapperRelativePath}.d.ts`);
+    const programFileName = isSoundscriptSourceFile(sourceEntryPath)
+      ? builtProgram.preparedProgram.toProgramFileName(sourceEntryPath)
+      : sourceEntryPath;
+    const hasDefaultExport = moduleHasDefaultExport(builtProgram.program, programFileName);
+    const jsImportSpecifier = relativeImportSpecifier(wrapperJsPath, sourceJsPath);
+    const typesImportSpecifier = relativeTypeImportSpecifier(
+      wrapperTypesPath,
+      join(options.outDir, 'types', toDeclarationRelativePath(relativeSourcePath)),
+    );
+    const writeStart = performance.now();
+    await writeGeneratedFile(
+      wrapperJsPath,
+      createEntryWrapperText(jsImportSpecifier, hasDefaultExport),
+      emittedFiles,
+    );
+    await writeGeneratedFile(
+      wrapperTypesPath,
+      createEntryWrapperText(typesImportSpecifier, hasDefaultExport),
+      emittedFiles,
+    );
+    entryWrapperMetadata.writeMs = Number(
+      (entryWrapperMetadata.writeMs + (performance.now() - writeStart)).toFixed(1),
+    );
+    entryWrapperMetadata.wrapperFiles += 2;
+  }
+  logCheckerTiming(
+    'project.build.writeEntryWrappers',
+    performance.now() - entryWrapperStart,
+    entryWrapperMetadata,
+    { always: true },
+  );
+
+  const copyMetadataStart = performance.now();
+  await copyFileIfPresent(join(packageRoot, 'README.md'), join(options.outDir, 'README.md'));
+  await copyFileIfPresent(join(packageRoot, 'LICENSE'), join(options.outDir, 'LICENSE'));
+  logCheckerTiming(
+    'project.build.copyMetadataFiles',
+    performance.now() - copyMetadataStart,
+    {
+      projectPath: options.projectPath,
+    },
+    { always: true },
+  );
+
+  const distPackageJson = buildDistPackageJson(packageJson, packageInfo);
+  const distPackageJsonPath = join(options.outDir, 'package.json');
+  const writePackageJsonStart = performance.now();
+  await writeGeneratedFile(
+    distPackageJsonPath,
+    `${JSON.stringify(distPackageJson, null, 2)}\n`,
+    emittedFiles,
+  );
+  logCheckerTiming(
+    'project.build.writePackageJson',
+    performance.now() - writePackageJsonStart,
+    {
+      projectPath: options.projectPath,
+    },
+    { always: true },
+  );
+
+  return {
+    artifacts: {
+      emittedFiles,
+      outDir: options.outDir,
+      packageJsonPath: distPackageJsonPath,
+    },
+    diagnostics: [],
+    exitCode: 0,
+    output: renderBuildOutput(
+      {
+        emittedFiles,
+        outDir: options.outDir,
+        packageJsonPath: distPackageJsonPath,
+      },
+      options.projectPath,
+    ),
+  };
 }
 
 async function writeGeneratedFile(
@@ -816,6 +1211,115 @@ export async function buildProject(options: BuildProjectOptions): Promise<BuildP
     () => createBuildCacheHeader(options),
     { always: true },
   );
+  const buildCacheReadMetadata: Record<string, string> = {
+    cacheDir: buildCacheProjectDirectory,
+    projectPath: options.projectPath,
+    status: 'miss',
+  };
+  const buildCacheReadResult = measureCheckerTiming(
+    'project.build.cache.read',
+    buildCacheReadMetadata,
+    () => {
+      const result = readBuildCacheResult(options, buildCacheHeader);
+      buildCacheReadMetadata.status = result.status;
+      return result;
+    },
+    { always: true },
+  );
+  if (buildCacheReadResult.status === 'hit') {
+    const { builtProgram } = createPackageBuildProgram(options, buildCacheReadResult.prepareArtifacts);
+    try {
+      return await emitPackageBuildOutputs(options, packageJson, packageInfo, builtProgram, {
+        validateDiagnostics: false,
+      });
+    } finally {
+      builtProgram.dispose();
+    }
+  }
+  if (buildCacheReadResult.status === 'miss') {
+    const { builtProgram, loadedConfig } = createPackageBuildProgram(options);
+    const preparedProject = createPreparedAnalysisProjectFromBuiltinExpandedProgram(
+      {
+        projectPath: options.projectPath,
+        target: options.target,
+        workingDirectory: options.workingDirectory,
+      },
+      loadedConfig,
+      builtProgram,
+    );
+    try {
+      const analysis = measureCheckerTiming(
+        'project.build.analysis',
+        {
+          cache: 'persistent',
+          path: 'shared-built-program',
+          projectPath: options.projectPath,
+        },
+        () => analyzePreparedProjectWithArtifacts(preparedProject),
+        { always: true },
+      );
+      if (hasErrorDiagnostics(analysis.result.diagnostics)) {
+        return {
+          diagnostics: analysis.result.diagnostics,
+          exitCode: 1,
+          output: formatDiagnostics(analysis.result.diagnostics, options.workingDirectory),
+        };
+      }
+
+      const preparedProjectReuseSnapshots = measureCheckerTiming(
+        'project.build.cache.prepareArtifacts',
+        {
+          projectPath: options.projectPath,
+        },
+        () => capturePersistentPreparedAnalysisProjectReuseSnapshots(preparedProject),
+        { always: true },
+      );
+      const trackedFiles = measureCheckerTiming(
+        'project.build.cache.trackedFiles',
+        {
+          projectPath: options.projectPath,
+        },
+        () => createTrackedFileHashes(collectPreparedAnalysisProjectTrackedFilePaths(preparedProject)),
+        { always: true },
+      );
+      try {
+        measureCheckerTiming(
+          'project.build.cache.write',
+          {
+            cacheDir: buildCacheProjectDirectory,
+            projectPath: options.projectPath,
+          },
+          () =>
+            writeBuildCacheManifest(options.projectPath, {
+              cachedAt: new Date().toISOString(),
+              header: buildCacheHeader,
+              prepareArtifacts: preparedProjectReuseSnapshots,
+              schemaVersion: BUILD_CACHE_SCHEMA_VERSION,
+              trackedFiles,
+            }),
+          { always: true },
+        );
+      } catch {
+        // Build cache write failures must not change build behavior.
+      }
+      writePreparedProjectToPersistentCheckerCache(
+        {
+          projectPath: options.projectPath,
+          target: options.target,
+          workingDirectory: options.workingDirectory,
+        },
+        preparedProject,
+        analysis,
+        preparedProjectReuseSnapshots,
+      );
+      return await emitPackageBuildOutputs(options, packageJson, packageInfo, builtProgram, {
+        validateDiagnostics: false,
+      });
+    } finally {
+      disposePreparedAnalysisProject(preparedProject);
+    }
+  }
+
   const analysis = measureCheckerTiming(
     'project.build.analysis',
     {
@@ -837,21 +1341,6 @@ export async function buildProject(options: BuildProjectOptions): Promise<BuildP
       output: formatDiagnostics(analysis.result.diagnostics, options.workingDirectory),
     };
   }
-  const buildCacheReadMetadata: Record<string, string> = {
-    cacheDir: buildCacheProjectDirectory,
-    projectPath: options.projectPath,
-    status: 'miss',
-  };
-  const buildCacheReadResult = measureCheckerTiming(
-    'project.build.cache.read',
-    buildCacheReadMetadata,
-    () => {
-      const result = readBuildCacheResult(options, buildCacheHeader);
-      buildCacheReadMetadata.status = result.status;
-      return result;
-    },
-    { always: true },
-  );
   const preparedProject = prepareProjectAnalysis(
     {
       projectPath: options.projectPath,
@@ -873,6 +1362,14 @@ export async function buildProject(options: BuildProjectOptions): Promise<BuildP
       () => capturePersistentPreparedAnalysisProjectReuseSnapshots(preparedProject),
       { always: true },
     );
+    const trackedFiles = measureCheckerTiming(
+      'project.build.cache.trackedFiles',
+      {
+        projectPath: options.projectPath,
+      },
+      () => createTrackedFileHashes(collectPreparedAnalysisProjectTrackedFilePaths(preparedProject)),
+      { always: true },
+    );
     try {
       measureCheckerTiming(
         'project.build.cache.write',
@@ -886,6 +1383,7 @@ export async function buildProject(options: BuildProjectOptions): Promise<BuildP
             header: buildCacheHeader,
             prepareArtifacts: preparedProjectReuseSnapshots,
             schemaVersion: BUILD_CACHE_SCHEMA_VERSION,
+            trackedFiles,
           }),
         { always: true },
       );
@@ -893,356 +1391,9 @@ export async function buildProject(options: BuildProjectOptions): Promise<BuildP
       // Build cache write failures must not change build behavior.
     }
 
-    const builtProgram = createPackageBuildProgram(options, preparedProjectReuseSnapshots);
+    const { builtProgram } = createPackageBuildProgram(options, preparedProjectReuseSnapshots);
     try {
-      const diagnostics: MergedDiagnostic[] = [
-        ...builtProgram.frontendDiagnostics(),
-        ...ts.getPreEmitDiagnostics(builtProgram.program).map(toMergedDiagnostic),
-      ];
-      if (hasErrorDiagnostics(diagnostics)) {
-        return {
-          diagnostics,
-          exitCode: 1,
-          output: formatDiagnostics(diagnostics, options.workingDirectory),
-        };
-      }
-
-      try {
-        void builtProgram.program.getTypeChecker();
-      } catch (error) {
-        const merged = error instanceof MacroError ? [createMacroDiagnostic(error)] : [];
-        return {
-          diagnostics: merged,
-          exitCode: 1,
-          output: error instanceof MacroError
-            ? formatDiagnostics(merged, options.workingDirectory)
-            : String(error),
-        };
-      }
-
-      const emptyOutDirStart = performance.now();
-      await emptyDirectory(options.outDir);
-      logCheckerTiming(
-        'project.build.emptyOutDir',
-        performance.now() - emptyOutDirStart,
-        {
-          outDir: options.outDir,
-        },
-        { always: true },
-      );
-      const emittedFiles: string[] = [];
-      const typeOutputs = measureCheckerTiming(
-        'project.build.captureTypeOutputs',
-        {
-          projectPath: options.projectPath,
-        },
-        () => captureTypeScriptDeclarationOutputs(builtProgram.program),
-        { always: true },
-      );
-      const projectedDeclarations = emitProjectedDeclarations(builtProgram.analysisPreparedProgram);
-      const packageRoot = packageInfo.packageRoot;
-
-      const esmEmitMetadata: Record<string, number | string> = {
-        files: 0,
-        soundscriptFiles: 0,
-        transpileMs: 0,
-        typescriptFiles: 0,
-        writeMs: 0,
-      };
-      const esmEmitStart = performance.now();
-      for (const sourceFile of builtProgram.program.getSourceFiles()) {
-        if (sourceFile.isDeclarationFile) {
-          continue;
-        }
-
-        const sourceFileName = toSourceFileName(sourceFile.fileName);
-        if (!isPackageLocalSourceFile(sourceFileName, packageRoot)) {
-          continue;
-        }
-
-        const relativeSourcePath = relative(packageRoot, sourceFileName).replaceAll('\\', '/');
-        const outputJsRelativePath = toJsRelativePath(relativeSourcePath);
-        const outputJsPath = join(options.outDir, 'esm', outputJsRelativePath);
-        const outputMapPath = `${outputJsPath}.map`;
-        const sourceMapComment = `//# sourceMappingURL=${
-          relative(dirname(outputJsPath), outputMapPath).replaceAll('\\', '/')
-        }`;
-
-        const transpileStart = performance.now();
-        const isSoundscriptFile = builtProgram.preparedProgram.isSoundscriptSourceFile(
-          sourceFileName,
-        );
-        const artifact = isSoundscriptFile
-          ? (() => {
-            const preparedFile = builtProgram.diagnosticPreparedFiles.get(sourceFileName) ??
-              builtProgram.analysisPreparedProgram.preparedHost.getPreparedSourceFile(
-                sourceFileName,
-              );
-            if (!preparedFile) {
-              throw new Error(`Missing prepared source file for ${sourceFileName}.`);
-            }
-            return transpilePreparedSoundscriptModuleToEsm(
-              sourceFileName,
-              outputJsPath,
-              preparedFile,
-              {
-                module: ts.ModuleKind.ES2022,
-                target: ts.ScriptTarget.ES2022,
-                valueProgram: builtProgram.program,
-              },
-            );
-          })()
-          : transpileTypeScriptModuleToEsm(
-            sourceFileName,
-            outputJsPath,
-            sourceFile.text,
-            {
-              module: ts.ModuleKind.ES2022,
-              target: ts.ScriptTarget.ES2022,
-            },
-          );
-        esmEmitMetadata.transpileMs = Number(
-          ((esmEmitMetadata.transpileMs as number) + (performance.now() - transpileStart)).toFixed(
-            1,
-          ),
-        );
-        esmEmitMetadata.files = (esmEmitMetadata.files as number) + 1;
-        if (isSoundscriptFile) {
-          esmEmitMetadata.soundscriptFiles = (esmEmitMetadata.soundscriptFiles as number) + 1;
-        } else {
-          esmEmitMetadata.typescriptFiles = (esmEmitMetadata.typescriptFiles as number) + 1;
-        }
-
-        const writeStart = performance.now();
-        await writeGeneratedFile(
-          outputJsPath,
-          `${artifact.code}\n${sourceMapComment}\n`,
-          emittedFiles,
-        );
-        await writeGeneratedFile(outputMapPath, artifact.mapText, emittedFiles);
-        esmEmitMetadata.writeMs = Number(
-          ((esmEmitMetadata.writeMs as number) + (performance.now() - writeStart)).toFixed(1),
-        );
-      }
-      logCheckerTiming(
-        'project.build.emitEsmModules',
-        performance.now() - esmEmitStart,
-        esmEmitMetadata,
-        { always: true },
-      );
-
-      const projectedDeclarationWriteMetadata: Record<string, number> = {
-        declarations: 0,
-        rewriteMs: 0,
-        writeMs: 0,
-      };
-      const projectedDeclarationWriteStart = performance.now();
-      for (const [sourceFileName, declarationText] of projectedDeclarations.entries()) {
-        if (!isPackageLocalSourceFile(sourceFileName, packageRoot)) {
-          continue;
-        }
-
-        const relativeSourcePath = relative(packageRoot, sourceFileName).replaceAll('\\', '/');
-        const declarationPath = join(
-          options.outDir,
-          'types',
-          toDeclarationRelativePath(relativeSourcePath),
-        );
-        const rewriteStart = performance.now();
-        const rewrittenText = rewriteModuleSpecifiersForEmit(declarationText, declarationPath);
-        projectedDeclarationWriteMetadata.rewriteMs = Number(
-          (projectedDeclarationWriteMetadata.rewriteMs + (performance.now() - rewriteStart))
-            .toFixed(1),
-        );
-        const writeStart = performance.now();
-        await writeGeneratedFile(declarationPath, rewrittenText, emittedFiles);
-        projectedDeclarationWriteMetadata.writeMs = Number(
-          (projectedDeclarationWriteMetadata.writeMs + (performance.now() - writeStart)).toFixed(1),
-        );
-        projectedDeclarationWriteMetadata.declarations += 1;
-      }
-      logCheckerTiming(
-        'project.build.writeProjectedDeclarations',
-        performance.now() - projectedDeclarationWriteStart,
-        projectedDeclarationWriteMetadata,
-        { always: true },
-      );
-
-      const capturedDeclarationWriteMetadata: Record<string, number> = {
-        declarations: 0,
-        rewriteMs: 0,
-        writeMs: 0,
-      };
-      const capturedDeclarationWriteStart = performance.now();
-      for (const [outputPath, declarationText] of typeOutputs.entries()) {
-        if (
-          !outputPath.startsWith(`${DECLARATION_CAPTURE_OUT_DIR}/`) ||
-          outputPath.endsWith('.sts.d.ts')
-        ) {
-          continue;
-        }
-
-        const relativeOutputPath = relative(DECLARATION_CAPTURE_OUT_DIR, outputPath).replaceAll(
-          '\\',
-          '/',
-        );
-        const destinationPath = join(options.outDir, 'types', relativeOutputPath);
-        const rewriteStart = performance.now();
-        const rewrittenText = rewriteModuleSpecifiersForEmit(declarationText, destinationPath);
-        capturedDeclarationWriteMetadata.rewriteMs = Number(
-          (capturedDeclarationWriteMetadata.rewriteMs + (performance.now() - rewriteStart)).toFixed(
-            1,
-          ),
-        );
-        const writeStart = performance.now();
-        await writeGeneratedFile(destinationPath, rewrittenText, emittedFiles);
-        capturedDeclarationWriteMetadata.writeMs = Number(
-          (capturedDeclarationWriteMetadata.writeMs + (performance.now() - writeStart)).toFixed(1),
-        );
-        capturedDeclarationWriteMetadata.declarations += 1;
-      }
-      logCheckerTiming(
-        'project.build.writeCapturedTypeOutputs',
-        performance.now() - capturedDeclarationWriteStart,
-        capturedDeclarationWriteMetadata,
-        { always: true },
-      );
-
-      const copiedSourceFiles = new Set<string>();
-      const copySourcesMetadata: Record<string, number> = {
-        copiedFiles: 0,
-        copyMs: 0,
-      };
-      const copySourcesStart = performance.now();
-      for (const sourceFile of builtProgram.program.getSourceFiles()) {
-        if (sourceFile.isDeclarationFile) {
-          continue;
-        }
-
-        const sourceFileName = toSourceFileName(sourceFile.fileName);
-        if (
-          !isPackageLocalSourceFile(sourceFileName, packageRoot) ||
-          copiedSourceFiles.has(sourceFileName)
-        ) {
-          continue;
-        }
-        copiedSourceFiles.add(sourceFileName);
-
-        const relativeSourcePath = relative(packageRoot, sourceFileName).replaceAll('\\', '/');
-        const destinationPath = join(options.outDir, 'soundscript', relativeSourcePath);
-        const copyStart = performance.now();
-        await makeDirectory(dirname(destinationPath));
-        await copyFile(sourceFileName, destinationPath);
-        copySourcesMetadata.copyMs = Number(
-          (copySourcesMetadata.copyMs + (performance.now() - copyStart)).toFixed(1),
-        );
-        copySourcesMetadata.copiedFiles += 1;
-        emittedFiles.push(destinationPath);
-      }
-      logCheckerTiming(
-        'project.build.copySources',
-        performance.now() - copySourcesStart,
-        copySourcesMetadata,
-        { always: true },
-      );
-
-      const sourceEntries = packageInfo.exports.size > 0
-        ? [...packageInfo.exports.entries()]
-        : packageInfo.legacySourceEntryPath
-        ? [['.', packageInfo.legacySourceEntryPath] as const]
-        : [];
-      const entryWrapperMetadata: Record<string, number> = {
-        wrapperFiles: 0,
-        writeMs: 0,
-      };
-      const entryWrapperStart = performance.now();
-      for (const [exportKey, sourceEntryPath] of sourceEntries) {
-        const relativeSourcePath = relative(packageRoot, sourceEntryPath).replaceAll('\\', '/');
-        const wrapperRelativePath = toEntryWrapperRelativePath(exportKey);
-        const sourceJsPath = join(options.outDir, 'esm', toJsRelativePath(relativeSourcePath));
-        const wrapperJsPath = join(options.outDir, 'esm', `${wrapperRelativePath}.js`);
-        const wrapperTypesPath = join(options.outDir, 'types', `${wrapperRelativePath}.d.ts`);
-        const programFileName = isSoundscriptSourceFile(sourceEntryPath)
-          ? builtProgram.preparedProgram.toProgramFileName(sourceEntryPath)
-          : sourceEntryPath;
-        const hasDefaultExport = moduleHasDefaultExport(builtProgram.program, programFileName);
-        const jsImportSpecifier = relativeImportSpecifier(wrapperJsPath, sourceJsPath);
-        const typesImportSpecifier = relativeTypeImportSpecifier(
-          wrapperTypesPath,
-          join(options.outDir, 'types', toDeclarationRelativePath(relativeSourcePath)),
-        );
-        const writeStart = performance.now();
-        await writeGeneratedFile(
-          wrapperJsPath,
-          createEntryWrapperText(jsImportSpecifier, hasDefaultExport),
-          emittedFiles,
-        );
-        await writeGeneratedFile(
-          wrapperTypesPath,
-          createEntryWrapperText(typesImportSpecifier, hasDefaultExport),
-          emittedFiles,
-        );
-        entryWrapperMetadata.writeMs = Number(
-          (entryWrapperMetadata.writeMs + (performance.now() - writeStart)).toFixed(1),
-        );
-        entryWrapperMetadata.wrapperFiles += 2;
-      }
-      logCheckerTiming(
-        'project.build.writeEntryWrappers',
-        performance.now() - entryWrapperStart,
-        entryWrapperMetadata,
-        { always: true },
-      );
-
-      const copyMetadataStart = performance.now();
-      await copyFileIfPresent(join(packageRoot, 'README.md'), join(options.outDir, 'README.md'));
-      await copyFileIfPresent(join(packageRoot, 'LICENSE'), join(options.outDir, 'LICENSE'));
-      logCheckerTiming(
-        'project.build.copyMetadataFiles',
-        performance.now() - copyMetadataStart,
-        {
-          projectPath: options.projectPath,
-        },
-        { always: true },
-      );
-
-      const distPackageJson = buildDistPackageJson(
-        packageJson,
-        packageInfo,
-      );
-      const distPackageJsonPath = join(options.outDir, 'package.json');
-      const writePackageJsonStart = performance.now();
-      await writeGeneratedFile(
-        distPackageJsonPath,
-        `${JSON.stringify(distPackageJson, null, 2)}\n`,
-        emittedFiles,
-      );
-      logCheckerTiming(
-        'project.build.writePackageJson',
-        performance.now() - writePackageJsonStart,
-        {
-          projectPath: options.projectPath,
-        },
-        { always: true },
-      );
-
-      return {
-        artifacts: {
-          emittedFiles,
-          outDir: options.outDir,
-          packageJsonPath: distPackageJsonPath,
-        },
-        diagnostics: [],
-        exitCode: 0,
-        output: renderBuildOutput(
-          {
-            emittedFiles,
-            outDir: options.outDir,
-            packageJsonPath: distPackageJsonPath,
-          },
-          options.projectPath,
-        ),
-      };
+      return await emitPackageBuildOutputs(options, packageJson, packageInfo, builtProgram);
     } finally {
       builtProgram.dispose();
     }
