@@ -343,6 +343,41 @@ function createJsHostImports(
     return wrapped;
   };
 
+  const bridgeHostPromiseToInternal = (
+    value: unknown,
+    candidate: unknown,
+    fulfillExportName: string,
+  ) => {
+    if (!(value instanceof Promise)) {
+      throw new TypeError('Expected JS Promise for soundscript_promise.to_internal.');
+    }
+    const candidateKey = expectHeapIdentityKey(candidate);
+    const existing = hostPromiseToInternalCache.get(value);
+    if (existing) {
+      return existing;
+    }
+    const instance = instanceCell.instance;
+    if (!instance) {
+      throw new Error('Promise bridge invoked before instantiation completed.');
+    }
+    const fulfill = instance.exports[fulfillExportName];
+    const reject = instance.exports.__soundscript_promise_bridge_reject;
+    if (typeof fulfill !== 'function' || typeof reject !== 'function') {
+      throw new Error('Missing exported Promise bridge helpers.');
+    }
+    hostPromiseToInternalCache.set(value, candidateKey);
+    internalPromiseToHostCache.set(candidateKey, value);
+    value.then(
+      (resolved) => {
+        fulfill(candidateKey, resolved);
+      },
+      (reason) => {
+        reject(candidateKey, reason);
+      },
+    );
+    return candidateKey;
+  };
+
   return {
     soundscript_array: {
       empty: () => [],
@@ -835,38 +870,10 @@ function createJsHostImports(
         return undefined;
       },
     }),
-    soundscript_promise: {
+    soundscript_promise: new Proxy({
       is_host: (value: unknown) => value instanceof Promise ? 1 : 0,
-      to_internal: (value: unknown, candidate: unknown) => {
-        if (!(value instanceof Promise)) {
-          throw new TypeError('Expected JS Promise for soundscript_promise.to_internal.');
-        }
-        const candidateKey = expectHeapIdentityKey(candidate);
-        const existing = hostPromiseToInternalCache.get(value);
-        if (existing) {
-          return existing;
-        }
-        const instance = instanceCell.instance;
-        if (!instance) {
-          throw new Error('Promise bridge invoked before instantiation completed.');
-        }
-        const fulfill = instance.exports.__soundscript_promise_bridge_fulfill;
-        const reject = instance.exports.__soundscript_promise_bridge_reject;
-        if (typeof fulfill !== 'function' || typeof reject !== 'function') {
-          throw new Error('Missing exported Promise bridge helpers.');
-        }
-        hostPromiseToInternalCache.set(value, candidateKey);
-        internalPromiseToHostCache.set(candidateKey, value);
-        value.then(
-          (resolved) => {
-            fulfill(candidateKey, resolved);
-          },
-          (reason) => {
-            reject(candidateKey, reason);
-          },
-        );
-        return candidateKey;
-      },
+      to_internal: (value: unknown, candidate: unknown) =>
+        bridgeHostPromiseToInternal(value, candidate, '__soundscript_promise_bridge_fulfill'),
       to_host: (value: unknown) => {
         const internalPromise = expectHeapIdentityKey(value);
         const existing = internalPromiseToHostCache.get(internalPromise);
@@ -891,7 +898,22 @@ function createJsHostImports(
         internalPromiseToHostCache.set(internalPromise, created);
         return created;
       },
-    },
+    }, {
+      get(target, property, receiver) {
+        if (typeof property === 'string') {
+          const toInternalBridgeMatch = /^to_internal_bridge_(\d+)$/.exec(property);
+          if (toInternalBridgeMatch) {
+            return (value: unknown, candidate: unknown) =>
+              bridgeHostPromiseToInternal(
+                value,
+                candidate,
+                `__soundscript_promise_bridge_fulfill_${toInternalBridgeMatch[1]}`,
+              );
+          }
+        }
+        return Reflect.get(target, property, receiver);
+      },
+    }),
     soundscript_async_generator: {
       to_step: (iterator: unknown) => {
         const iteratorKey = getHostIdentityKey(iterator);

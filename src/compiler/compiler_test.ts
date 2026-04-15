@@ -9184,6 +9184,998 @@ compilerIntegrationTest(
 );
 
 compilerIntegrationTest(
+  'compileProject supports bag-like local payload objects through imported host closure params',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              skipLibCheck: true,
+              target: 'ES2022',
+              lib: ['ES2022'],
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+              allowSyntheticDefaultImports: true,
+            },
+            include: ['src/**/*.sts', 'src/**/*.d.ts'],
+            soundscript: {
+              target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/bag-api.d.ts',
+        contents: [
+          "declare module 'bag-api' {",
+          '  export const api: {',
+          '    acceptBag(props: Record<string, unknown>): string;',
+          '  };',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.sts',
+        contents: [
+          '// #[interop]',
+          "import { api } from 'bag-api';",
+          '',
+          'export function main(): string {',
+          '  const props: Record<string, unknown> = {',
+          "    title: 'Write compiler tests',",
+          '    completed: false,',
+          '  };',
+          '  return api.acceptBag(props);',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const wrapperModule = await importCompiledWrapperModule(result.artifacts.wrapperPath);
+    const instantiated = await wrapperModule.instantiate({
+      modules: {
+        'bag-api': {
+          api: {
+            acceptBag(props: Record<string, unknown>): string {
+              const title = props.title;
+              const completed = props.completed;
+              if (typeof title !== 'string') {
+                return 'bad-title';
+              }
+              if (typeof completed !== 'boolean') {
+                return 'bad-completed';
+              }
+              return `${title}:${completed ? 'done' : 'open'}`;
+            },
+          },
+        },
+      },
+    });
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+
+    assertEquals(await exported(), 'Write compiler tests:open');
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject supports ambient bag-like local payload objects through imported host closure params',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              skipLibCheck: true,
+              target: 'ES2022',
+              lib: ['ES2022'],
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+              allowSyntheticDefaultImports: true,
+            },
+            include: ['src/**/*.sts', 'src/**/*.d.ts'],
+            soundscript: {
+              target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/bag-api.d.ts',
+        contents: [
+          "declare module 'bag-api' {",
+          '  export interface BagLike {',
+          '    [key: string]: unknown;',
+          '  }',
+          '  export const api: {',
+          '    acceptBag(props: BagLike): string;',
+          '  };',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/bag-types.d.ts',
+        contents: [
+          "type BagLike = import('bag-api').BagLike;",
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.sts',
+        contents: [
+          '// #[interop]',
+          "import { api } from 'bag-api';",
+          '',
+          'export function main(): string {',
+          '  const props: BagLike = {',
+          "    title: 'Write compiler tests',",
+          '    completed: false,',
+          '  };',
+          '  return api.acceptBag(props);',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const wrapperModule = await importCompiledWrapperModule(result.artifacts.wrapperPath);
+    const instantiated = await wrapperModule.instantiate({
+      modules: {
+        'bag-api': {
+          api: {
+            acceptBag(props: Record<string, unknown>): string {
+              const title = props.title;
+              const completed = props.completed;
+              if (typeof title !== 'string') {
+                return 'bad-title';
+              }
+              if (typeof completed !== 'boolean') {
+                return 'bad-completed';
+              }
+              return `${title}:${completed ? 'done' : 'open'}`;
+            },
+          },
+        },
+      },
+    });
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+
+    assertEquals(await exported(), 'Write compiler tests:open');
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject supports ambient bag-like local payload objects through imported host closure params in async frames',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              skipLibCheck: true,
+              target: 'ES2022',
+              lib: ['ES2022'],
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+              allowSyntheticDefaultImports: true,
+            },
+            include: ['src/**/*.sts', 'src/**/*.d.ts'],
+            soundscript: {
+              target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/bag-api.d.ts',
+        contents: [
+          "declare module 'bag-api' {",
+          '  export interface BagLike {',
+          '    [key: string]: unknown;',
+          '  }',
+          '  export const api: {',
+          '    acceptBag(props: BagLike): string;',
+          '  };',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/bag-types.d.ts',
+        contents: [
+          "type BagLike = import('bag-api').BagLike;",
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.sts',
+        contents: [
+          '// #[interop]',
+          "import { api } from 'bag-api';",
+          '',
+          'export async function main(): Promise<string> {',
+          '  const props: BagLike = {',
+          "    title: 'Write compiler tests',",
+          '    completed: false,',
+          '  };',
+          '  return api.acceptBag(props);',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const wrapperModule = await importCompiledWrapperModule(result.artifacts.wrapperPath);
+    const instantiated = await wrapperModule.instantiate({
+      modules: {
+        'bag-api': {
+          api: {
+            acceptBag(props: Record<string, unknown>): string {
+              const title = props.title;
+              const completed = props.completed;
+              if (typeof title !== 'string') {
+                return 'bad-title';
+              }
+              if (typeof completed !== 'boolean') {
+                return 'bad-completed';
+              }
+              return `${title}:${completed ? 'done' : 'open'}`;
+            },
+          },
+        },
+      },
+    });
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+
+    assertEquals(await exported(), 'Write compiler tests:open');
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject supports imported host fallback methods with omitted optional object params',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              skipLibCheck: true,
+              target: 'ES2022',
+              lib: ['ES2022'],
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+              allowSyntheticDefaultImports: true,
+            },
+            include: ['src/**/*.sts', 'src/**/*.d.ts'],
+            soundscript: {
+              target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/db-types.d.ts',
+        contents: [
+          "declare module 'db' {",
+          '  export interface RecordApi {',
+          '    create(values: Record<string, unknown>, options?: Record<string, unknown>): Promise<string>;',
+          '  }',
+          '  export function createRecordApi(): RecordApi;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.sts',
+        contents: [
+          '// #[interop]',
+          "import { createRecordApi } from 'db';",
+          '',
+          'export async function main(): Promise<string> {',
+          '  const api = createRecordApi();',
+          '  return await api.create({',
+          "    title: 'Write compiler tests',",
+          '    completed: false,',
+          '  });',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const wrapperModule = await importCompiledWrapperModule(result.artifacts.wrapperPath);
+    const instantiated = await wrapperModule.instantiate({
+      modules: {
+        db: {
+          createRecordApi() {
+            return {
+              async create(values: Record<string, unknown>, options?: Record<string, unknown>) {
+                if (options !== undefined) {
+                  return 'bad-options';
+                }
+                const title = values.title;
+                const completed = values.completed;
+                if (typeof title !== 'string') {
+                  return 'bad-title';
+                }
+                if (typeof completed !== 'boolean') {
+                  return 'bad-completed';
+                }
+                return `${title}:${completed ? 'done' : 'open'}`;
+              },
+            };
+          },
+        },
+      },
+    });
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+
+    assertEquals(await exported(), 'Write compiler tests:open');
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject supports imported host method result locals across async frame method calls',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              skipLibCheck: true,
+              target: 'ES2022',
+              lib: ['ES2022'],
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+              allowSyntheticDefaultImports: true,
+            },
+            include: ['src/**/*.sts', 'src/**/*.d.ts'],
+            soundscript: {
+              target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/db-types.d.ts',
+        contents: [
+          "declare module 'db' {",
+          '  export interface RecordLike {',
+          '    getValue(key: string): unknown;',
+          '  }',
+          '  export interface RecordApi {',
+          '    create(values: Record<string, unknown>, options?: Record<string, unknown>): Promise<RecordLike>;',
+          '  }',
+          '  export interface Driver {',
+          '    sync(options?: Record<string, unknown>): Promise<void>;',
+          '    createRecordApi(): RecordApi;',
+          '  }',
+          '  export function createDriver(): Driver;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.sts',
+        contents: [
+          '// #[interop]',
+          "import { createDriver } from 'db';",
+          '',
+          'export async function main(): Promise<string> {',
+          '  const driver = createDriver();',
+          '  const api = driver.createRecordApi();',
+          '  await driver.sync({ force: true });',
+          '  const record = await api.create({',
+          "    title: 'Write compiler tests',",
+          '    completed: false,',
+          '  });',
+          "  const title = record.getValue('title');",
+          "  if (typeof title !== 'string') {",
+          "    return 'bad-title';",
+          '  }',
+          "  const completed = record.getValue('completed');",
+          "  if (typeof completed !== 'boolean') {",
+          "    return 'bad-completed';",
+          '  }',
+          '  return title + (completed ? \':done\' : \':open\');',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    class RecordLike {
+      values: Record<string, unknown>;
+
+      constructor(values: Record<string, unknown>) {
+        this.values = { ...values };
+      }
+
+      getValue(key: string): unknown {
+        return this.values[key];
+      }
+    }
+
+    const wrapperModule = await importCompiledWrapperModule(result.artifacts.wrapperPath);
+    const instantiated = await wrapperModule.instantiate({
+      modules: {
+        db: {
+          createDriver() {
+            return {
+              async sync(options?: Record<string, unknown>): Promise<void> {
+                if (options?.force !== true) {
+                  throw new Error('expected force sync option');
+                }
+              },
+              createRecordApi() {
+                return {
+                  async create(values: Record<string, unknown>, options?: Record<string, unknown>) {
+                    if (options !== undefined) {
+                      throw new Error('expected omitted options');
+                    }
+                    return new RecordLike(values);
+                  },
+                };
+              },
+            };
+          },
+        },
+      },
+    });
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+
+    assertEquals(await exported(), 'Write compiler tests:open');
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject supports imported host fallback result locals across async frame method calls',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              skipLibCheck: true,
+              target: 'ES2022',
+              lib: ['ES2022'],
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+              allowSyntheticDefaultImports: true,
+            },
+            include: ['src/**/*.sts', 'src/**/*.d.ts'],
+            soundscript: {
+              target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/db-types.d.ts',
+        contents: [
+          "declare module 'db' {",
+          '  export interface RecordLike {',
+          '    getValue(key: string): unknown;',
+          '  }',
+          '  export interface RecordApi {',
+          '    [key: string]: unknown;',
+          '    create(values: Record<string, unknown>, options?: Record<string, unknown>): Promise<RecordLike>;',
+          '    findAll(): Promise<RecordLike[]>;',
+          '  }',
+          '  export interface Driver {',
+          '    sync(options?: Record<string, unknown>): Promise<void>;',
+          '    createRecordApi(): RecordApi;',
+          '  }',
+          '  export function createDriver(): Driver;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.sts',
+        contents: [
+          '// #[interop]',
+          "import { createDriver } from 'db';",
+          '',
+          'export async function main(): Promise<string> {',
+          '  const driver = createDriver();',
+          '  const api = driver.createRecordApi();',
+          '  await driver.sync({ force: true });',
+          '  const record = await api.create({',
+          "    title: 'Write compiler tests',",
+          '    completed: false,',
+          '  });',
+          "  const title = record.getValue('title');",
+          "  if (typeof title !== 'string') {",
+          "    return 'bad-title';",
+          '  }',
+          "  const completed = record.getValue('completed');",
+          "  if (typeof completed !== 'boolean') {",
+          "    return 'bad-completed';",
+          '  }',
+          '  return title + (completed ? \':done\' : \':open\');',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    class RecordLike {
+      values: Record<string, unknown>;
+
+      constructor(values: Record<string, unknown>) {
+        this.values = { ...values };
+      }
+
+      getValue(key: string): unknown {
+        return this.values[key];
+      }
+    }
+
+    const wrapperModule = await importCompiledWrapperModule(result.artifacts.wrapperPath);
+    const instantiated = await wrapperModule.instantiate({
+      modules: {
+        db: {
+          createDriver() {
+            return {
+              async sync(options?: Record<string, unknown>): Promise<void> {
+                if (options?.force !== true) {
+                  throw new Error('expected force sync option');
+                }
+              },
+              createRecordApi() {
+                const records: RecordLike[] = [];
+                return {
+                  async create(values: Record<string, unknown>, options?: Record<string, unknown>) {
+                    if (options !== undefined) {
+                      throw new Error('expected omitted options');
+                    }
+                    const record = new RecordLike(values);
+                    records.push(record);
+                    return record;
+                  },
+                  async findAll(): Promise<RecordLike[]> {
+                    return records;
+                  },
+                };
+              },
+            };
+          },
+        },
+      },
+    });
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+
+    assertEquals(await exported(), 'Write compiler tests:open');
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject ignores unused unsupported methods on imported host fallback result locals',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              skipLibCheck: true,
+              target: 'ES2022',
+              lib: ['ES2022'],
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+              allowSyntheticDefaultImports: true,
+            },
+            include: ['src/**/*.sts', 'src/**/*.d.ts'],
+            soundscript: {
+              target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/db-types.d.ts',
+        contents: [
+          "declare module 'db' {",
+          '  export interface RecordLike {',
+          '    getValue(key: string): unknown;',
+          '  }',
+          '  export interface RecordApi {',
+          '    [key: string]: unknown;',
+          '    create(values: Record<string, unknown>, options?: Record<string, unknown>): Promise<RecordLike>;',
+          '    findAll(): Promise<RecordLike[]>;',
+          '    scope(',
+          '      options?:',
+          '        | string',
+          '        | { method: readonly [string, string, number] }',
+          '        | readonly (string | { method: readonly [string, string, number] })[]',
+          '    ): RecordApi;',
+          '  }',
+          '  export interface Driver {',
+          '    sync(options?: Record<string, unknown>): Promise<void>;',
+          '    createRecordApi(): RecordApi;',
+          '  }',
+          '  export function createDriver(): Driver;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.sts',
+        contents: [
+          '// #[interop]',
+          "import { createDriver } from 'db';",
+          '',
+          'export async function main(): Promise<string> {',
+          '  const driver = createDriver();',
+          '  const api = driver.createRecordApi();',
+          '  await driver.sync({ force: true });',
+          '  const record = await api.create({',
+          "    title: 'Write compiler tests',",
+          '    completed: false,',
+          '  });',
+          "  const title = record.getValue('title');",
+          "  if (typeof title !== 'string') {",
+          "    return 'bad-title';",
+          '  }',
+          "  const completed = record.getValue('completed');",
+          "  if (typeof completed !== 'boolean') {",
+          "    return 'bad-completed';",
+          '  }',
+          '  return title + (completed ? \':done\' : \':open\');',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    class RecordLike {
+      values: Record<string, unknown>;
+
+      constructor(values: Record<string, unknown>) {
+        this.values = { ...values };
+      }
+
+      getValue(key: string): unknown {
+        return this.values[key];
+      }
+    }
+
+    const wrapperModule = await importCompiledWrapperModule(result.artifacts.wrapperPath);
+    const instantiated = await wrapperModule.instantiate({
+      modules: {
+        db: {
+          createDriver() {
+            return {
+              async sync(options?: Record<string, unknown>): Promise<void> {
+                if (options?.force !== true) {
+                  throw new Error('expected force sync option');
+                }
+              },
+              createRecordApi() {
+                const records: RecordLike[] = [];
+                return {
+                  async create(values: Record<string, unknown>, options?: Record<string, unknown>) {
+                    if (options !== undefined) {
+                      throw new Error('expected omitted options');
+                    }
+                    const record = new RecordLike(values);
+                    records.push(record);
+                    return record;
+                  },
+                  async findAll(): Promise<RecordLike[]> {
+                    return records;
+                  },
+                  scope(): never {
+                    throw new Error('unused scope should not be called');
+                  },
+                };
+              },
+            };
+          },
+        },
+      },
+    });
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+
+    assertEquals(await exported(), 'Write compiler tests:open');
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject supports real sequelize package declarations for sqlite todo model operations',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              skipLibCheck: true,
+              target: 'ES2022',
+              lib: ['ES2022'],
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+              allowSyntheticDefaultImports: true,
+            },
+            include: ['src/**/*.sts', 'src/**/*.d.ts'],
+            soundscript: {
+              target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/sequelize-types.d.ts',
+        contents: [
+          "type TodoAttributes = import('sequelize').ModelAttributes<import('sequelize').Model>;",
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.sts',
+        contents: [
+          '// #[interop]',
+          "import { Sequelize } from 'sequelize';",
+          '',
+          'export async function main(): Promise<string> {',
+          '  const sequelize = new Sequelize({',
+          "    dialect: 'sqlite',",
+          "    storage: ':memory:',",
+          '    logging: false,',
+          '  });',
+          '  const todoAttributes: TodoAttributes = {',
+          "    title: 'STRING',",
+          "    completed: 'BOOLEAN',",
+          '  };',
+          "  const Todo = sequelize.define('Todo', todoAttributes);",
+          '  await sequelize.sync({ force: true });',
+          '  await Todo.create({',
+          "    title: 'Write compiler tests',",
+          '    completed: false,',
+          '  });',
+          '  const todos = await Todo.findAll();',
+          '  const firstTodo = todos[0];',
+          '  if (firstTodo === undefined) {',
+          "    return 'missing';",
+          '  }',
+          "  const title = firstTodo.getDataValue('title');",
+          "  if (typeof title !== 'string') {",
+          "    return 'bad-title';",
+          '  }',
+          "  const completed = firstTodo.getDataValue('completed');",
+          "  if (typeof completed !== 'boolean') {",
+          "    return 'bad-completed';",
+          '  }',
+          '  if (completed) {',
+          "    return title + ':done';",
+          '  }',
+          "  return title + ':open';",
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    await Deno.symlink(
+      getExampleNodeModulesPath('examples/fullstack-todo'),
+      join(tempDirectory, 'node_modules'),
+    );
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    class FakeModel {
+      data: Record<string, unknown>;
+
+      constructor(values: Record<string, unknown>) {
+        this.data = { ...values };
+      }
+
+      getDataValue(key: string): unknown {
+        return this.data[key];
+      }
+    }
+
+    class Sequelize {
+      define(
+        _modelName: string,
+        _attributes: Record<string, unknown>,
+      ): {
+        create(values: Record<string, unknown>): Promise<FakeModel>;
+        findAll(): Promise<FakeModel[]>;
+      } {
+        const records: FakeModel[] = [];
+        return {
+          async create(values: Record<string, unknown>): Promise<FakeModel> {
+            const record = new FakeModel(values);
+            records.push(record);
+            return record;
+          },
+          async findAll(): Promise<FakeModel[]> {
+            return records;
+          },
+        };
+      }
+
+      async sync(_options?: Record<string, unknown>): Promise<this> {
+        return this;
+      }
+    }
+
+    const wrapperModule = await importCompiledWrapperModule(result.artifacts.wrapperPath);
+    const instantiated = await wrapperModule.instantiate({
+      modules: {
+        sequelize: {
+          DataTypes: {
+            BOOLEAN: {
+              key: 'BOOLEAN',
+            },
+            STRING: {
+              key: 'STRING',
+            },
+          },
+          Sequelize,
+        },
+      },
+    });
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+
+    assertEquals(await exported(), 'Write compiler tests:open');
+  },
+);
+
+compilerIntegrationTest(
   'compileProject supports ambient host functions with destructured declaration params',
   async () => {
     const tempDirectory = await createTempProject([

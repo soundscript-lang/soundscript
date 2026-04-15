@@ -1613,6 +1613,7 @@ export interface CompilerClosureSignatureIR {
   params: readonly CompilerValueType[];
   sourceParamClassConstructorTagIds?: readonly (number | undefined)[];
   paramClosureSignatureIds?: readonly (number | undefined)[];
+  paramPromiseValueBoundaries?: readonly (CompilerHostBoundaryIR | undefined)[];
   paramTaggedPrimitiveKinds?: readonly (CompilerTaggedPrimitiveBoundaryKindsIR | undefined)[];
   paramHeapRepresentations?: readonly (CompilerRuntimeRepresentationRefIR<'object'> | undefined)[];
   paramHeapArrayRepresentations?:
@@ -1620,6 +1621,7 @@ export interface CompilerClosureSignatureIR {
   resultType: CompilerValueType;
   resultClassConstructorTagId?: number;
   resultClosureSignatureId?: number;
+  resultPromiseValueBoundary?: CompilerHostBoundaryIR;
   resultTaggedPrimitiveKinds?: CompilerTaggedPrimitiveBoundaryKindsIR;
   resultHeapRepresentation?: CompilerRuntimeRepresentationRefIR<'object'>;
   resultHeapArrayRepresentation?: CompilerRuntimeRepresentationRefIR<'object'>;

@@ -2095,10 +2095,16 @@ function moduleUsesHostPromiseParamBridge(module: CompilerModuleIR): boolean {
         )
       )
     )
+  ) || getHostClosureBoundarySignatures(module).some(({ signature, needsResultBoundary }) =>
+    needsResultBoundary &&
+    (
+      signature.resultPromiseValueBoundary !== undefined ||
+      moduleRepresentationUsesPromiseBridge(module, signature.resultHeapRepresentation)
+    )
   );
 }
 
-function moduleUsesHostPromiseResultBridge(module: CompilerModuleIR): boolean {
+function moduleUsesDirectHostPromiseResultBridge(module: CompilerModuleIR): boolean {
   return module.functions.some((func) =>
     (func.hostImport !== undefined && getEffectiveHostImportPromiseParamNames(func).size > 0) ||
     (func.exportName.length > 0 && hasEffectiveHostExportPromiseResult(func)) ||
@@ -2113,6 +2119,19 @@ function moduleUsesHostPromiseResultBridge(module: CompilerModuleIR): boolean {
           getEffectiveFunctionHeapResultRepresentation(func),
         )
       )
+    )
+  );
+}
+
+function moduleUsesHostPromiseResultBridge(module: CompilerModuleIR): boolean {
+  return moduleUsesDirectHostPromiseResultBridge(module) ||
+    getHostClosureBoundarySignatures(module).some(({ signature, needsParamBoundary }) =>
+    needsParamBoundary &&
+    (
+      signature.paramPromiseValueBoundaries?.some((boundary) => boundary !== undefined) === true ||
+      signature.paramHeapRepresentations?.some((representation) =>
+        moduleRepresentationUsesPromiseBridge(module, representation)
+      ) === true
     )
   );
 }
@@ -4739,6 +4758,8 @@ interface IndexedRuntimeOperation<TOperation extends CompilerRuntimeOperationIR>
 }
 
 interface FunctionBackendRuntimeContext {
+  boxedHeapRepresentations: Map<string, BackendHeapRepresentation>;
+  closureSignaturesById: ReadonlyMap<number, CompilerClosureSignatureIR>;
   currentFunction: CompilerFunctionIR;
   dynamicAllocationOpIndexesByLocal: Map<string, number>;
   dynamicAllocationsByLocal: ReadonlyMap<
@@ -6691,6 +6712,84 @@ function collectHostBoundarySpecializedObjectUsage(
       needsResultBoundary: boolean;
     }
   >();
+  const recordHostPromiseValueBoundaryUsage = (
+    valueBoundary: CompilerHostBoundaryIR | undefined,
+  ): void => {
+    if (!valueBoundary) {
+      return;
+    }
+    switch (valueBoundary.kind) {
+      case 'object':
+        if (valueBoundary.representation.kind === 'specialized_object_representation') {
+          recordUsage(
+            valueBoundary.representation as CompilerRuntimeSpecializedObjectRepresentationRefIR,
+            { needsResultBoundary: true },
+          );
+        }
+        return;
+      case 'tagged':
+        if (valueBoundary.heapBoundary?.kind === 'object' &&
+          valueBoundary.heapBoundary.representation.kind === 'specialized_object_representation') {
+          recordUsage(
+            valueBoundary.heapBoundary
+              .representation as CompilerRuntimeSpecializedObjectRepresentationRefIR,
+            { needsResultBoundary: true },
+          );
+        }
+        if (
+          valueBoundary.heapBoundary?.kind === 'array' &&
+          valueBoundary.heapBoundary.carrierType === 'owned_heap_array_ref' &&
+          valueBoundary.heapBoundary.elementBoundary.kind === 'object' &&
+          valueBoundary.heapBoundary.elementBoundary.representation.kind ===
+            'specialized_object_representation'
+        ) {
+          recordUsage(
+            valueBoundary.heapBoundary.elementBoundary
+              .representation as CompilerRuntimeSpecializedObjectRepresentationRefIR,
+            { needsResultBoundary: true },
+          );
+        }
+        if (
+          valueBoundary.heapBoundary?.kind === 'array' &&
+          valueBoundary.heapBoundary.carrierType === 'owned_tagged_array_ref' &&
+          valueBoundary.heapBoundary.elementBoundary.representation?.kind ===
+            'specialized_object_representation'
+        ) {
+          recordUsage(
+            valueBoundary.heapBoundary.elementBoundary
+              .representation as CompilerRuntimeSpecializedObjectRepresentationRefIR,
+            { needsResultBoundary: true },
+          );
+        }
+        return;
+      case 'array':
+        if (
+          valueBoundary.carrierType === 'owned_heap_array_ref' &&
+          valueBoundary.elementBoundary.kind === 'object' &&
+          valueBoundary.elementBoundary.representation.kind === 'specialized_object_representation'
+        ) {
+          recordUsage(
+            valueBoundary.elementBoundary
+              .representation as CompilerRuntimeSpecializedObjectRepresentationRefIR,
+            { needsResultBoundary: true },
+          );
+        }
+        if (
+          valueBoundary.carrierType === 'owned_tagged_array_ref' &&
+          valueBoundary.elementBoundary.representation?.kind ===
+            'specialized_object_representation'
+        ) {
+          recordUsage(
+            valueBoundary.elementBoundary
+              .representation as CompilerRuntimeSpecializedObjectRepresentationRefIR,
+            { needsResultBoundary: true },
+          );
+        }
+        return;
+      default:
+        return;
+    }
+  };
   const recordUsage = (
     representation: CompilerRuntimeSpecializedObjectRepresentationRefIR,
     updates: {
@@ -6770,6 +6869,10 @@ function collectHostBoundarySpecializedObjectUsage(
     const hostHeapArrayResultRepresentation = getEffectiveHostHeapArrayResultRepresentation(func);
     const hostTaggedArrayParamsByName = getEffectiveHostTaggedArrayParamsByName(func);
     const hostTaggedArrayResultKinds = getEffectiveHostTaggedArrayResultKinds(func);
+    recordHostPromiseValueBoundaryUsage(getHostPromiseBoundary(func.hostResultBoundary)?.valueBoundary);
+    for (const paramBoundary of func.hostParamBoundaries ?? []) {
+      recordHostPromiseValueBoundaryUsage(getHostPromiseBoundary(paramBoundary.boundary)?.valueBoundary);
+    }
     for (
       const boundary of getHostAdaptableSpecializedObjectParamBoundaries(
         func,
@@ -6900,6 +7003,12 @@ function collectHostBoundarySpecializedObjectUsage(
         needsParamCopyBack: hasFallbackParamBoundary,
         needsResultBoundary: hasFallbackParamBoundary || hasFallbackResultBoundary,
       });
+    }
+  }
+  for (const signature of module.closureSignatures ?? []) {
+    recordHostPromiseValueBoundaryUsage(signature.resultPromiseValueBoundary);
+    for (const boundary of signature.paramPromiseValueBoundaries ?? []) {
+      recordHostPromiseValueBoundaryUsage(boundary);
     }
   }
   return usageByRepresentationName;
@@ -7450,10 +7559,142 @@ function getHostObjectPropertyPathKey(propertyPath: readonly string[]): string {
   return JSON.stringify(propertyPath);
 }
 
+interface HostPromiseValueBridgeSpec {
+  id: number;
+  key: string;
+  valueBoundary: CompilerHostBoundaryIR;
+}
+
+function getHostPromiseToInternalImportName(bridgeId?: number): string {
+  return bridgeId === undefined
+    ? SOUNDSCRIPT_HOST_PROMISE_TO_INTERNAL_IMPORT_NAME
+    : `$host_promise_to_internal_${bridgeId}`;
+}
+
+function getHostPromiseToInternalImportExportName(bridgeId?: number): string {
+  return bridgeId === undefined ? 'to_internal' : `to_internal_bridge_${bridgeId}`;
+}
+
+function getHostPromiseBridgeFulfillExportName(bridgeId?: number): string {
+  return bridgeId === undefined
+    ? SOUNDSCRIPT_PROMISE_BRIDGE_FULFILL_EXPORT_NAME
+    : `__soundscript_promise_bridge_fulfill_${bridgeId}`;
+}
+
+function encodeHostBoundaryBridgeKey(boundary: CompilerHostBoundaryIR): string {
+  switch (boundary.kind) {
+    case 'scalar':
+      return `scalar:${boundary.valueType}`;
+    case 'string':
+      return `string:${boundary.owned ? 'owned' : 'borrowed'}`;
+    case 'closure':
+      return `closure:${boundary.signatureId}`;
+    case 'class_constructor':
+      return `class:${boundary.classTagId}`;
+    case 'externref':
+      return 'externref';
+    case 'object':
+      return `object:${boundary.representation.kind}:${boundary.representation.name}:${
+        (boundary.fields ?? []).map((field) =>
+          `${field.name}:${field.optional ? 'optional' : 'required'}:${
+            encodeHostBoundaryBridgeKey(field.boundary)
+          }`
+        ).join('|')
+      }`;
+    case 'tagged':
+      return `tagged:${
+        [
+          boundary.includesBoolean ? 'b' : '',
+          boundary.includesNull ? 'n' : '',
+          boundary.includesNumber ? 'd' : '',
+          boundary.includesString ? 's' : '',
+          boundary.includesUndefined ? 'u' : '',
+        ].join('')
+      }:${boundary.heapBoundary ? encodeHostBoundaryBridgeKey(boundary.heapBoundary) : '-'}`;
+    case 'promise':
+      return `promise:${boundary.representation.kind}:${boundary.representation.name}:${
+        boundary.valueBoundary ? encodeHostBoundaryBridgeKey(boundary.valueBoundary) : '-'
+      }`;
+    case 'array':
+      return `array:${boundary.carrierType}:${encodeHostBoundaryBridgeKey(boundary.elementBoundary)}`;
+    default: {
+      const exhaustiveCheck: never = boundary;
+      return exhaustiveCheck;
+    }
+  }
+}
+
+function hostPromiseValueBoundaryUsesGenericBridge(boundary: CompilerHostBoundaryIR | undefined): boolean {
+  if (!boundary) {
+    return true;
+  }
+  switch (boundary.kind) {
+    case 'scalar':
+    case 'string':
+      return true;
+    case 'tagged':
+      return boundary.heapBoundary === undefined;
+    default:
+      return false;
+  }
+}
+
+function collectTypedHostPromiseValueBridgeSpecs(module: CompilerModuleIR): HostPromiseValueBridgeSpec[] {
+  const specsByKey = new Map<string, CompilerHostBoundaryIR>();
+  const maybeAddBoundary = (boundary: CompilerHostBoundaryIR | undefined): void => {
+    if (!boundary || hostPromiseValueBoundaryUsesGenericBridge(boundary)) {
+      return;
+    }
+    const key = encodeHostBoundaryBridgeKey(boundary);
+    if (!specsByKey.has(key)) {
+      specsByKey.set(key, boundary);
+    }
+  };
+  for (const func of module.functions) {
+    maybeAddBoundary(getHostPromiseBoundary(func.hostResultBoundary)?.valueBoundary);
+    for (const paramBoundary of func.hostParamBoundaries ?? []) {
+      maybeAddBoundary(getHostPromiseBoundary(paramBoundary.boundary)?.valueBoundary);
+    }
+  }
+  for (const signature of module.closureSignatures ?? []) {
+    maybeAddBoundary(signature.resultPromiseValueBoundary);
+    for (const boundary of signature.paramPromiseValueBoundaries ?? []) {
+      maybeAddBoundary(boundary);
+    }
+  }
+  return [...specsByKey.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, valueBoundary], index) => ({
+      id: index,
+      key,
+      valueBoundary,
+    }));
+}
+
+function getTypedHostPromiseValueBridgeSpec(
+  module: CompilerModuleIR,
+  boundary: CompilerHostBoundaryIR | undefined,
+): HostPromiseValueBridgeSpec | undefined {
+  if (!boundary || hostPromiseValueBoundaryUsesGenericBridge(boundary)) {
+    return undefined;
+  }
+  const key = encodeHostBoundaryBridgeKey(boundary);
+  return collectTypedHostPromiseValueBridgeSpecs(module).find((spec) => spec.key === key);
+}
+
+function getHostPromiseToInternalImportNameForBoundary(
+  module: CompilerModuleIR,
+  boundary: CompilerHostBoundaryIR | undefined,
+): string {
+  const spec = getTypedHostPromiseValueBridgeSpec(module, boundary);
+  return getHostPromiseToInternalImportName(spec?.id);
+}
+
 function emitPromiseRuntimeImports(module: CompilerModuleIR): string[] {
   if (!moduleUsesHostPromiseBridge(module) && !moduleUsesAsyncGeneratorHostImportBridge(module)) {
     return [];
   }
+  const typedPromiseValueBridgeSpecs = collectTypedHostPromiseValueBridgeSpecs(module);
   return [
     ...(moduleUsesAsyncGeneratorHostImportBridge(module)
       ? [
@@ -7462,6 +7703,11 @@ function emitPromiseRuntimeImports(module: CompilerModuleIR): string[] {
       : []),
     `(import "soundscript_promise" "to_host" (func ${SOUNDSCRIPT_HOST_PROMISE_TO_HOST_IMPORT_NAME} (param (ref null eq)) (result externref)))`,
     `(import "soundscript_promise" "to_internal" (func ${SOUNDSCRIPT_HOST_PROMISE_TO_INTERNAL_IMPORT_NAME} (param externref) (param (ref null eq)) (result (ref null eq))))`,
+    ...typedPromiseValueBridgeSpecs.map((spec) =>
+      `(import "soundscript_promise" "${getHostPromiseToInternalImportExportName(spec.id)}" (func ${
+        getHostPromiseToInternalImportName(spec.id)
+      } (param externref) (param (ref null eq)) (result (ref null eq))))`
+    ),
   ];
 }
 
@@ -8391,8 +8637,25 @@ function getHostClosureBoundarySignatures(module: CompilerModuleIR): readonly {
     }
     markUsage(signatureId, { needsParamBoundary: true, needsResultBoundary: true });
   }
+  const hostClosureUsageNeedsPromiseResultBridge = [...usageById.entries()].some(
+    ([signatureId, usage]) => {
+      if (!usage.needsParamBoundary) {
+        return false;
+      }
+      const signature = signatureById.get(signatureId);
+      if (!signature) {
+        return false;
+      }
+      return signature.paramPromiseValueBoundaries?.some((boundary) => boundary !== undefined) ===
+          true ||
+        signature.paramHeapRepresentations?.some((representation) =>
+          moduleRepresentationUsesPromiseBridge(module, representation)
+        ) === true;
+    },
+  );
   if (
-    moduleUsesHostPromiseResultBridge(module) ||
+    moduleUsesDirectHostPromiseResultBridge(module) ||
+    hostClosureUsageNeedsPromiseResultBridge ||
     moduleUsesSyncGeneratorHostResultBridge(module) ||
     moduleUsesAsyncGeneratorHostResultBridge(module)
   ) {
@@ -9502,8 +9765,9 @@ function emitHostSpecializedObjectBoundaryHelpers(
   );
   const fallbackObjectLayout = getFallbackObjectLayout(module.runtime);
   const needsGeneratorStepHostResultHelpers = moduleUsesGeneratorStepClosureHostBridge(module);
+  const specializedUsages = [...usageByRepresentationName.values()];
 
-  return [...usageByRepresentationName.values()]
+  return specializedUsages
     .sort((left, right) =>
       left.layout.representation.name.localeCompare(right.layout.representation.name)
     )
@@ -11973,6 +12237,20 @@ function emitOwnedHeapArrayBoundaryHelpers(
   if (moduleUsesOwnedHeapArrayHostParamBoundary(module)) {
     lines.push(...emitCloneOwnedHeapArrayHelper());
   }
+  for (const [propertyName, representation] of collectHostBoundaryFallbackHeapArrayProperties(module)) {
+    emitParamBoundaryHelper(
+      representation,
+      `fallback-layout:param:${propertyName}:${representation.name}`,
+    );
+    emitResultBoundaryHelper(
+      representation,
+      `fallback-layout:result:${propertyName}:${representation.name}`,
+    );
+    emitParamCopyBackHelper(
+      representation,
+      `fallback-layout:copy:${propertyName}:${representation.name}`,
+    );
+  }
   const closureFunctionById = new Map(
     module.functions
       .filter((func) => func.closureFunctionId !== undefined)
@@ -12060,6 +12338,10 @@ function emitOwnedHeapArrayBoundaryHelpers(
           representation,
           `fallback:result:${propertyName}:${representation.name}`,
         );
+        emitParamCopyBackHelper(
+          representation,
+          `fallback:copy:result:${propertyName}:${representation.name}`,
+        );
       }
       if (needsFallbackMethodSyncCopyBack) {
         emitParamCopyBackHelper(
@@ -12104,6 +12386,10 @@ function emitOwnedHeapArrayBoundaryHelpers(
         emitResultBoundaryHelper(
           field.heapArrayRepresentation,
           `specialized:result:${usage.layout.representation.name}:${field.name}`,
+        );
+        emitParamCopyBackHelper(
+          field.heapArrayRepresentation,
+          `specialized:copy:result:${usage.layout.representation.name}:${field.name}`,
         );
       }
       if (usage.needsParamCopyBack || needsMethodSyncCopyBack || needsFieldSyncCopyBack) {
@@ -16410,6 +16696,7 @@ function emitPromiseRuntimeHelpers(
   const usesHostPromiseResultBridge = moduleUsesHostPromiseResultBridge(module) ||
     moduleUsesSyncGeneratorHostResultBridge(module) ||
     moduleUsesAsyncGeneratorHostResultBridge(module);
+  const typedPromiseValueBridgeSpecs = collectTypedHostPromiseValueBridgeSpecs(module);
   const usesThen = moduleUsesPromiseThenRuntime(module) || usesHostPromiseResultBridge;
   const usesAsyncGeneratorHostStepBridge = moduleUsesAsyncGeneratorHostStepBridge(module) ||
     moduleUsesAsyncGeneratorHostResultBridge(module);
@@ -17525,6 +17812,31 @@ function emitPromiseRuntimeHelpers(
         ')',
       ]
       : []),
+    ...typedPromiseValueBridgeSpecs.map((spec) => [
+      `(func $${getHostPromiseBridgeFulfillExportName(spec.id)} (export "${getHostPromiseBridgeFulfillExportName(spec.id)}") (param $promise (ref null eq)) (param $value externref)`,
+      `${indent(1)}(local $target (ref null $${layout.watTypeId}))`,
+      `${indent(1)}(local $value__host_tag i32)`,
+      `${indent(1)}(local $value__host_tagged (ref null $tagged_value))`,
+      `${indent(1)}local.get $promise`,
+      `${indent(1)}ref.cast (ref null $${layout.watTypeId})`,
+      `${indent(1)}local.set $target`,
+      ...emitHostPromiseBoundaryValueToTagged(
+        spec.valueBoundary,
+        'value',
+        'value__host_tag',
+        'value__host_tagged',
+        1,
+        layoutsByRepresentationName,
+        fallbackObjectLayout,
+        layout,
+      ),
+      `${indent(1)}local.set $value__host_tagged`,
+      `${indent(1)}local.get $target`,
+      `${indent(1)}local.get $value__host_tagged`,
+      `${indent(1)}call $__soundscript_promise_fulfill`,
+      `${indent(1)}call $${SOUNDSCRIPT_PROMISE_DRAIN_HELPER_NAME}`,
+      ')',
+    ]).flat(),
     ...((usesHostPromiseParamBridge || usesAsyncGeneratorHostStepBridge)
       ? [
         `(func $${SOUNDSCRIPT_PROMISE_BRIDGE_REJECT_EXPORT_NAME} (export "${SOUNDSCRIPT_PROMISE_BRIDGE_REJECT_EXPORT_NAME}") (param $promise (ref null eq)) (param $value externref)`,
@@ -19253,11 +19565,99 @@ function inferHeapLocalRepresentations(
   const specializedAllocationIndexesByLocal = new Map<string, number>();
   const dynamicAllocationIndexesByLocal = new Map<string, number>();
   const fallbackAllocationIndexesByLocal = new Map<string, number>();
+  const boxedHeapRepresentations = new Map<string, BackendHeapRepresentation>();
+  const fallbackPinnedLocals = new Set<string>();
+  for (const operation of operations) {
+    switch (operation.kind) {
+      case 'adapt_value':
+        if (
+          operation.family === 'object' &&
+          operation.toRepresentation.kind === 'fallback_object_representation'
+        ) {
+          fallbackPinnedLocals.add(operation.valueName);
+          fallbackPinnedLocals.add(operation.fallbackMaterialization.resultName);
+        }
+        break;
+      case 'get_fallback_object_property':
+      case 'has_fallback_object_property':
+      case 'set_fallback_object_property':
+      case 'list_fallback_object_keys':
+        fallbackPinnedLocals.add(operation.objectName);
+        break;
+      default:
+        break;
+    }
+  }
+
+  const getExpressionHeapRepresentation = (
+    expression: CompilerExpressionIR,
+  ): BackendHeapRepresentation | undefined => {
+    switch (expression.kind) {
+      case 'local_get':
+        return expression.type === 'heap_ref'
+          ? heapLocalRepresentations.get(expression.name)
+          : undefined;
+      case 'box_get':
+        return expression.type === 'heap_ref' && expression.box.kind === 'local_get'
+          ? boxedHeapRepresentations.get(expression.box.name)
+          : undefined;
+      case 'class_static_field_get':
+        return expression.type === 'heap_ref' && expression.heapRepresentation
+          ? getHeapRepresentationForBoundary(
+            expression.heapRepresentation,
+            layoutsByRepresentationName,
+            fallbackObjectLayout,
+            dynamicObjectLayout,
+          )
+          : undefined;
+      case 'call': {
+        if (expression.type !== 'heap_ref') {
+          return undefined;
+        }
+        if (
+          expression.callee === '__soundscript_promise_new_pending' ||
+          expression.callee === '__soundscript_promise_resolve' ||
+          expression.callee === '__soundscript_promise_reject' ||
+          expression.callee === '__soundscript_promise_then' ||
+          expression.callee === SOUNDSCRIPT_ASYNC_GENERATOR_STEP_HELPER_NAME
+        ) {
+          return dynamicObjectLayout
+            ? {
+              kind: 'dynamic',
+              layout: dynamicObjectLayout,
+            }
+            : undefined;
+        }
+        const callee = functionsByName.get(expression.callee);
+        const resultRepresentation = callee
+          ? getEffectiveFunctionHeapResultRepresentation(callee)
+          : undefined;
+        return resultRepresentation
+          ? getHeapRepresentationForBoundary(
+            resultRepresentation,
+            layoutsByRepresentationName,
+            fallbackObjectLayout,
+            dynamicObjectLayout,
+          )
+          : undefined;
+      }
+      default:
+        return undefined;
+    }
+  };
 
   const visitStatements = (statements: readonly CompilerStatementIR[]) => {
     for (const statement of statements) {
       if (statement.kind !== 'local_set' || !heapLocalNames.has(statement.name)) {
         switch (statement.kind) {
+          case 'box_set':
+            if (statement.valueType === 'heap_ref' && statement.box.kind === 'local_get') {
+              const representation = getExpressionHeapRepresentation(statement.value);
+              if (representation) {
+                boxedHeapRepresentations.set(statement.box.name, representation);
+              }
+            }
+            break;
           case 'if':
             visitStatements(statement.thenBody);
             visitStatements(statement.elseBody);
@@ -19358,6 +19758,19 @@ function inferHeapLocalRepresentations(
             throw createUnsupportedHeapRuntimeBackendError(
               `Heap local ${statement.name} was assigned from unsupported boxed non-heap value.`,
             );
+          }
+          const sourceRepresentation = statement.value.box.kind === 'local_get'
+            ? boxedHeapRepresentations.get(statement.value.box.name)
+            : undefined;
+          if (
+            sourceRepresentation &&
+            !(
+              heapLocalRepresentations.get(statement.name)?.kind === 'fallback' &&
+              fallbackPinnedLocals.has(statement.name)
+            )
+          ) {
+            nextRepresentation = sourceRepresentation;
+            break;
           }
           nextRepresentation = heapLocalRepresentations.get(statement.name) ??
             (() => {
@@ -19470,7 +19883,8 @@ function inferHeapLocalRepresentations(
       const existingRepresentation = heapLocalRepresentations.get(statement.name);
       if (
         existingRepresentation?.kind === 'fallback' &&
-        nextRepresentation.kind === 'specialized'
+        nextRepresentation.kind === 'specialized' &&
+        fallbackPinnedLocals.has(statement.name)
       ) {
         nextRepresentation = existingRepresentation;
       }
@@ -19483,6 +19897,10 @@ function inferHeapLocalRepresentations(
             nextRepresentation.kind === 'specialized' &&
             existingRepresentation.layout.representation.name !==
               nextRepresentation.layout.representation.name
+          ) &&
+          !(
+            statement.value.kind === 'box_get' &&
+            !fallbackPinnedLocals.has(statement.name)
           )
         )
       ) {
@@ -19581,6 +19999,7 @@ function expressionCallsFallbackReturningFunction(
 function expressionCallsFunctionWithHeapParamRepresentationKind(
   expression: CompilerExpressionIR,
   functionsByName: ReadonlyMap<string, CompilerFunctionIR>,
+  closureSignaturesById: ReadonlyMap<number, CompilerClosureSignatureIR>,
   kind: CompilerRuntimeRepresentationRefIR<'object'>['kind'],
 ): boolean {
   switch (expression.kind) {
@@ -19595,18 +20014,47 @@ function expressionCallsFunctionWithHeapParamRepresentationKind(
         return true;
       }
       return expression.args.some((argument) =>
-        expressionCallsFunctionWithHeapParamRepresentationKind(argument, functionsByName, kind)
+        expressionCallsFunctionWithHeapParamRepresentationKind(
+          argument,
+          functionsByName,
+          closureSignaturesById,
+          kind,
+        )
       );
+    }
+    case 'closure_call': {
+      const signature = closureSignaturesById.get(expression.signatureId);
+      if (
+        signature?.paramHeapRepresentations?.some((representation) => representation?.kind === kind)
+      ) {
+        return true;
+      }
+      return expressionCallsFunctionWithHeapParamRepresentationKind(
+          expression.callee,
+          functionsByName,
+          closureSignaturesById,
+          kind,
+        ) ||
+        expression.args.some((argument) =>
+          expressionCallsFunctionWithHeapParamRepresentationKind(
+            argument,
+            functionsByName,
+            closureSignaturesById,
+            kind,
+          )
+        );
     }
     case 'binary':
       return expressionCallsFunctionWithHeapParamRepresentationKind(
           expression.left,
           functionsByName,
+          closureSignaturesById,
           kind,
         ) ||
         expressionCallsFunctionWithHeapParamRepresentationKind(
           expression.right,
           functionsByName,
+          closureSignaturesById,
           kind,
         );
     default: {
@@ -19614,7 +20062,12 @@ function expressionCallsFunctionWithHeapParamRepresentationKind(
       forEachExpressionChild(expression, (child) => {
         if (
           !matched &&
-          expressionCallsFunctionWithHeapParamRepresentationKind(child, functionsByName, kind)
+          expressionCallsFunctionWithHeapParamRepresentationKind(
+            child,
+            functionsByName,
+            closureSignaturesById,
+            kind,
+          )
         ) {
           matched = true;
         }
@@ -19663,6 +20116,7 @@ function functionCallsFallbackReturningFunction(
 function functionCallsFunctionWithHeapParamRepresentationKind(
   func: CompilerFunctionIR,
   functionsByName: ReadonlyMap<string, CompilerFunctionIR>,
+  closureSignaturesById: ReadonlyMap<number, CompilerClosureSignatureIR>,
   kind: CompilerRuntimeRepresentationRefIR<'object'>['kind'],
 ): boolean {
   const visitStatements = (statements: readonly CompilerStatementIR[]): boolean =>
@@ -19675,12 +20129,14 @@ function functionCallsFunctionWithHeapParamRepresentationKind(
           return expressionCallsFunctionWithHeapParamRepresentationKind(
             statement.value,
             functionsByName,
+            closureSignaturesById,
             kind,
           );
         case 'return':
           return expressionCallsFunctionWithHeapParamRepresentationKind(
             statement.value,
             functionsByName,
+            closureSignaturesById,
             kind,
           );
         case 'owned_heap_array_set':
@@ -19691,22 +20147,26 @@ function functionCallsFunctionWithHeapParamRepresentationKind(
           return expressionCallsFunctionWithHeapParamRepresentationKind(
               statement.array,
               functionsByName,
+              closureSignaturesById,
               kind,
             ) ||
             expressionCallsFunctionWithHeapParamRepresentationKind(
               statement.index,
               functionsByName,
+              closureSignaturesById,
               kind,
             ) ||
             expressionCallsFunctionWithHeapParamRepresentationKind(
               statement.value,
               functionsByName,
+              closureSignaturesById,
               kind,
             );
         case 'if':
           return expressionCallsFunctionWithHeapParamRepresentationKind(
               statement.condition,
               functionsByName,
+              closureSignaturesById,
               kind,
             ) ||
             visitStatements(statement.thenBody) ||
@@ -19715,6 +20175,7 @@ function functionCallsFunctionWithHeapParamRepresentationKind(
           return expressionCallsFunctionWithHeapParamRepresentationKind(
               statement.condition,
               functionsByName,
+              closureSignaturesById,
               kind,
             ) ||
             visitStatements(statement.body);
@@ -19983,6 +20444,7 @@ function functionUsesOwnedTaggedArrayLiteralRuntime(func: CompilerFunctionIR): b
 function createFunctionBackendRuntimeContext(
   func: CompilerFunctionIR,
   functionsByName: ReadonlyMap<string, CompilerFunctionIR>,
+  closureSignaturesById: ReadonlyMap<number, CompilerClosureSignatureIR>,
   runtime: CompilerRuntimeIR | undefined,
   layoutsByRepresentationName: ReadonlyMap<string, BackendSpecializedObjectLayout>,
   fallbackPropertyKeyIdsByKey: ReadonlyMap<string, number>,
@@ -19997,19 +20459,26 @@ function createFunctionBackendRuntimeContext(
   const callsFallbackParamBoundaryFunction = functionCallsFunctionWithHeapParamRepresentationKind(
     func,
     functionsByName,
+    closureSignaturesById,
     'fallback_object_representation',
   );
   const fallbackObjectLayout = (
       functionUsesFallbackRuntime(func, operations) ||
       functionCallsFallbackReturningFunction(func, functionsByName) ||
       callsFallbackParamBoundaryFunction ||
-      hasHostFallbackBoundary
+      hasHostFallbackBoundary ||
+      (func.heapLocalRepresentations ?? []).some((boundary) =>
+        boundary.representation.kind === 'fallback_object_representation'
+      ) ||
+      getEffectiveFunctionHeapResultRepresentation(func)?.kind ===
+        'fallback_object_representation'
     )
     ? getFallbackObjectLayout(runtime)
     : undefined;
   const callsDynamicParamBoundaryFunction = functionCallsFunctionWithHeapParamRepresentationKind(
     func,
     functionsByName,
+    closureSignaturesById,
     'dynamic_object_representation',
   );
   const dynamicObjectLayout = (
@@ -20177,7 +20646,18 @@ function createFunctionBackendRuntimeContext(
     });
   };
   collectSpecializedCallResultScratchLocals(func.body);
+  if (fallbackObjectLayout) {
+    for (const representation of heapLocalRepresentations.values()) {
+      if (representation.kind === 'specialized') {
+        ensureSpecializedFallbackGeneralizationScratchLocal(
+          representation.layout.representation.name,
+        );
+      }
+    }
+  }
   return {
+    boxedHeapRepresentations: new Map<string, BackendHeapRepresentation>(),
+    closureSignaturesById,
     consumedOperationIndexes: new Set<number>(),
     currentFunction: func,
     dynamicAllocationOpIndexesByLocal: new Map<string, number>(),
@@ -20264,6 +20744,86 @@ function getHeapParamRepresentationWatType(
       return `(ref null $${runtime.dynamicObjectLayout.watTypeId})`;
     case 'specialized_object_representation':
       return getHeapBoundaryWatType(representation.name, runtime);
+  }
+}
+
+function getRuntimeHeapRepresentationForExpression(
+  expression: CompilerExpressionIR,
+  runtime: FunctionBackendRuntimeContext,
+): BackendHeapRepresentation | undefined {
+  switch (expression.kind) {
+    case 'local_get':
+      return expression.type === 'heap_ref'
+        ? runtime.heapLocalRepresentations.get(expression.name)
+        : undefined;
+    case 'box_get':
+      return expression.type === 'heap_ref' && expression.box.kind === 'local_get'
+        ? runtime.boxedHeapRepresentations.get(expression.box.name)
+        : undefined;
+    case 'class_static_field_get':
+      return expression.type === 'heap_ref' && expression.heapRepresentation
+        ? getHeapRepresentationForBoundary(
+          expression.heapRepresentation,
+          runtime.layoutsByRepresentationName,
+          runtime.fallbackObjectLayout,
+          runtime.dynamicObjectLayout,
+        )
+        : undefined;
+    case 'call': {
+      if (expression.type !== 'heap_ref') {
+        return undefined;
+      }
+      if (
+        expression.callee === '__soundscript_promise_new_pending' ||
+        expression.callee === '__soundscript_promise_resolve' ||
+        expression.callee === '__soundscript_promise_reject' ||
+        expression.callee === '__soundscript_promise_then' ||
+        expression.callee === SOUNDSCRIPT_ASYNC_GENERATOR_STEP_HELPER_NAME
+      ) {
+        return runtime.dynamicObjectLayout
+          ? {
+            kind: 'dynamic',
+            layout: runtime.dynamicObjectLayout,
+          }
+          : undefined;
+      }
+      const callee = runtime.functionsByName.get(expression.callee);
+      const resultRepresentation = callee
+        ? getEffectiveFunctionHeapResultRepresentation(callee)
+        : undefined;
+      return resultRepresentation
+        ? getHeapRepresentationForBoundary(
+          resultRepresentation,
+          runtime.layoutsByRepresentationName,
+          runtime.fallbackObjectLayout,
+          runtime.dynamicObjectLayout,
+        )
+        : undefined;
+    }
+    case 'closure_call': {
+      if (expression.type !== 'heap_ref') {
+        return undefined;
+      }
+      const signature = runtime.closureSignaturesById.get(expression.signatureId);
+      if (signature?.resultPromiseValueBoundary) {
+        return runtime.dynamicObjectLayout
+          ? {
+            kind: 'dynamic',
+            layout: runtime.dynamicObjectLayout,
+          }
+          : undefined;
+      }
+      return signature?.resultHeapRepresentation
+        ? getHeapRepresentationForBoundary(
+          signature.resultHeapRepresentation,
+          runtime.layoutsByRepresentationName,
+          runtime.fallbackObjectLayout,
+          runtime.dynamicObjectLayout,
+        )
+        : undefined;
+    }
+    default:
+      return undefined;
   }
 }
 
@@ -21185,6 +21745,84 @@ function emitGeneralizeHeapRef(
       adaptationValueName,
       sourceValueName,
       adaptation,
+      level,
+      runtime,
+    ),
+    ...(leaveOnStack ? [`${indent(level)}local.get $${targetLocalName}`] : []),
+  ];
+}
+
+function emitSpecializedObjectFallbackMaterializationWrites(
+  sourceObjectName: string,
+  sourceLayout: BackendSpecializedObjectLayout,
+  targetObjectName: string,
+  level: number,
+  runtime: FunctionBackendRuntimeContext,
+): string[] {
+  return sourceLayout.fields.flatMap((field, fieldIndex) => {
+    const valueLines = [
+      `${indent(level)}local.get $${sourceObjectName}`,
+      `${indent(level)}struct.get $${sourceLayout.watTypeId} ${
+        getSpecializedObjectFieldSlotIndex(sourceLayout, fieldIndex)
+      }`,
+    ];
+    switch (field.valueType) {
+      case 'f64':
+        valueLines.push(`${indent(level)}call $tag_number`);
+        break;
+      case 'i32':
+        valueLines.push(`${indent(level)}call $tag_boolean`);
+        break;
+      case 'tagged_ref':
+        break;
+      case 'heap_ref':
+      case 'class_constructor_ref':
+      case 'closure_ref':
+      case 'owned_heap_array_ref':
+      case 'owned_array_ref':
+      case 'owned_number_array_ref':
+      case 'owned_boolean_array_ref':
+      case 'owned_tagged_array_ref':
+        valueLines.push(`${indent(level)}call $tag_heap_object`);
+        break;
+      default: {
+        const exhaustiveCheck: never = field.valueType;
+        throw createUnsupportedHeapRuntimeBackendError(
+          `Unsupported specialized fallback materialization value type ${exhaustiveCheck}.`,
+        );
+      }
+    }
+    return [
+      `${indent(level)}local.get $${targetObjectName}`,
+      `${indent(level)}i32.const ${getFallbackPropertyKeyId(field.name, runtime)}`,
+      ...valueLines,
+      `${indent(level)}call $set_fallback_object_property`,
+    ];
+  });
+}
+
+function emitGeneralizeSpecializedHeapRefToFallback(
+  sourceObjectName: string,
+  sourceLayout: BackendSpecializedObjectLayout,
+  targetLocalName: string,
+  leaveOnStack: boolean,
+  level: number,
+  runtime: FunctionBackendRuntimeContext,
+): string[] {
+  const targetLayout = runtime.fallbackObjectLayout ??
+    (() => {
+      throw createUnsupportedHeapRuntimeBackendError(
+        'Missing fallback object layout for specialized generalization.',
+      );
+    })();
+  return [
+    `${indent(level)}local.get $${sourceObjectName}`,
+    `${indent(level)}call $generalize_object_to_fallback`,
+    `${indent(level)}local.set $${targetLocalName}`,
+    ...emitSpecializedObjectFallbackMaterializationWrites(
+      sourceObjectName,
+      sourceLayout,
+      targetLocalName,
       level,
       runtime,
     ),
@@ -22538,6 +23176,42 @@ function emitExpression(
               argument.kind === 'untag_heap_object' ||
               argument.kind === 'heap_null')
           ) {
+            if (
+              argument.kind === 'box_get' &&
+              argument.box.kind === 'local_get' &&
+              paramRepresentation.kind === 'fallback_object_representation'
+            ) {
+              const sourceRepresentation = runtime.boxedHeapRepresentations.get(argument.box.name);
+              if (sourceRepresentation?.kind === 'specialized' && runtime.fallbackObjectLayout) {
+                const scratchLocalName = runtime
+                  .specializedCallResultScratchLocalsByRepresentationName.get(
+                    sourceRepresentation.layout.representation.name,
+                  );
+                if (!scratchLocalName) {
+                  throw createUnsupportedHeapRuntimeBackendError(
+                    `Missing specialized call-result scratch local for ${sourceRepresentation.layout.representation.name}.`,
+                  );
+                }
+                return [
+                  ...emitExpression(argument, level, runtime),
+                  `${indent(level)}ref.cast (ref null $${sourceRepresentation.layout.watTypeId})`,
+                  `${indent(level)}local.set $${scratchLocalName}`,
+                  ...emitGeneralizeSpecializedHeapRefToFallback(
+                    scratchLocalName,
+                    sourceRepresentation.layout,
+                    runtime.fallbackScratchLocalName ??
+                      (() => {
+                        throw createUnsupportedHeapRuntimeBackendError(
+                          'Missing fallback scratch local for closure argument generalization.',
+                        );
+                      })(),
+                    true,
+                    level,
+                    runtime,
+                  ),
+                ];
+              }
+            }
             return [
               ...emitExpression(argument, level, runtime),
               `${indent(level)}ref.cast ${getHeapParamRepresentationWatType(paramRepresentation, runtime)}`,
@@ -22573,7 +23247,48 @@ function emitExpression(
     case 'closure_call':
       return [
         ...emitExpression(expression.callee, level, runtime),
-        ...expression.args.flatMap((argument) => emitExpression(argument, level, runtime)),
+        ...expression.args.flatMap((argument, index) => {
+          const paramRepresentation = runtime.closureSignaturesById.get(expression.signatureId)
+            ?.paramHeapRepresentations?.[index];
+          if (
+            argument.kind === 'local_get' &&
+            argument.type === 'heap_ref' &&
+            paramRepresentation?.kind === 'fallback_object_representation'
+          ) {
+            const argumentRepresentation = getHeapRepresentationForLocal(argument.name, runtime);
+            if (argumentRepresentation.kind === 'specialized' && runtime.fallbackObjectLayout) {
+              if (!runtime.fallbackScratchLocalName) {
+                throw createUnsupportedHeapRuntimeBackendError(
+                  'Missing fallback scratch local for closure argument generalization.',
+                );
+              }
+              return emitGeneralizeHeapRef(
+                argument.name,
+                argument.name,
+                argumentRepresentation.layout,
+                runtime.fallbackObjectLayout,
+                runtime.fallbackScratchLocalName,
+                true,
+                level,
+                runtime,
+              );
+            }
+          }
+          if (
+            'type' in argument &&
+            argument.type === 'heap_ref' &&
+            paramRepresentation &&
+            (argument.kind === 'box_get' ||
+              argument.kind === 'untag_heap_object' ||
+              argument.kind === 'heap_null')
+          ) {
+            return [
+              ...emitExpression(argument, level, runtime),
+              `${indent(level)}ref.cast ${getHeapParamRepresentationWatType(paramRepresentation, runtime)}`,
+            ];
+          }
+          return emitExpression(argument, level, runtime);
+        }),
         `${indent(level)}call $closure_call_${expression.signatureId}`,
       ];
     case 'host_import_externref':
@@ -22608,6 +23323,18 @@ function emitStatement(
         `${indent(level)}global.set $${statement.globalName}`,
       ];
     case 'local_set':
+      if (getLocalValueType(statement.name, runtime) === 'box_ref') {
+        if (statement.value.kind === 'box_new' && statement.value.valueType === 'heap_ref') {
+          const representation = getRuntimeHeapRepresentationForExpression(statement.value.value, runtime);
+          if (representation) {
+            runtime.boxedHeapRepresentations.set(statement.name, representation);
+          } else {
+            runtime.boxedHeapRepresentations.delete(statement.name);
+          }
+        } else {
+          runtime.boxedHeapRepresentations.delete(statement.name);
+        }
+      }
       if (runtime.heapLocalNames.has(statement.name)) {
         const targetRepresentation = getHeapRepresentationForLocal(statement.name, runtime);
         switch (statement.value.kind) {
@@ -22888,6 +23615,40 @@ function emitStatement(
                 `Heap local ${statement.name} was assigned from unsupported boxed non-heap value.`,
               );
             }
+            if (
+              targetRepresentation.kind === 'fallback' &&
+              statement.value.box.kind === 'local_get'
+            ) {
+              const sourceRepresentation = runtime.boxedHeapRepresentations.get(
+                statement.value.box.name,
+              );
+              if (sourceRepresentation?.kind === 'specialized') {
+                const scratchLocalName = runtime
+                  .specializedCallResultScratchLocalsByRepresentationName.get(
+                    sourceRepresentation.layout.representation.name,
+                  );
+                if (!scratchLocalName) {
+                  throw createUnsupportedHeapRuntimeBackendError(
+                    `Missing specialized call-result scratch local for ${sourceRepresentation.layout.representation.name}.`,
+                  );
+                }
+                runtime.initializedLocalNames.add(statement.name);
+                    return [
+                      ...emitExpression(statement.value, level, runtime),
+                      `${indent(level)}ref.cast (ref null $${sourceRepresentation.layout.watTypeId})`,
+                      `${indent(level)}local.set $${scratchLocalName}`,
+                      ...emitGeneralizeSpecializedHeapRefToFallback(
+                        scratchLocalName,
+                        sourceRepresentation.layout,
+                        statement.name,
+                        false,
+                        level,
+                    runtime,
+                  ),
+                  ...emitPendingFallbackWriteOperations(level, runtime),
+                ];
+              }
+            }
             runtime.initializedLocalNames.add(statement.name);
             return [
               ...emitExpression(statement.value, level, runtime),
@@ -22987,6 +23748,14 @@ function emitStatement(
       ];
     }
     case 'box_set':
+      if (statement.valueType === 'heap_ref' && statement.box.kind === 'local_get') {
+        const representation = getRuntimeHeapRepresentationForExpression(statement.value, runtime);
+        if (representation) {
+          runtime.boxedHeapRepresentations.set(statement.box.name, representation);
+        } else {
+          runtime.boxedHeapRepresentations.delete(statement.box.name);
+        }
+      }
       return [
         ...emitExpression(statement.box, level, runtime),
         `${indent(level)}ref.cast (ref null $${getClosureBoxTypeName(statement.valueType)})`,
@@ -23223,6 +23992,7 @@ function emitHostImportedFunctionWrapper(
   const hostImportPromiseParamNames = getEffectiveHostImportPromiseParamNames(func);
   const hostTaggedPrimitiveResultKinds = getEffectiveHostTaggedPrimitiveResultKinds(func);
   const hostClosureResultSignatureId = getEffectiveHostClosureResultSignatureId(func);
+  const hostPromiseResultBoundary = getHostPromiseBoundary(func.hostResultBoundary);
   const hasHostPromiseResult = hasEffectiveHostImportPromiseResult(func);
   const hasHostGeneratorResult = func.hostImportGeneratorResult === true;
   const hasHostAsyncGeneratorResult = func.hostImportAsyncGeneratorResult === true;
@@ -23301,7 +24071,9 @@ function emitHostImportedFunctionWrapper(
     ...(hasHostPromiseResult
       ? [
         `${indent(1)}call $${SOUNDSCRIPT_PROMISE_NEW_PENDING_HELPER_NAME}`,
-        `${indent(1)}call ${SOUNDSCRIPT_HOST_PROMISE_TO_INTERNAL_IMPORT_NAME}`,
+        `${indent(1)}call ${
+          getHostPromiseToInternalImportNameForBoundary(module, hostPromiseResultBoundary?.valueBoundary)
+        }`,
         `${indent(1)}ref.cast ${
           getHeapBoundaryWatType(
             runtime.dynamicObjectLayout?.representation.name ??
@@ -23334,9 +24106,11 @@ function emitHostImportedFunctionWrapper(
       ]
       : hostTaggedPrimitiveResultKinds !== undefined
       ? emitHostClosureBoundaryResultToInternal(
+        module,
         func.resultType,
         undefined,
         undefined,
+        hostPromiseResultBoundary?.valueBoundary,
         hostTaggedPrimitiveResultKinds,
         heapResultRepresentation,
         undefined,
@@ -23345,9 +24119,11 @@ function emitHostImportedFunctionWrapper(
       )
       : hostClosureResultSignatureId !== undefined
       ? emitHostClosureBoundaryResultToInternal(
+        module,
         func.resultType,
         undefined,
         hostClosureResultSignatureId,
+        hostPromiseResultBoundary?.valueBoundary,
         undefined,
         heapResultRepresentation,
         undefined,
@@ -23356,9 +24132,11 @@ function emitHostImportedFunctionWrapper(
       )
       : func.resultType === 'heap_ref'
       ? emitHostClosureBoundaryResultToInternal(
+        module,
         func.resultType,
         undefined,
         undefined,
+        hostPromiseResultBoundary?.valueBoundary,
         undefined,
         heapResultRepresentation,
         undefined,
@@ -23722,6 +24500,162 @@ function emitHostTaggedPrimitiveAndClosureToInternal(
     `${indent(level)})`,
     `${indent(level)}local.get $${taggedLocalName}`,
   ];
+}
+
+function emitHostPromiseBoundaryValueToTagged(
+  boundary: CompilerHostBoundaryIR,
+  externrefLocalName: string,
+  tagLocalName: string,
+  taggedLocalName: string,
+  level: number,
+  layoutsByRepresentationName: ReadonlyMap<string, BackendSpecializedObjectLayout>,
+  _fallbackObjectLayout: BackendFallbackObjectRuntimeLayout | undefined,
+  dynamicObjectLayout?: BackendDynamicObjectRuntimeLayout,
+): string[] {
+  switch (boundary.kind) {
+    case 'scalar':
+      return boundary.valueType === 'f64'
+        ? [
+          `${indent(level)}local.get $${externrefLocalName}`,
+          `${indent(level)}call $tagged_number_value`,
+          `${indent(level)}call $tag_number`,
+        ]
+        : [
+          `${indent(level)}local.get $${externrefLocalName}`,
+          `${indent(level)}call $tagged_boolean_value`,
+          `${indent(level)}call $tag_boolean`,
+        ];
+    case 'string':
+      return [
+        `${indent(level)}local.get $${externrefLocalName}`,
+        `${indent(level)}call $string_to_owned`,
+        `${indent(level)}call $tag_string`,
+      ];
+    case 'closure':
+      return [
+        `${indent(level)}local.get $${externrefLocalName}`,
+        `${indent(level)}call $host_externref_to_closure_${boundary.signatureId}`,
+        `${indent(level)}call $tag_heap_object`,
+      ];
+    case 'class_constructor':
+      return [
+        `${indent(level)}local.get $${externrefLocalName}`,
+        `${indent(level)}call $${getHostObjectGetClassTagImportFunctionName()}`,
+        `${indent(level)}i32.const ${boundary.classTagId}`,
+        `${indent(level)}i32.ne`,
+        `${indent(level)}if`,
+        `${indent(level + 1)}unreachable`,
+        `${indent(level)}end`,
+        `${indent(level)}call $tag_undefined`,
+      ];
+    case 'object':
+      return [
+        `${indent(level)}local.get $${externrefLocalName}`,
+        `${indent(level)}call $${
+          boundary.representation.kind === 'specialized_object_representation'
+            ? getHostObjectToSpecializedHelperName(
+              getLayoutForRepresentationName(boundary.representation.name, layoutsByRepresentationName),
+            )
+            : boundary.representation.kind === 'dynamic_object_representation'
+            ? getHostBuiltinErrorToDynamicHelperName()
+            : getHostObjectToFallbackHelperName()
+        }`,
+        `${indent(level)}call $tag_heap_object`,
+      ];
+    case 'array':
+      switch (boundary.carrierType) {
+        case 'owned_array_ref':
+          return [
+            `${indent(level)}local.get $${externrefLocalName}`,
+            `${indent(level)}call $host_array_to_owned_string_array`,
+            `${indent(level)}call $tag_heap_object`,
+          ];
+        case 'owned_number_array_ref':
+          return [
+            `${indent(level)}local.get $${externrefLocalName}`,
+            `${indent(level)}call $host_array_to_owned_number_array`,
+            `${indent(level)}call $tag_heap_object`,
+          ];
+        case 'owned_boolean_array_ref':
+          return [
+            `${indent(level)}local.get $${externrefLocalName}`,
+            `${indent(level)}call $host_array_to_owned_boolean_array`,
+            `${indent(level)}call $tag_heap_object`,
+          ];
+        case 'owned_heap_array_ref':
+          if (boundary.elementBoundary.kind !== 'object') {
+            throw new Error('Expected object element boundary for owned heap array Promise bridge.');
+          }
+          return [
+            `${indent(level)}local.get $${externrefLocalName}`,
+            `${indent(level)}call $${getHostArrayToOwnedHeapArrayHelperName(boundary.elementBoundary.representation)}`,
+            `${indent(level)}call $tag_heap_object`,
+          ];
+        case 'owned_tagged_array_ref':
+          if (boundary.elementBoundary.kind !== 'tagged') {
+            throw new Error('Expected tagged element boundary for owned tagged array Promise bridge.');
+          }
+          return [
+            `${indent(level)}local.get $${externrefLocalName}`,
+            `${indent(level)}call $${getHostArrayToOwnedTaggedArrayHelperName({
+              includesBoolean: boundary.elementBoundary.includesBoolean,
+              includesNull: boundary.elementBoundary.includesNull,
+              includesNumber: boundary.elementBoundary.includesNumber,
+              includesString: boundary.elementBoundary.includesString,
+              includesUndefined: boundary.elementBoundary.includesUndefined,
+              representation: boundary.elementBoundary.heapBoundary?.kind === 'object'
+                ? boundary.elementBoundary.heapBoundary.representation
+                : undefined,
+            })}`,
+            `${indent(level)}call $tag_heap_object`,
+          ];
+        default: {
+          const exhaustiveCheck: never = boundary.carrierType;
+          return exhaustiveCheck;
+        }
+      }
+    case 'tagged':
+      if (boundary.heapBoundary?.kind === 'closure') {
+        return emitHostTaggedPrimitiveAndClosureToInternal(
+          externrefLocalName,
+          tagLocalName,
+          taggedLocalName,
+          boundary,
+          level,
+        );
+      }
+      if (boundary.heapBoundary?.kind === 'object') {
+        return emitHostClosureTaggedPrimitiveAndHeapToInternal(
+          externrefLocalName,
+          tagLocalName,
+          taggedLocalName,
+          boundary,
+          boundary.heapBoundary.representation,
+          level,
+          layoutsByRepresentationName,
+          dynamicObjectLayout,
+        );
+      }
+      if (boundary.heapBoundary === undefined) {
+        return emitHostTaggedPrimitiveExternrefToTagged(
+          externrefLocalName,
+          tagLocalName,
+          taggedLocalName,
+          boundary,
+          level,
+          indent,
+        );
+      }
+      throw new Error('Unsupported tagged heap Promise bridge boundary.');
+    case 'externref':
+      throw new Error('Externref Promise bridge boundaries are not supported.');
+    case 'promise':
+      throw new Error('Nested Promise bridge boundaries are not supported.');
+    default: {
+      const exhaustiveCheck: never = boundary;
+      return exhaustiveCheck;
+    }
+  }
 }
 
 function emitInternalClosureTaggedPrimitiveAndHeapToHost(
@@ -24203,9 +25137,11 @@ function emitInternalClosureBoundaryParamToHost(
 }
 
 function emitHostClosureBoundaryResultToInternal(
+  module: CompilerModuleIR,
   valueType: CompilerValueType,
   resultClassConstructorTagId: number | undefined,
   closureSignatureId: number | undefined,
+  promiseValueBoundary: CompilerClosureSignatureIR['resultPromiseValueBoundary'],
   taggedKinds: CompilerClosureSignatureIR['resultTaggedPrimitiveKinds'],
   heapRepresentation: CompilerClosureSignatureIR['resultHeapRepresentation'],
   heapArrayRepresentation: CompilerClosureSignatureIR['resultHeapArrayRepresentation'],
@@ -24234,6 +25170,15 @@ function emitHostClosureBoundaryResultToInternal(
     case 'owned_string_ref':
       return [`${indent(level)}call $string_to_owned`];
     case 'heap_ref':
+      if (promiseValueBoundary) {
+        return [
+          `${indent(level)}call $${SOUNDSCRIPT_PROMISE_NEW_PENDING_HELPER_NAME}`,
+          `${indent(level)}call ${
+            getHostPromiseToInternalImportNameForBoundary(module, promiseValueBoundary)
+          }`,
+          `${indent(level)}ref.cast (ref null $object_dynamic)`,
+        ];
+      }
       if (!heapRepresentation) {
         throw new Error('Missing heap representation for host-to-internal closure result.');
       }
@@ -24303,6 +25248,7 @@ function emitInternalClosureBoundaryResultToHost(
   valueType: CompilerValueType,
   resultClassConstructorTagId: number | undefined,
   closureSignatureId: number | undefined,
+  promiseValueBoundary: CompilerClosureSignatureIR['resultPromiseValueBoundary'],
   taggedKinds: CompilerClosureSignatureIR['resultTaggedPrimitiveKinds'],
   heapRepresentation: CompilerClosureSignatureIR['resultHeapRepresentation'],
   heapArrayRepresentation: CompilerClosureSignatureIR['resultHeapArrayRepresentation'],
@@ -24330,6 +25276,9 @@ function emitInternalClosureBoundaryResultToHost(
     case 'owned_string_ref':
       return [`${indent(level)}call $owned_string_to_host`];
     case 'heap_ref':
+      if (promiseValueBoundary) {
+        return [`${indent(level)}call ${SOUNDSCRIPT_HOST_PROMISE_TO_HOST_IMPORT_NAME}`];
+      }
       if (!heapRepresentation) {
         throw new Error('Missing heap representation for internal-to-host closure result.');
       }
@@ -25727,6 +26676,9 @@ function emitHostExportWrapper(
       const dynamicCollectionParam = hostDynamicCollectionParamsByName.get(param.name);
       const objectBoundaryRepresentation = objectParamBoundariesByName.get(param.name);
       const heapArrayBoundaryRepresentation = heapArrayParamBoundariesByName.get(param.name);
+      const promiseParamBoundary = getHostPromiseBoundary(
+        func.hostParamBoundaries?.find((boundary) => boundary.name === param.name)?.boundary,
+      );
       const priorHeapArrayParams = heapArrayParamBoundaries.filter((boundary) =>
         priorParamNames.has(boundary.name)
       );
@@ -25741,7 +26693,9 @@ function emitHostExportWrapper(
           `${indent(1)}local.set $${param.name}__host_promise`,
           `${indent(1)}local.get $${param.name}`,
           `${indent(1)}local.get $${param.name}__host_promise`,
-          `${indent(1)}call ${SOUNDSCRIPT_HOST_PROMISE_TO_INTERNAL_IMPORT_NAME}`,
+          `${indent(1)}call ${
+            getHostPromiseToInternalImportNameForBoundary(module, promiseParamBoundary?.valueBoundary)
+          }`,
           `${indent(1)}ref.cast ${
             getHeapBoundaryWatType(
               runtime.dynamicObjectLayout?.representation.name ??
@@ -26364,9 +27318,11 @@ function emitClosureCallHelpers(
         ...(isHostImportedGeneratorStepSignature
           ? [`${indent(2)}call $${getHostIteratorResultToDynamicHelperName()}`]
           : emitHostClosureBoundaryResultToInternal(
+            module,
             signature.resultType,
             signature.resultClassConstructorTagId,
             signature.resultClosureSignatureId,
+            signature.resultPromiseValueBoundary,
             signature.resultTaggedPrimitiveKinds,
             signature.resultHeapRepresentation,
             signature.resultHeapArrayRepresentation,
@@ -27173,6 +28129,7 @@ function emitHostClosureInvokeExports(
             signature.resultType,
             signature.resultClassConstructorTagId,
             signature.resultClosureSignatureId,
+            signature.resultPromiseValueBoundary,
             signature.resultTaggedPrimitiveKinds,
             signature.resultHeapRepresentation,
             signature.resultHeapArrayRepresentation,
@@ -27196,9 +28153,13 @@ function emitFunction(
   fallbackPropertyKeyIdsByKey: ReadonlyMap<string, number>,
   stringRuntimeLayout?: BackendStringRuntimeLayout,
 ): string[] {
+  const closureSignaturesById = new Map(
+    (module.closureSignatures ?? []).map((signature) => [signature.id, signature] as const),
+  );
   const runtime = createFunctionBackendRuntimeContext(
     func,
     functionsByName,
+    closureSignaturesById,
     runtimeIR,
     layoutsByRepresentationName,
     fallbackPropertyKeyIdsByKey,
