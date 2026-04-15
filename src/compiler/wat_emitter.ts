@@ -20630,6 +20630,30 @@ function emitMaterializationEntryValueAsTagged(
           }`,
           `${indent(level)}call $tag_boolean`,
         ];
+      case 'string_ref':
+        return [
+          `${indent(level)}local.get $${sourceObjectName}`,
+          `${indent(level)}struct.get $${layout.watTypeId} ${
+            getSpecializedObjectFieldSlotIndex(layout, fieldRead.operation.fieldIndex)
+          }`,
+          `${indent(level)}call $string_to_owned`,
+          `${indent(level)}call $tag_string`,
+        ];
+      case 'owned_string_ref':
+        return [
+          `${indent(level)}local.get $${sourceObjectName}`,
+          `${indent(level)}struct.get $${layout.watTypeId} ${
+            getSpecializedObjectFieldSlotIndex(layout, fieldRead.operation.fieldIndex)
+          }`,
+          `${indent(level)}call $tag_string`,
+        ];
+      case 'tagged_ref':
+        return [
+          `${indent(level)}local.get $${sourceObjectName}`,
+          `${indent(level)}struct.get $${layout.watTypeId} ${
+            getSpecializedObjectFieldSlotIndex(layout, fieldRead.operation.fieldIndex)
+          }`,
+        ];
       case 'owned_array_ref':
       case 'owned_number_array_ref':
       case 'owned_boolean_array_ref':

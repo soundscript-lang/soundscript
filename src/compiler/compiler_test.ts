@@ -8418,6 +8418,411 @@ compilerIntegrationTest(
 );
 
 compilerIntegrationTest(
+  'compileProject supports real express package declarations with nested request params and chained json responses',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              skipLibCheck: true,
+              target: 'ES2022',
+              lib: ['ES2022'],
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+              allowSyntheticDefaultImports: true,
+              types: ['node', 'express'],
+            },
+            include: ['src/**/*.sts', 'src/**/*.d.ts'],
+            soundscript: {
+              target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/express-types.d.ts',
+        contents: [
+          "type ExpressToggleRequest = import('express').Request<",
+          '  { id: string },',
+          '  unknown,',
+          '  {',
+          '    completed: boolean;',
+          '    meta: {',
+          '      attempt: number;',
+          '    };',
+          '  }',
+          '>;',
+          "type ToggleRequest = Pick<ExpressToggleRequest, 'body' | 'params'>;",
+          "type ToggleResponse = Pick<import('express').Response, 'json' | 'status'>;",
+          '',
+          'interface MinimalApp {',
+          '  post(path: string, handler: (req: ToggleRequest, res: ToggleResponse) => void): void;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.sts',
+        contents: [
+          '// #[interop]',
+          "import express from 'express';",
+          '',
+          'let observed = 0;',
+          '',
+          'function createApp(): MinimalApp {',
+          '  const app = express();',
+          '  return {',
+          '    post(path, handler) {',
+          '      app.post(path, handler);',
+          '    },',
+          '  };',
+          '}',
+          '',
+          'export function main(): number {',
+          '  const app = createApp();',
+          "  app.post('/todos/:id/toggle', (req, res) => {",
+          '    const attempt = req.body.meta.attempt;',
+          '    const completed = req.body.completed;',
+          '    const id = req.params.id;',
+          "    if (id === 'todo-7' && completed === true) {",
+          '      observed = attempt;',
+          '    } else {',
+          '      observed = 0;',
+          '    }',
+          '    res.status(201).json({',
+          '      attempt,',
+          '      completed,',
+          '      id,',
+          '    });',
+          '  });',
+          '  return observed;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    await linkTempProjectNodeModules(tempDirectory, [
+      'express',
+      '@types/express',
+      '@types/express-serve-static-core',
+      '@types/body-parser',
+      '@types/serve-static',
+      '@types/node',
+      '@types/qs',
+      '@types/range-parser',
+      '@types/send',
+      '@types/connect',
+      '@types/http-errors',
+      'undici-types',
+      '@types/mime',
+      'mime-db',
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const registeredPaths: string[] = [];
+    const statusCalls: number[] = [];
+    const jsonPayloads: Array<{ attempt: number; completed: boolean; id: string }> = [];
+
+    interface ResponseLike {
+      json(payload: { attempt: number; completed: boolean; id: string }): ResponseLike;
+      status(code: number): ResponseLike;
+    }
+
+    interface AppLike {
+      post(
+        path: string,
+        handler: (
+          req: {
+            body: { completed: boolean; meta: { attempt: number } };
+            params: { id: string };
+          },
+          res: ResponseLike,
+        ) => void,
+      ): AppLike;
+    }
+
+    const app: AppLike = {
+      post(path, handler) {
+        registeredPaths.push(path);
+        const response: ResponseLike = {
+          json(payload) {
+            jsonPayloads.push(payload);
+            return response;
+          },
+          status(code: number) {
+            statusCalls.push(code);
+            return response;
+          },
+        };
+        handler(
+          {
+            body: {
+              completed: true,
+              meta: {
+                attempt: 4,
+              },
+            },
+            params: {
+              id: 'todo-7',
+            },
+          },
+          response,
+        );
+        return this;
+      },
+    };
+
+    function express() {
+      return app;
+    }
+
+    const wrapperModule = await importCompiledWrapperModule(result.artifacts.wrapperPath);
+    const instantiated = await wrapperModule.instantiate({
+      modules: {
+        express: {
+          default: express,
+        },
+      },
+    });
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+
+    assertEquals(await exported(), 4);
+    assertEquals(registeredPaths, ['/todos/:id/toggle']);
+    assertEquals(statusCalls, [201]);
+    assertEquals(jsonPayloads, [
+      {
+        attempt: 4,
+        completed: true,
+        id: 'todo-7',
+      },
+    ]);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject supports real express package declarations with chained json responses from local payload objects',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              skipLibCheck: true,
+              target: 'ES2022',
+              lib: ['ES2022'],
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+              allowSyntheticDefaultImports: true,
+              types: ['node', 'express'],
+            },
+            include: ['src/**/*.sts', 'src/**/*.d.ts'],
+            soundscript: {
+              target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/express-types.d.ts',
+        contents: [
+          "type ExpressToggleRequest = import('express').Request<",
+          '  { id: string },',
+          '  unknown,',
+          '  {',
+          '    completed: boolean;',
+          '    meta: {',
+          '      attempt: number;',
+          '    };',
+          '  }',
+          '>;',
+          "type ToggleRequest = Pick<ExpressToggleRequest, 'body' | 'params'>;",
+          "type ToggleResponse = Pick<import('express').Response, 'json' | 'status'>;",
+          '',
+          'interface MinimalApp {',
+          '  post(path: string, handler: (req: ToggleRequest, res: ToggleResponse) => void): void;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.sts',
+        contents: [
+          '// #[interop]',
+          "import express from 'express';",
+          '',
+          'let observed = 0;',
+          '',
+          'function createApp(): MinimalApp {',
+          '  const app = express();',
+          '  return {',
+          '    post(path, handler) {',
+          '      app.post(path, handler);',
+          '    },',
+          '  };',
+          '}',
+          '',
+          'export function main(): number {',
+          '  const app = createApp();',
+          "  app.post('/todos/:id/toggle', (req, res) => {",
+          '    const attempt = req.body.meta.attempt;',
+          '    const completed = req.body.completed;',
+          '    const id = req.params.id;',
+          '    const payload = {',
+          '      attempt,',
+          '      completed,',
+          '      id,',
+          '    };',
+          "    if (id === 'todo-7' && completed === true) {",
+          '      observed = attempt;',
+          '    } else {',
+          '      observed = 0;',
+          '    }',
+          '    res.status(201).json(payload);',
+          '  });',
+          '  return observed;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    await linkTempProjectNodeModules(tempDirectory, [
+      'express',
+      '@types/express',
+      '@types/express-serve-static-core',
+      '@types/body-parser',
+      '@types/serve-static',
+      '@types/node',
+      '@types/qs',
+      '@types/range-parser',
+      '@types/send',
+      '@types/connect',
+      '@types/http-errors',
+      'undici-types',
+      '@types/mime',
+      'mime-db',
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const registeredPaths: string[] = [];
+    const statusCalls: number[] = [];
+    const jsonPayloads: Array<{ attempt: number; completed: boolean; id: string }> = [];
+
+    interface ResponseLike {
+      json(payload: { attempt: number; completed: boolean; id: string }): ResponseLike;
+      status(code: number): ResponseLike;
+    }
+
+    interface AppLike {
+      post(
+        path: string,
+        handler: (
+          req: {
+            body: { completed: boolean; meta: { attempt: number } };
+            params: { id: string };
+          },
+          res: ResponseLike,
+        ) => void,
+      ): AppLike;
+    }
+
+    const app: AppLike = {
+      post(path, handler) {
+        registeredPaths.push(path);
+        const response: ResponseLike = {
+          json(payload) {
+            jsonPayloads.push(payload);
+            return response;
+          },
+          status(code: number) {
+            statusCalls.push(code);
+            return response;
+          },
+        };
+        handler(
+          {
+            body: {
+              completed: true,
+              meta: {
+                attempt: 4,
+              },
+            },
+            params: {
+              id: 'todo-7',
+            },
+          },
+          response,
+        );
+        return this;
+      },
+    };
+
+    function express() {
+      return app;
+    }
+
+    const wrapperModule = await importCompiledWrapperModule(result.artifacts.wrapperPath);
+    const instantiated = await wrapperModule.instantiate({
+      modules: {
+        express: {
+          default: express,
+        },
+      },
+    });
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+
+    assertEquals(await exported(), 4);
+    assertEquals(registeredPaths, ['/todos/:id/toggle']);
+    assertEquals(statusCalls, [201]);
+    assertEquals(jsonPayloads, [
+      {
+        attempt: 4,
+        completed: true,
+        id: 'todo-7',
+      },
+    ]);
+  },
+);
+
+compilerIntegrationTest(
   'compileProject supports real express and react-dom/server package declarations for SSR handlers',
   async () => {
     const tempDirectory = await createTempProject([

@@ -2181,6 +2181,10 @@ function isSupportedHeapLocalType(checker: ts.TypeChecker, type: ts.Type): boole
     return (type as ts.UnionType).types.length > 0 &&
       (type as ts.UnionType).types.every((member) => isSupportedHeapLocalType(checker, member));
   }
+  if ((type.flags & ts.TypeFlags.Intersection) !== 0) {
+    return (type as ts.IntersectionType).types.length > 0 &&
+      (type as ts.IntersectionType).types.every((member) => isSupportedHeapLocalType(checker, member));
+  }
 
   if ((type.flags & ts.TypeFlags.Object) === 0) {
     return false;
@@ -32912,6 +32916,76 @@ function lowerMissingOptionalArgument(
   );
 }
 
+function shouldLowerTaggedHeapArgumentAsHeapValue(
+  argument: ts.Expression | undefined,
+  parameterType: CompilerValueType,
+  parameterRepresentation: CompilerRuntimeObjectRepresentationRef | undefined,
+  context: FunctionLoweringContext,
+): boolean {
+  if (
+    !argument ||
+    parameterType !== 'tagged_ref' ||
+    !parameterRepresentation ||
+    parameterRepresentation.kind === 'dynamic_object_representation'
+  ) {
+    return false;
+  }
+  const argumentSourceType = context.checker.getTypeAtLocation(argument);
+  const argumentRepresentation = getHeapObjectRepresentationFromExpression(argument, context);
+  const argumentValueName = getHeapObjectValueNameFromExpression(argument, context);
+  return !!(
+    argumentRepresentation &&
+    !argumentValueName &&
+    isSupportedHeapLocalType(context.checker, argumentSourceType)
+  );
+}
+
+function lowerTaggedClosureCallArgument(
+  argument: ts.Expression,
+  parameterName: string | undefined,
+  parameterRepresentation: CompilerRuntimeObjectRepresentationRef | undefined,
+  context: FunctionLoweringContext,
+): CompilerExpressionIR {
+  const argumentRepresentation = getHeapObjectRepresentationFromExpression(argument, context);
+  const argumentSourceType = context.checker.getTypeAtLocation(argument);
+  const argumentValueName = getHeapObjectValueNameFromExpression(argument, context);
+  const shouldLowerTaggedClosureHeapArgument = !!(
+    parameterRepresentation &&
+    parameterRepresentation.kind !== 'dynamic_object_representation' &&
+    argumentRepresentation &&
+    isSupportedHeapLocalType(context.checker, argumentSourceType)
+  );
+  if (!shouldLowerTaggedClosureHeapArgument) {
+    return lowerExpressionAsValueType(argument, 'tagged_ref', context);
+  }
+  const adaptedHeapArgument = argumentValueName
+    ? adaptClosureBoundaryLocalToResolvedValue(
+      argumentValueName,
+      {
+        type: 'heap_ref',
+        heapRepresentation: argumentRepresentation,
+      },
+      {
+        type: 'heap_ref',
+        heapRepresentation: parameterRepresentation,
+      },
+      argument,
+      context,
+    )
+    : lowerClosureCallArgument(
+      argument,
+      lowerExpressionAsValueType(argument, 'heap_ref', context),
+      parameterName,
+      parameterRepresentation,
+      context,
+    );
+  return {
+    kind: 'tag_heap_object',
+    value: adaptedHeapArgument,
+    type: 'tagged_ref',
+  };
+}
+
 function lowerClosureCallArgument(
   argument: ts.Expression,
   loweredArgument: CompilerExpressionIR,
@@ -53415,22 +53489,17 @@ function lowerDirectNamedInvocation(
       ? callee.heapParamRepresentations?.find((boundary) => boundary.name === parameterName)
         ?.representation
       : undefined;
-    const argumentSourceType = argument ? context.checker.getTypeAtLocation(argument) : undefined;
     const argumentRepresentation = argument
       ? getHeapObjectRepresentationFromExpression(argument, context)
       : undefined;
     const argumentValueName = argument
       ? getHeapObjectValueNameFromExpression(argument, context)
       : undefined;
-    const lowerTaggedHeapArgumentAsHeapValue = !!(
-      argument &&
-      argumentSourceType &&
-      param.type === 'tagged_ref' &&
-      parameterRepresentation &&
-      parameterRepresentation.kind !== 'dynamic_object_representation' &&
-      argumentRepresentation &&
-      !argumentValueName &&
-      isSupportedHeapLocalType(context.checker, argumentSourceType)
+    const lowerTaggedHeapArgumentAsHeapValue = shouldLowerTaggedHeapArgumentAsHeapValue(
+      argument,
+      param.type,
+      parameterRepresentation,
+      context,
     );
     const loweredArgument = argument
       ? parameterBoundary?.kind === 'externref'
@@ -54803,7 +54872,14 @@ function lowerCallExpression(
           continue;
         }
         const loweredArgument = argument
-          ? lowerExpressionAsValueType(argument, sourceParameter.resolvedValue.type, context)
+          ? sourceParameter.resolvedValue.type === 'tagged_ref'
+            ? lowerTaggedClosureCallArgument(
+              argument,
+              sourceParameter.name,
+              sourceParameter.resolvedValue.heapRepresentation,
+              context,
+            )
+            : lowerExpressionAsValueType(argument, sourceParameter.resolvedValue.type, context)
           : lowerMissingOptionalArgument(sourceParameter.resolvedValue.type, expression);
         const adaptedArgument = argument &&
             sourceParameter.resolvedValue.type === 'closure_ref' &&
@@ -54922,7 +54998,14 @@ function lowerCallExpression(
         continue;
       }
       const loweredArgument = argument
-        ? lowerExpressionAsValueType(argument, sourceParameter.resolvedValue.type, context)
+        ? sourceParameter.resolvedValue.type === 'tagged_ref'
+          ? lowerTaggedClosureCallArgument(
+            argument,
+            sourceParameter.name,
+            sourceParameter.resolvedValue.heapRepresentation,
+            context,
+          )
+          : lowerExpressionAsValueType(argument, sourceParameter.resolvedValue.type, context)
         : lowerMissingOptionalArgument(sourceParameter.resolvedValue.type, expression);
       const adaptedArgument = argument &&
           sourceParameter.resolvedValue.type === 'closure_ref' &&
