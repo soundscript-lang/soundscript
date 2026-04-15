@@ -4,7 +4,6 @@ import { createSoundStdlibCompilerHost } from '../bundled/sound_stdlib.ts';
 import { loadConfig, type LoadedConfig } from '../project/config.ts';
 import {
   type BuiltinRuntimeProgram,
-  createBuiltinRuntimeProgram,
   getAlwaysAvailableBuiltinMacroDefinitions,
   getAlwaysAvailableBuiltinMacroExports,
   getBuiltinMacroDefinitionsBySpecifier,
@@ -33,6 +32,10 @@ import {
   transpilePreparedSoundscriptModuleToEsm,
   transpileTypeScriptModuleToEsm,
 } from './transform.ts';
+import {
+  collectRuntimeSemanticClosure,
+  createRuntimeSemanticProgram,
+} from './semantic_closure.ts';
 
 const PROJECT_CONFIG_CANDIDATES = ['tsconfig.soundscript.json', 'tsconfig.json'] as const;
 const LOCAL_CODE_EXTENSIONS = ['.sts', '.ts', '.tsx', '.mts', '.cts', '.jsx'] as const;
@@ -45,10 +48,13 @@ interface TransformProjectContext {
 
 interface TransformProjectSession {
   deferredExpansion?: DeferredRuntimeExpansion;
-  expandedProgram?: BuiltinRuntimeProgram;
   preparedProgram?: PreparedProgram;
+  preparedRoots: Set<string>;
   projectContext: TransformProjectContext;
-  requestedRuntimeRoots: Set<string>;
+  semanticClosureRoots: readonly string[];
+  semanticClosureSignature?: string;
+  semanticProgram?: BuiltinRuntimeProgram;
+  semanticRequiredFiles: Set<string>;
 }
 
 export type OnDemandTransformMode =
@@ -260,26 +266,6 @@ function resolveProjectPath(
   return projectPath;
 }
 
-function createExpandedRuntimeProgram(
-  projectContext: TransformProjectContext,
-  rootNames: readonly string[],
-  previousProgram?: BuiltinRuntimeProgram,
-): BuiltinRuntimeProgram {
-  return createBuiltinRuntimeProgram({
-    baseHost: createSoundStdlibCompilerHost(
-      projectContext.loadedConfig.frontierCommandLine.options,
-      dirname(projectContext.projectPath),
-    ),
-    configuredSoundscriptFileNames: projectContext.loadedConfig.frontierConfiguredFileNames,
-    oldProgram: previousProgram?.preparedProgram.program,
-    options: projectContext.loadedConfig.frontierCommandLine.options,
-    projectReferences: projectContext.loadedConfig.frontierCommandLine.projectReferences,
-    reusableCompilerHostState: previousProgram?.preparedProgram.preparedHost.reuseState,
-    rootNames,
-    runtime: projectContext.loadedConfig.runtime,
-  });
-}
-
 interface DeferredRuntimeExpansion {
   expandedFiles: ReadonlyMap<string, ts.SourceFile>;
   macroEnvironment: ProjectMacroEnvironment;
@@ -477,39 +463,37 @@ export function createOnDemandTransformer(
     }
 
     const session: TransformProjectSession = {
+      preparedRoots: new Set(),
       projectContext,
-      requestedRuntimeRoots: new Set(),
+      semanticClosureRoots: [],
+      semanticRequiredFiles: new Set(),
     };
     projectSessionsByPath.set(projectContext.projectPath, session);
     return session;
   }
 
-  function ensureExpandedProgramForFile(
+  function ensureSemanticRuntimeProgramForFile(
     session: TransformProjectSession,
-    fileName: string,
-    sourceText: string,
+    fileNames: readonly string[],
   ): BuiltinRuntimeProgram {
-    const currentProgram = session.expandedProgram;
-    const currentSourceFile = currentProgram && getExpandedProgramSourceFile(currentProgram, fileName);
+    const closure = collectRuntimeSemanticClosure(session.projectContext, fileNames);
+    const currentProgram = session.semanticProgram;
     if (
       currentProgram &&
-      currentSourceFile &&
-      getPreparedOriginalText(currentProgram.preparedProgram, fileName) === sourceText
+      session.semanticClosureSignature === closure.signature
     ) {
       return currentProgram;
     }
 
-    if (!currentSourceFile) {
-      session.requestedRuntimeRoots.add(fileName);
-    }
-
-    const nextProgram = createExpandedRuntimeProgram(
+    const nextProgram = createRuntimeSemanticProgram(
       session.projectContext,
-      [...session.requestedRuntimeRoots],
+      closure.rootNames,
       currentProgram,
     );
-    session.expandedProgram?.dispose();
-    session.expandedProgram = nextProgram;
+    session.semanticProgram?.dispose();
+    session.semanticProgram = nextProgram;
+    session.semanticClosureRoots = closure.rootNames;
+    session.semanticClosureSignature = closure.signature;
     return nextProgram;
   }
 
@@ -528,18 +512,16 @@ export function createOnDemandTransformer(
     }
 
     if (!currentProgram || !preparedProgramIncludesFile(currentProgram, fileName)) {
-      session.requestedRuntimeRoots.add(fileName);
+      session.preparedRoots.add(fileName);
     }
 
     const nextProgram = createPreparedRuntimeProgram(
       session.projectContext,
-      [...session.requestedRuntimeRoots],
+      [...session.preparedRoots],
       currentProgram,
     );
     session.deferredExpansion?.dispose();
     session.deferredExpansion = undefined;
-    session.expandedProgram?.dispose();
-    session.expandedProgram = undefined;
     currentProgram?.dispose(false);
     session.preparedProgram = nextProgram;
     return nextProgram;
@@ -631,9 +613,15 @@ export function createOnDemandTransformer(
           if (!(error instanceof SemanticMacroExpansionRequiredError)) {
             throw error;
           }
+          session.semanticRequiredFiles.clear();
+          session.semanticRequiredFiles.add(error.fileName);
+          session.semanticRequiredFiles.add(fileName);
         }
 
-        const expandedProgram = ensureExpandedProgramForFile(session, fileName, sourceText);
+        const expandedProgram = ensureSemanticRuntimeProgramForFile(
+          session,
+          [...new Set([fileName, ...session.semanticRequiredFiles])],
+        );
         return transpileExpandedSourceFile(
           expandedProgram,
           fileName,

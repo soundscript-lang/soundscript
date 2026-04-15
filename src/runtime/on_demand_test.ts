@@ -660,6 +660,100 @@ Deno.test('createOnDemandTransformer transparently falls back for semantic macro
   assertEquals(transformed.code.includes('__sts_macro_expr('), false);
 });
 
+Deno.test('createOnDemandTransformer scopes semantic runtime roots per requested file instead of accumulating prior semantic roots', async () => {
+  const root = await Deno.makeTempDir({ prefix: 'soundscript-on-demand-semantic-scope-' });
+  await writeProjectFile(
+    root,
+    'tsconfig.json',
+    JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+          moduleResolution: 'Bundler',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+  );
+  await writeProjectFile(
+    root,
+    'src/macros.macro.sts',
+    [
+      "import { macroSignature } from 'sts:macros';",
+      '',
+      '// #[macro(call)]',
+      'export function TypeName() {',
+      '  return {',
+      '    signature: macroSignature.of(macroSignature.expr("value")),',
+      '    expand(ctx: any) {',
+      "      return ctx.output.expr(ctx.build.stringLiteral(ctx.semantics.argType(0)?.displayText ?? 'unknown'));",
+      '    },',
+      '  };',
+      '}',
+      '',
+    ].join('\n'),
+  );
+  await writeProjectFile(
+    root,
+    'src/a.sts',
+    [
+      "import { TypeName } from './macros.macro';",
+      'declare function readFirst(): Promise<number>;',
+      'export const firstType = TypeName(readFirst());',
+      '',
+    ].join('\n'),
+  );
+  await writeProjectFile(
+    root,
+    'src/b.sts',
+    [
+      "import { TypeName } from './macros.macro';",
+      'declare function readSecond(): Promise<string>;',
+      'export const secondType = TypeName(readSecond());',
+      '',
+    ].join('\n'),
+  );
+
+  const originalError = console.error;
+  const originalTiming = Deno.env.get('SOUNDSCRIPT_CHECKER_TIMING');
+  const logs: string[] = [];
+  console.error = (...args: unknown[]) => {
+    logs.push(args.map((arg) => String(arg)).join(' '));
+  };
+  Deno.env.set('SOUNDSCRIPT_CHECKER_TIMING', '1');
+
+  try {
+    const transformer = createOnDemandTransformer({ workingDirectory: root });
+    const firstTransformed = await transformer.transformModule(join(root, 'src/a.sts'));
+    const secondTransformed = await transformer.transformModule(join(root, 'src/b.sts'));
+
+    assertEquals(firstTransformed.transformMode, 'soundscript-semantic-macro');
+    assertEquals(secondTransformed.transformMode, 'soundscript-semantic-macro');
+  } finally {
+    console.error = originalError;
+    if (originalTiming === undefined) {
+      Deno.env.delete('SOUNDSCRIPT_CHECKER_TIMING');
+    } else {
+      Deno.env.set('SOUNDSCRIPT_CHECKER_TIMING', originalTiming);
+    }
+  }
+
+  const semanticProgramRootCounts = logs
+    .filter((line) => line.includes('project.prepare.builtin.initialProgram'))
+    .map((line) => {
+      const match = /rootCount=(\d+)/u.exec(line);
+      return match ? Number(match[1]) : null;
+    })
+    .filter((value): value is number => value !== null);
+
+  assertEquals(semanticProgramRootCounts, [2, 2], logs.join('\n'));
+});
+
 Deno.test('createOnDemandTransformer leaves unmatched TypeScript files on the ordinary TypeScript path', async () => {
   const root = await Deno.makeTempDir({ prefix: 'soundscript-on-demand-unmatched-ts-' });
   await writeProjectFile(

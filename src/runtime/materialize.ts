@@ -1,16 +1,15 @@
 import { dirname, extname, join, relative } from '../platform/path.ts';
 import ts from 'typescript';
 
-import { createSoundStdlibCompilerHost } from '../bundled/sound_stdlib.ts';
 import {
   formatDiagnostics,
   hasErrorDiagnostics,
   type MergedDiagnostic,
   toMergedDiagnostic,
 } from '../checker/diagnostics.ts';
-import { createBuiltinRuntimeProgram } from '../frontend/builtin_macro_support.ts';
 import { MacroError } from '../frontend/macro_errors.ts';
 import { isSoundscriptSourceFile } from '../frontend/project_frontend.ts';
+import { isSoundscriptMacroSourceFile } from '../project/soundscript_files.ts';
 import {
   copyFile,
   createSymlink,
@@ -24,6 +23,10 @@ import {
   writeTextFile,
 } from '../platform/host.ts';
 import { loadRuntimeProgramConfig } from './project_roots.ts';
+import {
+  collectRuntimeSemanticClosure,
+  createRuntimeSemanticProgram,
+} from './semantic_closure.ts';
 import { inlineSourceMapComment, stripTrailingSourceMapComment } from './source_maps.ts';
 import { type RuntimeTransformArtifact, transpileTypeScriptModuleToEsm } from './transform.ts';
 
@@ -290,23 +293,8 @@ function createRuntimeMacroDiagnostic(error: MacroError): MergedDiagnostic {
   };
 }
 
-function createExpandedProgram(projectPath: string, extraRootNames: readonly string[] = []) {
-  const runtimeConfig = loadRuntimeProgramConfig(projectPath, extraRootNames);
-  return createBuiltinRuntimeProgram({
-    baseHost: createSoundStdlibCompilerHost(
-      runtimeConfig.loadedConfig.frontierCommandLine.options,
-      dirname(projectPath),
-    ),
-    configFileParsingDiagnostics: runtimeConfig.configFileParsingDiagnostics,
-    configuredSoundscriptFileNames: runtimeConfig.loadedConfig.soundscriptConfiguredFileNames,
-    options: runtimeConfig.loadedConfig.frontierCommandLine.options,
-    projectReferences: runtimeConfig.loadedConfig.frontierCommandLine.projectReferences,
-    rootNames: runtimeConfig.rootNames,
-  });
-}
-
 function transpileExpandedSoundscriptModuleToEsm(
-  expandedProgram: ReturnType<typeof createExpandedProgram>,
+  expandedProgram: ReturnType<typeof createRuntimeSemanticProgram>,
   sourceFileName: string,
   outputPath: string,
 ): RuntimeTransformArtifact {
@@ -326,6 +314,33 @@ function transpileExpandedSoundscriptModuleToEsm(
       target: ts.ScriptTarget.ES2022,
     },
   );
+}
+
+function collectReachableRuntimePaths(entryPaths: readonly string[]): readonly string[] {
+  const queue = [...entryPaths];
+  const visited = new Set<string>();
+
+  while (queue.length > 0) {
+    const sourceFileName = queue.shift()!;
+    if (visited.has(sourceFileName)) {
+      continue;
+    }
+    visited.add(sourceFileName);
+
+    if (!isRuntimeCodeFile(sourceFileName)) {
+      continue;
+    }
+
+    const sourceText = readTextFileSync(sourceFileName);
+    for (const specifier of collectModuleSpecifiers(sourceText, sourceFileName)) {
+      const dependencyPath = resolveLocalDependency(sourceFileName, specifier);
+      if (dependencyPath && !visited.has(dependencyPath)) {
+        queue.push(dependencyPath);
+      }
+    }
+  }
+
+  return [...visited];
 }
 
 export async function materializeRuntimeGraph(
@@ -371,14 +386,37 @@ export async function materializeRuntimeGraph(
     };
   }
 
-  const expandedProgram = createExpandedProgram(
-    entryProjectPath,
-    options.entryPaths.filter(isSoundscriptSourceFile),
+  const runtimeConfig = loadRuntimeProgramConfig(entryProjectPath);
+  const reachableRuntimePaths = collectReachableRuntimePaths(options.entryPaths);
+  const semanticSeedPaths = reachableRuntimePaths.filter((fileName) =>
+    runtimeConfig.loadedConfig.isSoundscriptSourceFile(fileName) ||
+    isSoundscriptSourceFile(fileName) ||
+    isSoundscriptMacroSourceFile(fileName)
   );
-  const frontendDiagnostics: MergedDiagnostic[] = [
-    ...expandedProgram.frontendDiagnostics(),
-    ...ts.getPreEmitDiagnostics(expandedProgram.program).map(toMergedDiagnostic),
-  ];
+  const semanticClosure = collectRuntimeSemanticClosure(
+    {
+      configFileParsingDiagnostics: runtimeConfig.configFileParsingDiagnostics,
+      loadedConfig: runtimeConfig.loadedConfig,
+      projectPath: entryProjectPath,
+    },
+    semanticSeedPaths,
+  );
+  const expandedProgram = semanticClosure.rootNames.length > 0
+    ? createRuntimeSemanticProgram(
+      {
+        configFileParsingDiagnostics: runtimeConfig.configFileParsingDiagnostics,
+        loadedConfig: runtimeConfig.loadedConfig,
+        projectPath: entryProjectPath,
+      },
+      semanticClosure.rootNames,
+    )
+    : undefined;
+  const frontendDiagnostics: MergedDiagnostic[] = expandedProgram
+    ? [
+      ...expandedProgram.frontendDiagnostics(),
+      ...ts.getPreEmitDiagnostics(expandedProgram.program).map(toMergedDiagnostic),
+    ]
+    : [];
   if (hasErrorDiagnostics(frontendDiagnostics)) {
     return {
       diagnostics: frontendDiagnostics,
@@ -388,7 +426,9 @@ export async function materializeRuntimeGraph(
   }
 
   try {
-    void expandedProgram.program.getTypeChecker();
+    if (expandedProgram) {
+      void expandedProgram.program.getTypeChecker();
+    }
   } catch (error) {
     const diagnostics = error instanceof MacroError ? [createRuntimeMacroDiagnostic(error)] : [];
     return {
@@ -441,8 +481,10 @@ export async function materializeRuntimeGraph(
 
     const sourceText = readTextFileSync(sourceFileName);
     const outputPath = toRuntimeCodeOutputPath(projectRoot, sourceFileName, options.outDir);
-    const artifact = isSoundscriptSourceFile(sourceFileName)
-      ? transpileExpandedSoundscriptModuleToEsm(expandedProgram, sourceFileName, outputPath)
+    const isFrontierRuntimeFile = runtimeConfig.loadedConfig.isSoundscriptSourceFile(sourceFileName) ||
+      isSoundscriptSourceFile(sourceFileName);
+    const artifact = isFrontierRuntimeFile
+      ? transpileExpandedSoundscriptModuleToEsm(expandedProgram!, sourceFileName, outputPath)
       : transpileTypeScriptModuleToEsm(sourceFileName, outputPath, sourceText, {
         module: ts.ModuleKind.ES2022,
         target: ts.ScriptTarget.ES2022,

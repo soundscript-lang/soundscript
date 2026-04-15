@@ -52,11 +52,24 @@ export class MacroError extends Error {
 
 export class SemanticMacroExpansionRequiredError extends Error {
   readonly capability: string;
+  readonly fileName: string;
+  readonly macroName: string;
+  readonly placeholderId: number;
 
-  constructor(capability: string) {
+  constructor(
+    capability: string,
+    options: {
+      fileName: string;
+      macroName: string;
+      placeholderId: number;
+    },
+  ) {
     super(`Macro expansion requires full semantic services for ${capability}.`);
     this.name = 'SemanticMacroExpansionRequiredError';
     this.capability = capability;
+    this.fileName = options.fileName;
+    this.macroName = options.macroName;
+    this.placeholderId = options.placeholderId;
   }
 }
 

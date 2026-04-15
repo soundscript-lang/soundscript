@@ -101,7 +101,11 @@ export function createExpandMacroPlaceholderFromDefinition<
           hostAccess,
         )
         : options.deferToSemanticExpansion
-        ? createDeferredAdvancedContext(createMacroContext(resolved, runtimeResolver))
+        ? createDeferredAdvancedContext(createMacroContext(resolved, runtimeResolver), {
+          fileName: resolved.placeholder.invocation.fileName,
+          macroName: resolved.placeholder.invocation.nameText,
+          placeholderId: resolved.placeholder.id,
+        })
         : createUnsupportedAdvancedContext(createMacroContext(resolved, runtimeResolver));
       const decodedSignature = validateMacroInvocationSignature(definition, baseContext);
       validateDeclarationMacroPlacement(resolved, baseContext);
@@ -466,9 +470,14 @@ function createUnsupportedAdvancedContext(
 
 function createDeferredAdvancedContext(
   baseContext: BaseMacroContext,
+  options: {
+    fileName: string;
+    macroName: string;
+    placeholderId: number;
+  },
 ): Parameters<MacroDefinition['expand']>[0] {
   const requiresSemanticExpansion = (capability: string): never => {
-    throw new SemanticMacroExpansionRequiredError(capability);
+    throw new SemanticMacroExpansionRequiredError(capability, options);
   };
 
   return {

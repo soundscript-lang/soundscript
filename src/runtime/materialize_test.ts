@@ -223,3 +223,52 @@ Deno.test('materializeRuntimeGraph expands package-authored macros before emit',
     await Deno.remove(root, { recursive: true }).catch(() => undefined);
   }
 });
+
+Deno.test('materializeRuntimeGraph ignores unrelated frontier files outside the entry semantic closure', async () => {
+  const root = await Deno.makeTempDir({ prefix: 'soundscript-materialize-scope-' });
+  const outDir = join(root, '.soundscript-out');
+
+  try {
+    await writeProjectFile(
+      root,
+      'tsconfig.json',
+      JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+            moduleResolution: 'Bundler',
+          },
+          include: ['src/**/*.sts'],
+        },
+        null,
+        2,
+      ),
+    );
+    await writeInstalledStdlibPackage(root);
+    await writeProjectFile(root, 'src/main.sts', 'export const main = 1;\n');
+    await writeProjectFile(
+      root,
+      'src/unrelated.sts',
+      [
+        "import { missing } from './missing';",
+        'export const value = missing;',
+        '',
+      ].join('\n'),
+    );
+
+    const result = await materializeRuntimeGraph({
+      entryPaths: [join(root, 'src/main.sts')],
+      outDir,
+      workingDirectory: root,
+    });
+
+    assertEquals(result.exitCode, 0);
+    const emittedEntry = await Deno.readTextFile(join(outDir, 'src/main.js'));
+    assertStringIncludes(emittedEntry, 'export const main = 1;');
+  } finally {
+    await Deno.remove(root, { recursive: true }).catch(() => undefined);
+  }
+});

@@ -10,6 +10,7 @@ import ts from 'typescript';
 
 import { normalizeRuntimeContext } from '../project/config.ts';
 import { installTestDisposableCleanup } from './builtin_expanded_program_test_cleanup.ts';
+import { SemanticMacroExpansionRequiredError } from './macro_errors.ts';
 import {
   createPreparedCompilerHostReuseState,
   createPreparedProgram as createPreparedProgramRaw,
@@ -205,9 +206,67 @@ Deno.test(
       environment.dispose();
     }
 
-    assertEquals(preparedSourceLookups, 2);
+  assertEquals(preparedSourceLookups, 2);
   },
 );
+
+Deno.test('createProjectMacroEnvironment surfaces structured semantic-expansion metadata in deferred mode', () => {
+  const fileName = '/virtual/index.sts';
+  const macroFile = '/virtual/macros/defs.macro.sts';
+  const preparedProgram = createPreparedProgram({
+    baseHost: createBaseHost(
+      new Map([
+        [fileName, "import { Foo } from './macros/defs.macro';\nexport const value = Foo(1);\n"],
+        [
+          macroFile,
+          [
+            "import 'sts:macros';",
+            '',
+            '// #[macro(call)]',
+            'export function Foo() {',
+            '  return {',
+            '    expand(ctx) {',
+            '      ctx.semantics.argType(0);',
+            '      return ctx.output.expr(ctx.quote.expr`1`);',
+            '    },',
+            '  };',
+            '}',
+            '',
+          ].join('\n'),
+        ],
+      ]),
+    ),
+    options: {
+      target: ts.ScriptTarget.ES2022,
+      module: ts.ModuleKind.ESNext,
+      moduleResolution: ts.ModuleResolutionKind.Bundler,
+      noEmit: true,
+    },
+    rootNames: [fileName],
+  });
+  const environment = createProjectMacroEnvironment(
+    preparedProgram,
+    new Map(),
+    new Map(),
+    new Map(),
+    new Map(),
+    undefined,
+    { deferToSemanticExpansion: true },
+  );
+
+  try {
+    const error = assertThrows(
+      () => environment.expandPreparedProgram(),
+      SemanticMacroExpansionRequiredError,
+    );
+    assertEquals(error?.fileName, fileName);
+    assertEquals(error?.macroName, 'Foo');
+    assertEquals(error?.capability, 'semantics.argType');
+    assertEquals(typeof error?.placeholderId, 'number');
+  } finally {
+    environment.dispose();
+  }
+});
 
 Deno.test(
   'createProjectMacroEnvironment reuses unchanged expanded source files for files with no macro invocations',
