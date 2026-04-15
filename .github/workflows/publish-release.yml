@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       expected_version:
-        description: Optional version expected from src/cli/cli.ts
+        description: Optional version expected from the current release source
         required: false
         type: string
 
@@ -57,7 +57,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          VERSION="$(deno eval 'const text = await Deno.readTextFile("src/cli/cli.ts"); const match = text.match(/export const VERSION = '\''([^'\'']+)'\''/u); if (!match) throw new Error("Could not find VERSION in src/cli/cli.ts."); console.log(match[1]);')"
+          VERSION="$(deno eval 'import { parseVersion } from "./scripts/release/npm_manifest.ts"; console.log(parseVersion());')"
           if [[ -n "${{ inputs.expected_version }}" && "${{ inputs.expected_version }}" != "$VERSION" ]]; then
             echo "Expected version ${{ inputs.expected_version }}, found $VERSION." >&2
             exit 1
