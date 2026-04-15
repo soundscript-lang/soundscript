@@ -12240,6 +12240,29 @@ function emitOwnedHeapArrayBoundaryHelpers(
       ),
     );
   };
+  const getPromiseOwnedHeapArrayRepresentations = (
+    boundary: CompilerHostBoundaryIR | undefined,
+  ): CompilerRuntimeRepresentationRefIR<'object'>[] => {
+    if (!boundary) {
+      return [];
+    }
+    if (
+      boundary.kind === 'array' &&
+      boundary.carrierType === 'owned_heap_array_ref' &&
+      boundary.elementBoundary.kind === 'object'
+    ) {
+      return [boundary.elementBoundary.representation];
+    }
+    if (
+      boundary.kind === 'tagged' &&
+      boundary.heapBoundary?.kind === 'array' &&
+      boundary.heapBoundary.carrierType === 'owned_heap_array_ref' &&
+      boundary.heapBoundary.elementBoundary.kind === 'object'
+    ) {
+      return [boundary.heapBoundary.elementBoundary.representation];
+    }
+    return [];
+  };
   if (moduleUsesOwnedHeapArrayHostParamBoundary(module)) {
     lines.push(...emitCloneOwnedHeapArrayHelper());
   }
@@ -12404,6 +12427,14 @@ function emitOwnedHeapArrayBoundaryHelpers(
           `specialized:copy:${usage.layout.representation.name}:${field.name}`,
         );
       }
+    }
+  }
+  for (const spec of collectTypedHostPromiseValueBridgeSpecs(module)) {
+    for (const representation of getPromiseOwnedHeapArrayRepresentations(spec.valueBoundary)) {
+      emitParamBoundaryHelper(
+        representation,
+        `promise:param:${spec.id}:${representation.name}`,
+      );
     }
   }
   return lines;

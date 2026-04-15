@@ -24,16 +24,47 @@ function createSequelizeStore() {
 }
 
 type SequelizeStore = ReturnType<typeof createSequelizeStore>;
+type TodoModelStore = ReturnType<SequelizeStore['define']>;
+
+let cachedSequelizeStore: SequelizeStore | undefined = undefined;
+let cachedTodoModelStore: TodoModelStore | undefined = undefined;
 
 let seededTodos = false;
 
-async function replaceTodos(todos: TodoList): Promise<void> {
-  const nextSequelizeStore = createSequelizeStore();
-  const todoAttributes: TodoAttributes = {
+function createTodoAttributes(): TodoAttributes {
+  return {
     title: 'STRING',
     completed: 'BOOLEAN',
   };
-  const nextTodoModelStore = nextSequelizeStore.define('Todo', todoAttributes);
+}
+
+function getSequelizeStore(): SequelizeStore {
+  const currentSequelizeStore = cachedSequelizeStore;
+  if (currentSequelizeStore !== undefined) {
+    return currentSequelizeStore;
+  }
+  const nextSequelizeStore = createSequelizeStore();
+  cachedSequelizeStore = nextSequelizeStore;
+  return nextSequelizeStore;
+}
+
+function createTodoModelStore(): TodoModelStore {
+  return getSequelizeStore().define('Todo', createTodoAttributes());
+}
+
+function getTodoModelStore(): TodoModelStore {
+  const currentTodoModelStore = cachedTodoModelStore;
+  if (currentTodoModelStore !== undefined) {
+    return currentTodoModelStore;
+  }
+  const nextTodoModelStore = createTodoModelStore();
+  cachedTodoModelStore = nextTodoModelStore;
+  return nextTodoModelStore;
+}
+
+async function replaceTodos(todos: TodoList): Promise<void> {
+  const nextSequelizeStore = getSequelizeStore();
+  const nextTodoModelStore = getTodoModelStore();
   await nextSequelizeStore.sync({ force: true });
   const firstTodo = todos[0];
   const secondTodo = todos[1];
@@ -58,12 +89,7 @@ async function ensureTodosSeeded(): Promise<void> {
 
 async function getTodos(): Promise<TodoList> {
   await ensureTodosSeeded();
-  const nextSequelizeStore = createSequelizeStore();
-  const todoAttributes: TodoAttributes = {
-    title: 'STRING',
-    completed: 'BOOLEAN',
-  };
-  const nextTodoModelStore = nextSequelizeStore.define('Todo', todoAttributes);
+  const nextTodoModelStore = getTodoModelStore();
   const rows = await nextTodoModelStore.findAll();
   const fallbackTodos = createInitialTodos();
   const firstRow = rows[0];

@@ -572,6 +572,16 @@ interface ModuleClosureLoweringState {
 }
 
 const boundaryRepresentationResolutionStack = new Set<ts.Type>();
+const candidateObjectRepresentationResolutionStack = new Set<ts.Type | ts.Symbol>();
+const candidateSpecializedShapeResolutionStack = new Set<ts.Type | ts.Symbol>();
+const fixedLayoutShapeResolutionStack = new Set<ts.Type | ts.Symbol>();
+
+function getTypeResolutionKey(
+  checker: ts.TypeChecker,
+  type: ts.Type,
+): ts.Type | ts.Symbol {
+  return type.aliasSymbol ?? type.getSymbol() ?? checker.getApparentType(type).getSymbol() ?? type;
+}
 
 function createModuleRuntimeLoweringState(): ModuleRuntimeLoweringState {
   return {
@@ -1446,6 +1456,50 @@ function refineClosureAbiInvocationWithActualClosureArgs(
     : invocation;
 }
 
+function alignResolvedClosureInvocationSourceParameters(
+  invocation: ResolvedClosureAbiInvocationIR,
+  effectiveParams: readonly ResolvedClosureAbiValueIR[],
+  callExpression: ts.CallExpression,
+): readonly ResolvedClosureAbiInvocationParamIR[] {
+  if (invocation.sourceParameters.length === effectiveParams.length) {
+    return invocation.sourceParameters.map((parameter, index) => ({
+      ...parameter,
+      resolvedValue: effectiveParams[index]!,
+    }));
+  }
+  const aligned: ResolvedClosureAbiInvocationParamIR[] = [];
+  let effectiveIndex = 0;
+  for (let sourceIndex = 0; sourceIndex < invocation.sourceParameters.length; sourceIndex += 1) {
+    const parameter = invocation.sourceParameters[sourceIndex]!;
+    const remainingEffective = effectiveParams.length - effectiveIndex;
+    const remainingSource = invocation.sourceParameters.length - sourceIndex;
+    if (effectiveIndex >= effectiveParams.length) {
+      if (parameter.argumentIndex === undefined) {
+        continue;
+      }
+      throw new CompilerUnsupportedError(
+        'Known closure boundary metadata does not match the resolved call arguments.',
+        callExpression,
+      );
+    }
+    if (parameter.argumentIndex === undefined && remainingSource - 1 >= remainingEffective) {
+      continue;
+    }
+    aligned.push({
+      ...parameter,
+      resolvedValue: effectiveParams[effectiveIndex]!,
+    });
+    effectiveIndex += 1;
+  }
+  if (effectiveIndex !== effectiveParams.length) {
+    throw new CompilerUnsupportedError(
+      'Known closure boundary metadata does not match the resolved call arguments.',
+      callExpression,
+    );
+  }
+  return aligned;
+}
+
 function ensureSupportedHostClosureBoundaryInvocation(
   invocation: ResolvedClosureAbiInvocationIR,
   node: ts.Node,
@@ -1782,8 +1836,22 @@ function resolveClosureAbiValueType(
       erasedFromRuntime: true,
     };
   }
-  const ambientCallableObjectRepresentation = runtime && allowAmbientDeclarationFileMethods
-    ? getAmbientHostProjectedCallableObjectBoundaryRepresentation(
+  if (runtime && isPromiseType(checker, type)) {
+    return {
+      type: 'heap_ref',
+      promiseValueBoundary: resolveHostPromiseBridgeValueBoundary(
+        checker,
+        type,
+        node,
+        closures,
+        runtime,
+        classes,
+      ),
+      heapRepresentation: ensureObjectDynamicRepresentation(runtime),
+    };
+  }
+  const ambientDeclarationObjectRepresentation = runtime && allowAmbientDeclarationFileMethods
+    ? getInternalAmbientDeclarationObjectRepresentation(
       checker,
       type,
       node,
@@ -1791,10 +1859,10 @@ function resolveClosureAbiValueType(
       classes,
     )
     : undefined;
-  if (ambientCallableObjectRepresentation) {
+  if (ambientDeclarationObjectRepresentation) {
     return {
       type: 'heap_ref',
-      heapRepresentation: ambientCallableObjectRepresentation,
+      heapRepresentation: ambientDeclarationObjectRepresentation,
     };
   }
   const nullishWrappedCallableMembers = getNullishWrappedCallableMemberTypes(checker, type);
@@ -1885,20 +1953,6 @@ function resolveClosureAbiValueType(
         includesUndefined: taggedHeapNullableBoundary.includesUndefined,
       },
       heapRepresentation: taggedHeapNullableBoundary.representation,
-    };
-  }
-  if (runtime && isPromiseType(checker, type)) {
-    return {
-      type: 'heap_ref',
-      promiseValueBoundary: resolveHostPromiseBridgeValueBoundary(
-        checker,
-        type,
-        node,
-        closures,
-        runtime,
-        classes,
-      ),
-      heapRepresentation: ensureObjectDynamicRepresentation(runtime),
     };
   }
   const taggedPrimitiveKinds = getHostTaggedBoundaryKinds(type);
@@ -2208,7 +2262,7 @@ function getClosureAbiValueTypeForType(
   if (isSupportedOwnedHeapArrayType(checker, type)) {
     return 'owned_heap_array_ref';
   }
-  if (isSupportedHeapLocalType(checker, type)) {
+  if (isSupportedProjectedHeapBoundaryType(checker, type)) {
     return 'heap_ref';
   }
   if (isStringLikeType(type)) {
@@ -2239,6 +2293,9 @@ function getClosureAbiValueTypeForType(
     return 'tagged_ref';
   }
   if (isSupportedInternalTaggedHeapUnionType(checker, type)) {
+    return 'tagged_ref';
+  }
+  if (isSupportedTaggedHeapNullableType(checker, type)) {
     return 'tagged_ref';
   }
   if (isTaggedCompilerUnionType(type)) {
@@ -2366,6 +2423,132 @@ function getClosureSignatureId(
     resultHeapArrayRepresentation: result.heapArrayRepresentation,
   });
   return id;
+}
+
+function getResolvedClosureAbiValueFromHostBoundary(
+  valueType: CompilerValueType,
+  boundary: CompilerHostBoundaryIR | undefined,
+  heapRepresentation?: CompilerRuntimeRepresentationRefIR<'object'>,
+): ResolvedClosureAbiValueIR {
+  switch (valueType) {
+    case 'f64':
+    case 'i32':
+      return { type: valueType };
+    case 'owned_string_ref':
+      return { type: 'owned_string_ref' };
+    case 'closure_ref':
+      return {
+        type: 'closure_ref',
+        closureSignatureId: boundary?.kind === 'closure' ? boundary.signatureId : undefined,
+      };
+    case 'heap_ref':
+      if (boundary?.kind === 'promise') {
+        return {
+          type: 'heap_ref',
+          promiseValueBoundary: boundary.valueBoundary,
+          heapRepresentation: boundary.representation,
+        };
+      }
+      return {
+        type: 'heap_ref',
+        heapRepresentation: boundary?.kind === 'object'
+          ? boundary.representation
+          : heapRepresentation,
+      };
+    case 'owned_heap_array_ref':
+      return {
+        type: 'owned_heap_array_ref',
+        heapArrayRepresentation: boundary?.kind === 'array' &&
+            boundary.carrierType === 'owned_heap_array_ref' &&
+            boundary.elementBoundary.kind === 'object'
+          ? boundary.elementBoundary.representation
+          : undefined,
+      };
+    case 'owned_array_ref':
+      return { type: 'owned_array_ref' };
+    case 'owned_number_array_ref':
+      return { type: 'owned_number_array_ref' };
+    case 'owned_boolean_array_ref':
+      return { type: 'owned_boolean_array_ref' };
+    case 'owned_tagged_array_ref':
+      return {
+        type: 'owned_tagged_array_ref',
+        taggedPrimitiveKinds: boundary?.kind === 'array' &&
+            boundary.carrierType === 'owned_tagged_array_ref' &&
+            boundary.elementBoundary.kind === 'tagged'
+          ? {
+            includesBoolean: boundary.elementBoundary.includesBoolean,
+            includesNull: boundary.elementBoundary.includesNull,
+            includesNumber: boundary.elementBoundary.includesNumber,
+            includesString: boundary.elementBoundary.includesString,
+            includesUndefined: boundary.elementBoundary.includesUndefined,
+          }
+          : undefined,
+        heapRepresentation: boundary?.kind === 'array' &&
+            boundary.carrierType === 'owned_tagged_array_ref' &&
+            boundary.elementBoundary.kind === 'tagged' &&
+            boundary.elementBoundary.heapBoundary?.kind === 'object'
+          ? boundary.elementBoundary.heapBoundary.representation
+          : undefined,
+      };
+    case 'tagged_ref':
+      return {
+        type: 'tagged_ref',
+        taggedPrimitiveKinds: boundary?.kind === 'tagged'
+          ? {
+            includesBoolean: boundary.includesBoolean,
+            includesNull: boundary.includesNull,
+            includesNumber: boundary.includesNumber,
+            includesString: boundary.includesString,
+            includesUndefined: boundary.includesUndefined,
+          }
+          : undefined,
+        heapRepresentation: boundary?.kind === 'tagged' && boundary.heapBoundary?.kind === 'object'
+          ? boundary.heapBoundary.representation
+          : heapRepresentation,
+      };
+    default: {
+      const exhaustiveCheck: never = valueType;
+      return exhaustiveCheck;
+    }
+  }
+}
+
+function getClosureSignatureIdForAmbientHostMemberDeclaration(
+  declaration: ts.MethodDeclaration | ts.MethodSignature,
+  checker: ts.TypeChecker,
+  closures: ModuleClosureLoweringState,
+  runtime: ModuleRuntimeLoweringState,
+  classes: ReadonlyMap<ts.Symbol, ts.ClassDeclaration>,
+): number {
+  const header = createAmbientHostProjectedMemberMetadataHeader(
+    declaration,
+    checker,
+    closures,
+    runtime,
+    classes,
+  );
+  const paramBoundariesByName = new Map(
+    (header.hostParamBoundaries ?? []).map((param) => [param.name, param.boundary] as const),
+  );
+  const heapParamRepresentationsByName = new Map(
+    (header.heapParamRepresentations ?? []).map((param) => [param.name, param.representation] as const),
+  );
+  return getClosureSignatureId(
+    header.params.map((param) =>
+      getResolvedClosureAbiValueFromHostBoundary(
+        param.type,
+        paramBoundariesByName.get(param.name),
+        heapParamRepresentationsByName.get(param.name),
+      )
+    ),
+    getResolvedClosureAbiValueFromHostBoundary(
+      header.resultType,
+      header.hostResultBoundary,
+      header.heapResultRepresentation,
+    ),
+    closures,
+  );
 }
 
 function isDefinitelyUndefinedType(type: ts.Type): boolean {
@@ -2520,6 +2703,45 @@ function isSupportedHeapLocalType(checker: ts.TypeChecker, type: ts.Type): boole
     !checker.isTupleType(type);
 }
 
+function isSupportedAmbientDeclarationConstructableHeapBoundaryType(
+  checker: ts.TypeChecker,
+  type: ts.Type,
+): boolean {
+  if ((type.flags & ts.TypeFlags.Union) !== 0) {
+    return (type as ts.UnionType).types.length > 0 &&
+      (type as ts.UnionType).types.every((member) =>
+        isSupportedAmbientDeclarationConstructableHeapBoundaryType(checker, member)
+      );
+  }
+  if ((type.flags & ts.TypeFlags.Intersection) !== 0) {
+    return (type as ts.IntersectionType).types.length > 0 &&
+      (type as ts.IntersectionType).types.every((member) =>
+        isSupportedAmbientDeclarationConstructableHeapBoundaryType(checker, member)
+      );
+  }
+  if ((type.flags & ts.TypeFlags.Object) === 0) {
+    return false;
+  }
+  return checker.getSignaturesOfType(type, ts.SignatureKind.Call).length === 0 &&
+    checker.getSignaturesOfType(type, ts.SignatureKind.Construct).length > 0 &&
+    isDeclarationOnlyBoundaryType(type);
+}
+
+function isSupportedProjectedHeapBoundaryType(
+  checker: ts.TypeChecker,
+  type: ts.Type,
+): boolean {
+  return isSupportedHeapLocalType(checker, type) ||
+    isSupportedAmbientDeclarationConstructableHeapBoundaryType(checker, type);
+}
+
+function isSupportedTaggedHeapNullableMemberType(
+  checker: ts.TypeChecker,
+  type: ts.Type,
+): boolean {
+  return isSupportedProjectedHeapBoundaryType(checker, type);
+}
+
 function isSupportedTaggedHeapNullableType(checker: ts.TypeChecker, type: ts.Type): boolean {
   if ((type.flags & ts.TypeFlags.Union) === 0) {
     return false;
@@ -2527,7 +2749,8 @@ function isSupportedTaggedHeapNullableType(checker: ts.TypeChecker, type: ts.Typ
   const members = (type as ts.UnionType).types;
   return members.some((member) => isUndefinedType(member) || isNullType(member)) &&
     members.every((member) =>
-      isUndefinedType(member) || isNullType(member) || isSupportedHeapLocalType(checker, member)
+      isUndefinedType(member) || isNullType(member) ||
+      isSupportedTaggedHeapNullableMemberType(checker, member)
     );
 }
 
@@ -3643,6 +3866,36 @@ function getCompatibleHeapCallbackRepresentation(
 
 function getCompilerBindingValueType(checker: ts.TypeChecker, node: ts.Node): CompilerValueType {
   const type = checker.getTypeAtLocation(node);
+  if ((type.flags & ts.TypeFlags.Union) !== 0) {
+    const nullableMembers = (type as ts.UnionType).types.filter((member) =>
+      isUndefinedType(member) || isNullType(member)
+    );
+    const heapMembers = (type as ts.UnionType).types.filter((member) =>
+      !isUndefinedType(member) && !isNullType(member)
+    );
+    if (
+      nullableMembers.length > 0 &&
+      heapMembers.length > 0 &&
+      heapMembers.every((member) =>
+        isDeclarationOnlyBoundaryType(member) &&
+        checker.getSignaturesOfType(member, ts.SignatureKind.Construct).length > 0
+      )
+    ) {
+      return 'tagged_ref';
+    }
+  }
+  if (isSupportedNullableOwnedArrayType(checker, type)) {
+    return 'tagged_ref';
+  }
+  if (isTaggedCompilerUnionType(type)) {
+    return 'tagged_ref';
+  }
+  if (isSupportedInternalTaggedHeapUnionType(checker, type)) {
+    return 'tagged_ref';
+  }
+  if (isSupportedTaggedHeapNullableType(checker, type)) {
+    return 'tagged_ref';
+  }
   if (
     checker.getSignaturesOfType(type, ts.SignatureKind.Call).length === 0 &&
     checker.getSignaturesOfType(type, ts.SignatureKind.Construct).length > 0 &&
@@ -3658,18 +3911,6 @@ function getCompilerBindingValueType(checker: ts.TypeChecker, node: ts.Node): Co
   }
   if (isSupportedOwnedHeapArrayType(checker, type)) {
     return 'owned_heap_array_ref';
-  }
-  if (isSupportedNullableOwnedArrayType(checker, type)) {
-    return 'tagged_ref';
-  }
-  if (isTaggedCompilerUnionType(type)) {
-    return 'tagged_ref';
-  }
-  if (isSupportedInternalTaggedHeapUnionType(checker, type)) {
-    return 'tagged_ref';
-  }
-  if (isSupportedTaggedHeapNullableType(checker, type)) {
-    return 'tagged_ref';
   }
   if (
     isSupportedLengthViewType(checker, type, node) &&
@@ -4007,12 +4248,20 @@ function lowerExpressionAsValueType(
       return lowered;
     }
     const expressionType = context.checker.getTypeAtLocation(expression);
+    const internalAmbientRepresentation = getInternalAmbientDeclarationObjectRepresentation(
+      context.checker,
+      expressionType,
+      expression,
+      context.runtime,
+      context.classes,
+    );
     if (
       'type' in lowered &&
       lowered.type === 'tagged_ref' &&
       (
         isSupportedHeapLocalType(context.checker, expressionType) ||
-        isHostTaggedObjectExpression(expression, context)
+        isHostTaggedObjectExpression(expression, context) ||
+        internalAmbientRepresentation
       )
     ) {
       return {
@@ -4022,7 +4271,8 @@ function lowerExpressionAsValueType(
             context,
           ) ??
           (ts.isIdentifier(expression) ? lookupSymbol(context, expression.text)?.heapRepresentation : undefined) ??
-          getHeapObjectRepresentationFromExpression(expression, context),
+          getHeapObjectRepresentationFromExpression(expression, context) ??
+          internalAmbientRepresentation,
         value: lowered,
         type: 'heap_ref',
       };
@@ -19183,6 +19433,15 @@ function isSupportedCallableFixedLayoutPropertyDeclaration(
     isSupportedMethodLikePropertyDeclaration(declaration, allowAmbientDeclarationFileMethods);
 }
 
+function getSupportedMethodLikePropertyDeclarations(
+  property: ts.Symbol,
+  allowAmbientDeclarationFileMethods = false,
+): readonly ts.Declaration[] {
+  return (property.getDeclarations() ?? []).filter((declaration) =>
+    isSupportedMethodLikePropertyDeclaration(declaration, allowAmbientDeclarationFileMethods)
+  );
+}
+
 function isMethodLikeFixedLayoutPropertyDeclaration(declaration: ts.Declaration): boolean {
   return isSupportedMethodLikePropertyDeclaration(declaration);
 }
@@ -19202,6 +19461,19 @@ function getFixedLayoutPropertyShape(
         ? declaration.questionToken !== undefined
         : false
     ) ?? false;
+  const methodLikeDeclarations = getSupportedMethodLikePropertyDeclarations(
+    property,
+    allowAmbientDeclarationFileMethods,
+  );
+  if (methodLikeDeclarations.length > 0) {
+    if (isPureClassMethodProperty(property)) {
+      return undefined;
+    }
+    return finalizeFixedLayoutPropertyShape(
+      { name: property.getName(), optional: isOptional, valueType: 'closure_ref' },
+      runtime,
+    );
+  }
   const propertyType = checker.getTypeOfSymbolAtLocation(property, contextNode);
   if ((propertyType.flags & ts.TypeFlags.NumberLike) !== 0) {
     return finalizeFixedLayoutPropertyShape(
@@ -19557,6 +19829,12 @@ function getFixedLayoutShapeInfo(
   shapeSignature: string;
   fields: CompilerRuntimeSpecializedObjectFieldIR[];
 } | undefined {
+  const resolutionKey = getTypeResolutionKey(checker, type);
+  if (fixedLayoutShapeResolutionStack.has(resolutionKey)) {
+    return undefined;
+  }
+  fixedLayoutShapeResolutionStack.add(resolutionKey);
+  try {
   if (!isSupportedHeapLocalType(checker, type)) {
     return undefined;
   }
@@ -19610,6 +19888,9 @@ function getFixedLayoutShapeInfo(
       boundary: property.boundary,
     })),
   };
+  } finally {
+    fixedLayoutShapeResolutionStack.delete(resolutionKey);
+  }
 }
 
 function supportsLocalOnlyFixedLayoutHeapScaffolding(
@@ -19726,48 +20007,57 @@ function getCandidateSpecializedObjectShapeInfo(
   shapeSignature: string;
   fields: CompilerRuntimeSpecializedObjectFieldIR[];
 } | undefined {
-  if ((type.flags & ts.TypeFlags.Union) === 0) {
-    return getFixedLayoutShapeInfo(
-      checker,
-      type,
-      contextNode,
-      runtime,
-      classes,
-      allowAmbientDeclarationFileMethods,
-    );
+  const resolutionKey = getTypeResolutionKey(checker, type);
+  if (candidateSpecializedShapeResolutionStack.has(resolutionKey)) {
+    return undefined;
   }
+  candidateSpecializedShapeResolutionStack.add(resolutionKey);
+  try {
+    if ((type.flags & ts.TypeFlags.Union) === 0) {
+      return getFixedLayoutShapeInfo(
+        checker,
+        type,
+        contextNode,
+        runtime,
+        classes,
+        allowAmbientDeclarationFileMethods,
+      );
+    }
 
-  let candidateShapeInfo:
-    | {
-      shapeSignature: string;
-      fields: CompilerRuntimeSpecializedObjectFieldIR[];
+    let candidateShapeInfo:
+      | {
+        shapeSignature: string;
+        fields: CompilerRuntimeSpecializedObjectFieldIR[];
+      }
+      | undefined;
+    for (const member of (type as ts.UnionType).types) {
+      if (isBagLikeType(checker, member)) {
+        continue;
+      }
+      const memberShape = getFixedLayoutShapeInfo(
+        checker,
+        member,
+        contextNode,
+        runtime,
+        classes,
+        allowAmbientDeclarationFileMethods,
+      );
+      if (memberShape === undefined) {
+        return undefined;
+      }
+      if (!candidateShapeInfo) {
+        candidateShapeInfo = memberShape;
+        continue;
+      }
+      if (candidateShapeInfo.shapeSignature !== memberShape.shapeSignature) {
+        return undefined;
+      }
     }
-    | undefined;
-  for (const member of (type as ts.UnionType).types) {
-    if (isBagLikeType(checker, member)) {
-      continue;
-    }
-    const memberShape = getFixedLayoutShapeInfo(
-      checker,
-      member,
-      contextNode,
-      runtime,
-      classes,
-      allowAmbientDeclarationFileMethods,
-    );
-    if (memberShape === undefined) {
-      return undefined;
-    }
-    if (!candidateShapeInfo) {
-      candidateShapeInfo = memberShape;
-      continue;
-    }
-    if (candidateShapeInfo.shapeSignature !== memberShape.shapeSignature) {
-      return undefined;
-    }
+
+    return candidateShapeInfo;
+  } finally {
+    candidateSpecializedShapeResolutionStack.delete(resolutionKey);
   }
-
-  return candidateShapeInfo;
 }
 
 function hasCallableHeapProperty(
@@ -19793,6 +20083,12 @@ function hasCallableHeapProperty(
     );
   }
   return type.getProperties().some((property) => {
+    if (
+      getSupportedMethodLikePropertyDeclarations(property, allowAmbientDeclarationFileMethods).length >
+        0
+    ) {
+      return true;
+    }
     const propertyType = checker.getTypeOfSymbolAtLocation(property, contextNode);
     const signatures = checker.getSignaturesOfType(propertyType, ts.SignatureKind.Call);
     const hasCallableUnionMember = (propertyType.flags & ts.TypeFlags.Union) !== 0 &&
@@ -19851,6 +20147,13 @@ function hasOverloadedCallableHeapProperty(
     );
   }
   return type.getProperties().some((property) => {
+    const methodLikeDeclarations = getSupportedMethodLikePropertyDeclarations(
+      property,
+      allowAmbientDeclarationFileMethods,
+    );
+    if (methodLikeDeclarations.length > 0) {
+      return methodLikeDeclarations.length > 1;
+    }
     const propertyType = checker.getTypeOfSymbolAtLocation(property, contextNode);
     const signatures = checker.getSignaturesOfType(propertyType, ts.SignatureKind.Call);
     const overloadedCallableUnionMember = (propertyType.flags & ts.TypeFlags.Union) !== 0 &&
@@ -20425,14 +20728,6 @@ function tryLowerSpecializedObjectFieldAsValueType(
   if (boundaryRepresentation?.kind !== 'specialized_object_representation') {
     return undefined;
   }
-  if (!objectName) {
-    const materialized = materializeHeapExpressionToLocal(
-      expression.expression,
-      context,
-      expression.name.text,
-    );
-    objectName = materialized.name;
-  }
   const fieldLayout = getSpecializedObjectFieldValueLayout(
     context.runtime,
     boundaryRepresentation,
@@ -20440,6 +20735,14 @@ function tryLowerSpecializedObjectFieldAsValueType(
   );
   if (!fieldLayout || fieldLayout.valueType !== expectedType) {
     return undefined;
+  }
+  if (!objectName) {
+    const materialized = materializeHeapExpressionToLocal(
+      expression.expression,
+      context,
+      expression.name.text,
+    );
+    objectName = materialized.name;
   }
   const resultName = createLocalName(expression.name.text, context.nextLocalId);
   context.nextLocalId += 1;
@@ -20778,33 +21081,48 @@ function annotateCallableSpecializedObjectFieldsForHostBoundary(
         const shallowClosureBoundaryOptions = {
           annotateNestedCallableHeapFields: false,
         } satisfies ResolveClosureAbiSignatureOptions;
-        ensureSupportedHostClosureBoundarySignature(
-          checker,
-          propertyType,
-          contextNode,
-          closures,
-          runtime,
-          classes,
-          shallowClosureBoundaryOptions,
-        );
-        annotateHostClosureBoundaryTypes(
-          checker,
-          propertyType,
-          contextNode,
-          runtime,
-          closures,
-          classes,
-          shallowClosureBoundaryOptions,
-        );
-        const signatureId = getClosureSignatureIdForType(
-          checker,
-          propertyType,
-          contextNode,
-          closures,
-          runtime,
-          classes,
-          shallowClosureBoundaryOptions,
-        );
+        const ambientMemberDeclaration = allowAmbientDeclarationFileMethods
+          ? property.getDeclarations()?.find((declaration): declaration is ts.MethodDeclaration | ts.MethodSignature =>
+            ts.isMethodDeclaration(declaration) || ts.isMethodSignature(declaration)
+          )
+          : undefined;
+        const signatureId = ambientMemberDeclaration
+          ? getClosureSignatureIdForAmbientHostMemberDeclaration(
+            ambientMemberDeclaration,
+            checker,
+            closures,
+            runtime,
+            classes,
+          )
+          : (() => {
+            ensureSupportedHostClosureBoundarySignature(
+              checker,
+              propertyType,
+              contextNode,
+              closures,
+              runtime,
+              classes,
+              shallowClosureBoundaryOptions,
+            );
+            annotateHostClosureBoundaryTypes(
+              checker,
+              propertyType,
+              contextNode,
+              runtime,
+              closures,
+              classes,
+              shallowClosureBoundaryOptions,
+            );
+            return getClosureSignatureIdForType(
+              checker,
+              propertyType,
+              contextNode,
+              closures,
+              runtime,
+              classes,
+              shallowClosureBoundaryOptions,
+            );
+          })();
         const field = concreteRepresentation.fields.find((candidate) =>
           candidate.name === property.getName()
         );
@@ -21272,33 +21590,48 @@ function collectCallableFallbackHostBoundaryProperties(
       if (!hasSupportedCallableDeclaration) {
         continue;
       }
-      ensureSupportedHostClosureBoundarySignature(
-        checker,
-        propertyType,
-        contextNode,
-        closures,
-        runtime,
-        classes,
-        shallowClosureBoundaryOptions,
-      );
-      annotateHostClosureBoundaryTypes(
-        checker,
-        propertyType,
-        contextNode,
-        runtime,
-        closures,
-        classes,
-        shallowClosureBoundaryOptions,
-      );
-      const signatureId = getClosureSignatureIdForType(
-        checker,
-        propertyType,
-        contextNode,
-        closures,
-        runtime,
-        classes,
-        shallowClosureBoundaryOptions,
-      );
+      const ambientMemberDeclaration = allowAmbientDeclarationFileMethods
+        ? property.getDeclarations()?.find((declaration): declaration is ts.MethodDeclaration | ts.MethodSignature =>
+          ts.isMethodDeclaration(declaration) || ts.isMethodSignature(declaration)
+        )
+        : undefined;
+      const signatureId = ambientMemberDeclaration
+        ? getClosureSignatureIdForAmbientHostMemberDeclaration(
+          ambientMemberDeclaration,
+          checker,
+          closures,
+          runtime,
+          classes,
+        )
+        : (() => {
+          ensureSupportedHostClosureBoundarySignature(
+            checker,
+            propertyType,
+            contextNode,
+            closures,
+            runtime,
+            classes,
+            shallowClosureBoundaryOptions,
+          );
+          annotateHostClosureBoundaryTypes(
+            checker,
+            propertyType,
+            contextNode,
+            runtime,
+            closures,
+            classes,
+            shallowClosureBoundaryOptions,
+          );
+          return getClosureSignatureIdForType(
+            checker,
+            propertyType,
+            contextNode,
+            closures,
+            runtime,
+            classes,
+            shallowClosureBoundaryOptions,
+          );
+        })();
       const existing = signatureIdsByName.get(property.getName());
       if (existing !== undefined && existing !== signatureId) {
         throw new CompilerUnsupportedError(
@@ -22274,6 +22607,45 @@ function resolveHostPromiseBridgeValueBoundary(
     runtime,
     classes,
   );
+  const annotateResolvedHeapBoundary = (
+    heapType: ts.Type,
+    boundaryNode: ts.Node,
+    representation: CompilerRuntimeRepresentationRefIR<'object'>,
+  ): void => {
+    if (
+      !closures ||
+      representation.kind !== 'specialized_object_representation' ||
+      !hasCallableHeapProperty(checker, heapType, boundaryNode, true)
+    ) {
+      return;
+    }
+    annotateCallableSpecializedObjectFieldsForHostBoundary(
+      checker,
+      heapType,
+      boundaryNode,
+      representation as CompilerRuntimeSpecializedObjectRepresentationRefIR,
+      runtime,
+      closures,
+      classes,
+      true,
+    );
+  };
+  if (promisedValue.heapRepresentation) {
+    annotateResolvedHeapBoundary(
+      promisedType,
+      node,
+      promisedValue.heapRepresentation,
+    );
+  }
+  if (promisedValue.heapArrayRepresentation) {
+    for (const elementType of getOwnedHeapArrayElementTypes(checker, promisedType, node)) {
+      annotateResolvedHeapBoundary(
+        elementType,
+        node,
+        promisedValue.heapArrayRepresentation,
+      );
+    }
+  }
   return createHostBoundaryFromResolvedClosureAbiValue(promisedValue, runtime);
 }
 
@@ -22822,6 +23194,45 @@ function upsertCurrentFunctionFallbackBoundaryField(
   }
 }
 
+function upsertCurrentFunctionLocalFallbackBoundaryField(
+  func: CompilerFunctionIR,
+  field: CompilerHostBoundaryFieldIR,
+  contextNode: ts.Node,
+  fallbackRepresentation: CompilerRuntimeFallbackObjectRepresentationRefIR,
+): void {
+  const boundary = func.hostLocalFallbackBoundary;
+  if (boundary && boundary.representation.name !== fallbackRepresentation.name) {
+    throw new CompilerUnsupportedError(
+      'Ambient host object boundaries do not currently support conflicting local fallback object representations.',
+      contextNode,
+    );
+  }
+  const fields = boundary?.fields ? [...boundary.fields] : [];
+  const existing = fields.find((candidate) => candidate.name === field.name);
+  if (existing) {
+    if (existing.optional !== field.optional || !hostBoundaryEqual(existing.boundary, field.boundary)) {
+      throw new CompilerUnsupportedError(
+        'Ambient host object boundaries do not yet support conflicting boundary types on the same property name.',
+        contextNode,
+      );
+    }
+    mergeHostBoundaryFieldMethodClosureFunctionIds(existing, field);
+  } else {
+    fields.push(createHostBoundaryField(
+      field.name,
+      field.optional,
+      field.boundary,
+      field.methodClosureFunctionIds,
+    ));
+    fields.sort((left, right) => left.name.localeCompare(right.name));
+  }
+  func.hostLocalFallbackBoundary = {
+    kind: 'object',
+    representation: fallbackRepresentation,
+    fields,
+  };
+}
+
 function upsertCurrentFunctionFallbackClosureBoundaryField(
   func: CompilerFunctionIR,
   property: { name: string; signatureId: number; methodClosureFunctionIds?: readonly number[] },
@@ -22829,6 +23240,28 @@ function upsertCurrentFunctionFallbackClosureBoundaryField(
   fallbackRepresentation?: CompilerRuntimeFallbackObjectRepresentationRefIR,
 ): void {
   upsertCurrentFunctionFallbackBoundaryField(
+    func,
+    createHostBoundaryField(
+      property.name,
+      false,
+      {
+        kind: 'closure',
+        signatureId: property.signatureId,
+      },
+      property.methodClosureFunctionIds,
+    ),
+    contextNode,
+    fallbackRepresentation,
+  );
+}
+
+function upsertCurrentFunctionLocalFallbackClosureBoundaryField(
+  func: CompilerFunctionIR,
+  property: { name: string; signatureId: number; methodClosureFunctionIds?: readonly number[] },
+  contextNode: ts.Node,
+  fallbackRepresentation: CompilerRuntimeFallbackObjectRepresentationRefIR,
+): void {
+  upsertCurrentFunctionLocalFallbackBoundaryField(
     func,
     createHostBoundaryField(
       property.name,
@@ -24957,6 +25390,12 @@ function getCandidateObjectRepresentationForType(
   classes: ReadonlyMap<ts.Symbol, ts.ClassDeclaration>,
   allowAmbientDeclarationFileMethods = false,
 ): CompilerRuntimeObjectRepresentationRef | undefined {
+  const resolutionKey = getTypeResolutionKey(checker, type);
+  if (candidateObjectRepresentationResolutionStack.has(resolutionKey)) {
+    return ensureObjectFallbackRepresentation(runtime);
+  }
+  candidateObjectRepresentationResolutionStack.add(resolutionKey);
+  try {
   const usesAmbientDeclarationProjection = allowAmbientDeclarationFileMethods ||
     isDeclarationOnlyBoundaryType(type);
   if (
@@ -24979,6 +25418,17 @@ function getCandidateObjectRepresentationForType(
     getSupportedStringKeySetTypeInfo(checker, type) !== undefined
   ) {
     return ensureObjectDynamicRepresentation(runtime);
+  }
+  if (
+    usesAmbientDeclarationProjection &&
+    hasSelfReferentialAmbientMethodLikeProperty(
+      checker,
+      type,
+      contextNode,
+      usesAmbientDeclarationProjection,
+    )
+  ) {
+    return ensureObjectFallbackRepresentation(runtime);
   }
   if (
     usesAmbientDeclarationProjection &&
@@ -25093,6 +25543,9 @@ function getCandidateObjectRepresentationForType(
   }
 
   return undefined;
+  } finally {
+    candidateObjectRepresentationResolutionStack.delete(resolutionKey);
+  }
 }
 
 function hasAmbientHostImportedFunctionCallBoundary(
@@ -25264,6 +25717,17 @@ function getHeapObjectRepresentationFromExpression(
   );
   if (stringKeySetAddRepresentation) {
     return stringKeySetAddRepresentation;
+  }
+  if (ts.isCallExpression(expression)) {
+    const directNamedCallee = ts.isIdentifier(expression.expression)
+      ? (() => {
+        const resolved = resolveReferencedSymbol(context.checker, expression.expression);
+        return resolved ? context.functions.get(resolved.symbol) : undefined;
+      })()
+      : undefined;
+    if (directNamedCallee?.heapResultRepresentation) {
+      return directNamedCallee.heapResultRepresentation;
+    }
   }
   const concreteObjectLiteralRepresentation = getConcreteObjectLiteralRepresentationFromExpression(
     expression,
@@ -28718,19 +29182,30 @@ function createFunctionHeader(
         if (!hasExportBoundary && isSupportedLengthViewType(checker, parameterType, parameter)) {
           return 'f64';
         }
-        if (isSupportedHeapLocalType(checker, parameterType)) {
-          const representation = isPromiseType(checker, parameterType) ||
-              isGeneratorObjectType(checker, parameterType) ||
-              isAsyncGeneratorObjectType(checker, parameterType) ||
-              isIteratorResultObjectType(checker, parameterType)
-            ? ensureObjectDynamicRepresentation(runtime)
-            : getFunctionBoundaryRepresentation(
-              checker,
-              parameterType,
-              parameter,
-              runtime,
-              classes,
-            );
+        const internalAmbientObjectRepresentation = !hasExportBoundary
+          ? getInternalAmbientDeclarationObjectRepresentation(
+            checker,
+            parameterType,
+            parameter.name,
+            runtime,
+            classes,
+          )
+          : undefined;
+        if (isSupportedHeapLocalType(checker, parameterType) || internalAmbientObjectRepresentation) {
+          const representation = isSupportedHeapLocalType(checker, parameterType)
+            ? (isPromiseType(checker, parameterType) ||
+                isGeneratorObjectType(checker, parameterType) ||
+                isAsyncGeneratorObjectType(checker, parameterType) ||
+                isIteratorResultObjectType(checker, parameterType)
+              ? ensureObjectDynamicRepresentation(runtime)
+              : getFunctionBoundaryRepresentation(
+                checker,
+                parameterType,
+                parameter,
+                runtime,
+                classes,
+              ))
+            : internalAmbientObjectRepresentation!;
           if (hasExportBoundary) {
             ensureHostPromiseBridgeSupportForRepresentation(representation, runtime, closures);
             const hostDynamicCollectionParamInfo = getSupportedHostDynamicCollectionParamInfo(
@@ -28947,6 +29422,15 @@ function createFunctionHeader(
       );
     }
   }
+  const internalAmbientResultRepresentation = !hasExportBoundary
+    ? getInternalAmbientDeclarationObjectRepresentation(
+      checker,
+      returnType,
+      declaration,
+      runtime,
+      classes,
+    )
+    : undefined;
   const heapResultRepresentation = isSupportedHeapLocalType(checker, returnType)
     ? (isPromiseType(checker, returnType) ||
         isGeneratorObjectType(checker, returnType) ||
@@ -28954,7 +29438,7 @@ function createFunctionHeader(
         isIteratorResultObjectType(checker, returnType)
       ? ensureObjectDynamicRepresentation(runtime)
       : getFunctionBoundaryRepresentation(checker, returnType, declaration, runtime, classes))
-    : undefined;
+    : internalAmbientResultRepresentation;
   if (
     hasExportBoundary &&
     heapResultRepresentation &&
@@ -29147,21 +29631,6 @@ function createAmbientHostFunctionHeader(
         classes,
         true,
       );
-    }
-    if (representation.kind === 'fallback_object_representation') {
-      for (
-        const property of collectCallableFallbackHostBoundaryProperties(
-          checker,
-          type,
-          contextNode,
-          closures,
-          runtime,
-          classes,
-          true,
-        )
-      ) {
-        recordHostFallbackClosureProperty(property, contextNode);
-      }
     }
   };
   const params: CompilerLocalIR[] = declaration.parameters.map((parameter, index) => {
@@ -29417,6 +29886,17 @@ function createAmbientHostFunctionHeader(
   let hostImportGeneratorResult = false;
   let hostImportAsyncGeneratorResult = false;
   let resultType: CompilerValueType;
+  const methodName = isSupportedFixedLayoutObjectPropertyName(declaration.name)
+    ? getSupportedFixedLayoutObjectPropertyNameText(declaration.name)
+    : declaration.name.getText();
+  const internalAmbientDeclarationObjectResultRepresentation =
+    getInternalAmbientDeclarationObjectRepresentation(
+      checker,
+      returnType,
+      declaration,
+      runtime,
+      classes,
+    );
   const callableObjectResultRepresentation = getAmbientHostProjectedCallableObjectBoundaryRepresentation(
     checker,
     returnType,
@@ -29439,6 +29919,29 @@ function createAmbientHostFunctionHeader(
     promiseResult = true;
     resultType = 'heap_ref';
     heapResultRepresentation = ensureObjectDynamicRepresentation(runtime);
+  } else if (internalAmbientDeclarationObjectResultRepresentation) {
+    ensureHostPromiseBridgeSupportForRepresentation(
+      internalAmbientDeclarationObjectResultRepresentation,
+      runtime,
+      closures,
+    );
+    resultType = 'heap_ref';
+    heapResultRepresentation = internalAmbientDeclarationObjectResultRepresentation;
+    if (
+      internalAmbientDeclarationObjectResultRepresentation.kind === 'specialized_object_representation' &&
+      hasCallableHeapProperty(checker, returnType, declaration, true)
+    ) {
+      annotateCallableSpecializedObjectFieldsForHostBoundary(
+        checker,
+        returnType,
+        declaration,
+        internalAmbientDeclarationObjectResultRepresentation,
+        runtime,
+        closures,
+        classes,
+        true,
+      );
+    }
   } else if (isAsyncGeneratorObjectType(checker, returnType)) {
     ensureGeneratorCallSignatureId(closures, runtime);
     hostImportAsyncGeneratorResult = true;
@@ -29752,6 +30255,46 @@ function isAmbientHostBuiltinLibObjectType(
     });
 }
 
+function hasSelfReferentialAmbientMethodLikeProperty(
+  checker: ts.TypeChecker,
+  type: ts.Type,
+  contextNode: ts.Node,
+  allowAmbientDeclarationFileMethods = false,
+): boolean {
+  const isEquivalentAmbientBoundaryType = (left: ts.Type, right: ts.Type): boolean => {
+    const leftKey = getTypeResolutionKey(checker, left);
+    const rightKey = getTypeResolutionKey(checker, right);
+    if (leftKey === rightKey) {
+      return true;
+    }
+    return isDeclarationOnlyBoundaryType(left) &&
+      isDeclarationOnlyBoundaryType(right) &&
+      checker.isTypeAssignableTo(left, right) &&
+      checker.isTypeAssignableTo(right, left);
+  };
+  const returnTypeIncludesOwner = (returnType: ts.Type, ownerType: ts.Type): boolean => {
+    if ((returnType.flags & ts.TypeFlags.Union) !== 0) {
+      return (returnType as ts.UnionType).types.some((member) =>
+        returnTypeIncludesOwner(member, ownerType)
+      );
+    }
+    return isEquivalentAmbientBoundaryType(returnType, ownerType);
+  };
+  const memberTypes = (type.flags & ts.TypeFlags.Union) !== 0
+    ? (type as ts.UnionType).types
+    : [type];
+  return memberTypes.some((member) =>
+    member.getProperties().some((property) =>
+      getSupportedMethodLikePropertyDeclarations(property, allowAmbientDeclarationFileMethods).some(() => {
+        const propertyType = checker.getTypeOfSymbolAtLocation(property, contextNode);
+        return checker.getSignaturesOfType(propertyType, ts.SignatureKind.Call).some((signature) =>
+          returnTypeIncludesOwner(checker.getReturnTypeOfSignature(signature), member)
+        );
+      })
+    )
+  );
+}
+
 function isProjectedFallbackBoundaryObjectType(
   checker: ts.TypeChecker,
   type: ts.Type,
@@ -29813,6 +30356,253 @@ function getAmbientHostProjectedCallableObjectBoundaryRepresentation(
     return undefined;
   }
   return ensureObjectFallbackRepresentation(runtime);
+}
+
+function getAmbientConstructableDeclarationShapeInfo(
+  checker: ts.TypeChecker,
+  type: ts.Type,
+  contextNode: ts.Node,
+  runtime: ModuleRuntimeLoweringState,
+  classes: ReadonlyMap<ts.Symbol, ts.ClassDeclaration>,
+): {
+  shapeSignature: string;
+  fields: CompilerRuntimeSpecializedObjectFieldIR[];
+} | undefined {
+  const getMemberShapeInfo = (member: ts.Type):
+    | {
+      shapeSignature: string;
+      fields: CompilerRuntimeSpecializedObjectFieldIR[];
+    }
+    | undefined => {
+      if (!isSupportedAmbientDeclarationConstructableHeapBoundaryType(checker, member)) {
+        return undefined;
+      }
+      if (isExcludedOrdinaryObjectShapeInferenceType(checker, member)) {
+        return undefined;
+      }
+      if (isBagLikeType(checker, member)) {
+        return undefined;
+      }
+      const definedShape = member.getProperties()
+        .flatMap((property) => {
+          const shape = getFixedLayoutPropertyShape(
+            checker,
+            property,
+            contextNode,
+            runtime,
+            classes,
+            true,
+          );
+          if (shape) {
+            return [shape];
+          }
+          return isPureClassMethodProperty(property) ? [] : [undefined];
+        })
+        .sort((left, right) => (left?.name ?? '').localeCompare(right?.name ?? ''));
+      if (definedShape.some((property) => property === undefined)) {
+        return undefined;
+      }
+      const concreteShape = definedShape.filter((property): property is FixedLayoutPropertyShape =>
+        property !== undefined
+      );
+      if (concreteShape.length === 0) {
+        return member.getProperties().every((property) => isPureClassMethodProperty(property))
+          ? { shapeSignature: '', fields: [] }
+          : undefined;
+      }
+      return {
+        shapeSignature: concreteShape.map(encodeFixedLayoutPropertyShapeSignature).join('|'),
+        fields: concreteShape.map((property) => ({
+          name: property.name,
+          optional: property.optional,
+          valueType: property.valueType,
+          valueRepresentation: 'tagged_value',
+          taggedPrimitiveKinds: property.taggedPrimitiveKinds,
+          classTagId: property.classTagId,
+          promiseBridge: property.promiseBridge,
+          heapRepresentationName: property.heapRepresentationName,
+          heapArrayRepresentationName: property.heapArrayRepresentationName,
+          boundary: property.boundary,
+        })),
+      };
+    };
+
+  if ((type.flags & ts.TypeFlags.Union) === 0) {
+    return getMemberShapeInfo(type);
+  }
+
+  let candidateShapeInfo:
+    | {
+      shapeSignature: string;
+      fields: CompilerRuntimeSpecializedObjectFieldIR[];
+    }
+    | undefined;
+  for (const member of (type as ts.UnionType).types) {
+    if (isBagLikeType(checker, member)) {
+      continue;
+    }
+    const memberShape = getMemberShapeInfo(member);
+    if (memberShape === undefined) {
+      return undefined;
+    }
+    if (!candidateShapeInfo) {
+      candidateShapeInfo = memberShape;
+      continue;
+    }
+    if (candidateShapeInfo.shapeSignature !== memberShape.shapeSignature) {
+      return undefined;
+    }
+  }
+  return candidateShapeInfo;
+}
+
+function isProjectedFallbackAmbientConstructableBoundaryObjectType(
+  checker: ts.TypeChecker,
+  type: ts.Type,
+  classes: ReadonlyMap<ts.Symbol, ts.ClassDeclaration>,
+): boolean {
+  if ((type.flags & ts.TypeFlags.Union) !== 0) {
+    return (type as ts.UnionType).types.length > 0 &&
+      (type as ts.UnionType).types.every((member) =>
+        isProjectedFallbackAmbientConstructableBoundaryObjectType(checker, member, classes)
+      );
+  }
+  if (!isSupportedAmbientDeclarationConstructableHeapBoundaryType(checker, type)) {
+    return false;
+  }
+  if (isExcludedOrdinaryObjectShapeInferenceType(checker, type)) {
+    return false;
+  }
+  return getClassDeclarationsForType(checker, type, classes).length === 0;
+}
+
+function getInternalAmbientConstructableDeclarationObjectRepresentation(
+  checker: ts.TypeChecker,
+  type: ts.Type,
+  contextNode: ts.Node,
+  runtime: ModuleRuntimeLoweringState,
+  classes: ReadonlyMap<ts.Symbol, ts.ClassDeclaration>,
+): CompilerRuntimeRepresentationRefIR<'object'> | undefined {
+  if (!isSupportedAmbientDeclarationConstructableHeapBoundaryType(checker, type)) {
+    return undefined;
+  }
+  const maxAmbientMemberPropertyCount = (candidate: ts.Type): number => {
+    if ((candidate.flags & ts.TypeFlags.Union) !== 0) {
+      return Math.max(
+        0,
+        ...(candidate as ts.UnionType).types.map((member) => maxAmbientMemberPropertyCount(member)),
+      );
+    }
+    return candidate.getProperties().length;
+  };
+  if (hasSelfReferentialAmbientMethodLikeProperty(checker, type, contextNode, true)) {
+    return ensureObjectFallbackRepresentation(runtime);
+  }
+  if (hasOverloadedCallableHeapProperty(checker, type, contextNode, true)) {
+    return ensureObjectFallbackRepresentation(runtime);
+  }
+  if (isAmbientHostBuiltinLibObjectType(checker, type)) {
+    return ensureObjectFallbackRepresentation(runtime);
+  }
+  if (
+    isProjectedFallbackAmbientConstructableBoundaryObjectType(checker, type, classes) &&
+    maxAmbientMemberPropertyCount(type) >= 64
+  ) {
+    return ensureObjectFallbackRepresentation(runtime);
+  }
+  let candidateShapeInfo:
+    | {
+      shapeSignature: string;
+      fields: CompilerRuntimeSpecializedObjectFieldIR[];
+    }
+    | undefined;
+  try {
+    candidateShapeInfo = getAmbientConstructableDeclarationShapeInfo(
+      checker,
+      type,
+      contextNode,
+      runtime,
+      classes,
+    );
+  } catch (error) {
+    if (error instanceof CompilerUnsupportedError) {
+      return ensureObjectFallbackRepresentation(runtime);
+    }
+    throw error;
+  }
+  if (
+    getClassDeclarationsForType(checker, type, classes).length === 0 &&
+    hasImmediateAmbientCallableBoundaryProperty(checker, type, contextNode, true) &&
+    candidateShapeInfo === undefined
+  ) {
+    return ensureObjectFallbackRepresentation(runtime);
+  }
+  if (
+    getClassDeclarationsForType(checker, type, classes).length === 0 &&
+    (
+      candidateShapeInfo?.shapeSignature === '' ||
+      candidateShapeInfo?.fields.length === 0
+    )
+  ) {
+    return ensureObjectFallbackRepresentation(runtime);
+  }
+  if (candidateShapeInfo) {
+    return ensureSpecializedObjectRepresentation(
+      runtime,
+      getSpecializedObjectRepresentationName(candidateShapeInfo.shapeSignature),
+      candidateShapeInfo.shapeSignature,
+      { fields: candidateShapeInfo.fields },
+    );
+  }
+  return isProjectedFallbackAmbientConstructableBoundaryObjectType(checker, type, classes)
+    ? ensureObjectFallbackRepresentation(runtime)
+    : undefined;
+}
+
+function getInternalAmbientDeclarationObjectRepresentation(
+  checker: ts.TypeChecker,
+  type: ts.Type,
+  contextNode: ts.Node,
+  runtime: ModuleRuntimeLoweringState,
+  classes: ReadonlyMap<ts.Symbol, ts.ClassDeclaration>,
+): CompilerRuntimeRepresentationRefIR<'object'> | undefined {
+  if (!isDeclarationOnlyBoundaryType(type)) {
+    return undefined;
+  }
+  if (
+    isSupportedOwnedTaggedArrayType(checker, type) ||
+    isSupportedOwnedHeapArrayType(checker, type) ||
+    isSupportedOwnedStringArrayType(checker, type) ||
+    isSupportedOwnedNumberArrayType(checker, type) ||
+    isSupportedOwnedBooleanArrayType(checker, type)
+  ) {
+    return undefined;
+  }
+  const internalConstructableRepresentation =
+    getInternalAmbientConstructableDeclarationObjectRepresentation(
+      checker,
+      type,
+      contextNode,
+      runtime,
+      classes,
+    );
+  if (internalConstructableRepresentation) {
+    return internalConstructableRepresentation;
+  }
+  return getAmbientHostProjectedObjectBoundaryRepresentation(
+    checker,
+    type,
+    contextNode,
+    runtime,
+    classes,
+    true,
+  ) ?? getAmbientHostProjectedCallableObjectBoundaryRepresentation(
+    checker,
+    type,
+    contextNode,
+    runtime,
+    classes,
+  );
 }
 
 function createAmbientHostConstructorHeader(
@@ -29883,21 +30673,6 @@ function createAmbientHostConstructorHeader(
         classes,
         true,
       );
-    }
-    if (representation.kind === 'fallback_object_representation') {
-      for (
-        const property of collectCallableFallbackHostBoundaryProperties(
-          checker,
-          type,
-          contextNode,
-          closures,
-          runtime,
-          classes,
-          true,
-        )
-      ) {
-        recordHostFallbackClosureProperty(property, contextNode);
-      }
     }
   };
   const lowerConstructorParameter = (
@@ -30242,17 +31017,201 @@ function createAmbientHostProjectedMemberMetadataHeader(
       declaration,
     );
   }
+  const heapParamRepresentations: CompilerFunctionHeapBoundaryIR[] = [];
+  const hostClosureParams: Array<{ name: string; signatureId: number }> = [];
+  const hostTaggedPrimitiveParams: CompilerFunctionHostTaggedPrimitiveParamIR[] = [];
+  const hostImportPromiseParams: string[] = [];
+  const hostImportPromiseParamValueBoundaries: Array<{
+    name: string;
+    valueBoundary: CompilerHostBoundaryIR;
+  }> = [];
   const returnType = checker.getReturnTypeOfSignature(signature);
   let hostClosureResultSignatureId: number | undefined;
   let heapResultRepresentation: CompilerRuntimeRepresentationRefIR<'object'> | undefined;
   let hostTaggedPrimitiveResultKinds: CompilerTaggedPrimitiveBoundaryKindsIR | undefined;
   let hostTaggedHeapResultBoundary: CompilerFunctionHostTaggedHeapNullableBoundaryIR | undefined;
   const hostFallbackClosureProperties: Array<{ name: string; signatureId: number }> = [];
+  const recordHostFallbackClosureProperty = (
+    property: { name: string; signatureId: number },
+    contextNode: ts.Node,
+  ): void => {
+    const existing = hostFallbackClosureProperties.find((candidate) =>
+      candidate.name === property.name
+    );
+    if (existing && existing.signatureId !== property.signatureId) {
+      throw new CompilerUnsupportedError(
+        'Ambient host object boundaries do not yet support conflicting callable property signatures on the same property name.',
+        contextNode,
+      );
+    }
+    if (!existing) {
+      hostFallbackClosureProperties.push(property);
+    }
+  };
+  const annotateHostHeapBoundaryType = (
+    type: ts.Type,
+    contextNode: ts.Node,
+    representation: CompilerRuntimeRepresentationRefIR<'object'>,
+  ): void => {
+    if (
+      representation.kind === 'specialized_object_representation' &&
+      hasCallableHeapProperty(checker, type, contextNode, true)
+    ) {
+      annotateCallableSpecializedObjectFieldsForHostBoundary(
+        checker,
+        type,
+        contextNode,
+        representation as CompilerRuntimeSpecializedObjectRepresentationRefIR,
+        runtime,
+        closures,
+        classes,
+        true,
+      );
+    }
+  };
+  const params: CompilerLocalIR[] = declaration.parameters.flatMap((parameter, index) => {
+    const parameterType = checker.getTypeAtLocation(parameter);
+    if ((parameterType.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0) {
+      const runtimeName = getFunctionParameterRuntimeName(parameter, index);
+      hostTaggedPrimitiveParams.push({
+        name: runtimeName,
+        ...getUnknownTaggedPrimitiveBoundaryKinds(),
+      });
+      heapParamRepresentations.push({
+        name: runtimeName,
+        representation: ensureObjectFallbackRepresentation(runtime),
+      });
+      return [{
+        name: runtimeName,
+        type: 'tagged_ref',
+      }];
+    }
+    if (isPromiseType(checker, parameterType)) {
+      const valueBoundary = resolveHostPromiseBridgeValueBoundary(
+        checker,
+        parameterType,
+        parameter,
+        closures,
+        runtime,
+        classes,
+      );
+      ensurePromiseRuntimeInfrastructure(runtime);
+      ensureBuiltinErrorRuntimeInfrastructure(runtime);
+      getPromiseFulfilledHandlerSignatureId(closures, runtime);
+      const runtimeName = getFunctionParameterRuntimeName(parameter, index);
+      hostImportPromiseParams.push(runtimeName);
+      hostImportPromiseParamValueBoundaries.push({
+        name: runtimeName,
+        valueBoundary,
+      });
+      heapParamRepresentations.push({
+        name: runtimeName,
+        representation: ensureObjectDynamicRepresentation(runtime),
+      });
+      return [{
+        name: runtimeName,
+        type: 'heap_ref',
+      }];
+    }
+    if (checker.getSignaturesOfType(parameterType, ts.SignatureKind.Call).length > 0) {
+      ensureSupportedHostClosureBoundarySignature(
+        checker,
+        parameterType,
+        parameter.name,
+        closures,
+        runtime,
+        classes,
+      );
+      annotateHostClosureBoundaryTypes(
+        checker,
+        parameterType,
+        parameter.name,
+        runtime,
+        closures,
+        classes,
+      );
+      const runtimeName = getFunctionParameterRuntimeName(parameter, index);
+      hostClosureParams.push({
+        name: runtimeName,
+        signatureId: getClosureSignatureIdForType(
+          checker,
+          parameterType,
+          parameter.name,
+          closures,
+          runtime,
+          classes,
+        ),
+      });
+      return [{
+        name: runtimeName,
+        type: 'closure_ref',
+      }];
+    }
+    if (isStringLikeType(parameterType)) {
+      ensureStringRepresentation(runtime);
+      return [{
+        name: getFunctionParameterRuntimeName(parameter, index),
+        type: 'owned_string_ref',
+      }];
+    }
+    if (isSupportedHeapLocalType(checker, parameterType)) {
+      const runtimeName = getFunctionParameterRuntimeName(parameter, index);
+      const representation = getAmbientHostProjectedObjectBoundaryRepresentation(
+        checker,
+        parameterType,
+        parameter.name,
+        runtime,
+        classes,
+        true,
+      );
+      if (!representation) {
+        throw new CompilerUnsupportedError(
+          'Ambient host member declarations currently require fixed-layout or fallback object boundaries for non-Promise heap params in compiler subset.',
+          parameter.name,
+        );
+      }
+      ensureHostPromiseBridgeSupportForRepresentation(representation, runtime, closures);
+      annotateHostHeapBoundaryType(parameterType, parameter.name, representation);
+      heapParamRepresentations.push({
+        name: runtimeName,
+        representation,
+      });
+      return [{
+        name: runtimeName,
+        type: 'heap_ref',
+      }];
+    }
+    const valueType = getCompilerValueTypeForType(parameterType, parameter.name);
+    if (valueType !== 'f64' && valueType !== 'i32') {
+      if (parameter.questionToken !== undefined || parameter.initializer !== undefined) {
+        return [];
+      }
+      throw new CompilerUnsupportedError(
+        'Ambient host member declarations currently support only number, boolean, string, callback, Promise, and fixed-layout object params in compiler subset.',
+        parameter.name,
+      );
+    }
+    return [{
+      name: getFunctionParameterRuntimeName(parameter, index),
+      type: valueType,
+    }];
+  });
   let promiseResult = false;
   let hostPromiseResultValueBoundary: CompilerHostBoundaryIR | undefined;
   let hostImportGeneratorResult = false;
   let hostImportAsyncGeneratorResult = false;
   let resultType: CompilerValueType;
+  const methodName = isSupportedFixedLayoutObjectPropertyName(declaration.name)
+    ? getSupportedFixedLayoutObjectPropertyNameText(declaration.name)
+    : declaration.name.getText();
+  const internalAmbientDeclarationObjectResultRepresentation =
+    getInternalAmbientDeclarationObjectRepresentation(
+      checker,
+      returnType,
+      declaration,
+      runtime,
+      classes,
+    );
   const callableObjectResultRepresentation = getAmbientHostProjectedCallableObjectBoundaryRepresentation(
     checker,
     returnType,
@@ -30275,6 +31234,29 @@ function createAmbientHostProjectedMemberMetadataHeader(
     promiseResult = true;
     resultType = 'heap_ref';
     heapResultRepresentation = ensureObjectDynamicRepresentation(runtime);
+  } else if (internalAmbientDeclarationObjectResultRepresentation) {
+    ensureHostPromiseBridgeSupportForRepresentation(
+      internalAmbientDeclarationObjectResultRepresentation,
+      runtime,
+      closures,
+    );
+    resultType = 'heap_ref';
+    heapResultRepresentation = internalAmbientDeclarationObjectResultRepresentation;
+    if (
+      internalAmbientDeclarationObjectResultRepresentation.kind === 'specialized_object_representation' &&
+      hasCallableHeapProperty(checker, returnType, declaration, true)
+    ) {
+      annotateCallableSpecializedObjectFieldsForHostBoundary(
+        checker,
+        returnType,
+        declaration,
+        internalAmbientDeclarationObjectResultRepresentation,
+        runtime,
+        closures,
+        classes,
+        true,
+      );
+    }
   } else if (isAsyncGeneratorObjectType(checker, returnType)) {
     ensureGeneratorCallSignatureId(closures, runtime);
     hostImportAsyncGeneratorResult = true;
@@ -30417,9 +31399,6 @@ function createAmbientHostProjectedMemberMetadataHeader(
       }
     }
   }
-  const methodName = isSupportedFixedLayoutObjectPropertyName(declaration.name)
-    ? getSupportedFixedLayoutObjectPropertyNameText(declaration.name)
-    : declaration.name.getText();
   return attachHostBoundaries({
     name: `ambient_member:${methodName}`,
     exportName: '',
@@ -30428,20 +31407,33 @@ function createAmbientHostProjectedMemberMetadataHeader(
       name: `ambient_member:${methodName}`,
       promiseResult: promiseResult || undefined,
     },
+    heapParamRepresentations: heapParamRepresentations.length > 0
+      ? heapParamRepresentations
+      : undefined,
+    hostImportPromiseParams: hostImportPromiseParams.length > 0
+      ? hostImportPromiseParams
+      : undefined,
     heapResultRepresentation,
     hostImportGeneratorResult: hostImportGeneratorResult || undefined,
     hostImportAsyncGeneratorResult: hostImportAsyncGeneratorResult || undefined,
-    params: [],
+    params,
     resultType,
     locals: [],
     body: [],
   }, {
+    closureParams: hostClosureParams.length > 0 ? hostClosureParams : undefined,
+    promiseParamValueBoundaries: hostImportPromiseParamValueBoundaries.length > 0
+      ? hostImportPromiseParamValueBoundaries
+      : undefined,
     closureResultSignatureId: hostClosureResultSignatureId,
     promiseResultValueBoundary: hostPromiseResultValueBoundary,
     fallbackClosureProperties: hostFallbackClosureProperties.length > 0
       ? hostFallbackClosureProperties
       : undefined,
     taggedHeapNullableResult: hostTaggedHeapResultBoundary,
+    taggedPrimitiveParams: hostTaggedPrimitiveParams.length > 0
+      ? hostTaggedPrimitiveParams
+      : undefined,
     taggedPrimitiveResultKinds: hostTaggedPrimitiveResultKinds,
   }, runtime);
 }
@@ -30519,21 +31511,6 @@ function createAmbientHostStaticMethodHeader(
         classes,
         true,
       );
-    }
-    if (representation.kind === 'fallback_object_representation') {
-      for (
-        const property of collectCallableFallbackHostBoundaryProperties(
-          checker,
-          type,
-          contextNode,
-          closures,
-          runtime,
-          classes,
-          true,
-        )
-      ) {
-        recordHostFallbackClosureProperty(property, contextNode);
-      }
     }
   };
   const params: CompilerLocalIR[] = declaration.parameters.map((parameter, index) => {
@@ -30969,21 +31946,6 @@ function createAmbientHostPropertyGetterHeaderWithImportName(
         classes,
         true,
       );
-    }
-    if (representation.kind === 'fallback_object_representation') {
-      for (
-        const property of collectCallableFallbackHostBoundaryProperties(
-          checker,
-          type,
-          contextNode,
-          closures,
-          runtime,
-          classes,
-          true,
-        )
-      ) {
-        recordHostFallbackClosureProperty(property, contextNode);
-      }
     }
   };
   let hostClosureResultSignatureId: number | undefined;
@@ -56551,12 +57513,12 @@ function lowerCallExpression(
           };
         })()
         : invocation;
-      const effectiveSourceParameters = knownCalleeSignatureId !== undefined &&
-          invocation.sourceParameters.length === effectiveInvocation.params.length
-        ? invocation.sourceParameters.map((parameter, index) => ({
-          ...parameter,
-          resolvedValue: effectiveInvocation.params[index]!,
-        }))
+      const effectiveSourceParameters = knownCalleeSignatureId !== undefined
+        ? alignResolvedClosureInvocationSourceParameters(
+          invocation,
+          effectiveInvocation.params,
+          expression,
+        )
         : invocation.sourceParameters;
       if (effectiveInvocation.result.classDeclaration && !allowClassConstructorResult) {
         throw new CompilerUnsupportedError(
@@ -56683,12 +57645,12 @@ function lowerCallExpression(
         };
       })()
       : invocation;
-    const effectiveSourceParameters = knownCalleeSignatureId !== undefined &&
-        invocation.sourceParameters.length === effectiveInvocation.params.length
-      ? invocation.sourceParameters.map((parameter, index) => ({
-        ...parameter,
-        resolvedValue: effectiveInvocation.params[index]!,
-      }))
+    const effectiveSourceParameters = knownCalleeSignatureId !== undefined
+      ? alignResolvedClosureInvocationSourceParameters(
+        invocation,
+        effectiveInvocation.params,
+        expression,
+      )
       : invocation.sourceParameters;
     if (effectiveInvocation.result.classDeclaration && !allowClassConstructorResult) {
       throw new CompilerUnsupportedError(
@@ -56958,9 +57920,28 @@ function recordCurrentFunctionHostFallbackClosureProperty(
   property: { name: string; signatureId: number },
   contextNode: ts.Node,
   fallbackRepresentation: CompilerRuntimeFallbackObjectRepresentationRefIR | undefined,
+  preferTopLevelBoundary: boolean,
   context: FunctionLoweringContext,
 ): void {
-  upsertCurrentFunctionFallbackClosureBoundaryField(
+  if (!fallbackRepresentation) {
+    upsertCurrentFunctionFallbackClosureBoundaryField(
+      context.currentFunction,
+      property,
+      contextNode,
+      fallbackRepresentation,
+    );
+    return;
+  }
+  if (preferTopLevelBoundary) {
+    upsertCurrentFunctionFallbackClosureBoundaryField(
+      context.currentFunction,
+      property,
+      contextNode,
+      fallbackRepresentation,
+    );
+    return;
+  }
+  upsertCurrentFunctionLocalFallbackClosureBoundaryField(
     context.currentFunction,
     property,
     contextNode,
@@ -56997,6 +57978,7 @@ function maybeRecordFallbackBoundaryCallablePropertyAccess(
       'fallback_object_representation'
     ? receiverBoundaryRepresentation
     : undefined;
+  const receiverHostBoundary = getHostBoundaryFromExpression(expression.expression, context);
   const ambientReceiverHeader = ts.isIdentifier(expression.expression)
     ? getAmbientHostImportedTopLevelPropertyBinding(expression.expression, context)?.header
     : ts.isPropertyAccessExpression(expression.expression)
@@ -57053,6 +58035,45 @@ function maybeRecordFallbackBoundaryCallablePropertyAccess(
     ? context.checker.getResolvedSignature(invocationCall)
     : undefined;
   const getDeclaredPropertySignatureId = (): number => {
+    const resolvedAmbientMemberDeclaration = invocationSignature?.getDeclaration();
+    const ambientMemberDeclaration = (
+      resolvedAmbientMemberDeclaration &&
+      (ts.isMethodDeclaration(resolvedAmbientMemberDeclaration) ||
+        ts.isMethodSignature(resolvedAmbientMemberDeclaration)) &&
+      resolvedAmbientMemberDeclaration.getSourceFile().isDeclarationFile &&
+      property.getDeclarations()?.includes(resolvedAmbientMemberDeclaration)
+        ? resolvedAmbientMemberDeclaration
+        : property.getDeclarations()?.find((
+          declaration,
+        ): declaration is ts.MethodDeclaration | ts.MethodSignature =>
+          (ts.isMethodDeclaration(declaration) || ts.isMethodSignature(declaration)) &&
+          declaration.getSourceFile().isDeclarationFile
+        )
+    );
+    if (ambientMemberDeclaration) {
+      return getClosureSignatureIdForAmbientHostMemberDeclaration(
+        ambientMemberDeclaration,
+        context.checker,
+        context.closures,
+        context.runtime,
+        context.classes,
+      );
+    }
+    const fallbackAmbientMemberDeclaration = property.getDeclarations()?.find((
+      declaration,
+    ): declaration is ts.MethodDeclaration | ts.MethodSignature =>
+      (ts.isMethodDeclaration(declaration) || ts.isMethodSignature(declaration)) &&
+      declaration.getSourceFile().isDeclarationFile
+    );
+    if (fallbackAmbientMemberDeclaration) {
+      return getClosureSignatureIdForAmbientHostMemberDeclaration(
+        fallbackAmbientMemberDeclaration,
+        context.checker,
+        context.closures,
+        context.runtime,
+        context.classes,
+      );
+    }
     ensureSupportedHostClosureBoundarySignature(
       context.checker,
       propertyType,
@@ -57078,32 +58099,22 @@ function maybeRecordFallbackBoundaryCallablePropertyAccess(
       context.classes,
     );
   };
-  let signatureId: number | undefined;
-  const shouldPreferDeclaredPropertySignature = options?.preferDeclaredPropertySignature === true ||
-    fallbackRepresentationForProperty !== undefined;
-  if (shouldPreferDeclaredPropertySignature) {
-    try {
-      signatureId = getDeclaredPropertySignatureId();
-    } catch (error) {
-      if (
-        !(error instanceof CompilerUnsupportedError) ||
-        invocationSignature === undefined ||
-        options?.preferDeclaredPropertySignature === true
-      ) {
-        throw error;
-      }
+  const getInvocationSignatureId = (): number => {
+    if (!invocationSignature || !invocationCall) {
+      throw new CompilerUnsupportedError(
+        'Unable to resolve invocation signature for callable host boundary property.',
+        expression.name,
+      );
     }
-  }
-  if (signatureId === undefined && invocationSignature) {
     const invocation = resolveClosureAbiInvocation(
       context.checker,
       invocationSignature,
-      invocationCall!,
+      invocationCall,
       context.closures,
       context.runtime,
       context.classes,
       {
-        skipResultCallableHeapFieldAnnotation: invocationCall?.parent !== undefined
+        skipResultCallableHeapFieldAnnotation: invocationCall.parent !== undefined
           ? ts.isExpressionStatement(invocationCall.parent)
           : false,
       },
@@ -57121,16 +58132,38 @@ function maybeRecordFallbackBoundaryCallablePropertyAccess(
       context.closures,
       context.classes,
       {
-        skipResultHeapBoundaryAnnotation: invocationCall?.parent !== undefined
+        skipResultHeapBoundaryAnnotation: invocationCall.parent !== undefined
           ? ts.isExpressionStatement(invocationCall.parent)
           : false,
       },
     );
-    signatureId = getClosureSignatureId(
+    return getClosureSignatureId(
       invocation.params,
       invocation.result,
       context.closures,
     );
+  };
+  let signatureId: number | undefined;
+  const shouldPreferDeclaredPropertySignature = options?.preferDeclaredPropertySignature === true ||
+    fallbackRepresentationForProperty !== undefined;
+  if (shouldPreferDeclaredPropertySignature) {
+    try {
+      signatureId = getDeclaredPropertySignatureId();
+    } catch (error) {
+      if (
+        !(error instanceof CompilerUnsupportedError) ||
+        invocationSignature === undefined ||
+        options?.preferDeclaredPropertySignature === true
+      ) {
+        throw error;
+      }
+    }
+  }
+  if (invocationSignature) {
+    const invocationSignatureId = getInvocationSignatureId();
+    if (signatureId === undefined || signatureId !== invocationSignatureId) {
+      signatureId = invocationSignatureId;
+    }
   }
   if (signatureId === undefined) {
     signatureId = getDeclaredPropertySignatureId();
@@ -57142,6 +58175,7 @@ function maybeRecordFallbackBoundaryCallablePropertyAccess(
     },
     expression.name,
     fallbackRepresentationForProperty,
+    receiverHostBoundary?.kind === 'object' || ambientReceiverHeader !== undefined,
     context,
   );
 }
@@ -58894,6 +59928,22 @@ function lowerVariableStatement(
       } else if (ambientHostBoundaryInitializerRepresentation) {
         declarationRepresentation = ambientHostBoundaryInitializerRepresentation;
       } else if (
+        declaration.initializer &&
+        isSupportedAmbientDeclarationConstructableHeapBoundaryType(
+          context.checker,
+          declarationType,
+        )
+      ) {
+        declarationRepresentation =
+          getBoundaryObjectRepresentationFromExpression(declaration.initializer, context) ??
+            getInternalAmbientDeclarationObjectRepresentation(
+              context.checker,
+              declarationType,
+              declaration.name,
+              context.runtime,
+              context.classes,
+            );
+      } else if (
         isGeneratorObjectType(context.checker, declarationType) ||
         isAsyncGeneratorObjectType(context.checker, declarationType) ||
         isIteratorResultObjectType(context.checker, declarationType)
@@ -59895,7 +60945,7 @@ function lowerExpressionStatement(
     }
     if (symbol.globalName) {
       if (symbol.type === 'tagged_ref') {
-        const assignedHeapRepresentation = isSupportedHeapLocalType(
+        const assignedHeapRepresentation = isSupportedProjectedHeapBoundaryType(
             context.checker,
             context.checker.getTypeAtLocation(expression.right),
           )
@@ -61355,12 +62405,30 @@ function lowerStatement(
       ];
     }
     if (context.currentFunction.resultType === 'heap_ref') {
-      const resultRepresentation = context.currentFunction.heapResultRepresentation;
+      let resultRepresentation = context.currentFunction.heapResultRepresentation;
       if (!resultRepresentation) {
         throw new CompilerUnsupportedError(
           'Heap returns require function boundary representation metadata.',
           statement,
         );
+      }
+      const ambientReturnedRepresentation =
+        getAmbientHostImportedBoundaryRepresentationFromExpression(
+          statement.expression,
+          context,
+        );
+      if (
+        ambientReturnedRepresentation &&
+        isSpecializedObjectRepresentationRef(resultRepresentation)
+      ) {
+        resultRepresentation = ambientReturnedRepresentation;
+        context.currentFunction.heapResultRepresentation = ambientReturnedRepresentation;
+        if (context.currentFunction.hostResultBoundary?.kind === 'object') {
+          context.currentFunction.hostResultBoundary = {
+            ...context.currentFunction.hostResultBoundary,
+            representation: ambientReturnedRepresentation,
+          };
+        }
       }
       const returnedClassInstantiation = getMaterializableClassInstantiation(
         statement.expression,

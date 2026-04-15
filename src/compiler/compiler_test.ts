@@ -615,6 +615,457 @@ compilerIntegrationTest(
 );
 
 compilerIntegrationTest(
+  'compileProject supports helper-returned imported host method results across typed host promise object arrays',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              skipLibCheck: true,
+              target: 'ES2022',
+              lib: ['ES2022'],
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+              allowSyntheticDefaultImports: true,
+            },
+            include: ['src/**/*.sts', 'src/**/*.d.ts'],
+            soundscript: {
+              target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/db-types.d.ts',
+        contents: [
+          "declare module 'db' {",
+          '  export interface Row {',
+          '    getDataValue(key: string): unknown;',
+          '  }',
+          '  export interface Model {',
+          '    create(value: { title: string; completed: boolean }): Promise<void>;',
+          '    findAll(): Promise<Row[]>;',
+          '  }',
+          '  export interface Attributes {',
+          '    title: string;',
+          '    completed: string;',
+          '  }',
+          '  export class Store {',
+          '    constructor();',
+          '    define(name: string, attributes: Attributes): Model;',
+          '  }',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.sts',
+        contents: [
+          '// #[interop]',
+          "import { Store } from 'db';",
+          '',
+          'function createStore() {',
+          '  return new Store();',
+          '}',
+          '',
+          "type ModelStore = ReturnType<Store['define']>;",
+          '',
+          'function createAttrs() {',
+          '  return {',
+          "    title: 'STRING',",
+          "    completed: 'BOOLEAN',",
+          '  };',
+          '}',
+          '',
+          'function createModelStore(): ModelStore {',
+          "  return createStore().define('Todo', createAttrs());",
+          '}',
+          '',
+          'export async function main(): Promise<string> {',
+          '  const model = createModelStore();',
+          "  await model.create({ title: 'a', completed: false });",
+          '  const rows = await model.findAll();',
+          '  const first = rows[0];',
+          '  if (first === undefined) {',
+          "    return 'missing';",
+          '  }',
+          "  const title = first.getDataValue('title');",
+          "  return typeof title === 'string' ? title : 'bad';",
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const wrapperModule = await importCompiledWrapperModule(result.artifacts.wrapperPath);
+    const instantiated = await wrapperModule.instantiate({
+      modules: {
+        db: {
+          Store: class Store {
+            #rows: Array<{ title: string; completed: boolean }> = [];
+
+            define(_name: string, _attributes: { title: string; completed: string }) {
+              const rows = this.#rows;
+              return {
+                async create(value: { title: string; completed: boolean }) {
+                  rows.push({ ...value });
+                },
+                async findAll() {
+                  return rows.map((row) => ({
+                    getDataValue(key: string) {
+                      return row[key as 'title' | 'completed'];
+                    },
+                  }));
+                },
+              };
+            }
+          },
+        },
+      },
+    });
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+
+    assertEquals(await exported(), 'a');
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject supports cached top-level imported host method results across typed host promise object arrays',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              skipLibCheck: true,
+              target: 'ES2022',
+              lib: ['ES2022'],
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+              allowSyntheticDefaultImports: true,
+            },
+            include: ['src/**/*.sts', 'src/**/*.d.ts'],
+            soundscript: {
+              target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/db-types.d.ts',
+        contents: [
+          "declare module 'db' {",
+          '  export interface Row {',
+          '    getDataValue(key: string): unknown;',
+          '  }',
+          '  export interface Model {',
+          '    create(value: { title: string; completed: boolean }): Promise<void>;',
+          '    findAll(): Promise<Row[]>;',
+          '  }',
+          '  export interface Attributes {',
+          '    title: string;',
+          '    completed: string;',
+          '  }',
+          '  export class Store {',
+          '    constructor();',
+          '    define(name: string, attributes: Attributes): Model;',
+          '  }',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.sts',
+        contents: [
+          '// #[interop]',
+          "import { Store } from 'db';",
+          '',
+          'function createStore() {',
+          '  return new Store();',
+          '}',
+          '',
+          "type ModelStore = ReturnType<Store['define']>;",
+          '',
+          'let cachedModelStore: ModelStore | undefined = undefined;',
+          '',
+          'function createAttrs() {',
+          '  return {',
+          "    title: 'STRING',",
+          "    completed: 'BOOLEAN',",
+          '  };',
+          '}',
+          '',
+          'function createModelStore(): ModelStore {',
+          "  return createStore().define('Todo', createAttrs());",
+          '}',
+          '',
+          'function getModelStore(): ModelStore {',
+          '  const current = cachedModelStore;',
+          '  if (current !== undefined) {',
+          '    return current;',
+          '  }',
+          '  const next = createModelStore();',
+          '  cachedModelStore = next;',
+          '  return next;',
+          '}',
+          '',
+          'export async function main(): Promise<string> {',
+          '  const model = getModelStore();',
+          "  await model.create({ title: 'a', completed: false });",
+          '  const rows = await getModelStore().findAll();',
+          '  const first = rows[0];',
+          '  if (first === undefined) {',
+          "    return 'missing';",
+          '  }',
+          "  const title = first.getDataValue('title');",
+          "  return typeof title === 'string' ? title : 'bad';",
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    let storeConstructed = 0;
+    let defineCalls = 0;
+    const wrapperModule = await importCompiledWrapperModule(result.artifacts.wrapperPath);
+    const instantiated = await wrapperModule.instantiate({
+      modules: {
+        db: {
+          Store: class Store {
+            #rows: Array<{ title: string; completed: boolean }> = [];
+
+            constructor() {
+              storeConstructed += 1;
+            }
+
+            define(_name: string, _attributes: { title: string; completed: string }) {
+              defineCalls += 1;
+              const rows = this.#rows;
+              return {
+                async create(value: { title: string; completed: boolean }) {
+                  rows.push({ ...value });
+                },
+                async findAll() {
+                  return rows.map((row) => ({
+                    getDataValue(key: string) {
+                      return row[key as 'title' | 'completed'];
+                    },
+                  }));
+                },
+              };
+            }
+          },
+        },
+      },
+    });
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+
+    assertEquals(await exported(), 'a');
+    assertEquals(await exported(), 'a');
+    assertEquals(storeConstructed, 1);
+    assertEquals(defineCalls, 1);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject supports cached top-level nullable constructable host method results across typed host promise object arrays',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              skipLibCheck: true,
+              target: 'ES2022',
+              lib: ['ES2022'],
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+              allowSyntheticDefaultImports: true,
+            },
+            include: ['src/**/*.sts', 'src/**/*.d.ts'],
+            soundscript: {
+              target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/db-types.d.ts',
+        contents: [
+          "declare module 'db' {",
+          '  export interface Row {',
+          '    getDataValue(key: string): unknown;',
+          '  }',
+          '  export interface ModelCtor {',
+          '    new (): Row;',
+          '    create(value: { title: string; completed: boolean }): Promise<void>;',
+          '    findAll(): Promise<Row[]>;',
+          '  }',
+          '  export interface Attributes {',
+          '    title: string;',
+          '    completed: string;',
+          '  }',
+          '  export class Store {',
+          '    constructor();',
+          '    define(name: string, attributes: Attributes): ModelCtor;',
+          '  }',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.sts',
+        contents: [
+          '// #[interop]',
+          "import { Store } from 'db';",
+          '',
+          'function createStore() {',
+          '  return new Store();',
+          '}',
+          '',
+          "type ModelStore = ReturnType<Store['define']>;",
+          '',
+          'let cachedModelStore: ModelStore | undefined = undefined;',
+          '',
+          'function createAttrs() {',
+          '  return {',
+          "    title: 'STRING',",
+          "    completed: 'BOOLEAN',",
+          '  };',
+          '}',
+          '',
+          'function createModelStore(): ModelStore {',
+          "  return createStore().define('Todo', createAttrs());",
+          '}',
+          '',
+          'function getModelStore(): ModelStore {',
+          '  const current = cachedModelStore;',
+          '  if (current !== undefined) {',
+          '    return current;',
+          '  }',
+          '  const next = createModelStore();',
+          '  cachedModelStore = next;',
+          '  return next;',
+          '}',
+          '',
+          'export async function main(): Promise<string> {',
+          '  const model = getModelStore();',
+          "  await model.create({ title: 'a', completed: false });",
+          '  const rows = await getModelStore().findAll();',
+          '  const first = rows[0];',
+          '  if (first === undefined) {',
+          "    return 'missing';",
+          '  }',
+          "  const title = first.getDataValue('title');",
+          "  return typeof title === 'string' ? title : 'bad';",
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    let storeConstructed = 0;
+    let defineCalls = 0;
+    const wrapperModule = await importCompiledWrapperModule(result.artifacts.wrapperPath);
+    const instantiated = await wrapperModule.instantiate({
+      modules: {
+        db: {
+          Store: class Store {
+            #rows: Array<{ title: string; completed: boolean }> = [];
+
+            constructor() {
+              storeConstructed += 1;
+            }
+
+            define(_name: string, _attributes: { title: string; completed: string }) {
+              defineCalls += 1;
+              const rows = this.#rows;
+              return class {
+                static async create(value: { title: string; completed: boolean }) {
+                  rows.push({ ...value });
+                }
+
+                static async findAll() {
+                  return rows.map((row) => ({
+                    getDataValue(key: string) {
+                      return row[key as 'title' | 'completed'];
+                    },
+                  }));
+                }
+              };
+            }
+          },
+        },
+      },
+    });
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+
+    assertEquals(await exported(), 'a');
+    assertEquals(await exported(), 'a');
+    assertEquals(storeConstructed, 1);
+    assertEquals(defineCalls, 1);
+  },
+);
+
+compilerIntegrationTest(
   'compileProject keeps value-only imported host functions pay-for-play',
   async () => {
     const tempDirectory = await createTempProject([
@@ -8229,6 +8680,7 @@ compilerIntegrationTest(
     let getTodosHandler:
       | ((req: { params: { id: string }; url: string }, res: ResponseLike) => void | Promise<void>)
       | undefined;
+    let sequelizeConstructed = 0;
     let defineCalls = 0;
     let syncCalls = 0;
     let createCalls = 0;
@@ -8276,6 +8728,10 @@ compilerIntegrationTest(
       let rows: FakeTodoModel[] = [];
 
       class Sequelize {
+        constructor() {
+          sequelizeConstructed += 1;
+        }
+
         define(_modelName: string, _attributes: Record<string, unknown>) {
           defineCalls += 1;
           return {
@@ -8389,10 +8845,11 @@ compilerIntegrationTest(
     assertStringIncludes(sentHtml, 'Write compiler tests');
     assertStringIncludes(sentHtml, 'done');
     assertStringIncludes(sentHtml, 'open');
-    assert(defineCalls >= 1);
-    assert(syncCalls >= 1);
-    assert(createCalls >= 2);
-    assert(findAllCalls >= 2);
+    assertEquals(sequelizeConstructed, 1);
+    assertEquals(defineCalls, 1);
+    assertEquals(syncCalls, 2);
+    assertEquals(createCalls, 4);
+    assertEquals(findAllCalls, 2);
   },
 );
 
@@ -8422,6 +8879,7 @@ compilerIntegrationTest(
       | ((req: { params: { id: string }; url: string }, res: ResponseLike) => void | Promise<void>)
       | undefined;
     let sentHtml = '';
+    let sequelizeConstructed = 0;
     let defineCalls = 0;
     let syncCalls = 0;
     let createCalls = 0;
@@ -8469,6 +8927,10 @@ compilerIntegrationTest(
       let rows: FakeTodoModel[] = [];
 
       class Sequelize {
+        constructor() {
+          sequelizeConstructed += 1;
+        }
+
         define(_modelName: string, _attributes: Record<string, unknown>) {
           defineCalls += 1;
           return {
@@ -8594,10 +9056,11 @@ compilerIntegrationTest(
     assertStringIncludes(mutatedHtml, 'Write compiler tests');
     assertStringIncludes(mutatedHtml, 'Ship the Wasm SSR todo app');
     assertFalse(mutatedHtml.includes('open'));
-    assert(defineCalls >= 1);
-    assert(syncCalls >= 2);
-    assert(createCalls >= 4);
-    assert(findAllCalls >= 3);
+    assertEquals(sequelizeConstructed, 1);
+    assertEquals(defineCalls, 1);
+    assertEquals(syncCalls, 2);
+    assertEquals(createCalls, 4);
+    assertEquals(findAllCalls, 3);
   },
 );
 
