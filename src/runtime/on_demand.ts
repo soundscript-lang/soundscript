@@ -2,11 +2,33 @@ import ts from 'typescript';
 
 import { createSoundStdlibCompilerHost } from '../bundled/sound_stdlib.ts';
 import { loadConfig, type LoadedConfig } from '../project/config.ts';
-import { createBuiltinExpandedProgram } from '../frontend/builtin_macro_support.ts';
+import {
+  type BuiltinExpandedProgram,
+  createBuiltinExpandedProgram,
+  getAlwaysAvailableBuiltinMacroDefinitions,
+  getAlwaysAvailableBuiltinMacroExports,
+  getBuiltinMacroDefinitionsBySpecifier,
+  getBuiltinMacroExportsBySpecifier,
+  getBuiltinMacroFactoriesBySpecifier,
+  withBuiltinMacroSupport,
+} from '../frontend/builtin_macro_support.ts';
+import { SemanticMacroExpansionRequiredError } from '../frontend/macro_errors.ts';
+import {
+  createProjectMacroEnvironment,
+  type ProjectMacroEnvironment,
+} from '../frontend/project_macro_support.ts';
 import { dirname, join } from '../platform/path.ts';
-import { toSourceFileName } from '../frontend/project_frontend.ts';
+import {
+  createPreparedProgram,
+  type PreparedProgram,
+  toSourceFileName,
+} from '../frontend/project_frontend.ts';
 import { resolveSoundScriptAwareModule } from '../project/soundscript_packages.ts';
-import { type RuntimeTransformArtifact, transpileTypeScriptModuleToEsm } from './transform.ts';
+import {
+  type RuntimeTransformArtifact,
+  transpilePreparedSoundscriptModuleToEsm,
+  transpileTypeScriptModuleToEsm,
+} from './transform.ts';
 
 const PROJECT_CONFIG_CANDIDATES = ['tsconfig.soundscript.json', 'tsconfig.json'] as const;
 const LOCAL_CODE_EXTENSIONS = ['.sts', '.ts', '.tsx', '.mts', '.cts', '.jsx'] as const;
@@ -18,13 +40,22 @@ interface TransformProjectContext {
 }
 
 interface TransformProjectSession {
-  expandedProgram?: ReturnType<typeof createExpandedRuntimeProgram>;
+  deferredExpansion?: DeferredRuntimeExpansion;
+  expandedProgram?: BuiltinExpandedProgram;
+  preparedProgram?: PreparedProgram;
   projectContext: TransformProjectContext;
   requestedRuntimeRoots: Set<string>;
 }
 
+export type OnDemandTransformMode =
+  | 'soundscript-deferred-macro'
+  | 'soundscript-prepared'
+  | 'soundscript-semantic-macro'
+  | 'typescript';
+
 export interface OnDemandTransformResult extends RuntimeTransformArtifact {
   projectPath: string;
+  transformMode: OnDemandTransformMode;
 }
 
 export interface OnDemandTransformer {
@@ -141,16 +172,32 @@ function loadProjectContext(projectPath: string): TransformProjectContext {
 }
 
 function getPreparedOriginalText(
-  expandedProgram: ReturnType<typeof createExpandedRuntimeProgram>,
+  preparedProgram: Pick<PreparedProgram, 'preparedHost' | 'toProgramFileName'>,
   fileName: string,
 ): string | undefined {
-  const programFileName = expandedProgram.preparedProgram.toProgramFileName(fileName);
-  return expandedProgram.preparedProgram.preparedHost.getPreparedSourceFile(programFileName)
+  const programFileName = preparedProgram.toProgramFileName(fileName);
+  return preparedProgram.preparedHost.getPreparedSourceFile(programFileName)
     ?.originalText;
 }
 
+function getPreparedSourceFile(
+  preparedProgram: PreparedProgram,
+  fileName: string,
+) {
+  return preparedProgram.preparedHost.getPreparedSourceFile(
+    preparedProgram.toProgramFileName(fileName),
+  );
+}
+
+function preparedProgramIncludesFile(
+  preparedProgram: PreparedProgram,
+  fileName: string,
+): boolean {
+  return preparedProgram.program.getSourceFile(preparedProgram.toProgramFileName(fileName)) !== undefined;
+}
+
 function getExpandedProgramSourceFile(
-  expandedProgram: ReturnType<typeof createExpandedRuntimeProgram>,
+  expandedProgram: BuiltinExpandedProgram,
   fileName: string,
 ): ts.SourceFile | undefined {
   return expandedProgram.program.getSourceFile(
@@ -159,7 +206,7 @@ function getExpandedProgramSourceFile(
 }
 
 function transpileExpandedSourceFile(
-  expandedProgram: ReturnType<typeof createExpandedRuntimeProgram>,
+  expandedProgram: BuiltinExpandedProgram,
   fileName: string,
   projectPath: string,
 ): OnDemandTransformResult {
@@ -181,6 +228,7 @@ function transpileExpandedSourceFile(
   return {
     ...artifact,
     projectPath,
+    transformMode: 'soundscript-semantic-macro',
   };
 }
 
@@ -199,18 +247,151 @@ function resolveProjectPath(
 function createExpandedRuntimeProgram(
   projectContext: TransformProjectContext,
   rootNames: readonly string[],
-) {
+  previousProgram?: BuiltinExpandedProgram,
+): BuiltinExpandedProgram {
   return createBuiltinExpandedProgram({
     baseHost: createSoundStdlibCompilerHost(
       projectContext.loadedConfig.frontierCommandLine.options,
       dirname(projectContext.projectPath),
     ),
-    configuredSoundscriptFileNames: projectContext.loadedConfig.soundscriptConfiguredFileNames,
+    configuredSoundscriptFileNames: projectContext.loadedConfig.frontierConfiguredFileNames,
+    oldProgram: previousProgram?.preparedProgram.program,
     options: projectContext.loadedConfig.frontierCommandLine.options,
     projectReferences: projectContext.loadedConfig.frontierCommandLine.projectReferences,
+    reusableCompilerHostState: previousProgram?.preparedProgram.preparedHost.reuseState,
     rootNames,
     runtime: projectContext.loadedConfig.runtime,
   });
+}
+
+interface DeferredRuntimeExpansion {
+  expandedFiles: ReadonlyMap<string, ts.SourceFile>;
+  macroEnvironment: ProjectMacroEnvironment;
+  preparedProgram: PreparedProgram;
+  dispose(): void;
+}
+
+function createPreparedRuntimeProgram(
+  projectContext: TransformProjectContext,
+  rootNames: readonly string[],
+  previousProgram?: PreparedProgram,
+): PreparedProgram {
+  return createPreparedProgram(withBuiltinMacroSupport({
+    baseHost: createSoundStdlibCompilerHost(
+      projectContext.loadedConfig.frontierCommandLine.options,
+      dirname(projectContext.projectPath),
+    ),
+    configuredSoundscriptFileNames: projectContext.loadedConfig.frontierConfiguredFileNames,
+    oldProgram: previousProgram?.program,
+    options: projectContext.loadedConfig.frontierCommandLine.options,
+    projectReferences: projectContext.loadedConfig.frontierCommandLine.projectReferences,
+    reusableCompilerHostState: previousProgram?.preparedHost.reuseState,
+    rootNames,
+    runtime: projectContext.loadedConfig.runtime,
+  }));
+}
+
+function createIsolatedPreparedRuntimeProgram(
+  projectContext: TransformProjectContext,
+  fileName: string,
+): PreparedProgram {
+  return createPreparedProgram(withBuiltinMacroSupport({
+    baseHost: createSoundStdlibCompilerHost(
+      projectContext.loadedConfig.frontierCommandLine.options,
+      dirname(projectContext.projectPath),
+    ),
+    configuredSoundscriptFileNames: projectContext.loadedConfig.frontierConfiguredFileNames,
+    options: {
+      ...projectContext.loadedConfig.frontierCommandLine.options,
+      noResolve: true,
+    },
+    rootNames: [fileName],
+    runtime: projectContext.loadedConfig.runtime,
+  }));
+}
+
+function createDeferredRuntimeExpansion(
+  preparedProgram: PreparedProgram,
+): DeferredRuntimeExpansion {
+  const macroEnvironment = createProjectMacroEnvironment(
+    preparedProgram,
+    getBuiltinMacroDefinitionsBySpecifier(),
+    getBuiltinMacroExportsBySpecifier(undefined, { deferToSemanticExpansion: true }),
+    getBuiltinMacroFactoriesBySpecifier(),
+    getAlwaysAvailableBuiltinMacroDefinitions(),
+    getAlwaysAvailableBuiltinMacroExports(undefined, { deferToSemanticExpansion: true }),
+    { deferToSemanticExpansion: true },
+  );
+  try {
+    const expandedFiles = macroEnvironment.expandPreparedProgram();
+    return {
+      expandedFiles,
+      macroEnvironment,
+      preparedProgram,
+      dispose(): void {
+        macroEnvironment.dispose();
+      },
+    };
+  } catch (error) {
+    macroEnvironment.dispose();
+    throw error;
+  }
+}
+
+function transpilePreparedSourceFile(
+  preparedProgram: PreparedProgram,
+  fileName: string,
+  projectPath: string,
+): OnDemandTransformResult {
+  const preparedFile = getPreparedSourceFile(preparedProgram, fileName);
+  if (!preparedFile) {
+    throw new Error(`Missing prepared source file for ${fileName}.`);
+  }
+
+  const artifact = transpilePreparedSoundscriptModuleToEsm(
+    fileName,
+    `${fileName}.js`,
+    preparedFile,
+    {
+      module: ts.ModuleKind.ES2022,
+      moduleSpecifierMode: 'preserve',
+      target: ts.ScriptTarget.ES2022,
+    },
+  );
+  return {
+    ...artifact,
+    projectPath,
+    transformMode: 'soundscript-prepared',
+  };
+}
+
+function transpileDeferredExpandedSourceFile(
+  expansion: DeferredRuntimeExpansion,
+  fileName: string,
+  projectPath: string,
+): OnDemandTransformResult {
+  const sourceFile = expansion.expandedFiles.get(
+    expansion.preparedProgram.toProgramFileName(fileName),
+  );
+  if (!sourceFile) {
+    throw new Error(`Missing deferred expanded source file for ${fileName}.`);
+  }
+
+  const artifact = transpileTypeScriptModuleToEsm(
+    fileName,
+    `${fileName}.js`,
+    ts.createPrinter().printFile(sourceFile),
+    {
+      module: ts.ModuleKind.ES2022,
+      moduleSpecifierMode: 'preserve',
+      target: ts.ScriptTarget.ES2022,
+    },
+  );
+  return {
+    ...artifact,
+    projectPath,
+    transformMode: 'soundscript-deferred-macro',
+  };
 }
 
 export function createOnDemandTransformer(
@@ -267,13 +448,13 @@ export function createOnDemandTransformer(
     session: TransformProjectSession,
     fileName: string,
     sourceText: string,
-  ): ReturnType<typeof createExpandedRuntimeProgram> {
+  ): BuiltinExpandedProgram {
     const currentProgram = session.expandedProgram;
     const currentSourceFile = currentProgram && getExpandedProgramSourceFile(currentProgram, fileName);
     if (
       currentProgram &&
       currentSourceFile &&
-      getPreparedOriginalText(currentProgram, fileName) === sourceText
+      getPreparedOriginalText(currentProgram.preparedProgram, fileName) === sourceText
     ) {
       return currentProgram;
     }
@@ -285,10 +466,61 @@ export function createOnDemandTransformer(
     const nextProgram = createExpandedRuntimeProgram(
       session.projectContext,
       [...session.requestedRuntimeRoots],
+      currentProgram,
     );
     session.expandedProgram?.dispose();
     session.expandedProgram = nextProgram;
     return nextProgram;
+  }
+
+  function ensurePreparedProgramForFile(
+    session: TransformProjectSession,
+    fileName: string,
+    sourceText: string,
+  ): PreparedProgram {
+    const currentProgram = session.preparedProgram;
+    if (
+      currentProgram &&
+      preparedProgramIncludesFile(currentProgram, fileName) &&
+      getPreparedOriginalText(currentProgram, fileName) === sourceText
+    ) {
+      return currentProgram;
+    }
+
+    if (!currentProgram || !preparedProgramIncludesFile(currentProgram, fileName)) {
+      session.requestedRuntimeRoots.add(fileName);
+    }
+
+    const nextProgram = createPreparedRuntimeProgram(
+      session.projectContext,
+      [...session.requestedRuntimeRoots],
+      currentProgram,
+    );
+    session.deferredExpansion?.dispose();
+    session.deferredExpansion = undefined;
+    session.expandedProgram?.dispose();
+    session.expandedProgram = undefined;
+    currentProgram?.dispose(false);
+    session.preparedProgram = nextProgram;
+    return nextProgram;
+  }
+
+  function ensureDeferredExpansionForPreparedProgram(
+    session: TransformProjectSession,
+  ): DeferredRuntimeExpansion {
+    const currentExpansion = session.deferredExpansion;
+    const preparedProgram = session.preparedProgram;
+    if (!preparedProgram) {
+      throw new Error('Missing prepared program for deferred runtime expansion.');
+    }
+    if (currentExpansion?.preparedProgram === preparedProgram) {
+      return currentExpansion;
+    }
+
+    const nextExpansion = createDeferredRuntimeExpansion(preparedProgram);
+    currentExpansion?.dispose();
+    session.deferredExpansion = nextExpansion;
+    return nextExpansion;
   }
 
   function transformModuleSync(fileName: string): OnDemandTransformResult {
@@ -302,22 +534,68 @@ export function createOnDemandTransformer(
         throw new Error(`Could not read source file ${fileName}.`);
       }
       const sourceHash = ts.sys.createHash?.(sourceText) ?? sourceText;
-      const fullCacheKey =
-        `${projectContext.projectPath}\u0000full\u0000${fileName}\u0000${sourceHash}`;
-      const cachedFull = soundscriptCache.get(fullCacheKey);
-      if (cachedFull) {
-        return cachedFull;
-      }
       const session = getProjectSession(projectContext);
+      const preparedCacheKey =
+        `${projectContext.projectPath}\u0000prepared\u0000${fileName}\u0000${sourceHash}`;
+      const cachedPrepared = soundscriptCache.get(preparedCacheKey);
+      if (cachedPrepared) {
+        return cachedPrepared;
+      }
+      const isolatedPreparedProgram = createIsolatedPreparedRuntimeProgram(projectContext, fileName);
       try {
+        const isolatedPreparedFile = getPreparedSourceFile(isolatedPreparedProgram, fileName);
+        if (!isolatedPreparedFile) {
+          throw new Error(`Missing prepared source file for ${fileName}.`);
+        }
+
+        if (isolatedPreparedFile.rewriteResult.macrosById.size === 0) {
+          const result = transpilePreparedSourceFile(
+            isolatedPreparedProgram,
+            fileName,
+            projectContext.projectPath,
+          );
+          soundscriptCache.set(preparedCacheKey, result);
+          return result;
+        }
+      } finally {
+        isolatedPreparedProgram.dispose(true);
+      }
+      try {
+        const preparedProgram = ensurePreparedProgramForFile(session, fileName, sourceText);
+        const preparedFile = getPreparedSourceFile(preparedProgram, fileName);
+        if (!preparedFile) {
+          throw new Error(`Missing prepared source file for ${fileName}.`);
+        }
+
+        if (preparedFile.rewriteResult.macrosById.size === 0) {
+          const result = transpilePreparedSourceFile(
+            preparedProgram,
+            fileName,
+            projectContext.projectPath,
+          );
+          soundscriptCache.set(preparedCacheKey, result);
+          return result;
+        }
+
+        try {
+          const deferredExpansion = ensureDeferredExpansionForPreparedProgram(session);
+          return transpileDeferredExpandedSourceFile(
+            deferredExpansion,
+            fileName,
+            projectContext.projectPath,
+          );
+        } catch (error) {
+          if (!(error instanceof SemanticMacroExpansionRequiredError)) {
+            throw error;
+          }
+        }
+
         const expandedProgram = ensureExpandedProgramForFile(session, fileName, sourceText);
-        const result = transpileExpandedSourceFile(
+        return transpileExpandedSourceFile(
           expandedProgram,
           fileName,
           projectContext.projectPath,
         );
-        soundscriptCache.set(fullCacheKey, result);
-        return result;
       } finally {
         projectSessionsByPath.set(projectContext.projectPath, session);
       }
@@ -362,6 +640,7 @@ export function createOnDemandTransformer(
     const result = {
       ...artifact,
       projectPath,
+      transformMode: 'typescript' as const,
     };
     typeScriptCache.set(cacheKey, result);
     return result;

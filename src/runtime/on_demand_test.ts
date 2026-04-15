@@ -68,6 +68,7 @@ Deno.test('createOnDemandTransformer expands valid project macros for local .sts
 
   const transformer = createOnDemandTransformer({ workingDirectory: root });
   const transformed = await transformer.transformModule(join(root, 'src/demo.sts'));
+  assertEquals(transformed.transformMode, 'soundscript-deferred-macro');
   assertStringIncludes(transformed.code, 'export const doubled = (value) * 2;');
   assertEquals(transformed.code.includes('__sts_macro_expr('), false);
 });
@@ -128,6 +129,7 @@ Deno.test('createOnDemandTransformer fully lowers macros even with an installed 
 
   const transformer = createOnDemandTransformer({ workingDirectory: root });
   const transformed = await transformer.transformModule(join(root, 'src/demo.sts'));
+  assertEquals(transformed.transformMode, 'soundscript-deferred-macro');
   assertStringIncludes(transformed.code, 'export const doubled = (helper) * 2;');
   assertEquals(transformed.code.includes('__sts_macro_expr('), false);
 });
@@ -169,11 +171,12 @@ Deno.test('createOnDemandTransformer resolves and transforms local .sts files wi
   assertEquals(transformer.resolveImportSpecifier('./helper', mainPath), helperPath);
 
   const transformed = await transformer.transformModule(mainPath);
+  assertEquals(transformed.transformMode, 'soundscript-prepared');
   assertStringIncludes(transformed.code, "from './helper';");
   assertStringIncludes(transformed.mapText, '/src/main.sts');
 });
 
-Deno.test('createOnDemandTransformer reuses the expanded project program across dependency transforms', async () => {
+Deno.test('createOnDemandTransformer avoids the full expanded runtime program for no-macro dependency transforms', async () => {
   const root = await Deno.makeTempDir({ prefix: 'soundscript-on-demand-reuse-' });
   await writeProjectFile(
     root,
@@ -213,8 +216,10 @@ Deno.test('createOnDemandTransformer reuses the expanded project program across 
 
   try {
     const transformer = createOnDemandTransformer({ workingDirectory: root });
-    await transformer.transformModule(join(root, 'src/main.sts'));
-    await transformer.transformModule(join(root, 'src/helper.sts'));
+    const mainTransformed = await transformer.transformModule(join(root, 'src/main.sts'));
+    const helperTransformed = await transformer.transformModule(join(root, 'src/helper.sts'));
+    assertEquals(mainTransformed.transformMode, 'soundscript-prepared');
+    assertEquals(helperTransformed.transformMode, 'soundscript-prepared');
   } finally {
     console.error = originalError;
     if (originalTiming === undefined) {
@@ -224,10 +229,10 @@ Deno.test('createOnDemandTransformer reuses the expanded project program across 
     }
   }
 
-  const initialProgramBuilds = logs.filter((line) =>
+  const fullExpandedProgramBuilds = logs.filter((line) =>
     line.includes('project.prepare.builtin.initialProgram')
   );
-  assertEquals(initialProgramBuilds.length, 1, logs.join('\n'));
+  assertEquals(fullExpandedProgramBuilds.length, 0, logs.join('\n'));
 });
 
 Deno.test('createOnDemandTransformer lowers JSX in .sts files without requiring tsconfig jsx', async () => {
@@ -261,6 +266,7 @@ Deno.test('createOnDemandTransformer lowers JSX in .sts files without requiring 
   const transformer = createOnDemandTransformer({ workingDirectory: root });
   const transformed = await transformer.transformModule(join(root, 'src/main.sts'));
 
+  assertEquals(transformed.transformMode, 'soundscript-prepared');
   assertStringIncludes(transformed.code, 'react/jsx-runtime');
   assertEquals(transformed.code.includes('<section>'), false);
 });
@@ -324,6 +330,7 @@ Deno.test('createOnDemandTransformer resolves shipped package source through sou
   assertEquals(transformer.resolveImportSpecifier('example-pkg', mainPath), packageSourcePath);
 
   const transformed = await transformer.transformModule(packageSourcePath);
+  assertEquals(transformed.transformMode, 'soundscript-prepared');
   assertStringIncludes(transformed.code, 'export const pkgValue = 41;');
   assertStringIncludes(transformed.mapText, '/node_modules/example-pkg/src/index.sts');
 });
@@ -410,9 +417,11 @@ Deno.test('createOnDemandTransformer macro-expands source-published dependency .
   assertEquals(transformer.resolveImportSpecifier('example-pkg', mainPath), join(root, 'node_modules/example-pkg/src/index.sts'));
 
   const transformedContracts = await transformer.transformModule(packageContractsPath);
+  assertEquals(transformedContracts.transformMode, 'soundscript-semantic-macro');
   assertStringIncludes(transformedContracts.code, 'export const UserCodec =');
 
   const transformedShared = await transformer.transformModule(packageSharedPath);
+  assertEquals(transformedShared.transformMode, 'soundscript-prepared');
   assertStringIncludes(transformedShared.code, "import { UserCodec } from './contracts.sts';");
   assertStringIncludes(transformedShared.code, "export const encoded = UserCodec.encode({ id: 'user-1' });");
 });
@@ -453,6 +462,7 @@ Deno.test('createOnDemandTransformer treats configured TypeScript files from sou
 
   assertEquals(transformer.shouldTransformFile(mainPath), true);
   const transformed = await transformer.transformModule(mainPath);
+  assertEquals(transformed.transformMode, 'soundscript-prepared');
   assertStringIncludes(transformed.code, "from '@soundscript/soundscript';");
   assertStringIncludes(transformed.code, 'export const value = some(41);');
 });
@@ -514,6 +524,7 @@ Deno.test('createOnDemandTransformer expands macros in configured TypeScript fil
 
   const transformer = createOnDemandTransformer({ workingDirectory: root });
   const transformed = await transformer.transformModule(join(root, 'src/demo.ts'));
+  assertEquals(transformed.transformMode, 'soundscript-deferred-macro');
   assertStringIncludes(transformed.code, 'export const doubled = (value) * 2;');
   assertEquals(transformed.code.includes('__sts_macro_expr('), false);
 });
@@ -574,6 +585,7 @@ Deno.test('createOnDemandTransformer transparently falls back for semantic macro
   const transformer = createOnDemandTransformer({ workingDirectory: root });
   const transformed = await transformer.transformModule(join(root, 'src/demo.ts'));
 
+  assertEquals(transformed.transformMode, 'soundscript-semantic-macro');
   assertStringIncludes(transformed.code, 'export const typeName = "Promise<number>";');
   assertEquals(transformed.code.includes('__sts_macro_expr('), false);
 });
@@ -608,6 +620,7 @@ Deno.test('createOnDemandTransformer leaves unmatched TypeScript files on the or
 
   const transformer = createOnDemandTransformer({ workingDirectory: root });
   const transformed = await transformer.transformModule(join(root, 'src/main.ts'));
+  assertEquals(transformed.transformMode, 'typescript');
   assertEquals(transformed.code.includes("from 'sts:prelude';"), false);
   assertStringIncludes(transformed.code, 'export const value = some(41);');
 });
