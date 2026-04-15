@@ -7650,28 +7650,45 @@ compilerIntegrationTest(
     assert(result.artifacts.wrapperPath);
 
     let listenedPort = -1;
-    const registeredPaths: string[] = [];
+    const registeredGetPaths: string[] = [];
+    const registeredPostPaths: string[] = [];
     let sentHtml = '';
+    let getTodosHandler:
+      | ((req: { params: { id: string }; url: string }, res: ResponseLike) => void)
+      | undefined;
 
     interface ResponseLike {
       send(html: string): ResponseLike;
+      json(
+        payload: {
+          firstCompleted: boolean;
+          secondCompleted: boolean;
+          toggledId: string;
+        },
+      ): ResponseLike;
+      status(code: number): ResponseLike;
     }
 
     interface AppLike {
-      get(path: string, handler: (req: { url: string }, res: ResponseLike) => void): AppLike;
+      get(
+        path: string,
+        handler: (req: { params: { id: string }; url: string }, res: ResponseLike) => void,
+      ): AppLike;
+      post(
+        path: string,
+        handler: (req: { params: { id: string }; url: string }, res: ResponseLike) => void,
+      ): AppLike;
       listen(port: number): { close(): void };
     }
 
     const app: AppLike = {
       get(path, handler) {
-        registeredPaths.push(path);
-        const response: ResponseLike = {
-          send(html: string) {
-            sentHtml = html;
-            return response;
-          },
-        };
-        handler({ url: '/todos' }, response);
+        registeredGetPaths.push(path);
+        getTodosHandler = handler;
+        return this;
+      },
+      post(path, _handler) {
+        registeredPostPaths.push(path);
         return this;
       },
       listen(port) {
@@ -7682,6 +7699,22 @@ compilerIntegrationTest(
         };
       },
     };
+
+    function createResponse(): ResponseLike {
+        const response: ResponseLike = {
+          send(html: string) {
+            sentHtml = html;
+            return response;
+          },
+          json(_payload) {
+            return response;
+          },
+          status(_code: number) {
+            return response;
+          },
+        };
+        return response;
+    }
 
     function express() {
       return app;
@@ -7722,12 +7755,166 @@ compilerIntegrationTest(
     }
 
     assertEquals(await startExport(4325), undefined);
-    assertEquals(registeredPaths, ['/todos']);
+    assertEquals(registeredGetPaths, ['/todos']);
+    assertEquals(registeredPostPaths, ['/api/todos/:id/toggle']);
     assertEquals(listenedPort, 4325);
+    assert(getTodosHandler);
+    getTodosHandler({ params: { id: '' }, url: '/todos' }, createResponse());
     assertStringIncludes(sentHtml, '<!doctype html>');
     assertStringIncludes(sentHtml, 'Todos');
     assertStringIncludes(sentHtml, 'Write compiler tests');
     assertStringIncludes(sentHtml, 'done');
+    assertStringIncludes(sentHtml, 'open');
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject executes the checked-in fullstack-todo example through express mutation handlers',
+  async () => {
+    const { projectDirectory, result } = compileCheckedInProject('examples/fullstack-todo');
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    let listenedPort = -1;
+    const registeredGetPaths: string[] = [];
+    const registeredPostPaths: string[] = [];
+    const statusCalls: number[] = [];
+    const jsonPayloads: Array<{
+      firstCompleted: boolean;
+      secondCompleted: boolean;
+      toggledId: string;
+    }> = [];
+    let getTodosHandler:
+      | ((req: { params: { id: string }; url: string }, res: ResponseLike) => void)
+      | undefined;
+    let postToggleHandler:
+      | ((req: { params: { id: string }; url: string }, res: ResponseLike) => void)
+      | undefined;
+    let sentHtml = '';
+
+    interface ResponseLike {
+      send(html: string): ResponseLike;
+      json(
+        payload: {
+          firstCompleted: boolean;
+          secondCompleted: boolean;
+          toggledId: string;
+        },
+      ): ResponseLike;
+      status(code: number): ResponseLike;
+    }
+
+    interface AppLike {
+      get(
+        path: string,
+        handler: (req: { params: { id: string }; url: string }, res: ResponseLike) => void,
+      ): AppLike;
+      post(
+        path: string,
+        handler: (req: { params: { id: string }; url: string }, res: ResponseLike) => void,
+      ): AppLike;
+      listen(port: number): { close(): void };
+    }
+
+    function createResponse(): ResponseLike {
+      const response: ResponseLike = {
+        send(html: string) {
+          sentHtml = html;
+          return response;
+        },
+        json(payload) {
+          jsonPayloads.push(payload);
+          return response;
+        },
+        status(code: number) {
+          statusCalls.push(code);
+          return response;
+        },
+      };
+      return response;
+    }
+
+    const app: AppLike = {
+      get(path, handler) {
+        registeredGetPaths.push(path);
+        getTodosHandler = handler;
+        return this;
+      },
+      post(path, handler) {
+        registeredPostPaths.push(path);
+        postToggleHandler = handler;
+        return this;
+      },
+      listen(port) {
+        listenedPort = port;
+        return {
+          close() {
+          },
+        };
+      },
+    };
+
+    function express() {
+      return app;
+    }
+
+    const reactJsxRuntimeModule = await import('npm:react@19.2.4/jsx-runtime');
+    const reactDomServerModule = await import('npm:react-dom@19.2.4/server');
+    const reactRouterModule = await import('npm:react-router@7.14.0');
+    const wrapperModule = await importCompiledWrapperModule(result.artifacts.wrapperPath);
+    const instantiated = await wrapperModule.instantiate({
+      modules: {
+        express: {
+          default: express,
+        },
+        'react/jsx-runtime': reactJsxRuntimeModule,
+        'react-dom/server': reactDomServerModule,
+        'react-router': reactRouterModule,
+      },
+    });
+
+    const renderPageName = await resolveQualifiedExportName(projectDirectory, 'renderPage');
+    const renderPageExport = instantiated.exports[renderPageName];
+    if (typeof renderPageExport !== 'function') {
+      throw new Error(`Expected exported function "${renderPageName}".`);
+    }
+    const startName = await resolveQualifiedExportName(projectDirectory, 'start');
+    const startExport = instantiated.exports[startName];
+    if (typeof startExport !== 'function') {
+      throw new Error(`Expected exported function "${startName}".`);
+    }
+
+    assertEquals(await startExport(4325), undefined);
+    assertEquals(listenedPort, 4325);
+    assertEquals(registeredGetPaths, ['/todos']);
+    assertEquals(registeredPostPaths, ['/api/todos/:id/toggle']);
+    assert(getTodosHandler);
+    assert(postToggleHandler);
+
+    getTodosHandler({ params: { id: '' }, url: '/todos' }, createResponse());
+    assertStringIncludes(sentHtml, 'open');
+
+    postToggleHandler(
+      { params: { id: '1' }, url: '/api/todos/1/toggle' },
+      createResponse(),
+    );
+    assertEquals(statusCalls, [200]);
+    assertEquals(jsonPayloads, [
+      {
+        firstCompleted: true,
+        secondCompleted: true,
+        toggledId: '1',
+      },
+    ]);
+
+    const mutatedHtml = await renderPageExport('/todos');
+    assertStringIncludes(mutatedHtml, '<!doctype html>');
+    assertStringIncludes(mutatedHtml, 'Write compiler tests');
+    assertStringIncludes(mutatedHtml, 'Ship the Wasm SSR todo app');
+    assertFalse(mutatedHtml.includes('open'));
   },
 );
 

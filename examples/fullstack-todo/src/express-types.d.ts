@@ -1,13 +1,25 @@
 interface MinimalRequest {
   url: string;
+  params: {
+    id: string;
+  };
 }
 
 interface MinimalResponse {
   send(html: string): MinimalResponse;
+  json(
+    payload: {
+      firstCompleted: boolean;
+      secondCompleted: boolean;
+      toggledId: string;
+    },
+  ): MinimalResponse;
+  status(code: number): MinimalResponse;
 }
 
 interface MinimalApp {
   get(path: string, handler: (req: MinimalRequest, res: MinimalResponse) => void): void;
+  post(path: string, handler: (req: MinimalRequest, res: MinimalResponse) => void): void;
   listen(port: number): void;
 }
 
@@ -18,6 +30,7 @@ declare module 'express' {
 
   interface ExpressApp {
     get(path: string, handler: (req: Request, res: Response) => void): ExpressApp;
+    post(path: string, handler: (req: Request, res: Response) => void): ExpressApp;
     listen(port: number): unknown;
   }
 

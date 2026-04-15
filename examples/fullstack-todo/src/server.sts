@@ -5,7 +5,14 @@ import { renderToString } from 'react-dom/server';
 // #[interop]
 import { StaticRouter } from 'react-router';
 
-import { AppRoutes, createInitialTodos } from './app.sts';
+import {
+  AppRoutes,
+  createTodos,
+  toggleTodoByRouteId,
+} from './app.sts';
+
+let firstTodoCompleted = false;
+let secondTodoCompleted = true;
 
 function createApp(): MinimalApp {
   const app = express();
@@ -13,16 +20,28 @@ function createApp(): MinimalApp {
     get(path, handler) {
       app.get(path, handler);
     },
+    post(path, handler) {
+      app.post(path, handler);
+    },
     listen(port) {
       app.listen(port);
     },
   };
 }
 
+function getTodos() {
+  return createTodos(firstTodoCompleted, secondTodoCompleted);
+}
+
+function setTodoCompletionState(firstCompleted: boolean, secondCompleted: boolean): void {
+  firstTodoCompleted = firstCompleted;
+  secondTodoCompleted = secondCompleted;
+}
+
 function App(path: string) {
   return (
     <StaticRouter location={path}>
-      <AppRoutes todos={createInitialTodos()} />
+      <AppRoutes todos={getTodos()} />
     </StaticRouter>
   );
 }
@@ -35,6 +54,16 @@ export function start(port: number): void {
   const app = createApp();
   app.get('/todos', (req, res) => {
     res.send(renderPage(req.url));
+  });
+  app.post('/api/todos/:id/toggle', (req, res) => {
+    const nextTodos = toggleTodoByRouteId(getTodos(), req.params.id);
+    setTodoCompletionState(nextTodos[0].completed, nextTodos[1].completed);
+    const response = res.status(200);
+    response.json({
+      firstCompleted: nextTodos[0].completed,
+      secondCompleted: nextTodos[1].completed,
+      toggledId: req.params.id,
+    });
   });
   app.listen(port);
 }

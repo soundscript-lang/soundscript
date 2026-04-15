@@ -24,6 +24,67 @@ export function createInitialTodos(): TodoList {
   ];
 }
 
+function cloneTodo(todo: Todo, completed: boolean): Todo {
+  return {
+    id: todo.id,
+    title: todo.title,
+    completed,
+  };
+}
+
+export function toggleTodoById(todos: TodoList, id: number): TodoList {
+  const firstTodo = todos[0];
+  const secondTodo = todos[1];
+  if (firstTodo.id === id) {
+    if (firstTodo.completed) {
+      return [
+        cloneTodo(firstTodo, false),
+        cloneTodo(secondTodo, secondTodo.completed),
+      ];
+    }
+    return [
+      cloneTodo(firstTodo, true),
+      cloneTodo(secondTodo, secondTodo.completed),
+    ];
+  }
+  if (secondTodo.id === id) {
+    if (secondTodo.completed) {
+      return [
+        cloneTodo(firstTodo, firstTodo.completed),
+        cloneTodo(secondTodo, false),
+      ];
+    }
+    return [
+      cloneTodo(firstTodo, firstTodo.completed),
+      cloneTodo(secondTodo, true),
+    ];
+  }
+  return todos;
+}
+
+export function toggleTodoByRouteId(todos: TodoList, routeId: string): TodoList {
+  if (routeId === '1') {
+    return toggleTodoById(todos, 1);
+  }
+  if (routeId === '2') {
+    return toggleTodoById(todos, 2);
+  }
+  return todos;
+}
+
+export function createTodos(
+  firstTodoCompleted: boolean,
+  secondTodoCompleted: boolean,
+): TodoList {
+  const initialTodos = createInitialTodos();
+  const firstTodo = initialTodos[0];
+  const secondTodo = initialTodos[1];
+  return [
+    cloneTodo(firstTodo, firstTodoCompleted),
+    cloneTodo(secondTodo, secondTodoCompleted),
+  ];
+}
+
 interface TodoPageProps {
   todos: TodoList;
 }
