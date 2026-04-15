@@ -343,3 +343,80 @@ export function createSoundStdlibCompilerHost(
 
   return host;
 }
+
+export function createBundledTypeCompilerHost(
+  options: ts.CompilerOptions,
+  currentDirectory?: string,
+): ts.CompilerHost {
+  const baseHost = ts.createCompilerHost(options, true);
+  const host: ts.CompilerHost = {
+    ...baseHost,
+    getCurrentDirectory() {
+      return currentDirectory ?? baseHost.getCurrentDirectory();
+    },
+    resolveModuleNames(
+      moduleNames,
+      containingFile,
+      reusedNames,
+      redirectedReference,
+      compilerOptions,
+      containingSourceFile,
+    ) {
+      const delegated = baseHost.resolveModuleNames?.(
+        moduleNames,
+        containingFile,
+        reusedNames,
+        redirectedReference,
+        compilerOptions,
+        containingSourceFile,
+      );
+      const fallbackHost = createModuleResolutionHost(baseHost);
+
+      return moduleNames.map((moduleName, index) => {
+        const bundledResolution = resolveBundledTypeModule(moduleName);
+        if (bundledResolution) {
+          return bundledResolution;
+        }
+        if (delegated?.[index]) {
+          return delegated[index];
+        }
+        return ts.resolveModuleName(
+          moduleName,
+          containingFile,
+          compilerOptions ?? options,
+          fallbackHost,
+          undefined,
+          redirectedReference,
+        ).resolvedModule;
+      });
+    },
+    resolveTypeReferenceDirectives(
+      typeReferenceDirectiveNames,
+      containingFile,
+      redirectedReference,
+      compilerOptions,
+      containingFileMode,
+    ) {
+      return typeReferenceDirectiveNames.map((typeReferenceDirectiveName) => {
+        const bundledResolution = resolveBundledTypeReferenceDirective(
+          getTypeDirectiveName(typeReferenceDirectiveName),
+        );
+        if (bundledResolution) {
+          return bundledResolution;
+        }
+
+        return ts.resolveTypeReferenceDirective(
+          getTypeDirectiveName(typeReferenceDirectiveName),
+          containingFile,
+          compilerOptions,
+          host,
+          redirectedReference,
+          undefined,
+          containingFileMode,
+        ).resolvedTypeReferenceDirective;
+      });
+    },
+  };
+
+  return host;
+}

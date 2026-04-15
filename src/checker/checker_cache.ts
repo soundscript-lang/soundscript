@@ -172,7 +172,7 @@ function createSoundscriptRootDiscoverySignature(
   const explicitFiles = (rawConfig?.files ?? [])
     .map((fileName) => fileName.startsWith('/') ? fileName : join(basePath, fileName))
     .map((fileName) => ts.sys.resolvePath(fileName))
-    .filter((fileName) => fileName.endsWith('.sts'))
+    .filter(loadedConfig.isSoundscriptSourceFile)
     .sort()
     .join('\u0000');
   const includePatterns = rawConfig?.include
@@ -224,6 +224,8 @@ function createCheckerCacheHeader(
     configDiagnosticsSignature: createConfigDiagnosticsSignature(loadedConfig),
     configSignature: stableStringify({
       commandLineOptions: loadedConfig.commandLine.options,
+      frontierCommandLineOptions: loadedConfig.frontierCommandLine.options,
+      frontierProjectReferences: loadedConfig.frontierCommandLine.projectReferences ?? [],
       projectReferences: loadedConfig.commandLine.projectReferences ?? [],
       raw: loadedConfig.commandLine.raw,
       runtime: loadedConfig.runtime,

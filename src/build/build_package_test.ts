@@ -319,3 +319,81 @@ Deno.test('buildProject invalidates build cache when the tool fingerprint change
     console.error = originalError;
   }
 });
+
+Deno.test('buildProject prints emitted files only in verbose mode', async () => {
+  const tempDirectory = await createTempBuildProject([
+    {
+      path: 'package.json',
+      contents: JSON.stringify(
+        {
+          name: 'sound-build-output',
+          version: '1.0.0',
+          soundscript: {
+            version: 1,
+            exports: {
+              '.': { source: './src/index.sts' },
+            },
+          },
+        },
+        null,
+        2,
+      ),
+    },
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            target: 'ES2022',
+            module: 'ESNext',
+            moduleResolution: 'Bundler',
+          },
+          include: ['src/**/*.sts', 'src/**/*.ts'],
+        },
+        null,
+        2,
+      ),
+    },
+    {
+      path: 'src/index.sts',
+      contents: [
+        "import { ok } from 'sts:prelude';",
+        'export const value = ok(1);',
+        '',
+      ].join('\n'),
+    },
+  ]);
+  const projectPath = join(tempDirectory, 'tsconfig.json');
+  const outDir = join(tempDirectory, 'dist');
+
+  const conciseResult = await buildProject({
+    outDir,
+    projectPath,
+    workingDirectory: tempDirectory,
+  });
+  assertEquals(conciseResult.exitCode, 0, conciseResult.output);
+  assertEquals(
+    conciseResult.output.startsWith('Built package: dist ('),
+    true,
+    conciseResult.output,
+  );
+  assertEquals(
+    conciseResult.output.includes('dist/esm/src/index.js'),
+    false,
+    conciseResult.output,
+  );
+
+  const verboseResult = await buildProject({
+    outDir,
+    projectPath,
+    verbose: true,
+    workingDirectory: tempDirectory,
+  });
+  assertEquals(verboseResult.exitCode, 0, verboseResult.output);
+  assertEquals(
+    verboseResult.output.includes('dist/esm/src/index.js'),
+    true,
+    verboseResult.output,
+  );
+});

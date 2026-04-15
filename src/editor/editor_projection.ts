@@ -319,7 +319,7 @@ function getProjectedPreparedSource(
   const rootNames = [filePath];
   const expandedProgram = createBuiltinExpandedProgram({
     baseHost: createSoundStdlibCompilerHost(
-      loadedConfig.commandLine.options,
+      loadedConfig.frontierCommandLine.options,
       dirname(projectPath),
     ),
     configFileParsingDiagnostics: getConfigFileParsingDiagnostics(
@@ -329,8 +329,8 @@ function getProjectedPreparedSource(
     configuredSoundscriptFileNames: loadedConfig.soundscriptConfiguredFileNames,
     expansionEnabled: resolvedExpansionEnabled,
     fileOverrides,
-    options: loadedConfig.commandLine.options,
-    projectReferences: loadedConfig.commandLine.projectReferences,
+    options: loadedConfig.frontierCommandLine.options,
+    projectReferences: loadedConfig.frontierCommandLine.projectReferences,
     rootNames,
   });
 

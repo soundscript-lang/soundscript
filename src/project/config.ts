@@ -80,6 +80,7 @@ export interface BuildCommand {
   outDir: string;
   projectPath: string;
   target?: RuntimeTarget;
+  verbose: boolean;
   watch: boolean;
   workingDirectory: string;
 }
@@ -144,6 +145,10 @@ export interface LoadedConfig {
   commandLine: ts.ParsedCommandLine;
   configuredSoundscriptRootNames: readonly string[];
   diagnostics: ts.Diagnostic[];
+  frontierCommandLine: ts.ParsedCommandLine;
+  frontierConfiguredFileNames: ReadonlySet<string>;
+  frontierRootNames: readonly string[];
+  hostRootNames: readonly string[];
   runtime: RuntimeContext;
   soundscript: SoundscriptConfig;
   soundscriptConfiguredFileNames: ReadonlySet<string>;
@@ -577,6 +582,7 @@ export function parseCommand(args: readonly string[], workingDirectory: string):
   let runtimeTarget: RuntimeTarget | undefined;
   let cacheDir: string | undefined;
   let useCache = true;
+  let verbose = false;
   let watch = false;
 
   for (let index = 1; index < args.length; index += 1) {
@@ -723,6 +729,17 @@ export function parseCommand(args: readonly string[], workingDirectory: string):
           isAbsolute(nextArgument) ? nextArgument : join(workingDirectory, nextArgument),
         );
         index += 1;
+        break;
+      }
+      case '--verbose': {
+        if (subcommand !== 'build') {
+          return {
+            kind: 'invalid',
+            message: '--verbose is only supported for build.',
+          };
+        }
+
+        verbose = true;
         break;
       }
       case '--file': {
@@ -929,6 +946,7 @@ export function parseCommand(args: readonly string[], workingDirectory: string):
       outDir: outDir ?? join(workingDirectory, 'dist'),
       projectPath: projectPath ?? join(workingDirectory, 'tsconfig.json'),
       target: runtimeTarget,
+      verbose,
       watch,
       workingDirectory,
     };
@@ -983,21 +1001,30 @@ export function loadConfig(
       normalizedCommandLine,
       soundscript,
     );
+    const isFrontierSourceFile = (fileName: string): boolean =>
+      isLocalSoundscriptSourceFile(
+        fileName,
+        soundscriptRoots.soundscriptConfiguredFileNames,
+      );
+    const frontierCommandLine = shouldApplySoundCompilerOptionBaseline(
+        soundscriptRoots.soundscriptRootNames,
+        soundscriptRoots.soundscriptConfiguredFileNames,
+        additionalRootNames,
+      )
+      ? applySoundCompilerOptionBaseline(normalizedCommandLine)
+      : normalizedCommandLine;
     return {
-      commandLine: shouldApplySoundCompilerOptionBaseline(
-          soundscriptRoots.soundscriptRootNames,
-          soundscriptRoots.soundscriptConfiguredFileNames,
-          additionalRootNames,
-        )
-        ? applySoundCompilerOptionBaseline(normalizedCommandLine)
-        : normalizedCommandLine,
+      commandLine: normalizedCommandLine,
       configuredSoundscriptRootNames: soundscriptRoots.configuredSoundscriptRootNames,
       diagnostics: [configFile.error],
+      frontierCommandLine,
+      frontierConfiguredFileNames: soundscriptRoots.soundscriptConfiguredFileNames,
+      frontierRootNames: soundscriptRoots.soundscriptRootNames,
+      hostRootNames: normalizedCommandLine.fileNames.filter((fileName) =>
+        !isFrontierSourceFile(fileName)
+      ),
       isSoundscriptSourceFile(fileName: string): boolean {
-        return isLocalSoundscriptSourceFile(
-          fileName,
-          soundscriptRoots.soundscriptConfiguredFileNames,
-        );
+        return isFrontierSourceFile(fileName);
       },
       runtime,
       soundscript,
@@ -1030,21 +1057,30 @@ export function loadConfig(
     normalizedCommandLine,
     soundscript,
   );
+  const isFrontierSourceFile = (fileName: string): boolean =>
+    isLocalSoundscriptSourceFile(
+      fileName,
+      soundscriptRoots.soundscriptConfiguredFileNames,
+    );
+  const frontierCommandLine = shouldApplySoundCompilerOptionBaseline(
+      soundscriptRoots.soundscriptRootNames,
+      soundscriptRoots.soundscriptConfiguredFileNames,
+      additionalRootNames,
+    )
+    ? applySoundCompilerOptionBaseline(normalizedCommandLine)
+    : normalizedCommandLine;
   return {
-    commandLine: shouldApplySoundCompilerOptionBaseline(
-        soundscriptRoots.soundscriptRootNames,
-        soundscriptRoots.soundscriptConfiguredFileNames,
-        additionalRootNames,
-      )
-      ? applySoundCompilerOptionBaseline(normalizedCommandLine)
-      : normalizedCommandLine,
+    commandLine: normalizedCommandLine,
     configuredSoundscriptRootNames: soundscriptRoots.configuredSoundscriptRootNames,
     diagnostics: [...commandLine.errors, ...configDiagnostics],
+    frontierCommandLine,
+    frontierConfiguredFileNames: soundscriptRoots.soundscriptConfiguredFileNames,
+    frontierRootNames: soundscriptRoots.soundscriptRootNames,
+    hostRootNames: normalizedCommandLine.fileNames.filter((fileName) =>
+      !isFrontierSourceFile(fileName)
+    ),
     isSoundscriptSourceFile(fileName: string): boolean {
-      return isLocalSoundscriptSourceFile(
-        fileName,
-        soundscriptRoots.soundscriptConfiguredFileNames,
-      );
+      return isFrontierSourceFile(fileName);
     },
     runtime,
     soundscript,

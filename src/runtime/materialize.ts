@@ -294,13 +294,13 @@ function createExpandedProgram(projectPath: string, extraRootNames: readonly str
   const runtimeConfig = loadRuntimeProgramConfig(projectPath, extraRootNames);
   return createBuiltinExpandedProgram({
     baseHost: createSoundStdlibCompilerHost(
-      runtimeConfig.loadedConfig.commandLine.options,
+      runtimeConfig.loadedConfig.frontierCommandLine.options,
       dirname(projectPath),
     ),
     configFileParsingDiagnostics: runtimeConfig.configFileParsingDiagnostics,
     configuredSoundscriptFileNames: runtimeConfig.loadedConfig.soundscriptConfiguredFileNames,
-    options: runtimeConfig.loadedConfig.commandLine.options,
-    projectReferences: runtimeConfig.loadedConfig.commandLine.projectReferences,
+    options: runtimeConfig.loadedConfig.frontierCommandLine.options,
+    projectReferences: runtimeConfig.loadedConfig.frontierCommandLine.projectReferences,
     rootNames: runtimeConfig.rootNames,
   });
 }

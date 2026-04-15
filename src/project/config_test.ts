@@ -39,10 +39,12 @@ Deno.test('parseCommand accepts ndjson output format', () => {
   );
 
   assertEquals(command, {
+    cacheDir: undefined,
     kind: 'check',
     format: 'ndjson',
     projectPath: '/tmp/workspace/tsconfig.json',
     target: undefined,
+    useCache: true,
     workingDirectory: '/tmp/workspace',
   });
 });
@@ -59,7 +61,26 @@ Deno.test('parseCommand accepts build subcommand with out-dir and watch', () => 
     outDir: '/tmp/workspace/dist-package',
     projectPath: '/tmp/workspace/tsconfig.json',
     target: undefined,
+    verbose: false,
     watch: true,
+    workingDirectory: '/tmp/workspace',
+  });
+});
+
+Deno.test('parseCommand accepts build subcommand with verbose output', () => {
+  const command = parseCommand(
+    ['build', '--project', './tsconfig.json', '--verbose'],
+    '/tmp/workspace',
+  );
+
+  assertEquals(command, {
+    kind: 'build',
+    format: 'text',
+    outDir: '/tmp/workspace/dist',
+    projectPath: '/tmp/workspace/tsconfig.json',
+    target: undefined,
+    verbose: true,
+    watch: false,
     workingDirectory: '/tmp/workspace',
   });
 });
@@ -75,10 +96,12 @@ Deno.test('parseCommand accepts runtime target override for compile-style comman
   );
 
   assertEquals(checkCommand, {
+    cacheDir: undefined,
     kind: 'check',
     format: 'text',
     projectPath: '/tmp/workspace/tsconfig.json',
     target: 'wasm-node',
+    useCache: true,
     workingDirectory: '/tmp/workspace',
   });
   assertEquals(expandCommand, {
@@ -129,6 +152,18 @@ Deno.test('parseCommand rejects --watch outside build', () => {
   assertEquals(command, {
     kind: 'invalid',
     message: '--watch is only supported for build.',
+  });
+});
+
+Deno.test('parseCommand rejects --verbose outside build', () => {
+  const command = parseCommand(
+    ['check', '--verbose'],
+    '/tmp/workspace',
+  );
+
+  assertEquals(command, {
+    kind: 'invalid',
+    message: '--verbose is only supported for build.',
   });
 });
 
@@ -327,7 +362,8 @@ Deno.test('loadConfig always enables JSX emit for soundscript programs', async (
 
   const loadedConfig = loadConfig(projectPath);
 
-  assertEquals(loadedConfig.commandLine.options.jsx, ts.JsxEmit.ReactJSX);
+  assertEquals(loadedConfig.commandLine.options.jsx, ts.JsxEmit.Preserve);
+  assertEquals(loadedConfig.frontierCommandLine.options.jsx, ts.JsxEmit.ReactJSX);
 });
 
 Deno.test('loadConfig preserves pure TypeScript compiler options when no soundscript roots are present', async () => {
@@ -360,11 +396,12 @@ Deno.test('loadConfig preserves pure TypeScript compiler options when no soundsc
   assertEquals(loadedConfig.commandLine.options.strict, false);
 });
 
-Deno.test('loadConfig parses soundscript.include and treats matching TypeScript files as soundscript roots', async () => {
+Deno.test('loadConfig splits host and frontier roots for soundscript.include TypeScript files', async () => {
   const tempDirectory = await Deno.makeTempDir({ prefix: 'soundscript-config-include-' });
   const projectPath = join(tempDirectory, 'tsconfig.json');
   await Deno.mkdir(join(tempDirectory, 'src'), { recursive: true });
   await Deno.writeTextFile(join(tempDirectory, 'src/index.ts'), 'export const value = 1;\n');
+  await Deno.writeTextFile(join(tempDirectory, 'src/helper.ts'), 'export const helper = 2;\n');
   await Deno.writeTextFile(join(tempDirectory, 'src/view.tsx'), 'export const view = <div />;\n');
   await Deno.writeTextFile(join(tempDirectory, 'src/types.d.ts'), 'export interface Value {}\n');
   await Deno.writeTextFile(join(tempDirectory, 'src/helper.js'), 'export const helper = 1;\n');
@@ -392,12 +429,66 @@ Deno.test('loadConfig parses soundscript.include and treats matching TypeScript 
 
   assertEquals(loadedConfig.soundscript.include, ['src/**/*.ts', 'src/**/*.tsx', 'src/**/*.d.ts', 'src/**/*.js']);
   assertEquals(
-    loadedConfig.soundscriptRootNames,
+    [...loadedConfig.frontierRootNames],
     [
+      join(tempDirectory, 'src/helper.ts'),
       join(tempDirectory, 'src/index.ts'),
       join(tempDirectory, 'src/view.tsx'),
     ],
   );
-  assertEquals(loadedConfig.commandLine.options.jsx, ts.JsxEmit.ReactJSX);
-  assertEquals(loadedConfig.commandLine.options.strict, true);
+  assertEquals(
+    loadedConfig.frontierConfiguredFileNames,
+    new Set([
+      join(tempDirectory, 'src/helper.ts'),
+      join(tempDirectory, 'src/index.ts'),
+      join(tempDirectory, 'src/view.tsx'),
+    ]),
+  );
+  assertEquals(loadedConfig.hostRootNames, [join(tempDirectory, 'src/types.d.ts')]);
+  assertEquals(loadedConfig.commandLine.options.jsx, ts.JsxEmit.Preserve);
+  assertEquals(loadedConfig.commandLine.options.strict, false);
+  assertEquals(loadedConfig.frontierCommandLine.options.jsx, ts.JsxEmit.ReactJSX);
+  assertEquals(loadedConfig.frontierCommandLine.options.strict, true);
+});
+
+Deno.test('loadConfig keeps non-frontier TypeScript files in host roots when soundscript.include marks one file', async () => {
+  const tempDirectory = await Deno.makeTempDir({ prefix: 'soundscript-config-frontier-split-' });
+  const projectPath = join(tempDirectory, 'tsconfig.json');
+  await Deno.mkdir(join(tempDirectory, 'src'), { recursive: true });
+  await Deno.writeTextFile(join(tempDirectory, 'src/frontier.ts'), 'export const frontier = 1;\n');
+  await Deno.writeTextFile(join(tempDirectory, 'src/host.ts'), 'export const host = 2;\n');
+  await Deno.writeTextFile(
+    projectPath,
+    JSON.stringify(
+      {
+        compilerOptions: {
+          jsx: 'preserve',
+          module: 'ESNext',
+          strict: false,
+          target: 'ES2022',
+        },
+        include: ['src/**/*.ts'],
+        soundscript: {
+          include: ['src/frontier.ts'],
+        },
+      },
+      null,
+      2,
+    ),
+  );
+
+  const loadedConfig = loadConfig(projectPath);
+
+  assertEquals(loadedConfig.frontierRootNames, [join(tempDirectory, 'src/frontier.ts')]);
+  assertEquals(loadedConfig.frontierConfiguredFileNames, new Set([join(tempDirectory, 'src/frontier.ts')]));
+  assertEquals(loadedConfig.hostRootNames, [join(tempDirectory, 'src/host.ts')]);
+  assertEquals(
+    loadedConfig.commandLine.fileNames.sort(),
+    [
+      join(tempDirectory, 'src/frontier.ts'),
+      join(tempDirectory, 'src/host.ts'),
+    ],
+  );
+  assertEquals(loadedConfig.commandLine.options.strict, false);
+  assertEquals(loadedConfig.frontierCommandLine.options.strict, true);
 });

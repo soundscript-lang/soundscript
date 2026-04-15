@@ -148,6 +148,37 @@ Deno.test('runCli passes runtime target override to buildProject', async () => {
   assertEquals(receivedTarget, 'wasm-node');
 });
 
+Deno.test('runCli passes verbose build output preference to buildProject', async () => {
+  const tempDirectory = await Deno.makeTempDir({ prefix: 'soundscript-build-verbose-' });
+  const projectPath = join(tempDirectory, 'tsconfig.json');
+  let receivedVerbose = false;
+
+  await Deno.writeTextFile(projectPath, '{}');
+
+  const result = await runCli(
+    ['build', '--project', projectPath, '--verbose'],
+    tempDirectory,
+    {
+      buildProject: async (options) => {
+        receivedVerbose = options.verbose === true;
+        return {
+          diagnostics: [],
+          exitCode: 0,
+          output: 'built\n',
+          artifacts: {
+            emittedFiles: [],
+            outDir: join(tempDirectory, 'dist'),
+            packageJsonPath: join(tempDirectory, 'dist/package.json'),
+          },
+        };
+      },
+    },
+  );
+
+  assertEquals(result.exitCode, 0);
+  assertEquals(receivedVerbose, true);
+});
+
 Deno.test('runCli passes runtime target override to runProgram', async () => {
   const tempDirectory = await Deno.makeTempDir({ prefix: 'soundscript-check-target-' });
   const projectPath = join(tempDirectory, 'tsconfig.json');

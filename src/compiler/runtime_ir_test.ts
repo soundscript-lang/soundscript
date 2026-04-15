@@ -3,6 +3,7 @@ import { dirname, join } from '@std/path';
 import ts from 'typescript';
 
 import { createSoundStdlibCompilerHost } from '../bundled/sound_stdlib.ts';
+import { collectSoundscriptRootNames, loadConfig } from '../project/config.ts';
 import type { CompilerModuleIR } from './ir.ts';
 import { lowerProgramToCompilerIR } from './lower.ts';
 import { emitCompilerModuleToWat } from './wat_emitter.ts';
@@ -48,7 +49,6 @@ import type {
   CompilerRuntimeTaggedPayloadLayoutIR,
   CompilerRuntimeTaggedValueRepresentationIR,
 } from './runtime_ir.ts';
-import { loadConfig } from '../project/config.ts';
 
 const EXPECTED_ORDINARY_OBJECT_PROTOTYPE_OWN_PROPERTY_KEYS = [
   '__defineGetter__',
@@ -81,12 +81,13 @@ async function createTempProject(
 
 function createCompilerProgram(projectPath: string): ts.Program {
   const loadedConfig = loadConfig(projectPath);
-  const host = createSoundStdlibCompilerHost(loadedConfig.commandLine.options);
+  const soundscriptRootNames = collectSoundscriptRootNames(projectPath, loadedConfig);
+  const host = createSoundStdlibCompilerHost(loadedConfig.frontierCommandLine.options);
   return ts.createProgram({
     host,
-    rootNames: loadedConfig.commandLine.fileNames,
-    options: loadedConfig.commandLine.options,
-    projectReferences: loadedConfig.commandLine.projectReferences,
+    rootNames: [...new Set([...loadedConfig.commandLine.fileNames, ...soundscriptRootNames])],
+    options: loadedConfig.frontierCommandLine.options,
+    projectReferences: loadedConfig.frontierCommandLine.projectReferences,
     configFileParsingDiagnostics: loadedConfig.diagnostics,
   });
 }

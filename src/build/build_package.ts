@@ -104,6 +104,7 @@ export interface BuildProjectOptions {
   outDir: string;
   projectPath: string;
   target?: RuntimeTarget;
+  verbose?: boolean;
   workingDirectory: string;
 }
 
@@ -192,7 +193,7 @@ function createSoundscriptRootDiscoverySignature(
   const explicitFiles = (rawConfig?.files ?? [])
     .map((fileName) => fileName.startsWith('/') ? fileName : join(basePath, fileName))
     .map((fileName) => ts.sys.resolvePath(fileName))
-    .filter((fileName) => fileName.endsWith('.sts'))
+    .filter(loadedConfig.isSoundscriptSourceFile)
     .sort()
     .join('\u0000');
   const includePatterns = rawConfig?.include
@@ -255,6 +256,8 @@ function createBuildCacheHeader(options: BuildProjectOptions): BuildCacheHeader 
     configDiagnosticsSignature: createConfigDiagnosticsSignature(loadedConfig),
     configSignature: stableStringify({
       commandLineOptions: loadedConfig.commandLine.options,
+      frontierCommandLineOptions: loadedConfig.frontierCommandLine.options,
+      frontierProjectReferences: loadedConfig.frontierCommandLine.projectReferences ?? [],
       projectReferences: loadedConfig.commandLine.projectReferences ?? [],
       raw: loadedConfig.commandLine.raw,
       runtime: loadedConfig.runtime,
@@ -492,14 +495,25 @@ function toEntryWrapperRelativePath(exportKey: string): string {
   return exportKey === '.' ? 'index' : exportKey.slice(2);
 }
 
-function renderBuildOutput(artifacts: BuildProjectArtifacts, projectPath: string): string {
+function renderBuildOutput(
+  artifacts: BuildProjectArtifacts,
+  projectPath: string,
+  verbose = false,
+): string {
   const artifactBaseDirectory = dirname(projectPath);
+  const relativeOutDir = relative(artifactBaseDirectory, artifacts.outDir);
+  if (!verbose) {
+    return [
+      `Built package: ${relativeOutDir} (${artifacts.emittedFiles.length} files)`,
+      '',
+    ].join('\n');
+  }
   const renderedFiles = artifacts.emittedFiles
     .map((filePath) => `  ${relative(artifactBaseDirectory, filePath)}`)
     .join('\n');
 
   return [
-    `Built package: ${relative(artifactBaseDirectory, artifacts.outDir)}`,
+    `Built package: ${relativeOutDir}`,
     renderedFiles,
     '',
   ].join('\n');
@@ -578,7 +592,7 @@ function createPackageBuildProgramWithLoadedConfig(
   const soundscriptRootNames = collectSoundscriptRootNames(options.projectPath, loadedConfig);
   return createBuiltinExpandedProgram({
     baseHost: createSoundStdlibCompilerHost(
-      loadedConfig.commandLine.options,
+      loadedConfig.frontierCommandLine.options,
       dirname(options.projectPath),
     ),
     configFileParsingDiagnostics: getConfigFileParsingDiagnostics(
@@ -587,7 +601,7 @@ function createPackageBuildProgramWithLoadedConfig(
     ),
     configuredSoundscriptFileNames: loadedConfig.soundscriptConfiguredFileNames,
     options: {
-      ...loadedConfig.commandLine.options,
+      ...loadedConfig.frontierCommandLine.options,
       declaration: true,
       emitDeclarationOnly: true,
       noEmit: false,
@@ -602,7 +616,7 @@ function createPackageBuildProgramWithLoadedConfig(
       options.projectPath,
       'semantic',
     ),
-    projectReferences: loadedConfig.commandLine.projectReferences,
+    projectReferences: loadedConfig.frontierCommandLine.projectReferences,
     reusableCompilerHostState: createPackageBuildReuseState(
       prepareArtifacts,
       dirname(options.projectPath),
@@ -966,15 +980,16 @@ async function emitPackageBuildOutputs(
     },
     diagnostics: [],
     exitCode: 0,
-    output: renderBuildOutput(
-      {
-        emittedFiles,
-        outDir: options.outDir,
-        packageJsonPath: distPackageJsonPath,
-      },
-      options.projectPath,
-    ),
-  };
+        output: renderBuildOutput(
+          {
+            emittedFiles,
+            outDir: options.outDir,
+            packageJsonPath: distPackageJsonPath,
+          },
+          options.projectPath,
+          options.verbose,
+        ),
+      };
 }
 
 async function writeGeneratedFile(

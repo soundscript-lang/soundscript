@@ -173,6 +173,63 @@ Deno.test('createOnDemandTransformer resolves and transforms local .sts files wi
   assertStringIncludes(transformed.mapText, '/src/main.sts');
 });
 
+Deno.test('createOnDemandTransformer reuses the expanded project program across dependency transforms', async () => {
+  const root = await Deno.makeTempDir({ prefix: 'soundscript-on-demand-reuse-' });
+  await writeProjectFile(
+    root,
+    'tsconfig.json',
+    JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          target: 'ES2022',
+          module: 'ESNext',
+          moduleResolution: 'Bundler',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+  );
+  await writeProjectFile(root, 'src/helper.sts', 'export const helper = 41;\n');
+  await writeProjectFile(
+    root,
+    'src/main.sts',
+    [
+      "import { helper } from './helper';",
+      'export const value = helper + 1;',
+      '',
+    ].join('\n'),
+  );
+
+  const originalError = console.error;
+  const originalTiming = Deno.env.get('SOUNDSCRIPT_CHECKER_TIMING');
+  const logs: string[] = [];
+  console.error = (...args: unknown[]) => {
+    logs.push(args.map((arg) => String(arg)).join(' '));
+  };
+  Deno.env.set('SOUNDSCRIPT_CHECKER_TIMING', '1');
+
+  try {
+    const transformer = createOnDemandTransformer({ workingDirectory: root });
+    await transformer.transformModule(join(root, 'src/main.sts'));
+    await transformer.transformModule(join(root, 'src/helper.sts'));
+  } finally {
+    console.error = originalError;
+    if (originalTiming === undefined) {
+      Deno.env.delete('SOUNDSCRIPT_CHECKER_TIMING');
+    } else {
+      Deno.env.set('SOUNDSCRIPT_CHECKER_TIMING', originalTiming);
+    }
+  }
+
+  const initialProgramBuilds = logs.filter((line) =>
+    line.includes('project.prepare.builtin.initialProgram')
+  );
+  assertEquals(initialProgramBuilds.length, 1, logs.join('\n'));
+});
+
 Deno.test('createOnDemandTransformer lowers JSX in .sts files without requiring tsconfig jsx', async () => {
   const root = await Deno.makeTempDir({ prefix: 'soundscript-on-demand-jsx-' });
   await writeProjectFile(

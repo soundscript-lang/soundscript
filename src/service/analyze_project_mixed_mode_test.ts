@@ -137,6 +137,71 @@ Deno.test('analyzeProject keeps .ts on ordinary TS semantics in mixed .ts/.sts p
   assertEquals(result.diagnostics[0]?.column, 7);
 });
 
+Deno.test('analyzeProject treats included TypeScript frontier files separately from host TypeScript files', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.ts'],
+        soundscript: {
+          include: ['src/frontier.ts'],
+        },
+      },
+      null,
+      2,
+    ),
+    'src/frontier.ts': [
+      'const dict = Object.create(null);',
+      'const plain: object = dict;',
+      'void plain;',
+      '',
+    ].join('\n'),
+    'src/host.ts': [
+      'const dict = Object.create(null);',
+      'const plain: object = dict;',
+      'void plain;',
+      '',
+    ].join('\n'),
+  });
+
+  const baseOptions = {
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  };
+
+  const result = await analyzeProject(baseOptions);
+  const preparedProject = prepareProjectAnalysis(baseOptions);
+
+  assertEquals(
+    summarizeDiagnostics(result.diagnostics),
+    [[
+      'SOUND1024',
+      join(tempDirectory, 'src/frontier.ts'),
+      2,
+      7,
+    ]],
+  );
+  assert(preparedProject.stsView !== null);
+  assert(preparedProject.tsView !== null);
+  assertEquals(
+    preparedProject.stsView.program.getRootFileNames().map((fileName) =>
+      preparedProject.stsView!.preparedProgram.toSourceFileName(fileName)
+    ).sort(),
+    [join(tempDirectory, 'src/frontier.ts')],
+  );
+  assertEquals(
+    preparedProject.tsView.program.getRootFileNames().map((fileName) =>
+      preparedProject.tsView!.preparedProgram.toSourceFileName(fileName)
+    ).sort(),
+    [join(tempDirectory, 'src/host.ts')],
+  );
+});
+
 Deno.test('analyzeProject exposes bare machine numerics only to .sts files in mixed projects', async () => {
   const tempDirectory = await createTempProject({
     'tsconfig.json': JSON.stringify(

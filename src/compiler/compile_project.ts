@@ -35,6 +35,10 @@ import {
   type PreparedSourceFile,
   toSourceFileName,
 } from '../frontend/project_frontend.ts';
+
+function isDeclarationRootFileName(fileName: string): boolean {
+  return fileName.endsWith('.d.ts') || fileName.endsWith('.d.mts') || fileName.endsWith('.d.cts');
+}
 import { CompilerUnsupportedError } from './errors.ts';
 import { lowerProgramToCompilerIR, validateHonestHeapBoundarySurfaces } from './lower.ts';
 import {
@@ -247,9 +251,10 @@ function createProgram(options: CompileProjectOptions): {
 } {
   const loadedConfig = loadConfig(options.projectPath, { target: options.target });
   const soundscriptRootNames = collectSoundscriptRootNames(options.projectPath, loadedConfig);
+  const declarationRootNames = loadedConfig.commandLine.fileNames.filter(isDeclarationRootFileName);
   const expandedProgram = createBuiltinExpandedProgram({
     baseHost: createSoundStdlibCompilerHost(
-      loadedConfig.commandLine.options,
+      loadedConfig.frontierCommandLine.options,
       dirname(options.projectPath),
     ),
     configFileParsingDiagnostics: getConfigFileParsingDiagnostics(
@@ -258,13 +263,13 @@ function createProgram(options: CompileProjectOptions): {
     ),
     configuredSoundscriptFileNames: loadedConfig.soundscriptConfiguredFileNames,
     numericLoweringTarget: 'wasm',
-    options: loadedConfig.commandLine.options,
-    projectReferences: loadedConfig.commandLine.projectReferences,
+    options: loadedConfig.frontierCommandLine.options,
+    projectReferences: loadedConfig.frontierCommandLine.projectReferences,
     runtime: loadedConfig.runtime,
     rootNames: [
       ...new Set([
-        ...loadedConfig.commandLine.fileNames,
         ...soundscriptRootNames,
+        ...declarationRootNames,
       ]),
     ],
   });

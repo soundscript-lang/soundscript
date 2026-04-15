@@ -25,6 +25,10 @@ import { MacroError } from './macro_errors.ts';
 import { makeDirectory, writeTextFile } from '../platform/host.ts';
 import { toSourceFileName } from './project_frontend.ts';
 
+function isDeclarationRootFileName(fileName: string): boolean {
+  return fileName.endsWith('.d.ts') || fileName.endsWith('.d.mts') || fileName.endsWith('.d.cts');
+}
+
 export interface ExpandProjectOptions {
   expansionEnabled?: boolean;
   filePath?: string;
@@ -164,9 +168,10 @@ export async function expandProject(options: ExpandProjectOptions): Promise<Expa
     loadedConfig.soundscript,
   );
   const soundscriptRootNames = collectSoundscriptRootNames(options.projectPath, loadedConfig);
+  const declarationRootNames = loadedConfig.commandLine.fileNames.filter(isDeclarationRootFileName);
   const expandedProgram = createBuiltinExpandedProgram({
     baseHost: createSoundStdlibCompilerHost(
-      loadedConfig.commandLine.options,
+      loadedConfig.frontierCommandLine.options,
       dirname(options.projectPath),
     ),
     configFileParsingDiagnostics: getConfigFileParsingDiagnostics(
@@ -175,13 +180,13 @@ export async function expandProject(options: ExpandProjectOptions): Promise<Expa
     ),
     configuredSoundscriptFileNames: loadedConfig.soundscriptConfiguredFileNames,
     expansionEnabled,
-    options: loadedConfig.commandLine.options,
-    projectReferences: loadedConfig.commandLine.projectReferences,
+    options: loadedConfig.frontierCommandLine.options,
+    projectReferences: loadedConfig.frontierCommandLine.projectReferences,
     runtime: loadedConfig.runtime,
     rootNames: [
       ...new Set([
-        ...loadedConfig.commandLine.fileNames,
         ...soundscriptRootNames,
+        ...declarationRootNames,
       ]),
     ],
   });

@@ -17,6 +17,12 @@ interface TransformProjectContext {
   readonly projectPath: string;
 }
 
+interface TransformProjectSession {
+  expandedProgram?: ReturnType<typeof createExpandedRuntimeProgram>;
+  projectContext: TransformProjectContext;
+  requestedRuntimeRoots: Set<string>;
+}
+
 export interface OnDemandTransformResult extends RuntimeTransformArtifact {
   projectPath: string;
 }
@@ -125,21 +131,69 @@ function findNearestProjectPath(startPath: string): string | undefined {
   }
 }
 
-function getProjectContext(
+function loadProjectContext(projectPath: string): TransformProjectContext {
+  const loadedConfig = loadConfig(projectPath);
+  return {
+    compilerOptions: loadedConfig.frontierCommandLine.options,
+    loadedConfig,
+    projectPath,
+  };
+}
+
+function getPreparedOriginalText(
+  expandedProgram: ReturnType<typeof createExpandedRuntimeProgram>,
+  fileName: string,
+): string | undefined {
+  const programFileName = expandedProgram.preparedProgram.toProgramFileName(fileName);
+  return expandedProgram.preparedProgram.preparedHost.getPreparedSourceFile(programFileName)
+    ?.originalText;
+}
+
+function getExpandedProgramSourceFile(
+  expandedProgram: ReturnType<typeof createExpandedRuntimeProgram>,
+  fileName: string,
+): ts.SourceFile | undefined {
+  return expandedProgram.program.getSourceFile(
+    expandedProgram.preparedProgram.toProgramFileName(fileName),
+  );
+}
+
+function transpileExpandedSourceFile(
+  expandedProgram: ReturnType<typeof createExpandedRuntimeProgram>,
+  fileName: string,
+  projectPath: string,
+): OnDemandTransformResult {
+  const sourceFile = getExpandedProgramSourceFile(expandedProgram, fileName);
+  if (!sourceFile) {
+    throw new Error(`Missing expanded source file for ${fileName}.`);
+  }
+
+  const artifact = transpileTypeScriptModuleToEsm(
+    fileName,
+    `${fileName}.js`,
+    ts.createPrinter().printFile(sourceFile),
+    {
+      module: ts.ModuleKind.ES2022,
+      moduleSpecifierMode: 'preserve',
+      target: ts.ScriptTarget.ES2022,
+    },
+  );
+  return {
+    ...artifact,
+    projectPath,
+  };
+}
+
+function resolveProjectPath(
   fileName: string,
   explicitProjectPath: string | undefined,
-): TransformProjectContext | undefined {
+): string | undefined {
   const projectPath = explicitProjectPath ?? findNearestProjectPath(fileName);
   if (!projectPath) {
     return undefined;
   }
 
-  const loadedConfig = loadConfig(projectPath);
-  return {
-    compilerOptions: loadedConfig.commandLine.options,
-    loadedConfig,
-    projectPath,
-  };
+  return projectPath;
 }
 
 function createExpandedRuntimeProgram(
@@ -148,12 +202,12 @@ function createExpandedRuntimeProgram(
 ) {
   return createBuiltinExpandedProgram({
     baseHost: createSoundStdlibCompilerHost(
-      projectContext.loadedConfig.commandLine.options,
+      projectContext.loadedConfig.frontierCommandLine.options,
       dirname(projectContext.projectPath),
     ),
     configuredSoundscriptFileNames: projectContext.loadedConfig.soundscriptConfiguredFileNames,
-    options: projectContext.loadedConfig.commandLine.options,
-    projectReferences: projectContext.loadedConfig.commandLine.projectReferences,
+    options: projectContext.loadedConfig.frontierCommandLine.options,
+    projectReferences: projectContext.loadedConfig.frontierCommandLine.projectReferences,
     rootNames,
     runtime: projectContext.loadedConfig.runtime,
   });
@@ -164,6 +218,78 @@ export function createOnDemandTransformer(
 ): SyncOnDemandTransformer {
   const soundscriptCache = new Map<string, OnDemandTransformResult>();
   const typeScriptCache = new Map<string, OnDemandTransformResult>();
+  const projectContextByPath = new Map<string, TransformProjectContext>();
+  const projectPathByFileName = new Map<string, string | undefined>();
+  const projectSessionsByPath = new Map<string, TransformProjectSession>();
+
+  function getProjectContext(
+    fileName: string,
+    explicitProjectPath: string | undefined,
+  ): TransformProjectContext | undefined {
+    const cachedProjectPath = explicitProjectPath === undefined
+      ? projectPathByFileName.get(fileName)
+      : undefined;
+    const projectPath = cachedProjectPath !== undefined
+      ? cachedProjectPath
+      : resolveProjectPath(fileName, explicitProjectPath);
+    if (explicitProjectPath === undefined) {
+      projectPathByFileName.set(fileName, projectPath);
+    }
+    if (!projectPath) {
+      return undefined;
+    }
+
+    const cachedContext = projectContextByPath.get(projectPath);
+    if (cachedContext) {
+      return cachedContext;
+    }
+
+    const projectContext = loadProjectContext(projectPath);
+    projectContextByPath.set(projectPath, projectContext);
+    return projectContext;
+  }
+
+  function getProjectSession(projectContext: TransformProjectContext): TransformProjectSession {
+    const cachedSession = projectSessionsByPath.get(projectContext.projectPath);
+    if (cachedSession) {
+      return cachedSession;
+    }
+
+    const session: TransformProjectSession = {
+      projectContext,
+      requestedRuntimeRoots: new Set(),
+    };
+    projectSessionsByPath.set(projectContext.projectPath, session);
+    return session;
+  }
+
+  function ensureExpandedProgramForFile(
+    session: TransformProjectSession,
+    fileName: string,
+    sourceText: string,
+  ): ReturnType<typeof createExpandedRuntimeProgram> {
+    const currentProgram = session.expandedProgram;
+    const currentSourceFile = currentProgram && getExpandedProgramSourceFile(currentProgram, fileName);
+    if (
+      currentProgram &&
+      currentSourceFile &&
+      getPreparedOriginalText(currentProgram, fileName) === sourceText
+    ) {
+      return currentProgram;
+    }
+
+    if (!currentSourceFile) {
+      session.requestedRuntimeRoots.add(fileName);
+    }
+
+    const nextProgram = createExpandedRuntimeProgram(
+      session.projectContext,
+      [...session.requestedRuntimeRoots],
+    );
+    session.expandedProgram?.dispose();
+    session.expandedProgram = nextProgram;
+    return nextProgram;
+  }
 
   function transformModuleSync(fileName: string): OnDemandTransformResult {
     const projectContext = getProjectContext(fileName, options.projectPath);
@@ -182,35 +308,18 @@ export function createOnDemandTransformer(
       if (cachedFull) {
         return cachedFull;
       }
-      const expandedProgram = createExpandedRuntimeProgram(projectContext, [fileName]);
+      const session = getProjectSession(projectContext);
       try {
-        const transpileExpanded = (): OnDemandTransformResult => {
-          const programFileName = expandedProgram.preparedProgram.toProgramFileName(fileName);
-          const sourceFile = expandedProgram.program.getSourceFile(programFileName);
-          if (!sourceFile) {
-            throw new Error(`Missing expanded source file for ${fileName}.`);
-          }
-          const artifact = transpileTypeScriptModuleToEsm(
-            fileName,
-            `${fileName}.js`,
-            ts.createPrinter().printFile(sourceFile),
-            {
-              module: ts.ModuleKind.ES2022,
-              moduleSpecifierMode: 'preserve',
-              target: ts.ScriptTarget.ES2022,
-            },
-          );
-          return {
-            ...artifact,
-            projectPath: projectContext.projectPath,
-          };
-        };
-
-        const result = transpileExpanded();
+        const expandedProgram = ensureExpandedProgramForFile(session, fileName, sourceText);
+        const result = transpileExpandedSourceFile(
+          expandedProgram,
+          fileName,
+          projectContext.projectPath,
+        );
         soundscriptCache.set(fullCacheKey, result);
         return result;
       } finally {
-        expandedProgram.dispose();
+        projectSessionsByPath.set(projectContext.projectPath, session);
       }
     }
 
