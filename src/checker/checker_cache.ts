@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import process from 'node:process';
 
 import ts from 'typescript';
 
@@ -36,6 +37,10 @@ import type { MergedDiagnostic } from './diagnostics.ts';
 import type { FlowFileRuleCache } from './rules/flow.ts';
 import type { FileDiagnosticRuleCacheEntry } from './rules/index.ts';
 import { getSoundscriptToolFingerprint } from '../version.ts';
+import {
+  resolvePackageVerificationCacheDirectory,
+  writePackageVerificationCacheEntries,
+} from './package_verification_cache.ts';
 
 const CHECKER_CACHE_SCHEMA_VERSION = 10;
 const CHECKER_CACHE_ROOT_DIRECTORY = '.soundscript-cache';
@@ -593,6 +598,9 @@ function collectPreparedProjectDependencyDependents(
       packageSourceFilePaths,
     ),
   );
+  for (const summary of preparedProject.packageVerificationSummaries) {
+    addDependents(restoreDependencyDependents(summary.dependencyDependents));
+  }
 
   return new Map(
     [...dependents.entries()].map(([filePath, fileDependents]) => [
@@ -784,6 +792,14 @@ function emitPreparedProjectDependencySignatureHashes(
 
   emitForView(preparedProject.stsView, 'sts');
   emitForView(preparedProject.packageSourcePolicyView, 'packageSource');
+  const requestedFilePaths = new Set(filePaths);
+  for (const summary of preparedProject.packageVerificationSummaries) {
+    for (const [filePath, signature] of Object.entries(summary.dependencySignatures)) {
+      if (requestedFilePaths.has(filePath)) {
+        signatures[filePath] = signature;
+      }
+    }
+  }
   return signatures;
 }
 
@@ -1294,6 +1310,56 @@ function writeCheckerCacheManifest(
   }
 }
 
+function writePackageVerificationCacheFromManifest(
+  options: PersistentCheckerRunOptions,
+  preparedProject: PreparedAnalysisProject,
+  manifest: CheckerCacheManifest,
+): void {
+  if (
+    !(options.useCache ?? true) ||
+    preparedProject.packageVerificationCacheMissUnits.length === 0 ||
+    !preparedProject.packageSourcePolicyView
+  ) {
+    return;
+  }
+
+  let projectedDeclarations: ReadonlyMap<string, string>;
+  try {
+    projectedDeclarations = emitProjectedDeclarations(
+      preparedProject.packageSourcePolicyView.analysisPreparedProgram,
+      manifest.files
+        .filter((file) => file.view === 'packageSource')
+        .map((file) => file.filePath),
+    );
+  } catch (error) {
+    logCheckerTiming('project.packageVerificationCache.write.skipped', 0, {
+      error: error instanceof Error ? `${error.name}: ${error.message}` : String(error),
+      projectPath: options.projectPath,
+    }, { always: true });
+    return;
+  }
+
+  try {
+    writePackageVerificationCacheEntries({
+      cacheDir: options.cacheDir,
+      dependencyDependents: manifest.dependencyDependents,
+      dependencySignatures: manifest.dependencySignatures,
+      files: manifest.files.filter((file) => file.view === 'packageSource'),
+      projectPath: options.projectPath,
+      projectedDeclarations,
+      sourceSurfaceSignatures: manifest.sourceSurfaceSignatures,
+      units: preparedProject.packageVerificationCacheMissUnits,
+      useCache: options.useCache ?? true,
+    });
+  } catch (error) {
+    logCheckerTiming('project.packageVerificationCache.write.failed', 0, {
+      cacheDir: resolvePackageVerificationCacheDirectory(options.projectPath, options.cacheDir),
+      error: error instanceof Error ? `${error.name}: ${error.message}` : String(error),
+      projectPath: options.projectPath,
+    }, { always: true });
+  }
+}
+
 export function writePreparedProjectToPersistentCheckerCache(
   options: PersistentCheckerRunOptions,
   preparedProject: PreparedAnalysisProject,
@@ -1425,6 +1491,7 @@ export function writePreparedProjectToPersistentCheckerCache(
       () => writeCheckerCacheManifest(options, manifest),
       { always: true },
     );
+    writePackageVerificationCacheFromManifest(options, preparedProject, manifest);
   } catch (error) {
     logCheckerTiming('project.cache.write.failed', 0, {
       error: error instanceof Error ? `${error.name}: ${error.message}` : String(error),
@@ -1478,10 +1545,12 @@ export function analyzeProjectWithPersistentCacheForReuse(
     ? createCheckerCacheBuildInfoDirectory(options.projectPath, options.cacheDir)
     : undefined;
   const preparedProject = prepareProjectAnalysis(options, undefined, {
+    packageVerificationCacheDir: options.cacheDir,
     persistentBuildInfoDirectory,
     persistentReuseSnapshots: cacheReadResult.kind === 'stale'
       ? cacheReadResult.manifest.prepareArtifacts
       : undefined,
+    usePackageVerificationCache: useCache,
   });
   try {
     const previousMetadataByFilePath = cacheReadResult.kind === 'stale'
@@ -1782,6 +1851,7 @@ export function analyzeProjectWithPersistentCacheForReuse(
           () => writeCheckerCacheManifest(options, manifest),
           { always: true },
         );
+        writePackageVerificationCacheFromManifest(options, preparedProject, manifest);
       } catch (error) {
         logCheckerTiming('project.cache.write.failed', 0, {
           error: error instanceof Error ? `${error.name}: ${error.message}` : String(error),
