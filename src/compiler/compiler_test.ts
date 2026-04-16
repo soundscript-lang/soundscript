@@ -2642,6 +2642,117 @@ compilerIntegrationTest(
 );
 
 compilerIntegrationTest(
+  'compileProject executes WeakMap object-key set, get, has, and delete operations',
+  async () => {
+    const tempDirectory = await createCompilerTestProject([
+      'type Box = { value: number };',
+      '',
+      'export function main(): number {',
+      '  const left: Box = { value: 1 };',
+      '  const right: Box = { value: 2 };',
+      '  const missing: Box = { value: 3 };',
+      '  const map = new WeakMap<Box, number>();',
+      '  map.set(left, 4);',
+      '  map.set(right, 5);',
+      '  map.set(left, 7);',
+      '  let score = 0;',
+      '  if (map.has(left)) {',
+      '    score = score * 10 + 1;',
+      '  }',
+      '  if (map.has(missing)) {',
+      '    score = score * 10 + 1;',
+      '  } else {',
+      '    score = score * 10;',
+      '  }',
+      '  const leftValue = map.get(left) ?? 0;',
+      '  const rightValue = map.get(right) ?? 0;',
+      '  const missingValue = map.get(missing) ?? 9;',
+      '  const deletedLeft = map.delete(left) ? 1 : 0;',
+      '  const deletedMissing = map.delete(missing) ? 1 : 0;',
+      '  const afterDelete = map.get(left) ?? 6;',
+      '  return score * 100000',
+      '    + leftValue * 10000',
+      '    + rightValue * 1000',
+      '    + missingValue * 100',
+      '    + deletedLeft * 10',
+      '    + deletedMissing',
+      '    + afterDelete;',
+      '}',
+      '',
+    ].join('\n'));
+
+    const result = compileTempProject(tempDirectory);
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assertEquals(await invokeCompiledEntry(tempDirectory, 'main', []), 1_075_916);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject executes WeakSet object-key add, has, and delete operations',
+  async () => {
+    const tempDirectory = await createCompilerTestProject([
+      'type Box = { value: number };',
+      '',
+      'export function main(): number {',
+      '  const left: Box = { value: 1 };',
+      '  const right: Box = { value: 2 };',
+      '  const missing: Box = { value: 3 };',
+      '  const set = new WeakSet<Box>();',
+      '  set.add(left);',
+      '  set.add(right);',
+      '  set.add(left);',
+      '  const hasLeft = set.has(left) ? 1 : 0;',
+      '  const hasMissing = set.has(missing) ? 1 : 0;',
+      '  const deletedLeft = set.delete(left) ? 1 : 0;',
+      '  const deletedMissing = set.delete(missing) ? 1 : 0;',
+      '  const afterDelete = set.has(left) ? 1 : 0;',
+      '  const stillRight = set.has(right) ? 1 : 0;',
+      '  set.add(left);',
+      '  const afterReadd = set.has(left) ? 1 : 0;',
+      '  return hasLeft * 1000000',
+      '    + hasMissing * 100000',
+      '    + deletedLeft * 10000',
+      '    + deletedMissing * 1000',
+      '    + afterDelete * 100',
+      '    + stillRight * 10',
+      '    + afterReadd;',
+      '}',
+      '',
+    ].join('\n'));
+
+    const result = compileTempProject(tempDirectory);
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assertEquals(await invokeCompiledEntry(tempDirectory, 'main', []), 1_010_011);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject omits WeakMap and WeakSet backing helpers when unused',
+  async () => {
+    const tempDirectory = await createCompilerTestProject([
+      'export function main(): number {',
+      '  return 42;',
+      '}',
+      '',
+    ].join('\n'));
+
+    const result = compileTempProject(tempDirectory);
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    const watOutput = await readWatArtifact(tempDirectory);
+    assertFalse(watOutput.includes('__weakmap_keys'));
+    assertFalse(watOutput.includes('__weakmap_values'));
+    assertFalse(watOutput.includes('__weakset_values'));
+    assertFalse(watOutput.includes('owned_heap_array_index_of'));
+  },
+);
+
+compilerIntegrationTest(
   'compileProject executes initial Set constructor, add, has, delete, clear, and size operations',
   async () => {
     const tempDirectory = await createCompilerTestProject([
