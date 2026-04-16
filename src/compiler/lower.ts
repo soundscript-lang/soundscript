@@ -4361,6 +4361,13 @@ function lowerExpressionAsValueType(
     );
   }
   if (targetType === 'owned_tagged_array_ref') {
+    if (ts.isArrayLiteralExpression(expression) && expression.elements.length === 0) {
+      return {
+        kind: 'owned_tagged_array_literal',
+        elements: [],
+        type: 'owned_tagged_array_ref',
+      };
+    }
     const ownedExpression = tryLowerOwnedTaggedArrayExpression(expression, context);
     if (ownedExpression) {
       return ownedExpression;
