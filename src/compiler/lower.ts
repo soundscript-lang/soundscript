@@ -4083,10 +4083,17 @@ function getVariableDeclarationLoweringInfo(
       (isSupportedNumberKeyMapNewExpression(declaration.initializer, context)
         ? ensureObjectDynamicRepresentation(context.runtime)
         : undefined) ??
+      (isSupportedTaggedKeyNumberValueMapNewExpression(declaration.initializer, context)
+        ? ensureObjectDynamicRepresentation(context.runtime)
+        : undefined) ??
       (isSupportedStringKeyMapNewExpression(declaration.initializer, context)
         ? ensureObjectDynamicRepresentation(context.runtime)
         : undefined) ??
       getNumberKeyMapSetResultRepresentationFromExpression(declaration.initializer, context) ??
+      getTaggedKeyNumberValueMapSetResultRepresentationFromExpression(
+        declaration.initializer,
+        context,
+      ) ??
       getStringKeyMapSetResultRepresentationFromExpression(declaration.initializer, context) ??
       (isSupportedStringKeySetNewExpression(declaration.initializer, context)
         ? ensureObjectDynamicRepresentation(context.runtime)
@@ -15429,6 +15436,72 @@ function isSupportedNumberKeyMapType(checker: ts.TypeChecker, type: ts.Type): bo
   return getSupportedNumberKeyMapTypeInfo(checker, type) !== undefined;
 }
 
+interface SupportedTaggedKeyNumberValueMapTypeInfo {
+  readonly: boolean;
+  keyType: ts.Type;
+  valueType: ts.Type;
+  keysArrayType: 'owned_tagged_array_ref';
+  keysElementType: 'tagged_ref';
+  valuesArrayType: 'owned_number_array_ref';
+  valuesElementType: 'f64';
+}
+
+function isSupportedTaggedMapKeyType(checker: ts.TypeChecker, type: ts.Type): boolean {
+  if (isStringLikeType(type) || (type.flags & ts.TypeFlags.NumberLike) !== 0) {
+    return false;
+  }
+  if ((type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown | ts.TypeFlags.BooleanLike)) !== 0) {
+    return true;
+  }
+  return isTaggedCompilerUnionType(type) ||
+    isSupportedTaggedHeapNullableType(checker, type) ||
+    isSupportedInternalTaggedHeapUnionType(checker, type) ||
+    isDefinitelyUndefinedType(type) ||
+    isDefinitelyNullType(type);
+}
+
+function getSupportedTaggedKeyNumberValueMapTypeInfo(
+  checker: ts.TypeChecker,
+  type: ts.Type,
+): SupportedTaggedKeyNumberValueMapTypeInfo | undefined {
+  const apparentType = checker.getApparentType(type);
+  const symbol = apparentType.aliasSymbol ?? apparentType.getSymbol();
+  const symbolName = symbol?.getName();
+  if (symbolName !== 'Map' && symbolName !== 'ReadonlyMap') {
+    return undefined;
+  }
+  if ((apparentType.flags & ts.TypeFlags.Object) === 0) {
+    return undefined;
+  }
+  const typeArguments = checker.getTypeArguments(apparentType as ts.TypeReference);
+  const keyType = typeArguments[0];
+  const valueType = typeArguments[1];
+  if (
+    !keyType ||
+    !valueType ||
+    !isSupportedTaggedMapKeyType(checker, keyType) ||
+    (valueType.flags & ts.TypeFlags.NumberLike) === 0
+  ) {
+    return undefined;
+  }
+  return {
+    readonly: symbolName === 'ReadonlyMap',
+    keyType,
+    valueType,
+    keysArrayType: 'owned_tagged_array_ref',
+    keysElementType: 'tagged_ref',
+    valuesArrayType: 'owned_number_array_ref',
+    valuesElementType: 'f64',
+  };
+}
+
+function isSupportedTaggedKeyNumberValueMapType(
+  checker: ts.TypeChecker,
+  type: ts.Type,
+): boolean {
+  return getSupportedTaggedKeyNumberValueMapTypeInfo(checker, type) !== undefined;
+}
+
 interface SupportedSetElementTypeInfo {
   valuesArrayType:
     | 'owned_array_ref'
@@ -15706,6 +15779,18 @@ function isSupportedNumberKeyMapNewExpression(
 ): expression is ts.NewExpression {
   return ts.isNewExpression(expression) &&
     getSupportedNumberKeyMapTypeInfo(
+        context.checker,
+        context.checker.getTypeAtLocation(expression),
+      ) !==
+      undefined;
+}
+
+function isSupportedTaggedKeyNumberValueMapNewExpression(
+  expression: ts.Expression,
+  context: FunctionLoweringContext,
+): expression is ts.NewExpression {
+  return ts.isNewExpression(expression) &&
+    getSupportedTaggedKeyNumberValueMapTypeInfo(
         context.checker,
         context.checker.getTypeAtLocation(expression),
       ) !==
@@ -16819,6 +16904,318 @@ function lowerSupportedNumberKeyMapLookupIndex(
   );
 }
 
+const supportedTaggedKeyNumberValueMapKeysPropertyKey = '__map_tagged_keys';
+const supportedTaggedKeyNumberValueMapValuesPropertyKey = '__map_tagged_number_values';
+
+function createSupportedTaggedKeyNumberValueMapKeysPropertyKeyName(
+  context: FunctionLoweringContext,
+  statements: CompilerStatementIR[],
+  baseName: string,
+): string {
+  return createOwnedStringLiteralLocal(
+    supportedTaggedKeyNumberValueMapKeysPropertyKey,
+    context,
+    statements,
+    `${baseName}_keys_key`,
+  );
+}
+
+function createSupportedTaggedKeyNumberValueMapValuesPropertyKeyName(
+  context: FunctionLoweringContext,
+  statements: CompilerStatementIR[],
+  baseName: string,
+): string {
+  return createOwnedStringLiteralLocal(
+    supportedTaggedKeyNumberValueMapValuesPropertyKey,
+    context,
+    statements,
+    `${baseName}_values_key`,
+  );
+}
+
+function lowerSupportedTaggedKeyNumberValueMapKeysArrayRead(
+  objectName: string,
+  representation: CompilerRuntimeDynamicObjectRepresentationRefIR,
+  context: FunctionLoweringContext,
+  baseName: string,
+): CompilerExpressionIR {
+  const keyStatements: CompilerStatementIR[] = [];
+  const propertyKeyName = createSupportedTaggedKeyNumberValueMapKeysPropertyKeyName(
+    context,
+    keyStatements,
+    baseName,
+  );
+  context.expressionPreludeStatements.push(...keyStatements);
+  return lowerDynamicObjectPropertyReadAsValueType(
+    objectName,
+    representation,
+    propertyKeyName,
+    'owned_tagged_array_ref',
+    context,
+  );
+}
+
+function lowerSupportedTaggedKeyNumberValueMapValuesArrayRead(
+  objectName: string,
+  representation: CompilerRuntimeDynamicObjectRepresentationRefIR,
+  context: FunctionLoweringContext,
+  baseName: string,
+): CompilerExpressionIR {
+  const keyStatements: CompilerStatementIR[] = [];
+  const propertyKeyName = createSupportedTaggedKeyNumberValueMapValuesPropertyKeyName(
+    context,
+    keyStatements,
+    baseName,
+  );
+  context.expressionPreludeStatements.push(...keyStatements);
+  return lowerDynamicObjectPropertyReadAsValueType(
+    objectName,
+    representation,
+    propertyKeyName,
+    'owned_number_array_ref',
+    context,
+  );
+}
+
+function materializeSupportedTaggedKeyNumberValueMapKeysArray(
+  objectName: string,
+  representation: CompilerRuntimeDynamicObjectRepresentationRefIR,
+  context: FunctionLoweringContext,
+  baseName: string,
+): string {
+  return materializeLoweredExpressionToLocal(
+    lowerSupportedTaggedKeyNumberValueMapKeysArrayRead(
+      objectName,
+      representation,
+      context,
+      baseName,
+    ),
+    context,
+    baseName,
+  );
+}
+
+function materializeSupportedTaggedKeyNumberValueMapValuesArray(
+  objectName: string,
+  representation: CompilerRuntimeDynamicObjectRepresentationRefIR,
+  context: FunctionLoweringContext,
+  baseName: string,
+): string {
+  return materializeLoweredExpressionToLocal(
+    lowerSupportedTaggedKeyNumberValueMapValuesArrayRead(
+      objectName,
+      representation,
+      context,
+      baseName,
+    ),
+    context,
+    baseName,
+  );
+}
+
+function initializeSupportedTaggedKeyNumberValueMapKeysArrayProperty(
+  objectName: string,
+  representation: CompilerRuntimeDynamicObjectRepresentationRefIR,
+  arrayExpression: CompilerExpressionIR,
+  context: FunctionLoweringContext,
+  baseName: string,
+): string {
+  const arrayName = materializeLoweredExpressionToLocal(
+    arrayExpression,
+    context,
+    `${baseName}_keys`,
+    true,
+  );
+  const keyStatements: CompilerStatementIR[] = [];
+  const propertyKeyName = createSupportedTaggedKeyNumberValueMapKeysPropertyKeyName(
+    context,
+    keyStatements,
+    baseName,
+  );
+  context.expressionPreludeStatements.push(...keyStatements);
+  context.expressionPreludeStatements.push({
+    kind: 'dynamic_object_property_set',
+    objectName,
+    propertyKeyName,
+    value: {
+      kind: 'tag_heap_object',
+      value: {
+        kind: 'local_get',
+        name: arrayName,
+        type: 'owned_tagged_array_ref',
+      },
+      type: 'tagged_ref',
+    },
+  });
+  return arrayName;
+}
+
+function initializeSupportedTaggedKeyNumberValueMapValuesArrayProperty(
+  objectName: string,
+  representation: CompilerRuntimeDynamicObjectRepresentationRefIR,
+  arrayExpression: CompilerExpressionIR,
+  context: FunctionLoweringContext,
+  baseName: string,
+): string {
+  const arrayName = materializeLoweredExpressionToLocal(
+    arrayExpression,
+    context,
+    `${baseName}_values`,
+    true,
+  );
+  const keyStatements: CompilerStatementIR[] = [];
+  const propertyKeyName = createSupportedTaggedKeyNumberValueMapValuesPropertyKeyName(
+    context,
+    keyStatements,
+    baseName,
+  );
+  context.expressionPreludeStatements.push(...keyStatements);
+  context.expressionPreludeStatements.push({
+    kind: 'dynamic_object_property_set',
+    objectName,
+    propertyKeyName,
+    value: {
+      kind: 'tag_heap_object',
+      value: {
+        kind: 'local_get',
+        name: arrayName,
+        type: 'owned_number_array_ref',
+      },
+      type: 'tagged_ref',
+    },
+  });
+  return arrayName;
+}
+
+function getTaggedKeyNumberValueMapOperationKinds(
+  expression: ts.Expression,
+  context: FunctionLoweringContext,
+): CompilerTaggedPrimitiveBoundaryKindsIR {
+  const type = context.checker.getTypeAtLocation(expression);
+  const directKinds = getHostTaggedBoundaryKinds(type);
+  if (directKinds) {
+    return toCompilerTaggedPrimitiveBoundaryKinds(directKinds)!;
+  }
+  if ((type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0) {
+    return HOST_TAGGED_OBJECT_VALUE_BOUNDARY_KINDS;
+  }
+  if (isStringLikeType(type)) {
+    return { includesString: true };
+  }
+  if ((type.flags & ts.TypeFlags.NumberLike) !== 0) {
+    return { includesNumber: true };
+  }
+  if ((type.flags & ts.TypeFlags.BooleanLike) !== 0) {
+    return { includesBoolean: true };
+  }
+  if (isDefinitelyUndefinedType(type)) {
+    return { includesUndefined: true };
+  }
+  if (isDefinitelyNullType(type)) {
+    return { includesNull: true };
+  }
+  return {};
+}
+
+function upsertSupportedTaggedKeyNumberValueMapEntry(
+  keysName: string,
+  valuesName: string,
+  keyName: string,
+  valueName: string,
+  keyKinds: CompilerTaggedPrimitiveBoundaryKindsIR,
+  context: FunctionLoweringContext,
+): void {
+  const indexName = createLocalName('map_index', context.nextLocalId);
+  context.nextLocalId += 1;
+  context.locals.push({ name: indexName, type: 'f64' });
+  context.expressionPreludeStatements.push({
+    kind: 'local_set',
+    name: indexName,
+    value: createOwnedArrayIndexOfExpression(
+      keysName,
+      'owned_tagged_array_ref',
+      {
+        kind: 'local_get',
+        name: keyName,
+        type: 'tagged_ref',
+      },
+      keyKinds,
+    ),
+  });
+  context.expressionPreludeStatements.push({
+    kind: 'if',
+    condition: {
+      kind: 'binary',
+      op: 'f64.ge',
+      left: {
+        kind: 'local_get',
+        name: indexName,
+        type: 'f64',
+      },
+      right: {
+        kind: 'number_literal',
+        value: 0,
+      },
+      type: 'i32',
+    },
+    thenBody: [{
+      kind: 'owned_number_array_set',
+      array: {
+        kind: 'local_get',
+        name: valuesName,
+        type: 'owned_number_array_ref',
+      },
+      index: {
+        kind: 'local_get',
+        name: indexName,
+        type: 'f64',
+      },
+      value: {
+        kind: 'local_get',
+        name: valueName,
+        type: 'f64',
+      },
+    }],
+    elseBody: [
+      {
+        kind: 'expression',
+        value: createOwnedArrayPushValueExpression(
+          keysName,
+          'owned_tagged_array_ref',
+          keyName,
+          'tagged_ref',
+        ),
+      },
+      {
+        kind: 'expression',
+        value: createOwnedArrayPushValueExpression(
+          valuesName,
+          'owned_number_array_ref',
+          valueName,
+          'f64',
+        ),
+      },
+    ],
+  });
+}
+
+function lowerSupportedTaggedKeyNumberValueMapLookupIndex(
+  keysName: string,
+  keyName: string,
+  keyKinds: CompilerTaggedPrimitiveBoundaryKindsIR,
+): CompilerExpressionIR {
+  return createOwnedArrayIndexOfExpression(
+    keysName,
+    'owned_tagged_array_ref',
+    {
+      kind: 'local_get',
+      name: keyName,
+      type: 'tagged_ref',
+    },
+    keyKinds,
+  );
+}
+
 const supportedSetValuesPropertyKey = '__set_values';
 
 function createSupportedSetValuesPropertyKeyName(
@@ -16909,8 +17306,13 @@ function initializeSupportedSetValuesArrayProperty(
 
 function createOwnedArrayIndexOfExpression(
   arrayName: string,
-  arrayType: 'owned_array_ref' | 'owned_number_array_ref' | 'owned_boolean_array_ref',
+  arrayType:
+    | 'owned_array_ref'
+    | 'owned_number_array_ref'
+    | 'owned_boolean_array_ref'
+    | 'owned_tagged_array_ref',
   searchExpression: CompilerExpressionIR,
+  taggedKinds: CompilerTaggedPrimitiveBoundaryKindsIR = HOST_TAGGED_OBJECT_VALUE_BOUNDARY_KINDS,
 ): CompilerExpressionIR {
   switch (arrayType) {
     case 'owned_array_ref':
@@ -16946,6 +17348,18 @@ function createOwnedArrayIndexOfExpression(
         search: searchExpression,
         type: 'f64',
       };
+    case 'owned_tagged_array_ref':
+      return {
+        kind: 'owned_tagged_array_index_of',
+        array: {
+          kind: 'local_get',
+          name: arrayName,
+          type: 'owned_tagged_array_ref',
+        },
+        kinds: taggedKinds,
+        search: searchExpression,
+        type: 'f64',
+      };
     default: {
       const exhaustiveCheck: never = arrayType;
       return exhaustiveCheck;
@@ -16955,7 +17369,10 @@ function createOwnedArrayIndexOfExpression(
 
 function createOwnedArrayDeleteAtExpression(
   arrayName: string,
-  arrayType: 'owned_array_ref' | 'owned_number_array_ref' | 'owned_boolean_array_ref',
+  arrayType:
+    | 'owned_array_ref'
+    | 'owned_number_array_ref'
+    | 'owned_boolean_array_ref',
   indexExpression: CompilerExpressionIR,
 ): CompilerExpressionIR {
   const emptyItems = createOwnedArrayEmptyLiteral(arrayType);
@@ -17309,6 +17726,51 @@ function getNumberKeyMapSetResultRepresentationFromExpression(
   return receiverRepresentation?.kind === 'dynamic_object_representation'
     ? receiverRepresentation
     : isSupportedNumberKeyMapNewExpression(receiver, context)
+    ? ensureObjectDynamicRepresentation(context.runtime)
+    : undefined;
+}
+
+function getTaggedKeyNumberValueMapSetResultRepresentationFromExpression(
+  expression: ts.Expression,
+  context: FunctionLoweringContext,
+): CompilerRuntimeDynamicObjectRepresentationRefIR | undefined {
+  if (ts.isParenthesizedExpression(expression)) {
+    return getTaggedKeyNumberValueMapSetResultRepresentationFromExpression(
+      expression.expression,
+      context,
+    );
+  }
+  if (
+    ts.isAsExpression(expression) &&
+    (
+      isRepresentationSafeHeapCast(context.checker, expression) ||
+      isHeapToBagGeneralizationCast(context.checker, expression)
+    )
+  ) {
+    return getTaggedKeyNumberValueMapSetResultRepresentationFromExpression(
+      expression.expression,
+      context,
+    );
+  }
+  if (!ts.isCallExpression(expression) || !ts.isPropertyAccessExpression(expression.expression)) {
+    return undefined;
+  }
+  if (expression.expression.name.text !== 'set') {
+    return undefined;
+  }
+  const receiver = expression.expression.expression;
+  if (
+    !isSupportedTaggedKeyNumberValueMapType(
+      context.checker,
+      context.checker.getTypeAtLocation(receiver),
+    )
+  ) {
+    return undefined;
+  }
+  const receiverRepresentation = getHeapObjectRepresentationFromExpression(receiver, context);
+  return receiverRepresentation?.kind === 'dynamic_object_representation'
+    ? receiverRepresentation
+    : isSupportedTaggedKeyNumberValueMapNewExpression(receiver, context)
     ? ensureObjectDynamicRepresentation(context.runtime)
     : undefined;
 }
@@ -26507,6 +26969,9 @@ function getHeapObjectRepresentationFromExpression(
   if (isSupportedNumberKeyMapNewExpression(expression, context)) {
     return ensureObjectDynamicRepresentation(context.runtime);
   }
+  if (isSupportedTaggedKeyNumberValueMapNewExpression(expression, context)) {
+    return ensureObjectDynamicRepresentation(context.runtime);
+  }
   if (isSupportedStringKeyMapNewExpression(expression, context)) {
     return ensureObjectDynamicRepresentation(context.runtime);
   }
@@ -26535,6 +27000,11 @@ function getHeapObjectRepresentationFromExpression(
   );
   if (numberKeyMapSetRepresentation) {
     return numberKeyMapSetRepresentation;
+  }
+  const taggedKeyNumberValueMapSetRepresentation =
+    getTaggedKeyNumberValueMapSetResultRepresentationFromExpression(expression, context);
+  if (taggedKeyNumberValueMapSetRepresentation) {
+    return taggedKeyNumberValueMapSetRepresentation;
   }
   const promiseRepresentation = getPromiseResultRepresentationFromExpression(expression, context);
   if (promiseRepresentation) {
@@ -56471,6 +56941,67 @@ function lowerInitialNumberKeyMapNewExpression(
   };
 }
 
+function lowerInitialTaggedKeyNumberValueMapNewExpression(
+  expression: ts.NewExpression,
+  context: FunctionLoweringContext,
+): CompilerExpressionIR {
+  if ((expression.arguments?.length ?? 0) !== 0) {
+    throw new CompilerUnsupportedError(
+      'Tagged-key Map construction currently supports only zero arguments in compiler subset.',
+      expression,
+    );
+  }
+  const mapTypeInfo = getSupportedTaggedKeyNumberValueMapTypeInfo(
+    context.checker,
+    context.checker.getTypeAtLocation(expression),
+  );
+  if (!mapTypeInfo) {
+    throw new CompilerUnsupportedError(
+      'Tagged-key Map construction currently supports only tagged keys and number values in compiler subset.',
+      expression,
+    );
+  }
+  const representation = ensureObjectDynamicRepresentation(context.runtime);
+  const resultName = createLocalName('map', context.nextLocalId);
+  context.nextLocalId += 1;
+  context.locals.push({ name: resultName, type: 'heap_ref' });
+  context.functionRuntime.operations.push({
+    kind: 'allocate_dynamic_object',
+    resultName,
+    representation,
+    entries: [],
+  });
+  context.expressionPreludeStatements.push({
+    kind: 'local_set',
+    name: resultName,
+    value: {
+      kind: 'heap_placeholder',
+      debugName: 'map_instance',
+      type: 'heap_ref',
+    },
+  });
+  context.functionRuntime.heapObjectRepresentationsByLocal.set(resultName, representation);
+  initializeSupportedTaggedKeyNumberValueMapKeysArrayProperty(
+    resultName,
+    representation,
+    createOwnedArrayEmptyLiteral(mapTypeInfo.keysArrayType),
+    context,
+    'map',
+  );
+  initializeSupportedTaggedKeyNumberValueMapValuesArrayProperty(
+    resultName,
+    representation,
+    createOwnedArrayEmptyLiteral(mapTypeInfo.valuesArrayType),
+    context,
+    'map',
+  );
+  return {
+    kind: 'local_get',
+    name: resultName,
+    type: 'heap_ref',
+  };
+}
+
 function lowerInitialStringKeySetNewExpression(
   expression: ts.NewExpression,
   context: FunctionLoweringContext,
@@ -57175,6 +57706,258 @@ function lowerInitialNumberKeyMapCallExpression(
       objectName,
       representation,
       'values',
+      createOwnedArrayEmptyLiteral(mapTypeInfo.valuesArrayType),
+      context,
+      'map_clear',
+    );
+    return {
+      kind: 'undefined_literal',
+      type: 'tagged_ref',
+    };
+  }
+
+  return undefined;
+}
+
+function lowerInitialTaggedKeyNumberValueMapCallExpression(
+  expression: ts.CallExpression,
+  context: FunctionLoweringContext,
+): CompilerExpressionIR | undefined {
+  if (!ts.isPropertyAccessExpression(expression.expression)) {
+    return undefined;
+  }
+  const receiver = expression.expression.expression;
+  const methodName = expression.expression.name.text;
+  const mapTypeInfo = getSupportedTaggedKeyNumberValueMapTypeInfo(
+    context.checker,
+    context.checker.getTypeAtLocation(receiver),
+  );
+  if (!mapTypeInfo) {
+    return undefined;
+  }
+  let objectName = getHeapObjectValueNameFromExpression(receiver, context);
+  let representation = getHeapObjectRepresentationFromExpression(receiver, context);
+  if (!objectName) {
+    const materialized = materializeHeapExpressionToLocal(receiver, context, 'map_object');
+    objectName = materialized.name;
+    representation = materialized.representation;
+  }
+  if (representation?.kind !== 'dynamic_object_representation') {
+    throw new CompilerUnsupportedError(
+      'Map receivers currently require compiler-owned Map values in compiler subset.',
+      receiver,
+    );
+  }
+
+  if (methodName === 'set') {
+    if (mapTypeInfo.readonly) {
+      throw new CompilerUnsupportedError(
+        'ReadonlyMap set calls are not supported in compiler subset.',
+        expression.expression.name,
+      );
+    }
+    if (expression.arguments.length !== 2) {
+      throw new CompilerUnsupportedError(
+        'Map set calls must receive exactly two arguments.',
+        expression,
+      );
+    }
+    const keysName = materializeSupportedTaggedKeyNumberValueMapKeysArray(
+      objectName,
+      representation,
+      context,
+      'map_keys',
+    );
+    const valuesName = materializeSupportedTaggedKeyNumberValueMapValuesArray(
+      objectName,
+      representation,
+      context,
+      'map_values',
+    );
+    const keyName = materializeLoweredExpressionToLocal(
+      lowerExpressionAsValueType(expression.arguments[0]!, mapTypeInfo.keysElementType, context),
+      context,
+      'map_key',
+      true,
+    );
+    const keyKinds = getTaggedKeyNumberValueMapOperationKinds(expression.arguments[0]!, context);
+    const valueName = materializeLoweredExpressionToLocal(
+      lowerExpressionAsValueType(expression.arguments[1]!, mapTypeInfo.valuesElementType, context),
+      context,
+      'map_value',
+      true,
+    );
+    upsertSupportedTaggedKeyNumberValueMapEntry(
+      keysName,
+      valuesName,
+      keyName,
+      valueName,
+      keyKinds,
+      context,
+    );
+    return {
+      kind: 'local_get',
+      name: objectName,
+      type: 'heap_ref',
+    };
+  }
+
+  if (methodName === 'get') {
+    if (expression.arguments.length !== 1) {
+      throw new CompilerUnsupportedError(
+        'Map get calls must receive exactly one argument.',
+        expression,
+      );
+    }
+    const keysName = materializeSupportedTaggedKeyNumberValueMapKeysArray(
+      objectName,
+      representation,
+      context,
+      'map_keys',
+    );
+    const valuesName = materializeSupportedTaggedKeyNumberValueMapValuesArray(
+      objectName,
+      representation,
+      context,
+      'map_values',
+    );
+    const keyName = materializeLoweredExpressionToLocal(
+      lowerExpressionAsValueType(expression.arguments[0]!, mapTypeInfo.keysElementType, context),
+      context,
+      'map_key',
+      true,
+    );
+    const keyKinds = getTaggedKeyNumberValueMapOperationKinds(expression.arguments[0]!, context);
+    const indexName = createLocalName('map_index', context.nextLocalId);
+    context.nextLocalId += 1;
+    context.locals.push({ name: indexName, type: 'f64' });
+    const resultName = createLocalName('map_value', context.nextLocalId);
+    context.nextLocalId += 1;
+    context.locals.push({ name: resultName, type: 'tagged_ref' });
+    context.expressionPreludeStatements.push(
+      {
+        kind: 'local_set',
+        name: indexName,
+        value: lowerSupportedTaggedKeyNumberValueMapLookupIndex(keysName, keyName, keyKinds),
+      },
+      {
+        kind: 'local_set',
+        name: resultName,
+        value: {
+          kind: 'undefined_literal',
+          type: 'tagged_ref',
+        },
+      },
+      {
+        kind: 'if',
+        condition: {
+          kind: 'binary',
+          op: 'f64.ge',
+          left: {
+            kind: 'local_get',
+            name: indexName,
+            type: 'f64',
+          },
+          right: {
+            kind: 'number_literal',
+            value: 0,
+          },
+          type: 'i32',
+        },
+        thenBody: [{
+          kind: 'local_set',
+          name: resultName,
+          value: {
+            kind: 'tag_number',
+            value: {
+              kind: 'owned_number_array_element',
+              value: {
+                kind: 'local_get',
+                name: valuesName,
+                type: 'owned_number_array_ref',
+              },
+              index: {
+                kind: 'local_get',
+                name: indexName,
+                type: 'f64',
+              },
+              type: 'f64',
+            },
+            type: 'tagged_ref',
+          },
+        }],
+        elseBody: [],
+      },
+    );
+    return {
+      kind: 'local_get',
+      name: resultName,
+      type: 'tagged_ref',
+    };
+  }
+
+  if (methodName === 'has') {
+    if (expression.arguments.length !== 1) {
+      throw new CompilerUnsupportedError(
+        'Map has calls must receive exactly one argument.',
+        expression,
+      );
+    }
+    const keysName = materializeSupportedTaggedKeyNumberValueMapKeysArray(
+      objectName,
+      representation,
+      context,
+      'map_keys',
+    );
+    const keyName = materializeLoweredExpressionToLocal(
+      lowerExpressionAsValueType(expression.arguments[0]!, mapTypeInfo.keysElementType, context),
+      context,
+      'map_key',
+      true,
+    );
+    const keyKinds = getTaggedKeyNumberValueMapOperationKinds(expression.arguments[0]!, context);
+    return {
+      kind: 'binary',
+      op: 'f64.ge',
+      left: lowerSupportedTaggedKeyNumberValueMapLookupIndex(keysName, keyName, keyKinds),
+      right: {
+        kind: 'number_literal',
+        value: 0,
+      },
+      type: 'i32',
+    };
+  }
+
+  if (methodName === 'delete') {
+    throw new CompilerUnsupportedError(
+      'Tagged-key Map delete calls are not supported yet in compiler subset.',
+      expression,
+    );
+  }
+
+  if (methodName === 'clear') {
+    if (mapTypeInfo.readonly) {
+      throw new CompilerUnsupportedError(
+        'ReadonlyMap clear calls are not supported in compiler subset.',
+        expression.expression.name,
+      );
+    }
+    if (expression.arguments.length !== 0) {
+      throw new CompilerUnsupportedError(
+        'Map clear calls must not receive arguments.',
+        expression,
+      );
+    }
+    initializeSupportedTaggedKeyNumberValueMapKeysArrayProperty(
+      objectName,
+      representation,
+      createOwnedArrayEmptyLiteral(mapTypeInfo.keysArrayType),
+      context,
+      'map_clear',
+    );
+    initializeSupportedTaggedKeyNumberValueMapValuesArrayProperty(
+      objectName,
+      representation,
       createOwnedArrayEmptyLiteral(mapTypeInfo.valuesArrayType),
       context,
       'map_clear',
@@ -58347,6 +59130,15 @@ function lowerCallExpression(
     const initialNumberKeyMapCall = lowerInitialNumberKeyMapCallExpression(expression, context);
     if (initialNumberKeyMapCall) {
       return initialNumberKeyMapCall;
+    }
+  }
+  {
+    const initialTaggedKeyMapCall = lowerInitialTaggedKeyNumberValueMapCallExpression(
+      expression,
+      context,
+    );
+    if (initialTaggedKeyMapCall) {
+      return initialTaggedKeyMapCall;
     }
   }
   {
@@ -60362,6 +61154,45 @@ function lowerPropertyAccessExpression(
       expression,
     );
   }
+  const taggedKeyNumberValueMapTypeInfo = getSupportedTaggedKeyNumberValueMapTypeInfo(
+    context.checker,
+    receiverType,
+  );
+  if (expression.name.text === 'size' && taggedKeyNumberValueMapTypeInfo !== undefined) {
+    let objectName = getHeapObjectValueNameFromExpression(expression.expression, context);
+    let representation = getHeapObjectRepresentationFromExpression(expression.expression, context);
+    if (!objectName) {
+      const materialized = materializeHeapExpressionToLocal(
+        expression.expression,
+        context,
+        'map_size',
+      );
+      objectName = materialized.name;
+      representation = materialized.representation;
+    }
+    if (representation?.kind !== 'dynamic_object_representation') {
+      throw new CompilerUnsupportedError(
+        'Map size reads currently require compiler-owned Map values in compiler subset.',
+        expression.expression,
+      );
+    }
+    return {
+      kind: 'owned_array_length',
+      value: lowerSupportedTaggedKeyNumberValueMapKeysArrayRead(
+        objectName,
+        representation,
+        context,
+        'map_size',
+      ),
+      type: 'f64',
+    };
+  }
+  if (taggedKeyNumberValueMapTypeInfo !== undefined) {
+    throw new CompilerUnsupportedError(
+      'Only direct tagged-key Map get/has/set/clear calls and size property reads are currently supported in compiler subset.',
+      expression,
+    );
+  }
   const stringKeyMapTypeInfo = getSupportedStringKeyMapTypeInfo(context.checker, receiverType);
   if (expression.name.text === 'size' && stringKeyMapTypeInfo !== undefined) {
     let objectName = getHeapObjectValueNameFromExpression(expression.expression, context);
@@ -61548,6 +62379,9 @@ function lowerExpression(
     }
     if (isSupportedNumberKeyMapNewExpression(expression, context)) {
       return lowerInitialNumberKeyMapNewExpression(expression, context);
+    }
+    if (isSupportedTaggedKeyNumberValueMapNewExpression(expression, context)) {
+      return lowerInitialTaggedKeyNumberValueMapNewExpression(expression, context);
     }
     if (isSupportedStringKeyMapNewExpression(expression, context)) {
       return lowerInitialStringKeyMapNewExpression(expression, context);

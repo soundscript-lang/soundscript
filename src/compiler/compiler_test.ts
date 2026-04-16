@@ -2664,6 +2664,9 @@ compilerIntegrationTest(
     assertEquals(result.exitCode, 0);
     assertEquals(result.diagnostics, []);
     assertEquals(await invokeCompiledEntry(tempDirectory, 'main', []), 2975);
+    const watOutput = await readWatArtifactForProject(tempDirectory);
+    assertFalse(watOutput.includes('__map_tagged_keys'));
+    assertFalse(watOutput.includes('__map_tagged_number_values'));
   },
 );
 
@@ -2697,6 +2700,36 @@ compilerIntegrationTest(
   },
 );
 
+compilerIntegrationTest(
+  'compileProject executes unknown-key Map get and set operations',
+  async () => {
+    const tempDirectory = await createCompilerTestProject([
+      'export function main(): number {',
+      '  const map = new Map<unknown, number>();',
+      '  map.set(1, 42);',
+      '  map.set("1", 7);',
+      '  map.set(true, 5);',
+      '  map.set(1, 9);',
+      '  const one = map.get(1) ?? 0;',
+      '  const stringOne = map.get("1") ?? 0;',
+      '  const truth = map.get(true) ?? 0;',
+      '  const missing = map.get(false) ?? 6;',
+      '  return map.size * 10000 + one * 1000 + stringOne * 100 + truth * 10 + missing;',
+      '}',
+      '',
+    ].join('\n'));
+
+    const result = compileTempProject(tempDirectory);
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assertEquals(await invokeCompiledEntry(tempDirectory, 'main', []), 39756);
+    const watOutput = await readWatArtifactForProject(tempDirectory);
+    assertFalse(watOutput.includes('__map_number_keys'));
+    assertFalse(watOutput.includes('__map_number_values'));
+  },
+);
+
 compilerIntegrationTest('compileProject keeps numeric-key Map storage pay-for-play', async () => {
   const tempDirectory = await createCompilerTestProject([
     'export function main(): number {',
@@ -2714,6 +2747,8 @@ compilerIntegrationTest('compileProject keeps numeric-key Map storage pay-for-pl
   const watOutput = await readWatArtifactForProject(tempDirectory);
   assertFalse(watOutput.includes('__map_number_keys'));
   assertFalse(watOutput.includes('__map_number_values'));
+  assertFalse(watOutput.includes('__map_tagged_keys'));
+  assertFalse(watOutput.includes('__map_tagged_number_values'));
 });
 
 compilerIntegrationTest(

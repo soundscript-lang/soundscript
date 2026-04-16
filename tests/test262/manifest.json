@@ -18056,8 +18056,8 @@
     }
   },
   {
-    "test": "cases/defer/map-get.ts",
-    "note": "Map.prototype.get should preserve the upstream numeric-key lookup result.",
+    "test": "cases/pass-now/map-get.ts",
+    "note": "Map.prototype.get with unknown numeric keys now executes through the compiler-owned tagged-key collection path.",
     "entry": "main",
     "args": [],
     "expected": 42,
