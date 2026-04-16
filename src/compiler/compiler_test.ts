@@ -22201,6 +22201,51 @@ compilerIntegrationTest(
 );
 
 compilerIntegrationTest(
+  'compileProject narrows mixed primitive and object union conditional locals',
+  async () => {
+    const tempDirectory = await createCompilerTestProject([
+      'type Left = { left: number };',
+      'type Right = { right: number };',
+      'type Value = number | string | Left | Right;',
+      '',
+      'function score(which: number): number {',
+      '  const value: Value = which === 0',
+      '    ? 3',
+      '    : which === 1',
+      '    ? "abcd"',
+      '    : which === 2',
+      '    ? { left: 5 }',
+      '    : { right: 7 };',
+      '  if (typeof value === "number") {',
+      '    return value;',
+      '  }',
+      '  if (typeof value === "string") {',
+      '    return value.length;',
+      '  }',
+      '  if ("left" in value) {',
+      '    return value.left * 10;',
+      '  }',
+      '  return value.right;',
+      '}',
+      '',
+      'export function main(): number {',
+      '  return score(0) * 1000',
+      '    + score(1) * 100',
+      '    + score(2) * 10',
+      '    + score(3);',
+      '}',
+      '',
+    ].join('\n'));
+
+    const result = compileTempProject(tempDirectory);
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assertEquals(await invokeCompiledEntry(tempDirectory, 'main', []), 3_907);
+  },
+);
+
+compilerIntegrationTest(
   'lowerProgramToCompilerIR distinguishes explicit bag-like object locals from narrow fixed layouts',
   async () => {
     const tempDirectory = await createTempProject([

@@ -4661,6 +4661,21 @@ function isSupportedConditionalExpressionTargetType(targetType: CompilerValueTyp
     targetType === 'class_constructor_ref';
 }
 
+function isTaggedHeapUnionConditionalHeapArm(
+  expression: ts.Expression,
+  context: FunctionLoweringContext,
+): boolean {
+  try {
+    return getCompilerBindingValueType(context.checker, expression) === 'heap_ref' &&
+      isSupportedHeapLocalType(context.checker, context.checker.getTypeAtLocation(expression));
+  } catch (error) {
+    if (error instanceof CompilerUnsupportedError) {
+      return false;
+    }
+    throw error;
+  }
+}
+
 function lowerConditionalExpressionAsValueType(
   expression: ts.ConditionalExpression,
   targetType: CompilerValueType,
@@ -4678,10 +4693,33 @@ function lowerConditionalExpressionAsValueType(
   const resultName = createLocalName('conditional', context.nextLocalId);
   context.nextLocalId += 1;
   context.locals.push({ name: resultName, type: targetType });
+  const taggedHeapUnionObjectRepresentation = targetType === 'tagged_ref'
+    ? getInternalTaggedHeapUnionObjectRepresentation(
+      context.checker,
+      context.checker.getTypeAtLocation(expression),
+      context.runtime,
+    )
+    : undefined;
 
-  const whenTrue = lowerExpressionAsValueType(expression.whenTrue, targetType, context);
+  const whenTrue = taggedHeapUnionObjectRepresentation &&
+      isTaggedHeapUnionConditionalHeapArm(expression.whenTrue, context)
+    ? lowerTaggedHeapUnionObjectExpression(
+      expression.whenTrue,
+      taggedHeapUnionObjectRepresentation,
+      context,
+      resultName,
+    )
+    : lowerExpressionAsValueType(expression.whenTrue, targetType, context);
   const whenTruePreludeStatements = consumeExpressionPreludeStatements(context);
-  const whenFalse = lowerExpressionAsValueType(expression.whenFalse, targetType, context);
+  const whenFalse = taggedHeapUnionObjectRepresentation &&
+      isTaggedHeapUnionConditionalHeapArm(expression.whenFalse, context)
+    ? lowerTaggedHeapUnionObjectExpression(
+      expression.whenFalse,
+      taggedHeapUnionObjectRepresentation,
+      context,
+      resultName,
+    )
+    : lowerExpressionAsValueType(expression.whenFalse, targetType, context);
   const whenFalsePreludeStatements = consumeExpressionPreludeStatements(context);
 
   context.expressionPreludeStatements.push(
