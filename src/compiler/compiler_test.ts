@@ -2693,6 +2693,138 @@ compilerIntegrationTest('compileProject defers WeakSet backend support', async (
   );
 });
 
+compilerIntegrationTest('compileProject executes direct Symbol identity checks', async () => {
+  const tempDirectory = await createCompilerTestProject([
+    'function same(left: symbol, right: symbol): boolean {',
+    '  return left === right;',
+    '}',
+    '',
+    'export function main(): number {',
+    "  const left: symbol = Symbol('token');",
+    "  const right: symbol = globalThis.Symbol('token');",
+    '  let score = 0;',
+    '  if (same(left, left)) {',
+    '    score += 10;',
+    '  }',
+    '  if (same(left, right)) {',
+    '    score += 1;',
+    '  }',
+    '  return score;',
+    '}',
+    '',
+  ].join('\n'));
+
+  const result = compileTempProject(tempDirectory);
+
+  assertEquals(result.exitCode, 0);
+  assertEquals(result.diagnostics, []);
+  assertEquals(await invokeCompiledEntry(tempDirectory, 'main', []), 10);
+});
+
+compilerIntegrationTest('compileProject executes direct Symbol typeof checks', async () => {
+  const tempDirectory = await createCompilerTestProject([
+    'export function main(): number {',
+    "  const token: symbol = Symbol('token');",
+    "  return typeof token === 'symbol' ? 1 : 0;",
+    '}',
+    '',
+  ].join('\n'));
+
+  const result = compileTempProject(tempDirectory);
+
+  assertEquals(result.exitCode, 0);
+  assertEquals(result.diagnostics, []);
+  assertEquals(await invokeCompiledEntry(tempDirectory, 'main', []), 1);
+});
+
+compilerIntegrationTest('compileProject keeps symbol-keyed object writes deferred', async () => {
+  const tempDirectory = await createCompilerTestProject([
+    'export function main(): number {',
+    "  const key: symbol = Symbol('token');",
+    '  const record = { [key]: 7 };',
+    '  void record;',
+    '  return 0;',
+    '}',
+    '',
+  ].join('\n'));
+
+  const result = compileTempProject(tempDirectory);
+
+  assertEquals(result.exitCode, 1);
+  assertEquals(
+    result.diagnostics.map((diagnostic: { source: string }) => diagnostic.source),
+    ['sound'],
+  );
+  assertEquals(
+    result.diagnostics.map((diagnostic: { code: string }) => diagnostic.code),
+    ['SOUND1022'],
+  );
+});
+
+compilerIntegrationTest('compileProject keeps symbol-keyed element reads deferred', async () => {
+  const tempDirectory = await createCompilerTestProject([
+    'export function main(record: Record<PropertyKey, number>): number {',
+    "  const key: symbol = Symbol('token');",
+    '  return record[key];',
+    '}',
+    '',
+  ].join('\n'));
+
+  const result = compileTempProject(tempDirectory);
+
+  assertEquals(result.exitCode, 1);
+  assertEquals(
+    result.diagnostics.map((diagnostic: { source: string }) => diagnostic.source),
+    ['sound'],
+  );
+  assertEquals(
+    result.diagnostics.map((diagnostic: { code: string }) => diagnostic.code),
+    ['SOUND1022'],
+  );
+});
+
+compilerIntegrationTest('compileProject keeps Symbol runtime pay-for-play', async () => {
+  const tempDirectory = await createCompilerTestProject([
+    'export function main(): number {',
+    '  return 7;',
+    '}',
+    '',
+  ].join('\n'));
+
+  const result = compileTempProject(tempDirectory);
+
+  assertEquals(result.exitCode, 0);
+  assertEquals(result.diagnostics, []);
+  const watOutput = await readWatArtifactForProject(tempDirectory);
+  assertFalse(watOutput.includes('$symbol_runtime'));
+});
+
+compilerIntegrationTest(
+  'compileProject keeps standalone Symbol runtime isolated from object helpers',
+  async () => {
+    const tempDirectory = await createCompilerTestProject([
+      'export function main(): number {',
+      "  const left: symbol = Symbol('left');",
+      "  const right: symbol = Symbol('right');",
+      '  return left === right ? 1 : 2;',
+      '}',
+      '',
+    ].join('\n'));
+
+    const result = compileTempProject(tempDirectory);
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    const watOutput = await readWatArtifactForProject(tempDirectory);
+    assertStringIncludes(watOutput, '$symbol_runtime');
+    assertFalse(watOutput.includes('$string_runtime'));
+    assertFalse(watOutput.includes('owned_string_literal'));
+    assertFalse(watOutput.includes('dynamic_object'));
+    assertFalse(watOutput.includes('fallback_object'));
+    assertFalse(watOutput.includes('specialized_object'));
+  },
+);
+
 compilerIntegrationTest(
   'compileProject executes initial Set constructor, add, has, delete, clear, and size operations',
   async () => {

@@ -62,6 +62,18 @@ export function isStringConstructorCall(expression: ts.CallExpression): boolean 
   );
 }
 
+export function isSymbolConstructorCall(expression: ts.CallExpression): boolean {
+  return (
+    ts.isIdentifier(expression.expression) &&
+    expression.expression.text === 'Symbol'
+  ) || (
+    ts.isPropertyAccessExpression(expression.expression) &&
+    ts.isIdentifier(expression.expression.expression) &&
+    expression.expression.expression.text === 'globalThis' &&
+    expression.expression.name.text === 'Symbol'
+  );
+}
+
 export function isStringCharCodeAtCall(
   expression: ts.CallExpression,
   checker: ts.TypeChecker,

@@ -711,11 +711,10 @@ function id(gen: Generator<number, void, unknown>): void {
 `,
   ),
   fixture(
-    'symbol-constructor.reject.ts',
-    `// @sound-test: reject
-// @sound-error: SOUND1022
+    'symbol-constructor.accept.ts',
+    `// @sound-test: accept
 //
-// User-defined symbols are banned in soundscript.
+// Direct compiler-owned symbols are allowed as standalone values.
 //
 const token = Symbol("token");
 void token;
@@ -733,11 +732,10 @@ void token;
 `,
   ),
   fixture(
-    'globalthis-symbol-constructor.reject.ts',
-    `// @sound-test: reject
-// @sound-error: SOUND1022
+    'globalthis-symbol-constructor.accept.ts',
+    `// @sound-test: accept
 //
-// globalThis.Symbol should not re-open user-defined symbols.
+// globalThis.Symbol is the same direct compiler-owned symbol constructor.
 //
 const token = globalThis.Symbol("token");
 void token;
@@ -759,11 +757,82 @@ void token;
     `// @sound-test: reject
 // @sound-error: SOUND1022
 //
-// Aliased Symbol construction should still reject.
+// Aliased Symbol construction stays outside the first symbol slice.
 //
 const makeSymbol = Symbol;
 const token = makeSymbol("token");
 void token;
+`,
+  ),
+  fixture(
+    'symbol-keyed-object-literal.reject.ts',
+    `// @sound-test: reject
+// @sound-error: SOUND1022
+//
+// Symbol-keyed object storage is deferred so ordinary object layouts do not
+// pay for symbol-key metadata.
+//
+const key: symbol = Symbol("token");
+const record = { [key]: 7 };
+void record;
+`,
+  ),
+  fixture(
+    'symbol-keyed-element-access.reject.ts',
+    `// @sound-test: reject
+// @sound-error: SOUND1022
+//
+// Symbol-keyed reads are deferred with symbol-keyed writes.
+//
+function read(record: Record<PropertyKey, number>): void {
+  const key: symbol = Symbol("token");
+  void record[key];
+}
+`,
+  ),
+  fixture(
+    'symbol-keyed-object-method.reject.ts',
+    `// @sound-test: reject
+// @sound-error: SOUND1022
+//
+// Symbol-keyed object methods are deferred with symbol-keyed storage.
+//
+const key: symbol = Symbol("token");
+const record = {
+  [key](): number {
+    return 1;
+  },
+};
+void record;
+`,
+  ),
+  fixture(
+    'symbol-keyed-class-field.reject.ts',
+    `// @sound-test: reject
+// @sound-error: SOUND1022
+//
+// Symbol-keyed class fields would require symbol metadata on compiler-owned
+// object layouts, so they stay out of the supported subset.
+//
+const key: symbol = Symbol("token");
+class TokenRecord {
+  [key] = 1;
+}
+void TokenRecord;
+`,
+  ),
+  fixture(
+    'symbol-keyed-object-binding.reject.ts',
+    `// @sound-test: reject
+// @sound-error: SOUND1022
+//
+// Symbol-keyed destructuring is a symbol-keyed read and stays deferred.
+//
+function read(record: Record<PropertyKey, number>): void {
+  const key: symbol = Symbol("token");
+  const { [key]: value } = record;
+  void value;
+}
 `,
   ),
   fixture(
@@ -3381,11 +3450,12 @@ void value;
 `,
   ),
   fixture(
-    'object-literal-typed-symbollike-match-element.accept.ts',
-    `// @sound-test: accept
+    'object-literal-typed-symbollike-match-element.reject.ts',
+    `// @sound-test: reject
+// @sound-error: SOUND1022
 //
-// The string-literal element-access branch should also avoid values that are
-// merely typed as typeof Symbol.
+// Values typed as symbol still create symbol-keyed object methods, even when
+// they are not the builtin Symbol global protocol hook.
 //
 // #[extern]
 declare const SymbolLike: typeof Symbol;
@@ -3400,11 +3470,12 @@ void matcher;
 `,
   ),
   fixture(
-    'object-literal-typed-symbollike-iterator.accept.ts',
-    `// @sound-test: accept
+    'object-literal-typed-symbollike-iterator.reject.ts',
+    `// @sound-test: reject
+// @sound-error: SOUND1022
 //
-// Values merely typed as typeof Symbol should not be mistaken for the builtin
-// Symbol global.
+// Symbol-keyed object methods are deferred even when the key comes from a
+// non-builtin symbol-like value.
 //
 // #[extern]
 declare const SymbolLike: typeof Symbol;

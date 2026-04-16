@@ -25,7 +25,11 @@ import {
   type WrappedBuiltinInvocation,
 } from './resolved_builtins.ts';
 import { isInsideSyntheticErrorNormalizationHelper } from './generated_helpers.ts';
-import { getLocalUnsafeProofOverrideChainRoot, isLocallyUnsafe } from './trust.ts';
+import {
+  getLocalUnsafeProofOverrideChainRoot,
+  hasDirectInteropAnnotation,
+  isLocallyUnsafe,
+} from './trust.ts';
 
 const LEGACY_ACCESSOR_MEMBER_NAMES = new Set([
   '__defineGetter__',
@@ -1562,6 +1566,118 @@ function isBannedSymbolHookName(
   return undefined;
 }
 
+function isSymbolLikeType(checker: ts.TypeChecker, type: ts.Type): boolean {
+  const normalized = checker.getBaseTypeOfLiteralType(type);
+  if ((normalized.flags & ts.TypeFlags.ESSymbolLike) !== 0) {
+    return true;
+  }
+  if ((normalized.flags & ts.TypeFlags.Union) !== 0) {
+    const members = (normalized as ts.UnionType).types;
+    return members.length > 0 && members.every((member) => isSymbolLikeType(checker, member));
+  }
+  if ((normalized.flags & ts.TypeFlags.Intersection) !== 0) {
+    const members = (normalized as ts.IntersectionType).types;
+    return members.length > 0 && members.every((member) => isSymbolLikeType(checker, member));
+  }
+
+  return false;
+}
+
+function isDirectSymbolConstructorReference(
+  context: AnalysisContext,
+  expression: ts.Expression,
+): boolean {
+  const isSyntacticallyDirect = (
+    ts.isIdentifier(expression) &&
+    expression.text === 'Symbol'
+  ) || (
+    ts.isPropertyAccessExpression(expression) &&
+    ts.isIdentifier(expression.expression) &&
+    expression.expression.text === 'globalThis' &&
+    expression.name.text === 'Symbol'
+  );
+  return isSyntacticallyDirect && resolvesToBuiltinGlobalValue(context, expression, 'Symbol', {
+    ownerNames: ['SymbolConstructor'],
+  });
+}
+
+function getEnclosingImportDeclaration(
+  node: ts.Node,
+): ts.ImportDeclaration | ts.ImportEqualsDeclaration | undefined {
+  let current: ts.Node | undefined = node;
+  while (current) {
+    if (ts.isImportDeclaration(current) || ts.isImportEqualsDeclaration(current)) {
+      return current;
+    }
+    if (ts.isStatement(current) || ts.isSourceFile(current)) {
+      return undefined;
+    }
+    current = current.parent;
+  }
+  return undefined;
+}
+
+function isDirectInteropBindingIdentifier(
+  context: AnalysisContext,
+  identifier: ts.Identifier,
+): boolean {
+  const symbol = context.checker.getSymbolAtLocation(identifier);
+  if (!symbol) {
+    return false;
+  }
+
+  for (const declaration of symbol.declarations ?? []) {
+    const importDeclaration = getEnclosingImportDeclaration(declaration);
+    if (importDeclaration && hasDirectInteropAnnotation(context, importDeclaration)) {
+      return true;
+    }
+
+    if (
+      ts.isVariableDeclaration(declaration) &&
+      hasDirectInteropAnnotation(context, declaration)
+    ) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function getExpressionRootIdentifier(expression: ts.Expression): ts.Identifier | undefined {
+  const current = unwrapParenthesizedExpression(expression);
+  if (ts.isIdentifier(current)) {
+    return current;
+  }
+  if (ts.isPropertyAccessExpression(current) || ts.isElementAccessExpression(current)) {
+    return getExpressionRootIdentifier(current.expression);
+  }
+  if (ts.isAsExpression(current) || ts.isSatisfiesExpression(current)) {
+    return getExpressionRootIdentifier(current.expression);
+  }
+
+  return undefined;
+}
+
+function isDirectInteropReceiverExpression(
+  context: AnalysisContext,
+  expression: ts.Expression,
+): boolean {
+  const root = getExpressionRootIdentifier(expression);
+  return root !== undefined && isDirectInteropBindingIdentifier(context, root);
+}
+
+function getSymbolComputedPropertyNameExpression(
+  context: AnalysisContext,
+  name: ts.PropertyName | ts.BindingName,
+): ts.Expression | undefined {
+  if (!ts.isComputedPropertyName(name)) {
+    return undefined;
+  }
+  return isSymbolLikeType(context.checker, context.checker.getTypeAtLocation(name.expression))
+    ? name.expression
+    : undefined;
+}
+
 function getWrappedInvocationArgument(
   node: ts.CallExpression,
   invocation: WrappedBuiltinInvocation,
@@ -1976,6 +2092,29 @@ function getUnsupportedFeatureDiagnostic(
     if (bannedSymbolHookNode) {
       return unsupportedFeature(bannedSymbolHookNode, 'symbolHook');
     }
+    const symbolComputedProperty = getSymbolComputedPropertyNameExpression(context, node.name);
+    if (symbolComputedProperty) {
+      return unsupportedFeature(symbolComputedProperty, 'symbolApi');
+    }
+  }
+
+  if (ts.isBindingElement(node) && node.propertyName) {
+    const symbolComputedProperty = getSymbolComputedPropertyNameExpression(
+      context,
+      node.propertyName,
+    );
+    if (symbolComputedProperty) {
+      return unsupportedFeature(symbolComputedProperty, 'symbolApi');
+    }
+  }
+
+  if (
+    ts.isElementAccessExpression(node) &&
+    node.argumentExpression &&
+    isSymbolLikeType(context.checker, context.checker.getTypeAtLocation(node.argumentExpression)) &&
+    !isDirectInteropReceiverExpression(context, node.expression)
+  ) {
+    return unsupportedFeature(node.argumentExpression, 'symbolApi');
   }
 
   if (ts.isArrayLiteralExpression(node) && node.elements.some(ts.isOmittedExpression)) {
@@ -2025,19 +2164,26 @@ function getUnsupportedFeatureDiagnostic(
       );
     }
 
-    if (
+    const isSymbolForCall = matchesResolvedBuiltinSignature(context, node, {
+      ownerNames: ['SymbolConstructor'],
+      memberNames: ['for'],
+    }) ||
+      matchesResolvedBuiltinCallableValue(context, node.expression, {
+        ownerNames: ['SymbolConstructor'],
+        memberNames: ['for'],
+      });
+    if (isSymbolForCall) {
+      return unsupportedFeature(node.expression, 'symbolApi');
+    }
+
+    const isSymbolConstructorCall =
       matchesResolvedBuiltinSignature(context, node, { ownerNames: ['SymbolConstructor'] }) ||
       matchesResolvedBuiltinCallableValue(context, node.expression, {
         ownerNames: ['SymbolConstructor'],
-      }) ||
-      matchesResolvedBuiltinSignature(context, node, {
-        ownerNames: ['SymbolConstructor'],
-        memberNames: ['for'],
-      }) ||
-      matchesResolvedBuiltinCallableValue(context, node.expression, {
-        ownerNames: ['SymbolConstructor'],
-        memberNames: ['for'],
-      })
+      });
+    if (
+      isSymbolConstructorCall &&
+      !isDirectSymbolConstructorReference(context, node.expression)
     ) {
       return unsupportedFeature(node.expression, 'symbolApi');
     }

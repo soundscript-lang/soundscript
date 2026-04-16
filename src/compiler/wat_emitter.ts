@@ -213,6 +213,8 @@ function getWatValueType(valueType: CompilerValueType): string {
     case 'class_constructor_ref':
     case 'string_ref':
       return 'externref';
+    case 'symbol_ref':
+      return '(ref null $symbol_runtime)';
     case 'owned_string_ref':
       return '(ref null $string_runtime)';
     case 'owned_heap_array_ref':
@@ -249,6 +251,8 @@ function getClosureBoxTypeName(valueType: CompilerValueType): string {
     case 'class_constructor_ref':
     case 'string_ref':
       return 'box_externref';
+    case 'symbol_ref':
+      return 'box_symbol';
     case 'owned_string_ref':
       return 'box_owned_string';
     case 'owned_heap_array_ref':
@@ -285,6 +289,8 @@ function getClosureBoxFieldWatType(valueType: CompilerValueType): string {
       return 'externref';
     case 'string_ref':
       return 'externref';
+    case 'symbol_ref':
+      return '(ref null $symbol_runtime)';
     case 'owned_string_ref':
       return '(ref null $string_runtime)';
     case 'owned_heap_array_ref':
@@ -2552,6 +2558,22 @@ function moduleUsesOwnedTaggedArrayRuntime(module: CompilerModuleIR): boolean {
           operation.pairValueType === 'tagged_ref')
       )
     ) ?? false);
+}
+
+function moduleUsesSymbolRuntime(module: CompilerModuleIR): boolean {
+  return module.functions.some((func) =>
+    func.params.some((param) => param.type === 'symbol_ref') ||
+    func.resultType === 'symbol_ref' ||
+    func.locals.some((local) => local.type === 'symbol_ref') ||
+    statementsUseStringHelper(
+      func.body,
+      (expression) => getExpressionValueType(expression) === 'symbol_ref',
+    )
+  );
+}
+
+function emitSymbolRuntimeTypes(module: CompilerModuleIR): string[] {
+  return moduleUsesSymbolRuntime(module) ? ['(type $symbol_runtime (struct))'] : [];
 }
 
 function moduleUsesOwnedStringArrayPush(module: CompilerModuleIR): boolean {
@@ -21134,6 +21156,7 @@ function getLocalValueType(
 function getExpressionValueType(expression: CompilerExpressionIR): CompilerValueType | undefined {
   switch (expression.kind) {
     case 'string_literal':
+    case 'symbol_new':
     case 'string_to_owned':
     case 'owned_string_to_host':
     case 'owned_string_literal':
@@ -21363,6 +21386,10 @@ function emitBoxLocalValueAsTagged(
         ...emitExpression(localExpression, level, runtime),
         `${indent(level)}call $tag_heap_object`,
       ];
+    case 'symbol_ref':
+      throw createUnsupportedHeapRuntimeBackendError(
+        'Symbol values cannot be stored through tagged object materialization.',
+      );
     default: {
       const exhaustiveCheck: never = valueType;
       return exhaustiveCheck;
@@ -21581,6 +21608,10 @@ function emitFallbackReadOp(
         ];
     case 'box_ref':
       return [...lines, `${indent(level)}call $untag_heap_object`];
+    case 'symbol_ref':
+      throw createUnsupportedHeapRuntimeBackendError(
+        'Symbol-valued fallback object reads are not supported.',
+      );
     default: {
       const exhaustiveCheck: never = resultType;
       return exhaustiveCheck;
@@ -21666,6 +21697,10 @@ function emitDynamicReadOp(
       ];
     case 'box_ref':
       return [...lines, `${indent(level)}call $untag_heap_object`];
+    case 'symbol_ref':
+      throw createUnsupportedHeapRuntimeBackendError(
+        'Symbol-valued dynamic object reads are not supported.',
+      );
     default: {
       const exhaustiveCheck: never = resultType;
       return exhaustiveCheck;
@@ -21842,6 +21877,10 @@ function emitSpecializedFieldReadOp(
         ];
       case 'box_ref':
         return [...lines, `${indent(level)}call $untag_heap_object`];
+      case 'symbol_ref':
+        throw createUnsupportedHeapRuntimeBackendError(
+          'Symbol-valued specialized object reads are not supported.',
+        );
       default: {
         const exhaustiveCheck: never = resultType;
         return exhaustiveCheck;
@@ -22393,6 +22432,8 @@ function emitExpression(
       return [`${indent(level)}call $string_literal_${expression.literalId}`];
     case 'owned_string_literal':
       return [`${indent(level)}call $owned_string_literal_${expression.literalId}`];
+    case 'symbol_new':
+      return [`${indent(level)}struct.new $symbol_runtime`];
     case 'owned_string_array_literal':
       if (!runtime.ownedArrayScratchLocalName) {
         throw createUnsupportedHeapRuntimeBackendError(
@@ -23516,6 +23557,14 @@ function emitExpression(
           }`,
         ];
         return expression.op === 'string.eq' ? lines : [...lines, `${indent(level)}i32.eqz`];
+      }
+      if (expression.op === 'ref.eq' || expression.op === 'ref.ne') {
+        const lines = [
+          ...emitExpression(expression.left, level, runtime),
+          ...emitExpression(expression.right, level, runtime),
+          `${indent(level)}ref.eq`,
+        ];
+        return expression.op === 'ref.eq' ? lines : [...lines, `${indent(level)}i32.eqz`];
       }
       return [
         ...emitExpression(expression.left, level, runtime),
@@ -27583,6 +27632,9 @@ function emitClosureRuntimeTypes(module: CompilerModuleIR): string[] {
     ...(usedBoxValueTypes.has('string_ref')
       ? ['(type $box_externref (struct (field (mut externref))))']
       : []),
+    ...(usedBoxValueTypes.has('symbol_ref')
+      ? ['(type $box_symbol (struct (field (mut (ref null $symbol_runtime)))))']
+      : []),
     ...(usedBoxValueTypes.has('owned_string_ref')
       ? ['(type $box_owned_string (struct (field (mut (ref null $string_runtime)))))']
       : []),
@@ -28820,6 +28872,7 @@ export function emitCompilerModuleToWat(module: CompilerModuleIR): string {
     ),
     ...emitTaggedValueType(module).map((line) => `${indent(1)}${line}`),
     ...emitTaggedValueHelpers(module, stringRuntimeLayout).map((line) => `${indent(1)}${line}`),
+    ...emitSymbolRuntimeTypes(module).map((line) => `${indent(1)}${line}`),
     ...(moduleUsesTaggedThrowRuntime(module)
       ? [
         `(func $${SOUNDSCRIPT_THROW_TAGGED_HELPER_NAME} (param $value (ref null $tagged_value))`,

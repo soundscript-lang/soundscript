@@ -490,11 +490,16 @@ export function describeUnsupportedFeature(
         replacementFamily: 'dense_array_literal',
       });
     case 'symbolApi':
-      return createUnsupportedFeature(kind, '`Symbol` and `Symbol.for(...)` are not supported in soundscript.', {
-        hint: 'Use string literal tags or another explicit tagged-data representation instead.',
-        replacementFamily: 'string_literal_tags',
-        fixability: 'api_redesign',
-      });
+      return createUnsupportedFeature(
+        kind,
+        'This Symbol operation is not supported in soundscript.',
+        {
+          hint:
+            'Use direct `Symbol(...)` only for standalone identity values; keep registry, alias, and symbol-keyed object operations out of the supported subset.',
+          replacementFamily: 'string_literal_tags',
+          fixability: 'api_redesign',
+        },
+      );
     case 'symbolHook':
       return createUnsupportedFeature(kind, 'Custom `Symbol.*` protocol hooks are not supported in soundscript.', {
         hint: 'Expose explicit methods instead of runtime meta-protocol hooks.',

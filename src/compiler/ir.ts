@@ -12,6 +12,7 @@ export type CompilerValueType =
   | 'heap_ref'
   | 'class_constructor_ref'
   | 'string_ref'
+  | 'symbol_ref'
   | 'owned_string_ref'
   | 'owned_heap_array_ref'
   | 'owned_array_ref'
@@ -42,6 +43,8 @@ export type CompilerBinaryOp =
   | 'i32.ne'
   | 'i32.and'
   | 'i32.or'
+  | 'ref.eq'
+  | 'ref.ne'
   | 'string.concat'
   | 'string.eq'
   | 'string.ne';
@@ -101,6 +104,11 @@ export interface CompilerOwnedStringLiteralIR {
   kind: 'owned_string_literal';
   literalId: number;
   type: 'owned_string_ref';
+}
+
+export interface CompilerSymbolNewIR {
+  kind: 'symbol_new';
+  type: 'symbol_ref';
 }
 
 export interface CompilerStringLengthIR {
@@ -1129,6 +1137,7 @@ export type CompilerExpressionIR =
   | CompilerHeapPlaceholderIR
   | CompilerStringLiteralIR
   | CompilerOwnedStringLiteralIR
+  | CompilerSymbolNewIR
   | CompilerStringLengthIR
   | CompilerOwnedStringLengthIR
   | CompilerOwnedStringConcatIR

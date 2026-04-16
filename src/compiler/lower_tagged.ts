@@ -42,6 +42,22 @@ export function isStringLikeType(type: ts.Type): boolean {
   return false;
 }
 
+export function isSymbolLikeType(type: ts.Type): boolean {
+  if ((type.flags & ts.TypeFlags.ESSymbolLike) !== 0) {
+    return true;
+  }
+  if ((type.flags & ts.TypeFlags.Union) !== 0) {
+    return (type as ts.UnionType).types.length > 0 &&
+      (type as ts.UnionType).types.every((member) => isSymbolLikeType(member));
+  }
+  if ((type.flags & ts.TypeFlags.Intersection) !== 0) {
+    return (type as ts.IntersectionType).types.length > 0 &&
+      (type as ts.IntersectionType).types.every((member) => isSymbolLikeType(member));
+  }
+
+  return false;
+}
+
 export function isNumberOrUndefinedType(type: ts.Type): boolean {
   return isNumberOrNullableType(type) &&
     (type as ts.UnionType).types.some((member) => isUndefinedType(member));
@@ -399,6 +415,9 @@ export function getCompilerValueTypeForType(type: ts.Type, node: ts.Node): Compi
   }
   if (isStringLikeType(type)) {
     return 'string_ref';
+  }
+  if (isSymbolLikeType(type)) {
+    return 'symbol_ref';
   }
   if ((type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0) {
     return 'tagged_ref';

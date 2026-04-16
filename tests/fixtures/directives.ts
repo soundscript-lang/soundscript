@@ -880,11 +880,11 @@ export declare const table: { [key: symbol]: number };
     },
   ),
   fixture(
-    'foreign-symbol-keyed-local-receiver.accept.ts',
-    `// @sound-test: accept
+    'foreign-symbol-keyed-local-receiver.reject.ts',
+    `// @sound-test: reject
+// @sound-error: SOUND1022
 //
-// After import-site trust, foreign symbol values are used as typed in direct
-// mode.
+// Foreign symbols do not make compiler-owned local object layouts symbol-keyed.
 //
 // #[interop]
 import { token } from "./lib";

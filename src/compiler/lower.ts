@@ -125,6 +125,7 @@ import {
   isStringLikeType,
   isStringOrNullableType,
   isSupportedTaggedPredicateSyntax,
+  isSymbolLikeType,
   isTaggedCompilerUnionType,
   isTaggedPrimitiveUnionType,
   isTaggedTypeWithBoolean,
@@ -167,6 +168,7 @@ import {
   isStringTrimCall,
   isStringTrimEndCall,
   isStringTrimStartCall,
+  isSymbolConstructorCall,
 } from './lower_strings.ts';
 import {
   createSpecializedObjectKeysHelperName,
@@ -2355,6 +2357,9 @@ function getClosureAbiValueTypeForType(
   if (isStringLikeType(type)) {
     return 'owned_string_ref';
   }
+  if (isSymbolLikeType(type)) {
+    return 'symbol_ref';
+  }
   if (isSupportedOwnedStringArrayType(checker, type)) {
     return 'owned_array_ref';
   }
@@ -2520,6 +2525,11 @@ function getResolvedClosureAbiValueFromHostBoundary(
   switch (valueType) {
     case 'f64':
     case 'i32':
+      return { type: valueType };
+    case 'class_constructor_ref':
+    case 'string_ref':
+    case 'symbol_ref':
+    case 'box_ref':
       return { type: valueType };
     case 'owned_string_ref':
       return { type: 'owned_string_ref' };
@@ -22909,6 +22919,10 @@ function createHostBoundaryFromResolvedClosureAbiValue(
       throw new CompilerUnsupportedError(
         'Class-constructor host boundaries currently require class tag metadata.',
       );
+    case 'symbol_ref':
+      throw new CompilerUnsupportedError(
+        'Symbol host boundaries are not supported in compiler subset.',
+      );
     case 'box_ref':
       throw new CompilerUnsupportedError(
         'Opaque boxed host boundaries are not supported in compiler subset.',
@@ -23955,6 +23969,7 @@ function createSpecializedObjectFieldFromResolvedValue(
       };
     case 'owned_string_ref':
     case 'string_ref':
+    case 'symbol_ref':
     case 'box_ref':
       throw new CompilerUnsupportedError(
         'Fixed-layout object fields currently require tagged, heap, scalar, closure, class, or owned-array initializer values.',
@@ -29900,6 +29915,8 @@ function createFunctionHeader(
     ? 'owned_boolean_array_ref'
     : isStringLikeType(returnType)
     ? (ensureStringRepresentation(runtime), 'string_ref')
+    : isSymbolLikeType(returnType)
+    ? 'symbol_ref'
     : !hasExportBoundary && isSupportedInternalTaggedHeapUnionType(checker, returnType)
     ? 'tagged_ref'
     : isSupportedTaggedHeapNullableType(checker, returnType)
@@ -33652,6 +33669,10 @@ function lowerBinaryExpression(
   if (taggedPredicate) {
     return taggedPredicate;
   }
+  const symbolTypeofPredicate = tryLowerSymbolTypeofPredicateExpression(expression, context);
+  if (symbolTypeofPredicate) {
+    return symbolTypeofPredicate;
+  }
   if (expression.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken) {
     const resultType = getCompilerBindingValueType(context.checker, expression);
     const expressionType = context.checker.getTypeAtLocation(expression);
@@ -33874,6 +33895,20 @@ function lowerBinaryExpression(
         type: 'i32',
       };
     }
+    if (
+      isSymbolLikeType(context.checker.getTypeAtLocation(expression.left)) &&
+      isSymbolLikeType(context.checker.getTypeAtLocation(expression.right))
+    ) {
+      return {
+        kind: 'binary',
+        op: expression.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken
+          ? 'ref.eq'
+          : 'ref.ne',
+        left: lowerExpressionAsValueType(expression.left, 'symbol_ref', context),
+        right: lowerExpressionAsValueType(expression.right, 'symbol_ref', context),
+        type: 'i32',
+      };
+    }
   }
   if (expression.operatorToken.kind === ts.SyntaxKind.PlusToken) {
     if (
@@ -33991,6 +34026,53 @@ function isTaggedBackedConditionOperand(
       (symbol?.type === 'box_ref' && symbol.boxedValueType === 'tagged_ref');
   }
   return false;
+}
+
+function tryLowerSymbolTypeofPredicateExpression(
+  expression: ts.BinaryExpression,
+  context: FunctionLoweringContext,
+): CompilerExpressionIR | undefined {
+  if (
+    expression.operatorToken.kind !== ts.SyntaxKind.EqualsEqualsEqualsToken &&
+    expression.operatorToken.kind !== ts.SyntaxKind.ExclamationEqualsEqualsToken
+  ) {
+    return undefined;
+  }
+
+  const tryMatch = (
+    typeofExpression: ts.Expression,
+    literalExpression: ts.Expression,
+  ): CompilerExpressionIR | undefined => {
+    if (!ts.isTypeOfExpression(typeofExpression)) {
+      return undefined;
+    }
+    if (tryGetStaticStringLiteralText(literalExpression) !== 'symbol') {
+      return undefined;
+    }
+    if (!isSymbolLikeType(context.checker.getTypeAtLocation(typeofExpression.expression))) {
+      return undefined;
+    }
+    const loweredOperand = lowerExpressionAsValueType(
+      typeofExpression.expression,
+      'symbol_ref',
+      context,
+    );
+    const operandPreludeStatements = consumeExpressionPreludeStatements(context);
+    context.expressionPreludeStatements.push(
+      ...operandPreludeStatements,
+      {
+        kind: 'expression',
+        value: loweredOperand,
+      },
+    );
+    return {
+      kind: 'boolean_literal',
+      value: expression.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken,
+    };
+  };
+
+  return tryMatch(expression.left, expression.right) ??
+    tryMatch(expression.right, expression.left);
 }
 
 function tryLowerTaggedTypeofPredicateExpression(
@@ -57372,6 +57454,29 @@ function lowerCallExpression(
       kind: 'owned_string_literal',
       literalId: getOrCreateStringLiteralId(text, context.runtime),
       type: 'owned_string_ref',
+    };
+  }
+  if (isSymbolConstructorCall(expression)) {
+    if (expression.arguments.length > 1) {
+      throw new CompilerUnsupportedError(
+        'Symbol calls must receive zero or one argument in compiler subset.',
+        expression,
+      );
+    }
+    const description = expression.arguments[0];
+    if (
+      description &&
+      !isDefinitelyUndefinedType(context.checker.getTypeAtLocation(description)) &&
+      tryGetStaticStringLiteralText(description) === undefined
+    ) {
+      throw new CompilerUnsupportedError(
+        'Symbol descriptions currently require compile-time string literals in compiler subset.',
+        description,
+      );
+    }
+    return {
+      kind: 'symbol_new',
+      type: 'symbol_ref',
     };
   }
   if (isObjectFromEntriesCall(expression)) {
