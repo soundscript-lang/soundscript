@@ -5658,30 +5658,35 @@ function getSpecializedClosureFieldSignatureKey(
   return `${representationName}\u0000${fieldIndex}`;
 }
 
+type SpecializedClosureFieldSignatureState = number | 'conflict';
+
 function recordSpecializedClosureFieldSignature(
-  signaturesByField: Map<string, number>,
+  signaturesByField: Map<string, SpecializedClosureFieldSignatureState>,
   representationName: string,
   fieldIndex: number,
   signatureId: number,
 ): void {
   const key = getSpecializedClosureFieldSignatureKey(representationName, fieldIndex);
   const existing = signaturesByField.get(key);
+  if (existing === 'conflict') {
+    return;
+  }
   if (existing !== undefined && existing !== signatureId) {
-    throw new Error(
-      `Conflicting closure signatures for specialized object field ${representationName}:${fieldIndex}.`,
-    );
+    signaturesByField.set(key, 'conflict');
+    return;
   }
   signaturesByField.set(key, signatureId);
 }
 
 function getSpecializedClosureFieldSignature(
-  signaturesByField: ReadonlyMap<string, number>,
+  signaturesByField: ReadonlyMap<string, SpecializedClosureFieldSignatureState>,
   representationName: string,
   fieldIndex: number,
 ): number | undefined {
-  return signaturesByField.get(
+  const signature = signaturesByField.get(
     getSpecializedClosureFieldSignatureKey(representationName, fieldIndex),
   );
+  return signature === 'conflict' ? undefined : signature;
 }
 
 function upsertFunctionHostLocalFallbackClosureProperty(
@@ -5732,7 +5737,7 @@ function propagateSpecializedClosureFieldSignaturesToProjectionReads(
   runtime: ModuleRuntimeLoweringState,
   functions: readonly CompilerFunctionIR[],
 ): void {
-  const signaturesByField = new Map<string, number>();
+  const signaturesByField = new Map<string, SpecializedClosureFieldSignatureState>();
   for (const representation of runtime.representations) {
     if (representation.kind !== 'specialized_object_representation') {
       continue;
