@@ -18096,8 +18096,8 @@
     }
   },
   {
-    "test": "cases/defer/map-has-after-delete.ts",
-    "note": "Map.prototype.has should preserve the upstream missing-after-delete result.",
+    "test": "cases/pass-now/map-has-after-delete.ts",
+    "note": "Number-key Map.prototype.has after delete now executes through the compiler-owned numeric-array-backed collection path.",
     "entry": "main",
     "args": [],
     "expected": false,
@@ -18340,8 +18340,8 @@
     "expected": 1
   },
   {
-    "test": "cases/defer/map-size-after-clear.ts",
-    "note": "Map.prototype.size should preserve the upstream count after clear.",
+    "test": "cases/pass-now/map-size-after-clear.ts",
+    "note": "Number-key Map.prototype.size after clear now executes through the compiler-owned numeric-array-backed collection path.",
     "entry": "main",
     "args": [],
     "expected": 0,
@@ -18376,8 +18376,8 @@
     }
   },
   {
-    "test": "cases/defer/map-size-after-delete.ts",
-    "note": "Map.prototype.size should preserve the upstream count after deleting the only entry.",
+    "test": "cases/pass-now/map-size-after-delete.ts",
+    "note": "Number-key Map.prototype.size after delete now executes through the compiler-owned numeric-array-backed collection path.",
     "entry": "main",
     "args": [],
     "expected": 0,

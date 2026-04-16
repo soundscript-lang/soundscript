@@ -2643,6 +2643,80 @@ compilerIntegrationTest('compileProject executes Map delete and clear operations
 });
 
 compilerIntegrationTest(
+  'compileProject executes numeric-key Map get and set operations',
+  async () => {
+    const tempDirectory = await createCompilerTestProject([
+      'export function main(): number {',
+      '  const map = new Map<number, number>();',
+      '  map.set(1, 42);',
+      '  map.set(2, 7);',
+      '  map.set(1, 9);',
+      '  const one = map.get(1) ?? 0;',
+      '  const two = map.get(2) ?? 0;',
+      '  const missing = map.get(3) ?? 5;',
+      '  return map.size * 1000 + one * 100 + two * 10 + missing;',
+      '}',
+      '',
+    ].join('\n'));
+
+    const result = compileTempProject(tempDirectory);
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assertEquals(await invokeCompiledEntry(tempDirectory, 'main', []), 2975);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject executes numeric-key Map.set return-this identity',
+  async () => {
+    const tempDirectory = await createCompilerTestProject([
+      'export function main(): number {',
+      '  const map = new Map<number, number>();',
+      '  let score = 0;',
+      '  if (map.set(1, 1) !== new Map<number, number>()) {',
+      '    score += 100;',
+      '  }',
+      '  if (map.set(1, 2) === map) {',
+      '    score += 10;',
+      '  }',
+      '  const chained = map.set(2, 3).set(3, 4);',
+      '  if (chained === map) {',
+      '    score += 1;',
+      '  }',
+      '  return score * 100 + map.size;',
+      '}',
+      '',
+    ].join('\n'));
+
+    const result = compileTempProject(tempDirectory);
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assertEquals(await invokeCompiledEntry(tempDirectory, 'main', []), 11103);
+  },
+);
+
+compilerIntegrationTest('compileProject keeps numeric-key Map storage pay-for-play', async () => {
+  const tempDirectory = await createCompilerTestProject([
+    'export function main(): number {',
+    '  const map = new Map<string, number>();',
+    '  map.set("left", 3);',
+    '  return map.get("left") ?? 0;',
+    '}',
+    '',
+  ].join('\n'));
+
+  const result = compileTempProject(tempDirectory);
+
+  assertEquals(result.exitCode, 0);
+  assertEquals(result.diagnostics, []);
+  const watOutput = await readWatArtifactForProject(tempDirectory);
+  assertFalse(watOutput.includes('__map_number_keys'));
+  assertFalse(watOutput.includes('__map_number_values'));
+});
+
+compilerIntegrationTest(
   'compileProject executes nullish coalescing over Map.get results after mutations',
   async () => {
     const tempDirectory = await createCompilerTestProject([
