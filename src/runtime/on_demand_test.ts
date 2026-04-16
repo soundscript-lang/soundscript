@@ -186,6 +186,7 @@ Deno.test('createOnDemandTransformer resolves and transforms local .sts files wi
 
   const transformed = await transformer.transformModule(mainPath);
   assertEquals(transformed.transformMode, 'soundscript-prepared');
+  assertEquals(transformed.loaderFormat, 'module');
   assertStringIncludes(transformed.code, "from './helper';");
   assertStringIncludes(transformed.code, 'export const value = helper + 1;');
   assertStringIncludes(transformed.mapText, '/src/main.sts');
@@ -236,6 +237,7 @@ Deno.test('createOnDemandTransformer transpiles .sts runtime files even on strip
   const transformed = await transformer.transformModule(join(root, 'src/main.sts'));
 
   assertEquals(transformed.transformMode, 'soundscript-prepared');
+  assertEquals(transformed.loaderFormat, 'module');
   assertEquals(transformed.code.includes('import type'), false);
   assertEquals(transformed.code.includes(': number'), false);
   assertStringIncludes(transformed.code, 'export const answer = value.value;');
@@ -479,7 +481,10 @@ Deno.test('createOnDemandTransformer macro-expands source-published dependency .
   const packageContractsPath = join(root, 'node_modules/example-pkg/src/contracts.sts');
   const packageSharedPath = join(root, 'node_modules/example-pkg/src/shared.sts');
 
-  assertEquals(transformer.resolveImportSpecifier('example-pkg', mainPath), join(root, 'node_modules/example-pkg/src/index.sts'));
+  assertEquals(
+    transformer.resolveImportSpecifier('example-pkg', mainPath),
+    join(root, 'node_modules/example-pkg/src/index.sts'),
+  );
 
   const transformedContracts = await transformer.transformModule(packageContractsPath);
   assertEquals(transformedContracts.transformMode, 'soundscript-semantic-macro');
@@ -488,7 +493,10 @@ Deno.test('createOnDemandTransformer macro-expands source-published dependency .
   const transformedShared = await transformer.transformModule(packageSharedPath);
   assertEquals(transformedShared.transformMode, 'soundscript-prepared');
   assertStringIncludes(transformedShared.code, "import { UserCodec } from './contracts.sts';");
-  assertStringIncludes(transformedShared.code, "export const encoded = UserCodec.encode({ id: 'user-1' });");
+  assertStringIncludes(
+    transformedShared.code,
+    "export const encoded = UserCodec.encode({ id: 'user-1' });",
+  );
 });
 
 Deno.test('createOnDemandTransformer treats configured TypeScript files from soundscript.include as soundscript sources', async () => {
@@ -528,6 +536,7 @@ Deno.test('createOnDemandTransformer treats configured TypeScript files from sou
   assertEquals(transformer.shouldTransformFile(mainPath), true);
   const transformed = await transformer.transformModule(mainPath);
   assertEquals(transformed.transformMode, 'soundscript-prepared');
+  assertEquals(transformed.loaderFormat, 'module-typescript');
   assertStringIncludes(transformed.code, "from '@soundscript/soundscript';");
   assertStringIncludes(transformed.code, 'export const value = some(41);');
 });
@@ -563,6 +572,7 @@ Deno.test('createOnDemandTransformer keeps ordinary TypeScript type syntax on th
   const transformer = createOnDemandTransformer({ workingDirectory: root });
   const transformed = await transformer.transformModule(join(root, 'src/main.ts'));
   assertEquals(transformed.transformMode, 'typescript');
+  assertEquals(transformed.loaderFormat, 'module-typescript');
   assertStringIncludes(transformed.code, 'export const value: number = 41;');
 });
 
@@ -1389,7 +1399,9 @@ Deno.test('createOnDemandTransformer matches the legacy full semantic runtime pr
 });
 
 Deno.test('createOnDemandTransformer matches the legacy full semantic runtime program for multi-file semantic closures', async () => {
-  const root = await Deno.makeTempDir({ prefix: 'soundscript-on-demand-multifile-semantic-parity-' });
+  const root = await Deno.makeTempDir({
+    prefix: 'soundscript-on-demand-multifile-semantic-parity-',
+  });
   await writeProjectFile(
     root,
     'tsconfig.json',

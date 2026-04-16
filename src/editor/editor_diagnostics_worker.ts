@@ -6,7 +6,7 @@ import {
   IncrementalProjectSession,
 } from '../checker/analyze_project.ts';
 import type { MergedDiagnostic } from '../checker/diagnostics.ts';
-import { isSoundscriptSourceFile } from '../frontend/project_frontend.ts';
+import { loadConfig, type LoadedConfig } from '../project/config.ts';
 
 interface JsonRpcLikeRequest {
   id?: number;
@@ -25,6 +25,7 @@ interface WorkerProjectState {
 
 interface WorkerContext {
   documents: Map<string, SyncedDocument>;
+  loadedConfigs: Map<string, LoadedConfig>;
   projects: Map<string, WorkerProjectState>;
 }
 
@@ -47,8 +48,23 @@ interface SerializedWorkerDiagnostic {
 function createWorkerContext(): WorkerContext {
   return {
     documents: new Map(),
+    loadedConfigs: new Map(),
     projects: new Map(),
   };
+}
+
+async function loadedConfigForProject(
+  context: WorkerContext,
+  projectPath: string,
+): Promise<LoadedConfig> {
+  const cached = context.loadedConfigs.get(projectPath);
+  if (cached) {
+    return cached;
+  }
+
+  const loadedConfig = loadConfig(projectPath);
+  context.loadedConfigs.set(projectPath, loadedConfig);
+  return loadedConfig;
 }
 
 function serializeDiagnostic(diagnostic: MergedDiagnostic): SerializedWorkerDiagnostic {
@@ -102,14 +118,15 @@ function fileOverridesForProject(
   return overrides;
 }
 
-function additionalRootNamesForProject(
+async function additionalRootNamesForProject(
   context: WorkerContext,
   projectPath: string,
-): readonly string[] {
+): Promise<readonly string[]> {
   const projectDirectory = dirname(projectPath);
+  const loadedConfig = await loadedConfigForProject(context, projectPath);
   return [...context.documents.keys()]
     .filter((filePath) =>
-      filePath.startsWith(projectDirectory) && isSoundscriptSourceFile(filePath)
+      filePath.startsWith(projectDirectory) && loadedConfig.isSoundscriptSourceFile(filePath)
     )
     .sort();
 }
@@ -157,7 +174,7 @@ async function handleRequest(
       }
 
       const fileOverrides = fileOverridesForProject(context, projectPath);
-      const additionalRootNames = additionalRootNamesForProject(context, projectPath);
+      const additionalRootNames = await additionalRootNamesForProject(context, projectPath);
       const cachedProject = context.projects.get(projectPath) ?? {
         analysisSession: new IncrementalProjectSession(),
       };
