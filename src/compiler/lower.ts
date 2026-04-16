@@ -517,7 +517,10 @@ interface ModuleRuntimeLoweringState {
     HostObjectNestedPropertyNamesState
   >;
   ambientHostFallbackBoundarySyncRequests: Map<string, AmbientHostFallbackBoundarySyncRequest>;
+  hostImportInvocationFunctions: CompilerFunctionIR[];
+  hostImportInvocationFunctionsByKey: Map<string, CompilerFunctionIR>;
   functions: CompilerRuntimeFunctionIR[];
+  nextHostImportInvocationId: number;
   nextClassStaticFieldId: number;
   nextClassTagId: number;
   representations: CompilerRuntimeRepresentationIR[];
@@ -603,7 +606,10 @@ function createModuleRuntimeLoweringState(): ModuleRuntimeLoweringState {
     hostAsyncGeneratorYieldObjectPropertyNames: new Set(),
     hostAsyncGeneratorYieldObjectNestedPropertyNames: new Map(),
     ambientHostFallbackBoundarySyncRequests: new Map(),
+    hostImportInvocationFunctions: [],
+    hostImportInvocationFunctionsByKey: new Map(),
     functions: [],
+    nextHostImportInvocationId: 0,
     nextClassStaticFieldId: 0,
     nextClassTagId: 1,
     representations: [],
@@ -1019,13 +1025,14 @@ function getNullishWrappedCallableMemberTypes(
 function resolveClosureAbiInvocation(
   checker: ts.TypeChecker,
   signature: ts.Signature,
-  callExpression: ts.CallExpression,
+  callExpression: ts.CallExpression | ts.NewExpression,
   closures: ModuleClosureLoweringState | undefined,
   runtime?: ModuleRuntimeLoweringState,
   classes: ReadonlyMap<ts.Symbol, ts.ClassDeclaration> = new Map(),
   options?: ResolveClosureAbiInvocationOptions,
 ): ResolvedClosureAbiInvocationIR {
   const parameters = signature.getParameters();
+  const suppliedArguments = callExpression.arguments ?? [];
   const sourceParameters: ResolvedClosureAbiInvocationParamIR[] = [];
   let argumentIndex = 0;
   for (const [parameterIndex, parameter] of parameters.entries()) {
@@ -1037,7 +1044,7 @@ function resolveClosureAbiInvocation(
         checker.getTypeOfSymbolAtLocation(parameter, callExpression.expression),
         declaration.name,
       );
-      const remainingArgumentCount = callExpression.arguments.length - argumentIndex;
+      const remainingArgumentCount = suppliedArguments.length - argumentIndex;
       for (let restIndex = 0; restIndex < remainingArgumentCount; restIndex += 1) {
         sourceParameters.push({
           declaration,
@@ -1065,7 +1072,7 @@ function resolveClosureAbiInvocation(
       checker.getSignaturesOfType(parameterTypeAtCall, ts.SignatureKind.Call).length > 0
         ? checker.getTypeOfSymbolAtLocation(parameter, declaration.name)
         : parameterTypeAtCall;
-    const argumentProvided = argumentIndex < callExpression.arguments.length;
+    const argumentProvided = argumentIndex < suppliedArguments.length;
     const omittedOptionalCallableBoundary =
       !argumentProvided &&
       declaration.questionToken !== undefined &&
@@ -1096,7 +1103,7 @@ function resolveClosureAbiInvocation(
       argumentIndex += 1;
     }
   }
-  if (argumentIndex < callExpression.arguments.length) {
+  if (argumentIndex < suppliedArguments.length) {
     throw new CompilerUnsupportedError(
       'Closure calls must match the declared parameter arity.',
       callExpression,
@@ -1344,6 +1351,13 @@ function getKnownHostMethodClosureSignatureIdForPropertyAccess(
     }
   }
   if (receiverBoundaryRepresentation?.kind === 'fallback_object_representation') {
+    const fallbackBoundaryField = findCurrentFunctionFallbackBoundaryFieldByName(
+      context.currentFunction,
+      expression.name.text,
+    );
+    if (fallbackBoundaryField?.boundary.kind === 'closure') {
+      return fallbackBoundaryField.boundary.signatureId;
+    }
     const receiverHostBoundary = getHostBoundaryFromExpression(expression.expression, context);
     if (receiverHostBoundary?.kind === 'object') {
       const property = receiverHostBoundary.fields?.find((field) => field.name === expression.name.text);
@@ -1364,6 +1378,41 @@ function getKnownHostMethodClosureSignatureIdForPropertyAccess(
     }
   }
   return undefined;
+}
+
+function isHostBackedBoundaryPropertyAccess(
+  expression: ts.PropertyAccessExpression,
+  context: FunctionLoweringContext,
+): boolean {
+  const receiverBoundaryRepresentation = getBoundaryObjectRepresentationFromExpression(
+    expression.expression,
+    context,
+  );
+  if (
+    receiverBoundaryRepresentation?.kind !== 'fallback_object_representation' &&
+    receiverBoundaryRepresentation?.kind !== 'specialized_object_representation'
+  ) {
+    return false;
+  }
+  const receiverHostBoundary = getHostBoundaryFromExpression(expression.expression, context);
+  if (receiverHostBoundary?.kind === 'object') {
+    return true;
+  }
+  if (getAmbientHostImportedHeaderFromExpression(expression.expression, context) !== undefined) {
+    return true;
+  }
+  if (receiverBoundaryRepresentation.kind === 'specialized_object_representation') {
+    const field = getFieldsForSpecializedObjectRepresentation(
+      context.runtime,
+      receiverBoundaryRepresentation,
+    ).find((candidate) => candidate.name === expression.name.text);
+    return field?.boundary?.kind === 'closure';
+  }
+  const fallbackBoundaryField = findCurrentFunctionFallbackBoundaryFieldByName(
+    context.currentFunction,
+    expression.name.text,
+  );
+  return fallbackBoundaryField?.boundary.kind === 'closure';
 }
 
 function getKnownFallbackClosureSignatureIdForPropertyAccess(
@@ -18798,6 +18847,32 @@ function isScalarSafeFixedLayoutObjectValueExpression(
     if (!checker) {
       return false;
     }
+    if (
+      ts.isIdentifier(expression.expression) &&
+      isModuleObjectImportReference(checker, expression.expression)
+    ) {
+      const fieldType = checker.getTypeAtLocation(expression);
+      if (getConcreteClassConstructorDeclarationFromResolvedType(checker, fieldType, expression)) {
+        return true;
+      }
+      if ((fieldType.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0) {
+        return true;
+      }
+      if (checker.getSignaturesOfType(fieldType, ts.SignatureKind.Call).length > 0) {
+        return true;
+      }
+      return (fieldType.flags & ts.TypeFlags.NumberLike) !== 0 ||
+        (fieldType.flags & ts.TypeFlags.BooleanLike) !== 0 ||
+        isStringLikeType(fieldType) ||
+        isSupportedTaggedHeapNullableType(checker, fieldType) ||
+        isSupportedInternalTaggedHeapUnionType(checker, fieldType) ||
+        getHostTaggedBoundaryKinds(fieldType) !== undefined ||
+        isSupportedHeapLocalType(checker, fieldType) ||
+        isSupportedInternalOwnedTaggedHeapArrayType(checker, fieldType) ||
+        isSupportedOwnedStringArrayType(checker, fieldType) ||
+        isSupportedOwnedNumberArrayType(checker, fieldType) ||
+        isSupportedOwnedBooleanArrayType(checker, fieldType);
+    }
     const objectType = checker.getTypeAtLocation(expression.expression);
     const shapeSignature = getCandidateSpecializedObjectShapeSignature(
       checker,
@@ -32214,6 +32289,22 @@ function isNamespaceImportReference(
   return symbol?.declarations?.some(ts.isNamespaceImport) ?? false;
 }
 
+function isModuleObjectImportReference(
+  checker: ts.TypeChecker,
+  node: ts.Identifier,
+): boolean {
+  const symbol = checker.getSymbolAtLocation(node);
+  if (
+    !symbol?.declarations?.some((declaration) =>
+      ts.isImportClause(declaration) || ts.isImportSpecifier(declaration)
+    )
+  ) {
+    return false;
+  }
+  const resolved = resolveReferencedSymbol(checker, node);
+  return resolved?.symbol.getDeclarations()?.some(ts.isSourceFile) ?? false;
+}
+
 function isImportedBindingReferencedOutsideDeclaration(
   declaration: ts.ImportDeclaration,
   localName: ts.Identifier,
@@ -32372,6 +32463,7 @@ function registerImportedHostBinding(
     exportName?: string;
     importKind: CompilerJsHostImportIR['importKind'];
     importingSourceFileName: string;
+    memberName?: string;
     moduleSpecifier: string;
   },
   memberReferenceFilter: ((memberSymbol: ts.Symbol) => boolean) | undefined,
@@ -32401,6 +32493,7 @@ function registerImportedHostBinding(
       exportName: metadata.exportName,
       importKind: metadata.importKind,
       importingSourceFileName: metadata.importingSourceFileName,
+      memberName: metadata.memberName,
       moduleSpecifier: metadata.moduleSpecifier,
     });
     incrementFunctionNameCount(functionNameCounts, bindingName);
@@ -32587,6 +32680,76 @@ function registerNamespaceImportedHostBindings(
   if (!registeredBinding) {
     throw new CompilerUnsupportedError(
       'Namespace imports are not supported in compiler subset.',
+      binding.localName,
+    );
+  }
+}
+
+function registerModuleObjectImportedHostBindings(
+  declaration: ts.ImportDeclaration,
+  checker: ts.TypeChecker,
+  binding: Exclude<ImportBindingReference, { importKind: 'namespace' }>,
+  moduleSymbol: ts.Symbol,
+  importedHostDeclarations: Map<ts.Symbol, ImportedHostBinding>,
+  functionNameCounts: Map<string, number>,
+  moduleSpecifier: string,
+): void {
+  const exports = checker.getExportsOfModule(moduleSymbol);
+  let registeredBinding = false;
+  for (const exportedSymbol of exports) {
+    const resolvedExportSymbol = (exportedSymbol.flags & ts.SymbolFlags.Alias) !== 0
+      ? checker.getAliasedSymbol(exportedSymbol)
+      : exportedSymbol;
+    if (
+      !isImportedNamespaceMemberReferencedOutsideDeclaration(
+        declaration,
+        resolvedExportSymbol,
+        checker,
+      )
+    ) {
+      continue;
+    }
+    const declarations = resolvedExportSymbol.getDeclarations();
+    if (!declarations || declarations.length === 0) {
+      continue;
+    }
+    let resolvedRoot: ResolvedImportedHostDeclarationRoot;
+    try {
+      resolvedRoot = resolveImportedHostDeclarationRoot(declarations, binding.localName);
+    } catch (error) {
+      if (error instanceof CompilerUnsupportedError) {
+        continue;
+      }
+      throw error;
+    }
+    if (!resolvedRoot.declaration.getSourceFile().isDeclarationFile) {
+      throw new CompilerUnsupportedError(
+        'Module-object imports are not supported in compiler subset.',
+        binding.localName,
+      );
+    }
+    registerImportedHostBinding(
+      resolvedExportSymbol,
+      resolvedRoot.declaration,
+      resolvedRoot.namespaceMemberFunctions,
+      resolvedRoot.namespaceMemberVariables,
+      {
+        exportName: binding.exportName,
+        importKind: binding.importKind,
+        importingSourceFileName: declaration.getSourceFile().fileName,
+        memberName: exportedSymbol.name,
+        moduleSpecifier,
+      },
+      undefined,
+      importedHostDeclarations,
+      functionNameCounts,
+      checker,
+    );
+    registeredBinding = true;
+  }
+  if (!registeredBinding) {
+    throw new CompilerUnsupportedError(
+      'Module-object imports currently require supported property member access in compiler subset.',
       binding.localName,
     );
   }
@@ -32822,6 +32985,23 @@ function assertSupportedImportDeclaration(
         'Only imported top-level function and class declarations are supported.',
         binding.localName,
       );
+    }
+
+    if (
+      declarations.length === 1 &&
+      ts.isSourceFile(declarations[0]!) &&
+      declarations[0]!.isDeclarationFile
+    ) {
+      registerModuleObjectImportedHostBindings(
+        declaration,
+        checker,
+        binding,
+        resolvedSymbol.symbol,
+        importedHostDeclarations,
+        functionNameCounts,
+        moduleSpecifier,
+      );
+      continue;
     }
 
     const {
@@ -34269,6 +34449,7 @@ function lowerFallbackObjectPropertyReadAsValueType(
   propertyKey: string,
   resultType: CompilerValueType,
   context: FunctionLoweringContext,
+  closureSignatureId?: number,
 ): CompilerExpressionIR {
   const resultName = createLocalName(propertyKey, context.nextLocalId);
   context.nextLocalId += 1;
@@ -34279,6 +34460,7 @@ function lowerFallbackObjectPropertyReadAsValueType(
     resultName,
     representation,
     propertyKey,
+    closureSignatureId,
   };
   context.functionRuntime.operations.push(operation);
   return {
@@ -56396,6 +56578,116 @@ function lowerDirectNamedInvocation(
   };
 }
 
+function encodeTaggedPrimitiveKindsKey(
+  kinds: CompilerTaggedPrimitiveBoundaryKindsIR | undefined,
+): string {
+  if (!kinds) {
+    return '-';
+  }
+  return [
+    kinds.includesBoolean ? 'b' : '',
+    kinds.includesNull ? 'n' : '',
+    kinds.includesNumber ? 'd' : '',
+    kinds.includesString ? 's' : '',
+    kinds.includesUndefined ? 'u' : '',
+  ].join('');
+}
+
+function encodeResolvedHostInvocationValueKey(value: ResolvedClosureAbiValueIR): string {
+  return [
+    value.type,
+    value.closureSignatureId ?? '-',
+    value.classTagId ?? '-',
+    value.promiseValueBoundary ? JSON.stringify(value.promiseValueBoundary) : '-',
+    encodeTaggedPrimitiveKindsKey(value.taggedPrimitiveKinds),
+    value.heapRepresentation
+      ? `${value.heapRepresentation.kind}:${value.heapRepresentation.name}`
+      : '-',
+    value.heapArrayRepresentation
+      ? `${value.heapArrayRepresentation.kind}:${value.heapArrayRepresentation.name}`
+      : '-',
+  ].join(':');
+}
+
+function getOrCreateHostImportInvocationHeader(
+  baseHeader: CompilerFunctionIR,
+  invocation: ResolvedClosureAbiInvocationIR,
+  context: FunctionLoweringContext,
+  diagnosticNode: ts.Node,
+): CompilerFunctionIR {
+  const hostImport = baseHeader.hostImport;
+  if (!hostImport) {
+    return baseHeader;
+  }
+  ensureSupportedHostClosureBoundaryInvocation(invocation, diagnosticNode, context.runtime);
+  annotateHostClosureBoundaryInvocationTypes(
+    context.checker,
+    invocation,
+    diagnosticNode,
+    context.runtime,
+    context.closures,
+    context.classes,
+    { skipResultHeapBoundaryAnnotation: true },
+  );
+  const runtimeSourceParameters = invocation.sourceParameters.filter((parameter) =>
+    !parameter.resolvedValue.erasedFromRuntime
+  );
+  const key = [
+    hostImport.module,
+    hostImport.name,
+    hostImport.construct === true ? 'construct' : 'call',
+    baseHeader.resultType,
+    runtimeSourceParameters.map((parameter) =>
+      `${parameter.name}:${encodeResolvedHostInvocationValueKey(parameter.resolvedValue)}`
+    ).join('|'),
+  ].join('=>');
+  const existing = context.runtime.hostImportInvocationFunctionsByKey.get(key);
+  if (existing) {
+    return existing;
+  }
+
+  const params: CompilerLocalIR[] = [];
+  const paramBoundaries: CompilerHostParamBoundaryIR[] = [];
+  const heapParamRepresentations: CompilerFunctionHeapBoundaryIR[] = [];
+  for (const parameter of runtimeSourceParameters) {
+    const value = parameter.resolvedValue;
+    params.push({
+      name: parameter.name,
+      type: value.type,
+    });
+    const boundary = createHostBoundaryFromResolvedClosureAbiValue(value, context.runtime);
+    paramBoundaries.push({
+      name: parameter.name,
+      boundary,
+    });
+    if (value.heapRepresentation) {
+      heapParamRepresentations.push({
+        name: parameter.name,
+        representation: value.heapRepresentation,
+      });
+    }
+  }
+
+  const header: CompilerFunctionIR = {
+    ...baseHeader,
+    name: `${baseHeader.name}__host_invocation_${context.runtime.nextHostImportInvocationId++}`,
+    params,
+    heapParamRepresentations: heapParamRepresentations.length > 0
+      ? heapParamRepresentations
+      : undefined,
+    hostImportPromiseParams: undefined,
+    hostParamBoundaries: paramBoundaries.length > 0 ? paramBoundaries : undefined,
+    hostImportCallUsed: true,
+    hostImportValueUsed: undefined,
+    hostLocalFallbackBoundary: undefined,
+    locals: [],
+    body: [],
+  };
+  context.runtime.hostImportInvocationFunctionsByKey.set(key, header);
+  context.runtime.hostImportInvocationFunctions.push(header);
+  return header;
+}
+
 function getAmbientHostImportedConstructorBinding(
   expression: ts.Expression,
   context: FunctionLoweringContext,
@@ -56456,8 +56748,13 @@ function isAmbientHostImportedMemberOwnerExpression(
   expression: ts.Expression,
   context: FunctionLoweringContext,
 ): boolean {
-  if (ts.isIdentifier(expression) && isNamespaceImportReference(context.checker, expression)) {
-    return true;
+  if (ts.isIdentifier(expression)) {
+    if (
+      isNamespaceImportReference(context.checker, expression) ||
+      isModuleObjectImportReference(context.checker, expression)
+    ) {
+      return true;
+    }
   }
   if (ts.isIdentifier(expression)) {
     const resolved = resolveReferencedSymbol(context.checker, expression);
@@ -57494,32 +57791,54 @@ function lowerCallExpression(
         expression.expression,
         true,
       );
-      const knownCalleeSignatureId =
+      const canonicalCalleeSignatureId =
         getKnownHostMethodClosureSignatureIdForPropertyAccess(expression.expression, context) ??
         getKnownClosureSignatureIdFromExpression(
           expression.expression,
           context,
         );
-      const effectiveInvocation = knownCalleeSignatureId !== undefined
-        ? (() => {
+      let selectedCalleeSignatureId = canonicalCalleeSignatureId;
+      let effectiveInvocation = invocation;
+      let effectiveSourceParameters = invocation.sourceParameters;
+      if (canonicalCalleeSignatureId !== undefined) {
+        try {
           const storedSignature = resolveClosureAbiSignatureById(
-            knownCalleeSignatureId,
+            canonicalCalleeSignatureId,
             context.closures,
           );
-          return {
+          effectiveInvocation = {
             ...invocation,
             params: storedSignature.params,
             result: storedSignature.result,
           };
-        })()
-        : invocation;
-      const effectiveSourceParameters = knownCalleeSignatureId !== undefined
-        ? alignResolvedClosureInvocationSourceParameters(
-          invocation,
-          effectiveInvocation.params,
-          expression,
-        )
-        : invocation.sourceParameters;
+          effectiveSourceParameters = alignResolvedClosureInvocationSourceParameters(
+            invocation,
+            effectiveInvocation.params,
+            expression,
+          );
+        } catch (error) {
+          if (
+            !(error instanceof CompilerUnsupportedError) ||
+            !isHostBackedBoundaryPropertyAccess(expression.expression, context)
+          ) {
+            throw error;
+          }
+          selectedCalleeSignatureId = getClosureSignatureId(
+            invocation.params,
+            invocation.result,
+            context.closures,
+          );
+          effectiveInvocation = invocation;
+          effectiveSourceParameters = invocation.sourceParameters;
+        }
+      }
+      if (selectedCalleeSignatureId !== canonicalCalleeSignatureId) {
+        maybeOverrideLoweredHostMethodCalleeSignature(
+          loweredMethodCallee,
+          selectedCalleeSignatureId,
+          context,
+        );
+      }
       if (effectiveInvocation.result.classDeclaration && !allowClassConstructorResult) {
         throw new CompilerUnsupportedError(
           'Class constructor closure results are currently only supported in const aliases, static member access, and new expressions.',
@@ -57591,7 +57910,7 @@ function lowerCallExpression(
         kind: 'closure_call',
         callee: loweredMethodCallee,
         args,
-        signatureId: knownCalleeSignatureId ??
+        signatureId: selectedCalleeSignatureId ??
           getClosureSignatureId(
             effectiveInvocation.params,
             effectiveInvocation.result,
@@ -57820,6 +58139,7 @@ function lowerFallbackObjectPropertyRead(
   propertyKey: string,
   resultNode: ts.Node,
   context: FunctionLoweringContext,
+  closureSignatureId?: number,
 ): CompilerExpressionIR {
   const resultName = createLocalName(propertyKey, context.nextLocalId);
   const resultValueType = context.checker.getTypeAtLocation(resultNode);
@@ -57844,6 +58164,7 @@ function lowerFallbackObjectPropertyRead(
     resultName,
     representation,
     propertyKey,
+    closureSignatureId,
   };
   context.functionRuntime.operations.push(operation);
   if (resultType === 'heap_ref') {
@@ -57866,6 +58187,33 @@ function lowerFallbackObjectPropertyRead(
     name: resultName,
     type: resultType,
   };
+}
+
+function maybeOverrideLoweredHostMethodCalleeSignature(
+  callee: CompilerExpressionIR,
+  signatureId: number | undefined,
+  context: FunctionLoweringContext,
+): void {
+  if (signatureId === undefined || callee.kind !== 'local_get') {
+    return;
+  }
+  for (let index = context.functionRuntime.operations.length - 1; index >= 0; index -= 1) {
+    const operation = context.functionRuntime.operations[index];
+    if (
+      operation.kind === 'get_fallback_object_property' &&
+      operation.resultName === callee.name
+    ) {
+      operation.closureSignatureId = signatureId;
+      return;
+    }
+    if (
+      operation.kind === 'get_specialized_object_field' &&
+      operation.resultName === callee.name
+    ) {
+      operation.closureSignatureId = signatureId;
+      return;
+    }
+  }
 }
 
 function lowerDynamicObjectPropertyRead(
@@ -58161,7 +58509,10 @@ function maybeRecordFallbackBoundaryCallablePropertyAccess(
   }
   if (invocationSignature) {
     const invocationSignatureId = getInvocationSignatureId();
-    if (signatureId === undefined || signatureId !== invocationSignatureId) {
+    if (
+      signatureId === undefined ||
+      (!shouldPreferDeclaredPropertySignature && signatureId !== invocationSignatureId)
+    ) {
       signatureId = invocationSignatureId;
     }
   }
@@ -58732,12 +59083,17 @@ function lowerPropertyAccessExpression(
       );
     }
     maybeRecordFallbackBoundaryCallablePropertyAccess(expression, context);
+    const closureSignatureId = getKnownHostMethodClosureSignatureIdForPropertyAccess(
+      expression,
+      context,
+    ) ?? getKnownClosureSignatureIdFromExpression(expression, context);
     return lowerFallbackObjectPropertyRead(
       stableObjectName,
       boundaryRepresentation,
       expression.name.text,
       resultNode,
       context,
+      closureSignatureId,
     );
   }
   if (boundaryRepresentation?.kind === 'dynamic_object_representation') {
@@ -58782,6 +59138,10 @@ function lowerPropertyAccessExpression(
   }
   const resultName = createLocalName(expression.name.text, context.nextLocalId);
   const resultType = getCompilerBindingValueType(context.checker, expression);
+  const closureSignatureId = resultType === 'closure_ref'
+    ? getKnownHostMethodClosureSignatureIdForPropertyAccess(expression, context) ??
+      getKnownClosureSignatureIdFromExpression(expression, context)
+    : undefined;
   context.nextLocalId += 1;
   context.locals.push({ name: resultName, type: resultType });
   context.functionRuntime.operations.push({
@@ -58790,6 +59150,7 @@ function lowerPropertyAccessExpression(
     resultName,
     representation: boundaryRepresentation,
     fieldIndex,
+    closureSignatureId,
   });
   return {
     kind: 'local_get',
@@ -59536,9 +59897,26 @@ function lowerExpression(
         ambientHostConstructor.declaration.members.find(
           ts.isConstructorDeclaration,
         );
+      const calleeHeader = resolvedSignature &&
+          ambientHostConstructor.declaration.members.filter(ts.isConstructorDeclaration).length > 1
+        ? getOrCreateHostImportInvocationHeader(
+          ambientHostConstructor.header,
+          resolveClosureAbiInvocation(
+            context.checker,
+            resolvedSignature,
+            newExpression,
+            context.closures,
+            context.runtime,
+            context.classes,
+            { coerceOmittedOptionalParamsToUndefined: true },
+          ),
+          context,
+          newExpression,
+        )
+        : ambientHostConstructor.header;
       return lowerDirectNamedInvocation(
         newExpression,
-        ambientHostConstructor.header,
+        calleeHeader,
         constructorDeclaration,
         context,
         constructorDeclaration?.parameters,
@@ -64979,6 +65357,11 @@ export function lowerProgramToCompilerIR(
       ? [header]
       : [];
   });
+  const hostImportInvocationCallNames = new Set(
+    runtime.hostImportInvocationFunctions.flatMap((header) =>
+      header.hostImportCallUsed === true && header.hostImport ? [header.hostImport.name] : []
+    ),
+  );
   const includedJsHostImports = importedHostDeclarations.size > 0
     ? [...importedHostDeclarations.entries()].flatMap(([symbol, binding]) => {
       const header = functionHeaders.get(symbol);
@@ -64988,20 +65371,24 @@ export function lowerProgramToCompilerIR(
           binding.declaration,
         );
       }
-      if (header.hostImportCallUsed !== true && header.hostImportValueUsed !== true) {
+      const hostImportCallUsed = header.hostImportCallUsed === true ||
+        hostImportInvocationCallNames.has(header.hostImport.name);
+      if (!hostImportCallUsed && header.hostImportValueUsed !== true) {
         return [];
       }
-      return [{
-        hostImportName: header.hostImport.name,
-        hostImportCallUsed: header.hostImportCallUsed === true,
-        hostImportValueUsed: header.hostImportValueUsed === true,
-        bindingKind: binding.bindingKind,
-        importKind: binding.importKind,
-        importerModulePath: normalizeModulePath(projectRoot, binding.importingSourceFileName),
-        moduleSpecifier: binding.moduleSpecifier,
-        exportName: binding.exportName,
-        memberName: binding.memberName,
-      } satisfies CompilerJsHostImportIR];
+      return [
+        {
+          hostImportName: header.hostImport.name,
+          hostImportCallUsed,
+          hostImportValueUsed: header.hostImportValueUsed === true,
+          bindingKind: binding.bindingKind,
+          importKind: binding.importKind,
+          importerModulePath: normalizeModulePath(projectRoot, binding.importingSourceFileName),
+          moduleSpecifier: binding.moduleSpecifier,
+          exportName: binding.exportName,
+          memberName: binding.memberName,
+        } satisfies CompilerJsHostImportIR,
+      ];
     })
     : undefined;
 
@@ -65051,6 +65438,7 @@ export function lowerProgramToCompilerIR(
     functions: [
       ...loweredFunctions,
       ...includedImportedHostHeaders,
+      ...runtime.hostImportInvocationFunctions,
       ...runtime.classStaticInitializerFunctions,
       ...closures.liftedFunctions,
     ],

@@ -5,7 +5,7 @@ import { renderToString } from 'react-dom/server';
 // #[interop]
 import { StaticRouter } from 'react-router';
 // #[interop]
-import { Sequelize } from 'sequelize';
+import { DataTypes, Sequelize } from 'sequelize';
 
 import {
   AppRoutes,
@@ -33,8 +33,8 @@ let seededTodos = false;
 
 function createTodoAttributes(): TodoAttributes {
   return {
-    title: 'STRING',
-    completed: 'BOOLEAN',
+    title: DataTypes.STRING,
+    completed: DataTypes.BOOLEAN,
   };
 }
 
@@ -148,7 +148,7 @@ async function handleGetTodos(req: MinimalRequest, res: MinimalResponse): Promis
   res.send(html);
 }
 
-async function handleToggleTodo(req: MinimalRequest, res: MinimalResponse): Promise<void> {
+async function handleToggleTodo(req: MinimalToggleRequest, res: MinimalResponse): Promise<void> {
   const nextTodos = toggleTodoByRouteId(await getTodos(), req.params.id);
   await replaceTodos(nextTodos);
   const response = res.status(200);

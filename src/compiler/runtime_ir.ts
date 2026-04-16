@@ -580,6 +580,7 @@ export interface CompilerRuntimeGetSpecializedObjectFieldIR {
   resultName: string;
   representation: CompilerRuntimeSpecializedObjectRepresentationRefIR;
   fieldIndex: number;
+  closureSignatureId?: number;
 }
 
 export interface CompilerRuntimeGetFallbackObjectPropertyIR {
@@ -588,6 +589,7 @@ export interface CompilerRuntimeGetFallbackObjectPropertyIR {
   resultName: string;
   representation: CompilerRuntimeFallbackObjectRepresentationRefIR;
   propertyKey: string;
+  closureSignatureId?: number;
 }
 
 export interface CompilerRuntimeGetDynamicObjectPropertyIR {

@@ -8637,6 +8637,22 @@ function getHostClosureBoundarySignatures(module: CompilerModuleIR): readonly {
       }
     }
   }
+  for (const runtimeFunction of module.runtime?.functions ?? []) {
+    for (const operation of runtimeFunction.operations) {
+      if (
+        (
+          operation.kind === 'get_fallback_object_property' ||
+          operation.kind === 'get_specialized_object_field'
+        ) &&
+        operation.closureSignatureId !== undefined
+      ) {
+        markUsage(operation.closureSignatureId, {
+          needsParamBoundary: true,
+          needsResultBoundary: true,
+        });
+      }
+    }
+  }
   for (const signatureId of calledClosureSignatureIds) {
     if (localClosureFunctionSignatureIds.has(signatureId)) {
       continue;
@@ -19552,12 +19568,7 @@ function inferHeapLocalRepresentations(
     ) {
       continue;
     }
-    if (
-      operation.kind !== 'list_specialized_object_keys' &&
-      heapLocalRepresentations.get(operation.objectName)?.kind === 'fallback'
-    ) {
-      continue;
-    }
+    let recordedSpecializedFieldResult = false;
     if (
       operation.kind === 'get_specialized_object_field' && heapLocalNames.has(operation.resultName)
     ) {
@@ -19579,8 +19590,17 @@ function inferHeapLocalRepresentations(
             dynamicObjectLayout,
           ),
         );
-        continue;
+        recordedSpecializedFieldResult = true;
       }
+    }
+    if (
+      operation.kind !== 'list_specialized_object_keys' &&
+      heapLocalRepresentations.get(operation.objectName)?.kind === 'fallback'
+    ) {
+      continue;
+    }
+    if (recordedSpecializedFieldResult) {
+      continue;
     }
     if (
       operation.kind !== 'list_specialized_object_keys' &&
@@ -21362,11 +21382,37 @@ function emitFallbackReadOp(
         `${indent(level)}ref.cast (ref null $owned_heap_array)`,
       ];
     case 'closure_ref':
-      return [
-        ...lines,
-        `${indent(level)}call $untag_heap_object`,
-        `${indent(level)}ref.cast (ref null $closure)`,
-      ];
+      return propertyRead.operation.closureSignatureId !== undefined
+        ? [
+          `${indent(level)}local.get $${propertyRead.operation.objectName}`,
+          `${indent(level)}call $${getHostObjectLookupCachedImportFunctionName()}`,
+          `${indent(level)}ref.is_null`,
+          `${indent(level)}(if (result (ref null $closure))`,
+          `${indent(level + 1)}(then`,
+          ...lines.map((line) => `${indent(1)}${line}`),
+          `${indent(level + 2)}call $untag_heap_object`,
+          `${indent(level + 2)}ref.cast (ref null $closure)`,
+          `${indent(level + 1)})`,
+          `${indent(level + 1)}(else`,
+          `${indent(level + 2)}local.get $${propertyRead.operation.objectName}`,
+          `${indent(level + 2)}call $${getHostObjectLookupCachedImportFunctionName()}`,
+          `${indent(level + 2)}call $${
+            getHostFallbackObjectGetImportFunctionName(
+              propertyRead.operation.propertyKey,
+              'get_closure',
+            )
+          }`,
+          `${indent(level + 2)}call $host_externref_to_closure_${
+            propertyRead.operation.closureSignatureId
+          }`,
+          `${indent(level + 1)})`,
+          `${indent(level)})`,
+        ]
+        : [
+          ...lines,
+          `${indent(level)}call $untag_heap_object`,
+          `${indent(level)}ref.cast (ref null $closure)`,
+        ];
     case 'box_ref':
       return [...lines, `${indent(level)}call $untag_heap_object`];
     default: {
@@ -21528,6 +21574,28 @@ function emitSpecializedFieldReadOp(
       getSpecializedObjectFieldSlotIndex(layout, fieldRead.operation.fieldIndex)
     }`,
   ];
+  if (field.valueType === 'closure_ref' && resultType === 'closure_ref') {
+    return fieldRead.operation.closureSignatureId !== undefined
+      ? [
+        `${indent(level)}local.get $${fieldRead.operation.objectName}`,
+        `${indent(level)}call $${getHostObjectLookupCachedImportFunctionName()}`,
+        `${indent(level)}ref.is_null`,
+        `${indent(level)}(if (result (ref null $closure))`,
+        `${indent(level + 1)}(then`,
+        ...lines.map((line) => `${indent(1)}${line}`),
+        `${indent(level + 1)})`,
+        `${indent(level + 1)}(else`,
+        `${indent(level + 2)}local.get $${fieldRead.operation.objectName}`,
+        `${indent(level + 2)}call $${getHostObjectLookupCachedImportFunctionName()}`,
+        `${indent(level + 2)}call $${getHostObjectImportFunctionName('get_closure', field.name)}`,
+        `${indent(level + 2)}call $host_externref_to_closure_${
+          fieldRead.operation.closureSignatureId
+        }`,
+        `${indent(level + 1)})`,
+        `${indent(level)})`,
+      ]
+      : lines;
+  }
   if (field.valueType === 'heap_ref' && resultType === 'heap_ref') {
     const resultRepresentation = getHeapRepresentationForLocal(
       fieldRead.operation.resultName,

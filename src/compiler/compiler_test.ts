@@ -80,6 +80,34 @@ function createSoundscriptOnlyCompilerTsconfig(): string {
   );
 }
 
+function getHostClosureCallImportArgumentCounts(watOutput: string): number[] {
+  return [...watOutput.matchAll(
+    /\(import "soundscript_closure" "call_\d+" \(func \$host_closure_call_\d+((?: \(param [^)]+\))*)(?: \(result [^)]+\))?\)\)/g,
+  )].map((match) => Math.max(0, (match[1].match(/\(param /g)?.length ?? 0) - 1));
+}
+
+function assertHostExternrefToClosureCallsAreDefined(watOutput: string): void {
+  const definedAdapterIds = new Set(
+    [...watOutput.matchAll(/\(func \$host_externref_to_closure_(\d+)/g)].map((match) => match[1]),
+  );
+  for (const match of watOutput.matchAll(/call \$host_externref_to_closure_(\d+)/g)) {
+    assert(
+      definedAdapterIds.has(match[1]),
+      `Missing host_externref_to_closure_${match[1]} helper definition.`,
+    );
+  }
+}
+
+function getHostFunctionImportArgumentCounts(watOutput: string, functionName: string): number[] {
+  const escapedFunctionName = functionName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return [...watOutput.matchAll(
+    new RegExp(
+      `\\(import "soundscript_host_function" "[^"]*:${escapedFunctionName}" \\(func \\$[^\\s)]+((?: \\(param [^)]+\\))*)(?: \\(result [^)]+\\))?\\)\\)`,
+      'g',
+    ),
+  )].map((match) => match[1].match(/\(param /g)?.length ?? 0);
+}
+
 function getExampleNodeModulesPath(relativeExampleDirectory: string): string {
   return join(REPO_ROOT, relativeExampleDirectory, 'node_modules');
 }
@@ -8701,13 +8729,17 @@ compilerIntegrationTest(
     interface AppLike {
       get(
         path: string,
-        handler:
-          (req: { params: { id: string }; url: string }, res: ResponseLike) => void | Promise<void>,
+        handler: (
+          req: { params: { id: string }; url: string },
+          res: ResponseLike,
+        ) => void | Promise<void>,
       ): AppLike;
       post(
         path: string,
-        handler:
-          (req: { params: { id: string }; url: string }, res: ResponseLike) => void | Promise<void>,
+        handler: (
+          req: { params: { id: string }; url: string },
+          res: ResponseLike,
+        ) => void | Promise<void>,
       ): AppLike;
       listen(port: number): { close(): void };
     }
@@ -8757,7 +8789,13 @@ compilerIntegrationTest(
         }
       }
 
-      return { Sequelize };
+      return {
+        DataTypes: {
+          BOOLEAN: { key: 'BOOLEAN' },
+          STRING: { key: 'STRING' },
+        },
+        Sequelize,
+      };
     }
 
     const app: AppLike = {
@@ -8780,19 +8818,19 @@ compilerIntegrationTest(
     };
 
     function createResponse(): ResponseLike {
-        const response: ResponseLike = {
-          send(html: string) {
-            sentHtml = html;
-            return response;
-          },
-          json(_payload) {
-            return response;
-          },
-          status(_code: number) {
-            return response;
-          },
-        };
-        return response;
+      const response: ResponseLike = {
+        send(html: string) {
+          sentHtml = html;
+          return response;
+        },
+        json(_payload) {
+          return response;
+        },
+        status(_code: number) {
+          return response;
+        },
+      };
+      return response;
     }
 
     function express() {
@@ -8900,13 +8938,17 @@ compilerIntegrationTest(
     interface AppLike {
       get(
         path: string,
-        handler:
-          (req: { params: { id: string }; url: string }, res: ResponseLike) => void | Promise<void>,
+        handler: (
+          req: { params: { id: string }; url: string },
+          res: ResponseLike,
+        ) => void | Promise<void>,
       ): AppLike;
       post(
         path: string,
-        handler:
-          (req: { params: { id: string }; url: string }, res: ResponseLike) => void | Promise<void>,
+        handler: (
+          req: { params: { id: string }; url: string },
+          res: ResponseLike,
+        ) => void | Promise<void>,
       ): AppLike;
       listen(port: number): { close(): void };
     }
@@ -8956,7 +8998,13 @@ compilerIntegrationTest(
         }
       }
 
-      return { Sequelize };
+      return {
+        DataTypes: {
+          BOOLEAN: { key: 'BOOLEAN' },
+          STRING: { key: 'STRING' },
+        },
+        Sequelize,
+      };
     }
 
     function createResponse(): ResponseLike {
@@ -9061,6 +9109,242 @@ compilerIntegrationTest(
     assertEquals(syncCalls, 2);
     assertEquals(createCalls, 4);
     assertEquals(findAllCalls, 3);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject executes the checked-in fullstack-todo server against real sequelize sqlite package',
+  async () => {
+    const { projectDirectory, result } = compileCheckedInProject('examples/fullstack-todo');
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const renderPageName = await resolveQualifiedExportName(projectDirectory, 'renderPage');
+    const startName = await resolveQualifiedExportName(projectDirectory, 'start');
+    const runnerDirectory = await Deno.makeTempDir();
+    const runnerPath = join(runnerDirectory, 'run-fullstack-real-sequelize.mjs');
+    await Deno.writeTextFile(
+      runnerPath,
+      [
+        `import { instantiate } from ${JSON.stringify(`file://${result.artifacts.wrapperPath}`)};`,
+        '',
+        'let sentHtml = "";',
+        'const registeredGetPaths = [];',
+        'const registeredPostPaths = [];',
+        'const statusCalls = [];',
+        'const jsonPayloads = [];',
+        'let getTodosHandler;',
+        'let postToggleHandler;',
+        '',
+        'function createResponse() {',
+        '  const response = {',
+        '    send(html) {',
+        '      sentHtml = html;',
+        '      return response;',
+        '    },',
+        '    json(payload) {',
+        '      jsonPayloads.push(payload);',
+        '      return response;',
+        '    },',
+        '    status(code) {',
+        '      statusCalls.push(code);',
+        '      return response;',
+        '    },',
+        '  };',
+        '  return response;',
+        '}',
+        '',
+        'const app = {',
+        '  get(path, handler) {',
+        '    registeredGetPaths.push(path);',
+        '    getTodosHandler = handler;',
+        '    return this;',
+        '  },',
+        '  post(path, handler) {',
+        '    registeredPostPaths.push(path);',
+        '    postToggleHandler = handler;',
+        '    return this;',
+        '  },',
+        '  listen() {',
+        '    return { close() {} };',
+        '  },',
+        '};',
+        '',
+        'function express() {',
+        '  return app;',
+        '}',
+        '',
+        'const instantiated = await instantiate({',
+        '  modules: {',
+        '    express: { default: express },',
+        '  },',
+        '});',
+        `const renderPage = instantiated.exports[${JSON.stringify(renderPageName)}];`,
+        `const start = instantiated.exports[${JSON.stringify(startName)}];`,
+        "if (typeof renderPage !== 'function' || typeof start !== 'function') {",
+        "  throw new Error('Expected compiled fullstack exports.');",
+        '}',
+        'await start(0);',
+        "if (typeof getTodosHandler !== 'function' || typeof postToggleHandler !== 'function') {",
+        "  throw new Error('Expected registered express handlers.');",
+        '}',
+        "await getTodosHandler({ params: { id: '' }, url: '/todos' }, createResponse());",
+        'const initialHtml = sentHtml;',
+        "await postToggleHandler({ params: { id: '1' }, url: '/api/todos/1/toggle' }, createResponse());",
+        "const mutatedHtml = await renderPage('/todos');",
+        'console.log(JSON.stringify({',
+        '  initialHtml,',
+        '  jsonPayloads,',
+        '  mutatedHtml,',
+        '  registeredGetPaths,',
+        '  registeredPostPaths,',
+        '  statusCalls,',
+        '}));',
+        'process.exit(0);',
+        '',
+      ].join('\n'),
+    );
+
+    const nodeResult = await new Deno.Command('node', {
+      args: [runnerPath],
+      cwd: runnerDirectory,
+      stderr: 'piped',
+      stdout: 'piped',
+    }).output();
+    const stdout = new TextDecoder().decode(nodeResult.stdout).trim();
+    const stderr = new TextDecoder().decode(nodeResult.stderr).trim();
+    assertEquals(nodeResult.success, true, stderr);
+
+    const observed = JSON.parse(stdout) as {
+      initialHtml: string;
+      jsonPayloads: Array<{
+        firstCompleted: boolean;
+        secondCompleted: boolean;
+        toggledId: string;
+      }>;
+      mutatedHtml: string;
+      registeredGetPaths: string[];
+      registeredPostPaths: string[];
+      statusCalls: number[];
+    };
+    assertEquals(observed.registeredGetPaths, ['/todos']);
+    assertEquals(observed.registeredPostPaths, ['/api/todos/:id/toggle']);
+    assertEquals(observed.statusCalls, [200]);
+    assertEquals(observed.jsonPayloads, [
+      {
+        firstCompleted: true,
+        secondCompleted: true,
+        toggledId: '1',
+      },
+    ]);
+    assertStringIncludes(observed.initialHtml, 'Write compiler tests');
+    assertStringIncludes(observed.initialHtml, 'open');
+    assertStringIncludes(observed.mutatedHtml, 'Write compiler tests');
+    assertStringIncludes(observed.mutatedHtml, 'Ship the Wasm SSR todo app');
+    assertFalse(observed.mutatedHtml.includes('open'));
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject serves the checked-in fullstack-todo app through real express and sequelize packages',
+  async () => {
+    const { projectDirectory, result } = compileCheckedInProject('examples/fullstack-todo');
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const startName = await resolveQualifiedExportName(projectDirectory, 'start');
+    const runnerDirectory = await Deno.makeTempDir();
+    const runnerPath = join(runnerDirectory, 'run-fullstack-real-server.mjs');
+    await Deno.writeTextFile(
+      runnerPath,
+      [
+        "import { createServer } from 'node:net';",
+        `import { instantiate } from ${JSON.stringify(`file://${result.artifacts.wrapperPath}`)};`,
+        '',
+        'async function reservePort() {',
+        '  return await new Promise((resolve, reject) => {',
+        '    const server = createServer();',
+        '    server.once("error", reject);',
+        '    server.listen(0, "127.0.0.1", () => {',
+        '      const address = server.address();',
+        '      if (address === null || typeof address === "string") {',
+        '        server.close();',
+        '        reject(new Error("Expected TCP address."));',
+        '        return;',
+        '      }',
+        '      const port = address.port;',
+        '      server.close(() => resolve(port));',
+        '    });',
+        '  });',
+        '}',
+        '',
+        'const port = await reservePort();',
+        'const instantiated = await instantiate();',
+        `const start = instantiated.exports[${JSON.stringify(startName)}];`,
+        "if (typeof start !== 'function') {",
+        "  throw new Error('Expected compiled start export.');",
+        '}',
+        'await start(port);',
+        'const baseUrl = `http://127.0.0.1:${port}`;',
+        'const initialResponse = await fetch(`${baseUrl}/todos`);',
+        'const initialHtml = await initialResponse.text();',
+        'const toggleResponse = await fetch(`${baseUrl}/api/todos/1/toggle`, { method: "POST" });',
+        'const togglePayload = await toggleResponse.json();',
+        'const mutatedResponse = await fetch(`${baseUrl}/todos`);',
+        'const mutatedHtml = await mutatedResponse.text();',
+        'console.log(JSON.stringify({',
+        '  initialHtml,',
+        '  initialStatus: initialResponse.status,',
+        '  mutatedHtml,',
+        '  mutatedStatus: mutatedResponse.status,',
+        '  togglePayload,',
+        '  toggleStatus: toggleResponse.status,',
+        '}));',
+        'process.exit(0);',
+        '',
+      ].join('\n'),
+    );
+
+    const nodeResult = await new Deno.Command('node', {
+      args: [runnerPath],
+      cwd: runnerDirectory,
+      stderr: 'piped',
+      stdout: 'piped',
+    }).output();
+    const stdout = new TextDecoder().decode(nodeResult.stdout).trim();
+    const stderr = new TextDecoder().decode(nodeResult.stderr).trim();
+    assertEquals(nodeResult.success, true, stderr);
+
+    const observed = JSON.parse(stdout) as {
+      initialHtml: string;
+      initialStatus: number;
+      mutatedHtml: string;
+      mutatedStatus: number;
+      togglePayload: {
+        firstCompleted: boolean;
+        secondCompleted: boolean;
+        toggledId: string;
+      };
+      toggleStatus: number;
+    };
+    assertEquals(observed.initialStatus, 200);
+    assertEquals(observed.toggleStatus, 200);
+    assertEquals(observed.mutatedStatus, 200);
+    assertEquals(observed.togglePayload, {
+      firstCompleted: true,
+      secondCompleted: true,
+      toggledId: '1',
+    });
+    assertStringIncludes(observed.initialHtml, 'Write compiler tests');
+    assertStringIncludes(observed.initialHtml, 'open');
+    assertStringIncludes(observed.mutatedHtml, 'Ship the Wasm SSR todo app');
+    assertFalse(observed.mutatedHtml.includes('open'));
   },
 );
 
@@ -10704,6 +10988,10 @@ compilerIntegrationTest(
     assert(result.artifacts);
     assert(result.artifacts.wrapperPath);
 
+    const watOutput = await readWatArtifactForProject(tempDirectory);
+    assertFalse(getHostClosureCallImportArgumentCounts(watOutput).includes(2));
+    assertHostExternrefToClosureCallsAreDefined(watOutput);
+
     const wrapperModule = await importCompiledWrapperModule(result.artifacts.wrapperPath);
     const instantiated = await wrapperModule.instantiate({
       modules: {
@@ -10736,6 +11024,127 @@ compilerIntegrationTest(
     }
 
     assertEquals(await exported(), 'Write compiler tests:open');
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject supports imported host fallback methods with mixed omitted and present optional object params in one function',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              skipLibCheck: true,
+              target: 'ES2022',
+              lib: ['ES2022'],
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+              allowSyntheticDefaultImports: true,
+            },
+            include: ['src/**/*.sts', 'src/**/*.d.ts'],
+            soundscript: {
+              target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/db-types.d.ts',
+        contents: [
+          "declare module 'db' {",
+          '  export interface RecordApi {',
+          '    create(',
+          '      values: Record<string, unknown>,',
+          '      options?: { prefix: string },',
+          '    ): Promise<string>;',
+          '  }',
+          '  export function createRecordApi(): RecordApi;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.sts',
+        contents: [
+          '// #[interop]',
+          "import { createRecordApi } from 'db';",
+          '',
+          'export async function main(): Promise<string> {',
+          '  const api = createRecordApi();',
+          '  const first = await api.create({',
+          "    title: 'Write compiler tests',",
+          '    completed: false,',
+          '  });',
+          '  const second = await api.create(',
+          '    {',
+          "      title: 'Ship host boundary fixes',",
+          '      completed: true,',
+          '    },',
+          "    { prefix: 'two' },",
+          '  );',
+          "  return first + '|' + second;",
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const watOutput = await readWatArtifactForProject(tempDirectory);
+    assert(getHostClosureCallImportArgumentCounts(watOutput).includes(2));
+    assertHostExternrefToClosureCallsAreDefined(watOutput);
+
+    const wrapperModule = await importCompiledWrapperModule(result.artifacts.wrapperPath);
+    const instantiated = await wrapperModule.instantiate({
+      modules: {
+        db: {
+          createRecordApi() {
+            return {
+              async create(
+                values: Record<string, unknown>,
+                options?: { prefix: string },
+              ): Promise<string> {
+                const title = values.title;
+                const completed = values.completed;
+                if (typeof title !== 'string') {
+                  return 'bad-title';
+                }
+                if (typeof completed !== 'boolean') {
+                  return 'bad-completed';
+                }
+                const prefix = options?.prefix ?? 'one';
+                return `${prefix}:${title}:${completed ? 'done' : 'open'}`;
+              },
+            };
+          },
+        },
+      },
+    });
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+
+    assertEquals(
+      await exported(),
+      'one:Write compiler tests:open|two:Ship host boundary fixes:done',
+    );
   },
 );
 
@@ -10807,7 +11216,7 @@ compilerIntegrationTest(
           "  if (typeof completed !== 'boolean') {",
           "    return 'bad-completed';",
           '  }',
-          '  return title + (completed ? \':done\' : \':open\');',
+          "  return title + (completed ? ':done' : ':open');",
           '}',
           '',
         ].join('\n'),
@@ -10869,6 +11278,124 @@ compilerIntegrationTest(
     }
 
     assertEquals(await exported(), 'Write compiler tests:open');
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject selects imported host constructor overload ABIs per invocation',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              skipLibCheck: true,
+              target: 'ES2022',
+              lib: ['ES2022'],
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+              allowSyntheticDefaultImports: true,
+            },
+            include: ['src/**/*.sts', 'src/**/*.d.ts'],
+            soundscript: {
+              target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/driver.d.ts',
+        contents: [
+          "declare module 'driver' {",
+          '  export interface DriverOptions {',
+          '    prefix: string;',
+          '  }',
+          '  export class Driver {',
+          '    constructor(config: DriverOptions);',
+          '    constructor(database: string, username: string, password: string | undefined, options: DriverOptions);',
+          '  }',
+          '  export function getLastConstructArgs(): Promise<string>;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.sts',
+        contents: [
+          '// #[interop]',
+          "import { Driver, getLastConstructArgs } from 'driver';",
+          '',
+          'export async function main(): Promise<string> {',
+          "  const first = new Driver({ prefix: 'one' });",
+          "  const second = new Driver('db', 'user', undefined, { prefix: 'two' });",
+          '  return await getLastConstructArgs();',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const watOutput = await readWatArtifactForProject(tempDirectory);
+    assertEquals(
+      getHostFunctionImportArgumentCounts(watOutput, 'Driver').sort((left, right) => left - right),
+      [1, 4],
+    );
+
+    class Driver {
+      prefix: string;
+      argCount: number;
+
+      constructor(...args: unknown[]) {
+        this.argCount = args.length;
+        const options = (args.length === 1 ? args[0] : args[3]) as
+          | { prefix?: unknown }
+          | undefined;
+        this.prefix =
+          (args.length === 1 || args.length === 4) && typeof options?.prefix === 'string'
+            ? options.prefix
+            : 'bad-constructor-args';
+      }
+    }
+    const constructLog: string[] = [];
+
+    const wrapperModule = await importCompiledWrapperModule(result.artifacts.wrapperPath);
+    const instantiated = await wrapperModule.instantiate({
+      modules: {
+        driver: {
+          Driver: class extends Driver {
+            constructor(...args: unknown[]) {
+              super(...args);
+              constructLog.push(`${this.prefix}:${this.argCount}`);
+            }
+          },
+          async getLastConstructArgs(): Promise<string> {
+            return constructLog.join('|');
+          },
+        },
+      },
+    });
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+
+    assertEquals(await exported(), 'one:1|two:4');
   },
 );
 
@@ -10942,7 +11469,7 @@ compilerIntegrationTest(
           "  if (typeof completed !== 'boolean') {",
           "    return 'bad-completed';",
           '  }',
-          '  return title + (completed ? \':done\' : \':open\');',
+          "  return title + (completed ? ':done' : ':open');",
           '}',
           '',
         ].join('\n'),
@@ -11089,7 +11616,7 @@ compilerIntegrationTest(
           "  if (typeof completed !== 'boolean') {",
           "    return 'bad-completed';",
           '  }',
-          '  return title + (completed ? \':done\' : \':open\');',
+          "  return title + (completed ? ':done' : ':open');",
           '}',
           '',
         ].join('\n'),
@@ -11318,6 +11845,146 @@ compilerIntegrationTest(
     }
 
     assertEquals(await exported(), 'Write compiler tests:open');
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject executes real sequelize sqlite todo model operations through package interop',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'package.json',
+        contents: JSON.stringify(
+          {
+            dependencies: {
+              sequelize: '6.37.8',
+              sqlite3: '6.0.1',
+            },
+            private: true,
+            type: 'module',
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              skipLibCheck: true,
+              target: 'ES2022',
+              lib: ['ES2022'],
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+              allowSyntheticDefaultImports: true,
+            },
+            include: ['src/**/*.sts', 'src/**/*.d.ts'],
+            soundscript: {
+              target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/sequelize-types.d.ts',
+        contents: [
+          "type TodoAttributes = import('sequelize').ModelAttributes<import('sequelize').Model>;",
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.sts',
+        contents: [
+          '// #[interop]',
+          "import { DataTypes, Sequelize } from 'sequelize';",
+          '',
+          'export async function main(): Promise<string> {',
+          '  const sequelize = new Sequelize({',
+          "    dialect: 'sqlite',",
+          "    storage: ':memory:',",
+          '    logging: false,',
+          '  });',
+          '  const todoAttributes: TodoAttributes = {',
+          '    title: DataTypes.STRING,',
+          '    completed: DataTypes.BOOLEAN,',
+          '  };',
+          "  const Todo = sequelize.define('Todo', todoAttributes);",
+          '  await sequelize.sync({ force: true });',
+          '  await Todo.create({',
+          "    title: 'Write compiler tests',",
+          '    completed: false,',
+          '  });',
+          '  await Todo.create({',
+          "    title: 'Ship host boundary fixes',",
+          '    completed: true,',
+          '  });',
+          '  const openTodos = await Todo.findAll({',
+          '    where: { completed: false },',
+          '  });',
+          '  await sequelize.close();',
+          '  const firstTodo = openTodos[0];',
+          '  if (firstTodo === undefined) {',
+          "    return 'missing';",
+          '  }',
+          "  const title = firstTodo.getDataValue('title');",
+          "  if (typeof title !== 'string') {",
+          "    return 'bad-title';",
+          '  }',
+          '  if (openTodos.length === 1) {',
+          "    return title + ':1';",
+          '  }',
+          "  return title + ':many';",
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    await Deno.symlink(
+      getExampleNodeModulesPath('examples/fullstack-todo'),
+      join(tempDirectory, 'node_modules'),
+    );
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const runnerPath = join(tempDirectory, 'run-real-sequelize.mjs');
+    await Deno.writeTextFile(
+      runnerPath,
+      [
+        "import { instantiate } from './soundscript-out/module.js';",
+        'const instantiated = await instantiate();',
+        `const exported = instantiated.exports[${JSON.stringify(exportName)}];`,
+        "if (typeof exported !== 'function') {",
+        "  throw new Error('Expected compiled main export.');",
+        '}',
+        'console.log(await exported());',
+        '',
+      ].join('\n'),
+    );
+    const nodeResult = await new Deno.Command('node', {
+      args: [runnerPath],
+      cwd: tempDirectory,
+      stderr: 'piped',
+      stdout: 'piped',
+    }).output();
+    const stdout = new TextDecoder().decode(nodeResult.stdout).trim();
+    const stderr = new TextDecoder().decode(nodeResult.stderr).trim();
+    assertEquals(nodeResult.success, true, stderr);
+    assertEquals(stdout, 'Write compiler tests:1');
   },
 );
 

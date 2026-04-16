@@ -1,5 +1,8 @@
 interface MinimalRequest {
   url: string;
+}
+
+interface MinimalToggleRequest extends MinimalRequest {
   params: {
     id: string;
   };
@@ -24,7 +27,7 @@ interface MinimalApp {
   ): void;
   post(
     path: string,
-    handler: (req: MinimalRequest, res: MinimalResponse) => Promise<void>,
+    handler: (req: MinimalToggleRequest, res: MinimalResponse) => Promise<void>,
   ): void;
   listen(port: number): void;
 }
@@ -32,13 +35,15 @@ interface MinimalApp {
 declare module 'express' {
   interface Request extends MinimalRequest {}
 
+  interface ToggleRequest extends MinimalToggleRequest {}
+
   interface Response extends MinimalResponse {}
 
   interface ExpressApp {
     get(path: string, handler: (req: Request, res: Response) => Promise<void>): ExpressApp;
     post(
       path: string,
-      handler: (req: Request, res: Response) => Promise<void>,
+      handler: (req: ToggleRequest, res: Response) => Promise<void>,
     ): ExpressApp;
     listen(port: number): unknown;
   }
