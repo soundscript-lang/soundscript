@@ -22246,6 +22246,90 @@ compilerIntegrationTest(
 );
 
 compilerIntegrationTest(
+  'compileProject narrows mixed primitive and object union array elements',
+  async () => {
+    const tempDirectory = await createCompilerTestProject([
+      'type Left = { left: number };',
+      'type Right = { right: number };',
+      'type Value = number | string | Left | Right;',
+      '',
+      'function score(value: Value): number {',
+      '  if (typeof value === "number") {',
+      '    return value;',
+      '  }',
+      '  if (typeof value === "string") {',
+      '    return value.length;',
+      '  }',
+      '  if ("left" in value) {',
+      '    return value.left * 10;',
+      '  }',
+      '  return value.right;',
+      '}',
+      '',
+      'export function main(): number {',
+      '  const values: Value[] = [3, "abcd", { left: 5 }, { right: 7 }];',
+      '  return score(values[0]) * 1000',
+      '    + score(values[1]) * 100',
+      '    + score(values[2]) * 10',
+      '    + score(values[3]);',
+      '}',
+      '',
+    ].join('\n'));
+
+    const result = compileTempProject(tempDirectory);
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assertEquals(await invokeCompiledEntry(tempDirectory, 'main', []), 3_907);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject narrows mixed primitive and object union array mutations',
+  async () => {
+    const tempDirectory = await createCompilerTestProject([
+      'type Left = { left: number };',
+      'type Right = { right: number };',
+      'type Value = number | string | Left | Right;',
+      '',
+      'function score(value: Value): number {',
+      '  if (typeof value === "number") {',
+      '    return value;',
+      '  }',
+      '  if (typeof value === "string") {',
+      '    return value.length;',
+      '  }',
+      '  if ("left" in value) {',
+      '    return value.left * 10;',
+      '  }',
+      '  return value.right;',
+      '}',
+      '',
+      'export function main(): number {',
+      '  const values: Value[] = [0, "", { left: 0 }, { right: 0 }];',
+      '  values[0] = 3;',
+      '  values[1] = "abcd";',
+      '  values[2] = { left: 5 };',
+      '  values[3] = { right: 7 };',
+      '  values.push({ left: 1 });',
+      '  return score(values[0]) * 1000',
+      '    + score(values[1]) * 100',
+      '    + score(values[2]) * 10',
+      '    + score(values[3])',
+      '    + score(values[4]);',
+      '}',
+      '',
+    ].join('\n'));
+
+    const result = compileTempProject(tempDirectory);
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assertEquals(await invokeCompiledEntry(tempDirectory, 'main', []), 3_917);
+  },
+);
+
+compilerIntegrationTest(
   'lowerProgramToCompilerIR distinguishes explicit bag-like object locals from narrow fixed layouts',
   async () => {
     const tempDirectory = await createTempProject([

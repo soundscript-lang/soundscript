@@ -3453,6 +3453,21 @@ function getInternalTaggedHeapUnionObjectRepresentation(
   return ensureObjectFallbackRepresentation(runtime);
 }
 
+function getInternalOwnedTaggedHeapArrayObjectRepresentation(
+  checker: ts.TypeChecker,
+  type: ts.Type,
+  runtime: ModuleRuntimeLoweringState,
+): CompilerRuntimeObjectRepresentationRef | undefined {
+  if (!isSupportedInternalOwnedTaggedHeapArrayType(checker, type)) {
+    return undefined;
+  }
+  const objectMemberTypes = getTaggedArrayObjectMemberTypes(checker, type);
+  if (objectMemberTypes.length < 2) {
+    return undefined;
+  }
+  return ensureObjectFallbackRepresentation(runtime);
+}
+
 function getFunctionTaggedHeapParamRepresentation(
   func: CompilerFunctionIR,
   name: string,
@@ -4661,7 +4676,7 @@ function isSupportedConditionalExpressionTargetType(targetType: CompilerValueTyp
     targetType === 'class_constructor_ref';
 }
 
-function isTaggedHeapUnionConditionalHeapArm(
+function isTaggedHeapUnionHeapValueExpression(
   expression: ts.Expression,
   context: FunctionLoweringContext,
 ): boolean {
@@ -4702,7 +4717,7 @@ function lowerConditionalExpressionAsValueType(
     : undefined;
 
   const whenTrue = taggedHeapUnionObjectRepresentation &&
-      isTaggedHeapUnionConditionalHeapArm(expression.whenTrue, context)
+      isTaggedHeapUnionHeapValueExpression(expression.whenTrue, context)
     ? lowerTaggedHeapUnionObjectExpression(
       expression.whenTrue,
       taggedHeapUnionObjectRepresentation,
@@ -4712,7 +4727,7 @@ function lowerConditionalExpressionAsValueType(
     : lowerExpressionAsValueType(expression.whenTrue, targetType, context);
   const whenTruePreludeStatements = consumeExpressionPreludeStatements(context);
   const whenFalse = taggedHeapUnionObjectRepresentation &&
-      isTaggedHeapUnionConditionalHeapArm(expression.whenFalse, context)
+      isTaggedHeapUnionHeapValueExpression(expression.whenFalse, context)
     ? lowerTaggedHeapUnionObjectExpression(
       expression.whenFalse,
       taggedHeapUnionObjectRepresentation,
@@ -7463,6 +7478,11 @@ function tryLowerOwnedTaggedArrayExpression(
     if (kinds?.includesString) {
       ensureStringRepresentation(context.runtime);
     }
+    const objectRepresentation = getInternalOwnedTaggedHeapArrayObjectRepresentation(
+      context.checker,
+      expressionType,
+      context.runtime,
+    );
     return {
       kind: 'owned_tagged_array_literal',
       elements: expression.elements.map((element) => {
@@ -7472,7 +7492,7 @@ function tryLowerOwnedTaggedArrayExpression(
             element,
           );
         }
-        return lowerExpressionAsValueType(element, 'tagged_ref', context);
+        return lowerOwnedTaggedArrayElementAsTagged(element, objectRepresentation, context);
       }),
       type: 'owned_tagged_array_ref',
     };
@@ -8083,11 +8103,16 @@ function lowerOwnedArrayPushExpression(
       name: symbol!.emittedName,
       type: 'owned_tagged_array_ref',
     };
+    const objectRepresentation = getInternalOwnedTaggedHeapArrayObjectRepresentation(
+      context.checker,
+      context.checker.getTypeAtLocation(receiverExpression),
+      context.runtime,
+    );
     const loweredArguments = materializeMutationArguments(
       expression.arguments,
       'tagged_ref',
       'push_value',
-      (argument) => lowerExpressionAsValueType(argument, 'tagged_ref', context),
+      (argument) => lowerOwnedTaggedArrayElementAsTagged(argument, objectRepresentation, context),
     );
     loweredArguments.slice(0, -1).forEach((value) => {
       context.expressionPreludeStatements.push({
@@ -8404,11 +8429,16 @@ function lowerOwnedArrayUnshiftExpression(
       name: symbol!.emittedName,
       type: 'owned_tagged_array_ref',
     };
+    const objectRepresentation = getInternalOwnedTaggedHeapArrayObjectRepresentation(
+      context.checker,
+      context.checker.getTypeAtLocation(receiverExpression),
+      context.runtime,
+    );
     const loweredArguments = materializeMutationArguments(
       expression.arguments,
       'tagged_ref',
       'unshift_value',
-      (argument) => lowerExpressionAsValueType(argument, 'tagged_ref', context),
+      (argument) => lowerOwnedTaggedArrayElementAsTagged(argument, objectRepresentation, context),
     );
     loweredArguments.slice(1).reverse().forEach((value) => {
       context.expressionPreludeStatements.push({
@@ -15248,7 +15278,16 @@ function lowerOwnedArrayAssignmentStatement(
   const ownedTaggedArray = tryLowerOwnedTaggedArrayExpression(expression.left.expression, context);
   if (ownedTaggedArray) {
     const index = lowerExpression(indexExpression, context);
-    const value = lowerExpressionAsValueType(expression.right, 'tagged_ref', context);
+    const objectRepresentation = getInternalOwnedTaggedHeapArrayObjectRepresentation(
+      context.checker,
+      context.checker.getTypeAtLocation(expression.left.expression),
+      context.runtime,
+    );
+    const value = lowerOwnedTaggedArrayElementAsTagged(
+      expression.right,
+      objectRepresentation,
+      context,
+    );
     const preludeStatements = consumeExpressionPreludeStatements(context);
     return [...preludeStatements, {
       kind: 'owned_tagged_array_set',
@@ -37453,6 +37492,22 @@ function lowerTaggedHeapUnionObjectExpression(
     value: heapValue,
     type: 'tagged_ref',
   };
+}
+
+function lowerOwnedTaggedArrayElementAsTagged(
+  expression: ts.Expression,
+  objectRepresentation: CompilerRuntimeObjectRepresentationRef | undefined,
+  context: FunctionLoweringContext,
+  baseName = 'tagged_array',
+): CompilerExpressionIR {
+  return objectRepresentation && isTaggedHeapUnionHeapValueExpression(expression, context)
+    ? lowerTaggedHeapUnionObjectExpression(
+      expression,
+      objectRepresentation,
+      context,
+      baseName,
+    )
+    : lowerExpressionAsValueType(expression, 'tagged_ref', context);
 }
 
 function lowerClosureCallArgument(
