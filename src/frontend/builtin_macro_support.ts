@@ -60,6 +60,7 @@ import {
 } from './project_macro_support.ts';
 import {
   clearPreparedCompilerHostReuseState,
+  createPreparedCompilerHostReuseState,
   createPreparedProgram,
   type CreatePreparedProgramOptions,
   getLineAndCharacterOfPosition,
@@ -118,7 +119,8 @@ export interface CreateBuiltinExpandedProgramOptions extends CreatePreparedProgr
   numericLoweringTarget?: NumericLoweringTarget;
 }
 
-export interface CreateBuiltinDiagnosticProgramOptions extends CreateBuiltinExpandedProgramOptions {}
+export interface CreateBuiltinDiagnosticProgramOptions
+  extends CreateBuiltinExpandedProgramOptions {}
 
 export interface CreateBuiltinEmitProgramOptions extends CreatePreparedProgramOptions {
   numericLoweringTarget?: NumericLoweringTarget;
@@ -1014,6 +1016,7 @@ export function expandPreparedProgramWithBuiltinsForDiagnostics(
 }
 
 interface BuiltinProgramStageContext {
+  createStagePreparedProgramOptions(stage: 'annotated' | 'final'): CreatePreparedProgramOptions;
   diagnosticPreparedFiles: Map<string, PreparedSourceFile>;
   frontendDiagnostics: MergedDiagnostic[];
   macroEnvironment: ProjectMacroEnvironment;
@@ -1131,6 +1134,25 @@ function createBuiltinProgramStageContext(
     { always: true },
   );
   persistPreparedProgramBuildInfo(preparedProgram);
+  const getBuiltinStageReuseState = (stage: 'annotated' | 'final') => {
+    const primaryReuseState = preparedProgram.preparedHost.reuseState;
+    const stageReuseStates = primaryReuseState.builtinStageReuseStates ??= {};
+    const existingStageReuseState = stageReuseStates[stage];
+    if (existingStageReuseState) {
+      return existingStageReuseState;
+    }
+    const stageReuseState = createPreparedCompilerHostReuseState(
+      supportedOptions.baseHost.getCurrentDirectory?.() ?? ts.sys.getCurrentDirectory(),
+    );
+    stageReuseStates[stage] = stageReuseState;
+    return stageReuseState;
+  };
+  const createStagePreparedProgramOptions = (
+    stage: 'annotated' | 'final',
+  ): CreatePreparedProgramOptions => ({
+    ...withPersistentSemanticBuildInfoStage(supportedOptions, stage),
+    reusableCompilerHostState: getBuiltinStageReuseState(stage),
+  });
   const frontendDiagnostics: MergedDiagnostic[] = [...preparedProgram.frontendDiagnostics()];
   const macroEnvironment = measureCheckerTiming(
     'project.prepare.builtin.macroEnvironment',
@@ -1147,6 +1169,7 @@ function createBuiltinProgramStageContext(
     { always: true },
   );
   return {
+    createStagePreparedProgramOptions,
     diagnosticPreparedFiles: new Map<string, PreparedSourceFile>(),
     frontendDiagnostics,
     macroEnvironment,
@@ -1275,7 +1298,7 @@ function createBuiltinAnnotatedStage(
       },
       () =>
         context.trackPreparedProgram(createPreparedProgram({
-          ...withPersistentSemanticBuildInfoStage(context.supportedOptions, 'annotated'),
+          ...context.createStagePreparedProgramOptions('annotated'),
           fileOverrides: annotatedOverrides,
           invalidateModuleResolutions: false,
           oldProgram: context.preparedProgram.program,
@@ -1327,7 +1350,7 @@ function createBuiltinEmitStagePreparation(
         }
 
         const nextNumericsProgram = context.trackPreparedProgram(createPreparedProgram({
-          ...withPersistentSemanticBuildInfoStage(context.supportedOptions, 'final'),
+          ...context.createStagePreparedProgramOptions('final'),
           fileOverrides: numericOverrides,
           invalidateModuleResolutions: false,
           oldProgram: numericsProgram.program,
@@ -1593,7 +1616,7 @@ function createBuiltinFinalProgram(
     },
     () =>
       context.trackPreparedProgram(createPreparedProgram({
-        ...withPersistentSemanticBuildInfoStage(context.supportedOptions, 'final'),
+        ...context.createStagePreparedProgramOptions('final'),
         fileOverrides: emitStage.finalOverrides,
         invalidateModuleResolutions: false,
         oldProgram: emitStage.numericsProgram.program,
@@ -1623,7 +1646,7 @@ function createSupplementalTsDiagnosticPrograms(
     },
     () =>
       context.trackPreparedProgram(createPreparedProgram({
-        ...withPersistentSemanticBuildInfoStage(context.supportedOptions, 'final'),
+        ...context.createStagePreparedProgramOptions('final'),
         fileOverrides: emitStage.finalOverrides,
         invalidateModuleResolutions: false,
         oldProgram: emitStage.numericsProgram.program,

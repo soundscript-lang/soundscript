@@ -178,6 +178,7 @@ Deno.test('createPreparedCompilerHost exposes rewrite metadata for loaded macro 
     new Map(),
     undefined,
     {},
+    new Set(),
     TEST_MACRO_SITE_KINDS,
   );
 
@@ -589,6 +590,7 @@ Deno.test('createPreparedCompilerHost keeps a stable cached prepared entry acros
     new Map(),
     undefined,
     {},
+    new Set(),
     TEST_MACRO_SITE_KINDS,
   );
 
@@ -1064,6 +1066,7 @@ Deno.test('createPreparedCompilerHost reuses unchanged prepared and source files
     new Map(),
     reuseState,
     {},
+    new Set(),
     TEST_MACRO_SITE_KINDS,
   );
   const secondHost = createPreparedCompilerHost(
@@ -1072,6 +1075,7 @@ Deno.test('createPreparedCompilerHost reuses unchanged prepared and source files
     new Map(),
     reuseState,
     {},
+    new Set(),
     TEST_MACRO_SITE_KINDS,
   );
 
@@ -1127,6 +1131,7 @@ Deno.test('createPreparedCompilerHost prefers file overrides over base host cont
     new Map(),
     undefined,
     {},
+    new Set(),
     TEST_MACRO_SITE_KINDS,
   );
 
@@ -1151,6 +1156,7 @@ Deno.test('createPreparedCompilerHost exposes only cached prepared files', () =>
     new Map(),
     createPreparedCompilerHostReuseState(),
     {},
+    new Set(),
     TEST_MACRO_SITE_KINDS,
   );
 
@@ -1202,6 +1208,7 @@ Deno.test('createPreparedCompilerHost exposes a macro placeholder index for cach
     new Map(),
     undefined,
     {},
+    new Set(),
     TEST_MACRO_SITE_KINDS,
   );
 
@@ -1248,6 +1255,7 @@ Deno.test('createPreparedCompilerHost disambiguates same placeholder ids across 
     new Map(),
     undefined,
     {},
+    new Set(),
     TEST_MACRO_SITE_KINDS,
   );
 
@@ -1278,6 +1286,7 @@ Deno.test('createPreparedCompilerHost returns snapshot placeholder indexes over 
     new Map(),
     undefined,
     {},
+    new Set(),
     TEST_MACRO_SITE_KINDS,
   );
 
@@ -1863,7 +1872,10 @@ Deno.test('createPreparedProgram reuses hydrated module resolutions from a persi
   firstProgram.program.getSemanticDiagnostics();
 
   const snapshot = capturePersistentPreparedCompilerHostReuseSnapshot(initialReuseState);
-  const hydratedReuseState = hydratePersistentPreparedCompilerHostReuseSnapshot(snapshot, '/virtual');
+  const hydratedReuseState = hydratePersistentPreparedCompilerHostReuseSnapshot(
+    snapshot,
+    '/virtual',
+  );
   const hydratedProgram = createPreparedProgram({
     baseHost: createCountingResolveHost(files, hydratedCounts),
     options,
@@ -1971,7 +1983,10 @@ Deno.test(
     firstProgram.program.getSemanticDiagnostics();
 
     const snapshot = capturePersistentPreparedCompilerHostReuseSnapshot(initialReuseState);
-    const hydratedReuseState = hydratePersistentPreparedCompilerHostReuseSnapshot(snapshot, '/virtual');
+    const hydratedReuseState = hydratePersistentPreparedCompilerHostReuseSnapshot(
+      snapshot,
+      '/virtual',
+    );
     const hydratedProgram = createPreparedProgram({
       baseHost: createCountingResolveHost(files, hydratedCounts),
       options,
@@ -2196,6 +2211,77 @@ Deno.test('createBuiltinExpandedProgram keeps the annotated rebuilt program when
     }
     console.error = originalError;
   }
+});
+
+Deno.test('createBuiltinExpandedProgram keeps persistent prepared source reuse stage-local', () => {
+  const firstFileName = '/virtual/first.sts';
+  const secondFileName = '/virtual/second.sts';
+  const createMacroText = (label: string) =>
+    [
+      "type Ok = { tag: 'ok'; value: number };",
+      "type Err = { tag: 'err'; error: string };",
+      'declare const value: Ok | Err | undefined;',
+      `export const ${label} = Match(value, [`,
+      '  ({ value }: Ok) => value,',
+      '  ({ error }: Err) => error.length,',
+      '  (_: undefined) => 0,',
+      ']);',
+      '',
+    ].join('\n');
+  const compilerOptions = {
+    target: ts.ScriptTarget.ES2022,
+    module: ts.ModuleKind.ESNext,
+    moduleResolution: ts.ModuleResolutionKind.Bundler,
+    noEmit: true,
+  } as const;
+  const initialReuseState = createPreparedCompilerHostReuseState('/virtual');
+
+  createBuiltinExpandedProgram({
+    baseHost: createBaseHost(
+      new Map([
+        [firstFileName, createMacroText('first')],
+        [secondFileName, createMacroText('second')],
+      ]),
+    ),
+    options: compilerOptions,
+    reusableCompilerHostState: initialReuseState,
+    rootNames: [firstFileName, secondFileName],
+  });
+
+  const snapshot = capturePersistentPreparedCompilerHostReuseSnapshot(initialReuseState);
+  const hydratedReuseState = hydratePersistentPreparedCompilerHostReuseSnapshot(
+    snapshot,
+    '/virtual',
+  );
+  const firstProgramFileName = `${firstFileName}.ts`;
+  const initialStageSourceFileBefore = hydratedReuseState.rewrittenSourceFiles.get(
+    firstProgramFileName,
+  )?.sourceFile;
+  const finalStageSourceFileBefore = hydratedReuseState.builtinStageReuseStates?.final
+    ?.rewrittenSourceFiles.get(firstProgramFileName)?.sourceFile;
+
+  createBuiltinExpandedProgram({
+    baseHost: createBaseHost(
+      new Map([
+        [firstFileName, createMacroText('first')],
+        [secondFileName, `${createMacroText('second')}// local body edit\n`],
+      ]),
+    ),
+    options: compilerOptions,
+    reusableCompilerHostState: hydratedReuseState,
+    rootNames: [firstFileName, secondFileName],
+  });
+
+  const initialStageSourceFileAfter = hydratedReuseState.rewrittenSourceFiles.get(
+    firstProgramFileName,
+  )?.sourceFile;
+  const finalStageSourceFileAfter = hydratedReuseState.builtinStageReuseStates?.final
+    ?.rewrittenSourceFiles.get(firstProgramFileName)?.sourceFile;
+
+  assert(initialStageSourceFileBefore);
+  assert(finalStageSourceFileBefore);
+  assertStrictEquals(initialStageSourceFileAfter, initialStageSourceFileBefore);
+  assertStrictEquals(finalStageSourceFileAfter, finalStageSourceFileBefore);
 });
 
 Deno.test('createBuiltinExpandedProgram skips the final rebuilt program when builtin rewrites stop after annotation', () => {

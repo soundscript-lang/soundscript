@@ -21,17 +21,13 @@ import {
 } from '../checker/engine/diagnostic_codes.ts';
 import { describeUnsupportedFeature } from '../checker/unsupported_feature_messages.ts';
 import {
+  type CheckerTimingMetadata,
   isCheckerTimingFlagEnabled,
   logCheckerTiming,
   measureCheckerTiming,
-  type CheckerTimingMetadata,
 } from '../checker/timing.ts';
 import { BUILTIN_DIRECTIVE_NAMES, createAnnotationLookup } from '../language/annotation_syntax.ts';
-import {
-  makeDirectorySync,
-  pathExistsSync,
-  readTextFileSync,
-} from '../platform/host.ts';
+import { makeDirectorySync, pathExistsSync, readTextFileSync } from '../platform/host.ts';
 import {
   getSoundScriptPackageExportInfoForResolvedModule,
   isForeignPackageSourceFile,
@@ -72,8 +68,8 @@ import { scanMacroCandidates } from './macro_scanner.ts';
 import type {
   HashDiagnostic,
   MacroParseDiagnostic,
-  ParsedMacroInvocation,
   MacroReplacement,
+  ParsedMacroInvocation,
   RewriteResult,
 } from './macro_types.ts';
 import type { MacroPlaceholderIndex } from './macro_index.ts';
@@ -895,10 +891,12 @@ interface PersistentCachedSourceFileEntrySnapshot {
 type PersistentResolvedModuleSnapshot = ts.ResolvedModule | null;
 
 export interface PersistentPreparedCompilerHostReuseSnapshot {
-  builtinAnnotatedSourceFiles: readonly (readonly [string, CachedBuiltinAnnotatedSourceFileEntry])[];
+  builtinAnnotatedSourceFiles:
+    readonly (readonly [string, CachedBuiltinAnnotatedSourceFileEntry])[];
   builtinFinalSourceFiles: readonly (
     readonly [string, PersistentCachedBuiltinFinalSourceFileEntrySnapshot]
   )[];
+  builtinStageReuseStates?: PersistentPreparedCompilerHostStageReuseSnapshots;
   expandedMacroSourceFiles: readonly (
     readonly [string, PersistentCachedExpandedMacroSourceFileEntrySnapshot]
   )[];
@@ -915,9 +913,20 @@ export interface PersistentPreparedCompilerHostReuseSnapshot {
   rewrittenSourceFiles: readonly (readonly [string, PersistentCachedSourceFileEntrySnapshot])[];
 }
 
+export interface PersistentPreparedCompilerHostStageReuseSnapshots {
+  annotated?: PersistentPreparedCompilerHostReuseSnapshot;
+  final?: PersistentPreparedCompilerHostReuseSnapshot;
+}
+
+export interface PreparedCompilerHostStageReuseStates {
+  annotated?: PreparedCompilerHostReuseState;
+  final?: PreparedCompilerHostReuseState;
+}
+
 export interface PreparedCompilerHostReuseState {
   builtinAnnotatedSourceFiles: Map<string, CachedBuiltinAnnotatedSourceFileEntry>;
   builtinFinalSourceFiles: Map<string, CachedBuiltinFinalSourceFileEntry>;
+  builtinStageReuseStates?: PreparedCompilerHostStageReuseStates;
   changedProgramSourceFiles: Set<string>;
   expandedMacroSourceFiles: Map<string, CachedExpandedMacroSourceFileEntry>;
   macroModuleArtifactCache: Map<string, CachedMacroModuleArtifactEntry>;
@@ -1292,9 +1301,11 @@ function writePersistentBuilderProgramBuildInfo(
     operation,
     metadata,
     () => {
-      const emitBuildInfo = (builderProgram as ts.BuilderProgram & {
-        emitBuildInfo?: () => void;
-      } | undefined)?.emitBuildInfo;
+      const emitBuildInfo = (builderProgram as
+        | ts.BuilderProgram & {
+          emitBuildInfo?: () => void;
+        }
+        | undefined)?.emitBuildInfo;
       if (!emitBuildInfo) {
         metadata.status = 'unsupported';
         return;
@@ -1351,6 +1362,16 @@ export function createPreparedCompilerHostReuseState(
 export function clearPreparedCompilerHostReuseState(
   reusableState: PreparedCompilerHostReuseState,
 ): void {
+  if (reusableState.builtinStageReuseStates) {
+    const stageReuseStates = reusableState.builtinStageReuseStates;
+    if (stageReuseStates.annotated) {
+      clearPreparedCompilerHostReuseState(stageReuseStates.annotated);
+    }
+    if (stageReuseStates.final) {
+      clearPreparedCompilerHostReuseState(stageReuseStates.final);
+    }
+    reusableState.builtinStageReuseStates = undefined;
+  }
   reusableState.builtinAnnotatedSourceFiles.clear();
   reusableState.builtinFinalSourceFiles.clear();
   reusableState.changedProgramSourceFiles.clear();
@@ -2508,15 +2529,13 @@ export function emitProjectedDeclarations(
         },
         preparedProgram.persistentProjectedDeclarationBuildInfoPath,
       );
-      const declarationBuilderSeed =
-        reusableState.projectedDeclarationBuilderProgram ??
+      const declarationBuilderSeed = reusableState.projectedDeclarationBuilderProgram ??
         createPersistentBuilderProgramSeed(
           'project.emitProjectedDeclarations.buildInfoSeed',
           preparedProgram.persistentProjectedDeclarationBuildInfoPath,
           preparedProgram.preparedHost.host,
         );
-      const canIncrementallyReuseDeclarations =
-        hasMatchingProjectedDeclarationOutputs &&
+      const canIncrementallyReuseDeclarations = hasMatchingProjectedDeclarationOutputs &&
         declarationBuilderSeed !== undefined;
       metadata.mode = canIncrementallyReuseDeclarations ? 'incremental' : 'full';
       metadata.seededOutputs = hasMatchingProjectedDeclarationOutputs
@@ -2529,12 +2548,13 @@ export function emitProjectedDeclarations(
           rootNames: rootNames.length,
           seed: declarationBuilderSeed ? 'yes' : 'no',
         },
-        () => ts.createEmitAndSemanticDiagnosticsBuilderProgram(
-          rootNames.map(toProgramFileName),
-          projectedDeclarationCompilerOptions,
-          preparedProgram.preparedHost.host,
-          declarationBuilderSeed as ts.EmitAndSemanticDiagnosticsBuilderProgram | undefined,
-        ),
+        () =>
+          ts.createEmitAndSemanticDiagnosticsBuilderProgram(
+            rootNames.map(toProgramFileName),
+            projectedDeclarationCompilerOptions,
+            preparedProgram.preparedHost.host,
+            declarationBuilderSeed as ts.EmitAndSemanticDiagnosticsBuilderProgram | undefined,
+          ),
       );
       const declarationProgram = declarationBuilderProgram.getProgram();
       reusableState.projectedDeclarationBuilderProgram = declarationBuilderProgram;
@@ -4019,6 +4039,16 @@ export function createPreparedCompilerHost(
     return projectedDeclarationOverrides.get(toProjectedDeclarationSourceFileName(fileName));
   }
 
+  function shouldUsePlainHostSourceFile(fileName: string): boolean {
+    return !expansionEnabled && !isConfiguredSoundscriptFile(fileName);
+  }
+
+  function shouldUsePlainHostModuleResolution(): boolean {
+    return !expansionEnabled &&
+      projectedDeclarationOverrides.size === 0 &&
+      !allowSoundscriptProgramFileResolution;
+  }
+
   const resolvedImportedMacroSiteKindsByFile = new Map<
     string,
     ReadonlyMap<string, ImportedMacroSiteKind>
@@ -4470,6 +4500,32 @@ export function createPreparedCompilerHost(
     containingSourceFile?: ts.SourceFile,
   ): (ts.ResolvedModule | undefined)[] {
     const sourceContainingFile = toSourceFileName(containingFile);
+    if (shouldUsePlainHostModuleResolution()) {
+      const delegated = baseHost.resolveModuleNames?.(
+        moduleNames,
+        sourceContainingFile,
+        reusedNames,
+        redirectedReference,
+        options ?? compilerOptions,
+        containingSourceFile,
+      );
+      if (delegated) {
+        return delegated;
+      }
+      const moduleResolutionHost = createModuleResolutionHost();
+      const resolutionMode = containingSourceFile?.impliedNodeFormat;
+      return moduleNames.map((moduleName) =>
+        ts.resolveModuleName(
+          moduleName,
+          sourceContainingFile,
+          options ?? {},
+          moduleResolutionHost,
+          reusableState.moduleResolutionCache,
+          redirectedReference,
+          resolutionMode,
+        ).resolvedModule
+      );
+    }
     const moduleResolutionHost = createModuleResolutionHost();
     const resolutionMode = containingSourceFile?.impliedNodeFormat;
     const canReuseResolvedModuleMemo = !invalidateModuleResolutions ||
@@ -4718,6 +4774,20 @@ export function createPreparedCompilerHost(
           programSourceFiles.add(fileName);
           return sourceFile;
         }
+        const sourceFileName = toSourceFileName(fileName);
+        if (shouldUsePlainHostSourceFile(sourceFileName)) {
+          const sourceFile = baseHost.getSourceFile(
+            sourceFileName,
+            languageVersion,
+            onError,
+            shouldCreateNewSourceFile,
+          );
+          if (!sourceFile) {
+            return undefined;
+          }
+          programSourceFiles.add(fileName);
+          return ensureSourceFileVersion(sourceFile, sourceFile.text);
+        }
         const prepared = getPreparedSourceFile(fileName);
         if (prepared !== undefined) {
           const sourceFile = getCachedOrCreateSourceFile(
@@ -4733,7 +4803,6 @@ export function createPreparedCompilerHost(
           return sourceFile;
         }
 
-        const sourceFileName = toSourceFileName(fileName);
         const sourceFile = baseHost.getSourceFile(
           sourceFileName,
           languageVersion,
@@ -4755,6 +4824,9 @@ export function createPreparedCompilerHost(
           return projectedDeclarationText;
         }
         const sourceFileName = toSourceFileName(fileName);
+        if (shouldUsePlainHostSourceFile(sourceFileName)) {
+          return baseHost.readFile(sourceFileName);
+        }
         return getPreparedSourceFile(fileName)?.rewrittenText ?? baseHost.readFile(sourceFileName);
       },
       resolveModuleNames,
@@ -4847,8 +4919,7 @@ export function createPreparedProgram(
       projectReferencesSignature;
   const requestedSemanticDiagnosticsBuildInfoPath =
     options.persistentSemanticDiagnosticsBuildInfoPath ?? '';
-  const canReuseActiveSemanticDiagnosticsBuilder =
-    canIncrementallyReuseSemanticDiagnostics &&
+  const canReuseActiveSemanticDiagnosticsBuilder = canIncrementallyReuseSemanticDiagnostics &&
     preparedHost.reuseState.semanticDiagnosticsBuildInfoPath ===
       requestedSemanticDiagnosticsBuildInfoPath;
   const semanticDiagnosticsCompilerOptions = createPersistentBuildInfoCompilerOptions(
@@ -4876,14 +4947,15 @@ export function createPreparedProgram(
       seed: semanticDiagnosticsBuilderSeed ? 'yes' : 'no',
       stage: inferPersistentBuildInfoStage(options.persistentSemanticDiagnosticsBuildInfoPath),
     },
-    () => ts.createSemanticDiagnosticsBuilderProgram(
-      rootNames,
-      semanticDiagnosticsCompilerOptions,
-      preparedHost.host,
-      semanticDiagnosticsBuilderSeed as ts.SemanticDiagnosticsBuilderProgram | undefined,
-      options.configFileParsingDiagnostics,
-      options.projectReferences,
-    ),
+    () =>
+      ts.createSemanticDiagnosticsBuilderProgram(
+        rootNames,
+        semanticDiagnosticsCompilerOptions,
+        preparedHost.host,
+        semanticDiagnosticsBuilderSeed as ts.SemanticDiagnosticsBuilderProgram | undefined,
+        options.configFileParsingDiagnostics,
+        options.projectReferences,
+      ),
   );
   const program = builderProgram.getProgram();
   const removedProgramSourceFiles = new Set<string>();
@@ -4916,8 +4988,7 @@ export function createPreparedProgram(
       removedProgramFiles: removedProgramSourceFiles.size,
       resolvedModuleMemoHits: sourceFileCacheStats.resolvedModuleMemoHits,
       resolvedModuleMemoMisses: sourceFileCacheStats.resolvedModuleMemoMisses,
-      reusedProgramFiles:
-        preparedHost.reuseState.programSourceFiles.size -
+      reusedProgramFiles: preparedHost.reuseState.programSourceFiles.size -
         preparedHost.reuseState.changedProgramSourceFiles.size,
       reusedResolvedModuleMemoOnInvalidation: reuseResolvedModulesOnInvalidation,
       rewrittenSourceFileCacheHits: sourceFileCacheStats.rewrittenHits,
@@ -4946,7 +5017,8 @@ export function createPreparedProgram(
       return isLocalSoundscriptSourceFile(fileName, configuredSoundscriptFileNames);
     },
     options: options.options,
-    persistentProjectedDeclarationBuildInfoPath: options.persistentProjectedDeclarationBuildInfoPath,
+    persistentProjectedDeclarationBuildInfoPath:
+      options.persistentProjectedDeclarationBuildInfoPath,
     persistentSemanticDiagnosticsBuildInfoPath: options.persistentSemanticDiagnosticsBuildInfoPath,
     placeholderIndex(): MacroPlaceholderIndex {
       return preparedHost.getMacroPlaceholderIndex();
@@ -4971,37 +5043,61 @@ export function persistPreparedProgramBuildInfo(preparedProgram: PreparedProgram
 
 export function capturePersistentPreparedCompilerHostReuseSnapshot(
   reuseState: PreparedCompilerHostReuseState,
+  options: { includeBuiltinStageReuseStates?: boolean } = {},
 ): PersistentPreparedCompilerHostReuseSnapshot {
+  const includeBuiltinStageReuseStates = options.includeBuiltinStageReuseStates ?? true;
   return {
     builtinAnnotatedSourceFiles: [...reuseState.builtinAnnotatedSourceFiles.entries()],
     builtinFinalSourceFiles: [...reuseState.builtinFinalSourceFiles.entries()].map((
       [fileName, entry],
-    ) => [
-      fileName,
-      {
-        ...entry,
-        diagnosticPreparedFile: entry.diagnosticPreparedFile
-          ? serializePreparedSourceFile(entry.diagnosticPreparedFile)
+    ) =>
+      [
+        fileName,
+        {
+          ...entry,
+          diagnosticPreparedFile: entry.diagnosticPreparedFile
+            ? serializePreparedSourceFile(entry.diagnosticPreparedFile)
+            : undefined,
+        },
+      ] as const
+    ),
+    builtinStageReuseStates: includeBuiltinStageReuseStates && reuseState.builtinStageReuseStates
+      ? {
+        annotated: reuseState.builtinStageReuseStates.annotated
+          ? capturePersistentPreparedCompilerHostReuseSnapshot(
+            reuseState.builtinStageReuseStates.annotated,
+            { includeBuiltinStageReuseStates: false },
+          )
           : undefined,
-      },
-    ] as const),
+        final: reuseState.builtinStageReuseStates.final
+          ? capturePersistentPreparedCompilerHostReuseSnapshot(
+            reuseState.builtinStageReuseStates.final,
+            { includeBuiltinStageReuseStates: false },
+          )
+          : undefined,
+      }
+      : undefined,
     expandedMacroSourceFiles: [...reuseState.expandedMacroSourceFiles.entries()].map((
       [fileName, entry],
-    ) => [
-      fileName,
-      {
-        cacheKey: entry.cacheKey,
-        fileName: entry.sourceFile.fileName,
-        text: entry.sourceFile.text,
-      },
-    ] as const),
-    preparedSourceFiles: [...reuseState.preparedSourceFiles.entries()].map(([fileName, entry]) => [
-      fileName,
-      {
-        ...entry,
-        prepared: serializePreparedSourceFile(entry.prepared),
-      },
-    ] as const),
+    ) =>
+      [
+        fileName,
+        {
+          cacheKey: entry.cacheKey,
+          fileName: entry.sourceFile.fileName,
+          text: entry.sourceFile.text,
+        },
+      ] as const
+    ),
+    preparedSourceFiles: [...reuseState.preparedSourceFiles.entries()].map(([fileName, entry]) =>
+      [
+        fileName,
+        {
+          ...entry,
+          prepared: serializePreparedSourceFile(entry.prepared),
+        },
+      ] as const
+    ),
     projectedDeclarationOptionSignature: reuseState.projectedDeclarationOptionSignature,
     projectedDeclarationOutputs: reuseState.projectedDeclarationOutputs
       ? [...reuseState.projectedDeclarationOutputs.entries()]
@@ -5035,6 +5131,22 @@ export function hydratePersistentPreparedCompilerHostReuseSnapshot(
         ? restorePreparedSourceFile(entry.diagnosticPreparedFile)
         : undefined,
     });
+  }
+  if (snapshot.builtinStageReuseStates) {
+    reuseState.builtinStageReuseStates = {
+      annotated: snapshot.builtinStageReuseStates.annotated
+        ? hydratePersistentPreparedCompilerHostReuseSnapshot(
+          snapshot.builtinStageReuseStates.annotated,
+          currentDirectory,
+        )
+        : undefined,
+      final: snapshot.builtinStageReuseStates.final
+        ? hydratePersistentPreparedCompilerHostReuseSnapshot(
+          snapshot.builtinStageReuseStates.final,
+          currentDirectory,
+        )
+        : undefined,
+    };
   }
   for (const [fileName, entry] of snapshot.expandedMacroSourceFiles) {
     reuseState.expandedMacroSourceFiles.set(fileName, {

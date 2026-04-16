@@ -115,13 +115,176 @@ Deno.test('runProgram caches unchanged checker results by default', async () => 
       workingDirectory: tempDirectory,
     });
     assert(logs.some((line) => line.includes('[soundscript:checker] project.cache.read ')));
-    assert(!logs.some((line) => line.includes('[soundscript:checker] project.prepareProjectAnalysis ')));
+    assert(
+      !logs.some((line) => line.includes('[soundscript:checker] project.prepareProjectAnalysis ')),
+    );
     return result;
   });
 
   assertEquals(secondResult.diagnostics, firstResult.diagnostics);
   assertEquals(secondResult.output, firstResult.output);
   assertEquals(secondResult.exitCode, firstResult.exitCode);
+});
+
+Deno.test('runProgram checker cache does not persist host TypeScript file reuse artifacts', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+          },
+          include: ['src/**/*.ts'],
+        },
+        null,
+        2,
+      ),
+    },
+    {
+      path: 'src/index.ts',
+      contents: [
+        'export const broken: number = "oops";',
+        '',
+      ].join('\n'),
+    },
+  ]);
+  const projectPath = join(tempDirectory, 'tsconfig.json');
+  const cacheDirectory = resolveCheckerCacheDirectory(projectPath);
+
+  const firstResult = runProgram({
+    projectPath,
+    workingDirectory: tempDirectory,
+  });
+  assert(firstResult.diagnostics.some((diagnostic) => diagnostic.source === 'ts'));
+
+  const manifest = JSON.parse(await Deno.readTextFile(join(cacheDirectory, 'manifest.json'))) as {
+    files: Array<{ view: string }>;
+    prepareArtifacts?: { ts?: unknown };
+  };
+  assertEquals(manifest.files.some((file) => file.view === 'ts'), false);
+  assertEquals(manifest.prepareArtifacts?.ts, undefined);
+
+  const secondResult = withCapturedTimingLogs((logs) => {
+    const result = runProgram({
+      projectPath,
+      workingDirectory: tempDirectory,
+    });
+    assert(logs.some((line) => line.includes('[soundscript:checker] project.cache.read ')));
+    assert(
+      !logs.some((line) => line.includes('[soundscript:checker] project.prepareProjectAnalysis ')),
+    );
+    return result;
+  });
+  assertEquals(secondResult.diagnostics, firstResult.diagnostics);
+});
+
+Deno.test('runProgram does not reuse frontier-only checker cache after host TypeScript edits', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+          },
+          include: ['src/**/*.ts'],
+        },
+        null,
+        2,
+      ),
+    },
+    {
+      path: 'src/index.ts',
+      contents: [
+        'export const value: number = 1;',
+        '',
+      ].join('\n'),
+    },
+  ]);
+  const projectPath = join(tempDirectory, 'tsconfig.json');
+  const filePath = join(tempDirectory, 'src/index.ts');
+
+  const firstResult = runProgram({
+    projectPath,
+    workingDirectory: tempDirectory,
+  });
+  assertEquals(firstResult.exitCode, 0);
+
+  await Deno.writeTextFile(
+    filePath,
+    [
+      'export const value: number = "oops";',
+      '',
+    ].join('\n'),
+  );
+
+  const secondResult = withCapturedTimingLogs((logs) => {
+    const result = runProgram({
+      projectPath,
+      workingDirectory: tempDirectory,
+    });
+    assert(
+      logs.some((line) => line.includes('[soundscript:checker] project.analyzePreparedProject ')),
+    );
+    assert(
+      !logs.some((line) =>
+        line.includes('[soundscript:checker] project.cache.incremental.result ')
+      ),
+    );
+    return result;
+  });
+  assertEquals(secondResult.exitCode, 1);
+  assert(secondResult.diagnostics.some((diagnostic) => diagnostic.source === 'ts'));
+});
+
+Deno.test('runProgram host TypeScript diagnostics do not include declaration-only diagnostics when declaration emit is disabled', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify(
+        {
+          compilerOptions: {
+            declaration: false,
+            noEmit: true,
+            strict: true,
+            target: 'ES2022',
+            module: 'ESNext',
+          },
+          include: ['src/**/*.ts'],
+        },
+        null,
+        2,
+      ),
+    },
+    {
+      path: 'src/index.ts',
+      contents: [
+        'class Hidden {',
+        '  readonly value = 1;',
+        '}',
+        '',
+        'export function makeHidden() {',
+        '  return new Hidden();',
+        '}',
+        '',
+      ].join('\n'),
+    },
+  ]);
+  const projectPath = join(tempDirectory, 'tsconfig.json');
+
+  const result = runProgram({
+    projectPath,
+    workingDirectory: tempDirectory,
+  });
+  assertEquals(result.exitCode, 0);
+  assertEquals(result.diagnostics.length, 0);
 });
 
 Deno.test('runProgram invalidates checker cache when the tool fingerprint changes', async () => {
@@ -156,22 +319,25 @@ Deno.test('runProgram invalidates checker cache when the tool fingerprint change
     runProgram({
       projectPath,
       workingDirectory: tempDirectory,
-    })
-  );
+    }));
   assert(firstResult.diagnostics.length > 0);
 
-  const secondResult = withToolFingerprintOverride('test-fingerprint-b', () =>
-    withCapturedTimingLogs((logs) => {
-      const result = runProgram({
-        projectPath,
-        workingDirectory: tempDirectory,
-      });
-      assert(
-        logs.some((line) => line.includes('[soundscript:checker] project.prepareProjectAnalysis ')),
-        logs.join('\n'),
-      );
-      return result;
-    })
+  const secondResult = withToolFingerprintOverride(
+    'test-fingerprint-b',
+    () =>
+      withCapturedTimingLogs((logs) => {
+        const result = runProgram({
+          projectPath,
+          workingDirectory: tempDirectory,
+        });
+        assert(
+          logs.some((line) =>
+            line.includes('[soundscript:checker] project.prepareProjectAnalysis ')
+          ),
+          logs.join('\n'),
+        );
+        return result;
+      }),
   );
 
   assertEquals(secondResult.diagnostics, firstResult.diagnostics);
@@ -272,7 +438,9 @@ Deno.test('runProgram invalidates cached checker results when a tracked file cha
     projectPath,
     workingDirectory: tempDirectory,
   });
-  assert(firstResult.diagnostics.some((diagnostic: MergedDiagnostic) => diagnostic.code === 'TS2322'));
+  assert(
+    firstResult.diagnostics.some((diagnostic: MergedDiagnostic) => diagnostic.code === 'TS2322'),
+  );
 
   await Deno.writeTextFile(sourcePath, 'export const broken: number = 1;\n');
 
@@ -281,7 +449,9 @@ Deno.test('runProgram invalidates cached checker results when a tracked file cha
       projectPath,
       workingDirectory: tempDirectory,
     });
-    assert(logs.some((line) => line.includes('[soundscript:checker] project.prepareProjectAnalysis ')));
+    assert(
+      logs.some((line) => line.includes('[soundscript:checker] project.prepareProjectAnalysis ')),
+    );
     return result;
   });
 
@@ -363,15 +533,25 @@ Deno.test('runProgram incrementally reuses unaffected cached file results after 
     });
     assert(logs.some((line) => line.includes('[soundscript:checker] project.cache.fileMetadata ')));
     assert(logs.some((line) => line.includes('[soundscript:checker] project.cache.trackedFiles ')));
-    assert(logs.some((line) =>
-      line.includes('[soundscript:checker] project.cache.dependencySignatures ')
-    ));
-    assert(logs.some((line) => line.includes('[soundscript:checker] project.cache.prepareArtifacts ')));
+    assert(
+      logs.some((line) =>
+        line.includes('[soundscript:checker] project.cache.dependencySignatures ')
+      ),
+    );
+    assert(
+      logs.some((line) => line.includes('[soundscript:checker] project.cache.prepareArtifacts ')),
+    );
     assert(logs.some((line) => line.includes('[soundscript:checker] project.cache.incremental ')));
-    assert(logs.some((line) =>
-      line.includes('[soundscript:checker] project.analyzePreparedProjectOwnedDiagnosticsForFile ')
-    ));
-    assert(!logs.some((line) => line.includes('[soundscript:checker] project.analyzePreparedProject ')));
+    assert(
+      logs.some((line) =>
+        line.includes(
+          '[soundscript:checker] project.analyzePreparedProjectOwnedDiagnosticsForFile ',
+        )
+      ),
+    );
+    assert(
+      !logs.some((line) => line.includes('[soundscript:checker] project.analyzePreparedProject ')),
+    );
     return result;
   });
 
@@ -449,24 +629,36 @@ Deno.test('runProgram keeps dependent .sts files cached when a changed dependenc
       projectPath,
       workingDirectory: tempDirectory,
     });
-    assert(logs.some((line) =>
-      line.includes('[soundscript:checker] project.cache.fileMetadata.breakdown ') &&
-      line.includes('candidateCollectionMs=0') &&
-      line.includes('diagnosticPathCollectionMs=0')
-    ));
-    assert(logs.some((line) =>
-      line.includes('[soundscript:checker] project.cache.incremental.result ') &&
-      line.includes('refreshedFiles=1') &&
-      line.includes('reusedFiles=1')
-    ));
-    assert(logs.some((line) =>
-      line.includes('[soundscript:checker] project.analyzePreparedProjectOwnedDiagnosticsForFile ') &&
-      line.includes(`filePath=${editedFilePath}`)
-    ));
-    assert(!logs.some((line) =>
-      line.includes('[soundscript:checker] project.analyzePreparedProjectOwnedDiagnosticsForFile ') &&
-      line.includes(`filePath=${dependentFilePath}`)
-    ));
+    assert(
+      logs.some((line) =>
+        line.includes('[soundscript:checker] project.cache.fileMetadata.breakdown ') &&
+        line.includes('candidateCollectionMs=0') &&
+        line.includes('diagnosticPathCollectionMs=0')
+      ),
+    );
+    assert(
+      logs.some((line) =>
+        line.includes('[soundscript:checker] project.cache.incremental.result ') &&
+        line.includes('refreshedFiles=1') &&
+        line.includes('reusedFiles=1')
+      ),
+    );
+    assert(
+      logs.some((line) =>
+        line.includes(
+          '[soundscript:checker] project.analyzePreparedProjectOwnedDiagnosticsForFile ',
+        ) &&
+        line.includes(`filePath=${editedFilePath}`)
+      ),
+    );
+    assert(
+      !logs.some((line) =>
+        line.includes(
+          '[soundscript:checker] project.analyzePreparedProjectOwnedDiagnosticsForFile ',
+        ) &&
+        line.includes(`filePath=${dependentFilePath}`)
+      ),
+    );
     return result;
   });
 
@@ -632,27 +824,41 @@ Deno.test('runProgram skips dependency-signature emission for non-exported .sts 
       projectPath,
       workingDirectory: tempDirectory,
     });
-    assert(logs.some((line) =>
-      line.includes('[soundscript:checker] project.cache.dependencySignatures ') &&
-      line.includes('changedTrackedFiles=0') &&
-      line.includes('exportedSurfaceReusedFiles=1')
-    ));
-    assert(!logs.some((line) =>
-      line.includes('[soundscript:checker] project.emitProjectedDeclarations ')
-    ));
-    assert(logs.some((line) =>
-      line.includes('[soundscript:checker] project.cache.incremental.result ') &&
-      line.includes('refreshedFiles=1') &&
-      line.includes('reusedFiles=1')
-    ));
-    assert(logs.some((line) =>
-      line.includes('[soundscript:checker] project.analyzePreparedProjectOwnedDiagnosticsForFile ') &&
-      line.includes(`filePath=${editedFilePath}`)
-    ));
-    assert(!logs.some((line) =>
-      line.includes('[soundscript:checker] project.analyzePreparedProjectOwnedDiagnosticsForFile ') &&
-      line.includes(`filePath=${dependentFilePath}`)
-    ));
+    assert(
+      logs.some((line) =>
+        line.includes('[soundscript:checker] project.cache.dependencySignatures ') &&
+        line.includes('changedTrackedFiles=0') &&
+        line.includes('exportedSurfaceReusedFiles=1')
+      ),
+    );
+    assert(
+      !logs.some((line) =>
+        line.includes('[soundscript:checker] project.emitProjectedDeclarations ')
+      ),
+    );
+    assert(
+      logs.some((line) =>
+        line.includes('[soundscript:checker] project.cache.incremental.result ') &&
+        line.includes('refreshedFiles=1') &&
+        line.includes('reusedFiles=1')
+      ),
+    );
+    assert(
+      logs.some((line) =>
+        line.includes(
+          '[soundscript:checker] project.analyzePreparedProjectOwnedDiagnosticsForFile ',
+        ) &&
+        line.includes(`filePath=${editedFilePath}`)
+      ),
+    );
+    assert(
+      !logs.some((line) =>
+        line.includes(
+          '[soundscript:checker] project.analyzePreparedProjectOwnedDiagnosticsForFile ',
+        ) &&
+        line.includes(`filePath=${dependentFilePath}`)
+      ),
+    );
     return result;
   });
 
@@ -735,11 +941,13 @@ Deno.test('runProgram seeds checker build info on stale cached runs', async () =
     const dependencySignatureLog = logs.find((line) =>
       line.includes('[soundscript:checker] project.cache.dependencySignatures ')
     );
-    assert(logs.some((line) =>
-      line.includes('[soundscript:checker] project.prepare.semanticBuildInfoSeed ') &&
-      line.includes('status=seeded') &&
-      line.includes('sts.semantic.initial.tsbuildinfo')
-    ));
+    assert(
+      logs.some((line) =>
+        line.includes('[soundscript:checker] project.prepare.semanticBuildInfoSeed ') &&
+        line.includes('status=seeded') &&
+        line.includes('sts.semantic.initial.tsbuildinfo')
+      ),
+    );
     assert(
       logs.some((line) =>
         line.includes('[soundscript:checker] project.emitProjectedDeclarations.buildInfoSeed ') &&
@@ -829,10 +1037,12 @@ Deno.test('runProgram logs TypeScript internal timing summaries when requested',
         projectPath,
         workingDirectory: tempDirectory,
       });
-      assert(logs.some((line) =>
-        line.includes('[soundscript:checker] project.prepare.semanticBuilderInternals ') &&
-        line.includes('measureCount=')
-      ));
+      assert(
+        logs.some((line) =>
+          line.includes('[soundscript:checker] project.prepare.semanticBuilderInternals ') &&
+          line.includes('measureCount=')
+        ),
+      );
       const dependencySignatureLog = logs.find((line) =>
         line.includes('[soundscript:checker] project.cache.dependencySignatures ')
       );
@@ -886,7 +1096,9 @@ Deno.test('runProgram logs top-level analysis and formatting timings when reques
       workingDirectory: tempDirectory,
     });
     assert(logs.some((line) => line.includes('[soundscript:checker] runProgram.analysis ')));
-    assert(logs.some((line) => line.includes('[soundscript:checker] runProgram.formatDiagnostics ')));
+    assert(
+      logs.some((line) => line.includes('[soundscript:checker] runProgram.formatDiagnostics ')),
+    );
     assert(logs.some((line) => line.includes('[soundscript:checker] runProgram.total ')));
     assertEquals(result.exitCode, 0);
     assertEquals(result.diagnostics.length, 0);
@@ -993,7 +1205,7 @@ Deno.test('runProgram hydrates macro prepare artifacts on stale cached runs', as
   });
 });
 
-Deno.test('runProgram persists rewritten and projected declaration source-file prepare artifacts', async () => {
+Deno.test('runProgram persists frontier prepare artifacts without host source-file artifacts', async () => {
   const tempDirectory = await createTempProject([
     {
       path: 'tsconfig.json',
@@ -1043,10 +1255,7 @@ Deno.test('runProgram persists rewritten and projected declaration source-file p
   };
 
   assert((manifest.prepareArtifacts?.sts?.compilerHost?.rewrittenSourceFiles?.length ?? 0) > 0);
-  assert(
-    (manifest.prepareArtifacts?.ts?.compilerHost?.projectedDeclarationSourceFiles?.length ?? 0) >
-      0,
-  );
+  assertEquals(manifest.prepareArtifacts?.ts, undefined);
 });
 
 Deno.test('runProgram refreshes dependent .sts files when a changed dependency signature changes', async () => {
@@ -1114,21 +1323,31 @@ Deno.test('runProgram refreshes dependent .sts files when a changed dependency s
       projectPath,
       workingDirectory: tempDirectory,
     });
-    assert(logs.some((line) =>
-      line.includes('[soundscript:checker] project.analyzePreparedProjectOwnedDiagnosticsForFile ') &&
-      line.includes(`filePath=${editedFilePath}`)
-    ));
-    assert(logs.some((line) =>
-      line.includes('[soundscript:checker] project.analyzePreparedProjectOwnedDiagnosticsForFile ') &&
-      line.includes(`filePath=${dependentFilePath}`)
-    ));
+    assert(
+      logs.some((line) =>
+        line.includes(
+          '[soundscript:checker] project.analyzePreparedProjectOwnedDiagnosticsForFile ',
+        ) &&
+        line.includes(`filePath=${editedFilePath}`)
+      ),
+    );
+    assert(
+      logs.some((line) =>
+        line.includes(
+          '[soundscript:checker] project.analyzePreparedProjectOwnedDiagnosticsForFile ',
+        ) &&
+        line.includes(`filePath=${dependentFilePath}`)
+      ),
+    );
     return result;
   });
 
   assertEquals(secondResult.exitCode, 1);
-  assert(secondResult.diagnostics.some((diagnostic: MergedDiagnostic) =>
-    diagnostic.filePath === dependentFilePath && diagnostic.code === 'TS2345'
-  ));
+  assert(
+    secondResult.diagnostics.some((diagnostic: MergedDiagnostic) =>
+      diagnostic.filePath === dependentFilePath && diagnostic.code === 'TS2345'
+    ),
+  );
 });
 
 Deno.test('runProgram updates cached dependency dependents when an importer drops a dependency', async () => {
@@ -1211,19 +1430,29 @@ Deno.test('runProgram updates cached dependency dependents when an importer drop
       projectPath,
       workingDirectory: tempDirectory,
     });
-    assert(logs.some((line) =>
-      line.includes('[soundscript:checker] project.cache.incremental.result ') &&
-      line.includes('refreshedFiles=1') &&
-      line.includes('reusedFiles=1')
-    ));
-    assert(logs.some((line) =>
-      line.includes('[soundscript:checker] project.analyzePreparedProjectOwnedDiagnosticsForFile ') &&
-      line.includes(`filePath=${producerFilePath}`)
-    ));
-    assert(!logs.some((line) =>
-      line.includes('[soundscript:checker] project.analyzePreparedProjectOwnedDiagnosticsForFile ') &&
-      line.includes(`filePath=${importerFilePath}`)
-    ));
+    assert(
+      logs.some((line) =>
+        line.includes('[soundscript:checker] project.cache.incremental.result ') &&
+        line.includes('refreshedFiles=1') &&
+        line.includes('reusedFiles=1')
+      ),
+    );
+    assert(
+      logs.some((line) =>
+        line.includes(
+          '[soundscript:checker] project.analyzePreparedProjectOwnedDiagnosticsForFile ',
+        ) &&
+        line.includes(`filePath=${producerFilePath}`)
+      ),
+    );
+    assert(
+      !logs.some((line) =>
+        line.includes(
+          '[soundscript:checker] project.analyzePreparedProjectOwnedDiagnosticsForFile ',
+        ) &&
+        line.includes(`filePath=${importerFilePath}`)
+      ),
+    );
     return result;
   });
 
@@ -1316,18 +1545,24 @@ Deno.test('runProgram reuses persisted relations, effects, and value-type rule c
       projectPath,
       workingDirectory: tempDirectory,
     });
-    assert(logs.some((line) =>
-      line.includes('[soundscript:checker] project.analyze.sound.rule.relations ') &&
-      line.includes('cache=hit')
-    ));
-    assert(logs.some((line) =>
-      line.includes('[soundscript:checker] project.analyze.sound.rule.effects ') &&
-      line.includes('cache=hit')
-    ));
-    assert(logs.some((line) =>
-      line.includes('[soundscript:checker] project.analyze.sound.rule.valueTypes ') &&
-      line.includes('cache=hit')
-    ));
+    assert(
+      logs.some((line) =>
+        line.includes('[soundscript:checker] project.analyze.sound.rule.relations ') &&
+        line.includes('cache=hit')
+      ),
+    );
+    assert(
+      logs.some((line) =>
+        line.includes('[soundscript:checker] project.analyze.sound.rule.effects ') &&
+        line.includes('cache=hit')
+      ),
+    );
+    assert(
+      logs.some((line) =>
+        line.includes('[soundscript:checker] project.analyze.sound.rule.valueTypes ') &&
+        line.includes('cache=hit')
+      ),
+    );
     return result;
   });
 
@@ -1419,21 +1654,27 @@ Deno.test('runProgram invalidates persisted relations, effects, and value-type r
       projectPath,
       workingDirectory: tempDirectory,
     });
-    assert(logs.some((line) =>
-      line.includes('[soundscript:checker] project.analyze.sound.rule.relations ') &&
-      line.includes(`filePath=${sourcePath}`) &&
-      line.includes('cache=miss')
-    ));
-    assert(logs.some((line) =>
-      line.includes('[soundscript:checker] project.analyze.sound.rule.effects ') &&
-      line.includes(`filePath=${sourcePath}`) &&
-      line.includes('cache=miss')
-    ));
-    assert(logs.some((line) =>
-      line.includes('[soundscript:checker] project.analyze.sound.rule.valueTypes ') &&
-      line.includes(`filePath=${sourcePath}`) &&
-      line.includes('cache=miss')
-    ));
+    assert(
+      logs.some((line) =>
+        line.includes('[soundscript:checker] project.analyze.sound.rule.relations ') &&
+        line.includes(`filePath=${sourcePath}`) &&
+        line.includes('cache=miss')
+      ),
+    );
+    assert(
+      logs.some((line) =>
+        line.includes('[soundscript:checker] project.analyze.sound.rule.effects ') &&
+        line.includes(`filePath=${sourcePath}`) &&
+        line.includes('cache=miss')
+      ),
+    );
+    assert(
+      logs.some((line) =>
+        line.includes('[soundscript:checker] project.analyze.sound.rule.valueTypes ') &&
+        line.includes(`filePath=${sourcePath}`) &&
+        line.includes('cache=miss')
+      ),
+    );
     return result;
   });
 

@@ -5,11 +5,7 @@ import ts from 'typescript';
 import { collectSoundscriptRootNames, loadConfig, type RuntimeTarget } from '../project/config.ts';
 import { emitProjectedDeclarations } from '../frontend/project_frontend.ts';
 import { resolveSoundScriptAwareModule } from '../project/soundscript_packages.ts';
-import {
-  basename,
-  dirname,
-  join,
-} from '../platform/path.ts';
+import { basename, dirname, join } from '../platform/path.ts';
 import {
   makeDirectorySync,
   pathExistsSync,
@@ -20,28 +16,28 @@ import {
 } from '../platform/host.ts';
 import type { AnalyzeProjectOptions, AnalyzeProjectResult } from '../service/types.ts';
 import {
-  analyzePreparedProjectWithArtifacts,
   analyzePreparedProjectOwnedDiagnosticsForFileWithArtifacts,
+  analyzePreparedProjectWithArtifacts,
+  type AnalyzePreparedProjectWithArtifactsResult,
   capturePersistentPreparedAnalysisProjectReuseSnapshots,
   collectPreparedAnalysisProjectFileMetadata,
   collectPreparedAnalysisProjectTrackedFilePaths,
   disposePreparedAnalysisProject,
   filterAnalyzedDiagnosticsForFile,
   matchesPreparedAnalysisAnyFilePath,
-  prepareProjectAnalysis,
-  type AnalyzePreparedProjectWithArtifactsResult,
   type PersistentPreparedAnalysisProjectReuseSnapshots,
   type PreparedAnalysisProject,
   type PreparedAnalysisProjectFileMetadata,
   type PreparedProjectAnalysisArtifacts,
+  prepareProjectAnalysis,
 } from './analyze_project.ts';
-import { measureCheckerTiming } from './timing.ts';
+import { logCheckerTiming, measureCheckerTiming } from './timing.ts';
 import type { MergedDiagnostic } from './diagnostics.ts';
 import type { FlowFileRuleCache } from './rules/flow.ts';
 import type { FileDiagnosticRuleCacheEntry } from './rules/index.ts';
 import { getSoundscriptToolFingerprint } from '../version.ts';
 
-const CHECKER_CACHE_SCHEMA_VERSION = 8;
+const CHECKER_CACHE_SCHEMA_VERSION = 10;
 const CHECKER_CACHE_ROOT_DIRECTORY = '.soundscript-cache';
 const CHECKER_CACHE_SUBDIRECTORY = 'checker';
 const CHECKER_CACHE_BUILD_INFO_SUBDIRECTORY = 'buildinfo';
@@ -358,7 +354,9 @@ function createDependencySignatureViewByFilePath(
 }
 
 function hasExportLikeModifier(statement: ts.Statement): boolean {
-  return (ts.canHaveModifiers(statement) ? ts.getModifiers(statement) : undefined)?.some((modifier) =>
+  return (ts.canHaveModifiers(statement) ? ts.getModifiers(statement) : undefined)?.some((
+    modifier,
+  ) =>
     modifier.kind === ts.SyntaxKind.DefaultKeyword ||
     modifier.kind === ts.SyntaxKind.ExportKeyword
   ) ?? false;
@@ -398,13 +396,17 @@ function createSourceSurfaceSignature(
         ts.isExportAssignment(statement) ||
         ts.isExportDeclaration(statement)
       ) {
-        parts.push(sourceSurfaceSignaturePrinter.printNode(ts.EmitHint.Unspecified, statement, sourceFile));
+        parts.push(
+          sourceSurfaceSignaturePrinter.printNode(ts.EmitHint.Unspecified, statement, sourceFile),
+        );
         continue;
       }
       if (!hasExportLikeModifier(statement)) {
         continue;
       }
-      parts.push(sourceSurfaceSignaturePrinter.printNode(ts.EmitHint.Unspecified, statement, sourceFile));
+      parts.push(
+        sourceSurfaceSignaturePrinter.printNode(ts.EmitHint.Unspecified, statement, sourceFile),
+      );
     }
 
     return hashText(parts.join('\u0000'));
@@ -417,7 +419,9 @@ function getPreparedProjectDependencySignatureView(
   preparedProject: PreparedAnalysisProject,
   viewKind: PreparedAnalysisProjectFileMetadata['view'],
 ): PreparedAnalysisProject['stsView'] | PreparedAnalysisProject['packageSourcePolicyView'] {
-  return viewKind === 'packageSource' ? preparedProject.packageSourcePolicyView : preparedProject.stsView;
+  return viewKind === 'packageSource'
+    ? preparedProject.packageSourcePolicyView
+    : preparedProject.stsView;
 }
 
 function createPreparedProjectSourceSurfaceSignatures(
@@ -450,7 +454,10 @@ function selectTrackedFilesForDependencySignatureUpdate(
   let exportedSurfaceReusedFiles = 0;
 
   for (const changedTrackedFilePath of changedTrackedFiles) {
-    const dependencyFilePath = findDependencySignatureFilePath(changedTrackedFilePath, fileViewByFilePath);
+    const dependencyFilePath = findDependencySignatureFilePath(
+      changedTrackedFilePath,
+      fileViewByFilePath,
+    );
     if (!dependencyFilePath) {
       selectedTrackedFiles.push(changedTrackedFilePath);
       continue;
@@ -504,7 +511,9 @@ function getStaticSourceFileModuleSpecifiers(sourceFile: ts.SourceFile): readonl
 }
 
 function collectPreparedViewDependencyDependents(
-  preparedView: PreparedAnalysisProject['stsView'] | PreparedAnalysisProject['packageSourcePolicyView'],
+  preparedView:
+    | PreparedAnalysisProject['stsView']
+    | PreparedAnalysisProject['packageSourcePolicyView'],
   filePaths: readonly string[],
 ): ReadonlyMap<string, readonly string[]> {
   if (!preparedView || filePaths.length === 0) {
@@ -614,7 +623,9 @@ function restoreDependencyDependents(
 }
 
 function collectPreparedViewDirectDependencyImports(
-  preparedView: PreparedAnalysisProject['stsView'] | PreparedAnalysisProject['packageSourcePolicyView'],
+  preparedView:
+    | PreparedAnalysisProject['stsView']
+    | PreparedAnalysisProject['packageSourcePolicyView'],
   importerFilePaths: readonly string[],
   allowedDependencyFilePaths: ReadonlySet<string>,
 ): ReadonlyMap<string, readonly string[]> {
@@ -834,7 +845,10 @@ function updatePreparedProjectDependencySignatures(
   let dependencySignatureWaves = 0;
 
   for (const changedTrackedFilePath of changedTrackedFiles) {
-    const dependencyFilePath = findDependencySignatureFilePath(changedTrackedFilePath, fileViewByFilePath);
+    const dependencyFilePath = findDependencySignatureFilePath(
+      changedTrackedFilePath,
+      fileViewByFilePath,
+    );
     if (!dependencyFilePath) {
       changedDependencyFiles.add(changedTrackedFilePath);
       continue;
@@ -1169,7 +1183,13 @@ function tryReusePartialCheckerCacheManifest(
     },
   ) => CheckerCacheFileEntry,
 ): IncrementalCheckerCacheReuseResult | null {
-  if (manifest.unownedDiagnostics.length > 0) {
+  if (
+    changedTrackedFiles.some((changedFilePath) =>
+      !preparedProjectFileMetadata.some((metadata) =>
+        matchesPreparedAnalysisAnyFilePath(changedFilePath, [metadata.filePath])
+      )
+    )
+  ) {
     return null;
   }
   if (
@@ -1252,7 +1272,10 @@ function writeCheckerCacheManifest(
   options: PersistentCheckerRunOptions,
   manifest: CheckerCacheManifest,
 ): void {
-  const cacheProjectDirectory = createCheckerCacheProjectDirectory(options.projectPath, options.cacheDir);
+  const cacheProjectDirectory = createCheckerCacheProjectDirectory(
+    options.projectPath,
+    options.cacheDir,
+  );
   makeDirectorySync(cacheProjectDirectory);
   const manifestPath = join(cacheProjectDirectory, 'manifest.json');
   const temporaryPath = join(
@@ -1282,7 +1305,10 @@ export function writePreparedProjectToPersistentCheckerCache(
     return prepareArtifacts;
   }
 
-  const cacheProjectDirectory = createCheckerCacheProjectDirectory(options.projectPath, options.cacheDir);
+  const cacheProjectDirectory = createCheckerCacheProjectDirectory(
+    options.projectPath,
+    options.cacheDir,
+  );
   const header = measureCheckerTiming(
     'project.cache.preflight',
     {
@@ -1305,7 +1331,14 @@ export function writePreparedProjectToPersistentCheckerCache(
     {
       projectPath: options.projectPath,
     },
-    () => collectPreparedAnalysisProjectFileMetadata(preparedProject),
+    () =>
+      collectPreparedAnalysisProjectFileMetadata(
+        preparedProject,
+        new Map(),
+        [],
+        [],
+        { includeTypescriptView: false },
+      ),
     { always: true },
   );
   const dependencyDependents = measureCheckerTiming(
@@ -1355,7 +1388,11 @@ export function writePreparedProjectToPersistentCheckerCache(
       {
         projectPath: options.projectPath,
       },
-      () => capturePersistentPreparedAnalysisProjectReuseSnapshots(preparedProject),
+      () =>
+        capturePersistentPreparedAnalysisProjectReuseSnapshots(
+          preparedProject,
+          { includeTypescriptView: false },
+        ),
       { always: true },
     );
   const manifest = measureCheckerTiming(
@@ -1388,7 +1425,11 @@ export function writePreparedProjectToPersistentCheckerCache(
       () => writeCheckerCacheManifest(options, manifest),
       { always: true },
     );
-  } catch {
+  } catch (error) {
+    logCheckerTiming('project.cache.write.failed', 0, {
+      error: error instanceof Error ? `${error.name}: ${error.message}` : String(error),
+      projectPath: options.projectPath,
+    }, { always: true });
     // Cache write failures must not change checker behavior.
   }
 
@@ -1399,7 +1440,10 @@ export function analyzeProjectWithPersistentCacheForReuse(
   options: PersistentCheckerRunOptions,
 ): PersistentCheckerAnalysisWithReuseResult {
   const useCache = options.useCache ?? true;
-  const cacheProjectDirectory = createCheckerCacheProjectDirectory(options.projectPath, options.cacheDir);
+  const cacheProjectDirectory = createCheckerCacheProjectDirectory(
+    options.projectPath,
+    options.cacheDir,
+  );
   const header = useCache
     ? measureCheckerTiming(
       'project.cache.preflight',
@@ -1481,6 +1525,7 @@ export function analyzeProjectWithPersistentCacheForReuse(
           previousMetadataByFilePath,
           cacheReadResult.kind === 'stale' ? cacheReadResult.changedTrackedFiles : [],
           reusedCandidateFilePaths,
+          { includeTypescriptView: false },
         ),
       { always: true },
     );
@@ -1543,7 +1588,11 @@ export function analyzeProjectWithPersistentCacheForReuse(
         {
           projectPath: options.projectPath,
         },
-        () => capturePersistentPreparedAnalysisProjectReuseSnapshots(preparedProject),
+        () =>
+          capturePersistentPreparedAnalysisProjectReuseSnapshots(
+            preparedProject,
+            { includeTypescriptView: false },
+          ),
         { always: true },
       );
       const incrementalReuse = measureCheckerTiming(
@@ -1552,7 +1601,8 @@ export function analyzeProjectWithPersistentCacheForReuse(
           cacheDir: cacheProjectDirectory,
           changedDependencyFiles: dependencySignatureUpdate.changedDependencyFiles.length,
           changedTrackedFiles: cacheReadResult.changedTrackedFiles.length,
-          dependencySignatureFilesEmitted: dependencySignatureUpdate.dependencySignatureFilesEmitted,
+          dependencySignatureFilesEmitted:
+            dependencySignatureUpdate.dependencySignatureFilesEmitted,
           dependencySignatureWaves: dependencySignatureUpdate.dependencySignatureWaves,
           exportedSurfaceChangedFiles: dependencySignatureTrackedFiles.exportedSurfaceChangedFiles,
           exportedSurfaceReusedFiles: dependencySignatureTrackedFiles.exportedSurfaceReusedFiles,
@@ -1586,7 +1636,9 @@ export function analyzeProjectWithPersistentCacheForReuse(
                 analysis.result.diagnostics,
                 filePath,
               );
-              const metadata = preparedProjectFileMetadata.find((entry) => entry.filePath === filePath)!;
+              const metadata = preparedProjectFileMetadata.find((entry) =>
+                entry.filePath === filePath
+              )!;
               return {
                 ...metadata,
                 effectCache: analysis.artifacts.effectsByFile.get(filePath),
@@ -1626,7 +1678,11 @@ export function analyzeProjectWithPersistentCacheForReuse(
             () => writeCheckerCacheManifest(options, incrementalReuse.manifest),
             { always: true },
           );
-        } catch {
+        } catch (error) {
+          logCheckerTiming('project.cache.write.failed', 0, {
+            error: error instanceof Error ? `${error.name}: ${error.message}` : String(error),
+            projectPath: options.projectPath,
+          }, { always: true });
           // Cache write failures must not change checker behavior.
         }
         return {
@@ -1684,7 +1740,11 @@ export function analyzeProjectWithPersistentCacheForReuse(
         {
           projectPath: options.projectPath,
         },
-        () => capturePersistentPreparedAnalysisProjectReuseSnapshots(preparedProject),
+        () =>
+          capturePersistentPreparedAnalysisProjectReuseSnapshots(
+            preparedProject,
+            { includeTypescriptView: false },
+          ),
         { always: true },
       );
       const manifest = measureCheckerTiming(
@@ -1717,7 +1777,11 @@ export function analyzeProjectWithPersistentCacheForReuse(
           () => writeCheckerCacheManifest(options, manifest),
           { always: true },
         );
-      } catch {
+      } catch (error) {
+        logCheckerTiming('project.cache.write.failed', 0, {
+          error: error instanceof Error ? `${error.name}: ${error.message}` : String(error),
+          projectPath: options.projectPath,
+        }, { always: true });
         // Cache write failures must not change checker behavior.
       }
       return {

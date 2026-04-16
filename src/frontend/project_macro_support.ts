@@ -359,16 +359,20 @@ export function capturePersistentProjectMacroEnvironmentReuseSnapshot(
       .map(([fileName, dependents]) => [fileName, [...dependents].sort()] as const),
     expandedFilesByMode: [...stableReuseState.expandedFilesByMode.entries()].map((
       [modeKey, expandedFiles],
-    ) => [
-      modeKey,
-      [...expandedFiles.entries()].map(([fileName, sourceFile]) => [
-        fileName,
-        {
-          fileName: sourceFile.fileName,
-          text: sourceFile.text,
-        },
-      ] as const),
-    ] as const),
+    ) =>
+      [
+        modeKey,
+        [...expandedFiles.entries()].map(([fileName, sourceFile]) =>
+          [
+            fileName,
+            {
+              fileName: sourceFile.fileName,
+              text: sourceFile.text,
+            },
+          ] as const
+        ),
+      ] as const
+    ),
   };
 }
 
@@ -1261,8 +1265,9 @@ export function createProjectMacroEnvironment(
     }
 
     for (const authorityBinding of cachedPlan.authorityBindings) {
-      const availableDefinitions = builtinDefinitionsBySpecifier.get(authorityBinding.resolvedFileName) ??
-        definitionsForResolvedModule(authorityBinding.resolvedFileName);
+      const availableDefinitions =
+        builtinDefinitionsBySpecifier.get(authorityBinding.resolvedFileName) ??
+          definitionsForResolvedModule(authorityBinding.resolvedFileName);
       const availableExports = builtinExportsBySpecifier.get(authorityBinding.resolvedFileName) ??
         exportsForResolvedModule(authorityBinding.resolvedFileName);
       const definition = availableDefinitions.get(authorityBinding.authorityExportName);
@@ -2688,8 +2693,10 @@ export function createProjectMacroEnvironment(
           isExpandableProgramSourceFile,
         ),
       );
-      const removedProgramSourceFiles = [...preparedProgram.preparedHost.reuseState
-        .removedProgramSourceFiles].filter(isExpandableProgramSourceFile);
+      const removedProgramSourceFiles = [
+        ...preparedProgram.preparedHost.reuseState
+          .removedProgramSourceFiles,
+      ].filter(isExpandableProgramSourceFile);
       const affectedSourceFiles = new Set<string>();
 
       for (const removedFileName of removedProgramSourceFiles) {
@@ -2707,6 +2714,37 @@ export function createProjectMacroEnvironment(
           if (currentProgramSourceFiles.has(dependentFileName)) {
             affectedSourceFiles.add(dependentFileName);
           }
+        }
+      }
+
+      const changedMacroModuleFiles = [
+        ...preparedProgram.preparedHost.reuseState.changedProgramSourceFiles,
+      ].filter((changedFileName) => {
+        const changedSourcePath = preparedProgram.toSourceFileName(changedFileName);
+        if (isSoundscriptMacroSourceFile(changedSourcePath)) {
+          return true;
+        }
+        try {
+          return isLikelyMacroModule(changedSourcePath);
+        } catch {
+          return false;
+        }
+      });
+      if (changedMacroModuleFiles.length > 0) {
+        stableCompiledArtifactCache.clear();
+        compiledArtifactCache.clear();
+        preparedProgram.preparedHost.reuseState.builtinAnnotatedSourceFiles.clear();
+        preparedProgram.preparedHost.reuseState.builtinFinalSourceFiles.clear();
+        stableReuseState.bindingPlanDependenciesByFile.clear();
+        stableReuseState.bindingPlansByFile.clear();
+        stableReuseState.dependencySourceTextsByFile.clear();
+        stableReuseState.dependentFilesByDependencyFile.clear();
+        expansionCache.clear();
+        for (const modeExpandedFiles of stableReuseState.expandedFilesByMode.values()) {
+          modeExpandedFiles.clear();
+        }
+        for (const currentFileName of currentProgramSourceFiles) {
+          affectedSourceFiles.add(currentFileName);
         }
       }
 
@@ -2815,8 +2853,10 @@ export function createProjectMacroEnvironment(
         }
 
         const cachedBindingPlan = stableReuseState.bindingPlansByFile.get(sourceFile.fileName);
-        if (cachedExpandedSourceFile && cachedBindingPlan &&
-          isCachedMacroBindingPlanValid(sourceFile, cachedBindingPlan)) {
+        if (
+          cachedExpandedSourceFile && cachedBindingPlan &&
+          isCachedMacroBindingPlanValid(sourceFile, cachedBindingPlan)
+        ) {
           const sourceFileName = preparedProgram.toSourceFileName(sourceFile.fileName);
           const preparedSource = preparedProgram.preparedHost.getPreparedSourceFile(sourceFileName);
           const cachedExpansionCacheKey = createExpansionCacheKeyFromPreparedState(
