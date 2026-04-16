@@ -32740,7 +32740,12 @@ function registerModuleObjectImportedHostBindings(
         memberName: exportedSymbol.name,
         moduleSpecifier,
       },
-      undefined,
+      (memberSymbol: ts.Symbol) =>
+        isImportedNamespaceMemberReferencedOutsideDeclaration(
+          declaration,
+          memberSymbol,
+          checker,
+        ),
       importedHostDeclarations,
       functionNameCounts,
       checker,

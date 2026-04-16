@@ -11233,6 +11233,11 @@ compilerIntegrationTest(
     assert(result.artifacts);
     assert(result.artifacts.wrapperPath);
 
+    const watOutput = await readWatArtifactForProject(tempDirectory);
+    assertFalse(watOutput.includes('get_closure:scope'));
+    assertFalse(watOutput.includes('scope_required_closure_ref'));
+    assertFalse(watOutput.includes('$host_object_get_closure__73636f7065'));
+
     class RecordLike {
       values: Record<string, unknown>;
 
@@ -16718,6 +16723,113 @@ compilerIntegrationTest(
 );
 
 compilerIntegrationTest(
+  'compileProject emits only used host class static member imports',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts', 'src/**/*.d.ts'],
+            soundscript: {
+              target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/class-static-paygo-host.d.ts',
+        contents: [
+          'export declare class Counter {',
+          '  constructor(start: number);',
+          '  static from(start: number): Counter;',
+          '  static unused(start: number): Counter;',
+          '  static preset: Counter;',
+          '  value(): number;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/class-static-paygo-host.js',
+        contents: [
+          'export class Counter {',
+          '  constructor(start) {',
+          '    this.current = start;',
+          '  }',
+          '',
+          '  static from(start) {',
+          '    return new Counter(start + 1);',
+          '  }',
+          '',
+          '  static unused() {',
+          "    throw new Error('unused static method should not be imported');",
+          '  }',
+          '',
+          '  value() {',
+          '    return this.current;',
+          '  }',
+          '}',
+          '',
+          'Counter.preset = new Counter(99);',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          '// #[interop]',
+          "import { Counter } from './class-static-paygo-host.js';",
+          '',
+          'export function main(): number {',
+          '  return Counter.from(7).value();',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const watOutput = await readWatArtifactForProject(tempDirectory);
+    const wrapperOutput = await Deno.readTextFile(result.artifacts.wrapperPath);
+    assertStringIncludes(watOutput, ':Counter.from"');
+    assertStringIncludes(wrapperOutput, '"memberName": "from"');
+    assertFalse(watOutput.includes(':Counter.unused"'));
+    assertFalse(watOutput.includes('$unused__host_import'));
+    assertFalse(watOutput.includes(':Counter.preset"'));
+    assertFalse(watOutput.includes('$preset__host_import'));
+    assertFalse(wrapperOutput.includes('"memberName": "unused"'));
+    assertFalse(wrapperOutput.includes('"memberName": "preset"'));
+
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate();
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+    assertEquals(await exported(), 8);
+  },
+);
+
+compilerIntegrationTest(
   'compileProject calls static methods on #[interop] host class imports in wasm-browser wrappers',
   async () => {
     const tempDirectory = await createTempProject([
@@ -19747,6 +19859,112 @@ compilerIntegrationTest(
       throw new Error(`Expected exported function "${exportName}".`);
     }
     assertEquals(await exported(), 11);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject emits only used module-object member imports',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+            },
+            include: ['src/**/*.ts', 'src/**/*.d.ts'],
+            soundscript: {
+              target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/kinds.d.ts',
+        contents: [
+          'export declare const STRING: string;',
+          'export declare const BOOLEAN: string;',
+          'export declare const UNUSED: string;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/kinds.js',
+        contents: [
+          "export const STRING = 'string';",
+          "export const BOOLEAN = 'boolean';",
+          "export const UNUSED = 'unused';",
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/kit.d.ts',
+        contents: [
+          "export * as Kinds from './kinds.js';",
+          'export declare function observe(kind: string): string;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/kit.js',
+        contents: [
+          "export * as Kinds from './kinds.js';",
+          'export function observe(kind) {',
+          '  return `${kind}:seen`;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          '// #[interop]',
+          "import { Kinds, observe } from './kit.js';",
+          '',
+          'export function main(): string {',
+          '  return observe(Kinds.STRING);',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const watOutput = await readWatArtifactForProject(tempDirectory);
+    const wrapperOutput = await Deno.readTextFile(result.artifacts.wrapperPath);
+    assertStringIncludes(watOutput, ':STRING"');
+    assertStringIncludes(wrapperOutput, '"memberName": "STRING"');
+    assertFalse(watOutput.includes(':BOOLEAN"'));
+    assertFalse(watOutput.includes('$BOOLEAN__host_import'));
+    assertFalse(watOutput.includes(':UNUSED"'));
+    assertFalse(watOutput.includes('$UNUSED__host_import'));
+    assertFalse(wrapperOutput.includes('"memberName": "BOOLEAN"'));
+    assertFalse(wrapperOutput.includes('"memberName": "UNUSED"'));
+
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate();
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+    assertEquals(await exported(), 'string:seen');
   },
 );
 
