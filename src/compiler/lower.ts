@@ -58721,6 +58721,235 @@ function recordCurrentFunctionHostFallbackClosureProperty(
   );
 }
 
+function createHostFallbackBoundaryFieldForPropertyAccess(
+  propertyName: string,
+  propertyType: ts.Type,
+  contextNode: ts.Node,
+  context: FunctionLoweringContext,
+): CompilerHostBoundaryFieldIR | undefined {
+  if (context.checker.getSignaturesOfType(propertyType, ts.SignatureKind.Call).length > 0) {
+    return undefined;
+  }
+  const classConstructorDeclaration = getConcreteClassConstructorDeclarationForType(
+    context.checker,
+    propertyType,
+    contextNode,
+    context.classes,
+  );
+  if (classConstructorDeclaration) {
+    return createHostBoundaryField(propertyName, false, {
+      kind: 'class_constructor',
+      classTagId: getConcreteClassConstructorTagId(
+        context.checker,
+        classConstructorDeclaration,
+        contextNode,
+        context.runtime,
+        context.classes,
+      ),
+    });
+  }
+  const arrayValueType = isSupportedOwnedStringArrayType(context.checker, propertyType)
+    ? 'owned_array_ref'
+    : isSupportedOwnedNumberArrayType(context.checker, propertyType)
+    ? 'owned_number_array_ref'
+    : isSupportedOwnedBooleanArrayType(context.checker, propertyType)
+    ? 'owned_boolean_array_ref'
+    : undefined;
+  if (arrayValueType) {
+    return createHostBoundaryField(propertyName, false, {
+      kind: 'array',
+      carrierType: arrayValueType,
+      elementBoundary: arrayValueType === 'owned_array_ref'
+        ? { kind: 'string', owned: true }
+        : arrayValueType === 'owned_number_array_ref'
+        ? { kind: 'scalar', valueType: 'f64' }
+        : { kind: 'scalar', valueType: 'i32' },
+    });
+  }
+  const taggedArrayBoundary = getHostTaggedArrayBoundaryInfo(
+    context.checker,
+    propertyType,
+    contextNode,
+    context.runtime,
+    context.classes,
+  );
+  if (isSupportedOwnedHeapArrayType(context.checker, propertyType) && !taggedArrayBoundary) {
+    const representation = getOwnedHeapArrayBoundaryRepresentation(
+      context.checker,
+      propertyType,
+      contextNode,
+      context.runtime,
+      context.classes,
+    );
+    return createHostBoundaryField(propertyName, false, {
+      kind: 'array',
+      carrierType: 'owned_heap_array_ref',
+      elementBoundary: createDerivedHostObjectBoundaryFromRepresentation(
+        representation,
+        context.runtime,
+      ),
+    });
+  }
+  if (taggedArrayBoundary) {
+    return createHostBoundaryField(propertyName, false, {
+      kind: 'array',
+      carrierType: 'owned_tagged_array_ref',
+      elementBoundary: createHostTaggedBoundary(
+        {
+          includesBoolean: taggedArrayBoundary.includesBoolean,
+          includesNull: taggedArrayBoundary.includesNull,
+          includesNumber: taggedArrayBoundary.includesNumber,
+          includesString: taggedArrayBoundary.includesString,
+          includesUndefined: taggedArrayBoundary.includesUndefined,
+        },
+        taggedArrayBoundary.representation
+          ? createDerivedHostObjectBoundaryFromRepresentation(
+            taggedArrayBoundary.representation,
+            context.runtime,
+          )
+          : undefined,
+      ),
+    });
+  }
+  const taggedHeapUnionBoundary = getHostTaggedHeapUnionBoundaryInfo(
+    context.checker,
+    propertyType,
+    contextNode,
+    context.runtime,
+    context.classes,
+  );
+  const taggedHeapNullableBoundary = taggedHeapUnionBoundary
+    ? undefined
+    : isSupportedTaggedHeapNullableType(context.checker, propertyType)
+    ? getTaggedHeapNullableBoundaryInfo(
+      context.checker,
+      propertyType,
+      contextNode,
+      context.runtime,
+      context.classes,
+    )
+    : undefined;
+  if (taggedHeapUnionBoundary || taggedHeapNullableBoundary) {
+    const taggedPrimitiveKinds = taggedHeapUnionBoundary?.taggedPrimitiveKinds ?? {
+      includesBoolean: false,
+      includesNull: taggedHeapNullableBoundary!.includesNull,
+      includesNumber: false,
+      includesString: false,
+      includesUndefined: taggedHeapNullableBoundary!.includesUndefined,
+    };
+    const representation = taggedHeapUnionBoundary?.representation ??
+      taggedHeapNullableBoundary!.representation;
+    return createHostBoundaryField(
+      propertyName,
+      false,
+      createHostTaggedBoundary(
+        taggedPrimitiveKinds,
+        createDerivedHostObjectBoundaryFromRepresentation(
+          representation,
+          context.runtime,
+        ),
+      ),
+    );
+  }
+  if (
+    !isSupportedOwnedTaggedArrayType(context.checker, propertyType) &&
+    isSupportedHeapLocalType(context.checker, propertyType)
+  ) {
+    const candidateShape = getCandidateSpecializedObjectShapeSignature(
+      context.checker,
+      propertyType,
+      contextNode,
+    );
+    const representation = candidateShape !== undefined ||
+        isBagLikeType(context.checker, propertyType) ||
+        isProjectedFallbackBoundaryObjectType(context.checker, propertyType, context.classes)
+      ? getFunctionBoundaryRepresentation(
+        context.checker,
+        propertyType,
+        contextNode,
+        context.runtime,
+        context.classes,
+      )
+      : undefined;
+    if (!representation) {
+      return undefined;
+    }
+    return createHostBoundaryField(
+      propertyName,
+      false,
+      createDerivedHostObjectBoundaryFromRepresentation(representation, context.runtime),
+    );
+  }
+  return undefined;
+}
+
+function maybeRecordFallbackBoundaryStructuredPropertyAccess(
+  expression: ts.PropertyAccessExpression,
+  context: FunctionLoweringContext,
+): void {
+  const receiverRepresentation = getHeapObjectRepresentationFromExpression(
+    expression.expression,
+    context,
+  );
+  const receiverBoundaryRepresentation = getBoundaryObjectRepresentationFromExpression(
+    expression.expression,
+    context,
+  );
+  const fallbackReceiverRepresentation =
+    receiverRepresentation?.kind === 'fallback_object_representation'
+      ? receiverRepresentation
+      : undefined;
+  const fallbackBoundaryRepresentation = receiverBoundaryRepresentation?.kind ===
+      'fallback_object_representation'
+    ? receiverBoundaryRepresentation
+    : undefined;
+  if (
+    !fallbackReceiverRepresentation &&
+    !fallbackBoundaryRepresentation &&
+    !currentFunctionHasTopLevelFallbackHostObjectBoundary(context.currentFunction)
+  ) {
+    return;
+  }
+  const receiverType = context.checker.getTypeAtLocation(expression.expression);
+  const property = receiverType.getProperty(expression.name.text);
+  if (!property) {
+    return;
+  }
+  if (
+    property.getDeclarations()?.some((declaration) =>
+      ts.isMethodDeclaration(declaration) || ts.isMethodSignature(declaration)
+    ) === true
+  ) {
+    return;
+  }
+  const propertyType = context.checker.getTypeOfSymbolAtLocation(property, expression.name);
+  const field = createHostFallbackBoundaryFieldForPropertyAccess(
+    expression.name.text,
+    propertyType,
+    expression.name,
+    context,
+  );
+  if (!field) {
+    return;
+  }
+  const fallbackRepresentationForProperty = fallbackReceiverRepresentation ??
+    fallbackBoundaryRepresentation;
+  if (fallbackRepresentationForProperty) {
+    upsertCurrentFunctionFallbackBoundaryField(
+      context.currentFunction,
+      field,
+      expression.name,
+      fallbackRepresentationForProperty,
+    );
+    return;
+  }
+  upsertCurrentFunctionFallbackBoundaryField(
+    context.currentFunction,
+    field,
+    expression.name,
+  );
+}
+
 function currentFunctionHasTopLevelFallbackHostObjectBoundary(
   func: CompilerFunctionIR,
 ): boolean {
@@ -59508,6 +59737,7 @@ function lowerPropertyAccessExpression(
         context,
       );
     }
+    maybeRecordFallbackBoundaryStructuredPropertyAccess(expression, context);
     maybeRecordFallbackBoundaryCallablePropertyAccess(expression, context);
     const closureSignatureId = getKnownHostMethodClosureSignatureIdForPropertyAccess(
       expression,

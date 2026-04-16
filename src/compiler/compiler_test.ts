@@ -11134,6 +11134,128 @@ compilerIntegrationTest(
 );
 
 compilerIntegrationTest(
+  'compileProject supports imported nested fallback objects with array and callback fields',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              skipLibCheck: true,
+              target: 'ES2022',
+              lib: ['ES2022'],
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+              allowSyntheticDefaultImports: true,
+            },
+            include: ['src/**/*.sts', 'src/**/*.d.ts'],
+            soundscript: {
+              target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/config-api.d.ts',
+        contents: [
+          "declare module 'config-api' {",
+          '  export interface NestedConfig {',
+          '    [key: string]: unknown;',
+          '    labels: string[];',
+          '    adjust(value: number): number;',
+          '  }',
+          '  export interface HostConfig {',
+          '    [key: string]: unknown;',
+          '    title: string;',
+          '    nested: NestedConfig;',
+          '  }',
+          '  export function makeConfig(): HostConfig;',
+          '  export function acceptConfig(config: HostConfig): number;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.sts',
+        contents: [
+          '// #[interop]',
+          "import { acceptConfig, makeConfig } from 'config-api';",
+          '',
+          'export function main(): number {',
+          '  const config = makeConfig();',
+          '  const nested = config.nested;',
+          '  return nested.labels.length + nested.adjust(5) + acceptConfig(config);',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.diagnostics, []);
+    assertEquals(result.exitCode, 0);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const watOutput = await readWatArtifactForProject(tempDirectory);
+    assertStringIncludes(watOutput, '$host_array_to_owned_string_array');
+    assertStringIncludes(watOutput, '$owned_string_array_to_host_array');
+
+    const wrapperModule = await importCompiledWrapperModule(result.artifacts.wrapperPath);
+    const instantiated = await wrapperModule.instantiate({
+      modules: {
+        'config-api': {
+          makeConfig() {
+            return {
+              title: 'root',
+              nested: {
+                labels: ['left', 'right'],
+                adjust(value: number) {
+                  return value + 7;
+                },
+              },
+            };
+          },
+          acceptConfig(config: {
+            title?: unknown;
+            nested?: { labels?: unknown; adjust?: unknown };
+          }) {
+            if (config.title !== 'root') {
+              return -1000;
+            }
+            const labels = config.nested?.labels;
+            if (!Array.isArray(labels) || labels[0] !== 'left') {
+              return -100;
+            }
+            const adjust = config.nested?.adjust;
+            if (typeof adjust !== 'function') {
+              return -10;
+            }
+            return adjust(3);
+          },
+        },
+      },
+    });
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+
+    assertEquals(await exported(), 24);
+  },
+);
+
+compilerIntegrationTest(
   'compileProject supports imported host fallback methods with omitted optional object params',
   async () => {
     const tempDirectory = await createTempProject([
@@ -11203,6 +11325,8 @@ compilerIntegrationTest(
     const watOutput = await readWatArtifactForProject(tempDirectory);
     assertFalse(getHostClosureCallImportArgumentCounts(watOutput).includes(2));
     assertHostExternrefToClosureCallsAreDefined(watOutput);
+    assertFalse(watOutput.includes('$host_array_to_owned_string_array'));
+    assertFalse(watOutput.includes('$owned_string_array_to_host_array'));
 
     const wrapperModule = await importCompiledWrapperModule(result.artifacts.wrapperPath);
     const instantiated = await wrapperModule.instantiate({

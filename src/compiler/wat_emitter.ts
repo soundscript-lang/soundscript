@@ -3920,6 +3920,24 @@ function moduleUsesFallbackHostMethodArrayPropertySyncBoundary(
   });
 }
 
+function moduleUsesFallbackObjectArrayPropertyBoundary(
+  module: CompilerModuleIR,
+  valueType:
+    | 'owned_array_ref'
+    | 'owned_number_array_ref'
+    | 'owned_boolean_array_ref',
+): boolean {
+  const usage = collectHostBoundaryFallbackObjectUsage(module);
+  return (
+    usage?.needsParamBoundary === true ||
+    usage?.needsParamCopyBack === true ||
+    usage?.needsResultBoundary === true
+  ) &&
+    [...getEffectiveHostFallbackObjectMetadata(module).arrayProperties.values()].some((
+      property,
+    ) => property === valueType);
+}
+
 function getSpecializedTaggedArrayFieldBoundaryUsage(module: CompilerModuleIR): {
   usesParamBoundary: boolean;
   usesResultBoundary: boolean;
@@ -4024,6 +4042,7 @@ function moduleUsesOwnedArrayHostParamBoundary(module: CompilerModuleIR): boolea
         (getHostFallbackObjectParamBoundaryNames(func).length > 0 ||
           hasHostFallbackObjectResultBoundary(func));
     }) ||
+    moduleUsesFallbackObjectArrayPropertyBoundary(module, 'owned_array_ref') ||
     module.runtime?.representations.some((representation) =>
       representation.kind === 'specialized_object_representation' &&
       representation.fields.some((field) => field.valueType === 'owned_array_ref') &&
@@ -4064,6 +4083,7 @@ function moduleUsesOwnedArrayHostResultBoundary(module: CompilerModuleIR): boole
       ) &&
         hasHostFallbackObjectResultBoundary(func);
     }) ||
+    moduleUsesFallbackObjectArrayPropertyBoundary(module, 'owned_array_ref') ||
     module.runtime?.representations.some((representation) =>
       representation.kind === 'specialized_object_representation' &&
       representation.fields.some((field) => field.valueType === 'owned_array_ref') &&
@@ -4103,6 +4123,7 @@ function moduleUsesOwnedNumberArrayHostParamBoundary(module: CompilerModuleIR): 
         (getHostFallbackObjectParamBoundaryNames(func).length > 0 ||
           hasHostFallbackObjectResultBoundary(func));
     }) ||
+    moduleUsesFallbackObjectArrayPropertyBoundary(module, 'owned_number_array_ref') ||
     module.runtime?.representations.some((representation) =>
       representation.kind === 'specialized_object_representation' &&
       representation.fields.some((field) => field.valueType === 'owned_number_array_ref') &&
@@ -4143,6 +4164,7 @@ function moduleUsesOwnedNumberArrayHostResultBoundary(module: CompilerModuleIR):
       ) &&
         hasHostFallbackObjectResultBoundary(func);
     }) ||
+    moduleUsesFallbackObjectArrayPropertyBoundary(module, 'owned_number_array_ref') ||
     module.runtime?.representations.some((representation) =>
       representation.kind === 'specialized_object_representation' &&
       representation.fields.some((field) => field.valueType === 'owned_number_array_ref') &&
@@ -4182,6 +4204,7 @@ function moduleUsesOwnedBooleanArrayHostParamBoundary(module: CompilerModuleIR):
         (getHostFallbackObjectParamBoundaryNames(func).length > 0 ||
           hasHostFallbackObjectResultBoundary(func));
     }) ||
+    moduleUsesFallbackObjectArrayPropertyBoundary(module, 'owned_boolean_array_ref') ||
     module.runtime?.representations.some((representation) =>
       representation.kind === 'specialized_object_representation' &&
       representation.fields.some((field) => field.valueType === 'owned_boolean_array_ref') &&
@@ -4222,6 +4245,7 @@ function moduleUsesOwnedBooleanArrayHostResultBoundary(module: CompilerModuleIR)
       ) &&
         hasHostFallbackObjectResultBoundary(func);
     }) ||
+    moduleUsesFallbackObjectArrayPropertyBoundary(module, 'owned_boolean_array_ref') ||
     module.runtime?.representations.some((representation) =>
       representation.kind === 'specialized_object_representation' &&
       representation.fields.some((field) => field.valueType === 'owned_boolean_array_ref') &&
