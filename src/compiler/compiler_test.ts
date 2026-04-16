@@ -2865,6 +2865,33 @@ compilerIntegrationTest(
   },
 );
 
+compilerIntegrationTest('compileProject executes Set.add return-this identity', async () => {
+  const tempDirectory = await createCompilerTestProject([
+    'export function main(): number {',
+    '  const set = new Set<number>();',
+    '  let score = 0;',
+    '  if (set.add(1) !== new Set<number>()) {',
+    '    score += 100;',
+    '  }',
+    '  if (set.add(1) === set) {',
+    '    score += 10;',
+    '  }',
+    '  const chained = set.add(2).add(3);',
+    '  if (chained === set) {',
+    '    score += 1;',
+    '  }',
+    '  return score * 100 + set.size;',
+    '}',
+    '',
+  ].join('\n'));
+
+  const result = compileTempProject(tempDirectory);
+
+  assertEquals(result.exitCode, 0);
+  assertEquals(result.diagnostics, []);
+  assertEquals(await invokeCompiledEntry(tempDirectory, 'main', []), 11103);
+});
+
 compilerIntegrationTest(
   'compileProject executes numeric Set constructor, add, delete, clear, and values iteration',
   async () => {

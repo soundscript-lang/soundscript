@@ -33909,6 +33909,20 @@ function lowerBinaryExpression(
         type: 'i32',
       };
     }
+    if (
+      isSupportedHeapRefStrictEqualityOperand(expression.left, context) &&
+      isSupportedHeapRefStrictEqualityOperand(expression.right, context)
+    ) {
+      return {
+        kind: 'binary',
+        op: expression.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken
+          ? 'ref.eq'
+          : 'ref.ne',
+        left: lowerExpressionAsValueType(expression.left, 'heap_ref', context),
+        right: lowerExpressionAsValueType(expression.right, 'heap_ref', context),
+        type: 'i32',
+      };
+    }
   }
   if (expression.operatorToken.kind === ts.SyntaxKind.PlusToken) {
     if (
@@ -34073,6 +34087,23 @@ function tryLowerSymbolTypeofPredicateExpression(
 
   return tryMatch(expression.left, expression.right) ??
     tryMatch(expression.right, expression.left);
+}
+
+function isSupportedHeapRefStrictEqualityOperand(
+  expression: ts.Expression,
+  context: FunctionLoweringContext,
+): boolean {
+  try {
+    return getCompilerValueTypeForType(
+      context.checker.getTypeAtLocation(expression),
+      expression,
+    ) === 'heap_ref';
+  } catch (error) {
+    if (error instanceof CompilerUnsupportedError) {
+      return false;
+    }
+    throw error;
+  }
 }
 
 function tryLowerTaggedTypeofPredicateExpression(

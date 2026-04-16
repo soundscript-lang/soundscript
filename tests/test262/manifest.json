@@ -24098,7 +24098,7 @@
     }
   },
   {
-    "test": "cases/defer/set-add.ts",
+    "test": "cases/pass-now/set-add.ts",
     "note": "Set.prototype.add should preserve the upstream return-this behavior.",
     "entry": "main",
     "args": [],
