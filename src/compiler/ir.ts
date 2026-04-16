@@ -1575,6 +1575,12 @@ export type CompilerModuleGlobalIR =
     initialValue: 'undefined' | 'null';
   };
 
+export interface CompilerClosureModuleGlobalIR {
+  globalName: string;
+  functionId: number;
+  signatureId: number;
+}
+
 export interface CompilerModuleIR {
   closureSignatures?: readonly CompilerClosureSignatureIR[];
   syncTryCatchClosureSignatureId?: number;
@@ -1586,10 +1592,12 @@ export interface CompilerModuleIR {
   hostPromiseRejectObjectNestedPropertyNames?: readonly CompilerHostObjectNestedPropertyNamesIR[];
   hostAsyncGeneratorYieldObjectBoundary?: CompilerHostBoundaryObjectIR;
   hostAsyncGeneratorYieldObjectPropertyNames?: readonly string[];
-  hostAsyncGeneratorYieldObjectNestedPropertyNames?: readonly CompilerHostObjectNestedPropertyNamesIR[];
+  hostAsyncGeneratorYieldObjectNestedPropertyNames?:
+    readonly CompilerHostObjectNestedPropertyNamesIR[];
   functions: CompilerFunctionIR[];
   jsHostImports?: readonly CompilerJsHostImportIR[];
   moduleGlobals?: readonly CompilerModuleGlobalIR[];
+  closureModuleGlobals?: readonly CompilerClosureModuleGlobalIR[];
   stringLiterals?: readonly string[];
   stringLiteralCodeUnits?: readonly (readonly number[])[];
   runtime?: CompilerRuntimeIR;

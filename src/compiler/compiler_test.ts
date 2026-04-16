@@ -10440,6 +10440,218 @@ compilerIntegrationTest(
 );
 
 compilerIntegrationTest(
+  'compileProject retains host callbacks with nested request response object params after registration',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              skipLibCheck: true,
+              target: 'ES2022',
+              lib: ['ES2022'],
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+              allowSyntheticDefaultImports: true,
+            },
+            include: ['src/**/*.sts', 'src/**/*.d.ts'],
+            soundscript: {
+              target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/router-types.d.ts',
+        contents: [
+          'interface DelayedRequest {',
+          '  url: string;',
+          '  params: {',
+          '    id: string;',
+          '  };',
+          '  body: {',
+          '    completed: boolean;',
+          '    meta: {',
+          '      attempt: number;',
+          '    };',
+          '  };',
+          '}',
+          '',
+          'interface DelayedResponse {',
+          '  json(payload: {',
+          '    attempt: number;',
+          '    completed: boolean;',
+          '    id: string;',
+          '    url: string;',
+          '  }): DelayedResponse;',
+          '  status(code: number): DelayedResponse;',
+          '}',
+          '',
+          "declare module 'delayed-router' {",
+          '  export interface Router {',
+          '    post(',
+          '      path: string,',
+          '      handler: (req: DelayedRequest, res: DelayedResponse) => void,',
+          '    ): void;',
+          '  }',
+          '',
+          '  export function createRouter(): Router;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.sts',
+        contents: [
+          '// #[interop]',
+          "import { createRouter } from 'delayed-router';",
+          '',
+          'let observedAttempt = 0;',
+          'let observedCompleted = false;',
+          '',
+          'function handleDelayed(req: DelayedRequest, res: DelayedResponse): void {',
+          '  const attempt = req.body.meta.attempt;',
+          '  const completed = req.body.completed;',
+          '  const id = req.params.id;',
+          '  const url = req.url;',
+          '  observedAttempt = attempt;',
+          '  observedCompleted = completed;',
+          '  res.status(202).json({',
+          '    attempt,',
+          '    completed,',
+          '    id,',
+          '    url,',
+          '  });',
+          '}',
+          '',
+          'export function start(): number {',
+          '  const router = createRouter();',
+          "  router.post('/todos/:id/toggle', handleDelayed);",
+          "  router.post('/todos/:id/retry', handleDelayed);",
+          '  return 1;',
+          '}',
+          '',
+          'export function latestAttempt(): number {',
+          '  return observedAttempt;',
+          '}',
+          '',
+          'export function latestCompleted(): number {',
+          '  return observedCompleted ? 1 : 0;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+    const watOutput = await readWatArtifact(tempDirectory);
+    assertStringIncludes(watOutput, '$closure_top_level_value_');
+
+    const registeredPaths: string[] = [];
+    const registeredHandlers: Array<(req: unknown, res: unknown) => void> = [];
+    const statusCalls: number[] = [];
+    const jsonPayloads: Array<{
+      attempt: number;
+      completed: boolean;
+      id: string;
+      url: string;
+    }> = [];
+
+    const wrapperModule = await importCompiledWrapperModule(result.artifacts.wrapperPath);
+    const instantiated = await wrapperModule.instantiate({
+      modules: {
+        'delayed-router': {
+          createRouter() {
+            return {
+              post(path: string, handler: (req: unknown, res: unknown) => void): void {
+                registeredPaths.push(path);
+                registeredHandlers.push(handler);
+              },
+            };
+          },
+        },
+      },
+    });
+    const startName = await resolveQualifiedExportName(tempDirectory, 'start');
+    const startExport = instantiated.exports[startName];
+    if (typeof startExport !== 'function') {
+      throw new Error(`Expected exported function "${startName}".`);
+    }
+    const latestAttemptName = await resolveQualifiedExportName(tempDirectory, 'latestAttempt');
+    const latestAttemptExport = instantiated.exports[latestAttemptName];
+    if (typeof latestAttemptExport !== 'function') {
+      throw new Error(`Expected exported function "${latestAttemptName}".`);
+    }
+    const latestCompletedName = await resolveQualifiedExportName(tempDirectory, 'latestCompleted');
+    const latestCompletedExport = instantiated.exports[latestCompletedName];
+    if (typeof latestCompletedExport !== 'function') {
+      throw new Error(`Expected exported function "${latestCompletedName}".`);
+    }
+
+    assertEquals(await startExport(), 1);
+    assertEquals(registeredPaths, ['/todos/:id/toggle', '/todos/:id/retry']);
+    assertEquals(registeredHandlers.length, 2);
+    assertStrictEquals(registeredHandlers[0], registeredHandlers[1]);
+
+    const response = {
+      json(payload: {
+        attempt: number;
+        completed: boolean;
+        id: string;
+        url: string;
+      }) {
+        jsonPayloads.push(payload);
+        return response;
+      },
+      status(code: number) {
+        statusCalls.push(code);
+        return response;
+      },
+    };
+    registeredHandlers[1]?.(
+      {
+        body: {
+          completed: true,
+          meta: {
+            attempt: 7,
+          },
+        },
+        params: {
+          id: 'todo-7',
+        },
+        url: '/api/todos/todo-7/retry',
+      },
+      response,
+    );
+
+    assertEquals(statusCalls, [202]);
+    assertEquals(jsonPayloads, [
+      {
+        attempt: 7,
+        completed: true,
+        id: 'todo-7',
+        url: '/api/todos/todo-7/retry',
+      },
+    ]);
+    assertEquals(await latestAttemptExport(), 7);
+    assertEquals(await latestCompletedExport(), 1);
+  },
+);
+
+compilerIntegrationTest(
   'compileProject supports real express and react-dom/server package declarations for SSR handlers',
   async () => {
     const tempDirectory = await createTempProject([
@@ -14007,6 +14219,8 @@ compilerIntegrationTest(
     assertEquals(result.diagnostics, []);
     assert(result.artifacts);
     assert(result.artifacts.wrapperPath);
+    const watOutput = await readWatArtifact(tempDirectory);
+    assertFalse(watOutput.includes('closure_top_level_value_'));
 
     const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
     const instantiated = await wrapperModule.instantiate();
