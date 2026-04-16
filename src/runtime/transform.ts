@@ -17,6 +17,7 @@ import {
 
 export interface RuntimeTransformArtifact {
   code: string;
+  loaderFormat: 'module' | 'module-typescript';
   mapText: string;
 }
 
@@ -169,7 +170,9 @@ export function rewriteModuleSpecifiersForEmit(
   );
 }
 
-function parseNodeVersion(nodeVersion: string | undefined): { major: number; minor: number } | undefined {
+function parseNodeVersion(
+  nodeVersion: string | undefined,
+): { major: number; minor: number } | undefined {
   if (!nodeVersion) {
     return undefined;
   }
@@ -331,6 +334,7 @@ function normalizeTranspiledMap(
 
   return {
     code: stripTrailingSourceMapComment(rewrittenCode),
+    loaderFormat: 'module',
     mapText: `${JSON.stringify(map)}\n`,
   };
 }
@@ -382,6 +386,7 @@ export function emitPreparedSoundscriptModuleDirect(
 
   return {
     code: composed.code,
+    loaderFormat: 'module-typescript',
     mapText: composed.mapText,
   };
 }
@@ -420,6 +425,7 @@ export function transpilePreparedSoundscriptModuleToEsm(
 
   return {
     code: composed.code,
+    loaderFormat: 'module',
     mapText: composed.mapText,
   };
 }
@@ -437,6 +443,7 @@ export function emitTypeScriptModuleDirect(
   const composed = createIdentitySourceMap(rewrittenCode, sourceFileName, sourceText);
   return {
     code: composed.code,
+    loaderFormat: 'module-typescript',
     mapText: composed.mapText,
   };
 }

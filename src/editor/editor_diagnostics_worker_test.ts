@@ -226,6 +226,64 @@ Deno.test('editor diagnostics worker matches CLI diagnostics for an overridden f
   }
 });
 
+Deno.test('editor diagnostics worker treats configured TypeScript files from soundscript.include as soundscript', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+        soundscript: {
+          include: ['src/demo.ts'],
+        },
+      },
+      null,
+      2,
+    ),
+    'src/demo.ts': 'console.log(42);\n',
+  });
+
+  const projectPath = join(tempDirectory, 'tsconfig.json');
+  const filePath = join(tempDirectory, 'src/demo.ts');
+  const worker = await startWorkerHarness();
+
+  try {
+    const initializeResponse = await worker.request('initialize');
+    assertEquals(initializeResponse.error, undefined);
+
+    const syncResponse = await worker.request('syncDocument', {
+      filePath,
+      text: 'console.log(42);\n',
+      version: 1,
+    });
+    assertEquals(syncResponse.error, undefined);
+
+    const diagnosticsResponse = await worker.request('diagnostics', {
+      filePath,
+      projectPath,
+    });
+    assertEquals(diagnosticsResponse.error, undefined);
+
+    const expectedDiagnostics = await collectExpectedDiagnostics(
+      projectPath,
+      tempDirectory,
+      filePath,
+      new Map([[filePath, 'console.log(42);\n']]),
+    );
+    assertEquals(
+      normalizeSerializedDiagnostics(diagnosticsResponse.result?.diagnostics ?? []),
+      expectedDiagnostics,
+    );
+    assertEquals(expectedDiagnostics.some((diagnostic) => diagnostic.code === 'SOUND1039'), true);
+  } finally {
+    await worker.close();
+  }
+});
+
 Deno.test('editor diagnostics worker does not leak sibling diagnostics onto a clean barrel file', async () => {
   const tempDirectory = await createTempProject({
     'tsconfig.json': JSON.stringify(

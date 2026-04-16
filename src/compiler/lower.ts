@@ -2533,6 +2533,12 @@ function getResolvedClosureAbiValueFromHostBoundary(
       return { type: valueType };
     case 'owned_string_ref':
       return { type: 'owned_string_ref' };
+    case 'class_constructor_ref':
+      return { type: 'class_constructor_ref' };
+    case 'string_ref':
+      return { type: 'string_ref' };
+    case 'box_ref':
+      return { type: 'box_ref' };
     case 'closure_ref':
       return {
         type: 'closure_ref',
@@ -31542,7 +31548,7 @@ function createAmbientHostFunctionHeader(
         checker,
         returnType,
         declaration,
-        internalAmbientDeclarationObjectResultRepresentation,
+        internalAmbientDeclarationObjectResultRepresentation as CompilerRuntimeSpecializedObjectRepresentationRefIR,
         runtime,
         closures,
         classes,
@@ -32666,7 +32672,7 @@ function createAmbientHostProjectedMemberMetadataHeader(
       );
     }
   };
-  const params: CompilerLocalIR[] = declaration.parameters.flatMap((parameter, index) => {
+  const params: CompilerLocalIR[] = declaration.parameters.flatMap((parameter, index): CompilerLocalIR[] => {
     const parameterType = checker.getTypeAtLocation(parameter);
     if ((parameterType.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0) {
       const runtimeName = getFunctionParameterRuntimeName(parameter, index);
@@ -32849,7 +32855,7 @@ function createAmbientHostProjectedMemberMetadataHeader(
         checker,
         returnType,
         declaration,
-        internalAmbientDeclarationObjectResultRepresentation,
+        internalAmbientDeclarationObjectResultRepresentation as CompilerRuntimeSpecializedObjectRepresentationRefIR,
         runtime,
         closures,
         classes,

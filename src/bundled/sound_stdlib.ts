@@ -426,10 +426,16 @@ export function createProjectCompilerHost(
   currentDirectory?: string,
 ): ts.CompilerHost {
   const baseHost = ts.createCompilerHost(options, true);
+  const hostCurrentDirectory = currentDirectory ?? baseHost.getCurrentDirectory();
+  const fallbackHost = createModuleResolutionHost(baseHost);
+  const moduleResolutionCache = ts.createModuleResolutionCache(
+    hostCurrentDirectory,
+    baseHost.getCanonicalFileName.bind(baseHost),
+  );
   const host: ts.CompilerHost = {
     ...baseHost,
     getCurrentDirectory() {
-      return currentDirectory ?? baseHost.getCurrentDirectory();
+      return hostCurrentDirectory;
     },
     resolveModuleNames(
       moduleNames,
@@ -447,7 +453,6 @@ export function createProjectCompilerHost(
         compilerOptions,
         containingSourceFile,
       );
-      const fallbackHost = createModuleResolutionHost(baseHost);
 
       return moduleNames.map((moduleName, index) => {
         if (delegated?.[index]) {
@@ -462,7 +467,7 @@ export function createProjectCompilerHost(
           containingFile,
           compilerOptions ?? options,
           fallbackHost,
-          undefined,
+          moduleResolutionCache,
           redirectedReference,
           containingSourceFile?.impliedNodeFormat,
         ).resolvedModule;

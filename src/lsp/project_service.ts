@@ -16,7 +16,6 @@ import {
   getLineAndCharacterOfPosition,
   getPositionOfLineAndCharacter,
   isProjectedSoundscriptDeclarationFile,
-  isSoundscriptSourceFile,
   isUnsoundImportedModuleForTypeProjection,
   mapProgramEnclosingRangeToSource,
   mapProgramRangeToSource,
@@ -275,7 +274,8 @@ function aggregateMacroCacheStats(
     aggregated.bindingPlanCacheInvalidations += view.macroCacheStats.bindingPlanCacheInvalidations;
     aggregated.bindingPlanCacheMisses += view.macroCacheStats.bindingPlanCacheMisses;
     aggregated.expandedFileCacheHits += view.macroCacheStats.expandedFileCacheHits;
-    aggregated.expandedFileCacheInvalidations += view.macroCacheStats.expandedFileCacheInvalidations;
+    aggregated.expandedFileCacheInvalidations +=
+      view.macroCacheStats.expandedFileCacheInvalidations;
     aggregated.expandedFileCacheMisses += view.macroCacheStats.expandedFileCacheMisses;
     aggregated.evaluatedModules += view.macroCacheStats.evaluatedModules;
     aggregated.moduleCacheHits += view.macroCacheStats.moduleCacheHits;
@@ -5637,7 +5637,16 @@ function canonicalSoundscriptSourceFileName(
   const sourceFileName = toProjectedDeclarationSourceFileName(
     preparedProject.preparedProgram.toSourceFileName(fileName),
   );
-  return isSoundscriptSourceFile(sourceFileName) ? sourceFileName : null;
+  return preparedProject.preparedProgram.isSoundscriptSourceFile(sourceFileName)
+    ? sourceFileName
+    : null;
+}
+
+function isSoundscriptSourceLocation(
+  fileName: string,
+  views: readonly PreparedAnalysisView[],
+): boolean {
+  return views.some((view) => view.preparedProgram.isSoundscriptSourceFile(fileName));
 }
 
 function collectCrossViewDeclarations(
@@ -5865,7 +5874,7 @@ function createSourceBackedDefinitionLocation(
 ): DefinitionLocation | null {
   const declarationFileName = declaration.getSourceFile().fileName;
   const sourceFileName = preparedProject.preparedProgram.toSourceFileName(declarationFileName);
-  if (!isSoundscriptSourceFile(sourceFileName)) {
+  if (!preparedProject.preparedProgram.isSoundscriptSourceFile(sourceFileName)) {
     return null;
   }
 
@@ -6183,7 +6192,7 @@ function definitionForNode(
 
   const allLocations = [...uniqueLocations.values()];
   const sourceLocations = allLocations.filter((location) =>
-    isSoundscriptSourceFile(fromFileUrl(location.uri))
+    isSoundscriptSourceLocation(fromFileUrl(location.uri), [preparedProject, ...relatedViews])
   );
   if (sourceLocations.length > 0) {
     return sourceLocations;
@@ -7282,7 +7291,7 @@ export function definitionOpenDocument(
         character,
         projectViews,
       );
-      if (primaryResult || !isSoundscriptSourceFile(filePath)) {
+      if (primaryResult || !preparedProject.preparedProgram.isSoundscriptSourceFile(filePath)) {
         return primaryResult;
       }
 

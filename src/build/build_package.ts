@@ -70,7 +70,7 @@ import { SOUNDSCRIPT_RUNTIME_PACKAGE_NAME } from '../project/soundscript_runtime
 import { getSoundscriptToolFingerprint } from '../version.ts';
 
 const DECLARATION_CAPTURE_OUT_DIR = '/__soundscript_build_types__';
-const BUILD_CACHE_SCHEMA_VERSION = 2;
+const BUILD_CACHE_SCHEMA_VERSION = 3;
 const BUILD_CACHE_MANIFEST_FILE_NAME = 'build-manifest.json';
 const CHECKER_CACHE_MANIFEST_FILE_NAME = 'manifest.json';
 const CHECKER_CACHE_BUILD_INFO_SUBDIRECTORY = 'buildinfo';
@@ -214,7 +214,9 @@ function createSoundscriptRootDiscoverySignature(
   ].join('\u0002');
 }
 
-function createTrackedFileHashes(trackedFilePaths: readonly string[]): Readonly<Record<string, string>> {
+function createTrackedFileHashes(
+  trackedFilePaths: readonly string[],
+): Readonly<Record<string, string>> {
   return Object.fromEntries(
     trackedFilePaths.map((filePath) => [filePath, hashText(ts.sys.readFile(filePath) ?? '')]),
   );
@@ -393,6 +395,10 @@ function mergePersistentPreparedCompilerHostReuseSnapshots(
       base.builtinFinalSourceFiles,
       overlay.builtinFinalSourceFiles,
     ),
+    builtinStageReuseStates: mergePersistentPreparedCompilerHostStageReuseSnapshots(
+      base.builtinStageReuseStates,
+      overlay.builtinStageReuseStates,
+    ),
     expandedMacroSourceFiles: mergePersistentPreparedCompilerHostReuseSnapshotEntries(
       base.expandedMacroSourceFiles,
       overlay.expandedMacroSourceFiles,
@@ -420,6 +426,19 @@ function mergePersistentPreparedCompilerHostReuseSnapshots(
       overlay.rewrittenSourceFiles,
     ),
   };
+}
+
+function mergePersistentPreparedCompilerHostStageReuseSnapshots(
+  base: PersistentPreparedCompilerHostReuseSnapshot['builtinStageReuseStates'] | undefined,
+  overlay: PersistentPreparedCompilerHostReuseSnapshot['builtinStageReuseStates'] | undefined,
+): PersistentPreparedCompilerHostReuseSnapshot['builtinStageReuseStates'] | undefined {
+  const annotated = base?.annotated && overlay?.annotated
+    ? mergePersistentPreparedCompilerHostReuseSnapshots(base.annotated, overlay.annotated)
+    : overlay?.annotated ?? base?.annotated;
+  const final = base?.final && overlay?.final
+    ? mergePersistentPreparedCompilerHostReuseSnapshots(base.final, overlay.final)
+    : overlay?.final ?? base?.final;
+  return annotated || final ? { annotated, final } : undefined;
 }
 
 function createPackageBuildReuseState(
@@ -635,7 +654,11 @@ function createPackageBuildProgram(
 } {
   const loadedConfig = loadConfig(options.projectPath, { target: options.target });
   return {
-    builtProgram: createPackageBuildProgramWithLoadedConfig(options, loadedConfig, prepareArtifacts),
+    builtProgram: createPackageBuildProgramWithLoadedConfig(
+      options,
+      loadedConfig,
+      prepareArtifacts,
+    ),
     loadedConfig,
   };
 }
@@ -980,16 +1003,16 @@ async function emitPackageBuildOutputs(
     },
     diagnostics: [],
     exitCode: 0,
-        output: renderBuildOutput(
-          {
-            emittedFiles,
-            outDir: options.outDir,
-            packageJsonPath: distPackageJsonPath,
-          },
-          options.projectPath,
-          options.verbose,
-        ),
-      };
+    output: renderBuildOutput(
+      {
+        emittedFiles,
+        outDir: options.outDir,
+        packageJsonPath: distPackageJsonPath,
+      },
+      options.projectPath,
+      options.verbose,
+    ),
+  };
 }
 
 async function writeGeneratedFile(
@@ -1242,7 +1265,10 @@ export async function buildProject(options: BuildProjectOptions): Promise<BuildP
     { always: true },
   );
   if (buildCacheReadResult.status === 'hit') {
-    const { builtProgram } = createPackageBuildProgram(options, buildCacheReadResult.prepareArtifacts);
+    const { builtProgram } = createPackageBuildProgram(
+      options,
+      buildCacheReadResult.prepareArtifacts,
+    );
     try {
       return await emitPackageBuildOutputs(options, packageJson, packageInfo, builtProgram, {
         validateDiagnostics: false,
@@ -1294,7 +1320,8 @@ export async function buildProject(options: BuildProjectOptions): Promise<BuildP
         {
           projectPath: options.projectPath,
         },
-        () => createTrackedFileHashes(collectPreparedAnalysisProjectTrackedFilePaths(preparedProject)),
+        () =>
+          createTrackedFileHashes(collectPreparedAnalysisProjectTrackedFilePaths(preparedProject)),
         { always: true },
       );
       try {
@@ -1382,7 +1409,8 @@ export async function buildProject(options: BuildProjectOptions): Promise<BuildP
       {
         projectPath: options.projectPath,
       },
-      () => createTrackedFileHashes(collectPreparedAnalysisProjectTrackedFilePaths(preparedProject)),
+      () =>
+        createTrackedFileHashes(collectPreparedAnalysisProjectTrackedFilePaths(preparedProject)),
       { always: true },
     );
     try {

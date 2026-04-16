@@ -5,6 +5,7 @@ import type { MergedDiagnostic } from '../checker/diagnostics.ts';
 import {
   analyzeOpenDocument,
   codeActionsOpenDocument,
+  definitionOpenDocument,
   getPreparedProjectForTest,
   referencesOpenDocument,
 } from './project_service.ts';
@@ -187,6 +188,47 @@ Deno.test('project service analyzes configured TypeScript files from soundscript
   const preparedProject = getPreparedProjectForTest(uri, session, 'sts-local');
   assert(preparedProject !== null);
   assertEquals(preparedProject.isSoundscriptSourceFile(join(tempDirectory, 'src/demo.ts')), true);
+});
+
+Deno.test('project service definitions resolve to configured TypeScript frontier sources', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+        soundscript: {
+          include: ['src/**/*.ts'],
+        },
+      },
+      null,
+      2,
+    ),
+    'src/helper.ts': 'export const helper = 41;\n',
+    'src/demo.ts': "import { helper } from './helper.ts';\nexport const value = helper + 1;\n",
+  });
+
+  const uri = toFileUrl(join(tempDirectory, 'src/demo.ts')).href;
+  const session = openSessionDocument(
+    uri,
+    "import { helper } from './helper.ts';\nexport const value = helper + 1;\n",
+  );
+
+  const definitions = definitionOpenDocument(
+    uri,
+    1,
+    'export const value = helper + 1;'.indexOf('helper'),
+    session,
+  );
+
+  assertEquals(definitions?.length, 1);
+  assertEquals(definitions?.[0]?.uri, toFileUrl(join(tempDirectory, 'src/helper.ts')).href);
+  assertEquals(definitions?.[0]?.range.start.line, 0);
+  assertEquals(definitions?.[0]?.range.start.character, 'export const '.length);
 });
 
 Deno.test('project service keeps full and sts-local prepared state cached independently', async () => {
