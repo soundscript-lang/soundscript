@@ -21560,12 +21560,15 @@ function supportsLocalOnlyFixedLayoutHeapScaffolding(
   checker: ts.TypeChecker,
   type: ts.Type,
   contextNode: ts.Node,
+  runtime?: ModuleRuntimeLoweringState,
+  classes: ReadonlyMap<ts.Symbol, ts.ClassDeclaration> = new Map(),
 ): boolean {
   if (!isSupportedHeapLocalType(checker, type)) {
     return false;
   }
   if ((type.flags & ts.TypeFlags.Union) === 0) {
-    return getFixedLayoutShapeSignature(checker, type, contextNode) !== undefined;
+    return getFixedLayoutShapeSignature(checker, type, contextNode, runtime, classes) !==
+      undefined;
   }
 
   const fixedLayoutShapes = new Set<string>();
@@ -21576,7 +21579,13 @@ function supportsLocalOnlyFixedLayoutHeapScaffolding(
     if (isBagLikeType(checker, member)) {
       continue;
     }
-    const memberShape = getFixedLayoutShapeSignature(checker, member, contextNode);
+    const memberShape = getFixedLayoutShapeSignature(
+      checker,
+      member,
+      contextNode,
+      runtime,
+      classes,
+    );
     if (memberShape === undefined) {
       return false;
     }
@@ -28513,6 +28522,15 @@ function recordSpecializedObjectAllocationForInitializer(
             type: 'heap_ref' as const,
           };
         })()
+        : fieldLayout.valueType === 'tagged_ref' &&
+            fieldLayout.heapRepresentationName &&
+            isTaggedHeapUnionHeapValueExpression(fieldInitializer, context)
+        ? lowerTaggedHeapUnionObjectExpression(
+          fieldInitializer,
+          getObjectRepresentationByName(context.runtime, fieldLayout.heapRepresentationName),
+          context,
+          `${field.name}_field_value`,
+        )
         : lowerExpressionAsValueType(
           fieldInitializer,
           fieldLayout.valueType,
@@ -28705,6 +28723,15 @@ function lowerClassFieldInitializersForDeclaration(
             type: 'heap_ref' as const,
           };
         })()
+        : fieldLayout.valueType === 'tagged_ref' &&
+            fieldLayout.heapRepresentationName &&
+            isTaggedHeapUnionHeapValueExpression(member.initializer, context)
+        ? lowerTaggedHeapUnionObjectExpression(
+          member.initializer,
+          getObjectRepresentationByName(context.runtime, fieldLayout.heapRepresentationName),
+          context,
+          `${fieldName}_field`,
+        )
         : lowerExpressionAsValueType(member.initializer, fieldLayout.valueType, context);
       statements.push(...consumeExpressionPreludeStatements(context));
       statements.push({
@@ -63623,7 +63650,18 @@ function lowerVariableStatement(
       );
     let declarationRepresentation: CompilerRuntimeObjectRepresentationRef | undefined;
     if (type === 'heap_ref') {
-      if (forcedHeapInitializerRepresentation) {
+      const explicitDeclarationRepresentation = declaration.type
+        ? getCandidateObjectRepresentationForType(
+          context.checker,
+          declarationType,
+          declaration.name,
+          context.runtime,
+          context.classes,
+        )
+        : undefined;
+      if (explicitDeclarationRepresentation) {
+        declarationRepresentation = explicitDeclarationRepresentation;
+      } else if (forcedHeapInitializerRepresentation) {
         declarationRepresentation = forcedHeapInitializerRepresentation;
       } else if (ambientHostBoundaryInitializerRepresentation) {
         declarationRepresentation = ambientHostBoundaryInitializerRepresentation;
@@ -63807,6 +63845,8 @@ function lowerVariableStatement(
         context.checker,
         declarationType,
         declaration.name,
+        context.runtime,
+        context.classes,
       )
     ) {
       throw new CompilerUnsupportedError(
@@ -64521,6 +64561,17 @@ function lowerExpressionStatement(
             type: 'heap_ref' as const,
           };
         })()
+        : fieldLayout.valueType === 'tagged_ref' &&
+            fieldLayout.heapRepresentationName &&
+            isTaggedHeapUnionHeapValueExpression(expression.right, context)
+        ? lowerTaggedHeapUnionObjectExpression(
+          expression.right,
+          getObjectRepresentationByName(context.runtime, fieldLayout.heapRepresentationName),
+          context,
+          ts.isPropertyAccessExpression(expression.left)
+            ? expression.left.name.text
+            : 'field_value',
+        )
         : lowerExpressionAsValueType(expression.right, fieldLayout.valueType, context);
       const valueStatements = consumeExpressionPreludeStatements(context);
       return [...receiverStatements, ...valueStatements, {
