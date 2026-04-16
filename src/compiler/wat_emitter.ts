@@ -1321,7 +1321,7 @@ function expressionUsesOwnedStringRuntime(expression: CompilerExpressionIR): boo
       return true;
     case 'owned_string_to_upper_case':
     case 'owned_string_to_lower_case':
-      return expressionUsesOwnedStringRuntime(expression.value);
+      return true;
     case 'string_length':
     case 'string_to_upper_case':
     case 'string_to_lower_case':
@@ -1351,24 +1351,20 @@ function expressionUsesOwnedStringRuntime(expression: CompilerExpressionIR): boo
     case 'owned_string_includes':
     case 'owned_string_index_of':
     case 'owned_string_last_index_of':
-      return expressionUsesOwnedStringRuntime(expression.value) ||
-        expressionUsesOwnedStringRuntime(expression.search);
+      return true;
     case 'owned_string_concat':
       return expressionUsesOwnedStringRuntime(expression.left) ||
         expressionUsesOwnedStringRuntime(expression.right);
     case 'owned_string_length':
-      return expressionUsesOwnedStringRuntime(expression.value);
     case 'owned_string_char_at':
-      return expressionUsesOwnedStringRuntime(expression.value) ||
-        expressionUsesOwnedStringRuntime(expression.index);
+      return true;
     case 'owned_string_slice':
     case 'owned_string_substring':
-      return expressionUsesOwnedStringRuntime(expression.value) ||
-        expressionUsesOwnedStringRuntime(expression.start) ||
-        (expression.end ? expressionUsesOwnedStringRuntime(expression.end) : false);
+      return true;
     case 'owned_string_trim':
     case 'owned_string_trim_start':
     case 'owned_string_trim_end':
+      return true;
     case 'owned_string_to_host':
     case 'tag_string':
     case 'untag_owned_string':
@@ -1376,8 +1372,7 @@ function expressionUsesOwnedStringRuntime(expression: CompilerExpressionIR): boo
       return expressionUsesOwnedStringRuntime(expression.value);
     case 'owned_string_char_code_at':
     case 'owned_string_code_point_at':
-      return expressionUsesOwnedStringRuntime(expression.value) ||
-        expressionUsesOwnedStringRuntime(expression.index);
+      return true;
     case 'owned_string_array_join':
     case 'owned_number_array_join':
     case 'owned_boolean_array_join':

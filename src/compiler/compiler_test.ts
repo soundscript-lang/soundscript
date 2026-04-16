@@ -22373,6 +22373,38 @@ compilerIntegrationTest(
 );
 
 compilerIntegrationTest(
+  'compileProject includes string runtime for string-narrowed tagged heap unions',
+  async () => {
+    const tempDirectory = await createCompilerTestProject([
+      'type Left = { left: number };',
+      'type Right = { right: number };',
+      'type Value = string | Left | Right;',
+      '',
+      'function score(value: Value): number {',
+      '  if (typeof value === "string") {',
+      '    return value.length;',
+      '  }',
+      '  if ("left" in value) {',
+      '    return value.left * 10;',
+      '  }',
+      '  return value.right;',
+      '}',
+      '',
+      'export function main(): number {',
+      '  return score({ left: 5 }) * 10 + score({ right: 7 });',
+      '}',
+      '',
+    ].join('\n'));
+
+    const result = compileTempProject(tempDirectory);
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assertEquals(await invokeCompiledEntry(tempDirectory, 'main', []), 507);
+  },
+);
+
+compilerIntegrationTest(
   'lowerProgramToCompilerIR distinguishes explicit bag-like object locals from narrow fixed layouts',
   async () => {
     const tempDirectory = await createTempProject([

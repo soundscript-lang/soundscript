@@ -2985,6 +2985,17 @@ function isSupportedInternalTaggedHeapUnionWithUndefined(
   return getSupportedInternalTaggedHeapUnionKinds(checker, type)?.includesUndefined === true;
 }
 
+function ensureInternalTaggedHeapUnionRuntime(
+  checker: ts.TypeChecker,
+  type: ts.Type,
+  runtime: ModuleRuntimeLoweringState,
+): void {
+  const kinds = getSupportedInternalTaggedHeapUnionKinds(checker, type);
+  if (kinds?.includesString) {
+    ensureStringRepresentation(runtime);
+  }
+}
+
 function getSupportedInternalOwnedTaggedHeapArrayKinds(
   checker: ts.TypeChecker,
   type: ts.Type,
@@ -4205,6 +4216,8 @@ function getVariableDeclarationLoweringInfo(
       }
       type = 'owned_tagged_array_ref';
     }
+  } else if (isSupportedInternalTaggedHeapUnionType(context.checker, declarationType)) {
+    ensureInternalTaggedHeapUnionRuntime(context.checker, declarationType, context.runtime);
   }
   return {
     declarationType,
@@ -30792,6 +30805,7 @@ function createFunctionHeader(
           return 'tagged_ref';
         }
         if (!hasExportBoundary && isSupportedInternalTaggedHeapUnionType(checker, parameterType)) {
+          ensureInternalTaggedHeapUnionRuntime(checker, parameterType, runtime);
           const representation = getInternalTaggedHeapUnionObjectRepresentation(
             checker,
             parameterType,
@@ -31171,6 +31185,9 @@ function createFunctionHeader(
     : undefined;
   const internalTaggedHeapUnionResult = !hasExportBoundary &&
     isSupportedInternalTaggedHeapUnionType(checker, returnType);
+  if (internalTaggedHeapUnionResult) {
+    ensureInternalTaggedHeapUnionRuntime(checker, returnType, runtime);
+  }
   const internalTaggedHeapUnionResultRepresentation = !hasExportBoundary
     ? getInternalTaggedHeapUnionObjectRepresentation(checker, returnType, runtime)
     : undefined;
