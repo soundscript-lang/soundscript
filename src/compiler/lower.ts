@@ -6444,35 +6444,6 @@ function tryLowerOwnedStringExpression(
     }
     if (
       symbol?.type === 'tagged_ref' &&
-      symbol.parameter &&
-      isStringLikeType(context.checker.getTypeAtLocation(expression)) &&
-      !context.assignedLocalNames.has(expression.text)
-    ) {
-      const adaptedName = createLocalName(expression.text, context.nextLocalId);
-      context.nextLocalId += 1;
-      context.locals.push({ name: adaptedName, type: 'owned_string_ref' });
-      symbol.ownedAliasValue = {
-        kind: 'local_get',
-        name: adaptedName,
-        type: 'owned_string_ref',
-      };
-      context.entryStatements.push({
-        kind: 'local_set',
-        name: adaptedName,
-        value: {
-          kind: 'untag_owned_string',
-          value: {
-            kind: 'local_get',
-            name: symbol.emittedName,
-            type: 'tagged_ref',
-          },
-          type: 'owned_string_ref',
-        },
-      });
-      return symbol.ownedAliasValue;
-    }
-    if (
-      symbol?.type === 'tagged_ref' &&
       isStringLikeType(context.checker.getTypeAtLocation(expression))
     ) {
       return {
@@ -63031,36 +63002,6 @@ function lowerExpression(
         };
       }
       if (isStringLikeType(expressionType)) {
-        if (symbol.parameter && !context.assignedLocalNames.has(expression.text)) {
-          if (!symbol.aliasValue) {
-            const adaptedName = createLocalName(expression.text, context.nextLocalId);
-            context.nextLocalId += 1;
-            context.locals.push({ name: adaptedName, type: 'string_ref' });
-            symbol.aliasValue = {
-              kind: 'local_get',
-              name: adaptedName,
-              type: 'string_ref',
-            };
-            context.expressionPreludeStatements.push({
-              kind: 'local_set',
-              name: adaptedName,
-              value: {
-                kind: 'owned_string_to_host',
-                value: {
-                  kind: 'untag_owned_string',
-                  value: {
-                    kind: 'local_get',
-                    name: symbol.emittedName,
-                    type: 'tagged_ref',
-                  },
-                  type: 'owned_string_ref',
-                },
-                type: 'string_ref',
-              },
-            });
-          }
-          return symbol.aliasValue;
-        }
         return {
           kind: 'untag_owned_string',
           value: {

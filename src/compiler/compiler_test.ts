@@ -22077,6 +22077,130 @@ compilerIntegrationTest(
 );
 
 compilerIntegrationTest(
+  'compileProject narrows discriminated object unions with string equality',
+  async () => {
+    const tempDirectory = await createCompilerTestProject([
+      'type Left = { kind: "left"; left: number };',
+      'type Right = { kind: "right"; right: number };',
+      '',
+      'function score(either: Left | Right): number {',
+      '  if (either.kind === "left") {',
+      '    return either.left * 10;',
+      '  }',
+      '  return either.right;',
+      '}',
+      '',
+      'export function main(): number {',
+      '  return score({ kind: "left", left: 4 }) + score({ kind: "right", right: 7 });',
+      '}',
+      '',
+    ].join('\n'));
+
+    const result = compileTempProject(tempDirectory);
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assertEquals(await invokeCompiledEntry(tempDirectory, 'main', []), 47);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject narrows discriminated object unions with switch cases',
+  async () => {
+    const tempDirectory = await createCompilerTestProject([
+      'type Left = { kind: "left"; left: number };',
+      'type Right = { kind: "right"; right: number };',
+      '',
+      'function score(either: Left | Right): number {',
+      '  switch (either.kind) {',
+      '    case "left":',
+      '      return either.left * 10;',
+      '    case "right":',
+      '      return either.right;',
+      '  }',
+      '}',
+      '',
+      'export function main(): number {',
+      '  return score({ kind: "left", left: 4 }) + score({ kind: "right", right: 7 });',
+      '}',
+      '',
+    ].join('\n'));
+
+    const result = compileTempProject(tempDirectory);
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assertEquals(await invokeCompiledEntry(tempDirectory, 'main', []), 47);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject narrows numeric discriminated object unions',
+  async () => {
+    const tempDirectory = await createCompilerTestProject([
+      'type Left = { kind: 1; left: number };',
+      'type Right = { kind: 2; right: number };',
+      '',
+      'function score(either: Left | Right): number {',
+      '  if (either.kind === 1) {',
+      '    return either.left * 10;',
+      '  }',
+      '  return either.right;',
+      '}',
+      '',
+      'export function main(): number {',
+      '  return score({ kind: 1, left: 4 }) + score({ kind: 2, right: 7 });',
+      '}',
+      '',
+    ].join('\n'));
+
+    const result = compileTempProject(tempDirectory);
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assertEquals(await invokeCompiledEntry(tempDirectory, 'main', []), 47);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject narrows primitive and object members of tagged heap unions',
+  async () => {
+    const tempDirectory = await createCompilerTestProject([
+      'type Left = { left: number };',
+      'type Right = { right: number };',
+      'type Value = number | string | Left | Right;',
+      '',
+      'function score(value: Value): number {',
+      '  if (typeof value === "number") {',
+      '    return value;',
+      '  }',
+      '  if (typeof value === "string") {',
+      '    return value.length;',
+      '  }',
+      '  if ("left" in value) {',
+      '    return value.left * 10;',
+      '  }',
+      '  return value.right;',
+      '}',
+      '',
+      'export function main(): number {',
+      '  return score(3) * 1000',
+      '    + score("abcd") * 100',
+      '    + score({ left: 5 }) * 10',
+      '    + score({ right: 7 });',
+      '}',
+      '',
+    ].join('\n'));
+
+    const result = compileTempProject(tempDirectory);
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assertEquals(await invokeCompiledEntry(tempDirectory, 'main', []), 3_907);
+  },
+);
+
+compilerIntegrationTest(
   'lowerProgramToCompilerIR distinguishes explicit bag-like object locals from narrow fixed layouts',
   async () => {
     const tempDirectory = await createTempProject([
