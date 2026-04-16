@@ -15701,7 +15701,7 @@ function getSupportedMapEntryIteratorTypeInfo(
   checker: ts.TypeChecker,
   yieldedType: ts.Type,
 ): {
-  elementType: 'owned_array_ref' | 'owned_tagged_array_ref';
+  elementType: 'owned_array_ref' | 'owned_number_array_ref' | 'owned_tagged_array_ref';
 } | undefined {
   if ((yieldedType.flags & ts.TypeFlags.Object) === 0) {
     return undefined;
@@ -15712,7 +15712,16 @@ function getSupportedMapEntryIteratorTypeInfo(
   const elementTypes = checker.getTypeArguments(yieldedType as ts.TypeReference);
   const keyType = elementTypes[0];
   const valueType = elementTypes[1];
-  if (!keyType || !valueType || !isStringLikeType(keyType)) {
+  if (!keyType || !valueType) {
+    return undefined;
+  }
+  if (
+    (keyType.flags & ts.TypeFlags.NumberLike) !== 0 &&
+    (valueType.flags & ts.TypeFlags.NumberLike) !== 0
+  ) {
+    return { elementType: 'owned_number_array_ref' };
+  }
+  if (!isStringLikeType(keyType)) {
     return undefined;
   }
   const valueInfo = getSupportedStringKeyMapIterationValueInfo(checker, valueType);
@@ -15858,6 +15867,16 @@ function isSupportedStringCollectionIteratorCreationCallExpression(
         getSupportedStringKeyMapIterationValueInfo(context.checker, mapTypeInfo.valueType) !==
           undefined)
     )
+  ) {
+    return true;
+  }
+  const numberKeyMapTypeInfo = getSupportedNumberKeyMapTypeInfo(
+    context.checker,
+    context.checker.getTypeAtLocation(receiver),
+  );
+  if (
+    numberKeyMapTypeInfo &&
+    (methodName === 'keys' || methodName === 'values' || methodName === 'entries')
   ) {
     return true;
   }
@@ -16902,6 +16921,174 @@ function lowerSupportedNumberKeyMapLookupIndex(
       type: 'f64',
     },
   );
+}
+
+function lowerSupportedNumberKeyMapEntriesArray(
+  keysName: string,
+  valuesName: string,
+  context: FunctionLoweringContext,
+  baseName: string,
+): CompilerExpressionIR {
+  const resultName = createLocalName(`${baseName}_entries`, context.nextLocalId);
+  context.nextLocalId += 1;
+  context.locals.push({ name: resultName, type: 'owned_heap_array_ref' });
+  const lengthName = createLocalName(`${baseName}_length`, context.nextLocalId);
+  context.nextLocalId += 1;
+  context.locals.push({ name: lengthName, type: 'f64' });
+  const indexName = createLocalName(`${baseName}_index`, context.nextLocalId);
+  context.nextLocalId += 1;
+  context.locals.push({ name: indexName, type: 'f64' });
+  const keyName = createLocalName(`${baseName}_key`, context.nextLocalId);
+  context.nextLocalId += 1;
+  context.locals.push({ name: keyName, type: 'f64' });
+  const valueName = createLocalName(`${baseName}_value`, context.nextLocalId);
+  context.nextLocalId += 1;
+  context.locals.push({ name: valueName, type: 'f64' });
+  const pairName = createLocalName(`${baseName}_pair`, context.nextLocalId);
+  context.nextLocalId += 1;
+  context.locals.push({ name: pairName, type: 'owned_number_array_ref' });
+
+  context.expressionPreludeStatements.push(
+    {
+      kind: 'local_set',
+      name: resultName,
+      value: createOwnedArrayEmptyLiteral('owned_heap_array_ref'),
+    },
+    {
+      kind: 'local_set',
+      name: lengthName,
+      value: {
+        kind: 'owned_array_length',
+        value: {
+          kind: 'local_get',
+          name: keysName,
+          type: 'owned_number_array_ref',
+        },
+        type: 'f64',
+      },
+    },
+    {
+      kind: 'local_set',
+      name: indexName,
+      value: {
+        kind: 'number_literal',
+        value: 0,
+      },
+    },
+    {
+      kind: 'while',
+      condition: {
+        kind: 'binary',
+        op: 'f64.lt',
+        left: {
+          kind: 'local_get',
+          name: indexName,
+          type: 'f64',
+        },
+        right: {
+          kind: 'local_get',
+          name: lengthName,
+          type: 'f64',
+        },
+        type: 'i32',
+      },
+      body: [
+        {
+          kind: 'local_set',
+          name: keyName,
+          value: {
+            kind: 'owned_number_array_element',
+            value: {
+              kind: 'local_get',
+              name: keysName,
+              type: 'owned_number_array_ref',
+            },
+            index: {
+              kind: 'local_get',
+              name: indexName,
+              type: 'f64',
+            },
+            type: 'f64',
+          },
+        },
+        {
+          kind: 'local_set',
+          name: valueName,
+          value: {
+            kind: 'owned_number_array_element',
+            value: {
+              kind: 'local_get',
+              name: valuesName,
+              type: 'owned_number_array_ref',
+            },
+            index: {
+              kind: 'local_get',
+              name: indexName,
+              type: 'f64',
+            },
+            type: 'f64',
+          },
+        },
+        {
+          kind: 'local_set',
+          name: pairName,
+          value: {
+            kind: 'owned_number_array_literal',
+            elements: [
+              {
+                kind: 'local_get',
+                name: keyName,
+                type: 'f64',
+              },
+              {
+                kind: 'local_get',
+                name: valueName,
+                type: 'f64',
+              },
+            ],
+            type: 'owned_number_array_ref',
+          },
+        },
+        {
+          kind: 'expression',
+          value: createOwnedArrayPushExpression(
+            resultName,
+            'owned_heap_array_ref',
+            {
+              kind: 'local_get',
+              name: pairName,
+              type: 'owned_number_array_ref',
+            },
+            'owned_number_array_ref',
+          ),
+        },
+        {
+          kind: 'local_set',
+          name: indexName,
+          value: {
+            kind: 'binary',
+            op: 'f64.add',
+            left: {
+              kind: 'local_get',
+              name: indexName,
+              type: 'f64',
+            },
+            right: {
+              kind: 'number_literal',
+              value: 1,
+            },
+            type: 'f64',
+          },
+        },
+      ],
+    },
+  );
+
+  return {
+    kind: 'local_get',
+    name: resultName,
+    type: 'owned_heap_array_ref',
+  };
 }
 
 const supportedTaggedKeyNumberValueMapKeysPropertyKey = '__map_tagged_keys';
@@ -18261,6 +18448,71 @@ function tryLowerCollectionForOfIterableExpression(
         };
       }
     }
+    const numberKeyMapTypeInfo = getSupportedNumberKeyMapTypeInfo(
+      context.checker,
+      context.checker.getTypeAtLocation(receiver),
+    );
+    if (numberKeyMapTypeInfo) {
+      if (expression.arguments.length !== 0) {
+        throw new CompilerUnsupportedError(
+          `Map ${methodName} iteration calls must not receive arguments.`,
+          expression,
+        );
+      }
+      const { objectName, representation } = getDynamicCollectionReceiverForIteration(
+        receiver,
+        context,
+        `map_${methodName}`,
+      );
+      if (methodName === 'keys') {
+        return {
+          arrayValue: lowerSupportedNumberKeyMapKeysArrayRead(
+            objectName,
+            representation,
+            context,
+            'map_keys',
+          ),
+          arrayType: numberKeyMapTypeInfo.keysArrayType,
+          elementType: numberKeyMapTypeInfo.keysElementType,
+        };
+      }
+      if (methodName === 'values') {
+        return {
+          arrayValue: lowerSupportedNumberKeyMapValuesArrayRead(
+            objectName,
+            representation,
+            context,
+            'map_values',
+          ),
+          arrayType: numberKeyMapTypeInfo.valuesArrayType,
+          elementType: numberKeyMapTypeInfo.valuesElementType,
+        };
+      }
+      if (methodName === 'entries') {
+        const keysName = materializeSupportedNumberKeyMapKeysArray(
+          objectName,
+          representation,
+          context,
+          'map_entries_keys',
+        );
+        const valuesName = materializeSupportedNumberKeyMapValuesArray(
+          objectName,
+          representation,
+          context,
+          'map_entries_values',
+        );
+        return {
+          arrayValue: lowerSupportedNumberKeyMapEntriesArray(
+            keysName,
+            valuesName,
+            context,
+            'map_entries',
+          ),
+          arrayType: 'owned_heap_array_ref',
+          elementType: 'owned_number_array_ref',
+        };
+      }
+    }
     const setTypeInfo = getSupportedStringKeySetTypeInfo(
       context.checker,
       context.checker.getTypeAtLocation(receiver),
@@ -18341,6 +18593,40 @@ function tryLowerCollectionForOfIterableExpression(
       ),
       arrayType: 'owned_heap_array_ref',
       elementType: iterationValueInfo.entryElementType,
+    };
+  }
+
+  const numberKeyMapTypeInfo = getSupportedNumberKeyMapTypeInfo(
+    context.checker,
+    context.checker.getTypeAtLocation(expression),
+  );
+  if (numberKeyMapTypeInfo) {
+    const { objectName, representation } = getDynamicCollectionReceiverForIteration(
+      expression,
+      context,
+      'map_iterable',
+    );
+    const keysName = materializeSupportedNumberKeyMapKeysArray(
+      objectName,
+      representation,
+      context,
+      'map_iterable_keys',
+    );
+    const valuesName = materializeSupportedNumberKeyMapValuesArray(
+      objectName,
+      representation,
+      context,
+      'map_iterable_values',
+    );
+    return {
+      arrayValue: lowerSupportedNumberKeyMapEntriesArray(
+        keysName,
+        valuesName,
+        context,
+        'map_iterable',
+      ),
+      arrayType: 'owned_heap_array_ref',
+      elementType: 'owned_number_array_ref',
     };
   }
 
@@ -57714,6 +58000,76 @@ function lowerInitialNumberKeyMapCallExpression(
       kind: 'undefined_literal',
       type: 'tagged_ref',
     };
+  }
+
+  if (methodName === 'keys') {
+    if (expression.arguments.length !== 0) {
+      throw new CompilerUnsupportedError(
+        'Map keys calls must not receive arguments.',
+        expression,
+      );
+    }
+    return lowerCollectionIteratorObject(
+      lowerSupportedNumberKeyMapKeysArrayRead(
+        objectName,
+        representation,
+        context,
+        'map_keys',
+      ),
+      mapTypeInfo.keysArrayType,
+      mapTypeInfo.keysElementType,
+      context,
+      'map_keys_iterator',
+    );
+  }
+
+  if (methodName === 'values') {
+    if (expression.arguments.length !== 0) {
+      throw new CompilerUnsupportedError(
+        'Map values calls must not receive arguments.',
+        expression,
+      );
+    }
+    return lowerCollectionIteratorObject(
+      lowerSupportedNumberKeyMapValuesArrayRead(
+        objectName,
+        representation,
+        context,
+        'map_values',
+      ),
+      mapTypeInfo.valuesArrayType,
+      mapTypeInfo.valuesElementType,
+      context,
+      'map_values_iterator',
+    );
+  }
+
+  if (methodName === 'entries') {
+    if (expression.arguments.length !== 0) {
+      throw new CompilerUnsupportedError(
+        'Map entries calls must not receive arguments.',
+        expression,
+      );
+    }
+    const keysName = materializeSupportedNumberKeyMapKeysArray(
+      objectName,
+      representation,
+      context,
+      'map_entries_keys',
+    );
+    const valuesName = materializeSupportedNumberKeyMapValuesArray(
+      objectName,
+      representation,
+      context,
+      'map_entries_values',
+    );
+    return lowerCollectionIteratorObject(
+      lowerSupportedNumberKeyMapEntriesArray(keysName, valuesName, context, 'map_entries'),
+      'owned_heap_array_ref',
+      'owned_number_array_ref',
+      context,
+      'map_entries_iterator',
+    );
   }
 
   return undefined;

@@ -2701,6 +2701,109 @@ compilerIntegrationTest(
 );
 
 compilerIntegrationTest(
+  'compileProject executes numeric-key Map iteration operations',
+  async () => {
+    const tempDirectory = await createCompilerTestProject([
+      'export function main(): number {',
+      '  const map = new Map<number, number>();',
+      '  map.set(3, 10);',
+      '  map.set(5, 20);',
+      '  map.set(3, 7);',
+      '  let keyScore = 0;',
+      '  for (const key of map.keys()) {',
+      '    keyScore = keyScore * 10 + key;',
+      '  }',
+      '  let valueScore = 0;',
+      '  for (const value of map.values()) {',
+      '    valueScore = valueScore * 100 + value;',
+      '  }',
+      '  let entryScore = 0;',
+      '  for (const [key, value] of map.entries()) {',
+      '    entryScore = entryScore * 1000 + key * 100 + value;',
+      '  }',
+      '  let defaultEntryScore = 0;',
+      '  for (const [key, value] of map) {',
+      '    defaultEntryScore = defaultEntryScore * 1000 + key * 100 + value;',
+      '  }',
+      '  return keyScore * 100000000 + valueScore * 10000 + entryScore + defaultEntryScore;',
+      '}',
+      '',
+    ].join('\n'));
+
+    const result = compileTempProject(tempDirectory);
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assertEquals(await invokeCompiledEntry(tempDirectory, 'main', []), 3_507_815_040);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject executes numeric-key Map iterator next operations',
+  async () => {
+    const tempDirectory = await createCompilerTestProject([
+      'function keyScore(): number {',
+      '  const map = new Map<number, number>();',
+      '  map.set(3, 10);',
+      '  map.set(5, 20);',
+      '  const iterator = map.keys();',
+      '  const first = iterator.next();',
+      '  if (first.done) {',
+      '    return 0;',
+      '  }',
+      '  const firstValue = first.value;',
+      '  const second = iterator.next();',
+      '  if (second.done) {',
+      '    return 0;',
+      '  }',
+      '  const secondValue = second.value;',
+      '  const done = iterator.next();',
+      '  return firstValue * 100000',
+      '    + secondValue * 10000',
+      '    + (done.done ? 1 : 0) * 1000;',
+      '}',
+      '',
+      'function valueScore(): number {',
+      '  const map = new Map<number, number>();',
+      '  map.set(3, 10);',
+      '  map.set(5, 20);',
+      '  const iterator = map.values();',
+      '  iterator.next();',
+      '  const second = iterator.next();',
+      '  if (second.done) {',
+      '    return 0;',
+      '  }',
+      '  return second.value * 10;',
+      '}',
+      '',
+      'function entryScore(): number {',
+      '  const map = new Map<number, number>();',
+      '  map.set(3, 10);',
+      '  map.set(5, 20);',
+      '  const iterator = map.entries();',
+      '  iterator.next();',
+      '  const second = iterator.next();',
+      '  if (second.done) {',
+      '    return 0;',
+      '  }',
+      '  return second.value[0] + second.value[1];',
+      '}',
+      '',
+      'export function main(): number {',
+      '  return keyScore() + valueScore() + entryScore();',
+      '}',
+      '',
+    ].join('\n'));
+
+    const result = compileTempProject(tempDirectory);
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assertEquals(await invokeCompiledEntry(tempDirectory, 'main', []), 351_225);
+  },
+);
+
+compilerIntegrationTest(
   'compileProject executes unknown-key Map get and set operations',
   async () => {
     const tempDirectory = await createCompilerTestProject([
