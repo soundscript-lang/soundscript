@@ -3,6 +3,7 @@ import { dirname, join } from '@std/path';
 
 import { resolveCheckerCacheDirectory } from './checker/checker_cache.ts';
 import type { MergedDiagnostic } from './checker/diagnostics.ts';
+import { runCli } from './cli/cli.ts';
 import { runProgram } from './cli/run_program.ts';
 import {
   maybeNormalizeTsconfigForInstalledStdlib,
@@ -41,6 +42,27 @@ function withCapturedTimingLogs<T>(run: (logs: string[]) => T): T {
   try {
     Deno.env.set('SOUNDSCRIPT_CHECKER_TIMING', '1');
     return run(logs);
+  } finally {
+    if (originalTimingEnv === undefined) {
+      Deno.env.delete('SOUNDSCRIPT_CHECKER_TIMING');
+    } else {
+      Deno.env.set('SOUNDSCRIPT_CHECKER_TIMING', originalTimingEnv);
+    }
+    console.error = originalError;
+  }
+}
+
+async function withCapturedTimingLogsAsync<T>(run: (logs: string[]) => Promise<T>): Promise<T> {
+  const originalTimingEnv = Deno.env.get('SOUNDSCRIPT_CHECKER_TIMING');
+  const originalError = console.error;
+  const logs: string[] = [];
+  console.error = (...args: unknown[]) => {
+    logs.push(args.map((arg) => String(arg)).join(' '));
+  };
+
+  try {
+    Deno.env.set('SOUNDSCRIPT_CHECKER_TIMING', '1');
+    return await run(logs);
   } finally {
     if (originalTimingEnv === undefined) {
       Deno.env.delete('SOUNDSCRIPT_CHECKER_TIMING');
@@ -2112,4 +2134,340 @@ Deno.test('runProgram invalidates source-published package verification cache wh
 
   assertEquals(secondResult.diagnostics, []);
   assertEquals(secondResult.exitCode, 0);
+});
+
+Deno.test('runProgram reuses source-published package-to-package verification units', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+            moduleResolution: 'Bundler',
+          },
+          include: ['src/**/*.sts'],
+        },
+        null,
+        2,
+      ),
+    },
+    {
+      path: 'src/index.sts',
+      contents: [
+        'import { exact } from "pkg-a";',
+        'void exact;',
+        '',
+      ].join('\n'),
+    },
+    {
+      path: 'node_modules/pkg-a/package.json',
+      contents: JSON.stringify(
+        {
+          name: 'pkg-a',
+          version: '1.0.0',
+          type: 'module',
+          types: './dist/index.d.ts',
+          soundscript: {
+            source: './src/index.sts',
+          },
+        },
+        null,
+        2,
+      ),
+    },
+    {
+      path: 'node_modules/pkg-a/dist/index.d.ts',
+      contents: 'export declare const exact: string;\n',
+    },
+    {
+      path: 'node_modules/pkg-a/src/index.sts',
+      contents: [
+        'import { value } from "pkg-b";',
+        'export const exact: string = value;',
+        '',
+      ].join('\n'),
+    },
+    {
+      path: 'node_modules/pkg-b/package.json',
+      contents: JSON.stringify(
+        {
+          name: 'pkg-b',
+          version: '1.0.0',
+          type: 'module',
+          types: './dist/index.d.ts',
+          soundscript: {
+            source: './src/index.sts',
+          },
+        },
+        null,
+        2,
+      ),
+    },
+    {
+      path: 'node_modules/pkg-b/dist/index.d.ts',
+      contents: 'export declare const value: string;\n',
+    },
+    {
+      path: 'node_modules/pkg-b/src/index.sts',
+      contents: 'export const value = "ok";\n',
+    },
+  ]);
+  const projectPath = join(tempDirectory, 'tsconfig.json');
+  const cacheRoot = join(tempDirectory, 'explicit-cache');
+
+  const firstResult = runProgram({
+    cacheDir: cacheRoot,
+    projectPath,
+    workingDirectory: tempDirectory,
+  });
+  assertEquals(firstResult.diagnostics, []);
+  await Deno.remove(resolveCheckerCacheDirectory(projectPath, cacheRoot), {
+    recursive: true,
+  });
+
+  const secondResult = withCapturedTimingLogs((logs) => {
+    const result = runProgram({
+      cacheDir: cacheRoot,
+      projectPath,
+      workingDirectory: tempDirectory,
+    });
+    const packageCacheResult = logs.find((line) =>
+      line.includes('[soundscript:checker] project.packageVerificationCache.result ')
+    );
+    assert(packageCacheResult?.includes('hits=2'));
+    assert(packageCacheResult?.includes('misses=0'));
+    assert(
+      !logs.some((line) =>
+        line.includes('[soundscript:checker] project.prepare.packageSourcePolicyView ')
+      ),
+    );
+    return result;
+  });
+
+  assertEquals(secondResult.diagnostics, firstResult.diagnostics);
+  assertEquals(secondResult.output, firstResult.output);
+  assertEquals(secondResult.exitCode, firstResult.exitCode);
+});
+
+Deno.test('runCli preserves source-published package cache parity for text json and ndjson output', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+            moduleResolution: 'Bundler',
+          },
+          include: ['src/**/*.sts'],
+        },
+        null,
+        2,
+      ),
+    },
+    {
+      path: 'src/index.sts',
+      contents: [
+        'import { value } from "sound-pkg";',
+        'void value;',
+        '',
+      ].join('\n'),
+    },
+    {
+      path: 'node_modules/sound-pkg/package.json',
+      contents: JSON.stringify(
+        {
+          name: 'sound-pkg',
+          version: '1.0.0',
+          type: 'module',
+          types: './dist/index.d.ts',
+          soundscript: {
+            source: './src/index.sts',
+          },
+        },
+        null,
+        2,
+      ),
+    },
+    {
+      path: 'node_modules/sound-pkg/dist/index.d.ts',
+      contents: 'export declare const value: number;\n',
+    },
+    {
+      path: 'node_modules/sound-pkg/src/index.sts',
+      contents: [
+        'const broken: string = 1;',
+        'export const value = broken;',
+        '',
+      ].join('\n'),
+    },
+  ]);
+  const projectPath = join(tempDirectory, 'tsconfig.json');
+  const cacheRoot = join(tempDirectory, 'explicit-cache');
+
+  for (const format of ['text', 'json', 'ndjson'] as const) {
+    const coldResult = await runCli(
+      [
+        'check',
+        '--project',
+        projectPath,
+        '--format',
+        format,
+        '--no-cache',
+        '--cache-dir',
+        cacheRoot,
+      ],
+      tempDirectory,
+    );
+    assertEquals(coldResult.exitCode, 1);
+
+    const populateResult = await runCli(
+      ['check', '--project', projectPath, '--format', format, '--cache-dir', cacheRoot],
+      tempDirectory,
+    );
+    assertEquals(populateResult.exitCode, coldResult.exitCode);
+    await Deno.remove(resolveCheckerCacheDirectory(projectPath, cacheRoot), {
+      recursive: true,
+    });
+
+    const cachedResult = await withCapturedTimingLogsAsync(async (logs) => {
+      const result = await runCli(
+        ['check', '--project', projectPath, '--format', format, '--cache-dir', cacheRoot],
+        tempDirectory,
+      );
+      assert(
+        logs.some((line) =>
+          line.includes('[soundscript:checker] project.packageVerificationCache.result ') &&
+          line.includes('hits=1')
+        ),
+      );
+      assert(
+        !logs.some((line) =>
+          line.includes('[soundscript:checker] project.prepare.packageSourcePolicyView ')
+        ),
+      );
+      return result;
+    });
+
+    assertEquals(cachedResult.exitCode, coldResult.exitCode);
+    assertEquals(cachedResult.output, coldResult.output);
+    assertEquals(cachedResult.diagnostics, coldResult.diagnostics);
+
+    await Deno.remove(resolveCheckerCacheDirectory(projectPath, cacheRoot), {
+      recursive: true,
+    }).catch(() => undefined);
+  }
+});
+
+Deno.test('runProgram ignores corrupt source-published package verification cache manifests', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+            moduleResolution: 'Bundler',
+          },
+          include: ['src/**/*.sts'],
+        },
+        null,
+        2,
+      ),
+    },
+    {
+      path: 'src/index.sts',
+      contents: [
+        'import { value } from "sound-pkg";',
+        'void value;',
+        '',
+      ].join('\n'),
+    },
+    {
+      path: 'node_modules/sound-pkg/package.json',
+      contents: JSON.stringify(
+        {
+          name: 'sound-pkg',
+          version: '1.0.0',
+          type: 'module',
+          types: './dist/index.d.ts',
+          soundscript: {
+            source: './src/index.sts',
+          },
+        },
+        null,
+        2,
+      ),
+    },
+    {
+      path: 'node_modules/sound-pkg/dist/index.d.ts',
+      contents: 'export declare const value: number;\n',
+    },
+    {
+      path: 'node_modules/sound-pkg/src/index.sts',
+      contents: [
+        'const broken: string = 1;',
+        'export const value = broken;',
+        '',
+      ].join('\n'),
+    },
+  ]);
+  const projectPath = join(tempDirectory, 'tsconfig.json');
+  const cacheRoot = join(tempDirectory, 'explicit-cache');
+
+  const firstResult = runProgram({
+    cacheDir: cacheRoot,
+    projectPath,
+    workingDirectory: tempDirectory,
+  });
+  assertEquals(firstResult.exitCode, 1);
+
+  const packageCacheRoot = join(cacheRoot, 'package-verification');
+  let corruptedManifest = false;
+  for await (const entry of Deno.readDir(packageCacheRoot)) {
+    if (!entry.isDirectory) {
+      continue;
+    }
+    await Deno.writeTextFile(join(packageCacheRoot, entry.name, 'manifest.json'), '{not-json');
+    corruptedManifest = true;
+    break;
+  }
+  assert(corruptedManifest);
+  await Deno.remove(resolveCheckerCacheDirectory(projectPath, cacheRoot), {
+    recursive: true,
+  });
+
+  const secondResult = withCapturedTimingLogs((logs) => {
+    const result = runProgram({
+      cacheDir: cacheRoot,
+      projectPath,
+      workingDirectory: tempDirectory,
+    });
+    assert(
+      logs.some((line) =>
+        line.includes('[soundscript:checker] project.packageVerificationCache.result ') &&
+        line.includes('misses=1')
+      ),
+    );
+    assert(
+      logs.some((line) =>
+        line.includes('[soundscript:checker] project.prepare.packageSourcePolicyView ')
+      ),
+    );
+    return result;
+  });
+
+  assertEquals(secondResult.diagnostics, firstResult.diagnostics);
+  assertEquals(secondResult.output, firstResult.output);
+  assertEquals(secondResult.exitCode, firstResult.exitCode);
 });
