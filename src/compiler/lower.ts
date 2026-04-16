@@ -32672,133 +32672,135 @@ function createAmbientHostProjectedMemberMetadataHeader(
       );
     }
   };
-  const params: CompilerLocalIR[] = declaration.parameters.flatMap((parameter, index): CompilerLocalIR[] => {
-    const parameterType = checker.getTypeAtLocation(parameter);
-    if ((parameterType.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0) {
-      const runtimeName = getFunctionParameterRuntimeName(parameter, index);
-      hostTaggedPrimitiveParams.push({
-        name: runtimeName,
-        ...getUnknownTaggedPrimitiveBoundaryKinds(),
-      });
-      heapParamRepresentations.push({
-        name: runtimeName,
-        representation: ensureObjectFallbackRepresentation(runtime),
-      });
-      return [{
-        name: runtimeName,
-        type: 'tagged_ref',
-      }];
-    }
-    if (isPromiseType(checker, parameterType)) {
-      const valueBoundary = resolveHostPromiseBridgeValueBoundary(
-        checker,
-        parameterType,
-        parameter,
-        closures,
-        runtime,
-        classes,
-      );
-      ensurePromiseRuntimeInfrastructure(runtime);
-      ensureBuiltinErrorRuntimeInfrastructure(runtime);
-      getPromiseFulfilledHandlerSignatureId(closures, runtime);
-      const runtimeName = getFunctionParameterRuntimeName(parameter, index);
-      hostImportPromiseParams.push(runtimeName);
-      hostImportPromiseParamValueBoundaries.push({
-        name: runtimeName,
-        valueBoundary,
-      });
-      heapParamRepresentations.push({
-        name: runtimeName,
-        representation: ensureObjectDynamicRepresentation(runtime),
-      });
-      return [{
-        name: runtimeName,
-        type: 'heap_ref',
-      }];
-    }
-    if (checker.getSignaturesOfType(parameterType, ts.SignatureKind.Call).length > 0) {
-      ensureSupportedHostClosureBoundarySignature(
-        checker,
-        parameterType,
-        parameter.name,
-        closures,
-        runtime,
-        classes,
-      );
-      annotateHostClosureBoundaryTypes(
-        checker,
-        parameterType,
-        parameter.name,
-        runtime,
-        closures,
-        classes,
-      );
-      const runtimeName = getFunctionParameterRuntimeName(parameter, index);
-      hostClosureParams.push({
-        name: runtimeName,
-        signatureId: getClosureSignatureIdForType(
+  const params: CompilerLocalIR[] = declaration.parameters.flatMap(
+    (parameter, index): CompilerLocalIR[] => {
+      const parameterType = checker.getTypeAtLocation(parameter);
+      if ((parameterType.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0) {
+        const runtimeName = getFunctionParameterRuntimeName(parameter, index);
+        hostTaggedPrimitiveParams.push({
+          name: runtimeName,
+          ...getUnknownTaggedPrimitiveBoundaryKinds(),
+        });
+        heapParamRepresentations.push({
+          name: runtimeName,
+          representation: ensureObjectFallbackRepresentation(runtime),
+        });
+        return [{
+          name: runtimeName,
+          type: 'tagged_ref',
+        }];
+      }
+      if (isPromiseType(checker, parameterType)) {
+        const valueBoundary = resolveHostPromiseBridgeValueBoundary(
+          checker,
+          parameterType,
+          parameter,
+          closures,
+          runtime,
+          classes,
+        );
+        ensurePromiseRuntimeInfrastructure(runtime);
+        ensureBuiltinErrorRuntimeInfrastructure(runtime);
+        getPromiseFulfilledHandlerSignatureId(closures, runtime);
+        const runtimeName = getFunctionParameterRuntimeName(parameter, index);
+        hostImportPromiseParams.push(runtimeName);
+        hostImportPromiseParamValueBoundaries.push({
+          name: runtimeName,
+          valueBoundary,
+        });
+        heapParamRepresentations.push({
+          name: runtimeName,
+          representation: ensureObjectDynamicRepresentation(runtime),
+        });
+        return [{
+          name: runtimeName,
+          type: 'heap_ref',
+        }];
+      }
+      if (checker.getSignaturesOfType(parameterType, ts.SignatureKind.Call).length > 0) {
+        ensureSupportedHostClosureBoundarySignature(
           checker,
           parameterType,
           parameter.name,
           closures,
           runtime,
           classes,
-        ),
-      });
-      return [{
-        name: runtimeName,
-        type: 'closure_ref',
-      }];
-    }
-    if (isStringLikeType(parameterType)) {
-      ensureStringRepresentation(runtime);
-      return [{
-        name: getFunctionParameterRuntimeName(parameter, index),
-        type: 'owned_string_ref',
-      }];
-    }
-    if (isSupportedHeapLocalType(checker, parameterType)) {
-      const runtimeName = getFunctionParameterRuntimeName(parameter, index);
-      const representation = getAmbientHostProjectedObjectBoundaryRepresentation(
-        checker,
-        parameterType,
-        parameter.name,
-        runtime,
-        classes,
-        true,
-      );
-      if (!representation) {
+        );
+        annotateHostClosureBoundaryTypes(
+          checker,
+          parameterType,
+          parameter.name,
+          runtime,
+          closures,
+          classes,
+        );
+        const runtimeName = getFunctionParameterRuntimeName(parameter, index);
+        hostClosureParams.push({
+          name: runtimeName,
+          signatureId: getClosureSignatureIdForType(
+            checker,
+            parameterType,
+            parameter.name,
+            closures,
+            runtime,
+            classes,
+          ),
+        });
+        return [{
+          name: runtimeName,
+          type: 'closure_ref',
+        }];
+      }
+      if (isStringLikeType(parameterType)) {
+        ensureStringRepresentation(runtime);
+        return [{
+          name: getFunctionParameterRuntimeName(parameter, index),
+          type: 'owned_string_ref',
+        }];
+      }
+      if (isSupportedHeapLocalType(checker, parameterType)) {
+        const runtimeName = getFunctionParameterRuntimeName(parameter, index);
+        const representation = getAmbientHostProjectedObjectBoundaryRepresentation(
+          checker,
+          parameterType,
+          parameter.name,
+          runtime,
+          classes,
+          true,
+        );
+        if (!representation) {
+          throw new CompilerUnsupportedError(
+            'Ambient host member declarations currently require fixed-layout or fallback object boundaries for non-Promise heap params in compiler subset.',
+            parameter.name,
+          );
+        }
+        ensureHostPromiseBridgeSupportForRepresentation(representation, runtime, closures);
+        annotateHostHeapBoundaryType(parameterType, parameter.name, representation);
+        heapParamRepresentations.push({
+          name: runtimeName,
+          representation,
+        });
+        return [{
+          name: runtimeName,
+          type: 'heap_ref',
+        }];
+      }
+      const valueType = getCompilerValueTypeForType(parameterType, parameter.name);
+      if (valueType !== 'f64' && valueType !== 'i32') {
+        if (parameter.questionToken !== undefined || parameter.initializer !== undefined) {
+          return [];
+        }
         throw new CompilerUnsupportedError(
-          'Ambient host member declarations currently require fixed-layout or fallback object boundaries for non-Promise heap params in compiler subset.',
+          'Ambient host member declarations currently support only number, boolean, string, callback, Promise, and fixed-layout object params in compiler subset.',
           parameter.name,
         );
       }
-      ensureHostPromiseBridgeSupportForRepresentation(representation, runtime, closures);
-      annotateHostHeapBoundaryType(parameterType, parameter.name, representation);
-      heapParamRepresentations.push({
-        name: runtimeName,
-        representation,
-      });
       return [{
-        name: runtimeName,
-        type: 'heap_ref',
+        name: getFunctionParameterRuntimeName(parameter, index),
+        type: valueType,
       }];
-    }
-    const valueType = getCompilerValueTypeForType(parameterType, parameter.name);
-    if (valueType !== 'f64' && valueType !== 'i32') {
-      if (parameter.questionToken !== undefined || parameter.initializer !== undefined) {
-        return [];
-      }
-      throw new CompilerUnsupportedError(
-        'Ambient host member declarations currently support only number, boolean, string, callback, Promise, and fixed-layout object params in compiler subset.',
-        parameter.name,
-      );
-    }
-    return [{
-      name: getFunctionParameterRuntimeName(parameter, index),
-      type: valueType,
-    }];
-  });
+    },
+  );
   let promiseResult = false;
   let hostPromiseResultValueBoundary: CompilerHostBoundaryIR | undefined;
   let hostImportGeneratorResult = false;
