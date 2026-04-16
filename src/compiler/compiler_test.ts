@@ -22488,6 +22488,56 @@ compilerIntegrationTest(
 );
 
 compilerIntegrationTest(
+  'compileProject narrows mixed primitive and object union map values',
+  async () => {
+    const tempDirectory = await createCompilerTestProject([
+      'type Left = { left: number };',
+      'type Right = { right: number };',
+      'type Value = number | string | Left | Right;',
+      '',
+      'function score(value: Value): number {',
+      '  if (typeof value === "number") {',
+      '    return value;',
+      '  }',
+      '  if (typeof value === "string") {',
+      '    return value.length;',
+      '  }',
+      '  if ("left" in value) {',
+      '    return value.left * 10;',
+      '  }',
+      '  return value.right;',
+      '}',
+      '',
+      'export function main(): number {',
+      '  const values = new Map<string, Value>();',
+      '  values.set("a", 3);',
+      '  values.set("b", "abcd");',
+      '  values.set("c", { left: 5 });',
+      '  values.set("d", { right: 7 });',
+      '  const a = values.get("a");',
+      '  const b = values.get("b");',
+      '  const c = values.get("c");',
+      '  const d = values.get("d");',
+      '  if (a === undefined || b === undefined || c === undefined || d === undefined) {',
+      '    return 0;',
+      '  }',
+      '  return score(a) * 1000',
+      '    + score(b) * 100',
+      '    + score(c) * 10',
+      '    + score(d);',
+      '}',
+      '',
+    ].join('\n'));
+
+    const result = compileTempProject(tempDirectory);
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assertEquals(await invokeCompiledEntry(tempDirectory, 'main', []), 3_907);
+  },
+);
+
+compilerIntegrationTest(
   'lowerProgramToCompilerIR distinguishes explicit bag-like object locals from narrow fixed layouts',
   async () => {
     const tempDirectory = await createTempProject([

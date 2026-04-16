@@ -57719,11 +57719,17 @@ function lowerInitialStringKeyMapCallExpression(
     );
     context.expressionPreludeStatements.push(...propertyKeyStatements);
     const valueStatements: CompilerStatementIR[] = [];
+    const valueHeapRepresentation = getInternalTaggedHeapUnionObjectRepresentation(
+      context.checker,
+      mapTypeInfo.valueType,
+      context.runtime,
+    );
     const valueName = getOrMaterializeValueName(
       expression.arguments[1]!,
       context,
       valueStatements,
       'map_value',
+      valueHeapRepresentation,
     );
     context.expressionPreludeStatements.push(...valueStatements);
     context.functionRuntime.operations.push({
