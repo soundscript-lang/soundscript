@@ -2730,6 +2730,35 @@ compilerIntegrationTest(
   },
 );
 
+compilerIntegrationTest('compileProject executes unknown-key Map delete operations', async () => {
+  const tempDirectory = await createCompilerTestProject([
+    'export function main(): number {',
+    '  const map = new Map<unknown, number>();',
+    '  map.set(1, 10);',
+    '  map.set("1", 20);',
+    '  map.set(true, 30);',
+    '  let score = 0;',
+    '  if (map.delete("1")) {',
+    '    score += 1000;',
+    '  }',
+    '  if (map.delete("missing")) {',
+    '    score += 100;',
+    '  }',
+    '  const one = map.get(1) ?? 0;',
+    '  const stringOne = map.get("1") ?? 4;',
+    '  const truth = map.get(true) ?? 0;',
+    '  return score + map.size * 100 + one * 10 + stringOne + truth;',
+    '}',
+    '',
+  ].join('\n'));
+
+  const result = compileTempProject(tempDirectory);
+
+  assertEquals(result.exitCode, 0);
+  assertEquals(result.diagnostics, []);
+  assertEquals(await invokeCompiledEntry(tempDirectory, 'main', []), 1334);
+});
+
 compilerIntegrationTest('compileProject keeps numeric-key Map storage pay-for-play', async () => {
   const tempDirectory = await createCompilerTestProject([
     'export function main(): number {',

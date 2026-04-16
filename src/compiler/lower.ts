@@ -57929,10 +57929,277 @@ function lowerInitialTaggedKeyNumberValueMapCallExpression(
   }
 
   if (methodName === 'delete') {
-    throw new CompilerUnsupportedError(
-      'Tagged-key Map delete calls are not supported yet in compiler subset.',
-      expression,
+    if (mapTypeInfo.readonly) {
+      throw new CompilerUnsupportedError(
+        'ReadonlyMap delete calls are not supported in compiler subset.',
+        expression.expression.name,
+      );
+    }
+    if (expression.arguments.length !== 1) {
+      throw new CompilerUnsupportedError(
+        'Map delete calls must receive exactly one argument.',
+        expression,
+      );
+    }
+    const keysName = materializeSupportedTaggedKeyNumberValueMapKeysArray(
+      objectName,
+      representation,
+      context,
+      'map_keys',
     );
+    const valuesName = materializeSupportedTaggedKeyNumberValueMapValuesArray(
+      objectName,
+      representation,
+      context,
+      'map_values',
+    );
+    const keyName = materializeLoweredExpressionToLocal(
+      lowerExpressionAsValueType(expression.arguments[0]!, mapTypeInfo.keysElementType, context),
+      context,
+      'map_key',
+      true,
+    );
+    const keyKinds = getTaggedKeyNumberValueMapOperationKinds(expression.arguments[0]!, context);
+    const indexName = createLocalName('map_index', context.nextLocalId);
+    context.nextLocalId += 1;
+    context.locals.push({ name: indexName, type: 'f64' });
+    const resultName = createLocalName('map_deleted', context.nextLocalId);
+    context.nextLocalId += 1;
+    context.locals.push({ name: resultName, type: 'i32' });
+    const nextKeysName = createLocalName('map_next_keys', context.nextLocalId);
+    context.nextLocalId += 1;
+    context.locals.push({ name: nextKeysName, type: 'owned_tagged_array_ref' });
+    const nextValuesName = createLocalName('map_next_values', context.nextLocalId);
+    context.nextLocalId += 1;
+    context.locals.push({ name: nextValuesName, type: 'owned_number_array_ref' });
+    const cursorName = createLocalName('map_cursor', context.nextLocalId);
+    context.nextLocalId += 1;
+    context.locals.push({ name: cursorName, type: 'f64' });
+    const lengthName = createLocalName('map_length', context.nextLocalId);
+    context.nextLocalId += 1;
+    context.locals.push({ name: lengthName, type: 'f64' });
+    const keyStatements: CompilerStatementIR[] = [];
+    const keysPropertyKeyName = createSupportedTaggedKeyNumberValueMapKeysPropertyKeyName(
+      context,
+      keyStatements,
+      'map_delete',
+    );
+    const valuesPropertyKeyName = createSupportedTaggedKeyNumberValueMapValuesPropertyKeyName(
+      context,
+      keyStatements,
+      'map_delete',
+    );
+    context.expressionPreludeStatements.push(...keyStatements);
+    context.expressionPreludeStatements.push(
+      {
+        kind: 'local_set',
+        name: indexName,
+        value: lowerSupportedTaggedKeyNumberValueMapLookupIndex(keysName, keyName, keyKinds),
+      },
+      {
+        kind: 'local_set',
+        name: resultName,
+        value: {
+          kind: 'boolean_literal',
+          value: false,
+        },
+      },
+      {
+        kind: 'if',
+        condition: {
+          kind: 'binary',
+          op: 'f64.ge',
+          left: {
+            kind: 'local_get',
+            name: indexName,
+            type: 'f64',
+          },
+          right: {
+            kind: 'number_literal',
+            value: 0,
+          },
+          type: 'i32',
+        },
+        thenBody: [
+          {
+            kind: 'local_set',
+            name: nextKeysName,
+            value: createOwnedArrayEmptyLiteral(mapTypeInfo.keysArrayType),
+          },
+          {
+            kind: 'local_set',
+            name: nextValuesName,
+            value: createOwnedArrayEmptyLiteral(mapTypeInfo.valuesArrayType),
+          },
+          {
+            kind: 'local_set',
+            name: cursorName,
+            value: {
+              kind: 'number_literal',
+              value: 0,
+            },
+          },
+          {
+            kind: 'local_set',
+            name: lengthName,
+            value: {
+              kind: 'owned_array_length',
+              value: {
+                kind: 'local_get',
+                name: keysName,
+                type: 'owned_tagged_array_ref',
+              },
+              type: 'f64',
+            },
+          },
+          {
+            kind: 'while',
+            condition: {
+              kind: 'binary',
+              op: 'f64.lt',
+              left: {
+                kind: 'local_get',
+                name: cursorName,
+                type: 'f64',
+              },
+              right: {
+                kind: 'local_get',
+                name: lengthName,
+                type: 'f64',
+              },
+              type: 'i32',
+            },
+            body: [
+              {
+                kind: 'if',
+                condition: {
+                  kind: 'binary',
+                  op: 'f64.ne',
+                  left: {
+                    kind: 'local_get',
+                    name: cursorName,
+                    type: 'f64',
+                  },
+                  right: {
+                    kind: 'local_get',
+                    name: indexName,
+                    type: 'f64',
+                  },
+                  type: 'i32',
+                },
+                thenBody: [
+                  {
+                    kind: 'expression',
+                    value: createOwnedArrayPushExpression(
+                      nextKeysName,
+                      'owned_tagged_array_ref',
+                      {
+                        kind: 'owned_tagged_array_element',
+                        value: {
+                          kind: 'local_get',
+                          name: keysName,
+                          type: 'owned_tagged_array_ref',
+                        },
+                        index: {
+                          kind: 'local_get',
+                          name: cursorName,
+                          type: 'f64',
+                        },
+                        type: 'tagged_ref',
+                      },
+                      'tagged_ref',
+                    ),
+                  },
+                  {
+                    kind: 'expression',
+                    value: createOwnedArrayPushExpression(
+                      nextValuesName,
+                      'owned_number_array_ref',
+                      {
+                        kind: 'owned_number_array_element',
+                        value: {
+                          kind: 'local_get',
+                          name: valuesName,
+                          type: 'owned_number_array_ref',
+                        },
+                        index: {
+                          kind: 'local_get',
+                          name: cursorName,
+                          type: 'f64',
+                        },
+                        type: 'f64',
+                      },
+                      'f64',
+                    ),
+                  },
+                ],
+                elseBody: [],
+              },
+              {
+                kind: 'local_set',
+                name: cursorName,
+                value: {
+                  kind: 'binary',
+                  op: 'f64.add',
+                  left: {
+                    kind: 'local_get',
+                    name: cursorName,
+                    type: 'f64',
+                  },
+                  right: {
+                    kind: 'number_literal',
+                    value: 1,
+                  },
+                  type: 'f64',
+                },
+              },
+            ],
+          },
+          {
+            kind: 'dynamic_object_property_set',
+            objectName,
+            propertyKeyName: keysPropertyKeyName,
+            value: {
+              kind: 'tag_heap_object',
+              value: {
+                kind: 'local_get',
+                name: nextKeysName,
+                type: 'owned_tagged_array_ref',
+              },
+              type: 'tagged_ref',
+            },
+          },
+          {
+            kind: 'dynamic_object_property_set',
+            objectName,
+            propertyKeyName: valuesPropertyKeyName,
+            value: {
+              kind: 'tag_heap_object',
+              value: {
+                kind: 'local_get',
+                name: nextValuesName,
+                type: 'owned_number_array_ref',
+              },
+              type: 'tagged_ref',
+            },
+          },
+          {
+            kind: 'local_set',
+            name: resultName,
+            value: {
+              kind: 'boolean_literal',
+              value: true,
+            },
+          },
+        ],
+        elseBody: [],
+      },
+    );
+    return {
+      kind: 'local_get',
+      name: resultName,
+      type: 'i32',
+    };
   }
 
   if (methodName === 'clear') {
