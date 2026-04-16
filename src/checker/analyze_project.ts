@@ -1845,6 +1845,9 @@ export function createPreparedAnalysisProjectFromBuiltinExpandedProgram(
 
 interface AnalyzePreparedViewOptions {
   captureArtifacts?: PreparedProjectAnalysisArtifacts;
+  diagnosticPaths?: readonly string[];
+  directDependencyPaths?: readonly string[];
+  fileScopedAnalysis?: boolean;
   reuseRuleCache?: SoundAnalysisRuleCache;
   ruleCacheKeysByFile?: ReadonlyMap<string, string>;
 }
@@ -1931,10 +1934,8 @@ function analyzePreparedViewForFile(
     };
   }
 
-  const frontendDiagnosticPaths = collectPreparedViewFrontendDiagnosticPaths(
-    preparedView,
-    filePath,
-  );
+  const frontendDiagnosticPaths = options.diagnosticPaths ??
+    collectPreparedViewFrontendDiagnosticPaths(preparedView, filePath);
   const frontendDiagnostics = preparedView.frontendDiagnostics.filter((diagnostic) =>
     matchesPreparedAnalysisAnyFilePath(diagnostic.filePath, frontendDiagnosticPaths)
   );
@@ -1946,7 +1947,11 @@ function analyzePreparedViewForFile(
   );
   const hasFrontendErrors = hasErrorDiagnostics(frontendDiagnostics);
   const hasTsErrors = hasErrorDiagnostics(tsDiagnostics);
-  const fileScopedAnalysisContext = getFileScopedAnalysisContext(preparedView, filePath);
+  const fileScopedAnalysisContext = getFileScopedAnalysisContext(
+    preparedView,
+    filePath,
+    options.fileScopedAnalysis,
+  );
   const universalDiagnostics = !fileScopedAnalysisContext || hasFrontendErrors
     ? []
     : filterAnalyzedDiagnosticsForFile(
@@ -1973,6 +1978,7 @@ function analyzePreparedViewForFile(
             createPreparedViewSoundRuleCacheKey(
               preparedView,
               filePath,
+              options.directDependencyPaths,
             ),
           ]]),
         },
@@ -2844,6 +2850,7 @@ function getPreparedViewSourceTextForRuleCacheKey(
 function createPreparedViewSoundRuleCacheKey(
   preparedView: PreparedAnalysisView,
   filePath: string,
+  directDependencyPaths?: readonly string[],
 ): string {
   const parts = [
     `file:${filePath}`,
@@ -2851,7 +2858,10 @@ function createPreparedViewSoundRuleCacheKey(
     `sound:${preparedView.runSound ? '1' : '0'}`,
     `source:${getPreparedViewSourceTextForRuleCacheKey(preparedView, filePath)}`,
   ];
-  for (const dependencyPath of collectPreparedViewDirectDependencyPaths(preparedView, filePath)) {
+  for (
+    const dependencyPath of directDependencyPaths ??
+      collectPreparedViewDirectDependencyPaths(preparedView, filePath)
+  ) {
     parts.push(
       `dep:${dependencyPath}:${
         getPreparedViewSourceTextForRuleCacheKey(preparedView, dependencyPath)
@@ -2919,6 +2929,7 @@ function collectPreparedViewSoundDiagnostics(
 function getFileScopedAnalysisContext(
   preparedView: PreparedAnalysisView,
   filePath: string,
+  fileScopedAnalysis?: boolean,
 ): AnalysisContext | null {
   let byFile = fileScopedAnalysisContextCache.get(preparedView);
   if (!byFile) {
@@ -2931,7 +2942,10 @@ function getFileScopedAnalysisContext(
     return cached;
   }
 
-  if (!supportsFileScopedAnalysisContext(preparedView, filePath)) {
+  if (
+    fileScopedAnalysis === false || (fileScopedAnalysis === undefined &&
+      !supportsFileScopedAnalysisContext(preparedView, filePath))
+  ) {
     byFile.set(filePath, null);
     return null;
   }
@@ -3587,6 +3601,11 @@ export function analyzePreparedProjectOwnedDiagnosticsForFileWithArtifacts(
   preparedProject: PreparedAnalysisProject,
   filePath: string,
   reuseArtifacts: PreparedProjectAnalysisArtifacts = createEmptyPreparedProjectAnalysisArtifacts(),
+  options: {
+    diagnosticPaths?: readonly string[];
+    directDependencyPaths?: readonly string[];
+    fileScopedAnalysis?: boolean;
+  } = {},
 ): AnalyzePreparedProjectWithArtifactsResult {
   return measureCheckerTiming(
     'project.analyzePreparedProjectOwnedDiagnosticsForFile',
@@ -3606,6 +3625,9 @@ export function analyzePreparedProjectOwnedDiagnosticsForFileWithArtifacts(
       const primaryView = getPreparedAnalysisViewForFile(preparedProject, filePath);
       const primaryAnalysis = analyzePreparedViewForFile(primaryView, filePath, {
         captureArtifacts: artifacts,
+        diagnosticPaths: options.diagnosticPaths,
+        directDependencyPaths: options.directDependencyPaths,
+        fileScopedAnalysis: options.fileScopedAnalysis,
         reuseRuleCache: flowRuleCache,
       });
       const diagnostics = dedupeMergedDiagnostics([

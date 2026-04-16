@@ -1621,6 +1621,9 @@ export function analyzeProjectWithPersistentCacheForReuse(
             sourceSurfaceSignatures,
             preparedProjectReuseSnapshots,
             (filePath, caches) => {
+              const metadata = preparedProjectFileMetadata.find((entry) =>
+                entry.filePath === filePath
+              )!;
               const analysis = analyzePreparedProjectOwnedDiagnosticsForFileWithArtifacts(
                 preparedProject,
                 filePath,
@@ -1631,14 +1634,16 @@ export function analyzeProjectWithPersistentCacheForReuse(
                   caches.relationCache,
                   caches.valueTypeCache,
                 ),
+                {
+                  diagnosticPaths: metadata.diagnosticPaths,
+                  directDependencyPaths: metadata.directDependencyPaths,
+                  fileScopedAnalysis: metadata.fileScopedAnalysis,
+                },
               );
               const ownedDiagnostics = filterAnalyzedDiagnosticsForFile(
                 analysis.result.diagnostics,
                 filePath,
               );
-              const metadata = preparedProjectFileMetadata.find((entry) =>
-                entry.filePath === filePath
-              )!;
               return {
                 ...metadata,
                 effectCache: analysis.artifacts.effectsByFile.get(filePath),

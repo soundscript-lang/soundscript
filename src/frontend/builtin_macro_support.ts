@@ -1569,39 +1569,46 @@ function collectBuiltinFrontendDiagnosticsForProgram(
   context: BuiltinProgramStageContext,
   targetProgram: PreparedProgram,
 ): void {
-  const abstractNumericFamilyDiagnostics = collectAbstractNumericFamilyArithmeticInProgram(
-    targetProgram.program,
-  ).map((diagnostic) =>
-    createAbstractNumericFamilyDiagnostic(
-      diagnostic,
-      context.diagnosticPreparedFiles.get(toSourceFileName(diagnostic.fileName)) ??
-        targetProgram.preparedHost.getPreparedSourceFile(toSourceFileName(diagnostic.fileName)),
-      targetProgram.program.getSourceFile(diagnostic.fileName)?.text ?? '',
-    )
+  measureCheckerTiming(
+    'project.prepare.builtin.frontendDiagnostics',
+    context.timingMetadata,
+    () => {
+      const abstractNumericFamilyDiagnostics = collectAbstractNumericFamilyArithmeticInProgram(
+        targetProgram.program,
+      ).map((diagnostic) =>
+        createAbstractNumericFamilyDiagnostic(
+          diagnostic,
+          context.diagnosticPreparedFiles.get(toSourceFileName(diagnostic.fileName)) ??
+            targetProgram.preparedHost.getPreparedSourceFile(toSourceFileName(diagnostic.fileName)),
+          targetProgram.program.getSourceFile(diagnostic.fileName)?.text ?? '',
+        )
+      );
+      context.frontendDiagnostics.push(...abstractNumericFamilyDiagnostics);
+      const mixedMachineNumericDiagnostics = collectMixedMachineNumericArithmeticInProgram(
+        targetProgram.program,
+      ).map((diagnostic) =>
+        createMixedMachineNumericDiagnostic(
+          diagnostic,
+          context.diagnosticPreparedFiles.get(toSourceFileName(diagnostic.fileName)) ??
+            targetProgram.preparedHost.getPreparedSourceFile(toSourceFileName(diagnostic.fileName)),
+          targetProgram.program.getSourceFile(diagnostic.fileName)?.text ?? '',
+        )
+      );
+      context.frontendDiagnostics.push(...mixedMachineNumericDiagnostics);
+      const sortComparatorDiagnostics = collectSortCallsWithoutComparatorInProgram(
+        targetProgram.program,
+      ).map((diagnostic) =>
+        createSortComparatorRequiredDiagnostic(
+          diagnostic,
+          context.diagnosticPreparedFiles.get(toSourceFileName(diagnostic.fileName)) ??
+            targetProgram.preparedHost.getPreparedSourceFile(toSourceFileName(diagnostic.fileName)),
+          targetProgram.program.getSourceFile(diagnostic.fileName)?.text ?? '',
+        )
+      );
+      context.frontendDiagnostics.push(...sortComparatorDiagnostics);
+    },
+    { always: true },
   );
-  context.frontendDiagnostics.push(...abstractNumericFamilyDiagnostics);
-  const mixedMachineNumericDiagnostics = collectMixedMachineNumericArithmeticInProgram(
-    targetProgram.program,
-  ).map((diagnostic) =>
-    createMixedMachineNumericDiagnostic(
-      diagnostic,
-      context.diagnosticPreparedFiles.get(toSourceFileName(diagnostic.fileName)) ??
-        targetProgram.preparedHost.getPreparedSourceFile(toSourceFileName(diagnostic.fileName)),
-      targetProgram.program.getSourceFile(diagnostic.fileName)?.text ?? '',
-    )
-  );
-  context.frontendDiagnostics.push(...mixedMachineNumericDiagnostics);
-  const sortComparatorDiagnostics = collectSortCallsWithoutComparatorInProgram(
-    targetProgram.program,
-  ).map((diagnostic) =>
-    createSortComparatorRequiredDiagnostic(
-      diagnostic,
-      context.diagnosticPreparedFiles.get(toSourceFileName(diagnostic.fileName)) ??
-        targetProgram.preparedHost.getPreparedSourceFile(toSourceFileName(diagnostic.fileName)),
-      targetProgram.program.getSourceFile(diagnostic.fileName)?.text ?? '',
-    )
-  );
-  context.frontendDiagnostics.push(...sortComparatorDiagnostics);
 }
 
 function createBuiltinFinalProgram(
