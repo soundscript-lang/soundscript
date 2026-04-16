@@ -2877,6 +2877,13 @@ function getSupportedInternalTaggedHeapUnionKinds(
   if ((type.flags & ts.TypeFlags.Union) === 0) {
     return undefined;
   }
+  if (
+    isGeneratorObjectType(checker, type) ||
+    isAsyncGeneratorObjectType(checker, type) ||
+    isIteratorResultObjectType(checker, type)
+  ) {
+    return undefined;
+  }
 
   let includesBoolean = false;
   let includesHeapObject = false;
@@ -2884,6 +2891,7 @@ function getSupportedInternalTaggedHeapUnionKinds(
   let includesNumber = false;
   let includesString = false;
   let includesUndefined = false;
+  let heapObjectMemberCount = 0;
 
   for (const member of (type as ts.UnionType).types) {
     if ((member.flags & ts.TypeFlags.BigIntLike) !== 0) {
@@ -2911,6 +2919,7 @@ function getSupportedInternalTaggedHeapUnionKinds(
     }
     if (isSupportedHeapLocalType(checker, member)) {
       includesHeapObject = true;
+      heapObjectMemberCount += 1;
       continue;
     }
     return undefined;
@@ -2923,7 +2932,7 @@ function getSupportedInternalTaggedHeapUnionKinds(
   const categoryCount = Number(includesBoolean) + Number(includesHeapObject) +
     Number(includesNull) +
     Number(includesNumber) + Number(includesString) + Number(includesUndefined);
-  if (categoryCount < 2) {
+  if (categoryCount < 2 && heapObjectMemberCount < 2) {
     return undefined;
   }
 
@@ -3427,6 +3436,29 @@ function getTaggedHeapUnionObjectMemberTypes(
     return [];
   }
   return (type as ts.UnionType).types.filter((member) => isSupportedHeapLocalType(checker, member));
+}
+
+function getInternalTaggedHeapUnionObjectRepresentation(
+  checker: ts.TypeChecker,
+  type: ts.Type,
+  runtime: ModuleRuntimeLoweringState,
+): CompilerRuntimeObjectRepresentationRef | undefined {
+  if (!isSupportedInternalTaggedHeapUnionType(checker, type)) {
+    return undefined;
+  }
+  const objectMemberTypes = getTaggedHeapUnionObjectMemberTypes(checker, type);
+  if (objectMemberTypes.length < 2) {
+    return undefined;
+  }
+  return ensureObjectFallbackRepresentation(runtime);
+}
+
+function getFunctionTaggedHeapParamRepresentation(
+  func: CompilerFunctionIR,
+  name: string,
+): CompilerRuntimeRepresentationRefIR<'object'> | undefined {
+  return func.taggedHeapParamRepresentations?.find((boundary) => boundary.name === name)
+    ?.representation;
 }
 
 function getTaggedHeapNullableBoundaryRepresentation(
@@ -4046,9 +4078,18 @@ function getVariableDeclarationLoweringInfo(
   fallbackOrdinaryObjectInitializer: boolean;
   ambientHostBoundaryInitializerRepresentation: CompilerRuntimeObjectRepresentationRef | undefined;
   forcedHeapInitializerRepresentation: CompilerRuntimeObjectRepresentationRef | undefined;
+  taggedHeapUnionObjectRepresentation: CompilerRuntimeObjectRepresentationRef | undefined;
   type: CompilerValueType;
 } {
   const declarationType = context.checker.getTypeAtLocation(declaration.name);
+  const taggedHeapUnionDeclarationType =
+    isSupportedInternalTaggedHeapUnionType(context.checker, declarationType) ||
+    isSupportedTaggedHeapNullableType(context.checker, declarationType);
+  const taggedHeapUnionObjectRepresentation = getInternalTaggedHeapUnionObjectRepresentation(
+    context.checker,
+    declarationType,
+    context.runtime,
+  );
   const dynamicOrdinaryObjectInitializer = declaration.initializer !== undefined &&
     ts.isObjectLiteralExpression(declaration.initializer) &&
     supportsFallbackOrdinaryObjectLocalScaffolding(
@@ -4082,7 +4123,8 @@ function getVariableDeclarationLoweringInfo(
       context,
     )
     : undefined;
-  const forcedHeapInitializerRepresentation = declaration.initializer
+  const forcedHeapInitializerRepresentation = declaration.initializer &&
+      !taggedHeapUnionDeclarationType
     ? getObjectAssignResultRepresentationFromExpression(declaration.initializer, context) ??
       getObjectFromEntriesResultRepresentationFromExpression(declaration.initializer, context) ??
       getConcreteObjectLiteralRepresentationFromExpression(declaration.initializer, context) ??
@@ -4155,6 +4197,7 @@ function getVariableDeclarationLoweringInfo(
     fallbackOrdinaryObjectInitializer,
     ambientHostBoundaryInitializerRepresentation,
     forcedHeapInitializerRepresentation,
+    taggedHeapUnionObjectRepresentation,
     type,
   };
 }
@@ -15506,6 +15549,22 @@ function isSupportedTaggedKeyNumberValueMapType(
   type: ts.Type,
 ): boolean {
   return getSupportedTaggedKeyNumberValueMapTypeInfo(checker, type) !== undefined;
+}
+
+function getSupportedCompilerOwnedCollectionObjectRepresentation(
+  checker: ts.TypeChecker,
+  type: ts.Type,
+  runtime: ModuleRuntimeLoweringState,
+): CompilerRuntimeObjectRepresentationRef | undefined {
+  if (
+    getSupportedStringKeyMapTypeInfo(checker, type) ||
+    getSupportedNumberKeyMapTypeInfo(checker, type) ||
+    getSupportedTaggedKeyNumberValueMapTypeInfo(checker, type) ||
+    getSupportedStringKeySetTypeInfo(checker, type)
+  ) {
+    return ensureObjectDynamicRepresentation(runtime);
+  }
+  return undefined;
 }
 
 interface SupportedSetElementTypeInfo {
@@ -27230,6 +27289,9 @@ function getHeapObjectRepresentationFromExpression(
       return bound.heapRepresentation;
     }
     if (bound.type === 'box_ref' && bound.boxedValueType === 'tagged_ref') {
+      if (bound.heapRepresentation) {
+        return bound.heapRepresentation;
+      }
       return getNarrowedTaggedHeapRepresentation(context.checker.getTypeAtLocation(expression));
     }
     if (bound.type === 'tagged_ref') {
@@ -27318,6 +27380,9 @@ function getHeapObjectRepresentationFromExpression(
       : undefined;
     if (directNamedCallee?.heapResultRepresentation) {
       return directNamedCallee.heapResultRepresentation;
+    }
+    if (directNamedCallee?.taggedHeapResultRepresentation) {
+      return directNamedCallee.taggedHeapResultRepresentation;
     }
   }
   const concreteObjectLiteralRepresentation = getConcreteObjectLiteralRepresentationFromExpression(
@@ -30207,6 +30272,7 @@ function createFunctionHeader(
   const hostClassConstructorParams: Array<{ name: string; classTagId: number }> = [];
   const hostExportParamOrder: string[] = [];
   const heapParamRepresentations: CompilerFunctionHeapBoundaryIR[] = [];
+  const taggedHeapParamRepresentations: CompilerFunctionHeapBoundaryIR[] = [];
   const recordHostFallbackArrayProperty = (
     property: {
       name: string;
@@ -30671,6 +30737,17 @@ function createFunctionHeader(
           return 'tagged_ref';
         }
         if (!hasExportBoundary && isSupportedInternalTaggedHeapUnionType(checker, parameterType)) {
+          const representation = getInternalTaggedHeapUnionObjectRepresentation(
+            checker,
+            parameterType,
+            runtime,
+          );
+          if (representation) {
+            taggedHeapParamRepresentations.push({
+              name: runtimeParamName,
+              representation,
+            });
+          }
           return 'tagged_ref';
         }
         if (isSupportedTaggedHeapNullableType(checker, parameterType)) {
@@ -30773,6 +30850,13 @@ function createFunctionHeader(
         if (!hasExportBoundary && isSupportedLengthViewType(checker, parameterType, parameter)) {
           return 'f64';
         }
+        const compilerOwnedCollectionRepresentation = !hasExportBoundary
+          ? getSupportedCompilerOwnedCollectionObjectRepresentation(
+            checker,
+            parameterType,
+            runtime,
+          )
+          : undefined;
         const internalAmbientObjectRepresentation = !hasExportBoundary
           ? getInternalAmbientDeclarationObjectRepresentation(
             checker,
@@ -30783,22 +30867,25 @@ function createFunctionHeader(
           )
           : undefined;
         if (
-          isSupportedHeapLocalType(checker, parameterType) || internalAmbientObjectRepresentation
+          compilerOwnedCollectionRepresentation ||
+          isSupportedHeapLocalType(checker, parameterType) ||
+          internalAmbientObjectRepresentation
         ) {
-          const representation = isSupportedHeapLocalType(checker, parameterType)
-            ? (isPromiseType(checker, parameterType) ||
-                isGeneratorObjectType(checker, parameterType) ||
-                isAsyncGeneratorObjectType(checker, parameterType) ||
-                isIteratorResultObjectType(checker, parameterType)
-              ? ensureObjectDynamicRepresentation(runtime)
-              : getFunctionBoundaryRepresentation(
-                checker,
-                parameterType,
-                parameter,
-                runtime,
-                classes,
-              ))
-            : internalAmbientObjectRepresentation!;
+          const representation = compilerOwnedCollectionRepresentation ??
+            (isSupportedHeapLocalType(checker, parameterType)
+              ? (isPromiseType(checker, parameterType) ||
+                  isGeneratorObjectType(checker, parameterType) ||
+                  isAsyncGeneratorObjectType(checker, parameterType) ||
+                  isIteratorResultObjectType(checker, parameterType)
+                ? ensureObjectDynamicRepresentation(runtime)
+                : getFunctionBoundaryRepresentation(
+                  checker,
+                  parameterType,
+                  parameter,
+                  runtime,
+                  classes,
+                ))
+              : internalAmbientObjectRepresentation!);
           if (hasExportBoundary) {
             ensureHostPromiseBridgeSupportForRepresentation(representation, runtime, closures);
             const hostDynamicCollectionParamInfo = getSupportedHostDynamicCollectionParamInfo(
@@ -31024,14 +31111,23 @@ function createFunctionHeader(
       classes,
     )
     : undefined;
-  const heapResultRepresentation = isSupportedHeapLocalType(checker, returnType)
-    ? (isPromiseType(checker, returnType) ||
-        isGeneratorObjectType(checker, returnType) ||
-        isAsyncGeneratorObjectType(checker, returnType) ||
-        isIteratorResultObjectType(checker, returnType)
-      ? ensureObjectDynamicRepresentation(runtime)
-      : getFunctionBoundaryRepresentation(checker, returnType, declaration, runtime, classes))
-    : internalAmbientResultRepresentation;
+  const compilerOwnedCollectionResultRepresentation = !hasExportBoundary
+    ? getSupportedCompilerOwnedCollectionObjectRepresentation(checker, returnType, runtime)
+    : undefined;
+  const internalTaggedHeapUnionResult = !hasExportBoundary &&
+    isSupportedInternalTaggedHeapUnionType(checker, returnType);
+  const internalTaggedHeapUnionResultRepresentation = !hasExportBoundary
+    ? getInternalTaggedHeapUnionObjectRepresentation(checker, returnType, runtime)
+    : undefined;
+  const heapResultRepresentation = compilerOwnedCollectionResultRepresentation ??
+    (!internalTaggedHeapUnionResult && isSupportedHeapLocalType(checker, returnType)
+      ? (isPromiseType(checker, returnType) ||
+          isGeneratorObjectType(checker, returnType) ||
+          isAsyncGeneratorObjectType(checker, returnType) ||
+          isIteratorResultObjectType(checker, returnType)
+        ? ensureObjectDynamicRepresentation(runtime)
+        : getFunctionBoundaryRepresentation(checker, returnType, declaration, runtime, classes))
+      : internalAmbientResultRepresentation);
   if (
     hasExportBoundary &&
     heapResultRepresentation &&
@@ -31102,6 +31198,10 @@ function createFunctionHeader(
       ? heapParamRepresentations
       : undefined,
     heapResultRepresentation,
+    taggedHeapParamRepresentations: taggedHeapParamRepresentations.length > 0
+      ? taggedHeapParamRepresentations
+      : undefined,
+    taggedHeapResultRepresentation: internalTaggedHeapUnionResultRepresentation,
     hostExportParamOrder: hasExportBoundary ? hostExportParamOrder : undefined,
     hostDynamicCollectionParams: hostDynamicCollectionParams.length > 0
       ? hostDynamicCollectionParams
@@ -37319,6 +37419,29 @@ function lowerTaggedClosureCallArgument(
   return {
     kind: 'tag_heap_object',
     value: adaptedHeapArgument,
+    type: 'tagged_ref',
+  };
+}
+
+function lowerTaggedHeapUnionObjectExpression(
+  expression: ts.Expression,
+  representation: CompilerRuntimeObjectRepresentationRef,
+  context: FunctionLoweringContext,
+  baseName = 'tagged_heap',
+): CompilerExpressionIR {
+  if (!isSupportedHeapLocalType(context.checker, context.checker.getTypeAtLocation(expression))) {
+    return lowerExpressionAsValueType(expression, 'tagged_ref', context);
+  }
+  const heapValue = lowerClosureCallArgument(
+    expression,
+    lowerExpressionAsValueType(expression, 'heap_ref', context),
+    baseName,
+    representation,
+    context,
+  );
+  return {
+    kind: 'tag_heap_object',
+    value: heapValue,
     type: 'tagged_ref',
   };
 }
@@ -59018,7 +59141,8 @@ function lowerDirectNamedInvocation(
       : undefined;
     const parameterRepresentation = parameterName
       ? callee.heapParamRepresentations?.find((boundary) => boundary.name === parameterName)
-        ?.representation
+        ?.representation ??
+        getFunctionTaggedHeapParamRepresentation(callee, parameterName)
       : undefined;
     const argumentRepresentation = argument
       ? getHeapObjectRepresentationFromExpression(argument, context)
@@ -63398,6 +63522,8 @@ function lowerVariableStatement(
     const fallbackOrdinaryObjectInitializer = declarationInfo.fallbackOrdinaryObjectInitializer;
     const ambientHostBoundaryInitializerRepresentation =
       declarationInfo.ambientHostBoundaryInitializerRepresentation;
+    const taggedHeapUnionObjectRepresentation = declarationInfo
+      .taggedHeapUnionObjectRepresentation;
     const ambientHostBoundaryInitializer = declaration.initializer
       ? (ts.isCallExpression(declaration.initializer)
         ? getAmbientHostProjectedCallResultBoundary(declaration.initializer, context)
@@ -63568,6 +63694,14 @@ function lowerVariableStatement(
             context,
           );
         }
+        if (type === 'tagged_ref' && taggedHeapUnionObjectRepresentation) {
+          return lowerTaggedHeapUnionObjectExpression(
+            declaration.initializer,
+            taggedHeapUnionObjectRepresentation,
+            context,
+            declaration.name.text,
+          );
+        }
         return lowerExpressionAsValueType(declaration.initializer, type, context);
       })()
       : type === 'tagged_ref'
@@ -63711,6 +63845,8 @@ function lowerVariableStatement(
       predeclared: false,
       heapRepresentation: type === 'heap_ref'
         ? capturedHeapInitializer?.representation ?? declarationRepresentation
+        : type === 'tagged_ref'
+        ? taggedHeapUnionObjectRepresentation
         : undefined,
       hostBoundary: ambientHostBoundaryInitializer,
       ambientHostSourceHeader,
@@ -63957,6 +64093,8 @@ function predeclareCapturedSimpleLocalBindings(
         heapRepresentation: declarationInfo.type === 'heap_ref'
           ? declarationInfo.forcedHeapInitializerRepresentation ??
             declarationInfo.ambientHostBoundaryInitializerRepresentation
+          : declarationInfo.type === 'tagged_ref'
+          ? declarationInfo.taggedHeapUnionObjectRepresentation
           : undefined,
         hostBoundary: predeclaredHostBoundary,
         ambientHostSourceHeader: predeclaredAmbientHostSourceHeader,
@@ -64509,6 +64647,13 @@ function lowerExpressionStatement(
           name: materializedHeapValue.name,
           type: 'heap_ref',
         } satisfies CompilerExpressionIR
+        : symbol.boxedValueType === 'tagged_ref' && symbol.heapRepresentation
+        ? lowerTaggedHeapUnionObjectExpression(
+          expression.right,
+          symbol.heapRepresentation,
+          context,
+          expression.left.text,
+        )
         : lowerExpressionAsValueType(
           expression.right,
           symbol.boxedValueType,
@@ -64532,7 +64677,14 @@ function lowerExpressionStatement(
         symbol.type === 'owned_number_array_ref' || symbol.type === 'owned_boolean_array_ref' ||
         (symbol.type === 'f64' &&
           isSupportedLengthViewType(context.checker, assignmentTargetType, expression.left))
-      ? lowerExpressionAsValueType(expression.right, symbol.type, context)
+      ? symbol.type === 'tagged_ref' && symbol.heapRepresentation
+        ? lowerTaggedHeapUnionObjectExpression(
+          expression.right,
+          symbol.heapRepresentation,
+          context,
+          expression.left.text,
+        )
+        : lowerExpressionAsValueType(expression.right, symbol.type, context)
       : lowerExpression(expression.right, context);
     if (
       getLoweredExpressionValueType(adaptedValue) === 'owned_array_ref' &&
@@ -66193,6 +66345,28 @@ function lowerStatement(
         },
       ];
     }
+    const taggedHeapUnionResultRepresentation = context.currentFunction.resultType === 'tagged_ref'
+      ? context.currentFunction.taggedHeapResultRepresentation
+      : undefined;
+    if (
+      taggedHeapUnionResultRepresentation &&
+      isSupportedHeapLocalType(
+        context.checker,
+        context.checker.getTypeAtLocation(statement.expression),
+      )
+    ) {
+      const value = lowerTaggedHeapUnionObjectExpression(
+        statement.expression,
+        taggedHeapUnionResultRepresentation,
+        context,
+        'return',
+      );
+      const preludeStatements = consumeExpressionPreludeStatements(context);
+      return [...preludeStatements, {
+        kind: 'return',
+        value,
+      }];
+    }
     let value: CompilerExpressionIR;
     try {
       value = lowerExpressionAsValueType(
@@ -67221,6 +67395,11 @@ function lowerFunction(
       functionRuntime.ownedArrayAliasLocalsByGroupId.set(groupId, new Set([param.name]));
     }
     if (ts.isIdentifier(declarationParam.name)) {
+      const parameterHeapRepresentation = param.type === 'heap_ref'
+        ? getEffectiveFunctionHeapParamRepresentation(header, param.name)
+        : param.type === 'tagged_ref'
+        ? getFunctionTaggedHeapParamRepresentation(header, param.name)
+        : undefined;
       const declarationParamSymbol = context.checker.getSymbolAtLocation(declarationParam.name);
       if (declarationParamSymbol && capturedLocalSymbols.has(declarationParamSymbol)) {
         const boxedName = createLocalName(param.name, locals.length);
@@ -67253,6 +67432,7 @@ function lowerFunction(
               context.classes,
             )
             : undefined,
+          heapRepresentation: parameterHeapRepresentation,
         });
         continue;
       }
@@ -67269,6 +67449,7 @@ function lowerFunction(
             context.classes,
           )
           : undefined,
+        heapRepresentation: parameterHeapRepresentation,
         parameter: true,
       });
       continue;

@@ -2804,6 +2804,70 @@ compilerIntegrationTest(
 );
 
 compilerIntegrationTest(
+  'compileProject executes collection operations across compiler-owned calls',
+  async () => {
+    const tempDirectory = await createCompilerTestProject([
+      'function buildMap(): Map<number, number> {',
+      '  const map = new Map<number, number>();',
+      '  map.set(7, 30);',
+      '  map.set(9, 40);',
+      '  return map;',
+      '}',
+      '',
+      'function buildSet(): Set<number> {',
+      '  const set = new Set<number>();',
+      '  set.add(4);',
+      '  set.add(6);',
+      '  return set;',
+      '}',
+      '',
+      'function keyScore(map: Map<number, number>): number {',
+      '  let score = 0;',
+      '  for (const key of map.keys()) {',
+      '    score = score * 10 + key;',
+      '  }',
+      '  return score;',
+      '}',
+      '',
+      'function valueScore(map: Map<number, number>): number {',
+      '  const iterator = map.values();',
+      '  iterator.next();',
+      '  const second = iterator.next();',
+      '  if (second.done) {',
+      '    return 0;',
+      '  }',
+      '  return second.value;',
+      '}',
+      '',
+      'function setScore(set: Set<number>): number {',
+      '  let score = 0;',
+      '  for (const value of set.values()) {',
+      '    score = score * 10 + value;',
+      '  }',
+      '  return score;',
+      '}',
+      '',
+      'export function main(): number {',
+      '  const map = new Map<number, number>();',
+      '  map.set(3, 10);',
+      '  map.set(5, 20);',
+      '  return keyScore(map) * 100000',
+      '    + valueScore(map) * 1000',
+      '    + keyScore(buildMap()) * 10',
+      '    + setScore(buildSet());',
+      '}',
+      '',
+    ].join('\n'));
+
+    const result = compileTempProject(tempDirectory);
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assertEquals(await invokeCompiledEntry(tempDirectory, 'main', []), 3_520_836);
+  },
+);
+
+compilerIntegrationTest(
   'compileProject executes unknown-key Map get and set operations',
   async () => {
     const tempDirectory = await createCompilerTestProject([
@@ -21836,7 +21900,7 @@ compilerIntegrationTest(
 );
 
 compilerIntegrationTest(
-  'compileProject rejects disjoint object union locals outside fixed-layout scaffolding',
+  'compileProject supports disjoint object union locals as tagged heap values',
   async () => {
     const tempDirectory = await createTempProject([
       {
@@ -21872,14 +21936,143 @@ compilerIntegrationTest(
       workingDirectory: tempDirectory,
     });
 
-    assertEquals(result.exitCode, 1);
-    assertEquals(result.diagnostics.map((diagnostic: { source: string }) => diagnostic.source), [
-      'compiler',
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject narrows disjoint object union locals with in checks',
+  async () => {
+    const tempDirectory = await createCompilerTestProject([
+      'type Left = { left: number };',
+      'type Right = { right: number };',
+      '',
+      'function score(either: Left | Right): number {',
+      '  if ("left" in either) {',
+      '    return either.left * 10;',
+      '  }',
+      '  return either.right;',
+      '}',
+      '',
+      'export function main(): number {',
+      '  const left: Left | Right = { left: 4 };',
+      '  const right: Left | Right = { right: 7 };',
+      '  return score(left) + score(right);',
+      '}',
+      '',
+    ].join('\n'));
+
+    const result = compileTempProject(tempDirectory);
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assertEquals(await invokeCompiledEntry(tempDirectory, 'main', []), 47);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject passes object literals directly to disjoint object union params',
+  async () => {
+    const tempDirectory = await createCompilerTestProject([
+      'type Left = { left: number };',
+      'type Right = { right: number };',
+      '',
+      'function score(either: Left | Right): number {',
+      '  if ("left" in either) {',
+      '    return either.left * 10;',
+      '  }',
+      '  return either.right;',
+      '}',
+      '',
+      'export function main(): number {',
+      '  return score({ left: 4 }) + score({ right: 7 });',
+      '}',
+      '',
+    ].join('\n'));
+
+    const result = compileTempProject(tempDirectory);
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assertEquals(await invokeCompiledEntry(tempDirectory, 'main', []), 47);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject returns disjoint object unions into in-narrowed consumers',
+  async () => {
+    const tempDirectory = await createCompilerTestProject([
+      'type Left = { left: number };',
+      'type Right = { right: number };',
+      '',
+      'function choose(left: boolean): Left | Right {',
+      '  if (left) {',
+      '    return { left: 4 };',
+      '  }',
+      '  return { right: 7 };',
+      '}',
+      '',
+      'function score(either: Left | Right): number {',
+      '  if ("left" in either) {',
+      '    return either.left * 10;',
+      '  }',
+      '  return either.right;',
+      '}',
+      '',
+      'export function main(): number {',
+      '  return score(choose(true)) + score(choose(false));',
+      '}',
+      '',
+    ].join('\n'));
+
+    const result = compileTempProject(tempDirectory);
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assertEquals(await invokeCompiledEntry(tempDirectory, 'main', []), 47);
+  },
+);
+
+compilerIntegrationTest(
+  'lowerProgramToCompilerIR keeps disjoint object union payload metadata internal',
+  async () => {
+    const tempDirectory = await createCompilerTestProject([
+      'type Left = { left: number };',
+      'type Right = { right: number };',
+      '',
+      'function choose(left: boolean): Left | Right {',
+      '  if (left) {',
+      '    return { left: 1 };',
+      '  }',
+      '  return { right: 2 };',
+      '}',
+      '',
+      'function score(either: Left | Right): number {',
+      '  if ("left" in either) {',
+      '    return either.left;',
+      '  }',
+      '  return either.right;',
+      '}',
+      '',
+      'export function main(): number {',
+      '  return score(choose(true));',
+      '}',
+      '',
+    ].join('\n'));
+
+    const moduleIR = lowerTempProjectToCompilerIR(tempDirectory);
+    const choose = moduleIR.functions.find((func) => func.name === 'choose');
+    const score = moduleIR.functions.find((func) => func.name === 'score');
+
+    assertEquals(choose?.heapResultRepresentation, undefined);
+    assertEquals(choose?.hostResultBoundary, undefined);
+    assertEquals(choose?.taggedHeapResultRepresentation?.kind, 'fallback_object_representation');
+    assertEquals(score?.heapParamRepresentations, undefined);
+    assertEquals(score?.hostParamBoundaries, undefined);
+    assertEquals(score?.taggedHeapParamRepresentations?.map((entry) => entry.representation.kind), [
+      'fallback_object_representation',
     ]);
-    assertEquals(result.diagnostics.map((diagnostic: { code: string }) => diagnostic.code), [
-      'COMPILER2001',
-    ]);
-    assertEquals(result.diagnostics[0]?.line, 2);
   },
 );
 

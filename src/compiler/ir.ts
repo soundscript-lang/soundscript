@@ -1533,6 +1533,8 @@ export interface CompilerFunctionIR {
   heapLocalRepresentations?: CompilerFunctionHeapBoundaryIR[];
   heapParamRepresentations?: CompilerFunctionHeapBoundaryIR[];
   heapResultRepresentation?: CompilerRuntimeRepresentationRefIR<'object'>;
+  taggedHeapParamRepresentations?: CompilerFunctionHeapBoundaryIR[];
+  taggedHeapResultRepresentation?: CompilerRuntimeRepresentationRefIR<'object'>;
   hostExportParamOrder?: readonly string[];
   hostDynamicCollectionParams?: readonly CompilerFunctionHostDynamicCollectionParamIR[];
   hostGeneratorResult?: boolean;
