@@ -2552,6 +2552,33 @@ compilerIntegrationTest(
   },
 );
 
+compilerIntegrationTest('compileProject executes Map.set return-this identity', async () => {
+  const tempDirectory = await createCompilerTestProject([
+    'export function main(): number {',
+    '  const map = new Map<string, number>();',
+    '  let score = 0;',
+    '  if (map.set("left", 1) !== new Map<string, number>()) {',
+    '    score += 100;',
+    '  }',
+    '  if (map.set("left", 2) === map) {',
+    '    score += 10;',
+    '  }',
+    '  const chained = map.set("right", 3).set("third", 4);',
+    '  if (chained === map) {',
+    '    score += 1;',
+    '  }',
+    '  return score * 100 + map.size;',
+    '}',
+    '',
+  ].join('\n'));
+
+  const result = compileTempProject(tempDirectory);
+
+  assertEquals(result.exitCode, 0);
+  assertEquals(result.diagnostics, []);
+  assertEquals(await invokeCompiledEntry(tempDirectory, 'main', []), 11103);
+});
+
 compilerIntegrationTest(
   'compileProject executes Map reads and writes with heap-valued entries',
   async () => {

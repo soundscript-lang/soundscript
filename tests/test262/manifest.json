@@ -18313,7 +18313,7 @@
     }
   },
   {
-    "test": "cases/defer/map-set.ts",
+    "test": "cases/pass-now/map-set.ts",
     "note": "Map.prototype.set should preserve the upstream return-this behavior when replacing a value.",
     "entry": "main",
     "args": [],
