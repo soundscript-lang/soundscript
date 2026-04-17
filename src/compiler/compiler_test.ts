@@ -22197,6 +22197,8 @@ compilerIntegrationTest(
     assertEquals(result.exitCode, 0);
     assertEquals(result.diagnostics, []);
     assertEquals(await invokeCompiledEntry(tempDirectory, 'main', []), 3_907);
+    const watOutput = await readWatArtifactForProject(tempDirectory);
+    assertFalse(watOutput.includes('(type $closure'));
   },
 );
 
@@ -22778,6 +22780,103 @@ compilerIntegrationTest(
     assertEquals(result.exitCode, 0);
     assertEquals(result.diagnostics, []);
     assertEquals(await invokeCompiledEntry(tempDirectory, 'main', []), 5353);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject narrows callable members of mixed primitive and object unions',
+  async () => {
+    const tempDirectory = await createCompilerTestProject([
+      'type Left = { left: number };',
+      'type Right = { right: number };',
+      'type Compute = (base: number) => number;',
+      'type Value = number | string | Compute | Left | Right;',
+      '',
+      'function score(value: Value): number {',
+      '  if (typeof value === "number") {',
+      '    return value;',
+      '  }',
+      '  if (typeof value === "string") {',
+      '    return value.length;',
+      '  }',
+      '  if (typeof value === "object") {',
+      '    if ("left" in value) {',
+      '      return value.left * 10;',
+      '    }',
+      '    return value.right;',
+      '  }',
+      '  return value(4);',
+      '}',
+      '',
+      'function scoreNotObjectFirst(value: Value): number {',
+      '  if (typeof value !== "object") {',
+      '    if (typeof value === "function") {',
+      '      return value(4);',
+      '    }',
+      '    if (typeof value === "number") {',
+      '      return value;',
+      '    }',
+      '    return value.length;',
+      '  }',
+      '  if ("left" in value) {',
+      '    return value.left * 10;',
+      '  }',
+      '  return value.right;',
+      '}',
+      '',
+      'function makeValue(): Value {',
+      '  return (base: number) => base + 6;',
+      '}',
+      '',
+      'function scoreEntries(values: Map<string, Value>): number {',
+      '  let total = 0;',
+      '  for (const [key, value] of values.entries()) {',
+      '    total += key.length + score(value);',
+      '  }',
+      '  return total;',
+      '}',
+      '',
+      'export function main(): number {',
+      '  const values: Value[] = [',
+      '    3,',
+      '    "abcd",',
+      '    (base: number) => base + 6,',
+      '    { left: 5 },',
+      '    { right: 7 },',
+      '  ];',
+      '  const arrayScore = score(values[0]) * 10000',
+      '    + score(values[1]) * 1000',
+      '    + score(values[2]) * 100',
+      '    + score(values[3]) * 10',
+      '    + score(values[4]);',
+      '  const entries = new Map<string, Value>([',
+      '    ["a", 3],',
+      '    ["bb", (base: number) => base + 6],',
+      '    ["ccc", { left: 5 }],',
+      '  ]);',
+      '  const reducerScore = values.reduce<number>(',
+      '    (total, value) => total + score(value),',
+      '    0,',
+      '  );',
+      '  const notObjectScore = scoreNotObjectFirst(values[2])',
+      '    + scoreNotObjectFirst(values[3]);',
+      '  return arrayScore * 1000',
+      '    + score(makeValue()) * 100',
+      '    + scoreEntries(entries)',
+      '    + reducerScore',
+      '    + notObjectScore;',
+      '}',
+      '',
+    ].join('\n'));
+
+    const result = compileTempProject(tempDirectory);
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assertEquals(await invokeCompiledEntry(tempDirectory, 'main', []), 35_508_203);
+    const watOutput = await readWatArtifactForProject(tempDirectory);
+    assertStringIncludes(watOutput, '(type $closure');
+    assertStringIncludes(watOutput, 'ref.test (ref $closure)');
   },
 );
 

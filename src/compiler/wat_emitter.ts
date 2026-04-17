@@ -1369,6 +1369,7 @@ function expressionUsesOwnedStringRuntime(expression: CompilerExpressionIR): boo
     case 'tag_string':
     case 'untag_owned_string':
     case 'tagged_has_tag':
+    case 'tagged_is_closure':
       return expressionUsesOwnedStringRuntime(expression.value);
     case 'owned_string_char_code_at':
     case 'owned_string_code_point_at':
@@ -1469,6 +1470,7 @@ function forEachExpressionChild(
     case 'tagged_is_undefined':
     case 'tagged_is_null':
     case 'tagged_has_tag':
+    case 'tagged_is_closure':
     case 'class_instanceof':
     case 'builtin_error_instanceof':
       visit(expression.value);
@@ -21291,6 +21293,7 @@ function getExpressionValueType(expression: CompilerExpressionIR): CompilerValue
     case 'tagged_is_undefined':
     case 'tagged_is_null':
     case 'tagged_has_tag':
+    case 'tagged_is_closure':
     case 'class_instanceof':
     case 'builtin_error_instanceof':
     case 'local_get':
@@ -23353,6 +23356,13 @@ function emitExpression(
         `${indent(level)}struct.get $tagged_value 0`,
         `${indent(level)}i32.const ${expression.tag}`,
         `${indent(level)}${expression.negated ? 'i32.ne' : 'i32.eq'}`,
+      ];
+    case 'tagged_is_closure':
+      return [
+        ...emitExpression(expression.value, level, runtime),
+        `${indent(level)}struct.get $tagged_value 2`,
+        `${indent(level)}ref.test (ref $closure)`,
+        ...(expression.negated ? [`${indent(level)}i32.eqz`] : []),
       ];
     case 'class_instanceof':
       return [
@@ -27514,7 +27524,8 @@ function moduleUsesClosureRuntime(module: CompilerModuleIR): boolean {
     module.functions.some((func) =>
       func.params.some((param) => param.type === 'box_ref' || param.type === 'closure_ref') ||
       func.locals.some((local) => local.type === 'box_ref' || local.type === 'closure_ref') ||
-      func.resultType === 'closure_ref'
+      func.resultType === 'closure_ref' ||
+      statementsUseStringHelper(func.body, (expression) => expression.kind === 'tagged_is_closure')
     );
 }
 
@@ -27547,6 +27558,7 @@ function collectBoxValueTypesFromExpression(
       expression.args.forEach((argument) => collectBoxValueTypesFromExpression(argument, used));
       return;
     case 'tag_heap_object':
+    case 'tagged_is_closure':
       collectBoxValueTypesFromExpression(expression.value, used);
       return;
     default:

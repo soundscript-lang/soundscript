@@ -1059,6 +1059,13 @@ export interface CompilerTaggedHasTagIR {
   type: 'i32';
 }
 
+export interface CompilerTaggedIsClosureIR {
+  kind: 'tagged_is_closure';
+  value: CompilerExpressionIR;
+  negated: boolean;
+  type: 'i32';
+}
+
 export interface CompilerClassInstanceOfIR {
   kind: 'class_instanceof';
   value: CompilerExpressionIR;
@@ -1269,6 +1276,7 @@ export type CompilerExpressionIR =
   | CompilerTaggedIsUndefinedIR
   | CompilerTaggedIsNullIR
   | CompilerTaggedHasTagIR
+  | CompilerTaggedIsClosureIR
   | CompilerClassInstanceOfIR
   | CompilerBuiltinErrorInstanceOfIR
   | CompilerLocalGetIR

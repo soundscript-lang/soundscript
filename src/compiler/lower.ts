@@ -2866,6 +2866,7 @@ function isSupportedTaggedHeapNullableType(checker: ts.TypeChecker, type: ts.Typ
 
 interface SupportedInternalTaggedHeapUnionKinds {
   includesBoolean: boolean;
+  includesCallable: boolean;
   includesHeapObject: boolean;
   includesNull: boolean;
   includesNumber: boolean;
@@ -2889,6 +2890,7 @@ function getSupportedInternalTaggedHeapUnionKinds(
   }
 
   let includesBoolean = false;
+  let includesCallable = false;
   let includesHeapObject = false;
   let includesNull = false;
   let includesNumber = false;
@@ -2920,6 +2922,12 @@ function getSupportedInternalTaggedHeapUnionKinds(
       includesString = true;
       continue;
     }
+    if (checker.getSignaturesOfType(member, ts.SignatureKind.Call).length > 0) {
+      includesCallable = true;
+      includesHeapObject = true;
+      heapObjectMemberCount += 1;
+      continue;
+    }
     if (isSupportedHeapLocalType(checker, member)) {
       includesHeapObject = true;
       heapObjectMemberCount += 1;
@@ -2941,6 +2949,7 @@ function getSupportedInternalTaggedHeapUnionKinds(
 
   return {
     includesBoolean,
+    includesCallable,
     includesHeapObject,
     includesNull,
     includesNumber,
@@ -2958,6 +2967,13 @@ function isSupportedInternalTaggedHeapUnionWithBoolean(
   type: ts.Type,
 ): boolean {
   return getSupportedInternalTaggedHeapUnionKinds(checker, type)?.includesBoolean === true;
+}
+
+function isSupportedInternalTaggedHeapUnionWithCallable(
+  checker: ts.TypeChecker,
+  type: ts.Type,
+): boolean {
+  return getSupportedInternalTaggedHeapUnionKinds(checker, type)?.includesCallable === true;
 }
 
 function isSupportedInternalTaggedHeapUnionWithNull(
@@ -4442,6 +4458,20 @@ function lowerExpressionAsValueType(
     if ('type' in lowered && lowered.type === 'closure_ref') {
       return lowered;
     }
+    if (
+      'type' in lowered &&
+      lowered.type === 'tagged_ref' &&
+      context.checker.getSignaturesOfType(
+          context.checker.getTypeAtLocation(expression),
+          ts.SignatureKind.Call,
+        ).length > 0
+    ) {
+      return {
+        kind: 'untag_heap_object',
+        value: lowered,
+        type: 'closure_ref',
+      };
+    }
     throw new CompilerUnsupportedError(
       'Only supported function-valued expressions are supported in compiler subset.',
       expression,
@@ -4579,6 +4609,13 @@ function lowerExpressionAsValueType(
       type: 'tagged_ref',
     };
   }
+  if (context.checker.getSignaturesOfType(sourceType, ts.SignatureKind.Call).length > 0) {
+    return {
+      kind: 'tag_heap_object',
+      value: lowerExpressionAsValueType(expression, 'closure_ref', context),
+      type: 'tagged_ref',
+    };
+  }
   const materializableObjectLiteral = getMaterializableObjectLiteralExpression(
     expression,
     context.checker,
@@ -4601,6 +4638,13 @@ function lowerExpressionAsValueType(
   }
   const lowered = lowerExpression(expression, context);
   if ('type' in lowered && lowered.type === 'heap_ref') {
+    return {
+      kind: 'tag_heap_object',
+      value: lowered,
+      type: 'tagged_ref',
+    };
+  }
+  if ('type' in lowered && lowered.type === 'closure_ref') {
     return {
       kind: 'tag_heap_object',
       value: lowered,
@@ -35404,6 +35448,8 @@ function invertTaggedPredicateExpression(
       return { ...expression, negated: !expression.negated };
     case 'tagged_has_tag':
       return { ...expression, negated: !expression.negated };
+    case 'tagged_is_closure':
+      return { ...expression, negated: !expression.negated };
     default:
       return undefined;
   }
@@ -35512,6 +35558,42 @@ function tryLowerTaggedTypeofPredicateExpression(
       ? 3
       : undefined;
     const operandType = context.checker.getTypeAtLocation(typeofExpression.expression);
+    if (literal === 'function') {
+      const supportsFunction = isSupportedInternalTaggedHeapUnionWithCallable(
+        context.checker,
+        operandType,
+      ) || isTaggedBackedConditionOperand(typeofExpression.expression, context);
+      if (!supportsFunction) {
+        return undefined;
+      }
+      const taggedValue = lowerExpressionAsValueType(
+        typeofExpression.expression,
+        'tagged_ref',
+        context,
+      );
+      const taggedPreludeStatements = consumeExpressionPreludeStatements(context);
+      const taggedName = createLocalName('typeof_function', context.nextLocalId);
+      context.nextLocalId += 1;
+      context.locals.push({ name: taggedName, type: 'tagged_ref' });
+      context.expressionPreludeStatements.push(
+        ...taggedPreludeStatements,
+        {
+          kind: 'local_set',
+          name: taggedName,
+          value: taggedValue,
+        },
+      );
+      return {
+        kind: 'tagged_is_closure',
+        value: {
+          kind: 'local_get',
+          name: taggedName,
+          type: 'tagged_ref',
+        },
+        negated: expression.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsEqualsToken,
+        type: 'i32',
+      };
+    }
     if (literal === 'object') {
       const supportsObject = isSupportedTaggedHeapNullableType(context.checker, operandType) ||
         isSupportedInternalTaggedHeapUnionType(context.checker, operandType) ||
@@ -35536,34 +35618,46 @@ function tryLowerTaggedTypeofPredicateExpression(
           value: taggedValue,
         },
       );
-      return {
-        kind: 'binary',
-        op: expression.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsEqualsToken
-          ? 'i32.and'
-          : 'i32.or',
+      const isNotObject =
+        expression.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsEqualsToken;
+      const taggedLocalGet = () => ({
+        kind: 'local_get' as const,
+        name: taggedName,
+        type: 'tagged_ref' as const,
+      });
+      const heapOrNullCheck = {
+        kind: 'binary' as const,
+        op: isNotObject ? 'i32.and' as const : 'i32.or' as const,
         left: {
-          kind: 'tagged_has_tag',
-          value: {
-            kind: 'local_get',
-            name: taggedName,
-            type: 'tagged_ref',
-          },
+          kind: 'tagged_has_tag' as const,
+          value: taggedLocalGet(),
           tag: 4,
-          negated: expression.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsEqualsToken,
-          type: 'i32',
+          negated: isNotObject,
+          type: 'i32' as const,
         },
         right: {
-          kind: 'tagged_has_tag',
-          value: {
-            kind: 'local_get',
-            name: taggedName,
-            type: 'tagged_ref',
-          },
+          kind: 'tagged_has_tag' as const,
+          value: taggedLocalGet(),
           tag: 6,
-          negated: expression.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsEqualsToken,
-          type: 'i32',
+          negated: isNotObject,
+          type: 'i32' as const,
         },
-        type: 'i32',
+        type: 'i32' as const,
+      };
+      if (!isSupportedInternalTaggedHeapUnionWithCallable(context.checker, operandType)) {
+        return heapOrNullCheck;
+      }
+      return {
+        kind: 'binary',
+        op: isNotObject ? 'i32.or' as const : 'i32.and' as const,
+        left: heapOrNullCheck,
+        right: {
+          kind: 'tagged_is_closure' as const,
+          value: taggedLocalGet(),
+          negated: !isNotObject,
+          type: 'i32' as const,
+        },
+        type: 'i32' as const,
       };
     }
     if (tag === undefined) {
