@@ -22589,6 +22589,64 @@ compilerIntegrationTest(
 );
 
 compilerIntegrationTest(
+  'compileProject narrows mixed primitive and object union map entry values',
+  async () => {
+    const tempDirectory = await createCompilerTestProject([
+      'type Left = { left: number };',
+      'type Right = { right: number };',
+      'type Value = number | string | Left | Right;',
+      '',
+      'function score(value: Value): number {',
+      '  if (typeof value === "number") {',
+      '    return value;',
+      '  }',
+      '  if (typeof value === "string") {',
+      '    return value.length;',
+      '  }',
+      '  if ("left" in value) {',
+      '    return value.left * 10;',
+      '  }',
+      '  return value.right;',
+      '}',
+      '',
+      'function directScore(values: Map<string, Value>): number {',
+      '  let total = 0;',
+      '  for (const [key, value] of values.entries()) {',
+      '    total += key.length + score(value);',
+      '  }',
+      '  return total;',
+      '}',
+      '',
+      'function storedIteratorScore(values: Map<string, Value>): number {',
+      '  const iterator = values.entries();',
+      '  let total = 0;',
+      '  for (const [key, value] of iterator) {',
+      '    total += key.length + score(value);',
+      '  }',
+      '  return total;',
+      '}',
+      '',
+      'export function main(): number {',
+      '  const values = new Map<string, Value>([',
+      '    ["a", 3],',
+      '    ["bb", "abcd"],',
+      '    ["ccc", { left: 5 }],',
+      '    ["dddd", { right: 7 }],',
+      '  ]);',
+      '  return directScore(values) * 100 + storedIteratorScore(values);',
+      '}',
+      '',
+    ].join('\n'));
+
+    const result = compileTempProject(tempDirectory);
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assertEquals(await invokeCompiledEntry(tempDirectory, 'main', []), 7_474);
+  },
+);
+
+compilerIntegrationTest(
   'lowerProgramToCompilerIR distinguishes explicit bag-like object locals from narrow fixed layouts',
   async () => {
     const tempDirectory = await createTempProject([

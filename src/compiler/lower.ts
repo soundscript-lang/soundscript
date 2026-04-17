@@ -15737,27 +15737,16 @@ function getSupportedHostDynamicCollectionParamInfo(
   return undefined;
 }
 
+interface SupportedCollectionIteratorTypeInfo {
+  kind: 'map_iterator' | 'set_iterator';
+  valuesArrayType: OwnedCallbackArrayType;
+  elementType: OwnedCallbackElementType;
+}
+
 function getSupportedCollectionIteratorTypeInfo(
   checker: ts.TypeChecker,
   type: ts.Type,
-): {
-  kind: 'map_iterator' | 'set_iterator';
-  valuesArrayType:
-    | 'owned_heap_array_ref'
-    | 'owned_array_ref'
-    | 'owned_number_array_ref'
-    | 'owned_boolean_array_ref'
-    | 'owned_tagged_array_ref';
-  elementType:
-    | 'owned_array_ref'
-    | 'owned_number_array_ref'
-    | 'owned_boolean_array_ref'
-    | 'owned_string_ref'
-    | 'owned_tagged_array_ref'
-    | 'f64'
-    | 'i32'
-    | 'tagged_ref';
-} | undefined {
+): SupportedCollectionIteratorTypeInfo | undefined {
   const apparentType = checker.getApparentType(type);
   const symbol = apparentType.aliasSymbol ?? apparentType.getSymbol();
   const symbolName = symbol?.getName();
@@ -65065,6 +65054,24 @@ function lowerForOfLoopBody(
   return body;
 }
 
+function resolveCollectionIteratorForOfLoopValueInfo(
+  loopDeclaration: ts.VariableDeclaration,
+  iteratorTypeInfo: SupportedCollectionIteratorTypeInfo,
+  context: FunctionLoweringContext,
+): ResolvedClosureAbiValueIR {
+  if (ts.isArrayBindingPattern(loopDeclaration.name)) {
+    return { type: iteratorTypeInfo.elementType };
+  }
+  return resolveClosureAbiValueType(
+    context.checker,
+    context.checker.getTypeAtLocation(loopDeclaration.name),
+    loopDeclaration.name,
+    context.closures,
+    context.runtime,
+    context.classes,
+  );
+}
+
 function lowerForOfStatement(
   statement: ts.ForOfStatement,
   context: FunctionLoweringContext,
@@ -65420,194 +65427,208 @@ function lowerForOfStatement(
     ];
   }
 
-  const collectionIteratorTypeInfo = getSupportedCollectionIteratorTypeInfo(
-    context.checker,
-    context.checker.getTypeAtLocation(statement.expression),
-  );
-  if (collectionIteratorTypeInfo) {
-    const loopValueInfo = resolveClosureAbiValueType(
+  if (!arrayValue) {
+    const collectionIteratorTypeInfo = getSupportedCollectionIteratorTypeInfo(
       context.checker,
-      context.checker.getTypeAtLocation(loopDeclaration.name),
-      loopDeclaration.name,
-      context.closures,
-      context.runtime,
-      context.classes,
+      context.checker.getTypeAtLocation(statement.expression),
     );
-    const iteratorName = createLocalName('for_of_iterator', context.nextLocalId);
-    context.nextLocalId += 1;
-    context.locals.push({ name: iteratorName, type: 'heap_ref' });
-    const iteratorRepresentation = ensureObjectDynamicRepresentation(context.runtime);
-    context.functionRuntime.heapObjectRepresentationsByLocal.set(
-      iteratorName,
-      iteratorRepresentation,
-    );
-    const resultName = createLocalName('for_of_result', context.nextLocalId);
-    context.nextLocalId += 1;
-    context.locals.push({ name: resultName, type: 'heap_ref' });
-    context.functionRuntime.heapObjectRepresentationsByLocal.set(
-      resultName,
-      iteratorRepresentation,
-    );
-    const doneName = createLocalName('for_of_done', context.nextLocalId);
-    context.nextLocalId += 1;
-    context.locals.push({ name: doneName, type: 'i32' });
-    const elementName = createLocalName(elementBaseName, context.nextLocalId);
-    context.nextLocalId += 1;
-    context.locals.push({ name: elementName, type: loopValueInfo.type });
-    if (loopValueInfo.type === 'heap_ref' && loopValueInfo.heapRepresentation) {
-      context.functionRuntime.heapObjectRepresentationsByLocal.set(
-        elementName,
-        loopValueInfo.heapRepresentation,
-      );
-    }
-    const iterableValue = lowerExpressionAsValueType(statement.expression, 'heap_ref', context);
-    const iterablePreludeStatements = consumeExpressionPreludeStatements(context);
-    const keyStatements: CompilerStatementIR[] = [];
-    const valueKeyName = createOwnedStringLiteralLocal(
-      'value',
-      context,
-      keyStatements,
-      'for_of_value_key',
-    );
-    const doneKeyName = createOwnedStringLiteralLocal(
-      'done',
-      context,
-      keyStatements,
-      'for_of_done_key',
-    );
-    const buildAdvanceStatements = (): CompilerStatementIR[] => {
-      const nextResult = lowerCollectionIteratorNextCallFromObject(
-        iteratorName,
-        iteratorRepresentation,
+    if (collectionIteratorTypeInfo) {
+      const loopValueInfo = resolveCollectionIteratorForOfLoopValueInfo(
+        loopDeclaration,
         collectionIteratorTypeInfo,
         context,
-        'for_of_iterator',
       );
-      const statements: CompilerStatementIR[] = [
+      const iteratorName = createLocalName('for_of_iterator', context.nextLocalId);
+      context.nextLocalId += 1;
+      context.locals.push({ name: iteratorName, type: 'heap_ref' });
+      const iteratorRepresentation = ensureObjectDynamicRepresentation(context.runtime);
+      context.functionRuntime.heapObjectRepresentationsByLocal.set(
+        iteratorName,
+        iteratorRepresentation,
+      );
+      const resultName = createLocalName('for_of_result', context.nextLocalId);
+      context.nextLocalId += 1;
+      context.locals.push({ name: resultName, type: 'heap_ref' });
+      context.functionRuntime.heapObjectRepresentationsByLocal.set(
+        resultName,
+        iteratorRepresentation,
+      );
+      const doneName = createLocalName('for_of_done', context.nextLocalId);
+      context.nextLocalId += 1;
+      context.locals.push({ name: doneName, type: 'i32' });
+      const elementName = createLocalName(elementBaseName, context.nextLocalId);
+      context.nextLocalId += 1;
+      context.locals.push({ name: elementName, type: loopValueInfo.type });
+      if (loopValueInfo.type === 'heap_ref' && loopValueInfo.heapRepresentation) {
+        context.functionRuntime.heapObjectRepresentationsByLocal.set(
+          elementName,
+          loopValueInfo.heapRepresentation,
+        );
+      }
+      const iterableValue = lowerExpressionAsValueType(statement.expression, 'heap_ref', context);
+      const iterablePreludeStatements = consumeExpressionPreludeStatements(context);
+      const keyStatements: CompilerStatementIR[] = [];
+      const valueKeyName = createOwnedStringLiteralLocal(
+        'value',
+        context,
+        keyStatements,
+        'for_of_value_key',
+      );
+      const doneKeyName = createOwnedStringLiteralLocal(
+        'done',
+        context,
+        keyStatements,
+        'for_of_done_key',
+      );
+      const buildAdvanceStatements = (): CompilerStatementIR[] => {
+        const nextResult = lowerCollectionIteratorNextCallFromObject(
+          iteratorName,
+          iteratorRepresentation,
+          collectionIteratorTypeInfo,
+          context,
+          'for_of_iterator',
+        );
+        const statements: CompilerStatementIR[] = [
+          ...consumeExpressionPreludeStatements(context),
+          {
+            kind: 'local_set',
+            name: resultName,
+            value: nextResult,
+          },
+        ];
+        const doneValue = lowerDynamicObjectPropertyReadAsValueType(
+          resultName,
+          iteratorRepresentation,
+          doneKeyName,
+          'i32',
+          context,
+        );
+        statements.push(
+          ...consumeExpressionPreludeStatements(context),
+          {
+            kind: 'local_set',
+            name: doneName,
+            value: doneValue,
+          },
+        );
+        return statements;
+      };
+      const proofStateBefore = cloneProvenSpecializedObjectKeyOrderByLocal(
+        context.functionRuntime.provenSpecializedObjectKeyOrderByLocal,
+      );
+      const deferredPlaceholderStateBefore = cloneDeferredObjectKeysPlaceholderLocals(
+        context.functionRuntime.deferredObjectKeysPlaceholderLocals,
+      );
+      context.functionRuntime.provenSpecializedObjectKeyOrderByLocal =
+        cloneProvenSpecializedObjectKeyOrderByLocal(proofStateBefore);
+      context.functionRuntime.deferredObjectKeysPlaceholderLocals =
+        cloneDeferredObjectKeysPlaceholderLocals(deferredPlaceholderStateBefore);
+      let body = lowerForOfLoopBody(
+        loopDeclaration,
+        elementName,
+        loopValueInfo.type,
+        loopValueInfo.type === 'heap_ref' ? loopValueInfo.heapRepresentation : undefined,
+        bodyStatements,
+        capturedLoopBinding,
+        loopContext,
+      );
+      const proofStateAfterBody = cloneProvenSpecializedObjectKeyOrderByLocal(
+        context.functionRuntime.provenSpecializedObjectKeyOrderByLocal,
+      );
+      const deferredPlaceholderStateAfterBody = cloneDeferredObjectKeysPlaceholderLocals(
+        context.functionRuntime.deferredObjectKeysPlaceholderLocals,
+      );
+      context.functionRuntime.provenSpecializedObjectKeyOrderByLocal =
+        mergeProvenSpecializedObjectKeyOrderStates(
+          proofStateBefore,
+          proofStateAfterBody,
+        );
+      context.functionRuntime.deferredObjectKeysPlaceholderLocals =
+        mergeDeferredObjectKeysPlaceholderLocals(
+          deferredPlaceholderStateBefore,
+          deferredPlaceholderStateAfterBody,
+        );
+      const valueExpression = adaptTaggedPromiseValueToResolvedValue(
+        lowerDynamicObjectPropertyReadAsValueType(
+          resultName,
+          iteratorRepresentation,
+          valueKeyName,
+          'tagged_ref',
+          context,
+        ),
+        loopValueInfo,
+        statement.expression,
+      );
+      body = [
+        ...(loopControlSetup
+          ? [
+            {
+              kind: 'box_set',
+              box: {
+                kind: 'local_get',
+                name: loopControlSetup.loopControl.continueBoxName,
+                type: 'box_ref',
+              },
+              value: {
+                kind: 'boolean_literal',
+                value: false,
+              },
+              valueType: 'i32',
+            } satisfies CompilerStatementIR,
+          ]
+          : []),
         ...consumeExpressionPreludeStatements(context),
         {
           kind: 'local_set',
-          name: resultName,
-          value: nextResult,
+          name: elementName,
+          value: valueExpression,
         },
+        ...body,
+        ...(loopControlSetup
+          ? [
+            {
+              kind: 'if',
+              condition: createSyncLoopBreakClearCondition(loopControlSetup.loopControl),
+              thenBody: buildAdvanceStatements(),
+              elseBody: [],
+            } satisfies CompilerStatementIR,
+          ]
+          : buildAdvanceStatements()),
       ];
-      const doneValue = lowerDynamicObjectPropertyReadAsValueType(
-        resultName,
-        iteratorRepresentation,
-        doneKeyName,
-        'i32',
-        context,
-      );
-      statements.push(
-        ...consumeExpressionPreludeStatements(context),
+      return [
+        ...(loopControlSetup?.setupStatements ?? []),
+        ...iterablePreludeStatements,
         {
           kind: 'local_set',
-          name: doneName,
-          value: doneValue,
+          name: iteratorName,
+          value: iterableValue,
         },
-      );
-      return statements;
-    };
-    const proofStateBefore = cloneProvenSpecializedObjectKeyOrderByLocal(
-      context.functionRuntime.provenSpecializedObjectKeyOrderByLocal,
-    );
-    const deferredPlaceholderStateBefore = cloneDeferredObjectKeysPlaceholderLocals(
-      context.functionRuntime.deferredObjectKeysPlaceholderLocals,
-    );
-    context.functionRuntime.provenSpecializedObjectKeyOrderByLocal =
-      cloneProvenSpecializedObjectKeyOrderByLocal(proofStateBefore);
-    context.functionRuntime.deferredObjectKeysPlaceholderLocals =
-      cloneDeferredObjectKeysPlaceholderLocals(deferredPlaceholderStateBefore);
-    let body = lowerForOfLoopBody(
-      loopDeclaration,
-      elementName,
-      loopValueInfo.type,
-      loopValueInfo.type === 'heap_ref' ? loopValueInfo.heapRepresentation : undefined,
-      bodyStatements,
-      capturedLoopBinding,
-      loopContext,
-    );
-    const proofStateAfterBody = cloneProvenSpecializedObjectKeyOrderByLocal(
-      context.functionRuntime.provenSpecializedObjectKeyOrderByLocal,
-    );
-    const deferredPlaceholderStateAfterBody = cloneDeferredObjectKeysPlaceholderLocals(
-      context.functionRuntime.deferredObjectKeysPlaceholderLocals,
-    );
-    context.functionRuntime.provenSpecializedObjectKeyOrderByLocal =
-      mergeProvenSpecializedObjectKeyOrderStates(
-        proofStateBefore,
-        proofStateAfterBody,
-      );
-    context.functionRuntime.deferredObjectKeysPlaceholderLocals =
-      mergeDeferredObjectKeysPlaceholderLocals(
-        deferredPlaceholderStateBefore,
-        deferredPlaceholderStateAfterBody,
-      );
-    const valueExpression = adaptTaggedPromiseValueToResolvedValue(
-      lowerDynamicObjectPropertyReadAsValueType(
-        resultName,
-        iteratorRepresentation,
-        valueKeyName,
-        'tagged_ref',
-        context,
-      ),
-      loopValueInfo,
-      statement.expression,
-    );
-    body = [
-      ...(loopControlSetup
-        ? [
-          {
-            kind: 'box_set',
-            box: {
-              kind: 'local_get',
-              name: loopControlSetup.loopControl.continueBoxName,
-              type: 'box_ref',
-            },
-            value: {
-              kind: 'boolean_literal',
-              value: false,
-            },
-            valueType: 'i32',
-          } satisfies CompilerStatementIR,
-        ]
-        : []),
-      ...consumeExpressionPreludeStatements(context),
-      {
-        kind: 'local_set',
-        name: elementName,
-        value: valueExpression,
-      },
-      ...body,
-      ...(loopControlSetup
-        ? [
-          {
-            kind: 'if',
-            condition: createSyncLoopBreakClearCondition(loopControlSetup.loopControl),
-            thenBody: buildAdvanceStatements(),
-            elseBody: [],
-          } satisfies CompilerStatementIR,
-        ]
-        : buildAdvanceStatements()),
-    ];
-    return [
-      ...(loopControlSetup?.setupStatements ?? []),
-      ...iterablePreludeStatements,
-      {
-        kind: 'local_set',
-        name: iteratorName,
-        value: iterableValue,
-      },
-      ...keyStatements,
-      ...buildAdvanceStatements(),
-      {
-        kind: 'while',
-        condition: loopControlSetup
-          ? {
-            kind: 'binary',
-            op: 'i32.and',
-            left: createSyncLoopBreakClearCondition(loopControlSetup.loopControl),
-            right: {
+        ...keyStatements,
+        ...buildAdvanceStatements(),
+        {
+          kind: 'while',
+          condition: loopControlSetup
+            ? {
+              kind: 'binary',
+              op: 'i32.and',
+              left: createSyncLoopBreakClearCondition(loopControlSetup.loopControl),
+              right: {
+                kind: 'binary',
+                op: 'i32.eq',
+                left: {
+                  kind: 'local_get',
+                  name: doneName,
+                  type: 'i32',
+                },
+                right: {
+                  kind: 'boolean_literal',
+                  value: false,
+                },
+                type: 'i32',
+              },
+              type: 'i32',
+            }
+            : {
               kind: 'binary',
               op: 'i32.eq',
               left: {
@@ -65621,25 +65642,10 @@ function lowerForOfStatement(
               },
               type: 'i32',
             },
-            type: 'i32',
-          }
-          : {
-            kind: 'binary',
-            op: 'i32.eq',
-            left: {
-              kind: 'local_get',
-              name: doneName,
-              type: 'i32',
-            },
-            right: {
-              kind: 'boolean_literal',
-              value: false,
-            },
-            type: 'i32',
-          },
-        body,
-      },
-    ];
+          body,
+        },
+      ];
+    }
   }
 
   if (!arrayValue || !arrayType || !elementType) {
