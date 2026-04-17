@@ -10,6 +10,7 @@ import type {
   CompilerFunctionHostFallbackTaggedArrayPropertyIR,
   CompilerFunctionHostTaggedArrayBoundaryIR,
   CompilerFunctionHostTaggedArrayUnionResultIR,
+  CompilerFunctionHostTaggedCallableUnionResultIR,
   CompilerFunctionHostTaggedHeapNullableBoundaryIR,
   CompilerFunctionHostTaggedHeapNullableParamIR,
   CompilerFunctionIR,
@@ -4123,6 +4124,12 @@ function moduleUsesHostTaggedArrayUnionResultCarrierType(
   return module.functions.some((func) =>
     func.closureFunctionId === undefined &&
     func.hostTaggedArrayUnionResult?.arrayBoundary.carrierType === carrierType
+  );
+}
+
+function moduleUsesHostTaggedCallableUnionResultBoundary(module: CompilerModuleIR): boolean {
+  return module.functions.some((func) =>
+    func.closureFunctionId === undefined && func.hostTaggedCallableUnionResult !== undefined
   );
 }
 
@@ -8855,6 +8862,12 @@ function getHostClosureBoundarySignatures(module: CompilerModuleIR): readonly {
         needsResultBoundary: true,
       });
     }
+    if (func.hostTaggedCallableUnionResult) {
+      markUsage(func.hostTaggedCallableUnionResult.closureSignatureId, {
+        needsParamBoundary: true,
+        needsResultBoundary: true,
+      });
+    }
     const hostClassConstructorResultTagId = getEffectiveHostClassConstructorResultTagId(func);
     if (hostClassConstructorResultTagId !== undefined) {
       markClassConstructorSurfaceUsage(hostClassConstructorResultTagId);
@@ -9082,52 +9095,64 @@ function getHostClosureBoundarySignatures(module: CompilerModuleIR): readonly {
 
 function emitClosureRuntimeImports(module: CompilerModuleIR): string[] {
   const hostClosureSignatures = getHostClosureBoundarySignatures(module);
-  if (hostClosureSignatures.length === 0 && module.syncTryCatchClosureSignatureId === undefined) {
+  const usesHostTaggedCallableUnionResult = moduleUsesHostTaggedCallableUnionResultBoundary(module);
+  if (
+    hostClosureSignatures.length === 0 &&
+    module.syncTryCatchClosureSignatureId === undefined &&
+    !usesHostTaggedCallableUnionResult
+  ) {
     return [];
   }
-  const imports = hostClosureSignatures.flatMap((
-    { signature, needsParamBoundary, needsResultBoundary },
-  ) => [
-    ...(needsParamBoundary
+  const imports = [
+    ...(usesHostTaggedCallableUnionResult
       ? [
-        '(import "soundscript_closure" ' +
-        `"call_${signature.id}" (func $host_closure_call_${signature.id} (param externref)${
-          getHostClosureSourceParamBoundaries(signature).map((param) =>
-            ` (param ${
-              param.classTagId !== undefined
-                ? 'externref'
-                : getHostClosureBoundaryWatType(param.type!)
-            })`
-          ).join('')
-        } (result ${
-          signature.resultClassConstructorTagId !== undefined
-            ? 'externref'
-            : getHostClosureBoundaryWatType(signature.resultType)
-        })))`,
-        `(import "soundscript_object" "${
-          getHostObjectParamCacheImportFieldName(
-            'lookup',
-            getHostClosureParamCacheKey(signature.id),
-          )
-        }" (func $${
-          getHostClosureLookupParamCachedImportFunctionName(signature.id)
-        } (param externref) (result (ref null eq))))`,
-        `(import "soundscript_object" "${
-          getHostObjectParamCacheImportFieldName(
-            'remember',
-            getHostClosureParamCacheKey(signature.id),
-          )
-        }" (func $${
-          getHostClosureRememberParamCachedImportFunctionName(signature.id)
-        } (param externref) (param (ref null eq))))`,
+        '(import "soundscript_closure" "is_function" (func $host_closure_is_function (param externref) (result i32)))',
       ]
       : []),
-    ...(needsResultBoundary
-      ? [
-        `(import "soundscript_closure" "to_host_${signature.id}" (func $host_closure_to_host_${signature.id} (param (ref null eq)) (result externref)))`,
-      ]
-      : []),
-  ]);
+    ...hostClosureSignatures.flatMap((
+      { signature, needsParamBoundary, needsResultBoundary },
+    ) => [
+      ...(needsParamBoundary
+        ? [
+          '(import "soundscript_closure" ' +
+          `"call_${signature.id}" (func $host_closure_call_${signature.id} (param externref)${
+            getHostClosureSourceParamBoundaries(signature).map((param) =>
+              ` (param ${
+                param.classTagId !== undefined
+                  ? 'externref'
+                  : getHostClosureBoundaryWatType(param.type!)
+              })`
+            ).join('')
+          } (result ${
+            signature.resultClassConstructorTagId !== undefined
+              ? 'externref'
+              : getHostClosureBoundaryWatType(signature.resultType)
+          })))`,
+          `(import "soundscript_object" "${
+            getHostObjectParamCacheImportFieldName(
+              'lookup',
+              getHostClosureParamCacheKey(signature.id),
+            )
+          }" (func $${
+            getHostClosureLookupParamCachedImportFunctionName(signature.id)
+          } (param externref) (result (ref null eq))))`,
+          `(import "soundscript_object" "${
+            getHostObjectParamCacheImportFieldName(
+              'remember',
+              getHostClosureParamCacheKey(signature.id),
+            )
+          }" (func $${
+            getHostClosureRememberParamCachedImportFunctionName(signature.id)
+          } (param externref) (param (ref null eq))))`,
+        ]
+        : []),
+      ...(needsResultBoundary
+        ? [
+          `(import "soundscript_closure" "to_host_${signature.id}" (func $host_closure_to_host_${signature.id} (param (ref null eq)) (result externref)))`,
+        ]
+        : []),
+    ]),
+  ];
   if (
     module.syncTryCatchClosureSignatureId !== undefined &&
     !hostClosureSignatures.some(({ signatureId }) =>
@@ -24697,6 +24722,7 @@ function emitHostImportedFunctionWrapper(
   const hostImportPromiseParamNames = getEffectiveHostImportPromiseParamNames(func);
   const hostTaggedPrimitiveResultKinds = getEffectiveHostTaggedPrimitiveResultKinds(func);
   const hostTaggedArrayUnionResult = func.hostTaggedArrayUnionResult;
+  const hostTaggedCallableUnionResult = func.hostTaggedCallableUnionResult;
   const hostClosureResultSignatureId = getEffectiveHostClosureResultSignatureId(func);
   const hostPromiseResultBoundary = getHostPromiseBoundary(func.hostResultBoundary);
   const hasHostPromiseResult = hasEffectiveHostImportPromiseResult(func);
@@ -24816,6 +24842,12 @@ function emitHostImportedFunctionWrapper(
       : hostTaggedArrayUnionResult !== undefined
       ? emitHostTaggedArrayUnionResultToInternal(
         hostTaggedArrayUnionResult,
+        1,
+        runtime.layoutsByRepresentationName,
+      )
+      : hostTaggedCallableUnionResult !== undefined
+      ? emitHostTaggedCallableUnionResultToInternal(
+        hostTaggedCallableUnionResult,
         1,
         runtime.layoutsByRepresentationName,
       )
@@ -26047,6 +26079,140 @@ function emitHostTaggedArrayUnionResultToInternal(
       boundary.arrayBoundary,
       level + 4,
     ),
+    `${indent(level + 4)}local.set $result__callback_tagged`,
+    `${indent(level + 4)}br ${doneLabel}`,
+    `${indent(level + 3)}else`,
+    ...objectLines,
+    `${indent(level + 3)}end`,
+    `${indent(level + 2)})`,
+    `${indent(level + 1)})`,
+    `${indent(level + 1)}unreachable`,
+    `${indent(level)})`,
+    `${indent(level)}local.get $result__callback_tagged`,
+  ];
+}
+
+function emitHostTaggedCallableUnionResultToInternal(
+  boundary: CompilerFunctionHostTaggedCallableUnionResultIR,
+  level: number,
+  layoutsByRepresentationName: ReadonlyMap<string, BackendSpecializedObjectLayout>,
+): string[] {
+  const doneLabel = '$result__callback_tagged__done';
+  const heapRepresentation = boundary.heapRepresentation;
+  const objectLines = heapRepresentation
+    ? [
+      `${indent(level + 4)}local.get $result__callback_value`,
+      `${indent(level + 4)}call $${
+        heapRepresentation.kind === 'specialized_object_representation'
+          ? getHostObjectToSpecializedHelperName(
+            getLayoutForRepresentationName(
+              heapRepresentation.name,
+              layoutsByRepresentationName,
+            ),
+          )
+          : heapRepresentation.kind === 'dynamic_object_representation'
+          ? getHostBuiltinErrorToDynamicHelperName()
+          : getHostObjectToFallbackHelperName()
+      }`,
+      `${indent(level + 4)}call $tag_heap_object`,
+      `${indent(level + 4)}local.set $result__callback_tagged`,
+      `${indent(level + 4)}br ${doneLabel}`,
+    ]
+    : [`${indent(level + 4)}unreachable`];
+  const kinds = boundary.taggedPrimitiveKinds;
+  return [
+    `${indent(level)}local.set $result__callback_value`,
+    `${indent(level)}local.get $result__callback_value`,
+    `${indent(level)}call $tagged_type_tag`,
+    `${indent(level)}local.set $result__callback_tag`,
+    `${indent(level)}(block ${doneLabel}`,
+    ...(kinds.includesUndefined
+      ? [
+        `${indent(level + 1)}local.get $result__callback_tag`,
+        `${indent(level + 1)}i32.const 0`,
+        `${indent(level + 1)}i32.eq`,
+        `${indent(level + 1)}(if`,
+        `${indent(level + 2)}(then`,
+        `${indent(level + 3)}call $tag_undefined`,
+        `${indent(level + 3)}local.set $result__callback_tagged`,
+        `${indent(level + 3)}br ${doneLabel}`,
+        `${indent(level + 2)})`,
+        `${indent(level + 1)})`,
+      ]
+      : []),
+    ...(kinds.includesNull
+      ? [
+        `${indent(level + 1)}local.get $result__callback_tag`,
+        `${indent(level + 1)}i32.const 6`,
+        `${indent(level + 1)}i32.eq`,
+        `${indent(level + 1)}(if`,
+        `${indent(level + 2)}(then`,
+        `${indent(level + 3)}call $tag_null`,
+        `${indent(level + 3)}local.set $result__callback_tagged`,
+        `${indent(level + 3)}br ${doneLabel}`,
+        `${indent(level + 2)})`,
+        `${indent(level + 1)})`,
+      ]
+      : []),
+    ...(kinds.includesBoolean
+      ? [
+        `${indent(level + 1)}local.get $result__callback_tag`,
+        `${indent(level + 1)}i32.const 1`,
+        `${indent(level + 1)}i32.eq`,
+        `${indent(level + 1)}(if`,
+        `${indent(level + 2)}(then`,
+        `${indent(level + 3)}local.get $result__callback_value`,
+        `${indent(level + 3)}call $tagged_boolean_value`,
+        `${indent(level + 3)}call $tag_boolean`,
+        `${indent(level + 3)}local.set $result__callback_tagged`,
+        `${indent(level + 3)}br ${doneLabel}`,
+        `${indent(level + 2)})`,
+        `${indent(level + 1)})`,
+      ]
+      : []),
+    ...(kinds.includesNumber
+      ? [
+        `${indent(level + 1)}local.get $result__callback_tag`,
+        `${indent(level + 1)}i32.const 2`,
+        `${indent(level + 1)}i32.eq`,
+        `${indent(level + 1)}(if`,
+        `${indent(level + 2)}(then`,
+        `${indent(level + 3)}local.get $result__callback_value`,
+        `${indent(level + 3)}call $tagged_number_value`,
+        `${indent(level + 3)}call $tag_number`,
+        `${indent(level + 3)}local.set $result__callback_tagged`,
+        `${indent(level + 3)}br ${doneLabel}`,
+        `${indent(level + 2)})`,
+        `${indent(level + 1)})`,
+      ]
+      : []),
+    ...(kinds.includesString
+      ? [
+        `${indent(level + 1)}local.get $result__callback_tag`,
+        `${indent(level + 1)}i32.const 3`,
+        `${indent(level + 1)}i32.eq`,
+        `${indent(level + 1)}(if`,
+        `${indent(level + 2)}(then`,
+        `${indent(level + 3)}local.get $result__callback_value`,
+        `${indent(level + 3)}call $string_to_owned`,
+        `${indent(level + 3)}call $tag_string`,
+        `${indent(level + 3)}local.set $result__callback_tagged`,
+        `${indent(level + 3)}br ${doneLabel}`,
+        `${indent(level + 2)})`,
+        `${indent(level + 1)})`,
+      ]
+      : []),
+    `${indent(level + 1)}local.get $result__callback_tag`,
+    `${indent(level + 1)}i32.const 4`,
+    `${indent(level + 1)}i32.eq`,
+    `${indent(level + 1)}(if`,
+    `${indent(level + 2)}(then`,
+    `${indent(level + 3)}local.get $result__callback_value`,
+    `${indent(level + 3)}call $host_closure_is_function`,
+    `${indent(level + 3)}if`,
+    `${indent(level + 4)}local.get $result__callback_value`,
+    `${indent(level + 4)}call $host_externref_to_closure_${boundary.closureSignatureId}`,
+    `${indent(level + 4)}call $tag_heap_object`,
     `${indent(level + 4)}local.set $result__callback_tagged`,
     `${indent(level + 4)}br ${doneLabel}`,
     `${indent(level + 3)}else`,

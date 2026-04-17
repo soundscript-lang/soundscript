@@ -738,6 +738,9 @@ function createJsHostImports(
         if (typeof property !== 'string') {
           return undefined;
         }
+        if (property === 'is_function') {
+          return (value: unknown) => Number(typeof value === 'function');
+        }
         const callMatch = /^call_(\d+)$/.exec(property);
         if (callMatch) {
           return (callback: unknown, ...args: unknown[]) => {

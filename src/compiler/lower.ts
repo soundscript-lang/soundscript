@@ -19,6 +19,7 @@ import type {
   CompilerFunctionHostTaggedArrayBoundaryIR,
   CompilerFunctionHostTaggedArrayParamIR,
   CompilerFunctionHostTaggedArrayUnionResultIR,
+  CompilerFunctionHostTaggedCallableUnionResultIR,
   CompilerFunctionHostTaggedHeapNullableBoundaryIR,
   CompilerFunctionHostTaggedHeapNullableParamIR,
   CompilerFunctionHostTaggedPrimitiveParamIR,
@@ -3539,6 +3540,146 @@ function getHostTaggedArrayHeapUnionResultBoundaryInfo(
   return {
     taggedPrimitiveKinds,
     arrayBoundary,
+    heapRepresentation,
+    objectMemberTypes,
+  };
+}
+
+function getHostTaggedCallableHeapUnionResultBoundaryInfo(
+  checker: ts.TypeChecker,
+  type: ts.Type,
+  contextNode: ts.Node,
+  closures: ModuleClosureLoweringState,
+  runtime: ModuleRuntimeLoweringState,
+  classes: ReadonlyMap<ts.Symbol, ts.ClassDeclaration>,
+):
+  | (CompilerFunctionHostTaggedCallableUnionResultIR & {
+    objectMemberTypes: readonly ts.Type[];
+  })
+  | undefined {
+  if ((type.flags & ts.TypeFlags.Union) === 0) {
+    return undefined;
+  }
+
+  let closureSignatureId: number | undefined;
+  const objectMemberTypes: ts.Type[] = [];
+  let heapRepresentation: CompilerRuntimeRepresentationRefIR<'object'> | undefined;
+  const taggedPrimitiveKinds: CompilerTaggedPrimitiveBoundaryKindsIR = {
+    includesBoolean: false,
+    includesNull: false,
+    includesNumber: false,
+    includesString: false,
+    includesUndefined: false,
+  };
+
+  for (const member of (type as ts.UnionType).types) {
+    if (isUndefinedType(member)) {
+      taggedPrimitiveKinds.includesUndefined = true;
+      continue;
+    }
+    if (isNullType(member)) {
+      taggedPrimitiveKinds.includesNull = true;
+      continue;
+    }
+    if ((member.flags & ts.TypeFlags.BooleanLike) !== 0) {
+      taggedPrimitiveKinds.includesBoolean = true;
+      continue;
+    }
+    if ((member.flags & ts.TypeFlags.NumberLike) !== 0) {
+      taggedPrimitiveKinds.includesNumber = true;
+      continue;
+    }
+    if (isStringLikeType(member)) {
+      taggedPrimitiveKinds.includesString = true;
+      continue;
+    }
+
+    if (checker.getSignaturesOfType(member, ts.SignatureKind.Call).length > 0) {
+      const shallowClosureBoundaryOptions = {
+        annotateNestedCallableHeapFields: false,
+      } satisfies ResolveClosureAbiSignatureOptions;
+      ensureSupportedHostClosureBoundarySignature(
+        checker,
+        member,
+        contextNode,
+        closures,
+        runtime,
+        classes,
+        shallowClosureBoundaryOptions,
+      );
+      annotateHostClosureBoundaryTypes(
+        checker,
+        member,
+        contextNode,
+        runtime,
+        closures,
+        classes,
+        shallowClosureBoundaryOptions,
+      );
+      const currentSignatureId = getClosureSignatureIdForType(
+        checker,
+        member,
+        contextNode,
+        closures,
+        runtime,
+        classes,
+        shallowClosureBoundaryOptions,
+      );
+      if (closureSignatureId !== undefined && closureSignatureId !== currentSignatureId) {
+        return undefined;
+      }
+      closureSignatureId = currentSignatureId;
+      continue;
+    }
+
+    if (!isSupportedHeapLocalType(checker, member)) {
+      return undefined;
+    }
+    const candidateObjectMemberTypes = [...objectMemberTypes, member];
+    const current = getFunctionBoundaryRepresentation(
+      checker,
+      member,
+      contextNode,
+      runtime,
+      classes,
+    );
+    objectMemberTypes.push(member);
+    if (!heapRepresentation) {
+      heapRepresentation = current;
+      continue;
+    }
+    if (heapRepresentation.kind === current.kind && heapRepresentation.name === current.name) {
+      continue;
+    }
+    if (
+      candidateObjectMemberTypes.every((candidate) =>
+        isBagLikeType(checker, candidate) ||
+        isProjectedFallbackBoundaryObjectType(checker, candidate, classes)
+      )
+    ) {
+      heapRepresentation = ensureObjectFallbackRepresentation(runtime);
+      continue;
+    }
+    throw new CompilerUnsupportedError(
+      'Exported callable-inclusive tagged boundaries do not yet support conflicting object representations.',
+      contextNode,
+    );
+  }
+
+  const categoryCount = Number(taggedPrimitiveKinds.includesBoolean === true) +
+    Number(taggedPrimitiveKinds.includesNull === true) +
+    Number(taggedPrimitiveKinds.includesNumber === true) +
+    Number(taggedPrimitiveKinds.includesString === true) +
+    Number(taggedPrimitiveKinds.includesUndefined === true) +
+    Number(closureSignatureId !== undefined) +
+    Number(heapRepresentation !== undefined);
+  if (categoryCount < 2 || closureSignatureId === undefined) {
+    return undefined;
+  }
+
+  return {
+    taggedPrimitiveKinds,
+    closureSignatureId,
     heapRepresentation,
     objectMemberTypes,
   };
@@ -32107,6 +32248,7 @@ function createAmbientHostFunctionHeader(
   let heapResultRepresentation: CompilerRuntimeRepresentationRefIR<'object'> | undefined;
   let hostTaggedPrimitiveResultKinds: CompilerTaggedPrimitiveBoundaryKindsIR | undefined;
   let hostTaggedArrayUnionResult: CompilerFunctionHostTaggedArrayUnionResultIR | undefined;
+  let hostTaggedCallableUnionResult: CompilerFunctionHostTaggedCallableUnionResultIR | undefined;
   let hostTaggedHeapResultBoundary: CompilerFunctionHostTaggedHeapNullableBoundaryIR | undefined;
   let promiseResult = false;
   let hostPromiseResultValueBoundary: CompilerHostBoundaryIR | undefined;
@@ -32227,6 +32369,14 @@ function createAmbientHostFunctionHeader(
       runtime,
       classes,
     );
+    const ambientTaggedCallableUnionResult = getHostTaggedCallableHeapUnionResultBoundaryInfo(
+      checker,
+      returnType,
+      declaration,
+      closures,
+      runtime,
+      classes,
+    );
     const ambientTaggedHeapUnionResult = getHostTaggedHeapUnionBoundaryInfo(
       checker,
       returnType,
@@ -32256,6 +32406,32 @@ function createAmbientHostFunctionHeader(
             memberType,
             declaration,
             ambientTaggedArrayUnionResult.heapRepresentation,
+          );
+        }
+      }
+      resultType = 'tagged_ref';
+    } else if (ambientTaggedCallableUnionResult) {
+      if (ambientTaggedCallableUnionResult.taggedPrimitiveKinds.includesString) {
+        ensureStringRepresentation(runtime);
+      }
+      hostTaggedPrimitiveResultKinds = ambientTaggedCallableUnionResult.taggedPrimitiveKinds;
+      hostTaggedCallableUnionResult = {
+        taggedPrimitiveKinds: ambientTaggedCallableUnionResult.taggedPrimitiveKinds,
+        closureSignatureId: ambientTaggedCallableUnionResult.closureSignatureId,
+        heapRepresentation: ambientTaggedCallableUnionResult.heapRepresentation,
+      };
+      if (ambientTaggedCallableUnionResult.heapRepresentation) {
+        hostTaggedHeapResultBoundary = {
+          includesNull: false,
+          includesUndefined: false,
+          representation: ambientTaggedCallableUnionResult.heapRepresentation,
+        };
+        heapResultRepresentation = ambientTaggedCallableUnionResult.heapRepresentation;
+        for (const memberType of ambientTaggedCallableUnionResult.objectMemberTypes) {
+          annotateHostHeapBoundaryType(
+            memberType,
+            declaration,
+            ambientTaggedCallableUnionResult.heapRepresentation,
           );
         }
       }
@@ -32351,6 +32527,7 @@ function createAmbientHostFunctionHeader(
     hostImportGeneratorResult: hostImportGeneratorResult || undefined,
     hostImportAsyncGeneratorResult: hostImportAsyncGeneratorResult || undefined,
     hostTaggedArrayUnionResult,
+    hostTaggedCallableUnionResult,
     heapResultRepresentation,
     params,
     resultType,

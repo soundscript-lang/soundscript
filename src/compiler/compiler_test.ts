@@ -1174,6 +1174,7 @@ compilerIntegrationTest(
       false,
     );
     assertEquals(watOutput.includes('$host_array_is_array'), false);
+    assertEquals(watOutput.includes('$host_closure_is_function'), false);
     const wrapperSource = await Deno.readTextFile(result.artifacts.wrapperPath);
     assertStringIncludes(wrapperSource, '"hostImportCallUsed": false');
     assertStringIncludes(wrapperSource, '"hostImportValueUsed": true');
@@ -23091,6 +23092,122 @@ compilerIntegrationTest(
     const watOutput = await readWatArtifactForProject(tempDirectory);
     assertStringIncludes(watOutput, 'call $host_array_is_array');
     assertStringIncludes(watOutput, 'call $host_array_to_owned_string_array');
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject imports host callable members of mixed tagged unions',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              skipLibCheck: true,
+              target: 'ES2022',
+              lib: ['ES2022'],
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+              allowSyntheticDefaultImports: true,
+            },
+            include: ['src/**/*.ts', 'src/**/*.d.ts'],
+            soundscript: {
+              target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/value-api.d.ts',
+        contents: [
+          "declare module 'value-api' {",
+          '  export type Left = { left: number };',
+          '  export type Compute = (base: number) => number;',
+          '  export type Value = number | string | Compute | Left;',
+          '  export function next(index: number): Value;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          '// #[interop]',
+          "import { next } from 'value-api';",
+          '',
+          'type Left = { left: number };',
+          'type Compute = (base: number) => number;',
+          'type Value = number | string | Compute | Left;',
+          '',
+          'function score(value: Value): number {',
+          '  if (typeof value === "function") {',
+          '    return value(4);',
+          '  }',
+          '  if (typeof value === "number") {',
+          '    return value;',
+          '  }',
+          '  if (typeof value === "string") {',
+          '    return value.length;',
+          '  }',
+          '  return value.left * 100;',
+          '}',
+          '',
+          'export function main(): number {',
+          '  return score(next(0)) * 1000',
+          '    + score(next(1)) * 100',
+          '    + score(next(2)) * 10',
+          '    + score(next(3));',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const wrapperModule = await importCompiledWrapperModule(result.artifacts.wrapperPath);
+    const instantiated = await wrapperModule.instantiate({
+      modules: {
+        'value-api': {
+          next(index: number) {
+            if (index === 0) {
+              return 3;
+            }
+            if (index === 1) {
+              return 'abcd';
+            }
+            if (index === 2) {
+              return (base: number) => base + 6;
+            }
+            return { left: 5 };
+          },
+        },
+      },
+    });
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+
+    assertEquals(exported(), 4000);
+
+    const watOutput = await readWatArtifactForProject(tempDirectory);
+    assertMatch(watOutput, /call \$host_externref_to_closure_\d+/);
+    assertEquals(watOutput.includes('$host_array_is_array'), false);
   },
 );
 
