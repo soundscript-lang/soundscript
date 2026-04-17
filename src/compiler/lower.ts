@@ -57311,6 +57311,21 @@ function lowerInitialStringKeyMapNewExpression(
       expression,
     );
   }
+  const mapTypeInfo = getSupportedStringKeyMapTypeInfo(
+    context.checker,
+    context.checker.getTypeAtLocation(expression),
+  );
+  if (!mapTypeInfo) {
+    throw new CompilerUnsupportedError(
+      'String-key Map construction currently requires supported string-key Map values in compiler subset.',
+      expression,
+    );
+  }
+  const valueHeapRepresentation = getInternalTaggedHeapUnionObjectRepresentation(
+    context.checker,
+    mapTypeInfo.valueType,
+    context.runtime,
+  );
   const representation = ensureObjectDynamicRepresentation(context.runtime);
   const resultName = createLocalName('map', context.nextLocalId);
   context.nextLocalId += 1;
@@ -57348,22 +57363,31 @@ function lowerInitialStringKeyMapNewExpression(
         propertyKeyStatements,
         'map_key',
       );
-      context.expressionPreludeStatements.push(...propertyKeyStatements);
-      const valueType = context.checker.getTypeAtLocation(entry.value);
-      const valueInfo = resolveClosureAbiValueType(
-        context.checker,
-        valueType,
-        entry.value,
-        context.closures,
-        context.runtime,
-        context.classes,
-      );
-      const valueExpression = adaptResolvedPromiseValueToTagged(
-        lowerExpressionAsValueType(entry.value, valueInfo.type, context),
-        valueInfo,
-        entry.value,
-        context,
-      );
+      const valueExpression = valueHeapRepresentation &&
+          isTaggedHeapUnionHeapValueExpression(entry.value, context)
+        ? lowerTaggedHeapUnionObjectExpression(
+          entry.value,
+          valueHeapRepresentation,
+          context,
+          'map_value',
+        )
+        : (() => {
+          const valueType = context.checker.getTypeAtLocation(entry.value);
+          const valueInfo = resolveClosureAbiValueType(
+            context.checker,
+            valueType,
+            entry.value,
+            context.closures,
+            context.runtime,
+            context.classes,
+          );
+          return adaptResolvedPromiseValueToTagged(
+            lowerExpressionAsValueType(entry.value, valueInfo.type, context),
+            valueInfo,
+            entry.value,
+            context,
+          );
+        })();
       const valuePreludeStatements = consumeExpressionPreludeStatements(context);
       context.expressionPreludeStatements.push(...propertyKeyStatements);
       context.expressionPreludeStatements.push(...valuePreludeStatements);
