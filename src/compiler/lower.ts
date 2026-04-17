@@ -2345,7 +2345,10 @@ function getClosureAbiValueTypeForType(
   if (checker.getSignaturesOfType(type, ts.SignatureKind.Call).length > 0) {
     return getCompilerClosureValueTypeForType(checker, type, node);
   }
-  if (isSupportedOwnedTaggedArrayType(checker, type)) {
+  if (
+    isSupportedOwnedTaggedArrayType(checker, type) ||
+    isSupportedInternalOwnedTaggedHeapArrayType(checker, type)
+  ) {
     return 'owned_tagged_array_ref';
   }
   if (isSupportedOwnedHeapArrayType(checker, type)) {
@@ -30924,35 +30927,29 @@ function createFunctionHeader(
         if (isSupportedOwnedBooleanArrayType(checker, parameterType)) {
           return 'owned_boolean_array_ref';
         }
-        const hostTaggedArrayBoundary = hasExportBoundary
-          ? getHostTaggedArrayBoundaryInfo(
-            checker,
-            parameterType,
-            parameter,
-            runtime,
-            classes,
-          )
-          : undefined;
-        const taggedArrayKinds = hostTaggedArrayBoundary ??
-          getSupportedOwnedTaggedArrayKinds(checker, parameterType);
+        const taggedArrayKinds = getHostTaggedArrayBoundaryInfo(
+          checker,
+          parameterType,
+          parameter,
+          runtime,
+          classes,
+        );
         if (taggedArrayKinds) {
           ensureTaggedValueRepresentation(runtime);
           if (taggedArrayKinds.includesString) {
             ensureStringRepresentation(runtime);
           }
-          if (hasExportBoundary) {
-            hostTaggedArrayParams.push({
-              name: runtimeParamName,
-              ...taggedArrayKinds,
-            });
-            if (hostTaggedArrayBoundary?.representation) {
-              for (const memberType of getTaggedArrayObjectMemberTypes(checker, parameterType)) {
-                annotateHostHeapBoundaryType(
-                  memberType,
-                  parameter,
-                  hostTaggedArrayBoundary.representation,
-                );
-              }
+          hostTaggedArrayParams.push({
+            name: runtimeParamName,
+            ...taggedArrayKinds,
+          });
+          if (taggedArrayKinds.representation) {
+            for (const memberType of getTaggedArrayObjectMemberTypes(checker, parameterType)) {
+              annotateHostHeapBoundaryType(
+                memberType,
+                parameter,
+                taggedArrayKinds.representation,
+              );
             }
           }
           return 'owned_tagged_array_ref';
@@ -31159,15 +31156,13 @@ function createFunctionHeader(
       }
       : undefined);
   const hasHostTaggedPrimitiveResult = hostTaggedPrimitiveResultKinds !== undefined;
-  const hostTaggedArrayResultKinds = hasExportBoundary
-    ? getHostTaggedArrayBoundaryInfo(
-      checker,
-      returnType,
-      declaration,
-      runtime,
-      classes,
-    ) ?? getSupportedOwnedTaggedArrayKinds(checker, returnType)
-    : undefined;
+  const taggedArrayResultKinds = getHostTaggedArrayBoundaryInfo(
+    checker,
+    returnType,
+    declaration,
+    runtime,
+    classes,
+  );
   const hasHostLengthViewResult = hasExportBoundary &&
     isSupportedLengthViewType(checker, returnType, declaration);
   const hostClosureResultSignatureId = hasExportBoundary &&
@@ -31204,25 +31199,25 @@ function createFunctionHeader(
       ensureStringRepresentation(runtime);
     }
   }
-  if (hostTaggedArrayResultKinds) {
+  if (taggedArrayResultKinds) {
     ensureTaggedValueRepresentation(runtime);
-    if (hostTaggedArrayResultKinds.includesString) {
+    if (taggedArrayResultKinds.includesString) {
       ensureStringRepresentation(runtime);
     }
     if (
-      'representation' in hostTaggedArrayResultKinds && hostTaggedArrayResultKinds.representation
+      taggedArrayResultKinds.representation
     ) {
       for (const memberType of getTaggedArrayObjectMemberTypes(checker, returnType)) {
         annotateHostHeapBoundaryType(
           memberType,
           declaration,
-          hostTaggedArrayResultKinds.representation,
+          taggedArrayResultKinds.representation,
         );
       }
     }
   }
   const hostHeapArrayResultRepresentation = hasExportBoundary &&
-      !hostTaggedArrayResultKinds &&
+      !taggedArrayResultKinds &&
       isSupportedOwnedHeapArrayType(checker, returnType)
     ? getOwnedHeapArrayBoundaryRepresentation(
       checker,
@@ -31288,7 +31283,7 @@ function createFunctionHeader(
     ? getCompilerClosureValueTypeForType(checker, returnType, declaration)
     : usesOwnedStringBoundary
     ? 'owned_string_ref'
-    : hostTaggedArrayResultKinds
+    : taggedArrayResultKinds
     ? 'owned_tagged_array_ref'
     : isSupportedOwnedHeapArrayType(checker, returnType)
     ? 'owned_heap_array_ref'
@@ -31393,9 +31388,7 @@ function createFunctionHeader(
     heapArrayParams: hostHeapArrayParams.length > 0 ? hostHeapArrayParams : undefined,
     heapArrayResultRepresentation: hostHeapArrayResultRepresentation,
     taggedArrayParams: hostTaggedArrayParams.length > 0 ? hostTaggedArrayParams : undefined,
-    taggedArrayResultKinds: hostTaggedArrayResultKinds
-      ? { ...hostTaggedArrayResultKinds }
-      : undefined,
+    taggedArrayResultKinds: taggedArrayResultKinds ? { ...taggedArrayResultKinds } : undefined,
     taggedHeapNullableParams: hostTaggedHeapNullableParams.length > 0
       ? hostTaggedHeapNullableParams
       : undefined,

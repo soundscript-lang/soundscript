@@ -10564,6 +10564,14 @@ function emitHostFallbackObjectBoundaryHelpers(
   const usesNumberArrayResultBoundary = moduleUsesOwnedNumberArrayHostResultBoundary(module);
   const usesBooleanArrayResultBoundary = moduleUsesOwnedBooleanArrayHostResultBoundary(module);
   const usesTaggedArrayResultBoundary = moduleUsesOwnedTaggedArrayHostResultBoundary(module);
+  const genericTaggedArrayResultBoundary = {
+    ...ASYNC_GENERATOR_HOST_TAGGED_ARRAY_BRIDGE_KINDS,
+    representation: {
+      family: 'object',
+      kind: 'fallback_object_representation',
+      name: layout.representation.name,
+    },
+  } satisfies CompilerFunctionHostTaggedArrayBoundaryIR;
   const closureFunctionById = new Map(
     module.functions
       .filter((func) => func.closureFunctionId !== undefined)
@@ -10604,9 +10612,7 @@ function emitHostFallbackObjectBoundaryHelpers(
             candidateKind.kind === 'heap'
               ? 'generic_owned_heap_array_to_host_array'
               : candidateKind.kind === 'tagged'
-              ? getOwnedTaggedArrayToHostHelperName(
-                ASYNC_GENERATOR_HOST_TAGGED_ARRAY_BRIDGE_KINDS,
-              )
+              ? getOwnedTaggedArrayToHostHelperName(genericTaggedArrayResultBoundary)
               : getOwnedArrayToHostHelperName(candidateKind.kind)
           }`,
           `${indent(level + 1)}call $${setterImportName}`,
@@ -28821,6 +28827,26 @@ export function emitCompilerModuleToWat(module: CompilerModuleIR): string {
       ))
     ? getFallbackObjectLayout(module.runtime)
     : undefined;
+  const fallbackTaggedArrayBridgeKinds = fallbackObjectLayout
+    ? {
+      ...ASYNC_GENERATOR_HOST_TAGGED_ARRAY_BRIDGE_KINDS,
+      representation: {
+        family: 'object',
+        kind: 'fallback_object_representation',
+        name: fallbackObjectLayout.representation.name,
+      },
+    } satisfies CompilerFunctionHostTaggedArrayBoundaryIR
+    : undefined;
+  const extraTaggedKindSets = [
+    ...(moduleUsesGeneratorStepClosureHostBridge(module)
+      ? [ASYNC_GENERATOR_HOST_TAGGED_ARRAY_BRIDGE_KINDS]
+      : []),
+    ...(moduleUsesOwnedTaggedArrayHostResultBoundary(module) &&
+        moduleUsesHostFallbackObjectBoundary(module) &&
+        fallbackTaggedArrayBridgeKinds
+      ? [fallbackTaggedArrayBridgeKinds]
+      : []),
+  ];
   const usesPromiseRuntime = moduleUsesPromiseRuntime(module);
   const lines = [
     '(module',
@@ -29064,9 +29090,7 @@ export function emitCompilerModuleToWat(module: CompilerModuleIR): string {
       usesTaggedParamBoundary: moduleUsesOwnedTaggedArrayHostParamBoundary(module),
       usesTaggedParamCopyBack: moduleUsesOwnedTaggedArrayHostParamCopyBack(module),
       usesTaggedResultBoundary: moduleUsesOwnedTaggedArrayHostResultBoundary(module),
-      extraTaggedKindSets: moduleUsesGeneratorStepClosureHostBridge(module)
-        ? [ASYNC_GENERATOR_HOST_TAGGED_ARRAY_BRIDGE_KINDS]
-        : undefined,
+      extraTaggedKindSets: extraTaggedKindSets.length > 0 ? extraTaggedKindSets : undefined,
       fallbackObjectWatTypeId: fallbackObjectLayout?.watTypeId,
       indent,
       layoutsByRepresentationName,
