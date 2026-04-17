@@ -3033,6 +3033,26 @@ function getSupportedInternalOwnedTaggedHeapArrayKinds(
       merged.includesUndefined = true;
       continue;
     }
+    if (isUndefinedType(elementType)) {
+      merged.includesUndefined = true;
+      continue;
+    }
+    if (isNullType(elementType)) {
+      merged.includesNull = true;
+      continue;
+    }
+    if ((elementType.flags & ts.TypeFlags.BooleanLike) !== 0) {
+      merged.includesBoolean = true;
+      continue;
+    }
+    if ((elementType.flags & ts.TypeFlags.NumberLike) !== 0) {
+      merged.includesNumber = true;
+      continue;
+    }
+    if (isStringLikeType(elementType)) {
+      merged.includesString = true;
+      continue;
+    }
     const kinds = getSupportedInternalTaggedHeapUnionKinds(checker, elementType);
     if (!kinds) {
       return undefined;
@@ -3053,6 +3073,23 @@ function isSupportedInternalOwnedTaggedHeapArrayType(
   type: ts.Type,
 ): boolean {
   return getSupportedInternalOwnedTaggedHeapArrayKinds(checker, type) !== undefined;
+}
+
+function isSupportedOwnedHeapArrayOfInternalTaggedHeapArraysType(
+  checker: ts.TypeChecker,
+  type: ts.Type,
+): boolean {
+  if ((type.flags & ts.TypeFlags.Object) === 0) {
+    return false;
+  }
+  if (!checker.isArrayType(type) && !checker.isTupleType(type)) {
+    return false;
+  }
+  const elementTypes = checker.getTypeArguments(type as ts.TypeReference);
+  return elementTypes.length > 0 &&
+    elementTypes.every((elementType) =>
+      isSupportedInternalOwnedTaggedHeapArrayType(checker, elementType)
+    );
 }
 
 function getTaggedArrayElementTypes(checker: ts.TypeChecker, type: ts.Type): readonly ts.Type[] {
@@ -4078,6 +4115,9 @@ function getCompilerBindingValueType(checker: ts.TypeChecker, node: ts.Node): Co
   }
   if (isSupportedInternalOwnedTaggedHeapArrayType(checker, type)) {
     return 'owned_tagged_array_ref';
+  }
+  if (isSupportedOwnedHeapArrayOfInternalTaggedHeapArraysType(checker, type)) {
+    return 'owned_heap_array_ref';
   }
   if (isSupportedOwnedHeapArrayType(checker, type)) {
     return 'owned_heap_array_ref';

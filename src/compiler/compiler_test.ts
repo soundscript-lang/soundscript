@@ -22647,6 +22647,52 @@ compilerIntegrationTest(
 );
 
 compilerIntegrationTest(
+  'compileProject narrows mixed primitive and object union Array.from map entries',
+  async () => {
+    const tempDirectory = await createCompilerTestProject([
+      'type Left = { left: number };',
+      'type Right = { right: number };',
+      'type Value = number | string | Left | Right;',
+      '',
+      'function score(value: Value): number {',
+      '  if (typeof value === "number") {',
+      '    return value;',
+      '  }',
+      '  if (typeof value === "string") {',
+      '    return value.length;',
+      '  }',
+      '  if ("left" in value) {',
+      '    return value.left * 10;',
+      '  }',
+      '  return value.right;',
+      '}',
+      '',
+      'export function main(): number {',
+      '  const values = new Map<string, Value>([',
+      '    ["a", 3],',
+      '    ["bb", "abcd"],',
+      '    ["ccc", { left: 5 }],',
+      '    ["dddd", { right: 7 }],',
+      '  ]);',
+      '  const entries = Array.from(values.entries());',
+      '  let total = 0;',
+      '  for (const [key, value] of entries) {',
+      '    total += key.length + score(value);',
+      '  }',
+      '  return total;',
+      '}',
+      '',
+    ].join('\n'));
+
+    const result = compileTempProject(tempDirectory);
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assertEquals(await invokeCompiledEntry(tempDirectory, 'main', []), 74);
+  },
+);
+
+compilerIntegrationTest(
   'lowerProgramToCompilerIR distinguishes explicit bag-like object locals from narrow fixed layouts',
   async () => {
     const tempDirectory = await createTempProject([
