@@ -162,6 +162,12 @@ export function getTaggedHostBoundaryUsage(module: CompilerModuleIR): TaggedHost
     for (const signatureId of getEffectiveHostClosureParamsByName(func).values()) {
       markClosureUsage(signatureId, { needsParamBoundary: true, needsResultBoundary: true });
     }
+    for (const param of func.hostTaggedCallableUnionParams ?? []) {
+      markClosureUsage(param.closureSignatureId, {
+        needsParamBoundary: true,
+        needsResultBoundary: true,
+      });
+    }
     const hostClosureResultSignatureId = getEffectiveHostClosureResultSignatureId(func);
     if (hostClosureResultSignatureId !== undefined) {
       markClosureUsage(hostClosureResultSignatureId, {
