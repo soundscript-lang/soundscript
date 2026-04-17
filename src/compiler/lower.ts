@@ -31,6 +31,7 @@ import type {
   CompilerLocalIR,
   CompilerModuleGlobalIR,
   CompilerModuleIR,
+  CompilerOwnedArrayValueTypeIR,
   CompilerStatementIR,
   CompilerTaggedPrimitiveBoundaryKindsIR,
   CompilerValueType,
@@ -666,15 +667,35 @@ function isExplicitThisParameter(parameter: ts.ParameterDeclaration): boolean {
 
 function isOwnedArrayValueType(
   type: CompilerValueType,
-): type is
-  | 'owned_heap_array_ref'
-  | 'owned_array_ref'
-  | 'owned_number_array_ref'
-  | 'owned_boolean_array_ref'
-  | 'owned_tagged_array_ref' {
+): type is CompilerOwnedArrayValueTypeIR {
   return type === 'owned_heap_array_ref' || type === 'owned_array_ref' ||
     type === 'owned_number_array_ref' ||
     type === 'owned_boolean_array_ref' || type === 'owned_tagged_array_ref';
+}
+
+function getSupportedOwnedArrayValueTypeForType(
+  checker: ts.TypeChecker,
+  type: ts.Type,
+): CompilerOwnedArrayValueTypeIR | undefined {
+  if (isSupportedOwnedStringArrayType(checker, type)) {
+    return 'owned_array_ref';
+  }
+  if (isSupportedOwnedNumberArrayType(checker, type)) {
+    return 'owned_number_array_ref';
+  }
+  if (isSupportedOwnedBooleanArrayType(checker, type)) {
+    return 'owned_boolean_array_ref';
+  }
+  if (
+    isSupportedOwnedTaggedArrayType(checker, type) ||
+    isSupportedInternalOwnedTaggedHeapArrayType(checker, type)
+  ) {
+    return 'owned_tagged_array_ref';
+  }
+  if (isSupportedOwnedHeapArrayType(checker, type)) {
+    return 'owned_heap_array_ref';
+  }
+  return undefined;
 }
 
 function isSupportedOwnedArrayType(
@@ -2928,6 +2949,11 @@ function getSupportedInternalTaggedHeapUnionKinds(
       heapObjectMemberCount += 1;
       continue;
     }
+    if (getSupportedOwnedArrayValueTypeForType(checker, member)) {
+      includesHeapObject = true;
+      heapObjectMemberCount += 1;
+      continue;
+    }
     if (isSupportedHeapLocalType(checker, member)) {
       includesHeapObject = true;
       heapObjectMemberCount += 1;
@@ -2974,6 +3000,23 @@ function isSupportedInternalTaggedHeapUnionWithCallable(
   type: ts.Type,
 ): boolean {
   return getSupportedInternalTaggedHeapUnionKinds(checker, type)?.includesCallable === true;
+}
+
+function getSupportedInternalTaggedHeapUnionArrayValueTypes(
+  checker: ts.TypeChecker,
+  type: ts.Type,
+): readonly CompilerOwnedArrayValueTypeIR[] {
+  if ((type.flags & ts.TypeFlags.Union) === 0) {
+    return [];
+  }
+  const result = new Set<CompilerOwnedArrayValueTypeIR>();
+  for (const member of (type as ts.UnionType).types) {
+    const arrayValueType = getSupportedOwnedArrayValueTypeForType(checker, member);
+    if (arrayValueType) {
+      result.add(arrayValueType);
+    }
+  }
+  return [...result];
 }
 
 function isSupportedInternalTaggedHeapUnionWithNull(
@@ -4374,6 +4417,80 @@ function tryLowerObjectValuesLengthExpression(
   };
 }
 
+function tryLowerTaggedExpressionAsOwnedArrayValueType(
+  expression: ts.Expression,
+  targetType: CompilerOwnedArrayValueTypeIR,
+  context: FunctionLoweringContext,
+): CompilerExpressionIR | undefined {
+  if (
+    getSupportedOwnedArrayValueTypeForType(
+      context.checker,
+      context.checker.getTypeAtLocation(expression),
+    ) !== targetType
+  ) {
+    return undefined;
+  }
+  const lowered = lowerExpression(expression, context);
+  if ('type' in lowered && lowered.type === 'tagged_ref') {
+    return {
+      kind: 'untag_heap_object',
+      value: lowered,
+      type: targetType,
+    };
+  }
+  return undefined;
+}
+
+function tryLowerTaggedLocalAsOwnedArrayValueType(
+  expression: ts.Expression,
+  targetType: CompilerOwnedArrayValueTypeIR,
+  context: FunctionLoweringContext,
+): CompilerExpressionIR | undefined {
+  if (ts.isParenthesizedExpression(expression)) {
+    return tryLowerTaggedLocalAsOwnedArrayValueType(expression.expression, targetType, context);
+  }
+  if (!ts.isIdentifier(expression)) {
+    return undefined;
+  }
+  if (
+    getSupportedOwnedArrayValueTypeForType(
+      context.checker,
+      context.checker.getTypeAtLocation(expression),
+    ) !== targetType
+  ) {
+    return undefined;
+  }
+  const symbol = lookupSymbol(context, expression.text);
+  if (symbol?.type === 'tagged_ref') {
+    return {
+      kind: 'untag_heap_object',
+      value: {
+        kind: 'local_get',
+        name: symbol.emittedName,
+        type: 'tagged_ref',
+      },
+      type: targetType,
+    };
+  }
+  if (symbol?.type === 'box_ref' && symbol.boxedValueType === 'tagged_ref') {
+    return {
+      kind: 'untag_heap_object',
+      value: {
+        kind: 'box_get',
+        box: {
+          kind: 'local_get',
+          name: symbol.emittedName,
+          type: 'box_ref',
+        },
+        valueType: 'tagged_ref',
+        type: 'tagged_ref',
+      },
+      type: targetType,
+    };
+  }
+  return undefined;
+}
+
 function lowerExpressionAsValueType(
   expression: ts.Expression,
   targetType: CompilerValueType,
@@ -4397,6 +4514,14 @@ function lowerExpressionAsValueType(
     if (ownedExpression) {
       return ownedExpression;
     }
+    const taggedArrayExpression = tryLowerTaggedExpressionAsOwnedArrayValueType(
+      expression,
+      'owned_array_ref',
+      context,
+    );
+    if (taggedArrayExpression) {
+      return taggedArrayExpression;
+    }
     throw new CompilerUnsupportedError(
       'Internal owned string-array expressions must return compiler-owned string-array expressions.',
       expression,
@@ -4406,6 +4531,14 @@ function lowerExpressionAsValueType(
     const ownedExpression = tryLowerOwnedHeapArrayExpression(expression, context);
     if (ownedExpression) {
       return ownedExpression;
+    }
+    const taggedArrayExpression = tryLowerTaggedExpressionAsOwnedArrayValueType(
+      expression,
+      'owned_heap_array_ref',
+      context,
+    );
+    if (taggedArrayExpression) {
+      return taggedArrayExpression;
     }
     throw new CompilerUnsupportedError(
       'Internal owned heap-array expressions must return compiler-owned heap-array expressions.',
@@ -4417,6 +4550,14 @@ function lowerExpressionAsValueType(
     if (ownedExpression) {
       return ownedExpression;
     }
+    const taggedArrayExpression = tryLowerTaggedExpressionAsOwnedArrayValueType(
+      expression,
+      'owned_number_array_ref',
+      context,
+    );
+    if (taggedArrayExpression) {
+      return taggedArrayExpression;
+    }
     throw new CompilerUnsupportedError(
       'Internal owned number-array expressions must return compiler-owned number-array expressions.',
       expression,
@@ -4426,6 +4567,14 @@ function lowerExpressionAsValueType(
     const ownedExpression = tryLowerOwnedBooleanArrayExpression(expression, context);
     if (ownedExpression) {
       return ownedExpression;
+    }
+    const taggedArrayExpression = tryLowerTaggedExpressionAsOwnedArrayValueType(
+      expression,
+      'owned_boolean_array_ref',
+      context,
+    );
+    if (taggedArrayExpression) {
+      return taggedArrayExpression;
     }
     throw new CompilerUnsupportedError(
       'Internal owned boolean-array expressions must return compiler-owned boolean-array expressions.',
@@ -4443,6 +4592,14 @@ function lowerExpressionAsValueType(
     const ownedExpression = tryLowerOwnedTaggedArrayExpression(expression, context);
     if (ownedExpression) {
       return ownedExpression;
+    }
+    const taggedArrayExpression = tryLowerTaggedExpressionAsOwnedArrayValueType(
+      expression,
+      'owned_tagged_array_ref',
+      context,
+    );
+    if (taggedArrayExpression) {
+      return taggedArrayExpression;
     }
     throw new CompilerUnsupportedError(
       'Internal owned tagged-array expressions must return compiler-owned tagged-array expressions.',
@@ -4613,6 +4770,14 @@ function lowerExpressionAsValueType(
     return {
       kind: 'tag_heap_object',
       value: lowerExpressionAsValueType(expression, 'closure_ref', context),
+      type: 'tagged_ref',
+    };
+  }
+  const ownedArrayValueType = getSupportedOwnedArrayValueTypeForType(context.checker, sourceType);
+  if (ownedArrayValueType) {
+    return {
+      kind: 'tag_heap_object',
+      value: lowerExpressionAsValueType(expression, ownedArrayValueType, context),
       type: 'tagged_ref',
     };
   }
@@ -6910,6 +7075,14 @@ function tryLowerOwnedObjectKeysExpression(
   if (ts.isParenthesizedExpression(expression)) {
     return tryLowerOwnedObjectKeysExpression(expression.expression, context);
   }
+  const taggedArrayValue = tryLowerTaggedLocalAsOwnedArrayValueType(
+    expression,
+    'owned_array_ref',
+    context,
+  );
+  if (taggedArrayValue) {
+    return taggedArrayValue;
+  }
   if (ts.isIdentifier(expression)) {
     const symbol = lookupSymbol(context, expression.text);
     if (symbol?.ownedArrayAliasValue) {
@@ -7083,6 +7256,14 @@ function tryLowerOwnedHeapArrayExpression(
   if (ts.isParenthesizedExpression(expression)) {
     return tryLowerOwnedHeapArrayExpression(expression.expression, context);
   }
+  const taggedArrayValue = tryLowerTaggedLocalAsOwnedArrayValueType(
+    expression,
+    'owned_heap_array_ref',
+    context,
+  );
+  if (taggedArrayValue) {
+    return taggedArrayValue;
+  }
   if (ts.isIdentifier(expression)) {
     const symbol = lookupSymbol(context, expression.text);
     if (symbol?.type === 'box_ref' && symbol.boxedValueType === 'owned_heap_array_ref') {
@@ -7252,6 +7433,14 @@ function tryLowerOwnedNumberArrayExpression(
   if (ts.isParenthesizedExpression(expression)) {
     return tryLowerOwnedNumberArrayExpression(expression.expression, context);
   }
+  const taggedArrayValue = tryLowerTaggedLocalAsOwnedArrayValueType(
+    expression,
+    'owned_number_array_ref',
+    context,
+  );
+  if (taggedArrayValue) {
+    return taggedArrayValue;
+  }
   if (ts.isIdentifier(expression)) {
     const symbol = lookupSymbol(context, expression.text);
     if (symbol?.ownedNumberArrayAliasValue) {
@@ -7392,6 +7581,14 @@ function tryLowerOwnedBooleanArrayExpression(
 ): CompilerExpressionIR | undefined {
   if (ts.isParenthesizedExpression(expression)) {
     return tryLowerOwnedBooleanArrayExpression(expression.expression, context);
+  }
+  const taggedArrayValue = tryLowerTaggedLocalAsOwnedArrayValueType(
+    expression,
+    'owned_boolean_array_ref',
+    context,
+  );
+  if (taggedArrayValue) {
+    return taggedArrayValue;
   }
   if (ts.isIdentifier(expression)) {
     const symbol = lookupSymbol(context, expression.text);
@@ -7534,6 +7731,14 @@ function tryLowerOwnedTaggedArrayExpression(
 ): CompilerExpressionIR | undefined {
   if (ts.isParenthesizedExpression(expression)) {
     return tryLowerOwnedTaggedArrayExpression(expression.expression, context);
+  }
+  const taggedArrayValue = tryLowerTaggedLocalAsOwnedArrayValueType(
+    expression,
+    'owned_tagged_array_ref',
+    context,
+  );
+  if (taggedArrayValue) {
+    return taggedArrayValue;
   }
   if (ts.isIdentifier(expression)) {
     const symbol = lookupSymbol(context, expression.text);
@@ -35450,6 +35655,8 @@ function invertTaggedPredicateExpression(
       return { ...expression, negated: !expression.negated };
     case 'tagged_is_closure':
       return { ...expression, negated: !expression.negated };
+    case 'tagged_is_array':
+      return { ...expression, negated: !expression.negated };
     default:
       return undefined;
   }
@@ -35470,6 +35677,53 @@ function isTaggedBackedConditionOperand(
       (symbol?.type === 'box_ref' && symbol.boxedValueType === 'tagged_ref');
   }
   return false;
+}
+
+function tryLowerTaggedArrayPredicateExpression(
+  expression: ts.Expression,
+  context: FunctionLoweringContext,
+): CompilerExpressionIR | undefined {
+  if (
+    !ts.isCallExpression(expression) ||
+    expression.arguments.length !== 1 ||
+    !ts.isPropertyAccessExpression(expression.expression) ||
+    expression.expression.name.text !== 'isArray' ||
+    !isArrayConstructorValue(context.checker, expression.expression.expression)
+  ) {
+    return undefined;
+  }
+  const operand = expression.arguments[0]!;
+  const arrayTypes = getSupportedInternalTaggedHeapUnionArrayValueTypes(
+    context.checker,
+    context.checker.getTypeAtLocation(operand),
+  );
+  if (arrayTypes.length === 0) {
+    return undefined;
+  }
+  const taggedValue = lowerExpressionAsValueType(operand, 'tagged_ref', context);
+  const taggedPreludeStatements = consumeExpressionPreludeStatements(context);
+  const taggedName = createLocalName('array_is_array', context.nextLocalId);
+  context.nextLocalId += 1;
+  context.locals.push({ name: taggedName, type: 'tagged_ref' });
+  context.expressionPreludeStatements.push(
+    ...taggedPreludeStatements,
+    {
+      kind: 'local_set',
+      name: taggedName,
+      value: taggedValue,
+    },
+  );
+  return {
+    kind: 'tagged_is_array',
+    value: {
+      kind: 'local_get',
+      name: taggedName,
+      type: 'tagged_ref',
+    },
+    arrayTypes,
+    negated: false,
+    type: 'i32',
+  };
 }
 
 function tryLowerSymbolTypeofPredicateExpression(
@@ -35845,6 +36099,10 @@ function tryLowerTaggedPredicateExpression(
 ): CompilerExpressionIR | undefined {
   if (ts.isParenthesizedExpression(expression)) {
     return tryLowerTaggedPredicateExpression(expression.expression, context);
+  }
+  const arrayPredicate = tryLowerTaggedArrayPredicateExpression(expression, context);
+  if (arrayPredicate) {
+    return arrayPredicate;
   }
   if (
     ts.isPrefixUnaryExpression(expression) && expression.operator === ts.SyntaxKind.ExclamationToken
@@ -63491,6 +63749,10 @@ function lowerExpression(
     );
   }
   if (ts.isCallExpression(expression)) {
+    const taggedPredicate = tryLowerTaggedPredicateExpression(expression, context);
+    if (taggedPredicate) {
+      return taggedPredicate;
+    }
     return lowerCallExpression(expression, context);
   }
   if (ts.isPropertyAccessExpression(expression)) {

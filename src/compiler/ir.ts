@@ -23,6 +23,13 @@ export type CompilerValueType =
   | 'box_ref'
   | 'closure_ref';
 
+export type CompilerOwnedArrayValueTypeIR =
+  | 'owned_heap_array_ref'
+  | 'owned_array_ref'
+  | 'owned_number_array_ref'
+  | 'owned_boolean_array_ref'
+  | 'owned_tagged_array_ref';
+
 export interface CompilerLocalIR {
   name: string;
   type: CompilerValueType;
@@ -1066,6 +1073,14 @@ export interface CompilerTaggedIsClosureIR {
   type: 'i32';
 }
 
+export interface CompilerTaggedIsArrayIR {
+  kind: 'tagged_is_array';
+  value: CompilerExpressionIR;
+  arrayTypes: readonly CompilerOwnedArrayValueTypeIR[];
+  negated: boolean;
+  type: 'i32';
+}
+
 export interface CompilerClassInstanceOfIR {
   kind: 'class_instanceof';
   value: CompilerExpressionIR;
@@ -1277,6 +1292,7 @@ export type CompilerExpressionIR =
   | CompilerTaggedIsNullIR
   | CompilerTaggedHasTagIR
   | CompilerTaggedIsClosureIR
+  | CompilerTaggedIsArrayIR
   | CompilerClassInstanceOfIR
   | CompilerBuiltinErrorInstanceOfIR
   | CompilerLocalGetIR

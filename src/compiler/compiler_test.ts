@@ -22199,6 +22199,7 @@ compilerIntegrationTest(
     assertEquals(await invokeCompiledEntry(tempDirectory, 'main', []), 3_907);
     const watOutput = await readWatArtifactForProject(tempDirectory);
     assertFalse(watOutput.includes('(type $closure'));
+    assertFalse(watOutput.includes('(type $owned_string_array'));
   },
 );
 
@@ -22877,6 +22878,62 @@ compilerIntegrationTest(
     const watOutput = await readWatArtifactForProject(tempDirectory);
     assertStringIncludes(watOutput, '(type $closure');
     assertStringIncludes(watOutput, 'ref.test (ref $closure)');
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject narrows array members of mixed primitive and object unions',
+  async () => {
+    const tempDirectory = await createCompilerTestProject([
+      'type Left = { left: number };',
+      'type Value = number | string | string[] | Left;',
+      '',
+      'function score(value: Value): number {',
+      '  if (Array.isArray(value)) {',
+      '    return value.length * 10 + value[0].length;',
+      '  }',
+      '  if (typeof value === "number") {',
+      '    return value;',
+      '  }',
+      '  if (typeof value === "string") {',
+      '    return value.length;',
+      '  }',
+      '  return value.left * 100;',
+      '}',
+      '',
+      'function scoreNotArrayFirst(value: Value): number {',
+      '  if (!Array.isArray(value)) {',
+      '    if (typeof value === "number") {',
+      '      return value;',
+      '    }',
+      '    if (typeof value === "string") {',
+      '      return value.length;',
+      '    }',
+      '    return value.left * 100;',
+      '  }',
+      '  return value.length * 10 + value[0].length;',
+      '}',
+      '',
+      'export function main(): number {',
+      '  const values: Value[] = [3, "abcd", ["hello", "x"], { left: 5 }];',
+      '  const directScore = score(values[0]) * 1000',
+      '    + score(values[1]) * 100',
+      '    + score(values[2]) * 10',
+      '    + score(values[3]);',
+      '  const notArrayScore = scoreNotArrayFirst(values[2])',
+      '    + scoreNotArrayFirst(values[3]);',
+      '  return directScore + notArrayScore;',
+      '}',
+      '',
+    ].join('\n'));
+
+    const result = compileTempProject(tempDirectory);
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assertEquals(await invokeCompiledEntry(tempDirectory, 'main', []), 4_675);
+    const watOutput = await readWatArtifactForProject(tempDirectory);
+    assertStringIncludes(watOutput, 'ref.test (ref $owned_string_array)');
   },
 );
 

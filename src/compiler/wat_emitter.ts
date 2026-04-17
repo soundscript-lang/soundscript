@@ -16,6 +16,7 @@ import type {
   CompilerLocalIR,
   CompilerModuleGlobalIR,
   CompilerModuleIR,
+  CompilerOwnedArrayValueTypeIR,
   CompilerStatementIR,
   CompilerTaggedPrimitiveBoundaryKindsIR,
   CompilerValueType,
@@ -237,6 +238,21 @@ function getWatValueType(valueType: CompilerValueType): string {
       const exhaustiveCheck: never = valueType;
       return exhaustiveCheck;
     }
+  }
+}
+
+function getOwnedArrayRuntimeWatTypeName(valueType: CompilerOwnedArrayValueTypeIR): string {
+  switch (valueType) {
+    case 'owned_heap_array_ref':
+      return 'owned_heap_array';
+    case 'owned_array_ref':
+      return 'owned_string_array';
+    case 'owned_number_array_ref':
+      return 'owned_number_array';
+    case 'owned_boolean_array_ref':
+      return 'owned_boolean_array';
+    case 'owned_tagged_array_ref':
+      return 'owned_tagged_array';
   }
 }
 
@@ -1370,6 +1386,7 @@ function expressionUsesOwnedStringRuntime(expression: CompilerExpressionIR): boo
     case 'untag_owned_string':
     case 'tagged_has_tag':
     case 'tagged_is_closure':
+    case 'tagged_is_array':
       return expressionUsesOwnedStringRuntime(expression.value);
     case 'owned_string_char_code_at':
     case 'owned_string_code_point_at':
@@ -1471,6 +1488,7 @@ function forEachExpressionChild(
     case 'tagged_is_null':
     case 'tagged_has_tag':
     case 'tagged_is_closure':
+    case 'tagged_is_array':
     case 'class_instanceof':
     case 'builtin_error_instanceof':
       visit(expression.value);
@@ -2476,7 +2494,8 @@ function moduleUsesObjectKeysArrayRuntime(module: CompilerModuleIR): boolean {
       func.body,
       (expression) =>
         getExpressionValueType(expression) === 'owned_array_ref' ||
-        expression.kind === 'owned_string_array_element',
+        expression.kind === 'owned_string_array_element' ||
+        expressionUsesTaggedArrayPredicate(expression, 'owned_array_ref'),
     )
   ) || getClassStaticStringArrayFields(module).length > 0 ||
     (module.runtime?.functions.some((func) =>
@@ -2490,6 +2509,13 @@ function moduleUsesObjectKeysArrayRuntime(module: CompilerModuleIR): boolean {
     ) ?? false);
 }
 
+function expressionUsesTaggedArrayPredicate(
+  expression: CompilerExpressionIR,
+  valueType: CompilerOwnedArrayValueTypeIR,
+): boolean {
+  return expression.kind === 'tagged_is_array' && expression.arrayTypes.includes(valueType);
+}
+
 function moduleUsesOwnedHeapArrayRuntime(module: CompilerModuleIR): boolean {
   return moduleUsesPromiseRuntime(module) ||
     module.functions.some((func) =>
@@ -2500,7 +2526,8 @@ function moduleUsesOwnedHeapArrayRuntime(module: CompilerModuleIR): boolean {
         func.body,
         (expression) =>
           getExpressionValueType(expression) === 'owned_heap_array_ref' ||
-          expression.kind === 'owned_heap_array_element',
+          expression.kind === 'owned_heap_array_element' ||
+          expressionUsesTaggedArrayPredicate(expression, 'owned_heap_array_ref'),
       )
     );
 }
@@ -2514,7 +2541,8 @@ function moduleUsesOwnedNumberArrayRuntime(module: CompilerModuleIR): boolean {
       func.body,
       (expression) =>
         getExpressionValueType(expression) === 'owned_number_array_ref' ||
-        expression.kind === 'owned_number_array_element',
+        expression.kind === 'owned_number_array_element' ||
+        expressionUsesTaggedArrayPredicate(expression, 'owned_number_array_ref'),
     )
   ) || getClassStaticNumberArrayFields(module).length > 0;
 }
@@ -2528,7 +2556,8 @@ function moduleUsesOwnedBooleanArrayRuntime(module: CompilerModuleIR): boolean {
       func.body,
       (expression) =>
         getExpressionValueType(expression) === 'owned_boolean_array_ref' ||
-        expression.kind === 'owned_boolean_array_element',
+        expression.kind === 'owned_boolean_array_element' ||
+        expressionUsesTaggedArrayPredicate(expression, 'owned_boolean_array_ref'),
     )
   ) || getClassStaticBooleanArrayFields(module).length > 0;
 }
@@ -2544,7 +2573,8 @@ function moduleUsesOwnedTaggedArrayRuntime(module: CompilerModuleIR): boolean {
       func.body,
       (expression) =>
         getExpressionValueType(expression) === 'owned_tagged_array_ref' ||
-        expression.kind === 'owned_tagged_array_element',
+        expression.kind === 'owned_tagged_array_element' ||
+        expressionUsesTaggedArrayPredicate(expression, 'owned_tagged_array_ref'),
     )
   ) || getClassStaticTaggedArrayFields(module).length > 0 ||
     (module.runtime?.functions.some((func) =>
@@ -21294,6 +21324,7 @@ function getExpressionValueType(expression: CompilerExpressionIR): CompilerValue
     case 'tagged_is_null':
     case 'tagged_has_tag':
     case 'tagged_is_closure':
+    case 'tagged_is_array':
     case 'class_instanceof':
     case 'builtin_error_instanceof':
     case 'local_get':
@@ -23364,6 +23395,20 @@ function emitExpression(
         `${indent(level)}ref.test (ref $closure)`,
         ...(expression.negated ? [`${indent(level)}i32.eqz`] : []),
       ];
+    case 'tagged_is_array': {
+      const checks = expression.arrayTypes.length === 0
+        ? [`${indent(level)}i32.const 0`]
+        : expression.arrayTypes.flatMap((arrayType, index) => [
+          ...emitExpression(expression.value, level, runtime),
+          `${indent(level)}struct.get $tagged_value 2`,
+          `${indent(level)}ref.test (ref $${getOwnedArrayRuntimeWatTypeName(arrayType)})`,
+          ...(index === 0 ? [] : [`${indent(level)}i32.or`]),
+        ]);
+      return [
+        ...checks,
+        ...(expression.negated ? [`${indent(level)}i32.eqz`] : []),
+      ];
+    }
     case 'class_instanceof':
       return [
         ...emitExpression(expression.value, level, runtime),
@@ -27559,6 +27604,7 @@ function collectBoxValueTypesFromExpression(
       return;
     case 'tag_heap_object':
     case 'tagged_is_closure':
+    case 'tagged_is_array':
       collectBoxValueTypesFromExpression(expression.value, used);
       return;
     default:
