@@ -168,6 +168,14 @@ export function getTaggedHostBoundaryUsage(module: CompilerModuleIR): TaggedHost
         needsResultBoundary: true,
       });
     }
+    for (const param of func.hostTaggedCompositeUnionParams ?? []) {
+      if (param.closureSignatureId !== undefined) {
+        markClosureUsage(param.closureSignatureId, {
+          needsParamBoundary: true,
+          needsResultBoundary: true,
+        });
+      }
+    }
     const hostClosureResultSignatureId = getEffectiveHostClosureResultSignatureId(func);
     if (hostClosureResultSignatureId !== undefined) {
       markClosureUsage(hostClosureResultSignatureId, {
@@ -177,6 +185,12 @@ export function getTaggedHostBoundaryUsage(module: CompilerModuleIR): TaggedHost
     }
     if (func.hostTaggedCallableUnionResult) {
       markClosureUsage(func.hostTaggedCallableUnionResult.closureSignatureId, {
+        needsParamBoundary: true,
+        needsResultBoundary: true,
+      });
+    }
+    if (func.hostTaggedCompositeUnionResult?.closureSignatureId !== undefined) {
+      markClosureUsage(func.hostTaggedCompositeUnionResult.closureSignatureId, {
         needsParamBoundary: true,
         needsResultBoundary: true,
       });

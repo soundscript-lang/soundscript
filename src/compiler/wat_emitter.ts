@@ -13,6 +13,8 @@ import type {
   CompilerFunctionHostTaggedArrayUnionResultIR,
   CompilerFunctionHostTaggedCallableUnionParamIR,
   CompilerFunctionHostTaggedCallableUnionResultIR,
+  CompilerFunctionHostTaggedCompositeUnionParamIR,
+  CompilerFunctionHostTaggedCompositeUnionResultIR,
   CompilerFunctionHostTaggedHeapNullableBoundaryIR,
   CompilerFunctionHostTaggedHeapNullableParamIR,
   CompilerFunctionIR,
@@ -4118,7 +4120,16 @@ function moduleUsesHostTaggedArrayUnionResultBoundary(module: CompilerModuleIR):
     func.closureFunctionId === undefined &&
     (
       (functionIsHostImported(func) && func.hostTaggedArrayUnionResult !== undefined) ||
-      (!functionIsHostImported(func) && (func.hostTaggedArrayUnionParams?.length ?? 0) > 0)
+      (
+        functionIsHostImported(func) &&
+        func.hostTaggedCompositeUnionResult?.arrayBoundary !== undefined
+      ) ||
+      (!functionIsHostImported(func) && (func.hostTaggedArrayUnionParams?.length ?? 0) > 0) ||
+      (
+        !functionIsHostImported(func) &&
+        func.hostTaggedCompositeUnionParams?.some((param) => param.arrayBoundary !== undefined) ===
+          true
+      )
     )
   );
 }
@@ -4135,9 +4146,19 @@ function moduleUsesHostTaggedArrayUnionResultCarrierType(
         func.hostTaggedArrayUnionResult?.arrayBoundary.carrierType === carrierType
       ) ||
       (
+        functionIsHostImported(func) &&
+        func.hostTaggedCompositeUnionResult?.arrayBoundary?.carrierType === carrierType
+      ) ||
+      (
         !functionIsHostImported(func) &&
         func.hostTaggedArrayUnionParams?.some((param) =>
             param.arrayBoundary.carrierType === carrierType
+          ) === true
+      ) ||
+      (
+        !functionIsHostImported(func) &&
+        func.hostTaggedCompositeUnionParams?.some((param) =>
+            param.arrayBoundary?.carrierType === carrierType
           ) === true
       )
     )
@@ -4158,8 +4179,18 @@ function moduleUsesHostTaggedArrayUnionToHostCarrierType(
           ) === true
       ) ||
       (
+        functionIsHostImported(func) &&
+        func.hostTaggedCompositeUnionParams?.some((param) =>
+            param.arrayBoundary?.carrierType === carrierType
+          ) === true
+      ) ||
+      (
         !functionIsHostImported(func) &&
         func.hostTaggedArrayUnionResult?.arrayBoundary.carrierType === carrierType
+      ) ||
+      (
+        !functionIsHostImported(func) &&
+        func.hostTaggedCompositeUnionResult?.arrayBoundary?.carrierType === carrierType
       )
     )
   );
@@ -4170,7 +4201,17 @@ function moduleUsesHostTaggedCallableUnionResultBoundary(module: CompilerModuleI
     func.closureFunctionId === undefined &&
     (
       (functionIsHostImported(func) && func.hostTaggedCallableUnionResult !== undefined) ||
-      (!functionIsHostImported(func) && (func.hostTaggedCallableUnionParams?.length ?? 0) > 0)
+      (
+        functionIsHostImported(func) &&
+        func.hostTaggedCompositeUnionResult?.closureSignatureId !== undefined
+      ) ||
+      (!functionIsHostImported(func) && (func.hostTaggedCallableUnionParams?.length ?? 0) > 0) ||
+      (
+        !functionIsHostImported(func) &&
+        func.hostTaggedCompositeUnionParams?.some((param) =>
+            param.closureSignatureId !== undefined
+          ) === true
+      )
     )
   );
 }
@@ -4185,6 +4226,14 @@ function getHostTaggedArrayUnionParamsByName(
   func: CompilerFunctionIR,
 ): Map<string, CompilerFunctionHostTaggedArrayUnionParamIR> {
   return new Map((func.hostTaggedArrayUnionParams ?? []).map((param) => [param.name, param]));
+}
+
+function getHostTaggedCompositeUnionParamsByName(
+  func: CompilerFunctionIR,
+): Map<string, CompilerFunctionHostTaggedCompositeUnionParamIR> {
+  return new Map(
+    (func.hostTaggedCompositeUnionParams ?? []).map((param) => [param.name, param]),
+  );
 }
 
 function moduleUsesOwnedArrayHostParamBoundary(module: CompilerModuleIR): boolean {
@@ -8919,6 +8968,17 @@ function getHostClosureBoundarySignatures(module: CompilerModuleIR): readonly {
           : { needsParamBoundary: true, needsResultBoundary: true },
       );
     }
+    for (const param of func.hostTaggedCompositeUnionParams ?? []) {
+      if (param.closureSignatureId === undefined) {
+        continue;
+      }
+      markUsage(
+        param.closureSignatureId,
+        functionIsHostImported(func)
+          ? { needsResultBoundary: true }
+          : { needsParamBoundary: true, needsResultBoundary: true },
+      );
+    }
     const hostClosureResultSignatureId = getEffectiveHostClosureResultSignatureId(func);
     if (hostClosureResultSignatureId !== undefined) {
       markUsage(hostClosureResultSignatureId, {
@@ -8928,6 +8988,12 @@ function getHostClosureBoundarySignatures(module: CompilerModuleIR): readonly {
     }
     if (func.hostTaggedCallableUnionResult) {
       markUsage(func.hostTaggedCallableUnionResult.closureSignatureId, {
+        needsParamBoundary: true,
+        needsResultBoundary: true,
+      });
+    }
+    if (func.hostTaggedCompositeUnionResult?.closureSignatureId !== undefined) {
+      markUsage(func.hostTaggedCompositeUnionResult.closureSignatureId, {
         needsParamBoundary: true,
         needsResultBoundary: true,
       });
@@ -24782,6 +24848,7 @@ function emitHostImportedFunctionWrapper(
   const hostClosureParamsByName = getEffectiveHostClosureParamsByName(func);
   const hostTaggedArrayUnionParamsByName = getHostTaggedArrayUnionParamsByName(func);
   const hostTaggedCallableUnionParamsByName = getHostTaggedCallableUnionParamsByName(func);
+  const hostTaggedCompositeUnionParamsByName = getHostTaggedCompositeUnionParamsByName(func);
   const hostTaggedPrimitiveParamsByName = getEffectiveHostTaggedPrimitiveParamsByName(func);
   const heapParamRepresentationsByName = getEffectiveFunctionHeapParamRepresentationsByName(func);
   const heapResultRepresentation = getEffectiveFunctionHeapResultRepresentation(func);
@@ -24789,6 +24856,7 @@ function emitHostImportedFunctionWrapper(
   const hostTaggedPrimitiveResultKinds = getEffectiveHostTaggedPrimitiveResultKinds(func);
   const hostTaggedArrayUnionResult = func.hostTaggedArrayUnionResult;
   const hostTaggedCallableUnionResult = func.hostTaggedCallableUnionResult;
+  const hostTaggedCompositeUnionResult = func.hostTaggedCompositeUnionResult;
   const hostClosureResultSignatureId = getEffectiveHostClosureResultSignatureId(func);
   const hostPromiseResultBoundary = getHostPromiseBoundary(func.hostResultBoundary);
   const hasHostPromiseResult = hasEffectiveHostImportPromiseResult(func);
@@ -24844,6 +24912,19 @@ function emitHostImportedFunctionWrapper(
           `${indent(1)}local.get $${param.name}`,
           `${indent(1)}call ${SOUNDSCRIPT_HOST_PROMISE_TO_HOST_IMPORT_NAME}`,
         ];
+      }
+      const hostTaggedCompositeUnionParam = hostTaggedCompositeUnionParamsByName.get(param.name);
+      if (hostTaggedCompositeUnionParam) {
+        return emitInternalTaggedCompositeUnionParamToHost(
+          hostTaggedCompositeUnionParam,
+          param.name,
+          `${param.name}__host_tag`,
+          `${param.name}__host_value`,
+          1,
+          runtime.layoutsByRepresentationName,
+          runtime.fallbackObjectLayout,
+          runtime.dynamicObjectLayout,
+        );
       }
       const hostTaggedArrayUnionParam = hostTaggedArrayUnionParamsByName.get(param.name);
       if (hostTaggedArrayUnionParam) {
@@ -24931,6 +25012,12 @@ function emitHostImportedFunctionWrapper(
         `${indent(1)}call $set_dynamic_object_property`,
         `${indent(1)}local.get $result__generator_object`,
       ]
+      : hostTaggedCompositeUnionResult !== undefined
+      ? emitHostTaggedCompositeUnionResultToInternal(
+        hostTaggedCompositeUnionResult,
+        1,
+        runtime.layoutsByRepresentationName,
+      )
       : hostTaggedArrayUnionResult !== undefined
       ? emitHostTaggedArrayUnionResultToInternal(
         hostTaggedArrayUnionResult,
@@ -26428,6 +26515,188 @@ function emitInternalTaggedArrayUnionParamToHost(
   ];
 }
 
+function emitInternalTaggedCompositeUnionParamToHost(
+  boundary: CompilerFunctionHostTaggedCompositeUnionResultIR,
+  taggedLocalName: string,
+  tagLocalName: string,
+  externrefLocalName: string,
+  level: number,
+  layoutsByRepresentationName: ReadonlyMap<string, BackendSpecializedObjectLayout>,
+  fallbackObjectLayout: BackendFallbackObjectRuntimeLayout | undefined,
+  dynamicObjectLayout?: BackendDynamicObjectRuntimeLayout,
+): string[] {
+  const doneLabel = `$${externrefLocalName}__done`;
+  const heapRepresentation = boundary.heapRepresentation;
+  const objectLines = heapRepresentation
+    ? [
+      `${indent(level + 3)}local.get $${taggedLocalName}`,
+      `${indent(level + 3)}call $untag_heap_object`,
+      `${indent(level + 3)}ref.cast ${
+        heapRepresentation.kind === 'specialized_object_representation'
+          ? `(ref null $${
+            getLayoutForRepresentationName(heapRepresentation.name, layoutsByRepresentationName)
+              .watTypeId
+          })`
+          : heapRepresentation.kind === 'dynamic_object_representation'
+          ? `(ref null $${
+            dynamicObjectLayout?.watTypeId ??
+              (() => {
+                throw createUnsupportedHeapRuntimeBackendError(
+                  'Missing dynamic object layout for internal-to-host composite tagged union boundary.',
+                );
+              })()
+          })`
+          : `(ref null $${
+            fallbackObjectLayout?.watTypeId ??
+              (() => {
+                throw createUnsupportedHeapRuntimeBackendError(
+                  'Missing fallback object layout for internal-to-host composite tagged union boundary.',
+                );
+              })()
+          })`
+      }`,
+      `${indent(level + 3)}call $${
+        heapRepresentation.kind === 'specialized_object_representation'
+          ? getSpecializedObjectToHostHelperName(
+            getLayoutForRepresentationName(heapRepresentation.name, layoutsByRepresentationName),
+          )
+          : heapRepresentation.kind === 'dynamic_object_representation'
+          ? getHostDynamicObjectToHostHelperName()
+          : getFallbackObjectToHostHelperName()
+      }`,
+      `${indent(level + 3)}local.set $${externrefLocalName}`,
+      `${indent(level + 3)}br ${doneLabel}`,
+    ]
+    : [`${indent(level + 3)}unreachable`];
+  const kinds = boundary.taggedPrimitiveKinds;
+  const arrayCarrierWatType = boundary.arrayBoundary
+    ? getArrayUnionCarrierWatType(boundary.arrayBoundary)
+    : undefined;
+  return [
+    `${indent(level)}local.get $${taggedLocalName}`,
+    `${indent(level)}struct.get $tagged_value 0`,
+    `${indent(level)}local.set $${tagLocalName}`,
+    `${indent(level)}(block ${doneLabel}`,
+    ...(kinds.includesUndefined
+      ? [
+        `${indent(level + 1)}local.get $${tagLocalName}`,
+        `${indent(level + 1)}i32.const 0`,
+        `${indent(level + 1)}i32.eq`,
+        `${indent(level + 1)}(if`,
+        `${indent(level + 2)}(then`,
+        `${indent(level + 3)}call $tagged_undefined_value`,
+        `${indent(level + 3)}local.set $${externrefLocalName}`,
+        `${indent(level + 3)}br ${doneLabel}`,
+        `${indent(level + 2)})`,
+        `${indent(level + 1)})`,
+      ]
+      : []),
+    ...(kinds.includesNull
+      ? [
+        `${indent(level + 1)}local.get $${tagLocalName}`,
+        `${indent(level + 1)}i32.const 6`,
+        `${indent(level + 1)}i32.eq`,
+        `${indent(level + 1)}(if`,
+        `${indent(level + 2)}(then`,
+        `${indent(level + 3)}ref.null extern`,
+        `${indent(level + 3)}local.set $${externrefLocalName}`,
+        `${indent(level + 3)}br ${doneLabel}`,
+        `${indent(level + 2)})`,
+        `${indent(level + 1)})`,
+      ]
+      : []),
+    ...(kinds.includesBoolean
+      ? [
+        `${indent(level + 1)}local.get $${tagLocalName}`,
+        `${indent(level + 1)}i32.const 1`,
+        `${indent(level + 1)}i32.eq`,
+        `${indent(level + 1)}(if`,
+        `${indent(level + 2)}(then`,
+        `${indent(level + 3)}local.get $${taggedLocalName}`,
+        `${indent(level + 3)}call $untag_boolean`,
+        `${indent(level + 3)}call $tagged_from_boolean`,
+        `${indent(level + 3)}local.set $${externrefLocalName}`,
+        `${indent(level + 3)}br ${doneLabel}`,
+        `${indent(level + 2)})`,
+        `${indent(level + 1)})`,
+      ]
+      : []),
+    ...(kinds.includesNumber
+      ? [
+        `${indent(level + 1)}local.get $${tagLocalName}`,
+        `${indent(level + 1)}i32.const 2`,
+        `${indent(level + 1)}i32.eq`,
+        `${indent(level + 1)}(if`,
+        `${indent(level + 2)}(then`,
+        `${indent(level + 3)}local.get $${taggedLocalName}`,
+        `${indent(level + 3)}call $untag_number`,
+        `${indent(level + 3)}call $tagged_from_number`,
+        `${indent(level + 3)}local.set $${externrefLocalName}`,
+        `${indent(level + 3)}br ${doneLabel}`,
+        `${indent(level + 2)})`,
+        `${indent(level + 1)})`,
+      ]
+      : []),
+    ...(kinds.includesString
+      ? [
+        `${indent(level + 1)}local.get $${tagLocalName}`,
+        `${indent(level + 1)}i32.const 3`,
+        `${indent(level + 1)}i32.eq`,
+        `${indent(level + 1)}(if`,
+        `${indent(level + 2)}(then`,
+        `${indent(level + 3)}local.get $${taggedLocalName}`,
+        `${indent(level + 3)}call $untag_owned_string`,
+        `${indent(level + 3)}call $owned_string_to_host`,
+        `${indent(level + 3)}local.set $${externrefLocalName}`,
+        `${indent(level + 3)}br ${doneLabel}`,
+        `${indent(level + 2)})`,
+        `${indent(level + 1)})`,
+      ]
+      : []),
+    `${indent(level + 1)}local.get $${tagLocalName}`,
+    `${indent(level + 1)}i32.const 4`,
+    `${indent(level + 1)}i32.eq`,
+    `${indent(level + 1)}(if`,
+    `${indent(level + 2)}(then`,
+    ...(boundary.closureSignatureId !== undefined
+      ? [
+        `${indent(level + 3)}local.get $${taggedLocalName}`,
+        `${indent(level + 3)}call $untag_heap_object`,
+        `${indent(level + 3)}ref.test (ref null $closure)`,
+        `${indent(level + 3)}if`,
+        `${indent(level + 4)}local.get $${taggedLocalName}`,
+        `${indent(level + 4)}call $untag_heap_object`,
+        `${indent(level + 4)}ref.cast (ref null $closure)`,
+        `${indent(level + 4)}call $host_closure_to_host_${boundary.closureSignatureId}`,
+        `${indent(level + 4)}local.set $${externrefLocalName}`,
+        `${indent(level + 4)}br ${doneLabel}`,
+        `${indent(level + 3)}end`,
+      ]
+      : []),
+    ...(boundary.arrayBoundary && arrayCarrierWatType
+      ? [
+        `${indent(level + 3)}local.get $${taggedLocalName}`,
+        `${indent(level + 3)}call $untag_heap_object`,
+        `${indent(level + 3)}ref.test (ref null $${arrayCarrierWatType})`,
+        `${indent(level + 3)}if`,
+        `${indent(level + 4)}local.get $${taggedLocalName}`,
+        `${indent(level + 4)}call $untag_heap_object`,
+        `${indent(level + 4)}ref.cast (ref null $${arrayCarrierWatType})`,
+        `${indent(level + 4)}call $${getArrayUnionToHostHelperName(boundary.arrayBoundary)}`,
+        `${indent(level + 4)}local.set $${externrefLocalName}`,
+        `${indent(level + 4)}br ${doneLabel}`,
+        `${indent(level + 3)}end`,
+      ]
+      : []),
+    ...objectLines,
+    `${indent(level + 2)})`,
+    `${indent(level + 1)})`,
+    `${indent(level + 1)}unreachable`,
+    `${indent(level)})`,
+    `${indent(level)}local.get $${externrefLocalName}`,
+  ];
+}
+
 function emitHostTaggedArrayUnionResultToInternal(
   boundary: CompilerFunctionHostTaggedArrayUnionResultIR,
   level: number,
@@ -26556,6 +26825,158 @@ function emitHostTaggedArrayUnionResultToInternal(
     `${indent(level + 3)}else`,
     ...objectLines,
     `${indent(level + 3)}end`,
+    `${indent(level + 2)})`,
+    `${indent(level + 1)})`,
+    `${indent(level + 1)}unreachable`,
+    `${indent(level)})`,
+    `${indent(level)}local.get $result__callback_tagged`,
+  ];
+}
+
+function emitHostTaggedCompositeUnionResultToInternal(
+  boundary: CompilerFunctionHostTaggedCompositeUnionResultIR,
+  level: number,
+  layoutsByRepresentationName: ReadonlyMap<string, BackendSpecializedObjectLayout>,
+): string[] {
+  const doneLabel = '$result__callback_tagged__done';
+  const heapRepresentation = boundary.heapRepresentation;
+  const objectLines = heapRepresentation
+    ? [
+      `${indent(level + 3)}local.get $result__callback_value`,
+      `${indent(level + 3)}call $${
+        heapRepresentation.kind === 'specialized_object_representation'
+          ? getHostObjectToSpecializedHelperName(
+            getLayoutForRepresentationName(
+              heapRepresentation.name,
+              layoutsByRepresentationName,
+            ),
+          )
+          : heapRepresentation.kind === 'dynamic_object_representation'
+          ? getHostBuiltinErrorToDynamicHelperName()
+          : getHostObjectToFallbackHelperName()
+      }`,
+      `${indent(level + 3)}call $tag_heap_object`,
+      `${indent(level + 3)}local.set $result__callback_tagged`,
+      `${indent(level + 3)}br ${doneLabel}`,
+    ]
+    : [`${indent(level + 3)}unreachable`];
+  const kinds = boundary.taggedPrimitiveKinds;
+  return [
+    `${indent(level)}local.set $result__callback_value`,
+    `${indent(level)}local.get $result__callback_value`,
+    `${indent(level)}call $tagged_type_tag`,
+    `${indent(level)}local.set $result__callback_tag`,
+    `${indent(level)}(block ${doneLabel}`,
+    ...(kinds.includesUndefined
+      ? [
+        `${indent(level + 1)}local.get $result__callback_tag`,
+        `${indent(level + 1)}i32.const 0`,
+        `${indent(level + 1)}i32.eq`,
+        `${indent(level + 1)}(if`,
+        `${indent(level + 2)}(then`,
+        `${indent(level + 3)}call $tag_undefined`,
+        `${indent(level + 3)}local.set $result__callback_tagged`,
+        `${indent(level + 3)}br ${doneLabel}`,
+        `${indent(level + 2)})`,
+        `${indent(level + 1)})`,
+      ]
+      : []),
+    ...(kinds.includesNull
+      ? [
+        `${indent(level + 1)}local.get $result__callback_tag`,
+        `${indent(level + 1)}i32.const 6`,
+        `${indent(level + 1)}i32.eq`,
+        `${indent(level + 1)}(if`,
+        `${indent(level + 2)}(then`,
+        `${indent(level + 3)}call $tag_null`,
+        `${indent(level + 3)}local.set $result__callback_tagged`,
+        `${indent(level + 3)}br ${doneLabel}`,
+        `${indent(level + 2)})`,
+        `${indent(level + 1)})`,
+      ]
+      : []),
+    ...(kinds.includesBoolean
+      ? [
+        `${indent(level + 1)}local.get $result__callback_tag`,
+        `${indent(level + 1)}i32.const 1`,
+        `${indent(level + 1)}i32.eq`,
+        `${indent(level + 1)}(if`,
+        `${indent(level + 2)}(then`,
+        `${indent(level + 3)}local.get $result__callback_value`,
+        `${indent(level + 3)}call $tagged_boolean_value`,
+        `${indent(level + 3)}call $tag_boolean`,
+        `${indent(level + 3)}local.set $result__callback_tagged`,
+        `${indent(level + 3)}br ${doneLabel}`,
+        `${indent(level + 2)})`,
+        `${indent(level + 1)})`,
+      ]
+      : []),
+    ...(kinds.includesNumber
+      ? [
+        `${indent(level + 1)}local.get $result__callback_tag`,
+        `${indent(level + 1)}i32.const 2`,
+        `${indent(level + 1)}i32.eq`,
+        `${indent(level + 1)}(if`,
+        `${indent(level + 2)}(then`,
+        `${indent(level + 3)}local.get $result__callback_value`,
+        `${indent(level + 3)}call $tagged_number_value`,
+        `${indent(level + 3)}call $tag_number`,
+        `${indent(level + 3)}local.set $result__callback_tagged`,
+        `${indent(level + 3)}br ${doneLabel}`,
+        `${indent(level + 2)})`,
+        `${indent(level + 1)})`,
+      ]
+      : []),
+    ...(kinds.includesString
+      ? [
+        `${indent(level + 1)}local.get $result__callback_tag`,
+        `${indent(level + 1)}i32.const 3`,
+        `${indent(level + 1)}i32.eq`,
+        `${indent(level + 1)}(if`,
+        `${indent(level + 2)}(then`,
+        `${indent(level + 3)}local.get $result__callback_value`,
+        `${indent(level + 3)}call $string_to_owned`,
+        `${indent(level + 3)}call $tag_string`,
+        `${indent(level + 3)}local.set $result__callback_tagged`,
+        `${indent(level + 3)}br ${doneLabel}`,
+        `${indent(level + 2)})`,
+        `${indent(level + 1)})`,
+      ]
+      : []),
+    `${indent(level + 1)}local.get $result__callback_tag`,
+    `${indent(level + 1)}i32.const 4`,
+    `${indent(level + 1)}i32.eq`,
+    `${indent(level + 1)}(if`,
+    `${indent(level + 2)}(then`,
+    ...(boundary.closureSignatureId !== undefined
+      ? [
+        `${indent(level + 3)}local.get $result__callback_value`,
+        `${indent(level + 3)}call $host_closure_is_function`,
+        `${indent(level + 3)}if`,
+        `${indent(level + 4)}local.get $result__callback_value`,
+        `${indent(level + 4)}call $host_externref_to_closure_${boundary.closureSignatureId}`,
+        `${indent(level + 4)}call $tag_heap_object`,
+        `${indent(level + 4)}local.set $result__callback_tagged`,
+        `${indent(level + 4)}br ${doneLabel}`,
+        `${indent(level + 3)}end`,
+      ]
+      : []),
+    ...(boundary.arrayBoundary
+      ? [
+        `${indent(level + 3)}local.get $result__callback_value`,
+        `${indent(level + 3)}call $host_array_is_array`,
+        `${indent(level + 3)}if`,
+        ...emitHostArrayBoundaryToTaggedHeapObject(
+          'result__callback_value',
+          boundary.arrayBoundary,
+          level + 4,
+        ),
+        `${indent(level + 4)}local.set $result__callback_tagged`,
+        `${indent(level + 4)}br ${doneLabel}`,
+        `${indent(level + 3)}end`,
+      ]
+      : []),
+    ...objectLines,
     `${indent(level + 2)})`,
     `${indent(level + 1)})`,
     `${indent(level + 1)}unreachable`,
@@ -27780,6 +28201,167 @@ function emitHostTaggedArrayUnionParamAdaptation(
   ];
 }
 
+function emitHostTaggedCompositeUnionParamAdaptation(
+  paramName: string,
+  boundary: CompilerFunctionHostTaggedCompositeUnionParamIR,
+  priorSpecializedParams: ReadonlyArray<{
+    name: string;
+    representation: CompilerRuntimeSpecializedObjectRepresentationRefIR;
+  }>,
+  priorFallbackParamNames: ReadonlyArray<string>,
+  level: number,
+  runtime: FunctionBackendRuntimeContext,
+): string[] {
+  const tagLocal = `$${paramName}__host_tag`;
+  const valueLocal = `$${paramName}__host_tagged`;
+  const doneLabel = `$${paramName}__host_done`;
+  const heapRepresentation = boundary.heapRepresentation;
+  const objectLines = heapRepresentation
+    ? [
+      ...(heapRepresentation.kind === 'specialized_object_representation'
+        ? emitHostSpecializedObjectParamAdaptation(
+          paramName,
+          heapRepresentation as CompilerRuntimeSpecializedObjectRepresentationRefIR,
+          priorSpecializedParams,
+          level + 3,
+          runtime,
+        )
+        : heapRepresentation.kind === 'fallback_object_representation'
+        ? emitHostFallbackObjectParamAdaptation(
+          paramName,
+          priorFallbackParamNames,
+          level + 3,
+          runtime,
+        )
+        : [
+          `${indent(level + 3)}local.get $${paramName}`,
+          `${indent(level + 3)}call $${getHostBuiltinErrorToDynamicHelperName()}`,
+        ]),
+      `${indent(level + 3)}call $tag_heap_object`,
+      `${indent(level + 3)}local.set ${valueLocal}`,
+      `${indent(level + 3)}br ${doneLabel}`,
+    ]
+    : [`${indent(level + 3)}unreachable`];
+  const kinds = boundary.taggedPrimitiveKinds;
+  return [
+    `${indent(level)}local.get $${paramName}`,
+    `${indent(level)}call $tagged_type_tag`,
+    `${indent(level)}local.set ${tagLocal}`,
+    `${indent(level)}(block ${doneLabel}`,
+    ...(kinds.includesUndefined
+      ? [
+        `${indent(level + 1)}local.get ${tagLocal}`,
+        `${indent(level + 1)}i32.const 0`,
+        `${indent(level + 1)}i32.eq`,
+        `${indent(level + 1)}(if`,
+        `${indent(level + 2)}(then`,
+        `${indent(level + 3)}call $tag_undefined`,
+        `${indent(level + 3)}local.set ${valueLocal}`,
+        `${indent(level + 3)}br ${doneLabel}`,
+        `${indent(level + 2)})`,
+        `${indent(level + 1)})`,
+      ]
+      : []),
+    ...(kinds.includesNull
+      ? [
+        `${indent(level + 1)}local.get ${tagLocal}`,
+        `${indent(level + 1)}i32.const 6`,
+        `${indent(level + 1)}i32.eq`,
+        `${indent(level + 1)}(if`,
+        `${indent(level + 2)}(then`,
+        `${indent(level + 3)}call $tag_null`,
+        `${indent(level + 3)}local.set ${valueLocal}`,
+        `${indent(level + 3)}br ${doneLabel}`,
+        `${indent(level + 2)})`,
+        `${indent(level + 1)})`,
+      ]
+      : []),
+    ...(kinds.includesBoolean
+      ? [
+        `${indent(level + 1)}local.get ${tagLocal}`,
+        `${indent(level + 1)}i32.const 1`,
+        `${indent(level + 1)}i32.eq`,
+        `${indent(level + 1)}(if`,
+        `${indent(level + 2)}(then`,
+        `${indent(level + 3)}local.get $${paramName}`,
+        `${indent(level + 3)}call $tagged_boolean_value`,
+        `${indent(level + 3)}call $tag_boolean`,
+        `${indent(level + 3)}local.set ${valueLocal}`,
+        `${indent(level + 3)}br ${doneLabel}`,
+        `${indent(level + 2)})`,
+        `${indent(level + 1)})`,
+      ]
+      : []),
+    ...(kinds.includesNumber
+      ? [
+        `${indent(level + 1)}local.get ${tagLocal}`,
+        `${indent(level + 1)}i32.const 2`,
+        `${indent(level + 1)}i32.eq`,
+        `${indent(level + 1)}(if`,
+        `${indent(level + 2)}(then`,
+        `${indent(level + 3)}local.get $${paramName}`,
+        `${indent(level + 3)}call $tagged_number_value`,
+        `${indent(level + 3)}call $tag_number`,
+        `${indent(level + 3)}local.set ${valueLocal}`,
+        `${indent(level + 3)}br ${doneLabel}`,
+        `${indent(level + 2)})`,
+        `${indent(level + 1)})`,
+      ]
+      : []),
+    ...(kinds.includesString
+      ? [
+        `${indent(level + 1)}local.get ${tagLocal}`,
+        `${indent(level + 1)}i32.const 3`,
+        `${indent(level + 1)}i32.eq`,
+        `${indent(level + 1)}(if`,
+        `${indent(level + 2)}(then`,
+        `${indent(level + 3)}local.get $${paramName}`,
+        `${indent(level + 3)}call $string_to_owned`,
+        `${indent(level + 3)}call $tag_string`,
+        `${indent(level + 3)}local.set ${valueLocal}`,
+        `${indent(level + 3)}br ${doneLabel}`,
+        `${indent(level + 2)})`,
+        `${indent(level + 1)})`,
+      ]
+      : []),
+    `${indent(level + 1)}local.get ${tagLocal}`,
+    `${indent(level + 1)}i32.const 4`,
+    `${indent(level + 1)}i32.eq`,
+    `${indent(level + 1)}(if`,
+    `${indent(level + 2)}(then`,
+    ...(boundary.closureSignatureId !== undefined
+      ? [
+        `${indent(level + 3)}local.get $${paramName}`,
+        `${indent(level + 3)}call $host_closure_is_function`,
+        `${indent(level + 3)}if`,
+        `${indent(level + 4)}local.get $${paramName}`,
+        `${indent(level + 4)}call $host_externref_to_closure_${boundary.closureSignatureId}`,
+        `${indent(level + 4)}call $tag_heap_object`,
+        `${indent(level + 4)}local.set ${valueLocal}`,
+        `${indent(level + 4)}br ${doneLabel}`,
+        `${indent(level + 3)}end`,
+      ]
+      : []),
+    ...(boundary.arrayBoundary
+      ? [
+        `${indent(level + 3)}local.get $${paramName}`,
+        `${indent(level + 3)}call $host_array_is_array`,
+        `${indent(level + 3)}if`,
+        ...emitHostArrayBoundaryToTaggedHeapObject(paramName, boundary.arrayBoundary, level + 4),
+        `${indent(level + 4)}local.set ${valueLocal}`,
+        `${indent(level + 4)}br ${doneLabel}`,
+        `${indent(level + 3)}end`,
+      ]
+      : []),
+    ...objectLines,
+    `${indent(level + 2)})`,
+    `${indent(level + 1)})`,
+    `${indent(level + 1)}unreachable`,
+    `${indent(level)})`,
+    `${indent(level)}local.get ${valueLocal}`,
+  ];
+}
+
 function emitHostTaggedCallableUnionParamAdaptation(
   paramName: string,
   boundary: CompilerFunctionHostTaggedCallableUnionParamIR,
@@ -28198,6 +28780,7 @@ function emitHostExportWrapper(
   const taggedHeapNullableParamsByName = getEffectiveHostTaggedHeapNullableParamsByName(func);
   const hostTaggedArrayUnionParamsByName = getHostTaggedArrayUnionParamsByName(func);
   const hostTaggedCallableUnionParamsByName = getHostTaggedCallableUnionParamsByName(func);
+  const hostTaggedCompositeUnionParamsByName = getHostTaggedCompositeUnionParamsByName(func);
   const hostTaggedParamLocalNames = [
     ...new Set([
       ...taggedPrimitiveParamsByName.keys(),
@@ -28258,6 +28841,7 @@ function emitHostExportWrapper(
   const hostClosureResultSignatureId = getEffectiveHostClosureResultSignatureId(func);
   const hostTaggedArrayUnionResult = func.hostTaggedArrayUnionResult;
   const hostTaggedCallableUnionResult = func.hostTaggedCallableUnionResult;
+  const hostTaggedCompositeUnionResult = func.hostTaggedCompositeUnionResult;
   const hostTaggedPrimitiveResultKinds = getEffectiveHostTaggedPrimitiveResultKinds(func);
   const hostTaggedHeapNullableResult = getEffectiveHostTaggedHeapNullableResultBoundary(func);
   const hasHostPromiseResult = hasEffectiveHostExportPromiseResult(func);
@@ -28531,6 +29115,7 @@ function emitHostExportWrapper(
       const taggedHeapNullableBoundary = taggedHeapNullableParamsByName.get(param.name);
       const hostTaggedArrayUnionParam = hostTaggedArrayUnionParamsByName.get(param.name);
       const hostTaggedCallableUnionParam = hostTaggedCallableUnionParamsByName.get(param.name);
+      const hostTaggedCompositeUnionParam = hostTaggedCompositeUnionParamsByName.get(param.name);
       const taggedArrayKinds = taggedArrayParamsByName.get(param.name);
       const closureSignatureId = hostClosureParamsByName.get(param.name);
       const dynamicCollectionParam = hostDynamicCollectionParamsByName.get(param.name);
@@ -28573,6 +29158,15 @@ function emitHostExportWrapper(
           `${indent(1)}local.set $${param.name}__host_promise`,
           `${indent(1)}local.get $${param.name}__host_promise`,
         ]
+        : hostTaggedCompositeUnionParam
+        ? emitHostTaggedCompositeUnionParamAdaptation(
+          param.name,
+          hostTaggedCompositeUnionParam,
+          priorAllSpecializedObjectParams,
+          priorAllFallbackParams,
+          1,
+          runtime,
+        )
         : hostTaggedArrayUnionParam
         ? emitHostTaggedArrayUnionParamAdaptation(
           param.name,
@@ -28772,6 +29366,21 @@ function emitHostExportWrapper(
           hostClassConstructorResultTagId,
           1,
           runtime.layoutsByRepresentationName,
+        ),
+      ]
+      : hostTaggedCompositeUnionResult !== undefined
+      ? [
+        ...(needsHostSyncScratch ? [`${indent(1)}local.get $result__host_sync_tmp`] : []),
+        `${indent(1)}local.set $result__host_tagged`,
+        ...emitInternalTaggedCompositeUnionParamToHost(
+          hostTaggedCompositeUnionResult,
+          'result__host_tagged',
+          'result__host_tag',
+          'result__host_value',
+          1,
+          runtime.layoutsByRepresentationName,
+          runtime.fallbackObjectLayout,
+          runtime.dynamicObjectLayout,
         ),
       ]
       : hostTaggedArrayUnionResult !== undefined
