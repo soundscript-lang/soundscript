@@ -256,6 +256,21 @@ function getOwnedArrayRuntimeWatTypeName(valueType: CompilerOwnedArrayValueTypeI
   }
 }
 
+function getOwnedArrayDataWatTypeName(valueType: CompilerOwnedArrayValueTypeIR): string {
+  switch (valueType) {
+    case 'owned_heap_array_ref':
+      return 'owned_heap_array_data';
+    case 'owned_array_ref':
+      return 'owned_string_array_data';
+    case 'owned_number_array_ref':
+      return 'owned_number_array_data';
+    case 'owned_boolean_array_ref':
+      return 'owned_boolean_array_data';
+    case 'owned_tagged_array_ref':
+      return 'owned_tagged_array_data';
+  }
+}
+
 function getClosureBoxTypeName(valueType: CompilerValueType): string {
   switch (valueType) {
     case 'f64':
@@ -1327,6 +1342,12 @@ function expressionUsesStringLiteral(expression: CompilerExpressionIR): boolean 
 }
 
 function expressionUsesOwnedStringRuntime(expression: CompilerExpressionIR): boolean {
+  if (
+    expression.kind === 'tagged_array_element' &&
+    expression.arrayTypes.includes('owned_array_ref')
+  ) {
+    return true;
+  }
   switch (expression.kind) {
     case 'owned_string_literal':
     case 'owned_string_array_literal':
@@ -1387,7 +1408,11 @@ function expressionUsesOwnedStringRuntime(expression: CompilerExpressionIR): boo
     case 'tagged_has_tag':
     case 'tagged_is_closure':
     case 'tagged_is_array':
+    case 'tagged_array_length':
       return expressionUsesOwnedStringRuntime(expression.value);
+    case 'tagged_array_element':
+      return expressionUsesOwnedStringRuntime(expression.value) ||
+        expressionUsesOwnedStringRuntime(expression.index);
     case 'owned_string_char_code_at':
     case 'owned_string_code_point_at':
       return true;
@@ -1489,9 +1514,14 @@ function forEachExpressionChild(
     case 'tagged_has_tag':
     case 'tagged_is_closure':
     case 'tagged_is_array':
+    case 'tagged_array_length':
     case 'class_instanceof':
     case 'builtin_error_instanceof':
       visit(expression.value);
+      break;
+    case 'tagged_array_element':
+      visit(expression.value);
+      visit(expression.index);
       break;
     case 'box_new':
       visit(expression.value);
@@ -2276,7 +2306,9 @@ function expressionUsesTaggedStringHelper(expression: CompilerExpressionIR): boo
     expression.kind === 'untag_owned_string' ||
     expression.kind === 'owned_string_array_pop' ||
     expression.kind === 'owned_string_array_shift' ||
-    expression.kind === 'owned_string_array_at'
+    expression.kind === 'owned_string_array_at' ||
+    (expression.kind === 'tagged_array_element' &&
+      expression.arrayTypes.includes('owned_array_ref'))
   ) {
     return true;
   }
@@ -2513,7 +2545,11 @@ function expressionUsesTaggedArrayPredicate(
   expression: CompilerExpressionIR,
   valueType: CompilerOwnedArrayValueTypeIR,
 ): boolean {
-  return expression.kind === 'tagged_is_array' && expression.arrayTypes.includes(valueType);
+  return (
+    expression.kind === 'tagged_is_array' ||
+    expression.kind === 'tagged_array_length' ||
+    expression.kind === 'tagged_array_element'
+  ) && expression.arrayTypes.includes(valueType);
 }
 
 function moduleUsesOwnedHeapArrayRuntime(module: CompilerModuleIR): boolean {
@@ -21325,6 +21361,8 @@ function getExpressionValueType(expression: CompilerExpressionIR): CompilerValue
     case 'tagged_has_tag':
     case 'tagged_is_closure':
     case 'tagged_is_array':
+    case 'tagged_array_length':
+    case 'tagged_array_element':
     case 'class_instanceof':
     case 'builtin_error_instanceof':
     case 'local_get':
@@ -23408,6 +23446,102 @@ function emitExpression(
         ...checks,
         ...(expression.negated ? [`${indent(level)}i32.eqz`] : []),
       ];
+    }
+    case 'tagged_array_length': {
+      const emitPayloadTest = (
+        arrayType: CompilerOwnedArrayValueTypeIR,
+        currentLevel: number,
+      ): string[] => [
+        ...emitExpression(expression.value, currentLevel, runtime),
+        `${indent(currentLevel)}struct.get $tagged_value 2`,
+        `${indent(currentLevel)}ref.test (ref $${getOwnedArrayRuntimeWatTypeName(arrayType)})`,
+      ];
+      const emitLength = (
+        arrayType: CompilerOwnedArrayValueTypeIR,
+        currentLevel: number,
+      ): string[] => [
+        ...emitExpression(expression.value, currentLevel, runtime),
+        `${indent(currentLevel)}struct.get $tagged_value 2`,
+        `${indent(currentLevel)}ref.cast (ref null $${getOwnedArrayRuntimeWatTypeName(arrayType)})`,
+        `${indent(currentLevel)}struct.get $${getOwnedArrayRuntimeWatTypeName(arrayType)} 0`,
+        `${indent(currentLevel)}array.len`,
+        `${indent(currentLevel)}f64.convert_i32_u`,
+      ];
+      const emitDispatch = (index: number, currentLevel: number): string[] => {
+        const arrayType = expression.arrayTypes[index];
+        if (!arrayType) {
+          return [`${indent(currentLevel)}unreachable`];
+        }
+        return [
+          ...emitPayloadTest(arrayType, currentLevel),
+          `${indent(currentLevel)}if (result f64)`,
+          ...emitLength(arrayType, currentLevel + 1),
+          `${indent(currentLevel)}else`,
+          ...emitDispatch(index + 1, currentLevel + 1),
+          `${indent(currentLevel)}end`,
+        ];
+      };
+      return emitDispatch(0, level);
+    }
+    case 'tagged_array_element': {
+      const emitPayloadTest = (
+        arrayType: CompilerOwnedArrayValueTypeIR,
+        currentLevel: number,
+      ): string[] => [
+        ...emitExpression(expression.value, currentLevel, runtime),
+        `${indent(currentLevel)}struct.get $tagged_value 2`,
+        `${indent(currentLevel)}ref.test (ref $${getOwnedArrayRuntimeWatTypeName(arrayType)})`,
+      ];
+      const emitArrayElement = (
+        arrayType: CompilerOwnedArrayValueTypeIR,
+        currentLevel: number,
+      ): string[] => {
+        if (arrayType === 'owned_array_ref' && !runtime.stringRuntimeLayout) {
+          throw createUnsupportedHeapRuntimeBackendError(
+            'Tagged string-array union element access requires the owned string runtime.',
+          );
+        }
+        return [
+          ...emitExpression(expression.value, currentLevel, runtime),
+          `${indent(currentLevel)}struct.get $tagged_value 2`,
+          `${indent(currentLevel)}ref.cast (ref null $${
+            getOwnedArrayRuntimeWatTypeName(arrayType)
+          })`,
+          `${indent(currentLevel)}struct.get $${getOwnedArrayRuntimeWatTypeName(arrayType)} 0`,
+          ...emitExpression(expression.index, currentLevel, runtime),
+          `${indent(currentLevel)}i32.trunc_f64_u`,
+          `${indent(currentLevel)}array.get $${getOwnedArrayDataWatTypeName(arrayType)}`,
+          ...(arrayType === 'owned_array_ref'
+            ? [
+              `${indent(currentLevel)}ref.cast (ref null $${
+                runtime.stringRuntimeLayout!.runtimeWatTypeId
+              })`,
+              `${indent(currentLevel)}call $tag_string`,
+            ]
+            : arrayType === 'owned_number_array_ref'
+            ? [`${indent(currentLevel)}call $tag_number`]
+            : arrayType === 'owned_boolean_array_ref'
+            ? [`${indent(currentLevel)}call $tag_boolean`]
+            : arrayType === 'owned_heap_array_ref'
+            ? [`${indent(currentLevel)}call $tag_heap_object`]
+            : []),
+        ];
+      };
+      const emitDispatch = (index: number, currentLevel: number): string[] => {
+        const arrayType = expression.arrayTypes[index];
+        if (!arrayType) {
+          return [`${indent(currentLevel)}unreachable`];
+        }
+        return [
+          ...emitPayloadTest(arrayType, currentLevel),
+          `${indent(currentLevel)}if (result (ref null $tagged_value))`,
+          ...emitArrayElement(arrayType, currentLevel + 1),
+          `${indent(currentLevel)}else`,
+          ...emitDispatch(index + 1, currentLevel + 1),
+          `${indent(currentLevel)}end`,
+        ];
+      };
+      return emitDispatch(0, level);
     }
     case 'class_instanceof':
       return [
@@ -27605,7 +27739,12 @@ function collectBoxValueTypesFromExpression(
     case 'tag_heap_object':
     case 'tagged_is_closure':
     case 'tagged_is_array':
+    case 'tagged_array_length':
       collectBoxValueTypesFromExpression(expression.value, used);
+      return;
+    case 'tagged_array_element':
+      collectBoxValueTypesFromExpression(expression.value, used);
+      collectBoxValueTypesFromExpression(expression.index, used);
       return;
     default:
       return;

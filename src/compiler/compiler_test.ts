@@ -22938,6 +22938,48 @@ compilerIntegrationTest(
 );
 
 compilerIntegrationTest(
+  'compileProject narrows multiple array representations inside mixed unions',
+  async () => {
+    const tempDirectory = await createCompilerTestProject([
+      'type Value = string[] | number[] | boolean[] | number;',
+      '',
+      'function score(value: Value): number {',
+      '  if (Array.isArray(value)) {',
+      '    const first = value[0];',
+      '    if (typeof first === "string") {',
+      '      return value.length * 100 + first.length;',
+      '    }',
+      '    if (typeof first === "number") {',
+      '      return value.length * 100 + first;',
+      '    }',
+      '    return value.length * 100 + (first ? 7 : 8);',
+      '  }',
+      '  return value;',
+      '}',
+      '',
+      'export function main(): number {',
+      '  const values: Value[] = [["abcd", "x"], [5], [true], 9];',
+      '  return score(values[0]) * 1000000',
+      '    + score(values[1]) * 10000',
+      '    + score(values[2]) * 100',
+      '    + score(values[3]);',
+      '}',
+      '',
+    ].join('\n'));
+
+    const result = compileTempProject(tempDirectory);
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assertEquals(await invokeCompiledEntry(tempDirectory, 'main', []), 205_060_709);
+    const watOutput = await readWatArtifactForProject(tempDirectory);
+    assertStringIncludes(watOutput, 'ref.test (ref $owned_string_array)');
+    assertStringIncludes(watOutput, 'ref.test (ref $owned_number_array)');
+    assertStringIncludes(watOutput, 'ref.test (ref $owned_boolean_array)');
+  },
+);
+
+compilerIntegrationTest(
   'lowerProgramToCompilerIR distinguishes explicit bag-like object locals from narrow fixed layouts',
   async () => {
     const tempDirectory = await createTempProject([

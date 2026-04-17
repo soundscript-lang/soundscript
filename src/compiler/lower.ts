@@ -35726,6 +35726,125 @@ function tryLowerTaggedArrayPredicateExpression(
   };
 }
 
+function getTaggedArrayUnionValueTypesForExpression(
+  expression: ts.Expression,
+  context: FunctionLoweringContext,
+): readonly CompilerOwnedArrayValueTypeIR[] {
+  const arrayTypes = getSupportedInternalTaggedHeapUnionArrayValueTypes(
+    context.checker,
+    context.checker.getTypeAtLocation(expression),
+  );
+  return arrayTypes.length > 0 ? arrayTypes : [];
+}
+
+function ensureTaggedArrayUnionElementRuntime(
+  arrayTypes: readonly CompilerOwnedArrayValueTypeIR[],
+  context: FunctionLoweringContext,
+): void {
+  ensureTaggedValueRepresentation(context.runtime);
+  if (arrayTypes.includes('owned_array_ref')) {
+    ensureStringRepresentation(context.runtime);
+  }
+}
+
+function tryLowerTaggedArrayLengthExpression(
+  expression: ts.PropertyAccessExpression,
+  context: FunctionLoweringContext,
+): CompilerExpressionIR | undefined {
+  if (expression.name.text !== 'length') {
+    return undefined;
+  }
+  const arrayTypes = getTaggedArrayUnionValueTypesForExpression(expression.expression, context);
+  if (arrayTypes.length === 0) {
+    return undefined;
+  }
+  ensureTaggedValueRepresentation(context.runtime);
+  const taggedValue = lowerExpressionAsValueType(expression.expression, 'tagged_ref', context);
+  const taggedPreludeStatements = consumeExpressionPreludeStatements(context);
+  const taggedName = createLocalName('tagged_array_length', context.nextLocalId);
+  context.nextLocalId += 1;
+  context.locals.push({ name: taggedName, type: 'tagged_ref' });
+  context.expressionPreludeStatements.push(
+    ...taggedPreludeStatements,
+    {
+      kind: 'local_set',
+      name: taggedName,
+      value: taggedValue,
+    },
+  );
+  return {
+    kind: 'tagged_array_length',
+    value: {
+      kind: 'local_get',
+      name: taggedName,
+      type: 'tagged_ref',
+    },
+    arrayTypes,
+    type: 'f64',
+  };
+}
+
+function tryLowerTaggedArrayElementExpression(
+  expression: ts.ElementAccessExpression,
+  context: FunctionLoweringContext,
+): CompilerExpressionIR | undefined {
+  const arrayTypes = getTaggedArrayUnionValueTypesForExpression(expression.expression, context);
+  if (arrayTypes.length === 0) {
+    return undefined;
+  }
+  let argumentExpression = expression.argumentExpression;
+  while (argumentExpression && ts.isParenthesizedExpression(argumentExpression)) {
+    argumentExpression = argumentExpression.expression;
+  }
+  if (!argumentExpression) {
+    return undefined;
+  }
+  const indexType = context.checker.getTypeAtLocation(argumentExpression);
+  if ((indexType.flags & ts.TypeFlags.NumberLike) === 0) {
+    return undefined;
+  }
+  ensureTaggedArrayUnionElementRuntime(arrayTypes, context);
+  const taggedValue = lowerExpressionAsValueType(expression.expression, 'tagged_ref', context);
+  const taggedPreludeStatements = consumeExpressionPreludeStatements(context);
+  const indexValue = lowerExpressionAsValueType(argumentExpression, 'f64', context);
+  const indexPreludeStatements = consumeExpressionPreludeStatements(context);
+  const taggedName = createLocalName('tagged_array', context.nextLocalId);
+  context.nextLocalId += 1;
+  const indexName = createLocalName('tagged_array_index', context.nextLocalId);
+  context.nextLocalId += 1;
+  context.locals.push({ name: taggedName, type: 'tagged_ref' });
+  context.locals.push({ name: indexName, type: 'f64' });
+  context.expressionPreludeStatements.push(
+    ...taggedPreludeStatements,
+    {
+      kind: 'local_set',
+      name: taggedName,
+      value: taggedValue,
+    },
+    ...indexPreludeStatements,
+    {
+      kind: 'local_set',
+      name: indexName,
+      value: indexValue,
+    },
+  );
+  return {
+    kind: 'tagged_array_element',
+    value: {
+      kind: 'local_get',
+      name: taggedName,
+      type: 'tagged_ref',
+    },
+    index: {
+      kind: 'local_get',
+      name: indexName,
+      type: 'f64',
+    },
+    arrayTypes,
+    type: 'tagged_ref',
+  };
+}
+
 function tryLowerSymbolTypeofPredicateExpression(
   expression: ts.BinaryExpression,
   context: FunctionLoweringContext,
@@ -62406,6 +62525,10 @@ function lowerPropertyAccessExpression(
     );
   }
   const receiverType = context.checker.getTypeAtLocation(expression.expression);
+  const taggedArrayLength = tryLowerTaggedArrayLengthExpression(expression, context);
+  if (taggedArrayLength) {
+    return taggedArrayLength;
+  }
   const numberKeyMapTypeInfo = getSupportedNumberKeyMapTypeInfo(context.checker, receiverType);
   if (expression.name.text === 'size' && numberKeyMapTypeInfo !== undefined) {
     let objectName = getHeapObjectValueNameFromExpression(expression.expression, context);
@@ -62965,6 +63088,10 @@ function lowerElementAccessExpression(
   }
   if (isDeferredObjectKeysPlaceholderExpression(expression.expression, context)) {
     throw createUnsupportedObservableObjectKeysResultError(resultNode);
+  }
+  const taggedArrayElementExpression = tryLowerTaggedArrayElementExpression(expression, context);
+  if (taggedArrayElementExpression) {
+    return taggedArrayElementExpression;
   }
   const ownedObjectKeysElementExpression = tryLowerOwnedStringArrayElementExpression(
     expression,

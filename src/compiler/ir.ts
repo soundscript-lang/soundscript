@@ -1081,6 +1081,21 @@ export interface CompilerTaggedIsArrayIR {
   type: 'i32';
 }
 
+export interface CompilerTaggedArrayLengthIR {
+  kind: 'tagged_array_length';
+  value: CompilerExpressionIR;
+  arrayTypes: readonly CompilerOwnedArrayValueTypeIR[];
+  type: 'f64';
+}
+
+export interface CompilerTaggedArrayElementIR {
+  kind: 'tagged_array_element';
+  value: CompilerExpressionIR;
+  index: CompilerExpressionIR;
+  arrayTypes: readonly CompilerOwnedArrayValueTypeIR[];
+  type: 'tagged_ref';
+}
+
 export interface CompilerClassInstanceOfIR {
   kind: 'class_instanceof';
   value: CompilerExpressionIR;
@@ -1293,6 +1308,8 @@ export type CompilerExpressionIR =
   | CompilerTaggedHasTagIR
   | CompilerTaggedIsClosureIR
   | CompilerTaggedIsArrayIR
+  | CompilerTaggedArrayLengthIR
+  | CompilerTaggedArrayElementIR
   | CompilerClassInstanceOfIR
   | CompilerBuiltinErrorInstanceOfIR
   | CompilerLocalGetIR
