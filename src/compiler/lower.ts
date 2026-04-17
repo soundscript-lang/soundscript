@@ -7084,11 +7084,22 @@ function tryLowerOwnedHeapArrayExpression(
     }
   }
   if (ts.isArrayLiteralExpression(expression)) {
-    const expressionType = context.checker.getTypeAtLocation(expression);
-    if (isSupportedInternalOwnedTaggedHeapArrayType(context.checker, expressionType)) {
+    const expressionType = context.checker.getContextualType(expression) ??
+      context.checker.getTypeAtLocation(expression);
+    const internalTaggedHeapArrayElements = isSupportedOwnedHeapArrayOfInternalTaggedHeapArraysType(
+      context.checker,
+      expressionType,
+    );
+    if (
+      !internalTaggedHeapArrayElements &&
+      isSupportedInternalOwnedTaggedHeapArrayType(context.checker, expressionType)
+    ) {
       return undefined;
     }
-    if (!isSupportedOwnedHeapArrayType(context.checker, expressionType)) {
+    if (
+      !internalTaggedHeapArrayElements &&
+      !isSupportedOwnedHeapArrayType(context.checker, expressionType)
+    ) {
       return undefined;
     }
     return {
@@ -7100,7 +7111,9 @@ function tryLowerOwnedHeapArrayExpression(
             element,
           );
         }
-        const loweredElement = lowerExpression(element, context);
+        const loweredElement = internalTaggedHeapArrayElements
+          ? lowerExpressionAsValueType(element, 'owned_tagged_array_ref', context)
+          : lowerExpression(element, context);
         const loweredElementType = getLoweredExpressionValueType(loweredElement);
         if (
           loweredElementType !== 'heap_ref' &&
@@ -7526,7 +7539,8 @@ function tryLowerOwnedTaggedArrayExpression(
     }
   }
   if (ts.isArrayLiteralExpression(expression)) {
-    const expressionType = context.checker.getTypeAtLocation(expression);
+    const expressionType = context.checker.getContextualType(expression) ??
+      context.checker.getTypeAtLocation(expression);
     if (
       !isSupportedOwnedTaggedArrayType(context.checker, expressionType) &&
       !isSupportedInternalOwnedTaggedHeapArrayType(context.checker, expressionType)
