@@ -383,6 +383,7 @@ function createJsHostImports(
       empty: () => [],
       empty_number: () => [],
       empty_boolean: () => [],
+      is_array: (value: unknown) => Number(Array.isArray(value)),
       clear: (value: unknown) => {
         if (!Array.isArray(value)) {
           throw new TypeError('Expected JS array for soundscript_array.clear.');

@@ -36,6 +36,7 @@ export interface ArrayRuntimeImportUsage {
   usesBooleanParamBoundary: boolean;
   usesBooleanParamCopyBack: boolean;
   usesBooleanResultBoundary: boolean;
+  usesHostArrayIsArray?: boolean;
   usesTaggedParamBoundary: boolean;
   usesTaggedParamCopyBack: boolean;
   usesTaggedResultBoundary: boolean;
@@ -152,6 +153,7 @@ export function emitArrayRuntimeImports(usage: ArrayRuntimeImportUsage): string[
     usesBooleanParamBoundary,
     usesBooleanParamCopyBack,
     usesBooleanResultBoundary,
+    usesHostArrayIsArray = false,
     usesTaggedParamBoundary,
     usesTaggedParamCopyBack,
     usesTaggedResultBoundary,
@@ -162,6 +164,7 @@ export function emitArrayRuntimeImports(usage: ArrayRuntimeImportUsage): string[
     !usesStringParamBoundary && !usesStringParamCopyBack && !usesStringResultBoundary &&
     !usesNumberParamBoundary && !usesNumberParamCopyBack && !usesNumberResultBoundary &&
     !usesBooleanParamBoundary && !usesBooleanParamCopyBack && !usesBooleanResultBoundary &&
+    !usesHostArrayIsArray &&
     !usesTaggedParamBoundary && !usesTaggedParamCopyBack && !usesTaggedResultBoundary
   ) {
     return [];
@@ -178,6 +181,11 @@ export function emitArrayRuntimeImports(usage: ArrayRuntimeImportUsage): string[
     usesAnyParamBoundary;
 
   return [
+    ...(usesHostArrayIsArray
+      ? [
+        '(import "soundscript_array" "is_array" (func $host_array_is_array (param externref) (result i32)))',
+      ]
+      : []),
     ...(usesAnyParamBoundary || usesAnyHeapBoundary
       ? [
         '(import "soundscript_array" "length" (func $host_array_length (param externref) (result i32)))',

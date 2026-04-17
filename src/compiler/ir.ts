@@ -1546,6 +1546,12 @@ export interface CompilerFunctionHostTaggedArrayParamIR
   name: string;
 }
 
+export interface CompilerFunctionHostTaggedArrayUnionResultIR {
+  taggedPrimitiveKinds: CompilerTaggedPrimitiveBoundaryKindsIR;
+  arrayBoundary: CompilerHostBoundaryArrayIR;
+  heapRepresentation?: CompilerRuntimeRepresentationRefIR<'object'>;
+}
+
 export interface CompilerFunctionHostTaggedHeapNullableBoundaryIR {
   includesNull: boolean;
   includesUndefined: boolean;
@@ -1584,6 +1590,7 @@ export interface CompilerFunctionIR {
   hostImportPromiseParams?: readonly string[];
   hostImportGeneratorResult?: boolean;
   hostImportAsyncGeneratorResult?: boolean;
+  hostTaggedArrayUnionResult?: CompilerFunctionHostTaggedArrayUnionResultIR;
   hostLengthViewParams?: readonly string[];
   hostLengthViewResult?: boolean;
   hostParamBoundaries?: readonly CompilerHostParamBoundaryIR[];

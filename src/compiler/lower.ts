@@ -18,6 +18,7 @@ import type {
   CompilerFunctionHostDynamicCollectionParamIR,
   CompilerFunctionHostTaggedArrayBoundaryIR,
   CompilerFunctionHostTaggedArrayParamIR,
+  CompilerFunctionHostTaggedArrayUnionResultIR,
   CompilerFunctionHostTaggedHeapNullableBoundaryIR,
   CompilerFunctionHostTaggedHeapNullableParamIR,
   CompilerFunctionHostTaggedPrimitiveParamIR,
@@ -3230,6 +3231,118 @@ function getHostTaggedArrayBoundaryInfo(
   return representation ? { ...kinds, representation } : kinds;
 }
 
+function hostArrayBoundaryEqual(
+  existing: CompilerHostBoundaryArrayIR,
+  candidate: CompilerHostBoundaryArrayIR,
+): boolean {
+  if (existing.carrierType !== candidate.carrierType) {
+    return false;
+  }
+  if (
+    existing.carrierType === 'owned_array_ref' ||
+    existing.carrierType === 'owned_number_array_ref' ||
+    existing.carrierType === 'owned_boolean_array_ref'
+  ) {
+    return true;
+  }
+  if (existing.carrierType === 'owned_heap_array_ref') {
+    return existing.elementBoundary.kind === 'object' &&
+      candidate.elementBoundary.kind === 'object' &&
+      existing.elementBoundary.representation.kind ===
+        candidate.elementBoundary.representation.kind &&
+      existing.elementBoundary.representation.name ===
+        candidate.elementBoundary.representation.name;
+  }
+  return existing.elementBoundary.kind === 'tagged' &&
+    candidate.elementBoundary.kind === 'tagged' &&
+    existing.elementBoundary.includesBoolean === candidate.elementBoundary.includesBoolean &&
+    existing.elementBoundary.includesNull === candidate.elementBoundary.includesNull &&
+    existing.elementBoundary.includesNumber === candidate.elementBoundary.includesNumber &&
+    existing.elementBoundary.includesString === candidate.elementBoundary.includesString &&
+    existing.elementBoundary.includesUndefined === candidate.elementBoundary.includesUndefined &&
+    ((
+      existing.elementBoundary.heapBoundary?.kind !== 'object' &&
+      candidate.elementBoundary.heapBoundary?.kind !== 'object'
+    ) || (
+      existing.elementBoundary.heapBoundary?.kind === 'object' &&
+      candidate.elementBoundary.heapBoundary?.kind === 'object' &&
+      existing.elementBoundary.heapBoundary.representation.kind ===
+        candidate.elementBoundary.heapBoundary.representation.kind &&
+      existing.elementBoundary.heapBoundary.representation.name ===
+        candidate.elementBoundary.heapBoundary.representation.name
+    ));
+}
+
+function getHostArrayBoundaryForType(
+  checker: ts.TypeChecker,
+  type: ts.Type,
+  contextNode: ts.Node,
+  runtime: ModuleRuntimeLoweringState,
+  classes: ReadonlyMap<ts.Symbol, ts.ClassDeclaration>,
+): CompilerHostBoundaryArrayIR | undefined {
+  if (isSupportedOwnedStringArrayType(checker, type)) {
+    return {
+      kind: 'array',
+      carrierType: 'owned_array_ref',
+      elementBoundary: { kind: 'string', owned: true },
+    };
+  }
+  if (isSupportedOwnedNumberArrayType(checker, type)) {
+    return {
+      kind: 'array',
+      carrierType: 'owned_number_array_ref',
+      elementBoundary: { kind: 'scalar', valueType: 'f64' },
+    };
+  }
+  if (isSupportedOwnedBooleanArrayType(checker, type)) {
+    return {
+      kind: 'array',
+      carrierType: 'owned_boolean_array_ref',
+      elementBoundary: { kind: 'scalar', valueType: 'i32' },
+    };
+  }
+  const taggedArrayBoundary = getHostTaggedArrayBoundaryInfo(
+    checker,
+    type,
+    contextNode,
+    runtime,
+    classes,
+  );
+  if (taggedArrayBoundary) {
+    return {
+      kind: 'array',
+      carrierType: 'owned_tagged_array_ref',
+      elementBoundary: createHostTaggedBoundary(
+        {
+          includesBoolean: taggedArrayBoundary.includesBoolean,
+          includesNull: taggedArrayBoundary.includesNull,
+          includesNumber: taggedArrayBoundary.includesNumber,
+          includesString: taggedArrayBoundary.includesString,
+          includesUndefined: taggedArrayBoundary.includesUndefined,
+        },
+        taggedArrayBoundary.representation
+          ? createHostObjectBoundary(runtime, taggedArrayBoundary.representation.name)
+          : undefined,
+      ),
+    };
+  }
+  if (isSupportedOwnedHeapArrayType(checker, type)) {
+    const heapArrayRepresentation = getOwnedHeapArrayBoundaryRepresentation(
+      checker,
+      type,
+      contextNode,
+      runtime,
+      classes,
+    );
+    return {
+      kind: 'array',
+      carrierType: 'owned_heap_array_ref',
+      elementBoundary: createHostObjectBoundary(runtime, heapArrayRepresentation.name),
+    };
+  }
+  return undefined;
+}
+
 function getHostTaggedArrayUnionBoundaryInfo(
   checker: ts.TypeChecker,
   type: ts.Type,
@@ -3252,47 +3365,6 @@ function getHostTaggedArrayUnionBoundaryInfo(
     includesString: false,
     includesUndefined: false,
   };
-  const hasMatchingBoundary = (
-    existing: CompilerHostBoundaryArrayIR,
-    candidate: CompilerHostBoundaryArrayIR,
-  ): boolean => {
-    if (existing.carrierType !== candidate.carrierType) {
-      return false;
-    }
-    if (
-      existing.carrierType === 'owned_array_ref' ||
-      existing.carrierType === 'owned_number_array_ref' ||
-      existing.carrierType === 'owned_boolean_array_ref'
-    ) {
-      return true;
-    }
-    if (existing.carrierType === 'owned_heap_array_ref') {
-      return existing.elementBoundary.kind === 'object' &&
-        candidate.elementBoundary.kind === 'object' &&
-        existing.elementBoundary.representation.kind ===
-          candidate.elementBoundary.representation.kind &&
-        existing.elementBoundary.representation.name ===
-          candidate.elementBoundary.representation.name;
-    }
-    return existing.elementBoundary.kind === 'tagged' &&
-      candidate.elementBoundary.kind === 'tagged' &&
-      existing.elementBoundary.includesBoolean === candidate.elementBoundary.includesBoolean &&
-      existing.elementBoundary.includesNull === candidate.elementBoundary.includesNull &&
-      existing.elementBoundary.includesNumber === candidate.elementBoundary.includesNumber &&
-      existing.elementBoundary.includesString === candidate.elementBoundary.includesString &&
-      existing.elementBoundary.includesUndefined === candidate.elementBoundary.includesUndefined &&
-      ((
-        existing.elementBoundary.heapBoundary?.kind !== 'object' &&
-        candidate.elementBoundary.heapBoundary?.kind !== 'object'
-      ) || (
-        existing.elementBoundary.heapBoundary?.kind === 'object' &&
-        candidate.elementBoundary.heapBoundary?.kind === 'object' &&
-        existing.elementBoundary.heapBoundary.representation.kind ===
-          candidate.elementBoundary.heapBoundary.representation.kind &&
-        existing.elementBoundary.heapBoundary.representation.name ===
-          candidate.elementBoundary.heapBoundary.representation.name
-      ));
-  };
   for (const member of (type as ts.UnionType).types) {
     if (isUndefinedType(member)) {
       taggedPrimitiveKinds.includesUndefined = true;
@@ -3314,65 +3386,13 @@ function getHostTaggedArrayUnionBoundaryInfo(
       taggedPrimitiveKinds.includesString = true;
       continue;
     }
-    let candidateBoundary: CompilerHostBoundaryArrayIR | undefined;
-    if (isSupportedOwnedStringArrayType(checker, member)) {
-      candidateBoundary = {
-        kind: 'array',
-        carrierType: 'owned_array_ref',
-        elementBoundary: { kind: 'string', owned: true },
-      };
-    } else if (isSupportedOwnedNumberArrayType(checker, member)) {
-      candidateBoundary = {
-        kind: 'array',
-        carrierType: 'owned_number_array_ref',
-        elementBoundary: { kind: 'scalar', valueType: 'f64' },
-      };
-    } else if (isSupportedOwnedBooleanArrayType(checker, member)) {
-      candidateBoundary = {
-        kind: 'array',
-        carrierType: 'owned_boolean_array_ref',
-        elementBoundary: { kind: 'scalar', valueType: 'i32' },
-      };
-    } else {
-      const taggedArrayBoundary = getHostTaggedArrayBoundaryInfo(
-        checker,
-        member,
-        contextNode,
-        runtime,
-        classes,
-      );
-      if (taggedArrayBoundary) {
-        candidateBoundary = {
-          kind: 'array',
-          carrierType: 'owned_tagged_array_ref',
-          elementBoundary: createHostTaggedBoundary(
-            {
-              includesBoolean: taggedArrayBoundary.includesBoolean,
-              includesNull: taggedArrayBoundary.includesNull,
-              includesNumber: taggedArrayBoundary.includesNumber,
-              includesString: taggedArrayBoundary.includesString,
-              includesUndefined: taggedArrayBoundary.includesUndefined,
-            },
-            taggedArrayBoundary.representation
-              ? createHostObjectBoundary(runtime, taggedArrayBoundary.representation.name)
-              : undefined,
-          ),
-        };
-      } else if (isSupportedOwnedHeapArrayType(checker, member)) {
-        const heapArrayRepresentation = getOwnedHeapArrayBoundaryRepresentation(
-          checker,
-          member,
-          contextNode,
-          runtime,
-          classes,
-        );
-        candidateBoundary = {
-          kind: 'array',
-          carrierType: 'owned_heap_array_ref',
-          elementBoundary: createHostObjectBoundary(runtime, heapArrayRepresentation.name),
-        };
-      }
-    }
+    const candidateBoundary = getHostArrayBoundaryForType(
+      checker,
+      member,
+      contextNode,
+      runtime,
+      classes,
+    );
     if (!candidateBoundary) {
       return undefined;
     }
@@ -3381,7 +3401,7 @@ function getHostTaggedArrayUnionBoundaryInfo(
       arrayBoundary = candidateBoundary;
       continue;
     }
-    if (!hasMatchingBoundary(arrayBoundary, candidateBoundary)) {
+    if (!hostArrayBoundaryEqual(arrayBoundary, candidateBoundary)) {
       return undefined;
     }
   }
@@ -3400,6 +3420,127 @@ function getHostTaggedArrayUnionBoundaryInfo(
   return {
     taggedPrimitiveKinds,
     arrayBoundary,
+  };
+}
+
+function getHostTaggedArrayHeapUnionResultBoundaryInfo(
+  checker: ts.TypeChecker,
+  type: ts.Type,
+  contextNode: ts.Node,
+  runtime: ModuleRuntimeLoweringState,
+  classes: ReadonlyMap<ts.Symbol, ts.ClassDeclaration>,
+):
+  | (CompilerFunctionHostTaggedArrayUnionResultIR & {
+    objectMemberTypes: readonly ts.Type[];
+  })
+  | undefined {
+  if ((type.flags & ts.TypeFlags.Union) === 0) {
+    return undefined;
+  }
+
+  let arrayBoundary: CompilerHostBoundaryArrayIR | undefined;
+  let sawArray = false;
+  const objectMemberTypes: ts.Type[] = [];
+  let heapRepresentation: CompilerRuntimeRepresentationRefIR<'object'> | undefined;
+  const taggedPrimitiveKinds: CompilerTaggedPrimitiveBoundaryKindsIR = {
+    includesBoolean: false,
+    includesNull: false,
+    includesNumber: false,
+    includesString: false,
+    includesUndefined: false,
+  };
+
+  for (const member of (type as ts.UnionType).types) {
+    if (isUndefinedType(member)) {
+      taggedPrimitiveKinds.includesUndefined = true;
+      continue;
+    }
+    if (isNullType(member)) {
+      taggedPrimitiveKinds.includesNull = true;
+      continue;
+    }
+    if ((member.flags & ts.TypeFlags.BooleanLike) !== 0) {
+      taggedPrimitiveKinds.includesBoolean = true;
+      continue;
+    }
+    if ((member.flags & ts.TypeFlags.NumberLike) !== 0) {
+      taggedPrimitiveKinds.includesNumber = true;
+      continue;
+    }
+    if (isStringLikeType(member)) {
+      taggedPrimitiveKinds.includesString = true;
+      continue;
+    }
+
+    const candidateArrayBoundary = getHostArrayBoundaryForType(
+      checker,
+      member,
+      contextNode,
+      runtime,
+      classes,
+    );
+    if (candidateArrayBoundary) {
+      sawArray = true;
+      if (!arrayBoundary) {
+        arrayBoundary = candidateArrayBoundary;
+        continue;
+      }
+      if (!hostArrayBoundaryEqual(arrayBoundary, candidateArrayBoundary)) {
+        return undefined;
+      }
+      continue;
+    }
+
+    if (!isSupportedHeapLocalType(checker, member)) {
+      return undefined;
+    }
+    const candidateObjectMemberTypes = [...objectMemberTypes, member];
+    const current = getFunctionBoundaryRepresentation(
+      checker,
+      member,
+      contextNode,
+      runtime,
+      classes,
+    );
+    objectMemberTypes.push(member);
+    if (!heapRepresentation) {
+      heapRepresentation = current;
+      continue;
+    }
+    if (heapRepresentation.kind === current.kind && heapRepresentation.name === current.name) {
+      continue;
+    }
+    if (
+      candidateObjectMemberTypes.every((candidate) =>
+        isBagLikeType(checker, candidate) ||
+        isProjectedFallbackBoundaryObjectType(checker, candidate, classes)
+      )
+    ) {
+      heapRepresentation = ensureObjectFallbackRepresentation(runtime);
+      continue;
+    }
+    throw new CompilerUnsupportedError(
+      'Exported array-inclusive tagged boundaries do not yet support conflicting object representations.',
+      contextNode,
+    );
+  }
+
+  const categoryCount = Number(taggedPrimitiveKinds.includesBoolean === true) +
+    Number(taggedPrimitiveKinds.includesNull === true) +
+    Number(taggedPrimitiveKinds.includesNumber === true) +
+    Number(taggedPrimitiveKinds.includesString === true) +
+    Number(taggedPrimitiveKinds.includesUndefined === true) +
+    Number(sawArray) +
+    Number(heapRepresentation !== undefined);
+  if (categoryCount < 2 || !arrayBoundary) {
+    return undefined;
+  }
+
+  return {
+    taggedPrimitiveKinds,
+    arrayBoundary,
+    heapRepresentation,
+    objectMemberTypes,
   };
 }
 
@@ -31965,6 +32106,7 @@ function createAmbientHostFunctionHeader(
   let hostClosureResultSignatureId: number | undefined;
   let heapResultRepresentation: CompilerRuntimeRepresentationRefIR<'object'> | undefined;
   let hostTaggedPrimitiveResultKinds: CompilerTaggedPrimitiveBoundaryKindsIR | undefined;
+  let hostTaggedArrayUnionResult: CompilerFunctionHostTaggedArrayUnionResultIR | undefined;
   let hostTaggedHeapResultBoundary: CompilerFunctionHostTaggedHeapNullableBoundaryIR | undefined;
   let promiseResult = false;
   let hostPromiseResultValueBoundary: CompilerHostBoundaryIR | undefined;
@@ -32078,6 +32220,13 @@ function createAmbientHostFunctionHeader(
     heapResultRepresentation = ensureObjectFallbackRepresentation(runtime);
     resultType = 'tagged_ref';
   } else {
+    const ambientTaggedArrayUnionResult = getHostTaggedArrayHeapUnionResultBoundaryInfo(
+      checker,
+      returnType,
+      declaration,
+      runtime,
+      classes,
+    );
     const ambientTaggedHeapUnionResult = getHostTaggedHeapUnionBoundaryInfo(
       checker,
       returnType,
@@ -32085,7 +32234,33 @@ function createAmbientHostFunctionHeader(
       runtime,
       classes,
     );
-    if (ambientTaggedHeapUnionResult) {
+    if (ambientTaggedArrayUnionResult) {
+      if (ambientTaggedArrayUnionResult.taggedPrimitiveKinds.includesString) {
+        ensureStringRepresentation(runtime);
+      }
+      hostTaggedPrimitiveResultKinds = ambientTaggedArrayUnionResult.taggedPrimitiveKinds;
+      hostTaggedArrayUnionResult = {
+        taggedPrimitiveKinds: ambientTaggedArrayUnionResult.taggedPrimitiveKinds,
+        arrayBoundary: ambientTaggedArrayUnionResult.arrayBoundary,
+        heapRepresentation: ambientTaggedArrayUnionResult.heapRepresentation,
+      };
+      if (ambientTaggedArrayUnionResult.heapRepresentation) {
+        hostTaggedHeapResultBoundary = {
+          includesNull: false,
+          includesUndefined: false,
+          representation: ambientTaggedArrayUnionResult.heapRepresentation,
+        };
+        heapResultRepresentation = ambientTaggedArrayUnionResult.heapRepresentation;
+        for (const memberType of ambientTaggedArrayUnionResult.objectMemberTypes) {
+          annotateHostHeapBoundaryType(
+            memberType,
+            declaration,
+            ambientTaggedArrayUnionResult.heapRepresentation,
+          );
+        }
+      }
+      resultType = 'tagged_ref';
+    } else if (ambientTaggedHeapUnionResult) {
       if (ambientTaggedHeapUnionResult.taggedPrimitiveKinds.includesString) {
         ensureStringRepresentation(runtime);
       }
@@ -32175,6 +32350,7 @@ function createAmbientHostFunctionHeader(
       : undefined,
     hostImportGeneratorResult: hostImportGeneratorResult || undefined,
     hostImportAsyncGeneratorResult: hostImportAsyncGeneratorResult || undefined,
+    hostTaggedArrayUnionResult,
     heapResultRepresentation,
     params,
     resultType,

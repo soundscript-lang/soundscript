@@ -9,6 +9,7 @@ import type {
   CompilerFunctionHeapBoundaryIR,
   CompilerFunctionHostFallbackTaggedArrayPropertyIR,
   CompilerFunctionHostTaggedArrayBoundaryIR,
+  CompilerFunctionHostTaggedArrayUnionResultIR,
   CompilerFunctionHostTaggedHeapNullableBoundaryIR,
   CompilerFunctionHostTaggedHeapNullableParamIR,
   CompilerFunctionIR,
@@ -4109,10 +4110,29 @@ function getSpecializedTaggedArrayFieldBoundaryUsage(module: CompilerModuleIR): 
   return usage;
 }
 
+function moduleUsesHostTaggedArrayUnionResultBoundary(module: CompilerModuleIR): boolean {
+  return module.functions.some((func) =>
+    func.closureFunctionId === undefined && func.hostTaggedArrayUnionResult !== undefined
+  );
+}
+
+function moduleUsesHostTaggedArrayUnionResultCarrierType(
+  module: CompilerModuleIR,
+  carrierType: CompilerFunctionHostTaggedArrayUnionResultIR['arrayBoundary']['carrierType'],
+): boolean {
+  return module.functions.some((func) =>
+    func.closureFunctionId === undefined &&
+    func.hostTaggedArrayUnionResult?.arrayBoundary.carrierType === carrierType
+  );
+}
+
 function moduleUsesOwnedArrayHostParamBoundary(module: CompilerModuleIR): boolean {
   return module.functions.some((func) =>
     func.closureFunctionId === undefined &&
     func.params.some((param) => param.type === 'owned_array_ref')
+  ) || moduleUsesHostTaggedArrayUnionResultCarrierType(
+    module,
+    'owned_array_ref',
   ) ||
     module.functions.some((func) =>
       func.hostDynamicCollectionParams?.some((param) =>
@@ -4196,6 +4216,9 @@ function moduleUsesOwnedNumberArrayHostParamBoundary(module: CompilerModuleIR): 
   return module.functions.some((func) =>
     func.closureFunctionId === undefined &&
     func.params.some((param) => param.type === 'owned_number_array_ref')
+  ) || moduleUsesHostTaggedArrayUnionResultCarrierType(
+    module,
+    'owned_number_array_ref',
   ) ||
     module.functions.some((func) =>
       func.hostDynamicCollectionParams?.some((param) => param.valueKind === 'number') === true
@@ -4277,6 +4300,9 @@ function moduleUsesOwnedBooleanArrayHostParamBoundary(module: CompilerModuleIR):
   return module.functions.some((func) =>
     func.closureFunctionId === undefined &&
     func.params.some((param) => param.type === 'owned_boolean_array_ref')
+  ) || moduleUsesHostTaggedArrayUnionResultCarrierType(
+    module,
+    'owned_boolean_array_ref',
   ) ||
     module.functions.some((func) =>
       func.hostDynamicCollectionParams?.some((param) => param.valueKind === 'boolean') === true
@@ -4362,6 +4388,9 @@ function moduleUsesOwnedHeapArrayHostParamBoundary(module: CompilerModuleIR): bo
   return module.functions.some((func) =>
     func.closureFunctionId === undefined &&
     getEffectiveHostHeapArrayParamsByName(func).size > 0
+  ) || moduleUsesHostTaggedArrayUnionResultCarrierType(
+    module,
+    'owned_heap_array_ref',
   ) || module.functions.some((func) => {
     const fallbackProperties = getEffectiveFunctionHostFallbackObjectPropertyMetadata(func);
     return fallbackProperties.heapArrayProperties.size > 0 &&
@@ -4444,6 +4473,9 @@ function moduleUsesOwnedTaggedArrayHostParamBoundary(module: CompilerModuleIR): 
   return module.functions.some((func) =>
     func.closureFunctionId === undefined &&
     func.params.some((param) => param.type === 'owned_tagged_array_ref')
+  ) || moduleUsesHostTaggedArrayUnionResultCarrierType(
+    module,
+    'owned_tagged_array_ref',
   ) || module.functions.some((func) => {
     const fallbackProperties = getEffectiveFunctionHostFallbackObjectPropertyMetadata(func);
     return fallbackProperties.taggedArrayProperties.size > 0 &&
@@ -24664,6 +24696,7 @@ function emitHostImportedFunctionWrapper(
   const heapResultRepresentation = getEffectiveFunctionHeapResultRepresentation(func);
   const hostImportPromiseParamNames = getEffectiveHostImportPromiseParamNames(func);
   const hostTaggedPrimitiveResultKinds = getEffectiveHostTaggedPrimitiveResultKinds(func);
+  const hostTaggedArrayUnionResult = func.hostTaggedArrayUnionResult;
   const hostClosureResultSignatureId = getEffectiveHostClosureResultSignatureId(func);
   const hostPromiseResultBoundary = getHostPromiseBoundary(func.hostResultBoundary);
   const hasHostPromiseResult = hasEffectiveHostImportPromiseResult(func);
@@ -24780,6 +24813,12 @@ function emitHostImportedFunctionWrapper(
         `${indent(1)}call $set_dynamic_object_property`,
         `${indent(1)}local.get $result__generator_object`,
       ]
+      : hostTaggedArrayUnionResult !== undefined
+      ? emitHostTaggedArrayUnionResultToInternal(
+        hostTaggedArrayUnionResult,
+        1,
+        runtime.layoutsByRepresentationName,
+      )
       : hostTaggedPrimitiveResultKinds !== undefined
       ? emitHostClosureBoundaryResultToInternal(
         module,
@@ -25821,6 +25860,204 @@ function emitInternalClosureBoundaryParamToHost(
     default:
       return [`${indent(level)}local.get $${localName}`];
   }
+}
+
+function emitHostArrayBoundaryToTaggedHeapObject(
+  externrefLocalName: string,
+  boundary: CompilerFunctionHostTaggedArrayUnionResultIR['arrayBoundary'],
+  level: number,
+): string[] {
+  switch (boundary.carrierType) {
+    case 'owned_array_ref':
+      return [
+        `${indent(level)}local.get $${externrefLocalName}`,
+        `${indent(level)}call $host_array_to_owned_string_array`,
+        `${indent(level)}call $tag_heap_object`,
+      ];
+    case 'owned_number_array_ref':
+      return [
+        `${indent(level)}local.get $${externrefLocalName}`,
+        `${indent(level)}call $host_array_to_owned_number_array`,
+        `${indent(level)}call $tag_heap_object`,
+      ];
+    case 'owned_boolean_array_ref':
+      return [
+        `${indent(level)}local.get $${externrefLocalName}`,
+        `${indent(level)}call $host_array_to_owned_boolean_array`,
+        `${indent(level)}call $tag_heap_object`,
+      ];
+    case 'owned_heap_array_ref':
+      if (boundary.elementBoundary.kind !== 'object') {
+        throw new Error('Expected object element boundary for tagged union heap-array boundary.');
+      }
+      return [
+        `${indent(level)}local.get $${externrefLocalName}`,
+        `${indent(level)}call $${
+          getHostArrayToOwnedHeapArrayHelperName(boundary.elementBoundary.representation)
+        }`,
+        `${indent(level)}call $tag_heap_object`,
+      ];
+    case 'owned_tagged_array_ref':
+      if (boundary.elementBoundary.kind !== 'tagged') {
+        throw new Error('Expected tagged element boundary for tagged union tagged-array boundary.');
+      }
+      return [
+        `${indent(level)}local.get $${externrefLocalName}`,
+        `${indent(level)}call $${
+          getHostArrayToOwnedTaggedArrayHelperName({
+            includesBoolean: boundary.elementBoundary.includesBoolean,
+            includesNull: boundary.elementBoundary.includesNull,
+            includesNumber: boundary.elementBoundary.includesNumber,
+            includesString: boundary.elementBoundary.includesString,
+            includesUndefined: boundary.elementBoundary.includesUndefined,
+            representation: boundary.elementBoundary.heapBoundary?.kind === 'object'
+              ? boundary.elementBoundary.heapBoundary.representation
+              : undefined,
+          })
+        }`,
+        `${indent(level)}call $tag_heap_object`,
+      ];
+    default: {
+      const exhaustiveCheck: never = boundary.carrierType;
+      return exhaustiveCheck;
+    }
+  }
+}
+
+function emitHostTaggedArrayUnionResultToInternal(
+  boundary: CompilerFunctionHostTaggedArrayUnionResultIR,
+  level: number,
+  layoutsByRepresentationName: ReadonlyMap<string, BackendSpecializedObjectLayout>,
+): string[] {
+  const doneLabel = '$result__callback_tagged__done';
+  const heapRepresentation = boundary.heapRepresentation;
+  const objectLines = heapRepresentation
+    ? [
+      `${indent(level + 4)}local.get $result__callback_value`,
+      `${indent(level + 4)}call $${
+        heapRepresentation.kind === 'specialized_object_representation'
+          ? getHostObjectToSpecializedHelperName(
+            getLayoutForRepresentationName(
+              heapRepresentation.name,
+              layoutsByRepresentationName,
+            ),
+          )
+          : heapRepresentation.kind === 'dynamic_object_representation'
+          ? getHostBuiltinErrorToDynamicHelperName()
+          : getHostObjectToFallbackHelperName()
+      }`,
+      `${indent(level + 4)}call $tag_heap_object`,
+      `${indent(level + 4)}local.set $result__callback_tagged`,
+      `${indent(level + 4)}br ${doneLabel}`,
+    ]
+    : [`${indent(level + 4)}unreachable`];
+  const kinds = boundary.taggedPrimitiveKinds;
+  return [
+    `${indent(level)}local.set $result__callback_value`,
+    `${indent(level)}local.get $result__callback_value`,
+    `${indent(level)}call $tagged_type_tag`,
+    `${indent(level)}local.set $result__callback_tag`,
+    `${indent(level)}(block ${doneLabel}`,
+    ...(kinds.includesUndefined
+      ? [
+        `${indent(level + 1)}local.get $result__callback_tag`,
+        `${indent(level + 1)}i32.const 0`,
+        `${indent(level + 1)}i32.eq`,
+        `${indent(level + 1)}(if`,
+        `${indent(level + 2)}(then`,
+        `${indent(level + 3)}call $tag_undefined`,
+        `${indent(level + 3)}local.set $result__callback_tagged`,
+        `${indent(level + 3)}br ${doneLabel}`,
+        `${indent(level + 2)})`,
+        `${indent(level + 1)})`,
+      ]
+      : []),
+    ...(kinds.includesNull
+      ? [
+        `${indent(level + 1)}local.get $result__callback_tag`,
+        `${indent(level + 1)}i32.const 6`,
+        `${indent(level + 1)}i32.eq`,
+        `${indent(level + 1)}(if`,
+        `${indent(level + 2)}(then`,
+        `${indent(level + 3)}call $tag_null`,
+        `${indent(level + 3)}local.set $result__callback_tagged`,
+        `${indent(level + 3)}br ${doneLabel}`,
+        `${indent(level + 2)})`,
+        `${indent(level + 1)})`,
+      ]
+      : []),
+    ...(kinds.includesBoolean
+      ? [
+        `${indent(level + 1)}local.get $result__callback_tag`,
+        `${indent(level + 1)}i32.const 1`,
+        `${indent(level + 1)}i32.eq`,
+        `${indent(level + 1)}(if`,
+        `${indent(level + 2)}(then`,
+        `${indent(level + 3)}local.get $result__callback_value`,
+        `${indent(level + 3)}call $tagged_boolean_value`,
+        `${indent(level + 3)}call $tag_boolean`,
+        `${indent(level + 3)}local.set $result__callback_tagged`,
+        `${indent(level + 3)}br ${doneLabel}`,
+        `${indent(level + 2)})`,
+        `${indent(level + 1)})`,
+      ]
+      : []),
+    ...(kinds.includesNumber
+      ? [
+        `${indent(level + 1)}local.get $result__callback_tag`,
+        `${indent(level + 1)}i32.const 2`,
+        `${indent(level + 1)}i32.eq`,
+        `${indent(level + 1)}(if`,
+        `${indent(level + 2)}(then`,
+        `${indent(level + 3)}local.get $result__callback_value`,
+        `${indent(level + 3)}call $tagged_number_value`,
+        `${indent(level + 3)}call $tag_number`,
+        `${indent(level + 3)}local.set $result__callback_tagged`,
+        `${indent(level + 3)}br ${doneLabel}`,
+        `${indent(level + 2)})`,
+        `${indent(level + 1)})`,
+      ]
+      : []),
+    ...(kinds.includesString
+      ? [
+        `${indent(level + 1)}local.get $result__callback_tag`,
+        `${indent(level + 1)}i32.const 3`,
+        `${indent(level + 1)}i32.eq`,
+        `${indent(level + 1)}(if`,
+        `${indent(level + 2)}(then`,
+        `${indent(level + 3)}local.get $result__callback_value`,
+        `${indent(level + 3)}call $string_to_owned`,
+        `${indent(level + 3)}call $tag_string`,
+        `${indent(level + 3)}local.set $result__callback_tagged`,
+        `${indent(level + 3)}br ${doneLabel}`,
+        `${indent(level + 2)})`,
+        `${indent(level + 1)})`,
+      ]
+      : []),
+    `${indent(level + 1)}local.get $result__callback_tag`,
+    `${indent(level + 1)}i32.const 4`,
+    `${indent(level + 1)}i32.eq`,
+    `${indent(level + 1)}(if`,
+    `${indent(level + 2)}(then`,
+    `${indent(level + 3)}local.get $result__callback_value`,
+    `${indent(level + 3)}call $host_array_is_array`,
+    `${indent(level + 3)}if`,
+    ...emitHostArrayBoundaryToTaggedHeapObject(
+      'result__callback_value',
+      boundary.arrayBoundary,
+      level + 4,
+    ),
+    `${indent(level + 4)}local.set $result__callback_tagged`,
+    `${indent(level + 4)}br ${doneLabel}`,
+    `${indent(level + 3)}else`,
+    ...objectLines,
+    `${indent(level + 3)}end`,
+    `${indent(level + 2)})`,
+    `${indent(level + 1)})`,
+    `${indent(level + 1)}unreachable`,
+    `${indent(level)})`,
+    `${indent(level)}local.get $result__callback_tagged`,
+  ];
 }
 
 function emitHostClosureBoundaryResultToInternal(
@@ -29072,6 +29309,7 @@ export function emitCompilerModuleToWat(module: CompilerModuleIR): string {
       usesBooleanParamBoundary: moduleUsesOwnedBooleanArrayHostParamBoundary(module),
       usesBooleanParamCopyBack: moduleUsesOwnedBooleanArrayHostParamCopyBack(module),
       usesBooleanResultBoundary: moduleUsesOwnedBooleanArrayHostResultBoundary(module),
+      usesHostArrayIsArray: moduleUsesHostTaggedArrayUnionResultBoundary(module),
       usesTaggedParamBoundary: moduleUsesOwnedTaggedArrayHostParamBoundary(module),
       usesTaggedParamCopyBack: moduleUsesOwnedTaggedArrayHostParamCopyBack(module),
       usesTaggedResultBoundary: moduleUsesOwnedTaggedArrayHostResultBoundary(module),
