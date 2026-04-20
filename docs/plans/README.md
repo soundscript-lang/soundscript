@@ -10,6 +10,7 @@ older context that no longer matches the current implementation.
 ## Open Plans
 
 - `beta-to-v1-roadmap.md`
+- `checker-compiler-semantic-consolidation.md`
 - `checker-performance-and-incremental-state.md`
 - `compiler-roadmap.md`
 - `effect-system-v1.md`
