@@ -136,6 +136,7 @@ import {
   isStringOrNullableType,
   isSupportedTaggedPredicateSyntax,
   isSymbolLikeType,
+  isSymbolOrNullableType,
   isTaggedCompilerUnionType,
   isTaggedPrimitiveUnionType,
   isTaggedTypeWithBoolean,
@@ -1953,7 +1954,7 @@ function resolveClosureAbiValueType(
     : undefined;
   if (ambientDeclarationObjectRepresentation) {
     const heapRepresentation =
-      ambientDeclarationObjectRepresentation.kind === 'specialized_object_representation' &&
+      isSpecializedObjectRepresentationRef(ambientDeclarationObjectRepresentation) &&
         specializedObjectRepresentationHasUnannotatedClosureFields(
           runtime!,
           ambientDeclarationObjectRepresentation,
@@ -2421,6 +2422,9 @@ function getClosureAbiValueTypeForType(
     return 'tagged_ref';
   }
   if (isSupportedTaggedHeapNullableType(checker, type)) {
+    return 'tagged_ref';
+  }
+  if (isSymbolOrNullableType(type)) {
     return 'tagged_ref';
   }
   if (isTaggedCompilerUnionType(type)) {
@@ -5019,6 +5023,9 @@ function getCompilerBindingValueType(checker: ts.TypeChecker, node: ts.Node): Co
     }
   }
   if (isSupportedNullableOwnedArrayType(checker, type)) {
+    return 'tagged_ref';
+  }
+  if (isSymbolOrNullableType(type)) {
     return 'tagged_ref';
   }
   if (isTaggedCompilerUnionType(type)) {
@@ -32904,6 +32911,8 @@ function createFunctionHeader(
     : !hasExportBoundary && isSupportedInternalTaggedHeapUnionType(checker, returnType)
     ? 'tagged_ref'
     : isSupportedTaggedHeapNullableType(checker, returnType)
+    ? 'tagged_ref'
+    : !hasExportBoundary && isSymbolOrNullableType(returnType)
     ? 'tagged_ref'
     : isTaggedCompilerUnionType(returnType)
     ? 'tagged_ref'
