@@ -1,4 +1,8 @@
-import type { CompilerModuleIR, CompilerTaggedPrimitiveBoundaryKindsIR } from './ir.ts';
+import type {
+  CompilerModuleIR,
+  CompilerTaggedPrimitiveBoundaryKindsIR,
+  CompilerUnionBoundaryIR,
+} from './ir.ts';
 import {
   getEffectiveFunctionHostFallbackObjectPropertyMetadata,
   getEffectiveHostClosureParamsByName,
@@ -55,6 +59,43 @@ export function getTaggedHostBoundaryUsage(module: CompilerModuleIR): TaggedHost
   >();
   const recursiveParamTaggedKinds: CompilerTaggedPrimitiveBoundaryKindsIR[] = [];
   const recursiveResultTaggedKinds: CompilerTaggedPrimitiveBoundaryKindsIR[] = [];
+  const getFiniteUnionTaggedPrimitiveKinds = (
+    boundary: CompilerUnionBoundaryIR | undefined,
+  ): CompilerTaggedPrimitiveBoundaryKindsIR | undefined => {
+    const kinds: CompilerTaggedPrimitiveBoundaryKindsIR = {
+      includesBoolean: false,
+      includesNull: false,
+      includesNumber: false,
+      includesString: false,
+      includesUndefined: false,
+    };
+    let sawTaggedPrimitiveArm = false;
+    for (const arm of boundary?.arms ?? []) {
+      switch (arm.kind) {
+        case 'undefined':
+          kinds.includesUndefined = true;
+          sawTaggedPrimitiveArm = true;
+          break;
+        case 'null':
+          kinds.includesNull = true;
+          sawTaggedPrimitiveArm = true;
+          break;
+        case 'boolean':
+          kinds.includesBoolean = true;
+          sawTaggedPrimitiveArm = true;
+          break;
+        case 'number':
+          kinds.includesNumber = true;
+          sawTaggedPrimitiveArm = true;
+          break;
+        case 'string':
+          kinds.includesString = true;
+          sawTaggedPrimitiveArm = true;
+          break;
+      }
+    }
+    return sawTaggedPrimitiveArm ? kinds : undefined;
+  };
   const markClosureUsage = (
     signatureId: number,
     flags: { needsParamBoundary?: boolean; needsResultBoundary?: boolean },
@@ -73,6 +114,19 @@ export function getTaggedHostBoundaryUsage(module: CompilerModuleIR): TaggedHost
       closureUsageById.set(signatureId, next);
     }
     return changed;
+  };
+  const markFiniteUnionClosureUsage = (
+    boundary: CompilerModuleIR['functions'][number]['hostUnionBoundaryResult'],
+    flags: { needsParamBoundary?: boolean; needsResultBoundary?: boolean },
+  ): void => {
+    for (const arm of boundary?.arms ?? []) {
+      if (arm.kind !== 'closure') {
+        continue;
+      }
+      for (const signatureId of arm.signatureIds) {
+        markClosureUsage(signatureId, flags);
+      }
+    }
   };
   const markSpecializedClosureUsage = (
     representationName: string,
@@ -176,6 +230,16 @@ export function getTaggedHostBoundaryUsage(module: CompilerModuleIR): TaggedHost
         });
       }
     }
+    for (const param of func.hostUnionBoundaryParams ?? []) {
+      const taggedKinds = getFiniteUnionTaggedPrimitiveKinds(param.boundary);
+      if (taggedKinds) {
+        recursiveParamTaggedKinds.push(taggedKinds);
+      }
+      markFiniteUnionClosureUsage(param.boundary, {
+        needsParamBoundary: true,
+        needsResultBoundary: true,
+      });
+    }
     const hostClosureResultSignatureId = getEffectiveHostClosureResultSignatureId(func);
     if (hostClosureResultSignatureId !== undefined) {
       markClosureUsage(hostClosureResultSignatureId, {
@@ -194,6 +258,16 @@ export function getTaggedHostBoundaryUsage(module: CompilerModuleIR): TaggedHost
         needsParamBoundary: true,
         needsResultBoundary: true,
       });
+    }
+    markFiniteUnionClosureUsage(func.hostUnionBoundaryResult, {
+      needsParamBoundary: true,
+      needsResultBoundary: true,
+    });
+    const finiteResultTaggedKinds = getFiniteUnionTaggedPrimitiveKinds(
+      func.hostUnionBoundaryResult,
+    );
+    if (finiteResultTaggedKinds) {
+      recursiveResultTaggedKinds.push(finiteResultTaggedKinds);
     }
     for (const boundary of getEffectiveHostTaggedHeapNullableParamsByName(func).values()) {
       if (boundary.representation.kind === 'specialized_object_representation') {

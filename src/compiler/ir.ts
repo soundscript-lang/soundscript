@@ -54,7 +54,9 @@ export type CompilerBinaryOp =
   | 'ref.ne'
   | 'string.concat'
   | 'string.eq'
-  | 'string.ne';
+  | 'string.ne'
+  | 'symbol.eq'
+  | 'symbol.ne';
 
 export interface CompilerNumberLiteralIR {
   kind: 'number_literal';
@@ -1004,6 +1006,12 @@ export interface CompilerTagStringIR {
   type: 'tagged_ref';
 }
 
+export interface CompilerTagSymbolIR {
+  kind: 'tag_symbol';
+  value: CompilerExpressionIR;
+  type: 'tagged_ref';
+}
+
 export interface CompilerTagHeapObjectIR {
   kind: 'tag_heap_object';
   value: CompilerExpressionIR;
@@ -1026,6 +1034,12 @@ export interface CompilerUntagOwnedStringIR {
   kind: 'untag_owned_string';
   value: CompilerExpressionIR;
   type: 'owned_string_ref';
+}
+
+export interface CompilerUntagSymbolIR {
+  kind: 'untag_symbol';
+  value: CompilerExpressionIR;
+  type: 'symbol_ref';
 }
 
 export interface CompilerUntagHeapObjectIR {
@@ -1298,10 +1312,12 @@ export type CompilerExpressionIR =
   | CompilerTagNumberIR
   | CompilerTagBooleanIR
   | CompilerTagStringIR
+  | CompilerTagSymbolIR
   | CompilerTagHeapObjectIR
   | CompilerUntagNumberIR
   | CompilerUntagBooleanIR
   | CompilerUntagOwnedStringIR
+  | CompilerUntagSymbolIR
   | CompilerUntagHeapObjectIR
   | CompilerTaggedIsUndefinedIR
   | CompilerTaggedIsNullIR
@@ -1580,6 +1596,41 @@ export interface CompilerFunctionHostTaggedCompositeUnionParamIR
   name: string;
 }
 
+export type CompilerUnionArmIR =
+  | { kind: 'undefined' }
+  | { kind: 'null' }
+  | { kind: 'boolean' }
+  | { kind: 'number' }
+  | { kind: 'string'; owned?: boolean }
+  | { kind: 'bigint'; deferred?: boolean }
+  | { kind: 'symbol' }
+  | { kind: 'object'; boundary: CompilerHostBoundaryObjectIR }
+  | { kind: 'array'; boundary: CompilerHostBoundaryArrayIR }
+  | { kind: 'map'; keyBoundary: CompilerHostBoundaryIR; valueBoundary: CompilerHostBoundaryIR }
+  | { kind: 'set'; valueBoundary: CompilerHostBoundaryIR }
+  | { kind: 'promise'; boundary: CompilerHostBoundaryPromiseIR }
+  | {
+    kind: 'generator';
+    async: boolean;
+    yieldBoundary?: CompilerHostBoundaryIR;
+    returnBoundary?: CompilerHostBoundaryIR;
+    nextBoundary?: CompilerHostBoundaryIR;
+  }
+  | { kind: 'closure'; signatureIds: readonly number[] }
+  | { kind: 'class_constructor'; classTagId: number }
+  | { kind: 'machine_numeric'; numericKind: string; deferred: true }
+  | { kind: 'value_class'; name: string; deferred: true };
+
+export interface CompilerUnionBoundaryIR {
+  kind: 'finite_union';
+  arms: readonly CompilerUnionArmIR[];
+}
+
+export interface CompilerFunctionHostUnionParamIR {
+  name: string;
+  boundary: CompilerUnionBoundaryIR;
+}
+
 export interface CompilerFunctionHostTaggedHeapNullableBoundaryIR {
   includesNull: boolean;
   includesUndefined: boolean;
@@ -1618,6 +1669,8 @@ export interface CompilerFunctionIR {
   hostImportPromiseParams?: readonly string[];
   hostImportGeneratorResult?: boolean;
   hostImportAsyncGeneratorResult?: boolean;
+  hostUnionBoundaryParams?: readonly CompilerFunctionHostUnionParamIR[];
+  hostUnionBoundaryResult?: CompilerUnionBoundaryIR;
   hostTaggedArrayUnionParams?: readonly CompilerFunctionHostTaggedArrayUnionParamIR[];
   hostTaggedCallableUnionParams?: readonly CompilerFunctionHostTaggedCallableUnionParamIR[];
   hostTaggedCompositeUnionParams?: readonly CompilerFunctionHostTaggedCompositeUnionParamIR[];

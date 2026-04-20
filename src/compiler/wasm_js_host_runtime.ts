@@ -733,6 +733,14 @@ function createJsHostImports(
       from_number: (value: number) => Number(value),
       from_boolean: (value: number) => value !== 0,
     },
+    soundscript_symbol: {
+      is: (value: unknown) => Number(typeof value === 'symbol'),
+      new: () => Symbol(),
+      same: (left: unknown, right: unknown) => Number(left === right),
+    },
+    soundscript_bigint: {
+      is: (value: unknown) => Number(typeof value === 'bigint'),
+    },
     soundscript_closure: new Proxy({}, {
       get(_target, property) {
         if (typeof property !== 'string') {

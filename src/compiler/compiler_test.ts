@@ -3151,6 +3151,10 @@ compilerIntegrationTest(
     assertEquals(result.diagnostics, []);
     const watOutput = await readWatArtifactForProject(tempDirectory);
     assertStringIncludes(watOutput, '$symbol_runtime');
+    assertStringIncludes(watOutput, '(import "soundscript_symbol" "new"');
+    assertStringIncludes(watOutput, '(import "soundscript_symbol" "same"');
+    assertFalse(watOutput.includes('$host_symbol_to_internal'));
+    assertFalse(watOutput.includes('$internal_symbol_to_host'));
     assertFalse(watOutput.includes('$string_runtime'));
     assertFalse(watOutput.includes('owned_string_literal'));
     assertFalse(watOutput.includes('dynamic_object'));

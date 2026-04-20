@@ -27,6 +27,7 @@ import type {
   CompilerFunctionHostTaggedHeapNullableBoundaryIR,
   CompilerFunctionHostTaggedHeapNullableParamIR,
   CompilerFunctionHostTaggedPrimitiveParamIR,
+  CompilerFunctionHostUnionParamIR,
   CompilerFunctionIR,
   CompilerHostBoundaryArrayIR,
   CompilerHostBoundaryFieldIR,
@@ -40,6 +41,8 @@ import type {
   CompilerOwnedArrayValueTypeIR,
   CompilerStatementIR,
   CompilerTaggedPrimitiveBoundaryKindsIR,
+  CompilerUnionArmIR,
+  CompilerUnionBoundaryIR,
   CompilerValueType,
 } from './ir.ts';
 import type {
@@ -3348,6 +3351,409 @@ function getHostArrayBoundaryForType(
   return undefined;
 }
 
+function getHostBoundaryKey(boundary: CompilerHostBoundaryIR): string {
+  switch (boundary.kind) {
+    case 'scalar':
+      return `scalar:${boundary.valueType}`;
+    case 'string':
+      return `string:${boundary.owned ? 'owned' : 'borrowed'}`;
+    case 'closure':
+      return `closure:${boundary.signatureId}`;
+    case 'class_constructor':
+      return `class_constructor:${boundary.classTagId}`;
+    case 'externref':
+      return 'externref';
+    case 'object': {
+      const fieldKeys = (boundary.fields ?? []).map((field) => ({
+        name: field.name,
+        optional: field.optional,
+        boundaryKey: getHostBoundaryKey(field.boundary),
+      })).sort((left, right) =>
+        left.name.localeCompare(right.name) ||
+        left.boundaryKey.localeCompare(right.boundaryKey) ||
+        Number(left.optional) - Number(right.optional)
+      );
+      return `object:${boundary.representation.kind}:${boundary.representation.name}:${
+        fieldKeys.map((field) =>
+          `${field.name}:${field.optional ? 'optional' : 'required'}:${field.boundaryKey}`
+        ).join('|')
+      }`;
+    }
+    case 'tagged':
+      return `tagged:${
+        [
+          boundary.includesBoolean ? 'b' : '',
+          boundary.includesNull ? 'n' : '',
+          boundary.includesNumber ? 'd' : '',
+          boundary.includesString ? 's' : '',
+          boundary.includesUndefined ? 'u' : '',
+        ].join('')
+      }:${boundary.heapBoundary ? getHostBoundaryKey(boundary.heapBoundary) : '-'}`;
+    case 'promise':
+      return `promise:${boundary.representation.kind}:${boundary.representation.name}:${
+        boundary.valueBoundary ? getHostBoundaryKey(boundary.valueBoundary) : '-'
+      }`;
+    case 'array':
+      return `array:${boundary.carrierType}:${getHostBoundaryKey(boundary.elementBoundary)}`;
+    default: {
+      const exhaustiveCheck: never = boundary;
+      return exhaustiveCheck;
+    }
+  }
+}
+
+function getFiniteUnionArmKey(arm: CompilerUnionArmIR): string {
+  switch (arm.kind) {
+    case 'undefined':
+    case 'null':
+    case 'boolean':
+    case 'number':
+    case 'bigint':
+    case 'symbol':
+      return arm.kind;
+    case 'string':
+      return `string:${arm.owned ? 'owned' : 'plain'}`;
+    case 'object':
+      return `object:${getHostBoundaryKey(arm.boundary)}`;
+    case 'array':
+      return `array:${getHostBoundaryKey(arm.boundary)}`;
+    case 'map':
+      return `map:${getHostBoundaryKey(arm.keyBoundary)}:${getHostBoundaryKey(arm.valueBoundary)}`;
+    case 'set':
+      return `set:${getHostBoundaryKey(arm.valueBoundary)}`;
+    case 'promise':
+      return `promise:${getHostBoundaryKey(arm.boundary)}`;
+    case 'generator':
+      return `generator:${arm.async ? 'async' : 'sync'}:${
+        arm.yieldBoundary ? getHostBoundaryKey(arm.yieldBoundary) : '-'
+      }:${arm.returnBoundary ? getHostBoundaryKey(arm.returnBoundary) : '-'}:${
+        arm.nextBoundary ? getHostBoundaryKey(arm.nextBoundary) : '-'
+      }`;
+    case 'closure':
+      return `closure:${
+        [...new Set(arm.signatureIds)].sort((left, right) => left - right).join(',')
+      }`;
+    case 'class_constructor':
+      return `class_constructor:${arm.classTagId}`;
+    case 'machine_numeric':
+      return `machine_numeric:${arm.numericKind}`;
+    case 'value_class':
+      return `value_class:${arm.name}`;
+    default: {
+      const exhaustiveCheck: never = arm;
+      return exhaustiveCheck;
+    }
+  }
+}
+
+function pushFiniteUnionArm(
+  armsByKey: Map<string, CompilerUnionArmIR>,
+  arm: CompilerUnionArmIR,
+): void {
+  armsByKey.set(getFiniteUnionArmKey(arm), arm);
+}
+
+function pushFiniteUnionPrimitiveArms(
+  armsByKey: Map<string, CompilerUnionArmIR>,
+  kinds: CompilerTaggedPrimitiveBoundaryKindsIR,
+): void {
+  if (kinds.includesUndefined) {
+    pushFiniteUnionArm(armsByKey, { kind: 'undefined' });
+  }
+  if (kinds.includesNull) {
+    pushFiniteUnionArm(armsByKey, { kind: 'null' });
+  }
+  if (kinds.includesBoolean) {
+    pushFiniteUnionArm(armsByKey, { kind: 'boolean' });
+  }
+  if (kinds.includesNumber) {
+    pushFiniteUnionArm(armsByKey, { kind: 'number' });
+  }
+  if (kinds.includesString) {
+    pushFiniteUnionArm(armsByKey, { kind: 'string' });
+  }
+}
+
+function createFiniteHostUnionBoundaryFromLegacyParts(parts: {
+  taggedPrimitiveKinds: CompilerTaggedPrimitiveBoundaryKindsIR;
+  arrayBoundary?: CompilerHostBoundaryArrayIR;
+  closureSignatureId?: number;
+  heapRepresentation?: CompilerRuntimeRepresentationRefIR<'object'>;
+}): CompilerUnionBoundaryIR | undefined {
+  const armsByKey = new Map<string, CompilerUnionArmIR>();
+  pushFiniteUnionPrimitiveArms(armsByKey, parts.taggedPrimitiveKinds);
+  if (parts.arrayBoundary) {
+    pushFiniteUnionArm(armsByKey, { kind: 'array', boundary: parts.arrayBoundary });
+  }
+  if (parts.closureSignatureId !== undefined) {
+    pushFiniteUnionArm(armsByKey, {
+      kind: 'closure',
+      signatureIds: [parts.closureSignatureId],
+    });
+  }
+  if (parts.heapRepresentation) {
+    pushFiniteUnionArm(armsByKey, {
+      kind: 'object',
+      boundary: createHostObjectBoundaryFromRepresentation(parts.heapRepresentation),
+    });
+  }
+  const arms = [...armsByKey.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([, arm]) => arm);
+  return arms.length >= 2 ? { kind: 'finite_union', arms } : undefined;
+}
+
+function getFlattenedFiniteUnionMemberTypes(type: ts.Type): readonly ts.Type[] {
+  if ((type.flags & ts.TypeFlags.Union) === 0) {
+    return [type];
+  }
+  return (type as ts.UnionType).types.flatMap((
+    member,
+  ) => [...getFlattenedFiniteUnionMemberTypes(member)]);
+}
+
+function getFiniteHostUnionArmForType(
+  checker: ts.TypeChecker,
+  type: ts.Type,
+  contextNode: ts.Node,
+  closures: ModuleClosureLoweringState | undefined,
+  runtime: ModuleRuntimeLoweringState,
+  classes: ReadonlyMap<ts.Symbol, ts.ClassDeclaration>,
+): CompilerUnionArmIR | undefined {
+  if (isUndefinedType(type)) {
+    return { kind: 'undefined' };
+  }
+  if (isNullType(type)) {
+    return { kind: 'null' };
+  }
+  if ((type.flags & ts.TypeFlags.BooleanLike) !== 0) {
+    return { kind: 'boolean' };
+  }
+  if ((type.flags & ts.TypeFlags.NumberLike) !== 0) {
+    return { kind: 'number' };
+  }
+  if (isStringLikeType(type)) {
+    return { kind: 'string' };
+  }
+  if ((type.flags & ts.TypeFlags.BigIntLike) !== 0) {
+    return { kind: 'bigint' };
+  }
+  if (isSymbolLikeType(type)) {
+    return { kind: 'symbol' };
+  }
+
+  if (isPromiseType(checker, type)) {
+    if (!closures) {
+      return undefined;
+    }
+    const valueBoundary = resolveHostPromiseBridgeValueBoundary(
+      checker,
+      type,
+      contextNode,
+      closures,
+      runtime,
+      classes,
+    );
+    ensurePromiseRuntimeInfrastructure(runtime);
+    ensureBuiltinErrorRuntimeInfrastructure(runtime);
+    getPromiseFulfilledHandlerSignatureId(closures, runtime);
+    return {
+      kind: 'promise',
+      boundary: {
+        kind: 'promise',
+        representation: ensureObjectDynamicRepresentation(runtime),
+        valueBoundary,
+      },
+    };
+  }
+
+  const asyncGeneratorInfo = getSupportedAsyncGeneratorTypeInfo(checker, type);
+  const generatorInfo = asyncGeneratorInfo ?? getSupportedGeneratorTypeInfo(checker, type);
+  if (generatorInfo) {
+    if (!closures) {
+      return undefined;
+    }
+    ensureGeneratorCallSignatureId(closures, runtime);
+    ensurePromiseRuntimeInfrastructure(runtime);
+    ensureBuiltinErrorRuntimeInfrastructure(runtime);
+    getPromiseFulfilledHandlerSignatureId(closures, runtime);
+    return {
+      kind: 'generator',
+      async: asyncGeneratorInfo !== undefined,
+      yieldBoundary: resolveHostGeneratorBridgeValueBoundary(
+        checker,
+        generatorInfo.yieldType,
+        contextNode,
+        closures,
+        runtime,
+        classes,
+      ),
+      returnBoundary: resolveHostGeneratorBridgeValueBoundary(
+        checker,
+        generatorInfo.returnType,
+        contextNode,
+        closures,
+        runtime,
+        classes,
+      ),
+      nextBoundary: resolveHostGeneratorBridgeValueBoundary(
+        checker,
+        generatorInfo.nextType,
+        contextNode,
+        closures,
+        runtime,
+        classes,
+      ),
+    };
+  }
+
+  const arrayBoundary = getHostArrayBoundaryForType(
+    checker,
+    type,
+    contextNode,
+    runtime,
+    classes,
+  );
+  if (arrayBoundary) {
+    return { kind: 'array', boundary: arrayBoundary };
+  }
+
+  if (checker.getSignaturesOfType(type, ts.SignatureKind.Call).length > 0) {
+    if (!closures) {
+      return undefined;
+    }
+    const shallowClosureBoundaryOptions = {
+      annotateNestedCallableHeapFields: false,
+    } satisfies ResolveClosureAbiSignatureOptions;
+    ensureSupportedHostClosureBoundarySignature(
+      checker,
+      type,
+      contextNode,
+      closures,
+      runtime,
+      classes,
+      shallowClosureBoundaryOptions,
+    );
+    annotateHostClosureBoundaryTypes(
+      checker,
+      type,
+      contextNode,
+      runtime,
+      closures,
+      classes,
+      shallowClosureBoundaryOptions,
+    );
+    return {
+      kind: 'closure',
+      signatureIds: [
+        getClosureSignatureIdForType(
+          checker,
+          type,
+          contextNode,
+          closures,
+          runtime,
+          classes,
+          shallowClosureBoundaryOptions,
+        ),
+      ],
+    };
+  }
+
+  if (isSupportedHeapLocalType(checker, type)) {
+    return {
+      kind: 'object',
+      boundary: createHostObjectBoundaryFromRepresentation(
+        getFunctionBoundaryRepresentation(
+          checker,
+          type,
+          contextNode,
+          runtime,
+          classes,
+        ),
+      ),
+    };
+  }
+
+  return undefined;
+}
+
+type FiniteHostUnionBoundaryClassification =
+  | { kind: 'not_union' }
+  | { kind: 'unsupported_union' }
+  | { kind: 'classified_union'; boundary?: CompilerUnionBoundaryIR };
+
+function classifyFiniteHostUnionBoundaryForType(
+  checker: ts.TypeChecker,
+  type: ts.Type,
+  contextNode: ts.Node,
+  closures: ModuleClosureLoweringState | undefined,
+  runtime: ModuleRuntimeLoweringState,
+  classes: ReadonlyMap<ts.Symbol, ts.ClassDeclaration>,
+): FiniteHostUnionBoundaryClassification {
+  if ((type.flags & ts.TypeFlags.Union) === 0) {
+    return { kind: 'not_union' };
+  }
+  const armsByKey = new Map<string, CompilerUnionArmIR>();
+  for (const member of getFlattenedFiniteUnionMemberTypes(type)) {
+    const arm = getFiniteHostUnionArmForType(
+      checker,
+      member,
+      contextNode,
+      closures,
+      runtime,
+      classes,
+    );
+    if (!arm) {
+      return { kind: 'unsupported_union' };
+    }
+    pushFiniteUnionArm(armsByKey, arm);
+  }
+  const arms = [...armsByKey.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([, arm]) => arm);
+  return {
+    kind: 'classified_union',
+    boundary: arms.length >= 2 ? { kind: 'finite_union', arms } : undefined,
+  };
+}
+
+function classifyFiniteHostUnionBoundaryForLegacyParts(
+  checker: ts.TypeChecker,
+  type: ts.Type,
+  contextNode: ts.Node,
+  closures: ModuleClosureLoweringState | undefined,
+  runtime: ModuleRuntimeLoweringState,
+  classes: ReadonlyMap<ts.Symbol, ts.ClassDeclaration>,
+  legacyParts: {
+    taggedPrimitiveKinds: CompilerTaggedPrimitiveBoundaryKindsIR;
+    arrayBoundary?: CompilerHostBoundaryArrayIR;
+    closureSignatureId?: number;
+    heapRepresentation?: CompilerRuntimeRepresentationRefIR<'object'>;
+  },
+): CompilerUnionBoundaryIR | undefined {
+  const classification = classifyFiniteHostUnionBoundaryForType(
+    checker,
+    type,
+    contextNode,
+    closures,
+    runtime,
+    classes,
+  );
+  if (classification.kind === 'unsupported_union') {
+    return undefined;
+  }
+  return classification.kind === 'classified_union'
+    ? classification.boundary ?? createFiniteHostUnionBoundaryFromLegacyParts(legacyParts)
+    : createFiniteHostUnionBoundaryFromLegacyParts(legacyParts);
+}
+
+function finiteUnionBoundaryHasArm(
+  boundary: CompilerUnionBoundaryIR | undefined,
+  kind: CompilerUnionArmIR['kind'],
+): boolean {
+  return boundary?.arms.some((arm) => arm.kind === kind) === true;
+}
+
 function getHostTaggedArrayUnionBoundaryInfo(
   checker: ts.TypeChecker,
   type: ts.Type,
@@ -4224,6 +4630,16 @@ function getHostTaggedHeapUnionBoundaryInfo(
   };
   representation: CompilerRuntimeRepresentationRefIR<'object'>;
 } | undefined {
+  if (
+    (type.flags & ts.TypeFlags.Union) !== 0 &&
+    (type as ts.UnionType).types.some((member) =>
+      isPromiseType(checker, member) ||
+      isGeneratorObjectType(checker, member) ||
+      isAsyncGeneratorObjectType(checker, member)
+    )
+  ) {
+    return undefined;
+  }
   const kinds = getSupportedInternalTaggedHeapUnionKinds(checker, type);
   if (
     !kinds ||
@@ -5116,6 +5532,27 @@ function lowerExpressionAsValueType(
       throw error;
     }
   }
+  if (targetType === 'symbol_ref') {
+    const lowered = lowerExpression(expression, context);
+    if ('type' in lowered && lowered.type === 'symbol_ref') {
+      return lowered;
+    }
+    if (
+      'type' in lowered &&
+      lowered.type === 'tagged_ref' &&
+      isSymbolLikeType(context.checker.getTypeAtLocation(expression))
+    ) {
+      return {
+        kind: 'untag_symbol',
+        value: lowered,
+        type: 'symbol_ref',
+      };
+    }
+    throw new CompilerUnsupportedError(
+      'Only supported symbol-valued expressions are supported in compiler subset.',
+      expression,
+    );
+  }
   if (targetType === 'f64') {
     const lengthView = tryLowerLengthViewValue(expression, context);
     if (lengthView) {
@@ -5212,6 +5649,13 @@ function lowerExpressionAsValueType(
     return {
       kind: 'tag_string',
       value: ownedValue,
+      type: 'tagged_ref',
+    };
+  }
+  if (isSymbolLikeType(sourceType)) {
+    return {
+      kind: 'tag_symbol',
+      value: lowerExpressionAsValueType(expression, 'symbol_ref', context),
       type: 'tagged_ref',
     };
   }
@@ -25074,6 +25518,31 @@ function resolveHostPromiseBridgeValueBoundary(
   return createHostBoundaryFromResolvedClosureAbiValue(promisedValue, runtime);
 }
 
+function resolveHostGeneratorBridgeValueBoundary(
+  checker: ts.TypeChecker,
+  valueType: ts.Type,
+  node: ts.Node,
+  closures: ModuleClosureLoweringState | undefined,
+  runtime: ModuleRuntimeLoweringState,
+  classes: ReadonlyMap<ts.Symbol, ts.ClassDeclaration>,
+): CompilerHostBoundaryIR {
+  const resolvedValue = resolveClosureAbiValueType(
+    checker,
+    valueType,
+    node,
+    closures,
+    runtime,
+    classes,
+  );
+  if (resolvedValue.classDeclaration || resolvedValue.erasedFromRuntime) {
+    throw new CompilerUnsupportedError(
+      'Generator host boundary values currently do not support concrete class-constructor erasure in compiler subset.',
+      node,
+    );
+  }
+  return createHostBoundaryFromResolvedClosureAbiValue(resolvedValue, runtime);
+}
+
 function mergeCompilerTaggedPrimitiveBoundaryKinds(
   left: CompilerTaggedPrimitiveBoundaryKindsIR | undefined,
   right: CompilerTaggedPrimitiveBoundaryKindsIR | undefined,
@@ -31105,6 +31574,7 @@ function createFunctionHeader(
   const hostTaggedArrayUnionParams: CompilerFunctionHostTaggedArrayUnionParamIR[] = [];
   const hostTaggedCallableUnionParams: CompilerFunctionHostTaggedCallableUnionParamIR[] = [];
   const hostTaggedCompositeUnionParams: CompilerFunctionHostTaggedCompositeUnionParamIR[] = [];
+  const hostUnionBoundaryParams: CompilerFunctionHostUnionParamIR[] = [];
   const hostDynamicCollectionParams: CompilerFunctionHostDynamicCollectionParamIR[] = [];
   const hostPromiseParams: string[] = [];
   const hostPromiseParamValueBoundaries: Array<{
@@ -31559,6 +32029,26 @@ function createFunctionHeader(
             closureSignatureId: hostTaggedCompositeUnionBoundary.closureSignatureId,
             heapRepresentation: hostTaggedCompositeUnionBoundary.heapRepresentation,
           });
+          const unionBoundary = classifyFiniteHostUnionBoundaryForLegacyParts(
+            checker,
+            parameterType,
+            parameter,
+            closures,
+            runtime,
+            classes,
+            {
+              taggedPrimitiveKinds: hostTaggedCompositeUnionBoundary.taggedPrimitiveKinds,
+              arrayBoundary: hostTaggedCompositeUnionBoundary.arrayBoundary,
+              closureSignatureId: hostTaggedCompositeUnionBoundary.closureSignatureId,
+              heapRepresentation: hostTaggedCompositeUnionBoundary.heapRepresentation,
+            },
+          );
+          if (unionBoundary) {
+            hostUnionBoundaryParams.push({
+              name: runtimeParamName,
+              boundary: unionBoundary,
+            });
+          }
           if (hostTaggedCompositeUnionBoundary.heapRepresentation) {
             hostTaggedHeapNullableParams.push({
               name: runtimeParamName,
@@ -31599,6 +32089,25 @@ function createFunctionHeader(
             arrayBoundary: hostTaggedArrayUnionBoundary.arrayBoundary,
             heapRepresentation: hostTaggedArrayUnionBoundary.heapRepresentation,
           });
+          const unionBoundary = classifyFiniteHostUnionBoundaryForLegacyParts(
+            checker,
+            parameterType,
+            parameter,
+            closures,
+            runtime,
+            classes,
+            {
+              taggedPrimitiveKinds: hostTaggedArrayUnionBoundary.taggedPrimitiveKinds,
+              arrayBoundary: hostTaggedArrayUnionBoundary.arrayBoundary,
+              heapRepresentation: hostTaggedArrayUnionBoundary.heapRepresentation,
+            },
+          );
+          if (unionBoundary) {
+            hostUnionBoundaryParams.push({
+              name: runtimeParamName,
+              boundary: unionBoundary,
+            });
+          }
           if (hostTaggedArrayUnionBoundary.heapRepresentation) {
             hostTaggedHeapNullableParams.push({
               name: runtimeParamName,
@@ -31640,6 +32149,25 @@ function createFunctionHeader(
             closureSignatureId: hostTaggedCallableUnionBoundary.closureSignatureId,
             heapRepresentation: hostTaggedCallableUnionBoundary.heapRepresentation,
           });
+          const unionBoundary = classifyFiniteHostUnionBoundaryForLegacyParts(
+            checker,
+            parameterType,
+            parameter,
+            closures,
+            runtime,
+            classes,
+            {
+              taggedPrimitiveKinds: hostTaggedCallableUnionBoundary.taggedPrimitiveKinds,
+              closureSignatureId: hostTaggedCallableUnionBoundary.closureSignatureId,
+              heapRepresentation: hostTaggedCallableUnionBoundary.heapRepresentation,
+            },
+          );
+          if (unionBoundary) {
+            hostUnionBoundaryParams.push({
+              name: runtimeParamName,
+              boundary: unionBoundary,
+            });
+          }
           if (hostTaggedCallableUnionBoundary.heapRepresentation) {
             hostTaggedHeapNullableParams.push({
               name: runtimeParamName,
@@ -31680,6 +32208,24 @@ function createFunctionHeader(
             includesUndefined: false,
             representation: hostTaggedHeapUnionBoundary.representation,
           });
+          const unionBoundary = classifyFiniteHostUnionBoundaryForLegacyParts(
+            checker,
+            parameterType,
+            parameter,
+            closures,
+            runtime,
+            classes,
+            {
+              taggedPrimitiveKinds: hostTaggedHeapUnionBoundary.taggedPrimitiveKinds,
+              heapRepresentation: hostTaggedHeapUnionBoundary.representation,
+            },
+          );
+          if (unionBoundary) {
+            hostUnionBoundaryParams.push({
+              name: runtimeParamName,
+              boundary: unionBoundary,
+            });
+          }
           for (const memberType of getTaggedHeapUnionObjectMemberTypes(checker, parameterType)) {
             annotateHostHeapBoundaryType(
               memberType,
@@ -31696,9 +32242,50 @@ function createFunctionHeader(
           if (hostTaggedBoundaryKinds.includesString) {
             ensureStringRepresentation(runtime);
           }
+          const taggedPrimitiveKinds = toCompilerTaggedPrimitiveBoundaryKinds(
+            hostTaggedBoundaryKinds,
+          )!;
           hostTaggedPrimitiveParams.push(
             toCompilerHostTaggedPrimitiveParam(runtimeParamName, hostTaggedBoundaryKinds),
           );
+          const unionBoundary = classifyFiniteHostUnionBoundaryForLegacyParts(
+            checker,
+            parameterType,
+            parameter,
+            closures,
+            runtime,
+            classes,
+            { taggedPrimitiveKinds },
+          );
+          if (unionBoundary) {
+            hostUnionBoundaryParams.push({
+              name: runtimeParamName,
+              boundary: unionBoundary,
+            });
+          }
+          return 'tagged_ref';
+        }
+        const finiteHostUnionBoundary = hasExportBoundary
+          ? classifyFiniteHostUnionBoundaryForType(
+            checker,
+            parameterType,
+            parameter,
+            closures,
+            runtime,
+            classes,
+          )
+          : { kind: 'not_union' } satisfies FiniteHostUnionBoundaryClassification;
+        if (
+          finiteHostUnionBoundary.kind === 'classified_union' &&
+          finiteHostUnionBoundary.boundary
+        ) {
+          if (finiteUnionBoundaryHasArm(finiteHostUnionBoundary.boundary, 'string')) {
+            ensureStringRepresentation(runtime);
+          }
+          hostUnionBoundaryParams.push({
+            name: runtimeParamName,
+            boundary: finiteHostUnionBoundary.boundary,
+          });
           return 'tagged_ref';
         }
         if (!hasExportBoundary && isSupportedInternalTaggedHeapUnionType(checker, parameterType)) {
@@ -31729,6 +32316,31 @@ function createFunctionHeader(
               name: runtimeParamName,
               ...boundary,
             });
+            const taggedPrimitiveKinds = {
+              includesBoolean: false,
+              includesNull: boundary.includesNull,
+              includesNumber: false,
+              includesString: false,
+              includesUndefined: boundary.includesUndefined,
+            };
+            const unionBoundary = classifyFiniteHostUnionBoundaryForLegacyParts(
+              checker,
+              parameterType,
+              parameter,
+              closures,
+              runtime,
+              classes,
+              {
+                taggedPrimitiveKinds,
+                heapRepresentation: boundary.representation,
+              },
+            );
+            if (unionBoundary) {
+              hostUnionBoundaryParams.push({
+                name: runtimeParamName,
+                boundary: unionBoundary,
+              });
+            }
             for (const memberType of getTaggedHeapNullableObjectMemberTypes(parameterType)) {
               annotateHostHeapBoundaryType(memberType, parameter, boundary.representation);
             }
@@ -31975,6 +32587,111 @@ function createFunctionHeader(
       classes,
     )
     : undefined;
+  const hostTaggedBoundaryResultKinds = hasExportBoundary
+    ? getHostTaggedBoundaryKinds(returnType)
+    : undefined;
+  const hostUnionBoundaryResult = hostTaggedCompositeUnionResult
+    ? classifyFiniteHostUnionBoundaryForLegacyParts(
+      checker,
+      returnType,
+      declaration,
+      closures,
+      runtime,
+      classes,
+      {
+        taggedPrimitiveKinds: hostTaggedCompositeUnionResult.taggedPrimitiveKinds,
+        arrayBoundary: hostTaggedCompositeUnionResult.arrayBoundary,
+        closureSignatureId: hostTaggedCompositeUnionResult.closureSignatureId,
+        heapRepresentation: hostTaggedCompositeUnionResult.heapRepresentation,
+      },
+    )
+    : hostTaggedArrayUnionResult
+    ? classifyFiniteHostUnionBoundaryForLegacyParts(
+      checker,
+      returnType,
+      declaration,
+      closures,
+      runtime,
+      classes,
+      {
+        taggedPrimitiveKinds: hostTaggedArrayUnionResult.taggedPrimitiveKinds,
+        arrayBoundary: hostTaggedArrayUnionResult.arrayBoundary,
+        heapRepresentation: hostTaggedArrayUnionResult.heapRepresentation,
+      },
+    )
+    : hostTaggedCallableUnionResult
+    ? classifyFiniteHostUnionBoundaryForLegacyParts(
+      checker,
+      returnType,
+      declaration,
+      closures,
+      runtime,
+      classes,
+      {
+        taggedPrimitiveKinds: hostTaggedCallableUnionResult.taggedPrimitiveKinds,
+        closureSignatureId: hostTaggedCallableUnionResult.closureSignatureId,
+        heapRepresentation: hostTaggedCallableUnionResult.heapRepresentation,
+      },
+    )
+    : hostTaggedHeapUnionResult
+    ? classifyFiniteHostUnionBoundaryForLegacyParts(
+      checker,
+      returnType,
+      declaration,
+      closures,
+      runtime,
+      classes,
+      {
+        taggedPrimitiveKinds: hostTaggedHeapUnionResult.taggedPrimitiveKinds,
+        heapRepresentation: hostTaggedHeapUnionResult.representation,
+      },
+    )
+    : hostTaggedHeapNullableResult
+    ? classifyFiniteHostUnionBoundaryForLegacyParts(
+      checker,
+      returnType,
+      declaration,
+      closures,
+      runtime,
+      classes,
+      {
+        taggedPrimitiveKinds: {
+          includesBoolean: false,
+          includesNull: hostTaggedHeapNullableResult.includesNull,
+          includesNumber: false,
+          includesString: false,
+          includesUndefined: hostTaggedHeapNullableResult.includesUndefined,
+        },
+        heapRepresentation: hostTaggedHeapNullableResult.representation,
+      },
+    )
+    : hostTaggedBoundaryResultKinds
+    ? classifyFiniteHostUnionBoundaryForLegacyParts(
+      checker,
+      returnType,
+      declaration,
+      closures,
+      runtime,
+      classes,
+      {
+        taggedPrimitiveKinds: toCompilerTaggedPrimitiveBoundaryKinds(
+          hostTaggedBoundaryResultKinds,
+        )!,
+      },
+    )
+    : (() => {
+      const classification = hasExportBoundary
+        ? classifyFiniteHostUnionBoundaryForType(
+          checker,
+          returnType,
+          declaration,
+          closures,
+          runtime,
+          classes,
+        )
+        : { kind: 'not_union' } satisfies FiniteHostUnionBoundaryClassification;
+      return classification.kind === 'classified_union' ? classification.boundary : undefined;
+    })();
   const hostTaggedHeapResultBoundary = hostTaggedCompositeUnionResult?.heapRepresentation
     ? {
       includesNull: false,
@@ -32018,14 +32735,13 @@ function createFunctionHeader(
       );
     }
   }
-  const hostTaggedBoundaryResultKinds = hasExportBoundary
-    ? getHostTaggedBoundaryKinds(returnType)
-    : undefined;
   const hostTaggedPrimitiveResultKinds = hostTaggedCompositeUnionResult?.taggedPrimitiveKinds ??
     hostTaggedArrayUnionResult?.taggedPrimitiveKinds ??
     hostTaggedCallableUnionResult?.taggedPrimitiveKinds ??
     hostTaggedHeapUnionResult?.taggedPrimitiveKinds ??
-    hostTaggedBoundaryResultKinds ??
+    (hostTaggedBoundaryResultKinds
+      ? toCompilerTaggedPrimitiveBoundaryKinds(hostTaggedBoundaryResultKinds)
+      : undefined) ??
     (hasExportBoundary && isDefinitelyUndefinedLikeType(returnType)
       ? {
         includesBoolean: false,
@@ -32081,6 +32797,9 @@ function createFunctionHeader(
     if (hostTaggedPrimitiveResultKinds?.includesString) {
       ensureStringRepresentation(runtime);
     }
+  }
+  if (finiteUnionBoundaryHasArm(hostUnionBoundaryResult, 'string')) {
+    ensureStringRepresentation(runtime);
   }
   if (taggedArrayResultKinds) {
     ensureTaggedValueRepresentation(runtime);
@@ -32162,6 +32881,8 @@ function createFunctionHeader(
     ? 'tagged_ref'
     : hasHostTaggedPrimitiveResult
     ? 'tagged_ref'
+    : hostUnionBoundaryResult
+    ? 'tagged_ref'
     : checker.getSignaturesOfType(returnType, ts.SignatureKind.Call).length > 0
     ? getCompilerClosureValueTypeForType(checker, returnType, declaration)
     : usesOwnedStringBoundary
@@ -32237,6 +32958,9 @@ function createFunctionHeader(
     hostTaggedCompositeUnionParams: hostTaggedCompositeUnionParams.length > 0
       ? hostTaggedCompositeUnionParams
       : undefined,
+    hostUnionBoundaryParams: hostUnionBoundaryParams.length > 0
+      ? hostUnionBoundaryParams
+      : undefined,
     hostLengthViewParams: hostLengthViewParams.length > 0 ? hostLengthViewParams : undefined,
     hostLengthViewResult: hasHostLengthViewResult || undefined,
     hostTaggedArrayUnionResult: hostTaggedArrayUnionResult
@@ -32261,6 +32985,7 @@ function createFunctionHeader(
         heapRepresentation: hostTaggedCompositeUnionResult.heapRepresentation,
       }
       : undefined,
+    hostUnionBoundaryResult,
     params,
     resultType,
     locals: [],
@@ -32338,6 +33063,7 @@ function createAmbientHostFunctionHeader(
   const hostTaggedArrayUnionParams: CompilerFunctionHostTaggedArrayUnionParamIR[] = [];
   const hostTaggedCallableUnionParams: CompilerFunctionHostTaggedCallableUnionParamIR[] = [];
   const hostTaggedCompositeUnionParams: CompilerFunctionHostTaggedCompositeUnionParamIR[] = [];
+  const hostUnionBoundaryParams: CompilerFunctionHostUnionParamIR[] = [];
   const hostImportPromiseParams: string[] = [];
   const hostImportPromiseParamValueBoundaries: Array<{
     name: string;
@@ -32430,6 +33156,21 @@ function createAmbientHostFunctionHeader(
         name: runtimeName,
         ...ambientTaggedPrimitiveKinds,
       });
+      const unionBoundary = classifyFiniteHostUnionBoundaryForLegacyParts(
+        checker,
+        parameterType,
+        parameter.name,
+        closures,
+        runtime,
+        classes,
+        { taggedPrimitiveKinds: ambientTaggedPrimitiveKinds },
+      );
+      if (unionBoundary) {
+        hostUnionBoundaryParams.push({
+          name: runtimeName,
+          boundary: unionBoundary,
+        });
+      }
       return {
         name: runtimeName,
         type: 'tagged_ref',
@@ -32458,6 +33199,26 @@ function createAmbientHostFunctionHeader(
         closureSignatureId: ambientTaggedCompositeUnionParam.closureSignatureId,
         heapRepresentation: ambientTaggedCompositeUnionParam.heapRepresentation,
       });
+      const unionBoundary = classifyFiniteHostUnionBoundaryForLegacyParts(
+        checker,
+        parameterType,
+        parameter.name,
+        closures,
+        runtime,
+        classes,
+        {
+          taggedPrimitiveKinds: ambientTaggedCompositeUnionParam.taggedPrimitiveKinds,
+          arrayBoundary: ambientTaggedCompositeUnionParam.arrayBoundary,
+          closureSignatureId: ambientTaggedCompositeUnionParam.closureSignatureId,
+          heapRepresentation: ambientTaggedCompositeUnionParam.heapRepresentation,
+        },
+      );
+      if (unionBoundary) {
+        hostUnionBoundaryParams.push({
+          name: runtimeName,
+          boundary: unionBoundary,
+        });
+      }
       if (ambientTaggedCompositeUnionParam.heapRepresentation) {
         hostTaggedHeapNullableParams.push({
           name: runtimeName,
@@ -32505,6 +33266,25 @@ function createAmbientHostFunctionHeader(
         arrayBoundary: ambientTaggedArrayUnionParam.arrayBoundary,
         heapRepresentation: ambientTaggedArrayUnionParam.heapRepresentation,
       });
+      const unionBoundary = classifyFiniteHostUnionBoundaryForLegacyParts(
+        checker,
+        parameterType,
+        parameter.name,
+        closures,
+        runtime,
+        classes,
+        {
+          taggedPrimitiveKinds: ambientTaggedArrayUnionParam.taggedPrimitiveKinds,
+          arrayBoundary: ambientTaggedArrayUnionParam.arrayBoundary,
+          heapRepresentation: ambientTaggedArrayUnionParam.heapRepresentation,
+        },
+      );
+      if (unionBoundary) {
+        hostUnionBoundaryParams.push({
+          name: runtimeName,
+          boundary: unionBoundary,
+        });
+      }
       if (ambientTaggedArrayUnionParam.heapRepresentation) {
         hostTaggedHeapNullableParams.push({
           name: runtimeName,
@@ -32553,6 +33333,25 @@ function createAmbientHostFunctionHeader(
         closureSignatureId: ambientTaggedCallableUnionParam.closureSignatureId,
         heapRepresentation: ambientTaggedCallableUnionParam.heapRepresentation,
       });
+      const unionBoundary = classifyFiniteHostUnionBoundaryForLegacyParts(
+        checker,
+        parameterType,
+        parameter.name,
+        closures,
+        runtime,
+        classes,
+        {
+          taggedPrimitiveKinds: ambientTaggedCallableUnionParam.taggedPrimitiveKinds,
+          closureSignatureId: ambientTaggedCallableUnionParam.closureSignatureId,
+          heapRepresentation: ambientTaggedCallableUnionParam.heapRepresentation,
+        },
+      );
+      if (unionBoundary) {
+        hostUnionBoundaryParams.push({
+          name: runtimeName,
+          boundary: unionBoundary,
+        });
+      }
       if (ambientTaggedCallableUnionParam.heapRepresentation) {
         hostTaggedHeapNullableParams.push({
           name: runtimeName,
@@ -32600,6 +33399,24 @@ function createAmbientHostFunctionHeader(
         includesUndefined: false,
         representation: ambientTaggedHeapUnionBoundary.representation,
       });
+      const unionBoundary = classifyFiniteHostUnionBoundaryForLegacyParts(
+        checker,
+        parameterType,
+        parameter.name,
+        closures,
+        runtime,
+        classes,
+        {
+          taggedPrimitiveKinds: ambientTaggedHeapUnionBoundary.taggedPrimitiveKinds,
+          heapRepresentation: ambientTaggedHeapUnionBoundary.representation,
+        },
+      );
+      if (unionBoundary) {
+        hostUnionBoundaryParams.push({
+          name: runtimeName,
+          boundary: unionBoundary,
+        });
+      }
       if (parameter.questionToken === undefined && parameter.initializer === undefined) {
         for (const memberType of getTaggedHeapUnionObjectMemberTypes(checker, parameterType)) {
           annotateHostHeapBoundaryType(
@@ -32609,6 +33426,30 @@ function createAmbientHostFunctionHeader(
           );
         }
       }
+      return {
+        name: runtimeName,
+        type: 'tagged_ref',
+      };
+    }
+    const finiteHostUnionBoundary = classifyFiniteHostUnionBoundaryForType(
+      checker,
+      parameterType,
+      parameter.name,
+      closures,
+      runtime,
+      classes,
+    );
+    if (
+      finiteHostUnionBoundary.kind === 'classified_union' &&
+      finiteHostUnionBoundary.boundary
+    ) {
+      if (finiteUnionBoundaryHasArm(finiteHostUnionBoundary.boundary, 'string')) {
+        ensureStringRepresentation(runtime);
+      }
+      hostUnionBoundaryParams.push({
+        name: runtimeName,
+        boundary: finiteHostUnionBoundary.boundary,
+      });
       return {
         name: runtimeName,
         type: 'tagged_ref',
@@ -32630,6 +33471,31 @@ function createAmbientHostFunctionHeader(
         includesString: false,
         includesUndefined: boundary.includesUndefined,
       });
+      const taggedPrimitiveKinds = {
+        includesBoolean: false,
+        includesNull: boundary.includesNull,
+        includesNumber: false,
+        includesString: false,
+        includesUndefined: boundary.includesUndefined,
+      };
+      const unionBoundary = classifyFiniteHostUnionBoundaryForLegacyParts(
+        checker,
+        parameterType,
+        parameter.name,
+        closures,
+        runtime,
+        classes,
+        {
+          taggedPrimitiveKinds,
+          heapRepresentation: boundary.representation,
+        },
+      );
+      if (unionBoundary) {
+        hostUnionBoundaryParams.push({
+          name: runtimeName,
+          boundary: unionBoundary,
+        });
+      }
       heapParamRepresentations.push({
         name: runtimeName,
         representation: boundary.representation,
@@ -32780,6 +33646,7 @@ function createAmbientHostFunctionHeader(
   let hostTaggedCompositeUnionResult:
     | CompilerFunctionHostTaggedCompositeUnionResultIR
     | undefined;
+  let hostUnionBoundaryResult: CompilerUnionBoundaryIR | undefined;
   let hostTaggedHeapResultBoundary: CompilerFunctionHostTaggedHeapNullableBoundaryIR | undefined;
   let promiseResult = false;
   let hostPromiseResultValueBoundary: CompilerHostBoundaryIR | undefined;
@@ -32934,6 +33801,20 @@ function createAmbientHostFunctionHeader(
         closureSignatureId: ambientTaggedCompositeUnionResult.closureSignatureId,
         heapRepresentation: ambientTaggedCompositeUnionResult.heapRepresentation,
       };
+      hostUnionBoundaryResult = classifyFiniteHostUnionBoundaryForLegacyParts(
+        checker,
+        returnType,
+        declaration,
+        closures,
+        runtime,
+        classes,
+        {
+          taggedPrimitiveKinds: ambientTaggedCompositeUnionResult.taggedPrimitiveKinds,
+          arrayBoundary: ambientTaggedCompositeUnionResult.arrayBoundary,
+          closureSignatureId: ambientTaggedCompositeUnionResult.closureSignatureId,
+          heapRepresentation: ambientTaggedCompositeUnionResult.heapRepresentation,
+        },
+      );
       if (ambientTaggedCompositeUnionResult.heapRepresentation) {
         hostTaggedHeapResultBoundary = {
           includesNull: false,
@@ -32960,6 +33841,19 @@ function createAmbientHostFunctionHeader(
         arrayBoundary: ambientTaggedArrayUnionResult.arrayBoundary,
         heapRepresentation: ambientTaggedArrayUnionResult.heapRepresentation,
       };
+      hostUnionBoundaryResult = classifyFiniteHostUnionBoundaryForLegacyParts(
+        checker,
+        returnType,
+        declaration,
+        closures,
+        runtime,
+        classes,
+        {
+          taggedPrimitiveKinds: ambientTaggedArrayUnionResult.taggedPrimitiveKinds,
+          arrayBoundary: ambientTaggedArrayUnionResult.arrayBoundary,
+          heapRepresentation: ambientTaggedArrayUnionResult.heapRepresentation,
+        },
+      );
       if (ambientTaggedArrayUnionResult.heapRepresentation) {
         hostTaggedHeapResultBoundary = {
           includesNull: false,
@@ -32986,6 +33880,19 @@ function createAmbientHostFunctionHeader(
         closureSignatureId: ambientTaggedCallableUnionResult.closureSignatureId,
         heapRepresentation: ambientTaggedCallableUnionResult.heapRepresentation,
       };
+      hostUnionBoundaryResult = classifyFiniteHostUnionBoundaryForLegacyParts(
+        checker,
+        returnType,
+        declaration,
+        closures,
+        runtime,
+        classes,
+        {
+          taggedPrimitiveKinds: ambientTaggedCallableUnionResult.taggedPrimitiveKinds,
+          closureSignatureId: ambientTaggedCallableUnionResult.closureSignatureId,
+          heapRepresentation: ambientTaggedCallableUnionResult.heapRepresentation,
+        },
+      );
       if (ambientTaggedCallableUnionResult.heapRepresentation) {
         hostTaggedHeapResultBoundary = {
           includesNull: false,
@@ -33012,67 +33919,110 @@ function createAmbientHostFunctionHeader(
         includesUndefined: false,
         representation: ambientTaggedHeapUnionResult.representation,
       };
+      hostUnionBoundaryResult = classifyFiniteHostUnionBoundaryForLegacyParts(
+        checker,
+        returnType,
+        declaration,
+        closures,
+        runtime,
+        classes,
+        {
+          taggedPrimitiveKinds: ambientTaggedHeapUnionResult.taggedPrimitiveKinds,
+          heapRepresentation: ambientTaggedHeapUnionResult.representation,
+        },
+      );
       heapResultRepresentation = ambientTaggedHeapUnionResult.representation;
       resultType = 'tagged_ref';
-    } else if (isSupportedTaggedHeapNullableType(checker, returnType)) {
-      const boundary = getAmbientHostTaggedHeapNullableBoundaryInfo(
-        checker,
-        returnType,
-        declaration,
-        runtime,
-        classes,
-      );
-      hostTaggedPrimitiveResultKinds = {
-        includesBoolean: false,
-        includesNull: boundary.includesNull,
-        includesNumber: false,
-        includesString: false,
-        includesUndefined: boundary.includesUndefined,
-      };
-      hostTaggedHeapResultBoundary = boundary;
-      heapResultRepresentation = boundary.representation;
-      resultType = 'tagged_ref';
-    } else if (isStringLikeType(returnType)) {
-      ensureStringRepresentation(runtime);
-      resultType = 'string_ref';
-    } else if (isSupportedHeapLocalType(checker, returnType)) {
-      const representation = getAmbientHostProjectedObjectBoundaryRepresentation(
-        checker,
-        returnType,
-        declaration,
-        runtime,
-        classes,
-        true,
-      );
-      if (!representation) {
-        throw new CompilerUnsupportedError(
-          'Ambient host function declarations currently require fixed-layout or fallback object boundaries for non-Promise heap results in compiler subset.',
-          declaration,
-        );
-      }
-      ensureHostPromiseBridgeSupportForRepresentation(representation, runtime, closures);
-      resultType = 'heap_ref';
-      heapResultRepresentation = representation;
-      annotateHostHeapBoundaryType(returnType, declaration, representation);
     } else {
-      const valueType = getCompilerValueTypeForType(returnType, declaration);
-      if (valueType === 'tagged_ref' && isDefinitelyUndefinedLikeType(returnType)) {
-        ensureTaggedValueRepresentation(runtime);
+      const finiteHostUnionBoundary = classifyFiniteHostUnionBoundaryForType(
+        checker,
+        returnType,
+        declaration,
+        closures,
+        runtime,
+        classes,
+      );
+      if (
+        finiteHostUnionBoundary.kind === 'classified_union' &&
+        finiteHostUnionBoundary.boundary
+      ) {
+        if (finiteUnionBoundaryHasArm(finiteHostUnionBoundary.boundary, 'string')) {
+          ensureStringRepresentation(runtime);
+        }
+        hostUnionBoundaryResult = finiteHostUnionBoundary.boundary;
+        resultType = 'tagged_ref';
+      } else if (isSupportedTaggedHeapNullableType(checker, returnType)) {
+        const boundary = getAmbientHostTaggedHeapNullableBoundaryInfo(
+          checker,
+          returnType,
+          declaration,
+          runtime,
+          classes,
+        );
         hostTaggedPrimitiveResultKinds = {
           includesBoolean: false,
-          includesNull: false,
+          includesNull: boundary.includesNull,
           includesNumber: false,
           includesString: false,
-          includesUndefined: true,
+          includesUndefined: boundary.includesUndefined,
         };
-        resultType = valueType;
-      } else if (valueType !== 'f64' && valueType !== 'i32') {
-        throw new CompilerUnsupportedError(
-          'Ambient host function declarations currently support only number, boolean, undefined-like, string, callback, Promise, and fixed-layout object results in compiler subset.',
+        hostTaggedHeapResultBoundary = boundary;
+        hostUnionBoundaryResult = classifyFiniteHostUnionBoundaryForLegacyParts(
+          checker,
+          returnType,
           declaration,
+          closures,
+          runtime,
+          classes,
+          {
+            taggedPrimitiveKinds: hostTaggedPrimitiveResultKinds,
+            heapRepresentation: boundary.representation,
+          },
         );
+        heapResultRepresentation = boundary.representation;
+        resultType = 'tagged_ref';
+      } else if (isStringLikeType(returnType)) {
+        ensureStringRepresentation(runtime);
+        resultType = 'string_ref';
+      } else if (isSupportedHeapLocalType(checker, returnType)) {
+        const representation = getAmbientHostProjectedObjectBoundaryRepresentation(
+          checker,
+          returnType,
+          declaration,
+          runtime,
+          classes,
+          true,
+        );
+        if (!representation) {
+          throw new CompilerUnsupportedError(
+            'Ambient host function declarations currently require fixed-layout or fallback object boundaries for non-Promise heap results in compiler subset.',
+            declaration,
+          );
+        }
+        ensureHostPromiseBridgeSupportForRepresentation(representation, runtime, closures);
+        resultType = 'heap_ref';
+        heapResultRepresentation = representation;
+        annotateHostHeapBoundaryType(returnType, declaration, representation);
       } else {
-        resultType = valueType;
+        const valueType = getCompilerValueTypeForType(returnType, declaration);
+        if (valueType === 'tagged_ref' && isDefinitelyUndefinedLikeType(returnType)) {
+          ensureTaggedValueRepresentation(runtime);
+          hostTaggedPrimitiveResultKinds = {
+            includesBoolean: false,
+            includesNull: false,
+            includesNumber: false,
+            includesString: false,
+            includesUndefined: true,
+          };
+          resultType = valueType;
+        } else if (valueType !== 'f64' && valueType !== 'i32') {
+          throw new CompilerUnsupportedError(
+            'Ambient host function declarations currently support only number, boolean, undefined-like, string, callback, Promise, and fixed-layout object results in compiler subset.',
+            declaration,
+          );
+        } else {
+          resultType = valueType;
+        }
       }
     }
   }
@@ -33101,9 +34051,13 @@ function createAmbientHostFunctionHeader(
     hostTaggedCompositeUnionParams: hostTaggedCompositeUnionParams.length > 0
       ? hostTaggedCompositeUnionParams
       : undefined,
+    hostUnionBoundaryParams: hostUnionBoundaryParams.length > 0
+      ? hostUnionBoundaryParams
+      : undefined,
     hostTaggedArrayUnionResult,
     hostTaggedCallableUnionResult,
     hostTaggedCompositeUnionResult,
+    hostUnionBoundaryResult,
     heapResultRepresentation,
     params,
     resultType,
@@ -36464,8 +37418,8 @@ function lowerBinaryExpression(
       return {
         kind: 'binary',
         op: expression.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken
-          ? 'ref.eq'
-          : 'ref.ne',
+          ? 'symbol.eq'
+          : 'symbol.ne',
         left: lowerExpressionAsValueType(expression.left, 'symbol_ref', context),
         right: lowerExpressionAsValueType(expression.right, 'symbol_ref', context),
         type: 'i32',
@@ -36785,6 +37739,11 @@ function tryLowerSymbolTypeofPredicateExpression(
     return undefined;
   }
 
+  const typeMayIncludeSymbol = (type: ts.Type): boolean =>
+    isSymbolLikeType(type) ||
+    ((type.flags & ts.TypeFlags.Union) !== 0 &&
+      (type as ts.UnionType).types.some((member) => typeMayIncludeSymbol(member)));
+
   const tryMatch = (
     typeofExpression: ts.Expression,
     literalExpression: ts.Expression,
@@ -36795,8 +37754,39 @@ function tryLowerSymbolTypeofPredicateExpression(
     if (tryGetStaticStringLiteralText(literalExpression) !== 'symbol') {
       return undefined;
     }
-    if (!isSymbolLikeType(context.checker.getTypeAtLocation(typeofExpression.expression))) {
-      return undefined;
+    const operandType = context.checker.getTypeAtLocation(typeofExpression.expression);
+    if (!isSymbolLikeType(operandType)) {
+      if (!typeMayIncludeSymbol(operandType)) {
+        return undefined;
+      }
+      const loweredOperand = lowerExpressionAsValueType(
+        typeofExpression.expression,
+        'tagged_ref',
+        context,
+      );
+      const operandPreludeStatements = consumeExpressionPreludeStatements(context);
+      const taggedName = createLocalName('typeof_symbol', context.nextLocalId);
+      context.nextLocalId += 1;
+      context.locals.push({ name: taggedName, type: 'tagged_ref' });
+      context.expressionPreludeStatements.push(
+        ...operandPreludeStatements,
+        {
+          kind: 'local_set',
+          name: taggedName,
+          value: loweredOperand,
+        },
+      );
+      return {
+        kind: 'tagged_has_tag',
+        value: {
+          kind: 'local_get',
+          name: taggedName,
+          type: 'tagged_ref',
+        },
+        tag: 5,
+        negated: expression.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsEqualsToken,
+        type: 'i32',
+      };
     }
     const loweredOperand = lowerExpressionAsValueType(
       typeofExpression.expression,
@@ -36858,6 +37848,8 @@ function tryLowerTaggedTypeofPredicateExpression(
       ? 2
       : literal === 'string'
       ? 3
+      : literal === 'bigint'
+      ? 7
       : undefined;
     const operandType = context.checker.getTypeAtLocation(typeofExpression.expression);
     if (literal === 'function') {
@@ -36974,8 +37966,10 @@ function tryLowerTaggedTypeofPredicateExpression(
       : tag === 2
       ? isTaggedTypeWithNumber(operandType) ||
         isSupportedInternalTaggedHeapUnionWithNumber(context.checker, operandType)
-      : isTaggedTypeWithString(operandType) ||
-        isSupportedInternalTaggedHeapUnionWithString(context.checker, operandType);
+      : tag === 3
+      ? isTaggedTypeWithString(operandType) ||
+        isSupportedInternalTaggedHeapUnionWithString(context.checker, operandType)
+      : false;
     if (!supportsTag && !isTaggedBackedConditionOperand(typeofExpression.expression, context)) {
       return undefined;
     }

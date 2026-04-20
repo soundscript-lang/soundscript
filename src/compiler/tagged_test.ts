@@ -1382,6 +1382,899 @@ compilerTaggedTest(
 );
 
 compilerTaggedTest(
+  'emitCompilerModuleToWat consumes finite host union boundaries after legacy mixed-union metadata is cleared',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts'],
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          'interface Box {',
+          '  left: number;',
+          '}',
+          '',
+          'type ScalarOrArray = string | number[];',
+          'type CallableOrBox = ((input: number) => number) | Box;',
+          'type Choice = ScalarOrArray | CallableOrBox | string | (number[] | Box);',
+          '',
+          'export function main(value: Choice): Choice {',
+          '  return value;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const moduleIR = lowerTempProjectToCompilerIR(tempDirectory);
+    const main = moduleIR.functions.find((func: CompilerFunctionIR) => func.name === 'main');
+    if (!main) {
+      throw new Error('Expected lowered main function.');
+    }
+
+    assertEquals(main.hostUnionBoundaryParams?.[0]?.boundary.kind, 'finite_union');
+    assertEquals(
+      [...(main.hostUnionBoundaryParams?.[0]?.boundary.arms ?? [])]
+        .map((arm) => arm.kind)
+        .sort(),
+      ['array', 'closure', 'object', 'string'],
+    );
+    assertEquals(main.hostUnionBoundaryResult?.kind, 'finite_union');
+    assertEquals(
+      [...(main.hostUnionBoundaryResult?.arms ?? [])].map((arm) => arm.kind).sort(),
+      ['array', 'closure', 'object', 'string'],
+    );
+
+    main.hostTaggedArrayUnionParams = undefined;
+    main.hostTaggedCallableUnionParams = undefined;
+    main.hostTaggedCompositeUnionParams = undefined;
+    main.hostTaggedArrayUnionResult = undefined;
+    main.hostTaggedCallableUnionResult = undefined;
+    main.hostTaggedCompositeUnionResult = undefined;
+
+    const watOutput = emitCompilerModuleToWat(moduleIR);
+
+    assertStringIncludes(watOutput, 'call $host_array_is_array');
+    assertStringIncludes(watOutput, 'call $host_closure_is_function');
+    assertStringIncludes(watOutput, 'call $host_array_to_owned_number_array');
+    assertStringIncludes(watOutput, 'call $owned_number_array_to_host_array');
+    assertStringIncludes(watOutput, 'call $host_externref_to_closure_');
+    assertStringIncludes(watOutput, 'call $host_closure_to_host_');
+  },
+);
+
+compilerTaggedTest(
+  'emitCompilerModuleToWat consumes finite ambient host union boundaries after legacy metadata is cleared',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+            },
+            include: ['src/**/*.ts'],
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/host.d.ts',
+        contents: [
+          'export interface Box {',
+          '  left: number;',
+          '}',
+          '',
+          'export type Choice = string | number[] | ((input: number) => number) | Box;',
+          '',
+          'export declare function roundTrip(value: Choice): Choice;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          '// #[interop]',
+          "import { roundTrip } from './host.js';",
+          '',
+          'interface Box {',
+          '  left: number;',
+          '}',
+          '',
+          'type Choice = string | number[] | ((input: number) => number) | Box;',
+          '',
+          'export function main(value: Choice): Choice {',
+          '  return roundTrip(value);',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const moduleIR = lowerTempProjectToCompilerIR(tempDirectory);
+    const roundTrip = moduleIR.functions.find((func: CompilerFunctionIR) =>
+      func.hostImport?.name.includes('roundTrip')
+    );
+    if (!roundTrip) {
+      throw new Error('Expected lowered ambient roundTrip function.');
+    }
+
+    assertEquals(
+      [...(roundTrip.hostUnionBoundaryParams?.[0]?.boundary.arms ?? [])]
+        .map((arm) => arm.kind)
+        .sort(),
+      ['array', 'closure', 'object', 'string'],
+    );
+    assertEquals(
+      [...(roundTrip.hostUnionBoundaryResult?.arms ?? [])].map((arm) => arm.kind).sort(),
+      ['array', 'closure', 'object', 'string'],
+    );
+
+    roundTrip.hostTaggedArrayUnionParams = undefined;
+    roundTrip.hostTaggedCallableUnionParams = undefined;
+    roundTrip.hostTaggedCompositeUnionParams = undefined;
+    roundTrip.hostTaggedArrayUnionResult = undefined;
+    roundTrip.hostTaggedCallableUnionResult = undefined;
+    roundTrip.hostTaggedCompositeUnionResult = undefined;
+    roundTrip.hostParamBoundaries = undefined;
+    roundTrip.hostResultBoundary = undefined;
+
+    const watOutput = emitCompilerModuleToWat(moduleIR);
+
+    assertStringIncludes(
+      watOutput,
+      '(func $roundTrip__host_import (param $value externref) (result externref))',
+    );
+    assertStringIncludes(watOutput, 'call $host_array_is_array');
+    assertStringIncludes(watOutput, 'call $host_closure_is_function');
+    assertStringIncludes(watOutput, 'call $host_array_to_owned_number_array');
+    assertStringIncludes(watOutput, 'call $owned_number_array_to_host_array');
+    assertStringIncludes(watOutput, 'call $host_externref_to_closure_');
+    assertStringIncludes(watOutput, 'call $host_closure_to_host_');
+  },
+);
+
+compilerTaggedTest(
+  'compileProject reports unsupported finite host union arms before WAT emission',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+            },
+            include: ['src/**/*.ts'],
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/host.d.ts',
+        contents: [
+          'export type Choice = string | number | (new () => { value: number });',
+          '',
+          'export declare function consume(value: Choice): void;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          '// #[interop]',
+          "import { consume } from './host.js';",
+          '',
+          'export function main(value: string | number): number {',
+          '  consume(value);',
+          '  return 1;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 1);
+    assertEquals(
+      result.diagnostics.map((diagnostic: { source: string }) => diagnostic.source),
+      ['compiler'],
+    );
+    assertEquals(
+      result.diagnostics.map((diagnostic: { code: string }) => diagnostic.code),
+      ['COMPILER2001'],
+    );
+  },
+);
+
+compilerTaggedTest(
+  'emitCompilerModuleToWat consumes finite primitive unions after recursive host boundaries are cleared',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts'],
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          'type Choice = string | number | null;',
+          '',
+          'export function main(value: Choice): Choice {',
+          '  return value;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const moduleIR = lowerTempProjectToCompilerIR(tempDirectory);
+    const main = moduleIR.functions.find((func: CompilerFunctionIR) => func.name === 'main');
+    if (!main) {
+      throw new Error('Expected lowered main function.');
+    }
+
+    assertEquals(
+      [...(main.hostUnionBoundaryParams?.[0]?.boundary.arms ?? [])]
+        .map((arm) => arm.kind)
+        .sort(),
+      ['null', 'number', 'string'],
+    );
+    assertEquals(
+      [...(main.hostUnionBoundaryResult?.arms ?? [])].map((arm) => arm.kind).sort(),
+      ['null', 'number', 'string'],
+    );
+
+    main.hostParamBoundaries = undefined;
+    main.hostResultBoundary = undefined;
+
+    const watOutput = emitCompilerModuleToWat(moduleIR);
+
+    assertStringIncludes(watOutput, '(func $main__export (export "src/index.ts:main")');
+    assertStringIncludes(watOutput, '(param $value externref)');
+    assertStringIncludes(watOutput, 'call $tagged_type_tag');
+    assertStringIncludes(watOutput, 'call $tagged_number_value');
+    assertStringIncludes(watOutput, 'call $tagged_from_number');
+    assertEquals(watOutput.includes('soundscript_generator'), false);
+    assertEquals(watOutput.includes('soundscript_async_generator'), false);
+  },
+);
+
+compilerTaggedTest(
+  'emitCompilerModuleToWat consumes finite symbol primitive unions after recursive host boundaries are cleared',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts'],
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          'type Choice = symbol | string | number;',
+          '',
+          'export function main(value: Choice): Choice {',
+          '  return value;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const moduleIR = lowerTempProjectToCompilerIR(tempDirectory);
+    const main = moduleIR.functions.find((func: CompilerFunctionIR) => func.name === 'main');
+    if (!main) {
+      throw new Error('Expected lowered main function.');
+    }
+
+    assertEquals(
+      [...(main.hostUnionBoundaryParams?.[0]?.boundary.arms ?? [])]
+        .map((arm) => arm.kind)
+        .sort(),
+      ['number', 'string', 'symbol'],
+    );
+    assertEquals(
+      [...(main.hostUnionBoundaryResult?.arms ?? [])].map((arm) => arm.kind).sort(),
+      ['number', 'string', 'symbol'],
+    );
+
+    main.hostParamBoundaries = undefined;
+    main.hostResultBoundary = undefined;
+
+    const watOutput = emitCompilerModuleToWat(moduleIR);
+
+    assertStringIncludes(watOutput, '(func $main__export (export "src/index.ts:main")');
+    assertStringIncludes(watOutput, '(param $value externref)');
+    assertStringIncludes(watOutput, 'call $tagged_type_tag');
+    assertStringIncludes(watOutput, 'i32.const 5');
+    assertStringIncludes(watOutput, 'call $host_symbol_to_internal');
+    assertStringIncludes(watOutput, 'call $internal_symbol_to_host');
+    assertStringIncludes(watOutput, '(import "soundscript_symbol" "is"');
+    assertEquals(watOutput.includes('(import "soundscript_symbol" "new"'), false);
+    assertEquals(watOutput.includes('(import "soundscript_symbol" "same"'), false);
+    assertEquals(watOutput.includes('$bigint_runtime'), false);
+  },
+);
+
+compilerTaggedTest(
+  'compileProject roundtrips finite symbol primitive host unions',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts'],
+            soundscript: {
+              target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          'type Choice = symbol | string;',
+          '',
+          'export function main(value: Choice): Choice {',
+          '  return value;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+
+    const instance = await instantiateCompiledModuleInJs(tempDirectory);
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instance.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+
+    const token = Symbol('token');
+    assertEquals(await exported(token), token);
+    assertEquals(await exported('ready'), 'ready');
+  },
+);
+
+compilerTaggedTest(
+  'compileProject narrows finite symbol primitive host unions for identity checks',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts'],
+            soundscript: {
+              target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          'type Choice = symbol | string;',
+          '',
+          'export function same(left: Choice, right: Choice): number {',
+          "  if (typeof left === 'symbol' && typeof right === 'symbol') {",
+          '    return left === right ? 10 : 1;',
+          '  }',
+          '  return 2;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+
+    const instance = await instantiateCompiledModuleInJs(tempDirectory);
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'same');
+    const exported = instance.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+
+    const token = Symbol('token');
+    assertEquals(await exported(token, token), 10);
+    assertEquals(await exported(token, Symbol('token')), 1);
+    assertEquals(await exported('token', token), 2);
+  },
+);
+
+compilerTaggedTest(
+  'compileProject composes finite symbol and object host unions',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts'],
+            soundscript: {
+              target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          'interface Box {',
+          '  score: number;',
+          '}',
+          '',
+          'type Choice = symbol | Box;',
+          '',
+          'export function main(value: Choice): Choice {',
+          '  return value;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+
+    const instance = await instantiateCompiledModuleInJs(tempDirectory);
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instance.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+
+    const token = Symbol('token');
+    assertEquals(await exported(token), token);
+    assertEquals((await exported({ score: 7 })).score, 7);
+  },
+);
+
+compilerTaggedTest(
+  'compileProject composes finite symbol array and callable host unions',
+  async () => {
+    const createProject = (source: string) =>
+      createTempProject([
+        {
+          path: 'tsconfig.json',
+          contents: JSON.stringify(
+            {
+              compilerOptions: {
+                strict: true,
+                noEmit: true,
+                target: 'ES2022',
+                module: 'ESNext',
+              },
+              include: ['src/**/*.ts'],
+              soundscript: {
+                target: 'wasm-node',
+              },
+            },
+            null,
+            2,
+          ),
+        },
+        {
+          path: 'src/index.ts',
+          contents: source,
+        },
+      ]);
+
+    const arrayDirectory = await createProject([
+      'type Choice = symbol | number[];',
+      '',
+      'export function main(value: Choice): Choice {',
+      '  return value;',
+      '}',
+      '',
+    ].join('\n'));
+    const arrayResult = compileProject({
+      projectPath: join(arrayDirectory, 'tsconfig.json'),
+      workingDirectory: arrayDirectory,
+    });
+    assertEquals(arrayResult.exitCode, 0);
+    assertEquals(arrayResult.diagnostics, []);
+    const arrayInstance = await instantiateCompiledModuleInJs(arrayDirectory);
+    const arrayExportName = await resolveQualifiedExportName(arrayDirectory, 'main');
+    const arrayExported = arrayInstance.exports[arrayExportName];
+    if (typeof arrayExported !== 'function') {
+      throw new Error(`Expected exported function "${arrayExportName}".`);
+    }
+    const token = Symbol('token');
+    assertEquals(await arrayExported(token), token);
+    assertEquals(await arrayExported([3, 4]), [3, 4]);
+
+    const callableDirectory = await createProject([
+      'type Choice = symbol | ((input: number) => number);',
+      '',
+      'export function main(value: Choice): Choice {',
+      '  return value;',
+      '}',
+      '',
+    ].join('\n'));
+    const callableResult = compileProject({
+      projectPath: join(callableDirectory, 'tsconfig.json'),
+      workingDirectory: callableDirectory,
+    });
+    assertEquals(callableResult.exitCode, 0);
+    assertEquals(callableResult.diagnostics, []);
+    const callableInstance = await instantiateCompiledModuleInJs(callableDirectory);
+    const callableExportName = await resolveQualifiedExportName(callableDirectory, 'main');
+    const callableExported = callableInstance.exports[callableExportName];
+    if (typeof callableExported !== 'function') {
+      throw new Error(`Expected exported function "${callableExportName}".`);
+    }
+    assertEquals(await callableExported(token), token);
+    const returned = await callableExported((input: number) => input + 5);
+    if (typeof returned !== 'function') {
+      throw new Error('Expected returned callable branch.');
+    }
+    assertEquals(await returned(7), 12);
+  },
+);
+
+compilerTaggedTest(
+  'emitCompilerModuleToWat consumes finite bigint primitive unions after recursive host boundaries are cleared',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts'],
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          'type Choice = bigint | string | number;',
+          '',
+          'export function main(value: Choice): Choice {',
+          '  return value;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const moduleIR = lowerTempProjectToCompilerIR(tempDirectory);
+    const main = moduleIR.functions.find((func: CompilerFunctionIR) => func.name === 'main');
+    if (!main) {
+      throw new Error('Expected lowered main function.');
+    }
+
+    assertEquals(
+      [...(main.hostUnionBoundaryParams?.[0]?.boundary.arms ?? [])]
+        .map((arm) => arm.kind)
+        .sort(),
+      ['bigint', 'number', 'string'],
+    );
+    assertEquals(
+      [...(main.hostUnionBoundaryResult?.arms ?? [])].map((arm) => arm.kind).sort(),
+      ['bigint', 'number', 'string'],
+    );
+
+    main.hostParamBoundaries = undefined;
+    main.hostResultBoundary = undefined;
+
+    const watOutput = emitCompilerModuleToWat(moduleIR);
+
+    assertStringIncludes(watOutput, '(func $main__export (export "src/index.ts:main")');
+    assertStringIncludes(watOutput, '(param $value externref)');
+    assertStringIncludes(watOutput, 'call $tagged_type_tag');
+    assertStringIncludes(watOutput, 'i32.const 7');
+    assertStringIncludes(watOutput, 'call $host_bigint_to_internal');
+    assertStringIncludes(watOutput, 'call $internal_bigint_to_host');
+    assertStringIncludes(watOutput, '(import "soundscript_bigint" "is"');
+    assertEquals(watOutput.includes('$symbol_runtime'), false);
+    assertEquals(watOutput.includes('(import "soundscript_symbol"'), false);
+  },
+);
+
+compilerTaggedTest(
+  'compileProject roundtrips and narrows finite bigint primitive host unions',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts'],
+            soundscript: {
+              target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          'type Choice = bigint | string;',
+          '',
+          'export function main(value: Choice): Choice {',
+          '  return value;',
+          '}',
+          '',
+          'export function classify(value: Choice): number {',
+          "  return typeof value === 'bigint' ? 10 : 1;",
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+
+    const instance = await instantiateCompiledModuleInJs(tempDirectory);
+    const mainExportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const main = instance.exports[mainExportName];
+    if (typeof main !== 'function') {
+      throw new Error(`Expected exported function "${mainExportName}".`);
+    }
+    const classifyExportName = await resolveQualifiedExportName(tempDirectory, 'classify');
+    const classify = instance.exports[classifyExportName];
+    if (typeof classify !== 'function') {
+      throw new Error(`Expected exported function "${classifyExportName}".`);
+    }
+
+    assertEquals(await main(42n), 42n);
+    assertEquals(await main('ready'), 'ready');
+    assertEquals(await classify(42n), 10);
+    assertEquals(await classify('ready'), 1);
+  },
+);
+
+compilerTaggedTest(
+  'compileProject composes finite bigint symbol and object host unions',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts'],
+            soundscript: {
+              target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          'interface Box {',
+          '  score: number;',
+          '}',
+          '',
+          'type Choice = bigint | symbol | Box;',
+          '',
+          'export function main(value: Choice): Choice {',
+          '  return value;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+
+    const instance = await instantiateCompiledModuleInJs(tempDirectory);
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instance.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+
+    const token = Symbol('token');
+    assertEquals(await exported(42n), 42n);
+    assertEquals(await exported(token), token);
+    assertEquals((await exported({ score: 9 })).score, 9);
+  },
+);
+
+compilerTaggedTest(
+  'emitCompilerModuleToWat consumes finite nullable heap unions after recursive host boundaries are cleared',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts'],
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          'interface Box {',
+          '  value: number;',
+          '}',
+          '',
+          'type Choice = Box | null | undefined;',
+          '',
+          'export function main(value: Choice): Choice {',
+          '  return value;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const moduleIR = lowerTempProjectToCompilerIR(tempDirectory);
+    const main = moduleIR.functions.find((func: CompilerFunctionIR) => func.name === 'main');
+    if (!main) {
+      throw new Error('Expected lowered main function.');
+    }
+
+    assertEquals(
+      [...(main.hostUnionBoundaryParams?.[0]?.boundary.arms ?? [])]
+        .map((arm) => arm.kind)
+        .sort(),
+      ['null', 'object', 'undefined'],
+    );
+    assertEquals(
+      [...(main.hostUnionBoundaryResult?.arms ?? [])].map((arm) => arm.kind).sort(),
+      ['null', 'object', 'undefined'],
+    );
+
+    main.hostParamBoundaries = undefined;
+    main.hostResultBoundary = undefined;
+
+    const watOutput = emitCompilerModuleToWat(moduleIR);
+
+    assertStringIncludes(watOutput, '(func $main__export (export "src/index.ts:main")');
+    assertStringIncludes(watOutput, '(param $value externref)');
+    assertStringIncludes(watOutput, 'call $tag_null');
+    assertStringIncludes(watOutput, 'call $tagged_undefined_value');
+    assertStringIncludes(watOutput, 'call $tag_heap_object');
+  },
+);
+
+compilerTaggedTest(
   'emitCompilerModuleToWat defines fallback tagged array helpers from recursive property metadata after legacy side tables are cleared',
   async () => {
     const tempDirectory = await createTempProject([
@@ -1896,6 +2789,607 @@ compilerTaggedTest(
     assertStringIncludes(watOutput, '(func $__soundscript_promise_new_pending');
     assertStringIncludes(watOutput, '(param $value externref)');
     assertStringIncludes(watOutput, 'call $host_promise_to_host');
+  },
+);
+
+compilerTaggedTest(
+  'emitCompilerModuleToWat consumes finite Promise primitive unions after recursive host boundaries are cleared',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts'],
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          'type Choice = Promise<number> | string | number;',
+          '',
+          'export function main(value: Choice): Choice {',
+          '  return value;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const moduleIR = lowerTempProjectToCompilerIR(tempDirectory);
+    const main = moduleIR.functions.find((func: CompilerFunctionIR) =>
+      func.exportName.endsWith(':main')
+    );
+    if (!main) {
+      throw new Error('Expected lowered main function.');
+    }
+
+    assertEquals(
+      [...(main.hostUnionBoundaryParams?.[0]?.boundary.arms ?? [])]
+        .map((arm) => arm.kind)
+        .sort(),
+      ['number', 'promise', 'string'],
+    );
+    assertEquals(
+      [...(main.hostUnionBoundaryResult?.arms ?? [])].map((arm) => arm.kind).sort(),
+      ['number', 'promise', 'string'],
+    );
+
+    main.hostParamBoundaries = undefined;
+    main.hostResultBoundary = undefined;
+
+    const watOutput = emitCompilerModuleToWat(moduleIR);
+
+    assertStringIncludes(watOutput, '(func $__soundscript_promise_new_pending');
+    assertStringIncludes(watOutput, '(import "soundscript_promise" "is_host"');
+    assertStringIncludes(watOutput, 'call $host_promise_is_host');
+    assertStringIncludes(watOutput, 'call $host_promise_to_internal');
+    assertStringIncludes(watOutput, 'call $host_promise_to_host');
+    assertStringIncludes(watOutput, 'call $tagged_type_tag');
+  },
+);
+
+compilerTaggedTest(
+  'compileProject roundtrips finite Promise primitive host unions',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts'],
+            soundscript: {
+              target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          'type Choice = Promise<number> | string;',
+          '',
+          'export function main(value: Choice): Choice {',
+          '  return value;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+
+    const instance = await instantiateCompiledModuleInJs(tempDirectory);
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instance.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+
+    const promise = Promise.resolve(42);
+    assertEquals(await exported('ready'), 'ready');
+    const returnedPromise = exported(promise);
+    assertEquals(returnedPromise, promise);
+    assertEquals(await returnedPromise, 42);
+  },
+);
+
+compilerTaggedTest(
+  'compileProject roundtrips imported finite Promise primitive host unions',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+            },
+            include: ['src/**/*.ts'],
+            soundscript: {
+              target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/host.d.ts',
+        contents: [
+          'export type Choice = Promise<number> | string;',
+          '',
+          'export declare function roundTrip(value: Choice): Choice;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/host.js',
+        contents: [
+          'export function roundTrip(value) {',
+          '  return value;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          '// #[interop]',
+          "import { roundTrip } from './host.js';",
+          '',
+          'type Choice = Promise<number> | string;',
+          '',
+          'export function main(value: Choice): Choice {',
+          '  return roundTrip(value);',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+
+    const instance = await instantiateCompiledModuleInJs(tempDirectory, {
+      hostFunctions: {
+        'src/host.d.ts:roundTrip': (value: unknown) => value,
+      },
+    });
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instance.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+
+    const promise = Promise.resolve(52);
+    assertEquals(await exported('ready'), 'ready');
+    const returnedPromise = exported(promise);
+    assertEquals(returnedPromise, promise);
+    assertEquals(await returnedPromise, 52);
+  },
+);
+
+compilerTaggedTest(
+  'emitCompilerModuleToWat consumes finite generator primitive unions after recursive host boundaries are cleared',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts'],
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          'type SyncChoice = Generator<number, void, unknown> | string;',
+          'type AsyncChoice = AsyncGenerator<number, void, unknown> | number;',
+          '',
+          'export function syncMain(value: SyncChoice): SyncChoice {',
+          '  return value;',
+          '}',
+          '',
+          'export function asyncMain(value: AsyncChoice): AsyncChoice {',
+          '  return value;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const moduleIR = lowerTempProjectToCompilerIR(tempDirectory);
+    const syncMain = moduleIR.functions.find((func: CompilerFunctionIR) =>
+      func.exportName.endsWith(':syncMain')
+    );
+    const asyncMain = moduleIR.functions.find((func: CompilerFunctionIR) =>
+      func.exportName.endsWith(':asyncMain')
+    );
+    if (!syncMain || !asyncMain) {
+      throw new Error('Expected lowered generator union functions.');
+    }
+
+    assertEquals(
+      [...(syncMain.hostUnionBoundaryParams?.[0]?.boundary.arms ?? [])]
+        .map((arm) => arm.kind)
+        .sort(),
+      ['generator', 'string'],
+    );
+    assertEquals(
+      syncMain.hostUnionBoundaryParams?.[0]?.boundary.arms.find((arm) =>
+        arm.kind === 'generator'
+      )?.async,
+      false,
+    );
+    assertEquals(
+      [...(asyncMain.hostUnionBoundaryParams?.[0]?.boundary.arms ?? [])]
+        .map((arm) => arm.kind)
+        .sort(),
+      ['generator', 'number'],
+    );
+    assertEquals(
+      asyncMain.hostUnionBoundaryParams?.[0]?.boundary.arms.find((arm) =>
+        arm.kind === 'generator'
+      )?.async,
+      true,
+    );
+
+    const watOutput = emitCompilerModuleToWat(moduleIR);
+
+    assertStringIncludes(watOutput, '(import "soundscript_generator" "to_step"');
+    assertStringIncludes(watOutput, '(import "soundscript_generator" "wrap"');
+    assertStringIncludes(watOutput, '(import "soundscript_async_generator" "to_step"');
+    assertStringIncludes(watOutput, '(import "soundscript_async_generator" "wrap"');
+    assertStringIncludes(watOutput, 'call $host_sync_generator_to_step');
+    assertStringIncludes(watOutput, 'call $host_sync_generator_wrap');
+    assertStringIncludes(watOutput, 'call $host_async_generator_to_step');
+    assertStringIncludes(watOutput, 'call $host_async_generator_wrap');
+  },
+);
+
+compilerTaggedTest(
+  'compileProject roundtrips finite sync generator primitive host unions',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts'],
+            soundscript: {
+              target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          'type Choice = Generator<number, void, unknown> | string;',
+          '',
+          'export function main(value: Choice): Choice {',
+          '  return value;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+
+    const instance = await instantiateCompiledModuleInJs(tempDirectory);
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instance.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+
+    function* iterate(): Generator<number, void, unknown> {
+      yield 3;
+      yield 5;
+    }
+
+    assertEquals(exported('ready'), 'ready');
+    const returned = exported(iterate());
+    assertEquals(returned.next(), { value: 3, done: false });
+    assertEquals(returned.next(), { value: 5, done: false });
+  },
+);
+
+compilerTaggedTest(
+  'compileProject roundtrips finite async generator primitive host unions',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+            },
+            include: ['src/**/*.ts'],
+            soundscript: {
+              target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          'type Choice = AsyncGenerator<number, void, unknown> | string;',
+          '',
+          'export function main(value: Choice): Choice {',
+          '  return value;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+
+    const instance = await instantiateCompiledModuleInJs(tempDirectory);
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instance.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+
+    async function* iterate(): AsyncGenerator<number, void, unknown> {
+      yield 7;
+      yield 11;
+    }
+
+    assertEquals(exported('ready'), 'ready');
+    const returned = exported(iterate());
+    assertEquals(await returned.next(), { value: 7, done: false });
+    assertEquals(await returned.next(), { value: 11, done: false });
+  },
+);
+
+compilerTaggedTest(
+  'compileProject roundtrips imported finite sync generator primitive host unions',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+            },
+            include: ['src/**/*.ts'],
+            soundscript: {
+              target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/host.d.ts',
+        contents: [
+          'export type Choice = Generator<number, void, unknown> | string;',
+          '',
+          'export declare function roundTrip(value: Choice): Choice;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/host.js',
+        contents: [
+          'export function roundTrip(value) {',
+          '  return value;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          '// #[interop]',
+          "import { roundTrip } from './host.js';",
+          '',
+          'type Choice = Generator<number, void, unknown> | string;',
+          '',
+          'export function main(value: Choice): Choice {',
+          '  return roundTrip(value);',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+
+    const instance = await instantiateCompiledModuleInJs(tempDirectory, {
+      hostFunctions: {
+        'src/host.d.ts:roundTrip': (value: unknown) => value,
+      },
+    });
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instance.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+
+    function* iterate(): Generator<number, void, unknown> {
+      yield 13;
+      yield 17;
+    }
+
+    assertEquals(exported('ready'), 'ready');
+    const returned = exported(iterate());
+    assertEquals(returned.next(), { value: 13, done: false });
+    assertEquals(returned.next(), { value: 17, done: false });
+  },
+);
+
+compilerTaggedTest(
+  'compileProject roundtrips imported finite async generator primitive host unions',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+            },
+            include: ['src/**/*.ts'],
+            soundscript: {
+              target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/host.d.ts',
+        contents: [
+          'export type Choice = AsyncGenerator<number, void, unknown> | string;',
+          '',
+          'export declare function roundTrip(value: Choice): Choice;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/host.js',
+        contents: [
+          'export function roundTrip(value) {',
+          '  return value;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          '// #[interop]',
+          "import { roundTrip } from './host.js';",
+          '',
+          'type Choice = AsyncGenerator<number, void, unknown> | string;',
+          '',
+          'export function main(value: Choice): Choice {',
+          '  return roundTrip(value);',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+
+    const instance = await instantiateCompiledModuleInJs(tempDirectory, {
+      hostFunctions: {
+        'src/host.d.ts:roundTrip': (value: unknown) => value,
+      },
+    });
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instance.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+
+    async function* iterate(): AsyncGenerator<number, void, unknown> {
+      yield 19;
+      yield 23;
+    }
+
+    assertEquals(exported('ready'), 'ready');
+    const returned = exported(iterate());
+    assertEquals(await returned.next(), { value: 19, done: false });
+    assertEquals(await returned.next(), { value: 23, done: false });
   },
 );
 
