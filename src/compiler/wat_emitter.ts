@@ -1604,6 +1604,7 @@ function forEachExpressionChild(
     case 'owned_string_array_splice':
     case 'owned_number_array_splice':
     case 'owned_boolean_array_splice':
+    case 'owned_tagged_array_splice':
       visit(expression.array);
       visit(expression.start);
       visit(expression.deleteCount);
@@ -3451,6 +3452,15 @@ function moduleUsesOwnedBooleanArraySplice(module: CompilerModuleIR): boolean {
   );
 }
 
+function moduleUsesOwnedTaggedArraySplice(module: CompilerModuleIR): boolean {
+  return module.functions.some((func) =>
+    statementsUseStringHelper(
+      func.body,
+      (expression) => expression.kind === 'owned_tagged_array_splice',
+    )
+  );
+}
+
 function moduleUsesOwnedStringArrayIncludes(module: CompilerModuleIR): boolean {
   return module.functions.some((func) =>
     statementsUseStringHelper(
@@ -5172,16 +5182,18 @@ function moduleUsedOwnedStringLiteralIds(module: CompilerModuleIR): Set<number> 
   }
   if (moduleUsesGeneratorStepClosureHostBridge(module)) {
     const stringLiteralIdsByText = createStringLiteralIds(module);
-    for (const literal of [
-      SOUNDSCRIPT_GENERATOR_INTERNAL_PC_KEY,
-      SOUNDSCRIPT_GENERATOR_INTERNAL_STEP_KEY,
-      SOUNDSCRIPT_GENERATOR_INTERNAL_DELEGATE_KEY,
-      SOUNDSCRIPT_GENERATOR_INTERNAL_COMPLETION_KEY,
-      SOUNDSCRIPT_GENERATOR_INTERNAL_PENDING_PROMISE_KEY,
-      SOUNDSCRIPT_GENERATOR_INTERNAL_ASYNC_AWAIT_KEY,
-      'value',
-      'done',
-    ]) {
+    for (
+      const literal of [
+        SOUNDSCRIPT_GENERATOR_INTERNAL_PC_KEY,
+        SOUNDSCRIPT_GENERATOR_INTERNAL_STEP_KEY,
+        SOUNDSCRIPT_GENERATOR_INTERNAL_DELEGATE_KEY,
+        SOUNDSCRIPT_GENERATOR_INTERNAL_COMPLETION_KEY,
+        SOUNDSCRIPT_GENERATOR_INTERNAL_PENDING_PROMISE_KEY,
+        SOUNDSCRIPT_GENERATOR_INTERNAL_ASYNC_AWAIT_KEY,
+        'value',
+        'done',
+      ]
+    ) {
       literalIds.add(getRequiredStringLiteralId(stringLiteralIdsByText, literal));
     }
   }
@@ -22147,6 +22159,7 @@ function getExpressionValueType(expression: CompilerExpressionIR): CompilerValue
     case 'owned_string_array_splice':
     case 'owned_number_array_splice':
     case 'owned_boolean_array_splice':
+    case 'owned_tagged_array_splice':
     case 'owned_heap_array_includes':
     case 'owned_heap_array_index_of':
     case 'owned_string_array_includes':
@@ -23885,6 +23898,14 @@ function emitExpression(
         ...emitExpression(expression.items, level, runtime),
         `${indent(level)}call $owned_boolean_array_splice`,
       ];
+    case 'owned_tagged_array_splice':
+      return [
+        ...emitExpression(expression.array, level, runtime),
+        ...emitOwnedArrayOptionalIndexValueOperand(expression.start, level, runtime),
+        ...emitOwnedArrayOptionalIndexValueOperand(expression.deleteCount, level, runtime),
+        ...emitExpression(expression.items, level, runtime),
+        `${indent(level)}call $owned_tagged_array_splice`,
+      ];
     case 'owned_heap_array_includes':
       return [
         ...emitExpression(expression.array, level, runtime),
@@ -25538,7 +25559,8 @@ function emitHostImportedFunctionWrapper(
     )
     : undefined;
   if (
-    (hasHostGeneratorResult || hasHostAsyncGeneratorResult || hostUnionBoundaryResultHasGenerator) &&
+    (hasHostGeneratorResult || hasHostAsyncGeneratorResult ||
+      hostUnionBoundaryResultHasGenerator) &&
     !generatorStepSignature
   ) {
     throw new Error('Missing generator step signature for host-imported generator bridge.');
@@ -33382,6 +33404,7 @@ export function emitCompilerModuleToWat(module: CompilerModuleIR): string {
         usesOwnedStringSplice: moduleUsesOwnedStringArraySplice(module),
         usesOwnedNumberSplice: moduleUsesOwnedNumberArraySplice(module),
         usesOwnedBooleanSplice: moduleUsesOwnedBooleanArraySplice(module),
+        usesOwnedTaggedSplice: moduleUsesOwnedTaggedArraySplice(module),
         usesOwnedHeapIncludes: moduleUsesOwnedHeapArrayIncludes(module),
         usesOwnedStringIncludes: moduleUsesOwnedStringArrayIncludes(module),
         usesOwnedNumberIncludes: moduleUsesOwnedNumberArrayIncludes(module),

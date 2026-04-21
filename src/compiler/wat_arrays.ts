@@ -122,6 +122,7 @@ export interface OwnedArrayPushHelperUsage {
   usesOwnedStringSplice: boolean;
   usesOwnedNumberSplice: boolean;
   usesOwnedBooleanSplice: boolean;
+  usesOwnedTaggedSplice: boolean;
   usesOwnedHeapIncludes: boolean;
   usesOwnedStringIncludes: boolean;
   usesOwnedNumberIncludes: boolean;
@@ -535,7 +536,9 @@ function getOwnedArraySliceHelperName(
   }
 }
 
-function getOwnedArraySpliceHelperName(kind: 'heap' | 'string' | 'number' | 'boolean'): string {
+function getOwnedArraySpliceHelperName(
+  kind: 'heap' | 'string' | 'number' | 'boolean' | 'tagged',
+): string {
   switch (kind) {
     case 'heap':
       return 'owned_heap_array_splice';
@@ -545,6 +548,8 @@ function getOwnedArraySpliceHelperName(kind: 'heap' | 'string' | 'number' | 'boo
       return 'owned_number_array_splice';
     case 'boolean':
       return 'owned_boolean_array_splice';
+    case 'tagged':
+      return 'owned_tagged_array_splice';
   }
 }
 
@@ -2659,7 +2664,7 @@ function emitOwnedArrayConcatHelper(
 }
 
 function emitOwnedArraySpliceHelper(
-  kind: 'heap' | 'string' | 'number' | 'boolean',
+  kind: 'heap' | 'string' | 'number' | 'boolean' | 'tagged',
   indent: (level: number) => string,
 ): string[] {
   const wrapperTypeName = getOwnedArrayWatTypeName(kind);
@@ -3756,6 +3761,7 @@ export function emitOwnedArrayNativeHelpers(
     usesOwnedStringSplice,
     usesOwnedNumberSplice,
     usesOwnedBooleanSplice,
+    usesOwnedTaggedSplice,
     usesOwnedHeapIncludes,
     usesOwnedStringIncludes,
     usesOwnedNumberIncludes,
@@ -3832,6 +3838,7 @@ export function emitOwnedArrayNativeHelpers(
     ...(usesOwnedStringSplice ? emitOwnedArraySpliceHelper('string', indent) : []),
     ...(usesOwnedNumberSplice ? emitOwnedArraySpliceHelper('number', indent) : []),
     ...(usesOwnedBooleanSplice ? emitOwnedArraySpliceHelper('boolean', indent) : []),
+    ...(usesOwnedTaggedSplice ? emitOwnedArraySpliceHelper('tagged', indent) : []),
     ...(usesOwnedHeapIncludes ? emitOwnedArrayIncludesHelper('heap', indent) : []),
     ...(usesOwnedStringIncludes
       ? emitOwnedArrayIncludesHelper('string', indent, stringRuntimeLayout)

@@ -34,6 +34,7 @@ const FAMILY_DEPENDENCIES = new Map<
   ['dynamic_object', ['string']],
   ['fallback_object', ['string']],
   ['host_object_projection', ['host_handle']],
+  ['promise', ['finite_union']],
 ]);
 
 const FAMILY_HELPERS: Record<SemanticRuntimeFamilyId, readonly RuntimeHelperRequirementIR[]> = {
@@ -71,6 +72,7 @@ const FAMILY_HELPERS: Record<SemanticRuntimeFamilyId, readonly RuntimeHelperRequ
   ],
   promise: [
     { family: 'promise', name: 'promise_gc_records', kind: 'type' },
+    { family: 'promise', name: 'promise_resolution_ops', kind: 'operation' },
     { family: 'promise', name: 'promise_microtask_scheduler', kind: 'scheduler' },
   ],
   sync_generator: [

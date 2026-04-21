@@ -603,6 +603,15 @@ export interface CompilerOwnedBooleanArraySpliceIR {
   type: 'owned_boolean_array_ref';
 }
 
+export interface CompilerOwnedTaggedArraySpliceIR {
+  kind: 'owned_tagged_array_splice';
+  array: CompilerExpressionIR;
+  start: CompilerExpressionIR;
+  deleteCount: CompilerExpressionIR;
+  items: CompilerExpressionIR;
+  type: 'owned_tagged_array_ref';
+}
+
 export interface CompilerOwnedHeapArraySpliceIR {
   kind: 'owned_heap_array_splice';
   array: CompilerExpressionIR;
@@ -1273,6 +1282,7 @@ export type CompilerExpressionIR =
   | CompilerOwnedStringArraySpliceIR
   | CompilerOwnedNumberArraySpliceIR
   | CompilerOwnedBooleanArraySpliceIR
+  | CompilerOwnedTaggedArraySpliceIR
   | CompilerOwnedHeapArraySpliceIR
   | CompilerOwnedStringArrayIncludesIR
   | CompilerOwnedNumberArrayIncludesIR

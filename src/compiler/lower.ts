@@ -8240,8 +8240,15 @@ function tryLowerOwnedHeapArrayExpression(
             element,
           );
         }
+        const elementOwnedArrayType = getSupportedOwnedArrayValueTypeForType(
+          context.checker,
+          context.checker.getContextualType(element) ??
+            context.checker.getTypeAtLocation(element),
+        );
         const loweredElement = internalTaggedHeapArrayElements
           ? lowerExpressionAsValueType(element, 'owned_tagged_array_ref', context)
+          : elementOwnedArrayType
+          ? lowerExpressionAsValueType(element, elementOwnedArrayType, context)
           : lowerExpression(element, context);
         const loweredElementType = getLoweredExpressionValueType(loweredElement);
         if (
@@ -12950,6 +12957,75 @@ function createOwnedArrayPushExpression(
   }
 }
 
+function createOwnedArraySetStatement(
+  arrayName: string,
+  arrayType: OwnedCallbackArrayType,
+  index: CompilerExpressionIR,
+  value: CompilerExpressionIR,
+): CompilerStatementIR {
+  switch (arrayType) {
+    case 'owned_heap_array_ref':
+      return {
+        kind: 'owned_heap_array_set',
+        array: {
+          kind: 'local_get',
+          name: arrayName,
+          type: 'owned_heap_array_ref',
+        },
+        index,
+        value,
+      };
+    case 'owned_array_ref':
+      return {
+        kind: 'owned_string_array_set',
+        array: {
+          kind: 'local_get',
+          name: arrayName,
+          type: 'owned_array_ref',
+        },
+        index,
+        value,
+      };
+    case 'owned_number_array_ref':
+      return {
+        kind: 'owned_number_array_set',
+        array: {
+          kind: 'local_get',
+          name: arrayName,
+          type: 'owned_number_array_ref',
+        },
+        index,
+        value,
+      };
+    case 'owned_boolean_array_ref':
+      return {
+        kind: 'owned_boolean_array_set',
+        array: {
+          kind: 'local_get',
+          name: arrayName,
+          type: 'owned_boolean_array_ref',
+        },
+        index,
+        value,
+      };
+    case 'owned_tagged_array_ref':
+      return {
+        kind: 'owned_tagged_array_set',
+        array: {
+          kind: 'local_get',
+          name: arrayName,
+          type: 'owned_tagged_array_ref',
+        },
+        index,
+        value,
+      };
+    default: {
+      const exhaustiveCheck: never = arrayType;
+      return exhaustiveCheck;
+    }
+  }
+}
+
 function lowerOwnedArraySomeExpression(
   expression: ts.CallExpression,
   context: FunctionLoweringContext,
@@ -16441,16 +16517,30 @@ function lowerOwnedArrayAssignmentStatement(
   const ownedHeapArray = tryLowerOwnedHeapArrayExpression(expression.left.expression, context);
   if (ownedHeapArray) {
     const index = lowerExpression(indexExpression, context);
-    const materialized = materializeHeapExpressionToLocal(
-      expression.right,
-      context,
-      'heap_array_value',
+    const rightOwnedArrayType = getSupportedOwnedArrayValueTypeForType(
+      context.checker,
+      context.checker.getTypeAtLocation(expression.right),
     );
-    const value: CompilerExpressionIR = {
-      kind: 'local_get',
-      name: materialized.name,
-      type: 'heap_ref',
-    };
+    const value: CompilerExpressionIR = rightOwnedArrayType
+      ? {
+        kind: 'local_get',
+        name: materializeLoweredExpressionToLocal(
+          lowerExpressionAsValueType(expression.right, rightOwnedArrayType, context),
+          context,
+          'heap_array_value',
+          true,
+        ),
+        type: rightOwnedArrayType,
+      }
+      : {
+        kind: 'local_get',
+        name: materializeHeapExpressionToLocal(
+          expression.right,
+          context,
+          'heap_array_value',
+        ).name,
+        type: 'heap_ref',
+      };
     const preludeStatements = consumeExpressionPreludeStatements(context);
     return [...preludeStatements, {
       kind: 'owned_heap_array_set',
@@ -16717,8 +16807,49 @@ interface SupportedNumberKeyMapTypeInfo {
   valueType: ts.Type;
   keysArrayType: 'owned_number_array_ref';
   keysElementType: 'f64';
-  valuesArrayType: 'owned_number_array_ref';
-  valuesElementType: 'f64';
+  valuesArrayType:
+    | 'owned_array_ref'
+    | 'owned_number_array_ref'
+    | 'owned_boolean_array_ref'
+    | 'owned_tagged_array_ref';
+  valuesElementType: 'owned_string_ref' | 'f64' | 'i32' | 'tagged_ref';
+}
+
+function getSupportedNumberKeyMapValueInfo(
+  checker: ts.TypeChecker,
+  valueType: ts.Type,
+): Pick<SupportedNumberKeyMapTypeInfo, 'valuesArrayType' | 'valuesElementType'> | undefined {
+  if (isStringLikeType(valueType)) {
+    return {
+      valuesArrayType: 'owned_array_ref',
+      valuesElementType: 'owned_string_ref',
+    };
+  }
+  if ((valueType.flags & ts.TypeFlags.NumberLike) !== 0) {
+    return {
+      valuesArrayType: 'owned_number_array_ref',
+      valuesElementType: 'f64',
+    };
+  }
+  if ((valueType.flags & ts.TypeFlags.BooleanLike) !== 0) {
+    return {
+      valuesArrayType: 'owned_boolean_array_ref',
+      valuesElementType: 'i32',
+    };
+  }
+  if (
+    isSupportedInternalTaggedHeapUnionType(checker, valueType) ||
+    isSupportedTaggedHeapNullableType(checker, valueType) ||
+    isTaggedCompilerUnionType(valueType) ||
+    isDefinitelyUndefinedType(valueType) ||
+    isDefinitelyNullType(valueType)
+  ) {
+    return {
+      valuesArrayType: 'owned_tagged_array_ref',
+      valuesElementType: 'tagged_ref',
+    };
+  }
+  return undefined;
 }
 
 function getSupportedNumberKeyMapTypeInfo(
@@ -16737,12 +16868,8 @@ function getSupportedNumberKeyMapTypeInfo(
   const typeArguments = checker.getTypeArguments(apparentType as ts.TypeReference);
   const keyType = typeArguments[0];
   const valueType = typeArguments[1];
-  if (
-    !keyType ||
-    !valueType ||
-    (keyType.flags & ts.TypeFlags.NumberLike) === 0 ||
-    (valueType.flags & ts.TypeFlags.NumberLike) === 0
-  ) {
+  const valueInfo = valueType ? getSupportedNumberKeyMapValueInfo(checker, valueType) : undefined;
+  if (!keyType || !valueType || (keyType.flags & ts.TypeFlags.NumberLike) === 0 || !valueInfo) {
     return undefined;
   }
   return {
@@ -16751,8 +16878,7 @@ function getSupportedNumberKeyMapTypeInfo(
     valueType,
     keysArrayType: 'owned_number_array_ref',
     keysElementType: 'f64',
-    valuesArrayType: 'owned_number_array_ref',
-    valuesElementType: 'f64',
+    ...valueInfo,
   };
 }
 
@@ -18054,6 +18180,9 @@ function lowerSupportedNumberKeyMapArrayRead(
   objectName: string,
   representation: CompilerRuntimeDynamicObjectRepresentationRefIR,
   property: 'keys' | 'values',
+  arrayType:
+    | SupportedNumberKeyMapTypeInfo['keysArrayType']
+    | SupportedNumberKeyMapTypeInfo['valuesArrayType'],
   context: FunctionLoweringContext,
   baseName: string,
 ): CompilerExpressionIR {
@@ -18066,7 +18195,7 @@ function lowerSupportedNumberKeyMapArrayRead(
     objectName,
     representation,
     propertyKeyName,
-    'owned_number_array_ref',
+    arrayType,
     context,
   );
 }
@@ -18077,12 +18206,20 @@ function lowerSupportedNumberKeyMapKeysArrayRead(
   context: FunctionLoweringContext,
   baseName: string,
 ): CompilerExpressionIR {
-  return lowerSupportedNumberKeyMapArrayRead(objectName, representation, 'keys', context, baseName);
+  return lowerSupportedNumberKeyMapArrayRead(
+    objectName,
+    representation,
+    'keys',
+    'owned_number_array_ref',
+    context,
+    baseName,
+  );
 }
 
 function lowerSupportedNumberKeyMapValuesArrayRead(
   objectName: string,
   representation: CompilerRuntimeDynamicObjectRepresentationRefIR,
+  arrayType: SupportedNumberKeyMapTypeInfo['valuesArrayType'],
   context: FunctionLoweringContext,
   baseName: string,
 ): CompilerExpressionIR {
@@ -18090,6 +18227,7 @@ function lowerSupportedNumberKeyMapValuesArrayRead(
     objectName,
     representation,
     'values',
+    arrayType,
     context,
     baseName,
   );
@@ -18111,11 +18249,18 @@ function materializeSupportedNumberKeyMapKeysArray(
 function materializeSupportedNumberKeyMapValuesArray(
   objectName: string,
   representation: CompilerRuntimeDynamicObjectRepresentationRefIR,
+  arrayType: SupportedNumberKeyMapTypeInfo['valuesArrayType'],
   context: FunctionLoweringContext,
   baseName: string,
 ): string {
   return materializeLoweredExpressionToLocal(
-    lowerSupportedNumberKeyMapValuesArrayRead(objectName, representation, context, baseName),
+    lowerSupportedNumberKeyMapValuesArrayRead(
+      objectName,
+      representation,
+      arrayType,
+      context,
+      baseName,
+    ),
     context,
     baseName,
   );
@@ -18149,7 +18294,7 @@ function initializeSupportedNumberKeyMapArrayProperty(
       value: {
         kind: 'local_get',
         name: arrayName,
-        type: 'owned_number_array_ref',
+        type: getLoweredExpressionValueType(arrayExpression) ?? 'owned_number_array_ref',
       },
       type: 'tagged_ref',
     },
@@ -18160,6 +18305,8 @@ function initializeSupportedNumberKeyMapArrayProperty(
 function upsertSupportedNumberKeyMapEntry(
   keysName: string,
   valuesName: string,
+  valuesArrayType: SupportedNumberKeyMapTypeInfo['valuesArrayType'],
+  valuesElementType: SupportedNumberKeyMapTypeInfo['valuesElementType'],
   keyName: string,
   valueName: string,
   context: FunctionLoweringContext,
@@ -18196,24 +18343,20 @@ function upsertSupportedNumberKeyMapEntry(
       },
       type: 'i32',
     },
-    thenBody: [{
-      kind: 'owned_number_array_set',
-      array: {
-        kind: 'local_get',
-        name: valuesName,
-        type: 'owned_number_array_ref',
-      },
-      index: {
+    thenBody: [createOwnedArraySetStatement(
+      valuesName,
+      valuesArrayType,
+      {
         kind: 'local_get',
         name: indexName,
         type: 'f64',
       },
-      value: {
+      {
         kind: 'local_get',
         name: valueName,
-        type: 'f64',
+        type: valuesElementType,
       },
-    }],
+    )],
     elseBody: [
       {
         kind: 'expression',
@@ -18228,9 +18371,9 @@ function upsertSupportedNumberKeyMapEntry(
         kind: 'expression',
         value: createOwnedArrayPushValueExpression(
           valuesName,
-          'owned_number_array_ref',
+          valuesArrayType,
           valueName,
-          'f64',
+          valuesElementType,
         ),
       },
     ],
@@ -18250,6 +18393,45 @@ function lowerSupportedNumberKeyMapLookupIndex(
       type: 'f64',
     },
   );
+}
+
+function lowerSupportedNumberKeyMapValueAsTagged(
+  valuesName: string,
+  mapTypeInfo: SupportedNumberKeyMapTypeInfo,
+  indexName: string,
+): CompilerExpressionIR {
+  const element = createOwnedArrayElementExpression(
+    valuesName,
+    mapTypeInfo.valuesArrayType,
+    indexName,
+    mapTypeInfo.valuesElementType,
+  );
+  switch (mapTypeInfo.valuesElementType) {
+    case 'owned_string_ref':
+      return {
+        kind: 'tag_string',
+        value: element,
+        type: 'tagged_ref',
+      };
+    case 'f64':
+      return {
+        kind: 'tag_number',
+        value: element,
+        type: 'tagged_ref',
+      };
+    case 'i32':
+      return {
+        kind: 'tag_boolean',
+        value: element,
+        type: 'tagged_ref',
+      };
+    case 'tagged_ref':
+      return element;
+    default: {
+      const exhaustiveCheck: never = mapTypeInfo.valuesElementType;
+      return exhaustiveCheck;
+    }
+  }
 }
 
 function lowerSupportedNumberKeyMapEntriesArray(
@@ -18888,7 +19070,8 @@ function createOwnedArrayDeleteAtExpression(
   arrayType:
     | 'owned_array_ref'
     | 'owned_number_array_ref'
-    | 'owned_boolean_array_ref',
+    | 'owned_boolean_array_ref'
+    | 'owned_tagged_array_ref',
   indexExpression: CompilerExpressionIR,
 ): CompilerExpressionIR {
   const emptyItems = createOwnedArrayEmptyLiteral(arrayType);
@@ -18940,6 +19123,22 @@ function createOwnedArrayDeleteAtExpression(
         },
         items: emptyItems,
         type: 'owned_boolean_array_ref',
+      };
+    case 'owned_tagged_array_ref':
+      return {
+        kind: 'owned_tagged_array_splice',
+        array: {
+          kind: 'local_get',
+          name: arrayName,
+          type: 'owned_tagged_array_ref',
+        },
+        start: indexExpression,
+        deleteCount: {
+          kind: 'number_literal',
+          value: 1,
+        },
+        items: emptyItems,
+        type: 'owned_tagged_array_ref',
       };
     default: {
       const exhaustiveCheck: never = arrayType;
@@ -19446,9 +19645,9 @@ function getDirectNumberKeyMapConstructorEntries(
         rawKey,
       );
     }
-    if ((checker.getTypeAtLocation(rawValue).flags & ts.TypeFlags.NumberLike) === 0) {
+    if (!getSupportedNumberKeyMapValueInfo(checker, checker.getTypeAtLocation(rawValue))) {
       throw new CompilerUnsupportedError(
-        'Map construction currently supports only number values for number-key Maps in compiler subset.',
+        'Map construction currently supports only string, number, or boolean values for number-key Maps in compiler subset.',
         rawValue,
       );
     }
@@ -19810,6 +20009,7 @@ function tryLowerCollectionForOfIterableExpression(
           arrayValue: lowerSupportedNumberKeyMapValuesArrayRead(
             objectName,
             representation,
+            numberKeyMapTypeInfo.valuesArrayType,
             context,
             'map_values',
           ),
@@ -19827,6 +20027,7 @@ function tryLowerCollectionForOfIterableExpression(
         const valuesName = materializeSupportedNumberKeyMapValuesArray(
           objectName,
           representation,
+          numberKeyMapTypeInfo.valuesArrayType,
           context,
           'map_entries_values',
         );
@@ -19930,6 +20131,12 @@ function tryLowerCollectionForOfIterableExpression(
     context.checker.getTypeAtLocation(expression),
   );
   if (numberKeyMapTypeInfo) {
+    if (numberKeyMapTypeInfo.valuesElementType !== 'f64') {
+      throw new CompilerUnsupportedError(
+        'Number-key Map default iteration currently supports only number values in compiler subset.',
+        expression,
+      );
+    }
     const { objectName, representation } = getDynamicCollectionReceiverForIteration(
       expression,
       context,
@@ -19944,6 +20151,7 @@ function tryLowerCollectionForOfIterableExpression(
     const valuesName = materializeSupportedNumberKeyMapValuesArray(
       objectName,
       representation,
+      numberKeyMapTypeInfo.valuesArrayType,
       context,
       'map_iterable_values',
     );
@@ -59865,7 +60073,7 @@ function lowerInitialNumberKeyMapNewExpression(
   );
   if (!mapTypeInfo) {
     throw new CompilerUnsupportedError(
-      'Number-key Map construction currently supports only number keys and number values in compiler subset.',
+      'Number-key Map construction currently supports only number keys with string, number, or boolean values in compiler subset.',
       expression,
     );
   }
@@ -59930,7 +60138,15 @@ function lowerInitialNumberKeyMapNewExpression(
         'map_value',
         true,
       );
-      upsertSupportedNumberKeyMapEntry(keysName, valuesName, keyName, valueName, context);
+      upsertSupportedNumberKeyMapEntry(
+        keysName,
+        valuesName,
+        mapTypeInfo.valuesArrayType,
+        mapTypeInfo.valuesElementType,
+        keyName,
+        valueName,
+        context,
+      );
     }
   }
   return {
@@ -60428,6 +60644,7 @@ function lowerInitialNumberKeyMapCallExpression(
     const valuesName = materializeSupportedNumberKeyMapValuesArray(
       objectName,
       representation,
+      mapTypeInfo.valuesArrayType,
       context,
       'map_values',
     );
@@ -60443,7 +60660,15 @@ function lowerInitialNumberKeyMapCallExpression(
       'map_value',
       true,
     );
-    upsertSupportedNumberKeyMapEntry(keysName, valuesName, keyName, valueName, context);
+    upsertSupportedNumberKeyMapEntry(
+      keysName,
+      valuesName,
+      mapTypeInfo.valuesArrayType,
+      mapTypeInfo.valuesElementType,
+      keyName,
+      valueName,
+      context,
+    );
     return {
       kind: 'local_get',
       name: objectName,
@@ -60467,6 +60692,7 @@ function lowerInitialNumberKeyMapCallExpression(
     const valuesName = materializeSupportedNumberKeyMapValuesArray(
       objectName,
       representation,
+      mapTypeInfo.valuesArrayType,
       context,
       'map_values',
     );
@@ -60515,24 +60741,7 @@ function lowerInitialNumberKeyMapCallExpression(
         thenBody: [{
           kind: 'local_set',
           name: resultName,
-          value: {
-            kind: 'tag_number',
-            value: {
-              kind: 'owned_number_array_element',
-              value: {
-                kind: 'local_get',
-                name: valuesName,
-                type: 'owned_number_array_ref',
-              },
-              index: {
-                kind: 'local_get',
-                name: indexName,
-                type: 'f64',
-              },
-              type: 'f64',
-            },
-            type: 'tagged_ref',
-          },
+          value: lowerSupportedNumberKeyMapValueAsTagged(valuesName, mapTypeInfo, indexName),
         }],
         elseBody: [],
       },
@@ -60597,6 +60806,7 @@ function lowerInitialNumberKeyMapCallExpression(
     const valuesName = materializeSupportedNumberKeyMapValuesArray(
       objectName,
       representation,
+      mapTypeInfo.valuesArrayType,
       context,
       'map_values',
     );
@@ -60659,7 +60869,7 @@ function lowerInitialNumberKeyMapCallExpression(
             kind: 'expression',
             value: createOwnedArrayDeleteAtExpression(
               valuesName,
-              'owned_number_array_ref',
+              mapTypeInfo.valuesArrayType,
               {
                 kind: 'local_get',
                 name: indexName,
@@ -60753,6 +60963,7 @@ function lowerInitialNumberKeyMapCallExpression(
       lowerSupportedNumberKeyMapValuesArrayRead(
         objectName,
         representation,
+        mapTypeInfo.valuesArrayType,
         context,
         'map_values',
       ),
@@ -60770,6 +60981,12 @@ function lowerInitialNumberKeyMapCallExpression(
         expression,
       );
     }
+    if (mapTypeInfo.valuesElementType !== 'f64') {
+      throw new CompilerUnsupportedError(
+        'Number-key Map entries currently support only number values in compiler subset.',
+        expression,
+      );
+    }
     const keysName = materializeSupportedNumberKeyMapKeysArray(
       objectName,
       representation,
@@ -60779,6 +60996,7 @@ function lowerInitialNumberKeyMapCallExpression(
     const valuesName = materializeSupportedNumberKeyMapValuesArray(
       objectName,
       representation,
+      mapTypeInfo.valuesArrayType,
       context,
       'map_entries_values',
     );

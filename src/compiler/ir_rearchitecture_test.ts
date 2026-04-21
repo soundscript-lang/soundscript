@@ -766,10 +766,9 @@ Deno.test('compiler runtime manifest keeps unused families out of array-only mod
   assertEquals([...new Set(helpers)], ['array']);
 });
 
-Deno.test('compiler runtime manifest does not infer finite unions from other families', () => {
+Deno.test('compiler runtime manifest does not infer finite unions from non-payload families', () => {
   const semantic = semanticModuleWithFamilies([
     'map',
-    'promise',
     'set',
     'specialized_object',
     'sync_generator',
@@ -778,7 +777,7 @@ Deno.test('compiler runtime manifest does not infer finite unions from other fam
 
   assertEquals(
     manifest.familyRequirements.map((requirement) => requirement.family),
-    ['map', 'promise', 'set', 'specialized_object', 'sync_generator'],
+    ['map', 'set', 'specialized_object', 'sync_generator'],
   );
 });
 
@@ -1199,6 +1198,456 @@ Deno.test('compiler wasm-gc emitter produces runnable owned number array length 
   assertEquals((size as () => number)(), 3);
 });
 
+Deno.test('compiler wasm-gc emitter produces runnable owned boolean array reads and writes', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: { strict: true },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        export function update(flag: boolean): boolean {
+          const values = [true, false];
+          values[1] = flag;
+          return values[1];
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
+  const updatePlan = snapshot.wasmGcPlan.functionPlans.find((func) => func.name === 'update');
+  const watPath = join(tempDirectory, 'wasm-gc-shadow-boolean-array.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-shadow-boolean-array.wasm');
+
+  assertEquals(
+    snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
+    ['array'],
+  );
+  assertEquals(updatePlan?.bodyStatus, 'emittable');
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
+  const wat = await Deno.readTextFile(watPath);
+  assertEquals(wat.includes('(type $boolean_array_runtime (array (mut i32)))'), true);
+  assertEquals(wat.includes('array.set $boolean_array_runtime'), true);
+  assertEquals(wat.includes('array.get $boolean_array_runtime'), true);
+  const result = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(result.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(result.success, true);
+
+  const wasm = await Deno.readFile(wasmPath);
+  const instance = await WebAssembly.instantiate(wasm);
+  const update = instance.instance.exports['main.ts:update'];
+  assertEquals(typeof update, 'function');
+  assertEquals((update as (flag: number) => number)(1), 1);
+  assertEquals((update as (flag: number) => number)(0), 0);
+});
+
+Deno.test('compiler wasm-gc emitter produces runnable owned string array reads and writes', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: { strict: true },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        export function update(value: string, fallback: string): string {
+          const values = [fallback, fallback];
+          values[1] = value;
+          return values[1];
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
+  const updatePlan = snapshot.wasmGcPlan.functionPlans.find((func) => func.name === 'update');
+  const watPath = join(tempDirectory, 'wasm-gc-shadow-string-array.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-shadow-string-array.wasm');
+
+  assertEquals(
+    snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
+    ['array', 'string'],
+  );
+  assertEquals(updatePlan?.bodyStatus, 'emittable');
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
+  const wat = await Deno.readTextFile(watPath);
+  assertEquals(wat.includes('(type $string_array_runtime (array (mut externref)))'), true);
+  assertEquals(wat.includes('array.set $string_array_runtime'), true);
+  assertEquals(wat.includes('array.get $string_array_runtime'), true);
+  assertEquals(wat.includes('__string_eq'), false);
+  const result = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(result.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(result.success, true);
+
+  const wasm = await Deno.readFile(wasmPath);
+  const instance = await WebAssembly.instantiate(wasm);
+  const update = instance.instance.exports['main.ts:update'];
+  assertEquals(typeof update, 'function');
+  const value = { text: 'value' };
+  const fallback = { text: 'fallback' };
+  assertEquals((update as (value: unknown, fallback: unknown) => unknown)(value, fallback), value);
+});
+
+Deno.test('compiler wasm-gc emitter produces runnable owned tagged union array reads', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: { strict: true },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        export function pick(index: number, value: string): number {
+          const values: (string | number)[] = [value, 6];
+          const result = values[index];
+          if (typeof result === "string") {
+            return 2;
+          }
+          return result;
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
+  const pickPlan = snapshot.wasmGcPlan.functionPlans.find((func) => func.name === 'pick');
+  const watPath = join(tempDirectory, 'wasm-gc-shadow-tagged-array.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-shadow-tagged-array.wasm');
+
+  assertEquals(
+    snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
+    ['array', 'finite_union', 'string'],
+  );
+  assertEquals(pickPlan?.bodyStatus, 'emittable');
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
+  const wat = await Deno.readTextFile(watPath);
+  assertEquals(
+    wat.includes('(type $tagged_array_runtime (array (mut (ref null $tagged_value))))'),
+    true,
+  );
+  assertEquals(wat.includes('array.get $tagged_array_runtime'), true);
+  assertEquals(wat.includes('struct.get $tagged_value $number_payload'), true);
+  const result = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(result.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(result.success, true);
+
+  const wasm = await Deno.readFile(wasmPath);
+  const instance = await WebAssembly.instantiate(wasm);
+  const pick = instance.instance.exports['main.ts:pick'];
+  assertEquals(typeof pick, 'function');
+  const text = { text: 'value' };
+  assertEquals((pick as (index: number, value: unknown) => number)(0, text), 2);
+  assertEquals((pick as (index: number, value: unknown) => number)(1, text), 6);
+});
+
+Deno.test('compiler wasm-gc emitter produces runnable owned tagged union array writes', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: { strict: true },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        export function update(mode: number, value: string): number {
+          const values: (string | number)[] = [1, 2];
+          if (mode === 0) {
+            values[1] = value;
+          } else {
+            values[1] = 7;
+          }
+          const result = values[1];
+          if (typeof result === "string") {
+            return 3;
+          }
+          return result;
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
+  const updatePlan = snapshot.wasmGcPlan.functionPlans.find((func) => func.name === 'update');
+  const watPath = join(tempDirectory, 'wasm-gc-shadow-tagged-array-write.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-shadow-tagged-array-write.wasm');
+
+  assertEquals(
+    snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
+    ['array', 'finite_union', 'string'],
+  );
+  assertEquals(updatePlan?.bodyStatus, 'emittable');
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
+  const wat = await Deno.readTextFile(watPath);
+  assertEquals(
+    wat.includes('(type $tagged_array_runtime (array (mut (ref null $tagged_value))))'),
+    true,
+  );
+  assertEquals(wat.includes('array.set $tagged_array_runtime'), true);
+  assertEquals(wat.includes('(type $array_runtime (array (mut f64)))'), false);
+  assertEquals(wat.includes('(type $string_array_runtime (array (mut externref)))'), false);
+  assertEquals(wat.includes('(type $boolean_array_runtime (array (mut i32)))'), false);
+  const result = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(result.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(result.success, true);
+
+  const wasm = await Deno.readFile(wasmPath);
+  const instance = await WebAssembly.instantiate(wasm);
+  const update = instance.instance.exports['main.ts:update'];
+  assertEquals(typeof update, 'function');
+  const text = { text: 'value' };
+  assertEquals((update as (mode: number, value: unknown) => number)(0, text), 3);
+  assertEquals((update as (mode: number, value: unknown) => number)(1, text), 7);
+});
+
+Deno.test('compiler wasm-gc emitter produces runnable owned heap array nested reads', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: { strict: true },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        export function pick(): number {
+          const first = [1, 2];
+          const second = [3, 4];
+          const rows: number[][] = [first, second];
+          return rows[1][0];
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
+  const pickPlan = snapshot.wasmGcPlan.functionPlans.find((func) => func.name === 'pick');
+  const watPath = join(tempDirectory, 'wasm-gc-shadow-heap-array.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-shadow-heap-array.wasm');
+
+  assertEquals(
+    snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
+    ['array'],
+  );
+  assertEquals(pickPlan?.bodyStatus, 'emittable');
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
+  const wat = await Deno.readTextFile(watPath);
+  assertEquals(wat.includes('(type $heap_array_runtime (array (mut (ref null eq))))'), true);
+  assertEquals(wat.includes('array.get $heap_array_runtime'), true);
+  assertEquals(wat.includes('ref.cast (ref $array_runtime)'), true);
+  const result = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(result.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(result.success, true);
+
+  const wasm = await Deno.readFile(wasmPath);
+  const instance = await WebAssembly.instantiate(wasm);
+  const pick = instance.instance.exports['main.ts:pick'];
+  assertEquals(typeof pick, 'function');
+  assertEquals((pick as () => number)(), 3);
+});
+
+Deno.test('compiler wasm-gc emitter produces runnable direct multidimensional array literals', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: { strict: true },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        export function pick(): number {
+          const rows: number[][] = [[1, 2], [3, 4]];
+          return rows[1][0];
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
+  const pickPlan = snapshot.wasmGcPlan.functionPlans.find((func) => func.name === 'pick');
+  const watPath = join(tempDirectory, 'wasm-gc-shadow-direct-multidimensional-array.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-shadow-direct-multidimensional-array.wasm');
+
+  assertEquals(
+    snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
+    ['array'],
+  );
+  assertEquals(pickPlan?.bodyStatus, 'emittable');
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
+  const wat = await Deno.readTextFile(watPath);
+  assertEquals(wat.includes('array.new_fixed $heap_array_runtime 2'), true);
+  assertEquals(wat.includes('array.new_fixed $array_runtime 2'), true);
+  const result = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(result.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(result.success, true);
+
+  const wasm = await Deno.readFile(wasmPath);
+  const instance = await WebAssembly.instantiate(wasm);
+  const pick = instance.instance.exports['main.ts:pick'];
+  assertEquals(typeof pick, 'function');
+  assertEquals((pick as () => number)(), 3);
+});
+
+Deno.test('compiler wasm-gc emitter produces runnable multidimensional tagged union arrays', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: { strict: true },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        export function pick(row: number, column: number, value: string): number {
+          const rows: (string | number)[][] = [[value, 1], [2, value]];
+          const result = rows[row][column];
+          if (typeof result === "string") {
+            return 5;
+          }
+          return result;
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
+  const pickPlan = snapshot.wasmGcPlan.functionPlans.find((func) => func.name === 'pick');
+  const watPath = join(tempDirectory, 'wasm-gc-shadow-multidimensional-tagged-array.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-shadow-multidimensional-tagged-array.wasm');
+
+  assertEquals(
+    snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
+    ['array', 'finite_union', 'string'],
+  );
+  assertEquals(pickPlan?.bodyStatus, 'emittable');
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
+  const wat = await Deno.readTextFile(watPath);
+  assertEquals(wat.includes('array.new_fixed $heap_array_runtime 2'), true);
+  assertEquals(wat.includes('array.new_fixed $tagged_array_runtime 2'), true);
+  assertEquals(wat.includes('array.get $tagged_array_runtime'), true);
+  const result = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(result.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(result.success, true);
+
+  const wasm = await Deno.readFile(wasmPath);
+  const instance = await WebAssembly.instantiate(wasm);
+  const pick = instance.instance.exports['main.ts:pick'];
+  assertEquals(typeof pick, 'function');
+  const text = { text: 'value' };
+  assertEquals((pick as (row: number, column: number, value: unknown) => number)(0, 0, text), 5);
+  assertEquals((pick as (row: number, column: number, value: unknown) => number)(0, 1, text), 1);
+  assertEquals((pick as (row: number, column: number, value: unknown) => number)(1, 0, text), 2);
+  assertEquals((pick as (row: number, column: number, value: unknown) => number)(1, 1, text), 5);
+});
+
+Deno.test('compiler wasm-gc emitter produces runnable owned heap array writes', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: { strict: true },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        export function update(): number {
+          const first = [1, 2];
+          const second = [3, 4];
+          const rows: number[][] = [first, first];
+          rows[0] = second;
+          return rows[0][1];
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
+  const updatePlan = snapshot.wasmGcPlan.functionPlans.find((func) => func.name === 'update');
+  const watPath = join(tempDirectory, 'wasm-gc-shadow-heap-array-write.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-shadow-heap-array-write.wasm');
+
+  assertEquals(
+    snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
+    ['array'],
+  );
+  assertEquals(updatePlan?.bodyStatus, 'emittable');
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
+  const wat = await Deno.readTextFile(watPath);
+  assertEquals(wat.includes('array.set $heap_array_runtime'), true);
+  assertEquals(wat.includes('array.get $heap_array_runtime'), true);
+  const result = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(result.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(result.success, true);
+
+  const wasm = await Deno.readFile(wasmPath);
+  const instance = await WebAssembly.instantiate(wasm);
+  const update = instance.instance.exports['main.ts:update'];
+  assertEquals(typeof update, 'function');
+  assertEquals((update as () => number)(), 4);
+});
+
 Deno.test('compiler wasm-gc emitter produces runnable owned number array while loops', async () => {
   const tempDirectory = await createTempProject([
     {
@@ -1509,7 +1958,10 @@ Deno.test('compiler wasm-gc emitter produces runnable dynamic object computed pr
   const wat = await Deno.readTextFile(watPath);
   assertEquals(wat.includes('(type $dynamic_object_layout_object_dynamic_1'), true);
   assertEquals(wat.includes('struct.new $dynamic_object_layout_object_dynamic_1'), true);
-  assertEquals(wat.includes('struct.get $dynamic_object_layout_object_dynamic_1 $value_0'), true);
+  assertEquals(
+    wat.includes('struct.get $dynamic_object_layout_object_dynamic_1_f64 $value_0'),
+    true,
+  );
   assertEquals(wat.includes('fallback_object_layout'), false);
   const result = await new Deno.Command('wasm-tools', {
     args: ['parse', watPath, '-o', wasmPath],
@@ -1560,7 +2012,10 @@ Deno.test('compiler wasm-gc emitter produces runnable dynamic object multi-key r
   await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
   const wat = await Deno.readTextFile(watPath);
   assertEquals(wat.includes('(type $dynamic_object_layout_object_dynamic_2'), true);
-  assertEquals(wat.includes('struct.get $dynamic_object_layout_object_dynamic_2 $value_1'), true);
+  assertEquals(
+    /struct\.get \$dynamic_object_layout_object_dynamic_2_[^\s]+ \$value_1/.test(wat),
+    true,
+  );
   const result = await new Deno.Command('wasm-tools', {
     args: ['parse', watPath, '-o', wasmPath],
     stdout: 'piped',
@@ -1611,7 +2066,10 @@ Deno.test('compiler wasm-gc emitter produces runnable dynamic object alias write
   assertEquals(readPlan?.bodyStatus, 'emittable');
   await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
   const wat = await Deno.readTextFile(watPath);
-  assertEquals(wat.includes('struct.set $dynamic_object_layout_object_dynamic_1 $value_0'), true);
+  assertEquals(
+    wat.includes('struct.set $dynamic_object_layout_object_dynamic_1_f64 $value_0'),
+    true,
+  );
   const result = await new Deno.Command('wasm-tools', {
     args: ['parse', watPath, '-o', wasmPath],
     stdout: 'piped',
@@ -1626,6 +2084,1183 @@ Deno.test('compiler wasm-gc emitter produces runnable dynamic object alias write
   const read = instance.instance.exports['main.ts:read'];
   assertEquals(typeof read, 'function');
   assertEquals((read as (key: unknown) => number)('value'), 4);
+});
+
+Deno.test('compiler wasm-gc emitter produces runnable legacy Map set and size reads', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: { strict: true },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        export function main(): number {
+          const map = new Map<string, number>();
+          map.set("left", 3);
+          return map.size;
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
+  const mainPlan = snapshot.wasmGcPlan.functionPlans.find((func) => func.name === 'main');
+  const watPath = join(tempDirectory, 'wasm-gc-shadow-legacy-map-size.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-shadow-legacy-map-size.wasm');
+
+  assertEquals(
+    snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
+    ['dynamic_object', 'finite_union', 'string'],
+  );
+  assertEquals(mainPlan?.bodyStatus, 'emittable');
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
+  const wat = await Deno.readTextFile(watPath);
+  assertEquals(
+    wat.includes('struct.set $dynamic_object_layout_object_dynamic_1_f64 $value_0'),
+    true,
+  );
+  assertEquals(wat.includes('f64.const 1'), true);
+  assertEquals(wat.includes('map_runtime'), false);
+  assertEquals(wat.includes('set_runtime'), false);
+  const result = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(result.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(result.success, true);
+
+  const wasm = await Deno.readFile(wasmPath);
+  const instance = await WebAssembly.instantiate(wasm);
+  const main = instance.instance.exports['main.ts:main'];
+  assertEquals(typeof main, 'function');
+  assertEquals((main as () => number)(), 1);
+});
+
+Deno.test('compiler wasm-gc emitter produces runnable legacy Map has checks', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: { strict: true },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        export function main(): number {
+          const map = new Map<string, number>();
+          map.set("left", 3);
+          let score = 0;
+          if (map.has("left")) {
+            score = score + 10;
+          }
+          if (map.has("missing")) {
+            score = score + 1;
+          }
+          return score;
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
+  const mainPlan = snapshot.wasmGcPlan.functionPlans.find((func) => func.name === 'main');
+  const watPath = join(tempDirectory, 'wasm-gc-shadow-legacy-map-has.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-shadow-legacy-map-has.wasm');
+
+  assertEquals(
+    snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
+    ['dynamic_object', 'finite_union', 'string'],
+  );
+  assertEquals(mainPlan?.bodyStatus, 'emittable');
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
+  const wat = await Deno.readTextFile(watPath);
+  assertEquals(wat.includes('local.set $dynamic_has'), true);
+  assertEquals(wat.includes('map_runtime'), false);
+  const result = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(result.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(result.success, true);
+
+  const wasm = await Deno.readFile(wasmPath);
+  const instance = await WebAssembly.instantiate(wasm);
+  const main = instance.instance.exports['main.ts:main'];
+  assertEquals(typeof main, 'function');
+  assertEquals((main as () => number)(), 10);
+});
+
+Deno.test('compiler wasm-gc emitter produces runnable legacy Map get missing checks', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: { strict: true },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        export function main(): number {
+          const map = new Map<string, number>();
+          map.set("left", 3);
+          let score = 0;
+          const left = map.get("left");
+          if (left !== undefined) {
+            score = score + left;
+          }
+          const missing = map.get("missing");
+          if (missing === undefined) {
+            score = score + 10;
+          }
+          return score;
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
+  const mainPlan = snapshot.wasmGcPlan.functionPlans.find((func) => func.name === 'main');
+  const watPath = join(tempDirectory, 'wasm-gc-shadow-legacy-map-get.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-shadow-legacy-map-get.wasm');
+
+  assertEquals(
+    snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
+    ['dynamic_object', 'finite_union', 'string'],
+  );
+  assertEquals(mainPlan?.bodyStatus, 'emittable');
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
+  const wat = await Deno.readTextFile(watPath);
+  assertEquals(
+    wat.includes('struct.get $dynamic_object_layout_object_dynamic_1_f64 $value_0'),
+    true,
+  );
+  assertEquals(wat.includes('map_runtime'), false);
+  const result = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(result.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(result.success, true);
+
+  const wasm = await Deno.readFile(wasmPath);
+  const instance = await WebAssembly.instantiate(wasm);
+  const main = instance.instance.exports['main.ts:main'];
+  assertEquals(typeof main, 'function');
+  assertEquals((main as () => number)(), 13);
+});
+
+Deno.test('compiler wasm-gc emitter produces runnable legacy string-key tagged union Map values', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: { strict: true },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        export function main(text: string): number {
+          const map = new Map<string, string | number>();
+          map.set("left", text);
+          map.set("right", 7);
+          let score = map.size * 100;
+          const left = map.get("left");
+          if (typeof left === "string") {
+            score = score + 10;
+          }
+          const right = map.get("right");
+          if (typeof right === "number") {
+            score = score + right;
+          }
+          if (map.delete("left")) {
+            score = score + 1;
+          }
+          if (map.has("left")) {
+            score = score + 1000;
+          }
+          map.clear();
+          return score + map.size;
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
+  const mainPlan = snapshot.wasmGcPlan.functionPlans.find((func) => func.name === 'main');
+  const watPath = join(tempDirectory, 'wasm-gc-shadow-legacy-string-map-tagged-values.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-shadow-legacy-string-map-tagged-values.wasm');
+
+  assertEquals(
+    snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
+    ['dynamic_object', 'finite_union', 'string'],
+  );
+  assertEquals(mainPlan?.bodyStatus, 'emittable');
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
+  const wat = await Deno.readTextFile(watPath);
+  assertEquals(wat.includes('struct.get $tagged_value $number_payload'), true);
+  assertEquals(wat.includes('map_runtime'), false);
+  const result = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(result.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(result.success, true);
+
+  const wasm = await Deno.readFile(wasmPath);
+  const instance = await WebAssembly.instantiate(wasm);
+  const main = instance.instance.exports['main.ts:main'];
+  assertEquals(typeof main, 'function');
+  const text = { text: 'value' };
+  assertEquals((main as (text: unknown) => number)(text), 218);
+});
+
+Deno.test('compiler wasm-gc emitter produces runnable legacy Map values iteration after delete and clear', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: { strict: true },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        export function main(): number {
+          const map = new Map<string, number>();
+          map.set("left", 2);
+          map.set("middle", 5);
+          map.set("right", 7);
+          map.delete("middle");
+          const values = map.values();
+          const first = values.next().value ?? 0;
+          const second = values.next().value ?? 0;
+          const thirdDone = values.next().done === true;
+          let score = first * 10 + second;
+          if (thirdDone) {
+            score = score + 0;
+          } else {
+            score = score + 1000;
+          }
+          map.clear();
+          const afterClearDone = map.values().next().done === true;
+          if (afterClearDone) {
+            score = score + 0;
+          } else {
+            score = score + 2000;
+          }
+          return score + map.size;
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
+  const mainPlan = snapshot.wasmGcPlan.functionPlans.find((func) => func.name === 'main');
+  const watPath = join(tempDirectory, 'wasm-gc-shadow-legacy-map-values-after-delete-clear.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-shadow-legacy-map-values-after-delete-clear.wasm');
+
+  assertEquals(
+    snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
+    ['array', 'dynamic_object', 'finite_union', 'specialized_object', 'string'],
+  );
+  assertEquals(mainPlan?.bodyStatus, 'emittable');
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
+  const wat = await Deno.readTextFile(watPath);
+  assertEquals(wat.includes('map_runtime'), false);
+  assertEquals(wat.includes('array.new_default $array_runtime'), true);
+  const result = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(result.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(result.success, true);
+
+  const wasm = await Deno.readFile(wasmPath);
+  const instance = await WebAssembly.instantiate(wasm);
+  const main = instance.instance.exports['main.ts:main'];
+  assertEquals(typeof main, 'function');
+  assertEquals((main as () => number)(), 27);
+});
+
+Deno.test('compiler wasm-gc emitter produces runnable legacy numeric Map mutation flow', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: { strict: true },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        export function main(): number {
+          const map = new Map<number, number>();
+          map.set(1, 10);
+          map.set(2, 20);
+          map.set(2, 25);
+          let score = map.size * 100;
+          const value = map.get(2);
+          if (value !== undefined) {
+            score = score + value;
+          }
+          if (map.has(1)) {
+            score = score + 10;
+          }
+          if (map.delete(1)) {
+            score = score + 1;
+          }
+          if (map.has(1)) {
+            score = score + 1000;
+          }
+          map.clear();
+          return score + map.size;
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
+  const mainPlan = snapshot.wasmGcPlan.functionPlans.find((func) => func.name === 'main');
+  const watPath = join(tempDirectory, 'wasm-gc-shadow-legacy-map-number.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-shadow-legacy-map-number.wasm');
+
+  assertEquals(
+    snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
+    ['array', 'dynamic_object', 'finite_union', 'specialized_object', 'string'],
+  );
+  assertEquals(mainPlan?.bodyStatus, 'emittable');
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
+  const wat = await Deno.readTextFile(watPath);
+  assertEquals(
+    /\(type \$dynamic_object_layout_object_dynamic_2_[^\s]+ \(struct/.test(wat),
+    true,
+  );
+  assertEquals(
+    /struct\.get \$dynamic_object_layout_object_dynamic_2_[^\s]+ \$value_1/.test(wat),
+    true,
+  );
+  assertEquals(wat.includes('array.copy $array_runtime $array_runtime'), true);
+  assertEquals(wat.includes('map_runtime'), false);
+  const result = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(result.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(result.success, true);
+
+  const wasm = await Deno.readFile(wasmPath);
+  const instance = await WebAssembly.instantiate(wasm);
+  const main = instance.instance.exports['main.ts:main'];
+  assertEquals(typeof main, 'function');
+  assertEquals((main as () => number)(), 236);
+});
+
+Deno.test('compiler wasm-gc emitter produces runnable legacy number-key string Map get flow', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: { strict: true },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        export function main(value: string, fallback: string): string {
+          const map = new Map<number, string>();
+          map.set(1, fallback);
+          map.set(2, value);
+          const found = map.get(2);
+          if (found !== undefined) {
+            return found;
+          }
+          return fallback;
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
+  const mainPlan = snapshot.wasmGcPlan.functionPlans.find((func) => func.name === 'main');
+  const watPath = join(tempDirectory, 'wasm-gc-shadow-legacy-map-number-string.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-shadow-legacy-map-number-string.wasm');
+
+  assertEquals(
+    snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
+    ['array', 'dynamic_object', 'finite_union', 'specialized_object', 'string'],
+  );
+  assertEquals(mainPlan?.bodyStatus, 'emittable');
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
+  const wat = await Deno.readTextFile(watPath);
+  assertEquals(wat.includes('(type $string_array_runtime (array (mut externref)))'), true);
+  assertEquals(
+    /struct\.get \$dynamic_object_layout_object_dynamic_2_[^\s]+ \$value_1/.test(wat),
+    true,
+  );
+  assertEquals(wat.includes('map_runtime'), false);
+  const result = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(result.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(result.success, true);
+
+  const wasm = await Deno.readFile(wasmPath);
+  const instance = await WebAssembly.instantiate(wasm);
+  const main = instance.instance.exports['main.ts:main'];
+  assertEquals(typeof main, 'function');
+  const value = { text: 'value' };
+  const fallback = { text: 'fallback' };
+  assertEquals((main as (value: unknown, fallback: unknown) => unknown)(value, fallback), value);
+});
+
+Deno.test('compiler wasm-gc emitter produces runnable legacy number-key boolean Map get flow', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: { strict: true },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        export function main(flag: boolean): number {
+          const map = new Map<number, boolean>();
+          map.set(1, false);
+          map.set(2, flag);
+          map.set(2, true);
+          let score = map.size * 100;
+          const found = map.get(2);
+          if (found !== undefined && found) {
+            score = score + 10;
+          }
+          if (map.has(1)) {
+            score = score + 1;
+          }
+          return score;
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
+  const mainPlan = snapshot.wasmGcPlan.functionPlans.find((func) => func.name === 'main');
+  const watPath = join(tempDirectory, 'wasm-gc-shadow-legacy-map-number-boolean.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-shadow-legacy-map-number-boolean.wasm');
+
+  assertEquals(
+    snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
+    ['array', 'dynamic_object', 'finite_union', 'specialized_object', 'string'],
+  );
+  assertEquals(mainPlan?.bodyStatus, 'emittable');
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
+  const wat = await Deno.readTextFile(watPath);
+  assertEquals(wat.includes('(type $boolean_array_runtime (array (mut i32)))'), true);
+  assertEquals(
+    /struct\.get \$dynamic_object_layout_object_dynamic_2_[^\s]+ \$value_1/.test(wat),
+    true,
+  );
+  assertEquals(wat.includes('__string_eq'), false);
+  assertEquals(wat.includes('map_runtime'), false);
+  const result = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(result.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(result.success, true);
+
+  const wasm = await Deno.readFile(wasmPath);
+  const instance = await WebAssembly.instantiate(wasm);
+  const main = instance.instance.exports['main.ts:main'];
+  assertEquals(typeof main, 'function');
+  assertEquals((main as (flag: number) => number)(0), 211);
+  assertEquals((main as (flag: number) => number)(1), 211);
+});
+
+Deno.test('compiler wasm-gc emitter produces runnable legacy number-key string Map delete and clear', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: { strict: true },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        export function main(left: string, right: string, fallback: string): string {
+          const map = new Map<number, string>();
+          map.set(1, left);
+          map.set(2, right);
+          let result = fallback;
+          if (map.delete(1)) {
+            const found = map.get(2);
+            if (found !== undefined) {
+              result = found;
+            }
+          }
+          map.clear();
+          return result;
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
+  const mainPlan = snapshot.wasmGcPlan.functionPlans.find((func) => func.name === 'main');
+  const watPath = join(tempDirectory, 'wasm-gc-shadow-legacy-map-number-string-delete.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-shadow-legacy-map-number-string-delete.wasm');
+
+  assertEquals(
+    snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
+    ['array', 'dynamic_object', 'finite_union', 'specialized_object', 'string'],
+  );
+  assertEquals(mainPlan?.bodyStatus, 'emittable');
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
+  const wat = await Deno.readTextFile(watPath);
+  assertEquals(wat.includes('array.copy $string_array_runtime $string_array_runtime'), true);
+  assertEquals(wat.includes('__string_eq'), false);
+  assertEquals(wat.includes('map_runtime'), false);
+  const result = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(result.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(result.success, true);
+
+  const wasm = await Deno.readFile(wasmPath);
+  const instance = await WebAssembly.instantiate(wasm);
+  const main = instance.instance.exports['main.ts:main'];
+  assertEquals(typeof main, 'function');
+  const left = { text: 'left' };
+  const right = { text: 'right' };
+  const fallback = { text: 'fallback' };
+  assertEquals(
+    (main as (left: unknown, right: unknown, fallback: unknown) => unknown)(
+      left,
+      right,
+      fallback,
+    ),
+    right,
+  );
+});
+
+Deno.test('compiler wasm-gc emitter produces runnable legacy number-key boolean Map delete and clear', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: { strict: true },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        export function main(flag: boolean): number {
+          const map = new Map<number, boolean>();
+          map.set(1, false);
+          map.set(2, flag);
+          let score = map.size * 100;
+          if (map.delete(1)) {
+            score = score + 10;
+          }
+          const found = map.get(2);
+          if (found !== undefined && found) {
+            score = score + 1;
+          }
+          map.clear();
+          return score + map.size;
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
+  const mainPlan = snapshot.wasmGcPlan.functionPlans.find((func) => func.name === 'main');
+  const watPath = join(tempDirectory, 'wasm-gc-shadow-legacy-map-number-boolean-delete.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-shadow-legacy-map-number-boolean-delete.wasm');
+
+  assertEquals(
+    snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
+    ['array', 'dynamic_object', 'finite_union', 'specialized_object', 'string'],
+  );
+  assertEquals(mainPlan?.bodyStatus, 'emittable');
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
+  const wat = await Deno.readTextFile(watPath);
+  assertEquals(wat.includes('array.copy $boolean_array_runtime $boolean_array_runtime'), true);
+  assertEquals(wat.includes('__string_eq'), false);
+  assertEquals(wat.includes('map_runtime'), false);
+  const result = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(result.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(result.success, true);
+
+  const wasm = await Deno.readFile(wasmPath);
+  const instance = await WebAssembly.instantiate(wasm);
+  const main = instance.instance.exports['main.ts:main'];
+  assertEquals(typeof main, 'function');
+  assertEquals((main as (flag: number) => number)(1), 211);
+  assertEquals((main as (flag: number) => number)(0), 210);
+});
+
+Deno.test('compiler wasm-gc emitter produces runnable legacy number-key tagged union Map values', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: { strict: true },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        export function main(text: string): number {
+          const map = new Map<number, string | number>();
+          map.set(1, text);
+          map.set(2, 7);
+          let score = map.size * 100;
+          const left = map.get(1);
+          if (typeof left === "string") {
+            score = score + 10;
+          }
+          const right = map.get(2);
+          if (typeof right === "number") {
+            score = score + right;
+          }
+          if (map.delete(1)) {
+            score = score + 1;
+          }
+          if (map.has(1)) {
+            score = score + 1000;
+          }
+          map.clear();
+          return score + map.size;
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
+  const mainPlan = snapshot.wasmGcPlan.functionPlans.find((func) => func.name === 'main');
+  const watPath = join(tempDirectory, 'wasm-gc-shadow-legacy-map-number-tagged.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-shadow-legacy-map-number-tagged.wasm');
+
+  assertEquals(
+    snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
+    ['array', 'dynamic_object', 'finite_union', 'specialized_object', 'string'],
+  );
+  assertEquals(mainPlan?.bodyStatus, 'emittable');
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
+  const wat = await Deno.readTextFile(watPath);
+  assertEquals(
+    wat.includes('(type $tagged_array_runtime (array (mut (ref null $tagged_value))))'),
+    true,
+  );
+  assertEquals(wat.includes('__string_eq'), false);
+  assertEquals(wat.includes('map_runtime'), false);
+  const result = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(result.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(result.success, true);
+
+  const wasm = await Deno.readFile(wasmPath);
+  const instance = await WebAssembly.instantiate(wasm);
+  const main = instance.instance.exports['main.ts:main'];
+  assertEquals(typeof main, 'function');
+  assertEquals((main as (text: unknown) => number)({ text: 'left' }), 218);
+});
+
+Deno.test('compiler wasm-gc emitter produces runnable legacy Set empty size reads', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: { strict: true },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        export function main(): number {
+          const set = new Set<string>();
+          return set.size;
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
+  const mainPlan = snapshot.wasmGcPlan.functionPlans.find((func) => func.name === 'main');
+  const watPath = join(tempDirectory, 'wasm-gc-shadow-legacy-set-size.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-shadow-legacy-set-size.wasm');
+
+  assertEquals(
+    snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
+    ['array', 'dynamic_object', 'finite_union', 'specialized_object', 'string'],
+  );
+  assertEquals(mainPlan?.bodyStatus, 'emittable');
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
+  const wat = await Deno.readTextFile(watPath);
+  assertEquals(wat.includes('(type $string_array_runtime (array (mut externref)))'), true);
+  assertEquals(wat.includes('set_runtime'), false);
+  const result = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(result.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(result.success, true);
+
+  const wasm = await Deno.readFile(wasmPath);
+  const instance = await WebAssembly.instantiate(wasm);
+  const main = instance.instance.exports['main.ts:main'];
+  assertEquals(typeof main, 'function');
+  assertEquals((main as () => number)(), 0);
+});
+
+Deno.test('compiler wasm-gc emitter produces runnable legacy string Set add, has, and size', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: { strict: true },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        export function main(left: string, right: string, missing: string): number {
+          const set = new Set<string>();
+          set.add(left);
+          set.add(left);
+          set.add(right);
+          let score = set.size * 10;
+          if (set.has(left)) {
+            score = score + 1;
+          }
+          if (set.has(missing)) {
+            score = score + 100;
+          }
+          return score;
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
+  const mainPlan = snapshot.wasmGcPlan.functionPlans.find((func) => func.name === 'main');
+  const watPath = join(tempDirectory, 'wasm-gc-shadow-legacy-set-string.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-shadow-legacy-set-string.wasm');
+
+  assertEquals(
+    snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
+    ['array', 'dynamic_object', 'finite_union', 'specialized_object', 'string'],
+  );
+  assertEquals(mainPlan?.bodyStatus, 'emittable');
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
+  const wat = await Deno.readTextFile(watPath);
+  assertEquals(wat.includes('(type $string_array_runtime (array (mut externref)))'), true);
+  assertEquals(wat.includes('array.copy $string_array_runtime $string_array_runtime'), true);
+  assertEquals(wat.includes('(import "soundscript" "__string_eq"'), true);
+  assertEquals(wat.includes('set_runtime'), false);
+  const result = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(result.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(result.success, true);
+
+  const wasm = await Deno.readFile(wasmPath);
+  const instance = await WebAssembly.instantiate(wasm, {
+    soundscript: {
+      __string_eq: Object.is,
+    },
+  });
+  const main = instance.instance.exports['main.ts:main'];
+  assertEquals(typeof main, 'function');
+  const left = { text: 'left' };
+  const right = { text: 'right' };
+  const missing = { text: 'missing' };
+  assertEquals(
+    (main as (left: unknown, right: unknown, missing: unknown) => number)(
+      left,
+      right,
+      missing,
+    ),
+    21,
+  );
+});
+
+Deno.test('compiler wasm-gc emitter produces runnable legacy numeric Set add, has, and size', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: { strict: true },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        export function main(): number {
+          const set = new Set<number>();
+          set.add(1);
+          set.add(2);
+          let score = set.size * 10;
+          if (set.has(2)) {
+            score = score + 1;
+          }
+          if (set.has(3)) {
+            score = score + 100;
+          }
+          return score;
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
+  const mainPlan = snapshot.wasmGcPlan.functionPlans.find((func) => func.name === 'main');
+  const watPath = join(tempDirectory, 'wasm-gc-shadow-legacy-set-number.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-shadow-legacy-set-number.wasm');
+
+  assertEquals(
+    snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
+    ['array', 'dynamic_object', 'finite_union', 'specialized_object', 'string'],
+  );
+  assertEquals(mainPlan?.bodyStatus, 'emittable');
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
+  const wat = await Deno.readTextFile(watPath);
+  assertEquals(wat.includes('array.copy $array_runtime $array_runtime'), true);
+  assertEquals(wat.includes('set_runtime'), false);
+  const result = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(result.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(result.success, true);
+
+  const wasm = await Deno.readFile(wasmPath);
+  const instance = await WebAssembly.instantiate(wasm);
+  const main = instance.instance.exports['main.ts:main'];
+  assertEquals(typeof main, 'function');
+  assertEquals((main as () => number)(), 21);
+});
+
+Deno.test('compiler wasm-gc emitter produces runnable legacy boolean Set add, has, and size', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: { strict: true },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        export function main(flag: boolean): number {
+          const set = new Set<boolean>();
+          set.add(true);
+          set.add(false);
+          set.add(flag);
+          let score = set.size * 10;
+          if (set.has(flag)) {
+            score = score + 1;
+          }
+          if (set.has(true)) {
+            score = score + 1;
+          }
+          return score;
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
+  const mainPlan = snapshot.wasmGcPlan.functionPlans.find((func) => func.name === 'main');
+  const watPath = join(tempDirectory, 'wasm-gc-shadow-legacy-set-boolean.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-shadow-legacy-set-boolean.wasm');
+
+  assertEquals(
+    snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
+    ['array', 'dynamic_object', 'finite_union', 'specialized_object', 'string'],
+  );
+  assertEquals(mainPlan?.bodyStatus, 'emittable');
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
+  const wat = await Deno.readTextFile(watPath);
+  assertEquals(wat.includes('(type $boolean_array_runtime (array (mut i32)))'), true);
+  assertEquals(wat.includes('array.copy $boolean_array_runtime $boolean_array_runtime'), true);
+  assertEquals(wat.includes('__string_eq'), false);
+  assertEquals(wat.includes('set_runtime'), false);
+  const result = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(result.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(result.success, true);
+
+  const wasm = await Deno.readFile(wasmPath);
+  const instance = await WebAssembly.instantiate(wasm);
+  const main = instance.instance.exports['main.ts:main'];
+  assertEquals(typeof main, 'function');
+  assertEquals((main as (flag: number) => number)(1), 22);
+  assertEquals((main as (flag: number) => number)(0), 22);
+});
+
+Deno.test('compiler wasm-gc emitter produces runnable legacy string Set delete and clear', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: { strict: true },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        export function main(left: string, right: string): number {
+          const set = new Set<string>();
+          set.add(left);
+          set.add(left);
+          set.add(right);
+          let score = set.size * 100;
+          if (set.delete(left)) {
+            score = score + 10;
+          }
+          if (set.has(left)) {
+            score = score + 1000;
+          }
+          if (set.has(right)) {
+            score = score + 2;
+          }
+          set.clear();
+          return score + set.size;
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
+  const mainPlan = snapshot.wasmGcPlan.functionPlans.find((func) => func.name === 'main');
+  const watPath = join(tempDirectory, 'wasm-gc-shadow-legacy-set-string-delete.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-shadow-legacy-set-string-delete.wasm');
+
+  assertEquals(
+    snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
+    ['array', 'dynamic_object', 'finite_union', 'specialized_object', 'string'],
+  );
+  assertEquals(mainPlan?.bodyStatus, 'emittable');
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
+  const wat = await Deno.readTextFile(watPath);
+  assertEquals(wat.includes('array.copy $string_array_runtime $string_array_runtime'), true);
+  assertEquals(wat.includes('(import "soundscript" "__string_eq"'), true);
+  assertEquals(wat.includes('set_runtime'), false);
+  const result = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(result.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(result.success, true);
+
+  const wasm = await Deno.readFile(wasmPath);
+  const instance = await WebAssembly.instantiate(wasm, {
+    soundscript: {
+      __string_eq: Object.is,
+    },
+  });
+  const main = instance.instance.exports['main.ts:main'];
+  assertEquals(typeof main, 'function');
+  const left = { text: 'left' };
+  const right = { text: 'right' };
+  assertEquals((main as (left: unknown, right: unknown) => number)(left, right), 212);
+});
+
+Deno.test('compiler wasm-gc emitter produces runnable legacy boolean Set delete and clear', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: { strict: true },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        export function main(flag: boolean): number {
+          const set = new Set<boolean>();
+          set.add(true);
+          set.add(false);
+          set.add(flag);
+          let score = set.size * 100;
+          if (set.delete(flag)) {
+            score = score + 10;
+          }
+          if (set.has(flag)) {
+            score = score + 1000;
+          }
+          if (set.has(false)) {
+            score = score + 2;
+          }
+          set.clear();
+          return score + set.size;
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
+  const mainPlan = snapshot.wasmGcPlan.functionPlans.find((func) => func.name === 'main');
+  const watPath = join(tempDirectory, 'wasm-gc-shadow-legacy-set-boolean-delete.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-shadow-legacy-set-boolean-delete.wasm');
+
+  assertEquals(
+    snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
+    ['array', 'dynamic_object', 'finite_union', 'specialized_object', 'string'],
+  );
+  assertEquals(mainPlan?.bodyStatus, 'emittable');
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
+  const wat = await Deno.readTextFile(watPath);
+  assertEquals(wat.includes('array.copy $boolean_array_runtime $boolean_array_runtime'), true);
+  assertEquals(wat.includes('__string_eq'), false);
+  assertEquals(wat.includes('set_runtime'), false);
+  const result = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(result.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(result.success, true);
+
+  const wasm = await Deno.readFile(wasmPath);
+  const instance = await WebAssembly.instantiate(wasm);
+  const main = instance.instance.exports['main.ts:main'];
+  assertEquals(typeof main, 'function');
+  assertEquals((main as (flag: number) => number)(1), 212);
+  assertEquals((main as (flag: number) => number)(0), 210);
+});
+
+Deno.test('compiler wasm-gc emitter produces runnable legacy numeric Set delete and clear', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: { strict: true },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        export function main(): number {
+          const set = new Set<number>();
+          set.add(1);
+          set.add(2);
+          set.add(3);
+          let score = set.size * 100;
+          if (set.delete(2)) {
+            score = score + 10;
+          }
+          if (set.has(2)) {
+            score = score + 1;
+          }
+          if (set.has(3)) {
+            score = score + 2;
+          }
+          set.clear();
+          return score + set.size;
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
+  const mainPlan = snapshot.wasmGcPlan.functionPlans.find((func) => func.name === 'main');
+  const watPath = join(tempDirectory, 'wasm-gc-shadow-legacy-set-number-delete.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-shadow-legacy-set-number-delete.wasm');
+
+  assertEquals(
+    snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
+    ['array', 'dynamic_object', 'finite_union', 'specialized_object', 'string'],
+  );
+  assertEquals(mainPlan?.bodyStatus, 'emittable');
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
+  const wat = await Deno.readTextFile(watPath);
+  assertEquals(wat.includes('array.copy $array_runtime $array_runtime'), true);
+  assertEquals(wat.includes('set_runtime'), false);
+  const result = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(result.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(result.success, true);
+
+  const wasm = await Deno.readFile(wasmPath);
+  const instance = await WebAssembly.instantiate(wasm);
+  const main = instance.instance.exports['main.ts:main'];
+  assertEquals(typeof main, 'function');
+  assertEquals((main as () => number)(), 312);
 });
 
 Deno.test('compiler wasm-gc emitter produces runnable class instance field and method reads', async () => {
@@ -1835,6 +3470,187 @@ Deno.test('compiler wasm-gc emitter produces runnable direct function calls', as
   assertEquals((main as () => number)(), 12);
 });
 
+Deno.test('compiler wasm-gc emitter parses compiler-owned async Promise returns', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: {
+          strict: true,
+          lib: ['ES2020'],
+        },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        export async function value(): Promise<number> {
+          return 4;
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
+  const valuePlan = snapshot.wasmGcPlan.functionPlans.find((func) => func.name === 'value');
+  const watPath = join(tempDirectory, 'wasm-gc-shadow-async-promise-return.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-shadow-async-promise-return.wasm');
+
+  assertEquals(
+    snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
+    ['closure', 'finite_union', 'promise'],
+  );
+  assertEquals(valuePlan?.bodyStatus, 'emittable');
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
+  const wat = await Deno.readTextFile(watPath);
+  assertEquals(wat.includes('struct.new $tagged_value'), true);
+  assertEquals(wat.includes('call $soundscript_promise_resolve'), true);
+  assertEquals(wat.includes('Promise.resolve'), false);
+  assertEquals(wat.includes('jspi'), false);
+  const result = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(result.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(result.success, true);
+});
+
+Deno.test('compiler semantic shadow models async frame optional closure fields', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: {
+          strict: true,
+          lib: ['ES2020'],
+        },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        export async function main(): Promise<number> {
+          const value = await Promise.resolve(4);
+          return value + 1;
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
+  const mainPlan = snapshot.wasmGcPlan.functionPlans.find((func) => func.name === 'main');
+  const resumePlan = snapshot.wasmGcPlan.functionPlans.find((func) =>
+    func.name.startsWith('closure_async_frame_resume')
+  );
+
+  assertEquals(
+    snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
+    ['closure', 'dynamic_object', 'finite_union', 'promise', 'specialized_object', 'string'],
+  );
+  assertEquals(mainPlan?.bodyStatus, 'emittable');
+  assertEquals(resumePlan?.bodyStatus, 'emittable');
+  assertEquals(resumePlan?.unsupportedBodyKinds, []);
+});
+
+Deno.test('compiler wasm-gc emitter parses compiler-owned async await frame setup', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: {
+          strict: true,
+          lib: ['ES2020'],
+        },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        export async function main(): Promise<number> {
+          const value = await Promise.resolve(4);
+          return value + 1;
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
+  const watPath = join(tempDirectory, 'wasm-gc-shadow-async-await-frame.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-shadow-async-await-frame.wasm');
+
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
+  const wat = await Deno.readTextFile(watPath);
+  assertEquals(wat.includes('call $soundscript_promise_new_pending'), true);
+  assertEquals(wat.includes('call $soundscript_promise_then'), true);
+  assertEquals(wat.includes('$dynamic_object_layout_object_dynamic_2_f64_box_ref'), true);
+  assertEquals(wat.includes('$dynamic_object_layout_object_dynamic_1_f64'), false);
+  assertEquals(wat.includes('$dynamic_object_layout_object_dynamic_1_box_ref'), false);
+  assertEquals(wat.includes('Promise.resolve'), false);
+  assertEquals(wat.includes('jspi'), false);
+  const result = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(result.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(result.success, true);
+});
+
+Deno.test('compiler wasm-gc emitter runs compiler-owned async frame startup', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: {
+          strict: true,
+          lib: ['ES2020'],
+        },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        export async function main(): Promise<number> {
+          const value = await Promise.resolve(4);
+          return value + 1;
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
+  const watPath = join(tempDirectory, 'wasm-gc-shadow-async-await-frame-run.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-shadow-async-await-frame-run.wasm');
+
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
+  const wat = await Deno.readTextFile(watPath);
+  assertEquals(wat.includes('Promise.resolve'), false);
+  assertEquals(wat.includes('jspi'), false);
+  const result = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(result.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(result.success, true);
+
+  const wasm = await Deno.readFile(wasmPath);
+  const instance = await WebAssembly.instantiate(wasm);
+  const main = instance.instance.exports['main.ts:main'];
+  assertEquals(typeof main, 'function');
+  const promise = (main as () => unknown)();
+  assertEquals(promise === null, false);
+  assertEquals(promise instanceof Promise, false);
+});
+
 Deno.test('compiler wasm-gc emitter produces runnable internal number-null unions', async () => {
   const tempDirectory = await createTempProject([
     {
@@ -1895,6 +3711,78 @@ Deno.test('compiler wasm-gc emitter produces runnable internal number-null union
   assertEquals(typeof main, 'function');
   assertEquals((main as (flag: number) => number)(1), 7);
   assertEquals((main as (flag: number) => number)(0), 0);
+});
+
+Deno.test('compiler wasm-gc emitter produces runnable internal mixed scalar unions', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: { strict: true },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        function maybe(mode: number, value: string): string | number | null {
+          if (mode === 0) {
+            return null;
+          }
+          if (mode === 1) {
+            return value;
+          }
+          return 7;
+        }
+
+        export function main(mode: number, value: string): number {
+          const result = maybe(mode, value);
+          if (result === null) {
+            return 0;
+          }
+          if (typeof result === "string") {
+            return 2;
+          }
+          return result;
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
+  const maybePlan = snapshot.wasmGcPlan.functionPlans.find((func) => func.name === 'maybe');
+  const mainPlan = snapshot.wasmGcPlan.functionPlans.find((func) => func.name === 'main');
+  const watPath = join(tempDirectory, 'wasm-gc-shadow-mixed-scalar-union.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-shadow-mixed-scalar-union.wasm');
+
+  assertEquals(
+    snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
+    ['finite_union', 'string'],
+  );
+  assertEquals(maybePlan?.bodyStatus, 'emittable');
+  assertEquals(mainPlan?.bodyStatus, 'emittable');
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
+  const wat = await Deno.readTextFile(watPath);
+  assertEquals(wat.includes('i32.const 3'), true);
+  assertEquals(wat.includes('struct.get $tagged_value $number_payload'), true);
+  assertEquals(wat.includes('(field $extern_payload (mut externref))'), true);
+  const result = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(result.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(result.success, true);
+
+  const wasm = await Deno.readFile(wasmPath);
+  const instance = await WebAssembly.instantiate(wasm);
+  const main = instance.instance.exports['main.ts:main'];
+  assertEquals(typeof main, 'function');
+  const text = { text: 'value' };
+  assertEquals((main as (mode: number, value: unknown) => number)(0, text), 0);
+  assertEquals((main as (mode: number, value: unknown) => number)(1, text), 2);
+  assertEquals((main as (mode: number, value: unknown) => number)(2, text), 7);
 });
 
 Deno.test('compiler wasm-gc emitter produces runnable internal string-null unions', async () => {
@@ -2149,6 +4037,78 @@ Deno.test('compiler wasm-gc emitter produces runnable internal array-null unions
   assertEquals(typeof main, 'function');
   assertEquals((main as (flag: number) => number)(1), 5);
   assertEquals((main as (flag: number) => number)(0), 0);
+});
+
+Deno.test('compiler wasm-gc emitter produces runnable internal mixed heap-scalar unions', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: { strict: true },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        function maybe(mode: number, value: string): number[] | string | null {
+          if (mode === 0) {
+            return null;
+          }
+          if (mode === 1) {
+            return value;
+          }
+          return [4, 6];
+        }
+
+        export function main(mode: number, value: string): number {
+          const result = maybe(mode, value);
+          if (result === null) {
+            return 0;
+          }
+          if (typeof result === "string") {
+            return 2;
+          }
+          return result[1];
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
+  const maybePlan = snapshot.wasmGcPlan.functionPlans.find((func) => func.name === 'maybe');
+  const mainPlan = snapshot.wasmGcPlan.functionPlans.find((func) => func.name === 'main');
+  const watPath = join(tempDirectory, 'wasm-gc-shadow-mixed-heap-scalar-union.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-shadow-mixed-heap-scalar-union.wasm');
+
+  assertEquals(
+    snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
+    ['array', 'finite_union', 'string'],
+  );
+  assertEquals(maybePlan?.bodyStatus, 'emittable');
+  assertEquals(mainPlan?.bodyStatus, 'emittable');
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
+  const wat = await Deno.readTextFile(watPath);
+  assertEquals(wat.includes('struct.get $tagged_value $heap_payload'), true);
+  assertEquals(wat.includes('i32.const 3'), true);
+  assertEquals(wat.includes('array.get $array_runtime'), true);
+  const result = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(result.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(result.success, true);
+
+  const wasm = await Deno.readFile(wasmPath);
+  const instance = await WebAssembly.instantiate(wasm);
+  const main = instance.instance.exports['main.ts:main'];
+  assertEquals(typeof main, 'function');
+  const text = { text: 'value' };
+  assertEquals((main as (mode: number, value: unknown) => number)(0, text), 0);
+  assertEquals((main as (mode: number, value: unknown) => number)(1, text), 2);
+  assertEquals((main as (mode: number, value: unknown) => number)(2, text), 6);
 });
 
 Deno.test('compiler wasm-gc emitter produces runnable no-capture callbacks through host imports', async () => {

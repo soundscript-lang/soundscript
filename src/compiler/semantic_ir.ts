@@ -113,7 +113,9 @@ export interface SemanticHostImportIR {
 export type SemanticExpressionIR =
   | { kind: 'number_literal'; value: number; representation: 'f64' }
   | { kind: 'boolean_literal'; value: boolean; representation: 'i32' }
+  | { kind: 'undefined_literal'; representation: 'tagged_ref' }
   | { kind: 'null_literal'; representation: 'tagged_ref' }
+  | { kind: 'owned_string_literal'; literalId: number; representation: 'owned_string_ref' }
   | { kind: 'local_get'; name: string; representation: CompilerValueType }
   | {
     kind: 'string_to_owned';
@@ -176,6 +178,12 @@ export type SemanticExpressionIR =
     representation: CompilerValueType;
   }
   | {
+    kind: 'tagged_is_undefined';
+    value: SemanticExpressionIR;
+    negated: boolean;
+    representation: 'i32';
+  }
+  | {
     kind: 'tagged_is_null';
     value: SemanticExpressionIR;
     negated: boolean;
@@ -194,10 +202,128 @@ export type SemanticExpressionIR =
     representation: 'owned_number_array_ref';
   }
   | {
+    kind: 'owned_string_array_literal';
+    elements: readonly SemanticExpressionIR[];
+    representation: 'owned_array_ref';
+  }
+  | {
+    kind: 'owned_heap_array_literal';
+    elements: readonly SemanticExpressionIR[];
+    representation: 'owned_heap_array_ref';
+  }
+  | {
+    kind: 'owned_boolean_array_literal';
+    elements: readonly SemanticExpressionIR[];
+    representation: 'owned_boolean_array_ref';
+  }
+  | {
+    kind: 'owned_tagged_array_literal';
+    elements: readonly SemanticExpressionIR[];
+    representation: 'owned_tagged_array_ref';
+  }
+  | {
     kind: 'owned_number_array_element';
     value: SemanticExpressionIR;
     index: SemanticExpressionIR;
     representation: 'f64';
+  }
+  | {
+    kind: 'owned_number_array_push';
+    array: SemanticExpressionIR;
+    value: SemanticExpressionIR;
+    representation: 'f64';
+  }
+  | {
+    kind: 'owned_string_array_push';
+    array: SemanticExpressionIR;
+    value: SemanticExpressionIR;
+    representation: 'f64';
+  }
+  | {
+    kind: 'owned_boolean_array_push';
+    array: SemanticExpressionIR;
+    value: SemanticExpressionIR;
+    representation: 'f64';
+  }
+  | {
+    kind: 'owned_tagged_array_push';
+    array: SemanticExpressionIR;
+    value: SemanticExpressionIR;
+    representation: 'f64';
+  }
+  | {
+    kind: 'owned_number_array_splice';
+    array: SemanticExpressionIR;
+    start: SemanticExpressionIR;
+    deleteCount: SemanticExpressionIR;
+    items: SemanticExpressionIR;
+    representation: 'owned_number_array_ref';
+  }
+  | {
+    kind: 'owned_string_array_splice';
+    array: SemanticExpressionIR;
+    start: SemanticExpressionIR;
+    deleteCount: SemanticExpressionIR;
+    items: SemanticExpressionIR;
+    representation: 'owned_array_ref';
+  }
+  | {
+    kind: 'owned_boolean_array_splice';
+    array: SemanticExpressionIR;
+    start: SemanticExpressionIR;
+    deleteCount: SemanticExpressionIR;
+    items: SemanticExpressionIR;
+    representation: 'owned_boolean_array_ref';
+  }
+  | {
+    kind: 'owned_tagged_array_splice';
+    array: SemanticExpressionIR;
+    start: SemanticExpressionIR;
+    deleteCount: SemanticExpressionIR;
+    items: SemanticExpressionIR;
+    representation: 'owned_tagged_array_ref';
+  }
+  | {
+    kind: 'owned_number_array_index_of';
+    array: SemanticExpressionIR;
+    search: SemanticExpressionIR;
+    representation: 'f64';
+  }
+  | {
+    kind: 'owned_string_array_index_of';
+    array: SemanticExpressionIR;
+    search: SemanticExpressionIR;
+    representation: 'f64';
+  }
+  | {
+    kind: 'owned_boolean_array_index_of';
+    array: SemanticExpressionIR;
+    search: SemanticExpressionIR;
+    representation: 'f64';
+  }
+  | {
+    kind: 'owned_string_array_element';
+    value: SemanticExpressionIR;
+    index: SemanticExpressionIR;
+    representation: 'owned_string_ref';
+  }
+  | {
+    kind: 'owned_heap_array_element';
+    value: SemanticExpressionIR;
+    index: SemanticExpressionIR;
+    representation: CompilerValueType;
+  }
+  | {
+    kind: 'owned_boolean_array_element';
+    value: SemanticExpressionIR;
+    index: SemanticExpressionIR;
+    representation: 'i32';
+  }
+  | {
+    kind: 'owned_tagged_array_element';
+    value: SemanticExpressionIR;
+    index: SemanticExpressionIR;
+    representation: 'tagged_ref';
   }
   | {
     kind: 'owned_array_length';
@@ -212,6 +338,7 @@ export type SemanticExpressionIR =
     captureValueTypes: readonly CompilerValueType[];
     representation: 'closure_ref';
   }
+  | { kind: 'closure_null'; representation: 'closure_ref' }
   | {
     kind: 'closure_call';
     callee: SemanticExpressionIR;
@@ -321,6 +448,43 @@ export type SemanticStatementIR =
     valueType: CompilerValueType;
   }
   | {
+    kind: 'dynamic_object_size';
+    targetName: string;
+    objectName: string;
+    representationName: string;
+  }
+  | {
+    kind: 'dynamic_object_has';
+    targetName: string;
+    objectName: string;
+    representationName: string;
+    propertyKeyName: string;
+  }
+  | {
+    kind: 'dynamic_object_delete';
+    targetName: string;
+    objectName: string;
+    representationName: string;
+    propertyKeyName: string;
+  }
+  | {
+    kind: 'dynamic_object_clear';
+    targetName: string;
+    objectName: string;
+    representationName: string;
+  }
+  | {
+    kind: 'dynamic_object_values';
+    targetName: string;
+    objectName: string;
+    representationName: string;
+    resultType:
+      | 'owned_array_ref'
+      | 'owned_number_array_ref'
+      | 'owned_boolean_array_ref'
+      | 'owned_tagged_array_ref';
+  }
+  | {
     kind: 'box_set';
     box: SemanticExpressionIR;
     value: SemanticExpressionIR;
@@ -328,6 +492,30 @@ export type SemanticStatementIR =
   }
   | {
     kind: 'owned_number_array_set';
+    array: SemanticExpressionIR;
+    index: SemanticExpressionIR;
+    value: SemanticExpressionIR;
+  }
+  | {
+    kind: 'owned_string_array_set';
+    array: SemanticExpressionIR;
+    index: SemanticExpressionIR;
+    value: SemanticExpressionIR;
+  }
+  | {
+    kind: 'owned_heap_array_set';
+    array: SemanticExpressionIR;
+    index: SemanticExpressionIR;
+    value: SemanticExpressionIR;
+  }
+  | {
+    kind: 'owned_boolean_array_set';
+    array: SemanticExpressionIR;
+    index: SemanticExpressionIR;
+    value: SemanticExpressionIR;
+  }
+  | {
+    kind: 'owned_tagged_array_set';
     array: SemanticExpressionIR;
     index: SemanticExpressionIR;
     value: SemanticExpressionIR;
@@ -1284,7 +1472,13 @@ function addExpressionFamilies(
     if (node.kind.includes('error')) {
       families.add('error');
     }
-    if (node.kind.includes('tagged')) {
+    if (
+      node.kind.includes('tagged') ||
+      node.kind.startsWith('tag_') ||
+      node.kind.startsWith('untag_') ||
+      node.kind === 'undefined_literal' ||
+      node.kind === 'null_literal'
+    ) {
       families.add('finite_union');
     }
   });
@@ -1311,7 +1505,13 @@ function addStatementFamilies(
     ) {
       families.add('specialized_object');
     }
-    if (node.kind.includes('tagged')) {
+    if (
+      node.kind.includes('tagged') ||
+      node.kind.startsWith('tag_') ||
+      node.kind.startsWith('untag_') ||
+      node.kind === 'undefined_literal' ||
+      node.kind === 'null_literal'
+    ) {
       families.add('finite_union');
     }
   });
@@ -1641,8 +1841,16 @@ function semanticExpressionFromCompilerIR(
       return { kind: 'number_literal', value: expression.value, representation: 'f64' };
     case 'boolean_literal':
       return { kind: 'boolean_literal', value: expression.value, representation: 'i32' };
+    case 'undefined_literal':
+      return { kind: 'undefined_literal', representation: 'tagged_ref' };
     case 'null_literal':
       return { kind: 'null_literal', representation: 'tagged_ref' };
+    case 'owned_string_literal':
+      return {
+        kind: 'owned_string_literal',
+        literalId: expression.literalId,
+        representation: 'owned_string_ref',
+      };
     case 'local_get':
       return { kind: 'local_get', name: expression.name, representation: expression.type };
     case 'string_to_owned':
@@ -1717,6 +1925,13 @@ function semanticExpressionFromCompilerIR(
         value: semanticExpressionFromCompilerIR(expression.value),
         representation: expression.type,
       };
+    case 'tagged_is_undefined':
+      return {
+        kind: 'tagged_is_undefined',
+        value: semanticExpressionFromCompilerIR(expression.value),
+        negated: expression.negated,
+        representation: 'i32',
+      };
     case 'tagged_is_null':
       return {
         kind: 'tagged_is_null',
@@ -1738,12 +1953,149 @@ function semanticExpressionFromCompilerIR(
         elements: expression.elements.map(semanticExpressionFromCompilerIR),
         representation: 'owned_number_array_ref',
       };
+    case 'owned_string_array_literal':
+      return {
+        kind: 'owned_string_array_literal',
+        elements: expression.elements.map(semanticExpressionFromCompilerIR),
+        representation: 'owned_array_ref',
+      };
+    case 'owned_heap_array_literal':
+      return {
+        kind: 'owned_heap_array_literal',
+        elements: expression.elements.map(semanticExpressionFromCompilerIR),
+        representation: 'owned_heap_array_ref',
+      };
+    case 'owned_boolean_array_literal':
+      return {
+        kind: 'owned_boolean_array_literal',
+        elements: expression.elements.map(semanticExpressionFromCompilerIR),
+        representation: 'owned_boolean_array_ref',
+      };
+    case 'owned_tagged_array_literal':
+      return {
+        kind: 'owned_tagged_array_literal',
+        elements: expression.elements.map(semanticExpressionFromCompilerIR),
+        representation: 'owned_tagged_array_ref',
+      };
     case 'owned_number_array_element':
       return {
         kind: 'owned_number_array_element',
         value: semanticExpressionFromCompilerIR(expression.value),
         index: semanticExpressionFromCompilerIR(expression.index),
         representation: 'f64',
+      };
+    case 'owned_number_array_push':
+      return {
+        kind: 'owned_number_array_push',
+        array: semanticExpressionFromCompilerIR(expression.array),
+        value: semanticExpressionFromCompilerIR(expression.value),
+        representation: 'f64',
+      };
+    case 'owned_string_array_push':
+      return {
+        kind: 'owned_string_array_push',
+        array: semanticExpressionFromCompilerIR(expression.array),
+        value: semanticExpressionFromCompilerIR(expression.value),
+        representation: 'f64',
+      };
+    case 'owned_boolean_array_push':
+      return {
+        kind: 'owned_boolean_array_push',
+        array: semanticExpressionFromCompilerIR(expression.array),
+        value: semanticExpressionFromCompilerIR(expression.value),
+        representation: 'f64',
+      };
+    case 'owned_tagged_array_push':
+      return {
+        kind: 'owned_tagged_array_push',
+        array: semanticExpressionFromCompilerIR(expression.array),
+        value: semanticExpressionFromCompilerIR(expression.value),
+        representation: 'f64',
+      };
+    case 'owned_number_array_splice':
+      return {
+        kind: 'owned_number_array_splice',
+        array: semanticExpressionFromCompilerIR(expression.array),
+        start: semanticExpressionFromCompilerIR(expression.start),
+        deleteCount: semanticExpressionFromCompilerIR(expression.deleteCount),
+        items: semanticExpressionFromCompilerIR(expression.items),
+        representation: 'owned_number_array_ref',
+      };
+    case 'owned_string_array_splice':
+      return {
+        kind: 'owned_string_array_splice',
+        array: semanticExpressionFromCompilerIR(expression.array),
+        start: semanticExpressionFromCompilerIR(expression.start),
+        deleteCount: semanticExpressionFromCompilerIR(expression.deleteCount),
+        items: semanticExpressionFromCompilerIR(expression.items),
+        representation: 'owned_array_ref',
+      };
+    case 'owned_boolean_array_splice':
+      return {
+        kind: 'owned_boolean_array_splice',
+        array: semanticExpressionFromCompilerIR(expression.array),
+        start: semanticExpressionFromCompilerIR(expression.start),
+        deleteCount: semanticExpressionFromCompilerIR(expression.deleteCount),
+        items: semanticExpressionFromCompilerIR(expression.items),
+        representation: 'owned_boolean_array_ref',
+      };
+    case 'owned_tagged_array_splice':
+      return {
+        kind: 'owned_tagged_array_splice',
+        array: semanticExpressionFromCompilerIR(expression.array),
+        start: semanticExpressionFromCompilerIR(expression.start),
+        deleteCount: semanticExpressionFromCompilerIR(expression.deleteCount),
+        items: semanticExpressionFromCompilerIR(expression.items),
+        representation: 'owned_tagged_array_ref',
+      };
+    case 'owned_number_array_index_of':
+      return {
+        kind: 'owned_number_array_index_of',
+        array: semanticExpressionFromCompilerIR(expression.array),
+        search: semanticExpressionFromCompilerIR(expression.search),
+        representation: 'f64',
+      };
+    case 'owned_string_array_index_of':
+      return {
+        kind: 'owned_string_array_index_of',
+        array: semanticExpressionFromCompilerIR(expression.array),
+        search: semanticExpressionFromCompilerIR(expression.search),
+        representation: 'f64',
+      };
+    case 'owned_boolean_array_index_of':
+      return {
+        kind: 'owned_boolean_array_index_of',
+        array: semanticExpressionFromCompilerIR(expression.array),
+        search: semanticExpressionFromCompilerIR(expression.search),
+        representation: 'f64',
+      };
+    case 'owned_string_array_element':
+      return {
+        kind: 'owned_string_array_element',
+        value: semanticExpressionFromCompilerIR(expression.value),
+        index: semanticExpressionFromCompilerIR(expression.index),
+        representation: 'owned_string_ref',
+      };
+    case 'owned_heap_array_element':
+      return {
+        kind: 'owned_heap_array_element',
+        value: semanticExpressionFromCompilerIR(expression.value),
+        index: semanticExpressionFromCompilerIR(expression.index),
+        representation: expression.type,
+      };
+    case 'owned_boolean_array_element':
+      return {
+        kind: 'owned_boolean_array_element',
+        value: semanticExpressionFromCompilerIR(expression.value),
+        index: semanticExpressionFromCompilerIR(expression.index),
+        representation: 'i32',
+      };
+    case 'owned_tagged_array_element':
+      return {
+        kind: 'owned_tagged_array_element',
+        value: semanticExpressionFromCompilerIR(expression.value),
+        index: semanticExpressionFromCompilerIR(expression.index),
+        representation: 'tagged_ref',
       };
     case 'owned_array_length':
       return {
@@ -1760,6 +2112,8 @@ function semanticExpressionFromCompilerIR(
         captureValueTypes: expression.captureValueTypes,
         representation: 'closure_ref',
       };
+    case 'closure_null':
+      return { kind: 'closure_null', representation: 'closure_ref' };
     case 'closure_call':
       return {
         kind: 'closure_call',
@@ -1856,6 +2210,34 @@ function semanticStatementFromCompilerIR(
         index: semanticExpressionFromCompilerIR(statement.index),
         value: semanticExpressionFromCompilerIR(statement.value),
       };
+    case 'owned_string_array_set':
+      return {
+        kind: 'owned_string_array_set',
+        array: semanticExpressionFromCompilerIR(statement.array),
+        index: semanticExpressionFromCompilerIR(statement.index),
+        value: semanticExpressionFromCompilerIR(statement.value),
+      };
+    case 'owned_heap_array_set':
+      return {
+        kind: 'owned_heap_array_set',
+        array: semanticExpressionFromCompilerIR(statement.array),
+        index: semanticExpressionFromCompilerIR(statement.index),
+        value: semanticExpressionFromCompilerIR(statement.value),
+      };
+    case 'owned_boolean_array_set':
+      return {
+        kind: 'owned_boolean_array_set',
+        array: semanticExpressionFromCompilerIR(statement.array),
+        index: semanticExpressionFromCompilerIR(statement.index),
+        value: semanticExpressionFromCompilerIR(statement.value),
+      };
+    case 'owned_tagged_array_set':
+      return {
+        kind: 'owned_tagged_array_set',
+        array: semanticExpressionFromCompilerIR(statement.array),
+        index: semanticExpressionFromCompilerIR(statement.index),
+        value: semanticExpressionFromCompilerIR(statement.value),
+      };
     case 'if':
       return {
         kind: 'if',
@@ -1915,6 +2297,31 @@ type DynamicObjectPropertyGetOperationIR = Extract<
 type DynamicObjectPropertySetOperationIR = Extract<
   CompilerRuntimeOperationIR,
   { kind: 'set_dynamic_object_property' }
+>;
+
+type DynamicObjectSizeOperationIR = Extract<
+  CompilerRuntimeOperationIR,
+  { kind: 'get_dynamic_object_size' }
+>;
+
+type DynamicObjectHasOperationIR = Extract<
+  CompilerRuntimeOperationIR,
+  { kind: 'has_dynamic_object_property' }
+>;
+
+type DynamicObjectDeleteOperationIR = Extract<
+  CompilerRuntimeOperationIR,
+  { kind: 'delete_dynamic_object_property' }
+>;
+
+type DynamicObjectClearOperationIR = Extract<
+  CompilerRuntimeOperationIR,
+  { kind: 'clear_dynamic_object' }
+>;
+
+type DynamicObjectValuesOperationIR = Extract<
+  CompilerRuntimeOperationIR,
+  { kind: 'list_dynamic_object_values' }
 >;
 
 interface DynamicObjectInitialEntryIR {
@@ -2048,6 +2455,102 @@ function semanticDynamicObjectPropertySetFromRuntimeOperation(
   };
 }
 
+function dynamicObjectStoredLocalFromExpression(
+  expression: CompilerExpressionIR,
+): { name: string; valueType: CompilerValueType } | undefined {
+  if (expression.kind === 'local_get') {
+    return { name: expression.name, valueType: expression.type };
+  }
+  switch (expression.kind) {
+    case 'tag_number':
+    case 'tag_boolean':
+    case 'tag_string':
+    case 'tag_symbol':
+    case 'tag_heap_object':
+      return expression.value.kind === 'local_get'
+        ? { name: expression.value.name, valueType: expression.value.type }
+        : undefined;
+    default:
+      return undefined;
+  }
+}
+
+function semanticDynamicObjectPropertySetFromCompilerStatement(
+  statement: Extract<CompilerStatementIR, { kind: 'dynamic_object_property_set' }>,
+  representationName: string,
+): SemanticStatementIR | undefined {
+  const storedLocal = dynamicObjectStoredLocalFromExpression(statement.value);
+  if (!storedLocal) {
+    return undefined;
+  }
+  return {
+    kind: 'dynamic_object_property_set',
+    objectName: statement.objectName,
+    representationName,
+    propertyKeyName: statement.propertyKeyName,
+    valueName: storedLocal.name,
+    valueType: storedLocal.valueType,
+  };
+}
+
+function semanticDynamicObjectSizeFromRuntimeOperation(
+  operation: DynamicObjectSizeOperationIR,
+): SemanticStatementIR {
+  return {
+    kind: 'dynamic_object_size',
+    targetName: operation.resultName,
+    objectName: operation.objectName,
+    representationName: operation.representation.name,
+  };
+}
+
+function semanticDynamicObjectHasFromRuntimeOperation(
+  operation: DynamicObjectHasOperationIR,
+): SemanticStatementIR {
+  return {
+    kind: 'dynamic_object_has',
+    targetName: operation.resultName,
+    objectName: operation.objectName,
+    representationName: operation.representation.name,
+    propertyKeyName: operation.propertyKeyName,
+  };
+}
+
+function semanticDynamicObjectDeleteFromRuntimeOperation(
+  operation: DynamicObjectDeleteOperationIR,
+): SemanticStatementIR {
+  return {
+    kind: 'dynamic_object_delete',
+    targetName: operation.resultName,
+    objectName: operation.objectName,
+    representationName: operation.representation.name,
+    propertyKeyName: operation.propertyKeyName,
+  };
+}
+
+function semanticDynamicObjectClearFromRuntimeOperation(
+  operation: DynamicObjectClearOperationIR,
+): SemanticStatementIR {
+  return {
+    kind: 'dynamic_object_clear',
+    targetName: operation.resultName,
+    objectName: operation.objectName,
+    representationName: operation.representation.name,
+  };
+}
+
+function semanticDynamicObjectValuesFromRuntimeOperation(
+  operation: DynamicObjectValuesOperationIR,
+): SemanticStatementIR {
+  return {
+    kind: 'dynamic_object_values',
+    targetName: operation.resultName,
+    objectName: operation.objectName,
+    representationName: operation.representation.name,
+    resultType: operation.resultType,
+  };
+}
+
 function semanticBodyFromCompilerIR(
   func: CompilerFunctionIR,
   operations: readonly CompilerRuntimeOperationIR[],
@@ -2059,6 +2562,11 @@ function semanticBodyFromCompilerIR(
   const pendingFallbackGetsByResult = new Map<string, FallbackObjectPropertyGetOperationIR>();
   const dynamicAllocationsByResult = new Map<string, DynamicObjectAllocationPlanIR>();
   const pendingDynamicGetsByResult = new Map<string, DynamicObjectPropertyGetOperationIR>();
+  const pendingDynamicSizesByResult = new Map<string, DynamicObjectSizeOperationIR>();
+  const pendingDynamicHasByResult = new Map<string, DynamicObjectHasOperationIR>();
+  const pendingDynamicDeletesByResult = new Map<string, DynamicObjectDeleteOperationIR>();
+  const pendingDynamicClearsByResult = new Map<string, DynamicObjectClearOperationIR>();
+  const pendingDynamicValuesByResult = new Map<string, DynamicObjectValuesOperationIR>();
   const pendingInitialDynamicSetsByObject = new Map<
     string,
     DynamicObjectPropertySetOperationIR[]
@@ -2109,14 +2617,28 @@ function semanticBodyFromCompilerIR(
       operationAllocatedDynamicObjects.add(operation.resultName);
     } else if (operation.kind === 'get_dynamic_object_property') {
       pendingDynamicGetsByResult.set(operation.resultName, operation);
+    } else if (operation.kind === 'get_dynamic_object_size') {
+      pendingDynamicSizesByResult.set(operation.resultName, operation);
+    } else if (operation.kind === 'has_dynamic_object_property') {
+      pendingDynamicHasByResult.set(operation.resultName, operation);
+    } else if (operation.kind === 'delete_dynamic_object_property') {
+      pendingDynamicDeletesByResult.set(operation.resultName, operation);
+    } else if (operation.kind === 'clear_dynamic_object') {
+      pendingDynamicClearsByResult.set(operation.resultName, operation);
+    } else if (operation.kind === 'list_dynamic_object_values') {
+      pendingDynamicValuesByResult.set(operation.resultName, operation);
     }
   }
 
-  const body: SemanticStatementIR[] = [];
   const seenAssignments = new Set(func.params.map((param) => param.name));
   const allocatedDynamicObjects = new Set<string>();
+  const dynamicRepresentationNameByObjectName = new Map(
+    (func.heapLocalRepresentations ?? [])
+      .filter((local) => local.representation.kind === 'dynamic_object_representation')
+      .map((local) => [local.name, local.representation.name]),
+  );
   const emittedDynamicSetIndexes = new Set<number>();
-  const flushDynamicPropertySets = (): void => {
+  const flushDynamicPropertySets = (targetBody: SemanticStatementIR[]): void => {
     dynamicSetsAfterAllocation.forEach((operation, index) => {
       if (
         emittedDynamicSetIndexes.has(index) ||
@@ -2126,14 +2648,20 @@ function semanticBodyFromCompilerIR(
       ) {
         return;
       }
-      body.push(semanticDynamicObjectPropertySetFromRuntimeOperation(operation, valueTypesByName));
+      targetBody.push(
+        semanticDynamicObjectPropertySetFromRuntimeOperation(operation, valueTypesByName),
+      );
       emittedDynamicSetIndexes.add(index);
     });
   };
-  for (const statement of func.body) {
+
+  const emitPendingStatementsForCompilerStatement = (
+    statement: CompilerStatementIR,
+    targetBody: SemanticStatementIR[],
+  ): void => {
     for (const [resultName, operation] of [...pendingFieldGetsByResult]) {
       if (compilerTreeContainsLocalGet(statement, resultName)) {
-        body.push(
+        targetBody.push(
           semanticSpecializedObjectFieldGetFromRuntimeOperation(
             operation,
             specializedObjectFieldNames,
@@ -2144,7 +2672,7 @@ function semanticBodyFromCompilerIR(
     }
     for (const [resultName, operation] of [...pendingFallbackGetsByResult]) {
       if (compilerTreeContainsLocalGet(statement, resultName)) {
-        body.push(
+        targetBody.push(
           semanticFallbackObjectPropertyGetFromRuntimeOperation(operation, valueTypesByName),
         );
         pendingFallbackGetsByResult.delete(resultName);
@@ -2152,67 +2680,144 @@ function semanticBodyFromCompilerIR(
     }
     for (const [resultName, operation] of [...pendingDynamicGetsByResult]) {
       if (compilerTreeContainsLocalGet(statement, resultName)) {
-        body.push(
+        targetBody.push(
           semanticDynamicObjectPropertyGetFromRuntimeOperation(operation, valueTypesByName),
         );
         seenAssignments.add(operation.resultName);
         pendingDynamicGetsByResult.delete(resultName);
       }
     }
+    for (const [resultName, operation] of [...pendingDynamicSizesByResult]) {
+      if (compilerTreeContainsLocalGet(statement, resultName)) {
+        targetBody.push(semanticDynamicObjectSizeFromRuntimeOperation(operation));
+        seenAssignments.add(operation.resultName);
+        pendingDynamicSizesByResult.delete(resultName);
+      }
+    }
+    for (const [resultName, operation] of [...pendingDynamicHasByResult]) {
+      if (compilerTreeContainsLocalGet(statement, resultName)) {
+        targetBody.push(semanticDynamicObjectHasFromRuntimeOperation(operation));
+        seenAssignments.add(operation.resultName);
+        pendingDynamicHasByResult.delete(resultName);
+      }
+    }
+    for (const [resultName, operation] of [...pendingDynamicDeletesByResult]) {
+      if (compilerTreeContainsLocalGet(statement, resultName)) {
+        targetBody.push(semanticDynamicObjectDeleteFromRuntimeOperation(operation));
+        seenAssignments.add(operation.resultName);
+        pendingDynamicDeletesByResult.delete(resultName);
+      }
+    }
+    for (const [resultName, operation] of [...pendingDynamicClearsByResult]) {
+      if (compilerTreeContainsLocalGet(statement, resultName)) {
+        targetBody.push(semanticDynamicObjectClearFromRuntimeOperation(operation));
+        seenAssignments.add(operation.resultName);
+        pendingDynamicClearsByResult.delete(resultName);
+      }
+    }
+    for (const [resultName, operation] of [...pendingDynamicValuesByResult]) {
+      if (compilerTreeContainsLocalGet(statement, resultName)) {
+        targetBody.push(semanticDynamicObjectValuesFromRuntimeOperation(operation));
+        seenAssignments.add(operation.resultName);
+        pendingDynamicValuesByResult.delete(resultName);
+      }
+    }
+  };
 
+  const markSeenSemanticStatement = (semanticStatement: SemanticStatementIR): void => {
+    if (semanticStatement.kind === 'local_set') {
+      seenAssignments.add(semanticStatement.name);
+      if (
+        semanticStatement.value.kind === 'local_get' &&
+        allocatedDynamicObjects.has(semanticStatement.value.name)
+      ) {
+        allocatedDynamicObjects.add(semanticStatement.name);
+        const representationName = dynamicRepresentationNameByObjectName.get(
+          semanticStatement.value.name,
+        );
+        if (representationName !== undefined) {
+          dynamicRepresentationNameByObjectName.set(semanticStatement.name, representationName);
+        }
+      }
+    }
+  };
+
+  const convertCompilerStatement = (statement: CompilerStatementIR): SemanticStatementIR => {
     if (
       statement.kind === 'local_set' &&
       statement.value.kind === 'heap_placeholder' &&
       allocationsByResult.has(statement.name)
     ) {
-      body.push(
-        semanticSpecializedObjectNewFromRuntimeOperation(
-          allocationsByResult.get(statement.name)!,
-        ),
+      return semanticSpecializedObjectNewFromRuntimeOperation(
+        allocationsByResult.get(statement.name)!,
       );
     } else if (
       statement.kind === 'local_set' &&
       statement.value.kind === 'heap_placeholder' &&
       fallbackAllocationsByResult.has(statement.name)
     ) {
-      body.push(
-        semanticFallbackObjectNewFromRuntimeOperation(
-          fallbackAllocationsByResult.get(statement.name)!,
-          valueTypesByName,
-        ),
+      const semanticStatement = semanticFallbackObjectNewFromRuntimeOperation(
+        fallbackAllocationsByResult.get(statement.name)!,
+        valueTypesByName,
       );
       seenAssignments.add(statement.name);
+      return semanticStatement;
     } else if (
       statement.kind === 'local_set' &&
       statement.value.kind === 'heap_placeholder' &&
       dynamicAllocationsByResult.has(statement.name)
     ) {
-      body.push(
-        semanticDynamicObjectNewFromRuntimeOperation(
-          dynamicAllocationsByResult.get(statement.name)!,
-        ),
+      const semanticStatement = semanticDynamicObjectNewFromRuntimeOperation(
+        dynamicAllocationsByResult.get(statement.name)!,
       );
       seenAssignments.add(statement.name);
       allocatedDynamicObjects.add(statement.name);
-    } else {
-      const semanticStatement = semanticStatementFromCompilerIR(
-        statement,
-        specializedObjectFieldNames,
+      dynamicRepresentationNameByObjectName.set(
+        statement.name,
+        dynamicAllocationsByResult.get(statement.name)!.operation.representation.name,
       );
-      body.push(semanticStatement);
-      if (semanticStatement.kind === 'local_set') {
-        seenAssignments.add(semanticStatement.name);
-        if (
-          semanticStatement.value.kind === 'local_get' &&
-          allocatedDynamicObjects.has(semanticStatement.value.name)
-        ) {
-          allocatedDynamicObjects.add(semanticStatement.name);
-        }
-      }
+      return semanticStatement;
+    } else if (statement.kind === 'dynamic_object_property_set') {
+      const representationName = dynamicRepresentationNameByObjectName.get(statement.objectName);
+      const semanticStatement = representationName
+        ? semanticDynamicObjectPropertySetFromCompilerStatement(statement, representationName)
+        : undefined;
+      return semanticStatement ?? { kind: 'unsupported_statement', sourceKind: statement.kind };
+    } else if (statement.kind === 'if') {
+      return {
+        kind: 'if',
+        condition: semanticExpressionFromCompilerIR(statement.condition),
+        thenBody: convertCompilerBlock(statement.thenBody),
+        elseBody: convertCompilerBlock(statement.elseBody),
+      };
+    } else if (statement.kind === 'while') {
+      return {
+        kind: 'while',
+        condition: semanticExpressionFromCompilerIR(statement.condition),
+        body: convertCompilerBlock(statement.body),
+      };
     }
-    flushDynamicPropertySets();
+    return semanticStatementFromCompilerIR(
+      statement,
+      specializedObjectFieldNames,
+    );
+  };
+
+  function convertCompilerBlock(
+    statements: readonly CompilerStatementIR[],
+  ): SemanticStatementIR[] {
+    const body: SemanticStatementIR[] = [];
+    for (const statement of statements) {
+      emitPendingStatementsForCompilerStatement(statement, body);
+      const semanticStatement = convertCompilerStatement(statement);
+      body.push(semanticStatement);
+      markSeenSemanticStatement(semanticStatement);
+      flushDynamicPropertySets(body);
+    }
+    return body;
   }
-  return body;
+
+  return convertCompilerBlock(func.body);
 }
 
 function collectUnsupportedExpressionKinds(
@@ -2225,11 +2830,41 @@ function collectUnsupportedExpressionKinds(
       collectUnsupportedExpressionKinds(expression.right, kinds);
       break;
     case 'owned_number_array_literal':
+    case 'owned_string_array_literal':
+    case 'owned_heap_array_literal':
+    case 'owned_boolean_array_literal':
+    case 'owned_tagged_array_literal':
       expression.elements.forEach((element) => collectUnsupportedExpressionKinds(element, kinds));
       break;
     case 'owned_number_array_element':
+    case 'owned_string_array_element':
+    case 'owned_heap_array_element':
+    case 'owned_boolean_array_element':
+    case 'owned_tagged_array_element':
       collectUnsupportedExpressionKinds(expression.value, kinds);
       collectUnsupportedExpressionKinds(expression.index, kinds);
+      break;
+    case 'owned_number_array_push':
+    case 'owned_string_array_push':
+    case 'owned_boolean_array_push':
+    case 'owned_tagged_array_push':
+      collectUnsupportedExpressionKinds(expression.array, kinds);
+      collectUnsupportedExpressionKinds(expression.value, kinds);
+      break;
+    case 'owned_number_array_splice':
+    case 'owned_string_array_splice':
+    case 'owned_boolean_array_splice':
+    case 'owned_tagged_array_splice':
+      collectUnsupportedExpressionKinds(expression.array, kinds);
+      collectUnsupportedExpressionKinds(expression.start, kinds);
+      collectUnsupportedExpressionKinds(expression.deleteCount, kinds);
+      collectUnsupportedExpressionKinds(expression.items, kinds);
+      break;
+    case 'owned_number_array_index_of':
+    case 'owned_string_array_index_of':
+    case 'owned_boolean_array_index_of':
+      collectUnsupportedExpressionKinds(expression.array, kinds);
+      collectUnsupportedExpressionKinds(expression.search, kinds);
       break;
     case 'owned_array_length':
       collectUnsupportedExpressionKinds(expression.value, kinds);
@@ -2248,6 +2883,7 @@ function collectUnsupportedExpressionKinds(
     case 'untag_owned_string':
     case 'untag_symbol':
     case 'untag_heap_object':
+    case 'tagged_is_undefined':
     case 'tagged_is_null':
     case 'tagged_has_tag':
     case 'string_to_owned':
@@ -2260,6 +2896,8 @@ function collectUnsupportedExpressionKinds(
     case 'closure_literal':
       expression.captures.forEach((capture) => collectUnsupportedExpressionKinds(capture, kinds));
       break;
+    case 'closure_null':
+      break;
     case 'box_new':
       collectUnsupportedExpressionKinds(expression.value, kinds);
       break;
@@ -2271,7 +2909,9 @@ function collectUnsupportedExpressionKinds(
       break;
     case 'number_literal':
     case 'boolean_literal':
+    case 'undefined_literal':
     case 'null_literal':
+    case 'owned_string_literal':
     case 'local_get':
       break;
     default: {
@@ -2298,6 +2938,11 @@ function collectUnsupportedStatementKinds(
     case 'dynamic_object_new':
     case 'dynamic_object_property_get':
     case 'dynamic_object_property_set':
+    case 'dynamic_object_size':
+    case 'dynamic_object_has':
+    case 'dynamic_object_delete':
+    case 'dynamic_object_clear':
+    case 'dynamic_object_values':
       break;
     case 'specialized_object_field_set':
       collectUnsupportedExpressionKinds(statement.value, kinds);
@@ -2307,6 +2952,10 @@ function collectUnsupportedStatementKinds(
       collectUnsupportedExpressionKinds(statement.value, kinds);
       break;
     case 'owned_number_array_set':
+    case 'owned_string_array_set':
+    case 'owned_heap_array_set':
+    case 'owned_boolean_array_set':
+    case 'owned_tagged_array_set':
       collectUnsupportedExpressionKinds(statement.array, kinds);
       collectUnsupportedExpressionKinds(statement.index, kinds);
       collectUnsupportedExpressionKinds(statement.value, kinds);
