@@ -103,6 +103,12 @@ interface PackageVerificationDependencySummary {
   packageName: string;
 }
 
+interface PackageVerificationCacheHitEntry {
+  manifest: PackageVerificationCacheManifest;
+  summary: VerifiedPackageBoundarySummary;
+  unit: PackageVerificationUnit;
+}
+
 interface SerializedCachedPackageSourceFileAnalysis extends
   Omit<
     CachedPackageSourceFileAnalysis,
@@ -600,6 +606,16 @@ function toPackageDependencySummary(
   };
 }
 
+function packageVerificationUnitKey(unit: PackageVerificationUnit): string {
+  return `${unit.packageName}\0${unit.cacheId}`;
+}
+
+function packageVerificationDependencySummaryKey(
+  summary: PackageVerificationDependencySummary,
+): string {
+  return `${summary.packageName}\0${summary.cacheId}`;
+}
+
 function sortDependencySummaries(
   summaries: Iterable<PackageVerificationDependencySummary>,
 ): readonly PackageVerificationDependencySummary[] {
@@ -843,7 +859,7 @@ export function probePackageVerificationCache(options: {
       }),
     { always: true },
   );
-  const hits: VerifiedPackageBoundarySummary[] = [];
+  let hitEntries: PackageVerificationCacheHitEntry[] = [];
   const misses: PackageVerificationUnit[] = [];
 
   measureCheckerTiming(
@@ -862,12 +878,38 @@ export function probePackageVerificationCache(options: {
           misses.push(unit);
           continue;
         }
-        hits.push(hydratePackageVerificationManifest(unit, manifest));
+        hitEntries.push({
+          manifest,
+          summary: hydratePackageVerificationManifest(unit, manifest),
+          unit,
+        });
       }
     },
     { always: true },
   );
 
+  const missedUnitKeys = new Set(misses.map(packageVerificationUnitKey));
+  let propagatedMiss = true;
+  while (propagatedMiss) {
+    propagatedMiss = false;
+    const retainedHitEntries: PackageVerificationCacheHitEntry[] = [];
+    for (const entry of hitEntries) {
+      const dependsOnMissedUnit = entry.manifest.dependencyPackages.some((dependency) =>
+        missedUnitKeys.has(packageVerificationDependencySummaryKey(dependency))
+      );
+      if (!dependsOnMissedUnit) {
+        retainedHitEntries.push(entry);
+        continue;
+      }
+
+      missedUnitKeys.add(packageVerificationUnitKey(entry.unit));
+      misses.push(entry.unit);
+      propagatedMiss = true;
+    }
+    hitEntries = retainedHitEntries;
+  }
+
+  const hits = hitEntries.map((entry) => entry.summary);
   const projectedDeclarationOverrides = new Map<string, string>();
   for (const hit of hits) {
     for (const [filePath, text] of hit.projectedDeclarations) {
@@ -927,9 +969,6 @@ export function writePackageVerificationCacheEntries(options: {
         const files = options.files.filter((file) =>
           unitFilePathSet.has(normalizePath(file.filePath))
         );
-        if (files.length === 0) {
-          continue;
-        }
         const isUnitFilePath = (filePath: string): boolean =>
           unitFilePathSet.has(normalizePath(filePath));
         const unitDependencyDependents = Object.fromEntries(

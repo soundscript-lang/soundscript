@@ -38,6 +38,7 @@ Legend:
 - `batch-39`: covered by the thirty-ninth red-team batch added with this record.
 - `batch-40`: covered by the fortieth red-team batch added with this record.
 - `batch-41`: covered by the forty-first red-team batch added with this record.
+- `batch-42`: covered by the forty-second red-team batch added with this record.
 - `audit-debt`: missing coverage that should be closed before calling the family fully audited.
 - `out-of-scope`: explicitly outside the strong soundness claim.
 - `design-gap`: documented future work, not a current guarantee.
@@ -50,7 +51,7 @@ Legend:
 | BareObject/null-prototype provenance | covered       | covered         | covered      | batch-39                 | covered                    | batch-39                | batch-39           | audit-debt           |
 | `#[value]` parity                    | covered       | batch-1         | batch-1      | batch-1                  | batch-5                    | batch-1                 | batch-1            | covered              |
 | Machine numerics                     | covered       | batch-37        | batch-37     | batch-37                 | batch-5                    | batch-37                | batch-1,37         | batch-37             |
-| Macro/capability boundary            | covered       | covered         | audit-debt   | batch-6                  | batch-41                   | audit-debt              | batch-7            | batch-8              |
+| Macro/capability boundary            | covered       | covered         | audit-debt   | batch-6                  | batch-41,42                | audit-debt              | batch-7            | batch-8              |
 | Compiler acceptance parity           | covered       | audit-debt      | out-of-scope | out-of-scope             | out-of-scope               | out-of-scope            | batch-1,27,30      | covered,batch-27,30  |
 | Project-reference root ownership     | batch-32      | audit-debt      | audit-debt   | batch-32                 | out-of-scope               | batch-34                | batch-33           | out-of-scope         |
 
@@ -1035,11 +1036,41 @@ Legend:
   macro entries and reexported macro helpers. Subpath-only `soundscript.exports` macro variants and
   package-to-package macro chains remain follow-up coverage until claimed.
 
+## Batch 42 Findings
+
+### Subpath And Package-Chain Macro Verification Cache Reuse
+
+- Attack: prime a package whose only source-published entry is a subpath
+  `soundscript.exports["./macros"]` macro file, clear only the project checker cache, then require a
+  package-verification cache hit without rebuilding the package source policy view. Repeat with a
+  one-hop `pkg-a -> pkg-b/macros` macro dependency and with a transitive
+  `pkg-a -> pkg-b/macros -> pkg-c/macros` macro dependency, then edit only the downstream macro
+  helper so the expansion changes type while package metadata and public `.d.ts` surfaces remain
+  stable.
+- Routes: persistent checker cache, package verification cache, subpath-only `soundscript.exports`
+  macro entries, package-to-package macro dependency summaries, macro helper tracked-file
+  signatures, cold-vs-warm diagnostic parity, and same-kind macro output drift through a dependency
+  package.
+- Expected result: unchanged subpath macro packages are cache reusable (`units=1`, `hits=1`,
+  `misses=0`), unchanged one-hop chains are cache reusable (`units=2`, `hits=2`, `misses=0`), and
+  unchanged transitive chains are cache reusable (`units=3`, `hits=3`, `misses=0`). Helper edits in
+  a dependency package invalidate the changed package and every cached dependent whose macro
+  expansion may have observed it before matching cold diagnostics.
+- Result: confirmed production stale-reuse bug fixed. The direct subpath and one-hop package macro
+  tests passed after Batch 41, but the transitive chain initially reported `units=3`, `hits=2`,
+  `misses=1` on the unchanged warm run because a macro-helper-only dependency package had no
+  ordinary analyzed file and was not persisted. After allowing metadata-only package manifests, the
+  edited transitive run still reported `hits=1`, `misses=2` and reused `pkg-a`'s stale
+  macro-expanded package result. Package verification cache probing now propagates misses through
+  cached dependency package summaries, so a missed macro dependency also invalidates dependent
+  cached package units.
+- Residual risk: package macro verification cache coverage is now in place for legacy
+  `soundscript.source`, subpath `soundscript.exports`, reexporting macro packages, and
+  package-to-package macro chains. File-scoped and LSP/editor macro boundary cells remain separate
+  audit debt.
+
 ## Remaining High-Priority Audit Debt
 
-- Package verification cache reuse for subpath-only `soundscript.exports` macro variants and
-  package-to-package macro chains. Direct macro-only legacy `soundscript.source` packages are
-  covered by Batch 41.
 - Source-published package rewrite/member-path effect transforms through subpath-only
   `soundscript.exports` variants. Bare `soundscript.source` package-chain variants are covered by
   Batch 40.
@@ -1467,3 +1498,31 @@ red-team attack, the route matrix it covers, and the residual risk left behind.
   cold prepare `1.4s`, `.sts`-local cold prepare `871.5ms`, reused prepare after `.ts`-only edit
   `362.8ms`, reused prepare after `.sts`-only edit `1.0s`, reused `.sts`-local edit `709.3ms`, and
   analyze-only `2.3ms` average samples.
+- `deno test --allow-all --filter "transitive package macro chains"
+  tests/integration/red_team_audit_test.ts`:
+  initially failed with `units=3`, `hits=2`, `misses=1` on the unchanged warm run. After allowing
+  metadata-only package manifests, it failed with `hits=1`, `misses=2` after downstream macro helper
+  drift, proving stale dependent package reuse. After propagating package-cache misses through
+  dependency package summaries, passed, 1 test in `12s`.
+- `deno test --allow-all --filter "/(package verification cache reuses source-published macro
+  helper packages|package verification cache invalidates same-kind package macro output
+  drift|package verification cache reuses subpath macro exports|package verification cache
+  invalidates package-to-package macro chains|package verification cache invalidates transitive
+  package macro chains)/" tests/integration/red_team_audit_test.ts`:
+  passed, 5 tests in `59s`.
+- `deno test --allow-all --filter "package verification cache" src/run_program_test.ts`: passed, 6
+  tests in `22s` after the Batch 42 miss-propagation fix.
+- `deno test --allow-all tests/integration/red_team_audit_test.ts`: passed, 56 tests in `4m28s`.
+- `deno test --allow-all --filter "package macro" src/service/analyze_project_mixed_mode_test.ts
+  src/service/analyze_project_test.ts`:
+  passed, 5 tests in `26s`.
+- `deno lint src/checker/package_verification_cache.ts tests/integration/red_team_audit_test.ts`:
+  passed.
+- `deno fmt --check src/checker/package_verification_cache.ts
+  tests/integration/red_team_audit_test.ts docs/project/2026-04-17-red-team-audit.md`:
+  passed.
+- `deno task check`: passed.
+- `deno bench --allow-all tests/bench/mixed_project_analysis_bench.ts`: passed on Apple M5 Pro with
+  cold prepare `1.5s`, `.sts`-local cold prepare `878.9ms`, reused prepare after `.ts`-only edit
+  `355.8ms`, reused prepare after `.sts`-only edit `1.1s`, reused `.sts`-local edit `746.1ms`, and
+  analyze-only `2.1ms` average samples.

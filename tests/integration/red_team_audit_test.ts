@@ -1203,6 +1203,495 @@ Deno.test('red-team: package verification cache invalidates same-kind package ma
   );
 });
 
+Deno.test('red-team: package verification cache reuses subpath macro exports', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: createSoundscriptTsconfig(),
+    },
+    {
+      path: 'src/demo.sts',
+      contents: [
+        'import { Foo } from "sound-pkg/macros";',
+        'export const value = Foo();',
+        '',
+      ].join('\n'),
+    },
+    {
+      path: 'node_modules/sound-pkg/package.json',
+      contents: JSON.stringify(
+        {
+          name: 'sound-pkg',
+          version: '1.0.0',
+          type: 'module',
+          exports: {
+            './macros': {
+              types: './dist/macros.d.ts',
+              import: './dist/macros.js',
+            },
+          },
+          soundscript: {
+            version: 1,
+            exports: {
+              './macros': {
+                source: './src/macros.macro.sts',
+              },
+            },
+          },
+        },
+        null,
+        2,
+      ),
+    },
+    {
+      path: 'node_modules/sound-pkg/dist/macros.d.ts',
+      contents: 'export declare function Foo(): number;\n',
+    },
+    {
+      path: 'node_modules/sound-pkg/dist/macros.js',
+      contents: 'export function Foo() { return 1; }\n',
+    },
+    {
+      path: 'node_modules/sound-pkg/src/macros.macro.sts',
+      contents: [
+        "import 'sts:macros';",
+        "import { helperValue } from './helper.macro.sts';",
+        '',
+        '// #[macro(call)]',
+        'export function Foo() {',
+        '  return {',
+        '    expand(ctx: any) {',
+        '      return ctx.output.expr(ctx.build.stringLiteral(helperValue));',
+        '    },',
+        '  };',
+        '}',
+        '',
+      ].join('\n'),
+    },
+    {
+      path: 'node_modules/sound-pkg/src/helper.macro.sts',
+      contents: 'export const helperValue = "safe";\n',
+    },
+  ]);
+  const projectPath = join(tempDirectory, 'tsconfig.json');
+  const cacheRoot = await Deno.makeTempDir({ prefix: 'soundscript-red-team-cache-' });
+  const baseOptions = { cacheDir: cacheRoot, projectPath, workingDirectory: tempDirectory };
+
+  assertEquals(runProgram(baseOptions).diagnostics, []);
+
+  await Deno.remove(resolveCheckerCacheDirectory(projectPath, cacheRoot), { recursive: true });
+  withCapturedTimingLogs((logs) => {
+    const result = runProgram(baseOptions);
+    assert(
+      logs.some((line) =>
+        line.includes('[soundscript:checker] project.packageVerificationCache.result ') &&
+        line.includes('units=1') &&
+        line.includes('hits=1') &&
+        line.includes('misses=0')
+      ),
+      logs.join('\n'),
+    );
+    assert(
+      !logs.some((line) =>
+        line.includes('[soundscript:checker] project.prepare.packageSourcePolicyView ')
+      ),
+      logs.join('\n'),
+    );
+    assertEquals(result.diagnostics, []);
+  });
+
+  await writeProjectFile(
+    tempDirectory,
+    'node_modules/sound-pkg/src/helper.macro.sts',
+    "export const helperValue = Deno.env.get('HOME') ?? 'missing';\n",
+  );
+
+  const coldResult = runProgram({
+    cacheDir: await Deno.makeTempDir({ prefix: 'soundscript-red-team-cache-' }),
+    projectPath,
+    workingDirectory: tempDirectory,
+  });
+  const cachedResult = withCapturedTimingLogs((logs) => {
+    const result = runProgram(baseOptions);
+    assert(
+      logs.some((line) =>
+        line.includes('[soundscript:checker] project.packageVerificationCache.result ') &&
+        line.includes('units=1') &&
+        line.includes('hits=0') &&
+        line.includes('misses=1')
+      ),
+      logs.join('\n'),
+    );
+    assert(
+      logs.some((line) =>
+        line.includes('[soundscript:checker] project.cache.incremental ') &&
+        line.includes('changedTrackedFiles=1')
+      ),
+      logs.join('\n'),
+    );
+    return result;
+  });
+
+  assertEquals(coldResult.exitCode, 1, coldResult.output);
+  assert(coldResult.output.includes('Deno'), coldResult.output);
+  assertEquals(cachedResult.exitCode, coldResult.exitCode, cachedResult.output);
+  assertFreshAndCachedDiagnosticsMatch(
+    cachedResult.diagnostics,
+    coldResult.diagnostics,
+    tempDirectory,
+  );
+});
+
+Deno.test('red-team: package verification cache invalidates package-to-package macro chains', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: createSoundscriptTsconfig(),
+    },
+    {
+      path: 'src/demo.sts',
+      contents: [
+        'import { value } from "pkg-a";',
+        'export const exact: number = value;',
+        '',
+      ].join('\n'),
+    },
+    {
+      path: 'node_modules/pkg-a/package.json',
+      contents: JSON.stringify(
+        {
+          name: 'pkg-a',
+          version: '1.0.0',
+          type: 'module',
+          types: './dist/index.d.ts',
+          soundscript: {
+            source: './src/index.sts',
+          },
+        },
+        null,
+        2,
+      ),
+    },
+    {
+      path: 'node_modules/pkg-a/dist/index.d.ts',
+      contents: 'export declare const value: number;\n',
+    },
+    {
+      path: 'node_modules/pkg-a/src/index.sts',
+      contents: [
+        'import { Foo } from "pkg-b/macros";',
+        'export const value: number = Foo();',
+        '',
+      ].join('\n'),
+    },
+    {
+      path: 'node_modules/pkg-b/package.json',
+      contents: JSON.stringify(
+        {
+          name: 'pkg-b',
+          version: '1.0.0',
+          type: 'module',
+          exports: {
+            './macros': {
+              types: './dist/macros.d.ts',
+              import: './dist/macros.js',
+            },
+          },
+          soundscript: {
+            version: 1,
+            exports: {
+              './macros': {
+                source: './src/macros.macro.sts',
+              },
+            },
+          },
+        },
+        null,
+        2,
+      ),
+    },
+    {
+      path: 'node_modules/pkg-b/dist/macros.d.ts',
+      contents: 'export declare function Foo(): number;\n',
+    },
+    {
+      path: 'node_modules/pkg-b/dist/macros.js',
+      contents: 'export function Foo() { return 1; }\n',
+    },
+    {
+      path: 'node_modules/pkg-b/src/macros.macro.sts',
+      contents: [
+        "import 'sts:macros';",
+        "import { helperExpression } from './helper.macro.sts';",
+        '',
+        '// #[macro(call)]',
+        'export function Foo() {',
+        '  return {',
+        '    expand(ctx: any) {',
+        '      return ctx.output.expr(ctx.quote.expr`${helperExpression}`);',
+        '    },',
+        '  };',
+        '}',
+        '',
+      ].join('\n'),
+    },
+    {
+      path: 'node_modules/pkg-b/src/helper.macro.sts',
+      contents: 'export const helperExpression = "1";\n',
+    },
+  ]);
+  const projectPath = join(tempDirectory, 'tsconfig.json');
+  const cacheRoot = await Deno.makeTempDir({ prefix: 'soundscript-red-team-cache-' });
+  const baseOptions = { cacheDir: cacheRoot, projectPath, workingDirectory: tempDirectory };
+
+  assertEquals(runProgram(baseOptions).diagnostics, []);
+
+  await Deno.remove(resolveCheckerCacheDirectory(projectPath, cacheRoot), { recursive: true });
+  const warmPackageCacheResult = withCapturedTimingLogs((logs) => {
+    const result = runProgram(baseOptions);
+    assert(
+      logs.some((line) =>
+        line.includes('[soundscript:checker] project.packageVerificationCache.result ') &&
+        line.includes('units=2') &&
+        line.includes('hits=2') &&
+        line.includes('misses=0')
+      ),
+      logs.join('\n'),
+    );
+    assert(
+      !logs.some((line) =>
+        line.includes('[soundscript:checker] project.prepare.packageSourcePolicyView ')
+      ),
+      logs.join('\n'),
+    );
+    return result;
+  });
+  assertEquals(warmPackageCacheResult.diagnostics, []);
+
+  await writeProjectFile(
+    tempDirectory,
+    'node_modules/pkg-b/src/helper.macro.sts',
+    'export const helperExpression = \'"wrong"\';\n',
+  );
+
+  const coldResult = runProgram({
+    cacheDir: await Deno.makeTempDir({ prefix: 'soundscript-red-team-cache-' }),
+    projectPath,
+    workingDirectory: tempDirectory,
+  });
+  const cachedResult = withCapturedTimingLogs((logs) => {
+    const result = runProgram(baseOptions);
+    assert(
+      logs.some((line) =>
+        line.includes('[soundscript:checker] project.packageVerificationCache.result ') &&
+        line.includes('units=2') &&
+        line.includes('hits=0') &&
+        line.includes('misses=2')
+      ),
+      logs.join('\n'),
+    );
+    assert(
+      logs.some((line) =>
+        line.includes('[soundscript:checker] project.cache.incremental ') &&
+        line.includes('changedTrackedFiles=1')
+      ),
+      logs.join('\n'),
+    );
+    return result;
+  });
+
+  assertEquals(coldResult.exitCode, 1, coldResult.output);
+  assertEquals(diagnosticCodes(coldResult.diagnostics), ['TS2322']);
+  assertEquals(cachedResult.exitCode, coldResult.exitCode, cachedResult.output);
+  assertFreshAndCachedDiagnosticsMatch(
+    cachedResult.diagnostics,
+    coldResult.diagnostics,
+    tempDirectory,
+  );
+});
+
+Deno.test('red-team: package verification cache invalidates transitive package macro chains', async () => {
+  const createMacroSubpathPackageJson = (name: string): string =>
+    JSON.stringify(
+      {
+        name,
+        version: '1.0.0',
+        type: 'module',
+        exports: {
+          './macros': {
+            types: './dist/macros.d.ts',
+            import: './dist/macros.js',
+          },
+        },
+        soundscript: {
+          version: 1,
+          exports: {
+            './macros': {
+              source: './src/macros.macro.sts',
+            },
+          },
+        },
+      },
+      null,
+      2,
+    );
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: createSoundscriptTsconfig(),
+    },
+    {
+      path: 'src/demo.sts',
+      contents: [
+        'import { value } from "pkg-a";',
+        'export const exact: number = value;',
+        '',
+      ].join('\n'),
+    },
+    {
+      path: 'node_modules/pkg-a/package.json',
+      contents: JSON.stringify(
+        {
+          name: 'pkg-a',
+          version: '1.0.0',
+          type: 'module',
+          types: './dist/index.d.ts',
+          soundscript: {
+            source: './src/index.sts',
+          },
+        },
+        null,
+        2,
+      ),
+    },
+    {
+      path: 'node_modules/pkg-a/dist/index.d.ts',
+      contents: 'export declare const value: number;\n',
+    },
+    {
+      path: 'node_modules/pkg-a/src/index.sts',
+      contents: [
+        'import { Foo } from "pkg-b/macros";',
+        'export const value: number = Foo();',
+        '',
+      ].join('\n'),
+    },
+    {
+      path: 'node_modules/pkg-b/package.json',
+      contents: createMacroSubpathPackageJson('pkg-b'),
+    },
+    {
+      path: 'node_modules/pkg-b/dist/macros.d.ts',
+      contents: 'export declare function Foo(): number;\n',
+    },
+    {
+      path: 'node_modules/pkg-b/dist/macros.js',
+      contents: 'export function Foo() { return 1; }\n',
+    },
+    {
+      path: 'node_modules/pkg-b/src/macros.macro.sts',
+      contents: [
+        "import 'sts:macros';",
+        "import { helperExpression } from 'pkg-c/macros';",
+        '',
+        '// #[macro(call)]',
+        'export function Foo() {',
+        '  return {',
+        '    expand(ctx: any) {',
+        '      return ctx.output.expr(ctx.quote.expr`${helperExpression}`);',
+        '    },',
+        '  };',
+        '}',
+        '',
+      ].join('\n'),
+    },
+    {
+      path: 'node_modules/pkg-c/package.json',
+      contents: createMacroSubpathPackageJson('pkg-c'),
+    },
+    {
+      path: 'node_modules/pkg-c/dist/macros.d.ts',
+      contents: 'export declare const helperExpression: string;\n',
+    },
+    {
+      path: 'node_modules/pkg-c/dist/macros.js',
+      contents: 'export const helperExpression = "1";\n',
+    },
+    {
+      path: 'node_modules/pkg-c/src/macros.macro.sts',
+      contents: 'export const helperExpression = "1";\n',
+    },
+  ]);
+  const projectPath = join(tempDirectory, 'tsconfig.json');
+  const cacheRoot = await Deno.makeTempDir({ prefix: 'soundscript-red-team-cache-' });
+  const baseOptions = { cacheDir: cacheRoot, projectPath, workingDirectory: tempDirectory };
+
+  assertEquals(runProgram(baseOptions).diagnostics, []);
+
+  await Deno.remove(resolveCheckerCacheDirectory(projectPath, cacheRoot), { recursive: true });
+  const warmPackageCacheResult = withCapturedTimingLogs((logs) => {
+    const result = runProgram(baseOptions);
+    assert(
+      logs.some((line) =>
+        line.includes('[soundscript:checker] project.packageVerificationCache.result ') &&
+        line.includes('units=3') &&
+        line.includes('hits=3') &&
+        line.includes('misses=0')
+      ),
+      logs.join('\n'),
+    );
+    assert(
+      !logs.some((line) =>
+        line.includes('[soundscript:checker] project.prepare.packageSourcePolicyView ')
+      ),
+      logs.join('\n'),
+    );
+    return result;
+  });
+  assertEquals(warmPackageCacheResult.diagnostics, []);
+
+  await writeProjectFile(
+    tempDirectory,
+    'node_modules/pkg-c/src/macros.macro.sts',
+    'export const helperExpression = \'"wrong"\';\n',
+  );
+
+  const coldResult = runProgram({
+    cacheDir: await Deno.makeTempDir({ prefix: 'soundscript-red-team-cache-' }),
+    projectPath,
+    workingDirectory: tempDirectory,
+  });
+  const cachedResult = withCapturedTimingLogs((logs) => {
+    const result = runProgram(baseOptions);
+    assert(
+      logs.some((line) =>
+        line.includes('[soundscript:checker] project.packageVerificationCache.result ') &&
+        line.includes('units=3') &&
+        line.includes('hits=0') &&
+        line.includes('misses=3')
+      ),
+      logs.join('\n'),
+    );
+    assert(
+      logs.some((line) =>
+        line.includes('[soundscript:checker] project.cache.incremental ') &&
+        line.includes('changedTrackedFiles=1')
+      ),
+      logs.join('\n'),
+    );
+    return result;
+  });
+
+  assertEquals(coldResult.exitCode, 1, coldResult.output);
+  assertEquals(diagnosticCodes(coldResult.diagnostics), ['TS2322']);
+  assertEquals(cachedResult.exitCode, coldResult.exitCode, cachedResult.output);
+  assertFreshAndCachedDiagnosticsMatch(
+    cachedResult.diagnostics,
+    coldResult.diagnostics,
+    tempDirectory,
+  );
+});
+
 Deno.test('red-team: persistent checker cache invalidates source-published package effect edits', async () => {
   const tempDirectory = await createTempProject([
     {
