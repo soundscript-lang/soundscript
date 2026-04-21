@@ -3687,6 +3687,7 @@ function renderPromiseRecordTypes(plan: WasmGcModulePlanIR): readonly string[] {
           '    (field $result (mut (ref null eq)))',
           '    (field $on_fulfilled (mut (ref null eq)))',
           '    (field $on_rejected (mut (ref null eq)))',
+          '    (field $next (mut (ref null eq)))',
           '  ))',
           `  (type $promise_microtask_runtime (struct`,
           '    (field $reaction (mut (ref null $promise_reaction_runtime)))',
@@ -3906,6 +3907,21 @@ function renderPromiseReactionResultSet(
   ];
 }
 
+function renderPromiseReactionRecordNew(
+  resultLines: readonly string[],
+  onFulfilledLines: readonly string[],
+  onRejectedLines: readonly string[],
+  indent: string,
+): readonly string[] {
+  return [
+    ...resultLines,
+    ...onFulfilledLines,
+    ...onRejectedLines,
+    `${indent}ref.null eq`,
+    `${indent}struct.new $promise_reaction_runtime`,
+  ];
+}
+
 function renderPromiseMicrotaskValue(indent: string): readonly string[] {
   return [
     `${indent}local.get $task`,
@@ -4002,6 +4018,39 @@ function renderPromiseMicrotaskHelpers(
   usesRejectedHandler: boolean,
 ): readonly string[] {
   return [
+    '  (func $soundscript_promise_push_reaction (param $receiver (ref $promise_runtime)) (param $reaction (ref null $promise_reaction_runtime))',
+    '    (local $current (ref null $promise_reaction_runtime))',
+    '    local.get $receiver',
+    '    struct.get $promise_runtime $reaction',
+    '    local.set $current',
+    '    local.get $current',
+    '    ref.is_null',
+    '    if',
+    '      local.get $receiver',
+    '      local.get $reaction',
+    '      struct.set $promise_runtime $reaction',
+    '    else',
+    '      loop $walk_reactions',
+    '        local.get $current',
+    '        ref.as_non_null',
+    '        struct.get $promise_reaction_runtime $next',
+    '        ref.is_null',
+    '        if',
+    '          local.get $current',
+    '          ref.as_non_null',
+    '          local.get $reaction',
+    '          struct.set $promise_reaction_runtime $next',
+    '        else',
+    '          local.get $current',
+    '          ref.as_non_null',
+    '          struct.get $promise_reaction_runtime $next',
+    '          ref.cast (ref $promise_reaction_runtime)',
+    '          local.set $current',
+    '          br $walk_reactions',
+    '        end',
+    '      end',
+    '    end',
+    '  )',
     `  (func $soundscript_promise_enqueue_microtask (param $reaction (ref null $promise_reaction_runtime)) (param $value (ref null ${taggedValueTypeName()})) (param $state i32) (result (ref null $promise_microtask_runtime))`,
     '    local.get $reaction',
     '    local.get $value',
@@ -4019,6 +4068,7 @@ function renderPromiseMicrotaskHelpers(
     '    ref.as_non_null',
     '    struct.get $promise_microtask_runtime $reaction',
     '    local.set $reaction',
+    '    loop $drain_reactions',
     '    local.get $reaction',
     '    ref.is_null',
     '    if',
@@ -4039,6 +4089,22 @@ function renderPromiseMicrotaskHelpers(
     '    i32.eq',
     '    if',
     ...renderPromiseMicrotaskRejectedBranch(signatureId, usesRejectedHandler),
+    '    end',
+    '    local.get $reaction',
+    '    ref.as_non_null',
+    '    struct.get $promise_reaction_runtime $next',
+    '    ref.is_null',
+    '    if',
+    '      ref.null $promise_reaction_runtime',
+    '      local.set $reaction',
+    '    else',
+    '      local.get $reaction',
+    '      ref.as_non_null',
+    '      struct.get $promise_reaction_runtime $next',
+    '      ref.cast (ref $promise_reaction_runtime)',
+    '      local.set $reaction',
+    '      br $drain_reactions',
+    '    end',
     '    end',
     '  )',
   ];
@@ -4115,12 +4181,12 @@ function renderPromiseHelperFunctions(plan: WasmGcModulePlanIR): readonly string
           '    i32.eq',
           '    if',
           ...renderPromiseEnqueueAndDrain(
-            [
-              '      local.get $result',
-              '      local.get $on_fulfilled',
-              '      local.get $on_rejected',
-              '      struct.new $promise_reaction_runtime',
-            ],
+            renderPromiseReactionRecordNew(
+              ['      local.get $result'],
+              ['      local.get $on_fulfilled'],
+              ['      local.get $on_rejected'],
+              '      ',
+            ),
             '1',
             [
               '      local.get $receiver',
@@ -4137,12 +4203,12 @@ function renderPromiseHelperFunctions(plan: WasmGcModulePlanIR): readonly string
           '    i32.eq',
           '    if',
           ...renderPromiseEnqueueAndDrain(
-            [
-              '      local.get $result',
-              '      local.get $on_fulfilled',
-              '      local.get $on_rejected',
-              '      struct.new $promise_reaction_runtime',
-            ],
+            renderPromiseReactionRecordNew(
+              ['      local.get $result'],
+              ['      local.get $on_fulfilled'],
+              ['      local.get $on_rejected'],
+              '      ',
+            ),
             '2',
             [
               '      local.get $receiver',
@@ -4159,11 +4225,13 @@ function renderPromiseHelperFunctions(plan: WasmGcModulePlanIR): readonly string
           '    if',
           '      local.get $receiver',
           '      ref.cast (ref $promise_runtime)',
-          '      local.get $result',
-          '      local.get $on_fulfilled',
-          '      local.get $on_rejected',
-          '      struct.new $promise_reaction_runtime',
-          '      struct.set $promise_runtime $reaction',
+          ...renderPromiseReactionRecordNew(
+            ['      local.get $result'],
+            ['      local.get $on_fulfilled'],
+            ['      local.get $on_rejected'],
+            '      ',
+          ),
+          '      call $soundscript_promise_push_reaction',
           '    end',
           '    local.get $result',
           '  )',

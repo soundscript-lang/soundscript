@@ -3641,6 +3641,56 @@ Deno.test('compiler wasm-gc emitter parses settled Promise.then callbacks', asyn
   assertEquals(result.success, true);
 });
 
+Deno.test('compiler wasm-gc emitter links multiple pending Promise.then reactions', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: {
+          strict: true,
+          lib: ['ES2020'],
+        },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        export function value(): Promise<number> {
+          const pending = new Promise<number>(() => {});
+          pending.then((item) => item + 1);
+          return pending.then((item) => item + 2);
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
+  const valuePlan = snapshot.wasmGcPlan.functionPlans.find((func) => func.name === 'value');
+  const watPath = join(tempDirectory, 'wasm-gc-shadow-promise-pending-reaction-list.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-shadow-promise-pending-reaction-list.wasm');
+
+  assertEquals(valuePlan?.bodyStatus, 'emittable');
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
+  const wat = await Deno.readTextFile(watPath);
+  assertEquals(wat.includes('(field $next (mut (ref null eq)))'), true);
+  assertEquals(wat.includes('(func $soundscript_promise_push_reaction'), true);
+  assertEquals(wat.includes('call $soundscript_promise_push_reaction'), true);
+  assertEquals(wat.includes('struct.get $promise_reaction_runtime $next'), true);
+  assertEquals(wat.includes('struct.set $promise_reaction_runtime $next'), true);
+  assertEquals(wat.includes('struct.set $promise_runtime $reaction'), true);
+  assertEquals(wat.includes('Promise.then'), false);
+  assertEquals(wat.includes('jspi'), false);
+  const result = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(result.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(result.success, true);
+});
+
 Deno.test('compiler semantic shadow models async frame optional closure fields', async () => {
   const tempDirectory = await createTempProject([
     {
