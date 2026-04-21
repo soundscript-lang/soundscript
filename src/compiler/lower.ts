@@ -215,6 +215,7 @@ interface BoundSymbol {
   aliasValue?: CompilerExpressionIR;
   boxedValueType?: CompilerValueType;
   heapRepresentation?: CompilerRuntimeObjectRepresentationRef;
+  taggedPrimitiveKinds?: CompilerTaggedPrimitiveBoundaryKindsIR;
   hostBoundary?: CompilerHostBoundaryIR;
   ambientHostSourceHeader?: CompilerFunctionIR;
   ownedAliasValue?: CompilerExpressionIR;
@@ -5578,13 +5579,22 @@ function lowerExpressionAsValueType(
   }
   if (targetType === 'symbol_ref') {
     const lowered = lowerExpression(expression, context);
+    const sourceType = context.checker.getTypeAtLocation(expression);
+    const boundTaggedPrimitiveKinds = getBoundIdentifierTaggedPrimitiveKinds(
+      expression,
+      context,
+    );
     if ('type' in lowered && lowered.type === 'symbol_ref') {
       return lowered;
     }
     if (
       'type' in lowered &&
       lowered.type === 'tagged_ref' &&
-      isSymbolLikeType(context.checker.getTypeAtLocation(expression))
+      (
+        isSymbolLikeType(sourceType) ||
+        isSymbolOrNullableType(sourceType) ||
+        boundTaggedPrimitiveKinds?.includesSymbol === true
+      )
     ) {
       return {
         kind: 'untag_symbol',
@@ -5599,13 +5609,20 @@ function lowerExpressionAsValueType(
   }
   if (targetType === 'bigint_ref') {
     const lowered = lowerExpression(expression, context);
+    const sourceType = context.checker.getTypeAtLocation(expression);
+    const boundTaggedPrimitiveKinds = getBoundIdentifierTaggedPrimitiveKinds(
+      expression,
+      context,
+    );
     if ('type' in lowered && lowered.type === 'bigint_ref') {
       return lowered;
     }
     if (
       'type' in lowered &&
       lowered.type === 'tagged_ref' &&
-      (context.checker.getTypeAtLocation(expression).flags & ts.TypeFlags.BigIntLike) !== 0
+      ((sourceType.flags & ts.TypeFlags.BigIntLike) !== 0 ||
+        getHostTaggedBoundaryKinds(sourceType)?.includesBigInt === true ||
+        boundTaggedPrimitiveKinds?.includesBigInt === true)
     ) {
       return {
         kind: 'untag_bigint',
@@ -6054,6 +6071,7 @@ interface ClosureCapturedBinding {
   heapRepresentation?: CompilerRuntimeObjectRepresentationRef;
   name: string;
   superClassDeclaration?: ts.ClassDeclaration;
+  taggedPrimitiveKinds?: CompilerTaggedPrimitiveBoundaryKindsIR;
   valueType: CompilerValueType;
   value: CompilerExpressionIR;
 }
@@ -6228,6 +6246,7 @@ function lowerClosureFunctionLike(
         emittedCaptureName: `capture_this_${captureBindingsByName.size}`,
         heapRepresentation: bound.heapRepresentation,
         superClassDeclaration: bound.superClassDeclaration,
+        taggedPrimitiveKinds: bound.taggedPrimitiveKinds,
         valueType: bound.boxedValueType ?? 'heap_ref',
         value: {
           kind: 'local_get',
@@ -6242,6 +6261,7 @@ function lowerClosureFunctionLike(
       emittedCaptureName: `capture_this_${captureBindingsByName.size}`,
       heapRepresentation: bound.heapRepresentation,
       superClassDeclaration: bound.superClassDeclaration,
+      taggedPrimitiveKinds: bound.taggedPrimitiveKinds,
       valueType: bound.type,
       value: {
         kind: 'box_new',
@@ -6300,6 +6320,7 @@ function lowerClosureFunctionLike(
             name: node.text,
             emittedCaptureName: `capture_${node.text}_${captureBindingsByName.size}`,
             heapRepresentation: bound.heapRepresentation,
+            taggedPrimitiveKinds: bound.taggedPrimitiveKinds,
             valueType: bound.boxedValueType ?? 'f64',
             value: {
               kind: 'local_get',
@@ -6312,6 +6333,7 @@ function lowerClosureFunctionLike(
             name: node.text,
             emittedCaptureName: `capture_${node.text}_${captureBindingsByName.size}`,
             heapRepresentation: bound.heapRepresentation,
+            taggedPrimitiveKinds: bound.taggedPrimitiveKinds,
             valueType: bound.type,
             value: {
               kind: 'box_new',
@@ -6503,6 +6525,7 @@ function lowerClosureFunctionLike(
       type: 'box_ref',
       boxedValueType: capture.valueType,
       heapRepresentation: capture.heapRepresentation,
+      taggedPrimitiveKinds: capture.taggedPrimitiveKinds,
       superClassDeclaration: capture.superClassDeclaration,
     });
   }
@@ -42220,6 +42243,7 @@ interface AsyncContinuationCaptureBinding {
   value: CompilerExpressionIR;
   boxedValueType?: CompilerValueType;
   heapRepresentation?: CompilerRuntimeObjectRepresentationRef;
+  taggedPrimitiveKinds?: CompilerTaggedPrimitiveBoundaryKindsIR;
   hostBoundary?: CompilerHostBoundaryIR;
   ambientHostSourceHeader?: CompilerFunctionIR;
   superClassDeclaration?: ts.ClassDeclaration;
@@ -42244,6 +42268,7 @@ function createAsyncContinuationCaptureBinding(
       valueType: 'box_ref',
       boxedValueType: bound.boxedValueType,
       heapRepresentation: bound.heapRepresentation,
+      taggedPrimitiveKinds: bound.taggedPrimitiveKinds,
       hostBoundary: bound.hostBoundary,
       ambientHostSourceHeader: bound.ambientHostSourceHeader,
       superClassDeclaration: bound.superClassDeclaration,
@@ -42260,6 +42285,7 @@ function createAsyncContinuationCaptureBinding(
     valueType: 'box_ref',
     boxedValueType: bound.type,
     heapRepresentation: bound.heapRepresentation,
+    taggedPrimitiveKinds: bound.taggedPrimitiveKinds,
     hostBoundary: bound.hostBoundary,
     ambientHostSourceHeader: bound.ambientHostSourceHeader,
     superClassDeclaration: bound.superClassDeclaration,
@@ -42540,6 +42566,7 @@ function collectAsyncContinuationCaptureBindings(
       valueType: bound.type,
       boxedValueType: bound.boxedValueType,
       heapRepresentation: bound.heapRepresentation,
+      taggedPrimitiveKinds: bound.taggedPrimitiveKinds,
       hostBoundary: bound.hostBoundary,
       ambientHostSourceHeader: bound.ambientHostSourceHeader,
       superClassDeclaration: bound.superClassDeclaration,
@@ -45500,6 +45527,7 @@ function lowerAsyncContinuationClosure(
       type: 'box_ref',
       boxedValueType: capture.boxedValueType,
       heapRepresentation: capture.heapRepresentation,
+      taggedPrimitiveKinds: capture.taggedPrimitiveKinds,
       hostBoundary: capture.hostBoundary,
       ambientHostSourceHeader: capture.ambientHostSourceHeader,
       superClassDeclaration: capture.superClassDeclaration,
@@ -45585,6 +45613,7 @@ function lowerAsyncContinuationClosure(
       heapRepresentation: bindingCaptured
         ? undefined
         : options.binding.valueInfo.heapRepresentation,
+      taggedPrimitiveKinds: options.binding.valueInfo.taggedPrimitiveKinds,
     });
   }
 
@@ -46327,6 +46356,7 @@ function lowerAsyncLoopControlContinuationClosure(
       type: 'box_ref',
       boxedValueType: capture.boxedValueType,
       heapRepresentation: capture.heapRepresentation,
+      taggedPrimitiveKinds: capture.taggedPrimitiveKinds,
       hostBoundary: capture.hostBoundary,
       ambientHostSourceHeader: capture.ambientHostSourceHeader,
       superClassDeclaration: capture.superClassDeclaration,
@@ -46490,6 +46520,7 @@ function lowerAsyncFunctionCompletionContinuationClosure(
       type: 'box_ref',
       boxedValueType: capture.boxedValueType,
       heapRepresentation: capture.heapRepresentation,
+      taggedPrimitiveKinds: capture.taggedPrimitiveKinds,
       hostBoundary: capture.hostBoundary,
       ambientHostSourceHeader: capture.ambientHostSourceHeader,
       superClassDeclaration: capture.superClassDeclaration,
@@ -46684,6 +46715,7 @@ function lowerAsyncWhileLoopControlHandlerClosure(
       type: 'box_ref',
       boxedValueType: capture.boxedValueType,
       heapRepresentation: capture.heapRepresentation,
+      taggedPrimitiveKinds: capture.taggedPrimitiveKinds,
       hostBoundary: capture.hostBoundary,
       ambientHostSourceHeader: capture.ambientHostSourceHeader,
       superClassDeclaration: capture.superClassDeclaration,
@@ -46917,6 +46949,7 @@ function lowerAsyncForLoopControlHandlerClosure(
       type: 'box_ref',
       boxedValueType: capture.boxedValueType,
       heapRepresentation: capture.heapRepresentation,
+      taggedPrimitiveKinds: capture.taggedPrimitiveKinds,
       hostBoundary: capture.hostBoundary,
       ambientHostSourceHeader: capture.ambientHostSourceHeader,
       superClassDeclaration: capture.superClassDeclaration,
@@ -46929,6 +46962,7 @@ function lowerAsyncForLoopControlHandlerClosure(
       type: 'box_ref',
       boxedValueType: capture.boxedValueType,
       heapRepresentation: capture.heapRepresentation,
+      taggedPrimitiveKinds: capture.taggedPrimitiveKinds,
       hostBoundary: capture.hostBoundary,
       ambientHostSourceHeader: capture.ambientHostSourceHeader,
       superClassDeclaration: capture.superClassDeclaration,
@@ -47179,6 +47213,7 @@ function lowerAsyncWhileStatementToPromiseExpression(
       type: 'box_ref',
       boxedValueType: capture.boxedValueType,
       heapRepresentation: capture.heapRepresentation,
+      taggedPrimitiveKinds: capture.taggedPrimitiveKinds,
       hostBoundary: capture.hostBoundary,
       ambientHostSourceHeader: capture.ambientHostSourceHeader,
       superClassDeclaration: capture.superClassDeclaration,
@@ -47560,6 +47595,7 @@ function lowerAsyncForStatementToPromiseExpression(
       type: 'box_ref',
       boxedValueType: capture.boxedValueType,
       heapRepresentation: capture.heapRepresentation,
+      taggedPrimitiveKinds: capture.taggedPrimitiveKinds,
       hostBoundary: capture.hostBoundary,
       ambientHostSourceHeader: capture.ambientHostSourceHeader,
       superClassDeclaration: capture.superClassDeclaration,
@@ -47572,6 +47608,7 @@ function lowerAsyncForStatementToPromiseExpression(
       type: 'box_ref',
       boxedValueType: capture.boxedValueType,
       heapRepresentation: capture.heapRepresentation,
+      taggedPrimitiveKinds: capture.taggedPrimitiveKinds,
       hostBoundary: capture.hostBoundary,
       ambientHostSourceHeader: capture.ambientHostSourceHeader,
       superClassDeclaration: capture.superClassDeclaration,
@@ -48178,6 +48215,7 @@ function lowerSyncScopedClosure(
       type: 'box_ref',
       boxedValueType: capture.boxedValueType,
       heapRepresentation: capture.heapRepresentation,
+      taggedPrimitiveKinds: capture.taggedPrimitiveKinds,
       hostBoundary: capture.hostBoundary,
       ambientHostSourceHeader: capture.ambientHostSourceHeader,
       superClassDeclaration: capture.superClassDeclaration,
@@ -51465,6 +51503,7 @@ function lowerFrameAsyncFunctionLikeBody(
           type: 'box_ref',
           boxedValueType: binding.valueInfo.type,
           heapRepresentation: binding.valueInfo.heapRepresentation,
+          taggedPrimitiveKinds: binding.valueInfo.taggedPrimitiveKinds,
           hostBoundary: binding.hostBoundary,
           ambientHostSourceHeader: binding.ambientHostSourceHeader,
         } satisfies BoundSymbol,
@@ -51552,6 +51591,7 @@ function lowerFrameAsyncFunctionLikeBody(
       type: 'box_ref',
       boxedValueType: capture.boxedValueType,
       heapRepresentation: capture.heapRepresentation,
+      taggedPrimitiveKinds: capture.taggedPrimitiveKinds,
       hostBoundary: capture.hostBoundary,
       ambientHostSourceHeader: capture.ambientHostSourceHeader,
       superClassDeclaration: capture.superClassDeclaration,
@@ -51668,6 +51708,7 @@ function lowerFrameAsyncFunctionLikeBody(
       type: 'box_ref',
       boxedValueType: binding.valueInfo.type,
       heapRepresentation: binding.valueInfo.heapRepresentation,
+      taggedPrimitiveKinds: binding.valueInfo.taggedPrimitiveKinds,
       hostBoundary: binding.hostBoundary,
       ambientHostSourceHeader: binding.ambientHostSourceHeader,
     };
@@ -55415,6 +55456,7 @@ function lowerGeneratorFunctionLikeBody(
           type: 'box_ref',
           boxedValueType: binding.valueInfo.type,
           heapRepresentation: binding.valueInfo.heapRepresentation,
+          taggedPrimitiveKinds: binding.valueInfo.taggedPrimitiveKinds,
           hostBoundary: binding.hostBoundary,
           ambientHostSourceHeader: binding.ambientHostSourceHeader,
         } satisfies BoundSymbol,
@@ -55492,6 +55534,7 @@ function lowerGeneratorFunctionLikeBody(
       type: 'box_ref',
       boxedValueType: capture.boxedValueType,
       heapRepresentation: capture.heapRepresentation,
+      taggedPrimitiveKinds: capture.taggedPrimitiveKinds,
       hostBoundary: capture.hostBoundary,
       ambientHostSourceHeader: capture.ambientHostSourceHeader,
       superClassDeclaration: capture.superClassDeclaration,
@@ -55623,6 +55666,7 @@ function lowerGeneratorFunctionLikeBody(
       type: 'box_ref',
       boxedValueType: binding.valueInfo.type,
       heapRepresentation: binding.valueInfo.heapRepresentation,
+      taggedPrimitiveKinds: binding.valueInfo.taggedPrimitiveKinds,
       hostBoundary: binding.hostBoundary,
       ambientHostSourceHeader: binding.ambientHostSourceHeader,
     };
@@ -65905,6 +65949,16 @@ function getBoundSymbolValueType(symbol: BoundSymbol | undefined): CompilerValue
   return symbol.type === 'box_ref' ? symbol.boxedValueType : symbol.type;
 }
 
+function getBoundIdentifierTaggedPrimitiveKinds(
+  expression: ts.Expression,
+  context: FunctionLoweringContext,
+): CompilerTaggedPrimitiveBoundaryKindsIR | undefined {
+  if (!ts.isIdentifier(expression)) {
+    return undefined;
+  }
+  return lookupSymbol(context, expression.text)?.taggedPrimitiveKinds;
+}
+
 function getCompilerScalarValueTypeForLowering(
   expression: ts.Expression,
   context: FunctionLoweringContext,
@@ -67907,6 +67961,7 @@ function lowerForOfLoopBody(
   elementName: string,
   elementType: CompilerValueType,
   heapElementRepresentation: CompilerRuntimeRepresentationRefIR<'object'> | undefined,
+  taggedPrimitiveKinds: CompilerTaggedPrimitiveBoundaryKindsIR | undefined,
   bodyStatements: readonly ts.Statement[],
   capturedLoopBinding: boolean,
   context: FunctionLoweringContext,
@@ -67926,6 +67981,7 @@ function lowerForOfLoopBody(
             type: 'box_ref',
             boxedValueType: elementType,
             heapRepresentation: elementType === 'heap_ref' ? heapElementRepresentation : undefined,
+            taggedPrimitiveKinds,
           } satisfies BoundSymbol,
         ]],
         context,
@@ -67953,6 +68009,7 @@ function lowerForOfLoopBody(
             emittedName: elementName,
             type: elementType,
             heapRepresentation: elementType === 'heap_ref' ? heapElementRepresentation : undefined,
+            taggedPrimitiveKinds,
           } satisfies BoundSymbol,
         ]],
         context,
@@ -68277,6 +68334,7 @@ function lowerForOfStatement(
       elementName,
       yieldedValueInfo.type,
       yieldedValueInfo.type === 'heap_ref' ? yieldedValueInfo.heapRepresentation : undefined,
+      yieldedValueInfo.taggedPrimitiveKinds,
       bodyStatements,
       capturedLoopBinding,
       loopContext,
@@ -68497,6 +68555,7 @@ function lowerForOfStatement(
         elementName,
         loopValueInfo.type,
         loopValueInfo.type === 'heap_ref' ? loopValueInfo.heapRepresentation : undefined,
+        loopValueInfo.taggedPrimitiveKinds,
         bodyStatements,
         capturedLoopBinding,
         loopContext,
@@ -68662,6 +68721,7 @@ function lowerForOfStatement(
     elementName,
     elementType,
     heapElementRepresentation,
+    undefined,
     bodyStatements,
     capturedLoopBinding,
     loopContext,

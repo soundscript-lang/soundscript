@@ -4169,6 +4169,161 @@ Deno.test('compiler wasm-gc emitter runs sync generator for-of loops', async () 
   assertEquals((sum as () => number)(), 3);
 });
 
+Deno.test('compiler wasm-gc emitter runs sync generator symbol payload loops', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: {
+          strict: true,
+          lib: ['ES2020'],
+        },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        export function* values(input: symbol): Generator<symbol | null, void, unknown> {
+          yield input;
+          yield null;
+        }
+
+        export function first(input: symbol, fallback: symbol): symbol {
+          for (const value of values(input)) {
+            if (value !== null) {
+              return value;
+            }
+          }
+          return fallback;
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
+  const firstPlan = snapshot.wasmGcPlan.functionPlans.find((func) => func.name === 'first');
+  const stepPlan = snapshot.wasmGcPlan.functionPlans.find((func) =>
+    func.name.startsWith('closure_generator_step')
+  );
+  const watPath = join(tempDirectory, 'wasm-gc-shadow-sync-generator-symbol-payload.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-shadow-sync-generator-symbol-payload.wasm');
+
+  assertEquals(
+    snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
+    [
+      'closure',
+      'dynamic_object',
+      'finite_union',
+      'host_handle',
+      'host_object_projection',
+      'specialized_object',
+      'string',
+      'symbol',
+      'sync_generator',
+    ],
+  );
+  assertEquals(firstPlan?.bodyStatus, 'emittable');
+  assertEquals(stepPlan?.bodyStatus, 'emittable');
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
+  const wat = await Deno.readTextFile(watPath);
+  assertEquals(wat.includes('i32.const 5'), true);
+  assertEquals(wat.includes('struct.get $tagged_value $extern_payload'), true);
+  const result = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(result.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(result.success, true);
+
+  const wasm = await Deno.readFile(wasmPath);
+  const instance = await WebAssembly.instantiate(wasm);
+  const first = instance.instance.exports['main.ts:first'];
+  assertEquals(typeof first, 'function');
+  const value = Symbol('selected');
+  const fallback = Symbol('fallback');
+  assertEquals((first as (value: symbol, fallback: symbol) => symbol)(value, fallback), value);
+});
+
+Deno.test('compiler wasm-gc emitter runs sync generator bigint payload loops', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: {
+          strict: true,
+          lib: ['ES2020'],
+          target: 'ES2020',
+        },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        export function* values(input: bigint): Generator<bigint | null, void, unknown> {
+          yield input;
+          yield null;
+        }
+
+        export function first(input: bigint, fallback: bigint): bigint {
+          for (const value of values(input)) {
+            if (value !== null) {
+              return value;
+            }
+          }
+          return fallback;
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
+  const firstPlan = snapshot.wasmGcPlan.functionPlans.find((func) => func.name === 'first');
+  const stepPlan = snapshot.wasmGcPlan.functionPlans.find((func) =>
+    func.name.startsWith('closure_generator_step')
+  );
+  const watPath = join(tempDirectory, 'wasm-gc-shadow-sync-generator-bigint-payload.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-shadow-sync-generator-bigint-payload.wasm');
+
+  assertEquals(
+    snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
+    [
+      'bigint',
+      'closure',
+      'dynamic_object',
+      'finite_union',
+      'host_handle',
+      'host_object_projection',
+      'specialized_object',
+      'string',
+      'sync_generator',
+    ],
+  );
+  assertEquals(firstPlan?.bodyStatus, 'emittable');
+  assertEquals(stepPlan?.bodyStatus, 'emittable');
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
+  const wat = await Deno.readTextFile(watPath);
+  assertEquals(wat.includes('i32.const 7'), true);
+  assertEquals(wat.includes('struct.get $tagged_value $extern_payload'), true);
+  const result = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(result.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(result.success, true);
+
+  const wasm = await Deno.readFile(wasmPath);
+  const instance = await WebAssembly.instantiate(wasm);
+  const first = instance.instance.exports['main.ts:first'];
+  assertEquals(typeof first, 'function');
+  assertEquals((first as (value: bigint, fallback: bigint) => bigint)(70n, 80n), 70n);
+});
+
 Deno.test('compiler wasm-gc emitter parses minimal async generator step closures', async () => {
   const tempDirectory = await createTempProject([
     {
@@ -4351,6 +4506,307 @@ Deno.test('compiler wasm-gc emitter runs async generator for-await frame startup
   const sum = instance.instance.exports['main.ts:sum'];
   assertEquals(typeof sum, 'function');
   const promise = (sum as () => unknown)();
+  assertEquals(promise === null, false);
+  assertEquals(promise instanceof Promise, false);
+});
+
+Deno.test('compiler wasm-gc emitter runs async generator symbol payload for-await startup', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: {
+          strict: true,
+          lib: ['ES2020', 'ES2018.AsyncGenerator'],
+        },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        export async function* values(input: symbol): AsyncGenerator<symbol | null, void, unknown> {
+          yield input;
+          yield null;
+        }
+
+        export async function first(input: symbol, fallback: symbol): Promise<symbol> {
+          for await (const value of values(input)) {
+            if (value !== null) {
+              return value;
+            }
+          }
+          return fallback;
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
+  const firstPlan = snapshot.wasmGcPlan.functionPlans.find((func) => func.name === 'first');
+  const stepPlan = snapshot.wasmGcPlan.functionPlans.find((func) =>
+    func.name.startsWith('closure_async_frame_step')
+  );
+  const watPath = join(tempDirectory, 'wasm-gc-shadow-async-generator-symbol-payload.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-shadow-async-generator-symbol-payload.wasm');
+
+  assertEquals(
+    snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
+    [
+      'async_generator',
+      'closure',
+      'dynamic_object',
+      'finite_union',
+      'host_handle',
+      'host_object_projection',
+      'promise',
+      'specialized_object',
+      'string',
+      'symbol',
+    ],
+  );
+  assertEquals(firstPlan?.bodyStatus, 'emittable');
+  assertEquals(stepPlan?.bodyStatus, 'emittable');
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
+  const wat = await Deno.readTextFile(watPath);
+  assertEquals(wat.includes('i32.const 5'), true);
+  assertEquals(wat.includes('struct.get $tagged_value $extern_payload'), true);
+  assertEquals(wat.includes('Promise.resolve'), false);
+  assertEquals(wat.includes('jspi'), false);
+  const result = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(result.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(result.success, true);
+
+  const wasm = await Deno.readFile(wasmPath);
+  const instance = await WebAssembly.instantiate(wasm);
+  const first = instance.instance.exports['main.ts:first'];
+  assertEquals(typeof first, 'function');
+  const promise = (first as (value: symbol, fallback: symbol) => unknown)(
+    Symbol('selected'),
+    Symbol('fallback'),
+  );
+  assertEquals(promise === null, false);
+  assertEquals(promise instanceof Promise, false);
+});
+
+Deno.test('compiler wasm-gc emitter runs async generator bigint payload for-await startup', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: {
+          strict: true,
+          lib: ['ES2020', 'ES2018.AsyncGenerator'],
+          target: 'ES2020',
+        },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        export async function* values(input: bigint): AsyncGenerator<bigint | null, void, unknown> {
+          yield input;
+          yield null;
+        }
+
+        export async function first(input: bigint, fallback: bigint): Promise<bigint> {
+          for await (const value of values(input)) {
+            if (value !== null) {
+              return value;
+            }
+          }
+          return fallback;
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
+  const firstPlan = snapshot.wasmGcPlan.functionPlans.find((func) => func.name === 'first');
+  const stepPlan = snapshot.wasmGcPlan.functionPlans.find((func) =>
+    func.name.startsWith('closure_async_frame_step')
+  );
+  const watPath = join(tempDirectory, 'wasm-gc-shadow-async-generator-bigint-payload.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-shadow-async-generator-bigint-payload.wasm');
+
+  assertEquals(
+    snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
+    [
+      'async_generator',
+      'bigint',
+      'closure',
+      'dynamic_object',
+      'finite_union',
+      'host_handle',
+      'host_object_projection',
+      'promise',
+      'specialized_object',
+      'string',
+    ],
+  );
+  assertEquals(firstPlan?.bodyStatus, 'emittable');
+  assertEquals(stepPlan?.bodyStatus, 'emittable');
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
+  const wat = await Deno.readTextFile(watPath);
+  assertEquals(wat.includes('i32.const 7'), true);
+  assertEquals(wat.includes('struct.get $tagged_value $extern_payload'), true);
+  assertEquals(wat.includes('Promise.resolve'), false);
+  assertEquals(wat.includes('jspi'), false);
+  const result = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(result.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(result.success, true);
+
+  const wasm = await Deno.readFile(wasmPath);
+  const instance = await WebAssembly.instantiate(wasm);
+  const first = instance.instance.exports['main.ts:first'];
+  assertEquals(typeof first, 'function');
+  const promise = (first as (value: bigint, fallback: bigint) => unknown)(70n, 80n);
+  assertEquals(promise === null, false);
+  assertEquals(promise instanceof Promise, false);
+});
+
+Deno.test('compiler wasm-gc emitter runs async generator symbol payload mirror startup', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: {
+          strict: true,
+          lib: ['ES2020', 'ES2018.AsyncGenerator'],
+        },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        export async function* values(input: symbol): AsyncGenerator<symbol | null, void, unknown> {
+          yield input;
+          yield null;
+        }
+
+        export async function* selected(input: symbol): AsyncGenerator<symbol, void, unknown> {
+          for await (const value of values(input)) {
+            if (value !== null) {
+              yield value;
+            }
+          }
+        }
+
+        export function first(input: symbol): Promise<IteratorResult<symbol, void>> {
+          return selected(input).next();
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
+  const firstPlan = snapshot.wasmGcPlan.functionPlans.find((func) => func.name === 'first');
+  const selectedPlan = snapshot.wasmGcPlan.functionPlans.find((func) => func.name === 'selected');
+  const watPath = join(tempDirectory, 'wasm-gc-shadow-async-generator-symbol-mirror.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-shadow-async-generator-symbol-mirror.wasm');
+
+  assertEquals(firstPlan?.bodyStatus, 'emittable');
+  assertEquals(selectedPlan?.bodyStatus, 'emittable');
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
+  const wat = await Deno.readTextFile(watPath);
+  assertEquals(wat.includes('i32.const 5'), true);
+  assertEquals(wat.includes('struct.get $tagged_value $extern_payload'), true);
+  assertEquals(wat.includes('Promise.resolve'), false);
+  assertEquals(wat.includes('jspi'), false);
+  const result = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(result.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(result.success, true);
+
+  const wasm = await Deno.readFile(wasmPath);
+  const instance = await WebAssembly.instantiate(wasm);
+  const first = instance.instance.exports['main.ts:first'];
+  assertEquals(typeof first, 'function');
+  const promise = (first as (value: symbol) => unknown)(Symbol('selected'));
+  assertEquals(promise === null, false);
+  assertEquals(promise instanceof Promise, false);
+});
+
+Deno.test('compiler wasm-gc emitter runs async generator bigint payload mirror startup', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: {
+          strict: true,
+          lib: ['ES2020', 'ES2018.AsyncGenerator'],
+          target: 'ES2020',
+        },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        export async function* values(input: bigint): AsyncGenerator<bigint | null, void, unknown> {
+          yield input;
+          yield null;
+        }
+
+        export async function* selected(input: bigint): AsyncGenerator<bigint, void, unknown> {
+          for await (const value of values(input)) {
+            if (value !== null) {
+              yield value;
+            }
+          }
+        }
+
+        export function first(input: bigint): Promise<IteratorResult<bigint, void>> {
+          return selected(input).next();
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
+  const firstPlan = snapshot.wasmGcPlan.functionPlans.find((func) => func.name === 'first');
+  const selectedPlan = snapshot.wasmGcPlan.functionPlans.find((func) => func.name === 'selected');
+  const watPath = join(tempDirectory, 'wasm-gc-shadow-async-generator-bigint-mirror.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-shadow-async-generator-bigint-mirror.wasm');
+
+  assertEquals(firstPlan?.bodyStatus, 'emittable');
+  assertEquals(selectedPlan?.bodyStatus, 'emittable');
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
+  const wat = await Deno.readTextFile(watPath);
+  assertEquals(wat.includes('i32.const 7'), true);
+  assertEquals(wat.includes('struct.get $tagged_value $extern_payload'), true);
+  assertEquals(wat.includes('Promise.resolve'), false);
+  assertEquals(wat.includes('jspi'), false);
+  const result = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(result.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(result.success, true);
+
+  const wasm = await Deno.readFile(wasmPath);
+  const instance = await WebAssembly.instantiate(wasm);
+  const first = instance.instance.exports['main.ts:first'];
+  assertEquals(typeof first, 'function');
+  const promise = (first as (value: bigint) => unknown)(70n);
   assertEquals(promise === null, false);
   assertEquals(promise instanceof Promise, false);
 });
