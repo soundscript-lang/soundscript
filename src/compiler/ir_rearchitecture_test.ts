@@ -3782,6 +3782,110 @@ Deno.test('compiler wasm-gc emitter guards Promise.race settlement after first r
   assertEquals(result.success, true);
 });
 
+Deno.test('compiler wasm-gc emitter parses Promise.all direct array literals', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: {
+          strict: true,
+          lib: ['ES2020'],
+        },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        export function value(): Promise<number[]> {
+          return Promise.all([Promise.resolve(1), Promise.resolve(2)]);
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
+  const valuePlan = snapshot.wasmGcPlan.functionPlans.find((func) => func.name === 'value');
+  const watPath = join(tempDirectory, 'wasm-gc-shadow-promise-all.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-shadow-promise-all.wasm');
+
+  assertEquals(
+    snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
+    ['array', 'closure', 'finite_union', 'promise'],
+  );
+  assertEquals(valuePlan?.bodyStatus, 'emittable');
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
+  const wat = await Deno.readTextFile(watPath);
+  assertEquals(wat.includes('promise_all_results'), true);
+  assertEquals(wat.includes('promise_all_remaining'), true);
+  assertEquals(wat.includes('call $soundscript_promise_resolve_into'), true);
+  assertEquals(wat.includes('call $soundscript_promise_reject_into'), true);
+  assertEquals(wat.includes('call $soundscript_promise_try_settle'), true);
+  assertEquals(wat.includes('Promise.all'), false);
+  assertEquals(wat.includes('jspi'), false);
+  const result = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(result.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(result.success, true);
+});
+
+Deno.test('compiler wasm-gc emitter parses Promise.catch and Promise.finally callbacks', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: {
+          strict: true,
+          lib: ['ES2020'],
+        },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        export function recover(): Promise<number> {
+          return Promise.reject<number>(4).catch(() => Promise.resolve(5));
+        }
+
+        export function preserve(): Promise<number> {
+          return Promise.resolve(4).finally(() => Promise.resolve(0));
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
+  const recoverPlan = snapshot.wasmGcPlan.functionPlans.find((func) => func.name === 'recover');
+  const preservePlan = snapshot.wasmGcPlan.functionPlans.find((func) => func.name === 'preserve');
+  const watPath = join(tempDirectory, 'wasm-gc-shadow-promise-catch-finally.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-shadow-promise-catch-finally.wasm');
+
+  assertEquals(recoverPlan?.bodyStatus, 'emittable');
+  assertEquals(preservePlan?.bodyStatus, 'emittable');
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
+  const wat = await Deno.readTextFile(watPath);
+  assertEquals(wat.includes('call $soundscript_promise_reject'), true);
+  assertEquals(wat.includes('call $soundscript_promise_resolve'), true);
+  assertEquals(wat.includes('call $soundscript_promise_then'), true);
+  assertEquals(wat.includes('call $soundscript_promise_adopt_reaction_result'), true);
+  assertEquals(wat.includes('Promise.catch'), false);
+  assertEquals(wat.includes('Promise.finally'), false);
+  assertEquals(wat.includes('jspi'), false);
+  const result = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(result.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(result.success, true);
+});
+
 Deno.test('compiler semantic shadow models async frame optional closure fields', async () => {
   const tempDirectory = await createTempProject([
     {
