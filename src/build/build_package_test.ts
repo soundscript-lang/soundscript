@@ -40,6 +40,119 @@ function withToolFingerprintOverride<T>(fingerprint: string, run: () => T): T {
   }
 }
 
+Deno.test('buildProject recursively builds references and invalidates referenced roots', async () => {
+  const tempDirectory = await createTempBuildProject([
+    {
+      path: 'app/package.json',
+      contents: JSON.stringify(
+        {
+          name: 'sound-build-app',
+          version: '1.0.0',
+          soundscript: {
+            version: 1,
+            exports: {
+              '.': { source: './src/index.sts' },
+            },
+          },
+        },
+        null,
+        2,
+      ),
+    },
+    {
+      path: 'app/tsconfig.json',
+      contents: JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            target: 'ES2022',
+            module: 'ESNext',
+            moduleResolution: 'Bundler',
+          },
+          references: [{ path: '../lib' }],
+          include: ['src/**/*.sts'],
+        },
+        null,
+        2,
+      ),
+    },
+    {
+      path: 'app/src/index.sts',
+      contents: 'export const appValue: string = "app";\n',
+    },
+    {
+      path: 'lib/package.json',
+      contents: JSON.stringify(
+        {
+          name: 'sound-build-lib',
+          version: '1.0.0',
+          soundscript: {
+            version: 1,
+            exports: {
+              '.': { source: './src/index.sts' },
+            },
+          },
+        },
+        null,
+        2,
+      ),
+    },
+    {
+      path: 'lib/tsconfig.json',
+      contents: JSON.stringify(
+        {
+          compilerOptions: {
+            composite: true,
+            declaration: true,
+            emitDeclarationOnly: true,
+            strict: true,
+            target: 'ES2022',
+            module: 'ESNext',
+            moduleResolution: 'Bundler',
+          },
+          include: ['src/**/*.sts'],
+        },
+        null,
+        2,
+      ),
+    },
+    {
+      path: 'lib/src/index.sts',
+      contents: 'export const libValue: string = "lib";\n',
+    },
+  ]);
+  const appProjectPath = join(tempDirectory, 'app/tsconfig.json');
+  const appOutDir = join(tempDirectory, 'app/dist');
+  const libOutDir = join(tempDirectory, 'lib/dist');
+  const poisonPath = join(tempDirectory, 'lib/src/poison.sts');
+
+  const firstResult = await buildProject({
+    buildReferences: true,
+    outDir: appOutDir,
+    projectPath: appProjectPath,
+    workingDirectory: tempDirectory,
+  });
+  assertEquals(firstResult.exitCode, 0, firstResult.output);
+  assertEquals(await Deno.stat(join(appOutDir, 'package.json')).then(() => true), true);
+  assertEquals(await Deno.stat(join(libOutDir, 'package.json')).then(() => true), true);
+
+  await Deno.writeTextFile(poisonPath, 'export const poison: string = 1;\n');
+
+  const secondResult = await buildProject({
+    buildReferences: true,
+    outDir: appOutDir,
+    projectPath: appProjectPath,
+    workingDirectory: tempDirectory,
+  });
+  assertEquals(secondResult.exitCode, 1);
+  assert(
+    secondResult.diagnostics.some((diagnostic) =>
+      diagnostic.code === 'TS2322' &&
+      diagnostic.filePath === poisonPath
+    ),
+  );
+});
+
 Deno.test('buildProject reuses persistent frontend artifacts across repeated builds', async () => {
   const tempDirectory = await createTempBuildProject([
     {
@@ -213,7 +326,7 @@ Deno.test('buildProject cold path only prepares analysis once', async () => {
 
     assert(
       logs.filter((line) => line.includes('[soundscript:checker] project.prepareProjectAnalysis '))
-          .length <= 1,
+        .length <= 1,
       logs.join('\n'),
     );
   } finally {
@@ -288,18 +401,19 @@ Deno.test('buildProject invalidates build cache when the tool fingerprint change
         outDir,
         projectPath,
         workingDirectory: tempDirectory,
-      })
-    );
+      }));
     assertEquals(firstResult.exitCode, 0, firstResult.output);
 
     logs.length = 0;
 
-    const secondResult = await withToolFingerprintOverride('test-fingerprint-b', () =>
-      buildProject({
-        outDir,
-        projectPath,
-        workingDirectory: tempDirectory,
-      })
+    const secondResult = await withToolFingerprintOverride(
+      'test-fingerprint-b',
+      () =>
+        buildProject({
+          outDir,
+          projectPath,
+          workingDirectory: tempDirectory,
+        }),
     );
     assertEquals(secondResult.exitCode, 0, secondResult.output);
 

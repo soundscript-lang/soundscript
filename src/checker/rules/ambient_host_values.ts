@@ -86,7 +86,7 @@ function createAmbientHostValueDiagnostic(node: ts.Identifier): SoundDiagnostic 
       `Example: ${example}`,
     ],
     hint:
-      "Import the host value through an explicit boundary such as `host:dom` / `host:node`, or add a same-file `// #[extern]` declaration when the runtime truly provides it.",
+      'Import the host value through an explicit boundary such as `host:dom` / `host:node`, or add a same-file `// #[extern]` declaration when the runtime truly provides it.',
     ...getNodeDiagnosticRange(node),
   };
 }
@@ -104,8 +104,14 @@ export function runAmbientHostValueRules(context: AnalysisContext): SoundDiagnos
         return;
       }
 
-      if (isDeclarationNameIdentifier(node) || isPropertyNameIdentifier(node) ||
-        isTypePositionIdentifier(node)) {
+      if (node.text === 'console') {
+        return;
+      }
+
+      if (
+        isDeclarationNameIdentifier(node) || isPropertyNameIdentifier(node) ||
+        isTypePositionIdentifier(node)
+      ) {
         return;
       }
 

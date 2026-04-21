@@ -26,7 +26,7 @@ import type { AnalyzeProjectResult } from '../service/types.ts';
 import type { FileDiagnosticRuleCacheEntry } from './rules/index.ts';
 import type { FlowFileRuleCache } from './rules/flow.ts';
 
-const PACKAGE_VERIFICATION_CACHE_SCHEMA_VERSION = 2;
+const PACKAGE_VERIFICATION_CACHE_SCHEMA_VERSION = 3;
 const PACKAGE_VERIFICATION_CACHE_SUBDIRECTORY = 'package-verification';
 const UNDEFINED_JSON_SENTINEL_KEY = '__soundscriptUndefined';
 const undefinedJsonSentinel = { [UNDEFINED_JSON_SENTINEL_KEY]: true } as const;
@@ -161,6 +161,10 @@ function isInstalledSoundscriptStdlibSource(fileName: string): boolean {
     normalized.endsWith('.sts');
 }
 
+function isMacroAuthoringSourcePath(fileName: string): boolean {
+  return fileName.endsWith('.macro.sts');
+}
+
 function isSourcePublishedPackageFile(
   fileName: string,
   projectPackageJsonPath: string | undefined,
@@ -197,7 +201,44 @@ function collectStaticModuleSpecifiers(fileName: string): readonly string[] {
     return [];
   }
 
-  return ts.preProcessFile(text, true, true).importedFiles.map((entry) => entry.fileName);
+  const moduleSpecifiers = new Set(
+    ts.preProcessFile(text, true, true).importedFiles.map((entry) => entry.fileName),
+  );
+  const sourceFile = ts.createSourceFile(
+    fileName,
+    text,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS,
+  );
+
+  const visit = (node: ts.Node): void => {
+    if (
+      (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) &&
+      node.moduleSpecifier &&
+      ts.isStringLiteralLike(node.moduleSpecifier)
+    ) {
+      moduleSpecifiers.add(node.moduleSpecifier.text);
+    } else if (
+      ts.isImportEqualsDeclaration(node) &&
+      ts.isExternalModuleReference(node.moduleReference) &&
+      node.moduleReference.expression &&
+      ts.isStringLiteralLike(node.moduleReference.expression)
+    ) {
+      moduleSpecifiers.add(node.moduleReference.expression.text);
+    } else if (
+      ts.isImportTypeNode(node) &&
+      ts.isLiteralTypeNode(node.argument) &&
+      ts.isStringLiteralLike(node.argument.literal)
+    ) {
+      moduleSpecifiers.add(node.argument.literal.text);
+    }
+
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+
+  return [...moduleSpecifiers].sort();
 }
 
 function createCompilerOptionsSignature(compilerOptions: ts.CompilerOptions): string {
@@ -526,6 +567,16 @@ function sortDependencySummaries(
   );
 }
 
+function mergeDependencySummaries(
+  ...summaryGroups: readonly (readonly PackageVerificationDependencySummary[])[]
+): readonly PackageVerificationDependencySummary[] {
+  const summaries = new Map<string, PackageVerificationDependencySummary>();
+  for (const summary of summaryGroups.flat()) {
+    summaries.set(`${summary.packageName}\0${summary.cacheId}`, summary);
+  }
+  return sortDependencySummaries(summaries.values());
+}
+
 function collectStaticDependencyPackageSummaries(
   unit: PackageVerificationUnit,
   allUnits: readonly PackageVerificationUnit[],
@@ -798,6 +849,7 @@ export function probePackageVerificationCache(options: {
 
 export function writePackageVerificationCacheEntries(options: {
   cacheDir?: string;
+  compilerOptions: ts.CompilerOptions;
   dependencyDependents: Readonly<Record<string, readonly string[]>>;
   dependencySignatures: Readonly<Record<string, string>>;
   files: readonly CachedPackageSourceFileAnalysis[];
@@ -821,6 +873,12 @@ export function writePackageVerificationCacheEntries(options: {
     },
     () => {
       for (const unit of options.units) {
+        if (
+          unit.sourceFilePaths.some(isMacroAuthoringSourcePath) ||
+          unit.supportFilePaths.some(isMacroAuthoringSourcePath)
+        ) {
+          continue;
+        }
         const unitFilePathSet = new Set(
           unit.sourceFilePaths.map((filePath) => normalizePath(filePath)),
         );
@@ -873,6 +931,10 @@ export function writePackageVerificationCacheEntries(options: {
           options.units,
           normalizedTrackedFilePaths,
         );
+        const dependencyPackages = mergeDependencySummaries(
+          trackedDependencySummary.dependencyPackages,
+          collectStaticDependencyPackageSummaries(unit, options.units, options.compilerOptions),
+        );
         if (trackedDependencySummary.unsupportedExternalTrackedFilePaths.length > 0) {
           continue;
         }
@@ -885,7 +947,7 @@ export function writePackageVerificationCacheEntries(options: {
             unit.packageRoot,
             unitDependencyDependents,
           ),
-          dependencyPackages: trackedDependencySummary.dependencyPackages,
+          dependencyPackages,
           dependencySignatures: relativizeRecordKeys(unit.packageRoot, unitDependencySignatures),
           files: files.map((file) => ({
             ...file,

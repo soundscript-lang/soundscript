@@ -201,15 +201,12 @@ export async function expandProject(options: ExpandProjectOptions): Promise<Expa
     rootNames,
   });
   try {
-    const diagnostics: MergedDiagnostic[] = [
-      ...expandedProgram.frontendDiagnostics(),
-      ...ts.getPreEmitDiagnostics(expandedProgram.program).map(toMergedDiagnostic),
-    ];
-    if (hasErrorDiagnostics(diagnostics)) {
+    const frontendDiagnostics = [...expandedProgram.frontendDiagnostics()];
+    if (hasErrorDiagnostics(frontendDiagnostics)) {
       return {
-        diagnostics,
+        diagnostics: frontendDiagnostics,
         exitCode: 1,
-        output: formatDiagnostics(diagnostics, options.workingDirectory),
+        output: formatDiagnostics(frontendDiagnostics, options.workingDirectory),
       };
     }
 
@@ -217,13 +214,25 @@ export async function expandProject(options: ExpandProjectOptions): Promise<Expa
       void expandedProgram.program.getTypeChecker();
     } catch (error) {
       const macroDiagnostics = error instanceof MacroError ? [createMacroDiagnostic(error)] : [];
-      const merged = [...diagnostics, ...macroDiagnostics];
+      const merged = [...frontendDiagnostics, ...macroDiagnostics];
       return {
         diagnostics: merged,
         exitCode: 1,
         output: error instanceof MacroError
           ? formatDiagnostics(merged, options.workingDirectory)
           : String(error),
+      };
+    }
+
+    const diagnostics: MergedDiagnostic[] = [
+      ...frontendDiagnostics,
+      ...ts.getPreEmitDiagnostics(expandedProgram.program).map(toMergedDiagnostic),
+    ];
+    if (hasErrorDiagnostics(diagnostics)) {
+      return {
+        diagnostics,
+        exitCode: 1,
+        output: formatDiagnostics(diagnostics, options.workingDirectory),
       };
     }
 

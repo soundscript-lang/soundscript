@@ -4,6 +4,7 @@ import { dirname, join, toFileUrl } from '@std/path';
 import type { MergedDiagnostic } from '../checker/diagnostics.ts';
 import {
   analyzeOpenDocument,
+  analyzeOpenProjectForTest,
   codeActionsOpenDocument,
   definitionOpenDocument,
   getPreparedProjectForTest,
@@ -151,6 +152,64 @@ Deno.test('project service reuses prepared sts-local analysis state across open-
   );
 });
 
+Deno.test('project service refreshes recursive referenced roots for full project diagnostics', async () => {
+  const tempDirectory = await createTempProject({
+    'app/tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+          moduleResolution: 'Bundler',
+        },
+        references: [{ path: '../lib' }],
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'app/src/index.sts': [
+      'import { value } from "../../lib/src/value";',
+      'export const exact: string = value;',
+      '',
+    ].join('\n'),
+    'lib/tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          composite: true,
+          declaration: true,
+          emitDeclarationOnly: true,
+          strict: true,
+          target: 'ES2022',
+          module: 'ESNext',
+          moduleResolution: 'Bundler',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'lib/src/value.sts': 'export const value: string = "ok";\n',
+  });
+  const uri = toFileUrl(join(tempDirectory, 'app/src/index.sts')).href;
+  const session = openSessionDocument(
+    uri,
+    await Deno.readTextFile(join(tempDirectory, 'app/src/index.sts')),
+  );
+
+  assertEquals(analyzeOpenProjectForTest(uri, session)?.diagnostics, []);
+
+  const poisonPath = join(tempDirectory, 'lib/src/poison.sts');
+  await Deno.writeTextFile(poisonPath, 'export const poison: string = 1;\n');
+
+  const diagnostics = analyzeOpenProjectForTest(uri, session)?.diagnostics ?? [];
+  assertEquals(
+    diagnostics.map((diagnostic) => [diagnostic.code, diagnostic.filePath]),
+    [['TS2322', poisonPath]],
+  );
+});
+
 Deno.test('project service analyzes configured TypeScript files from soundscript.include as soundscript', async () => {
   const tempDirectory = await createTempProject({
     'tsconfig.json': JSON.stringify(
@@ -169,7 +228,7 @@ Deno.test('project service analyzes configured TypeScript files from soundscript
       null,
       2,
     ),
-    'src/demo.ts': 'console.log(42);\n',
+    'src/demo.ts': 'const cwd = process.cwd();\nvoid cwd;\n',
   });
 
   const session = new SessionState();
@@ -178,7 +237,7 @@ Deno.test('project service analyzes configured TypeScript files from soundscript
     uri,
     languageId: 'typescript',
     version: 1,
-    text: 'console.log(42);\n',
+    text: 'const cwd = process.cwd();\nvoid cwd;\n',
   });
 
   const analyzed = await analyzeOpenDocument(uri, session);
@@ -981,7 +1040,7 @@ Deno.test('project service offers a SOUND1019 quick fix to make writable target 
   });
 });
 
-Deno.test('project service offers a SOUND1019 quick fix to make writable class fields readonly', async () => {
+Deno.test('project service offers a SOUND1019 quick fix to make writable class fields readonly', () => {
   const text = [
     'interface KennelLike {',
     '  animals: Animal[];',

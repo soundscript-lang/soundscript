@@ -116,6 +116,17 @@ function resolvePreferredRelativeSoundScriptModule(
     : [`${moduleSpecifier}.sts`, `${moduleSpecifier}/index.sts`];
 
   for (const candidate of candidates) {
+    const resolvedCandidate = normalize(
+      isAbsolute(candidate) ? candidate : join(dirname(containingFile), candidate),
+    );
+    if (host.fileExists(resolvedCandidate)) {
+      return {
+        extension: ts.Extension.Ts,
+        isExternalLibraryImport: false,
+        resolvedFileName: resolvedCandidate,
+      };
+    }
+
     const resolved = ts.resolveModuleName(
       candidate,
       containingFile,
@@ -332,8 +343,44 @@ function collectPackageLocalImportSpecifiers(
     return [];
   }
 
-  return ts.preProcessFile(sourceText, true, true).importedFiles
-    .map((entry) => entry.fileName);
+  const moduleSpecifiers = new Set(
+    ts.preProcessFile(sourceText, true, true).importedFiles.map((entry) => entry.fileName),
+  );
+  const sourceFile = ts.createSourceFile(
+    fileName,
+    sourceText,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS,
+  );
+
+  const visit = (node: ts.Node): void => {
+    if (
+      (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) &&
+      node.moduleSpecifier &&
+      ts.isStringLiteralLike(node.moduleSpecifier)
+    ) {
+      moduleSpecifiers.add(node.moduleSpecifier.text);
+    } else if (
+      ts.isImportEqualsDeclaration(node) &&
+      ts.isExternalModuleReference(node.moduleReference) &&
+      node.moduleReference.expression &&
+      ts.isStringLiteralLike(node.moduleReference.expression)
+    ) {
+      moduleSpecifiers.add(node.moduleReference.expression.text);
+    } else if (
+      ts.isImportTypeNode(node) &&
+      ts.isLiteralTypeNode(node.argument) &&
+      ts.isStringLiteralLike(node.argument.literal)
+    ) {
+      moduleSpecifiers.add(node.argument.literal.text);
+    }
+
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+
+  return [...moduleSpecifiers].sort();
 }
 
 function resolvePackageInternalDependency(

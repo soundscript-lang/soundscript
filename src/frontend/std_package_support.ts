@@ -604,11 +604,38 @@ function createModuleResolutionHost(baseHost: ts.CompilerHost): ts.ModuleResolut
   };
 }
 
-export function withStdPackageModuleResolution(baseHost: ts.CompilerHost): ts.CompilerHost {
+export function withStdPackageModuleResolution(
+  baseHost: ts.CompilerHost,
+  defaultOptions: ts.CompilerOptions = {},
+): ts.CompilerHost {
   return {
     ...baseHost,
     fileExists(fileName: string): boolean {
       return VIRTUAL_DECLARATION_FILE_SET.has(fileName) || baseHost.fileExists(fileName);
+    },
+    getSourceFile(
+      fileName: string,
+      languageVersion: ts.ScriptTarget | ts.CreateSourceFileOptions,
+      onError?: (message: string) => void,
+      shouldCreateNewSourceFile?: boolean,
+    ): ts.SourceFile | undefined {
+      const virtualText = STDLIB_DECLARATION_TEXTS.get(fileName);
+      if (virtualText !== undefined) {
+        return ts.createSourceFile(
+          fileName,
+          virtualText,
+          languageVersion,
+          true,
+          ts.ScriptKind.TS,
+        );
+      }
+
+      return baseHost.getSourceFile(
+        fileName,
+        languageVersion,
+        onError,
+        shouldCreateNewSourceFile,
+      );
     },
     readFile(fileName: string): string | undefined {
       if (VIRTUAL_DECLARATION_FILE_SET.has(fileName)) {
@@ -629,7 +656,7 @@ export function withStdPackageModuleResolution(baseHost: ts.CompilerHost): ts.Co
         containingFile,
         reusedNames,
         redirectedReference,
-        options ?? {},
+        options ?? defaultOptions,
       );
 
       return moduleNames.map((moduleName, index) => {
@@ -663,20 +690,20 @@ export function withStdPackageModuleResolution(baseHost: ts.CompilerHost): ts.Co
           };
         }
 
+        if (delegated?.[index]) {
+          return delegated[index];
+        }
+
         const resolved = ts.resolveModuleName(
           moduleName,
           containingFile,
-          options ?? {},
+          options ?? defaultOptions,
           fallbackHost,
           undefined,
           redirectedReference,
         ).resolvedModule;
         if (resolved && STDLIB_DECLARATION_FILE_SET.has(resolved.resolvedFileName)) {
           return resolved;
-        }
-
-        if (delegated?.[index]) {
-          return delegated[index];
         }
 
         return resolved;

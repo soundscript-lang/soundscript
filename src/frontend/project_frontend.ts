@@ -8,8 +8,6 @@ import {
   isProjectedSoundscriptDeclarationFile,
   isSoundscriptMacroSourceFile,
   isSoundscriptSourceFile,
-  SOUNDSCRIPT_DECLARATION_SUFFIX,
-  SOUNDSCRIPT_PROGRAM_SUFFIX,
   toProgramFileName,
   toProjectedDeclarationFileName,
   toProjectedDeclarationSourceFileName,
@@ -132,10 +130,6 @@ export {
 
 function isDeclarationFileName(fileName: string): boolean {
   return fileName.endsWith('.d.ts') || fileName.endsWith('.d.mts') || fileName.endsWith('.d.cts');
-}
-
-function isLoadableMacroModuleFile(fileName: string): boolean {
-  return isSoundscriptMacroSourceFile(fileName);
 }
 
 function blankPreservingLines(text: string): string {
@@ -1697,14 +1691,6 @@ function rewriteForeignImportStatement(
   ];
 }
 
-function hasDirectAnnotationComment(
-  sourceFile: ts.SourceFile,
-  node: ts.Node,
-  annotationName: string,
-): boolean {
-  return createAnnotationLookup(sourceFile).hasAttachedAnnotation(node, annotationName);
-}
-
 function rewriteForeignTypeImportsToUnknown(
   fileName: string,
   sourceText: string,
@@ -1744,10 +1730,6 @@ function rewriteForeignTypeImportsToUnknown(
       !statement.importClause ||
       !ts.isStringLiteral(statement.moduleSpecifier)
     ) {
-      continue;
-    }
-
-    if (hasDirectAnnotationComment(sourceFile, statement, 'interop')) {
       continue;
     }
 
@@ -2056,8 +2038,8 @@ function rewriteProjectedDeclarationInternalNumericReferences(declarationText: s
         const seenSpecifiers = new Set<string>();
         const elements: ts.ImportSpecifier[] = [];
         for (const element of node.importClause.namedBindings.elements) {
-          let nextPropertyName = element.propertyName;
-          let nextName = element.name;
+          const nextPropertyName = element.propertyName;
+          const nextName = element.name;
           if (
             element.propertyName &&
             element.propertyName.text === 'f64' &&
@@ -2179,13 +2161,34 @@ function collectProjectedDeclarationEmitSources(
   preparedProgram: PreparedProgram,
 ): readonly ProjectedDeclarationEmitCacheSource[] {
   return preparedProgram.program.getSourceFiles()
-    .filter((sourceFile) => !sourceFile.isDeclarationFile)
+    .filter((sourceFile) =>
+      shouldIncludeProjectedDeclarationEmitCacheSource(
+        preparedProgram,
+        sourceFile,
+      )
+    )
     .map((sourceFile) => ({
       fileName: toSourceFileName(sourceFile.fileName),
       text: sourceFile.text,
     }))
-    .filter((sourceFile) => preparedProgram.isSoundscriptSourceFile(sourceFile.fileName))
     .sort((left, right) => left.fileName.localeCompare(right.fileName));
+}
+
+function shouldIncludeProjectedDeclarationEmitCacheSource(
+  preparedProgram: PreparedProgram,
+  sourceFile: ts.SourceFile,
+): boolean {
+  const sourceFileName = toSourceFileName(sourceFile.fileName);
+  if (preparedProgram.isSoundscriptSourceFile(sourceFileName)) {
+    return true;
+  }
+  if (!sourceFile.isDeclarationFile) {
+    return false;
+  }
+
+  const normalizedFileName = sourceFileName.replaceAll('\\', '/');
+  const baseName = normalizedFileName.slice(normalizedFileName.lastIndexOf('/') + 1);
+  return !(baseName.startsWith('lib.') && baseName.endsWith('.d.ts'));
 }
 
 function createProjectedDeclarationEmitBucketKey(
@@ -4456,9 +4459,9 @@ export function createPreparedCompilerHost(
   function resolvePreferredSoundscriptModule(
     moduleName: string,
     containingFile: string,
-    options: ts.CompilerOptions,
+    _options: ts.CompilerOptions,
     moduleResolutionHost: ts.ModuleResolutionHost,
-    redirectedReference?: ts.ResolvedProjectReference,
+    _redirectedReference?: ts.ResolvedProjectReference,
   ): ts.ResolvedModuleFull | undefined {
     if (!moduleName.startsWith('.')) {
       return undefined;
@@ -4518,7 +4521,7 @@ export function createPreparedCompilerHost(
         ts.resolveModuleName(
           moduleName,
           sourceContainingFile,
-          options ?? {},
+          options ?? compilerOptions,
           moduleResolutionHost,
           reusableState.moduleResolutionCache,
           redirectedReference,
@@ -4534,6 +4537,7 @@ export function createPreparedCompilerHost(
     const unresolvedIndexes: number[] = [];
     const unresolvedModuleNames: string[] = [];
     const redirectedReferenceKey = redirectedReference?.sourceFile.fileName ?? '';
+    const effectiveOptions = options ?? {};
     const optionSignature = createModuleResolutionOptionSignature(options);
     const cacheKeys = moduleNames.map((moduleName) =>
       [
@@ -4566,7 +4570,7 @@ export function createPreparedCompilerHost(
         sourceContainingFile,
         reusedNames,
         redirectedReference,
-        options ?? {},
+        effectiveOptions,
         containingSourceFile,
       )
       : undefined;
@@ -4575,7 +4579,7 @@ export function createPreparedCompilerHost(
       const preferredSoundscript = resolvePreferredSoundscriptModule(
         moduleName,
         sourceContainingFile,
-        options ?? {},
+        effectiveOptions,
         moduleResolutionHost,
         redirectedReference,
       );
@@ -4659,7 +4663,7 @@ export function createPreparedCompilerHost(
       const resolvedModule = ts.resolveModuleName(
         moduleName,
         sourceContainingFile,
-        options ?? {},
+        effectiveOptions,
         moduleResolutionHost,
         reusableState.moduleResolutionCache,
         redirectedReference,
@@ -4670,7 +4674,7 @@ export function createPreparedCompilerHost(
         return resolvePreferredSoundscriptModule(
           moduleName,
           sourceContainingFile,
-          options ?? {},
+          effectiveOptions,
           moduleResolutionHost,
           redirectedReference,
         );
@@ -4732,6 +4736,11 @@ export function createPreparedCompilerHost(
     return resolvedModules;
   }
 
+  const {
+    resolveModuleNameLiterals: baseResolveModuleNameLiterals,
+    ...baseHostWithoutResolveModuleNameLiterals
+  } = baseHost;
+
   return {
     dispose(): void {
       preparedFiles.clear();
@@ -4749,7 +4758,7 @@ export function createPreparedCompilerHost(
       return buildMacroPlaceholderIndex([...preparedFiles.values()]);
     },
     host: {
-      ...baseHost,
+      ...baseHostWithoutResolveModuleNameLiterals,
       fileExists(fileName: string): boolean {
         const sourceFileName = toSourceFileName(fileName);
         return fileOverrides.has(sourceFileName) || baseHost.fileExists(sourceFileName);
@@ -4776,17 +4785,21 @@ export function createPreparedCompilerHost(
         }
         const sourceFileName = toSourceFileName(fileName);
         if (shouldUsePlainHostSourceFile(sourceFileName)) {
-          const sourceFile = baseHost.getSourceFile(
-            sourceFileName,
-            languageVersion,
-            onError,
-            shouldCreateNewSourceFile,
-          );
-          if (!sourceFile) {
+          const sourceText = fileOverrides.get(sourceFileName) ?? baseHost.readFile(sourceFileName);
+          if (sourceText === undefined) {
             return undefined;
           }
+          const sourceFile = getCachedOrCreateSourceFile(
+            reusableState.rewrittenSourceFiles,
+            'rewritten',
+            sourceFileName,
+            sourceText,
+            languageVersion,
+            'plain',
+            shouldCreateNewSourceFile,
+          );
           programSourceFiles.add(fileName);
-          return ensureSourceFileVersion(sourceFile, sourceFile.text);
+          return sourceFile;
         }
         const prepared = getPreparedSourceFile(fileName);
         if (prepared !== undefined) {
@@ -4830,6 +4843,27 @@ export function createPreparedCompilerHost(
         return getPreparedSourceFile(fileName)?.rewrittenText ?? baseHost.readFile(sourceFileName);
       },
       resolveModuleNames,
+      ...(shouldUsePlainHostModuleResolution() && baseResolveModuleNameLiterals
+        ? {
+          resolveModuleNameLiterals(
+            moduleLiterals,
+            containingFile,
+            redirectedReference,
+            options,
+            containingSourceFile,
+            reusedNames,
+          ) {
+            return baseResolveModuleNameLiterals(
+              moduleLiterals,
+              containingFile,
+              redirectedReference,
+              options,
+              containingSourceFile,
+              reusedNames,
+            );
+          },
+        }
+        : {}),
     },
     reuseState: reusableState,
     sourceFileCacheStats(): {

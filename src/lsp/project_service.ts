@@ -3,7 +3,6 @@ import ts from 'typescript';
 
 import type { MergedDiagnostic } from '../checker/diagnostics.ts';
 import {
-  analyzePreparedProject,
   analyzePreparedProjectForFile,
   getPreparedAnalysisViewForFile,
   IncrementalProjectSession,
@@ -77,6 +76,7 @@ import type { ParsedMacroInvocation } from '../frontend/macro_types.ts';
 import { parseMacroInvocationAt } from '../frontend/macro_parser.ts';
 import { scanMacroCandidates } from '../frontend/macro_scanner.ts';
 import { fileExistsSync, readTextFileSync } from '../platform/host.ts';
+import type { AnalyzeProjectResult } from '../service/types.ts';
 
 import { type OpenDocument, SessionState } from './session.ts';
 import { logLspTiming, measureLspTiming } from './timing.ts';
@@ -424,6 +424,8 @@ function getProjectContext(
   const mode = requestedMode === 'sts-local' && isProjectSoundscriptFile(filePath)
     ? 'sts-local'
     : 'full';
+  const analyzeReferences = mode === 'full' &&
+    (loadedConfig.commandLine.projectReferences?.length ?? 0) > 0;
   const cached = projectContextCache.get(projectContextCacheKey(projectPath, mode));
   const alternateCached = projectContextCache.get(
     projectContextCacheKey(projectPath, mode === 'full' ? 'sts-local' : 'full'),
@@ -445,7 +447,7 @@ function getProjectContext(
   const reusableContext = rootsMatch ? cached : alternateRootsMatch ? alternateCached : undefined;
   const canReusePreparedProject = reusableContext !== undefined;
   if (
-    (mode === 'full' && canReuseCachedForFull) ||
+    (mode === 'full' && canReuseCachedForFull && !analyzeReferences) ||
     (mode === 'sts-local' && canReuseCachedForStsLocal)
   ) {
     return { context: cached, projectPath };
@@ -462,6 +464,7 @@ function getProjectContext(
     preparedProject: analysisSession.prepare(
       {
         additionalRootNames,
+        analyzeReferences,
         projectPath,
         workingDirectory: dirname(projectPath),
         fileOverrides: toFileOverrideMap(documents),
@@ -505,6 +508,13 @@ export function getPreparedProjectForTest(
 ): PreparedAnalysisProject | null {
   const filePath = fromFileUrl(uri);
   return getProjectContext(filePath, session, mode)?.context.preparedProject ?? null;
+}
+
+export function analyzeOpenProjectForTest(
+  uri: string,
+  session: SessionState,
+): AnalyzeProjectResult | null {
+  return getAnalyzedProjectContext(fromFileUrl(uri), session);
 }
 
 function getPreparedProjectContext(
@@ -2232,21 +2242,6 @@ function unwrapAwaitedImportInitializer(node: ts.Node | undefined): ts.Expressio
   return ts.isExpression(node) ? node : undefined;
 }
 
-function variableDeclarationInteropBoundaryLine(
-  declaration: ts.VariableDeclaration,
-  text: string,
-  sourceFile: ts.SourceFile,
-): number | undefined {
-  const initializer = unwrapAwaitedImportInitializer(declaration.initializer);
-  if (!isRequireCallExpression(initializer) && !isDynamicImportCallExpression(initializer)) {
-    return undefined;
-  }
-
-  const statement = declaration.parent?.parent;
-  const startNode = statement && ts.isVariableStatement(statement) ? statement : declaration;
-  return getLineAndCharacterOfPosition(text, startNode.getStart(sourceFile)).line;
-}
-
 interface InteropBoundaryBinding {
   line: number;
   name: string;
@@ -3492,38 +3487,6 @@ function captureExpressionText(
   text: string,
 ): string {
   return text.slice(node.getStart(sourceFile), node.getEnd());
-}
-
-function simpleFlowCaptureExpression(
-  node: ts.Node | undefined,
-  sourceFile: ts.SourceFile,
-  text: string,
-  expectedText: string,
-): ts.ElementAccessExpression | ts.PropertyAccessExpression | undefined {
-  let current = node;
-  while (current) {
-    if (ts.isPropertyAccessExpression(current)) {
-      if (
-        !ts.isPropertyAccessChain(current) &&
-        captureExpressionText(current, sourceFile, text) === expectedText
-      ) {
-        return current;
-      }
-    } else if (ts.isElementAccessExpression(current)) {
-      if (
-        !ts.isElementAccessChain(current) &&
-        (
-          ts.isStringLiteral(current.argumentExpression) ||
-          ts.isNoSubstitutionTemplateLiteral(current.argumentExpression)
-        ) &&
-        captureExpressionText(current, sourceFile, text) === expectedText
-      ) {
-        return current;
-      }
-    }
-    current = current.parent;
-  }
-  return undefined;
 }
 
 function forEachNodeChild(
@@ -5451,11 +5414,6 @@ function resolveAnalysisContainerForSourceNode(
   return container;
 }
 
-function isDeclarationNameNode(node: ts.Node): boolean {
-  const parent = node.parent as ts.Declaration & { name?: ts.Node } | undefined;
-  return parent?.name === node;
-}
-
 function countNamedNodeOccurrence(
   container: ts.Node,
   target: ts.Node,
@@ -5793,11 +5751,6 @@ function getTargetSymbolKeys(
     }
   }
   return keys;
-}
-
-function isExportedStatement(statement: ts.Statement): boolean {
-  return (ts.canHaveModifiers(statement) ? ts.getModifiers(statement) : undefined)
-    ?.some((modifier: ts.ModifierLike) => modifier.kind === ts.SyntaxKind.ExportKeyword) ?? false;
 }
 
 function findTopLevelNamedDeclarationNode(
@@ -6891,7 +6844,6 @@ function collectReferenceLocationForNode(
     rewrittenStart: number;
   },
 ) {
-  const sourceFileName = preparedProject.preparedProgram.toSourceFileName(sourceFile.fileName);
   const preparedFile = preparedFileForProgramSourceFile(preparedProject, sourceFile);
   if (preparedFile) {
     const mappedRange = macroSourceMap
@@ -7154,7 +7106,7 @@ export function hoverOpenDocument(
   line: number,
   character: number,
   session: SessionState,
-  capabilityMode: 'full' | 'editor-bridge' = 'full',
+  _capabilityMode: 'full' | 'editor-bridge' = 'full',
 ): HoveredDocument | null {
   return measureDocumentOperation('request.hover', uri, () => {
     const filePath = fromFileUrl(uri);

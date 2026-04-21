@@ -252,6 +252,90 @@ Deno.test('materializeRuntimeGraph expands package-authored macros before emit',
   }
 });
 
+Deno.test('materializeRuntimeGraph refreshes same-kind macro helper output edits', async () => {
+  const root = await Deno.makeTempDir({ prefix: 'soundscript-materialize-macro-helper-drift-' });
+  const outDir = join(root, '.soundscript-out');
+
+  try {
+    await writeProjectFile(
+      root,
+      'tsconfig.json',
+      JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+            moduleResolution: 'Bundler',
+          },
+          include: ['src/**/*.sts'],
+        },
+        null,
+        2,
+      ),
+    );
+    await writeInstalledStdlibPackage(root);
+    await writeProjectFile(root, 'src/helper.macro.sts', 'export const suffix = "One";\n');
+    await writeProjectFile(
+      root,
+      'src/macros.macro.sts',
+      [
+        "import { macroSignature } from 'sts:macros';",
+        "import { suffix } from './helper.macro';",
+        '',
+        '// #[macro(decl)]',
+        'export function augment() {',
+        '  return {',
+        '    declarationKinds: ["class"] as const,',
+        "    expansionMode: 'augment' as const,",
+        '    signature: macroSignature.of(macroSignature.decl("target")),',
+        '    expand(ctx: any) {',
+        '      return ctx.output.stmt(ctx.quote.stmt`export const Registry${suffix} = Registry;`);',
+        '    },',
+        '  };',
+        '}',
+        '',
+      ].join('\n'),
+    );
+    await writeProjectFile(
+      root,
+      'src/index.sts',
+      [
+        "import { augment } from './macros.macro';",
+        '',
+        '// #[augment]',
+        'export class Registry {}',
+        '',
+      ].join('\n'),
+    );
+
+    const materializeAndRead = async (): Promise<string> => {
+      const result = await materializeRuntimeGraph({
+        entryPaths: [join(root, 'src/index.sts')],
+        outDir,
+        workingDirectory: root,
+      });
+      assertEquals(result.exitCode, 0, result.output);
+      assertEquals(result.diagnostics, []);
+      return await Deno.readTextFile(join(outDir, 'src/index.js'));
+    };
+
+    const first = await materializeAndRead();
+    assertStringIncludes(first, 'export const RegistryOne = Registry;');
+    assertEquals(first.includes('__sts_macro_stmt'), false);
+
+    await writeProjectFile(root, 'src/helper.macro.sts', 'export const suffix = "Two";\n');
+
+    const second = await materializeAndRead();
+    assertStringIncludes(second, 'export const RegistryTwo = Registry;');
+    assertEquals(second.includes('RegistryOne'), false);
+    assertEquals(second.includes('__sts_macro_stmt'), false);
+  } finally {
+    await Deno.remove(root, { recursive: true }).catch(() => undefined);
+  }
+});
+
 Deno.test('materializeRuntimeGraph ignores unrelated frontier files outside the entry semantic closure', async () => {
   const root = await Deno.makeTempDir({ prefix: 'soundscript-materialize-scope-' });
   const outDir = join(root, '.soundscript-out');
@@ -512,7 +596,11 @@ Deno.test('materializeRuntimeGraph matches the legacy full semantic runtime prog
     });
 
     assertEquals(result.exitCode, 0);
-    await assertMaterializedEntryMatchesLegacySemanticRuntimeProgram(root, outDir, 'src/contracts.sts');
+    await assertMaterializedEntryMatchesLegacySemanticRuntimeProgram(
+      root,
+      outDir,
+      'src/contracts.sts',
+    );
   } finally {
     await Deno.remove(root, { recursive: true }).catch(() => undefined);
   }

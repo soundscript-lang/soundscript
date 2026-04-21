@@ -1289,7 +1289,9 @@ Deno.test(
         1,
       );
       assertEquals(
-        logs.filter((line) => line.includes('[soundscript:checker] project.analyze.universalPolicy '))
+        logs.filter((line) =>
+          line.includes('[soundscript:checker] project.analyze.universalPolicy ')
+        )
           .length,
         1,
       );
@@ -1586,12 +1588,82 @@ Deno.test(
 );
 
 Deno.test(
+  'IncrementalProjectSession rebuilds .ts view after dependency disk drift with unrelated override',
+  async () => {
+    const tempDirectory = await createTempProject({
+      'tsconfig.json': JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+          },
+          include: ['src/**/*.ts'],
+        },
+        null,
+        2,
+      ),
+      'src/index.ts': [
+        'import { helper } from "./helper";',
+        'export const exact: number = helper;',
+        '',
+      ].join('\n'),
+      'src/helper.ts': 'export const helper: number = 1;\n',
+      'src/other.ts': 'export const other = 1;\n',
+    });
+
+    const projectPath = join(tempDirectory, 'tsconfig.json');
+    const indexFilePath = join(tempDirectory, 'src/index.ts');
+    const helperFilePath = join(tempDirectory, 'src/helper.ts');
+    const otherFilePath = join(tempDirectory, 'src/other.ts');
+    const session = new IncrementalProjectSession();
+
+    session.prepare({
+      projectPath,
+      workingDirectory: tempDirectory,
+    });
+    const initialIndexResult = session.analyzeFile(indexFilePath);
+    assertEquals(initialIndexResult.diagnostics, []);
+
+    await Deno.writeTextFile(helperFilePath, 'export const helper: string = "broken";\n');
+
+    const nextOptions = {
+      fileOverrides: new Map([[otherFilePath, 'export const other = 2;\n']]),
+      projectPath,
+      workingDirectory: tempDirectory,
+    };
+    const freshResult = analyzePreparedProjectForFile(
+      prepareProjectAnalysis(nextOptions),
+      indexFilePath,
+    );
+    session.prepare(nextOptions);
+    const sessionResult = session.analyzeFile(indexFilePath);
+
+    assertEquals(freshResult.diagnostics.map((diagnostic) => diagnostic.code), ['TS2322']);
+    assertEquals(
+      {
+        diagnostics: sessionResult.diagnostics.map((diagnostic) => diagnostic.code),
+        staleResultRejected: sessionResult !== initialIndexResult,
+        summary: sessionResult.summary,
+      },
+      {
+        diagnostics: freshResult.diagnostics.map((diagnostic) => diagnostic.code),
+        staleResultRejected: true,
+        summary: freshResult.summary,
+      },
+    );
+  },
+);
+
+Deno.test(
   'analyzeProject completes explicit declaration-backed DOM return relations without diagnostics',
   async () => {
     const tempDirectory = await createTempProject({
       'tsconfig.json': JSON.stringify(
         {
           compilerOptions: {
+            lib: ['ES2024', 'DOM', 'DOM.AsyncIterable'],
             strict: true,
             noEmit: true,
             target: 'ES2022',
@@ -1603,6 +1675,9 @@ Deno.test(
         2,
       ),
       'src/index.sts': [
+        '// #[interop]',
+        'import { document } from "host:dom";',
+        '',
         'export function main(): Element | null {',
         "  return document.getElementById('app');",
         '}',

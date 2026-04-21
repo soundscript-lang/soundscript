@@ -24,6 +24,7 @@ import {
   sourceTextLooksLikeMacroModule,
   usesLegacyDefineMacroAuthoring,
 } from '../frontend/macro_factory_support.ts';
+import { withStdPackageModuleResolution } from '../frontend/std_package_support.ts';
 import {
   capturePersistentPreparedCompilerHostReuseSnapshot,
   clearPreparedCompilerHostReuseState,
@@ -45,7 +46,11 @@ import {
   toProjectedDeclarationSourceFileName,
   toSourceFileName,
 } from '../frontend/project_frontend.ts';
-import { collectSoundscriptRootNames, loadConfig } from '../project/config.ts';
+import {
+  collectSoundscriptRootNames,
+  createProjectReferencesConfigSignature,
+  loadConfig,
+} from '../project/config.ts';
 import {
   findNearestPackageJsonPath,
   getSoundScriptPackageInfoForResolvedModule,
@@ -95,6 +100,7 @@ export interface PreparedAnalysisView {
   program: ts.Program;
   runSound: boolean;
   runUniversalPolicy: boolean;
+  tsDiagnosticSourceFileFilter?: (sourceFile: ts.SourceFile) => boolean;
   tsDiagnosticPrograms: readonly BuiltinExpandedTsDiagnosticProgram[];
   universalPolicyScope: 'full' | 'sourceSupplemental';
 }
@@ -119,6 +125,7 @@ export interface PreparedAnalysisProject {
   soundscriptRootNames: readonly string[];
   stsView: PreparedAnalysisView | null;
   tsCompilerHostReuseState: PreparedCompilerHostReuseState | undefined;
+  typescriptViewContentSignature: string;
   tsView: PreparedAnalysisView | null;
 }
 
@@ -302,6 +309,7 @@ function hydratePersistentPreparedAnalysisViewReuseSnapshot(
 
 interface AnalyzeProjectOptionsSnapshot {
   additionalRootNames: readonly string[];
+  analyzeReferences: boolean;
   fileOverrides: ReadonlyMap<string, string>;
   projectPath: string;
   target: AnalyzeProjectOptions['target'];
@@ -311,6 +319,7 @@ interface AnalyzeProjectOptionsSnapshot {
 interface CachedFileAnalysisResult {
   artifacts: PreparedProjectAnalysisArtifacts;
   cacheDependencyPaths: readonly string[];
+  cacheDependencySignature: string;
   result: AnalyzeProjectResult;
   supportsSelectiveReuse: boolean;
 }
@@ -326,6 +335,7 @@ function snapshotAnalyzeProjectOptions(
 ): AnalyzeProjectOptionsSnapshot {
   return {
     additionalRootNames: [...(options.additionalRootNames ?? [])],
+    analyzeReferences: options.analyzeReferences === true,
     fileOverrides: cloneFileOverrides(options.fileOverrides),
     projectPath: options.projectPath,
     target: options.target,
@@ -356,6 +366,7 @@ function analyzeProjectOptionsEqual(
 ): boolean {
   return left.projectPath === right.projectPath &&
     left.workingDirectory === right.workingDirectory &&
+    left.analyzeReferences === (right.analyzeReferences === true) &&
     left.target === right.target &&
     rootNamesEqual(left.additionalRootNames, right.additionalRootNames ?? []) &&
     fileOverridesEqual(left.fileOverrides, cloneFileOverrides(right.fileOverrides));
@@ -380,6 +391,52 @@ function collectChangedFileOverridePaths(
   }
 
   return [...changedPaths];
+}
+
+function createFileAnalysisCacheDependencySignature(
+  cacheDependencyPaths: readonly string[],
+  fileOverrides: ReadonlyMap<string, string>,
+): string {
+  const host = createModuleResolutionHostWithOverrides(fileOverrides);
+  return [...new Set(cacheDependencyPaths.map((filePath) => ts.sys.resolvePath(filePath)))]
+    .sort()
+    .map((filePath) => {
+      const text = host.readFile(filePath);
+      return [
+        filePath,
+        text === undefined ? 'missing' : 'text',
+        text?.length ?? 0,
+        text ?? '',
+      ].join('\u0001');
+    })
+    .join('\u0002');
+}
+
+function collectPreparedViewProgramSourceFilePaths(
+  preparedView: PreparedAnalysisView | null,
+): readonly string[] {
+  if (!preparedView) {
+    return [];
+  }
+
+  const paths = new Set<string>();
+  for (const sourceFile of preparedView.program.getSourceFiles()) {
+    if (preparedView.program.isSourceFileDefaultLibrary(sourceFile)) {
+      continue;
+    }
+    paths.add(preparedView.preparedProgram.toSourceFileName(sourceFile.fileName));
+  }
+  return [...paths].sort();
+}
+
+function createPreparedViewProgramContentSignature(
+  preparedView: PreparedAnalysisView | null,
+  fileOverrides: ReadonlyMap<string, string>,
+): string {
+  return createFileAnalysisCacheDependencySignature(
+    collectPreparedViewProgramSourceFilePaths(preparedView),
+    fileOverrides,
+  );
 }
 
 function canRetainCachedFileAnalysisResult(
@@ -421,6 +478,16 @@ function canRetainCachedFileAnalysisResult(
     return false;
   }
 
+  if (
+    cachedResult.cacheDependencySignature !==
+      createFileAnalysisCacheDependencySignature(
+        cachedResult.cacheDependencyPaths,
+        nextOptions.fileOverrides,
+      )
+  ) {
+    return false;
+  }
+
   return !changedOverridePaths.some((changedFilePath) =>
     matchesPreparedAnalysisAnyFilePath(changedFilePath, cachedResult.cacheDependencyPaths)
   );
@@ -434,12 +501,258 @@ function isPreparedAnalysisProjectSourceFile(
   return preparedView !== null && getPreparedViewSourceFileMatch(preparedView, filePath) !== null;
 }
 
+interface ProjectReferenceAnalysisState {
+  cycleKeys: Set<string>;
+  diagnostics: MergedDiagnostic[];
+  orderedProjectPaths: string[];
+  stack: string[];
+  visited: Set<string>;
+  visiting: Set<string>;
+}
+
+function resolveProjectReferenceConfigPath(reference: ts.ProjectReference): string {
+  return ts.sys.resolvePath(ts.resolveProjectReferencePath(reference));
+}
+
+function createProjectReferenceCycleDiagnostic(
+  projectPath: string,
+  stack: readonly string[],
+): MergedDiagnostic {
+  const cycleStart = stack.indexOf(projectPath);
+  const cycle = [
+    ...(cycleStart >= 0 ? stack.slice(cycleStart) : stack),
+    projectPath,
+  ];
+
+  return {
+    source: 'cli',
+    code: 'SOUNDSCRIPT_PROJECT_REFERENCE_CYCLE',
+    category: 'error',
+    message: `Project reference cycle detected: ${cycle.join(' -> ')}`,
+    filePath: projectPath,
+    line: 1,
+    column: 1,
+  };
+}
+
+function collectProjectReferenceAnalysisOrder(
+  projectPath: string,
+  options: Pick<AnalyzeProjectOptions, 'target'>,
+  state: ProjectReferenceAnalysisState,
+): void {
+  const resolvedProjectPath = ts.sys.resolvePath(projectPath);
+  if (state.visited.has(resolvedProjectPath)) {
+    return;
+  }
+  if (state.visiting.has(resolvedProjectPath)) {
+    const cycleStart = state.stack.indexOf(resolvedProjectPath);
+    const cycleStack = cycleStart >= 0 ? state.stack.slice(cycleStart) : [...state.stack];
+    const cycle = [
+      ...cycleStack,
+      resolvedProjectPath,
+    ];
+    const cycleKey = cycle.join('\u0000');
+    if (!state.cycleKeys.has(cycleKey)) {
+      state.cycleKeys.add(cycleKey);
+      state.diagnostics.push(
+        createProjectReferenceCycleDiagnostic(resolvedProjectPath, state.stack),
+      );
+    }
+    return;
+  }
+
+  state.visiting.add(resolvedProjectPath);
+  state.stack.push(resolvedProjectPath);
+
+  const loadedConfig = loadConfig(resolvedProjectPath, { target: options.target });
+  for (const reference of loadedConfig.commandLine.projectReferences ?? []) {
+    collectProjectReferenceAnalysisOrder(
+      resolveProjectReferenceConfigPath(reference),
+      options,
+      state,
+    );
+  }
+
+  state.stack.pop();
+  state.visiting.delete(resolvedProjectPath);
+  state.visited.add(resolvedProjectPath);
+  state.orderedProjectPaths.push(resolvedProjectPath);
+}
+
+function projectDirectoryContainsPath(projectPath: string, filePath: string): boolean {
+  const projectDirectory = dirname(projectPath);
+  const normalizedProjectDirectory = ts.sys.resolvePath(projectDirectory).replaceAll('\\', '/');
+  const normalizedFilePath = ts.sys.resolvePath(filePath).replaceAll('\\', '/');
+  const directoryPrefix = normalizedProjectDirectory.endsWith('/')
+    ? normalizedProjectDirectory
+    : `${normalizedProjectDirectory}/`;
+  return normalizedFilePath === normalizedProjectDirectory ||
+    normalizedFilePath.startsWith(directoryPrefix);
+}
+
+function filterFileOverridesForProject(
+  projectPath: string,
+  fileOverrides: ReadonlyMap<string, string> | undefined,
+): ReadonlyMap<string, string> | undefined {
+  if (!fileOverrides) {
+    return undefined;
+  }
+
+  const filtered = new Map<string, string>();
+  for (const [filePath, text] of fileOverrides.entries()) {
+    if (projectDirectoryContainsPath(projectPath, filePath)) {
+      filtered.set(filePath, text);
+    }
+  }
+  return filtered.size > 0 ? filtered : undefined;
+}
+
+function collectAdditionalRootNamesForProject(
+  projectPath: string,
+  options: AnalyzeProjectOptions,
+): readonly string[] {
+  const roots = new Set<string>();
+  for (const rootName of options.additionalRootNames ?? []) {
+    if (projectDirectoryContainsPath(projectPath, rootName)) {
+      roots.add(rootName);
+    }
+  }
+  for (const filePath of options.fileOverrides?.keys() ?? []) {
+    if (projectDirectoryContainsPath(projectPath, filePath)) {
+      roots.add(filePath);
+    }
+  }
+  return [...roots].sort();
+}
+
+function createReferencedProjectAnalyzeOptions(
+  projectPath: string,
+  options: AnalyzeProjectOptions,
+): AnalyzeProjectOptions {
+  return {
+    additionalRootNames: collectAdditionalRootNamesForProject(projectPath, options),
+    analyzeReferences: false,
+    fileOverrides: filterFileOverridesForProject(projectPath, options.fileOverrides),
+    projectPath,
+    target: options.target,
+    workingDirectory: dirname(projectPath),
+  };
+}
+
+function diagnosticFingerprint(diagnostics: readonly MergedDiagnostic[]): string {
+  return JSON.stringify(diagnostics.map((diagnostic) => [
+    diagnostic.source,
+    diagnostic.code,
+    diagnostic.category,
+    diagnostic.message,
+    diagnostic.filePath ?? '',
+    diagnostic.line ?? '',
+    diagnostic.column ?? '',
+    diagnostic.endLine ?? '',
+    diagnostic.endColumn ?? '',
+  ]));
+}
+
+function combineAnalyzeProjectResults(
+  results: readonly AnalyzeProjectResult[],
+): AnalyzeProjectResult {
+  const diagnostics = dedupeMergedDiagnostics(results.flatMap((result) => result.diagnostics));
+  return {
+    diagnostics,
+    summary: createSummary(diagnostics),
+  };
+}
+
+function createProjectSessionFreshnessSignature(
+  configReuseSignature: string,
+  soundscriptFileOverridesSignature: string,
+  soundscriptRootContentSignature: string,
+  stsProgramRootNames: readonly string[],
+  typescriptViewContentSignature: string,
+): string {
+  return stableConfigSignature({
+    configReuseSignature,
+    soundscriptFileOverridesSignature,
+    soundscriptRootContentSignature,
+    stsProgramRootNames,
+    typescriptViewContentSignature,
+  });
+}
+
+function createPreparedProjectSessionFreshnessSignature(
+  preparedProject: PreparedAnalysisProject,
+): string {
+  return createProjectSessionFreshnessSignature(
+    preparedProject.configReuseSignature,
+    preparedProject.soundscriptFileOverridesSignature,
+    preparedProject.soundscriptRootContentSignature,
+    preparedProject.stsProgramRootNames,
+    preparedProject.typescriptViewContentSignature,
+  );
+}
+
+function createCurrentProjectSessionFreshnessSignature(
+  options: AnalyzeProjectOptions,
+  previousPreparedProject: PreparedAnalysisProject,
+): string {
+  const loadedConfig = loadConfig(
+    options.projectPath,
+    { target: options.target },
+    options.additionalRootNames,
+  );
+  const configuredSoundscriptRootNames = collectSoundscriptRootNames(
+    options.projectPath,
+    loadedConfig,
+  );
+  const allRootNames = combineRootNames(
+    combineRootNames(
+      loadedConfig.commandLine.fileNames,
+      configuredSoundscriptRootNames,
+    ),
+    options.additionalRootNames,
+  );
+  const soundscriptRootNames = allRootNames.filter(loadedConfig.isSoundscriptSourceFile);
+  const declarationRootNames = allRootNames.filter(isDeclarationRootFileName);
+  const typescriptRootNames = allRootNames.filter((fileName) =>
+    !loadedConfig.isSoundscriptSourceFile(fileName)
+  );
+  const typescriptReachableSoundscriptRootNames = collectSoundscriptDependenciesFromHostRoots(
+    typescriptRootNames,
+    loadedConfig.frontierCommandLine.options,
+    options.fileOverrides,
+    loadedConfig.isSoundscriptSourceFile,
+  );
+  const stsProgramRootNames = combineRootNames(
+    combineRootNames(soundscriptRootNames, typescriptReachableSoundscriptRootNames),
+    declarationRootNames,
+  );
+  return createProjectSessionFreshnessSignature(
+    createProjectConfigReuseSignature(options.projectPath, loadedConfig),
+    createFileOverrideSignature(options.fileOverrides, loadedConfig.isSoundscriptSourceFile),
+    createSoundscriptRootContentSignature(
+      stsProgramRootNames,
+      loadedConfig.frontierCommandLine.options,
+      options.fileOverrides,
+      loadedConfig.isSoundscriptSourceFile,
+    ),
+    stsProgramRootNames,
+    createPreparedViewProgramContentSignature(
+      previousPreparedProject.tsView,
+      options.fileOverrides ?? new Map(),
+    ),
+  );
+}
+
 export class IncrementalProjectSession {
   #analyzedProject: AnalyzeProjectResult | null = null;
   #analyzedResultsByFile = new Map<string, CachedFileAnalysisResult>();
   #optionsSnapshot: AnalyzeProjectOptionsSnapshot | null = null;
   #prepareOptions: PrepareProjectAnalysisOptions = {};
+  #preparedProjectFreshnessSignature: string | null = null;
   #preparedProject: PreparedAnalysisProject | null = null;
+  #referenceGraphDiagnostics: readonly MergedDiagnostic[] = [];
+  #referenceProjectPaths: readonly string[] = [];
+  #referenceSessionsByProjectPath = new Map<string, IncrementalProjectSession>();
 
   get preparedProject(): PreparedAnalysisProject | null {
     return this.#preparedProject;
@@ -461,11 +774,16 @@ export class IncrementalProjectSession {
 
     const preparedProject = this.#requirePreparedProject();
     const analysis = analyzePreparedProjectForFileWithArtifacts(preparedProject, filePath);
+    const cacheDependencyPaths = collectPreparedProjectCacheDependencyPathsForFile(
+      preparedProject,
+      filePath,
+    );
     this.#analyzedResultsByFile.set(filePath, {
       artifacts: analysis.artifacts,
-      cacheDependencyPaths: collectPreparedProjectCacheDependencyPathsForFile(
-        preparedProject,
-        filePath,
+      cacheDependencyPaths,
+      cacheDependencySignature: createFileAnalysisCacheDependencySignature(
+        cacheDependencyPaths,
+        this.#optionsSnapshot?.fileOverrides ?? new Map(),
       ),
       result: analysis.result,
       supportsSelectiveReuse: true,
@@ -474,17 +792,23 @@ export class IncrementalProjectSession {
   }
 
   analyzeProject(): AnalyzeProjectResult {
-    this.#analyzedProject ??= analyzePreparedProject(this.#requirePreparedProject());
+    this.#analyzedProject ??= this.#optionsSnapshot?.analyzeReferences
+      ? this.#analyzeProjectWithReferences()
+      : analyzePreparedProject(this.#requirePreparedProject());
     return this.#analyzedProject;
   }
 
   dispose(): void {
     disposePreparedAnalysisProject(this.#preparedProject);
+    this.#disposeReferenceSessions();
     this.#analyzedProject = null;
     this.#analyzedResultsByFile.clear();
     this.#optionsSnapshot = null;
     this.#prepareOptions = {};
+    this.#preparedProjectFreshnessSignature = null;
     this.#preparedProject = null;
+    this.#referenceGraphDiagnostics = [];
+    this.#referenceProjectPaths = [];
   }
 
   prepare(
@@ -496,8 +820,13 @@ export class IncrementalProjectSession {
       this.#preparedProject &&
       this.#optionsSnapshot &&
       analyzeProjectOptionsEqual(this.#optionsSnapshot, options) &&
-      prepareProjectAnalysisOptionsEqual(this.#prepareOptions, prepareOptions)
+      prepareProjectAnalysisOptionsEqual(this.#prepareOptions, prepareOptions) &&
+      this.#preparedProjectFreshnessSignature ===
+        createCurrentProjectSessionFreshnessSignature(options, this.#preparedProject)
     ) {
+      if (this.#prepareReferenceSessions(options)) {
+        this.#analyzedProject = null;
+      }
       return this.#preparedProject;
     }
 
@@ -512,6 +841,9 @@ export class IncrementalProjectSession {
     const nextOptionsSnapshot = snapshotAnalyzeProjectOptions(options);
 
     this.#preparedProject = preparedProject;
+    this.#preparedProjectFreshnessSignature = createPreparedProjectSessionFreshnessSignature(
+      preparedProject,
+    );
     this.#optionsSnapshot = nextOptionsSnapshot;
     this.#prepareOptions = { ...prepareOptions };
     this.#invalidateAnalysisCaches(
@@ -521,8 +853,88 @@ export class IncrementalProjectSession {
       nextOptionsSnapshot,
       prepareOptions,
     );
+    this.#prepareReferenceSessions(options);
     disposePreparedAnalysisProject(previousPreparedProject, preparedProject);
     return preparedProject;
+  }
+
+  #analyzeProjectWithReferences(): AnalyzeProjectResult {
+    const results: AnalyzeProjectResult[] = [
+      {
+        diagnostics: [...this.#referenceGraphDiagnostics],
+        summary: createSummary(this.#referenceGraphDiagnostics),
+      },
+    ];
+    for (const projectPath of this.#referenceProjectPaths) {
+      const referenceSession = this.#referenceSessionsByProjectPath.get(projectPath);
+      if (referenceSession) {
+        results.push(referenceSession.analyzeProject());
+      }
+    }
+    results.push(analyzePreparedProject(this.#requirePreparedProject()));
+    return combineAnalyzeProjectResults(results);
+  }
+
+  #disposeReferenceSessions(retainedProjectPaths: ReadonlySet<string> = new Set()): boolean {
+    let disposed = false;
+    for (const [projectPath, session] of this.#referenceSessionsByProjectPath.entries()) {
+      if (retainedProjectPaths.has(projectPath)) {
+        continue;
+      }
+      session.dispose();
+      this.#referenceSessionsByProjectPath.delete(projectPath);
+      disposed = true;
+    }
+    return disposed;
+  }
+
+  #prepareReferenceSessions(options: AnalyzeProjectOptions): boolean {
+    const previousPaths = this.#referenceProjectPaths;
+    const previousDiagnosticsFingerprint = diagnosticFingerprint(this.#referenceGraphDiagnostics);
+    if (options.analyzeReferences !== true) {
+      const changed = previousPaths.length > 0 ||
+        this.#referenceGraphDiagnostics.length > 0 ||
+        this.#disposeReferenceSessions();
+      this.#referenceProjectPaths = [];
+      this.#referenceGraphDiagnostics = [];
+      return changed;
+    }
+
+    const referenceState: ProjectReferenceAnalysisState = {
+      cycleKeys: new Set(),
+      diagnostics: [],
+      orderedProjectPaths: [],
+      stack: [],
+      visited: new Set(),
+      visiting: new Set(),
+    };
+    collectProjectReferenceAnalysisOrder(options.projectPath, options, referenceState);
+
+    const rootProjectPath = ts.sys.resolvePath(options.projectPath);
+    const referenceProjectPaths = referenceState.orderedProjectPaths.filter((projectPath) =>
+      ts.sys.resolvePath(projectPath) !== rootProjectPath
+    );
+    const retainedProjectPaths = new Set(referenceProjectPaths);
+    let changed = previousPaths.length !== referenceProjectPaths.length ||
+      previousPaths.some((projectPath, index) => projectPath !== referenceProjectPaths[index]);
+    this.#referenceGraphDiagnostics = referenceState.diagnostics;
+    changed ||=
+      previousDiagnosticsFingerprint !== diagnosticFingerprint(referenceState.diagnostics);
+    changed ||= this.#disposeReferenceSessions(retainedProjectPaths);
+
+    for (const projectPath of referenceProjectPaths) {
+      const referenceSession = this.#referenceSessionsByProjectPath.get(projectPath) ??
+        new IncrementalProjectSession();
+      const previousPreparedProject = referenceSession.preparedProject;
+      this.#referenceSessionsByProjectPath.set(projectPath, referenceSession);
+      referenceSession.prepare(createReferencedProjectAnalyzeOptions(projectPath, options));
+      if (referenceSession.preparedProject !== previousPreparedProject) {
+        changed = true;
+      }
+    }
+
+    this.#referenceProjectPaths = referenceProjectPaths;
+    return changed;
   }
 
   #invalidateAnalysisCaches(
@@ -927,8 +1339,10 @@ function createProjectConfigReuseSignature(
     stableConfigSignature(loadedConfig.commandLine.raw),
     stableConfigSignature(loadedConfig.commandLine.options),
     stableConfigSignature(loadedConfig.commandLine.projectReferences ?? []),
+    createProjectReferencesConfigSignature(loadedConfig.commandLine.projectReferences),
     stableConfigSignature(loadedConfig.frontierCommandLine.options),
     stableConfigSignature(loadedConfig.frontierCommandLine.projectReferences ?? []),
+    createProjectReferencesConfigSignature(loadedConfig.frontierCommandLine.projectReferences),
     stableConfigSignature(loadedConfig.runtime),
   ].join('\u0003');
 }
@@ -1064,6 +1478,68 @@ function collectReachableSoundscriptDependencyFiles(
 
   reachableFiles.sort();
   return reachableFiles;
+}
+
+function collectSoundscriptDependenciesFromHostRoots(
+  rootNames: readonly string[],
+  compilerOptions: ts.CompilerOptions,
+  fileOverrides: ReadonlyMap<string, string> | undefined,
+  isSoundscriptFile: (fileName: string) => boolean,
+): readonly string[] {
+  const host = createModuleResolutionHostWithOverrides(fileOverrides);
+  const visited = new Set<string>();
+  const soundscriptDependencies = new Set<string>();
+
+  function visit(fileName: string): void {
+    const sourceFileName = ts.sys.resolvePath(toSourceFileName(fileName));
+    if (visited.has(sourceFileName)) {
+      return;
+    }
+    visited.add(sourceFileName);
+
+    const sourceText = host.readFile(sourceFileName);
+    if (!sourceText) {
+      return;
+    }
+
+    const sourceFile = ts.createSourceFile(
+      sourceFileName,
+      sourceText,
+      ts.ScriptTarget.Latest,
+      true,
+      ts.ScriptKind.TS,
+    );
+    for (const moduleSpecifier of getStaticSourceFileModuleSpecifiers(sourceFile)) {
+      const resolvedModule = resolveSoundScriptAwareModule(
+        moduleSpecifier,
+        sourceFileName,
+        compilerOptions,
+        host,
+      );
+      if (!resolvedModule) {
+        continue;
+      }
+
+      const dependencyFileName = ts.sys.resolvePath(
+        toSourceFileName(resolvedModule.resolvedFileName),
+      );
+      if (isSoundscriptFile(dependencyFileName)) {
+        soundscriptDependencies.add(dependencyFileName);
+        visit(dependencyFileName);
+        continue;
+      }
+
+      if (!isDeclarationRootFileName(dependencyFileName)) {
+        visit(dependencyFileName);
+      }
+    }
+  }
+
+  for (const rootName of rootNames) {
+    visit(rootName);
+  }
+
+  return [...soundscriptDependencies].sort();
 }
 
 function createSoundscriptRootContentSignature(
@@ -1606,6 +2082,7 @@ function prepareAnalysisView(
   oldProgram?: ts.Program,
   persistentBuildInfoKey?: PreparePersistentBuildInfoKey,
   persistentBuildInfoDirectory?: string,
+  tsDiagnosticSourceFileFilter?: (sourceFile: ts.SourceFile) => boolean,
 ): PreparedAnalysisView | null {
   if (rootNames.length === 0) {
     return null;
@@ -1676,6 +2153,7 @@ function prepareAnalysisView(
     program,
     runSound,
     runUniversalPolicy: true,
+    tsDiagnosticSourceFileFilter,
     tsDiagnosticPrograms: expandedProgram.tsDiagnosticPrograms,
     universalPolicyScope,
   };
@@ -1697,9 +2175,12 @@ function prepareHostAnalysisView(
 
   const preparedProgram = createPreparedProgram({
     allowSoundscriptProgramFileResolution: false,
-    baseHost: createProjectCompilerHost(
+    baseHost: withStdPackageModuleResolution(
+      createProjectCompilerHost(
+        loadedConfig.commandLine.options,
+        dirname(options.projectPath),
+      ),
       loadedConfig.commandLine.options,
-      dirname(options.projectPath),
     ),
     configFileParsingDiagnostics,
     configuredSoundscriptFileNames: loadedConfig.soundscriptConfiguredFileNames,
@@ -1741,6 +2222,7 @@ function prepareHostAnalysisView(
     program,
     runSound: false,
     runUniversalPolicy: false,
+    tsDiagnosticSourceFileFilter: undefined,
     tsDiagnosticPrograms: [{ program }],
     universalPolicyScope: 'full',
   };
@@ -1800,6 +2282,7 @@ export function createPreparedAnalysisProjectFromBuiltinExpandedProgram(
       program,
       runSound,
       runUniversalPolicy,
+      tsDiagnosticSourceFileFilter: undefined,
       tsDiagnosticPrograms: expandedProgram.tsDiagnosticPrograms,
       universalPolicyScope,
     };
@@ -1865,6 +2348,7 @@ export function createPreparedAnalysisProjectFromBuiltinExpandedProgram(
       )
       : null,
     tsCompilerHostReuseState: analysisPreparedProgram.preparedHost.reuseState,
+    typescriptViewContentSignature: '',
     tsView: hasTypescriptCandidates
       ? createView(
         (sourceFile) =>
@@ -2664,8 +3148,13 @@ function collectPreparedViewTsDiagnostics(
               : [];
           });
         });
-      metadata.diagnostics = collectedDiagnostics.length;
-      return collectedDiagnostics;
+      const filteredDiagnostics = preparedView.tsDiagnosticSourceFileFilter
+        ? collectedDiagnostics.filter((diagnostic) =>
+          !diagnostic.file || preparedView.tsDiagnosticSourceFileFilter!(diagnostic.file)
+        )
+        : collectedDiagnostics;
+      metadata.diagnostics = filteredDiagnostics.length;
+      return filteredDiagnostics;
     },
     { always: true },
   );
@@ -2685,7 +3174,7 @@ function collectTsDiagnosticsFromDiagnosticProgram(
   const builderProgram = diagnosticProgram.program === preparedView.program
     ? preparedView.preparedProgram.preparedHost.reuseState.semanticDiagnosticsBuilderProgram
     : undefined;
-  if (!builderProgram || sourceFile) {
+  if (!builderProgram || builderProgram.getProgram() !== diagnosticProgram.program || sourceFile) {
     return ts.getPreEmitDiagnostics(diagnosticProgram.program, sourceFile);
   }
 
@@ -3277,6 +3766,16 @@ export function disposePreparedAnalysisProject(
 }
 
 export function analyzeProject(options: AnalyzeProjectOptions): AnalyzeProjectResult {
+  if (options.analyzeReferences === true) {
+    const session = new IncrementalProjectSession();
+    try {
+      session.prepare(options);
+      return session.analyzeProject();
+    } finally {
+      session.dispose();
+    }
+  }
+
   const preparedProject = prepareProjectAnalysis(options);
   try {
     return analyzePreparedProject(preparedProject);
@@ -3328,9 +3827,22 @@ export function prepareProjectAnalysis(
       );
       const soundscriptRootNames = allRootNames.filter(loadedConfig.isSoundscriptSourceFile);
       const declarationRootNames = allRootNames.filter(isDeclarationRootFileName);
-      const stsProgramRootNames = combineRootNames(soundscriptRootNames, declarationRootNames);
       const typescriptRootNames = allRootNames.filter((fileName) =>
         !loadedConfig.isSoundscriptSourceFile(fileName)
+      );
+      const typescriptReachableSoundscriptRootNames = collectSoundscriptDependenciesFromHostRoots(
+        typescriptRootNames,
+        loadedConfig.frontierCommandLine.options,
+        options.fileOverrides,
+        loadedConfig.isSoundscriptSourceFile,
+      );
+      const projectedSoundscriptRootNames = combineRootNames(
+        soundscriptRootNames,
+        typescriptReachableSoundscriptRootNames,
+      );
+      const stsProgramRootNames = combineRootNames(
+        projectedSoundscriptRootNames,
+        declarationRootNames,
       );
       const packageVerificationCacheProbe = prepareOptions.usePackageVerificationCache === true
         ? probePackageVerificationCache({
@@ -3388,7 +3900,7 @@ export function prepareProjectAnalysis(
         reusableProject.soundscriptRootContentSignature === soundscriptRootContentSignature &&
         reusableProject.soundscriptFileOverridesSignature === soundscriptFileOverridesSignature;
       const soundscriptRootNameSet = new Set(
-        soundscriptRootNames.map((rootName) => ts.sys.resolvePath(rootName)),
+        projectedSoundscriptRootNames.map((rootName) => ts.sys.resolvePath(rootName)),
       );
       const stsView = canReuseStsArtifacts ? reusableProject.stsView : (() => {
         const metadata: Record<string, string | number> = {
@@ -3425,6 +3937,11 @@ export function prepareProjectAnalysis(
               canReuseConfigArtifacts ? reusableProject?.stsView?.program : undefined,
               'sts',
               prepareOptions.persistentBuildInfoDirectory,
+              (sourceFile) =>
+                !isSupplementalPackageSourceCandidate(
+                  toSourceFileName(sourceFile.fileName),
+                  projectPackageJsonPath,
+                ),
             );
             if (preparedView) {
               applyMacroCacheStatsToMetadata(metadata, preparedView.macroCacheStats);
@@ -3465,12 +3982,14 @@ export function prepareProjectAnalysis(
           tsCompilerHostReuseState: canReuseConfigArtifacts
             ? reusableProject?.tsCompilerHostReuseState
             : persistentTsCompilerHostReuseState,
+          typescriptViewContentSignature: '',
           tsView: null,
         };
         applyMacroCacheStatsToMetadata(prepareMetadata, aggregateMacroCacheStats(preparedProject));
         return preparedProject;
       }
       const needsSupplementalProjectionViews = typescriptRootNames.length > 0 ||
+        packageVerificationCacheProbe.misses.length > 0 ||
         (stsView !== null &&
           hasNonRootProjectedDeclarationCandidates(
             stsView.program,
@@ -3502,6 +4021,7 @@ export function prepareProjectAnalysis(
           tsCompilerHostReuseState: canReuseConfigArtifacts
             ? reusableProject?.tsCompilerHostReuseState
             : persistentTsCompilerHostReuseState,
+          typescriptViewContentSignature: '',
           tsView: null,
         };
         applyMacroCacheStatsToMetadata(prepareMetadata, aggregateMacroCacheStats(preparedProject));
@@ -3516,12 +4036,12 @@ export function prepareProjectAnalysis(
           'project.prepare.localProjection',
           {
             hasStsView: stsView !== null,
-            rootCount: soundscriptRootNames.length,
+            rootCount: projectedSoundscriptRootNames.length,
           },
           () =>
             filterProjectedDeclarationOverridesToRootNames(
-              emitProjectedDeclarationsFailClosed(stsView, soundscriptRootNames),
-              soundscriptRootNames,
+              emitProjectedDeclarationsFailClosed(stsView, projectedSoundscriptRootNames),
+              projectedSoundscriptRootNames,
             ),
           { always: true },
         );
@@ -3533,12 +4053,20 @@ export function prepareProjectAnalysis(
         localProjectedDeclarationOverrides,
         cachedPackageProjectedDeclarationOverrides,
       );
-      const packageProjectedDeclarationRootNames =
+      const typescriptReachablePackageSourceRootNames = projectedSoundscriptRootNames.filter(
+        (rootName) => isSupplementalPackageSourceCandidate(rootName, projectPackageJsonPath),
+      );
+      const packageProjectedDeclarationRootNames = combineRootNames(
         collectProjectedDeclarationCandidateRootNamesFromPrograms(
           [stsView?.program],
           projectedDeclarationOverrides,
           projectPackageJsonPath,
-        );
+        ),
+        combineRootNames(
+          typescriptReachablePackageSourceRootNames,
+          packageVerificationCacheProbe.misses.flatMap((unit) => unit.rootNames),
+        ),
+      ).sort();
       const packageSourcePolicyContentSignature = packageProjectedDeclarationRootNames.length === 0
         ? ''
         : createSoundscriptRootContentSignature(
@@ -3547,6 +4075,8 @@ export function prepareProjectAnalysis(
           options.fileOverrides,
           loadedConfig.isSoundscriptSourceFile,
         );
+      const packageSourcePolicyScope: PreparedAnalysisView['universalPolicyScope'] =
+        soundscriptRootNames.length > 0 ? 'full' : 'sourceSupplemental';
       const canReusePackageSourcePolicyView = canReuseConfigArtifacts &&
         rootNamesEqual(
           reusableProject.packageSourcePolicyView?.program.getRootFileNames().map(
@@ -3556,20 +4086,28 @@ export function prepareProjectAnalysis(
         ) &&
         reusableProject.packageSourcePolicyContentSignature ===
           packageSourcePolicyContentSignature &&
+        reusableProject.packageSourcePolicyView?.universalPolicyScope ===
+          packageSourcePolicyScope &&
         !projectedDeclarationOverridesDiffer(
           reusableProject.localProjectedDeclarationOverrides,
           projectedDeclarationOverrides,
         );
+      const reusableTsViewContentSignature = reusableProject
+        ? createPreparedViewProgramContentSignature(
+          reusableProject.tsView,
+          options.fileOverrides ?? new Map(),
+        )
+        : '';
       const canReuseTsView = canReuseConfigArtifacts &&
         rootNamesEqual(
           reusableProject.tsView?.program.getRootFileNames().map(toSourceFileName) ?? [],
           typescriptRootNames,
         ) &&
+        reusableProject.typescriptViewContentSignature === reusableTsViewContentSignature &&
         !projectedDeclarationOverridesDiffer(
           reusableProject.localProjectedDeclarationOverrides,
           projectedDeclarationOverrides,
         );
-
       const tsView = canReuseTsView ? reusableProject?.tsView ?? null : measureCheckerTiming(
         'project.prepare.hostView',
         {
@@ -3627,7 +4165,7 @@ export function prepareProjectAnalysis(
                 shouldAnalyzeSoundscriptSourceFile,
                 projectedDeclarationOverrides,
                 true,
-                'sourceSupplemental',
+                packageSourcePolicyScope,
                 canReusePackageSourcePolicyView
                   ? reusableProject?.packageSourcePolicyCompilerHostReuseState
                   : persistentPackageSourcePolicyCompilerHostReuseState,
@@ -3648,6 +4186,10 @@ export function prepareProjectAnalysis(
         soundscriptRootNames,
         stsView,
         tsCompilerHostReuseState: tsView?.preparedProgram.preparedHost.reuseState,
+        typescriptViewContentSignature: createPreparedViewProgramContentSignature(
+          tsView,
+          options.fileOverrides ?? new Map(),
+        ),
         tsView,
       };
       applyMacroCacheStatsToMetadata(prepareMetadata, aggregateMacroCacheStats(preparedProject));
@@ -3687,6 +4229,7 @@ function getPreparedAnalysisSupplementalViewsForFile(
   preparedProject: PreparedAnalysisProject,
   filePath: string,
   primaryView: PreparedAnalysisView | null,
+  diagnosticPaths: readonly string[],
 ): readonly PreparedAnalysisView[] {
   const supplementalViews: PreparedAnalysisView[] = [];
 
@@ -3701,6 +4244,18 @@ function getPreparedAnalysisSupplementalViewsForFile(
     addView(preparedProject.packageSourcePolicyView);
     return supplementalViews;
   }
+
+  const addViewWithDiagnosticPathMatch = (view: PreparedAnalysisView | null): void => {
+    if (
+      view &&
+      diagnosticPaths.some((diagnosticPath) => getPreparedViewSourceFileMatch(view, diagnosticPath))
+    ) {
+      addView(view);
+    }
+  };
+
+  addViewWithDiagnosticPathMatch(preparedProject.stsView);
+  addViewWithDiagnosticPathMatch(preparedProject.packageSourcePolicyView);
   return supplementalViews;
 }
 
@@ -3842,6 +4397,7 @@ export function analyzePreparedProjectForFileWithArtifacts(
         preparedProject,
         filePath,
         primaryView,
+        diagnosticPaths,
       );
       const requiresDependencyAnalysis = supplementalViews.length > 0 ||
         diagnosticPaths.some((diagnosticPath) =>
@@ -4061,11 +4617,104 @@ export function analyzePreparedProjectWithArtifacts(
   );
 }
 
+function canonicalDiagnosticFilePath(filePath: string): string {
+  return ts.sys.resolvePath(filePath).replaceAll('\\', '/');
+}
+
+function collectSourceDiagnosticsBySoundscriptPath<T extends MergedDiagnostic>(
+  diagnostics: readonly T[],
+): ReadonlyMap<string, readonly T[]> {
+  const sourceDiagnosticsByPath = new Map<string, T[]>();
+  for (const diagnostic of diagnostics) {
+    if (!diagnostic.filePath || !isSoundscriptSourceFile(diagnostic.filePath)) {
+      continue;
+    }
+
+    const sourcePath = canonicalDiagnosticFilePath(diagnostic.filePath);
+    const sourceDiagnostics = sourceDiagnosticsByPath.get(sourcePath) ?? [];
+    sourceDiagnostics.push(diagnostic);
+    sourceDiagnosticsByPath.set(sourcePath, sourceDiagnostics);
+  }
+
+  return sourceDiagnosticsByPath;
+}
+
+function projectedDeclarationSourcePath(filePath: string | undefined): string | null {
+  if (!filePath || !isProjectedSoundscriptDeclarationFile(filePath)) {
+    return null;
+  }
+
+  return canonicalDiagnosticFilePath(toProjectedDeclarationSourceFileName(filePath));
+}
+
+function sourceDiagnosticsContainEquivalentDiagnostic<T extends MergedDiagnostic>(
+  sourceDiagnostics: readonly T[] | undefined,
+  diagnostic: T,
+): boolean {
+  return sourceDiagnostics?.some((sourceDiagnostic) =>
+    sourceDiagnostic.code === diagnostic.code &&
+    sourceDiagnostic.message === diagnostic.message &&
+    sourceDiagnostic.line === diagnostic.line &&
+    sourceDiagnostic.column === diagnostic.column
+  ) === true;
+}
+
+function messageMentionsProjectedDeclarationForSourcePath(
+  message: string,
+  sourcePath: string,
+): boolean {
+  const normalizedMessage = message.replaceAll('\\', '/');
+  const projectedPath = toProjectedDeclarationFileName(sourcePath);
+  return normalizedMessage.includes(projectedPath) ||
+    normalizedMessage.includes(canonicalDiagnosticFilePath(projectedPath));
+}
+
+function isProjectedDeclarationArtifactDiagnostic<T extends MergedDiagnostic>(
+  diagnostic: T,
+  sourceDiagnosticsByPath: ReadonlyMap<string, readonly T[]>,
+): boolean {
+  const projectedSourcePath = projectedDeclarationSourcePath(diagnostic.filePath);
+  if (
+    projectedSourcePath &&
+    sourceDiagnosticsContainEquivalentDiagnostic(
+      sourceDiagnosticsByPath.get(projectedSourcePath),
+      diagnostic,
+    )
+  ) {
+    return true;
+  }
+
+  if (diagnostic.source !== 'ts' || diagnostic.code !== 'TS2306') {
+    return false;
+  }
+
+  for (const sourcePath of sourceDiagnosticsByPath.keys()) {
+    if (messageMentionsProjectedDeclarationForSourcePath(diagnostic.message, sourcePath)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function filterProjectedDeclarationArtifactDiagnostics<T extends MergedDiagnostic>(
+  diagnostics: readonly T[],
+): readonly T[] {
+  const sourceDiagnosticsByPath = collectSourceDiagnosticsBySoundscriptPath(diagnostics);
+  if (sourceDiagnosticsByPath.size === 0) {
+    return diagnostics;
+  }
+
+  return diagnostics.filter((diagnostic) =>
+    !isProjectedDeclarationArtifactDiagnostic(diagnostic, sourceDiagnosticsByPath)
+  );
+}
+
 function dedupeMergedDiagnostics<T extends MergedDiagnostic>(diagnostics: readonly T[]): T[] {
   const deduped: T[] = [];
   const seen = new Set<string>();
 
-  for (const diagnostic of diagnostics) {
+  for (const diagnostic of filterProjectedDeclarationArtifactDiagnostics(diagnostics)) {
     const key = [
       diagnostic.source,
       diagnostic.code,
