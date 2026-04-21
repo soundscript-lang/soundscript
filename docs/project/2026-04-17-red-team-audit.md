@@ -41,6 +41,7 @@ Legend:
 - `batch-42`: covered by the forty-second red-team batch added with this record.
 - `batch-43`: covered by the forty-third red-team batch added with this record.
 - `batch-44`: covered by the forty-fourth red-team batch added with this record.
+- `batch-45`: covered by the forty-fifth red-team batch added with this record.
 - `audit-debt`: missing coverage that should be closed before calling the family fully audited.
 - `out-of-scope`: explicitly outside the strong soundness claim.
 - `design-gap`: documented future work, not a current guarantee.
@@ -50,7 +51,7 @@ Legend:
 | Prepared/package-source parity       | covered       | covered         | covered      | covered,batch-29         | batch-3                    | covered                 | batch-1,10,28,31   | audit-debt           |
 | Flow/effect invalidation             | covered       | batch-35,40,43  | covered      | batch-4,35,40,43         | batch-4,40,43              | batch-35,40,43          | batch-44           | batch-44             |
 | Proof-oracle verification            | covered       | batch-38        | covered      | batch-38                 | batch-38                   | batch-38                | batch-44           | batch-44             |
-| BareObject/null-prototype provenance | covered       | covered         | covered      | batch-39                 | covered                    | batch-39                | batch-39           | audit-debt           |
+| BareObject/null-prototype provenance | covered       | covered         | covered      | batch-39                 | covered                    | batch-39                | batch-39           | batch-45             |
 | `#[value]` parity                    | covered       | batch-1         | batch-1      | batch-1                  | batch-5                    | batch-1                 | batch-1            | covered              |
 | Machine numerics                     | covered       | batch-37        | batch-37     | batch-37                 | batch-5                    | batch-37                | batch-1,37         | batch-37             |
 | Macro/capability boundary            | covered       | covered         | audit-debt   | batch-6                  | batch-41,42                | audit-debt              | batch-7            | batch-8              |
@@ -985,8 +986,8 @@ Legend:
 - Expected result: cold, warm cached, session, and build routes reject with the same `SOUND1024`
   diagnostic at the consumer assignment, and the post-edit build does not reuse stale artifacts.
 - Result: no production bug found for non-ordinary provenance cache or build-output invalidation.
-- Residual risk: compiler-gate coverage remains audit debt for non-ordinary values because this
-  family should be rejected before backend lowering on owned paths.
+- Residual risk: compiler-gate coverage is addressed separately in Batch 45 because non-ordinary
+  provenance diagnostics are checker-owned fail-before-emit gates.
 
 ## Batch 40 Findings
 
@@ -1114,6 +1115,25 @@ Legend:
 - Residual risk: if a future backend intentionally owns accepted effect/proof behavior instead of
   relying on checker rejection, it should add positive build/runtime or compiler-lowering tests for
   that new acceptance story.
+
+## Batch 45 Findings
+
+### Non-Ordinary Fail-Before-Emit Gate
+
+- Attack: extend the Batch 39 fixture so the helper drift from ordinary object to `RegExp.groups` is
+  also passed through `compileProject` after cached checker and build routes reject.
+- Routes: compiler/target gate diagnostics, checker-owned non-ordinary provenance diagnostics,
+  persistent checker cache, incremental full-project analysis, build cache invalidation, and emitted
+  artifact preservation after failed builds.
+- Expected result: `compileProject` must return the same `SOUND1024` diagnostic at the consumer
+  assignment and no compiler artifacts, and the failed post-drift build must leave previous output
+  artifacts unchanged. This proves the compiler backend never lowers checker-invalid
+  BareObject-family programs and the builder does not partially overwrite known-good output after
+  checker rejection.
+- Result: no production bug found. The BareObject/null-prototype compiler matrix cell is an
+  intentional fail-before-emit checker gate rather than a separate backend acceptance route.
+- Residual risk: if a future backend intentionally accepts and lowers BareObject-family values, it
+  should add positive build/runtime or compiler-lowering tests for that accepted surface.
 
 ## Remaining High-Priority Audit Debt
 
@@ -1591,5 +1611,14 @@ red-team attack, the route matrix it covers, and the residual risk left behind.
   tests/integration/red_team_audit_test.ts`:
   passed, 5 tests in `35s`.
 - `deno test --allow-all tests/integration/red_team_audit_test.ts`: passed, 58 tests in `5m13s`.
+- `deno lint tests/integration/red_team_audit_test.ts`: passed.
+- `deno task check`: passed.
+- `deno test --allow-all --filter "cached non-ordinary provenance survives helper drift into build
+  output" tests/integration/red_team_audit_test.ts`:
+  passed, 1 test in `10s`.
+- `deno test --allow-all tests/integration/red_team_audit_test.ts`: passed, 58 tests in `5m48s`.
+- `deno fmt --check tests/integration/red_team_audit_test.ts
+  docs/project/2026-04-17-red-team-audit.md`:
+  passed.
 - `deno lint tests/integration/red_team_audit_test.ts`: passed.
 - `deno task check`: passed.

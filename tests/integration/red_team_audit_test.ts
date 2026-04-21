@@ -8091,6 +8091,18 @@ Deno.test('red-team: cached non-ordinary provenance survives helper drift into b
       toProjectRelativeDiagnostics(failedBuild.diagnostics, tempDirectory),
       expectedDiagnostics,
     );
+    assertEquals(await collectFileContents(outDir), firstArtifacts);
+
+    const compileResult = compileProject({
+      projectPath,
+      workingDirectory: tempDirectory,
+    });
+    assertEquals(compileResult.exitCode, 1, compileResult.output);
+    assertEquals(
+      toProjectRelativeDiagnostics(compileResult.diagnostics, tempDirectory),
+      expectedDiagnostics,
+    );
+    assertEquals(compileResult.artifacts, undefined);
   } finally {
     session.dispose();
   }
