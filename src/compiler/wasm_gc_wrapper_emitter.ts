@@ -1,35 +1,66 @@
 import type {
   WasmGcExportWrapperPlanIR,
   WasmGcHostCallbackWrapperPlanIR,
+  WasmGcHostImportWrapperPlanIR,
   WasmGcModulePlanIR,
 } from './wasm_gc_backend_ir.ts';
 
-function groupHostCallbackWrappers(
-  wrappers: readonly WasmGcHostCallbackWrapperPlanIR[],
-): readonly (readonly [string, readonly WasmGcHostCallbackWrapperPlanIR[]])[] {
-  const groups = new Map<string, WasmGcHostCallbackWrapperPlanIR[]>();
-  for (const wrapper of wrappers) {
-    const key = `${wrapper.hostImportModule}\0${wrapper.hostImportName}`;
-    const group = groups.get(key) ?? [];
+function hostImportWrapperKey(moduleName: string, importName: string): string {
+  return `${moduleName}\0${importName}`;
+}
+
+function groupHostImportWrapperKeys(
+  plan: WasmGcModulePlanIR,
+): readonly (readonly [
+  string,
+  WasmGcHostImportWrapperPlanIR | undefined,
+  readonly WasmGcHostCallbackWrapperPlanIR[],
+])[] {
+  const callbackGroups = new Map<string, WasmGcHostCallbackWrapperPlanIR[]>();
+  for (const wrapper of plan.wrapperPlan.hostCallbackWrappers) {
+    const key = hostImportWrapperKey(wrapper.hostImportModule, wrapper.hostImportName);
+    const group = callbackGroups.get(key) ?? [];
     group.push(wrapper);
-    groups.set(key, group);
+    callbackGroups.set(key, group);
   }
-  return [...groups.entries()]
-    .map(([key, group]) =>
-      [key, group.sort((left, right) => left.paramIndex - right.paramIndex)] as const
-    )
-    .sort((left, right) => left[0].localeCompare(right[0]));
+  const stringWrappers = new Map<string, WasmGcHostImportWrapperPlanIR>();
+  for (const wrapper of plan.wrapperPlan.hostImportWrappers) {
+    stringWrappers.set(
+      hostImportWrapperKey(wrapper.hostImportModule, wrapper.hostImportName),
+      wrapper,
+    );
+  }
+  return [...new Set([...callbackGroups.keys(), ...stringWrappers.keys()])]
+    .sort()
+    .map((key) =>
+      [
+        key,
+        stringWrappers.get(key),
+        (callbackGroups.get(key) ?? []).sort((left, right) => left.paramIndex - right.paramIndex),
+      ] as const
+    );
 }
 
 function renderWrapperAssignment(
-  wrappers: readonly WasmGcHostCallbackWrapperPlanIR[],
+  hostImportWrapper: WasmGcHostImportWrapperPlanIR | undefined,
+  callbackWrappers: readonly WasmGcHostCallbackWrapperPlanIR[],
 ): string {
-  const first = wrappers[0]!;
-  const adaptations = wrappers.map((wrapper) =>
+  const first = hostImportWrapper ?? callbackWrappers[0]!;
+  const stringAdaptations = hostImportWrapper
+    ? hostImportWrapper.paramTypes.map((paramType, index) =>
+      isStringValueType(paramType)
+        ? `    adaptedArgs[${index}] = stringFromInternal(args[${index}]);`
+        : ''
+    ).filter((line) => line.length > 0)
+    : [];
+  const callbackAdaptations = callbackWrappers.map((wrapper) =>
     `    adaptedArgs[${wrapper.paramIndex}] = wrapClosure(${wrapper.signatureId}, args[${wrapper.paramIndex}], ${
       JSON.stringify(wrapper.paramTypes)
     }, ${JSON.stringify(wrapper.resultType)});`
-  ).join('\n');
+  );
+  const resultReturn = hostImportWrapper && isStringValueType(hostImportWrapper.resultType)
+    ? '    return stringToInternal(result);'
+    : '    return result;';
   return `  installWrappedHostImport(imports, hostImports, ${
     JSON.stringify(first.hostImportModule)
   }, ${JSON.stringify(first.hostImportName)}, (...args) => {
@@ -37,8 +68,9 @@ function renderWrapperAssignment(
     JSON.stringify(first.hostImportName)
   });
     const adaptedArgs = args.slice();
-${adaptations}
-    return target(...adaptedArgs);
+${[...stringAdaptations, ...callbackAdaptations].join('\n')}
+    const result = target(...adaptedArgs);
+${resultReturn}
   });`;
 }
 
@@ -105,6 +137,40 @@ function renderTaggedResultAdapterHelpers(plan: WasmGcModulePlanIR): string {
 
 function isStringValueType(valueType: string): boolean {
   return valueType === 'string_ref' || valueType === 'owned_string_ref';
+}
+
+function renderHostImportStringAdapterHelpers(plan: WasmGcModulePlanIR): string {
+  if (plan.wrapperPlan.hostImportWrappers.length === 0) {
+    return '';
+  }
+  return `function stringToInternal(value) {
+  if (typeof value !== 'string') {
+    throw new TypeError('Soundscript WasmGC string host import result must be a string.');
+  }
+  const instance = requireInstance();
+  const exports = instance.exports;
+  const append = requireExport(exports, '__soundscript_string_append_code_unit');
+  let current = requireExport(exports, '__soundscript_string_empty')();
+  for (let index = 0; index < value.length; index += 1) {
+    current = append(current, value.charCodeAt(index));
+  }
+  return current;
+}
+
+function stringFromInternal(value) {
+  if (value == null) {
+    throw new TypeError('Soundscript WasmGC string host import argument was null.');
+  }
+  const instance = requireInstance();
+  const exports = instance.exports;
+  const length = requireExport(exports, '__soundscript_string_length')(value);
+  const codeUnitAt = requireExport(exports, '__soundscript_string_code_unit_at');
+  let result = '';
+  for (let index = 0; index < length; index += 1) {
+    result += String.fromCharCode(codeUnitAt(value, index));
+  }
+  return result;
+}`;
 }
 
 function renderExportWrapperInvocation(wrapper: WasmGcExportWrapperPlanIR): string {
@@ -182,8 +248,10 @@ ${plan.wrapperPlan.exportWrappers.map(renderExportWrapperInvocation).join('\n')}
 }
 
 export function emitWasmGcWrapperModule(plan: WasmGcModulePlanIR): string {
-  const wrapperGroups = groupHostCallbackWrappers(plan.wrapperPlan.hostCallbackWrappers);
-  const wrapperAssignments = wrapperGroups.map(([, wrappers]) => renderWrapperAssignment(wrappers));
+  const wrapperGroups = groupHostImportWrapperKeys(plan);
+  const wrapperAssignments = wrapperGroups.map(([, hostImportWrapper, callbackWrappers]) =>
+    renderWrapperAssignment(hostImportWrapper, callbackWrappers)
+  );
   return `// Generated by the Soundscript wasm-gc shadow wrapper emitter.
 export function createSoundscriptWasmGcHostImports(hostImports, instanceCell) {
   function requireInstance() {
@@ -204,6 +272,8 @@ export function createSoundscriptWasmGcHostImports(hostImports, instanceCell) {
   ${renderTaggedAdapterHelpers(plan)}
 
   ${renderTaggedResultAdapterHelpers(plan)}
+
+  ${renderHostImportStringAdapterHelpers(plan)}
 
   function adaptToInternal(valueType, value) {
     return valueType === 'tagged_ref' ? tagHostValue(value) : value;

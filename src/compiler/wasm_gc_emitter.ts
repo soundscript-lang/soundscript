@@ -3456,8 +3456,9 @@ function renderStringEqualityHelperFunctions(plan: WasmGcModulePlanIR): readonly
     : [];
 }
 
-function wrapperPlanUsesStringExports(plan: WasmGcModulePlanIR): boolean {
-  return plan.wrapperPlan.exportWrappers.some((wrapper) =>
+function wrapperPlanUsesStringBoundaryHelpers(plan: WasmGcModulePlanIR): boolean {
+  const wrappers = [...plan.wrapperPlan.exportWrappers, ...plan.wrapperPlan.hostImportWrappers];
+  return wrappers.some((wrapper) =>
     wrapper.paramTypes.some((paramType) =>
       paramType === 'string_ref' || paramType === 'owned_string_ref'
     ) || wrapper.resultType === 'string_ref' || wrapper.resultType === 'owned_string_ref'
@@ -3465,7 +3466,7 @@ function wrapperPlanUsesStringExports(plan: WasmGcModulePlanIR): boolean {
 }
 
 function renderStringExportWrapperHelperFunctions(plan: WasmGcModulePlanIR): readonly string[] {
-  if (!wrapperPlanUsesStringExports(plan)) {
+  if (!wrapperPlanUsesStringBoundaryHelpers(plan)) {
     return [];
   }
   return [

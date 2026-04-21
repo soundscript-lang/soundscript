@@ -7028,6 +7028,96 @@ Deno.test('compiler wasm-gc wrapper glue adapts captured callbacks passed to hos
   assertEquals((main as (input: symbol, fallback: symbol) => symbol)(input, fallback), fallback);
 });
 
+Deno.test('compiler wasm-gc wrapper glue adapts imported string params and results', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: {
+          strict: true,
+          module: 'esnext',
+          moduleResolution: 'node',
+        },
+        files: ['main.ts', 'host.d.ts'],
+      }),
+    },
+    {
+      path: 'host.d.ts',
+      contents: `
+        export declare function mirror(text: string): string;
+      `,
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        import { mirror } from "./host";
+
+        export function main(): number {
+          const text = mirror("A😀");
+          return text.length;
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
+  const watPath = join(tempDirectory, 'wasm-gc-shadow-import-string-wrapper.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-shadow-import-string-wrapper.wasm');
+  const wrapperPath = join(tempDirectory, 'wasm-gc-shadow-import-string-wrapper.mjs');
+
+  assertEquals(snapshot.wasmGcPlan.wrapperPlan.hostImportWrappers, [
+    {
+      functionName: 'mirror',
+      hostImportModule: 'soundscript_host_function',
+      hostImportName: 'host.d.ts:mirror',
+      paramTypes: ['owned_string_ref'],
+      resultType: 'string_ref',
+    },
+  ]);
+
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
+  await Deno.writeTextFile(wrapperPath, emitWasmGcWrapperModule(snapshot.wasmGcPlan));
+  const wat = await Deno.readTextFile(watPath);
+  assertEquals(
+    wat.includes(
+      '(import "soundscript_host_function" "host.d.ts:mirror" (func $mirror (param $text (ref null $string_runtime)) (result (ref null $string_runtime)))',
+    ),
+    true,
+  );
+  assertEquals(wat.includes('(export "__soundscript_string_empty")'), true);
+  assertEquals(wat.includes('(export "__soundscript_string_append_code_unit")'), true);
+  assertEquals(wat.includes('(export "__soundscript_string_length")'), true);
+  assertEquals(wat.includes('(export "__soundscript_string_code_unit_at")'), true);
+  const parseResult = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(parseResult.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(parseResult.success, true);
+
+  const wrapperModule = await import(`file://${wrapperPath}?cacheBust=${crypto.randomUUID()}`);
+  const instanceCell: { instance?: WebAssembly.Instance } = {};
+  const imports = wrapperModule.createSoundscriptWasmGcHostImports(
+    {
+      soundscript_host_function: {
+        'host.d.ts:mirror': (text: string): string => {
+          assertEquals(text, 'A😀');
+          return `${text}!`;
+        },
+      },
+    },
+    instanceCell,
+  );
+  const wasm = await Deno.readFile(wasmPath);
+  const instance = (await WebAssembly.instantiate(wasm, imports)).instance;
+  instanceCell.instance = instance;
+  const main = instance.exports['main.ts:main'];
+  assertEquals(typeof main, 'function');
+  assertEquals((main as () => number)(), 4);
+});
+
 Deno.test('compiler wasm-gc wrapper glue adapts exported string params and results', async () => {
   const tempDirectory = await createTempProject([
     {

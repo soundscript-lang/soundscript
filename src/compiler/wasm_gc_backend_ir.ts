@@ -120,9 +120,18 @@ export interface WasmGcExportWrapperPlanIR {
   resultType: string;
 }
 
+export interface WasmGcHostImportWrapperPlanIR {
+  functionName: string;
+  hostImportModule: string;
+  hostImportName: string;
+  paramTypes: readonly string[];
+  resultType: string;
+}
+
 export interface WasmGcWrapperPlanIR {
   kind: 'wasm_gc_wrapper_plan';
   hostCallbackWrappers: readonly WasmGcHostCallbackWrapperPlanIR[];
+  hostImportWrappers: readonly WasmGcHostImportWrapperPlanIR[];
   taggedValueAdapterHelpers: readonly string[];
   taggedValueResultHelpers: readonly string[];
   exportWrappers: readonly WasmGcExportWrapperPlanIR[];
@@ -640,6 +649,29 @@ function createWasmGcExportWrapperPlan(
     .sort((left, right) => left.exportName.localeCompare(right.exportName));
 }
 
+function createWasmGcHostImportWrapperPlan(
+  functionPlans: readonly WasmGcFunctionPlanIR[],
+): readonly WasmGcHostImportWrapperPlanIR[] {
+  return functionPlans
+    .filter((func) => func.hostImport !== undefined)
+    .map((func) => ({
+      functionName: func.name,
+      hostImportModule: func.hostImport!.module,
+      hostImportName: func.hostImport!.name,
+      paramTypes: func.params.map((param) => param.wasmType),
+      resultType: func.result,
+    }))
+    .filter((wrapper) =>
+      wrapper.paramTypes.some(isWasmGcStringValueType) ||
+      isWasmGcStringValueType(wrapper.resultType)
+    )
+    .sort((left, right) =>
+      left.hostImportModule === right.hostImportModule
+        ? left.hostImportName.localeCompare(right.hostImportName)
+        : left.hostImportModule.localeCompare(right.hostImportModule)
+    );
+}
+
 function createWasmGcWrapperPlan(
   functionPlans: readonly WasmGcFunctionPlanIR[],
 ): WasmGcWrapperPlanIR {
@@ -688,6 +720,7 @@ function createWasmGcWrapperPlan(
   }
   const taggedValueAdapterHelpers = taggedValueAdapterHelpersForWrappers(wrappers);
   const taggedValueResultHelpers = taggedValueResultHelpersForWrappers(wrappers);
+  const hostImportWrappers = createWasmGcHostImportWrapperPlan(functionPlans);
   const exportWrappers = createWasmGcExportWrapperPlan(functionPlans);
   return {
     kind: 'wasm_gc_wrapper_plan',
@@ -696,6 +729,7 @@ function createWasmGcWrapperPlan(
         ? left.paramIndex - right.paramIndex
         : left.functionName.localeCompare(right.functionName)
     ),
+    hostImportWrappers,
     taggedValueAdapterHelpers,
     taggedValueResultHelpers,
     exportWrappers,
