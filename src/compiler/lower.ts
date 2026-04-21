@@ -5926,6 +5926,8 @@ function isSupportedConditionalExpressionTargetType(targetType: CompilerValueTyp
     targetType === 'i32' ||
     targetType === 'string_ref' ||
     targetType === 'owned_string_ref' ||
+    targetType === 'symbol_ref' ||
+    targetType === 'bigint_ref' ||
     targetType === 'tagged_ref' ||
     targetType === 'class_constructor_ref';
 }
@@ -5952,7 +5954,7 @@ function lowerConditionalExpressionAsValueType(
 ): CompilerExpressionIR {
   if (!isSupportedConditionalExpressionTargetType(targetType)) {
     throw new CompilerUnsupportedError(
-      'Conditional expressions currently support only scalar, string, tagged primitive, and class-constructor result values in compiler subset.',
+      'Conditional expressions currently support only scalar, string, symbol, bigint, tagged primitive, and class-constructor result values in compiler subset.',
       expression,
     );
   }
@@ -34043,9 +34045,14 @@ function createAmbientHostFunctionHeader(
       };
     }
     const valueType = getCompilerValueTypeForType(parameterType, parameter.name);
-    if (valueType !== 'f64' && valueType !== 'i32') {
+    if (
+      valueType !== 'f64' &&
+      valueType !== 'i32' &&
+      valueType !== 'symbol_ref' &&
+      valueType !== 'bigint_ref'
+    ) {
       throw new CompilerUnsupportedError(
-        'Ambient host function declarations currently support only number, boolean, string, callback, Promise, and fixed-layout object params in compiler subset.',
+        'Ambient host function declarations currently support only number, boolean, symbol, bigint, string, callback, Promise, and fixed-layout object params in compiler subset.',
         parameter.name,
       );
     }
@@ -34448,9 +34455,14 @@ function createAmbientHostFunctionHeader(
             includesUndefined: true,
           };
           resultType = valueType;
-        } else if (valueType !== 'f64' && valueType !== 'i32') {
+        } else if (
+          valueType !== 'f64' &&
+          valueType !== 'i32' &&
+          valueType !== 'symbol_ref' &&
+          valueType !== 'bigint_ref'
+        ) {
           throw new CompilerUnsupportedError(
-            'Ambient host function declarations currently support only number, boolean, undefined-like, string, callback, Promise, and fixed-layout object results in compiler subset.',
+            'Ambient host function declarations currently support only number, boolean, symbol, bigint, undefined-like, string, callback, Promise, and fixed-layout object results in compiler subset.',
             declaration,
           );
         } else {
@@ -62313,6 +62325,26 @@ function lowerDirectNamedInvocation(
         context.classes,
       )
       : undefined;
+    if (
+      callee.hostImport &&
+      argument &&
+      param.type === 'closure_ref' &&
+      targetClosureSignatureId !== undefined
+    ) {
+      const targetSignature = resolveClosureAbiSignatureById(
+        targetClosureSignatureId,
+        context.closures,
+      );
+      if (
+        targetSignature.params.some((signatureParam) => signatureParam.type === 'tagged_ref') ||
+        targetSignature.result.type === 'tagged_ref'
+      ) {
+        throw new CompilerUnsupportedError(
+          'Passing tagged-union callbacks to ambient host function imports requires generated JS wrapper support and is not supported by raw wasm-gc emission yet.',
+          argument,
+        );
+      }
+    }
     const adaptedArgument = argument &&
         targetClosureSignatureId !== undefined
       ? adaptClosureExpressionToTargetSignature(
@@ -62324,6 +62356,18 @@ function lowerDirectNamedInvocation(
         context,
       )
       : loweredArgument;
+    if (
+      callee.hostImport &&
+      argument &&
+      param.type === 'closure_ref' &&
+      adaptedArgument.kind === 'closure_literal' &&
+      adaptedArgument.captures.length > 0
+    ) {
+      throw new CompilerUnsupportedError(
+        'Passing captured closures to ambient host function imports requires generated JS wrapper support and is not supported by raw wasm-gc emission yet.',
+        argument,
+      );
+    }
     if (
       getLoweredExpressionValueType(loweredArgument) === 'owned_array_ref' &&
       param.type !== 'owned_array_ref'

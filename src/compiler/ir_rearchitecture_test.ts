@@ -6486,6 +6486,240 @@ Deno.test('compiler wasm-gc emitter produces runnable no-capture callbacks throu
   assertEquals((main as () => number)(), 23);
 });
 
+Deno.test('compiler wasm-gc emitter produces runnable symbol callbacks through host imports', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: {
+          strict: true,
+          module: 'esnext',
+          moduleResolution: 'node',
+        },
+        files: ['main.ts', 'host.d.ts'],
+      }),
+    },
+    {
+      path: 'host.d.ts',
+      contents: `
+        export declare function apply(fn: (value: symbol) => symbol, input: symbol): symbol;
+      `,
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        import { apply } from "./host";
+
+        export function main(input: symbol): symbol {
+          return apply((value: symbol): symbol => value, input);
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
+  const applyPlan = snapshot.wasmGcPlan.functionPlans.find((func) => func.name === 'apply');
+  const watPath = join(tempDirectory, 'wasm-gc-shadow-host-symbol-callback.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-shadow-host-symbol-callback.wasm');
+
+  assertEquals(applyPlan?.hostImport, {
+    module: 'soundscript_host_function',
+    name: 'host.d.ts:apply',
+  });
+  assertEquals(
+    snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
+    ['closure', 'host_handle', 'symbol'],
+  );
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
+  const wat = await Deno.readTextFile(watPath);
+  assertEquals(wat.includes('closure_call_adapter'), true);
+  assertEquals(wat.includes('Promise.resolve'), false);
+  assertEquals(wat.includes('jspi'), false);
+  const result = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(result.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(result.success, true);
+
+  const wasm = await Deno.readFile(wasmPath);
+  const instance = await WebAssembly.instantiate(wasm, {
+    soundscript_host_function: {
+      'host.d.ts:apply': (fn: (value: symbol) => symbol, input: symbol): symbol => {
+        assertEquals(fn(input), input);
+        return fn(input);
+      },
+    },
+  });
+  const main = instance.instance.exports['main.ts:main'];
+  assertEquals(typeof main, 'function');
+  const input = Symbol('input');
+  assertEquals((main as (input: symbol) => symbol)(input), input);
+});
+
+Deno.test('compiler wasm-gc emitter produces runnable bigint callbacks through host imports', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: {
+          strict: true,
+          module: 'esnext',
+          moduleResolution: 'node',
+          target: 'ES2020',
+        },
+        files: ['main.ts', 'host.d.ts'],
+      }),
+    },
+    {
+      path: 'host.d.ts',
+      contents: `
+        export declare function apply(fn: (value: bigint) => bigint, input: bigint): bigint;
+      `,
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        import { apply } from "./host";
+
+        export function main(input: bigint): bigint {
+          return apply((value: bigint): bigint => value, input);
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
+  const applyPlan = snapshot.wasmGcPlan.functionPlans.find((func) => func.name === 'apply');
+  const watPath = join(tempDirectory, 'wasm-gc-shadow-host-bigint-callback.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-shadow-host-bigint-callback.wasm');
+
+  assertEquals(applyPlan?.hostImport, {
+    module: 'soundscript_host_function',
+    name: 'host.d.ts:apply',
+  });
+  assertEquals(
+    snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
+    ['bigint', 'closure', 'host_handle'],
+  );
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
+  const wat = await Deno.readTextFile(watPath);
+  assertEquals(wat.includes('closure_call_adapter'), true);
+  assertEquals(wat.includes('Promise.resolve'), false);
+  assertEquals(wat.includes('jspi'), false);
+  const result = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(result.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(result.success, true);
+
+  const wasm = await Deno.readFile(wasmPath);
+  const instance = await WebAssembly.instantiate(wasm, {
+    soundscript_host_function: {
+      'host.d.ts:apply': (fn: (value: bigint) => bigint, input: bigint): bigint => {
+        assertEquals(fn(input), input);
+        return fn(input);
+      },
+    },
+  });
+  const main = instance.instance.exports['main.ts:main'];
+  assertEquals(typeof main, 'function');
+  assertEquals((main as (input: bigint) => bigint)(70n), 70n);
+});
+
+Deno.test('compiler wasm-gc emitter diagnoses tagged callbacks passed to raw host imports', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: {
+          strict: true,
+          module: 'esnext',
+          moduleResolution: 'node',
+        },
+        files: ['main.ts', 'host.d.ts'],
+      }),
+    },
+    {
+      path: 'host.d.ts',
+      contents: `
+        export declare function apply(fn: (value: symbol | null) => symbol, input: symbol): symbol;
+      `,
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        import { apply } from "./host";
+
+        export function main(input: symbol): symbol {
+          return apply((value: symbol | null): symbol => value!, input);
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  let message = '';
+  try {
+    createCompilerIrDebugSnapshot(program, tempDirectory);
+  } catch (error) {
+    message = error instanceof Error ? error.message : String(error);
+  }
+
+  assertEquals(
+    message,
+    'Passing tagged-union callbacks to ambient host function imports requires generated JS wrapper support and is not supported by raw wasm-gc emission yet.',
+  );
+});
+
+Deno.test('compiler wasm-gc emitter diagnoses captured callbacks passed to raw host imports', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: {
+          strict: true,
+          module: 'esnext',
+          moduleResolution: 'node',
+        },
+        files: ['main.ts', 'host.d.ts'],
+      }),
+    },
+    {
+      path: 'host.d.ts',
+      contents: `
+        export declare function apply(fn: (value: symbol) => symbol, input: symbol): symbol;
+      `,
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        import { apply } from "./host";
+
+        export function main(input: symbol, fallback: symbol): symbol {
+          return apply((_value: symbol): symbol => fallback, input);
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  let message = '';
+  try {
+    createCompilerIrDebugSnapshot(program, tempDirectory);
+  } catch (error) {
+    message = error instanceof Error ? error.message : String(error);
+  }
+
+  assertEquals(
+    message,
+    'Passing captured closures to ambient host function imports requires generated JS wrapper support and is not supported by raw wasm-gc emission yet.',
+  );
+});
+
 Deno.test('compiler wasm-gc emitter explains manifest-driven helpers and boundary types', async () => {
   const tempDirectory = await createTempProject([
     {
