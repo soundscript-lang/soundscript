@@ -46,6 +46,7 @@ export interface InvalidCommand {
 
 export interface CheckCommand {
   cacheDir?: string;
+  checkReferences: boolean;
   kind: 'check';
   format: OutputFormat;
   projectPath: string;
@@ -75,6 +76,7 @@ export interface ExpandCommand {
 }
 
 export interface BuildCommand {
+  buildReferences: boolean;
   kind: 'build';
   format: OutputFormat;
   outDir: string;
@@ -154,6 +156,106 @@ export interface LoadedConfig {
   soundscriptConfiguredFileNames: ReadonlySet<string>;
   soundscriptRootNames: readonly string[];
   isSoundscriptSourceFile(fileName: string): boolean;
+}
+
+function stableConfigSignature(value: unknown): string {
+  return JSON.stringify(value, (_key, currentValue) => {
+    if (
+      currentValue !== null &&
+      typeof currentValue === 'object' &&
+      !Array.isArray(currentValue)
+    ) {
+      return Object.fromEntries(
+        Object.entries(currentValue as Record<string, unknown>).sort(([left], [right]) =>
+          left.localeCompare(right)
+        ),
+      );
+    }
+
+    return currentValue;
+  });
+}
+
+function createConfigDiagnosticsSignature(diagnostics: readonly ts.Diagnostic[]): string {
+  return diagnostics.map((diagnostic) =>
+    [
+      diagnostic.code,
+      String(diagnostic.category),
+      diagnostic.file?.fileName ?? '',
+      diagnostic.start ?? '',
+      diagnostic.length ?? '',
+      ts.flattenDiagnosticMessageText(diagnostic.messageText, '\n'),
+    ].join('\u0001')
+  ).join('\u0002');
+}
+
+function resolveProjectReferenceConfigPath(reference: ts.ProjectReference): string {
+  return ts.sys.resolvePath(ts.resolveProjectReferencePath(reference));
+}
+
+function createProjectReferenceConfigSignature(
+  reference: ts.ProjectReference,
+  visited: Set<string>,
+): string {
+  const configPath = resolveProjectReferenceConfigPath(reference);
+  if (visited.has(configPath)) {
+    return stableConfigSignature({ configPath, cycle: true });
+  }
+  visited.add(configPath);
+
+  const configFile = ts.readConfigFile(configPath, ts.sys.readFile);
+  if (configFile.error) {
+    return stableConfigSignature({
+      configPath,
+      diagnostics: createConfigDiagnosticsSignature([configFile.error]),
+    });
+  }
+
+  const commandLine = ts.parseJsonConfigFileContent(
+    configFile.config,
+    ts.sys,
+    dirname(configPath),
+    {},
+    configPath,
+  );
+  const soundscript = parseSoundscriptConfig(configFile.config);
+  const runtime = normalizeRuntimeContext(soundscript);
+  const normalizedCommandLine = applyDefaultRuntimeTypes(
+    applyDefaultRuntimeLibs(commandLine, runtime, configFile.config),
+    runtime,
+    configFile.config,
+  );
+  const soundscriptRoots = collectConfiguredSoundscriptRootNames(
+    configPath,
+    normalizedCommandLine,
+    soundscript,
+  );
+  return stableConfigSignature({
+    configPath,
+    diagnostics: createConfigDiagnosticsSignature(commandLine.errors),
+    fileNames: normalizedCommandLine.fileNames,
+    options: normalizedCommandLine.options,
+    projectReferences: normalizedCommandLine.projectReferences ?? [],
+    raw: normalizedCommandLine.raw,
+    referencedConfigs: createProjectReferencesConfigSignature(
+      normalizedCommandLine.projectReferences,
+      visited,
+    ),
+    soundscriptConfiguredFileNames: [
+      ...soundscriptRoots.soundscriptConfiguredFileNames,
+    ].sort(),
+    soundscriptRootNames: soundscriptRoots.soundscriptRootNames,
+  });
+}
+
+export function createProjectReferencesConfigSignature(
+  projectReferences: readonly ts.ProjectReference[] | undefined,
+  visited = new Set<string>(),
+): string {
+  return (projectReferences ?? [])
+    .map((reference) => createProjectReferenceConfigSignature(reference, visited))
+    .sort()
+    .join('\u0002');
 }
 
 interface FileSystemEntries {
@@ -581,6 +683,7 @@ export function parseCommand(args: readonly string[], workingDirectory: string):
   let projectPath: string | undefined;
   let runtimeTarget: RuntimeTarget | undefined;
   let cacheDir: string | undefined;
+  let recursiveReferences = false;
   let useCache = true;
   let verbose = false;
   let watch = false;
@@ -707,6 +810,17 @@ export function parseCommand(args: readonly string[], workingDirectory: string):
           isAbsolute(nextArgument) ? nextArgument : join(workingDirectory, nextArgument),
         );
         index += 1;
+        break;
+      }
+      case '--references': {
+        if (subcommand !== 'check' && subcommand !== 'build') {
+          return {
+            kind: 'invalid',
+            message: '--references is only supported for check or build.',
+          };
+        }
+
+        recursiveReferences = true;
         break;
       }
       case '--out-dir': {
@@ -940,7 +1054,15 @@ export function parseCommand(args: readonly string[], workingDirectory: string):
   }
 
   if (subcommand === 'build') {
+    if (watch && recursiveReferences) {
+      return {
+        kind: 'invalid',
+        message: '--references is not supported with build --watch.',
+      };
+    }
+
     return {
+      buildReferences: recursiveReferences,
       kind: 'build',
       format,
       outDir: outDir ?? join(workingDirectory, 'dist'),
@@ -955,6 +1077,7 @@ export function parseCommand(args: readonly string[], workingDirectory: string):
   if (subcommand === 'check') {
     return {
       cacheDir,
+      checkReferences: recursiveReferences,
       kind: 'check',
       format,
       projectPath: projectPath ?? join(workingDirectory, 'tsconfig.json'),

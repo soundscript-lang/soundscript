@@ -84,6 +84,7 @@ const BUNDLED_TYPE_MODULE_ENTRY_POINTS = new Map<string, string>([
 ]);
 
 const cachedOverrideContentsByDirectory = new Map<string, ReadonlyMap<string, string>>();
+const dynamicOverrideContentsByFile = new Map<string, string>();
 
 function normalizePathForComparison(path: string): string {
   const normalizedPath = normalize(path);
@@ -163,17 +164,31 @@ function shouldUseOverride(
   overrideContents: ReadonlyMap<string, string>,
 ): string | undefined {
   const baseName = basename(fileName);
-  const overrideText = overrideContents.get(baseName);
-  if (!overrideText) {
-    return undefined;
-  }
-
   const normalizedFileName = normalizePathForComparison(fileName);
   if (!normalizedFileName.startsWith(normalizedDefaultLibDirectory)) {
     return undefined;
   }
 
-  return overrideText;
+  return overrideContents.get(baseName) ?? createDynamicDefaultLibOverride(fileName, baseName);
+}
+
+function createDynamicDefaultLibOverride(fileName: string, baseName: string): string | undefined {
+  if (baseName !== 'lib.dom.iterable.d.ts') {
+    return undefined;
+  }
+
+  const cached = dynamicOverrideContentsByFile.get(fileName);
+  if (cached !== undefined) {
+    return cached;
+  }
+
+  const sourceText = readTextFileSync(fileName);
+  const patchedText = sourceText.replace(
+    'interface MessageEvent<T = any> {',
+    'interface MessageEvent<T = unknown> {',
+  );
+  dynamicOverrideContentsByFile.set(fileName, patchedText);
+  return patchedText;
 }
 
 function getTypeDirectiveName(typeDirectiveName: string | ts.FileReference): string {
@@ -472,6 +487,26 @@ export function createProjectCompilerHost(
           containingSourceFile?.impliedNodeFormat,
         ).resolvedModule;
       });
+    },
+    resolveModuleNameLiterals(
+      moduleLiterals,
+      containingFile,
+      redirectedReference,
+      compilerOptions,
+      containingSourceFile,
+      reusedNames,
+    ) {
+      const resolvedModules = host.resolveModuleNames?.(
+        moduleLiterals.map((literal) => literal.text),
+        containingFile,
+        reusedNames?.map((literal) => literal.text),
+        redirectedReference,
+        compilerOptions,
+        containingSourceFile,
+      ) ?? [];
+      return resolvedModules.map((resolvedModule) => ({
+        resolvedModule: resolvedModule as ts.ResolvedModuleFull | undefined,
+      }));
     },
     resolveTypeReferenceDirectives(
       typeReferenceDirectiveNames,

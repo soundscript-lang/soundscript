@@ -40,8 +40,27 @@ Deno.test('parseCommand accepts ndjson output format', () => {
 
   assertEquals(command, {
     cacheDir: undefined,
+    checkReferences: false,
     kind: 'check',
     format: 'ndjson',
+    projectPath: '/tmp/workspace/tsconfig.json',
+    target: undefined,
+    useCache: true,
+    workingDirectory: '/tmp/workspace',
+  });
+});
+
+Deno.test('parseCommand accepts recursive project-reference check mode', () => {
+  const command = parseCommand(
+    ['check', '--project', './tsconfig.json', '--references'],
+    '/tmp/workspace',
+  );
+
+  assertEquals(command, {
+    cacheDir: undefined,
+    checkReferences: true,
+    kind: 'check',
+    format: 'text',
     projectPath: '/tmp/workspace/tsconfig.json',
     target: undefined,
     useCache: true,
@@ -56,6 +75,7 @@ Deno.test('parseCommand accepts build subcommand with out-dir and watch', () => 
   );
 
   assertEquals(command, {
+    buildReferences: false,
     kind: 'build',
     format: 'text',
     outDir: '/tmp/workspace/dist-package',
@@ -74,6 +94,7 @@ Deno.test('parseCommand accepts build subcommand with verbose output', () => {
   );
 
   assertEquals(command, {
+    buildReferences: false,
     kind: 'build',
     format: 'text',
     outDir: '/tmp/workspace/dist',
@@ -82,6 +103,37 @@ Deno.test('parseCommand accepts build subcommand with verbose output', () => {
     verbose: true,
     watch: false,
     workingDirectory: '/tmp/workspace',
+  });
+});
+
+Deno.test('parseCommand accepts recursive project-reference build mode', () => {
+  const command = parseCommand(
+    ['build', '--project', './tsconfig.json', '--references'],
+    '/tmp/workspace',
+  );
+
+  assertEquals(command, {
+    buildReferences: true,
+    kind: 'build',
+    format: 'text',
+    outDir: '/tmp/workspace/dist',
+    projectPath: '/tmp/workspace/tsconfig.json',
+    target: undefined,
+    verbose: false,
+    watch: false,
+    workingDirectory: '/tmp/workspace',
+  });
+});
+
+Deno.test('parseCommand rejects recursive build references with watch', () => {
+  const command = parseCommand(
+    ['build', '--project', './tsconfig.json', '--references', '--watch'],
+    '/tmp/workspace',
+  );
+
+  assertEquals(command, {
+    kind: 'invalid',
+    message: '--references is not supported with build --watch.',
   });
 });
 
@@ -97,6 +149,7 @@ Deno.test('parseCommand accepts runtime target override for compile-style comman
 
   assertEquals(checkCommand, {
     cacheDir: undefined,
+    checkReferences: false,
     kind: 'check',
     format: 'text',
     projectPath: '/tmp/workspace/tsconfig.json',
@@ -427,7 +480,12 @@ Deno.test('loadConfig splits host and frontier roots for soundscript.include Typ
 
   const loadedConfig = loadConfig(projectPath);
 
-  assertEquals(loadedConfig.soundscript.include, ['src/**/*.ts', 'src/**/*.tsx', 'src/**/*.d.ts', 'src/**/*.js']);
+  assertEquals(loadedConfig.soundscript.include, [
+    'src/**/*.ts',
+    'src/**/*.tsx',
+    'src/**/*.d.ts',
+    'src/**/*.js',
+  ]);
   assertEquals(
     [...loadedConfig.frontierRootNames],
     [
@@ -480,7 +538,10 @@ Deno.test('loadConfig keeps non-frontier TypeScript files in host roots when sou
   const loadedConfig = loadConfig(projectPath);
 
   assertEquals(loadedConfig.frontierRootNames, [join(tempDirectory, 'src/frontier.ts')]);
-  assertEquals(loadedConfig.frontierConfiguredFileNames, new Set([join(tempDirectory, 'src/frontier.ts')]));
+  assertEquals(
+    loadedConfig.frontierConfiguredFileNames,
+    new Set([join(tempDirectory, 'src/frontier.ts')]),
+  );
   assertEquals(loadedConfig.hostRootNames, [join(tempDirectory, 'src/host.ts')]);
   assertEquals(
     loadedConfig.commandLine.fileNames.sort(),

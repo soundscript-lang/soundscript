@@ -3,6 +3,7 @@ import type { RuntimeTarget } from '../project/config.ts';
 
 export interface AnalyzeProjectOptions {
   additionalRootNames?: readonly string[];
+  analyzeReferences?: boolean;
   fileOverrides?: ReadonlyMap<string, string>;
   projectPath: string;
   target?: RuntimeTarget;

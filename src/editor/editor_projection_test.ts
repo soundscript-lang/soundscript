@@ -78,8 +78,10 @@ Deno.test('projectEditorFile returns projected text, mappings, and stdlib virtua
 
   assertStringIncludes(
     projection.projectedText,
-    "import { type Environment, literalSchema, a, answer } from './types.ts';",
+    "import { type Environment, literalSchema as __sts_projected_value_0, a as __sts_projected_value_1, answer } from './types.ts';",
   );
+  assertStringIncludes(projection.projectedText, 'const literalSchema: unknown');
+  assertStringIncludes(projection.projectedText, 'const a: unknown');
   assertStringIncludes(projection.projectedText, 'console.log(literalSchema);');
   assert(!projection.projectedText.includes('type Environment = unknown;'));
   assert(

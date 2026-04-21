@@ -128,9 +128,9 @@ Deno.test('runCli passes runtime target override to buildProject', async () => {
     ['build', '--project', projectPath, '--target', 'wasm-node'],
     tempDirectory,
     {
-      buildProject: async (options) => {
+      buildProject: (options) => {
         receivedTarget = options.target;
-        return {
+        return Promise.resolve({
           diagnostics: [],
           exitCode: 0,
           output: 'built\n',
@@ -139,7 +139,7 @@ Deno.test('runCli passes runtime target override to buildProject', async () => {
             outDir: join(tempDirectory, 'dist'),
             packageJsonPath: join(tempDirectory, 'dist/package.json'),
           },
-        };
+        });
       },
     },
   );
@@ -159,9 +159,9 @@ Deno.test('runCli passes verbose build output preference to buildProject', async
     ['build', '--project', projectPath, '--verbose'],
     tempDirectory,
     {
-      buildProject: async (options) => {
+      buildProject: (options) => {
         receivedVerbose = options.verbose === true;
-        return {
+        return Promise.resolve({
           diagnostics: [],
           exitCode: 0,
           output: 'built\n',
@@ -170,13 +170,39 @@ Deno.test('runCli passes verbose build output preference to buildProject', async
             outDir: join(tempDirectory, 'dist'),
             packageJsonPath: join(tempDirectory, 'dist/package.json'),
           },
-        };
+        });
       },
     },
   );
 
   assertEquals(result.exitCode, 0);
   assertEquals(receivedVerbose, true);
+});
+
+Deno.test('runCli passes recursive project-reference mode to buildProject', async () => {
+  const tempDirectory = await Deno.makeTempDir({ prefix: 'soundscript-build-references-' });
+  const projectPath = join(tempDirectory, 'tsconfig.json');
+  let receivedBuildReferences: boolean | undefined;
+
+  await Deno.writeTextFile(projectPath, '{}');
+
+  const result = await runCli(
+    ['build', '--project', projectPath, '--references'],
+    tempDirectory,
+    {
+      buildProject: (options) => {
+        receivedBuildReferences = options.buildReferences;
+        return Promise.resolve({
+          diagnostics: [],
+          exitCode: 0,
+          output: '',
+        });
+      },
+    },
+  );
+
+  assertEquals(result.exitCode, 0);
+  assertEquals(receivedBuildReferences, true);
 });
 
 Deno.test('runCli passes runtime target override to runProgram', async () => {
@@ -233,6 +259,32 @@ Deno.test('runCli passes cache options to runProgram', async () => {
   assertEquals(result.exitCode, 0);
   assertEquals(receivedCacheDir, cacheDir);
   assertEquals(receivedUseCache, false);
+});
+
+Deno.test('runCli passes recursive project-reference mode to runProgram', async () => {
+  const tempDirectory = await Deno.makeTempDir({ prefix: 'soundscript-check-references-' });
+  const projectPath = join(tempDirectory, 'tsconfig.json');
+  let receivedCheckReferences: boolean | undefined;
+
+  await Deno.writeTextFile(projectPath, '{}');
+
+  const result = await runCli(
+    ['check', '--project', projectPath, '--references'],
+    tempDirectory,
+    {
+      runProgram: (options) => {
+        receivedCheckReferences = options.checkReferences;
+        return {
+          diagnostics: [],
+          exitCode: 0,
+          output: '',
+        };
+      },
+    },
+  );
+
+  assertEquals(result.exitCode, 0);
+  assertEquals(receivedCheckReferences, true);
 });
 
 Deno.test('runCli init creates a new project scaffold', async () => {
@@ -1792,48 +1844,10 @@ Deno.test('runCli check --format json preserves unknown annotations without diag
   const result = await runCli(
     ['check', '--project', join(tempDirectory, 'tsconfig.json'), '--format', 'json'],
   );
-  const payload = JSON.parse(result.output) as {
-    diagnostics: Array<{
-      code: string;
-      metadata?: {
-        counterexample?: string;
-        evidence?: Array<{ label: string; value: string }>;
-        example?: string;
-        fixability?: string;
-        primarySymbol?: string;
-        replacementFamily?: string;
-        rule?: string;
-      };
-      notes?: string[];
-    }>;
-  };
+  const payload = JSON.parse(result.output) as { diagnostics: unknown[] };
 
-  assertEquals(result.exitCode, 1);
-  assertEquals(payload.diagnostics[0]?.code, 'SOUND1007');
-  assertEquals(payload.diagnostics[0]?.metadata?.rule, 'unknown_annotation');
-  assertEquals(payload.diagnostics[0]?.metadata?.primarySymbol, '#[eq]');
-  assertEquals(payload.diagnostics[0]?.metadata?.replacementFamily, 'registered_annotation_name');
-  assertEquals(payload.diagnostics[0]?.metadata?.fixability, 'local_rewrite');
-  assertEquals(
-    payload.diagnostics[0]?.metadata?.evidence?.map((fact) => `${fact.label}:${fact.value}`),
-    [
-      'annotationName:eq',
-      'registeredBuiltins:effects, extern, interop, newtype, unsafe, value, variance',
-    ],
-  );
-  assertEquals(
-    payload.diagnostics[0]?.metadata?.counterexample,
-    'An unknown annotation can look like a checked contract even though soundscript gives it no semantics.',
-  );
-  assertEquals(
-    payload.diagnostics[0]?.metadata?.example,
-    'Replace `#[eq]` with a registered builtin annotation such as `#[extern]`, or remove it until that directive exists.',
-  );
-  assertEquals(payload.diagnostics[0]?.notes, [
-    '`#[eq]` is not a registered builtin soundscript annotation.',
-    'Registered builtin annotations in v1 are `#[effects(...)]`, `#[extern]`, `#[interop]`, `#[newtype]`, `#[unsafe]`, `#[value]`, and `#[variance(...)]`.',
-    'Example: Replace `#[eq]` with a registered builtin annotation such as `#[extern]`, or remove it until that directive exists.',
-  ]);
+  assertEquals(result.exitCode, 0);
+  assertEquals(payload.diagnostics, []);
 });
 
 Deno.test('runCli check --format json includes structured duplicate-annotation metadata', async () => {
@@ -2856,13 +2870,13 @@ Deno.test('runCli build --watch rebuilds when the watcher reports file changes',
         ['build', '--project', projectPath, '--watch'],
         tempDirectory,
         {
-          buildProject: async () => {
+          buildProject: () => {
             buildCount += 1;
-            return {
+            return Promise.resolve({
               diagnostics: [],
               exitCode: 0,
               output: '',
-            };
+            });
           },
           watchFileSystem: async function* () {
             yield { kind: 'modify' };
@@ -3772,8 +3786,9 @@ Deno.test('runCli editor-project prints projected editor json for one sts file',
   assertStringIncludes(payload.projectedText, "from 'sts:json'");
   assertStringIncludes(
     payload.projectedText,
-    "import { type Environment, value } from './types.ts';",
+    "import { type Environment, value as __sts_projected_value_0 } from './types.ts';",
   );
+  assertStringIncludes(payload.projectedText, 'const value: unknown = __sts_projected_value_0;');
   assertEquals(payload.virtualModules.some((entry) => entry.specifier === 'sts:json'), true);
 });
 

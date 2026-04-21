@@ -254,6 +254,12 @@ function createAbstractNumericFamilyDiagnostic(
     rangeStart = refinedIndex;
     rangeEnd = refinedIndex + diagnostic.expressionText.length;
   }
+  const lineStart = sourceText.lastIndexOf('\n', rangeStart - 1) + 1;
+  const leadingWhitespaceLength = sourceText.slice(lineStart).match(/^[ \t]*/u)?.[0].length ?? 0;
+  if (leadingWhitespaceLength > 0 && rangeStart >= lineStart + leadingWhitespaceLength) {
+    rangeStart += leadingWhitespaceLength;
+    rangeEnd += leadingWhitespaceLength;
+  }
 
   const start = getLineAndCharacterOfPosition(sourceText, rangeStart);
   const end = getLineAndCharacterOfPosition(sourceText, rangeEnd);
@@ -969,6 +975,7 @@ export function withBuiltinMacroSupport(
     ]),
     baseHost: withStdPackageModuleResolution(
       withMacroApiModuleResolution(options.baseHost),
+      options.options,
     ),
     importedMacroSiteKindsBySpecifier: new Map([
       ...getBuiltinMacroSiteKindsBySpecifier().entries(),

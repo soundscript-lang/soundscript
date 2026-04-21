@@ -8,6 +8,7 @@ import { runReceiverDisciplineRules } from './receiver_discipline.ts';
 
 export function runSourceSupplementalPolicyAnalysis(context: AnalysisContext): SoundDiagnostic[] {
   return [
+    ...runAsyncSurfaceRules(context),
     ...runReceiverDisciplineRules(context),
     ...runClassLifecycleRules(context),
     ...runPrototypeHardeningRules(context),
@@ -15,8 +16,5 @@ export function runSourceSupplementalPolicyAnalysis(context: AnalysisContext): S
 }
 
 export function runUniversalPolicyAnalysis(context: AnalysisContext): SoundDiagnostic[] {
-  return [
-    ...runAsyncSurfaceRules(context),
-    ...runSourceSupplementalPolicyAnalysis(context),
-  ];
+  return runSourceSupplementalPolicyAnalysis(context);
 }

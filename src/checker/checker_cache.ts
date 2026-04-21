@@ -3,8 +3,14 @@ import process from 'node:process';
 
 import ts from 'typescript';
 
-import { collectSoundscriptRootNames, loadConfig, type RuntimeTarget } from '../project/config.ts';
+import {
+  collectSoundscriptRootNames,
+  createProjectReferencesConfigSignature,
+  loadConfig,
+  type RuntimeTarget,
+} from '../project/config.ts';
 import { emitProjectedDeclarations } from '../frontend/project_frontend.ts';
+import { projectEffectAnnotationsOntoDeclarationText } from '../frontend/typescript_effect_declarations.ts';
 import { resolveSoundScriptAwareModule } from '../project/soundscript_packages.ts';
 import { basename, dirname, join } from '../platform/path.ts';
 import {
@@ -121,6 +127,7 @@ interface DependencySignatureTrackedFileSelection {
   changedTrackedFiles: readonly string[];
   exportedSurfaceChangedFiles: number;
   exportedSurfaceReusedFiles: number;
+  sourceSurfaceChangedFilePaths: readonly string[];
 }
 
 const UNDEFINED_JSON_SENTINEL_KEY = '__soundscriptUndefined';
@@ -226,7 +233,13 @@ function createCheckerCacheHeader(
     configSignature: stableStringify({
       commandLineOptions: loadedConfig.commandLine.options,
       frontierCommandLineOptions: loadedConfig.frontierCommandLine.options,
+      frontierProjectReferenceConfigs: createProjectReferencesConfigSignature(
+        loadedConfig.frontierCommandLine.projectReferences,
+      ),
       frontierProjectReferences: loadedConfig.frontierCommandLine.projectReferences ?? [],
+      projectReferenceConfigs: createProjectReferencesConfigSignature(
+        loadedConfig.commandLine.projectReferences,
+      ),
       projectReferences: loadedConfig.commandLine.projectReferences ?? [],
       raw: loadedConfig.commandLine.raw,
       runtime: loadedConfig.runtime,
@@ -380,6 +393,17 @@ function getSurfaceSignatureScriptKind(filePath: string): ts.ScriptKind {
   return ts.ScriptKind.TS;
 }
 
+function collectSoundAnnotationCommentsForSurfaceSignature(
+  sourceFile: ts.SourceFile,
+  node: ts.Node,
+): string {
+  const text = sourceFile.text.slice(node.getFullStart(), node.getEnd());
+  return [
+    ...text.matchAll(/\/\/\s*#\[[^\r\n]*/gu),
+    ...text.matchAll(/\/\*\s*#\[[\s\S]*?\]\s*\*\//gu),
+  ].map((match) => match[0]!.trim()).join('\n');
+}
+
 function createSourceSurfaceSignature(
   filePath: string,
   text: string,
@@ -408,6 +432,13 @@ function createSourceSurfaceSignature(
       }
       if (!hasExportLikeModifier(statement)) {
         continue;
+      }
+      const annotationComments = collectSoundAnnotationCommentsForSurfaceSignature(
+        sourceFile,
+        statement,
+      );
+      if (annotationComments) {
+        parts.push(annotationComments);
       }
       parts.push(
         sourceSurfaceSignaturePrinter.printNode(ts.EmitHint.Unspecified, statement, sourceFile),
@@ -455,6 +486,7 @@ function selectTrackedFilesForDependencySignatureUpdate(
   nextSourceSurfaceSignatures: Readonly<Record<string, string>>,
 ): DependencySignatureTrackedFileSelection {
   const selectedTrackedFiles: string[] = [];
+  const sourceSurfaceChangedFilePaths = new Set<string>();
   let exportedSurfaceChangedFiles = 0;
   let exportedSurfaceReusedFiles = 0;
 
@@ -480,6 +512,7 @@ function selectTrackedFilesForDependencySignatureUpdate(
     }
 
     selectedTrackedFiles.push(changedTrackedFilePath);
+    sourceSurfaceChangedFilePaths.add(dependencyFilePath);
     exportedSurfaceChangedFiles += 1;
   }
 
@@ -487,6 +520,7 @@ function selectTrackedFilesForDependencySignatureUpdate(
     changedTrackedFiles: selectedTrackedFiles,
     exportedSurfaceChangedFiles,
     exportedSurfaceReusedFiles,
+    sourceSurfaceChangedFilePaths: [...sourceSurfaceChangedFilePaths].sort(),
   };
 }
 
@@ -784,8 +818,19 @@ function emitPreparedProjectDependencySignatureHashes(
     }
 
     for (const [filePath, projectedDeclarationText] of projectedDeclarations) {
+      const sourceFile = view.analysisPreparedProgram.program.getSourceFile(
+        view.analysisPreparedProgram.toProgramFileName(filePath),
+      );
+      const declarationText = sourceFile
+        ? projectEffectAnnotationsOntoDeclarationText(
+          view.analysisContext,
+          sourceFile,
+          view.analysisPreparedProgram.toProjectedDeclarationFileName(filePath),
+          projectedDeclarationText,
+        )
+        : projectedDeclarationText;
       signatures[filePath] = hashText(
-        normalizeProjectedDeclarationTextForDependencySignature(projectedDeclarationText),
+        normalizeProjectedDeclarationTextForDependencySignature(declarationText),
       );
     }
   };
@@ -841,6 +886,54 @@ function findDependencySignatureFilePath(
   }
 
   return undefined;
+}
+
+function collectChangedPackageSourceDependencyFiles(
+  changedTrackedFiles: readonly string[],
+  fileMetadata: readonly PreparedAnalysisProjectFileMetadata[],
+): readonly string[] {
+  const packageSourceFiles = fileMetadata.filter((metadata) => metadata.view === 'packageSource');
+  const changedPackageSourceFiles = new Set<string>();
+  for (const changedTrackedFilePath of changedTrackedFiles) {
+    for (const metadata of packageSourceFiles) {
+      if (matchesPreparedAnalysisAnyFilePath(changedTrackedFilePath, [metadata.filePath])) {
+        changedPackageSourceFiles.add(metadata.filePath);
+      }
+    }
+  }
+  return [...changedPackageSourceFiles].sort();
+}
+
+function mergeDependencyFilePaths(
+  ...filePathGroups: readonly (readonly string[])[]
+): readonly string[] {
+  return [...new Set(filePathGroups.flat())].sort();
+}
+
+function staleCacheIncludesPreparedSnapshotBoundaryChange(
+  cacheReadResult: CheckerCacheReadResult,
+): boolean {
+  if (cacheReadResult.kind !== 'stale') {
+    return false;
+  }
+  if (
+    cacheReadResult.changedTrackedFiles.some((changedFilePath) =>
+      basename(changedFilePath) === 'package.json'
+    )
+  ) {
+    return true;
+  }
+  const packageSourceFiles = cacheReadResult.manifest.files.filter((file) =>
+    file.view === 'packageSource'
+  );
+  return cacheReadResult.changedTrackedFiles.some((changedFilePath) =>
+    packageSourceFiles.some((file) =>
+      matchesPreparedAnalysisAnyFilePath(changedFilePath, [
+        file.filePath,
+        ...file.cacheDependencyPaths,
+      ])
+    )
+  );
 }
 
 function updatePreparedProjectDependencySignatures(
@@ -1325,11 +1418,33 @@ function writePackageVerificationCacheFromManifest(
 
   let projectedDeclarations: ReadonlyMap<string, string>;
   try {
-    projectedDeclarations = emitProjectedDeclarations(
+    const emittedProjectedDeclarations = emitProjectedDeclarations(
       preparedProject.packageSourcePolicyView.analysisPreparedProgram,
       manifest.files
         .filter((file) => file.view === 'packageSource')
         .map((file) => file.filePath),
+    );
+    projectedDeclarations = new Map(
+      [...emittedProjectedDeclarations.entries()].map(([filePath, text]) => {
+        const sourceFile = preparedProject.packageSourcePolicyView!.analysisPreparedProgram.program
+          .getSourceFile(
+            preparedProject.packageSourcePolicyView!.analysisPreparedProgram.toProgramFileName(
+              filePath,
+            ),
+          );
+        return [
+          filePath,
+          sourceFile
+            ? projectEffectAnnotationsOntoDeclarationText(
+              preparedProject.packageSourcePolicyView!.analysisContext,
+              sourceFile,
+              preparedProject.packageSourcePolicyView!.analysisPreparedProgram
+                .toProjectedDeclarationFileName(filePath),
+              text,
+            )
+            : text,
+        ] as const;
+      }),
     );
   } catch (error) {
     logCheckerTiming('project.packageVerificationCache.write.skipped', 0, {
@@ -1342,6 +1457,8 @@ function writePackageVerificationCacheFromManifest(
   try {
     writePackageVerificationCacheEntries({
       cacheDir: options.cacheDir,
+      compilerOptions: preparedProject.packageSourcePolicyView?.preparedProgram.options ??
+        preparedProject.stsView?.preparedProgram.options ?? {},
       dependencyDependents: manifest.dependencyDependents,
       dependencySignatures: manifest.dependencySignatures,
       files: manifest.files.filter((file) => file.view === 'packageSource'),
@@ -1544,10 +1661,14 @@ export function analyzeProjectWithPersistentCacheForReuse(
   const persistentBuildInfoDirectory = useCache
     ? createCheckerCacheBuildInfoDirectory(options.projectPath, options.cacheDir)
     : undefined;
+  const reusePersistentPreparedSnapshots = cacheReadResult.kind === 'stale' &&
+    !staleCacheIncludesPreparedSnapshotBoundaryChange(
+      cacheReadResult,
+    );
   const preparedProject = prepareProjectAnalysis(options, undefined, {
     packageVerificationCacheDir: options.cacheDir,
     persistentBuildInfoDirectory,
-    persistentReuseSnapshots: cacheReadResult.kind === 'stale'
+    persistentReuseSnapshots: reusePersistentPreparedSnapshots
       ? cacheReadResult.manifest.prepareArtifacts
       : undefined,
     usePackageVerificationCache: useCache,
@@ -1652,6 +1773,15 @@ export function analyzeProjectWithPersistentCacheForReuse(
           ),
         { always: true },
       );
+      const changedPackageSourceDependencyFiles = collectChangedPackageSourceDependencyFiles(
+        cacheReadResult.changedTrackedFiles,
+        preparedProjectFileMetadata,
+      );
+      const changedCacheDependencyFiles = mergeDependencyFilePaths(
+        dependencySignatureUpdate.changedDependencyFiles,
+        dependencySignatureTrackedFiles.sourceSurfaceChangedFilePaths,
+        changedPackageSourceDependencyFiles,
+      );
       const preparedProjectReuseSnapshots = measureCheckerTiming(
         'project.cache.prepareArtifacts',
         {
@@ -1668,7 +1798,8 @@ export function analyzeProjectWithPersistentCacheForReuse(
         'project.cache.incremental',
         {
           cacheDir: cacheProjectDirectory,
-          changedDependencyFiles: dependencySignatureUpdate.changedDependencyFiles.length,
+          changedDependencyFiles: changedCacheDependencyFiles.length,
+          changedPackageSourceDependencyFiles: changedPackageSourceDependencyFiles.length,
           changedTrackedFiles: cacheReadResult.changedTrackedFiles.length,
           dependencySignatureFilesEmitted:
             dependencySignatureUpdate.dependencySignatureFilesEmitted,
@@ -1678,54 +1809,56 @@ export function analyzeProjectWithPersistentCacheForReuse(
           projectPath: options.projectPath,
         },
         () =>
-          tryReusePartialCheckerCacheManifest(
-            header,
-            cacheReadResult.manifest,
-            cacheReadResult.changedTrackedFiles,
-            dependencySignatureUpdate.changedDependencyFiles,
-            preparedProjectFileMetadata,
-            preparedProjectTrackedFilePaths,
-            dependencyDependents,
-            dependencySignatureUpdate.dependencySignatures,
-            sourceSurfaceSignatures,
-            preparedProjectReuseSnapshots,
-            (filePath, caches) => {
-              const metadata = preparedProjectFileMetadata.find((entry) =>
-                entry.filePath === filePath
-              )!;
-              const analysis = analyzePreparedProjectOwnedDiagnosticsForFileWithArtifacts(
-                preparedProject,
-                filePath,
-                createPreparedProjectAnalysisArtifactsByFilePath(
+          changedPackageSourceDependencyFiles.length > 0
+            ? null
+            : tryReusePartialCheckerCacheManifest(
+              header,
+              cacheReadResult.manifest,
+              cacheReadResult.changedTrackedFiles,
+              changedCacheDependencyFiles,
+              preparedProjectFileMetadata,
+              preparedProjectTrackedFilePaths,
+              dependencyDependents,
+              dependencySignatureUpdate.dependencySignatures,
+              sourceSurfaceSignatures,
+              preparedProjectReuseSnapshots,
+              (filePath, caches) => {
+                const metadata = preparedProjectFileMetadata.find((entry) =>
+                  entry.filePath === filePath
+                )!;
+                const analysis = analyzePreparedProjectOwnedDiagnosticsForFileWithArtifacts(
+                  preparedProject,
                   filePath,
-                  caches.effectCache,
-                  caches.flowCache,
-                  caches.relationCache,
-                  caches.valueTypeCache,
-                ),
-                {
-                  diagnosticPaths: metadata.diagnosticPaths,
-                  directDependencyPaths: metadata.directDependencyPaths,
-                  fileScopedAnalysis: metadata.fileScopedAnalysis,
-                },
-              );
-              const ownedDiagnostics = filterAnalyzedDiagnosticsForFile(
-                analysis.result.diagnostics,
-                filePath,
-              );
-              return {
-                ...metadata,
-                effectCache: analysis.artifacts.effectsByFile.get(filePath),
-                flowCache: analysis.artifacts.flowByFile.get(filePath),
-                relationCache: analysis.artifacts.relationsByFile.get(filePath),
-                result: {
-                  diagnostics: ownedDiagnostics,
-                  summary: createSummary(ownedDiagnostics),
-                },
-                valueTypeCache: analysis.artifacts.valueTypesByFile.get(filePath),
-              };
-            },
-          ),
+                  createPreparedProjectAnalysisArtifactsByFilePath(
+                    filePath,
+                    caches.effectCache,
+                    caches.flowCache,
+                    caches.relationCache,
+                    caches.valueTypeCache,
+                  ),
+                  {
+                    diagnosticPaths: metadata.diagnosticPaths,
+                    directDependencyPaths: metadata.directDependencyPaths,
+                    fileScopedAnalysis: metadata.fileScopedAnalysis,
+                  },
+                );
+                const ownedDiagnostics = filterAnalyzedDiagnosticsForFile(
+                  analysis.result.diagnostics,
+                  filePath,
+                );
+                return {
+                  ...metadata,
+                  effectCache: analysis.artifacts.effectsByFile.get(filePath),
+                  flowCache: analysis.artifacts.flowByFile.get(filePath),
+                  relationCache: analysis.artifacts.relationsByFile.get(filePath),
+                  result: {
+                    diagnostics: ownedDiagnostics,
+                    summary: createSummary(ownedDiagnostics),
+                  },
+                  valueTypeCache: analysis.artifacts.valueTypesByFile.get(filePath),
+                };
+              },
+            ),
         { always: true },
       );
       if (incrementalReuse) {

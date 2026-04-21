@@ -8,6 +8,7 @@ import {
 } from '../checker/engine/diagnostic_codes.ts';
 import type { AnalysisContext } from '../checker/engine/types.ts';
 import { getEffectCompositionForCallLike, isEffectFreeForCompiler } from '../checker/effects.ts';
+import { isSoundscriptSourceFile, toSourceFileName } from '../project/soundscript_files.ts';
 import { type CompilerUnsupportedDiagnosticOptions, CompilerUnsupportedError } from './errors.ts';
 import type {
   CompilerBinaryOp,
@@ -1923,7 +1924,7 @@ function resolveClosureAbiValueType(
     : undefined;
   if (ambientDeclarationObjectRepresentation) {
     const heapRepresentation =
-      ambientDeclarationObjectRepresentation.kind === 'specialized_object_representation' &&
+      isSpecializedObjectRepresentationRef(ambientDeclarationObjectRepresentation) &&
         specializedObjectRepresentationHasUnannotatedClosureFields(
           runtime!,
           ambientDeclarationObjectRepresentation,
@@ -34589,7 +34590,10 @@ function assertSupportedImportDeclaration(
       );
     }
 
-    if (!isRelativeModuleSpecifier(moduleSpecifier)) {
+    const isOwnedSoundscriptSourceImport = isSoundscriptSourceFile(
+      toSourceFileName(importedSourceFile.fileName),
+    );
+    if (!isRelativeModuleSpecifier(moduleSpecifier) && !isOwnedSoundscriptSourceImport) {
       throw new CompilerUnsupportedError(
         'Only declaration-backed host imports may use non-relative module specifiers.',
         declaration.moduleSpecifier,

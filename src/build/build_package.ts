@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
+import process from 'node:process';
 
-import { dirname, extname, join, relative } from '../platform/path.ts';
+import { basename, dirname, extname, join, relative } from '../platform/path.ts';
 import ts from 'typescript';
 
 import { createSoundStdlibCompilerHost } from '../bundled/sound_stdlib.ts';
@@ -27,6 +28,7 @@ import {
 import { logCheckerTiming, measureCheckerTiming } from '../checker/timing.ts';
 import {
   collectSoundscriptRootNames,
+  createProjectReferencesConfigSignature,
   getConfigFileParsingDiagnostics,
   loadConfig,
   type RuntimeTarget,
@@ -101,6 +103,7 @@ interface BuildCacheReadResult {
 }
 
 export interface BuildProjectOptions {
+  buildReferences?: boolean;
   outDir: string;
   projectPath: string;
   target?: RuntimeTarget;
@@ -259,7 +262,13 @@ function createBuildCacheHeader(options: BuildProjectOptions): BuildCacheHeader 
     configSignature: stableStringify({
       commandLineOptions: loadedConfig.commandLine.options,
       frontierCommandLineOptions: loadedConfig.frontierCommandLine.options,
+      frontierProjectReferenceConfigs: createProjectReferencesConfigSignature(
+        loadedConfig.frontierCommandLine.projectReferences,
+      ),
       frontierProjectReferences: loadedConfig.frontierCommandLine.projectReferences ?? [],
+      projectReferenceConfigs: createProjectReferencesConfigSignature(
+        loadedConfig.commandLine.projectReferences,
+      ),
       projectReferences: loadedConfig.commandLine.projectReferences ?? [],
       raw: loadedConfig.commandLine.raw,
       runtime: loadedConfig.runtime,
@@ -1147,6 +1156,23 @@ function buildDistPackageJson(
     files.unshift('LICENSE');
   }
 
+  const originalDependencies = asPackageJsonObject(originalPackageJson.dependencies);
+  const originalOptionalDependencies = asPackageJsonObject(
+    originalPackageJson.optionalDependencies,
+  );
+  const originalPeerDependencies = asPackageJsonObject(originalPackageJson.peerDependencies);
+  const peerDependencies = packageInfo.name === SOUNDSCRIPT_RUNTIME_PACKAGE_NAME
+    ? originalPeerDependencies
+    : packageInfo.toolchain
+    ? {
+      ...originalPeerDependencies,
+      [SOUNDSCRIPT_RUNTIME_PACKAGE_NAME]: packageInfo.toolchain,
+    }
+    : originalPeerDependencies;
+  const originalPeerDependenciesMeta = asPackageJsonObject(
+    originalPackageJson.peerDependenciesMeta,
+  );
+
   return {
     ...(typeof originalPackageJson.name === 'string' ? { name: originalPackageJson.name } : {}),
     ...(typeof originalPackageJson.version === 'string'
@@ -1163,16 +1189,13 @@ function buildDistPackageJson(
       ? { homepage: originalPackageJson.homepage }
       : {}),
     ...(typeof originalPackageJson.bugs === 'object' ? { bugs: originalPackageJson.bugs } : {}),
+    ...(originalDependencies ? { dependencies: originalDependencies } : {}),
+    ...(originalOptionalDependencies ? { optionalDependencies: originalOptionalDependencies } : {}),
+    ...(peerDependencies && Object.keys(peerDependencies).length > 0 ? { peerDependencies } : {}),
+    ...(originalPeerDependenciesMeta ? { peerDependenciesMeta: originalPeerDependenciesMeta } : {}),
     ...(exportsRecord['.'] ? { types: './types/index.d.ts' } : {}),
     exports: exportsRecord,
     files,
-    ...(packageInfo.name === SOUNDSCRIPT_RUNTIME_PACKAGE_NAME ? {} : packageInfo.toolchain
-      ? {
-        peerDependencies: {
-          [SOUNDSCRIPT_RUNTIME_PACKAGE_NAME]: packageInfo.toolchain,
-        },
-      }
-      : {}),
     soundscript: {
       ...(packageInfo.version !== undefined ? { version: packageInfo.version } : {}),
       ...(packageInfo.toolchain ? { toolchain: packageInfo.toolchain } : {}),
@@ -1181,7 +1204,211 @@ function buildDistPackageJson(
   };
 }
 
+function asPackageJsonObject(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+interface ProjectReferenceBuildState {
+  cycleKeys: Set<string>;
+  diagnostics: MergedDiagnostic[];
+  orderedProjectPaths: string[];
+  stack: string[];
+  visited: Set<string>;
+  visiting: Set<string>;
+}
+
+function resolveProjectReferenceConfigPath(reference: ts.ProjectReference): string {
+  return ts.sys.resolvePath(ts.resolveProjectReferencePath(reference));
+}
+
+function createProjectReferenceCycleDiagnostic(
+  projectPath: string,
+  stack: readonly string[],
+): MergedDiagnostic {
+  const cycleStart = stack.indexOf(projectPath);
+  const cycle = [
+    ...(cycleStart >= 0 ? stack.slice(cycleStart) : stack),
+    projectPath,
+  ];
+
+  return {
+    source: 'cli',
+    code: 'SOUNDSCRIPT_PROJECT_REFERENCE_CYCLE',
+    category: 'error',
+    message: `Project reference cycle detected: ${cycle.join(' -> ')}`,
+    filePath: projectPath,
+    line: 1,
+    column: 1,
+  };
+}
+
+function collectProjectReferenceBuildOrder(
+  projectPath: string,
+  options: Pick<BuildProjectOptions, 'target'>,
+  state: ProjectReferenceBuildState,
+): void {
+  const resolvedProjectPath = ts.sys.resolvePath(projectPath);
+  if (state.visited.has(resolvedProjectPath)) {
+    return;
+  }
+  if (state.visiting.has(resolvedProjectPath)) {
+    const cycleStart = state.stack.indexOf(resolvedProjectPath);
+    const cycleStack = cycleStart >= 0 ? state.stack.slice(cycleStart) : [...state.stack];
+    const cycle = [
+      ...cycleStack,
+      resolvedProjectPath,
+    ];
+    const cycleKey = cycle.join('\u0000');
+    if (!state.cycleKeys.has(cycleKey)) {
+      state.cycleKeys.add(cycleKey);
+      state.diagnostics.push(
+        createProjectReferenceCycleDiagnostic(resolvedProjectPath, state.stack),
+      );
+    }
+    return;
+  }
+
+  state.visiting.add(resolvedProjectPath);
+  state.stack.push(resolvedProjectPath);
+
+  const loadedConfig = loadConfig(resolvedProjectPath, { target: options.target });
+  for (const reference of loadedConfig.commandLine.projectReferences ?? []) {
+    collectProjectReferenceBuildOrder(
+      resolveProjectReferenceConfigPath(reference),
+      options,
+      state,
+    );
+  }
+
+  state.stack.pop();
+  state.visiting.delete(resolvedProjectPath);
+  state.visited.add(resolvedProjectPath);
+  state.orderedProjectPaths.push(resolvedProjectPath);
+}
+
+function dedupeDiagnostics(diagnostics: readonly MergedDiagnostic[]): MergedDiagnostic[] {
+  const seen = new Set<string>();
+  const deduped: MergedDiagnostic[] = [];
+  for (const diagnostic of diagnostics) {
+    const key = JSON.stringify([
+      diagnostic.source,
+      diagnostic.code,
+      diagnostic.category,
+      diagnostic.message,
+      diagnostic.filePath ?? '',
+      diagnostic.line ?? '',
+      diagnostic.column ?? '',
+      diagnostic.endLine ?? '',
+      diagnostic.endColumn ?? '',
+    ]);
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    deduped.push(diagnostic);
+  }
+  return deduped;
+}
+
+function recursiveBuildOutDir(options: BuildProjectOptions, projectPath: string): string {
+  const resolvedProjectPath = ts.sys.resolvePath(projectPath);
+  const resolvedRootProjectPath = ts.sys.resolvePath(options.projectPath);
+  return resolvedProjectPath === resolvedRootProjectPath
+    ? options.outDir
+    : join(dirname(resolvedProjectPath), basename(options.outDir));
+}
+
+async function buildProjectWithReferences(
+  options: BuildProjectOptions,
+): Promise<BuildProjectResult> {
+  return await measureCheckerTiming(
+    'project.build.references.total',
+    {
+      outDir: options.outDir,
+      projectPath: options.projectPath,
+    },
+    async () => {
+      const referenceState: ProjectReferenceBuildState = {
+        cycleKeys: new Set(),
+        diagnostics: [],
+        orderedProjectPaths: [],
+        stack: [],
+        visited: new Set(),
+        visiting: new Set(),
+      };
+      collectProjectReferenceBuildOrder(options.projectPath, options, referenceState);
+
+      const diagnostics = [...referenceState.diagnostics];
+      if (hasErrorDiagnostics(diagnostics)) {
+        return {
+          diagnostics,
+          exitCode: 1,
+          output: formatDiagnostics(diagnostics, options.workingDirectory),
+        };
+      }
+
+      const emittedFiles: string[] = [];
+      const outputs: string[] = [];
+      let rootArtifacts: BuildProjectArtifacts | undefined;
+      for (const projectPath of referenceState.orderedProjectPaths) {
+        const result = await buildSingleProject({
+          ...options,
+          buildReferences: false,
+          outDir: recursiveBuildOutDir(options, projectPath),
+          projectPath,
+        });
+        diagnostics.push(...result.diagnostics);
+        if (result.output) {
+          outputs.push(result.output);
+        }
+        if (result.artifacts) {
+          emittedFiles.push(...result.artifacts.emittedFiles);
+          if (ts.sys.resolvePath(projectPath) === ts.sys.resolvePath(options.projectPath)) {
+            rootArtifacts = result.artifacts;
+          }
+        }
+        if (result.exitCode !== 0) {
+          const mergedDiagnostics = dedupeDiagnostics(diagnostics);
+          return {
+            diagnostics: mergedDiagnostics,
+            exitCode: 1,
+            output: mergedDiagnostics.length > 0
+              ? formatDiagnostics(mergedDiagnostics, options.workingDirectory)
+              : outputs.join(''),
+          };
+        }
+      }
+
+      const mergedDiagnostics = dedupeDiagnostics(diagnostics);
+      return {
+        artifacts: rootArtifacts
+          ? {
+            ...rootArtifacts,
+            emittedFiles,
+          }
+          : undefined,
+        diagnostics: mergedDiagnostics,
+        exitCode: hasErrorDiagnostics(mergedDiagnostics) ? 1 : 0,
+        output: hasErrorDiagnostics(mergedDiagnostics)
+          ? formatDiagnostics(mergedDiagnostics, options.workingDirectory)
+          : outputs.join(''),
+      };
+    },
+    { always: true },
+  );
+}
+
 export async function buildProject(options: BuildProjectOptions): Promise<BuildProjectResult> {
+  if (options.buildReferences) {
+    return await buildProjectWithReferences(options);
+  }
+
+  return await buildSingleProject(options);
+}
+
+async function buildSingleProject(options: BuildProjectOptions): Promise<BuildProjectResult> {
   const packageJsonPath = findNearestPackageJson(dirname(options.projectPath));
   if (!packageJsonPath) {
     const diagnostics: MergedDiagnostic[] = [{
