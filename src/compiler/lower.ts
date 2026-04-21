@@ -17004,12 +17004,18 @@ interface SupportedSetElementTypeInfo {
   valuesArrayType:
     | 'owned_array_ref'
     | 'owned_number_array_ref'
-    | 'owned_boolean_array_ref';
-  valuesElementType: 'owned_string_ref' | 'f64' | 'i32';
-  entryElementType: 'owned_array_ref' | 'owned_number_array_ref' | 'owned_boolean_array_ref';
+    | 'owned_boolean_array_ref'
+    | 'owned_tagged_array_ref';
+  valuesElementType: 'owned_string_ref' | 'f64' | 'i32' | 'tagged_ref';
+  entryElementType:
+    | 'owned_array_ref'
+    | 'owned_number_array_ref'
+    | 'owned_boolean_array_ref'
+    | 'owned_tagged_array_ref';
 }
 
 function getSupportedSetElementTypeInfo(
+  checker: ts.TypeChecker,
   elementType: ts.Type,
 ): SupportedSetElementTypeInfo | undefined {
   if (isStringLikeType(elementType)) {
@@ -17033,6 +17039,19 @@ function getSupportedSetElementTypeInfo(
       entryElementType: 'owned_boolean_array_ref',
     };
   }
+  if (
+    isSupportedInternalTaggedHeapUnionType(checker, elementType) ||
+    isSupportedTaggedHeapNullableType(checker, elementType) ||
+    isTaggedCompilerUnionType(elementType) ||
+    isDefinitelyUndefinedType(elementType) ||
+    isDefinitelyNullType(elementType)
+  ) {
+    return {
+      valuesArrayType: 'owned_tagged_array_ref',
+      valuesElementType: 'tagged_ref',
+      entryElementType: 'owned_tagged_array_ref',
+    };
+  }
   return undefined;
 }
 
@@ -17054,7 +17073,7 @@ function getSupportedStringKeySetTypeInfo(
   if (!elementType) {
     return undefined;
   }
-  const elementTypeInfo = getSupportedSetElementTypeInfo(elementType);
+  const elementTypeInfo = getSupportedSetElementTypeInfo(checker, elementType);
   if (!elementTypeInfo) {
     return undefined;
   }
@@ -17222,7 +17241,11 @@ function getSupportedSetEntryIteratorTypeInfo(
   checker: ts.TypeChecker,
   yieldedType: ts.Type,
 ): {
-  elementType: 'owned_array_ref' | 'owned_number_array_ref' | 'owned_boolean_array_ref';
+  elementType:
+    | 'owned_array_ref'
+    | 'owned_number_array_ref'
+    | 'owned_boolean_array_ref'
+    | 'owned_tagged_array_ref';
 } | undefined {
   if ((yieldedType.flags & ts.TypeFlags.Object) === 0) {
     return undefined;
@@ -17236,8 +17259,8 @@ function getSupportedSetEntryIteratorTypeInfo(
   if (!keyType || !valueType) {
     return undefined;
   }
-  const keyInfo = getSupportedSetElementTypeInfo(keyType);
-  const valueInfo = getSupportedSetElementTypeInfo(valueType);
+  const keyInfo = getSupportedSetElementTypeInfo(checker, keyType);
+  const valueInfo = getSupportedSetElementTypeInfo(checker, valueType);
   if (
     !keyInfo ||
     !valueInfo ||
@@ -19350,7 +19373,8 @@ function lowerSupportedSetEntriesArray(
               ],
               type: 'owned_number_array_ref',
             }
-            : {
+            : setTypeInfo.entryElementType === 'owned_boolean_array_ref'
+            ? {
               kind: 'owned_boolean_array_literal',
               elements: [
                 {
@@ -19365,6 +19389,22 @@ function lowerSupportedSetEntriesArray(
                 },
               ],
               type: 'owned_boolean_array_ref',
+            }
+            : {
+              kind: 'owned_tagged_array_literal',
+              elements: [
+                {
+                  kind: 'local_get',
+                  name: valueName,
+                  type: 'tagged_ref',
+                },
+                {
+                  kind: 'local_get',
+                  name: valueName,
+                  type: 'tagged_ref',
+                },
+              ],
+              type: 'owned_tagged_array_ref',
             },
         },
         {
@@ -19702,9 +19742,9 @@ function getDirectStringKeySetConstructorValues(
         element,
       );
     }
-    if (!getSupportedSetElementTypeInfo(checker.getTypeAtLocation(element))) {
+    if (!getSupportedSetElementTypeInfo(checker, checker.getTypeAtLocation(element))) {
       throw new CompilerUnsupportedError(
-        'Set construction currently supports only string, number, and boolean values in compiler subset.',
+        'Set construction currently supports only string, number, boolean, and tagged union values in compiler subset.',
         element,
       );
     }
@@ -60315,7 +60355,7 @@ function lowerInitialStringKeySetNewExpression(
   );
   if (!setTypeInfo) {
     throw new CompilerUnsupportedError(
-      'Set construction currently supports only compiler-owned string, number, and boolean sets in compiler subset.',
+      'Set construction currently supports only compiler-owned string, number, boolean, and tagged-union sets in compiler subset.',
       expression,
     );
   }

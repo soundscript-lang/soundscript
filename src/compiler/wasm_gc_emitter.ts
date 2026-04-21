@@ -1447,16 +1447,23 @@ const TAGGED_ARRAY_SOURCE_SCRATCH = '__soundscript_tagged_array_source';
 const TAGGED_ARRAY_TMP_SCRATCH = '__soundscript_tagged_array_tmp';
 const TAGGED_ARRAY_INDEX_SCRATCH = '__soundscript_tagged_array_index';
 const TAGGED_ARRAY_LENGTH_SCRATCH = '__soundscript_tagged_array_length';
+const TAGGED_ARRAY_RESULT_SCRATCH = '__soundscript_tagged_array_result';
+const TAGGED_ARRAY_SEARCH_SCRATCH = '__soundscript_tagged_array_search';
+const TAGGED_ARRAY_CURRENT_SCRATCH = '__soundscript_tagged_array_current';
 const STRING_EQUAL_IMPORT_MODULE = 'soundscript';
 const STRING_EQUAL_IMPORT_NAME = '__string_eq';
 const STRING_EQUAL_FUNCTION_NAME = '__soundscript_string_eq';
+const EXTERN_EQUAL_IMPORT_MODULE = 'soundscript';
+const EXTERN_EQUAL_IMPORT_NAME = '__extern_eq';
+const EXTERN_EQUAL_FUNCTION_NAME = '__soundscript_extern_eq';
 
 type ArrayScratchUse =
   | 'number_array'
   | 'string_array'
   | 'string_array_index_of'
   | 'boolean_array'
-  | 'tagged_array';
+  | 'tagged_array'
+  | 'tagged_array_index_of';
 
 function collectNumberArrayScratchFromExpression(
   expression: SemanticExpressionIR,
@@ -1510,6 +1517,12 @@ function collectNumberArrayScratchFromExpression(
       collectNumberArrayScratchFromExpression(expression.start, uses);
       collectNumberArrayScratchFromExpression(expression.deleteCount, uses);
       collectNumberArrayScratchFromExpression(expression.items, uses);
+      break;
+    case 'owned_tagged_array_index_of':
+      uses.add('tagged_array');
+      uses.add('tagged_array_index_of');
+      collectNumberArrayScratchFromExpression(expression.array, uses);
+      collectNumberArrayScratchFromExpression(expression.search, uses);
       break;
     case 'owned_number_array_index_of':
       uses.add('number_array');
@@ -1719,6 +1732,9 @@ function numberArrayScratchLocals(func: WasmGcFunctionPlanIR): readonly {
         { name: TAGGED_ARRAY_TMP_SCRATCH, wasmType: '(ref null $tagged_array_runtime)' },
         { name: TAGGED_ARRAY_INDEX_SCRATCH, wasmType: 'i32' },
         { name: TAGGED_ARRAY_LENGTH_SCRATCH, wasmType: 'i32' },
+        { name: TAGGED_ARRAY_RESULT_SCRATCH, wasmType: 'f64' },
+        { name: TAGGED_ARRAY_SEARCH_SCRATCH, wasmType: `(ref null ${taggedValueTypeName()})` },
+        { name: TAGGED_ARRAY_CURRENT_SCRATCH, wasmType: `(ref null ${taggedValueTypeName()})` },
       ]
       : []),
   ];
@@ -1728,6 +1744,12 @@ function functionUsesStringArrayIndexOf(func: WasmGcFunctionPlanIR): boolean {
   const uses = new Set<ArrayScratchUse>();
   func.body.forEach((statement) => collectNumberArrayScratchFromStatement(statement, uses));
   return uses.has('string_array_index_of');
+}
+
+function functionUsesTaggedArrayIndexOf(func: WasmGcFunctionPlanIR): boolean {
+  const uses = new Set<ArrayScratchUse>();
+  func.body.forEach((statement) => collectNumberArrayScratchFromStatement(statement, uses));
+  return uses.has('tagged_array_index_of');
 }
 
 function renderNumberArraySource(
@@ -2376,6 +2398,123 @@ function renderTaggedArraySpliceExpression(
   ];
 }
 
+function renderTaggedArrayIndexOfExpression(
+  expression: Extract<SemanticExpressionIR, { kind: 'owned_tagged_array_index_of' }>,
+  indent: string,
+  context: FunctionRenderContext,
+): readonly string[] {
+  const current = sanitizeIdentifier(TAGGED_ARRAY_CURRENT_SCRATCH);
+  const search = sanitizeIdentifier(TAGGED_ARRAY_SEARCH_SCRATCH);
+  const currentValue = [
+    `${indent}    local.get $${current}`,
+    `${indent}    ref.as_non_null`,
+  ];
+  const searchValue = [
+    `${indent}    local.get $${search}`,
+    `${indent}    ref.as_non_null`,
+  ];
+  const currentTag = [
+    ...currentValue,
+    `${indent}    struct.get ${taggedValueTypeName()} $tag`,
+  ];
+  const searchTag = [
+    ...searchValue,
+    `${indent}    struct.get ${taggedValueTypeName()} $tag`,
+  ];
+  return [
+    ...renderTaggedArraySource(expression.array, indent, context),
+    ...renderExpression(expression.search, indent, context),
+    `${indent}local.set $${search}`,
+    `${indent}i32.const 0`,
+    `${indent}local.set $${sanitizeIdentifier(TAGGED_ARRAY_INDEX_SCRATCH)}`,
+    `${indent}local.get $${sanitizeIdentifier(TAGGED_ARRAY_SOURCE_SCRATCH)}`,
+    `${indent}ref.as_non_null`,
+    `${indent}array.len`,
+    `${indent}local.set $${sanitizeIdentifier(TAGGED_ARRAY_LENGTH_SCRATCH)}`,
+    `${indent}f64.const -1`,
+    `${indent}local.set $${sanitizeIdentifier(TAGGED_ARRAY_RESULT_SCRATCH)}`,
+    `${indent}block`,
+    `${indent}  loop`,
+    `${indent}    local.get $${sanitizeIdentifier(TAGGED_ARRAY_INDEX_SCRATCH)}`,
+    `${indent}    local.get $${sanitizeIdentifier(TAGGED_ARRAY_LENGTH_SCRATCH)}`,
+    `${indent}    i32.ge_u`,
+    `${indent}    br_if 1`,
+    `${indent}    local.get $${sanitizeIdentifier(TAGGED_ARRAY_SOURCE_SCRATCH)}`,
+    `${indent}    ref.as_non_null`,
+    `${indent}    local.get $${sanitizeIdentifier(TAGGED_ARRAY_INDEX_SCRATCH)}`,
+    `${indent}    array.get $tagged_array_runtime`,
+    `${indent}    local.set $${current}`,
+    ...currentTag,
+    ...searchTag,
+    `${indent}    i32.eq`,
+    `${indent}    if`,
+    ...currentTag,
+    `${indent}      i32.const ${TAGGED_NUMBER_TAG}`,
+    `${indent}      i32.eq`,
+    `${indent}      if (result i32)`,
+    ...currentValue,
+    `${indent}        struct.get ${taggedValueTypeName()} $number_payload`,
+    ...searchValue,
+    `${indent}        struct.get ${taggedValueTypeName()} $number_payload`,
+    `${indent}        f64.eq`,
+    `${indent}      else`,
+    ...currentTag,
+    `${indent}        i32.const ${TAGGED_BOOLEAN_TAG}`,
+    `${indent}        i32.eq`,
+    `${indent}        if (result i32)`,
+    ...currentValue,
+    `${indent}          struct.get ${taggedValueTypeName()} $number_payload`,
+    ...searchValue,
+    `${indent}          struct.get ${taggedValueTypeName()} $number_payload`,
+    `${indent}          f64.eq`,
+    `${indent}        else`,
+    ...currentTag,
+    `${indent}          i32.const ${TAGGED_UNDEFINED_TAG}`,
+    `${indent}          i32.eq`,
+    ...currentTag,
+    `${indent}          i32.const ${TAGGED_NULL_TAG}`,
+    `${indent}          i32.eq`,
+    `${indent}          i32.or`,
+    `${indent}          if (result i32)`,
+    `${indent}            i32.const 1`,
+    `${indent}          else`,
+    ...currentTag,
+    `${indent}            i32.const ${TAGGED_HEAP_OBJECT_TAG}`,
+    `${indent}            i32.eq`,
+    `${indent}            if (result i32)`,
+    ...currentValue,
+    `${indent}              struct.get ${taggedValueTypeName()} $heap_payload`,
+    ...searchValue,
+    `${indent}              struct.get ${taggedValueTypeName()} $heap_payload`,
+    `${indent}              ref.eq`,
+    `${indent}            else`,
+    ...currentValue,
+    `${indent}              struct.get ${taggedValueTypeName()} $extern_payload`,
+    ...searchValue,
+    `${indent}              struct.get ${taggedValueTypeName()} $extern_payload`,
+    `${indent}              call $${sanitizeIdentifier(EXTERN_EQUAL_FUNCTION_NAME)}`,
+    `${indent}            end`,
+    `${indent}          end`,
+    `${indent}        end`,
+    `${indent}      end`,
+    `${indent}      if`,
+    `${indent}        local.get $${sanitizeIdentifier(TAGGED_ARRAY_INDEX_SCRATCH)}`,
+    `${indent}        f64.convert_i32_s`,
+    `${indent}        local.set $${sanitizeIdentifier(TAGGED_ARRAY_RESULT_SCRATCH)}`,
+    `${indent}        br 3`,
+    `${indent}      end`,
+    `${indent}    end`,
+    `${indent}    local.get $${sanitizeIdentifier(TAGGED_ARRAY_INDEX_SCRATCH)}`,
+    `${indent}    i32.const 1`,
+    `${indent}    i32.add`,
+    `${indent}    local.set $${sanitizeIdentifier(TAGGED_ARRAY_INDEX_SCRATCH)}`,
+    `${indent}    br 0`,
+    `${indent}  end`,
+    `${indent}end`,
+    `${indent}local.get $${sanitizeIdentifier(TAGGED_ARRAY_RESULT_SCRATCH)}`,
+  ];
+}
+
 function renderHeapArrayElementCast(
   representation: string,
   indent: string,
@@ -2577,6 +2716,8 @@ function renderExpression(
       return renderStringArrayIndexOfExpression(expression, indent, context);
     case 'owned_boolean_array_index_of':
       return renderBooleanArrayIndexOfExpression(expression, indent, context);
+    case 'owned_tagged_array_index_of':
+      return renderTaggedArrayIndexOfExpression(expression, indent, context);
     case 'owned_string_array_element':
       return [
         ...renderExpression(expression.value, indent, context),
@@ -3121,6 +3262,18 @@ function renderStringEqualityImportPlan(plan: WasmGcModulePlanIR): readonly stri
     : [];
 }
 
+function renderExternEqualityImportPlan(plan: WasmGcModulePlanIR): readonly string[] {
+  return plan.functionPlans.some((func) => !func.hostImport && functionUsesTaggedArrayIndexOf(func))
+    ? [
+      `  (import ${JSON.stringify(EXTERN_EQUAL_IMPORT_MODULE)} ${
+        JSON.stringify(EXTERN_EQUAL_IMPORT_NAME)
+      } (func $${
+        sanitizeIdentifier(EXTERN_EQUAL_FUNCTION_NAME)
+      } (param externref externref) (result i32)))`,
+    ]
+    : [];
+}
+
 function collectBoxedClosureDispatchSignatureIdsFromExpression(
   expression: SemanticExpressionIR,
   signatureIds: Set<number>,
@@ -3280,6 +3433,7 @@ function collectBoxedClosureDispatchSignatureIdsFromExpression(
     case 'owned_number_array_index_of':
     case 'owned_string_array_index_of':
     case 'owned_boolean_array_index_of':
+    case 'owned_tagged_array_index_of':
       collectBoxedClosureDispatchSignatureIdsFromExpression(
         expression.array,
         signatureIds,
@@ -3682,6 +3836,7 @@ function collectBoxValueTypesFromExpression(
     case 'owned_number_array_index_of':
     case 'owned_string_array_index_of':
     case 'owned_boolean_array_index_of':
+    case 'owned_tagged_array_index_of':
       collectBoxValueTypesFromExpression(expression.array, valueTypes);
       collectBoxValueTypesFromExpression(expression.search, valueTypes);
       break;
@@ -3888,6 +4043,11 @@ function collectArrayRuntimeTypesFromExpression(
       break;
     case 'owned_boolean_array_index_of':
       runtimeTypes.add('boolean');
+      collectArrayRuntimeTypesFromExpression(expression.array, runtimeTypes);
+      collectArrayRuntimeTypesFromExpression(expression.search, runtimeTypes);
+      break;
+    case 'owned_tagged_array_index_of':
+      runtimeTypes.add('tagged');
       collectArrayRuntimeTypesFromExpression(expression.array, runtimeTypes);
       collectArrayRuntimeTypesFromExpression(expression.search, runtimeTypes);
       break;
@@ -4870,6 +5030,7 @@ export function emitWasmGcModulePlan(plan: WasmGcModulePlanIR): string {
   const closureDispatchHelpers = renderClosureDispatchHelpers(plan, closureFunctionNames);
   const hostImportPlans = plan.functionPlans.flatMap(renderHostImportPlan);
   const stringEqualityImportPlans = renderStringEqualityImportPlan(plan);
+  const externEqualityImportPlans = renderExternEqualityImportPlan(plan);
   const lines = [
     '(module',
     '  ;; soundscript wasm-gc shadow module',
@@ -4898,8 +5059,14 @@ export function emitWasmGcModulePlan(plan: WasmGcModulePlanIR): string {
         ]
         : ['    ;; none']
     ),
-    ...(hostImportPlans.length > 0 || stringEqualityImportPlans.length > 0
-      ? ['  ;; imports', ...hostImportPlans, ...stringEqualityImportPlans]
+    ...(hostImportPlans.length > 0 || stringEqualityImportPlans.length > 0 ||
+        externEqualityImportPlans.length > 0
+      ? [
+        '  ;; imports',
+        ...hostImportPlans,
+        ...stringEqualityImportPlans,
+        ...externEqualityImportPlans,
+      ]
       : []),
     '  ;; helpers',
     ...(plan.helperPlans.length > 0 || promiseHelperFunctions.length > 0 ||

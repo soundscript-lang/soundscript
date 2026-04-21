@@ -313,6 +313,12 @@ export type SemanticExpressionIR =
     representation: 'f64';
   }
   | {
+    kind: 'owned_tagged_array_index_of';
+    array: SemanticExpressionIR;
+    search: SemanticExpressionIR;
+    representation: 'f64';
+  }
+  | {
     kind: 'owned_string_array_element';
     value: SemanticExpressionIR;
     index: SemanticExpressionIR;
@@ -2103,6 +2109,13 @@ function semanticExpressionFromCompilerIR(
         search: semanticExpressionFromCompilerIR(expression.search),
         representation: 'f64',
       };
+    case 'owned_tagged_array_index_of':
+      return {
+        kind: 'owned_tagged_array_index_of',
+        array: semanticExpressionFromCompilerIR(expression.array),
+        search: semanticExpressionFromCompilerIR(expression.search),
+        representation: 'f64',
+      };
     case 'owned_string_array_element':
       return {
         kind: 'owned_string_array_element',
@@ -2953,6 +2966,7 @@ function collectUnsupportedExpressionKinds(
     case 'owned_number_array_index_of':
     case 'owned_string_array_index_of':
     case 'owned_boolean_array_index_of':
+    case 'owned_tagged_array_index_of':
       collectUnsupportedExpressionKinds(expression.array, kinds);
       collectUnsupportedExpressionKinds(expression.search, kinds);
       break;
