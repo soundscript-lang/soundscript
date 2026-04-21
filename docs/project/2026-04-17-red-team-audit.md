@@ -40,6 +40,7 @@ Legend:
 - `batch-41`: covered by the forty-first red-team batch added with this record.
 - `batch-42`: covered by the forty-second red-team batch added with this record.
 - `batch-43`: covered by the forty-third red-team batch added with this record.
+- `batch-44`: covered by the forty-fourth red-team batch added with this record.
 - `audit-debt`: missing coverage that should be closed before calling the family fully audited.
 - `out-of-scope`: explicitly outside the strong soundness claim.
 - `design-gap`: documented future work, not a current guarantee.
@@ -47,8 +48,8 @@ Legend:
 | Owned family                         | Fresh project | Reused prepared | File-scoped  | Persistent checker cache | Package verification cache | LSP/incremental session | Build cache/output | Compiler/target gate |
 | ------------------------------------ | ------------- | --------------- | ------------ | ------------------------ | -------------------------- | ----------------------- | ------------------ | -------------------- |
 | Prepared/package-source parity       | covered       | covered         | covered      | covered,batch-29         | batch-3                    | covered                 | batch-1,10,28,31   | audit-debt           |
-| Flow/effect invalidation             | covered       | batch-35,40,43  | covered      | batch-4,35,40,43         | batch-4,40,43              | batch-35,40,43          | audit-debt         | audit-debt           |
-| Proof-oracle verification            | covered       | batch-38        | covered      | batch-38                 | batch-38                   | batch-38                | audit-debt         | audit-debt           |
+| Flow/effect invalidation             | covered       | batch-35,40,43  | covered      | batch-4,35,40,43         | batch-4,40,43              | batch-35,40,43          | batch-44           | batch-44             |
+| Proof-oracle verification            | covered       | batch-38        | covered      | batch-38                 | batch-38                   | batch-38                | batch-44           | batch-44             |
 | BareObject/null-prototype provenance | covered       | covered         | covered      | batch-39                 | covered                    | batch-39                | batch-39           | audit-debt           |
 | `#[value]` parity                    | covered       | batch-1         | batch-1      | batch-1                  | batch-5                    | batch-1                 | batch-1            | covered              |
 | Machine numerics                     | covered       | batch-37        | batch-37     | batch-37                 | batch-5                    | batch-37                | batch-1,37         | batch-37             |
@@ -1090,13 +1091,32 @@ Legend:
 - Result: no production bug found after Batch 40 and Batch 42. Subpath-only source-published package
   exports preserve the same member-path forwarded-effect invalidation behavior as bare
   `soundscript.source` package chains.
-- Residual risk: build-output/compiler-gate coverage for effect families remains audit debt only if
-  those routes become part of the owned acceptance story rather than fail-before-emit checks.
+- Residual risk: build-output/compiler-gate coverage is addressed separately in Batch 44 because
+  effect and proof-oracle diagnostics are checker-owned fail-before-emit gates.
+
+## Batch 44 Findings
+
+### Effect And Proof Fail-Before-Emit Gates
+
+- Attack: prime `soundscript build` with valid effect and proof-oracle projects, then edit the
+  effect helper into a forbidden host-effectful call and edit the type guard body into an invalid
+  proof oracle while the build cache is warm. Separately invoke `compileProject` on both invalid
+  projects.
+- Routes: build cache invalidation, build analysis, emitted artifact preservation after failed
+  builds, compiler/target gate diagnostics, checker-owned effect diagnostics, and checker-owned
+  proof-oracle diagnostics.
+- Expected result: cached builds miss rather than emit from stale artifacts, run checker analysis,
+  return `SOUND1041` or `SOUND1017`, skip build-cache writes, and leave previous build outputs
+  unchanged. `compileProject` must return the same checker diagnostics with no compiler artifacts,
+  proving the compiler backend never lowers checker-invalid effect or proof-oracle programs.
+- Result: no production bug found. Effect and proof-oracle build/compiler matrix cells are
+  intentionally fail-before-emit checker gates, not separate backend acceptance routes.
+- Residual risk: if a future backend intentionally owns accepted effect/proof behavior instead of
+  relying on checker rejection, it should add positive build/runtime or compiler-lowering tests for
+  that new acceptance story.
 
 ## Remaining High-Priority Audit Debt
 
-- Build-output/compiler-gate coverage for effect and proof-oracle families where those routes become
-  part of the owned acceptance story rather than fail-before-emit checks.
 - File-scoped parity for unimported referenced-project roots if that route is later expected to own
   recursive project-reference diagnostics.
 - Recursive package support-file tracking for non-`.sts` helper graphs if that source-published
@@ -1560,4 +1580,16 @@ red-team attack, the route matrix it covers, and the residual risk left behind.
 - `deno fmt --check tests/integration/red_team_audit_test.ts
   docs/project/2026-04-17-red-team-audit.md`:
   passed.
+- `deno task check`: passed.
+- `deno test --allow-all --filter "build and compiler fail before emit for effect and proof
+  diagnostics" tests/integration/red_team_audit_test.ts`:
+  passed, 1 test in `7s`.
+- `deno test --allow-all --filter "/(build and compiler fail before emit for effect and proof
+  diagnostics|cached proof-oracle verification invalidates predicate body drift|package verification
+  cache invalidates source-published predicate body drift|cached effect summaries track member-path
+  forwarded callback drift|cached effect summaries track rewrite forwarded effect drift)/"
+  tests/integration/red_team_audit_test.ts`:
+  passed, 5 tests in `35s`.
+- `deno test --allow-all tests/integration/red_team_audit_test.ts`: passed, 58 tests in `5m13s`.
+- `deno lint tests/integration/red_team_audit_test.ts`: passed.
 - `deno task check`: passed.

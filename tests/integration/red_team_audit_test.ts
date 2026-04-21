@@ -7734,6 +7734,209 @@ Deno.test('red-team: package verification cache invalidates source-published pre
   assertEquals(cachedResult.exitCode, coldResult.exitCode, cachedResult.output);
 });
 
+Deno.test('red-team: build and compiler fail before emit for effect and proof diagnostics', async () => {
+  const createPackageJson = (name: string): string =>
+    `${
+      JSON.stringify(
+        {
+          name,
+          version: '1.0.0',
+          type: 'module',
+          soundscript: {
+            version: 1,
+            exports: {
+              '.': { source: './src/index.sts' },
+            },
+          },
+        },
+        null,
+        2,
+      )
+    }\n`;
+
+  const effectProject = await createTempProject([
+    {
+      path: 'package.json',
+      contents: createPackageJson('red-team-effect-build-gate'),
+    },
+    {
+      path: 'tsconfig.json',
+      contents: createSoundscriptTsconfig(),
+    },
+    {
+      path: 'src/index.sts',
+      contents: [
+        'import { readHost } from "./effect_helper";',
+        '',
+        '// #[effects(forbid: [host])]',
+        'export function run(): number {',
+        '  return readHost();',
+        '}',
+        '',
+      ].join('\n'),
+    },
+    {
+      path: 'src/effect_helper.sts',
+      contents: [
+        'export function readHost(): number {',
+        '  return 1;',
+        '}',
+        '',
+      ].join('\n'),
+    },
+  ]);
+  const effectProjectPath = join(effectProject, 'tsconfig.json');
+  const effectOutDir = join(effectProject, 'dist');
+  const firstEffectBuild = await buildProject({
+    outDir: effectOutDir,
+    projectPath: effectProjectPath,
+    workingDirectory: effectProject,
+  });
+  assertEquals(firstEffectBuild.exitCode, 0, firstEffectBuild.output);
+  const firstEffectArtifacts = await collectFileContents(effectOutDir);
+
+  await writeProjectFile(
+    effectProject,
+    'src/effect_helper.sts',
+    [
+      '// #[effects(add: [host.random])]',
+      'export function readHost(): number {',
+      '  return 1;',
+      '}',
+      '',
+    ].join('\n'),
+  );
+
+  const failedEffectBuild = await withCapturedTimingLogsAsync(async (logs) => {
+    const result = await buildProject({
+      outDir: effectOutDir,
+      projectPath: effectProjectPath,
+      workingDirectory: effectProject,
+    });
+    assert(
+      logs.some((line) =>
+        line.includes('[soundscript:checker] project.build.cache.read ') &&
+        line.includes('status=miss')
+      ),
+      logs.join('\n'),
+    );
+    assert(
+      logs.some((line) => line.includes('[soundscript:checker] project.build.analysis ')),
+      logs.join('\n'),
+    );
+    assert(
+      !logs.some((line) => line.includes('[soundscript:checker] project.build.cache.write ')),
+      logs.join('\n'),
+    );
+    return result;
+  });
+  assertEquals(failedEffectBuild.exitCode, 1, failedEffectBuild.output);
+  assertEquals(toProjectRelativeDiagnostics(failedEffectBuild.diagnostics, effectProject), [
+    ['SOUND1041', 'src/index.sts'],
+  ]);
+  assertEquals(await collectFileContents(effectOutDir), firstEffectArtifacts);
+
+  const effectCompileResult = compileProject({
+    projectPath: effectProjectPath,
+    workingDirectory: effectProject,
+  });
+  assertEquals(effectCompileResult.exitCode, 1, effectCompileResult.output);
+  assertEquals(toProjectRelativeDiagnostics(effectCompileResult.diagnostics, effectProject), [
+    ['SOUND1041', 'src/index.sts'],
+  ]);
+  assertEquals(effectCompileResult.artifacts, undefined);
+
+  const proofProject = await createTempProject([
+    {
+      path: 'package.json',
+      contents: createPackageJson('red-team-proof-build-gate'),
+    },
+    {
+      path: 'tsconfig.json',
+      contents: createSoundscriptTsconfig(),
+    },
+    {
+      path: 'src/index.sts',
+      contents: [
+        'import { isString } from "./guards";',
+        '',
+        'export function read(value: unknown): string | undefined {',
+        '  return isString(value) ? value : undefined;',
+        '}',
+        '',
+      ].join('\n'),
+    },
+    {
+      path: 'src/guards.sts',
+      contents: [
+        'export function isString(value: unknown): value is string {',
+        '  return typeof value === "string";',
+        '}',
+        '',
+      ].join('\n'),
+    },
+  ]);
+  const proofProjectPath = join(proofProject, 'tsconfig.json');
+  const proofOutDir = join(proofProject, 'dist');
+  const firstProofBuild = await buildProject({
+    outDir: proofOutDir,
+    projectPath: proofProjectPath,
+    workingDirectory: proofProject,
+  });
+  assertEquals(firstProofBuild.exitCode, 0, firstProofBuild.output);
+  const firstProofArtifacts = await collectFileContents(proofOutDir);
+
+  await writeProjectFile(
+    proofProject,
+    'src/guards.sts',
+    [
+      'export function isString(value: unknown): value is string {',
+      '  return true;',
+      '}',
+      '',
+    ].join('\n'),
+  );
+
+  const failedProofBuild = await withCapturedTimingLogsAsync(async (logs) => {
+    const result = await buildProject({
+      outDir: proofOutDir,
+      projectPath: proofProjectPath,
+      workingDirectory: proofProject,
+    });
+    assert(
+      logs.some((line) =>
+        line.includes('[soundscript:checker] project.build.cache.read ') &&
+        line.includes('status=miss')
+      ),
+      logs.join('\n'),
+    );
+    assert(
+      logs.some((line) => line.includes('[soundscript:checker] project.build.analysis ')),
+      logs.join('\n'),
+    );
+    assert(
+      !logs.some((line) => line.includes('[soundscript:checker] project.build.cache.write ')),
+      logs.join('\n'),
+    );
+    return result;
+  });
+  assertEquals(failedProofBuild.exitCode, 1, failedProofBuild.output);
+  assertEquals(toProjectRelativeDiagnostics(failedProofBuild.diagnostics, proofProject), [
+    ['SOUND1017', 'src/guards.sts'],
+  ]);
+  assertEquals(await collectFileContents(proofOutDir), firstProofArtifacts);
+
+  const proofCompileResult = compileProject({
+    projectPath: proofProjectPath,
+    workingDirectory: proofProject,
+  });
+  assertEquals(proofCompileResult.exitCode, 1, proofCompileResult.output);
+  assertEquals(toProjectRelativeDiagnostics(proofCompileResult.diagnostics, proofProject), [
+    ['SOUND1017', 'src/guards.sts'],
+  ]);
+  assertEquals(proofCompileResult.artifacts, undefined);
+});
+
 Deno.test('red-team: cached non-ordinary provenance survives helper drift into build output', async () => {
   const tempDirectory = await createTempProject([
     {
