@@ -44,7 +44,6 @@ import {
   isSoundscriptSourceFile,
   type PreparedCompilerHostReuseState,
   type PreparedProgram,
-  toProjectedDeclarationSourceFileName,
   toSourceFileName,
 } from './project_frontend.ts';
 import { MacroError } from './macro_errors.ts';
@@ -574,76 +573,6 @@ function createModuleResolutionHost(preparedProgram: PreparedProgram): ts.Module
   };
 }
 
-function stripImportedMacroBindings(
-  sourceFile: ts.SourceFile,
-  strippedImportNames: ReadonlySet<string>,
-  preserveRemovedImportStatements = false,
-): ts.SourceFile {
-  if (strippedImportNames.size === 0) {
-    return sourceFile;
-  }
-
-  const statements: ts.Statement[] = [];
-  for (const statement of sourceFile.statements) {
-    if (!ts.isImportDeclaration(statement) || !statement.importClause) {
-      statements.push(statement);
-      continue;
-    }
-
-    const importClause = statement.importClause;
-    const keptDefaultImport = importClause.name && !strippedImportNames.has(importClause.name.text)
-      ? importClause.name
-      : undefined;
-    const namedBindings = importClause.namedBindings;
-    let keptNamedBindings = namedBindings;
-
-    if (namedBindings && ts.isNamespaceImport(namedBindings)) {
-      keptNamedBindings = strippedImportNames.has(namedBindings.name.text)
-        ? undefined
-        : namedBindings;
-    }
-
-    if (namedBindings && ts.isNamedImports(namedBindings)) {
-      const remainingElements = namedBindings.elements.filter((element) =>
-        !strippedImportNames.has(element.name.text)
-      );
-      keptNamedBindings = remainingElements.length > 0
-        ? ts.factory.updateNamedImports(namedBindings, remainingElements)
-        : undefined;
-    }
-
-    if (keptDefaultImport === importClause.name && keptNamedBindings === namedBindings) {
-      statements.push(statement);
-      continue;
-    }
-
-    if (!keptDefaultImport && !keptNamedBindings) {
-      if (preserveRemovedImportStatements) {
-        statements.push(ts.factory.createEmptyStatement());
-      }
-      continue;
-    }
-
-    const updatedImportClause = ts.factory.updateImportClause(
-      importClause,
-      importClause.isTypeOnly,
-      keptDefaultImport,
-      keptNamedBindings,
-    );
-    statements.push(
-      ts.factory.updateImportDeclaration(
-        statement,
-        statement.modifiers,
-        updatedImportClause,
-        statement.moduleSpecifier,
-        statement.attributes,
-      ),
-    );
-  }
-
-  return ts.factory.updateSourceFile(sourceFile, statements);
-}
-
 function createSingleFileJavaScriptProgram(
   fileName: string,
   text: string,
@@ -860,7 +789,6 @@ function createPortableMacroGlobalThis(
   baseGlobal: typeof globalThis,
   fileName: string,
 ): typeof globalThis {
-  let proxy!: typeof globalThis;
   const portableMath = new Proxy(baseGlobal.Math ?? Math, {
     get(target, property, receiver) {
       if (property === 'random') {
@@ -884,7 +812,7 @@ function createPortableMacroGlobalThis(
     },
   });
 
-  proxy = new Proxy(baseGlobal, {
+  const proxy: typeof globalThis = new Proxy(baseGlobal, {
     defineProperty(_target, _property, _attributes) {
       throw new Error(
         `Macro module "${fileName}" cannot mutate globalThis. Macro execution only supports explicit capabilities on ctx.host.`,
@@ -1031,6 +959,7 @@ export function createProjectMacroEnvironment(
   const macroModuleEvaluator = createMacroVmModuleEvaluator();
   const macroNamesByFile = new Map<string, ReadonlySet<string>>();
   const bindingsByFile = new Map<string, PerFileMacroBindings>();
+  let processedPreparedProgramChangedMacroFiles = false;
   const macroTargetReuseState = createPreparedCompilerHostReuseState(
     preparedProgram.preparedHost.host.getCurrentDirectory?.() ?? ts.sys.getCurrentDirectory(),
   );
@@ -1197,8 +1126,7 @@ export function createProjectMacroEnvironment(
     const preparedSource = preparedProgram.preparedHost.getPreparedSourceFile(sourceFileName);
     if (
       cachedPlan.sourceText !== sourceFile.text ||
-      cachedPlan.preparedOriginalText !== preparedSource?.originalText ||
-      cachedPlan.preparedRewrittenText !== preparedSource?.rewrittenText
+      cachedPlan.preparedOriginalText !== preparedSource?.originalText
     ) {
       return false;
     }
@@ -1351,7 +1279,7 @@ export function createProjectMacroEnvironment(
       preserveMissingExpanders ? 'preserveMissing:1' : 'preserveMissing:0',
       annotateExpansions ? 'annotate:1' : 'annotate:0',
       preparedSource?.originalText ?? sourceFile.text,
-      preparedSource?.rewrittenText ?? sourceFile.text,
+      sourceFile.text,
       expansionDependencySignature,
       serializeImportedBindingUsage(importedBindingUsage),
     ].join('\u0003');
@@ -2674,6 +2602,10 @@ export function createProjectMacroEnvironment(
         annotateExpansions,
       );
       const cachedExpandedFiles = stableReuseState.expandedFilesByMode.get(expansionModeKey);
+      const hadReusableMacroState = cachedExpandedFiles !== undefined ||
+        stableReuseState.bindingPlansByFile.size > 0 ||
+        stableReuseState.dependencySourceTextsByFile.size > 0 ||
+        stableReuseState.expandedFilesByMode.size > 0;
       const expandedFiles = cachedExpandedFiles ?? new Map<string, ts.SourceFile>();
       stableReuseState.expandedFilesByMode.set(expansionModeKey, expandedFiles);
       const registriesByFile = new Map<
@@ -2718,34 +2650,31 @@ export function createProjectMacroEnvironment(
         }
       }
 
-      const changedMacroModuleFiles = [
-        ...preparedProgram.preparedHost.reuseState.changedProgramSourceFiles,
-      ].filter((changedFileName) => {
-        const changedSourcePath = preparedProgram.toSourceFileName(changedFileName);
-        if (isSoundscriptMacroSourceFile(changedSourcePath)) {
-          return true;
-        }
-        try {
-          return isLikelyMacroModule(changedSourcePath);
-        } catch {
-          return false;
-        }
-      });
-      if (changedMacroModuleFiles.length > 0) {
-        stableCompiledArtifactCache.clear();
-        compiledArtifactCache.clear();
-        preparedProgram.preparedHost.reuseState.builtinAnnotatedSourceFiles.clear();
-        preparedProgram.preparedHost.reuseState.builtinFinalSourceFiles.clear();
-        stableReuseState.bindingPlanDependenciesByFile.clear();
-        stableReuseState.bindingPlansByFile.clear();
-        stableReuseState.dependencySourceTextsByFile.clear();
-        stableReuseState.dependentFilesByDependencyFile.clear();
-        expansionCache.clear();
-        for (const modeExpandedFiles of stableReuseState.expandedFilesByMode.values()) {
-          modeExpandedFiles.clear();
-        }
-        for (const currentFileName of currentProgramSourceFiles) {
-          affectedSourceFiles.add(currentFileName);
+      if (!processedPreparedProgramChangedMacroFiles) {
+        processedPreparedProgramChangedMacroFiles = true;
+        const changedMacroModuleFiles = hadReusableMacroState
+          ? [
+            ...preparedProgram.preparedHost.reuseState.changedProgramSourceFiles,
+          ].filter((changedFileName) => {
+            const changedSourcePath = preparedProgram.toSourceFileName(changedFileName);
+            if (isSoundscriptMacroSourceFile(changedSourcePath)) {
+              return true;
+            }
+            try {
+              return isLikelyMacroModule(changedSourcePath);
+            } catch {
+              return false;
+            }
+          })
+          : [];
+        if (changedMacroModuleFiles.length > 0) {
+          stableCompiledArtifactCache.clear();
+          compiledArtifactCache.clear();
+          preparedProgram.preparedHost.reuseState.builtinAnnotatedSourceFiles.clear();
+          preparedProgram.preparedHost.reuseState.builtinFinalSourceFiles.clear();
+          for (const currentFileName of currentProgramSourceFiles) {
+            affectedSourceFiles.add(currentFileName);
+          }
         }
       }
 

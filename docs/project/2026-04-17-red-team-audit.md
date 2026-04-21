@@ -50,6 +50,7 @@ Legend:
 - `batch-51`: covered by the fifty-first red-team batch added with this record.
 - `batch-52`: covered by the fifty-second red-team batch added with this record.
 - `batch-53`: covered by the fifty-third red-team batch added with this record.
+- `batch-54`: covered by the fifty-fourth red-team batch added with this record.
 - `audit-debt`: missing coverage that should be closed before calling the family fully audited.
 - `out-of-scope`: explicitly outside the strong soundness claim.
 - `design-gap`: documented future work, not a current guarantee.
@@ -62,7 +63,7 @@ Legend:
 | BareObject/null-prototype provenance | covered           | covered                        | covered                        | batch-39                 | covered                    | batch-39                | batch-39            | batch-45             |
 | `#[value]` parity                    | covered           | batch-1                        | batch-1                        | batch-1                  | batch-5                    | batch-1                 | batch-1             | covered              |
 | Machine numerics                     | covered           | batch-37                       | batch-37                       | batch-37                 | batch-5                    | batch-37                | batch-1,37          | batch-37             |
-| Macro/capability boundary            | covered           | covered,batch-53               | batch-53                       | batch-6,53               | batch-41,42                | batch-53                | batch-7             | batch-8              |
+| Macro/capability boundary            | covered,batch-54  | covered,batch-53,54            | batch-53,54                    | batch-6,53,54            | batch-41,42,54             | batch-53,54             | batch-7             | batch-8              |
 | Compiler acceptance parity           | covered           | audit-debt                     | out-of-scope                   | out-of-scope             | out-of-scope               | out-of-scope            | batch-1,27,30       | covered,batch-27,30  |
 | Project-reference root ownership     | batch-32,47,48,49 | out-of-scope,batch-46,47,48,49 | out-of-scope,batch-46,47,48,49 | batch-32,48,49           | out-of-scope               | batch-34,47,48,49       | batch-33,50,51      | out-of-scope         |
 
@@ -1317,6 +1318,32 @@ Legend:
   exported macro LSP/editor drift remains breadth coverage; package verification cache routes are
   covered by Batches 41-42.
 
+## Batch 54 Findings
+
+### Package-Exported Macro Output Drift Editor Parity
+
+- Attack: prime a source-published package whose public macro expands `Foo()` to numeric expression
+  `1`, with a consumer declaring `export const value: number = Foo()`. Then change only the package
+  macro helper so the same macro emits string expression `"wrong"` while the package declaration
+  surface, macro import, and macro site kind remain stable.
+- Routes: fresh full prepared analysis, fresh file-scoped analysis, reused prepared full analysis,
+  reused prepared file-scoped analysis, incremental session full-project analysis, incremental
+  session file-scoped analysis, persistent checker cache, and source-published package verification
+  cache with an unchanged warm hit before the helper drift.
+- Expected result: all post-edit routes report the same `TS2322` diagnostic on `src/demo.sts`; the
+  package verification cache first proves reuse for unchanged macro-only source, then misses after
+  helper drift, and the persistent checker cache must not replay the old clean consumer result.
+- Result: confirmed adjacent production cache-reuse bug fixed. The package-exported macro route
+  already refreshed fresh, file-scoped, reused prepared, incremental session full/file-scoped,
+  persistent checker cache, and package verification cache diagnostics after same-kind helper-output
+  drift. The frontend macro-support regression suite then exposed that repeated expansion in one
+  prepared macro environment could treat the prepared program's initial changed macro files as new
+  on every call, clearing stable macro plans and re-expanding unchanged files. Changed macro files
+  are now processed once per environment, and stable binding/expanded-file caches are preserved so
+  dependency-signature validation records precise invalidations instead of broad misses.
+- Residual risk: this batch targets editor/LSP-style package macro drift and frontend macro reuse,
+  not build/runtime output for package-exported macros.
+
 ## Remaining High-Priority Audit Debt
 
 - Recursive package support-file tracking for non-`.sts` helper graphs if that source-published
@@ -1876,3 +1903,31 @@ red-team attack, the route matrix it covers, and the residual risk left behind.
   analyze-only `2.2ms` average samples. Two earlier same-command runs during the active full-suite
   window were slower, so the base commit was benchmarked in a temporary worktree; a subsequent rerun
   in this worktree matched the recent baseline and showed no meaningful regression.
+- `deno test --allow-all --filter "package-exported macro output drift matches editor and package
+  caches" tests/integration/red_team_audit_test.ts`:
+  passed, 1 test in `29s` with 67 filtered out after adding session file-scoped assertions and the
+  `project_macro_support.ts` lint/type-check cleanup.
+- `deno test --allow-all --filter
+  "/(macro output drift matches file-scoped and incremental analysis|package verification cache
+  invalidates same-kind package macro output drift|package-exported macro output drift matches editor
+  and package caches)/" tests/integration/red_team_audit_test.ts`:
+  passed, 3 tests in `42s` after the frontend macro reuse fix.
+- `deno test --allow-all --filter
+  "/(root package macro same-kind output changes|package subpath macro same-kind output changes)/"
+  src/service/analyze_project_mixed_mode_test.ts`:
+  passed, 2 tests in `29s`.
+- `deno test --allow-all src/frontend/project_macro_support_test.ts src/frontend/macro_vm_test.ts`:
+  initially failed four macro reuse assertions, then passed, 29 tests in `4s`, after changed macro
+  module processing stopped clearing stable binding and expanded-file caches repeatedly.
+- `deno test --allow-all tests/integration/red_team_audit_test.ts`: passed, 68 tests in `6m57s`.
+- `deno task check`: passed.
+- `deno fmt --check src/frontend/project_macro_support.ts tests/integration/red_team_audit_test.ts
+  docs/project/2026-04-17-red-team-audit.md`:
+  passed.
+- `deno lint src/frontend/project_macro_support.ts tests/integration/red_team_audit_test.ts`:
+  passed.
+- `deno bench --allow-all tests/bench/mixed_project_analysis_bench.ts`: rerun passed on Apple M5 Pro
+  with cold prepare `1.3s`, `.sts`-local cold prepare `889.9ms`, reused prepare after `.ts`-only
+  edit `350.2ms`, reused prepare after `.sts`-only edit `1.1s`, reused `.sts`-local edit `714.4ms`,
+  and analyze-only `2.2ms` average samples. An immediately preceding run was slower on reuse paths,
+  so the rerun is the recorded performance sample.

@@ -2128,6 +2128,7 @@ Deno.test('red-team: macro output drift matches file-scoped and incremental anal
     assertEquals(analyzePreparedProject(initialPreparedProject).diagnostics, []);
     assertEquals(analyzePreparedProjectForFile(initialPreparedProject, demoPath).diagnostics, []);
     assertEquals(session.analyzeProject().diagnostics, []);
+    assertEquals(session.analyzeFile(demoPath).diagnostics, []);
     assertEquals(runProgram(cachedOptions).diagnostics, []);
 
     const warmUnchangedResult = withCapturedTimingLogs((logs) => {
@@ -2158,6 +2159,7 @@ Deno.test('red-team: macro output drift matches file-scoped and incremental anal
     const reusedFileResult = analyzePreparedProjectForFile(reusedPreparedProject, demoPath);
     session.prepare(baseOptions);
     const sessionResult = session.analyzeProject();
+    const sessionFileResult = session.analyzeFile(demoPath);
     const coldCachedResult = runProgram({
       ...baseOptions,
       cacheDir: await Deno.makeTempDir({ prefix: 'soundscript-red-team-cache-' }),
@@ -2200,6 +2202,10 @@ Deno.test('red-team: macro output drift matches file-scoped and incremental anal
       );
       assertEquals(
         toProjectRelativeDiagnostics(sessionResult.diagnostics, tempDirectory),
+        expectedDiagnostics,
+      );
+      assertEquals(
+        toProjectRelativeDiagnostics(sessionFileResult.diagnostics, tempDirectory),
         expectedDiagnostics,
       );
       assertFreshAndCachedDiagnosticsMatch(
@@ -2554,6 +2560,196 @@ Deno.test('red-team: package verification cache invalidates same-kind package ma
     coldResult.diagnostics,
     tempDirectory,
   );
+});
+
+Deno.test('red-team: package-exported macro output drift matches editor and package caches', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: createSoundscriptTsconfig(),
+    },
+    {
+      path: 'src/demo.sts',
+      contents: [
+        'import { Foo } from "sound-pkg";',
+        'export const value: number = Foo();',
+        '',
+      ].join('\n'),
+    },
+    {
+      path: 'node_modules/sound-pkg/package.json',
+      contents: JSON.stringify(
+        {
+          name: 'sound-pkg',
+          version: '1.0.0',
+          type: 'module',
+          types: './dist/index.d.ts',
+          soundscript: {
+            source: './src/index.sts',
+          },
+        },
+        null,
+        2,
+      ),
+    },
+    {
+      path: 'node_modules/sound-pkg/dist/index.d.ts',
+      contents: 'export declare function Foo(): number;\n',
+    },
+    {
+      path: 'node_modules/sound-pkg/src/index.sts',
+      contents: 'export { Foo } from "./macros.macro.sts";\n',
+    },
+    {
+      path: 'node_modules/sound-pkg/src/macros.macro.sts',
+      contents: [
+        "import 'sts:macros';",
+        "import { helperExpression } from './helper.macro.sts';",
+        '',
+        '// #[macro(call)]',
+        'export function Foo() {',
+        '  return {',
+        '    expand(ctx: any) {',
+        '      return ctx.output.expr(ctx.quote.expr`${helperExpression}`);',
+        '    },',
+        '  };',
+        '}',
+        '',
+      ].join('\n'),
+    },
+    {
+      path: 'node_modules/sound-pkg/src/helper.macro.sts',
+      contents: 'export const helperExpression = "1";\n',
+    },
+  ]);
+  const projectPath = join(tempDirectory, 'tsconfig.json');
+  const demoPath = join(tempDirectory, 'src/demo.sts');
+  const cacheRoot = await Deno.makeTempDir({ prefix: 'soundscript-red-team-cache-' });
+  const baseOptions = { projectPath, workingDirectory: tempDirectory };
+  const cachedOptions = { ...baseOptions, cacheDir: cacheRoot };
+  const session = new IncrementalProjectSession();
+
+  const initialPreparedProject = prepareProjectAnalysis(baseOptions);
+  try {
+    session.prepare(baseOptions);
+    assertEquals(analyzePreparedProject(initialPreparedProject).diagnostics, []);
+    assertEquals(analyzePreparedProjectForFile(initialPreparedProject, demoPath).diagnostics, []);
+    assertEquals(session.analyzeProject().diagnostics, []);
+    assertEquals(session.analyzeFile(demoPath).diagnostics, []);
+    assertEquals(runProgram(cachedOptions).diagnostics, []);
+
+    await Deno.remove(resolveCheckerCacheDirectory(projectPath, cacheRoot), { recursive: true });
+    const warmPackageCacheResult = withCapturedTimingLogs((logs) => {
+      const result = runProgram(cachedOptions);
+      assert(
+        logs.some((line) =>
+          line.includes('[soundscript:checker] project.packageVerificationCache.result ') &&
+          line.includes('units=1') &&
+          line.includes('hits=1') &&
+          line.includes('misses=0')
+        ),
+        logs.join('\n'),
+      );
+      assert(
+        !logs.some((line) =>
+          line.includes('[soundscript:checker] project.prepare.packageSourcePolicyView ')
+        ),
+        logs.join('\n'),
+      );
+      return result;
+    });
+    assertEquals(warmPackageCacheResult.diagnostics, []);
+
+    await writeProjectFile(
+      tempDirectory,
+      'node_modules/sound-pkg/src/helper.macro.sts',
+      'export const helperExpression = \'"wrong"\';\n',
+    );
+
+    const coldPreparedProject = prepareProjectAnalysis(baseOptions);
+    const coldFullResult = analyzePreparedProject(coldPreparedProject);
+    const coldFileResult = analyzePreparedProjectForFile(coldPreparedProject, demoPath);
+    const reusedPreparedProject = prepareProjectAnalysis(baseOptions, initialPreparedProject);
+    const reusedFullResult = analyzePreparedProject(reusedPreparedProject);
+    const reusedFileResult = analyzePreparedProjectForFile(reusedPreparedProject, demoPath);
+    session.prepare(baseOptions);
+    const sessionResult = session.analyzeProject();
+    const sessionFileResult = session.analyzeFile(demoPath);
+    const coldCachedResult = runProgram({
+      ...baseOptions,
+      cacheDir: await Deno.makeTempDir({ prefix: 'soundscript-red-team-cache-' }),
+    });
+    const cachedResult = withCapturedTimingLogs((logs) => {
+      const result = runProgram(cachedOptions);
+      assert(
+        logs.some((line) => line.includes('[soundscript:checker] project.cache.read ')),
+        logs.join('\n'),
+      );
+      assert(
+        logs.some((line) =>
+          line.includes('[soundscript:checker] project.packageVerificationCache.result ') &&
+          line.includes('units=1') &&
+          line.includes('hits=0') &&
+          line.includes('misses=1')
+        ),
+        logs.join('\n'),
+      );
+      assert(
+        logs.some((line) =>
+          line.includes('[soundscript:checker] project.cache.incremental ') &&
+          line.includes('changedTrackedFiles=1')
+        ),
+        logs.join('\n'),
+      );
+      return result;
+    });
+    try {
+      const expectedDiagnostics: readonly (readonly [string, string])[] = [
+        ['TS2322', 'src/demo.sts'],
+      ];
+      assertEquals(
+        toProjectRelativeDiagnostics(coldFullResult.diagnostics, tempDirectory),
+        expectedDiagnostics,
+      );
+      assertEquals(
+        toProjectRelativeDiagnostics(coldFileResult.diagnostics, tempDirectory),
+        expectedDiagnostics,
+      );
+      assertEquals(
+        toProjectRelativeDiagnostics(reusedFullResult.diagnostics, tempDirectory),
+        expectedDiagnostics,
+      );
+      assertEquals(
+        toProjectRelativeDiagnostics(reusedFileResult.diagnostics, tempDirectory),
+        expectedDiagnostics,
+      );
+      assertEquals(
+        toProjectRelativeDiagnostics(sessionResult.diagnostics, tempDirectory),
+        expectedDiagnostics,
+      );
+      assertEquals(
+        toProjectRelativeDiagnostics(sessionFileResult.diagnostics, tempDirectory),
+        expectedDiagnostics,
+      );
+      assertEquals(coldCachedResult.exitCode, 1, coldCachedResult.output);
+      assertEquals(
+        toProjectRelativeDiagnostics(coldCachedResult.diagnostics, tempDirectory),
+        expectedDiagnostics,
+      );
+      assertEquals(cachedResult.exitCode, coldCachedResult.exitCode, cachedResult.output);
+      assertFreshAndCachedDiagnosticsMatch(
+        cachedResult.diagnostics,
+        coldCachedResult.diagnostics,
+        tempDirectory,
+      );
+    } finally {
+      disposePreparedAnalysisProject(coldPreparedProject);
+      disposePreparedAnalysisProject(reusedPreparedProject, initialPreparedProject);
+    }
+  } finally {
+    session.dispose();
+    disposePreparedAnalysisProject(initialPreparedProject);
+  }
 });
 
 Deno.test('red-team: package verification cache reuses subpath macro exports', async () => {
