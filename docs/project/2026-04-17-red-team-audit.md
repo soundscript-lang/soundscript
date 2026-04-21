@@ -53,6 +53,7 @@ Legend:
 - `batch-54`: covered by the fifty-fourth red-team batch added with this record.
 - `batch-55`: covered by the fifty-fifth red-team batch added with this record.
 - `batch-56`: covered by the fifty-sixth red-team batch added with this record.
+- `batch-57`: covered by the fifty-seventh red-team batch added with this record.
 - `audit-debt`: missing coverage that should be closed before calling the family fully audited.
 - `out-of-scope`: explicitly outside the strong soundness claim.
 - `design-gap`: documented future work, not a current guarantee.
@@ -65,7 +66,7 @@ Legend:
 | BareObject/null-prototype provenance | covered           | covered                        | covered                        | batch-39                 | covered                    | batch-39                | batch-39            | batch-45             |
 | `#[value]` parity                    | covered           | batch-1                        | batch-1                        | batch-1                  | batch-5                    | batch-1                 | batch-1             | covered              |
 | Machine numerics                     | covered           | batch-37                       | batch-37                       | batch-37                 | batch-5                    | batch-37                | batch-1,37          | batch-37             |
-| Macro/capability boundary            | covered,batch-54  | covered,batch-53,54            | batch-53,54,55                 | batch-6,53,54            | batch-41,42,54             | batch-53,54,55          | batch-7,56          | batch-8              |
+| Macro/capability boundary            | covered,batch-54  | covered,batch-53,54            | batch-53,54,55,57              | batch-6,53,54            | batch-41,42,54             | batch-53,54,55,57       | batch-7,56          | batch-8              |
 | Compiler acceptance parity           | covered           | audit-debt                     | out-of-scope                   | out-of-scope             | out-of-scope               | out-of-scope            | batch-1,27,30       | covered,batch-27,30  |
 | Project-reference root ownership     | batch-32,47,48,49 | out-of-scope,batch-46,47,48,49 | out-of-scope,batch-46,47,48,49 | batch-32,48,49           | out-of-scope               | batch-34,47,48,49       | batch-33,50,51      | out-of-scope         |
 
@@ -1387,6 +1388,29 @@ Legend:
   Package-to-package macro build/runtime diamonds remain breadth coverage if the package build claim
   is later broadened beyond direct dependency invalidation.
 
+## Batch 57 Findings
+
+### Package-Exported Macro File-Local Analysis Drift
+
+- Attack: open a consumer `.sts` document that imports macro `Foo()` from a source-published package
+  subpath and an unrelated `.sts` document with an in-memory override. Prime both full-project and
+  document-level file-local LSP analysis while `Foo()` expands to numeric expression `1`. Then
+  mutate only the package macro helper on disk so `Foo()` expands to string expression `"wrong"` and
+  update only the unrelated open document text.
+- Routes: `analyzeOpenProjectForTest`, `analyzeOpenDocument`, the project-service
+  `IncrementalProjectSession`, full prepared analysis with open-document overrides, and file-local
+  analyzed-result reuse.
+- Expected result: fresh project analysis with the same open-document overrides, LSP full-project
+  analysis, and document-level file-local diagnostics all report the same consumer-file `TS2322`.
+- Result: executable coverage added in `src/lsp/project_service_test.ts`. The red fixture exposed
+  that file-local analyzed-result reuse did not include macro helper files in its dependency
+  signature, so a stale clean file result could survive after unrelated open-document changes. Fixed
+  `collectPreparedProjectCacheDependencyPathsForFile` to include macro-environment tracked
+  dependency files in the file-analysis cache dependency signature.
+- Residual risk: this closes package-exported macro helper drift for file-local LSP diagnostics with
+  mixed open documents. Recursive non-`.sts` support-file tracking remains documented as out of
+  scope unless the package-source guarantee is broadened.
+
 ## Remaining High-Priority Audit Debt
 
 - Recursive package support-file tracking for non-`.sts` helper graphs if that source-published
@@ -1993,3 +2017,28 @@ red-team attack, the route matrix it covers, and the residual risk left behind.
   tests/integration/red_team_audit_test.ts docs/project/2026-04-17-red-team-audit.md`,
   `deno lint src/editor/editor_diagnostics_worker_test.ts tests/integration/red_team_audit_test.ts`,
   and `git diff --check`: passed after the Batch 55/56 updates.
+- `deno test --allow-all --filter "project service refreshes package-exported macro helper drift
+  across mixed open documents" src/lsp/project_service_test.ts`:
+  red run failed before the Batch 57 fix because `analyzeOpenDocument` retained clean file-local
+  diagnostics while fresh and full-project analysis reported consumer-file `TS2322`; green run
+  passed after adding macro helper files to file-analysis cache dependency signatures.
+- `deno test --allow-all --filter
+  "/(macro output drift matches file-scoped and incremental analysis|package-exported macro output
+  drift matches editor and package caches)/" tests/integration/red_team_audit_test.ts`:
+  passed, 2 tests in `38s`.
+- `deno test --allow-all --filter
+  "/(project service refreshes package-exported macro helper drift across mixed open
+  documents|project service logs macro cache reuse for incremental macro-backed rebuilds|project
+  service keeps full and sts-local prepared state cached independently)/" src/lsp/project_service_test.ts`:
+  passed, 3 tests in `10s`.
+- `deno test --allow-all src/lsp/project_service_test.ts`: passed, 22 tests in `26s`.
+- `deno test --allow-all tests/integration/red_team_audit_test.ts`: passed, 69 tests in `9m14s`.
+- `deno task check`: passed after the Batch 57 production fix.
+- `deno bench --allow-all tests/bench/mixed_project_analysis_bench.ts`: first Batch 57 run was
+  noisy; rerun on Apple M5 Pro recorded cold prepare `1.7s`, `.sts`-local cold prepare `1.1s`,
+  `.ts`-only reused prepare `411.1ms`, `.sts`-only reused prepare `1.4s`, reused `.sts`-local edit
+  `860.5ms`, and analyze-only `2.8ms`. A temporary worktree at pre-fix commit `27603fb` recorded
+  cold prepare `1.2s`, `.sts`-local cold prepare `1.2s`, `.ts`-only reused prepare `682.4ms`,
+  `.sts`-only reused prepare `1.2s`, reused `.sts`-local edit `690.4ms`, and analyze-only `4.0ms`;
+  the comparison did not show a broad significant regression from the precise file-analysis
+  dependency-signature fix.

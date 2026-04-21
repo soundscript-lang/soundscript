@@ -10,6 +10,7 @@ import {
   getPreparedProjectForTest,
   referencesOpenDocument,
 } from './project_service.ts';
+import { analyzeProject } from '../checker/analyze_project.ts';
 import { SessionState } from './session.ts';
 
 async function createTempProject(files: Record<string, string>): Promise<string> {
@@ -1202,6 +1203,150 @@ Deno.test('project service logs macro cache reuse for incremental macro-backed r
     }
     console.error = originalError;
   }
+});
+
+Deno.test('project service refreshes package-exported macro helper drift across mixed open documents', async () => {
+  const consumerText = [
+    'import { Foo } from "sound-pkg/api";',
+    'export const value: number = Foo();',
+    '',
+  ].join('\n');
+  const otherOpenText = [
+    'export const shadow = 1;',
+    '// open override',
+    '',
+  ].join('\n');
+  const otherUpdatedOpenText = [
+    'export const shadow = 2;',
+    '// updated open override',
+    '',
+  ].join('\n');
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+          moduleResolution: 'Bundler',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/consumer.sts': consumerText,
+    'src/other.sts': [
+      'export const shadow = 1;',
+      '',
+    ].join('\n'),
+    'node_modules/sound-pkg/package.json': JSON.stringify(
+      {
+        name: 'sound-pkg',
+        version: '1.0.0',
+        type: 'module',
+        exports: {
+          './api': {
+            types: './dist/api.d.ts',
+            import: './dist/api.js',
+          },
+        },
+        soundscript: {
+          version: 1,
+          exports: {
+            './api': {
+              source: './src/api.sts',
+            },
+          },
+        },
+      },
+      null,
+      2,
+    ),
+    'node_modules/sound-pkg/dist/api.d.ts': 'export declare function Foo(): number;\n',
+    'node_modules/sound-pkg/src/api.sts': 'export { Foo } from "./macros.macro.sts";\n',
+    'node_modules/sound-pkg/src/macros.macro.sts': [
+      "import 'sts:macros';",
+      "import { helperExpression } from './helper.macro.sts';",
+      '',
+      '// #[macro(call)]',
+      'export function Foo() {',
+      '  return {',
+      '    expand(ctx: any) {',
+      '      return ctx.output.expr(ctx.quote.expr`${helperExpression}`);',
+      '    },',
+      '  };',
+      '}',
+      '',
+    ].join('\n'),
+    'node_modules/sound-pkg/src/helper.macro.sts': 'export const helperExpression = "1";\n',
+  });
+
+  const projectPath = join(tempDirectory, 'tsconfig.json');
+  const consumerUri = toFileUrl(join(tempDirectory, 'src/consumer.sts')).href;
+  const otherUri = toFileUrl(join(tempDirectory, 'src/other.sts')).href;
+  const consumerPath = join(tempDirectory, 'src/consumer.sts');
+  const otherPath = join(tempDirectory, 'src/other.sts');
+  const helperPath = join(tempDirectory, 'node_modules/sound-pkg/src/helper.macro.sts');
+  const session = new SessionState();
+  session.open({
+    uri: consumerUri,
+    languageId: 'soundscript',
+    version: 1,
+    text: consumerText,
+  });
+  session.open({
+    uri: otherUri,
+    languageId: 'soundscript',
+    version: 1,
+    text: otherOpenText,
+  });
+
+  const cleanOpenDiagnostics = analyzeOpenProjectForTest(consumerUri, session)?.diagnostics ?? [];
+  assertEquals(cleanOpenDiagnostics, []);
+  assertEquals(analyzeOpenDocument(consumerUri, session).diagnostics, []);
+  const initialPreparedProject = getPreparedProjectForTest(consumerUri, session, 'full');
+  assert(initialPreparedProject !== null);
+  assert(initialPreparedProject.stsView !== null);
+  assertEquals(
+    initialPreparedProject.stsView.preparedProgram.preparedHost.getPreparedSourceFile(
+      otherPath,
+    )?.originalText,
+    otherOpenText,
+  );
+
+  await Deno.writeTextFile(
+    helperPath,
+    'export const helperExpression = \'"wrong"\';\n',
+  );
+  session.update(otherUri, 2, otherUpdatedOpenText);
+
+  const freshDiagnostics = (await analyzeProject({
+    fileOverrides: new Map([
+      [consumerPath, consumerText],
+      [otherPath, otherUpdatedOpenText],
+    ]),
+    projectPath,
+    workingDirectory: tempDirectory,
+  })).diagnostics.map((diagnostic) => [diagnostic.code, diagnostic.filePath]);
+  const openDiagnostics = (analyzeOpenProjectForTest(consumerUri, session)?.diagnostics ?? [])
+    .map((diagnostic) => [diagnostic.code, diagnostic.filePath]);
+  const documentDiagnostics = analyzeOpenDocument(consumerUri, session).diagnostics
+    .map((diagnostic) => [diagnostic.code, diagnostic.filePath]);
+  const rebuiltPreparedProject = getPreparedProjectForTest(consumerUri, session, 'full');
+  assert(rebuiltPreparedProject !== null);
+  assert(rebuiltPreparedProject.stsView !== null);
+  assertEquals(
+    rebuiltPreparedProject.stsView.preparedProgram.preparedHost.getPreparedSourceFile(
+      otherPath,
+    )?.originalText,
+    otherUpdatedOpenText,
+  );
+
+  assertEquals(freshDiagnostics, [['TS2322', consumerPath]]);
+  assertEquals(openDiagnostics, freshDiagnostics);
+  assertEquals(documentDiagnostics, freshDiagnostics);
 });
 
 Deno.test('project service finds local references inside .sts block scopes', async () => {

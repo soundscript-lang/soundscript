@@ -4482,11 +4482,25 @@ function collectPreparedProjectCacheDependencyPathsForFile(
   filePath: string,
 ): readonly string[] {
   const primaryView = getPreparedAnalysisViewForFile(preparedProject, filePath);
-  return primaryView
-    ? collectPreparedViewDependencyPaths(primaryView, filePath, {
-      includeNonDeclarationTypeScriptDependencies: true,
-    })
-    : [filePath];
+  if (!primaryView) {
+    return [filePath];
+  }
+
+  const sourceFileMatch = getPreparedViewSourceFileMatch(primaryView, filePath);
+  const macroDependencyPaths = sourceFileMatch
+    ? primaryView.macroEnvironment.trackedDependencyFilesForFile(sourceFileMatch.sourceFile)
+      .flatMap((dependencyFilePath) =>
+        collectPreparedAnalysisFilePathCandidates(dependencyFilePath)
+      )
+    : [];
+  return [
+    ...new Set([
+      ...collectPreparedViewDependencyPaths(primaryView, filePath, {
+        includeNonDeclarationTypeScriptDependencies: true,
+      }),
+      ...macroDependencyPaths,
+    ]),
+  ].sort();
 }
 
 function collectPreparedAnalysisFilePathCandidates(filePath: string): readonly string[] {
