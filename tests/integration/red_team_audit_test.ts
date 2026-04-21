@@ -6,6 +6,7 @@ import {
   analyzePreparedProject,
   analyzePreparedProjectForFile,
   analyzeProject,
+  disposePreparedAnalysisProject,
   IncrementalProjectSession,
   prepareProjectAnalysis,
 } from '../../src/checker/analyze_project.ts';
@@ -548,6 +549,78 @@ Deno.test('red-team: incremental session recursively analyzes referenced poison 
     assertEquals(sessionResult.summary, { total: 1, errors: 1, warnings: 0, messages: 0 });
   } finally {
     session.dispose();
+  }
+});
+
+Deno.test('red-team: project-reference poison roots are full-project recursive only', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'app/tsconfig.json',
+      contents: createSoundscriptProjectReferenceTsconfig({
+        noEmit: true,
+        references: [{ path: '../lib' }],
+      }),
+    },
+    {
+      path: 'app/src/index.sts',
+      contents: [
+        'import { value } from "../../lib/src/value";',
+        '',
+        'export const exact: string = value;',
+        '',
+      ].join('\n'),
+    },
+    {
+      path: 'lib/tsconfig.json',
+      contents: createReferencedLibraryTsconfig(false),
+    },
+    {
+      path: 'lib/src/value.sts',
+      contents: 'export const value: string = "ok";\n',
+    },
+  ]);
+  const projectPath = join(tempDirectory, 'app/tsconfig.json');
+  const indexPath = join(tempDirectory, 'app/src/index.sts');
+  const baseOptions = { projectPath, workingDirectory: tempDirectory };
+  const preparedProject = prepareProjectAnalysis(baseOptions);
+
+  try {
+    assertEquals(analyzePreparedProject(preparedProject).diagnostics, []);
+    assertEquals(analyzePreparedProjectForFile(preparedProject, indexPath).diagnostics, []);
+
+    await writeProjectFile(
+      tempDirectory,
+      'lib/src/poison.sts',
+      'export const poison: string = 1;\n',
+    );
+
+    const recursiveCliResult = runProgram({
+      checkReferences: true,
+      projectPath,
+      workingDirectory: tempDirectory,
+    });
+    assertEquals(
+      toProjectRelativeDiagnostics(recursiveCliResult.diagnostics, tempDirectory),
+      [['TS2322', 'lib/src/poison.sts']],
+    );
+
+    const freshPreparedProject = prepareProjectAnalysis(baseOptions);
+    try {
+      assertEquals(analyzePreparedProject(freshPreparedProject).diagnostics, []);
+      assertEquals(analyzePreparedProjectForFile(freshPreparedProject, indexPath).diagnostics, []);
+    } finally {
+      disposePreparedAnalysisProject(freshPreparedProject);
+    }
+
+    const reusedPreparedProject = prepareProjectAnalysis(baseOptions, preparedProject);
+    try {
+      assertEquals(analyzePreparedProject(reusedPreparedProject).diagnostics, []);
+      assertEquals(analyzePreparedProjectForFile(reusedPreparedProject, indexPath).diagnostics, []);
+    } finally {
+      disposePreparedAnalysisProject(reusedPreparedProject, preparedProject);
+    }
+  } finally {
+    disposePreparedAnalysisProject(preparedProject);
   }
 });
 
