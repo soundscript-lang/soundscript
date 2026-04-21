@@ -178,7 +178,11 @@ function taggedValueTypeName(): string {
 
 function wasmTypeForHostFunctionParam(
   param: WasmGcFunctionPlanIR['params'][number],
+  useWrapperGlue = false,
 ): string {
+  if (useWrapperGlue && param.hostBoundary?.kind === 'closure') {
+    return '(ref null eq)';
+  }
   const boundary = param.hostBoundary;
   if (boundary?.kind === 'closure' && boundary.signatureIds?.length === 1) {
     return `(ref null ${closureSignatureTypeName(boundary.signatureIds[0])})`;
@@ -242,6 +246,7 @@ interface FunctionRenderContext {
   fallbackObjectLocalLayouts: ReadonlyMap<string, FallbackObjectLocalLayout>;
   dynamicObjectLocalLayouts: ReadonlyMap<string, DynamicObjectLocalLayout>;
   dynamicObjectPropertyOrigins: ReadonlyMap<string, DynamicObjectPropertyOrigin>;
+  hostImportClosureWrapperArgIndicesByCallee: ReadonlyMap<string, ReadonlySet<number>>;
   localAliases: ReadonlyMap<string, string>;
 }
 
@@ -275,6 +280,7 @@ const EMPTY_RENDER_CONTEXT: FunctionRenderContext = {
   fallbackObjectLocalLayouts: new Map(),
   dynamicObjectLocalLayouts: new Map(),
   dynamicObjectPropertyOrigins: new Map(),
+  hostImportClosureWrapperArgIndicesByCallee: new Map(),
   localAliases: new Map(),
 };
 
@@ -322,6 +328,28 @@ function closureBoxLocalLiterals(
     }
   });
   return literals;
+}
+
+function hostImportClosureWrapperArgIndicesByCallee(
+  plan: WasmGcModulePlanIR,
+): ReadonlyMap<string, ReadonlySet<number>> {
+  const indicesByCallee = new Map<string, Set<number>>();
+  for (const wrapper of plan.wrapperPlan.hostCallbackWrappers) {
+    const indices = indicesByCallee.get(wrapper.functionName) ?? new Set<number>();
+    indices.add(wrapper.paramIndex);
+    indicesByCallee.set(wrapper.functionName, indices);
+  }
+  return indicesByCallee;
+}
+
+function hostImportClosureWrapperArgIndicesByFunction(
+  plan: WasmGcModulePlanIR,
+): ReadonlyMap<string, ReadonlySet<number>> {
+  return hostImportClosureWrapperArgIndicesByCallee(plan);
+}
+
+function hostCallbackWrapperSignatureIds(plan: WasmGcModulePlanIR): ReadonlySet<number> {
+  return new Set(plan.wrapperPlan.hostCallbackWrappers.map((wrapper) => wrapper.signatureId));
 }
 
 function closureObjectLocalNames(func: WasmGcFunctionPlanIR): ReadonlySet<string> {
@@ -2832,8 +2860,15 @@ function renderExpression(
           `${indent}call $${sanitizeIdentifier(expression.callee)}`,
         ];
       }
+      const hostWrapperArgIndices = context.hostImportClosureWrapperArgIndicesByCallee.get(
+        expression.callee,
+      );
       return [
-        ...expression.args.flatMap((arg) => renderExpression(arg, indent, context)),
+        ...expression.args.flatMap((arg, index) =>
+          hostWrapperArgIndices?.has(index)
+            ? renderClosureObjectValueExpression(arg, indent, context)
+            : renderExpression(arg, indent, context)
+        ),
         `${indent}call $${sanitizeIdentifier(expression.callee)}`,
       ];
     case 'box_new':
@@ -3161,6 +3196,7 @@ function renderFunctionPlan(
   func: WasmGcFunctionPlanIR,
   layoutsByRepresentation: ReadonlyMap<string, DynamicObjectLocalLayout>,
   closureFunctionNames: ReadonlyMap<number, string>,
+  hostImportWrapperArgIndicesByCallee: ReadonlyMap<string, ReadonlySet<number>>,
 ): readonly string[] {
   if (func.hostImport) {
     return [];
@@ -3189,6 +3225,7 @@ function renderFunctionPlan(
     fallbackObjectLocalLayouts: fallbackObjectLocalLayouts(func),
     dynamicObjectLocalLayouts: dynamicLayouts,
     dynamicObjectPropertyOrigins: dynamicObjectPropertyOrigins(func, dynamicLayouts, aliases),
+    hostImportClosureWrapperArgIndicesByCallee: hostImportWrapperArgIndicesByCallee,
     localAliases: aliases,
   };
   const scratchLocals = numberArrayScratchLocals(func);
@@ -3233,12 +3270,18 @@ function renderFunctionPlan(
   ];
 }
 
-function renderHostImportPlan(func: WasmGcFunctionPlanIR): readonly string[] {
+function renderHostImportPlan(
+  func: WasmGcFunctionPlanIR,
+  wrapperArgIndicesByFunction: ReadonlyMap<string, ReadonlySet<number>>,
+): readonly string[] {
   if (!func.hostImport) {
     return [];
   }
-  const params = func.params.map((param) =>
-    ` (param $${sanitizeIdentifier(param.name)} ${wasmTypeForHostFunctionParam(param)})`
+  const wrapperArgIndices = wrapperArgIndicesByFunction.get(func.name);
+  const params = func.params.map((param, index) =>
+    ` (param $${sanitizeIdentifier(param.name)} ${
+      wasmTypeForHostFunctionParam(param, wrapperArgIndices?.has(index))
+    })`
   ).join('');
   const result = func.result.length > 0
     ? ` (result ${wasmTypeForCompilerValueType(func.result)})`
@@ -3604,6 +3647,9 @@ function asyncGeneratorStepClosureSignatureId(plan: WasmGcModulePlanIR): number 
 
 function boxedClosureDispatchSignatureIds(plan: WasmGcModulePlanIR): readonly number[] {
   const signatureIds = new Set<number>();
+  for (const signatureId of hostCallbackWrapperSignatureIds(plan)) {
+    signatureIds.add(signatureId);
+  }
   for (const func of plan.functionPlans) {
     const closureObjectNames = closureObjectLocalNames(func);
     func.body.forEach((statement) =>
@@ -3625,6 +3671,9 @@ function boxedClosureDispatchSignatureIds(plan: WasmGcModulePlanIR): readonly nu
 }
 
 function moduleUsesClosureObjects(plan: WasmGcModulePlanIR): boolean {
+  if (plan.wrapperPlan.hostCallbackWrappers.length > 0) {
+    return true;
+  }
   if (boxedClosureDispatchSignatureIds(plan).length > 0) {
     return true;
   }
@@ -3683,6 +3732,7 @@ function renderClosureDispatchHelpers(
   plan: WasmGcModulePlanIR,
   closureFunctionNames: ReadonlyMap<number, string>,
 ): readonly string[] {
+  const hostWrapperSignatureIds = hostCallbackWrapperSignatureIds(plan);
   return boxedClosureDispatchSignatureIds(plan).flatMap((signatureId) => {
     const targetFunctions = plan.functionPlans
       .filter((func) =>
@@ -3699,8 +3749,13 @@ function renderClosureDispatchHelpers(
     const result = signatureSource.result.length > 0
       ? ` (result ${wasmTypeForCompilerValueType(signatureSource.result)})`
       : '';
+    const exportClause = hostWrapperSignatureIds.has(signatureId)
+      ? ` (export "__soundscript_closure_invoke_${signatureId}")`
+      : '';
     return [
-      `  (func ${closureDispatchFunctionName(signatureId)} (param $closure (ref null eq))${
+      `  (func ${
+        closureDispatchFunctionName(signatureId)
+      }${exportClause} (param $closure (ref null eq))${
         runtimeParams.map((param, index) =>
           ` (param $arg_${index} ${wasmTypeForCompilerValueType(param.wasmType)})`
         ).join('')
@@ -5009,6 +5064,89 @@ function renderAsyncGeneratorHelperFunctions(plan: WasmGcModulePlanIR): readonly
   ];
 }
 
+function renderHostTaggedWrapperHelperFunctions(plan: WasmGcModulePlanIR): readonly string[] {
+  const helpers = new Set(plan.wrapperPlan.taggedValueAdapterHelpers);
+  if (helpers.size === 0) {
+    return [];
+  }
+  const helperLines: string[] = [];
+  if (helpers.has('__soundscript_host_tag_undefined')) {
+    helperLines.push(
+      '  (func $__soundscript_host_tag_undefined (export "__soundscript_host_tag_undefined") (result (ref null $tagged_value))',
+      ...renderTaggedUndefined('    '),
+      '  )',
+    );
+  }
+  if (helpers.has('__soundscript_host_tag_null')) {
+    helperLines.push(
+      '  (func $__soundscript_host_tag_null (export "__soundscript_host_tag_null") (result (ref null $tagged_value))',
+      `    i32.const ${TAGGED_NULL_TAG}`,
+      '    f64.const 0',
+      '    ref.null extern',
+      '    ref.null eq',
+      `    struct.new ${taggedValueTypeName()}`,
+      '  )',
+    );
+  }
+  if (helpers.has('__soundscript_host_tag_number')) {
+    helperLines.push(
+      '  (func $__soundscript_host_tag_number (export "__soundscript_host_tag_number") (param $value f64) (result (ref null $tagged_value))',
+      `    i32.const ${TAGGED_NUMBER_TAG}`,
+      '    local.get $value',
+      '    ref.null extern',
+      '    ref.null eq',
+      `    struct.new ${taggedValueTypeName()}`,
+      '  )',
+    );
+  }
+  if (helpers.has('__soundscript_host_tag_boolean')) {
+    helperLines.push(
+      '  (func $__soundscript_host_tag_boolean (export "__soundscript_host_tag_boolean") (param $value i32) (result (ref null $tagged_value))',
+      `    i32.const ${TAGGED_BOOLEAN_TAG}`,
+      '    local.get $value',
+      '    f64.convert_i32_s',
+      '    ref.null extern',
+      '    ref.null eq',
+      `    struct.new ${taggedValueTypeName()}`,
+      '  )',
+    );
+  }
+  if (helpers.has('__soundscript_host_tag_string')) {
+    helperLines.push(
+      '  (func $__soundscript_host_tag_string (export "__soundscript_host_tag_string") (param $value externref) (result (ref null $tagged_value))',
+      `    i32.const ${TAGGED_STRING_TAG}`,
+      '    f64.const 0',
+      '    local.get $value',
+      '    ref.null eq',
+      `    struct.new ${taggedValueTypeName()}`,
+      '  )',
+    );
+  }
+  if (helpers.has('__soundscript_host_tag_symbol')) {
+    helperLines.push(
+      '  (func $__soundscript_host_tag_symbol (export "__soundscript_host_tag_symbol") (param $value externref) (result (ref null $tagged_value))',
+      `    i32.const ${TAGGED_SYMBOL_TAG}`,
+      '    f64.const 0',
+      '    local.get $value',
+      '    ref.null eq',
+      `    struct.new ${taggedValueTypeName()}`,
+      '  )',
+    );
+  }
+  if (helpers.has('__soundscript_host_tag_bigint')) {
+    helperLines.push(
+      '  (func $__soundscript_host_tag_bigint (export "__soundscript_host_tag_bigint") (param $value externref) (result (ref null $tagged_value))',
+      `    i32.const ${TAGGED_BIGINT_TAG}`,
+      '    f64.const 0',
+      '    local.get $value',
+      '    ref.null eq',
+      `    struct.new ${taggedValueTypeName()}`,
+      '  )',
+    );
+  }
+  return helperLines;
+}
+
 export function emitWasmGcModulePlan(plan: WasmGcModulePlanIR): string {
   const dynamicLayoutsByRepresentation = dynamicObjectLayoutsByRepresentation(plan);
   const closureFunctionNames = new Map(
@@ -5028,7 +5166,12 @@ export function emitWasmGcModulePlan(plan: WasmGcModulePlanIR): string {
   const promiseHelperFunctions = renderPromiseHelperFunctions(plan);
   const asyncGeneratorHelperFunctions = renderAsyncGeneratorHelperFunctions(plan);
   const closureDispatchHelpers = renderClosureDispatchHelpers(plan, closureFunctionNames);
-  const hostImportPlans = plan.functionPlans.flatMap(renderHostImportPlan);
+  const hostTaggedWrapperHelperFunctions = renderHostTaggedWrapperHelperFunctions(plan);
+  const hostImportWrapperArgIndicesByCallee = hostImportClosureWrapperArgIndicesByCallee(plan);
+  const hostImportWrapperArgIndicesByFunction = hostImportClosureWrapperArgIndicesByFunction(plan);
+  const hostImportPlans = plan.functionPlans.flatMap((func) =>
+    renderHostImportPlan(func, hostImportWrapperArgIndicesByFunction)
+  );
   const stringEqualityImportPlans = renderStringEqualityImportPlan(plan);
   const externEqualityImportPlans = renderExternEqualityImportPlan(plan);
   const lines = [
@@ -5070,10 +5213,12 @@ export function emitWasmGcModulePlan(plan: WasmGcModulePlanIR): string {
       : []),
     '  ;; helpers',
     ...(plan.helperPlans.length > 0 || promiseHelperFunctions.length > 0 ||
-        asyncGeneratorHelperFunctions.length > 0 || closureDispatchHelpers.length > 0
+        asyncGeneratorHelperFunctions.length > 0 || closureDispatchHelpers.length > 0 ||
+        hostTaggedWrapperHelperFunctions.length > 0
       ? [
         ...indentLines(plan.helperPlans.map(renderHelperPlan)),
         ...promiseHelperFunctions,
+        ...hostTaggedWrapperHelperFunctions,
         ...closureDispatchHelpers,
         ...asyncGeneratorHelperFunctions,
       ]
@@ -5082,7 +5227,12 @@ export function emitWasmGcModulePlan(plan: WasmGcModulePlanIR): string {
       ]),
     '  ;; functions',
     ...plan.functionPlans.flatMap((func) =>
-      renderFunctionPlan(func, dynamicLayoutsByRepresentation, closureFunctionNames)
+      renderFunctionPlan(
+        func,
+        dynamicLayoutsByRepresentation,
+        closureFunctionNames,
+        hostImportWrapperArgIndicesByCallee,
+      )
     ),
     ...renderDeclaredClosureElements(plan, closureFunctionNames),
     '  ;; boundaries',

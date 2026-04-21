@@ -62325,26 +62325,6 @@ function lowerDirectNamedInvocation(
         context.classes,
       )
       : undefined;
-    if (
-      callee.hostImport &&
-      argument &&
-      param.type === 'closure_ref' &&
-      targetClosureSignatureId !== undefined
-    ) {
-      const targetSignature = resolveClosureAbiSignatureById(
-        targetClosureSignatureId,
-        context.closures,
-      );
-      if (
-        targetSignature.params.some((signatureParam) => signatureParam.type === 'tagged_ref') ||
-        targetSignature.result.type === 'tagged_ref'
-      ) {
-        throw new CompilerUnsupportedError(
-          'Passing tagged-union callbacks to ambient host function imports requires generated JS wrapper support and is not supported by raw wasm-gc emission yet.',
-          argument,
-        );
-      }
-    }
     const adaptedArgument = argument &&
         targetClosureSignatureId !== undefined
       ? adaptClosureExpressionToTargetSignature(
@@ -62356,18 +62336,6 @@ function lowerDirectNamedInvocation(
         context,
       )
       : loweredArgument;
-    if (
-      callee.hostImport &&
-      argument &&
-      param.type === 'closure_ref' &&
-      adaptedArgument.kind === 'closure_literal' &&
-      adaptedArgument.captures.length > 0
-    ) {
-      throw new CompilerUnsupportedError(
-        'Passing captured closures to ambient host function imports requires generated JS wrapper support and is not supported by raw wasm-gc emission yet.',
-        argument,
-      );
-    }
     if (
       getLoweredExpressionValueType(loweredArgument) === 'owned_array_ref' &&
       param.type !== 'owned_array_ref'

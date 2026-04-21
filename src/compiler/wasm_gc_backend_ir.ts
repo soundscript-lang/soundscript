@@ -1,7 +1,9 @@
 import type { RuntimeHelperRequirementIR, RuntimeManifestIR } from './runtime_manifest_ir.ts';
+import type { CompilerTaggedPrimitiveBoundaryKindsIR } from './ir.ts';
 import {
   collectSemanticRuntimeFamiliesFromTypes,
   type SemanticBoundarySurfaceIR,
+  type SemanticExpressionIR,
   type SemanticHostImportIR,
   type SemanticModuleIR,
   type SemanticObjectLayoutIR,
@@ -69,6 +71,9 @@ export interface WasmGcFunctionPlanIR {
   closureSignatureId?: number;
   closureCaptureCount?: number;
   closureCaptureValueTypes?: readonly string[];
+  closureParamTaggedPrimitiveKinds?:
+    readonly (CompilerTaggedPrimitiveBoundaryKindsIR | undefined)[];
+  closureResultTaggedPrimitiveKinds?: CompilerTaggedPrimitiveBoundaryKindsIR;
   hostImport?: SemanticHostImportIR;
 }
 
@@ -90,6 +95,30 @@ export interface WasmGcBoundaryPlanIR {
   wrapperHooks: readonly string[];
 }
 
+export type WasmGcHostCallbackWrapperReasonIR =
+  | 'captured_closure'
+  | 'tagged_signature';
+
+export interface WasmGcHostCallbackWrapperPlanIR {
+  functionName: string;
+  hostImportModule: string;
+  hostImportName: string;
+  paramName: string;
+  paramIndex: number;
+  signatureId: number;
+  paramTypes: readonly string[];
+  resultType: string;
+  paramTaggedPrimitiveKinds: readonly (CompilerTaggedPrimitiveBoundaryKindsIR | undefined)[];
+  resultTaggedPrimitiveKinds?: CompilerTaggedPrimitiveBoundaryKindsIR;
+  reasons: readonly WasmGcHostCallbackWrapperReasonIR[];
+}
+
+export interface WasmGcWrapperPlanIR {
+  kind: 'wasm_gc_wrapper_plan';
+  hostCallbackWrappers: readonly WasmGcHostCallbackWrapperPlanIR[];
+  taggedValueAdapterHelpers: readonly string[];
+}
+
 export interface WasmGcDiagnosticPlanIR {
   code: 'WASMGC_DEFERRED_FAMILY';
   family: SemanticRuntimeFamilyId;
@@ -103,6 +132,7 @@ export interface WasmGcModulePlanIR {
   helperPlans: readonly WasmGcHelperPlanIR[];
   functionPlans: readonly WasmGcFunctionPlanIR[];
   boundaryPlans: readonly WasmGcBoundaryPlanIR[];
+  wrapperPlan: WasmGcWrapperPlanIR;
   diagnostics: readonly WasmGcDiagnosticPlanIR[];
 }
 
@@ -342,12 +372,311 @@ function createBoundaryPlan(
   };
 }
 
+function isSemanticExpression(value: unknown): value is SemanticExpressionIR {
+  return typeof value === 'object' && value !== null && 'kind' in value &&
+    'representation' in value;
+}
+
+function visitSemanticExpressionTree(
+  value: unknown,
+  visitor: (expression: SemanticExpressionIR) => void,
+): void {
+  if (Array.isArray(value)) {
+    value.forEach((item) => visitSemanticExpressionTree(item, visitor));
+    return;
+  }
+  if (typeof value !== 'object' || value === null) {
+    return;
+  }
+  if (isSemanticExpression(value)) {
+    visitor(value);
+  }
+  for (const child of Object.values(value)) {
+    visitSemanticExpressionTree(child, visitor);
+  }
+}
+
+function closureLiteralLocalCaptures(
+  func: WasmGcFunctionPlanIR,
+): ReadonlyMap<string, boolean> {
+  const locals = new Map<string, boolean>();
+  func.body.forEach((statement) => {
+    if (statement.kind === 'local_set' && statement.value.kind === 'closure_literal') {
+      locals.set(statement.name, statement.value.captures.length > 0);
+    }
+  });
+  return locals;
+}
+
+function expressionIsCapturedClosure(
+  expression: SemanticExpressionIR,
+  closureLocals: ReadonlyMap<string, boolean>,
+): boolean {
+  if (expression.kind === 'closure_literal') {
+    return expression.captures.length > 0;
+  }
+  if (expression.kind === 'local_get') {
+    return closureLocals.get(expression.name) === true;
+  }
+  return false;
+}
+
+function closureSignatureValueTypes(
+  functionPlans: readonly WasmGcFunctionPlanIR[],
+  signatureId: number,
+): {
+  paramTypes: readonly string[];
+  resultType: string;
+  paramTaggedPrimitiveKinds: readonly (CompilerTaggedPrimitiveBoundaryKindsIR | undefined)[];
+  resultTaggedPrimitiveKinds?: CompilerTaggedPrimitiveBoundaryKindsIR;
+} | undefined {
+  const signatureSource = functionPlans.find((func) =>
+    func.closureSignatureId === signatureId &&
+    func.closureFunctionId !== undefined &&
+    !func.hostImport
+  );
+  if (!signatureSource) {
+    return undefined;
+  }
+  const paramTaggedPrimitiveKinds = (signatureSource.closureParamTaggedPrimitiveKinds ?? [])
+    .map(compactTaggedPrimitiveKinds);
+  return {
+    paramTypes: signatureSource.params
+      .slice(signatureSource.closureCaptureCount ?? 0)
+      .map((param) => param.wasmType),
+    resultType: signatureSource.result,
+    paramTaggedPrimitiveKinds,
+    ...(compactTaggedPrimitiveKinds(signatureSource.closureResultTaggedPrimitiveKinds) !== undefined
+      ? {
+        resultTaggedPrimitiveKinds: compactTaggedPrimitiveKinds(
+          signatureSource.closureResultTaggedPrimitiveKinds,
+        ),
+      }
+      : {}),
+  };
+}
+
+function compactTaggedPrimitiveKinds(
+  kinds: CompilerTaggedPrimitiveBoundaryKindsIR | undefined,
+): CompilerTaggedPrimitiveBoundaryKindsIR | undefined {
+  if (!kinds) {
+    return undefined;
+  }
+  const compacted: CompilerTaggedPrimitiveBoundaryKindsIR = {};
+  if (kinds.includesBigInt) {
+    compacted.includesBigInt = true;
+  }
+  if (kinds.includesBoolean) {
+    compacted.includesBoolean = true;
+  }
+  if (kinds.includesNull) {
+    compacted.includesNull = true;
+  }
+  if (kinds.includesNumber) {
+    compacted.includesNumber = true;
+  }
+  if (kinds.includesString) {
+    compacted.includesString = true;
+  }
+  if (kinds.includesSymbol) {
+    compacted.includesSymbol = true;
+  }
+  if (kinds.includesUndefined) {
+    compacted.includesUndefined = true;
+  }
+  return Object.keys(compacted).length > 0 ? compacted : undefined;
+}
+
+function closureSignatureUsesTaggedValues(
+  signature: { paramTypes: readonly string[]; resultType: string },
+): boolean {
+  return signature.resultType === 'tagged_ref' ||
+    signature.paramTypes.some((paramType) => paramType === 'tagged_ref');
+}
+
+function callsiteCapturedClosureParams(
+  functionPlans: readonly WasmGcFunctionPlanIR[],
+): ReadonlyMap<string, ReadonlySet<number>> {
+  const capturedParams = new Map<string, Set<number>>();
+  const hostImportNames = new Set(
+    functionPlans.flatMap((func) => func.hostImport ? [func.name] : []),
+  );
+  for (const func of functionPlans) {
+    if (func.hostImport) {
+      continue;
+    }
+    const closureLocals = closureLiteralLocalCaptures(func);
+    for (const statement of func.body) {
+      visitSemanticExpressionTree(statement, (expression) => {
+        if (expression.kind !== 'call' || !hostImportNames.has(expression.callee)) {
+          return;
+        }
+        expression.args.forEach((arg, index) => {
+          if (!expressionIsCapturedClosure(arg, closureLocals)) {
+            return;
+          }
+          const indices = capturedParams.get(expression.callee) ?? new Set<number>();
+          indices.add(index);
+          capturedParams.set(expression.callee, indices);
+        });
+      });
+    }
+  }
+  return capturedParams;
+}
+
+function addTaggedValueAdapterHelpers(
+  helpers: Set<string>,
+  kinds: CompilerTaggedPrimitiveBoundaryKindsIR | undefined,
+): void {
+  if (!kinds) {
+    helpers.add('__soundscript_host_tag_bigint');
+    helpers.add('__soundscript_host_tag_boolean');
+    helpers.add('__soundscript_host_tag_null');
+    helpers.add('__soundscript_host_tag_number');
+    helpers.add('__soundscript_host_tag_string');
+    helpers.add('__soundscript_host_tag_symbol');
+    helpers.add('__soundscript_host_tag_undefined');
+    return;
+  }
+  if (kinds.includesBigInt) {
+    helpers.add('__soundscript_host_tag_bigint');
+  }
+  if (kinds.includesBoolean) {
+    helpers.add('__soundscript_host_tag_boolean');
+  }
+  if (kinds.includesNull) {
+    helpers.add('__soundscript_host_tag_null');
+  }
+  if (kinds.includesNumber) {
+    helpers.add('__soundscript_host_tag_number');
+  }
+  if (kinds.includesString) {
+    helpers.add('__soundscript_host_tag_string');
+  }
+  if (kinds.includesSymbol) {
+    helpers.add('__soundscript_host_tag_symbol');
+  }
+  if (kinds.includesUndefined) {
+    helpers.add('__soundscript_host_tag_undefined');
+  }
+}
+
+function taggedValueAdapterHelpersForWrappers(
+  wrappers: readonly WasmGcHostCallbackWrapperPlanIR[],
+): readonly string[] {
+  const helpers = new Set<string>();
+  for (const wrapper of wrappers) {
+    wrapper.paramTypes.forEach((paramType, index) => {
+      if (paramType === 'tagged_ref') {
+        addTaggedValueAdapterHelpers(helpers, wrapper.paramTaggedPrimitiveKinds[index]);
+      }
+    });
+    if (wrapper.resultType === 'tagged_ref') {
+      addTaggedValueAdapterHelpers(helpers, wrapper.resultTaggedPrimitiveKinds);
+    }
+  }
+  return [...helpers].sort();
+}
+
+function createWasmGcWrapperPlan(
+  functionPlans: readonly WasmGcFunctionPlanIR[],
+): WasmGcWrapperPlanIR {
+  const capturedParams = callsiteCapturedClosureParams(functionPlans);
+  const wrappers: WasmGcHostCallbackWrapperPlanIR[] = [];
+  for (const func of functionPlans) {
+    if (!func.hostImport) {
+      continue;
+    }
+    const capturedIndices = capturedParams.get(func.name) ?? new Set<number>();
+    func.params.forEach((param, paramIndex) => {
+      if (param.hostBoundary?.kind !== 'closure' || param.hostBoundary.signatureIds?.length !== 1) {
+        return;
+      }
+      const signatureId = param.hostBoundary.signatureIds[0]!;
+      const signature = closureSignatureValueTypes(functionPlans, signatureId);
+      if (!signature) {
+        return;
+      }
+      const reasons = new Set<WasmGcHostCallbackWrapperReasonIR>();
+      if (closureSignatureUsesTaggedValues(signature)) {
+        reasons.add('tagged_signature');
+      }
+      if (capturedIndices.has(paramIndex)) {
+        reasons.add('captured_closure');
+      }
+      if (reasons.size === 0) {
+        return;
+      }
+      wrappers.push({
+        functionName: func.name,
+        hostImportModule: func.hostImport!.module,
+        hostImportName: func.hostImport!.name,
+        paramName: param.name,
+        paramIndex,
+        signatureId,
+        paramTypes: signature.paramTypes,
+        resultType: signature.resultType,
+        paramTaggedPrimitiveKinds: signature.paramTaggedPrimitiveKinds,
+        ...(signature.resultTaggedPrimitiveKinds !== undefined
+          ? { resultTaggedPrimitiveKinds: signature.resultTaggedPrimitiveKinds }
+          : {}),
+        reasons: [...reasons].sort(),
+      });
+    });
+  }
+  const taggedValueAdapterHelpers = taggedValueAdapterHelpersForWrappers(wrappers);
+  return {
+    kind: 'wasm_gc_wrapper_plan',
+    hostCallbackWrappers: wrappers.sort((left, right) =>
+      left.functionName === right.functionName
+        ? left.paramIndex - right.paramIndex
+        : left.functionName.localeCompare(right.functionName)
+    ),
+    taggedValueAdapterHelpers,
+  };
+}
+
 export function createWasmGcModulePlan(
   semantic: SemanticModuleIR,
   runtimeManifest: RuntimeManifestIR,
 ): WasmGcModulePlanIR {
   const families = runtimeManifest.familyRequirements.map((requirement) => requirement.family);
   const deferred = new Set(WASM_GC_BACKEND_CAPABILITIES.deferredRuntimeFamilies);
+  const functionPlans: WasmGcFunctionPlanIR[] = semantic.functions.map((func) => ({
+    name: func.name,
+    exportName: func.exportName,
+    params: func.params.map((param) => ({
+      name: param.name,
+      wasmType: param.representation,
+      ...(param.hostBoundary !== undefined ? { hostBoundary: param.hostBoundary } : {}),
+    })),
+    locals: func.locals.map((local) => ({
+      name: local.name,
+      wasmType: local.representation,
+    })),
+    result: func.result,
+    body: func.body,
+    bodyStatus: func.bodyStatus,
+    unsupportedBodyKinds: func.unsupportedBodyKinds,
+    ...(func.closureFunctionId !== undefined ? { closureFunctionId: func.closureFunctionId } : {}),
+    ...(func.closureSignatureId !== undefined
+      ? { closureSignatureId: func.closureSignatureId }
+      : {}),
+    ...(func.closureCaptureCount !== undefined
+      ? { closureCaptureCount: func.closureCaptureCount }
+      : {}),
+    ...(func.closureCaptureValueTypes !== undefined
+      ? { closureCaptureValueTypes: func.closureCaptureValueTypes }
+      : {}),
+    ...(func.closureParamTaggedPrimitiveKinds !== undefined
+      ? { closureParamTaggedPrimitiveKinds: func.closureParamTaggedPrimitiveKinds }
+      : {}),
+    ...(func.closureResultTaggedPrimitiveKinds !== undefined
+      ? { closureResultTaggedPrimitiveKinds: func.closureResultTaggedPrimitiveKinds }
+      : {}),
+    ...(func.hostImport !== undefined ? { hostImport: func.hostImport } : {}),
+  }));
   return {
     kind: 'wasm_gc_module_plan',
     capabilities: WASM_GC_BACKEND_CAPABILITIES,
@@ -366,39 +695,11 @@ export function createWasmGcModulePlan(
       name: helper.name,
       kind: helper.kind,
     })),
-    functionPlans: semantic.functions.map((func) => ({
-      name: func.name,
-      exportName: func.exportName,
-      params: func.params.map((param) => ({
-        name: param.name,
-        wasmType: param.representation,
-        ...(param.hostBoundary !== undefined ? { hostBoundary: param.hostBoundary } : {}),
-      })),
-      locals: func.locals.map((local) => ({
-        name: local.name,
-        wasmType: local.representation,
-      })),
-      result: func.result,
-      body: func.body,
-      bodyStatus: func.bodyStatus,
-      unsupportedBodyKinds: func.unsupportedBodyKinds,
-      ...(func.closureFunctionId !== undefined
-        ? { closureFunctionId: func.closureFunctionId }
-        : {}),
-      ...(func.closureSignatureId !== undefined
-        ? { closureSignatureId: func.closureSignatureId }
-        : {}),
-      ...(func.closureCaptureCount !== undefined
-        ? { closureCaptureCount: func.closureCaptureCount }
-        : {}),
-      ...(func.closureCaptureValueTypes !== undefined
-        ? { closureCaptureValueTypes: func.closureCaptureValueTypes }
-        : {}),
-      ...(func.hostImport !== undefined ? { hostImport: func.hostImport } : {}),
-    })),
+    functionPlans,
     boundaryPlans: semantic.boundarySurfaces.map((surface) =>
       createBoundaryPlan(surface, runtimeManifest)
     ),
+    wrapperPlan: createWasmGcWrapperPlan(functionPlans),
     diagnostics: families
       .filter((family) => deferred.has(family))
       .map((family) => ({

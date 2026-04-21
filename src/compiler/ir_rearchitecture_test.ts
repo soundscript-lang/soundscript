@@ -15,6 +15,7 @@ import {
 import { createRuntimeManifestFromSemanticModule } from './runtime_manifest_ir.ts';
 import { createWasmGcModulePlan } from './wasm_gc_backend_ir.ts';
 import { emitWasmGcModulePlan } from './wasm_gc_emitter.ts';
+import { emitWasmGcWrapperModule } from './wasm_gc_wrapper_emitter.ts';
 import {
   createCompilerProgram,
   createTempProject,
@@ -537,6 +538,7 @@ Deno.test('compiler runtime manifest is deterministic and pay-for-play for sync 
   );
   assertEquals(snapshot.runtimeManifest.helperRequirements, []);
   assertEquals(snapshot.wasmGcPlan.helperPlans, []);
+  assertEquals(snapshot.wasmGcPlan.wrapperPlan.hostCallbackWrappers, []);
   assertEquals(snapshot.wasmGcPlan.boundaryPlans, [
     {
       kind: 'boundary_plan',
@@ -6457,6 +6459,7 @@ Deno.test('compiler wasm-gc emitter produces runnable no-capture callbacks throu
     snapshot.wasmGcPlan.boundaryPlans.find((plan) => plan.name === 'apply')?.adapterHelpers,
     ['closure_call_adapter'],
   );
+  assertEquals(snapshot.wasmGcPlan.wrapperPlan.hostCallbackWrappers, []);
   await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
   const wat = await Deno.readTextFile(watPath);
   assertEquals(
@@ -6632,7 +6635,7 @@ Deno.test('compiler wasm-gc emitter produces runnable bigint callbacks through h
   assertEquals((main as (input: bigint) => bigint)(70n), 70n);
 });
 
-Deno.test('compiler wasm-gc emitter diagnoses tagged callbacks passed to raw host imports', async () => {
+Deno.test('compiler wasm-gc wrapper glue adapts tagged callbacks passed to host imports', async () => {
   const tempDirectory = await createTempProject([
     {
       path: 'tsconfig.json',
@@ -6663,20 +6666,77 @@ Deno.test('compiler wasm-gc emitter diagnoses tagged callbacks passed to raw hos
     },
   ]);
   const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
-  let message = '';
-  try {
-    createCompilerIrDebugSnapshot(program, tempDirectory);
-  } catch (error) {
-    message = error instanceof Error ? error.message : String(error);
-  }
+  const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
+  const watPath = join(tempDirectory, 'wasm-gc-shadow-tagged-callback-wrapper.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-shadow-tagged-callback-wrapper.wasm');
+  const wrapperPath = join(tempDirectory, 'wasm-gc-shadow-tagged-callback-wrapper.mjs');
 
   assertEquals(
-    message,
-    'Passing tagged-union callbacks to ambient host function imports requires generated JS wrapper support and is not supported by raw wasm-gc emission yet.',
+    snapshot.wasmGcPlan.wrapperPlan.hostCallbackWrappers,
+    [
+      {
+        functionName: 'apply',
+        hostImportModule: 'soundscript_host_function',
+        hostImportName: 'host.d.ts:apply',
+        paramName: 'fn',
+        paramIndex: 0,
+        signatureId: 0,
+        paramTypes: ['tagged_ref'],
+        resultType: 'symbol_ref',
+        paramTaggedPrimitiveKinds: [{ includesNull: true, includesSymbol: true }],
+        reasons: ['tagged_signature'],
+      },
+    ],
   );
+  assertEquals(
+    snapshot.wasmGcPlan.wrapperPlan.taggedValueAdapterHelpers,
+    [
+      '__soundscript_host_tag_null',
+      '__soundscript_host_tag_symbol',
+    ],
+  );
+
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
+  await Deno.writeTextFile(wrapperPath, emitWasmGcWrapperModule(snapshot.wasmGcPlan));
+  const wat = await Deno.readTextFile(watPath);
+  assertEquals(
+    wat.includes(
+      '(import "soundscript_host_function" "host.d.ts:apply" (func $apply (param $fn (ref null eq)) (param $input externref) (result externref)))',
+    ),
+    true,
+  );
+  assertEquals(wat.includes('(export "__soundscript_closure_invoke_0")'), true);
+  assertEquals(wat.includes('(export "__soundscript_host_tag_symbol")'), true);
+  const parseResult = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(parseResult.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(parseResult.success, true);
+
+  const wrapperModule = await import(`file://${wrapperPath}?cacheBust=${crypto.randomUUID()}`);
+  const instanceCell: { instance?: WebAssembly.Instance } = {};
+  const imports = wrapperModule.createSoundscriptWasmGcHostImports(
+    {
+      soundscript_host_function: {
+        'host.d.ts:apply': (fn: (value: symbol | null) => symbol, input: symbol): symbol =>
+          fn(input),
+      },
+    },
+    instanceCell,
+  );
+  const wasm = await Deno.readFile(wasmPath);
+  const instance = (await WebAssembly.instantiate(wasm, imports)).instance;
+  instanceCell.instance = instance;
+  const main = instance.exports['main.ts:main'];
+  assertEquals(typeof main, 'function');
+  const input = Symbol('wrapped');
+  assertEquals((main as (input: symbol) => symbol)(input), input);
 });
 
-Deno.test('compiler wasm-gc emitter diagnoses captured callbacks passed to raw host imports', async () => {
+Deno.test('compiler wasm-gc wrapper glue adapts captured callbacks passed to host imports', async () => {
   const tempDirectory = await createTempProject([
     {
       path: 'tsconfig.json',
@@ -6707,17 +6767,67 @@ Deno.test('compiler wasm-gc emitter diagnoses captured callbacks passed to raw h
     },
   ]);
   const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
-  let message = '';
-  try {
-    createCompilerIrDebugSnapshot(program, tempDirectory);
-  } catch (error) {
-    message = error instanceof Error ? error.message : String(error);
-  }
+  const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
+  const watPath = join(tempDirectory, 'wasm-gc-shadow-captured-callback-wrapper.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-shadow-captured-callback-wrapper.wasm');
+  const wrapperPath = join(tempDirectory, 'wasm-gc-shadow-captured-callback-wrapper.mjs');
 
   assertEquals(
-    message,
-    'Passing captured closures to ambient host function imports requires generated JS wrapper support and is not supported by raw wasm-gc emission yet.',
+    snapshot.wasmGcPlan.wrapperPlan.hostCallbackWrappers,
+    [
+      {
+        functionName: 'apply',
+        hostImportModule: 'soundscript_host_function',
+        hostImportName: 'host.d.ts:apply',
+        paramName: 'fn',
+        paramIndex: 0,
+        signatureId: 0,
+        paramTypes: ['symbol_ref'],
+        resultType: 'symbol_ref',
+        paramTaggedPrimitiveKinds: [],
+        reasons: ['captured_closure'],
+      },
+    ],
   );
+
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
+  await Deno.writeTextFile(wrapperPath, emitWasmGcWrapperModule(snapshot.wasmGcPlan));
+  const wat = await Deno.readTextFile(watPath);
+  assertEquals(
+    wat.includes(
+      '(import "soundscript_host_function" "host.d.ts:apply" (func $apply (param $fn (ref null eq)) (param $input externref) (result externref)))',
+    ),
+    true,
+  );
+  assertEquals(wat.includes('(export "__soundscript_closure_invoke_0")'), true);
+  assertEquals(wat.includes('__soundscript_host_tag_symbol'), false);
+  const parseResult = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(parseResult.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(parseResult.success, true);
+
+  const wrapperModule = await import(`file://${wrapperPath}?cacheBust=${crypto.randomUUID()}`);
+  const instanceCell: { instance?: WebAssembly.Instance } = {};
+  const imports = wrapperModule.createSoundscriptWasmGcHostImports(
+    {
+      soundscript_host_function: {
+        'host.d.ts:apply': (fn: (value: symbol) => symbol, input: symbol): symbol => fn(input),
+      },
+    },
+    instanceCell,
+  );
+  const wasm = await Deno.readFile(wasmPath);
+  const instance = (await WebAssembly.instantiate(wasm, imports)).instance;
+  instanceCell.instance = instance;
+  const main = instance.exports['main.ts:main'];
+  assertEquals(typeof main, 'function');
+  const input = Symbol('input');
+  const fallback = Symbol('fallback');
+  assertEquals((main as (input: symbol, fallback: symbol) => symbol)(input, fallback), fallback);
 });
 
 Deno.test('compiler wasm-gc emitter explains manifest-driven helpers and boundary types', async () => {

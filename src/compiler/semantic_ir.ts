@@ -7,6 +7,7 @@ import type {
   CompilerHostBoundaryIR,
   CompilerModuleIR,
   CompilerStatementIR,
+  CompilerTaggedPrimitiveBoundaryKindsIR,
   CompilerUnionArmIR,
   CompilerUnionBoundaryIR,
   CompilerValueType,
@@ -566,6 +567,9 @@ export interface SemanticFunctionIR {
   closureSignatureId?: number;
   closureCaptureCount?: number;
   closureCaptureValueTypes?: readonly CompilerValueType[];
+  closureParamTaggedPrimitiveKinds?:
+    readonly (CompilerTaggedPrimitiveBoundaryKindsIR | undefined)[];
+  closureResultTaggedPrimitiveKinds?: CompilerTaggedPrimitiveBoundaryKindsIR;
   runtimeFamilies: readonly SemanticRuntimeFamilyId[];
   hostImport?: SemanticHostImportIR;
   hostImported: boolean;
@@ -3154,6 +3158,9 @@ export function createSemanticModuleFromCompilerIR(module: CompilerModuleIR): Se
   }
 
   const functions = module.functions.map((func): SemanticFunctionIR => {
+    const closureSignature = func.closureSignatureId !== undefined
+      ? module.closureSignatures?.find((signature) => signature.id === func.closureSignatureId)
+      : undefined;
     const unionBoundaries = collectFunctionUnionBoundaries(func);
     const runtimeFamilies = collectFunctionFamilies(func, unionBoundaries);
     const runtimeOperations = module.runtime?.functions.find((runtimeFunction) =>
@@ -3203,6 +3210,12 @@ export function createSemanticModuleFromCompilerIR(module: CompilerModuleIR): Se
         : {}),
       ...(func.closureCaptureValueTypes !== undefined
         ? { closureCaptureValueTypes: func.closureCaptureValueTypes }
+        : {}),
+      ...(closureSignature?.paramTaggedPrimitiveKinds !== undefined
+        ? { closureParamTaggedPrimitiveKinds: closureSignature.paramTaggedPrimitiveKinds }
+        : {}),
+      ...(closureSignature?.resultTaggedPrimitiveKinds !== undefined
+        ? { closureResultTaggedPrimitiveKinds: closureSignature.resultTaggedPrimitiveKinds }
         : {}),
       runtimeFamilies: functionRuntimeFamilies,
       ...(hostImport !== undefined ? { hostImport } : {}),
