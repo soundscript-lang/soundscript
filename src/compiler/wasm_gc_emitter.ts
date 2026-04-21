@@ -3372,6 +3372,13 @@ function collectBoxedClosureDispatchSignatureIdsFromStatement(
   }
 }
 
+function asyncGeneratorStepClosureSignatureId(plan: WasmGcModulePlanIR): number | undefined {
+  return plan.functionPlans.find((func) =>
+    func.closureSignatureId !== undefined &&
+    func.name.startsWith('closure_generator_step')
+  )?.closureSignatureId;
+}
+
 function boxedClosureDispatchSignatureIds(plan: WasmGcModulePlanIR): readonly number[] {
   const signatureIds = new Set<number>();
   for (const func of plan.functionPlans) {
@@ -3383,6 +3390,13 @@ function boxedClosureDispatchSignatureIds(plan: WasmGcModulePlanIR): readonly nu
         closureObjectNames,
       )
     );
+  }
+  const generatorStepSignatureId = asyncGeneratorStepClosureSignatureId(plan);
+  if (
+    generatorStepSignatureId !== undefined &&
+    moduleCallsFunction(plan, '__soundscript_async_generator_step')
+  ) {
+    signatureIds.add(generatorStepSignatureId);
   }
   return [...signatureIds].sort((left, right) => left - right);
 }
@@ -4727,6 +4741,39 @@ function renderPromiseHelperFunctions(plan: WasmGcModulePlanIR): readonly string
     : [];
 }
 
+function renderAsyncGeneratorHelperFunctions(plan: WasmGcModulePlanIR): readonly string[] {
+  if (!moduleCallsFunction(plan, '__soundscript_async_generator_step')) {
+    return [];
+  }
+  const signatureId = asyncGeneratorStepClosureSignatureId(plan);
+  if (signatureId === undefined) {
+    return [];
+  }
+  const usesPromiseThen = moduleCallsFunction(plan, '__soundscript_promise_then');
+  return [
+    `  (func $soundscript_async_generator_step (param $step (ref null eq)) (param $mode f64) (param $resume (ref null ${taggedValueTypeName()})) (result (ref null eq))`,
+    '    (local $result (ref null eq))',
+    '    local.get $step',
+    '    local.get $mode',
+    '    local.get $resume',
+    `    call ${closureDispatchFunctionName(signatureId)}`,
+    '    local.set $result',
+    ...renderPromiseRecordNew(
+      '1',
+      [
+        `    i32.const ${TAGGED_HEAP_OBJECT_TAG}`,
+        '    f64.const 0',
+        '    ref.null extern',
+        '    local.get $result',
+        `    struct.new ${taggedValueTypeName()}`,
+      ],
+      usesPromiseThen,
+      '    ',
+    ),
+    '  )',
+  ];
+}
+
 export function emitWasmGcModulePlan(plan: WasmGcModulePlanIR): string {
   const dynamicLayoutsByRepresentation = dynamicObjectLayoutsByRepresentation(plan);
   const closureFunctionNames = new Map(
@@ -4744,6 +4791,7 @@ export function emitWasmGcModulePlan(plan: WasmGcModulePlanIR): string {
   const taggedValueTypes = renderTaggedValueType(plan);
   const promiseRecordTypes = renderPromiseRecordTypes(plan);
   const promiseHelperFunctions = renderPromiseHelperFunctions(plan);
+  const asyncGeneratorHelperFunctions = renderAsyncGeneratorHelperFunctions(plan);
   const closureDispatchHelpers = renderClosureDispatchHelpers(plan, closureFunctionNames);
   const hostImportPlans = plan.functionPlans.flatMap(renderHostImportPlan);
   const stringEqualityImportPlans = renderStringEqualityImportPlan(plan);
@@ -4780,11 +4828,12 @@ export function emitWasmGcModulePlan(plan: WasmGcModulePlanIR): string {
       : []),
     '  ;; helpers',
     ...(plan.helperPlans.length > 0 || promiseHelperFunctions.length > 0 ||
-        closureDispatchHelpers.length > 0
+        asyncGeneratorHelperFunctions.length > 0 || closureDispatchHelpers.length > 0
       ? [
         ...indentLines(plan.helperPlans.map(renderHelperPlan)),
         ...promiseHelperFunctions,
         ...closureDispatchHelpers,
+        ...asyncGeneratorHelperFunctions,
       ]
       : [
         '    ;; none',
