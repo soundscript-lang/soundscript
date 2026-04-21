@@ -232,6 +232,9 @@ const NOOP_PROJECT_MACRO_ENVIRONMENT: ProjectMacroEnvironment = {
   siteKindsBySpecifierForFile(): ReadonlyMap<string, ReadonlyMap<string, never>> {
     return new Map<string, ReadonlyMap<string, never>>();
   },
+  trackedDependencyFilesForFile(): readonly string[] {
+    return [];
+  },
   trackedDependencyFiles(): readonly string[] {
     return [];
   },
@@ -1181,17 +1184,30 @@ export function collectPreparedAnalysisProjectFileMetadata(
       );
       diagnosticPathCollectionDurationMs += performance.now() - diagnosticPathStartTime;
       const diagnosticPaths = diagnosticPathCollection.paths;
-      let cacheDependencyPaths = diagnosticPaths;
+      const sourceFileMatch = getPreparedViewSourceFileMatch(view, filePath);
+      const macroDependencyPaths =
+        sourceFileMatch && view !== preparedProject.packageSourcePolicyView
+          ? view.macroEnvironment.trackedDependencyFilesForFile(sourceFileMatch.sourceFile)
+            .flatMap((dependencyFilePath) =>
+              collectPreparedAnalysisFilePathCandidates(dependencyFilePath)
+            )
+          : [];
+      let cacheDependencyPaths = [...new Set([...diagnosticPaths, ...macroDependencyPaths])].sort();
       if (diagnosticPathCollection.encounteredNonDeclarationTypeScriptDependency) {
         const cacheDependencyPathStartTime = performance.now();
-        cacheDependencyPaths = collectPreparedViewDependencyPaths(
-          view,
-          filePath,
-          {
-            includeNonDeclarationTypeScriptDependencies: true,
-          },
-          getPreparedViewDependencyTraversalCache(dependencyTraversalCaches, view),
-        );
+        cacheDependencyPaths = [
+          ...new Set([
+            ...collectPreparedViewDependencyPaths(
+              view,
+              filePath,
+              {
+                includeNonDeclarationTypeScriptDependencies: true,
+              },
+              getPreparedViewDependencyTraversalCache(dependencyTraversalCaches, view),
+            ),
+            ...macroDependencyPaths,
+          ]),
+        ].sort();
         cacheDependencyPathCollectionDurationMs += performance.now() - cacheDependencyPathStartTime;
       }
 

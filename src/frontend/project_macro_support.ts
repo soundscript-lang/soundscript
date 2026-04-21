@@ -280,6 +280,7 @@ export interface ProjectMacroEnvironment {
     preserveMissingExpanders?: boolean,
     annotateExpansions?: boolean,
   ): ReadonlyMap<string, ts.SourceFile>;
+  trackedDependencyFilesForFile(sourceFile: ts.SourceFile): readonly string[];
   trackedDependencyFiles(): readonly string[];
 }
 
@@ -2945,6 +2946,15 @@ export function createProjectMacroEnvironment(
         }
       }
       return expandedFiles;
+    },
+    trackedDependencyFilesForFile(sourceFile: ts.SourceFile): readonly string[] {
+      try {
+        bindingsForSourceFile(sourceFile);
+      } catch {
+        return [];
+      }
+      return [...(stableReuseState.bindingPlanDependenciesByFile.get(sourceFile.fileName) ?? [])]
+        .sort();
     },
     trackedDependencyFiles(): readonly string[] {
       return [...stableReuseState.dependencySourceTextsByFile.keys()].sort();

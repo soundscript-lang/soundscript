@@ -47,21 +47,24 @@ Legend:
 - `batch-48`: covered by the forty-eighth red-team batch added with this record.
 - `batch-49`: covered by the forty-ninth red-team batch added with this record.
 - `batch-50`: covered by the fiftieth red-team batch added with this record.
+- `batch-51`: covered by the fifty-first red-team batch added with this record.
+- `batch-52`: covered by the fifty-second red-team batch added with this record.
+- `batch-53`: covered by the fifty-third red-team batch added with this record.
 - `audit-debt`: missing coverage that should be closed before calling the family fully audited.
 - `out-of-scope`: explicitly outside the strong soundness claim.
 - `design-gap`: documented future work, not a current guarantee.
 
-| Owned family                         | Fresh project     | Reused prepared                | File-scoped                    | Persistent checker cache | Package verification cache | LSP/incremental session | Build cache/output | Compiler/target gate |
-| ------------------------------------ | ----------------- | ------------------------------ | ------------------------------ | ------------------------ | -------------------------- | ----------------------- | ------------------ | -------------------- |
-| Prepared/package-source parity       | covered           | covered                        | covered                        | covered,batch-29         | batch-3                    | covered                 | batch-1,10,28,31   | audit-debt           |
-| Flow/effect invalidation             | covered           | batch-35,40,43                 | covered                        | batch-4,35,40,43         | batch-4,40,43              | batch-35,40,43          | batch-44           | batch-44             |
-| Proof-oracle verification            | covered           | batch-38                       | covered                        | batch-38                 | batch-38                   | batch-38                | batch-44           | batch-44             |
-| BareObject/null-prototype provenance | covered           | covered                        | covered                        | batch-39                 | covered                    | batch-39                | batch-39           | batch-45             |
-| `#[value]` parity                    | covered           | batch-1                        | batch-1                        | batch-1                  | batch-5                    | batch-1                 | batch-1            | covered              |
-| Machine numerics                     | covered           | batch-37                       | batch-37                       | batch-37                 | batch-5                    | batch-37                | batch-1,37         | batch-37             |
-| Macro/capability boundary            | covered           | covered                        | audit-debt                     | batch-6                  | batch-41,42                | audit-debt              | batch-7            | batch-8              |
-| Compiler acceptance parity           | covered           | audit-debt                     | out-of-scope                   | out-of-scope             | out-of-scope               | out-of-scope            | batch-1,27,30      | covered,batch-27,30  |
-| Project-reference root ownership     | batch-32,47,48,49 | out-of-scope,batch-46,47,48,49 | out-of-scope,batch-46,47,48,49 | batch-32,48,49           | out-of-scope               | batch-34,47,48,49       | batch-33,50        | out-of-scope         |
+| Owned family                         | Fresh project     | Reused prepared                | File-scoped                    | Persistent checker cache | Package verification cache | LSP/incremental session | Build cache/output  | Compiler/target gate |
+| ------------------------------------ | ----------------- | ------------------------------ | ------------------------------ | ------------------------ | -------------------------- | ----------------------- | ------------------- | -------------------- |
+| Prepared/package-source parity       | covered           | covered                        | covered                        | covered,batch-29         | batch-3                    | covered                 | batch-1,10,28,31,52 | audit-debt           |
+| Flow/effect invalidation             | covered           | batch-35,40,43                 | covered                        | batch-4,35,40,43         | batch-4,40,43              | batch-35,40,43          | batch-44            | batch-44             |
+| Proof-oracle verification            | covered           | batch-38                       | covered                        | batch-38                 | batch-38                   | batch-38                | batch-44            | batch-44             |
+| BareObject/null-prototype provenance | covered           | covered                        | covered                        | batch-39                 | covered                    | batch-39                | batch-39            | batch-45             |
+| `#[value]` parity                    | covered           | batch-1                        | batch-1                        | batch-1                  | batch-5                    | batch-1                 | batch-1             | covered              |
+| Machine numerics                     | covered           | batch-37                       | batch-37                       | batch-37                 | batch-5                    | batch-37                | batch-1,37          | batch-37             |
+| Macro/capability boundary            | covered           | covered,batch-53               | batch-53                       | batch-6,53               | batch-41,42                | batch-53                | batch-7             | batch-8              |
+| Compiler acceptance parity           | covered           | audit-debt                     | out-of-scope                   | out-of-scope             | out-of-scope               | out-of-scope            | batch-1,27,30       | covered,batch-27,30  |
+| Project-reference root ownership     | batch-32,47,48,49 | out-of-scope,batch-46,47,48,49 | out-of-scope,batch-46,47,48,49 | batch-32,48,49           | out-of-scope               | batch-34,47,48,49       | batch-33,50,51      | out-of-scope         |
 
 ## Batch 1 Findings
 
@@ -1245,6 +1248,75 @@ Legend:
 - Residual risk: this hardens project-reference-only diamond output. A future package-runtime smoke
   could cover package imports across the same diamond if that becomes an owned build parity claim.
 
+## Batch 51 Findings
+
+### Diamond Build-Reference Cycle And Removal Drift
+
+- Attack: prime a recursive `build --references` diamond where `app` references `mid-a` and `mid-b`,
+  both middle projects initially reference `lib-a`, and stale successful build caches/outputs remain
+  on disk. One fixture retargets only `mid-a` to `lib-b` and makes `lib-b` reference `mid-a`,
+  creating a new project-reference cycle. The adjacent fixture removes both middle references to
+  `lib-a`, poisons `lib-a`, and leaves stale unreferenced output in place.
+- Routes: cold recursive `buildProject({ buildReferences: true })` after removing build caches, warm
+  recursive build with the original stale caches restored, build-cache timing, previous successful
+  output preservation, and cold-vs-warm artifact comparison for the still-reachable projects.
+- Expected result: cycle cold and warm recursive builds both fail with the same
+  `SOUNDSCRIPT_PROJECT_REFERENCE_CYCLE` diagnostic on `mid-a/tsconfig.json`, return no artifacts, do
+  not read project build caches after cycle detection, and leave the previous successful outputs
+  unchanged. Removal cold and warm recursive builds both succeed, skip `lib-a` cache reads/analysis,
+  omit `lib-a` from emitted files, and preserve the stale unreferenced `lib-a/dist` directory
+  because unreachable-output pruning is not currently an owned guarantee.
+- Result: executable coverage added in `tests/integration/red_team_audit_test.ts`; no production bug
+  found. Recursive build cycle detection runs before stale build-cache reads and remains cold-vs
+  warm deterministic after graph retargeting. Recursive build traversal also drops removed branches
+  from the build order without reusing their stale diagnostics or emitted-file lists.
+- Residual risk: this covers project-reference graph cycle and removal drift. Output pruning for
+  unreferenced package directories remains intentionally out of scope unless the build contract is
+  broadened.
+
+## Batch 52 Findings
+
+### Package Runtime Diamond Node Imports
+
+- Attack: build a source-published package diamond where `app` imports `mid-a` and `mid-b`, and both
+  middle packages import the same built `leaf` package. Install the four built outputs under a plain
+  Node `node_modules` tree and import the built app.
+- Routes: package build output for all four packages, build-cache warm-hit reuse for unchanged
+  outputs, build manifest dependency tracking for built source-published package surfaces, emitted
+  JS import-specifier inspection, copied `.sts` source surfaces, and plain Node ESM import smoke.
+- Expected result: warm unchanged builds hit the build cache and hash-match the cold outputs,
+  runtime JS imports package specifiers rather than `.sts` or `soundscript/src` paths, package
+  metadata exposes JS/types runtime exports plus copied Soundscript source exports, and Node
+  observes the diamond value `A:L1|B:L1`.
+- Result: no production bug found. Built package output preserves package specifiers across a
+  diamond graph, and the build manifests track the source-published package metadata/source surfaces
+  used by downstream package verification.
+- Residual risk: this is a runtime smoke for unchanged diamond output. Source and export-map drift
+  across this exact diamond remains breadth coverage; one-hop package source drift is covered by
+  earlier package build cache batches.
+
+## Batch 53 Findings
+
+### Macro Output Drift File-Scoped Cache Invalidation
+
+- Attack: prime a local macro whose helper expands `Foo()` to numeric expression `1`, with a
+  consumer declaring `export const value: number = Foo()`. Then change only the macro helper so the
+  same macro expands to string expression `"wrong"`.
+- Routes: fresh full prepared analysis, fresh file-scoped analysis, reused prepared full analysis,
+  reused prepared file-scoped analysis, incremental session full-project analysis, persistent
+  checker cache warm hit before mutation, and persistent checker cache stale reuse after mutation.
+- Expected result: all post-edit routes report the same `TS2322` diagnostic on `src/demo.sts`; the
+  persistent checker cache must not reuse the old clean file result when a macro helper changes only
+  output value and not its exported TypeScript surface.
+- Result: production bug found and fixed. The persistent checker cache previously tracked macro
+  helper files at project level but did not include per-file macro helper dependencies in the
+  consuming file's cache metadata, allowing stale clean diagnostics after same-kind macro output
+  drift. The fix records macro dependency files in per-file cache dependency paths so partial reuse
+  refreshes affected consumers precisely.
+- Residual risk: this closes local macro file-scoped and incremental-session coverage. Package
+  exported macro LSP/editor drift remains breadth coverage; package verification cache routes are
+  covered by Batches 41-42.
+
 ## Remaining High-Priority Audit Debt
 
 - Recursive package support-file tracking for non-`.sts` helper graphs if that source-published
@@ -1775,3 +1847,32 @@ red-team attack, the route matrix it covers, and the residual risk left behind.
   passed.
 - `deno lint tests/integration/red_team_audit_test.ts`: passed.
 - `deno task check`: passed.
+- `deno test --allow-all --filter "recursive build diamond graph retarget rejects new cycles"
+  tests/integration/red_team_audit_test.ts`:
+  passed, 1 test in `6s`; no production changes were needed for Batch 51.
+- `deno test --allow-all --filter "/(recursive build diamond graph retarget rejects new
+  cycles|recursive build diamond graph removal drops stale branch|package build output preserves
+  diamond Node imports|macro output drift matches file-scoped and incremental analysis)/"
+  tests/integration/red_team_audit_test.ts`:
+  passed, 4 tests in `50s`.
+- `deno test --allow-all --filter "/(persistent checker cache invalidates macro module edits that
+  change host access|package verification cache invalidates transitive package macro chains|macro
+  output drift matches file-scoped and incremental analysis)/"
+  tests/integration/red_team_audit_test.ts`:
+  passed, 3 tests in `41s` after the Batch 53 cache-metadata fix was narrowed away from
+  package-source policy views.
+- `deno test --allow-all tests/integration/red_team_audit_test.ts`: passed, 67 tests in `8m56s`.
+- `deno test --allow-all src/service/analyze_project_mixed_mode_test.ts
+  src/service/analyze_project_test.ts`:
+  passed, 307 tests in `8m50s`.
+- `deno fmt --check src/checker/analyze_project.ts src/frontend/project_macro_support.ts
+  tests/integration/red_team_audit_test.ts docs/project/2026-04-17-red-team-audit.md`:
+  passed.
+- `deno lint src/checker/analyze_project.ts tests/integration/red_team_audit_test.ts`: passed.
+- `deno task check`: passed.
+- `deno bench --allow-all tests/bench/mixed_project_analysis_bench.ts`: passed on Apple M5 Pro with
+  cold prepare `1.3s`, `.sts`-local cold prepare `839.4ms`, reused prepare after `.ts`-only edit
+  `353.0ms`, reused prepare after `.sts`-only edit `1.0s`, reused `.sts`-local edit `695.9ms`, and
+  analyze-only `2.2ms` average samples. Two earlier same-command runs during the active full-suite
+  window were slower, so the base commit was benchmarked in a temporary worktree; a subsequent rerun
+  in this worktree matched the recent baseline and showed no meaningful regression.

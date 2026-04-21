@@ -1359,6 +1359,412 @@ Deno.test('red-team: recursive build diamond graph retarget refreshes artifacts'
   assertEquals(await collectRecursiveArtifacts('dist'), warmSuccessArtifacts);
 });
 
+Deno.test('red-team: recursive build diamond graph retarget rejects new cycles', async () => {
+  const createPackageJson = (name: string): string =>
+    `${
+      JSON.stringify(
+        {
+          name,
+          version: '1.0.0',
+          type: 'module',
+          soundscript: {
+            version: 1,
+            exports: {
+              '.': { source: './src/index.sts' },
+            },
+          },
+        },
+        null,
+        2,
+      )
+    }\n`;
+  const createReferencedBuildTsconfig = (references: readonly { path: string }[]): string =>
+    createSoundscriptProjectReferenceTsconfig({
+      composite: true,
+      declaration: true,
+      references,
+    });
+  const tempDirectory = await createTempProject([
+    {
+      path: 'app/package.json',
+      contents: createPackageJson('red-team-build-cycle-app'),
+    },
+    {
+      path: 'app/tsconfig.json',
+      contents: createSoundscriptProjectReferenceTsconfig({
+        references: [{ path: '../mid-a' }, { path: '../mid-b' }],
+      }),
+    },
+    {
+      path: 'app/src/index.sts',
+      contents: [
+        'import { aValue } from "../../mid-a/src/index";',
+        'import { bValue } from "../../mid-b/src/index";',
+        '',
+        'export const exactA: string = aValue;',
+        'export const exactB: string = bValue;',
+        '',
+      ].join('\n'),
+    },
+    {
+      path: 'mid-a/package.json',
+      contents: createPackageJson('red-team-build-cycle-mid-a'),
+    },
+    {
+      path: 'mid-a/tsconfig.json',
+      contents: createReferencedBuildTsconfig([{ path: '../lib-a' }]),
+    },
+    {
+      path: 'mid-a/src/index.sts',
+      contents: 'export const aValue: string = "a";\n',
+    },
+    {
+      path: 'mid-b/package.json',
+      contents: createPackageJson('red-team-build-cycle-mid-b'),
+    },
+    {
+      path: 'mid-b/tsconfig.json',
+      contents: createReferencedBuildTsconfig([{ path: '../lib-a' }]),
+    },
+    {
+      path: 'mid-b/src/index.sts',
+      contents: 'export const bValue: string = "b";\n',
+    },
+    {
+      path: 'lib-a/package.json',
+      contents: createPackageJson('red-team-build-cycle-lib-a'),
+    },
+    {
+      path: 'lib-a/tsconfig.json',
+      contents: createReferencedBuildTsconfig([]),
+    },
+    {
+      path: 'lib-a/src/index.sts',
+      contents: 'export const value = "lib-a";\n',
+    },
+    {
+      path: 'lib-b/package.json',
+      contents: createPackageJson('red-team-build-cycle-lib-b'),
+    },
+    {
+      path: 'lib-b/tsconfig.json',
+      contents: createReferencedBuildTsconfig([]),
+    },
+    {
+      path: 'lib-b/src/index.sts',
+      contents: 'export const value = "lib-b";\n',
+    },
+  ]);
+  const projectPath = join(tempDirectory, 'app/tsconfig.json');
+  const projectPaths = [
+    ['app', projectPath],
+    ['mid-a', join(tempDirectory, 'mid-a/tsconfig.json')],
+    ['mid-b', join(tempDirectory, 'mid-b/tsconfig.json')],
+    ['lib-a', join(tempDirectory, 'lib-a/tsconfig.json')],
+    ['lib-b', join(tempDirectory, 'lib-b/tsconfig.json')],
+  ] as const;
+  const outDir = join(tempDirectory, 'app/dist');
+  const coldOutDir = join(tempDirectory, 'app/dist-cold-cycle');
+  const collectLiveRecursiveArtifacts = async (): Promise<
+    Readonly<Record<string, Readonly<Record<string, string>>>>
+  > => ({
+    app: await collectFileContents(join(tempDirectory, 'app/dist')),
+    'mid-a': await collectFileContents(join(tempDirectory, 'mid-a/dist')),
+    'mid-b': await collectFileContents(join(tempDirectory, 'mid-b/dist')),
+    'lib-a': await collectFileContents(join(tempDirectory, 'lib-a/dist')),
+  });
+  const removeBuildCaches = async (): Promise<void> => {
+    await Promise.all(
+      projectPaths.map(([, path]) =>
+        Deno.remove(resolveCheckerCacheDirectory(path), { recursive: true }).catch(() => undefined)
+      ),
+    );
+  };
+  const backupBuildCaches = async (): Promise<Map<string, string>> => {
+    const staleCacheBackups = new Map<string, string>();
+    for (const [label, path] of projectPaths) {
+      const cacheDirectory = resolveCheckerCacheDirectory(path);
+      const backupDirectory = join(tempDirectory, `.stale-cycle-cache-${label}`);
+      try {
+        await Deno.rename(cacheDirectory, backupDirectory);
+        staleCacheBackups.set(cacheDirectory, backupDirectory);
+      } catch {
+        // Unreferenced projects, such as lib-b before retargeting, have no primed build cache.
+      }
+    }
+    return staleCacheBackups;
+  };
+  const restoreBuildCaches = async (staleCacheBackups: Map<string, string>): Promise<void> => {
+    await removeBuildCaches();
+    for (const [cacheDirectory, backupDirectory] of staleCacheBackups) {
+      await Deno.mkdir(dirname(cacheDirectory), { recursive: true });
+      await Deno.rename(backupDirectory, cacheDirectory);
+    }
+  };
+
+  const firstBuild = await buildProject({
+    buildReferences: true,
+    outDir,
+    projectPath,
+    workingDirectory: tempDirectory,
+  });
+  assertEquals(firstBuild.exitCode, 0, firstBuild.output);
+  assertEquals(await pathExists(join(tempDirectory, 'lib-b/dist')), false);
+  const warmSuccessArtifacts = await collectLiveRecursiveArtifacts();
+
+  const staleCacheBackups = await backupBuildCaches();
+  await writeProjectFile(
+    tempDirectory,
+    'mid-a/tsconfig.json',
+    createReferencedBuildTsconfig([{ path: '../lib-b' }]),
+  );
+  await writeProjectFile(
+    tempDirectory,
+    'lib-b/tsconfig.json',
+    createReferencedBuildTsconfig([{ path: '../mid-a' }]),
+  );
+  await removeBuildCaches();
+
+  const coldCycleBuild = await buildProject({
+    buildReferences: true,
+    outDir: coldOutDir,
+    projectPath,
+    workingDirectory: tempDirectory,
+  });
+  const expectedCycleDiagnostics: readonly (readonly [string, string])[] = [
+    ['SOUNDSCRIPT_PROJECT_REFERENCE_CYCLE', 'mid-a/tsconfig.json'],
+  ];
+  assertEquals(coldCycleBuild.exitCode, 1, coldCycleBuild.output);
+  assertEquals(coldCycleBuild.artifacts, undefined);
+  assertEquals(
+    toProjectRelativeDiagnostics(coldCycleBuild.diagnostics, tempDirectory),
+    expectedCycleDiagnostics,
+  );
+  assert(coldCycleBuild.output.includes('Project reference cycle detected'), coldCycleBuild.output);
+  assertEquals(await pathExists(coldOutDir), false);
+  await restoreBuildCaches(staleCacheBackups);
+
+  const warmCycleBuild = await withCapturedTimingLogsAsync(async (logs) => {
+    const result = await buildProject({
+      buildReferences: true,
+      outDir,
+      projectPath,
+      workingDirectory: tempDirectory,
+    });
+    assert(
+      logs.some((line) => line.includes('[soundscript:checker] project.build.references.total ')),
+      logs.join('\n'),
+    );
+    assert(
+      !logs.some((line) => line.includes('[soundscript:checker] project.build.cache.read ')),
+      logs.join('\n'),
+    );
+    return result;
+  });
+  assertEquals(warmCycleBuild.exitCode, coldCycleBuild.exitCode, warmCycleBuild.output);
+  assertEquals(warmCycleBuild.artifacts, undefined);
+  assertEquals(
+    toProjectRelativeDiagnostics(warmCycleBuild.diagnostics, tempDirectory),
+    expectedCycleDiagnostics,
+  );
+  assertEquals(await collectLiveRecursiveArtifacts(), warmSuccessArtifacts);
+  assertEquals(await pathExists(join(tempDirectory, 'lib-b/dist')), false);
+});
+
+Deno.test('red-team: recursive build diamond graph removal drops stale branch', async () => {
+  const createPackageJson = (name: string): string =>
+    `${
+      JSON.stringify(
+        {
+          name,
+          version: '1.0.0',
+          type: 'module',
+          soundscript: {
+            version: 1,
+            exports: {
+              '.': { source: './src/index.sts' },
+            },
+          },
+        },
+        null,
+        2,
+      )
+    }\n`;
+  const createReferencedBuildTsconfig = (references: readonly { path: string }[]): string =>
+    createSoundscriptProjectReferenceTsconfig({
+      composite: true,
+      declaration: true,
+      references,
+    });
+  const tempDirectory = await createTempProject([
+    {
+      path: 'app/package.json',
+      contents: createPackageJson('red-team-build-removal-app'),
+    },
+    {
+      path: 'app/tsconfig.json',
+      contents: createSoundscriptProjectReferenceTsconfig({
+        references: [{ path: '../mid-a' }, { path: '../mid-b' }],
+      }),
+    },
+    {
+      path: 'app/src/index.sts',
+      contents: [
+        'import { aValue } from "../../mid-a/src/index";',
+        'import { bValue } from "../../mid-b/src/index";',
+        '',
+        'export const exactA: string = aValue;',
+        'export const exactB: string = bValue;',
+        '',
+      ].join('\n'),
+    },
+    {
+      path: 'mid-a/package.json',
+      contents: createPackageJson('red-team-build-removal-mid-a'),
+    },
+    {
+      path: 'mid-a/tsconfig.json',
+      contents: createReferencedBuildTsconfig([{ path: '../lib-a' }]),
+    },
+    {
+      path: 'mid-a/src/index.sts',
+      contents: 'export const aValue: string = "a";\n',
+    },
+    {
+      path: 'mid-b/package.json',
+      contents: createPackageJson('red-team-build-removal-mid-b'),
+    },
+    {
+      path: 'mid-b/tsconfig.json',
+      contents: createReferencedBuildTsconfig([{ path: '../lib-a' }]),
+    },
+    {
+      path: 'mid-b/src/index.sts',
+      contents: 'export const bValue: string = "b";\n',
+    },
+    {
+      path: 'lib-a/package.json',
+      contents: createPackageJson('red-team-build-removal-lib-a'),
+    },
+    {
+      path: 'lib-a/tsconfig.json',
+      contents: createReferencedBuildTsconfig([]),
+    },
+    {
+      path: 'lib-a/src/index.sts',
+      contents: 'export const value: string = "lib-a";\n',
+    },
+  ]);
+  const projectPath = join(tempDirectory, 'app/tsconfig.json');
+  const projectPaths = [
+    ['app', projectPath],
+    ['mid-a', join(tempDirectory, 'mid-a/tsconfig.json')],
+    ['mid-b', join(tempDirectory, 'mid-b/tsconfig.json')],
+    ['lib-a', join(tempDirectory, 'lib-a/tsconfig.json')],
+  ] as const;
+  const outDir = join(tempDirectory, 'app/dist');
+  const coldOutDir = join(tempDirectory, 'app/dist-cold-removal');
+  const collectReachableArtifacts = async (
+    outDirName: 'dist' | 'dist-cold-removal',
+  ): Promise<Readonly<Record<string, Readonly<Record<string, string>>>>> => ({
+    app: await collectFileContents(join(tempDirectory, 'app', outDirName)),
+    'mid-a': await collectFileContents(join(tempDirectory, 'mid-a', outDirName)),
+    'mid-b': await collectFileContents(join(tempDirectory, 'mid-b', outDirName)),
+  });
+  const relativeEmittedFiles = (files: readonly string[]): readonly string[] =>
+    files.map((file) => relative(tempDirectory, file).replaceAll('\\', '/')).sort();
+  const removeBuildCaches = async (): Promise<void> => {
+    await Promise.all(
+      projectPaths.map(([, path]) =>
+        Deno.remove(resolveCheckerCacheDirectory(path), { recursive: true }).catch(() => undefined)
+      ),
+    );
+  };
+  const backupBuildCaches = async (): Promise<Map<string, string>> => {
+    const staleCacheBackups = new Map<string, string>();
+    for (const [label, path] of projectPaths) {
+      const cacheDirectory = resolveCheckerCacheDirectory(path);
+      const backupDirectory = join(tempDirectory, `.stale-removal-cache-${label}`);
+      try {
+        await Deno.rename(cacheDirectory, backupDirectory);
+        staleCacheBackups.set(cacheDirectory, backupDirectory);
+      } catch {
+        // Every project is referenced during the priming build, but tolerate missing cache dirs.
+      }
+    }
+    return staleCacheBackups;
+  };
+  const restoreBuildCaches = async (staleCacheBackups: Map<string, string>): Promise<void> => {
+    await removeBuildCaches();
+    for (const [cacheDirectory, backupDirectory] of staleCacheBackups) {
+      await Deno.mkdir(dirname(cacheDirectory), { recursive: true });
+      await Deno.rename(backupDirectory, cacheDirectory);
+    }
+  };
+
+  const firstBuild = await buildProject({
+    buildReferences: true,
+    outDir,
+    projectPath,
+    workingDirectory: tempDirectory,
+  });
+  assertEquals(firstBuild.exitCode, 0, firstBuild.output);
+  assert(
+    relativeEmittedFiles(firstBuild.artifacts?.emittedFiles ?? []).includes(
+      'lib-a/dist/package.json',
+    ),
+  );
+  const staleCacheBackups = await backupBuildCaches();
+  await writeProjectFile(tempDirectory, 'mid-a/tsconfig.json', createReferencedBuildTsconfig([]));
+  await writeProjectFile(tempDirectory, 'mid-b/tsconfig.json', createReferencedBuildTsconfig([]));
+  await writeProjectFile(
+    tempDirectory,
+    'lib-a/src/index.sts',
+    'export const poison: string = 1;\n',
+  );
+  await writeProjectFile(tempDirectory, 'lib-a/dist/stale.txt', 'stale unreferenced output\n');
+  await removeBuildCaches();
+
+  const coldBuild = await buildProject({
+    buildReferences: true,
+    outDir: coldOutDir,
+    projectPath,
+    workingDirectory: tempDirectory,
+  });
+  assertEquals(coldBuild.exitCode, 0, coldBuild.output);
+  const coldArtifacts = await collectReachableArtifacts('dist-cold-removal');
+  const coldEmittedFiles = relativeEmittedFiles(coldBuild.artifacts?.emittedFiles ?? []);
+  assert(!coldEmittedFiles.some((file) => file.startsWith('lib-a/')), coldEmittedFiles.join('\n'));
+  await restoreBuildCaches(staleCacheBackups);
+
+  const warmBuild = await withCapturedTimingLogsAsync(async (logs) => {
+    const result = await buildProject({
+      buildReferences: true,
+      outDir,
+      projectPath,
+      workingDirectory: tempDirectory,
+    });
+    assert(
+      logs.some((line) => line.includes('[soundscript:checker] project.build.references.total ')),
+      logs.join('\n'),
+    );
+    assert(
+      !logs.some((line) =>
+        line.includes(join(tempDirectory, 'lib-a/tsconfig.json')) &&
+        (line.includes('[soundscript:checker] project.build.cache.read ') ||
+          line.includes('[soundscript:checker] project.build.analysis '))
+      ),
+      logs.join('\n'),
+    );
+    return result;
+  });
+  assertEquals(warmBuild.exitCode, coldBuild.exitCode, warmBuild.output);
+  assertEquals(await collectReachableArtifacts('dist'), coldArtifacts);
+  const warmEmittedFiles = relativeEmittedFiles(warmBuild.artifacts?.emittedFiles ?? []);
+  assert(!warmEmittedFiles.some((file) => file.startsWith('lib-a/')), warmEmittedFiles.join('\n'));
+  assertEquals(await pathExists(join(tempDirectory, 'lib-a/dist/stale.txt')), true);
+});
+
 Deno.test('red-team: incremental session rejects stale referenced project source reuse', async () => {
   const tempDirectory = await createTempProject([
     {
@@ -1671,6 +2077,145 @@ Deno.test('red-team: persistent checker cache invalidates macro module edits tha
     toProjectRelativeDiagnostics(cachedResult.diagnostics, tempDirectory),
     toProjectRelativeDiagnostics(coldResult.diagnostics, tempDirectory),
   );
+});
+
+Deno.test('red-team: macro output drift matches file-scoped and incremental analysis', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: createSoundscriptTsconfig(['src/**/*.sts']),
+    },
+    {
+      path: 'src/macros.macro.sts',
+      contents: [
+        "import 'sts:macros';",
+        "import { helperExpression } from './helper.macro';",
+        '',
+        '// #[macro(call)]',
+        'export function Foo() {',
+        '  return {',
+        '    expand(ctx: any) {',
+        '      return ctx.output.expr(ctx.quote.expr`${helperExpression}`);',
+        '    },',
+        '  };',
+        '}',
+        '',
+      ].join('\n'),
+    },
+    {
+      path: 'src/helper.macro.sts',
+      contents: 'export const helperExpression = "1";\n',
+    },
+    {
+      path: 'src/demo.sts',
+      contents: [
+        "import { Foo } from './macros.macro';",
+        'export const value: number = Foo();',
+        '',
+      ].join('\n'),
+    },
+  ]);
+  const projectPath = join(tempDirectory, 'tsconfig.json');
+  const demoPath = join(tempDirectory, 'src/demo.sts');
+  const cacheRoot = await Deno.makeTempDir({ prefix: 'soundscript-red-team-cache-' });
+  const baseOptions = { projectPath, workingDirectory: tempDirectory };
+  const cachedOptions = { ...baseOptions, cacheDir: cacheRoot };
+  const session = new IncrementalProjectSession();
+
+  const initialPreparedProject = prepareProjectAnalysis(baseOptions);
+  try {
+    session.prepare(baseOptions);
+    assertEquals(analyzePreparedProject(initialPreparedProject).diagnostics, []);
+    assertEquals(analyzePreparedProjectForFile(initialPreparedProject, demoPath).diagnostics, []);
+    assertEquals(session.analyzeProject().diagnostics, []);
+    assertEquals(runProgram(cachedOptions).diagnostics, []);
+
+    const warmUnchangedResult = withCapturedTimingLogs((logs) => {
+      const result = runProgram(cachedOptions);
+      assert(
+        logs.some((line) => line.includes('[soundscript:checker] project.cache.read ')),
+        logs.join('\n'),
+      );
+      assert(
+        !logs.some((line) => line.includes('[soundscript:checker] project.cache.incremental ')),
+        logs.join('\n'),
+      );
+      return result;
+    });
+    assertEquals(warmUnchangedResult.diagnostics, []);
+
+    await writeProjectFile(
+      tempDirectory,
+      'src/helper.macro.sts',
+      'export const helperExpression = \'"wrong"\';\n',
+    );
+
+    const coldPreparedProject = prepareProjectAnalysis(baseOptions);
+    const coldFullResult = analyzePreparedProject(coldPreparedProject);
+    const coldFileResult = analyzePreparedProjectForFile(coldPreparedProject, demoPath);
+    const reusedPreparedProject = prepareProjectAnalysis(baseOptions, initialPreparedProject);
+    const reusedFullResult = analyzePreparedProject(reusedPreparedProject);
+    const reusedFileResult = analyzePreparedProjectForFile(reusedPreparedProject, demoPath);
+    session.prepare(baseOptions);
+    const sessionResult = session.analyzeProject();
+    const coldCachedResult = runProgram({
+      ...baseOptions,
+      cacheDir: await Deno.makeTempDir({ prefix: 'soundscript-red-team-cache-' }),
+    });
+    const cachedResult = withCapturedTimingLogs((logs) => {
+      const result = runProgram(cachedOptions);
+      assert(
+        logs.some((line) => line.includes('[soundscript:checker] project.cache.read ')),
+        logs.join('\n'),
+      );
+      assert(
+        logs.some((line) => line.includes('[soundscript:checker] project.prepareProjectAnalysis ')),
+        logs.join('\n'),
+      );
+      return result;
+    });
+    try {
+      const expectedDiagnostics: readonly (readonly [string, string])[] = [
+        ['TS2322', 'src/demo.sts'],
+      ];
+      assertEquals(
+        toProjectRelativeDiagnostics(coldFullResult.diagnostics, tempDirectory),
+        expectedDiagnostics,
+      );
+      assert(
+        coldCachedResult.output.includes("Type 'string' is not assignable to type 'number'."),
+        coldCachedResult.output,
+      );
+      assertEquals(
+        toProjectRelativeDiagnostics(coldFileResult.diagnostics, tempDirectory),
+        expectedDiagnostics,
+      );
+      assertEquals(
+        toProjectRelativeDiagnostics(reusedFullResult.diagnostics, tempDirectory),
+        expectedDiagnostics,
+      );
+      assertEquals(
+        toProjectRelativeDiagnostics(reusedFileResult.diagnostics, tempDirectory),
+        expectedDiagnostics,
+      );
+      assertEquals(
+        toProjectRelativeDiagnostics(sessionResult.diagnostics, tempDirectory),
+        expectedDiagnostics,
+      );
+      assertFreshAndCachedDiagnosticsMatch(
+        cachedResult.diagnostics,
+        coldCachedResult.diagnostics,
+        tempDirectory,
+      );
+      assertEquals(cachedResult.exitCode, coldCachedResult.exitCode, cachedResult.output);
+    } finally {
+      disposePreparedAnalysisProject(coldPreparedProject);
+      disposePreparedAnalysisProject(reusedPreparedProject, initialPreparedProject);
+    }
+  } finally {
+    session.dispose();
+    disposePreparedAnalysisProject(initialPreparedProject);
+  }
 });
 
 Deno.test('red-team: persistent checker cache invalidates transitive macro helper host edits', async () => {
@@ -7916,6 +8461,295 @@ Deno.test('red-team: package build output preserves package-to-package Node impo
     ),
     appAfterPublishedSourceCorruption.output,
   );
+});
+
+Deno.test('red-team: package build output preserves diamond Node imports', async () => {
+  const createPackageJson = (
+    name: string,
+    dependencies: Record<string, string> = {},
+  ): string =>
+    `${
+      JSON.stringify(
+        {
+          name,
+          version: '1.0.0',
+          type: 'module',
+          ...(Object.keys(dependencies).length > 0 ? { dependencies } : {}),
+          soundscript: {
+            version: 1,
+            exports: {
+              '.': { source: './src/index.sts' },
+            },
+          },
+        },
+        null,
+        2,
+      )
+    }\n`;
+  const tempDirectory = await createTempProject([
+    {
+      path: 'packages/leaf/package.json',
+      contents: createPackageJson('red-team-diamond-leaf'),
+    },
+    {
+      path: 'packages/leaf/tsconfig.json',
+      contents: createSoundscriptTsconfig(['src/**/*.sts']),
+    },
+    {
+      path: 'packages/leaf/src/index.sts',
+      contents: 'export const leaf = "L1";\n',
+    },
+    {
+      path: 'packages/mid-a/package.json',
+      contents: createPackageJson('red-team-diamond-mid-a', {
+        'red-team-diamond-leaf': '1.0.0',
+      }),
+    },
+    {
+      path: 'packages/mid-a/tsconfig.json',
+      contents: createSoundscriptTsconfig(['src/**/*.sts']),
+    },
+    {
+      path: 'packages/mid-a/src/index.sts',
+      contents: [
+        'import { leaf } from "red-team-diamond-leaf";',
+        '',
+        'export const a = "A:" + leaf;',
+        '',
+      ].join('\n'),
+    },
+    {
+      path: 'packages/mid-b/package.json',
+      contents: createPackageJson('red-team-diamond-mid-b', {
+        'red-team-diamond-leaf': '1.0.0',
+      }),
+    },
+    {
+      path: 'packages/mid-b/tsconfig.json',
+      contents: createSoundscriptTsconfig(['src/**/*.sts']),
+    },
+    {
+      path: 'packages/mid-b/src/index.sts',
+      contents: [
+        'import { leaf } from "red-team-diamond-leaf";',
+        '',
+        'export const b = "B:" + leaf;',
+        '',
+      ].join('\n'),
+    },
+    {
+      path: 'packages/app/package.json',
+      contents: createPackageJson('red-team-diamond-app', {
+        'red-team-diamond-mid-a': '1.0.0',
+        'red-team-diamond-mid-b': '1.0.0',
+      }),
+    },
+    {
+      path: 'packages/app/tsconfig.json',
+      contents: createSoundscriptTsconfig(['src/**/*.sts']),
+    },
+    {
+      path: 'packages/app/src/index.sts',
+      contents: [
+        'import { a } from "red-team-diamond-mid-a";',
+        'import { b } from "red-team-diamond-mid-b";',
+        '',
+        'export const combined = a + "|" + b;',
+        '',
+      ].join('\n'),
+    },
+  ]);
+  const packages = {
+    app: {
+      name: 'red-team-diamond-app',
+      root: join(tempDirectory, 'packages/app'),
+    },
+    leaf: {
+      name: 'red-team-diamond-leaf',
+      root: join(tempDirectory, 'packages/leaf'),
+    },
+    'mid-a': {
+      name: 'red-team-diamond-mid-a',
+      root: join(tempDirectory, 'packages/mid-a'),
+    },
+    'mid-b': {
+      name: 'red-team-diamond-mid-b',
+      root: join(tempDirectory, 'packages/mid-b'),
+    },
+  } as const;
+  const projectPath = (name: keyof typeof packages): string =>
+    join(packages[name].root, 'tsconfig.json');
+  const outDir = (name: keyof typeof packages): string => join(packages[name].root, 'dist');
+  const linkPackage = async (
+    consumer: keyof typeof packages,
+    producer: keyof typeof packages,
+  ): Promise<void> => {
+    const nodeModules = join(packages[consumer].root, 'node_modules');
+    await Deno.mkdir(nodeModules, { recursive: true });
+    await Deno.symlink(outDir(producer), join(nodeModules, packages[producer].name), {
+      type: 'dir',
+    });
+  };
+  const buildPackage = async (name: keyof typeof packages) => {
+    const result = await buildProject({
+      outDir: outDir(name),
+      projectPath: projectPath(name),
+      workingDirectory: packages[name].root,
+    });
+    assertEquals(result.exitCode, 0, result.output);
+    return result;
+  };
+  const warmBuildPackage = async (name: keyof typeof packages) => {
+    const result = await withCapturedTimingLogsAsync(async (logs) => {
+      const buildResult = await buildProject({
+        outDir: outDir(name),
+        projectPath: projectPath(name),
+        workingDirectory: packages[name].root,
+      });
+      assert(
+        logs.some((line) =>
+          line.includes('[soundscript:checker] project.build.cache.read ') &&
+          line.includes('status=hit')
+        ),
+        logs.join('\n'),
+      );
+      assert(
+        !logs.some((line) => line.includes('[soundscript:checker] project.build.analysis ')),
+        logs.join('\n'),
+      );
+      return buildResult;
+    });
+    assertEquals(result.exitCode, 0, result.output);
+    return result;
+  };
+  const readTrackedFiles = async (
+    name: keyof typeof packages,
+  ): Promise<ReadonlySet<string>> => {
+    const manifest = JSON.parse(
+      await Deno.readTextFile(
+        join(resolveCheckerCacheDirectory(projectPath(name)), 'build-manifest.json'),
+      ),
+    ) as { trackedFiles: Record<string, string> };
+    return new Set(
+      await Promise.all(
+        Object.keys(manifest.trackedFiles).map(async (path) => {
+          try {
+            return await Deno.realPath(path);
+          } catch {
+            return path;
+          }
+        }),
+      ),
+    );
+  };
+  const assertNoSourceRuntimeSpecifier = async (
+    name: keyof typeof packages,
+    expectedImports: readonly string[],
+  ): Promise<void> => {
+    const implementation = await Deno.readTextFile(join(outDir(name), 'esm/src/index.js'));
+    for (const expectedImport of expectedImports) {
+      assert(implementation.includes(`"${expectedImport}"`), implementation);
+    }
+    assert(!implementation.includes('.sts'), implementation);
+    assert(!implementation.includes('soundscript/src'), implementation);
+  };
+  const installRoot = await Deno.makeTempDir({ prefix: 'soundscript-red-team-install-' });
+  const assertInstalledCombined = async (expected: string): Promise<void> => {
+    const smoke = await new Deno.Command('node', {
+      args: [
+        '--preserve-symlinks',
+        '--input-type=module',
+        '-e',
+        [
+          'const mod = await import("red-team-diamond-app");',
+          `if (mod.combined !== ${JSON.stringify(expected)}) {`,
+          '  throw new Error(`unexpected combined value ${mod.combined}`);',
+          '}',
+        ].join('\n'),
+      ],
+      cwd: installRoot,
+      stderr: 'piped',
+      stdout: 'piped',
+    }).output();
+    assertEquals(
+      smoke.code,
+      0,
+      new TextDecoder().decode(smoke.stderr) || new TextDecoder().decode(smoke.stdout),
+    );
+  };
+
+  await buildPackage('leaf');
+  await linkPackage('mid-a', 'leaf');
+  await linkPackage('mid-b', 'leaf');
+  await buildPackage('mid-a');
+  await buildPackage('mid-b');
+  await linkPackage('app', 'leaf');
+  await linkPackage('app', 'mid-a');
+  await linkPackage('app', 'mid-b');
+  await buildPackage('app');
+
+  await assertNoSourceRuntimeSpecifier('mid-a', ['red-team-diamond-leaf']);
+  await assertNoSourceRuntimeSpecifier('mid-b', ['red-team-diamond-leaf']);
+  await assertNoSourceRuntimeSpecifier('app', [
+    'red-team-diamond-mid-a',
+    'red-team-diamond-mid-b',
+  ]);
+  assertEquals(
+    JSON.parse(await Deno.readTextFile(join(outDir('leaf'), 'package.json'))).soundscript
+      .exports['.'],
+    { source: './soundscript/src/index.sts' },
+  );
+
+  const midATrackedFiles = await readTrackedFiles('mid-a');
+  const midBTrackedFiles = await readTrackedFiles('mid-b');
+  const appTrackedFiles = await readTrackedFiles('app');
+  assert(midATrackedFiles.has(await Deno.realPath(join(outDir('leaf'), 'package.json'))));
+  assert(
+    midATrackedFiles.has(await Deno.realPath(join(outDir('leaf'), 'soundscript/src/index.sts'))),
+  );
+  assert(midBTrackedFiles.has(await Deno.realPath(join(outDir('leaf'), 'package.json'))));
+  assert(
+    midBTrackedFiles.has(await Deno.realPath(join(outDir('leaf'), 'soundscript/src/index.sts'))),
+  );
+  assert(appTrackedFiles.has(await Deno.realPath(join(outDir('mid-a'), 'package.json'))));
+  assert(
+    appTrackedFiles.has(await Deno.realPath(join(outDir('mid-a'), 'soundscript/src/index.sts'))),
+  );
+  assert(appTrackedFiles.has(await Deno.realPath(join(outDir('mid-b'), 'package.json'))));
+  assert(
+    appTrackedFiles.has(await Deno.realPath(join(outDir('mid-b'), 'soundscript/src/index.sts'))),
+  );
+
+  await Deno.mkdir(join(installRoot, 'node_modules'), { recursive: true });
+  await Deno.symlink(outDir('app'), join(installRoot, 'node_modules/red-team-diamond-app'), {
+    type: 'dir',
+  });
+  await Deno.symlink(outDir('mid-a'), join(installRoot, 'node_modules/red-team-diamond-mid-a'), {
+    type: 'dir',
+  });
+  await Deno.symlink(outDir('mid-b'), join(installRoot, 'node_modules/red-team-diamond-mid-b'), {
+    type: 'dir',
+  });
+  await Deno.symlink(outDir('leaf'), join(installRoot, 'node_modules/red-team-diamond-leaf'), {
+    type: 'dir',
+  });
+  await assertInstalledCombined('A:L1|B:L1');
+
+  const firstArtifacts = {
+    app: await collectFileContents(outDir('app')),
+    leaf: await collectFileContents(outDir('leaf')),
+    'mid-a': await collectFileContents(outDir('mid-a')),
+    'mid-b': await collectFileContents(outDir('mid-b')),
+  };
+  await warmBuildPackage('leaf');
+  await warmBuildPackage('mid-a');
+  await warmBuildPackage('mid-b');
+  await warmBuildPackage('app');
+  assertEquals(await collectFileContents(outDir('leaf')), firstArtifacts.leaf);
+  assertEquals(await collectFileContents(outDir('mid-a')), firstArtifacts['mid-a']);
+  assertEquals(await collectFileContents(outDir('mid-b')), firstArtifacts['mid-b']);
+  assertEquals(await collectFileContents(outDir('app')), firstArtifacts.app);
+  await assertInstalledCombined('A:L1|B:L1');
 });
 
 Deno.test('red-team: cached effect summaries track member-path forwarded callback drift', async () => {
