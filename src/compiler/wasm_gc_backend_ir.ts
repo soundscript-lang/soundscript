@@ -129,6 +129,8 @@ export interface WasmGcDiagnosticPlanIR {
 export interface WasmGcModulePlanIR {
   kind: 'wasm_gc_module_plan';
   capabilities: BackendCapabilities;
+  stringLiterals: readonly string[];
+  stringLiteralCodeUnits: readonly (readonly number[])[];
   typePlans: readonly WasmGcTypePlanIR[];
   helperPlans: readonly WasmGcHelperPlanIR[];
   functionPlans: readonly WasmGcFunctionPlanIR[];
@@ -198,6 +200,7 @@ function wasmTypeForCompilerValueType(valueType: string): string {
       return valueType;
     case 'string_ref':
     case 'owned_string_ref':
+      return '(ref null $string_runtime)';
     case 'symbol_ref':
     case 'bigint_ref':
       return 'externref';
@@ -710,6 +713,8 @@ export function createWasmGcModulePlan(
   return {
     kind: 'wasm_gc_module_plan',
     capabilities: WASM_GC_BACKEND_CAPABILITIES,
+    stringLiterals: semantic.stringLiterals,
+    stringLiteralCodeUnits: semantic.stringLiteralCodeUnits,
     typePlans: [
       ...families.map((family) => ({
         source: 'runtime_family' as const,

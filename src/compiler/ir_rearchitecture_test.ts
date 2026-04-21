@@ -28,6 +28,8 @@ function semanticModuleWithFamilies(
   return {
     kind: 'semantic_module',
     functions: [],
+    stringLiterals: [],
+    stringLiteralCodeUnits: [],
     typeSnapshots: [],
     boundarySurfaces: [],
     objectLayouts: [],
@@ -1002,7 +1004,7 @@ Deno.test('compiler wasm-gc emitter produces runnable primitive while control fl
   assertEquals((sumDown as (count: number) => number)(5), 15);
 });
 
-Deno.test('compiler wasm-gc emitter produces runnable string externref identity', async () => {
+Deno.test('compiler wasm-gc emitter produces runnable owned string literal length', async () => {
   const tempDirectory = await createTempProject([
     {
       path: 'tsconfig.json',
@@ -1014,15 +1016,15 @@ Deno.test('compiler wasm-gc emitter produces runnable string externref identity'
     {
       path: 'main.ts',
       contents: `
-        export function echo(text: string): string {
-          return text;
+        export function length(): number {
+          return "A😀".length;
         }
       `,
     },
   ]);
   const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
   const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
-  const echoPlan = snapshot.wasmGcPlan.functionPlans.find((func) => func.name === 'echo');
+  const lengthPlan = snapshot.wasmGcPlan.functionPlans.find((func) => func.name === 'length');
   const watPath = join(tempDirectory, 'wasm-gc-shadow-string.wat');
   const wasmPath = join(tempDirectory, 'wasm-gc-shadow-string.wasm');
 
@@ -1030,11 +1032,14 @@ Deno.test('compiler wasm-gc emitter produces runnable string externref identity'
     snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
     ['string'],
   );
-  assertEquals(echoPlan?.bodyStatus, 'emittable');
+  assertEquals(lengthPlan?.bodyStatus, 'emittable');
   await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
   const wat = await Deno.readTextFile(watPath);
-  assertEquals(wat.includes('(param $text externref)'), true);
-  assertEquals(wat.includes('(result externref)'), true);
+  assertEquals(wat.includes('(type $string_code_unit_array_runtime (array (mut i32)))'), true);
+  assertEquals(wat.includes('(type $string_runtime (struct'), true);
+  assertEquals(wat.includes('array.new_fixed $string_code_unit_array_runtime 3'), true);
+  assertEquals(wat.includes('(param $text externref)'), false);
+  assertEquals(wat.includes('(result externref)'), false);
   const result = await new Deno.Command('wasm-tools', {
     args: ['parse', watPath, '-o', wasmPath],
     stdout: 'piped',
@@ -1046,10 +1051,9 @@ Deno.test('compiler wasm-gc emitter produces runnable string externref identity'
 
   const wasm = await Deno.readFile(wasmPath);
   const instance = await WebAssembly.instantiate(wasm);
-  const echo = instance.instance.exports['main.ts:echo'];
-  assertEquals(typeof echo, 'function');
-  const value = { text: 'host string payload' };
-  assertEquals((echo as (text: unknown) => unknown)(value), value);
+  const length = instance.instance.exports['main.ts:length'];
+  assertEquals(typeof length, 'function');
+  assertEquals((length as () => number)(), 3);
 });
 
 Deno.test('compiler wasm-gc emitter produces runnable owned number array reads', async () => {
@@ -1267,10 +1271,10 @@ Deno.test('compiler wasm-gc emitter produces runnable owned string array reads a
     {
       path: 'main.ts',
       contents: `
-        export function update(value: string, fallback: string): string {
-          const values = [fallback, fallback];
-          values[1] = value;
-          return values[1];
+        export function update(): number {
+          const values = ["fallback", "fallback"];
+          values[1] = "value";
+          return values[1].length;
         }
       `,
     },
@@ -1288,9 +1292,13 @@ Deno.test('compiler wasm-gc emitter produces runnable owned string array reads a
   assertEquals(updatePlan?.bodyStatus, 'emittable');
   await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
   const wat = await Deno.readTextFile(watPath);
-  assertEquals(wat.includes('(type $string_array_runtime (array (mut externref)))'), true);
+  assertEquals(
+    wat.includes('(type $string_array_runtime (array (mut (ref null $string_runtime))))'),
+    true,
+  );
   assertEquals(wat.includes('array.set $string_array_runtime'), true);
   assertEquals(wat.includes('array.get $string_array_runtime'), true);
+  assertEquals(wat.includes('struct.get $string_runtime $code_units'), true);
   assertEquals(wat.includes('__string_eq'), false);
   const result = await new Deno.Command('wasm-tools', {
     args: ['parse', watPath, '-o', wasmPath],
@@ -1305,9 +1313,7 @@ Deno.test('compiler wasm-gc emitter produces runnable owned string array reads a
   const instance = await WebAssembly.instantiate(wasm);
   const update = instance.instance.exports['main.ts:update'];
   assertEquals(typeof update, 'function');
-  const value = { text: 'value' };
-  const fallback = { text: 'fallback' };
-  assertEquals((update as (value: unknown, fallback: unknown) => unknown)(value, fallback), value);
+  assertEquals((update as () => number)(), 5);
 });
 
 Deno.test('compiler wasm-gc emitter produces runnable owned tagged union array reads', async () => {
@@ -1322,8 +1328,8 @@ Deno.test('compiler wasm-gc emitter produces runnable owned tagged union array r
     {
       path: 'main.ts',
       contents: `
-        export function pick(index: number, value: string): number {
-          const values: (string | number)[] = [value, 6];
+        export function pick(index: number): number {
+          const values: (string | number)[] = ["value", 6];
           const result = values[index];
           if (typeof result === "string") {
             return 2;
@@ -1365,9 +1371,8 @@ Deno.test('compiler wasm-gc emitter produces runnable owned tagged union array r
   const instance = await WebAssembly.instantiate(wasm);
   const pick = instance.instance.exports['main.ts:pick'];
   assertEquals(typeof pick, 'function');
-  const text = { text: 'value' };
-  assertEquals((pick as (index: number, value: unknown) => number)(0, text), 2);
-  assertEquals((pick as (index: number, value: unknown) => number)(1, text), 6);
+  assertEquals((pick as (index: number) => number)(0), 2);
+  assertEquals((pick as (index: number) => number)(1), 6);
 });
 
 Deno.test('compiler wasm-gc emitter produces runnable owned tagged union array writes', async () => {
@@ -1382,10 +1387,10 @@ Deno.test('compiler wasm-gc emitter produces runnable owned tagged union array w
     {
       path: 'main.ts',
       contents: `
-        export function update(mode: number, value: string): number {
+        export function update(mode: number): number {
           const values: (string | number)[] = [1, 2];
           if (mode === 0) {
-            values[1] = value;
+            values[1] = "value";
           } else {
             values[1] = 7;
           }
@@ -1432,9 +1437,8 @@ Deno.test('compiler wasm-gc emitter produces runnable owned tagged union array w
   const instance = await WebAssembly.instantiate(wasm);
   const update = instance.instance.exports['main.ts:update'];
   assertEquals(typeof update, 'function');
-  const text = { text: 'value' };
-  assertEquals((update as (mode: number, value: unknown) => number)(0, text), 3);
-  assertEquals((update as (mode: number, value: unknown) => number)(1, text), 7);
+  assertEquals((update as (mode: number) => number)(0), 3);
+  assertEquals((update as (mode: number) => number)(1), 7);
 });
 
 Deno.test('compiler wasm-gc emitter produces runnable owned heap array nested reads', async () => {
@@ -1552,8 +1556,8 @@ Deno.test('compiler wasm-gc emitter produces runnable multidimensional tagged un
     {
       path: 'main.ts',
       contents: `
-        export function pick(row: number, column: number, value: string): number {
-          const rows: (string | number)[][] = [[value, 1], [2, value]];
+        export function pick(row: number, column: number): number {
+          const rows: (string | number)[][] = [["value", 1], [2, "value"]];
           const result = rows[row][column];
           if (typeof result === "string") {
             return 5;
@@ -1592,11 +1596,10 @@ Deno.test('compiler wasm-gc emitter produces runnable multidimensional tagged un
   const instance = await WebAssembly.instantiate(wasm);
   const pick = instance.instance.exports['main.ts:pick'];
   assertEquals(typeof pick, 'function');
-  const text = { text: 'value' };
-  assertEquals((pick as (row: number, column: number, value: unknown) => number)(0, 0, text), 5);
-  assertEquals((pick as (row: number, column: number, value: unknown) => number)(0, 1, text), 1);
-  assertEquals((pick as (row: number, column: number, value: unknown) => number)(1, 0, text), 2);
-  assertEquals((pick as (row: number, column: number, value: unknown) => number)(1, 1, text), 5);
+  assertEquals((pick as (row: number, column: number) => number)(0, 0), 5);
+  assertEquals((pick as (row: number, column: number) => number)(0, 1), 1);
+  assertEquals((pick as (row: number, column: number) => number)(1, 0), 2);
+  assertEquals((pick as (row: number, column: number) => number)(1, 1), 5);
 });
 
 Deno.test('compiler wasm-gc emitter produces runnable owned heap array writes', async () => {
@@ -1940,7 +1943,8 @@ Deno.test('compiler wasm-gc emitter produces runnable dynamic object computed pr
     {
       path: 'main.ts',
       contents: `
-        export function read(key: string): number {
+        export function read(flag: boolean): number {
+          const key = flag ? "value" : "other";
           const record: Record<string, number> = { [key]: 4 };
           return record[key];
         }
@@ -1980,7 +1984,7 @@ Deno.test('compiler wasm-gc emitter produces runnable dynamic object computed pr
   const instance = await WebAssembly.instantiate(wasm);
   const read = instance.instance.exports['main.ts:read'];
   assertEquals(typeof read, 'function');
-  assertEquals((read as (key: unknown) => number)('value'), 4);
+  assertEquals((read as (flag: number) => number)(1), 4);
 });
 
 Deno.test('compiler wasm-gc emitter produces runnable dynamic object multi-key reads', async () => {
@@ -1995,7 +1999,10 @@ Deno.test('compiler wasm-gc emitter produces runnable dynamic object multi-key r
     {
       path: 'main.ts',
       contents: `
-        export function read(leftKey: string, rightKey: string): number {
+        export function read(): number {
+          const keys = ["left", "right"];
+          const leftKey = keys[0];
+          const rightKey = keys[1];
           const record: Record<string, number> = { [leftKey]: 2, [rightKey]: 5 };
           return record[rightKey];
         }
@@ -2010,14 +2017,14 @@ Deno.test('compiler wasm-gc emitter produces runnable dynamic object multi-key r
 
   assertEquals(
     snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
-    ['dynamic_object', 'finite_union', 'string'],
+    ['array', 'dynamic_object', 'finite_union', 'string'],
   );
   assertEquals(readPlan?.bodyStatus, 'emittable');
   await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
   const wat = await Deno.readTextFile(watPath);
   assertEquals(wat.includes('(type $dynamic_object_layout_object_dynamic_2'), true);
   assertEquals(
-    /struct\.get \$dynamic_object_layout_object_dynamic_2_[^\s]+ \$value_1/.test(wat),
+    /struct\.get \$dynamic_object_layout_object_dynamic_2_[^\s]+ \$value_\d/.test(wat),
     true,
   );
   const result = await new Deno.Command('wasm-tools', {
@@ -2033,7 +2040,7 @@ Deno.test('compiler wasm-gc emitter produces runnable dynamic object multi-key r
   const instance = await WebAssembly.instantiate(wasm);
   const read = instance.instance.exports['main.ts:read'];
   assertEquals(typeof read, 'function');
-  assertEquals((read as (leftKey: unknown, rightKey: unknown) => number)('left', 'right'), 5);
+  assertEquals((read as () => number)(), 5);
 });
 
 Deno.test('compiler wasm-gc emitter produces runnable dynamic object alias writes', async () => {
@@ -2048,7 +2055,8 @@ Deno.test('compiler wasm-gc emitter produces runnable dynamic object alias write
     {
       path: 'main.ts',
       contents: `
-        export function read(key: string): number {
+        export function read(flag: boolean): number {
+          const key = flag ? "value" : "other";
           const record: Record<string, number> = { [key]: 0 };
           const alias = record;
           alias[key] = 4;
@@ -2071,7 +2079,8 @@ Deno.test('compiler wasm-gc emitter produces runnable dynamic object alias write
   await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
   const wat = await Deno.readTextFile(watPath);
   assertEquals(
-    wat.includes('struct.set $dynamic_object_layout_object_dynamic_1_f64 $value_0'),
+    wat.includes('struct.set $dynamic_object_layout_object_dynamic') &&
+      wat.includes('$value_0'),
     true,
   );
   const result = await new Deno.Command('wasm-tools', {
@@ -2087,7 +2096,7 @@ Deno.test('compiler wasm-gc emitter produces runnable dynamic object alias write
   const instance = await WebAssembly.instantiate(wasm);
   const read = instance.instance.exports['main.ts:read'];
   assertEquals(typeof read, 'function');
-  assertEquals((read as (key: unknown) => number)('value'), 4);
+  assertEquals((read as (flag: number) => number)(1), 4);
 });
 
 Deno.test('compiler wasm-gc emitter produces runnable legacy Map set and size reads', async () => {
@@ -2279,9 +2288,9 @@ Deno.test('compiler wasm-gc emitter produces runnable legacy string-key tagged u
     {
       path: 'main.ts',
       contents: `
-        export function main(text: string): number {
+        export function main(): number {
           const map = new Map<string, string | number>();
-          map.set("left", text);
+          map.set("left", "value");
           map.set("right", 7);
           let score = map.size * 100;
           const left = map.get("left");
@@ -2332,8 +2341,7 @@ Deno.test('compiler wasm-gc emitter produces runnable legacy string-key tagged u
   const instance = await WebAssembly.instantiate(wasm);
   const main = instance.instance.exports['main.ts:main'];
   assertEquals(typeof main, 'function');
-  const text = { text: 'value' };
-  assertEquals((main as (text: unknown) => number)(text), 218);
+  assertEquals((main as () => number)(), 218);
 });
 
 Deno.test('compiler wasm-gc emitter produces runnable legacy Map values iteration after delete and clear', async () => {
@@ -2495,15 +2503,15 @@ Deno.test('compiler wasm-gc emitter produces runnable legacy number-key string M
     {
       path: 'main.ts',
       contents: `
-        export function main(value: string, fallback: string): string {
+        export function main(): number {
           const map = new Map<number, string>();
-          map.set(1, fallback);
-          map.set(2, value);
+          map.set(1, "fallback");
+          map.set(2, "value");
           const found = map.get(2);
           if (found !== undefined) {
-            return found;
+            return found.length;
           }
-          return fallback;
+          return 0;
         }
       `,
     },
@@ -2521,7 +2529,10 @@ Deno.test('compiler wasm-gc emitter produces runnable legacy number-key string M
   assertEquals(mainPlan?.bodyStatus, 'emittable');
   await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
   const wat = await Deno.readTextFile(watPath);
-  assertEquals(wat.includes('(type $string_array_runtime (array (mut externref)))'), true);
+  assertEquals(
+    wat.includes('(type $string_array_runtime (array (mut (ref null $string_runtime))))'),
+    true,
+  );
   assertEquals(
     /struct\.get \$dynamic_object_layout_object_dynamic_2_[^\s]+ \$value_1/.test(wat),
     true,
@@ -2540,9 +2551,7 @@ Deno.test('compiler wasm-gc emitter produces runnable legacy number-key string M
   const instance = await WebAssembly.instantiate(wasm);
   const main = instance.instance.exports['main.ts:main'];
   assertEquals(typeof main, 'function');
-  const value = { text: 'value' };
-  const fallback = { text: 'fallback' };
-  assertEquals((main as (value: unknown, fallback: unknown) => unknown)(value, fallback), value);
+  assertEquals((main as () => number)(), 5);
 });
 
 Deno.test('compiler wasm-gc emitter produces runnable legacy number-key boolean Map get flow', async () => {
@@ -2624,11 +2633,11 @@ Deno.test('compiler wasm-gc emitter produces runnable legacy number-key string M
     {
       path: 'main.ts',
       contents: `
-        export function main(left: string, right: string, fallback: string): string {
+        export function main(): number {
           const map = new Map<number, string>();
-          map.set(1, left);
-          map.set(2, right);
-          let result = fallback;
+          map.set(1, "left");
+          map.set(2, "right");
+          let result = "fallback";
           if (map.delete(1)) {
             const found = map.get(2);
             if (found !== undefined) {
@@ -2636,7 +2645,7 @@ Deno.test('compiler wasm-gc emitter produces runnable legacy number-key string M
             }
           }
           map.clear();
-          return result;
+          return result.length;
         }
       `,
     },
@@ -2670,17 +2679,7 @@ Deno.test('compiler wasm-gc emitter produces runnable legacy number-key string M
   const instance = await WebAssembly.instantiate(wasm);
   const main = instance.instance.exports['main.ts:main'];
   assertEquals(typeof main, 'function');
-  const left = { text: 'left' };
-  const right = { text: 'right' };
-  const fallback = { text: 'fallback' };
-  assertEquals(
-    (main as (left: unknown, right: unknown, fallback: unknown) => unknown)(
-      left,
-      right,
-      fallback,
-    ),
-    right,
-  );
+  assertEquals((main as () => number)(), 5);
 });
 
 Deno.test('compiler wasm-gc emitter produces runnable legacy number-key boolean Map delete and clear', async () => {
@@ -2758,9 +2757,9 @@ Deno.test('compiler wasm-gc emitter produces runnable legacy number-key tagged u
     {
       path: 'main.ts',
       contents: `
-        export function main(text: string): number {
+        export function main(): number {
           const map = new Map<number, string | number>();
-          map.set(1, text);
+          map.set(1, "left");
           map.set(2, 7);
           let score = map.size * 100;
           const left = map.get(1);
@@ -2815,7 +2814,7 @@ Deno.test('compiler wasm-gc emitter produces runnable legacy number-key tagged u
   const instance = await WebAssembly.instantiate(wasm);
   const main = instance.instance.exports['main.ts:main'];
   assertEquals(typeof main, 'function');
-  assertEquals((main as (text: unknown) => number)({ text: 'left' }), 218);
+  assertEquals((main as () => number)(), 218);
 });
 
 Deno.test('compiler wasm-gc emitter produces runnable legacy Set empty size reads', async () => {
@@ -2850,7 +2849,10 @@ Deno.test('compiler wasm-gc emitter produces runnable legacy Set empty size read
   assertEquals(mainPlan?.bodyStatus, 'emittable');
   await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
   const wat = await Deno.readTextFile(watPath);
-  assertEquals(wat.includes('(type $string_array_runtime (array (mut externref)))'), true);
+  assertEquals(
+    wat.includes('(type $string_array_runtime (array (mut (ref null $string_runtime))))'),
+    true,
+  );
   assertEquals(wat.includes('set_runtime'), true);
   const result = await new Deno.Command('wasm-tools', {
     args: ['parse', watPath, '-o', wasmPath],
@@ -2880,16 +2882,16 @@ Deno.test('compiler wasm-gc emitter produces runnable legacy string Set add, has
     {
       path: 'main.ts',
       contents: `
-        export function main(left: string, right: string, missing: string): number {
+        export function main(): number {
           const set = new Set<string>();
-          set.add(left);
-          set.add(left);
-          set.add(right);
+          set.add("left");
+          set.add("left");
+          set.add("right");
           let score = set.size * 10;
-          if (set.has(left)) {
+          if (set.has("left")) {
             score = score + 1;
           }
-          if (set.has(missing)) {
+          if (set.has("missing")) {
             score = score + 100;
           }
           return score;
@@ -2910,9 +2912,12 @@ Deno.test('compiler wasm-gc emitter produces runnable legacy string Set add, has
   assertEquals(mainPlan?.bodyStatus, 'emittable');
   await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
   const wat = await Deno.readTextFile(watPath);
-  assertEquals(wat.includes('(type $string_array_runtime (array (mut externref)))'), true);
+  assertEquals(
+    wat.includes('(type $string_array_runtime (array (mut (ref null $string_runtime))))'),
+    true,
+  );
   assertEquals(wat.includes('array.copy $string_array_runtime $string_array_runtime'), true);
-  assertEquals(wat.includes('(import "soundscript" "__string_eq"'), true);
+  assertEquals(wat.includes('(import "soundscript" "__string_eq"'), false);
   assertEquals(wat.includes('set_runtime'), true);
   const result = await new Deno.Command('wasm-tools', {
     args: ['parse', watPath, '-o', wasmPath],
@@ -2924,24 +2929,10 @@ Deno.test('compiler wasm-gc emitter produces runnable legacy string Set add, has
   assertEquals(result.success, true);
 
   const wasm = await Deno.readFile(wasmPath);
-  const instance = await WebAssembly.instantiate(wasm, {
-    soundscript: {
-      __string_eq: Object.is,
-    },
-  });
+  const instance = await WebAssembly.instantiate(wasm);
   const main = instance.instance.exports['main.ts:main'];
   assertEquals(typeof main, 'function');
-  const left = { text: 'left' };
-  const right = { text: 'right' };
-  const missing = { text: 'missing' };
-  assertEquals(
-    (main as (left: unknown, right: unknown, missing: unknown) => number)(
-      left,
-      right,
-      missing,
-    ),
-    21,
-  );
+  assertEquals((main as () => number)(), 21);
 });
 
 Deno.test('compiler wasm-gc emitter produces runnable legacy numeric Set add, has, and size', async () => {
@@ -3078,19 +3069,19 @@ Deno.test('compiler wasm-gc emitter produces runnable legacy string Set delete a
     {
       path: 'main.ts',
       contents: `
-        export function main(left: string, right: string): number {
+        export function main(): number {
           const set = new Set<string>();
-          set.add(left);
-          set.add(left);
-          set.add(right);
+          set.add("left");
+          set.add("left");
+          set.add("right");
           let score = set.size * 100;
-          if (set.delete(left)) {
+          if (set.delete("left")) {
             score = score + 10;
           }
-          if (set.has(left)) {
+          if (set.has("left")) {
             score = score + 1000;
           }
-          if (set.has(right)) {
+          if (set.has("right")) {
             score = score + 2;
           }
           set.clear();
@@ -3113,7 +3104,7 @@ Deno.test('compiler wasm-gc emitter produces runnable legacy string Set delete a
   await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
   const wat = await Deno.readTextFile(watPath);
   assertEquals(wat.includes('array.copy $string_array_runtime $string_array_runtime'), true);
-  assertEquals(wat.includes('(import "soundscript" "__string_eq"'), true);
+  assertEquals(wat.includes('(import "soundscript" "__string_eq"'), false);
   assertEquals(wat.includes('set_runtime'), true);
   const result = await new Deno.Command('wasm-tools', {
     args: ['parse', watPath, '-o', wasmPath],
@@ -3125,16 +3116,10 @@ Deno.test('compiler wasm-gc emitter produces runnable legacy string Set delete a
   assertEquals(result.success, true);
 
   const wasm = await Deno.readFile(wasmPath);
-  const instance = await WebAssembly.instantiate(wasm, {
-    soundscript: {
-      __string_eq: Object.is,
-    },
-  });
+  const instance = await WebAssembly.instantiate(wasm);
   const main = instance.instance.exports['main.ts:main'];
   assertEquals(typeof main, 'function');
-  const left = { text: 'left' };
-  const right = { text: 'right' };
-  assertEquals((main as (left: unknown, right: unknown) => number)(left, right), 212);
+  assertEquals((main as () => number)(), 212);
 });
 
 Deno.test('compiler wasm-gc emitter produces runnable legacy boolean Set delete and clear', async () => {
@@ -5273,18 +5258,18 @@ Deno.test('compiler wasm-gc emitter produces runnable internal mixed scalar unio
     {
       path: 'main.ts',
       contents: `
-        function maybe(mode: number, value: string): string | number | null {
+        function maybe(mode: number): string | number | null {
           if (mode === 0) {
             return null;
           }
           if (mode === 1) {
-            return value;
+            return "value";
           }
           return 7;
         }
 
-        export function main(mode: number, value: string): number {
-          const result = maybe(mode, value);
+        export function main(mode: number): number {
+          const result = maybe(mode);
           if (result === null) {
             return 0;
           }
@@ -5327,10 +5312,9 @@ Deno.test('compiler wasm-gc emitter produces runnable internal mixed scalar unio
   const instance = await WebAssembly.instantiate(wasm);
   const main = instance.instance.exports['main.ts:main'];
   assertEquals(typeof main, 'function');
-  const text = { text: 'value' };
-  assertEquals((main as (mode: number, value: unknown) => number)(0, text), 0);
-  assertEquals((main as (mode: number, value: unknown) => number)(1, text), 2);
-  assertEquals((main as (mode: number, value: unknown) => number)(2, text), 7);
+  assertEquals((main as (mode: number) => number)(0), 0);
+  assertEquals((main as (mode: number) => number)(1), 2);
+  assertEquals((main as (mode: number) => number)(2), 7);
 });
 
 Deno.test('compiler wasm-gc emitter produces runnable internal string-null unions', async () => {
@@ -5345,16 +5329,16 @@ Deno.test('compiler wasm-gc emitter produces runnable internal string-null union
     {
       path: 'main.ts',
       contents: `
-        function maybe(flag: boolean, value: string): string | null {
-          return flag ? value : null;
+        function maybe(flag: boolean): string | null {
+          return flag ? "value" : null;
         }
 
-        export function main(flag: boolean, value: string, fallback: string): string {
-          const result = maybe(flag, value);
+        export function main(flag: boolean): number {
+          const result = maybe(flag);
           if (result === null) {
-            return fallback;
+            return 0;
           }
-          return result;
+          return result.length;
         }
       `,
     },
@@ -5374,7 +5358,8 @@ Deno.test('compiler wasm-gc emitter produces runnable internal string-null union
   assertEquals(mainPlan?.bodyStatus, 'emittable');
   await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
   const wat = await Deno.readTextFile(watPath);
-  assertEquals(wat.includes('struct.get $tagged_value $extern_payload'), true);
+  assertEquals(wat.includes('struct.get $tagged_value $heap_payload'), true);
+  assertEquals(wat.includes('ref.cast (ref $string_runtime)'), true);
   const result = await new Deno.Command('wasm-tools', {
     args: ['parse', watPath, '-o', wasmPath],
     stdout: 'piped',
@@ -5388,16 +5373,8 @@ Deno.test('compiler wasm-gc emitter produces runnable internal string-null union
   const instance = await WebAssembly.instantiate(wasm);
   const main = instance.instance.exports['main.ts:main'];
   assertEquals(typeof main, 'function');
-  const value = { text: 'value' };
-  const fallback = { text: 'fallback' };
-  assertEquals(
-    (main as (flag: number, value: unknown, fallback: unknown) => unknown)(1, value, fallback),
-    value,
-  );
-  assertEquals(
-    (main as (flag: number, value: unknown, fallback: unknown) => unknown)(0, value, fallback),
-    fallback,
-  );
+  assertEquals((main as (flag: number) => number)(1), 5);
+  assertEquals((main as (flag: number) => number)(0), 0);
 });
 
 Deno.test('compiler wasm-gc emitter produces runnable internal boolean-null unions', async () => {
@@ -6357,18 +6334,18 @@ Deno.test('compiler wasm-gc emitter produces runnable internal mixed heap-scalar
     {
       path: 'main.ts',
       contents: `
-        function maybe(mode: number, value: string): number[] | string | null {
+        function maybe(mode: number): number[] | string | null {
           if (mode === 0) {
             return null;
           }
           if (mode === 1) {
-            return value;
+            return "value";
           }
           return [4, 6];
         }
 
-        export function main(mode: number, value: string): number {
-          const result = maybe(mode, value);
+        export function main(mode: number): number {
+          const result = maybe(mode);
           if (result === null) {
             return 0;
           }
@@ -6411,10 +6388,9 @@ Deno.test('compiler wasm-gc emitter produces runnable internal mixed heap-scalar
   const instance = await WebAssembly.instantiate(wasm);
   const main = instance.instance.exports['main.ts:main'];
   assertEquals(typeof main, 'function');
-  const text = { text: 'value' };
-  assertEquals((main as (mode: number, value: unknown) => number)(0, text), 0);
-  assertEquals((main as (mode: number, value: unknown) => number)(1, text), 2);
-  assertEquals((main as (mode: number, value: unknown) => number)(2, text), 6);
+  assertEquals((main as (mode: number) => number)(0), 0);
+  assertEquals((main as (mode: number) => number)(1), 2);
+  assertEquals((main as (mode: number) => number)(2), 6);
 });
 
 Deno.test('compiler wasm-gc emitter produces runnable no-capture callbacks through host imports', async () => {

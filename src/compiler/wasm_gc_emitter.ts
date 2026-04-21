@@ -147,6 +147,7 @@ function wasmTypeForCompilerValueType(valueType: string): string {
       return valueType;
     case 'string_ref':
     case 'owned_string_ref':
+      return `(ref null ${stringRuntimeTypeName()})`;
     case 'symbol_ref':
     case 'bigint_ref':
       return 'externref';
@@ -174,6 +175,14 @@ function wasmTypeForCompilerValueType(valueType: string): string {
 
 function taggedValueTypeName(): string {
   return '$tagged_value';
+}
+
+function stringCodeUnitArrayTypeName(): string {
+  return '$string_code_unit_array_runtime';
+}
+
+function stringRuntimeTypeName(): string {
+  return '$string_runtime';
 }
 
 function wasmTypeForHostFunctionParam(
@@ -248,6 +257,7 @@ interface FunctionRenderContext {
   dynamicObjectPropertyOrigins: ReadonlyMap<string, DynamicObjectPropertyOrigin>;
   hostImportClosureWrapperArgIndicesByCallee: ReadonlyMap<string, ReadonlySet<number>>;
   localAliases: ReadonlyMap<string, string>;
+  stringLiteralCodeUnits: readonly (readonly number[])[];
 }
 
 interface FallbackObjectLocalLayout {
@@ -282,6 +292,7 @@ const EMPTY_RENDER_CONTEXT: FunctionRenderContext = {
   dynamicObjectPropertyOrigins: new Map(),
   hostImportClosureWrapperArgIndicesByCallee: new Map(),
   localAliases: new Map(),
+  stringLiteralCodeUnits: [],
 };
 
 function closureLocalLiterals(
@@ -541,6 +552,12 @@ function localAliases(func: WasmGcFunctionPlanIR): ReadonlyMap<string, string> {
     }
     if (statement.value.kind === 'local_get') {
       aliases.set(statement.name, resolveLocalAlias(statement.value.name, aliases));
+    } else if (
+      (statement.value.kind === 'string_to_owned' ||
+        statement.value.kind === 'owned_string_to_host') &&
+      statement.value.value.kind === 'local_get'
+    ) {
+      aliases.set(statement.name, resolveLocalAlias(statement.value.value.name, aliases));
     } else if (statement.value.kind === 'owned_string_literal') {
       aliases.set(statement.name, `#owned_string_literal_${statement.value.literalId}`);
     }
@@ -1030,6 +1047,7 @@ function renderDefaultValueForCompilerType(valueType: string, indent: string): r
       return [`${indent}i32.const 0`];
     case 'string_ref':
     case 'owned_string_ref':
+      return [`${indent}ref.null ${stringRuntimeTypeName()}`];
     case 'symbol_ref':
     case 'bigint_ref':
       return [`${indent}ref.null extern`];
@@ -1106,8 +1124,8 @@ function renderDynamicObjectStoredValue(
       return [
         `${indent}i32.const ${TAGGED_STRING_TAG}`,
         `${indent}f64.const 0`,
+        `${indent}ref.null extern`,
         ...rawValue,
-        `${indent}ref.null eq`,
         `${indent}struct.new ${taggedValueTypeName()}`,
       ];
     case 'symbol_ref':
@@ -1590,6 +1608,7 @@ function collectNumberArrayScratchFromExpression(
       collectNumberArrayScratchFromExpression(expression.index, uses);
       break;
     case 'owned_array_length':
+    case 'owned_string_length':
     case 'tag_number':
     case 'tag_boolean':
     case 'tag_string':
@@ -1741,7 +1760,7 @@ function numberArrayScratchLocals(func: WasmGcFunctionPlanIR): readonly {
         { name: STRING_ARRAY_INDEX_SCRATCH, wasmType: 'i32' },
         { name: STRING_ARRAY_LENGTH_SCRATCH, wasmType: 'i32' },
         { name: STRING_ARRAY_RESULT_SCRATCH, wasmType: 'f64' },
-        { name: STRING_ARRAY_SEARCH_SCRATCH, wasmType: 'externref' },
+        { name: STRING_ARRAY_SEARCH_SCRATCH, wasmType: `(ref null ${stringRuntimeTypeName()})` },
       ]
       : []),
     ...(uses.has('boolean_array')
@@ -2507,20 +2526,33 @@ function renderTaggedArrayIndexOfExpression(
     `${indent}            i32.const 1`,
     `${indent}          else`,
     ...currentTag,
-    `${indent}            i32.const ${TAGGED_HEAP_OBJECT_TAG}`,
+    `${indent}            i32.const ${TAGGED_STRING_TAG}`,
     `${indent}            i32.eq`,
     `${indent}            if (result i32)`,
     ...currentValue,
     `${indent}              struct.get ${taggedValueTypeName()} $heap_payload`,
+    `${indent}              ref.cast (ref ${stringRuntimeTypeName()})`,
     ...searchValue,
     `${indent}              struct.get ${taggedValueTypeName()} $heap_payload`,
-    `${indent}              ref.eq`,
+    `${indent}              ref.cast (ref ${stringRuntimeTypeName()})`,
+    `${indent}              call $${sanitizeIdentifier(STRING_EQUAL_FUNCTION_NAME)}`,
     `${indent}            else`,
+    ...currentTag,
+    `${indent}              i32.const ${TAGGED_HEAP_OBJECT_TAG}`,
+    `${indent}              i32.eq`,
+    `${indent}              if (result i32)`,
     ...currentValue,
-    `${indent}              struct.get ${taggedValueTypeName()} $extern_payload`,
+    `${indent}                struct.get ${taggedValueTypeName()} $heap_payload`,
     ...searchValue,
-    `${indent}              struct.get ${taggedValueTypeName()} $extern_payload`,
-    `${indent}              call $${sanitizeIdentifier(EXTERN_EQUAL_FUNCTION_NAME)}`,
+    `${indent}                struct.get ${taggedValueTypeName()} $heap_payload`,
+    `${indent}                ref.eq`,
+    `${indent}              else`,
+    ...currentValue,
+    `${indent}                struct.get ${taggedValueTypeName()} $extern_payload`,
+    ...searchValue,
+    `${indent}                struct.get ${taggedValueTypeName()} $extern_payload`,
+    `${indent}                call $${sanitizeIdentifier(EXTERN_EQUAL_FUNCTION_NAME)}`,
+    `${indent}              end`,
     `${indent}            end`,
     `${indent}          end`,
     `${indent}        end`,
@@ -2549,6 +2581,33 @@ function renderHeapArrayElementCast(
 ): readonly string[] {
   const wasmType = wasmTypeForCompilerValueType(representation);
   return wasmType === '(ref null eq)' ? [] : [`${indent}ref.cast ${wasmType}`];
+}
+
+function renderOwnedStringLiteralExpression(
+  expression: Extract<SemanticExpressionIR, { kind: 'owned_string_literal' }>,
+  indent: string,
+  context: FunctionRenderContext,
+): readonly string[] {
+  const codeUnits = context.stringLiteralCodeUnits[expression.literalId] ?? [];
+  return [
+    ...codeUnits.map((codeUnit) => `${indent}i32.const ${codeUnit}`),
+    `${indent}array.new_fixed ${stringCodeUnitArrayTypeName()} ${codeUnits.length}`,
+    `${indent}struct.new ${stringRuntimeTypeName()}`,
+  ];
+}
+
+function renderOwnedStringLengthExpression(
+  expression: Extract<SemanticExpressionIR, { kind: 'owned_string_length' }>,
+  indent: string,
+  context: FunctionRenderContext,
+): readonly string[] {
+  return [
+    ...renderExpression(expression.value, indent, context),
+    `${indent}ref.cast (ref ${stringRuntimeTypeName()})`,
+    `${indent}struct.get ${stringRuntimeTypeName()} $code_units`,
+    `${indent}array.len`,
+    `${indent}f64.convert_i32_s`,
+  ];
 }
 
 function renderExpression(
@@ -2580,8 +2639,9 @@ function renderExpression(
     case 'heap_null':
       return [`${indent}ref.null eq`];
     case 'owned_string_literal':
-      // JS-host string materialization is still wrapper-owned in the shadow backend.
-      return [`${indent}ref.null extern`];
+      return renderOwnedStringLiteralExpression(expression, indent, context);
+    case 'owned_string_length':
+      return renderOwnedStringLengthExpression(expression, indent, context);
     case 'local_get':
       return [`${indent}local.get $${sanitizeIdentifier(expression.name)}`];
     case 'string_to_owned':
@@ -2608,8 +2668,8 @@ function renderExpression(
       return [
         `${indent}i32.const ${TAGGED_STRING_TAG}`,
         `${indent}f64.const 0`,
+        `${indent}ref.null extern`,
         ...renderExpression(expression.value, indent, context),
-        `${indent}ref.null eq`,
         `${indent}struct.new ${taggedValueTypeName()}`,
       ];
     case 'tag_symbol':
@@ -2653,7 +2713,8 @@ function renderExpression(
       return [
         ...renderExpression(expression.value, indent, context),
         `${indent}ref.cast (ref ${taggedValueTypeName()})`,
-        `${indent}struct.get ${taggedValueTypeName()} $extern_payload`,
+        `${indent}struct.get ${taggedValueTypeName()} $heap_payload`,
+        `${indent}ref.cast (ref ${stringRuntimeTypeName()})`,
       ];
     case 'untag_symbol':
       return [
@@ -2978,21 +3039,27 @@ function renderStatement(
         );
       const layoutEntries = layout?.entries ?? statement.entries;
       const initialEntries = statement.entries;
+      const initialEntriesByKey: Map<string, (typeof initialEntries)[number]> = new Map(
+        initialEntries.map((entry) => [`${entry.keyName}:${entry.valueType}`, entry] as const),
+      );
       return [
-        ...(initialEntries.length > 0
-          ? initialEntries.flatMap((entry) => [
-            `${indent}local.get $${sanitizeIdentifier(entry.keyName)}`,
-            `${indent}local.get $${sanitizeIdentifier(entry.valueName)}`,
-            `${indent}i32.const 1`,
-          ])
-          : layoutEntries.flatMap((entry) => [
-            `${indent}ref.null extern`,
-            ...renderDefaultValueForCompilerType(entry.valueType, indent),
-            `${indent}i32.const 0`,
-          ])),
+        ...layoutEntries.flatMap((entry) => {
+          const initialEntry = initialEntriesByKey.get(`${entry.keyName}:${entry.valueType}`);
+          return initialEntry
+            ? [
+              `${indent}local.get $${sanitizeIdentifier(initialEntry.keyName)}`,
+              `${indent}local.get $${sanitizeIdentifier(initialEntry.valueName)}`,
+              `${indent}i32.const 1`,
+            ]
+            : [
+              `${indent}ref.null ${stringRuntimeTypeName()}`,
+              ...renderDefaultValueForCompilerType(entry.valueType, indent),
+              `${indent}i32.const 0`,
+            ];
+        }),
         ...(layoutEntries.length === 0
           ? [
-            `${indent}ref.null extern`,
+            `${indent}ref.null ${stringRuntimeTypeName()}`,
             ...renderDefaultValueForCompilerType('f64', indent),
             `${indent}i32.const 0`,
           ]
@@ -3197,6 +3264,7 @@ function renderFunctionPlan(
   layoutsByRepresentation: ReadonlyMap<string, DynamicObjectLocalLayout>,
   closureFunctionNames: ReadonlyMap<number, string>,
   hostImportWrapperArgIndicesByCallee: ReadonlyMap<string, ReadonlySet<number>>,
+  stringLiteralCodeUnits: readonly (readonly number[])[],
 ): readonly string[] {
   if (func.hostImport) {
     return [];
@@ -3227,6 +3295,7 @@ function renderFunctionPlan(
     dynamicObjectPropertyOrigins: dynamicObjectPropertyOrigins(func, dynamicLayouts, aliases),
     hostImportClosureWrapperArgIndicesByCallee: hostImportWrapperArgIndicesByCallee,
     localAliases: aliases,
+    stringLiteralCodeUnits,
   };
   const scratchLocals = numberArrayScratchLocals(func);
   const params = func.params.map((param, index) =>
@@ -3294,13 +3363,94 @@ function renderHostImportPlan(
 }
 
 function renderStringEqualityImportPlan(plan: WasmGcModulePlanIR): readonly string[] {
-  return plan.functionPlans.some((func) => !func.hostImport && functionUsesStringArrayIndexOf(func))
+  void plan;
+  return [];
+}
+
+function renderStringEqualityHelperFunctions(plan: WasmGcModulePlanIR): readonly string[] {
+  const usesStringRuntime = plan.typePlans.some((typePlan) =>
+    typePlan.source === 'runtime_family' && typePlan.family === 'string'
+  );
+  const usesStringIndexOf = plan.functionPlans.some((func) =>
+    !func.hostImport && functionUsesStringArrayIndexOf(func)
+  ) || (usesStringRuntime &&
+    plan.functionPlans.some((func) => !func.hostImport && functionUsesTaggedArrayIndexOf(func))
+  );
+  return usesStringIndexOf
     ? [
-      `  (import ${JSON.stringify(STRING_EQUAL_IMPORT_MODULE)} ${
-        JSON.stringify(STRING_EQUAL_IMPORT_NAME)
-      } (func $${
-        sanitizeIdentifier(STRING_EQUAL_FUNCTION_NAME)
-      } (param externref externref) (result i32)))`,
+      `  (func $${sanitizeIdentifier(STRING_EQUAL_FUNCTION_NAME)} (param $left (ref null ${stringRuntimeTypeName()})) (param $right (ref null ${stringRuntimeTypeName()})) (result i32)`,
+      `    (local $left_units (ref null ${stringCodeUnitArrayTypeName()}))`,
+      `    (local $right_units (ref null ${stringCodeUnitArrayTypeName()}))`,
+      '    (local $index i32)',
+      '    (local $length i32)',
+      '    (local $result i32)',
+      '    local.get $left',
+      '    local.get $right',
+      '    ref.eq',
+      '    if',
+      '      i32.const 1',
+      '      local.set $result',
+      '    else',
+      '      local.get $left',
+      '      ref.is_null',
+      '      local.get $right',
+      '      ref.is_null',
+      '      i32.or',
+      '      i32.eqz',
+      '      if',
+      '        local.get $left',
+      `        ref.cast (ref ${stringRuntimeTypeName()})`,
+      `        struct.get ${stringRuntimeTypeName()} $code_units`,
+      '        local.set $left_units',
+      '        local.get $right',
+      `        ref.cast (ref ${stringRuntimeTypeName()})`,
+      `        struct.get ${stringRuntimeTypeName()} $code_units`,
+      '        local.set $right_units',
+      '        local.get $left_units',
+      '        ref.as_non_null',
+      '        array.len',
+      '        local.tee $length',
+      '        local.get $right_units',
+      '        ref.as_non_null',
+      '        array.len',
+      '        i32.eq',
+      '        if',
+      '          i32.const 1',
+      '          local.set $result',
+      '          i32.const 0',
+      '          local.set $index',
+      '          block',
+      '            loop',
+      '              local.get $index',
+      '              local.get $length',
+      '              i32.ge_u',
+      '              br_if 1',
+      '              local.get $left_units',
+      '              ref.as_non_null',
+      '              local.get $index',
+      `              array.get ${stringCodeUnitArrayTypeName()}`,
+      '              local.get $right_units',
+      '              ref.as_non_null',
+      '              local.get $index',
+      `              array.get ${stringCodeUnitArrayTypeName()}`,
+      '              i32.ne',
+      '              if',
+      '                i32.const 0',
+      '                local.set $result',
+      '                br 1',
+      '              end',
+      '              local.get $index',
+      '              i32.const 1',
+      '              i32.add',
+      '              local.set $index',
+      '              br 0',
+      '            end',
+      '          end',
+      '        end',
+      '      end',
+      '    end',
+      '    local.get $result',
+      '  )',
     ]
     : [];
 }
@@ -3489,6 +3639,7 @@ function collectBoxedClosureDispatchSignatureIdsFromExpression(
       );
       break;
     case 'owned_array_length':
+    case 'owned_string_length':
       collectBoxedClosureDispatchSignatureIdsFromExpression(
         expression.value,
         signatureIds,
@@ -3850,6 +4001,7 @@ function collectBoxValueTypesFromExpression(
     case 'tagged_has_tag':
     case 'string_to_owned':
     case 'owned_string_to_host':
+    case 'owned_string_length':
       collectBoxValueTypesFromExpression(expression.value, valueTypes);
       break;
     case 'call':
@@ -4128,6 +4280,7 @@ function collectArrayRuntimeTypesFromExpression(
       collectArrayRuntimeTypesFromExpression(expression.index, runtimeTypes);
       break;
     case 'owned_array_length':
+    case 'owned_string_length':
     case 'tag_number':
     case 'tag_boolean':
     case 'tag_string':
@@ -4289,7 +4442,9 @@ function renderArrayTypes(plan: WasmGcModulePlanIR): readonly string[] {
   return [
     ...(runtimeTypes.has('number') ? ['  (type $array_runtime (array (mut f64)))'] : []),
     ...(runtimeTypes.has('string')
-      ? ['  (type $string_array_runtime (array (mut externref)))']
+      ? [
+        `  (type $string_array_runtime (array (mut (ref null ${stringRuntimeTypeName()}))))`,
+      ]
       : []),
     ...(runtimeTypes.has('heap')
       ? ['  (type $heap_array_runtime (array (mut (ref null eq))))']
@@ -4299,6 +4454,20 @@ function renderArrayTypes(plan: WasmGcModulePlanIR): readonly string[] {
       ? ['  (type $tagged_array_runtime (array (mut (ref null $tagged_value))))']
       : []),
   ];
+}
+
+function renderStringRuntimeTypes(plan: WasmGcModulePlanIR): readonly string[] {
+  const usesStringRuntime = plan.typePlans.some((typePlan) =>
+    typePlan.source === 'runtime_family' && typePlan.family === 'string'
+  );
+  return usesStringRuntime
+    ? [
+      `  (type ${stringCodeUnitArrayTypeName()} (array (mut i32)))`,
+      `  (type ${stringRuntimeTypeName()} (struct`,
+      `    (field $code_units (ref ${stringCodeUnitArrayTypeName()}))`,
+      '  ))',
+    ]
+    : [];
 }
 
 function renderBoxTypes(plan: WasmGcModulePlanIR): readonly string[] {
@@ -4369,7 +4538,7 @@ function renderDynamicObjectTypes(
     .flatMap((layout) => [
       `  (type ${layout.typeName} (struct`,
       ...Array.from({ length: Math.max(layout.entries.length, 1) }, (_, index) => [
-        `    (field $key_${index} (mut externref))`,
+        `    (field $key_${index} (mut (ref null ${stringRuntimeTypeName()})))`,
         `    (field $value_${index} (mut ${
           wasmTypeForCompilerValueType(layout.entries[index]?.valueType ?? 'f64')
         }))`,
@@ -5182,6 +5351,7 @@ export function emitWasmGcModulePlan(plan: WasmGcModulePlanIR): string {
       .filter((func) => func.closureFunctionId !== undefined)
       .map((func) => [func.closureFunctionId!, `$${sanitizeIdentifier(func.name)}`] as const),
   );
+  const stringRuntimeTypes = renderStringRuntimeTypes(plan);
   const arrayTypes = renderArrayTypes(plan);
   const boxTypes = renderBoxTypes(plan);
   const closureSignatureTypes = renderClosureSignatureTypes(plan);
@@ -5191,6 +5361,7 @@ export function emitWasmGcModulePlan(plan: WasmGcModulePlanIR): string {
   const dynamicObjectTypes = renderDynamicObjectTypes(plan, dynamicLayoutsByRepresentation);
   const taggedValueTypes = renderTaggedValueType(plan);
   const promiseRecordTypes = renderPromiseRecordTypes(plan);
+  const stringEqualityHelperFunctions = renderStringEqualityHelperFunctions(plan);
   const promiseHelperFunctions = renderPromiseHelperFunctions(plan);
   const asyncGeneratorHelperFunctions = renderAsyncGeneratorHelperFunctions(plan);
   const closureDispatchHelpers = renderClosureDispatchHelpers(plan, closureFunctionNames);
@@ -5210,7 +5381,8 @@ export function emitWasmGcModulePlan(plan: WasmGcModulePlanIR): string {
     } custom_collector=${String(plan.capabilities.customCollector)}`,
     '  ;; types',
     ...(
-      plan.typePlans.length > 0 || arrayTypes.length > 0 || boxTypes.length > 0 ||
+      plan.typePlans.length > 0 || stringRuntimeTypes.length > 0 || arrayTypes.length > 0 ||
+        boxTypes.length > 0 ||
         closureSignatureTypes.length > 0 || closureObjectTypes.length > 0 ||
         capturedClosureEnvTypes.length > 0 ||
         fallbackObjectTypes.length > 0 ||
@@ -5219,6 +5391,7 @@ export function emitWasmGcModulePlan(plan: WasmGcModulePlanIR): string {
         ? [
           ...taggedValueTypes,
           ...promiseRecordTypes,
+          ...stringRuntimeTypes,
           ...arrayTypes,
           ...fallbackObjectTypes,
           ...dynamicObjectTypes,
@@ -5240,11 +5413,13 @@ export function emitWasmGcModulePlan(plan: WasmGcModulePlanIR): string {
       ]
       : []),
     '  ;; helpers',
-    ...(plan.helperPlans.length > 0 || promiseHelperFunctions.length > 0 ||
+    ...(plan.helperPlans.length > 0 || stringEqualityHelperFunctions.length > 0 ||
+        promiseHelperFunctions.length > 0 ||
         asyncGeneratorHelperFunctions.length > 0 || closureDispatchHelpers.length > 0 ||
         hostTaggedWrapperHelperFunctions.length > 0
       ? [
         ...indentLines(plan.helperPlans.map(renderHelperPlan)),
+        ...stringEqualityHelperFunctions,
         ...promiseHelperFunctions,
         ...hostTaggedWrapperHelperFunctions,
         ...closureDispatchHelpers,
@@ -5260,6 +5435,7 @@ export function emitWasmGcModulePlan(plan: WasmGcModulePlanIR): string {
         dynamicLayoutsByRepresentation,
         closureFunctionNames,
         hostImportWrapperArgIndicesByCallee,
+        plan.stringLiteralCodeUnits ?? [],
       )
     ),
     ...renderDeclaredClosureElements(plan, closureFunctionNames),

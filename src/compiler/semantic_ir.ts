@@ -118,6 +118,11 @@ export type SemanticExpressionIR =
   | { kind: 'null_literal'; representation: 'tagged_ref' }
   | { kind: 'heap_null'; representation: 'heap_ref' }
   | { kind: 'owned_string_literal'; literalId: number; representation: 'owned_string_ref' }
+  | {
+    kind: 'owned_string_length';
+    value: SemanticExpressionIR;
+    representation: 'f64';
+  }
   | { kind: 'local_get'; name: string; representation: CompilerValueType }
   | {
     kind: 'string_to_owned';
@@ -634,6 +639,8 @@ export interface SemanticDiagnosticIR {
 export interface SemanticModuleIR {
   kind: 'semantic_module';
   functions: readonly SemanticFunctionIR[];
+  stringLiterals: readonly string[];
+  stringLiteralCodeUnits: readonly (readonly number[])[];
   typeSnapshots: readonly SemanticTypeSnapshotIR[];
   boundarySurfaces: readonly SemanticBoundarySurfaceIR[];
   objectLayouts: readonly SemanticObjectLayoutIR[];
@@ -1531,6 +1538,9 @@ function addStatementFamilies(
         (node as { expression: CompilerExpressionIR }).expression,
       );
     }
+    if (node.kind.includes('string')) {
+      families.add('string');
+    }
     if (node.kind.includes('array')) {
       families.add('array');
     }
@@ -1888,6 +1898,12 @@ function semanticExpressionFromCompilerIR(
         kind: 'owned_string_literal',
         literalId: expression.literalId,
         representation: 'owned_string_ref',
+      };
+    case 'owned_string_length':
+      return {
+        kind: 'owned_string_length',
+        value: semanticExpressionFromCompilerIR(expression.value),
+        representation: 'f64',
       };
     case 'local_get':
       return { kind: 'local_get', name: expression.name, representation: expression.type };
@@ -2981,6 +2997,7 @@ function collectUnsupportedExpressionKinds(
       collectUnsupportedExpressionKinds(expression.search, kinds);
       break;
     case 'owned_array_length':
+    case 'owned_string_length':
       collectUnsupportedExpressionKinds(expression.value, kinds);
       break;
     case 'closure_call':
@@ -3156,7 +3173,6 @@ export function createSemanticModuleFromCompilerIR(module: CompilerModuleIR): Se
     moduleFamilies.add('promise');
     moduleFamilies.add('host_object_projection');
   }
-
   const functions = module.functions.map((func): SemanticFunctionIR => {
     const closureSignature = func.closureSignatureId !== undefined
       ? module.closureSignatures?.find((signature) => signature.id === func.closureSignatureId)
@@ -3233,6 +3249,8 @@ export function createSemanticModuleFromCompilerIR(module: CompilerModuleIR): Se
   return {
     kind: 'semantic_module',
     functions,
+    stringLiterals: module.stringLiterals ?? [],
+    stringLiteralCodeUnits: module.stringLiteralCodeUnits ?? [],
     typeSnapshots: [],
     boundarySurfaces: [],
     objectLayouts,
