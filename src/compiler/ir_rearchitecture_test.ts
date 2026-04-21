@@ -3513,6 +3513,8 @@ Deno.test('compiler wasm-gc emitter parses compiler-owned async Promise returns'
   assertEquals(wat.includes('(field $reaction'), false);
   assertEquals(wat.includes('(type $promise_reaction_runtime'), false);
   assertEquals(wat.includes('(type $promise_microtask_runtime'), false);
+  assertEquals(wat.includes('(func $soundscript_promise_enqueue_microtask'), false);
+  assertEquals(wat.includes('(func $soundscript_promise_drain_microtasks'), false);
   assertEquals(wat.includes('(func $soundscript_promise_reject '), false);
   assertEquals(wat.includes('(func $soundscript_promise_new_pending'), false);
   assertEquals(wat.includes('(func $soundscript_promise_then'), false);
@@ -3566,6 +3568,8 @@ Deno.test('compiler wasm-gc emitter parses compiler-owned Promise.reject returns
   assertEquals(wat.includes('(field $reaction'), false);
   assertEquals(wat.includes('(type $promise_reaction_runtime'), false);
   assertEquals(wat.includes('(type $promise_microtask_runtime'), false);
+  assertEquals(wat.includes('(func $soundscript_promise_enqueue_microtask'), false);
+  assertEquals(wat.includes('(func $soundscript_promise_drain_microtasks'), false);
   assertEquals(wat.includes('(func $soundscript_promise_resolve '), false);
   assertEquals(wat.includes('(func $soundscript_promise_new_pending'), false);
   assertEquals(wat.includes('(func $soundscript_promise_then'), false);
@@ -3616,6 +3620,10 @@ Deno.test('compiler wasm-gc emitter parses settled Promise.then callbacks', asyn
   assertEquals(wat.includes('(type $promise_reaction_runtime (struct'), true);
   assertEquals(wat.includes('(type $promise_microtask_runtime (struct'), true);
   assertEquals(wat.includes('(field $reaction (mut (ref null $promise_reaction_runtime)))'), true);
+  assertEquals(wat.includes('(func $soundscript_promise_enqueue_microtask'), true);
+  assertEquals(wat.includes('(func $soundscript_promise_drain_microtasks'), true);
+  assertEquals(wat.includes('call $soundscript_promise_enqueue_microtask'), true);
+  assertEquals(wat.includes('call $soundscript_promise_drain_microtasks'), true);
   assertEquals(wat.includes('struct.set $promise_runtime $reaction'), true);
   assertEquals(wat.includes('(func $closure_dispatch_sig_0'), true);
   assertEquals(wat.includes('struct.get $promise_runtime $state'), true);
@@ -3702,6 +3710,10 @@ Deno.test('compiler wasm-gc emitter parses compiler-owned async await frame setu
   const wat = await Deno.readTextFile(watPath);
   assertEquals(wat.includes('call $soundscript_promise_new_pending'), true);
   assertEquals(wat.includes('call $soundscript_promise_then'), true);
+  assertEquals(wat.includes('(func $soundscript_promise_enqueue_microtask'), true);
+  assertEquals(wat.includes('(func $soundscript_promise_drain_microtasks'), true);
+  assertEquals(wat.includes('call $soundscript_promise_enqueue_microtask'), true);
+  assertEquals(wat.includes('call $soundscript_promise_drain_microtasks'), true);
   assertEquals(wat.includes('struct.get $promise_runtime $reaction'), true);
   assertEquals(wat.includes('struct.get $promise_reaction_runtime $result'), true);
   assertEquals(wat.includes('$dynamic_object_layout_object_dynamic_2_f64_box_ref'), true);

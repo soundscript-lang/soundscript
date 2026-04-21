@@ -3827,13 +3827,7 @@ function renderPromiseSetStateAndValueFromTaggedTarget(
   targetName: string,
   state: string,
   valueLines: readonly string[],
-  options: {
-    handlerField: '$on_fulfilled' | '$on_rejected';
-    handlerResultState: string;
-    signatureId: number;
-    usesHandler: boolean;
-    usesPromiseThen: boolean;
-  },
+  options: { usesPromiseThen: boolean },
 ): readonly string[] {
   if (!options.usesPromiseThen) {
     return [
@@ -3867,30 +3861,11 @@ function renderPromiseSetStateAndValueFromTaggedTarget(
     '    ref.is_null',
     '    i32.eqz',
     '    if',
-    ...(options.usesHandler
-      ? [
-        '      local.get $reaction',
-        '      ref.as_non_null',
-        `      struct.get $promise_reaction_runtime ${options.handlerField}`,
-        '      ref.is_null',
-        '      if',
-        ...renderPromiseReactionResultSet('reaction', state, valueLines, '        '),
-        '      else',
-        ...renderPromiseReactionResultSet(
-          'reaction',
-          options.handlerResultState,
-          [
-            '          local.get $reaction',
-            '          ref.as_non_null',
-            `          struct.get $promise_reaction_runtime ${options.handlerField}`,
-            ...valueLines.map((line) => `          ${line.trimStart()}`),
-            `          call ${closureDispatchFunctionName(options.signatureId)}`,
-          ],
-          '        ',
-        ),
-        '      end',
-      ]
-      : renderPromiseReactionResultSet('reaction', state, valueLines, '      ')),
+    '      local.get $reaction',
+    ...valueLines.map((line) => `      ${line.trimStart()}`),
+    `      i32.const ${state}`,
+    '      call $soundscript_promise_enqueue_microtask',
+    '      call $soundscript_promise_drain_microtasks',
     '    end',
   ];
 }
@@ -3931,6 +3906,159 @@ function renderPromiseReactionResultSet(
   ];
 }
 
+function renderPromiseMicrotaskValue(indent: string): readonly string[] {
+  return [
+    `${indent}local.get $task`,
+    `${indent}ref.as_non_null`,
+    `${indent}struct.get $promise_microtask_runtime $value`,
+  ];
+}
+
+function renderPromiseMicrotaskReactionResultSet(
+  state: string,
+  valueLines: readonly string[],
+  indent: string,
+): readonly string[] {
+  return renderPromiseReactionResultSet('reaction', state, valueLines, indent);
+}
+
+function renderPromiseMicrotaskFulfilledBranch(
+  signatureId: number,
+  usesFulfilledHandler: boolean,
+): readonly string[] {
+  return usesFulfilledHandler
+    ? [
+      '      local.get $reaction',
+      '      ref.as_non_null',
+      '      struct.get $promise_reaction_runtime $on_fulfilled',
+      '      ref.is_null',
+      '      if',
+      ...renderPromiseMicrotaskReactionResultSet(
+        '1',
+        renderPromiseMicrotaskValue('          '),
+        '        ',
+      ),
+      '      else',
+      ...renderPromiseMicrotaskReactionResultSet(
+        '1',
+        [
+          '          local.get $reaction',
+          '          ref.as_non_null',
+          '          struct.get $promise_reaction_runtime $on_fulfilled',
+          ...renderPromiseMicrotaskValue('          '),
+          `          call ${closureDispatchFunctionName(signatureId)}`,
+        ],
+        '        ',
+      ),
+      '      end',
+    ]
+    : renderPromiseMicrotaskReactionResultSet(
+      '1',
+      renderPromiseMicrotaskValue('      '),
+      '      ',
+    );
+}
+
+function renderPromiseMicrotaskRejectedBranch(
+  signatureId: number,
+  usesRejectedHandler: boolean,
+): readonly string[] {
+  return usesRejectedHandler
+    ? [
+      '      local.get $reaction',
+      '      ref.as_non_null',
+      '      struct.get $promise_reaction_runtime $on_rejected',
+      '      ref.is_null',
+      '      if',
+      ...renderPromiseMicrotaskReactionResultSet(
+        '2',
+        renderPromiseMicrotaskValue('          '),
+        '        ',
+      ),
+      '      else',
+      ...renderPromiseMicrotaskReactionResultSet(
+        '1',
+        [
+          '          local.get $reaction',
+          '          ref.as_non_null',
+          '          struct.get $promise_reaction_runtime $on_rejected',
+          ...renderPromiseMicrotaskValue('          '),
+          `          call ${closureDispatchFunctionName(signatureId)}`,
+        ],
+        '        ',
+      ),
+      '      end',
+    ]
+    : renderPromiseMicrotaskReactionResultSet(
+      '2',
+      renderPromiseMicrotaskValue('      '),
+      '      ',
+    );
+}
+
+function renderPromiseMicrotaskHelpers(
+  signatureId: number,
+  usesFulfilledHandler: boolean,
+  usesRejectedHandler: boolean,
+): readonly string[] {
+  return [
+    `  (func $soundscript_promise_enqueue_microtask (param $reaction (ref null $promise_reaction_runtime)) (param $value (ref null ${taggedValueTypeName()})) (param $state i32) (result (ref null $promise_microtask_runtime))`,
+    '    local.get $reaction',
+    '    local.get $value',
+    '    local.get $state',
+    '    struct.new $promise_microtask_runtime',
+    '  )',
+    '  (func $soundscript_promise_drain_microtasks (param $task (ref null $promise_microtask_runtime))',
+    '    (local $reaction (ref null $promise_reaction_runtime))',
+    '    local.get $task',
+    '    ref.is_null',
+    '    if',
+    '      return',
+    '    end',
+    '    local.get $task',
+    '    ref.as_non_null',
+    '    struct.get $promise_microtask_runtime $reaction',
+    '    local.set $reaction',
+    '    local.get $reaction',
+    '    ref.is_null',
+    '    if',
+    '      return',
+    '    end',
+    '    local.get $task',
+    '    ref.as_non_null',
+    '    struct.get $promise_microtask_runtime $state',
+    '    i32.const 1',
+    '    i32.eq',
+    '    if',
+    ...renderPromiseMicrotaskFulfilledBranch(signatureId, usesFulfilledHandler),
+    '    end',
+    '    local.get $task',
+    '    ref.as_non_null',
+    '    struct.get $promise_microtask_runtime $state',
+    '    i32.const 2',
+    '    i32.eq',
+    '    if',
+    ...renderPromiseMicrotaskRejectedBranch(signatureId, usesRejectedHandler),
+    '    end',
+    '  )',
+  ];
+}
+
+function renderPromiseEnqueueAndDrain(
+  reactionLines: readonly string[],
+  state: string,
+  valueLines: readonly string[],
+  indent: string,
+): readonly string[] {
+  return [
+    ...reactionLines,
+    ...valueLines,
+    `${indent}i32.const ${state}`,
+    `${indent}call $soundscript_promise_enqueue_microtask`,
+    `${indent}call $soundscript_promise_drain_microtasks`,
+  ];
+}
+
 function renderPromiseHelperFunctions(plan: WasmGcModulePlanIR): readonly string[] {
   const usesPromiseResolution = plan.helperPlans.some((helper) =>
     helper.family === 'promise' && helper.name === 'promise_resolution_ops'
@@ -3946,6 +4074,13 @@ function renderPromiseHelperFunctions(plan: WasmGcModulePlanIR): readonly string
   const thenUsesRejectedHandler = modulePromiseThenUsesHandler(plan, 2);
   return usesPromiseResolution
     ? [
+      ...(usesPromiseThen
+        ? renderPromiseMicrotaskHelpers(
+          thenHandlerSignatureId,
+          thenUsesFulfilledHandler,
+          thenUsesRejectedHandler,
+        )
+        : []),
       ...(usesPromiseResolve
         ? [
           `  (func $soundscript_promise_resolve (param $value (ref null ${taggedValueTypeName()})) (result (ref null eq))`,
@@ -3979,46 +4114,21 @@ function renderPromiseHelperFunctions(plan: WasmGcModulePlanIR): readonly string
           '    i32.const 1',
           '    i32.eq',
           '    if',
-          ...(thenUsesFulfilledHandler
-            ? [
+          ...renderPromiseEnqueueAndDrain(
+            [
+              '      local.get $result',
               '      local.get $on_fulfilled',
-              '      ref.is_null',
-              '      if',
-              ...renderPromiseSetStateAndValue(
-                'result',
-                '1',
-                [
-                  '          local.get $receiver',
-                  '          ref.cast (ref $promise_runtime)',
-                  '          struct.get $promise_runtime $value',
-                ],
-                '        ',
-              ),
-              '      else',
-              ...renderPromiseSetStateAndValue(
-                'result',
-                '1',
-                [
-                  '          local.get $on_fulfilled',
-                  '          local.get $receiver',
-                  '          ref.cast (ref $promise_runtime)',
-                  '          struct.get $promise_runtime $value',
-                  `          call ${closureDispatchFunctionName(thenHandlerSignatureId)}`,
-                ],
-                '        ',
-              ),
-              '      end',
-            ]
-            : renderPromiseSetStateAndValue(
-              'result',
-              '1',
-              [
-                '        local.get $receiver',
-                '        ref.cast (ref $promise_runtime)',
-                '        struct.get $promise_runtime $value',
-              ],
-              '      ',
-            )),
+              '      local.get $on_rejected',
+              '      struct.new $promise_reaction_runtime',
+            ],
+            '1',
+            [
+              '      local.get $receiver',
+              '      ref.cast (ref $promise_runtime)',
+              '      struct.get $promise_runtime $value',
+            ],
+            '      ',
+          ),
           '    end',
           '    local.get $receiver',
           '    ref.cast (ref $promise_runtime)',
@@ -4026,46 +4136,21 @@ function renderPromiseHelperFunctions(plan: WasmGcModulePlanIR): readonly string
           '    i32.const 2',
           '    i32.eq',
           '    if',
-          ...(thenUsesRejectedHandler
-            ? [
+          ...renderPromiseEnqueueAndDrain(
+            [
+              '      local.get $result',
+              '      local.get $on_fulfilled',
               '      local.get $on_rejected',
-              '      ref.is_null',
-              '      if',
-              ...renderPromiseSetStateAndValue(
-                'result',
-                '2',
-                [
-                  '          local.get $receiver',
-                  '          ref.cast (ref $promise_runtime)',
-                  '          struct.get $promise_runtime $value',
-                ],
-                '        ',
-              ),
-              '      else',
-              ...renderPromiseSetStateAndValue(
-                'result',
-                '1',
-                [
-                  '          local.get $on_rejected',
-                  '          local.get $receiver',
-                  '          ref.cast (ref $promise_runtime)',
-                  '          struct.get $promise_runtime $value',
-                  `          call ${closureDispatchFunctionName(thenHandlerSignatureId)}`,
-                ],
-                '        ',
-              ),
-              '      end',
-            ]
-            : renderPromiseSetStateAndValue(
-              'result',
-              '2',
-              [
-                '        local.get $receiver',
-                '        ref.cast (ref $promise_runtime)',
-                '        struct.get $promise_runtime $value',
-              ],
-              '      ',
-            )),
+              '      struct.new $promise_reaction_runtime',
+            ],
+            '2',
+            [
+              '      local.get $receiver',
+              '      ref.cast (ref $promise_runtime)',
+              '      struct.get $promise_runtime $value',
+            ],
+            '      ',
+          ),
           '    end',
           '    local.get $receiver',
           '    ref.cast (ref $promise_runtime)',
@@ -4095,13 +4180,7 @@ function renderPromiseHelperFunctions(plan: WasmGcModulePlanIR): readonly string
             : []),
           ...renderPromiseSetStateAndValueFromTaggedTarget('target_tagged', '1', [
             '    local.get $value',
-          ], {
-            handlerField: '$on_fulfilled',
-            handlerResultState: '1',
-            signatureId: thenHandlerSignatureId,
-            usesHandler: thenUsesFulfilledHandler,
-            usesPromiseThen,
-          }),
+          ], { usesPromiseThen }),
           ...renderTaggedUndefined('    '),
           '  )',
         ]
@@ -4117,13 +4196,7 @@ function renderPromiseHelperFunctions(plan: WasmGcModulePlanIR): readonly string
             : []),
           ...renderPromiseSetStateAndValueFromTaggedTarget('target_tagged', '2', [
             '    local.get $value',
-          ], {
-            handlerField: '$on_rejected',
-            handlerResultState: '1',
-            signatureId: thenHandlerSignatureId,
-            usesHandler: thenUsesRejectedHandler,
-            usesPromiseThen,
-          }),
+          ], { usesPromiseThen }),
           ...renderTaggedUndefined('    '),
           '  )',
         ]
