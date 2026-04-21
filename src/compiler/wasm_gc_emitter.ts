@@ -3681,14 +3681,10 @@ function renderPromiseRecordTypes(plan: WasmGcModulePlanIR): readonly string[] {
   const usesPromiseThen = moduleCallsFunction(plan, '__soundscript_promise_then');
   return usesPromiseRecords
     ? [
-      `  (type $promise_runtime (struct`,
-      '    (field $state (mut i32))',
-      `    (field $value (mut (ref null ${taggedValueTypeName()})))`,
-      '  ))',
       ...(usesPromiseThen
         ? [
           `  (type $promise_reaction_runtime (struct`,
-          '    (field $result (mut (ref null $promise_runtime)))',
+          '    (field $result (mut (ref null eq)))',
           '    (field $on_fulfilled (mut (ref null eq)))',
           '    (field $on_rejected (mut (ref null eq)))',
           '  ))',
@@ -3699,6 +3695,13 @@ function renderPromiseRecordTypes(plan: WasmGcModulePlanIR): readonly string[] {
           '  ))',
         ]
         : []),
+      `  (type $promise_runtime (struct`,
+      '    (field $state (mut i32))',
+      `    (field $value (mut (ref null ${taggedValueTypeName()})))`,
+      ...(usesPromiseThen
+        ? ['    (field $reaction (mut (ref null $promise_reaction_runtime)))']
+        : []),
+      '  ))',
     ]
     : [];
 }
@@ -3824,20 +3827,107 @@ function renderPromiseSetStateAndValueFromTaggedTarget(
   targetName: string,
   state: string,
   valueLines: readonly string[],
+  options: {
+    handlerField: '$on_fulfilled' | '$on_rejected';
+    handlerResultState: string;
+    signatureId: number;
+    usesHandler: boolean;
+    usesPromiseThen: boolean;
+  },
 ): readonly string[] {
+  if (!options.usesPromiseThen) {
+    return [
+      `    local.get $${targetName}`,
+      `    ref.cast (ref ${taggedValueTypeName()})`,
+      `    struct.get ${taggedValueTypeName()} $heap_payload`,
+      '    ref.cast (ref $promise_runtime)',
+      `    i32.const ${state}`,
+      '    struct.set $promise_runtime $state',
+      `    local.get $${targetName}`,
+      `    ref.cast (ref ${taggedValueTypeName()})`,
+      `    struct.get ${taggedValueTypeName()} $heap_payload`,
+      '    ref.cast (ref $promise_runtime)',
+      ...valueLines,
+      '    struct.set $promise_runtime $value',
+    ];
+  }
+
   return [
     `    local.get $${targetName}`,
     `    ref.cast (ref ${taggedValueTypeName()})`,
     `    struct.get ${taggedValueTypeName()} $heap_payload`,
     '    ref.cast (ref $promise_runtime)',
-    `    i32.const ${state}`,
-    '    struct.set $promise_runtime $state',
-    `    local.get $${targetName}`,
-    `    ref.cast (ref ${taggedValueTypeName()})`,
-    `    struct.get ${taggedValueTypeName()} $heap_payload`,
-    '    ref.cast (ref $promise_runtime)',
+    '    local.set $target_promise',
+    ...renderPromiseSetStateAndValue('target_promise', state, valueLines, '    '),
+    '    local.get $target_promise',
+    '    ref.as_non_null',
+    '    struct.get $promise_runtime $reaction',
+    '    local.set $reaction',
+    '    local.get $reaction',
+    '    ref.is_null',
+    '    i32.eqz',
+    '    if',
+    ...(options.usesHandler
+      ? [
+        '      local.get $reaction',
+        '      ref.as_non_null',
+        `      struct.get $promise_reaction_runtime ${options.handlerField}`,
+        '      ref.is_null',
+        '      if',
+        ...renderPromiseReactionResultSet('reaction', state, valueLines, '        '),
+        '      else',
+        ...renderPromiseReactionResultSet(
+          'reaction',
+          options.handlerResultState,
+          [
+            '          local.get $reaction',
+            '          ref.as_non_null',
+            `          struct.get $promise_reaction_runtime ${options.handlerField}`,
+            ...valueLines.map((line) => `          ${line.trimStart()}`),
+            `          call ${closureDispatchFunctionName(options.signatureId)}`,
+          ],
+          '        ',
+        ),
+        '      end',
+      ]
+      : renderPromiseReactionResultSet('reaction', state, valueLines, '      ')),
+    '    end',
+  ];
+}
+
+function renderPromiseRecordNew(
+  state: string,
+  valueLines: readonly string[],
+  usesPromiseThen: boolean,
+  indent: string,
+): readonly string[] {
+  return [
+    `${indent}i32.const ${state}`,
     ...valueLines,
-    '    struct.set $promise_runtime $value',
+    ...(usesPromiseThen ? [`${indent}ref.null $promise_reaction_runtime`] : []),
+    `${indent}struct.new $promise_runtime`,
+  ];
+}
+
+function renderPromiseReactionResultSet(
+  reactionLocalName: string,
+  state: string,
+  valueLines: readonly string[],
+  indent: string,
+): readonly string[] {
+  return [
+    `${indent}local.get $${reactionLocalName}`,
+    `${indent}ref.as_non_null`,
+    `${indent}struct.get $promise_reaction_runtime $result`,
+    `${indent}ref.cast (ref $promise_runtime)`,
+    `${indent}i32.const ${state}`,
+    `${indent}struct.set $promise_runtime $state`,
+    `${indent}local.get $${reactionLocalName}`,
+    `${indent}ref.as_non_null`,
+    `${indent}struct.get $promise_reaction_runtime $result`,
+    `${indent}ref.cast (ref $promise_runtime)`,
+    ...valueLines,
+    `${indent}struct.set $promise_runtime $value`,
   ];
 }
 
@@ -3859,27 +3949,21 @@ function renderPromiseHelperFunctions(plan: WasmGcModulePlanIR): readonly string
       ...(usesPromiseResolve
         ? [
           `  (func $soundscript_promise_resolve (param $value (ref null ${taggedValueTypeName()})) (result (ref null eq))`,
-          '    i32.const 1',
-          '    local.get $value',
-          '    struct.new $promise_runtime',
+          ...renderPromiseRecordNew('1', ['    local.get $value'], usesPromiseThen, '    '),
           '  )',
         ]
         : []),
       ...(usesPromiseReject
         ? [
           `  (func $soundscript_promise_reject (param $value (ref null ${taggedValueTypeName()})) (result (ref null eq))`,
-          '    i32.const 2',
-          '    local.get $value',
-          '    struct.new $promise_runtime',
+          ...renderPromiseRecordNew('2', ['    local.get $value'], usesPromiseThen, '    '),
           '  )',
         ]
         : []),
       ...(usesPromiseNewPending
         ? [
           `  (func $soundscript_promise_new_pending (result (ref null eq))`,
-          '    i32.const 0',
-          ...renderTaggedUndefined('    '),
-          '    struct.new $promise_runtime',
+          ...renderPromiseRecordNew('0', renderTaggedUndefined('    '), usesPromiseThen, '    '),
           '  )',
         ]
         : []),
@@ -3887,9 +3971,7 @@ function renderPromiseHelperFunctions(plan: WasmGcModulePlanIR): readonly string
         ? [
           `  (func $soundscript_promise_then (param $receiver (ref null eq)) (param $on_fulfilled (ref null eq)) (param $on_rejected (ref null eq)) (result (ref null eq))`,
           '    (local $result (ref null $promise_runtime))',
-          '    i32.const 0',
-          ...renderTaggedUndefined('    '),
-          '    struct.new $promise_runtime',
+          ...renderPromiseRecordNew('0', renderTaggedUndefined('    '), usesPromiseThen, '    '),
           '    local.set $result',
           '    local.get $receiver',
           '    ref.cast (ref $promise_runtime)',
@@ -3985,6 +4067,19 @@ function renderPromiseHelperFunctions(plan: WasmGcModulePlanIR): readonly string
               '      ',
             )),
           '    end',
+          '    local.get $receiver',
+          '    ref.cast (ref $promise_runtime)',
+          '    struct.get $promise_runtime $state',
+          '    i32.eqz',
+          '    if',
+          '      local.get $receiver',
+          '      ref.cast (ref $promise_runtime)',
+          '      local.get $result',
+          '      local.get $on_fulfilled',
+          '      local.get $on_rejected',
+          '      struct.new $promise_reaction_runtime',
+          '      struct.set $promise_runtime $reaction',
+          '    end',
           '    local.get $result',
           '  )',
         ]
@@ -3992,9 +4087,21 @@ function renderPromiseHelperFunctions(plan: WasmGcModulePlanIR): readonly string
       ...(usesPromiseResolveInto
         ? [
           `  (func $soundscript_promise_resolve_into (param $target_tagged (ref null ${taggedValueTypeName()})) (param $value (ref null ${taggedValueTypeName()})) (result (ref null ${taggedValueTypeName()}))`,
+          ...(usesPromiseThen
+            ? [
+              '    (local $target_promise (ref null $promise_runtime))',
+              '    (local $reaction (ref null $promise_reaction_runtime))',
+            ]
+            : []),
           ...renderPromiseSetStateAndValueFromTaggedTarget('target_tagged', '1', [
             '    local.get $value',
-          ]),
+          ], {
+            handlerField: '$on_fulfilled',
+            handlerResultState: '1',
+            signatureId: thenHandlerSignatureId,
+            usesHandler: thenUsesFulfilledHandler,
+            usesPromiseThen,
+          }),
           ...renderTaggedUndefined('    '),
           '  )',
         ]
@@ -4002,9 +4109,21 @@ function renderPromiseHelperFunctions(plan: WasmGcModulePlanIR): readonly string
       ...(usesPromiseRejectInto
         ? [
           `  (func $soundscript_promise_reject_into (param $target_tagged (ref null ${taggedValueTypeName()})) (param $value (ref null ${taggedValueTypeName()})) (result (ref null ${taggedValueTypeName()}))`,
+          ...(usesPromiseThen
+            ? [
+              '    (local $target_promise (ref null $promise_runtime))',
+              '    (local $reaction (ref null $promise_reaction_runtime))',
+            ]
+            : []),
           ...renderPromiseSetStateAndValueFromTaggedTarget('target_tagged', '2', [
             '    local.get $value',
-          ]),
+          ], {
+            handlerField: '$on_rejected',
+            handlerResultState: '1',
+            signatureId: thenHandlerSignatureId,
+            usesHandler: thenUsesRejectedHandler,
+            usesPromiseThen,
+          }),
           ...renderTaggedUndefined('    '),
           '  )',
         ]

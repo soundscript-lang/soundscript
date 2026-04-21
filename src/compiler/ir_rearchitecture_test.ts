@@ -3510,6 +3510,7 @@ Deno.test('compiler wasm-gc emitter parses compiler-owned async Promise returns'
   const wat = await Deno.readTextFile(watPath);
   assertEquals(wat.includes('struct.new $tagged_value'), true);
   assertEquals(wat.includes('call $soundscript_promise_resolve'), true);
+  assertEquals(wat.includes('(field $reaction'), false);
   assertEquals(wat.includes('(type $promise_reaction_runtime'), false);
   assertEquals(wat.includes('(type $promise_microtask_runtime'), false);
   assertEquals(wat.includes('(func $soundscript_promise_reject '), false);
@@ -3562,6 +3563,7 @@ Deno.test('compiler wasm-gc emitter parses compiler-owned Promise.reject returns
   await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
   const wat = await Deno.readTextFile(watPath);
   assertEquals(wat.includes('call $soundscript_promise_reject'), true);
+  assertEquals(wat.includes('(field $reaction'), false);
   assertEquals(wat.includes('(type $promise_reaction_runtime'), false);
   assertEquals(wat.includes('(type $promise_microtask_runtime'), false);
   assertEquals(wat.includes('(func $soundscript_promise_resolve '), false);
@@ -3613,6 +3615,8 @@ Deno.test('compiler wasm-gc emitter parses settled Promise.then callbacks', asyn
   assertEquals(wat.includes('(type $closure_object (struct'), true);
   assertEquals(wat.includes('(type $promise_reaction_runtime (struct'), true);
   assertEquals(wat.includes('(type $promise_microtask_runtime (struct'), true);
+  assertEquals(wat.includes('(field $reaction (mut (ref null $promise_reaction_runtime)))'), true);
+  assertEquals(wat.includes('struct.set $promise_runtime $reaction'), true);
   assertEquals(wat.includes('(func $closure_dispatch_sig_0'), true);
   assertEquals(wat.includes('struct.get $promise_runtime $state'), true);
   assertEquals(wat.includes('call $closure_dispatch_sig_0'), true);
@@ -3698,6 +3702,8 @@ Deno.test('compiler wasm-gc emitter parses compiler-owned async await frame setu
   const wat = await Deno.readTextFile(watPath);
   assertEquals(wat.includes('call $soundscript_promise_new_pending'), true);
   assertEquals(wat.includes('call $soundscript_promise_then'), true);
+  assertEquals(wat.includes('struct.get $promise_runtime $reaction'), true);
+  assertEquals(wat.includes('struct.get $promise_reaction_runtime $result'), true);
   assertEquals(wat.includes('$dynamic_object_layout_object_dynamic_2_f64_box_ref'), true);
   assertEquals(wat.includes('$dynamic_object_layout_object_dynamic_1_f64'), false);
   assertEquals(wat.includes('$dynamic_object_layout_object_dynamic_1_box_ref'), false);
