@@ -4184,6 +4184,67 @@ Deno.test('compiler wasm-gc emitter runs async generator next startup', async ()
   assertEquals(promise instanceof Promise, false);
 });
 
+Deno.test('compiler wasm-gc emitter parses async generator for-await frame setup', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: {
+          strict: true,
+          lib: ['ES2020', 'ES2018.AsyncGenerator'],
+        },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        export async function* values(): AsyncGenerator<number, void, unknown> {
+          yield 1;
+          yield 2;
+        }
+
+        export async function sum(): Promise<number> {
+          let total = 0;
+          for await (const value of values()) {
+            total = total + value;
+          }
+          return total;
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
+  const sumPlan = snapshot.wasmGcPlan.functionPlans.find((func) => func.name === 'sum');
+  const stepPlan = snapshot.wasmGcPlan.functionPlans.find((func) =>
+    func.name.startsWith('closure_async_frame_step')
+  );
+  const watPath = join(tempDirectory, 'wasm-gc-shadow-async-generator-for-await.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-shadow-async-generator-for-await.wasm');
+
+  assertEquals(sumPlan?.bodyStatus, 'emittable');
+  assertEquals(stepPlan?.bodyStatus, 'emittable');
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
+  const wat = await Deno.readTextFile(watPath);
+  assertEquals(wat.includes('(func $soundscript_async_generator_step'), true);
+  assertEquals(wat.includes('Promise.resolve'), false);
+  assertEquals(wat.includes('jspi'), false);
+  const result = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(result.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(result.success, true);
+
+  const wasm = await Deno.readFile(wasmPath);
+  const instance = await WebAssembly.instantiate(wasm);
+  const sum = instance.instance.exports['main.ts:sum'];
+  assertEquals(typeof sum, 'function');
+});
+
 Deno.test('compiler semantic shadow models async frame optional closure fields', async () => {
   const tempDirectory = await createTempProject([
     {

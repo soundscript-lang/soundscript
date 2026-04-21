@@ -115,6 +115,7 @@ export type SemanticExpressionIR =
   | { kind: 'boolean_literal'; value: boolean; representation: 'i32' }
   | { kind: 'undefined_literal'; representation: 'tagged_ref' }
   | { kind: 'null_literal'; representation: 'tagged_ref' }
+  | { kind: 'heap_null'; representation: 'heap_ref' }
   | { kind: 'owned_string_literal'; literalId: number; representation: 'owned_string_ref' }
   | { kind: 'local_get'; name: string; representation: CompilerValueType }
   | {
@@ -1847,6 +1848,8 @@ function semanticExpressionFromCompilerIR(
       return { kind: 'undefined_literal', representation: 'tagged_ref' };
     case 'null_literal':
       return { kind: 'null_literal', representation: 'tagged_ref' };
+    case 'heap_null':
+      return { kind: 'heap_null', representation: 'heap_ref' };
     case 'owned_string_literal':
       return {
         kind: 'owned_string_literal',
@@ -2941,6 +2944,7 @@ function collectUnsupportedExpressionKinds(
     case 'boolean_literal':
     case 'undefined_literal':
     case 'null_literal':
+    case 'heap_null':
     case 'owned_string_literal':
     case 'local_get':
       break;

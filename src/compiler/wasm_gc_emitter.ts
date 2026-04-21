@@ -1541,6 +1541,7 @@ function collectNumberArrayScratchFromExpression(
     case 'boolean_literal':
     case 'undefined_literal':
     case 'null_literal':
+    case 'heap_null':
     case 'owned_string_literal':
     case 'local_get':
     case 'closure_null':
@@ -2360,6 +2361,8 @@ function renderExpression(
         `${indent}ref.null eq`,
         `${indent}struct.new ${taggedValueTypeName()}`,
       ];
+    case 'heap_null':
+      return [`${indent}ref.null eq`];
     case 'owned_string_literal':
       // JS-host string materialization is still wrapper-owned in the shadow backend.
       return [`${indent}ref.null extern`];
@@ -3234,6 +3237,7 @@ function collectBoxedClosureDispatchSignatureIdsFromExpression(
     case 'boolean_literal':
     case 'undefined_literal':
     case 'null_literal':
+    case 'heap_null':
     case 'owned_string_literal':
     case 'local_get':
     case 'closure_null':
@@ -3625,6 +3629,7 @@ function collectBoxValueTypesFromExpression(
     case 'boolean_literal':
     case 'undefined_literal':
     case 'null_literal':
+    case 'heap_null':
     case 'owned_string_literal':
     case 'local_get':
     case 'closure_null':
@@ -3882,6 +3887,7 @@ function collectArrayRuntimeTypesFromExpression(
     case 'boolean_literal':
     case 'undefined_literal':
     case 'null_literal':
+    case 'heap_null':
     case 'owned_string_literal':
     case 'local_get':
     case 'closure_null':
