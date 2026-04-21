@@ -3691,6 +3691,51 @@ Deno.test('compiler wasm-gc emitter links multiple pending Promise.then reaction
   assertEquals(result.success, true);
 });
 
+Deno.test('compiler wasm-gc emitter adopts Promise-returning then callbacks', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: {
+          strict: true,
+          lib: ['ES2020'],
+        },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        export function value(): Promise<number> {
+          return Promise.resolve(4).then((item) => Promise.resolve(item + 1));
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
+  const valuePlan = snapshot.wasmGcPlan.functionPlans.find((func) => func.name === 'value');
+  const watPath = join(tempDirectory, 'wasm-gc-shadow-promise-then-adoption.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-shadow-promise-then-adoption.wasm');
+
+  assertEquals(valuePlan?.bodyStatus, 'emittable');
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
+  const wat = await Deno.readTextFile(watPath);
+  assertEquals(wat.includes('(func $soundscript_promise_adopt_reaction_result'), true);
+  assertEquals(wat.includes('call $soundscript_promise_adopt_reaction_result'), true);
+  assertEquals(wat.includes('call $soundscript_promise_resolve'), true);
+  assertEquals(wat.includes('Promise.resolve'), false);
+  assertEquals(wat.includes('jspi'), false);
+  const result = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(result.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(result.success, true);
+});
+
 Deno.test('compiler semantic shadow models async frame optional closure fields', async () => {
   const tempDirectory = await createTempProject([
     {
