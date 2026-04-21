@@ -528,7 +528,7 @@ function dynamicObjectStatementEntry(
     case 'dynamic_object_property_set':
       return {
         keyName: statement.propertyKeyName,
-        valueName: statement.valueName,
+        valueName: statement.valueName ?? statement.propertyKeyName,
         valueType: statement.valueType,
       };
     default:
@@ -696,7 +696,7 @@ function dynamicObjectLocalLayouts(
           index === existingIndex
             ? {
               keyName: statement.propertyKeyName,
-              valueName: statement.valueName,
+              valueName: statement.valueName ?? statement.propertyKeyName,
               valueType: statement.valueType,
             }
             : entry
@@ -705,7 +705,7 @@ function dynamicObjectLocalLayouts(
           ...currentEntries,
           {
             keyName: statement.propertyKeyName,
-            valueName: statement.valueName,
+            valueName: statement.valueName ?? statement.propertyKeyName,
             valueType: statement.valueType,
           },
         ];
@@ -1385,11 +1385,13 @@ function collectNumberArrayScratchFromStatement(
     case 'fallback_object_property_get':
     case 'dynamic_object_new':
     case 'dynamic_object_property_get':
-    case 'dynamic_object_property_set':
     case 'dynamic_object_size':
     case 'dynamic_object_has':
     case 'dynamic_object_delete':
     case 'dynamic_object_clear':
+      break;
+    case 'dynamic_object_property_set':
+      collectNumberArrayScratchFromExpression(statement.value, uses);
       break;
     case 'dynamic_object_values':
       if (statement.resultType === 'owned_array_ref') {
@@ -1401,6 +1403,9 @@ function collectNumberArrayScratchFromStatement(
       } else {
         uses.add('tagged_array');
       }
+      break;
+    case 'throw_tagged':
+      collectNumberArrayScratchFromExpression(statement.value, uses);
       break;
     case 'trap':
     case 'unsupported_statement':
@@ -2615,7 +2620,7 @@ function renderStatement(
         `${indent}struct.set ${typeName} $present_${index}`,
         `${indent}local.get $${sanitizeIdentifier(statement.objectName)}`,
         `${indent}ref.cast (ref ${typeName})`,
-        `${indent}local.get $${sanitizeIdentifier(statement.valueName)}`,
+        ...renderExpression(statement.value, indent, context),
         `${indent}struct.set ${typeName} $value_${index}`,
       ];
     }
@@ -2699,6 +2704,12 @@ function renderStatement(
         `${indent}    br 0`,
         `${indent}  end`,
         `${indent}end`,
+      ];
+    case 'throw_tagged':
+      return [
+        ...renderExpression(statement.value, indent, context),
+        `${indent}drop`,
+        `${indent}unreachable`,
       ];
     case 'trap':
       return [`${indent}unreachable`];
@@ -2976,12 +2987,18 @@ function collectBoxedClosureDispatchSignatureIdsFromStatement(
     case 'fallback_object_property_get':
     case 'dynamic_object_new':
     case 'dynamic_object_property_get':
-    case 'dynamic_object_property_set':
     case 'dynamic_object_size':
     case 'dynamic_object_has':
     case 'dynamic_object_delete':
     case 'dynamic_object_clear':
     case 'dynamic_object_values':
+      break;
+    case 'dynamic_object_property_set':
+      collectBoxedClosureDispatchSignatureIdsFromExpression(statement.value, signatureIds);
+      break;
+    case 'throw_tagged':
+      collectBoxedClosureDispatchSignatureIdsFromExpression(statement.value, signatureIds);
+      break;
     case 'trap':
     case 'unsupported_statement':
       break;
@@ -3275,12 +3292,18 @@ function collectBoxValueTypesFromStatement(
     case 'fallback_object_property_get':
     case 'dynamic_object_new':
     case 'dynamic_object_property_get':
-    case 'dynamic_object_property_set':
     case 'dynamic_object_size':
     case 'dynamic_object_has':
     case 'dynamic_object_delete':
     case 'dynamic_object_clear':
     case 'dynamic_object_values':
+      break;
+    case 'dynamic_object_property_set':
+      collectBoxValueTypesFromExpression(statement.value, valueTypes);
+      break;
+    case 'throw_tagged':
+      collectBoxValueTypesFromExpression(statement.value, valueTypes);
+      break;
     case 'trap':
     case 'unsupported_statement':
       break;
@@ -3552,14 +3575,19 @@ function collectArrayRuntimeTypesFromStatement(
     case 'fallback_object_property_get':
     case 'dynamic_object_new':
     case 'dynamic_object_property_get':
-    case 'dynamic_object_property_set':
     case 'dynamic_object_size':
     case 'dynamic_object_has':
     case 'dynamic_object_delete':
     case 'dynamic_object_clear':
       break;
+    case 'dynamic_object_property_set':
+      collectArrayRuntimeTypesFromExpression(statement.value, runtimeTypes);
+      break;
     case 'dynamic_object_values':
       addArrayRuntimeForValueType(statement.resultType, runtimeTypes);
+      break;
+    case 'throw_tagged':
+      collectArrayRuntimeTypesFromExpression(statement.value, runtimeTypes);
       break;
     case 'trap':
     case 'unsupported_statement':

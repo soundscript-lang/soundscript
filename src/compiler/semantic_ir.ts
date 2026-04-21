@@ -444,7 +444,8 @@ export type SemanticStatementIR =
     objectName: string;
     representationName: string;
     propertyKeyName: string;
-    valueName: string;
+    valueName?: string;
+    value: SemanticExpressionIR;
     valueType: CompilerValueType;
   }
   | {
@@ -531,6 +532,7 @@ export type SemanticStatementIR =
     condition: SemanticExpressionIR;
     body: readonly SemanticStatementIR[];
   }
+  | { kind: 'throw_tagged'; value: SemanticExpressionIR }
   | { kind: 'trap' }
   | { kind: 'unsupported_statement'; sourceKind: string };
 
@@ -2257,6 +2259,8 @@ function semanticStatementFromCompilerIR(
           semanticStatementFromCompilerIR(nested, specializedObjectFieldNames)
         ),
       };
+    case 'throw_tagged':
+      return { kind: 'throw_tagged', value: semanticExpressionFromCompilerIR(statement.value) };
     case 'trap':
       return { kind: 'trap' };
     default:
@@ -2451,6 +2455,11 @@ function semanticDynamicObjectPropertySetFromRuntimeOperation(
     representationName: operation.representation.name,
     propertyKeyName: operation.propertyKeyName,
     valueName: operation.valueName,
+    value: {
+      kind: 'local_get',
+      name: operation.valueName,
+      representation: valueTypesByName.get(operation.valueName) ?? 'tagged_ref',
+    },
     valueType: valueTypesByName.get(operation.valueName) ?? 'tagged_ref',
   };
 }
@@ -2478,18 +2487,23 @@ function dynamicObjectStoredLocalFromExpression(
 function semanticDynamicObjectPropertySetFromCompilerStatement(
   statement: Extract<CompilerStatementIR, { kind: 'dynamic_object_property_set' }>,
   representationName: string,
-): SemanticStatementIR | undefined {
+): SemanticStatementIR {
   const storedLocal = dynamicObjectStoredLocalFromExpression(statement.value);
-  if (!storedLocal) {
-    return undefined;
-  }
+  const value: SemanticExpressionIR = storedLocal
+    ? {
+      kind: 'local_get',
+      name: storedLocal.name,
+      representation: storedLocal.valueType,
+    }
+    : semanticExpressionFromCompilerIR(statement.value);
   return {
     kind: 'dynamic_object_property_set',
     objectName: statement.objectName,
     representationName,
     propertyKeyName: statement.propertyKeyName,
-    valueName: storedLocal.name,
-    valueType: storedLocal.valueType,
+    ...(storedLocal ? { valueName: storedLocal.name } : {}),
+    value,
+    valueType: storedLocal?.valueType ?? value.representation,
   };
 }
 
@@ -2779,10 +2793,9 @@ function semanticBodyFromCompilerIR(
       return semanticStatement;
     } else if (statement.kind === 'dynamic_object_property_set') {
       const representationName = dynamicRepresentationNameByObjectName.get(statement.objectName);
-      const semanticStatement = representationName
+      return representationName
         ? semanticDynamicObjectPropertySetFromCompilerStatement(statement, representationName)
-        : undefined;
-      return semanticStatement ?? { kind: 'unsupported_statement', sourceKind: statement.kind };
+        : { kind: 'unsupported_statement', sourceKind: statement.kind };
     } else if (statement.kind === 'if') {
       return {
         kind: 'if',
@@ -2937,12 +2950,14 @@ function collectUnsupportedStatementKinds(
     case 'fallback_object_property_get':
     case 'dynamic_object_new':
     case 'dynamic_object_property_get':
-    case 'dynamic_object_property_set':
     case 'dynamic_object_size':
     case 'dynamic_object_has':
     case 'dynamic_object_delete':
     case 'dynamic_object_clear':
     case 'dynamic_object_values':
+      break;
+    case 'dynamic_object_property_set':
+      collectUnsupportedExpressionKinds(statement.value, kinds);
       break;
     case 'specialized_object_field_set':
       collectUnsupportedExpressionKinds(statement.value, kinds);
@@ -2968,6 +2983,9 @@ function collectUnsupportedStatementKinds(
     case 'while':
       collectUnsupportedExpressionKinds(statement.condition, kinds);
       statement.body.forEach((nested) => collectUnsupportedStatementKinds(nested, kinds));
+      break;
+    case 'throw_tagged':
+      collectUnsupportedExpressionKinds(statement.value, kinds);
       break;
     case 'unsupported_statement':
       kinds.add(statement.sourceKind);

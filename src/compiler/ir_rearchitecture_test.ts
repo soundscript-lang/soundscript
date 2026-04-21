@@ -3886,6 +3886,134 @@ Deno.test('compiler wasm-gc emitter parses Promise.catch and Promise.finally cal
   assertEquals(result.success, true);
 });
 
+Deno.test('compiler wasm-gc emitter parses minimal sync generator step closures', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: {
+          strict: true,
+          lib: ['ES2020'],
+        },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        export function* values(): Generator<number, void, unknown> {
+          yield 1;
+          yield 2;
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
+  const valuesPlan = snapshot.wasmGcPlan.functionPlans.find((func) => func.name === 'values');
+  const stepPlan = snapshot.wasmGcPlan.functionPlans.find((func) =>
+    func.name.startsWith('closure_generator_step')
+  );
+  const watPath = join(tempDirectory, 'wasm-gc-shadow-sync-generator-step.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-shadow-sync-generator-step.wasm');
+
+  assertEquals(
+    snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
+    [
+      'closure',
+      'dynamic_object',
+      'finite_union',
+      'host_handle',
+      'host_object_projection',
+      'specialized_object',
+      'string',
+      'sync_generator',
+    ],
+  );
+  assertEquals(valuesPlan?.bodyStatus, 'emittable');
+  assertEquals(stepPlan?.bodyStatus, 'emittable');
+  assertEquals(stepPlan?.unsupportedBodyKinds, []);
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
+  const wat = await Deno.readTextFile(watPath);
+  assertEquals(wat.includes('closure_generator_step'), true);
+  assertEquals(wat.includes('unsupported statement'), false);
+  assertEquals(wat.includes('generator_yield_result'), true);
+  assertEquals(wat.includes('jspi'), false);
+  const result = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(result.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(result.success, true);
+});
+
+Deno.test('compiler wasm-gc emitter parses minimal async generator step closures', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: {
+          strict: true,
+          lib: ['ES2020', 'ES2018.AsyncGenerator'],
+        },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        export async function* values(): AsyncGenerator<number, void, unknown> {
+          yield 1;
+          yield 2;
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
+  const valuesPlan = snapshot.wasmGcPlan.functionPlans.find((func) => func.name === 'values');
+  const stepPlan = snapshot.wasmGcPlan.functionPlans.find((func) =>
+    func.name.startsWith('closure_generator_step')
+  );
+  const watPath = join(tempDirectory, 'wasm-gc-shadow-async-generator-step.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-shadow-async-generator-step.wasm');
+
+  assertEquals(
+    snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
+    [
+      'async_generator',
+      'closure',
+      'dynamic_object',
+      'finite_union',
+      'host_handle',
+      'host_object_projection',
+      'promise',
+      'specialized_object',
+      'string',
+    ],
+  );
+  assertEquals(valuesPlan?.bodyStatus, 'emittable');
+  assertEquals(stepPlan?.bodyStatus, 'emittable');
+  assertEquals(stepPlan?.unsupportedBodyKinds, []);
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
+  const wat = await Deno.readTextFile(watPath);
+  assertEquals(wat.includes('closure_generator_step'), true);
+  assertEquals(wat.includes('unsupported statement'), false);
+  assertEquals(wat.includes('generator_yield_result'), true);
+  assertEquals(wat.includes('(type $promise_runtime (struct'), true);
+  assertEquals(wat.includes('jspi'), false);
+  const result = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(result.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(result.success, true);
+});
+
 Deno.test('compiler semantic shadow models async frame optional closure fields', async () => {
   const tempDirectory = await createTempProject([
     {
