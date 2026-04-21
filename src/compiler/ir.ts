@@ -1442,6 +1442,7 @@ export interface CompilerDynamicObjectPropertySetStatementIR {
   objectName: string;
   propertyKeyName: string;
   value: CompilerExpressionIR;
+  compatibilityCollectionFamily?: 'map' | 'set';
 }
 
 export interface CompilerIfStatementIR {

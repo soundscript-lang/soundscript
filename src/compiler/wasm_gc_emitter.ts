@@ -64,6 +64,13 @@ function renderRuntimeFamilyTypePlan(plan: WasmGcTypePlanIR): readonly string[] 
   if (plan.family === 'array') {
     return [];
   }
+  if (plan.family === 'map' || plan.family === 'set') {
+    return [
+      `  (type ${plan.name} (struct`,
+      '    (field $storage (mut (ref null eq)))',
+      '  ))',
+    ];
+  }
   return [`  ;; runtime-family ${plan.family} type ${plan.name} kind=${plan.wasmKind}`];
 }
 

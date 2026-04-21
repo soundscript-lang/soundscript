@@ -448,6 +448,7 @@ export type SemanticStatementIR =
     kind: 'dynamic_object_new';
     targetName: string;
     representationName: string;
+    collectionFamily?: 'map' | 'set';
     entries: readonly {
       keyName: string;
       valueName: string;
@@ -461,6 +462,7 @@ export type SemanticStatementIR =
     representationName: string;
     propertyKeyName: string;
     valueType: CompilerValueType;
+    collectionFamily?: 'map' | 'set';
   }
   | {
     kind: 'dynamic_object_property_set';
@@ -470,12 +472,14 @@ export type SemanticStatementIR =
     valueName?: string;
     value: SemanticExpressionIR;
     valueType: CompilerValueType;
+    collectionFamily?: 'map' | 'set';
   }
   | {
     kind: 'dynamic_object_size';
     targetName: string;
     objectName: string;
     representationName: string;
+    collectionFamily?: 'map' | 'set';
   }
   | {
     kind: 'dynamic_object_has';
@@ -483,6 +487,7 @@ export type SemanticStatementIR =
     objectName: string;
     representationName: string;
     propertyKeyName: string;
+    collectionFamily?: 'map' | 'set';
   }
   | {
     kind: 'dynamic_object_delete';
@@ -490,18 +495,21 @@ export type SemanticStatementIR =
     objectName: string;
     representationName: string;
     propertyKeyName: string;
+    collectionFamily?: 'map' | 'set';
   }
   | {
     kind: 'dynamic_object_clear';
     targetName: string;
     objectName: string;
     representationName: string;
+    collectionFamily?: 'map' | 'set';
   }
   | {
     kind: 'dynamic_object_values';
     targetName: string;
     objectName: string;
     representationName: string;
+    collectionFamily?: 'map' | 'set';
     resultType:
       | 'owned_array_ref'
       | 'owned_number_array_ref'
@@ -2518,6 +2526,9 @@ function semanticDynamicObjectNewFromRuntimeOperation(
     kind: 'dynamic_object_new',
     targetName: plan.operation.resultName,
     representationName: plan.operation.representation.name,
+    ...(plan.operation.compatibilityCollectionFamily
+      ? { collectionFamily: plan.operation.compatibilityCollectionFamily }
+      : {}),
     entries: plan.initialEntries,
   };
 }
@@ -2533,6 +2544,9 @@ function semanticDynamicObjectPropertyGetFromRuntimeOperation(
     representationName: operation.representation.name,
     propertyKeyName: operation.propertyKeyName,
     valueType: valueTypesByName.get(operation.resultName) ?? 'tagged_ref',
+    ...(operation.compatibilityCollectionFamily
+      ? { collectionFamily: operation.compatibilityCollectionFamily }
+      : {}),
   };
 }
 
@@ -2552,6 +2566,7 @@ function semanticDynamicObjectPropertySetFromRuntimeOperation(
       representation: valueTypesByName.get(operation.valueName) ?? 'tagged_ref',
     },
     valueType: valueTypesByName.get(operation.valueName) ?? 'tagged_ref',
+    ...compatibilityCollectionFamilyField(operation),
   };
 }
 
@@ -2596,7 +2611,16 @@ function semanticDynamicObjectPropertySetFromCompilerStatement(
     ...(storedLocal ? { valueName: storedLocal.name } : {}),
     value,
     valueType: storedLocal?.valueType ?? value.representation,
+    ...compatibilityCollectionFamilyField(statement),
   };
+}
+
+function compatibilityCollectionFamilyField(
+  operation: { compatibilityCollectionFamily?: 'map' | 'set' },
+): { collectionFamily?: 'map' | 'set' } {
+  return operation.compatibilityCollectionFamily
+    ? { collectionFamily: operation.compatibilityCollectionFamily }
+    : {};
 }
 
 function semanticDynamicObjectSizeFromRuntimeOperation(
@@ -2607,6 +2631,7 @@ function semanticDynamicObjectSizeFromRuntimeOperation(
     targetName: operation.resultName,
     objectName: operation.objectName,
     representationName: operation.representation.name,
+    ...compatibilityCollectionFamilyField(operation),
   };
 }
 
@@ -2619,6 +2644,7 @@ function semanticDynamicObjectHasFromRuntimeOperation(
     objectName: operation.objectName,
     representationName: operation.representation.name,
     propertyKeyName: operation.propertyKeyName,
+    ...compatibilityCollectionFamilyField(operation),
   };
 }
 
@@ -2631,6 +2657,7 @@ function semanticDynamicObjectDeleteFromRuntimeOperation(
     objectName: operation.objectName,
     representationName: operation.representation.name,
     propertyKeyName: operation.propertyKeyName,
+    ...compatibilityCollectionFamilyField(operation),
   };
 }
 
@@ -2642,6 +2669,7 @@ function semanticDynamicObjectClearFromRuntimeOperation(
     targetName: operation.resultName,
     objectName: operation.objectName,
     representationName: operation.representation.name,
+    ...compatibilityCollectionFamilyField(operation),
   };
 }
 
@@ -2653,6 +2681,7 @@ function semanticDynamicObjectValuesFromRuntimeOperation(
     targetName: operation.resultName,
     objectName: operation.objectName,
     representationName: operation.representation.name,
+    ...compatibilityCollectionFamilyField(operation),
     resultType: operation.resultType,
   };
 }

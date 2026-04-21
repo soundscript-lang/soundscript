@@ -2138,6 +2138,24 @@ Deno.test('compiler wasm-gc emitter produces runnable legacy Map set and size re
     ['dynamic_object', 'finite_union', 'map', 'string'],
   );
   assertEquals(mainPlan?.bodyStatus, 'emittable');
+  assertEquals(
+    mainPlan?.body.some((statement) =>
+      statement.kind === 'dynamic_object_new' && statement.collectionFamily === 'map'
+    ),
+    true,
+  );
+  assertEquals(
+    mainPlan?.body.some((statement) =>
+      statement.kind === 'dynamic_object_property_set' && statement.collectionFamily === 'map'
+    ),
+    true,
+  );
+  assertEquals(
+    mainPlan?.body.some((statement) =>
+      statement.kind === 'dynamic_object_size' && statement.collectionFamily === 'map'
+    ),
+    true,
+  );
   await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
   const wat = await Deno.readTextFile(watPath);
   assertEquals(
@@ -2145,8 +2163,8 @@ Deno.test('compiler wasm-gc emitter produces runnable legacy Map set and size re
     true,
   );
   assertEquals(wat.includes('f64.const 1'), true);
-  assertEquals(wat.includes('map_runtime'), true);
-  assertEquals(wat.includes('set_runtime'), false);
+  assertEquals(wat.includes('(type $map_runtime (struct'), true);
+  assertEquals(wat.includes('(type $set_runtime (struct'), false);
   const result = await new Deno.Command('wasm-tools', {
     args: ['parse', watPath, '-o', wasmPath],
     stdout: 'piped',
@@ -2201,6 +2219,12 @@ Deno.test('compiler wasm-gc emitter produces runnable legacy Map has checks', as
     ['dynamic_object', 'finite_union', 'map', 'string'],
   );
   assertEquals(mainPlan?.bodyStatus, 'emittable');
+  assertEquals(
+    mainPlan?.body.some((statement) =>
+      statement.kind === 'dynamic_object_new' && statement.collectionFamily === 'map'
+    ),
+    true,
+  );
   await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
   const wat = await Deno.readTextFile(watPath);
   assertEquals(wat.includes('local.set $dynamic_has'), true);
@@ -2855,13 +2879,32 @@ Deno.test('compiler wasm-gc emitter produces runnable legacy Set empty size read
     ['array', 'dynamic_object', 'finite_union', 'set', 'specialized_object', 'string'],
   );
   assertEquals(mainPlan?.bodyStatus, 'emittable');
+  assertEquals(
+    mainPlan?.body.some((statement) =>
+      statement.kind === 'dynamic_object_new' && statement.collectionFamily === 'set'
+    ),
+    true,
+  );
+  assertEquals(
+    mainPlan?.body.some((statement) =>
+      statement.kind === 'dynamic_object_property_set' && statement.collectionFamily === 'set'
+    ),
+    true,
+  );
+  assertEquals(
+    mainPlan?.body.some((statement) =>
+      statement.kind === 'dynamic_object_property_get' && statement.collectionFamily === 'set'
+    ),
+    true,
+  );
   await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
   const wat = await Deno.readTextFile(watPath);
   assertEquals(
     wat.includes('(type $string_array_runtime (array (mut (ref null $string_runtime))))'),
     true,
   );
-  assertEquals(wat.includes('set_runtime'), true);
+  assertEquals(wat.includes('(type $set_runtime (struct'), true);
+  assertEquals(wat.includes('(type $map_runtime (struct'), false);
   const result = await new Deno.Command('wasm-tools', {
     args: ['parse', watPath, '-o', wasmPath],
     stdout: 'piped',

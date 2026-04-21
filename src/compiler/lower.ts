@@ -19064,6 +19064,7 @@ function lowerSupportedSetValuesArrayRead(
     valuesKeyName,
     setTypeInfo.valuesArrayType,
     context,
+    'set',
   );
 }
 
@@ -19105,6 +19106,7 @@ function initializeSupportedSetValuesArrayProperty(
     kind: 'dynamic_object_property_set',
     objectName,
     propertyKeyName: valuesKeyName,
+    compatibilityCollectionFamily: 'set',
     value: {
       kind: 'tag_heap_object',
       value: {
