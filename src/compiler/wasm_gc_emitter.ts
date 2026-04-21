@@ -352,10 +352,18 @@ function generatorResultObjectNames(
 
 function generatorResultPropertyKind(name: string): 'value' | 'done' | undefined {
   const logicalKey = dynamicObjectLogicalKeyName(name);
-  if (logicalKey === 'generator_result_value_key' || /^value_\d+$/.test(name)) {
+  if (
+    logicalKey === 'generator_result_value_key' ||
+    /^value_\d+$/.test(name) ||
+    /^for_of_value_key_\d+$/.test(name)
+  ) {
     return 'value';
   }
-  if (logicalKey === 'generator_result_done_key' || /^done_\d+$/.test(name)) {
+  if (
+    logicalKey === 'generator_result_done_key' ||
+    /^done_\d+$/.test(name) ||
+    /^for_of_done_key_\d+$/.test(name)
+  ) {
     return 'done';
   }
   return undefined;

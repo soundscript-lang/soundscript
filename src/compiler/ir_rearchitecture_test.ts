@@ -4008,6 +4008,60 @@ Deno.test('compiler wasm-gc emitter runs minimal sync generator next calls', asy
   assertEquals((first as () => number)(), 1);
 });
 
+Deno.test('compiler wasm-gc emitter runs sync generator for-of loops', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: {
+          strict: true,
+          lib: ['ES2020'],
+        },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        export function* values(): Generator<number, void, unknown> {
+          yield 1;
+          yield 2;
+        }
+
+        export function sum(): number {
+          let total = 0;
+          for (const value of values()) {
+            total = total + value;
+          }
+          return total;
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
+  const sumPlan = snapshot.wasmGcPlan.functionPlans.find((func) => func.name === 'sum');
+  const watPath = join(tempDirectory, 'wasm-gc-shadow-sync-generator-for-of.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-shadow-sync-generator-for-of.wasm');
+
+  assertEquals(sumPlan?.bodyStatus, 'emittable');
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
+  const result = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(result.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(result.success, true);
+
+  const wasm = await Deno.readFile(wasmPath);
+  const instance = await WebAssembly.instantiate(wasm);
+  const sum = instance.instance.exports['main.ts:sum'];
+  assertEquals(typeof sum, 'function');
+  assertEquals((sum as () => number)(), 3);
+});
+
 Deno.test('compiler wasm-gc emitter parses minimal async generator step closures', async () => {
   const tempDirectory = await createTempProject([
     {

@@ -2349,6 +2349,23 @@ function compilerTreeContainsLocalGet(value: unknown, name: string): boolean {
   return containsLocalGet;
 }
 
+function compilerStatementImmediateExpressionsContainLocalGet(
+  statement: CompilerStatementIR,
+  name: string,
+): boolean {
+  if (statement.kind !== 'while') {
+    return compilerTreeContainsLocalGet(statement, name);
+  }
+  switch (statement.kind) {
+    case 'while':
+      return compilerTreeContainsLocalGet(statement.condition, name);
+    default: {
+      const exhaustiveCheck: never = statement;
+      return exhaustiveCheck;
+    }
+  }
+}
+
 function semanticSpecializedObjectNewFromRuntimeOperation(
   operation: SpecializedObjectAllocationOperationIR,
 ): SemanticStatementIR {
@@ -2674,7 +2691,7 @@ function semanticBodyFromCompilerIR(
     targetBody: SemanticStatementIR[],
   ): void => {
     for (const [resultName, operation] of [...pendingFieldGetsByResult]) {
-      if (compilerTreeContainsLocalGet(statement, resultName)) {
+      if (compilerStatementImmediateExpressionsContainLocalGet(statement, resultName)) {
         targetBody.push(
           semanticSpecializedObjectFieldGetFromRuntimeOperation(
             operation,
@@ -2685,7 +2702,7 @@ function semanticBodyFromCompilerIR(
       }
     }
     for (const [resultName, operation] of [...pendingFallbackGetsByResult]) {
-      if (compilerTreeContainsLocalGet(statement, resultName)) {
+      if (compilerStatementImmediateExpressionsContainLocalGet(statement, resultName)) {
         targetBody.push(
           semanticFallbackObjectPropertyGetFromRuntimeOperation(operation, valueTypesByName),
         );
@@ -2693,7 +2710,7 @@ function semanticBodyFromCompilerIR(
       }
     }
     for (const [resultName, operation] of [...pendingDynamicGetsByResult]) {
-      if (compilerTreeContainsLocalGet(statement, resultName)) {
+      if (compilerStatementImmediateExpressionsContainLocalGet(statement, resultName)) {
         targetBody.push(
           semanticDynamicObjectPropertyGetFromRuntimeOperation(operation, valueTypesByName),
         );
@@ -2702,35 +2719,35 @@ function semanticBodyFromCompilerIR(
       }
     }
     for (const [resultName, operation] of [...pendingDynamicSizesByResult]) {
-      if (compilerTreeContainsLocalGet(statement, resultName)) {
+      if (compilerStatementImmediateExpressionsContainLocalGet(statement, resultName)) {
         targetBody.push(semanticDynamicObjectSizeFromRuntimeOperation(operation));
         seenAssignments.add(operation.resultName);
         pendingDynamicSizesByResult.delete(resultName);
       }
     }
     for (const [resultName, operation] of [...pendingDynamicHasByResult]) {
-      if (compilerTreeContainsLocalGet(statement, resultName)) {
+      if (compilerStatementImmediateExpressionsContainLocalGet(statement, resultName)) {
         targetBody.push(semanticDynamicObjectHasFromRuntimeOperation(operation));
         seenAssignments.add(operation.resultName);
         pendingDynamicHasByResult.delete(resultName);
       }
     }
     for (const [resultName, operation] of [...pendingDynamicDeletesByResult]) {
-      if (compilerTreeContainsLocalGet(statement, resultName)) {
+      if (compilerStatementImmediateExpressionsContainLocalGet(statement, resultName)) {
         targetBody.push(semanticDynamicObjectDeleteFromRuntimeOperation(operation));
         seenAssignments.add(operation.resultName);
         pendingDynamicDeletesByResult.delete(resultName);
       }
     }
     for (const [resultName, operation] of [...pendingDynamicClearsByResult]) {
-      if (compilerTreeContainsLocalGet(statement, resultName)) {
+      if (compilerStatementImmediateExpressionsContainLocalGet(statement, resultName)) {
         targetBody.push(semanticDynamicObjectClearFromRuntimeOperation(operation));
         seenAssignments.add(operation.resultName);
         pendingDynamicClearsByResult.delete(resultName);
       }
     }
     for (const [resultName, operation] of [...pendingDynamicValuesByResult]) {
-      if (compilerTreeContainsLocalGet(statement, resultName)) {
+      if (compilerStatementImmediateExpressionsContainLocalGet(statement, resultName)) {
         targetBody.push(semanticDynamicObjectValuesFromRuntimeOperation(operation));
         seenAssignments.add(operation.resultName);
         pendingDynamicValuesByResult.delete(resultName);
