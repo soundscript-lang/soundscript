@@ -347,7 +347,8 @@ function generatorResultObjectNames(
       names.add(statement.name);
     } else if (
       statement.kind === 'dynamic_object_property_get' &&
-      /^async_frame_for_of_result_object_\d+$/.test(statement.objectName) &&
+      (/^async_frame_for_of_result_object_\d+$/.test(statement.objectName) ||
+        /^generator_for_of_result_object_\d+$/.test(statement.objectName)) &&
       generatorResultPropertyKind(statement.propertyKeyName) !== undefined
     ) {
       names.add(statement.objectName);
@@ -590,6 +591,10 @@ function dynamicObjectLogicalKeyName(name: string): string {
   if (/^generator_step_key_\d+$/.test(name)) {
     return 'generator_step_key';
   }
+  const generatorKey = /^(.+_generator_key)_\d+$/.exec(name);
+  if (generatorKey) {
+    return generatorKey[1]!;
+  }
   const frameKey = /^(.+_frame_key)_\d+$/.exec(name);
   if (frameKey) {
     return frameKey[1]!;
@@ -618,7 +623,8 @@ function isSplitGeneratorObjectDynamicObjectEntry(
   entry: DynamicObjectLocalLayout['entries'][number],
 ): boolean {
   const logicalKey = dynamicObjectLogicalKeyName(entry.keyName);
-  return logicalKey === 'generator_pc_key' || logicalKey === 'generator_step_key';
+  return logicalKey === 'generator_pc_key' || logicalKey === 'generator_step_key' ||
+    logicalKey.endsWith('_generator_key');
 }
 
 function isModuleScopedDynamicObjectEntry(
@@ -2648,8 +2654,8 @@ function renderExpression(
       ];
     case 'box_new':
       return [
-        ...(expression.valueType === 'closure_ref' && expression.value.kind === 'closure_literal'
-          ? renderClosureObjectExpression(expression.value, indent, context)
+        ...(expression.valueType === 'closure_ref'
+          ? renderClosureObjectValueExpression(expression.value, indent, context)
           : renderExpression(expression.value, indent, context)),
         `${indent}struct.new ${boxTypeName(expression.valueType)}`,
       ];
@@ -2883,8 +2889,8 @@ function renderStatement(
       return [
         ...renderExpression(statement.box, indent, context),
         `${indent}ref.cast (ref ${boxTypeName(statement.valueType)})`,
-        ...(statement.valueType === 'closure_ref' && statement.value.kind === 'closure_literal'
-          ? renderClosureObjectExpression(statement.value, indent, context)
+        ...(statement.valueType === 'closure_ref'
+          ? renderClosureObjectValueExpression(statement.value, indent, context)
           : renderExpression(statement.value, indent, context)),
         `${indent}struct.set ${boxTypeName(statement.valueType)} $value`,
       ];
