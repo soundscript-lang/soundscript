@@ -55925,6 +55925,30 @@ function lowerGeneratorFunctionLikeBody(
             context.runtime,
             context.classes,
           );
+          if (yieldedValueInfo.type === 'heap_ref') {
+            const materialized = materializeHeapExpressionToLocal(
+              segment.terminal.expression!,
+              stepContext,
+              'generator_yield_heap',
+              yieldedValueInfo.heapRepresentation,
+            );
+            if (materialized.representation) {
+              stepContext.functionRuntime.heapObjectRepresentationsByLocal.set(
+                materialized.name,
+                materialized.representation,
+              );
+            }
+            return adaptResolvedPromiseValueToTagged(
+              {
+                kind: 'local_get',
+                name: materialized.name,
+                type: 'heap_ref',
+              },
+              yieldedValueInfo,
+              segment.terminal.expression!,
+              stepContext,
+            );
+          }
           const yieldedValue = lowerExpressionAsValueType(
             segment.terminal.expression,
             yieldedValueInfo.type,
