@@ -149,6 +149,11 @@ export type SemanticExpressionIR =
     representation: 'tagged_ref';
   }
   | {
+    kind: 'tag_bigint';
+    value: SemanticExpressionIR;
+    representation: 'tagged_ref';
+  }
+  | {
     kind: 'tag_heap_object';
     value: SemanticExpressionIR;
     representation: 'tagged_ref';
@@ -172,6 +177,11 @@ export type SemanticExpressionIR =
     kind: 'untag_symbol';
     value: SemanticExpressionIR;
     representation: 'symbol_ref';
+  }
+  | {
+    kind: 'untag_bigint';
+    value: SemanticExpressionIR;
+    representation: 'bigint_ref';
   }
   | {
     kind: 'untag_heap_object';
@@ -1257,6 +1267,8 @@ function addValueTypeFamilies(
     families.add('string');
   } else if (valueType === 'symbol_ref') {
     families.add('symbol');
+  } else if (valueType === 'bigint_ref') {
+    families.add('bigint');
   } else if (valueType === 'closure_ref') {
     families.add('closure');
   } else if (valueType === 'class_constructor_ref') {
@@ -1894,6 +1906,12 @@ function semanticExpressionFromCompilerIR(
         value: semanticExpressionFromCompilerIR(expression.value),
         representation: 'tagged_ref',
       };
+    case 'tag_bigint':
+      return {
+        kind: 'tag_bigint',
+        value: semanticExpressionFromCompilerIR(expression.value),
+        representation: 'tagged_ref',
+      };
     case 'tag_heap_object':
       return {
         kind: 'tag_heap_object',
@@ -1923,6 +1941,12 @@ function semanticExpressionFromCompilerIR(
         kind: 'untag_symbol',
         value: semanticExpressionFromCompilerIR(expression.value),
         representation: 'symbol_ref',
+      };
+    case 'untag_bigint':
+      return {
+        kind: 'untag_bigint',
+        value: semanticExpressionFromCompilerIR(expression.value),
+        representation: 'bigint_ref',
       };
     case 'untag_heap_object':
       return {
@@ -2498,6 +2522,7 @@ function dynamicObjectStoredLocalFromExpression(
     case 'tag_boolean':
     case 'tag_string':
     case 'tag_symbol':
+    case 'tag_bigint':
     case 'tag_heap_object':
       return expression.value.kind === 'local_get'
         ? { name: expression.value.name, valueType: expression.value.type }
@@ -2937,11 +2962,13 @@ function collectUnsupportedExpressionKinds(
     case 'tag_boolean':
     case 'tag_string':
     case 'tag_symbol':
+    case 'tag_bigint':
     case 'tag_heap_object':
     case 'untag_number':
     case 'untag_boolean':
     case 'untag_owned_string':
     case 'untag_symbol':
+    case 'untag_bigint':
     case 'untag_heap_object':
     case 'tagged_is_undefined':
     case 'tagged_is_null':

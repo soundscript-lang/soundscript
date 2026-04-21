@@ -148,6 +148,7 @@ function wasmTypeForCompilerValueType(valueType: string): string {
     case 'string_ref':
     case 'owned_string_ref':
     case 'symbol_ref':
+    case 'bigint_ref':
       return 'externref';
     case 'tagged_ref':
       return `(ref null ${taggedValueTypeName()})`;
@@ -223,6 +224,7 @@ const TAGGED_STRING_TAG = 3;
 const TAGGED_HEAP_OBJECT_TAG = 4;
 const TAGGED_SYMBOL_TAG = 5;
 const TAGGED_NULL_TAG = 6;
+const TAGGED_BIGINT_TAG = 7;
 const TAGGED_UNDEFINED_TAG = 0;
 
 interface FunctionRenderContext {
@@ -1001,6 +1003,7 @@ function renderDefaultValueForCompilerType(valueType: string, indent: string): r
     case 'string_ref':
     case 'owned_string_ref':
     case 'symbol_ref':
+    case 'bigint_ref':
       return [`${indent}ref.null extern`];
     case 'tagged_ref':
       return renderTaggedUndefined(indent);
@@ -1087,6 +1090,14 @@ function renderDynamicObjectStoredValue(
         `${indent}ref.null eq`,
         `${indent}struct.new ${taggedValueTypeName()}`,
       ];
+    case 'bigint_ref':
+      return [
+        `${indent}i32.const ${TAGGED_BIGINT_TAG}`,
+        `${indent}f64.const 0`,
+        ...rawValue,
+        `${indent}ref.null eq`,
+        `${indent}struct.new ${taggedValueTypeName()}`,
+      ];
     default:
       return [
         `${indent}i32.const ${TAGGED_HEAP_OBJECT_TAG}`,
@@ -1139,6 +1150,22 @@ function renderDynamicObjectSetValue(
           ...renderExpression(expression, indent, context),
           `${indent}f64.convert_i32_s`,
           `${indent}ref.null extern`,
+          `${indent}ref.null eq`,
+          `${indent}struct.new ${taggedValueTypeName()}`,
+        ];
+      case 'symbol_ref':
+        return [
+          `${indent}i32.const ${TAGGED_SYMBOL_TAG}`,
+          `${indent}f64.const 0`,
+          ...renderExpression(expression, indent, context),
+          `${indent}ref.null eq`,
+          `${indent}struct.new ${taggedValueTypeName()}`,
+        ];
+      case 'bigint_ref':
+        return [
+          `${indent}i32.const ${TAGGED_BIGINT_TAG}`,
+          `${indent}f64.const 0`,
+          ...renderExpression(expression, indent, context),
           `${indent}ref.null eq`,
           `${indent}struct.new ${taggedValueTypeName()}`,
         ];
@@ -1526,11 +1553,13 @@ function collectNumberArrayScratchFromExpression(
     case 'tag_boolean':
     case 'tag_string':
     case 'tag_symbol':
+    case 'tag_bigint':
     case 'tag_heap_object':
     case 'untag_number':
     case 'untag_boolean':
     case 'untag_owned_string':
     case 'untag_symbol':
+    case 'untag_bigint':
     case 'untag_heap_object':
     case 'tagged_is_undefined':
     case 'tagged_is_null':
@@ -2424,6 +2453,14 @@ function renderExpression(
         `${indent}ref.null eq`,
         `${indent}struct.new ${taggedValueTypeName()}`,
       ];
+    case 'tag_bigint':
+      return [
+        `${indent}i32.const ${TAGGED_BIGINT_TAG}`,
+        `${indent}f64.const 0`,
+        ...renderExpression(expression.value, indent, context),
+        `${indent}ref.null eq`,
+        `${indent}struct.new ${taggedValueTypeName()}`,
+      ];
     case 'tag_heap_object':
       return [
         `${indent}i32.const ${TAGGED_HEAP_OBJECT_TAG}`,
@@ -2452,6 +2489,12 @@ function renderExpression(
         `${indent}struct.get ${taggedValueTypeName()} $extern_payload`,
       ];
     case 'untag_symbol':
+      return [
+        ...renderExpression(expression.value, indent, context),
+        `${indent}ref.cast (ref ${taggedValueTypeName()})`,
+        `${indent}struct.get ${taggedValueTypeName()} $extern_payload`,
+      ];
+    case 'untag_bigint':
       return [
         ...renderExpression(expression.value, indent, context),
         `${indent}ref.cast (ref ${taggedValueTypeName()})`,
@@ -3127,11 +3170,13 @@ function collectBoxedClosureDispatchSignatureIdsFromExpression(
     case 'tag_boolean':
     case 'tag_string':
     case 'tag_symbol':
+    case 'tag_bigint':
     case 'tag_heap_object':
     case 'untag_number':
     case 'untag_boolean':
     case 'untag_owned_string':
     case 'untag_symbol':
+    case 'untag_bigint':
     case 'untag_heap_object':
     case 'tagged_is_null':
     case 'tagged_is_undefined':
@@ -3583,11 +3628,13 @@ function collectBoxValueTypesFromExpression(
     case 'tag_boolean':
     case 'tag_string':
     case 'tag_symbol':
+    case 'tag_bigint':
     case 'tag_heap_object':
     case 'untag_number':
     case 'untag_boolean':
     case 'untag_owned_string':
     case 'untag_symbol':
+    case 'untag_bigint':
     case 'untag_heap_object':
     case 'tagged_is_undefined':
     case 'tagged_is_null':
@@ -3870,11 +3917,13 @@ function collectArrayRuntimeTypesFromExpression(
     case 'tag_boolean':
     case 'tag_string':
     case 'tag_symbol':
+    case 'tag_bigint':
     case 'tag_heap_object':
     case 'untag_number':
     case 'untag_boolean':
     case 'untag_owned_string':
     case 'untag_symbol':
+    case 'untag_bigint':
     case 'untag_heap_object':
     case 'tagged_is_null':
     case 'tagged_is_undefined':

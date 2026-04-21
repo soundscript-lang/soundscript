@@ -58,6 +58,10 @@ export function isSymbolLikeType(type: ts.Type): boolean {
   return false;
 }
 
+function isBigIntLikeType(type: ts.Type): boolean {
+  return (type.flags & ts.TypeFlags.BigIntLike) !== 0;
+}
+
 export function isNumberOrUndefinedType(type: ts.Type): boolean {
   return isNumberOrNullableType(type) &&
     (type as ts.UnionType).types.some((member) => isUndefinedType(member));
@@ -117,6 +121,17 @@ export function isSymbolOrNullableType(type: ts.Type): boolean {
     );
 }
 
+function isBigIntOrNullableType(type: ts.Type): boolean {
+  if ((type.flags & ts.TypeFlags.Union) === 0) {
+    return false;
+  }
+  const members = (type as ts.UnionType).types;
+  return members.some((member) => isUndefinedType(member) || isNullType(member)) &&
+    members.every((member) =>
+      isUndefinedType(member) || isNullType(member) || isBigIntLikeType(member)
+    );
+}
+
 export function isTaggedPrimitiveUnionType(type: ts.Type): boolean {
   if ((type.flags & ts.TypeFlags.Union) === 0) {
     return false;
@@ -130,6 +145,8 @@ export function isTaggedPrimitiveUnionType(type: ts.Type): boolean {
         ? 'boolean'
         : isStringLikeType(member)
         ? 'string'
+        : isBigIntLikeType(member)
+        ? 'bigint'
         : isUndefinedType(member)
         ? 'undefined'
         : isNullType(member)
@@ -139,7 +156,8 @@ export function isTaggedPrimitiveUnionType(type: ts.Type): boolean {
   );
   const primitiveCategoryCount = Number(categories.has('boolean')) +
     Number(categories.has('number')) +
-    Number(categories.has('string'));
+    Number(categories.has('string')) +
+    Number(categories.has('bigint'));
   return !categories.has('other') && primitiveCategoryCount >= 2;
 }
 
@@ -209,7 +227,8 @@ export function isTaggedNullableScalarType(type: ts.Type): boolean {
 }
 
 export function isTaggedNullableType(type: ts.Type): boolean {
-  return isTaggedNullableScalarType(type) || isStringOrNullableType(type);
+  return isTaggedNullableScalarType(type) || isStringOrNullableType(type) ||
+    isBigIntOrNullableType(type);
 }
 
 export function isTaggedCompilerUnionType(type: ts.Type): boolean {
@@ -489,6 +508,9 @@ export function getCompilerValueTypeForType(type: ts.Type, node: ts.Node): Compi
   }
   if (isSymbolLikeType(type)) {
     return 'symbol_ref';
+  }
+  if (isBigIntLikeType(type)) {
+    return 'bigint_ref';
   }
   if ((type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0) {
     return 'tagged_ref';

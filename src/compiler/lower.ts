@@ -2395,6 +2395,9 @@ function getClosureAbiValueTypeForType(
   if (isSymbolLikeType(type)) {
     return 'symbol_ref';
   }
+  if ((type.flags & ts.TypeFlags.BigIntLike) !== 0) {
+    return 'bigint_ref';
+  }
   if (isSupportedOwnedStringArrayType(checker, type)) {
     return 'owned_array_ref';
   }
@@ -2567,6 +2570,7 @@ function getResolvedClosureAbiValueFromHostBoundary(
     case 'class_constructor_ref':
     case 'string_ref':
     case 'symbol_ref':
+    case 'bigint_ref':
     case 'box_ref':
       return { type: valueType };
     case 'owned_string_ref':
@@ -5561,6 +5565,27 @@ function lowerExpressionAsValueType(
       expression,
     );
   }
+  if (targetType === 'bigint_ref') {
+    const lowered = lowerExpression(expression, context);
+    if ('type' in lowered && lowered.type === 'bigint_ref') {
+      return lowered;
+    }
+    if (
+      'type' in lowered &&
+      lowered.type === 'tagged_ref' &&
+      (context.checker.getTypeAtLocation(expression).flags & ts.TypeFlags.BigIntLike) !== 0
+    ) {
+      return {
+        kind: 'untag_bigint',
+        value: lowered,
+        type: 'bigint_ref',
+      };
+    }
+    throw new CompilerUnsupportedError(
+      'Only supported bigint-valued expressions are supported in compiler subset.',
+      expression,
+    );
+  }
   if (targetType === 'f64') {
     const lengthView = tryLowerLengthViewValue(expression, context);
     if (lengthView) {
@@ -5664,6 +5689,13 @@ function lowerExpressionAsValueType(
     return {
       kind: 'tag_symbol',
       value: lowerExpressionAsValueType(expression, 'symbol_ref', context),
+      type: 'tagged_ref',
+    };
+  }
+  if ((sourceType.flags & ts.TypeFlags.BigIntLike) !== 0) {
+    return {
+      kind: 'tag_bigint',
+      value: lowerExpressionAsValueType(expression, 'bigint_ref', context),
       type: 'tagged_ref',
     };
   }
@@ -25592,6 +25624,10 @@ function createHostBoundaryFromResolvedClosureAbiValue(
       throw new CompilerUnsupportedError(
         'Symbol host boundaries are not supported in compiler subset.',
       );
+    case 'bigint_ref':
+      throw new CompilerUnsupportedError(
+        'BigInt host boundaries are not supported in this slice.',
+      );
     case 'box_ref':
       throw new CompilerUnsupportedError(
         'Opaque boxed host boundaries are not supported in compiler subset.',
@@ -26664,6 +26700,7 @@ function createSpecializedObjectFieldFromResolvedValue(
     case 'owned_string_ref':
     case 'string_ref':
     case 'symbol_ref':
+    case 'bigint_ref':
     case 'box_ref':
       throw new CompilerUnsupportedError(
         'Fixed-layout object fields currently require tagged, heap, scalar, closure, class, or owned-array initializer values.',
@@ -33117,6 +33154,8 @@ function createFunctionHeader(
     ? (ensureStringRepresentation(runtime), 'string_ref')
     : isSymbolLikeType(returnType)
     ? 'symbol_ref'
+    : (returnType.flags & ts.TypeFlags.BigIntLike) !== 0
+    ? 'bigint_ref'
     : !hasExportBoundary && isSupportedInternalTaggedHeapUnionType(checker, returnType)
     ? 'tagged_ref'
     : isSupportedTaggedHeapNullableType(checker, returnType)

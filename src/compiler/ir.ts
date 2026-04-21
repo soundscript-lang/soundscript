@@ -13,6 +13,7 @@ export type CompilerValueType =
   | 'class_constructor_ref'
   | 'string_ref'
   | 'symbol_ref'
+  | 'bigint_ref'
   | 'owned_string_ref'
   | 'owned_heap_array_ref'
   | 'owned_array_ref'
@@ -1021,6 +1022,12 @@ export interface CompilerTagSymbolIR {
   type: 'tagged_ref';
 }
 
+export interface CompilerTagBigIntIR {
+  kind: 'tag_bigint';
+  value: CompilerExpressionIR;
+  type: 'tagged_ref';
+}
+
 export interface CompilerTagHeapObjectIR {
   kind: 'tag_heap_object';
   value: CompilerExpressionIR;
@@ -1049,6 +1056,12 @@ export interface CompilerUntagSymbolIR {
   kind: 'untag_symbol';
   value: CompilerExpressionIR;
   type: 'symbol_ref';
+}
+
+export interface CompilerUntagBigIntIR {
+  kind: 'untag_bigint';
+  value: CompilerExpressionIR;
+  type: 'bigint_ref';
 }
 
 export interface CompilerUntagHeapObjectIR {
@@ -1323,11 +1336,13 @@ export type CompilerExpressionIR =
   | CompilerTagBooleanIR
   | CompilerTagStringIR
   | CompilerTagSymbolIR
+  | CompilerTagBigIntIR
   | CompilerTagHeapObjectIR
   | CompilerUntagNumberIR
   | CompilerUntagBooleanIR
   | CompilerUntagOwnedStringIR
   | CompilerUntagSymbolIR
+  | CompilerUntagBigIntIR
   | CompilerUntagHeapObjectIR
   | CompilerTaggedIsUndefinedIR
   | CompilerTaggedIsNullIR

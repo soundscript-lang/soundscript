@@ -167,6 +167,8 @@ function wasmTypeForCompilerValueType(valueType: string): string {
       return valueType;
     case 'string_ref':
     case 'owned_string_ref':
+    case 'symbol_ref':
+    case 'bigint_ref':
       return 'externref';
     default:
       return '(ref null eq)';

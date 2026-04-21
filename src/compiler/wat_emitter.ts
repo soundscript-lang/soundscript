@@ -230,6 +230,8 @@ function getWatValueType(valueType: CompilerValueType): string {
       return 'externref';
     case 'symbol_ref':
       return '(ref null $symbol_runtime)';
+    case 'bigint_ref':
+      return '(ref null $bigint_runtime)';
     case 'owned_string_ref':
       return '(ref null $string_runtime)';
     case 'owned_heap_array_ref':
@@ -298,6 +300,8 @@ function getClosureBoxTypeName(valueType: CompilerValueType): string {
       return 'box_externref';
     case 'symbol_ref':
       return 'box_symbol';
+    case 'bigint_ref':
+      return 'box_bigint';
     case 'owned_string_ref':
       return 'box_owned_string';
     case 'owned_heap_array_ref':
@@ -336,6 +340,8 @@ function getClosureBoxFieldWatType(valueType: CompilerValueType): string {
       return 'externref';
     case 'symbol_ref':
       return '(ref null $symbol_runtime)';
+    case 'bigint_ref':
+      return '(ref null $bigint_runtime)';
     case 'owned_string_ref':
       return '(ref null $string_runtime)';
     case 'owned_heap_array_ref':
@@ -1419,8 +1425,10 @@ function expressionUsesOwnedStringRuntime(expression: CompilerExpressionIR): boo
     case 'owned_string_to_host':
     case 'tag_string':
     case 'tag_symbol':
+    case 'tag_bigint':
     case 'untag_owned_string':
     case 'untag_symbol':
+    case 'untag_bigint':
     case 'tagged_has_tag':
     case 'tagged_is_closure':
     case 'tagged_is_array':
@@ -1521,11 +1529,13 @@ function forEachExpressionChild(
     case 'tag_boolean':
     case 'tag_string':
     case 'tag_symbol':
+    case 'tag_bigint':
     case 'tag_heap_object':
     case 'untag_number':
     case 'untag_boolean':
     case 'untag_owned_string':
     case 'untag_symbol':
+    case 'untag_bigint':
     case 'untag_heap_object':
     case 'tagged_is_undefined':
     case 'tagged_is_null':
@@ -2890,7 +2900,15 @@ function emitSymbolRuntimeHelpers(module: CompilerModuleIR): string[] {
 }
 
 function moduleUsesBigIntRuntime(module: CompilerModuleIR): boolean {
-  return moduleUsesFiniteUnionBigIntBoundary(module);
+  return module.functions.some((func) =>
+    func.params.some((param) => param.type === 'bigint_ref') ||
+    func.resultType === 'bigint_ref' ||
+    func.locals.some((local) => local.type === 'bigint_ref') ||
+    statementsUseStringHelper(
+      func.body,
+      (expression) => getExpressionValueType(expression) === 'bigint_ref',
+    )
+  ) || moduleUsesFiniteUnionBigIntBoundary(module);
 }
 
 function emitBigIntRuntimeTypes(module: CompilerModuleIR): string[] {
@@ -22179,11 +22197,13 @@ function getExpressionValueType(expression: CompilerExpressionIR): CompilerValue
     case 'tag_boolean':
     case 'tag_string':
     case 'tag_symbol':
+    case 'tag_bigint':
     case 'tag_heap_object':
     case 'untag_number':
     case 'untag_boolean':
     case 'untag_owned_string':
     case 'untag_symbol':
+    case 'untag_bigint':
     case 'untag_heap_object':
     case 'tagged_is_undefined':
     case 'tagged_is_null':
@@ -22291,6 +22311,10 @@ function emitBoxLocalValueAsTagged(
     case 'symbol_ref':
       throw createUnsupportedHeapRuntimeBackendError(
         'Symbol values cannot be stored through tagged object materialization.',
+      );
+    case 'bigint_ref':
+      throw createUnsupportedHeapRuntimeBackendError(
+        'BigInt values cannot be stored through tagged object materialization.',
       );
     default: {
       const exhaustiveCheck: never = valueType;
@@ -22514,6 +22538,10 @@ function emitFallbackReadOp(
       throw createUnsupportedHeapRuntimeBackendError(
         'Symbol-valued fallback object reads are not supported.',
       );
+    case 'bigint_ref':
+      throw createUnsupportedHeapRuntimeBackendError(
+        'BigInt-valued fallback object reads are not supported.',
+      );
     default: {
       const exhaustiveCheck: never = resultType;
       return exhaustiveCheck;
@@ -22602,6 +22630,10 @@ function emitDynamicReadOp(
     case 'symbol_ref':
       throw createUnsupportedHeapRuntimeBackendError(
         'Symbol-valued dynamic object reads are not supported.',
+      );
+    case 'bigint_ref':
+      throw createUnsupportedHeapRuntimeBackendError(
+        'BigInt-valued dynamic object reads are not supported.',
       );
     default: {
       const exhaustiveCheck: never = resultType;
@@ -22782,6 +22814,10 @@ function emitSpecializedFieldReadOp(
       case 'symbol_ref':
         throw createUnsupportedHeapRuntimeBackendError(
           'Symbol-valued specialized object reads are not supported.',
+        );
+      case 'bigint_ref':
+        throw createUnsupportedHeapRuntimeBackendError(
+          'BigInt-valued specialized object reads are not supported.',
         );
       default: {
         const exhaustiveCheck: never = resultType;
@@ -24210,6 +24246,11 @@ function emitExpression(
         ...emitExpression(expression.value, level, runtime),
         `${indent(level)}call $tag_symbol`,
       ];
+    case 'tag_bigint':
+      return [
+        ...emitExpression(expression.value, level, runtime),
+        `${indent(level)}call $tag_bigint`,
+      ];
     case 'tag_heap_object':
       return [
         ...emitExpression(expression.value, level, runtime),
@@ -24234,6 +24275,11 @@ function emitExpression(
       return [
         ...emitExpression(expression.value, level, runtime),
         `${indent(level)}call $untag_symbol`,
+      ];
+    case 'untag_bigint':
+      return [
+        ...emitExpression(expression.value, level, runtime),
+        `${indent(level)}call $untag_bigint`,
       ];
     case 'untag_heap_object':
       return [
@@ -31984,6 +32030,9 @@ function emitClosureRuntimeTypes(module: CompilerModuleIR): string[] {
       : []),
     ...(usedBoxValueTypes.has('symbol_ref')
       ? ['(type $box_symbol (struct (field (mut (ref null $symbol_runtime)))))']
+      : []),
+    ...(usedBoxValueTypes.has('bigint_ref')
+      ? ['(type $box_bigint (struct (field (mut (ref null $bigint_runtime)))))']
       : []),
     ...(usedBoxValueTypes.has('owned_string_ref')
       ? ['(type $box_owned_string (struct (field (mut (ref null $string_runtime)))))']
