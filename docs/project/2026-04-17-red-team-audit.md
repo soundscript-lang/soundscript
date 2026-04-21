@@ -36,6 +36,7 @@ Legend:
 - `batch-37`: covered by the thirty-seventh red-team batch added with this record.
 - `batch-38`: covered by the thirty-eighth red-team batch added with this record.
 - `batch-39`: covered by the thirty-ninth red-team batch added with this record.
+- `batch-40`: covered by the fortieth red-team batch added with this record.
 - `audit-debt`: missing coverage that should be closed before calling the family fully audited.
 - `out-of-scope`: explicitly outside the strong soundness claim.
 - `design-gap`: documented future work, not a current guarantee.
@@ -43,7 +44,7 @@ Legend:
 | Owned family                         | Fresh project | Reused prepared | File-scoped  | Persistent checker cache | Package verification cache | LSP/incremental session | Build cache/output | Compiler/target gate |
 | ------------------------------------ | ------------- | --------------- | ------------ | ------------------------ | -------------------------- | ----------------------- | ------------------ | -------------------- |
 | Prepared/package-source parity       | covered       | covered         | covered      | covered,batch-29         | batch-3                    | covered                 | batch-1,10,28,31   | audit-debt           |
-| Flow/effect invalidation             | covered       | batch-35        | covered      | batch-4,35               | batch-4                    | batch-35                | audit-debt         | audit-debt           |
+| Flow/effect invalidation             | covered       | batch-35,40     | covered      | batch-4,35,40            | batch-4,40                 | batch-35,40             | audit-debt         | audit-debt           |
 | Proof-oracle verification            | covered       | batch-38        | covered      | batch-38                 | batch-38                   | batch-38                | audit-debt         | audit-debt           |
 | BareObject/null-prototype provenance | covered       | covered         | covered      | batch-39                 | covered                    | batch-39                | batch-39           | audit-debt           |
 | `#[value]` parity                    | covered       | batch-1         | batch-1      | batch-1                  | batch-5                    | batch-1                 | batch-1            | covered              |
@@ -917,9 +918,8 @@ Legend:
   callback recovery also follows local object-literal member paths and resolves shorthand property
   values to their callable symbols before falling back to structural signatures. No stale-cache bug
   was found after the fresh surface was broadened.
-- Residual risk: source-published package rewrite/member-path chains still need accepted fresh
-  fixtures and package-cache parity coverage; package-exported macro/effect transforms remain
-  documented design debt.
+- Residual risk: Batch 40 later covers bare `soundscript.source` package rewrite/member-path chains;
+  package-exported macro/effect transforms remain documented design debt.
 
 ## Batch 36 Findings
 
@@ -984,13 +984,39 @@ Legend:
 - Residual risk: compiler-gate coverage remains audit debt for non-ordinary values because this
   family should be rejected before backend lowering on owned paths.
 
+## Batch 40 Findings
+
+### Package-Chain Member-Path Effect Transforms
+
+- Attack: prime a `.sts` app importing `pkg-a`, where source-published `pkg-a` passes a nested
+  object-literal callback `decoder.inner.decode` into source-published `pkg-b`. `pkg-b` initially
+  handles the callback's `host` effect, then only `pkg-b/src/index.sts` changes to forward the same
+  member path without the handle while app source, package metadata, and public `.d.ts` signatures
+  stay stable.
+- Routes: fresh prepared analysis, reused prepared analysis, incremental full-project session,
+  persistent checker cache, source-published package verification cache, package-to-package
+  dependency summaries, object-literal member-path recovery, and forwarded-effect handle transforms.
+- Expected result: cold, reused prepared, warm cached, package-cache, and session routes accept the
+  primed handled state. After the `pkg-b` transform edit, all routes reject with the same
+  `SOUND1041` diagnostic from the app root, and the package verification cache reports two misses
+  after proving a two-unit warm hit.
+- Result: confirmed production precision bug fixed. Body inference was recording an unhandled
+  forwarded callback in addition to the explicit handled member-path forward for the same parameter
+  path, so the handled state leaked `host.random` as a direct app violation. Explicit forwarded
+  parameter paths now suppress duplicate body-inferred forwarding for the same parameter/member
+  path, preserving the explicit handle/rewrite contract while still inferring unannotated
+  forwarding.
+- Residual risk: package-exported macro/effect transforms remain design debt until package macro
+  reuse is intentionally cacheable. This batch covers bare `soundscript.source` package chains, not
+  subpath-only `soundscript.exports` variants.
+
 ## Remaining High-Priority Audit Debt
 
 - Package verification cache reuse for package-exported macros if macro-only packages become a
   cacheable package-source policy route.
-- Accepted source-published package rewrite/member-path effect transforms through package chains.
-  Local member-path callback forwarding is now covered by Batch 35; package-chain variants still
-  need accepted fresh fixtures before package-cache parity can be asserted.
+- Source-published package rewrite/member-path effect transforms through subpath-only
+  `soundscript.exports` variants. Bare `soundscript.source` package-chain variants are covered by
+  Batch 40.
 - Build-output/compiler-gate coverage for effect and proof-oracle families where those routes become
   part of the owned acceptance story rather than fail-before-emit checks.
 - File-scoped parity for unimported referenced-project roots if that route is later expected to own
@@ -1367,3 +1393,27 @@ red-team attack, the route matrix it covers, and the residual risk left behind.
   cold prepare `1.4s`, `.sts`-local cold prepare `854.8ms`, reused prepare after `.ts`-only edit
   `354.1ms`, reused prepare after `.sts`-only edit `1.1s`, reused `.sts`-local edit `711.6ms`, and
   analyze-only `2.3ms` average samples.
+- `deno test --allow-all --filter "package effect chains track member-path rewrite drift"
+  tests/integration/red_team_audit_test.ts`:
+  initially failed because body inference recorded an unhandled forwarded callback alongside the
+  explicit handled member-path forward. After suppressing duplicate inferred forwards for explicit
+  paths, passed, 1 test in `11s`.
+- `deno test --allow-all --filter
+  "/(package-to-package effect summary edits|package effect chains track member-path rewrite
+  drift|member-path forwarded callback drift|rewrite forwarded effect drift)/"
+  tests/integration/red_team_audit_test.ts`:
+  passed, 4 tests in `26s`.
+- `deno test --allow-all --filter "effects" src/service/analyze_project_test.ts
+  src/checker/engine/context_test.ts src/frontend/typescript_effect_declarations_test.ts`:
+  passed, 12 tests in `7s`.
+- `deno test --allow-all tests/integration/red_team_audit_test.ts`: passed, 52 tests in `3m30s`
+  after the Batch 40 package-chain effect fix.
+- `deno task check`: passed after the Batch 40 package-chain effect fix.
+- `deno fmt --check src/checker/effects.ts tests/integration/red_team_audit_test.ts
+  docs/project/2026-04-17-red-team-audit.md`:
+  passed.
+- `deno lint src/checker/effects.ts tests/integration/red_team_audit_test.ts`: passed.
+- `deno bench --allow-all tests/bench/mixed_project_analysis_bench.ts`: passed on Apple M5 Pro with
+  cold prepare `1.3s`, `.sts`-local cold prepare `838.9ms`, reused prepare after `.ts`-only edit
+  `360.4ms`, reused prepare after `.sts`-only edit `1.1s`, reused `.sts`-local edit `703.9ms`, and
+  analyze-only `2.2ms` average samples.

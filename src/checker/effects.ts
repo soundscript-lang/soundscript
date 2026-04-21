@@ -474,6 +474,29 @@ function createForwardedParameterKey(
   }:${handledEffects.join(',')}`;
 }
 
+function forwardedParameterHasPath(
+  forwardedParameter: EffectForwardedParameterFact,
+  parameterIndex: number,
+  memberPath: readonly string[],
+): boolean {
+  return forwardedParameter.parameterIndex === parameterIndex &&
+    forwardedParameter.memberPath.length === memberPath.length &&
+    forwardedParameter.memberPath.every((step, index) => step === memberPath[index]);
+}
+
+function hasForwardedParameterPath(
+  forwardedParameters: Map<string, EffectForwardedParameterFact>,
+  parameterIndex: number,
+  memberPath: readonly string[],
+): boolean {
+  for (const forwardedParameter of forwardedParameters.values()) {
+    if (forwardedParameterHasPath(forwardedParameter, parameterIndex, memberPath)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function addForwardedParameter(
   forwardedParameters: Map<string, EffectForwardedParameterFact>,
   parameterName: string | undefined,
@@ -1759,20 +1782,28 @@ function recomputeBodyDeclarationSummary(
           directAliasTarget !== undefined &&
           shouldForwardCurrentFunctionAliasCall(directAliasTarget, signatureSummary)
         ) {
-          const boundaryTransform = asyncBoundary
-            ? failureBoundaryToForwardTransform('reject')
-            : failureBoundaryToForwardTransform('preserve');
-          addForwardedParameter(
-            targetForwardedParameters,
-            getParameterName(
-              parameters[directAliasTarget.parameterIndex]!,
+          if (
+            !hasForwardedParameterPath(
+              targetForwardedParameters,
               directAliasTarget.parameterIndex,
-            ),
-            directAliasTarget.parameterIndex,
-            boundaryTransform.rewrites,
-            boundaryTransform.handledEffects,
-            directAliasTarget.memberPath,
-          );
+              directAliasTarget.memberPath,
+            )
+          ) {
+            const boundaryTransform = asyncBoundary
+              ? failureBoundaryToForwardTransform('reject')
+              : failureBoundaryToForwardTransform('preserve');
+            addForwardedParameter(
+              targetForwardedParameters,
+              getParameterName(
+                parameters[directAliasTarget.parameterIndex]!,
+                directAliasTarget.parameterIndex,
+              ),
+              directAliasTarget.parameterIndex,
+              boundaryTransform.rewrites,
+              boundaryTransform.handledEffects,
+              directAliasTarget.memberPath,
+            );
+          }
         } else {
           if (signatureSummary) {
             const directEffects =
