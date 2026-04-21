@@ -342,6 +342,27 @@ function renderClosureObjectExpression(
   ];
 }
 
+function renderPromiseThenHandlerExpression(
+  expression: SemanticExpressionIR,
+  indent: string,
+  context: FunctionRenderContext,
+): readonly string[] {
+  if (expression.kind === 'closure_null') {
+    return [`${indent}ref.null eq`];
+  }
+  if (expression.kind === 'closure_literal') {
+    return renderClosureObjectExpression(expression, indent, context);
+  }
+  if (expression.kind === 'local_get' && context.closureLocalLiterals.has(expression.name)) {
+    return renderClosureObjectExpression(
+      context.closureLocalLiterals.get(expression.name)!,
+      indent,
+      context,
+    );
+  }
+  return renderExpression(expression, indent, context);
+}
+
 function boxLocalValueTypes(func: WasmGcFunctionPlanIR): ReadonlyMap<string, string> {
   const valueTypes = new Map<string, string>();
   for (const statement of func.body) {
@@ -2371,13 +2392,24 @@ function renderExpression(
         `${indent}call_ref ${closureSignatureTypeName(expression.signatureId)}`,
       ];
     case 'call':
+      if (expression.callee === '__soundscript_promise_then' && expression.args.length === 3) {
+        const [receiver, onFulfilled, onRejected] = expression.args;
+        return [
+          ...renderExpression(receiver!, indent, context),
+          ...renderPromiseThenHandlerExpression(onFulfilled!, indent, context),
+          ...renderPromiseThenHandlerExpression(onRejected!, indent, context),
+          `${indent}call $${sanitizeIdentifier(expression.callee)}`,
+        ];
+      }
       return [
         ...expression.args.flatMap((arg) => renderExpression(arg, indent, context)),
         `${indent}call $${sanitizeIdentifier(expression.callee)}`,
       ];
     case 'box_new':
       return [
-        ...renderExpression(expression.value, indent, context),
+        ...(expression.valueType === 'closure_ref' && expression.value.kind === 'closure_literal'
+          ? renderClosureObjectExpression(expression.value, indent, context)
+          : renderExpression(expression.value, indent, context)),
         `${indent}struct.new ${boxTypeName(expression.valueType)}`,
       ];
     case 'box_get':
@@ -2798,6 +2830,13 @@ function collectBoxedClosureDispatchSignatureIdsFromExpression(
       );
       break;
     case 'call':
+      if (expression.callee === '__soundscript_promise_then') {
+        for (const handler of expression.args.slice(1, 3)) {
+          if (handler.kind === 'closure_literal') {
+            signatureIds.add(handler.signatureId);
+          }
+        }
+      }
       expression.args.forEach((arg) =>
         collectBoxedClosureDispatchSignatureIdsFromExpression(arg, signatureIds)
       );
@@ -3686,6 +3725,107 @@ function moduleCallsFunction(plan: WasmGcModulePlanIR, callee: string): boolean 
   return plan.functionPlans.some((func) => semanticTreeContainsCall(func.body, callee));
 }
 
+function collectPromiseThenHandlerSignatureIds(value: unknown, signatureIds: Set<number>): void {
+  if (value === null || typeof value !== 'object') {
+    return;
+  }
+  if (Array.isArray(value)) {
+    value.forEach((item) => collectPromiseThenHandlerSignatureIds(item, signatureIds));
+    return;
+  }
+  const record = value as Record<string, unknown>;
+  if (record.kind === 'call' && record.callee === '__soundscript_promise_then') {
+    const args = Array.isArray(record.args) ? record.args : [];
+    for (const handler of args.slice(1, 3)) {
+      if (
+        handler !== null &&
+        typeof handler === 'object' &&
+        (handler as Record<string, unknown>).kind === 'closure_literal' &&
+        typeof (handler as Record<string, unknown>).signatureId === 'number'
+      ) {
+        signatureIds.add((handler as { signatureId: number }).signatureId);
+      }
+    }
+  }
+  Object.values(record).forEach((item) =>
+    collectPromiseThenHandlerSignatureIds(item, signatureIds)
+  );
+}
+
+function promiseThenHandlerSignatureIds(plan: WasmGcModulePlanIR): readonly number[] {
+  const signatureIds = new Set<number>();
+  for (const func of plan.functionPlans) {
+    collectPromiseThenHandlerSignatureIds(func.body, signatureIds);
+  }
+  return [...signatureIds].sort((left, right) => left - right);
+}
+
+function promiseThenUsesHandler(value: unknown, handlerIndex: 1 | 2): boolean {
+  if (value === null || typeof value !== 'object') {
+    return false;
+  }
+  if (Array.isArray(value)) {
+    return value.some((item) => promiseThenUsesHandler(item, handlerIndex));
+  }
+  const record = value as Record<string, unknown>;
+  if (record.kind === 'call' && record.callee === '__soundscript_promise_then') {
+    const args = Array.isArray(record.args) ? record.args : [];
+    const handler = args[handlerIndex];
+    return !(
+      handler !== null &&
+      typeof handler === 'object' &&
+      (handler as Record<string, unknown>).kind === 'closure_null'
+    );
+  }
+  return Object.values(record).some((item) => promiseThenUsesHandler(item, handlerIndex));
+}
+
+function modulePromiseThenUsesHandler(
+  plan: WasmGcModulePlanIR,
+  handlerIndex: 1 | 2,
+): boolean {
+  return plan.functionPlans.some((func) => promiseThenUsesHandler(func.body, handlerIndex));
+}
+
+function renderPromiseSetStateAndValue(
+  promiseLocalName: string,
+  state: string,
+  valueLines: readonly string[],
+  indent: string,
+): readonly string[] {
+  return [
+    `${indent}local.get $${promiseLocalName}`,
+    `${indent}ref.as_non_null`,
+    `${indent}i32.const ${state}`,
+    `${indent}struct.set $promise_runtime $state`,
+    `${indent}local.get $${promiseLocalName}`,
+    `${indent}ref.as_non_null`,
+    ...valueLines,
+    `${indent}struct.set $promise_runtime $value`,
+  ];
+}
+
+function renderPromiseSetStateAndValueFromTaggedTarget(
+  targetName: string,
+  state: string,
+  valueLines: readonly string[],
+): readonly string[] {
+  return [
+    `    local.get $${targetName}`,
+    `    ref.cast (ref ${taggedValueTypeName()})`,
+    `    struct.get ${taggedValueTypeName()} $heap_payload`,
+    '    ref.cast (ref $promise_runtime)',
+    `    i32.const ${state}`,
+    '    struct.set $promise_runtime $state',
+    `    local.get $${targetName}`,
+    `    ref.cast (ref ${taggedValueTypeName()})`,
+    `    struct.get ${taggedValueTypeName()} $heap_payload`,
+    '    ref.cast (ref $promise_runtime)',
+    ...valueLines,
+    '    struct.set $promise_runtime $value',
+  ];
+}
+
 function renderPromiseHelperFunctions(plan: WasmGcModulePlanIR): readonly string[] {
   const usesPromiseResolution = plan.helperPlans.some((helper) =>
     helper.family === 'promise' && helper.name === 'promise_resolution_ops'
@@ -3696,6 +3836,9 @@ function renderPromiseHelperFunctions(plan: WasmGcModulePlanIR): readonly string
   const usesPromiseThen = moduleCallsFunction(plan, '__soundscript_promise_then');
   const usesPromiseResolveInto = moduleCallsFunction(plan, '__soundscript_promise_resolve_into');
   const usesPromiseRejectInto = moduleCallsFunction(plan, '__soundscript_promise_reject_into');
+  const thenHandlerSignatureId = promiseThenHandlerSignatureIds(plan)[0] ?? 0;
+  const thenUsesFulfilledHandler = modulePromiseThenUsesHandler(plan, 1);
+  const thenUsesRejectedHandler = modulePromiseThenUsesHandler(plan, 2);
   return usesPromiseResolution
     ? [
       ...(usesPromiseResolve
@@ -3728,13 +3871,115 @@ function renderPromiseHelperFunctions(plan: WasmGcModulePlanIR): readonly string
       ...(usesPromiseThen
         ? [
           `  (func $soundscript_promise_then (param $receiver (ref null eq)) (param $on_fulfilled (ref null eq)) (param $on_rejected (ref null eq)) (result (ref null eq))`,
+          '    (local $result (ref null $promise_runtime))',
+          '    i32.const 0',
+          ...renderTaggedUndefined('    '),
+          '    struct.new $promise_runtime',
+          '    local.set $result',
           '    local.get $receiver',
+          '    ref.cast (ref $promise_runtime)',
+          '    struct.get $promise_runtime $state',
+          '    i32.const 1',
+          '    i32.eq',
+          '    if',
+          ...(thenUsesFulfilledHandler
+            ? [
+              '      local.get $on_fulfilled',
+              '      ref.is_null',
+              '      if',
+              ...renderPromiseSetStateAndValue(
+                'result',
+                '1',
+                [
+                  '          local.get $receiver',
+                  '          ref.cast (ref $promise_runtime)',
+                  '          struct.get $promise_runtime $value',
+                ],
+                '        ',
+              ),
+              '      else',
+              ...renderPromiseSetStateAndValue(
+                'result',
+                '1',
+                [
+                  '          local.get $on_fulfilled',
+                  '          local.get $receiver',
+                  '          ref.cast (ref $promise_runtime)',
+                  '          struct.get $promise_runtime $value',
+                  `          call ${closureDispatchFunctionName(thenHandlerSignatureId)}`,
+                ],
+                '        ',
+              ),
+              '      end',
+            ]
+            : renderPromiseSetStateAndValue(
+              'result',
+              '1',
+              [
+                '        local.get $receiver',
+                '        ref.cast (ref $promise_runtime)',
+                '        struct.get $promise_runtime $value',
+              ],
+              '      ',
+            )),
+          '    end',
+          '    local.get $receiver',
+          '    ref.cast (ref $promise_runtime)',
+          '    struct.get $promise_runtime $state',
+          '    i32.const 2',
+          '    i32.eq',
+          '    if',
+          ...(thenUsesRejectedHandler
+            ? [
+              '      local.get $on_rejected',
+              '      ref.is_null',
+              '      if',
+              ...renderPromiseSetStateAndValue(
+                'result',
+                '2',
+                [
+                  '          local.get $receiver',
+                  '          ref.cast (ref $promise_runtime)',
+                  '          struct.get $promise_runtime $value',
+                ],
+                '        ',
+              ),
+              '      else',
+              ...renderPromiseSetStateAndValue(
+                'result',
+                '1',
+                [
+                  '          local.get $on_rejected',
+                  '          local.get $receiver',
+                  '          ref.cast (ref $promise_runtime)',
+                  '          struct.get $promise_runtime $value',
+                  `          call ${closureDispatchFunctionName(thenHandlerSignatureId)}`,
+                ],
+                '        ',
+              ),
+              '      end',
+            ]
+            : renderPromiseSetStateAndValue(
+              'result',
+              '2',
+              [
+                '        local.get $receiver',
+                '        ref.cast (ref $promise_runtime)',
+                '        struct.get $promise_runtime $value',
+              ],
+              '      ',
+            )),
+          '    end',
+          '    local.get $result',
           '  )',
         ]
         : []),
       ...(usesPromiseResolveInto
         ? [
           `  (func $soundscript_promise_resolve_into (param $target_tagged (ref null ${taggedValueTypeName()})) (param $value (ref null ${taggedValueTypeName()})) (result (ref null ${taggedValueTypeName()}))`,
+          ...renderPromiseSetStateAndValueFromTaggedTarget('target_tagged', '1', [
+            '    local.get $value',
+          ]),
           ...renderTaggedUndefined('    '),
           '  )',
         ]
@@ -3742,6 +3987,9 @@ function renderPromiseHelperFunctions(plan: WasmGcModulePlanIR): readonly string
       ...(usesPromiseRejectInto
         ? [
           `  (func $soundscript_promise_reject_into (param $target_tagged (ref null ${taggedValueTypeName()})) (param $value (ref null ${taggedValueTypeName()})) (result (ref null ${taggedValueTypeName()}))`,
+          ...renderPromiseSetStateAndValueFromTaggedTarget('target_tagged', '2', [
+            '    local.get $value',
+          ]),
           ...renderTaggedUndefined('    '),
           '  )',
         ]

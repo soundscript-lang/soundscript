@@ -3576,6 +3576,53 @@ Deno.test('compiler wasm-gc emitter parses compiler-owned Promise.reject returns
   assertEquals(result.success, true);
 });
 
+Deno.test('compiler wasm-gc emitter parses settled Promise.then callbacks', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: {
+          strict: true,
+          lib: ['ES2020'],
+        },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        export function value(): Promise<number> {
+          return Promise.resolve(4).then((item) => item + 1);
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
+  const valuePlan = snapshot.wasmGcPlan.functionPlans.find((func) => func.name === 'value');
+  const watPath = join(tempDirectory, 'wasm-gc-shadow-promise-then.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-shadow-promise-then.wasm');
+
+  assertEquals(valuePlan?.bodyStatus, 'emittable');
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
+  const wat = await Deno.readTextFile(watPath);
+  assertEquals(wat.includes('(type $closure_object (struct'), true);
+  assertEquals(wat.includes('(func $closure_dispatch_sig_0'), true);
+  assertEquals(wat.includes('struct.get $promise_runtime $state'), true);
+  assertEquals(wat.includes('call $closure_dispatch_sig_0'), true);
+  assertEquals(wat.includes('struct.set $promise_runtime $value'), true);
+  assertEquals(wat.includes('Promise.resolve'), false);
+  assertEquals(wat.includes('jspi'), false);
+  const result = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(result.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(result.success, true);
+});
+
 Deno.test('compiler semantic shadow models async frame optional closure fields', async () => {
   const tempDirectory = await createTempProject([
     {
