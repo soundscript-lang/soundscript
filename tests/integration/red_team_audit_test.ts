@@ -1058,6 +1058,307 @@ Deno.test('red-team: diamond project-reference graph retarget dedupes recursive 
   }
 });
 
+Deno.test('red-team: recursive build diamond graph retarget refreshes artifacts', async () => {
+  const createPackageJson = (name: string): string =>
+    `${
+      JSON.stringify(
+        {
+          name,
+          version: '1.0.0',
+          type: 'module',
+          soundscript: {
+            version: 1,
+            exports: {
+              '.': { source: './src/index.sts' },
+            },
+          },
+        },
+        null,
+        2,
+      )
+    }\n`;
+  const createReferencedBuildTsconfig = (references: readonly { path: string }[]): string =>
+    createSoundscriptProjectReferenceTsconfig({
+      composite: true,
+      declaration: true,
+      references,
+    });
+  const tempDirectory = await createTempProject([
+    {
+      path: 'app/package.json',
+      contents: createPackageJson('red-team-build-diamond-app'),
+    },
+    {
+      path: 'app/tsconfig.json',
+      contents: createSoundscriptProjectReferenceTsconfig({
+        references: [{ path: '../mid-a' }, { path: '../mid-b' }],
+      }),
+    },
+    {
+      path: 'app/src/index.sts',
+      contents: [
+        'import { aValue } from "../../mid-a/src/index";',
+        'import { bValue } from "../../mid-b/src/index";',
+        '',
+        'export const exactA: string = aValue;',
+        'export const exactB: string = bValue;',
+        '',
+      ].join('\n'),
+    },
+    {
+      path: 'mid-a/package.json',
+      contents: createPackageJson('red-team-build-diamond-mid-a'),
+    },
+    {
+      path: 'mid-a/tsconfig.json',
+      contents: createReferencedBuildTsconfig([{ path: '../lib-a' }]),
+    },
+    {
+      path: 'mid-a/src/index.sts',
+      contents: 'export const aValue: string = "a";\n',
+    },
+    {
+      path: 'mid-b/package.json',
+      contents: createPackageJson('red-team-build-diamond-mid-b'),
+    },
+    {
+      path: 'mid-b/tsconfig.json',
+      contents: createReferencedBuildTsconfig([{ path: '../lib-a' }]),
+    },
+    {
+      path: 'mid-b/src/index.sts',
+      contents: 'export const bValue: string = "b";\n',
+    },
+    {
+      path: 'lib-a/package.json',
+      contents: createPackageJson('red-team-build-diamond-lib-a'),
+    },
+    {
+      path: 'lib-a/tsconfig.json',
+      contents: createReferencedBuildTsconfig([]),
+    },
+    {
+      path: 'lib-a/src/index.sts',
+      contents: 'export const value = "lib-a-v1";\n',
+    },
+    {
+      path: 'lib-b/package.json',
+      contents: createPackageJson('red-team-build-diamond-lib-b'),
+    },
+    {
+      path: 'lib-b/tsconfig.json',
+      contents: createReferencedBuildTsconfig([]),
+    },
+    {
+      path: 'lib-b/src/index.sts',
+      contents: 'export const value = "lib-b-v1";\n',
+    },
+  ]);
+  const projectPath = join(tempDirectory, 'app/tsconfig.json');
+  const projectPaths = [
+    ['app', projectPath],
+    ['mid-a', join(tempDirectory, 'mid-a/tsconfig.json')],
+    ['mid-b', join(tempDirectory, 'mid-b/tsconfig.json')],
+    ['lib-a', join(tempDirectory, 'lib-a/tsconfig.json')],
+    ['lib-b', join(tempDirectory, 'lib-b/tsconfig.json')],
+  ] as const;
+  const outDir = join(tempDirectory, 'app/dist');
+  const coldOutDir = join(tempDirectory, 'app/dist-cold');
+  const coldFailOutDir = join(tempDirectory, 'app/dist-cold-fail');
+  const collectRecursiveArtifacts = async (
+    outDirName: 'dist' | 'dist-cold',
+  ): Promise<Readonly<Record<string, Readonly<Record<string, string>>>>> => ({
+    app: await collectFileContents(join(tempDirectory, 'app', outDirName)),
+    'mid-a': await collectFileContents(join(tempDirectory, 'mid-a', outDirName)),
+    'mid-b': await collectFileContents(join(tempDirectory, 'mid-b', outDirName)),
+    'lib-a': await collectFileContents(join(tempDirectory, 'lib-a', outDirName)),
+    'lib-b': await collectFileContents(join(tempDirectory, 'lib-b', outDirName)),
+  });
+  const relativeEmittedFiles = (files: readonly string[]): readonly string[] =>
+    files.map((file) => relative(tempDirectory, file).replaceAll('\\', '/')).sort();
+  const pathCount = (files: readonly string[], path: string): number =>
+    files.filter((file) => file === path).length;
+  const removeBuildCaches = async (): Promise<void> => {
+    await Promise.all(
+      projectPaths.map(([, path]) =>
+        Deno.remove(resolveCheckerCacheDirectory(path), { recursive: true }).catch(() => undefined)
+      ),
+    );
+  };
+  const backupBuildCaches = async (): Promise<Map<string, string>> => {
+    const staleCacheBackups = new Map<string, string>();
+    for (const [label, path] of projectPaths) {
+      const cacheDirectory = resolveCheckerCacheDirectory(path);
+      const backupDirectory = join(tempDirectory, `.stale-cache-${label}`);
+      try {
+        await Deno.rename(cacheDirectory, backupDirectory);
+        staleCacheBackups.set(cacheDirectory, backupDirectory);
+      } catch {
+        // Unreferenced projects, such as lib-b before retargeting, have no primed build cache.
+      }
+    }
+    return staleCacheBackups;
+  };
+  const restoreBuildCaches = async (staleCacheBackups: Map<string, string>): Promise<void> => {
+    await removeBuildCaches();
+    for (const [cacheDirectory, backupDirectory] of staleCacheBackups) {
+      await Deno.mkdir(dirname(cacheDirectory), { recursive: true });
+      await Deno.rename(backupDirectory, cacheDirectory);
+    }
+  };
+
+  const firstBuild = await buildProject({
+    buildReferences: true,
+    outDir,
+    projectPath,
+    workingDirectory: tempDirectory,
+  });
+  assertEquals(firstBuild.exitCode, 0, firstBuild.output);
+  const firstEmittedFiles = relativeEmittedFiles(firstBuild.artifacts?.emittedFiles ?? []);
+  assertEquals(pathCount(firstEmittedFiles, 'lib-a/dist/package.json'), 1);
+  assertEquals(pathCount(firstEmittedFiles, 'lib-b/dist/package.json'), 0);
+  assertEquals(await pathExists(join(tempDirectory, 'lib-b/dist')), false);
+
+  const staleCacheBackups = await backupBuildCaches();
+  await writeProjectFile(
+    tempDirectory,
+    'mid-a/tsconfig.json',
+    createReferencedBuildTsconfig([{ path: '../lib-b' }]),
+  );
+  await writeProjectFile(
+    tempDirectory,
+    'lib-a/src/index.sts',
+    'export const value = "lib-a-v2";\n',
+  );
+  await writeProjectFile(
+    tempDirectory,
+    'lib-b/src/index.sts',
+    'export const value = "lib-b-v2";\n',
+  );
+  await writeProjectFile(tempDirectory, 'mid-a/dist/stale.txt', 'stale mid-a output\n');
+  await writeProjectFile(tempDirectory, 'lib-b/dist/stale.txt', 'stale lib-b output\n');
+
+  const coldBuild = await buildProject({
+    buildReferences: true,
+    outDir: coldOutDir,
+    projectPath,
+    workingDirectory: tempDirectory,
+  });
+  assertEquals(coldBuild.exitCode, 0, coldBuild.output);
+  const coldArtifacts = await collectRecursiveArtifacts('dist-cold');
+  const coldEmittedFiles = relativeEmittedFiles(coldBuild.artifacts?.emittedFiles ?? []);
+  assertEquals(pathCount(coldEmittedFiles, 'lib-a/dist-cold/package.json'), 1);
+  assertEquals(pathCount(coldEmittedFiles, 'lib-b/dist-cold/package.json'), 1);
+  await restoreBuildCaches(staleCacheBackups);
+
+  const warmBuild = await withCapturedTimingLogsAsync(async (logs) => {
+    const result = await buildProject({
+      buildReferences: true,
+      outDir,
+      projectPath,
+      workingDirectory: tempDirectory,
+    });
+    assert(
+      logs.some((line) => line.includes('[soundscript:checker] project.build.references.total ')),
+      logs.join('\n'),
+    );
+    assert(
+      logs.some((line) => line.includes('[soundscript:checker] project.build.cache.read ')),
+      logs.join('\n'),
+    );
+    assert(
+      logs.some((line) =>
+        line.includes('[soundscript:checker] project.build.cache.read ') &&
+        line.includes(join(tempDirectory, 'lib-b/tsconfig.json')) &&
+        line.includes('status=miss')
+      ),
+      logs.join('\n'),
+    );
+    assert(
+      logs.some((line) => line.includes('[soundscript:checker] project.build.analysis ')),
+      logs.join('\n'),
+    );
+    return result;
+  });
+  assertEquals(warmBuild.exitCode, coldBuild.exitCode, warmBuild.output);
+  assertEquals(await collectRecursiveArtifacts('dist'), coldArtifacts);
+  assertEquals(await pathExists(join(tempDirectory, 'mid-a/dist/stale.txt')), false);
+  assertEquals(await pathExists(join(tempDirectory, 'lib-b/dist/stale.txt')), false);
+  const warmEmittedFiles = relativeEmittedFiles(warmBuild.artifacts?.emittedFiles ?? []);
+  assertEquals(
+    warmEmittedFiles.map((file) => file.replaceAll('/dist/', '/dist-cold/')),
+    coldEmittedFiles,
+  );
+  const libAOutput = await Deno.readTextFile(join(tempDirectory, 'lib-a/dist/esm/src/index.js'));
+  const libBOutput = await Deno.readTextFile(join(tempDirectory, 'lib-b/dist/esm/src/index.js'));
+  assert(libAOutput.includes('"lib-a-v2"'), libAOutput);
+  assert(!libAOutput.includes('"lib-a-v1"'), libAOutput);
+  assert(libBOutput.includes('"lib-b-v2"'), libBOutput);
+  assert(!libBOutput.includes('"lib-b-v1"'), libBOutput);
+
+  const warmSuccessArtifacts = await collectRecursiveArtifacts('dist');
+  const invalidCacheBackups = await backupBuildCaches();
+  await writeProjectFile(
+    tempDirectory,
+    'lib-b/src/index.sts',
+    'export const poison: string = 1;\n',
+  );
+  await removeBuildCaches();
+
+  const coldFailedBuild = await buildProject({
+    buildReferences: true,
+    outDir: coldFailOutDir,
+    projectPath,
+    workingDirectory: tempDirectory,
+  });
+  const expectedFailedDiagnostics: readonly (readonly [string, string])[] = [
+    ['TS2322', 'lib-b/src/index.sts'],
+  ];
+  assertEquals(coldFailedBuild.exitCode, 1, coldFailedBuild.output);
+  assertEquals(coldFailedBuild.artifacts, undefined);
+  assertEquals(
+    toProjectRelativeDiagnostics(coldFailedBuild.diagnostics, tempDirectory),
+    expectedFailedDiagnostics,
+  );
+  await restoreBuildCaches(invalidCacheBackups);
+
+  const warmFailedBuild = await withCapturedTimingLogsAsync(async (logs) => {
+    const result = await buildProject({
+      buildReferences: true,
+      outDir,
+      projectPath,
+      workingDirectory: tempDirectory,
+    });
+    const libBReadLine = logs.find((line) =>
+      line.includes('[soundscript:checker] project.build.cache.read ') &&
+      line.includes(join(tempDirectory, 'lib-b/tsconfig.json'))
+    );
+    assert(libBReadLine && !libBReadLine.includes('status=hit'), logs.join('\n'));
+    assert(
+      logs.some((line) =>
+        line.includes('[soundscript:checker] project.build.analysis ') &&
+        line.includes(join(tempDirectory, 'lib-b/tsconfig.json'))
+      ),
+      logs.join('\n'),
+    );
+    assert(
+      !logs.some((line) =>
+        line.includes('[soundscript:checker] project.build.cache.write ') &&
+        line.includes(join(tempDirectory, 'lib-b/tsconfig.json'))
+      ),
+      logs.join('\n'),
+    );
+    return result;
+  });
+  assertEquals(warmFailedBuild.exitCode, coldFailedBuild.exitCode, warmFailedBuild.output);
+  assertEquals(warmFailedBuild.artifacts, undefined);
+  assertEquals(
+    toProjectRelativeDiagnostics(warmFailedBuild.diagnostics, tempDirectory),
+    expectedFailedDiagnostics,
+  );
+  assertEquals(await collectRecursiveArtifacts('dist'), warmSuccessArtifacts);
+});
+
 Deno.test('red-team: incremental session rejects stale referenced project source reuse', async () => {
   const tempDirectory = await createTempProject([
     {

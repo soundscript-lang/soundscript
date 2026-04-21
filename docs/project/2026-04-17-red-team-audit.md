@@ -46,6 +46,7 @@ Legend:
 - `batch-47`: covered by the forty-seventh red-team batch added with this record.
 - `batch-48`: covered by the forty-eighth red-team batch added with this record.
 - `batch-49`: covered by the forty-ninth red-team batch added with this record.
+- `batch-50`: covered by the fiftieth red-team batch added with this record.
 - `audit-debt`: missing coverage that should be closed before calling the family fully audited.
 - `out-of-scope`: explicitly outside the strong soundness claim.
 - `design-gap`: documented future work, not a current guarantee.
@@ -60,7 +61,7 @@ Legend:
 | Machine numerics                     | covered           | batch-37                       | batch-37                       | batch-37                 | batch-5                    | batch-37                | batch-1,37         | batch-37             |
 | Macro/capability boundary            | covered           | covered                        | audit-debt                     | batch-6                  | batch-41,42                | audit-debt              | batch-7            | batch-8              |
 | Compiler acceptance parity           | covered           | audit-debt                     | out-of-scope                   | out-of-scope             | out-of-scope               | out-of-scope            | batch-1,27,30      | covered,batch-27,30  |
-| Project-reference root ownership     | batch-32,47,48,49 | out-of-scope,batch-46,47,48,49 | out-of-scope,batch-46,47,48,49 | batch-32,48,49           | out-of-scope               | batch-34,47,48,49       | batch-33           | out-of-scope         |
+| Project-reference root ownership     | batch-32,47,48,49 | out-of-scope,batch-46,47,48,49 | out-of-scope,batch-46,47,48,49 | batch-32,48,49           | out-of-scope               | batch-34,47,48,49       | batch-33,50        | out-of-scope         |
 
 ## Batch 1 Findings
 
@@ -1215,9 +1216,34 @@ Legend:
 - Result: no production bug found. Recursive checker routes retain the still-reachable diamond
   branch, add the newly referenced branch, and dedupe diagnostics across graph-shape drift and warm
   persistent cache reuse.
-- Residual risk: diamond `build --references` graph retargeting remains lower-priority breadth
-  coverage because Batch 33 covers one-hop build-reference ownership and Batches 48-49 cover the
-  checker/session stale-graph pressure point.
+- Residual risk: diamond `build --references` graph retargeting is covered by Batch 50. Remaining
+  reference-graph breadth risk is lower-priority package-output smoke for source packages that
+  import across the diamond rather than using project references only.
+
+## Batch 50 Findings
+
+### Diamond Build-Reference Graph Retarget Output
+
+- Attack: prime a recursive `build --references` diamond where `app` references `mid-a` and `mid-b`,
+  both middle projects initially reference `lib-a`, and `lib-b` exists but is unbuilt. Then retarget
+  only `mid-a` to `lib-b`, change accepted leaf source in both `lib-a` and `lib-b`, seed stale
+  output markers, and compare a cold recursive build against a warm recursive build using the
+  original primed build caches.
+- Routes: cold recursive `buildProject({ buildReferences: true })`, warm recursive build with
+  restored stale build caches, build-cache timing, recursive emitted artifact aggregation, and
+  emitted file contents across root, middle, old shared leaf, and new leaf outputs. The same fixture
+  then poisons the retargeted leaf and compares cold versus warm failed builds.
+- Expected result: cold and warm recursive builds both succeed, both emit `lib-a` and `lib-b`
+  exactly once, warm logs show recursive build traversal and a `lib-b` build-cache miss, stale
+  output markers disappear, and emitted artifacts/content match the cold build. After the leaf is
+  poisoned, cold and warm recursive builds report the same `lib-b` diagnostic, skip build-cache
+  writes for the failed project, and leave the previous successful warm outputs unchanged.
+- Result: no production bug found. Recursive build traversal follows the retargeted diamond graph,
+  preserves the still-live old shared branch, adds the new branch, and does not retain stale
+  old-output artifacts after warm cache reuse. Failed retargeted-leaf analysis also re-runs under
+  warm stale-cache conditions and does not overwrite good artifacts.
+- Residual risk: this hardens project-reference-only diamond output. A future package-runtime smoke
+  could cover package imports across the same diamond if that becomes an owned build parity claim.
 
 ## Remaining High-Priority Audit Debt
 
@@ -1735,6 +1761,15 @@ red-team attack, the route matrix it covers, and the residual risk left behind.
   diagnostics" tests/integration/red_team_audit_test.ts`:
   passed, 1 test in `22s`.
 - `deno test --allow-all tests/integration/red_team_audit_test.ts`: passed, 62 tests in `6m58s`.
+- `deno fmt --check tests/integration/red_team_audit_test.ts
+  docs/project/2026-04-17-red-team-audit.md`:
+  passed.
+- `deno lint tests/integration/red_team_audit_test.ts`: passed.
+- `deno task check`: passed.
+- `deno test --allow-all --filter "recursive build diamond graph retarget refreshes artifacts"
+  tests/integration/red_team_audit_test.ts`:
+  passed, 1 test in `16s`.
+- `deno test --allow-all tests/integration/red_team_audit_test.ts`: passed, 63 tests in `6m40s`.
 - `deno fmt --check tests/integration/red_team_audit_test.ts
   docs/project/2026-04-17-red-team-audit.md`:
   passed.
