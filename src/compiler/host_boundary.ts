@@ -232,6 +232,7 @@ export function getHostTaggedPrimitiveKinds(
     return undefined;
   }
   const kinds = {
+    includesBigInt: boundary.includesBigInt || undefined,
     includesBoolean: boundary.includesBoolean || undefined,
     includesNull: boundary.includesNull || undefined,
     includesNumber: boundary.includesNumber || undefined,
@@ -239,7 +240,7 @@ export function getHostTaggedPrimitiveKinds(
     includesSymbol: boundary.includesSymbol || undefined,
     includesUndefined: boundary.includesUndefined || undefined,
   };
-  return kinds.includesBoolean || kinds.includesNull || kinds.includesNumber ||
+  return kinds.includesBigInt || kinds.includesBoolean || kinds.includesNull || kinds.includesNumber ||
       kinds.includesString || kinds.includesSymbol || kinds.includesUndefined
     ? kinds
     : undefined;
@@ -493,6 +494,7 @@ export function getTaggedArrayBoundaryFromHostBoundary(
     return undefined;
   }
   return {
+    includesBigInt: boundary.elementBoundary.includesBigInt,
     includesBoolean: boundary.elementBoundary.includesBoolean,
     includesNull: boundary.elementBoundary.includesNull,
     includesNumber: boundary.elementBoundary.includesNumber,
@@ -548,7 +550,8 @@ function taggedBoundaryKindsEqual(
   left: CompilerTaggedPrimitiveBoundaryKindsIR,
   right: CompilerTaggedPrimitiveBoundaryKindsIR,
 ): boolean {
-  return left.includesBoolean === right.includesBoolean &&
+  return left.includesBigInt === right.includesBigInt &&
+    left.includesBoolean === right.includesBoolean &&
     left.includesNull === right.includesNull &&
     left.includesNumber === right.includesNumber &&
     left.includesString === right.includesString &&
@@ -694,6 +697,7 @@ export function getEffectiveFunctionHostFallbackObjectPropertyMetadata(
               representation: field.boundary.elementBoundary.heapBoundary?.kind === 'object'
                 ? field.boundary.elementBoundary.heapBoundary.representation
                 : undefined,
+              includesBigInt: field.boundary.elementBoundary.includesBigInt,
               includesBoolean: field.boundary.elementBoundary.includesBoolean,
               includesNull: field.boundary.elementBoundary.includesNull,
               includesNumber: field.boundary.elementBoundary.includesNumber,
@@ -725,6 +729,7 @@ export function getEffectiveFunctionHostFallbackObjectPropertyMetadata(
             {
               representation: field.boundary.heapBoundary.representation,
               taggedPrimitiveKinds: {
+                includesBigInt: field.boundary.includesBigInt,
                 includesBoolean: field.boundary.includesBoolean,
                 includesNull: field.boundary.includesNull,
                 includesNumber: field.boundary.includesNumber,

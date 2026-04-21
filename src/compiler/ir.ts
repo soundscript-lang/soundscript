@@ -1485,6 +1485,7 @@ export type CompilerStatementIR =
   | CompilerThrowTaggedStatementIR;
 
 export interface CompilerTaggedPrimitiveBoundaryKindsIR {
+  includesBigInt?: boolean;
   includesBoolean?: boolean;
   includesNull?: boolean;
   includesNumber?: boolean;

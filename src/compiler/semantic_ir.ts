@@ -1181,6 +1181,9 @@ function compilerHostBoundaryToSemanticType(boundary: CompilerHostBoundaryIR): S
       if (boundary.includesString) {
         arms.push({ kind: 'string' });
       }
+      if (boundary.includesBigInt) {
+        arms.push({ kind: 'bigint' });
+      }
       if (boundary.includesSymbol) {
         arms.push({ kind: 'symbol' });
       }

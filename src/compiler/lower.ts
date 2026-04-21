@@ -21758,9 +21758,11 @@ function isScalarSafeFixedLayoutObjectValueExpression(
       return true;
     }
     return (type.flags & ts.TypeFlags.NumberLike) !== 0 ||
+      (type.flags & ts.TypeFlags.BigIntLike) !== 0 ||
       (type.flags & ts.TypeFlags.BooleanLike) !== 0 ||
       isSupportedTaggedHeapNullableType(checker!, type) ||
       isSupportedInternalTaggedHeapUnionType(checker!, type) ||
+      isTaggedCompilerUnionType(type) ||
       isSymbolLikeType(type) ||
       isSymbolOrNullableType(type) ||
       getHostTaggedBoundaryKinds(type) !== undefined ||
@@ -21840,8 +21842,10 @@ function isScalarSafeFixedLayoutObjectValueExpression(
       return true;
     }
     return (type.flags & ts.TypeFlags.NumberLike) !== 0 ||
+      (type.flags & ts.TypeFlags.BigIntLike) !== 0 ||
       (type.flags & ts.TypeFlags.BooleanLike) !== 0 ||
       isStringLikeType(type) ||
+      isTaggedCompilerUnionType(type) ||
       isSymbolLikeType(type) ||
       isSymbolOrNullableType(type) ||
       isSupportedTaggedHeapNullableType(checker, type) ||
@@ -21926,8 +21930,10 @@ function isScalarSafeFixedLayoutObjectValueExpression(
         return true;
       }
       return (fieldType.flags & ts.TypeFlags.NumberLike) !== 0 ||
+        (fieldType.flags & ts.TypeFlags.BigIntLike) !== 0 ||
         (fieldType.flags & ts.TypeFlags.BooleanLike) !== 0 ||
         isStringLikeType(fieldType) ||
+        isTaggedCompilerUnionType(fieldType) ||
         isSymbolLikeType(fieldType) ||
         isSymbolOrNullableType(fieldType) ||
         isSupportedTaggedHeapNullableType(checker, fieldType) ||
@@ -21963,8 +21969,10 @@ function isScalarSafeFixedLayoutObjectValueExpression(
       return true;
     }
     return (fieldType.flags & ts.TypeFlags.NumberLike) !== 0 ||
+      (fieldType.flags & ts.TypeFlags.BigIntLike) !== 0 ||
       (fieldType.flags & ts.TypeFlags.BooleanLike) !== 0 ||
       isStringLikeType(fieldType) ||
+      isTaggedCompilerUnionType(fieldType) ||
       isSymbolLikeType(fieldType) ||
       isSymbolOrNullableType(fieldType) ||
       isSupportedTaggedHeapNullableType(checker, fieldType) ||
@@ -22316,6 +22324,7 @@ function createHostTaggedBoundary(
 ): CompilerHostBoundaryIR {
   return {
     kind: 'tagged',
+    includesBigInt: taggedPrimitiveKinds?.includesBigInt,
     includesBoolean: taggedPrimitiveKinds?.includesBoolean,
     includesNull: taggedPrimitiveKinds?.includesNull,
     includesNumber: taggedPrimitiveKinds?.includesNumber,
@@ -22506,6 +22515,7 @@ function encodeSpecializedTaggedPrimitiveKinds(
   kinds: CompilerTaggedPrimitiveBoundaryKindsIR,
 ): string {
   return [
+    kinds.includesBigInt ? 'g' : '',
     kinds.includesBoolean ? 'b' : '',
     kinds.includesNull ? 'n' : '',
     kinds.includesNumber ? 'd' : '',
@@ -22519,6 +22529,7 @@ function decodeSpecializedTaggedPrimitiveKinds(
   encodedKinds: string,
 ): CompilerTaggedPrimitiveBoundaryKindsIR {
   return {
+    includesBigInt: encodedKinds.includes('g'),
     includesBoolean: encodedKinds.includes('b'),
     includesNull: encodedKinds.includes('n'),
     includesNumber: encodedKinds.includes('d'),
@@ -22658,6 +22669,37 @@ function getFixedLayoutPropertyShape(
       },
       runtime,
     );
+  }
+  {
+    const members = (propertyType.flags & ts.TypeFlags.Union) !== 0
+      ? (propertyType as ts.UnionType).types
+      : [propertyType];
+    if (
+      members.some((member) => (member.flags & ts.TypeFlags.BigIntLike) !== 0) &&
+      members.every((member) =>
+        (member.flags & ts.TypeFlags.BigIntLike) !== 0 ||
+        isNullType(member) ||
+        isUndefinedType(member)
+      )
+    ) {
+      return finalizeFixedLayoutPropertyShape(
+        {
+          name: property.getName(),
+          optional: isOptional,
+          valueType: 'tagged_ref',
+          taggedPrimitiveKinds: withOptionalUndefinedTaggedKinds({
+            includesBigInt: true,
+            includesBoolean: false,
+            includesNull: members.some((member) => isNullType(member)),
+            includesNumber: false,
+            includesString: false,
+            includesSymbol: false,
+            includesUndefined: members.some((member) => isUndefinedType(member)),
+          }, isOptional),
+        },
+        runtime,
+      );
+    }
   }
   if (isSymbolLikeType(propertyType) || isSymbolOrNullableType(propertyType)) {
     const members = (propertyType.flags & ts.TypeFlags.Union) !== 0

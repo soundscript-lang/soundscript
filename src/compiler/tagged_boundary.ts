@@ -4,6 +4,7 @@ import type {
 } from './ir.ts';
 
 export interface TaggedBoundaryKindsLike {
+  includesBigInt?: boolean;
   includesBoolean: boolean;
   includesNull: boolean;
   includesNumber: boolean;
@@ -19,6 +20,7 @@ export function toCompilerTaggedPrimitiveBoundaryKinds(
     return undefined;
   }
   return {
+    includesBigInt: kinds.includesBigInt || undefined,
     includesBoolean: kinds.includesBoolean || undefined,
     includesNull: kinds.includesNull || undefined,
     includesNumber: kinds.includesNumber || undefined,

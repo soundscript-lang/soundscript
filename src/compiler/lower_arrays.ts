@@ -204,6 +204,7 @@ export function getSupportedOwnedTaggedArrayKinds(
   checker: ts.TypeChecker,
   type: ts.Type,
 ): {
+  includesBigInt?: boolean;
   includesBoolean: boolean;
   includesNull: boolean;
   includesNumber: boolean;
@@ -252,6 +253,7 @@ export function getSupportedOwnedTaggedArrayKinds(
       merged.includesNumber ||
       merged.includesString || merged.includesSymbol || merged.includesUndefined
     ? {
+      includesBigInt: merged.includesBigInt,
       includesBoolean: merged.includesBoolean,
       includesNull: merged.includesNull,
       includesNumber: merged.includesNumber,
