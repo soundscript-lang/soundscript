@@ -31,6 +31,11 @@ Legend:
 - `batch-32`: covered by the thirty-second red-team batch added with this record.
 - `batch-33`: covered by the thirty-third red-team batch added with this record.
 - `batch-34`: covered by the thirty-fourth red-team batch added with this record.
+- `batch-35`: covered by the thirty-fifth red-team batch added with this record.
+- `batch-36`: covered by the thirty-sixth red-team batch added with this record.
+- `batch-37`: covered by the thirty-seventh red-team batch added with this record.
+- `batch-38`: covered by the thirty-eighth red-team batch added with this record.
+- `batch-39`: covered by the thirty-ninth red-team batch added with this record.
 - `audit-debt`: missing coverage that should be closed before calling the family fully audited.
 - `out-of-scope`: explicitly outside the strong soundness claim.
 - `design-gap`: documented future work, not a current guarantee.
@@ -38,11 +43,11 @@ Legend:
 | Owned family                         | Fresh project | Reused prepared | File-scoped  | Persistent checker cache | Package verification cache | LSP/incremental session | Build cache/output | Compiler/target gate |
 | ------------------------------------ | ------------- | --------------- | ------------ | ------------------------ | -------------------------- | ----------------------- | ------------------ | -------------------- |
 | Prepared/package-source parity       | covered       | covered         | covered      | covered,batch-29         | batch-3                    | covered                 | batch-1,10,28,31   | audit-debt           |
-| Flow/effect invalidation             | covered       | audit-debt      | covered      | batch-4                  | batch-4                    | audit-debt              | audit-debt         | audit-debt           |
-| Proof-oracle verification            | covered       | audit-debt      | covered      | audit-debt               | audit-debt                 | audit-debt              | audit-debt         | audit-debt           |
-| BareObject/null-prototype provenance | covered       | covered         | covered      | audit-debt               | covered                    | audit-debt              | audit-debt         | audit-debt           |
+| Flow/effect invalidation             | covered       | batch-35        | covered      | batch-4,35               | batch-4                    | batch-35                | audit-debt         | audit-debt           |
+| Proof-oracle verification            | covered       | batch-38        | covered      | batch-38                 | batch-38                   | batch-38                | audit-debt         | audit-debt           |
+| BareObject/null-prototype provenance | covered       | covered         | covered      | batch-39                 | covered                    | batch-39                | batch-39           | audit-debt           |
 | `#[value]` parity                    | covered       | batch-1         | batch-1      | batch-1                  | batch-5                    | batch-1                 | batch-1            | covered              |
-| Machine numerics                     | covered       | audit-debt      | audit-debt   | audit-debt               | batch-5                    | audit-debt              | batch-1            | audit-debt           |
+| Machine numerics                     | covered       | batch-37        | batch-37     | batch-37                 | batch-5                    | batch-37                | batch-1,37         | batch-37             |
 | Macro/capability boundary            | covered       | covered         | audit-debt   | batch-6                  | design-gap                 | audit-debt              | batch-7            | batch-8              |
 | Compiler acceptance parity           | covered       | audit-debt      | out-of-scope | out-of-scope             | out-of-scope               | out-of-scope            | batch-1,27,30      | covered,batch-27,30  |
 | Project-reference root ownership     | batch-32      | audit-debt      | audit-debt   | batch-32                 | out-of-scope               | batch-34                | batch-33           | out-of-scope         |
@@ -892,15 +897,96 @@ Legend:
 - Residual risk: file-scoped diagnostics intentionally remain focused on the requested file and do
   not own unimported referenced-project roots.
 
+## Batch 35 Findings
+
+### Effect Transform Cache Parity
+
+- Attack: prime persistent checker cache, reused prepared analysis, and an incremental session with
+  a local `#[effects(forward: [{ from: callback, rewrite: [...] }])]` extern helper that rewrites
+  `fails` into `fails.rejects`; then change only the effect annotation to forward the callback
+  directly under a caller that forbids `fails.throws`.
+- Routes: reused prepared analysis, persistent checker cache, dependency signature refresh,
+  annotation-only source hashing, and incremental full-project analysis.
+- Expected result: cold, reused prepared, warm cached, and session routes all reject with the same
+  `SOUND1041` diagnostic after the rewrite transform is removed.
+- Result: no production bug found for local rewrite-transform cache invalidation.
+- Residual risk: true member-path forwarded callback probes and source-published package rewrite
+  chains currently fail closed during fresh analysis with an unsummarized frontier; they remain
+  design gaps rather than stale-cache bugs until the fresh accepted surface is broadened.
+
+## Batch 36 Findings
+
+### Package-To-Package Node Import Smoke
+
+- Attack: revalidated the existing package-to-package build-output route that builds a
+  source-published dependency, consumes its published `soundscript` source from a second package,
+  verifies unchanged warm build artifacts, and imports the built consumer with plain Node.
+- Routes: package build cache, source-published package consumption, runtime import specifier
+  preservation, package metadata projection, and Node import smoke.
+- Expected result: unchanged warm app builds hit the build cache and hash-match; dependency source
+  edits invalidate the app build; Node observes the changed dependency value through the built
+  package graph.
+- Result: Batch 31 already covers this debt. Batch 36 records it as closed and removes it from the
+  high-priority remaining-debt list.
+- Residual risk: deeper package-to-package-to-package chains remain lower-priority breadth coverage.
+
+## Batch 37 Findings
+
+### Machine Numeric Cached Parity
+
+- Attack: prime a package-shaped project whose public declaration exports `u8` and narrows `Numeric`
+  with `Num.isU8`; then change only a dependency leaf from `u8` to mixed `U8 + I8`.
+- Routes: reused prepared analysis, file-scoped analysis, persistent checker cache, incremental
+  full-project analysis, package build output declarations, failed warm build, and compiler target
+  gate smoke.
+- Expected result: every checker route rejects with `SOUNDSCRIPT_NUMERIC_MIXED_LEAF`, projected
+  declarations keep numeric leaf types instead of `number`, warm build rejects after the edit, and
+  same-leaf compiler lowering reports compiler-owned unsupported diagnostics.
+- Result: no production bug found for local numeric cache parity.
+- Residual risk: package verification cache numerics remain covered by Batch 5; broader runtime
+  numeric storage behavior continues to live in the frontend/stdlib suites.
+
+## Batch 38 Findings
+
+### Predicate Proof-Oracle Cache Parity
+
+- Attack: prime a valid exported type guard, then change only the predicate body to `return true`
+  while the signature and consumers stay unchanged. Repeat through a source-published package and
+  prove an unchanged package-cache hit before mutation.
+- Routes: reused prepared analysis, persistent checker cache, package verification cache,
+  source-published package invalidation, and incremental full-project analysis.
+- Expected result: cold, reused prepared, warm cached, session, and package-cache routes all reject
+  with `SOUND1017`; package verification cache hits unchanged source and misses after predicate-body
+  drift.
+- Result: no production bug found for predicate proof-oracle cache invalidation.
+- Residual risk: build-output and compiler-gate proof-oracle parity are still not first-class routes
+  because proof-oracle checks are checker-owned and should fail before emit/lowering.
+
+## Batch 39 Findings
+
+### Non-Ordinary Provenance Cache And Build Parity
+
+- Attack: prime a package-shaped project where an exported helper returns an ordinary object
+  accepted as `object`; then change only the helper body to return `RegExp.groups`, a
+  BareObject-family value.
+- Routes: persistent checker cache, incremental full-project analysis, build cache hit for unchanged
+  output, build-cache invalidation after provenance drift, and build diagnostics.
+- Expected result: cold, warm cached, session, and build routes reject with the same `SOUND1024`
+  diagnostic at the consumer assignment, and the post-edit build does not reuse stale artifacts.
+- Result: no production bug found for non-ordinary provenance cache or build-output invalidation.
+- Residual risk: compiler-gate coverage remains audit debt for non-ordinary values because this
+  family should be rejected before backend lowering on owned paths.
+
 ## Remaining High-Priority Audit Debt
 
 - Package verification cache reuse for package-exported macros if macro-only packages become a
   cacheable package-source policy route.
-- Persistent checker cache tests where local or package effect summaries change through member-path
-  forwards or rewrite transforms.
+- Accepted source-published package rewrite/member-path effect transforms through package chains if
+  those fresh surfaces are later broadened beyond the current fail-closed behavior.
+- Build-output/compiler-gate coverage for effect and proof-oracle families where those routes become
+  part of the owned acceptance story rather than fail-before-emit checks.
 - File-scoped parity for unimported referenced-project roots if that route is later expected to own
   recursive project-reference diagnostics.
-- Node import smoke for source-published packages consumed by another package.
 - Recursive package support-file tracking for non-`.sts` helper graphs if that source-published
   package boundary is ever brought into scope.
 
@@ -1229,3 +1315,24 @@ red-team attack, the route matrix it covers, and the residual risk left behind.
   passed.
 - `deno lint tests/integration/red_team_audit_test.ts`: passed.
 - `deno task check`: passed after the Batch 30 compiler import-gate fix.
+- `deno test --allow-all --filter "/(member-path forwarded callbacks|rewrite forwarded|cached
+  machine numerics|cached proof-oracle|source-published predicate|cached non-ordinary)/"
+  tests/integration/red_team_audit_test.ts`:
+  initially failed on two invalid effect fixture assumptions. The member-path fixture failed fresh
+  with an unsummarized frontier, so it was recorded as a fail-closed design gap. The rewrite
+  transform fixture was narrowed to the accepted local extern effect surface. The final focused run
+  passed, 6 tests.
+- `deno test --allow-all tests/integration/red_team_audit_test.ts`: passed, 51 tests in `3m22s`.
+- `deno task check`: passed after the Batch 35-39 test/doc additions.
+- `deno fmt --check tests/integration/red_team_audit_test.ts
+  docs/project/2026-04-17-red-team-audit.md`:
+  passed.
+- `deno lint tests/integration/red_team_audit_test.ts`: passed.
+- `deno test --allow-all src/build/build_package_test.ts src/frontend/numeric_types_test.ts
+  src/stdlib/numerics_test.ts`:
+  passed, 73 tests in `31s`.
+- `deno bench --allow-all tests/bench/mixed_project_analysis_bench.ts`: passed on Apple M5 Pro with
+  cold prepare `1.5s`, `.sts`-local cold prepare `903.9ms`, reused prepare after `.ts`-only edit
+  `371.4ms`, reused prepare after `.sts`-only edit `1.2s`, reused `.sts`-local edit `815.9ms`, and
+  analyze-only `3.6ms` average samples. This slice changed tests/docs only, so the benchmark is a
+  current-tree performance smoke rather than evidence for a production cache-key change.
