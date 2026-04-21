@@ -3806,68 +3806,64 @@ function modulePromiseThenUsesHandler(
   return plan.functionPlans.some((func) => promiseThenUsesHandler(func.body, handlerIndex));
 }
 
-function renderPromiseSetStateAndValue(
-  promiseLocalName: string,
-  state: string,
-  valueLines: readonly string[],
-  indent: string,
-): readonly string[] {
-  return [
-    `${indent}local.get $${promiseLocalName}`,
-    `${indent}ref.as_non_null`,
-    `${indent}i32.const ${state}`,
-    `${indent}struct.set $promise_runtime $state`,
-    `${indent}local.get $${promiseLocalName}`,
-    `${indent}ref.as_non_null`,
-    ...valueLines,
-    `${indent}struct.set $promise_runtime $value`,
-  ];
-}
-
 function renderPromiseSetStateAndValueFromTaggedTarget(
   targetName: string,
   state: string,
   valueLines: readonly string[],
   options: { usesPromiseThen: boolean },
 ): readonly string[] {
-  if (!options.usesPromiseThen) {
-    return [
-      `    local.get $${targetName}`,
-      `    ref.cast (ref ${taggedValueTypeName()})`,
-      `    struct.get ${taggedValueTypeName()} $heap_payload`,
-      '    ref.cast (ref $promise_runtime)',
-      `    i32.const ${state}`,
-      '    struct.set $promise_runtime $state',
-      `    local.get $${targetName}`,
-      `    ref.cast (ref ${taggedValueTypeName()})`,
-      `    struct.get ${taggedValueTypeName()} $heap_payload`,
-      '    ref.cast (ref $promise_runtime)',
-      ...valueLines,
-      '    struct.set $promise_runtime $value',
-    ];
-  }
-
   return [
     `    local.get $${targetName}`,
     `    ref.cast (ref ${taggedValueTypeName()})`,
     `    struct.get ${taggedValueTypeName()} $heap_payload`,
     '    ref.cast (ref $promise_runtime)',
     '    local.set $target_promise',
-    ...renderPromiseSetStateAndValue('target_promise', state, valueLines, '    '),
     '    local.get $target_promise',
     '    ref.as_non_null',
-    '    struct.get $promise_runtime $reaction',
-    '    local.set $reaction',
-    '    local.get $reaction',
-    '    ref.is_null',
+    ...valueLines,
+    `    i32.const ${state}`,
+    '    call $soundscript_promise_try_settle',
+    ...(options.usesPromiseThen
+      ? [
+        '    if',
+        '      local.get $target_promise',
+        '      ref.as_non_null',
+        '      struct.get $promise_runtime $reaction',
+        '      local.set $reaction',
+        '      local.get $reaction',
+        '      ref.is_null',
+        '      i32.eqz',
+        '      if',
+        '        local.get $reaction',
+        ...valueLines.map((line) => `        ${line.trimStart()}`),
+        `        i32.const ${state}`,
+        '        call $soundscript_promise_enqueue_microtask',
+        '        call $soundscript_promise_drain_microtasks',
+        '      end',
+        '    end',
+      ]
+      : ['    drop']),
+  ];
+}
+
+function renderPromiseTrySettleHelper(): readonly string[] {
+  return [
+    `  (func $soundscript_promise_try_settle (param $target (ref $promise_runtime)) (param $value (ref null ${taggedValueTypeName()})) (param $state i32) (result i32)`,
+    '    local.get $target',
+    '    struct.get $promise_runtime $state',
     '    i32.eqz',
-    '    if',
-    '      local.get $reaction',
-    ...valueLines.map((line) => `      ${line.trimStart()}`),
-    `      i32.const ${state}`,
-    '      call $soundscript_promise_enqueue_microtask',
-    '      call $soundscript_promise_drain_microtasks',
+    '    if (result i32)',
+    '      local.get $target',
+    '      local.get $state',
+    '      struct.set $promise_runtime $state',
+    '      local.get $target',
+    '      local.get $value',
+    '      struct.set $promise_runtime $value',
+    '      i32.const 1',
+    '    else',
+    '      i32.const 0',
     '    end',
+    '  )',
   ];
 }
 
@@ -4194,11 +4190,13 @@ function renderPromiseHelperFunctions(plan: WasmGcModulePlanIR): readonly string
   const usesPromiseThen = moduleCallsFunction(plan, '__soundscript_promise_then');
   const usesPromiseResolveInto = moduleCallsFunction(plan, '__soundscript_promise_resolve_into');
   const usesPromiseRejectInto = moduleCallsFunction(plan, '__soundscript_promise_reject_into');
+  const usesPromiseSettleInto = usesPromiseResolveInto || usesPromiseRejectInto;
   const thenHandlerSignatureId = promiseThenHandlerSignatureIds(plan)[0] ?? 0;
   const thenUsesFulfilledHandler = modulePromiseThenUsesHandler(plan, 1);
   const thenUsesRejectedHandler = modulePromiseThenUsesHandler(plan, 2);
   return usesPromiseResolution
     ? [
+      ...(usesPromiseSettleInto ? renderPromiseTrySettleHelper() : []),
       ...(usesPromiseThen
         ? renderPromiseMicrotaskHelpers(
           thenHandlerSignatureId,
@@ -4299,11 +4297,9 @@ function renderPromiseHelperFunctions(plan: WasmGcModulePlanIR): readonly string
       ...(usesPromiseResolveInto
         ? [
           `  (func $soundscript_promise_resolve_into (param $target_tagged (ref null ${taggedValueTypeName()})) (param $value (ref null ${taggedValueTypeName()})) (result (ref null ${taggedValueTypeName()}))`,
+          '    (local $target_promise (ref null $promise_runtime))',
           ...(usesPromiseThen
-            ? [
-              '    (local $target_promise (ref null $promise_runtime))',
-              '    (local $reaction (ref null $promise_reaction_runtime))',
-            ]
+            ? ['    (local $reaction (ref null $promise_reaction_runtime))']
             : []),
           ...renderPromiseSetStateAndValueFromTaggedTarget('target_tagged', '1', [
             '    local.get $value',
@@ -4315,11 +4311,9 @@ function renderPromiseHelperFunctions(plan: WasmGcModulePlanIR): readonly string
       ...(usesPromiseRejectInto
         ? [
           `  (func $soundscript_promise_reject_into (param $target_tagged (ref null ${taggedValueTypeName()})) (param $value (ref null ${taggedValueTypeName()})) (result (ref null ${taggedValueTypeName()}))`,
+          '    (local $target_promise (ref null $promise_runtime))',
           ...(usesPromiseThen
-            ? [
-              '    (local $target_promise (ref null $promise_runtime))',
-              '    (local $reaction (ref null $promise_reaction_runtime))',
-            ]
+            ? ['    (local $reaction (ref null $promise_reaction_runtime))']
             : []),
           ...renderPromiseSetStateAndValueFromTaggedTarget('target_tagged', '2', [
             '    local.get $value',
