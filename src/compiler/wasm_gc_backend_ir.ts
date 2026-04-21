@@ -113,11 +113,19 @@ export interface WasmGcHostCallbackWrapperPlanIR {
   reasons: readonly WasmGcHostCallbackWrapperReasonIR[];
 }
 
+export interface WasmGcExportWrapperPlanIR {
+  exportName: string;
+  wasmExportName: string;
+  paramTypes: readonly string[];
+  resultType: string;
+}
+
 export interface WasmGcWrapperPlanIR {
   kind: 'wasm_gc_wrapper_plan';
   hostCallbackWrappers: readonly WasmGcHostCallbackWrapperPlanIR[];
   taggedValueAdapterHelpers: readonly string[];
   taggedValueResultHelpers: readonly string[];
+  exportWrappers: readonly WasmGcExportWrapperPlanIR[];
 }
 
 export interface WasmGcDiagnosticPlanIR {
@@ -610,6 +618,28 @@ function taggedValueResultHelpersForWrappers(
   return [...helpers].sort();
 }
 
+function isWasmGcStringValueType(valueType: string): boolean {
+  return valueType === 'string_ref' || valueType === 'owned_string_ref';
+}
+
+function createWasmGcExportWrapperPlan(
+  functionPlans: readonly WasmGcFunctionPlanIR[],
+): readonly WasmGcExportWrapperPlanIR[] {
+  return functionPlans
+    .filter((func) => !func.hostImport && func.exportName.length > 0)
+    .map((func) => ({
+      exportName: func.exportName,
+      wasmExportName: func.exportName,
+      paramTypes: func.params.map((param) => param.wasmType),
+      resultType: func.result,
+    }))
+    .filter((wrapper) =>
+      wrapper.paramTypes.some(isWasmGcStringValueType) ||
+      isWasmGcStringValueType(wrapper.resultType)
+    )
+    .sort((left, right) => left.exportName.localeCompare(right.exportName));
+}
+
 function createWasmGcWrapperPlan(
   functionPlans: readonly WasmGcFunctionPlanIR[],
 ): WasmGcWrapperPlanIR {
@@ -658,6 +688,7 @@ function createWasmGcWrapperPlan(
   }
   const taggedValueAdapterHelpers = taggedValueAdapterHelpersForWrappers(wrappers);
   const taggedValueResultHelpers = taggedValueResultHelpersForWrappers(wrappers);
+  const exportWrappers = createWasmGcExportWrapperPlan(functionPlans);
   return {
     kind: 'wasm_gc_wrapper_plan',
     hostCallbackWrappers: wrappers.sort((left, right) =>
@@ -667,6 +698,7 @@ function createWasmGcWrapperPlan(
     ),
     taggedValueAdapterHelpers,
     taggedValueResultHelpers,
+    exportWrappers,
   };
 }
 

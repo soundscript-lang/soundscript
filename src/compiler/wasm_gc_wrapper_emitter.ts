@@ -1,4 +1,8 @@
-import type { WasmGcHostCallbackWrapperPlanIR, WasmGcModulePlanIR } from './wasm_gc_backend_ir.ts';
+import type {
+  WasmGcExportWrapperPlanIR,
+  WasmGcHostCallbackWrapperPlanIR,
+  WasmGcModulePlanIR,
+} from './wasm_gc_backend_ir.ts';
 
 function groupHostCallbackWrappers(
   wrappers: readonly WasmGcHostCallbackWrapperPlanIR[],
@@ -99,6 +103,84 @@ function renderTaggedResultAdapterHelpers(plan: WasmGcModulePlanIR): string {
 }`;
 }
 
+function isStringValueType(valueType: string): boolean {
+  return valueType === 'string_ref' || valueType === 'owned_string_ref';
+}
+
+function renderExportWrapperInvocation(wrapper: WasmGcExportWrapperPlanIR): string {
+  const adaptedArgs = wrapper.paramTypes.map((paramType, index) =>
+    isStringValueType(paramType) ? `stringToInternal(args[${index}])` : `args[${index}]`
+  ).join(', ');
+  const rawResult = `requireExport(wasmExports, ${
+    JSON.stringify(wrapper.wasmExportName)
+  })(${adaptedArgs})`;
+  const result = isStringValueType(wrapper.resultType)
+    ? `stringFromInternal(${rawResult})`
+    : rawResult;
+  return `    ${JSON.stringify(wrapper.exportName)}: (...args) => ${result},`;
+}
+
+function renderExportWrapperModule(plan: WasmGcModulePlanIR): string {
+  if (plan.wrapperPlan.exportWrappers.length === 0) {
+    return `export function createSoundscriptWasmGcExports(_instanceOrCell) {
+  return {};
+}
+`;
+  }
+  return `export function createSoundscriptWasmGcExports(instanceOrCell) {
+  function resolveInstance() {
+    if (instanceOrCell?.exports) {
+      return instanceOrCell;
+    }
+    if (instanceOrCell?.instance?.exports) {
+      return instanceOrCell.instance;
+    }
+    throw new Error('Soundscript WasmGC export wrapper needs an instantiated WebAssembly.Instance.');
+  }
+
+  function requireExport(exports, name) {
+    const value = exports[name];
+    if (typeof value !== 'function') {
+      throw new Error(\`Missing Soundscript WasmGC wrapper export \${name}.\`);
+    }
+    return value;
+  }
+
+  const instance = resolveInstance();
+  const wasmExports = instance.exports;
+
+  function stringToInternal(value) {
+    if (typeof value !== 'string') {
+      throw new TypeError('Soundscript WasmGC string export argument must be a string.');
+    }
+    const append = requireExport(wasmExports, '__soundscript_string_append_code_unit');
+    let current = requireExport(wasmExports, '__soundscript_string_empty')();
+    for (let index = 0; index < value.length; index += 1) {
+      current = append(current, value.charCodeAt(index));
+    }
+    return current;
+  }
+
+  function stringFromInternal(value) {
+    if (value == null) {
+      throw new TypeError('Soundscript WasmGC string export returned null.');
+    }
+    const length = requireExport(wasmExports, '__soundscript_string_length')(value);
+    const codeUnitAt = requireExport(wasmExports, '__soundscript_string_code_unit_at');
+    let result = '';
+    for (let index = 0; index < length; index += 1) {
+      result += String.fromCharCode(codeUnitAt(value, index));
+    }
+    return result;
+  }
+
+  return {
+${plan.wrapperPlan.exportWrappers.map(renderExportWrapperInvocation).join('\n')}
+  };
+}
+`;
+}
+
 export function emitWasmGcWrapperModule(plan: WasmGcModulePlanIR): string {
   const wrapperGroups = groupHostCallbackWrappers(plan.wrapperPlan.hostCallbackWrappers);
   const wrapperAssignments = wrapperGroups.map(([, wrappers]) => renderWrapperAssignment(wrappers));
@@ -167,5 +249,6 @@ ${
   }
   return imports;
 }
+${renderExportWrapperModule(plan)}
 `;
 }

@@ -3371,14 +3371,15 @@ function renderStringEqualityHelperFunctions(plan: WasmGcModulePlanIR): readonly
   const usesStringRuntime = plan.typePlans.some((typePlan) =>
     typePlan.source === 'runtime_family' && typePlan.family === 'string'
   );
-  const usesStringIndexOf = plan.functionPlans.some((func) =>
-    !func.hostImport && functionUsesStringArrayIndexOf(func)
-  ) || (usesStringRuntime &&
-    plan.functionPlans.some((func) => !func.hostImport && functionUsesTaggedArrayIndexOf(func))
-  );
+  const usesStringIndexOf =
+    plan.functionPlans.some((func) => !func.hostImport && functionUsesStringArrayIndexOf(func)) ||
+    (usesStringRuntime &&
+      plan.functionPlans.some((func) => !func.hostImport && functionUsesTaggedArrayIndexOf(func)));
   return usesStringIndexOf
     ? [
-      `  (func $${sanitizeIdentifier(STRING_EQUAL_FUNCTION_NAME)} (param $left (ref null ${stringRuntimeTypeName()})) (param $right (ref null ${stringRuntimeTypeName()})) (result i32)`,
+      `  (func $${
+        sanitizeIdentifier(STRING_EQUAL_FUNCTION_NAME)
+      } (param $left (ref null ${stringRuntimeTypeName()})) (param $right (ref null ${stringRuntimeTypeName()})) (result i32)`,
       `    (local $left_units (ref null ${stringCodeUnitArrayTypeName()}))`,
       `    (local $right_units (ref null ${stringCodeUnitArrayTypeName()}))`,
       '    (local $index i32)',
@@ -3453,6 +3454,73 @@ function renderStringEqualityHelperFunctions(plan: WasmGcModulePlanIR): readonly
       '  )',
     ]
     : [];
+}
+
+function wrapperPlanUsesStringExports(plan: WasmGcModulePlanIR): boolean {
+  return plan.wrapperPlan.exportWrappers.some((wrapper) =>
+    wrapper.paramTypes.some((paramType) =>
+      paramType === 'string_ref' || paramType === 'owned_string_ref'
+    ) || wrapper.resultType === 'string_ref' || wrapper.resultType === 'owned_string_ref'
+  );
+}
+
+function renderStringExportWrapperHelperFunctions(plan: WasmGcModulePlanIR): readonly string[] {
+  if (!wrapperPlanUsesStringExports(plan)) {
+    return [];
+  }
+  return [
+    `  (func $__soundscript_string_empty (export "__soundscript_string_empty") (result (ref null ${stringRuntimeTypeName()}))`,
+    `    array.new_fixed ${stringCodeUnitArrayTypeName()} 0`,
+    `    struct.new ${stringRuntimeTypeName()}`,
+    '  )',
+    `  (func $__soundscript_string_append_code_unit (export "__soundscript_string_append_code_unit") (param $value (ref null ${stringRuntimeTypeName()})) (param $code_unit i32) (result (ref null ${stringRuntimeTypeName()}))`,
+    `    (local $old_units (ref null ${stringCodeUnitArrayTypeName()}))`,
+    `    (local $new_units (ref null ${stringCodeUnitArrayTypeName()}))`,
+    '    (local $length i32)',
+    '    local.get $value',
+    `    ref.cast (ref ${stringRuntimeTypeName()})`,
+    `    struct.get ${stringRuntimeTypeName()} $code_units`,
+    '    local.set $old_units',
+    '    local.get $old_units',
+    '    ref.as_non_null',
+    '    array.len',
+    '    local.set $length',
+    '    local.get $length',
+    '    i32.const 1',
+    '    i32.add',
+    `    array.new_default ${stringCodeUnitArrayTypeName()}`,
+    '    local.set $new_units',
+    '    local.get $new_units',
+    '    ref.as_non_null',
+    '    i32.const 0',
+    '    local.get $old_units',
+    '    ref.as_non_null',
+    '    i32.const 0',
+    '    local.get $length',
+    `    array.copy ${stringCodeUnitArrayTypeName()} ${stringCodeUnitArrayTypeName()}`,
+    '    local.get $new_units',
+    '    ref.as_non_null',
+    '    local.get $length',
+    '    local.get $code_unit',
+    `    array.set ${stringCodeUnitArrayTypeName()}`,
+    '    local.get $new_units',
+    '    ref.as_non_null',
+    `    struct.new ${stringRuntimeTypeName()}`,
+    '  )',
+    `  (func $__soundscript_string_length (export "__soundscript_string_length") (param $value (ref null ${stringRuntimeTypeName()})) (result i32)`,
+    '    local.get $value',
+    `    ref.cast (ref ${stringRuntimeTypeName()})`,
+    `    struct.get ${stringRuntimeTypeName()} $code_units`,
+    '    array.len',
+    '  )',
+    `  (func $__soundscript_string_code_unit_at (export "__soundscript_string_code_unit_at") (param $value (ref null ${stringRuntimeTypeName()})) (param $index i32) (result i32)`,
+    '    local.get $value',
+    `    ref.cast (ref ${stringRuntimeTypeName()})`,
+    `    struct.get ${stringRuntimeTypeName()} $code_units`,
+    '    local.get $index',
+    `    array.get ${stringCodeUnitArrayTypeName()}`,
+    '  )',
+  ];
 }
 
 function renderExternEqualityImportPlan(plan: WasmGcModulePlanIR): readonly string[] {
@@ -5362,6 +5430,7 @@ export function emitWasmGcModulePlan(plan: WasmGcModulePlanIR): string {
   const taggedValueTypes = renderTaggedValueType(plan);
   const promiseRecordTypes = renderPromiseRecordTypes(plan);
   const stringEqualityHelperFunctions = renderStringEqualityHelperFunctions(plan);
+  const stringExportWrapperHelperFunctions = renderStringExportWrapperHelperFunctions(plan);
   const promiseHelperFunctions = renderPromiseHelperFunctions(plan);
   const asyncGeneratorHelperFunctions = renderAsyncGeneratorHelperFunctions(plan);
   const closureDispatchHelpers = renderClosureDispatchHelpers(plan, closureFunctionNames);
@@ -5414,12 +5483,14 @@ export function emitWasmGcModulePlan(plan: WasmGcModulePlanIR): string {
       : []),
     '  ;; helpers',
     ...(plan.helperPlans.length > 0 || stringEqualityHelperFunctions.length > 0 ||
+        stringExportWrapperHelperFunctions.length > 0 ||
         promiseHelperFunctions.length > 0 ||
         asyncGeneratorHelperFunctions.length > 0 || closureDispatchHelpers.length > 0 ||
         hostTaggedWrapperHelperFunctions.length > 0
       ? [
         ...indentLines(plan.helperPlans.map(renderHelperPlan)),
         ...stringEqualityHelperFunctions,
+        ...stringExportWrapperHelperFunctions,
         ...promiseHelperFunctions,
         ...hostTaggedWrapperHelperFunctions,
         ...closureDispatchHelpers,
