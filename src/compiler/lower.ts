@@ -823,10 +823,12 @@ function isUndefinedOnlyClosureAbiValue(value: ResolvedClosureAbiValueIR): boole
     value.classTagId === undefined &&
     value.heapRepresentation === undefined &&
     value.heapArrayRepresentation === undefined &&
+    value.taggedPrimitiveKinds?.includesBigInt !== true &&
     value.taggedPrimitiveKinds?.includesBoolean !== true &&
     value.taggedPrimitiveKinds?.includesNull !== true &&
     value.taggedPrimitiveKinds?.includesNumber !== true &&
     value.taggedPrimitiveKinds?.includesString !== true &&
+    value.taggedPrimitiveKinds?.includesSymbol !== true &&
     value.taggedPrimitiveKinds?.includesUndefined === true;
 }
 
@@ -868,6 +870,30 @@ function toTaggedClosureAbiValue(
           includesNull: false,
           includesNumber: false,
           includesString: true,
+          includesUndefined: false,
+        },
+      };
+    case 'symbol_ref':
+      return {
+        type: 'tagged_ref',
+        taggedPrimitiveKinds: {
+          includesBoolean: false,
+          includesNull: false,
+          includesNumber: false,
+          includesString: false,
+          includesSymbol: true,
+          includesUndefined: false,
+        },
+      };
+    case 'bigint_ref':
+      return {
+        type: 'tagged_ref',
+        taggedPrimitiveKinds: {
+          includesBigInt: true,
+          includesBoolean: false,
+          includesNull: false,
+          includesNumber: false,
+          includesString: false,
           includesUndefined: false,
         },
       };
@@ -960,6 +986,8 @@ function mergeResolvedClosureAbiValues(
         merged = {
           type: 'tagged_ref',
           taggedPrimitiveKinds: {
+            includesBigInt: merged.taggedPrimitiveKinds?.includesBigInt === true ||
+              candidate.taggedPrimitiveKinds?.includesBigInt === true,
             includesBoolean: merged.taggedPrimitiveKinds?.includesBoolean === true ||
               candidate.taggedPrimitiveKinds?.includesBoolean === true,
             includesNull: merged.taggedPrimitiveKinds?.includesNull === true ||
@@ -968,6 +996,8 @@ function mergeResolvedClosureAbiValues(
               candidate.taggedPrimitiveKinds?.includesNumber === true,
             includesString: merged.taggedPrimitiveKinds?.includesString === true ||
               candidate.taggedPrimitiveKinds?.includesString === true,
+            includesSymbol: merged.taggedPrimitiveKinds?.includesSymbol === true ||
+              candidate.taggedPrimitiveKinds?.includesSymbol === true,
             includesUndefined: merged.taggedPrimitiveKinds?.includesUndefined === true ||
               candidate.taggedPrimitiveKinds?.includesUndefined === true,
           },
@@ -2505,10 +2535,12 @@ function getClosureSignatureId(
       encodeHostBoundaryKey(value.promiseValueBoundary),
       value.taggedPrimitiveKinds
         ? [
+          value.taggedPrimitiveKinds.includesBigInt ? 'g' : '',
           value.taggedPrimitiveKinds.includesBoolean ? 'b' : '',
           value.taggedPrimitiveKinds.includesNull ? 'n' : '',
           value.taggedPrimitiveKinds.includesNumber ? 'd' : '',
           value.taggedPrimitiveKinds.includesString ? 's' : '',
+          value.taggedPrimitiveKinds.includesSymbol ? 'y' : '',
           value.taggedPrimitiveKinds.includesUndefined ? 'u' : '',
         ].join('')
         : '-',
@@ -25742,13 +25774,13 @@ function createHostBoundaryFromResolvedClosureAbiValue(
         'Class-constructor host boundaries currently require class tag metadata.',
       );
     case 'symbol_ref':
-      throw new CompilerUnsupportedError(
-        'Symbol host boundaries are not supported in compiler subset.',
-      );
+      return createHostTaggedBoundary({
+        includesSymbol: true,
+      });
     case 'bigint_ref':
-      throw new CompilerUnsupportedError(
-        'BigInt host boundaries are not supported in this slice.',
-      );
+      return createHostTaggedBoundary({
+        includesBigInt: true,
+      });
     case 'box_ref':
       throw new CompilerUnsupportedError(
         'Opaque boxed host boundaries are not supported in compiler subset.',
@@ -41416,6 +41448,18 @@ function lowerPromiseValueAsTagged(
         value: lowerExpressionAsValueType(expression, 'owned_string_ref', context),
         type: 'tagged_ref',
       };
+    case 'symbol_ref':
+      return {
+        kind: 'tag_symbol',
+        value: lowerExpressionAsValueType(expression, 'symbol_ref', context),
+        type: 'tagged_ref',
+      };
+    case 'bigint_ref':
+      return {
+        kind: 'tag_bigint',
+        value: lowerExpressionAsValueType(expression, 'bigint_ref', context),
+        type: 'tagged_ref',
+      };
     case 'heap_ref':
       return {
         kind: 'tag_heap_object',
@@ -41492,6 +41536,18 @@ function adaptTaggedPromiseValueToResolvedValue(
         kind: 'untag_owned_string',
         value,
         type: 'owned_string_ref',
+      };
+    case 'symbol_ref':
+      return {
+        kind: 'untag_symbol',
+        value,
+        type: 'symbol_ref',
+      };
+    case 'bigint_ref':
+      return {
+        kind: 'untag_bigint',
+        value,
+        type: 'bigint_ref',
       };
     case 'heap_ref':
       return {
@@ -41572,6 +41628,18 @@ function adaptResolvedPromiseValueToTagged(
       ensureStringRepresentation(context.runtime);
       return {
         kind: 'tag_string',
+        value,
+        type: 'tagged_ref',
+      };
+    case 'symbol_ref':
+      return {
+        kind: 'tag_symbol',
+        value,
+        type: 'tagged_ref',
+      };
+    case 'bigint_ref':
+      return {
+        kind: 'tag_bigint',
         value,
         type: 'tagged_ref',
       };

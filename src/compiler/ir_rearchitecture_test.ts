@@ -3641,6 +3641,113 @@ Deno.test('compiler wasm-gc emitter parses settled Promise.then callbacks', asyn
   assertEquals(result.success, true);
 });
 
+Deno.test('compiler wasm-gc emitter parses symbol tagged Promise.then payloads', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: {
+          strict: true,
+          lib: ['ES2020'],
+        },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        export function value(input: symbol, fallback: symbol): Promise<symbol> {
+          return Promise.resolve<symbol | null>(input).then((item) => {
+            if (item === null) {
+              return fallback;
+            }
+            return item;
+          });
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
+  const valuePlan = snapshot.wasmGcPlan.functionPlans.find((func) => func.name === 'value');
+  const watPath = join(tempDirectory, 'wasm-gc-shadow-promise-symbol-tagged-payload.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-shadow-promise-symbol-tagged-payload.wasm');
+
+  assertEquals(
+    snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
+    ['closure', 'finite_union', 'promise', 'symbol'],
+  );
+  assertEquals(valuePlan?.bodyStatus, 'emittable');
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
+  const wat = await Deno.readTextFile(watPath);
+  assertEquals(wat.includes('i32.const 5'), true);
+  assertEquals(wat.includes('struct.get $tagged_value $extern_payload'), true);
+  assertEquals(wat.includes('Promise.resolve'), false);
+  assertEquals(wat.includes('jspi'), false);
+  const result = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(result.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(result.success, true);
+});
+
+Deno.test('compiler wasm-gc emitter parses bigint tagged Promise.then payloads', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: {
+          strict: true,
+          lib: ['ES2020'],
+          target: 'ES2020',
+        },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        export function value(input: bigint, fallback: bigint): Promise<bigint> {
+          return Promise.resolve<bigint | null>(input).then((item) => {
+            if (item === null) {
+              return fallback;
+            }
+            return item;
+          });
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
+  const valuePlan = snapshot.wasmGcPlan.functionPlans.find((func) => func.name === 'value');
+  const watPath = join(tempDirectory, 'wasm-gc-shadow-promise-bigint-tagged-payload.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-shadow-promise-bigint-tagged-payload.wasm');
+
+  assertEquals(
+    snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
+    ['bigint', 'closure', 'finite_union', 'promise'],
+  );
+  assertEquals(valuePlan?.bodyStatus, 'emittable');
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
+  const wat = await Deno.readTextFile(watPath);
+  assertEquals(wat.includes('i32.const 7'), true);
+  assertEquals(wat.includes('struct.get $tagged_value $extern_payload'), true);
+  assertEquals(wat.includes('Promise.resolve'), false);
+  assertEquals(wat.includes('jspi'), false);
+  const result = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(result.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(result.success, true);
+});
+
 Deno.test('compiler wasm-gc emitter links multiple pending Promise.then reactions', async () => {
   const tempDirectory = await createTempProject([
     {

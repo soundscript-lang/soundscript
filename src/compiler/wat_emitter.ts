@@ -2813,6 +2813,80 @@ function moduleUsesFiniteUnionBigIntBoundary(module: CompilerModuleIR): boolean 
     moduleUsesFiniteUnionBigIntResultBoundary(module);
 }
 
+function hostBoundaryIncludesSymbol(boundary: CompilerHostBoundaryIR | undefined): boolean {
+  if (!boundary) {
+    return false;
+  }
+  switch (boundary.kind) {
+    case 'tagged':
+      return boundary.includesSymbol === true ||
+        hostBoundaryIncludesSymbol(boundary.heapBoundary);
+    case 'promise':
+      return hostBoundaryIncludesSymbol(boundary.valueBoundary);
+    case 'array':
+      return hostBoundaryIncludesSymbol(boundary.elementBoundary);
+    case 'object':
+      return (boundary.fields ?? []).some((field) => hostBoundaryIncludesSymbol(field.boundary));
+    case 'scalar':
+    case 'string':
+    case 'closure':
+    case 'class_constructor':
+    case 'externref':
+      return false;
+    default: {
+      const exhaustiveCheck: never = boundary;
+      return exhaustiveCheck;
+    }
+  }
+}
+
+function hostBoundaryIncludesBigInt(boundary: CompilerHostBoundaryIR | undefined): boolean {
+  if (!boundary) {
+    return false;
+  }
+  switch (boundary.kind) {
+    case 'tagged':
+      return boundary.includesBigInt === true ||
+        hostBoundaryIncludesBigInt(boundary.heapBoundary);
+    case 'promise':
+      return hostBoundaryIncludesBigInt(boundary.valueBoundary);
+    case 'array':
+      return hostBoundaryIncludesBigInt(boundary.elementBoundary);
+    case 'object':
+      return (boundary.fields ?? []).some((field) => hostBoundaryIncludesBigInt(field.boundary));
+    case 'scalar':
+    case 'string':
+    case 'closure':
+    case 'class_constructor':
+    case 'externref':
+      return false;
+    default: {
+      const exhaustiveCheck: never = boundary;
+      return exhaustiveCheck;
+    }
+  }
+}
+
+function moduleUsesHostTaggedSymbolBoundary(module: CompilerModuleIR): boolean {
+  return module.functions.some((func) =>
+    hostBoundaryIncludesSymbol(func.hostResultBoundary) ||
+    (func.hostParamBoundaries ?? []).some((param) => hostBoundaryIncludesSymbol(param.boundary))
+  ) || (module.closureSignatures ?? []).some((signature) =>
+    hostBoundaryIncludesSymbol(signature.resultPromiseValueBoundary) ||
+    (signature.paramPromiseValueBoundaries ?? []).some(hostBoundaryIncludesSymbol)
+  );
+}
+
+function moduleUsesHostTaggedBigIntBoundary(module: CompilerModuleIR): boolean {
+  return module.functions.some((func) =>
+    hostBoundaryIncludesBigInt(func.hostResultBoundary) ||
+    (func.hostParamBoundaries ?? []).some((param) => hostBoundaryIncludesBigInt(param.boundary))
+  ) || (module.closureSignatures ?? []).some((signature) =>
+    hostBoundaryIncludesBigInt(signature.resultPromiseValueBoundary) ||
+    (signature.paramPromiseValueBoundaries ?? []).some(hostBoundaryIncludesBigInt)
+  );
+}
+
 function moduleUsesFiniteUnionPromiseParamBoundary(module: CompilerModuleIR): boolean {
   return module.functions.some((func) =>
     (func.hostUnionBoundaryParams ?? []).some((param) =>
@@ -2858,12 +2932,12 @@ function moduleUsesSymbolRuntime(module: CompilerModuleIR): boolean {
       func.body,
       (expression) => getExpressionValueType(expression) === 'symbol_ref',
     )
-  ) || moduleUsesFiniteUnionSymbolBoundary(module);
+  ) || moduleUsesFiniteUnionSymbolBoundary(module) || moduleUsesHostTaggedSymbolBoundary(module);
 }
 
 function emitSymbolRuntimeImports(module: CompilerModuleIR): string[] {
   return [
-    ...(moduleUsesFiniteUnionSymbolBoundary(module)
+    ...(moduleUsesFiniteUnionSymbolBoundary(module) || moduleUsesHostTaggedSymbolBoundary(module)
       ? ['(import "soundscript_symbol" "is" (func $host_symbol_is (param externref) (result i32)))']
       : []),
     ...(moduleUsesSymbolNewRuntime(module)
@@ -2884,7 +2958,7 @@ function emitSymbolRuntimeTypes(module: CompilerModuleIR): string[] {
 }
 
 function emitSymbolRuntimeHelpers(module: CompilerModuleIR): string[] {
-  if (!moduleUsesFiniteUnionSymbolBoundary(module)) {
+  if (!moduleUsesFiniteUnionSymbolBoundary(module) && !moduleUsesHostTaggedSymbolBoundary(module)) {
     return [];
   }
   return [
@@ -2908,7 +2982,7 @@ function moduleUsesBigIntRuntime(module: CompilerModuleIR): boolean {
       func.body,
       (expression) => getExpressionValueType(expression) === 'bigint_ref',
     )
-  ) || moduleUsesFiniteUnionBigIntBoundary(module);
+  ) || moduleUsesFiniteUnionBigIntBoundary(module) || moduleUsesHostTaggedBigIntBoundary(module);
 }
 
 function emitBigIntRuntimeTypes(module: CompilerModuleIR): string[] {
@@ -2918,7 +2992,7 @@ function emitBigIntRuntimeTypes(module: CompilerModuleIR): string[] {
 }
 
 function emitBigIntRuntimeHelpers(module: CompilerModuleIR): string[] {
-  if (!moduleUsesFiniteUnionBigIntBoundary(module)) {
+  if (!moduleUsesFiniteUnionBigIntBoundary(module) && !moduleUsesHostTaggedBigIntBoundary(module)) {
     return [];
   }
   return [
@@ -2934,7 +3008,7 @@ function emitBigIntRuntimeHelpers(module: CompilerModuleIR): string[] {
 }
 
 function emitBigIntRuntimeImports(module: CompilerModuleIR): string[] {
-  return moduleUsesFiniteUnionBigIntBoundary(module)
+  return moduleUsesFiniteUnionBigIntBoundary(module) || moduleUsesHostTaggedBigIntBoundary(module)
     ? ['(import "soundscript_bigint" "is" (func $host_bigint_is (param externref) (result i32)))']
     : [];
 }

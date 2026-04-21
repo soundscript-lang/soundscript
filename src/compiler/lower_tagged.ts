@@ -145,6 +145,8 @@ export function isTaggedPrimitiveUnionType(type: ts.Type): boolean {
         ? 'boolean'
         : isStringLikeType(member)
         ? 'string'
+        : isSymbolLikeType(member)
+        ? 'symbol'
         : isBigIntLikeType(member)
         ? 'bigint'
         : isUndefinedType(member)
@@ -157,15 +159,18 @@ export function isTaggedPrimitiveUnionType(type: ts.Type): boolean {
   const primitiveCategoryCount = Number(categories.has('boolean')) +
     Number(categories.has('number')) +
     Number(categories.has('string')) +
+    Number(categories.has('symbol')) +
     Number(categories.has('bigint'));
   return !categories.has('other') && primitiveCategoryCount >= 2;
 }
 
 function getTaggedCompilerUnionKinds(type: ts.Type): {
+  includesBigInt?: boolean;
   includesBoolean: boolean;
   includesNull: boolean;
   includesNumber: boolean;
   includesString: boolean;
+  includesSymbol?: boolean;
   includesUndefined: boolean;
 } | undefined {
   if (!isTaggedCompilerUnionType(type) || (type.flags & ts.TypeFlags.Union) === 0) {
@@ -178,25 +183,31 @@ function getTaggedCompilerUnionKinds(type: ts.Type): {
       !isNullType(member) &&
       (member.flags & ts.TypeFlags.BooleanLike) === 0 &&
       (member.flags & ts.TypeFlags.NumberLike) === 0 &&
-      !isStringLikeType(member)
+      !isStringLikeType(member) &&
+      !isSymbolLikeType(member) &&
+      !isBigIntLikeType(member)
     )
   ) {
     return undefined;
   }
   return {
+    includesBigInt: members.some((member) => isBigIntLikeType(member)) || undefined,
     includesBoolean: members.some((member) => (member.flags & ts.TypeFlags.BooleanLike) !== 0),
     includesNull: members.some((member) => isNullType(member)),
     includesNumber: members.some((member) => (member.flags & ts.TypeFlags.NumberLike) !== 0),
     includesString: members.some((member) => isStringLikeType(member)),
+    includesSymbol: members.some((member) => isSymbolLikeType(member)) || undefined,
     includesUndefined: members.some((member) => isUndefinedType(member)),
   };
 }
 
 export function getTaggedPrimitiveUnionKinds(type: ts.Type): {
+  includesBigInt?: boolean;
   includesBoolean: boolean;
   includesNull: boolean;
   includesNumber: boolean;
   includesString: boolean;
+  includesSymbol?: boolean;
   includesUndefined: boolean;
 } {
   const kinds = getTaggedCompilerUnionKinds(type);
@@ -206,6 +217,7 @@ export function getTaggedPrimitiveUnionKinds(type: ts.Type): {
       includesNull: false,
       includesNumber: false,
       includesString: false,
+      includesSymbol: false,
       includesUndefined: false,
     };
   }
@@ -213,10 +225,12 @@ export function getTaggedPrimitiveUnionKinds(type: ts.Type): {
 }
 
 export function getHostTaggedBoundaryKinds(type: ts.Type): {
+  includesBigInt?: boolean;
   includesBoolean: boolean;
   includesNull: boolean;
   includesNumber: boolean;
   includesString: boolean;
+  includesSymbol?: boolean;
   includesUndefined: boolean;
 } | undefined {
   return getTaggedCompilerUnionKinds(type);
@@ -228,7 +242,7 @@ export function isTaggedNullableScalarType(type: ts.Type): boolean {
 
 export function isTaggedNullableType(type: ts.Type): boolean {
   return isTaggedNullableScalarType(type) || isStringOrNullableType(type) ||
-    isBigIntOrNullableType(type);
+    isSymbolOrNullableType(type) || isBigIntOrNullableType(type);
 }
 
 export function isTaggedCompilerUnionType(type: ts.Type): boolean {
@@ -274,6 +288,14 @@ export function isTaggedTypeofLiteralTagSupported(literal: string, operandType: 
     ? isTaggedTypeWithNumber(operandType)
     : literal === 'string'
     ? isTaggedTypeWithString(operandType)
+    : literal === 'symbol'
+    ? isTaggedCompilerUnionType(operandType) &&
+      (operandType.flags & ts.TypeFlags.Union) !== 0 &&
+      (operandType as ts.UnionType).types.some((member) => isSymbolLikeType(member))
+    : literal === 'bigint'
+    ? isTaggedCompilerUnionType(operandType) &&
+      (operandType.flags & ts.TypeFlags.Union) !== 0 &&
+      (operandType as ts.UnionType).types.some((member) => isBigIntLikeType(member))
     : literal === 'object'
     ? isTaggedTypeWithNull(operandType)
     : false;

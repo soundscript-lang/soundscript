@@ -657,10 +657,40 @@ export function emitHostTaggedPrimitiveExternrefToTagged(
 ): string[] {
   const doneLabel = `$${taggedLocalName}__done`;
   return [
-    `${indent(level)}local.get $${externrefLocalName}`,
-    `${indent(level)}call $tagged_type_tag`,
-    `${indent(level)}local.set $${tagLocalName}`,
     `${indent(level)}(block ${doneLabel}`,
+    ...(kinds.includesSymbol
+      ? [
+        `${indent(level + 1)}local.get $${externrefLocalName}`,
+        `${indent(level + 1)}call $host_symbol_is`,
+        `${indent(level + 1)}(if`,
+        `${indent(level + 2)}(then`,
+        `${indent(level + 3)}local.get $${externrefLocalName}`,
+        `${indent(level + 3)}call $host_symbol_to_internal`,
+        `${indent(level + 3)}call $tag_symbol`,
+        `${indent(level + 3)}local.set $${taggedLocalName}`,
+        `${indent(level + 3)}br ${doneLabel}`,
+        `${indent(level + 2)})`,
+        `${indent(level + 1)})`,
+      ]
+      : []),
+    ...(kinds.includesBigInt
+      ? [
+        `${indent(level + 1)}local.get $${externrefLocalName}`,
+        `${indent(level + 1)}call $host_bigint_is`,
+        `${indent(level + 1)}(if`,
+        `${indent(level + 2)}(then`,
+        `${indent(level + 3)}local.get $${externrefLocalName}`,
+        `${indent(level + 3)}call $host_bigint_to_internal`,
+        `${indent(level + 3)}call $tag_bigint`,
+        `${indent(level + 3)}local.set $${taggedLocalName}`,
+        `${indent(level + 3)}br ${doneLabel}`,
+        `${indent(level + 2)})`,
+        `${indent(level + 1)})`,
+      ]
+      : []),
+    `${indent(level + 1)}local.get $${externrefLocalName}`,
+    `${indent(level + 1)}call $tagged_type_tag`,
+    `${indent(level + 1)}local.set $${tagLocalName}`,
     ...(kinds.includesUndefined
       ? [
         `${indent(level + 1)}local.get $${tagLocalName}`,
@@ -833,6 +863,38 @@ export function emitTaggedPrimitiveToHostExternref(
         `${indent(level + 1)})`,
       ]
       : []),
+    ...(kinds.includesSymbol
+      ? [
+        `${indent(level + 1)}local.get $${tagLocalName}`,
+        `${indent(level + 1)}i32.const 5`,
+        `${indent(level + 1)}i32.eq`,
+        `${indent(level + 1)}(if`,
+        `${indent(level + 2)}(then`,
+        `${indent(level + 3)}local.get $${taggedLocalName}`,
+        `${indent(level + 3)}call $untag_symbol`,
+        `${indent(level + 3)}call $internal_symbol_to_host`,
+        `${indent(level + 3)}local.set $${externrefLocalName}`,
+        `${indent(level + 3)}br ${doneLabel}`,
+        `${indent(level + 2)})`,
+        `${indent(level + 1)})`,
+      ]
+      : []),
+    ...(kinds.includesBigInt
+      ? [
+        `${indent(level + 1)}local.get $${tagLocalName}`,
+        `${indent(level + 1)}i32.const 7`,
+        `${indent(level + 1)}i32.eq`,
+        `${indent(level + 1)}(if`,
+        `${indent(level + 2)}(then`,
+        `${indent(level + 3)}local.get $${taggedLocalName}`,
+        `${indent(level + 3)}call $untag_bigint`,
+        `${indent(level + 3)}call $internal_bigint_to_host`,
+        `${indent(level + 3)}local.set $${externrefLocalName}`,
+        `${indent(level + 3)}br ${doneLabel}`,
+        `${indent(level + 2)})`,
+        `${indent(level + 1)})`,
+      ]
+      : []),
     `${indent(level + 1)}unreachable`,
     `${indent(level)})`,
     `${indent(level)}local.get $${externrefLocalName}`,
@@ -849,10 +911,40 @@ export function emitHostTaggedPrimitiveParamAdaptation(
   const valueLocal = `$${paramName}__host_tagged`;
   const doneLabel = `$${paramName}__host_done`;
   return [
-    `${indent(level)}local.get $${paramName}`,
-    `${indent(level)}call $tagged_type_tag`,
-    `${indent(level)}local.set ${tagLocal}`,
     `${indent(level)}(block ${doneLabel}`,
+    ...(kinds.includesSymbol
+      ? [
+        `${indent(level + 1)}local.get $${paramName}`,
+        `${indent(level + 1)}call $host_symbol_is`,
+        `${indent(level + 1)}(if`,
+        `${indent(level + 2)}(then`,
+        `${indent(level + 3)}local.get $${paramName}`,
+        `${indent(level + 3)}call $host_symbol_to_internal`,
+        `${indent(level + 3)}call $tag_symbol`,
+        `${indent(level + 3)}local.set ${valueLocal}`,
+        `${indent(level + 3)}br ${doneLabel}`,
+        `${indent(level + 2)})`,
+        `${indent(level + 1)})`,
+      ]
+      : []),
+    ...(kinds.includesBigInt
+      ? [
+        `${indent(level + 1)}local.get $${paramName}`,
+        `${indent(level + 1)}call $host_bigint_is`,
+        `${indent(level + 1)}(if`,
+        `${indent(level + 2)}(then`,
+        `${indent(level + 3)}local.get $${paramName}`,
+        `${indent(level + 3)}call $host_bigint_to_internal`,
+        `${indent(level + 3)}call $tag_bigint`,
+        `${indent(level + 3)}local.set ${valueLocal}`,
+        `${indent(level + 3)}br ${doneLabel}`,
+        `${indent(level + 2)})`,
+        `${indent(level + 1)})`,
+      ]
+      : []),
+    `${indent(level + 1)}local.get $${paramName}`,
+    `${indent(level + 1)}call $tagged_type_tag`,
+    `${indent(level + 1)}local.set ${tagLocal}`,
     ...(kinds.includesUndefined
       ? [
         `${indent(level + 1)}local.get ${tagLocal}`,
@@ -1020,6 +1112,38 @@ export function emitHostTaggedPrimitiveResultAdaptation(
         `${indent(level + 3)}local.get ${taggedLocal}`,
         `${indent(level + 3)}call $untag_owned_string`,
         `${indent(level + 3)}call $owned_string_to_host`,
+        `${indent(level + 3)}local.set ${valueLocal}`,
+        `${indent(level + 3)}br ${doneLabel}`,
+        `${indent(level + 2)})`,
+        `${indent(level + 1)})`,
+      ]
+      : []),
+    ...(kinds.includesSymbol
+      ? [
+        `${indent(level + 1)}local.get ${tagLocal}`,
+        `${indent(level + 1)}i32.const 5`,
+        `${indent(level + 1)}i32.eq`,
+        `${indent(level + 1)}(if`,
+        `${indent(level + 2)}(then`,
+        `${indent(level + 3)}local.get ${taggedLocal}`,
+        `${indent(level + 3)}call $untag_symbol`,
+        `${indent(level + 3)}call $internal_symbol_to_host`,
+        `${indent(level + 3)}local.set ${valueLocal}`,
+        `${indent(level + 3)}br ${doneLabel}`,
+        `${indent(level + 2)})`,
+        `${indent(level + 1)})`,
+      ]
+      : []),
+    ...(kinds.includesBigInt
+      ? [
+        `${indent(level + 1)}local.get ${tagLocal}`,
+        `${indent(level + 1)}i32.const 7`,
+        `${indent(level + 1)}i32.eq`,
+        `${indent(level + 1)}(if`,
+        `${indent(level + 2)}(then`,
+        `${indent(level + 3)}local.get ${taggedLocal}`,
+        `${indent(level + 3)}call $untag_bigint`,
+        `${indent(level + 3)}call $internal_bigint_to_host`,
         `${indent(level + 3)}local.set ${valueLocal}`,
         `${indent(level + 3)}br ${doneLabel}`,
         `${indent(level + 2)})`,
