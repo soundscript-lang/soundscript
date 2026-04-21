@@ -3678,12 +3678,27 @@ function renderPromiseRecordTypes(plan: WasmGcModulePlanIR): readonly string[] {
   const usesPromiseRecords = plan.helperPlans.some((helper) =>
     helper.family === 'promise' && helper.name === 'promise_gc_records'
   );
+  const usesPromiseThen = moduleCallsFunction(plan, '__soundscript_promise_then');
   return usesPromiseRecords
     ? [
       `  (type $promise_runtime (struct`,
       '    (field $state (mut i32))',
       `    (field $value (mut (ref null ${taggedValueTypeName()})))`,
       '  ))',
+      ...(usesPromiseThen
+        ? [
+          `  (type $promise_reaction_runtime (struct`,
+          '    (field $result (mut (ref null $promise_runtime)))',
+          '    (field $on_fulfilled (mut (ref null eq)))',
+          '    (field $on_rejected (mut (ref null eq)))',
+          '  ))',
+          `  (type $promise_microtask_runtime (struct`,
+          '    (field $reaction (mut (ref null $promise_reaction_runtime)))',
+          `    (field $value (mut (ref null ${taggedValueTypeName()})))`,
+          '    (field $state (mut i32))',
+          '  ))',
+        ]
+        : []),
     ]
     : [];
 }

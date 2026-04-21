@@ -3510,6 +3510,8 @@ Deno.test('compiler wasm-gc emitter parses compiler-owned async Promise returns'
   const wat = await Deno.readTextFile(watPath);
   assertEquals(wat.includes('struct.new $tagged_value'), true);
   assertEquals(wat.includes('call $soundscript_promise_resolve'), true);
+  assertEquals(wat.includes('(type $promise_reaction_runtime'), false);
+  assertEquals(wat.includes('(type $promise_microtask_runtime'), false);
   assertEquals(wat.includes('(func $soundscript_promise_reject '), false);
   assertEquals(wat.includes('(func $soundscript_promise_new_pending'), false);
   assertEquals(wat.includes('(func $soundscript_promise_then'), false);
@@ -3560,6 +3562,8 @@ Deno.test('compiler wasm-gc emitter parses compiler-owned Promise.reject returns
   await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
   const wat = await Deno.readTextFile(watPath);
   assertEquals(wat.includes('call $soundscript_promise_reject'), true);
+  assertEquals(wat.includes('(type $promise_reaction_runtime'), false);
+  assertEquals(wat.includes('(type $promise_microtask_runtime'), false);
   assertEquals(wat.includes('(func $soundscript_promise_resolve '), false);
   assertEquals(wat.includes('(func $soundscript_promise_new_pending'), false);
   assertEquals(wat.includes('(func $soundscript_promise_then'), false);
@@ -3607,6 +3611,8 @@ Deno.test('compiler wasm-gc emitter parses settled Promise.then callbacks', asyn
   await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
   const wat = await Deno.readTextFile(watPath);
   assertEquals(wat.includes('(type $closure_object (struct'), true);
+  assertEquals(wat.includes('(type $promise_reaction_runtime (struct'), true);
+  assertEquals(wat.includes('(type $promise_microtask_runtime (struct'), true);
   assertEquals(wat.includes('(func $closure_dispatch_sig_0'), true);
   assertEquals(wat.includes('struct.get $promise_runtime $state'), true);
   assertEquals(wat.includes('call $closure_dispatch_sig_0'), true);
