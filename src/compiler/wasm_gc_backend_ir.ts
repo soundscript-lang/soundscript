@@ -97,6 +97,7 @@ export interface WasmGcBoundaryPlanIR {
 
 export type WasmGcHostCallbackWrapperReasonIR =
   | 'captured_closure'
+  | 'boundary_signature'
   | 'tagged_signature';
 
 export interface WasmGcHostCallbackWrapperPlanIR {
@@ -219,6 +220,7 @@ function wasmTypeForCompilerValueType(valueType: string): string {
     case 'owned_string_ref':
       return '(ref null $string_runtime)';
     case 'symbol_ref':
+      return '(ref null $symbol_runtime)';
     case 'bigint_ref':
       return 'externref';
     case 'tagged_ref':
@@ -607,8 +609,11 @@ function addTaggedValueResultHelpers(
     helpers.add('__soundscript_host_tag_number_payload');
     return;
   }
-  if (kinds.includesBigInt || kinds.includesString || kinds.includesSymbol) {
+  if (kinds.includesBigInt || kinds.includesString) {
     helpers.add('__soundscript_host_tag_extern_payload');
+  }
+  if (kinds.includesSymbol) {
+    helpers.add('__soundscript_host_tag_symbol_payload');
   }
   if (kinds.includesBoolean || kinds.includesNumber) {
     helpers.add('__soundscript_host_tag_number_payload');
@@ -627,8 +632,9 @@ function taggedValueResultHelpersForWrappers(
   return [...helpers].sort();
 }
 
-function isWasmGcStringValueType(valueType: string): boolean {
-  return valueType === 'string_ref' || valueType === 'owned_string_ref';
+function isWasmGcWrapperValueType(valueType: string): boolean {
+  return valueType === 'string_ref' || valueType === 'owned_string_ref' ||
+    valueType === 'symbol_ref';
 }
 
 function createWasmGcExportWrapperPlan(
@@ -643,8 +649,8 @@ function createWasmGcExportWrapperPlan(
       resultType: func.result,
     }))
     .filter((wrapper) =>
-      wrapper.paramTypes.some(isWasmGcStringValueType) ||
-      isWasmGcStringValueType(wrapper.resultType)
+      wrapper.paramTypes.some(isWasmGcWrapperValueType) ||
+      isWasmGcWrapperValueType(wrapper.resultType)
     )
     .sort((left, right) => left.exportName.localeCompare(right.exportName));
 }
@@ -662,14 +668,22 @@ function createWasmGcHostImportWrapperPlan(
       resultType: func.result,
     }))
     .filter((wrapper) =>
-      wrapper.paramTypes.some(isWasmGcStringValueType) ||
-      isWasmGcStringValueType(wrapper.resultType)
+      wrapper.paramTypes.some(isWasmGcWrapperValueType) ||
+      isWasmGcWrapperValueType(wrapper.resultType)
     )
     .sort((left, right) =>
       left.hostImportModule === right.hostImportModule
         ? left.hostImportName.localeCompare(right.hostImportName)
         : left.hostImportModule.localeCompare(right.hostImportModule)
     );
+}
+
+function closureSignatureUsesWrapperValues(signature: {
+  paramTypes: readonly string[];
+  resultType: string;
+}): boolean {
+  return signature.paramTypes.some(isWasmGcWrapperValueType) ||
+    isWasmGcWrapperValueType(signature.resultType);
 }
 
 function createWasmGcWrapperPlan(
@@ -697,6 +711,9 @@ function createWasmGcWrapperPlan(
       }
       if (capturedIndices.has(paramIndex)) {
         reasons.add('captured_closure');
+      }
+      if (reasons.size === 0 && closureSignatureUsesWrapperValues(signature)) {
+        reasons.add('boundary_signature');
       }
       if (reasons.size === 0) {
         return;

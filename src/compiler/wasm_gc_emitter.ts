@@ -149,6 +149,7 @@ function wasmTypeForCompilerValueType(valueType: string): string {
     case 'owned_string_ref':
       return `(ref null ${stringRuntimeTypeName()})`;
     case 'symbol_ref':
+      return `(ref null ${symbolRuntimeTypeName()})`;
     case 'bigint_ref':
       return 'externref';
     case 'tagged_ref':
@@ -183,6 +184,10 @@ function stringCodeUnitArrayTypeName(): string {
 
 function stringRuntimeTypeName(): string {
   return '$string_runtime';
+}
+
+function symbolRuntimeTypeName(): string {
+  return '$symbol_runtime';
 }
 
 function wasmTypeForHostFunctionParam(
@@ -1049,6 +1054,7 @@ function renderDefaultValueForCompilerType(valueType: string, indent: string): r
     case 'owned_string_ref':
       return [`${indent}ref.null ${stringRuntimeTypeName()}`];
     case 'symbol_ref':
+      return [`${indent}ref.null ${symbolRuntimeTypeName()}`];
     case 'bigint_ref':
       return [`${indent}ref.null extern`];
     case 'tagged_ref':
@@ -1132,8 +1138,8 @@ function renderDynamicObjectStoredValue(
       return [
         `${indent}i32.const ${TAGGED_SYMBOL_TAG}`,
         `${indent}f64.const 0`,
+        `${indent}ref.null extern`,
         ...rawValue,
-        `${indent}ref.null eq`,
         `${indent}struct.new ${taggedValueTypeName()}`,
       ];
     case 'bigint_ref':
@@ -1203,8 +1209,8 @@ function renderDynamicObjectSetValue(
         return [
           `${indent}i32.const ${TAGGED_SYMBOL_TAG}`,
           `${indent}f64.const 0`,
+          `${indent}ref.null extern`,
           ...renderExpression(expression, indent, context),
-          `${indent}ref.null eq`,
           `${indent}struct.new ${taggedValueTypeName()}`,
         ];
       case 'bigint_ref':
@@ -2538,7 +2544,7 @@ function renderTaggedArrayIndexOfExpression(
     `${indent}              call $${sanitizeIdentifier(STRING_EQUAL_FUNCTION_NAME)}`,
     `${indent}            else`,
     ...currentTag,
-    `${indent}              i32.const ${TAGGED_HEAP_OBJECT_TAG}`,
+    `${indent}              i32.const ${TAGGED_SYMBOL_TAG}`,
     `${indent}              i32.eq`,
     `${indent}              if (result i32)`,
     ...currentValue,
@@ -2547,11 +2553,22 @@ function renderTaggedArrayIndexOfExpression(
     `${indent}                struct.get ${taggedValueTypeName()} $heap_payload`,
     `${indent}                ref.eq`,
     `${indent}              else`,
+    ...currentTag,
+    `${indent}                i32.const ${TAGGED_HEAP_OBJECT_TAG}`,
+    `${indent}                i32.eq`,
+    `${indent}                if (result i32)`,
     ...currentValue,
-    `${indent}                struct.get ${taggedValueTypeName()} $extern_payload`,
+    `${indent}                  struct.get ${taggedValueTypeName()} $heap_payload`,
     ...searchValue,
-    `${indent}                struct.get ${taggedValueTypeName()} $extern_payload`,
-    `${indent}                call $${sanitizeIdentifier(EXTERN_EQUAL_FUNCTION_NAME)}`,
+    `${indent}                  struct.get ${taggedValueTypeName()} $heap_payload`,
+    `${indent}                  ref.eq`,
+    `${indent}                else`,
+    ...currentValue,
+    `${indent}                  struct.get ${taggedValueTypeName()} $extern_payload`,
+    ...searchValue,
+    `${indent}                  struct.get ${taggedValueTypeName()} $extern_payload`,
+    `${indent}                  call $${sanitizeIdentifier(EXTERN_EQUAL_FUNCTION_NAME)}`,
+    `${indent}                end`,
     `${indent}              end`,
     `${indent}            end`,
     `${indent}          end`,
@@ -2676,8 +2693,8 @@ function renderExpression(
       return [
         `${indent}i32.const ${TAGGED_SYMBOL_TAG}`,
         `${indent}f64.const 0`,
+        `${indent}ref.null extern`,
         ...renderExpression(expression.value, indent, context),
-        `${indent}ref.null eq`,
         `${indent}struct.new ${taggedValueTypeName()}`,
       ];
     case 'tag_bigint':
@@ -2720,7 +2737,8 @@ function renderExpression(
       return [
         ...renderExpression(expression.value, indent, context),
         `${indent}ref.cast (ref ${taggedValueTypeName()})`,
-        `${indent}struct.get ${taggedValueTypeName()} $extern_payload`,
+        `${indent}struct.get ${taggedValueTypeName()} $heap_payload`,
+        `${indent}ref.cast (ref ${symbolRuntimeTypeName()})`,
       ];
     case 'untag_bigint':
       return [
@@ -2946,6 +2964,21 @@ function renderExpression(
         `${indent}struct.get ${boxTypeName(expression.valueType)} $value`,
       ];
     case 'binary':
+      if (expression.op === 'symbol.eq') {
+        return [
+          ...renderExpression(expression.left, indent, context),
+          ...renderExpression(expression.right, indent, context),
+          `${indent}ref.eq`,
+        ];
+      }
+      if (expression.op === 'symbol.ne') {
+        return [
+          ...renderExpression(expression.left, indent, context),
+          ...renderExpression(expression.right, indent, context),
+          `${indent}ref.eq`,
+          `${indent}i32.eqz`,
+        ];
+      }
       return [
         ...renderExpression(expression.left, indent, context),
         ...renderExpression(expression.right, indent, context),
@@ -3465,6 +3498,35 @@ function wrapperPlanUsesStringBoundaryHelpers(plan: WasmGcModulePlanIR): boolean
   );
 }
 
+function taggedKindsIncludeSymbol(
+  kinds:
+    | NonNullable<
+      WasmGcModulePlanIR['wrapperPlan']['hostCallbackWrappers'][number][
+        'resultTaggedPrimitiveKinds'
+      ]
+    >
+    | WasmGcModulePlanIR['wrapperPlan']['hostCallbackWrappers'][number][
+      'paramTaggedPrimitiveKinds'
+    ][number]
+    | undefined,
+): boolean {
+  return kinds?.includesSymbol === true;
+}
+
+function wrapperPlanUsesSymbolBoundaryHelpers(plan: WasmGcModulePlanIR): boolean {
+  const wrappers = [...plan.wrapperPlan.exportWrappers, ...plan.wrapperPlan.hostImportWrappers];
+  return wrappers.some((wrapper) =>
+    wrapper.paramTypes.some((paramType) => paramType === 'symbol_ref') ||
+    wrapper.resultType === 'symbol_ref'
+  ) ||
+    plan.wrapperPlan.hostCallbackWrappers.some((wrapper) =>
+      wrapper.paramTypes.some((paramType) => paramType === 'symbol_ref') ||
+      wrapper.resultType === 'symbol_ref' ||
+      wrapper.paramTaggedPrimitiveKinds.some(taggedKindsIncludeSymbol) ||
+      taggedKindsIncludeSymbol(wrapper.resultTaggedPrimitiveKinds)
+    );
+}
+
 function renderStringExportWrapperHelperFunctions(plan: WasmGcModulePlanIR): readonly string[] {
   if (!wrapperPlanUsesStringBoundaryHelpers(plan)) {
     return [];
@@ -3520,6 +3582,23 @@ function renderStringExportWrapperHelperFunctions(plan: WasmGcModulePlanIR): rea
     `    struct.get ${stringRuntimeTypeName()} $code_units`,
     '    local.get $index',
     `    array.get ${stringCodeUnitArrayTypeName()}`,
+    '  )',
+  ];
+}
+
+function renderSymbolBoundaryWrapperHelperFunctions(plan: WasmGcModulePlanIR): readonly string[] {
+  if (!wrapperPlanUsesSymbolBoundaryHelpers(plan)) {
+    return [];
+  }
+  return [
+    `  (func $__soundscript_symbol_from_host (export "__soundscript_symbol_from_host") (param $value externref) (result (ref null ${symbolRuntimeTypeName()}))`,
+    '    local.get $value',
+    `    struct.new ${symbolRuntimeTypeName()}`,
+    '  )',
+    `  (func $__soundscript_symbol_to_host (export "__soundscript_symbol_to_host") (param $value (ref null ${symbolRuntimeTypeName()})) (result externref)`,
+    '    local.get $value',
+    `    ref.cast (ref ${symbolRuntimeTypeName()})`,
+    `    struct.get ${symbolRuntimeTypeName()} $host_value`,
     '  )',
   ];
 }
@@ -4539,6 +4618,19 @@ function renderStringRuntimeTypes(plan: WasmGcModulePlanIR): readonly string[] {
     : [];
 }
 
+function renderSymbolRuntimeTypes(plan: WasmGcModulePlanIR): readonly string[] {
+  const usesSymbolRuntime = plan.typePlans.some((typePlan) =>
+    typePlan.source === 'runtime_family' && typePlan.family === 'symbol'
+  );
+  return usesSymbolRuntime
+    ? [
+      `  (type ${symbolRuntimeTypeName()} (struct`,
+      '    (field $host_value externref)',
+      '  ))',
+    ]
+    : [];
+}
+
 function renderBoxTypes(plan: WasmGcModulePlanIR): readonly string[] {
   const valueTypes = new Set<string>();
   for (const func of plan.functionPlans) {
@@ -5363,11 +5455,11 @@ function renderHostTaggedWrapperHelperFunctions(plan: WasmGcModulePlanIR): reado
   }
   if (helpers.has('__soundscript_host_tag_symbol')) {
     helperLines.push(
-      '  (func $__soundscript_host_tag_symbol (export "__soundscript_host_tag_symbol") (param $value externref) (result (ref null $tagged_value))',
+      `  (func $__soundscript_host_tag_symbol (export "__soundscript_host_tag_symbol") (param $value (ref null ${symbolRuntimeTypeName()})) (result (ref null $tagged_value))`,
       `    i32.const ${TAGGED_SYMBOL_TAG}`,
       '    f64.const 0',
+      '    ref.null extern',
       '    local.get $value',
-      '    ref.null eq',
       `    struct.new ${taggedValueTypeName()}`,
       '  )',
     );
@@ -5410,6 +5502,16 @@ function renderHostTaggedWrapperHelperFunctions(plan: WasmGcModulePlanIR): reado
       '  )',
     );
   }
+  if (resultHelpers.has('__soundscript_host_tag_symbol_payload')) {
+    helperLines.push(
+      `  (func $__soundscript_host_tag_symbol_payload (export "__soundscript_host_tag_symbol_payload") (param $value (ref null $tagged_value)) (result (ref null ${symbolRuntimeTypeName()}))`,
+      '    local.get $value',
+      `    ref.cast (ref ${taggedValueTypeName()})`,
+      `    struct.get ${taggedValueTypeName()} $heap_payload`,
+      `    ref.cast (ref ${symbolRuntimeTypeName()})`,
+      '  )',
+    );
+  }
   return helperLines;
 }
 
@@ -5421,6 +5523,7 @@ export function emitWasmGcModulePlan(plan: WasmGcModulePlanIR): string {
       .map((func) => [func.closureFunctionId!, `$${sanitizeIdentifier(func.name)}`] as const),
   );
   const stringRuntimeTypes = renderStringRuntimeTypes(plan);
+  const symbolRuntimeTypes = renderSymbolRuntimeTypes(plan);
   const arrayTypes = renderArrayTypes(plan);
   const boxTypes = renderBoxTypes(plan);
   const closureSignatureTypes = renderClosureSignatureTypes(plan);
@@ -5432,6 +5535,7 @@ export function emitWasmGcModulePlan(plan: WasmGcModulePlanIR): string {
   const promiseRecordTypes = renderPromiseRecordTypes(plan);
   const stringEqualityHelperFunctions = renderStringEqualityHelperFunctions(plan);
   const stringExportWrapperHelperFunctions = renderStringExportWrapperHelperFunctions(plan);
+  const symbolBoundaryWrapperHelperFunctions = renderSymbolBoundaryWrapperHelperFunctions(plan);
   const promiseHelperFunctions = renderPromiseHelperFunctions(plan);
   const asyncGeneratorHelperFunctions = renderAsyncGeneratorHelperFunctions(plan);
   const closureDispatchHelpers = renderClosureDispatchHelpers(plan, closureFunctionNames);
@@ -5452,6 +5556,7 @@ export function emitWasmGcModulePlan(plan: WasmGcModulePlanIR): string {
     '  ;; types',
     ...(
       plan.typePlans.length > 0 || stringRuntimeTypes.length > 0 || arrayTypes.length > 0 ||
+        symbolRuntimeTypes.length > 0 ||
         boxTypes.length > 0 ||
         closureSignatureTypes.length > 0 || closureObjectTypes.length > 0 ||
         capturedClosureEnvTypes.length > 0 ||
@@ -5462,6 +5567,7 @@ export function emitWasmGcModulePlan(plan: WasmGcModulePlanIR): string {
           ...taggedValueTypes,
           ...promiseRecordTypes,
           ...stringRuntimeTypes,
+          ...symbolRuntimeTypes,
           ...arrayTypes,
           ...fallbackObjectTypes,
           ...dynamicObjectTypes,
@@ -5485,6 +5591,7 @@ export function emitWasmGcModulePlan(plan: WasmGcModulePlanIR): string {
     '  ;; helpers',
     ...(plan.helperPlans.length > 0 || stringEqualityHelperFunctions.length > 0 ||
         stringExportWrapperHelperFunctions.length > 0 ||
+        symbolBoundaryWrapperHelperFunctions.length > 0 ||
         promiseHelperFunctions.length > 0 ||
         asyncGeneratorHelperFunctions.length > 0 || closureDispatchHelpers.length > 0 ||
         hostTaggedWrapperHelperFunctions.length > 0
@@ -5492,6 +5599,7 @@ export function emitWasmGcModulePlan(plan: WasmGcModulePlanIR): string {
         ...indentLines(plan.helperPlans.map(renderHelperPlan)),
         ...stringEqualityHelperFunctions,
         ...stringExportWrapperHelperFunctions,
+        ...symbolBoundaryWrapperHelperFunctions,
         ...promiseHelperFunctions,
         ...hostTaggedWrapperHelperFunctions,
         ...closureDispatchHelpers,
