@@ -70,6 +70,77 @@ async function writeWorkspaceFiles(
   }
 }
 
+async function createPackageExportedMacroDriftWorkspace(): Promise<string> {
+  const workspace = await Deno.makeTempDir({
+    prefix: 'soundscript-lsp-package-exported-macro-drift-',
+  });
+  await Deno.mkdir(join(workspace, 'src'), { recursive: true });
+  await writeInstalledStdlibPackage(workspace);
+  await writeWorkspaceFiles(workspace, {
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+          moduleResolution: 'Bundler',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/consumer.sts': [
+      'import { Foo } from "sound-pkg/api";',
+      'export const value: number = Foo();',
+      '',
+    ].join('\n'),
+    'src/other.sts': ['export const shadow = 1;', ''].join('\n'),
+    'node_modules/sound-pkg/package.json': JSON.stringify(
+      {
+        name: 'sound-pkg',
+        version: '1.0.0',
+        type: 'module',
+        exports: {
+          './api': {
+            types: './dist/api.d.ts',
+            import: './dist/api.js',
+          },
+        },
+        soundscript: {
+          version: 1,
+          exports: {
+            './api': {
+              source: './src/api.sts',
+            },
+          },
+        },
+      },
+      null,
+      2,
+    ),
+    'node_modules/sound-pkg/dist/api.d.ts': 'export declare function Foo(): number;\n',
+    'node_modules/sound-pkg/src/api.sts': 'export { Foo } from "./macros.macro.sts";\n',
+    'node_modules/sound-pkg/src/macros.macro.sts': [
+      "import 'sts:macros';",
+      "import { helperExpression } from './helper.macro.sts';",
+      '',
+      '// #[macro(call)]',
+      'export function Foo() {',
+      '  return {',
+      '    expand(ctx: any) {',
+      '      return ctx.output.expr(ctx.quote.expr`${helperExpression}`);',
+      '    },',
+      '  };',
+      '}',
+      '',
+    ].join('\n'),
+    'node_modules/sound-pkg/src/helper.macro.sts': 'export const helperExpression = "1";\n',
+  });
+  return workspace;
+}
+
 function createUserDefinedTwiceMacroText(): string {
   return [
     "import { macroSignature, type InvocationSyntax } from 'sts:macros';",
@@ -2560,7 +2631,7 @@ Deno.test('LSP server shows builtin annotation hover docs', async () => {
 Deno.test('LSP server shows imported declaration macro docs on annotation hovers', async () => {
   const workspace = await createWorkspace();
   await writeWorkspaceFiles(workspace, {
-    'src/macros/derive.sts': createUserDefinedDeriveMacroText(),
+    'src/macros/derive.macro.sts': createUserDefinedDeriveMacroText(),
   });
   const { client, startPromise } = await initializeServer(workspace, {
     capabilityMode: 'editor-bridge',
@@ -2568,7 +2639,7 @@ Deno.test('LSP server shows imported declaration macro docs on annotation hovers
 
   const uri = `file://${workspace}/src/index.sts`;
   const lines = [
-    "import { derive } from './macros/derive';",
+    "import { derive } from './macros/derive.macro';",
     '// #[derive]',
     'export class User { id: string; }',
     '',
@@ -8507,7 +8578,7 @@ Deno.test('LSP server adds #[interop] at destructured dynamic import boundaries 
   await shutdownServer(client, startPromise);
 });
 
-Deno.test('LSP server adds #[interop] at import-equals boundaries from use-site diagnostics', async () => {
+Deno.test('LSP server does not offer #[interop] for rejected import-equals syntax', async () => {
   const workspace = await createWorkspace();
   await writeWorkspaceFiles(workspace, {
     'src/lib.ts': 'export const value = 1;\n',
@@ -8554,28 +8625,21 @@ Deno.test('LSP server adds #[interop] at import-equals boundaries from use-site 
     uri: string;
   };
 
-  const useSiteDiagnostic = params.diagnostics.find((diagnostic) =>
-    diagnostic.code === 'SOUND1005' && diagnostic.range.start.line === 1
+  assertEquals(
+    params.diagnostics.map((diagnostic) => diagnostic.code),
+    ['TS1202', 'TS1294'],
   );
-  assertEquals(useSiteDiagnostic?.data?.metadata?.rule, 'unsound_import_boundary');
 
   const codeActionResult = await requestCodeActions(
     client,
     uri,
-    useSiteDiagnostic ? [useSiteDiagnostic] : [],
+    params.diagnostics,
     'Timed out waiting for import-equals codeAction response.',
   );
 
-  assertEquals(codeActionResult?.[0]?.title, 'Add #[interop] boundary');
   assertEquals(
-    codeActionResult?.[0]?.edit?.changes?.[uri]?.[0],
-    {
-      newText: '// #[interop]\n',
-      range: {
-        start: { line: 0, character: 0 },
-        end: { line: 0, character: 0 },
-      },
-    },
+    codeActionResult?.some((action) => action.title === 'Add #[interop] boundary') ?? false,
+    false,
   );
 
   await shutdownServer(client, startPromise);
@@ -10638,6 +10702,111 @@ Deno.test('LSP server republishes diagnostics on didChange', async () => {
 
   await shutdownServer(client, startPromise);
 });
+
+Deno.test(
+  'LSP server publishes package-exported macro helper drift diagnostics across mixed open documents',
+  async () => {
+    const workspace = await createPackageExportedMacroDriftWorkspace();
+    const { client, startPromise } = await initializeServer(workspace);
+
+    const consumerUri = `file://${workspace}/src/consumer.sts`;
+    const otherUri = `file://${workspace}/src/other.sts`;
+    const consumerText = [
+      'import { Foo } from "sound-pkg/api";',
+      'export const value: number = Foo();',
+      '',
+    ].join('\n');
+    const otherText = ['export const shadow = 1;', ''].join('\n');
+    const otherChangedText = ['export const shadow = 2;', ''].join('\n');
+
+    await client.sendNotification('textDocument/didOpen', {
+      textDocument: {
+        uri: consumerUri,
+        languageId: 'soundscript',
+        version: 1,
+        text: consumerText,
+      },
+    });
+    const initialConsumerNotification = await withTimeout(
+      client.readNotification('textDocument/publishDiagnostics'),
+      250,
+      'Timed out waiting for initial consumer publishDiagnostics.',
+    );
+    const initialConsumerParams = initialConsumerNotification.params as {
+      diagnostics: Array<{ code: string }>;
+      uri: string;
+    };
+
+    assertEquals(initialConsumerParams.uri, consumerUri);
+    assertEquals(initialConsumerParams.diagnostics, []);
+
+    await client.sendNotification('textDocument/didOpen', {
+      textDocument: {
+        uri: otherUri,
+        languageId: 'soundscript',
+        version: 1,
+        text: otherText,
+      },
+    });
+    const initialOtherNotification = await withTimeout(
+      client.readNotification('textDocument/publishDiagnostics'),
+      250,
+      'Timed out waiting for initial other publishDiagnostics.',
+    );
+    const initialOtherParams = initialOtherNotification.params as {
+      diagnostics: Array<{ code: string }>;
+      uri: string;
+    };
+
+    assertEquals(initialOtherParams.uri, otherUri);
+    assertEquals(initialOtherParams.diagnostics, []);
+
+    await Deno.writeTextFile(
+      join(workspace, 'node_modules/sound-pkg/src/helper.macro.sts'),
+      'export const helperExpression = \'"wrong"\';\n',
+    );
+
+    await client.sendNotification('textDocument/didChange', {
+      textDocument: { uri: otherUri, version: 2 },
+      contentChanges: [{ text: otherChangedText }],
+    });
+    const changedOtherNotification = await withTimeout(
+      client.readNotification('textDocument/publishDiagnostics'),
+      250,
+      'Timed out waiting for changed other publishDiagnostics.',
+    );
+    const changedOtherParams = changedOtherNotification.params as {
+      diagnostics: Array<{ code: string }>;
+      uri: string;
+    };
+
+    assertEquals(changedOtherParams.uri, otherUri);
+    assertEquals(changedOtherParams.diagnostics, []);
+
+    // The server only republishes diagnostics for the URI that changed, so we
+    // trigger a no-op consumer didChange to surface the package-backed drift.
+    await client.sendNotification('textDocument/didChange', {
+      textDocument: { uri: consumerUri, version: 2 },
+      contentChanges: [{ text: consumerText }],
+    });
+    const consumerNotification = await withTimeout(
+      client.readNotification('textDocument/publishDiagnostics'),
+      250,
+      'Timed out waiting for consumer publishDiagnostics after helper drift.',
+    );
+    const consumerParams = consumerNotification.params as {
+      diagnostics: Array<{ code: string }>;
+      uri: string;
+    };
+
+    assertEquals(consumerParams.uri, consumerUri);
+    assertEquals(consumerParams.diagnostics.map((diagnostic) => diagnostic.code), [
+      'TS2322',
+    ]);
+
+    await shutdownServer(client, startPromise);
+  },
+);
 
 Deno.test('LSP server coalesces rapid didChange diagnostics to the latest document version', async () => {
   const workspace = await createWorkspace();

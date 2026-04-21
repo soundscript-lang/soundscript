@@ -54,6 +54,7 @@ Legend:
 - `batch-55`: covered by the fifty-fifth red-team batch added with this record.
 - `batch-56`: covered by the fifty-sixth red-team batch added with this record.
 - `batch-57`: covered by the fifty-seventh red-team batch added with this record.
+- `batch-58`: covered by the fifty-eighth red-team batch added with this record.
 - `audit-debt`: missing coverage that should be closed before calling the family fully audited.
 - `out-of-scope`: explicitly outside the strong soundness claim.
 - `design-gap`: documented future work, not a current guarantee.
@@ -66,7 +67,7 @@ Legend:
 | BareObject/null-prototype provenance | covered           | covered                        | covered                        | batch-39                 | covered                    | batch-39                | batch-39            | batch-45             |
 | `#[value]` parity                    | covered           | batch-1                        | batch-1                        | batch-1                  | batch-5                    | batch-1                 | batch-1             | covered              |
 | Machine numerics                     | covered           | batch-37                       | batch-37                       | batch-37                 | batch-5                    | batch-37                | batch-1,37          | batch-37             |
-| Macro/capability boundary            | covered,batch-54  | covered,batch-53,54            | batch-53,54,55,57              | batch-6,53,54            | batch-41,42,54             | batch-53,54,55,57       | batch-7,56          | batch-8              |
+| Macro/capability boundary            | covered,batch-54  | covered,batch-53,54            | batch-53,54,55,57,58           | batch-6,53,54            | batch-41,42,54             | batch-53,54,55,57,58    | batch-7,56          | batch-8              |
 | Compiler acceptance parity           | covered           | audit-debt                     | out-of-scope                   | out-of-scope             | out-of-scope               | out-of-scope            | batch-1,27,30       | covered,batch-27,30  |
 | Project-reference root ownership     | batch-32,47,48,49 | out-of-scope,batch-46,47,48,49 | out-of-scope,batch-46,47,48,49 | batch-32,48,49           | out-of-scope               | batch-34,47,48,49       | batch-33,50,51      | out-of-scope         |
 
@@ -1411,6 +1412,29 @@ Legend:
   mixed open documents. Recursive non-`.sts` support-file tracking remains documented as out of
   scope unless the package-source guarantee is broadened.
 
+## Batch 58 Findings
+
+### Package-Exported Macro Drift Through JSON-RPC LSP Publishing
+
+- Attack: run the real JSON-RPC LSP server against a workspace with an open consumer `.sts` document
+  importing macro `Foo()` from a source-published package subpath and a second unrelated open `.sts`
+  document. Prime `textDocument/publishDiagnostics` while `Foo()` expands to numeric expression `1`,
+  mutate only the package macro helper on disk so `Foo()` expands to string expression `"wrong"`,
+  then change the unrelated document before triggering a no-op consumer `didChange`.
+- Routes: `createServer`, in-memory JSON-RPC transport, `textDocument/didOpen`,
+  `textDocument/didChange`, scheduled `textDocument/publishDiagnostics`, the server-held
+  `SessionState`, and project-service file-local diagnostics under mixed open-document state.
+- Expected result: initial publish diagnostics are empty for both documents; the unrelated document
+  change republishes diagnostics only for that unrelated URI because the server schedules by changed
+  URI; the subsequent consumer publish reports consumer-file `TS2322`.
+- Result: executable coverage added in `src/lsp/server_test.ts`. No production change was needed
+  beyond the Batch 57 file-analysis dependency-signature fix; this batch proves the user-visible LSP
+  notification path observes that fix.
+- Residual risk: this confirms publish diagnostics after a consumer URI event. The current server
+  does not broadcast diagnostics for all open documents when an unrelated URI changes; that behavior
+  is intentionally documented in the test rather than changed here to avoid broad LSP work on every
+  edit.
+
 ## Remaining High-Priority Audit Debt
 
 - Recursive package support-file tracking for non-`.sts` helper graphs if that source-published
@@ -2042,3 +2066,12 @@ red-team attack, the route matrix it covers, and the residual risk left behind.
   `.sts`-only reused prepare `1.2s`, reused `.sts`-local edit `690.4ms`, and analyze-only `4.0ms`;
   the comparison did not show a broad significant regression from the precise file-analysis
   dependency-signature fix.
+- `deno test --allow-all --filter "publishes package-exported macro helper drift diagnostics across
+  mixed open documents" src/lsp/server_test.ts`:
+  passed, 1 test in `3s`; this covered the JSON-RPC `publishDiagnostics` route after package macro
+  helper drift with another open document in the session.
+- `deno test --allow-all src/lsp/server_test.ts`: passed, 164 tests in `4m10s`. The first full-suite
+  run exposed two stale existing fixtures, both treated as real: imported user macro hover now uses
+  the required `.macro.sts` module suffix, and rejected import-equals syntax now asserts that no
+  `#[interop]` quick fix is offered because TypeScript rejects that syntax before checker-owned
+  boundary analysis.
