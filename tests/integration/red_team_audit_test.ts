@@ -6009,7 +6009,7 @@ Deno.test('red-team: package build output preserves package-to-package Node impo
   );
 });
 
-Deno.test('red-team: member-path forwarded callbacks fail closed before cache reuse', async () => {
+Deno.test('red-team: cached effect summaries track member-path forwarded callback drift', async () => {
   const tempDirectory = await createTempProject([
     {
       path: 'tsconfig.json',
@@ -6022,7 +6022,7 @@ Deno.test('red-team: member-path forwarded callbacks fail closed before cache re
         '',
         '// #[effects(forbid: [host])]',
         'export function run(): number {',
-        '  const decoder = { decode };',
+        '  const decoder = { inner: { decode } };',
         '  return audited(decoder);',
         '}',
         '',
@@ -6032,7 +6032,7 @@ Deno.test('red-team: member-path forwarded callbacks fail closed before cache re
       path: 'src/effects.sts',
       contents: [
         'export interface Decoder {',
-        '  readonly decode: () => number;',
+        '  readonly inner: { readonly decode: () => number };',
         '}',
         '',
         '// #[effects(add: [])]',
@@ -6040,9 +6040,9 @@ Deno.test('red-team: member-path forwarded callbacks fail closed before cache re
         '  return 1;',
         '}',
         '',
-        '// #[effects(forward: [decoder.decode])]',
+        '// #[effects(forward: [decoder.inner.decode])]',
         'export function audited(decoder: Decoder): number {',
-        '  return decoder.decode();',
+        '  return decoder.inner.decode();',
         '}',
         '',
       ].join('\n'),
@@ -6055,14 +6055,69 @@ Deno.test('red-team: member-path forwarded callbacks fail closed before cache re
   const session = new IncrementalProjectSession();
 
   try {
-    const preparedResult = analyzePreparedProject(prepareProjectAnalysis(baseOptions));
+    const initialPreparedProject = prepareProjectAnalysis(baseOptions);
+    session.prepare(baseOptions);
+    assertEquals(analyzePreparedProject(initialPreparedProject).diagnostics, []);
+    assertEquals(session.analyzeProject().diagnostics, []);
+    assertEquals(runProgram(cachedOptions).diagnostics, []);
+
+    const warmUnchangedResult = withCapturedTimingLogs((logs) => {
+      const result = runProgram(cachedOptions);
+      assert(
+        logs.some((line) => line.includes('[soundscript:checker] project.cache.read ')),
+        logs.join('\n'),
+      );
+      assert(
+        !logs.some((line) => line.includes('[soundscript:checker] project.cache.incremental ')),
+        logs.join('\n'),
+      );
+      return result;
+    });
+    assertEquals(warmUnchangedResult.diagnostics, []);
+
+    await writeProjectFile(
+      tempDirectory,
+      'src/effects.sts',
+      [
+        'export interface Decoder {',
+        '  readonly inner: { readonly decode: () => number };',
+        '}',
+        '',
+        '// #[effects(add: [host.random])]',
+        'export function decode(): number {',
+        '  return 1;',
+        '}',
+        '',
+        '// #[effects(forward: [decoder.inner.decode])]',
+        'export function audited(decoder: Decoder): number {',
+        '  return decoder.inner.decode();',
+        '}',
+        '',
+      ].join('\n'),
+    );
+
+    const coldPreparedResult = analyzePreparedProject(prepareProjectAnalysis(baseOptions));
+    const reusedPreparedResult = analyzePreparedProject(
+      prepareProjectAnalysis(baseOptions, initialPreparedProject),
+    );
     session.prepare(baseOptions);
     const sessionResult = session.analyzeProject();
-    const coldCachedResult = runProgram(cachedOptions);
+    const coldCachedResult = runProgram({
+      ...baseOptions,
+      cacheDir: await Deno.makeTempDir({ prefix: 'soundscript-red-team-cache-' }),
+    });
     const cachedResult = withCapturedTimingLogs((logs) => {
       const result = runProgram(cachedOptions);
       assert(
         logs.some((line) => line.includes('[soundscript:checker] project.cache.read ')),
+        logs.join('\n'),
+      );
+      assert(
+        logs.some((line) =>
+          line.includes('[soundscript:checker] project.cache.incremental ') &&
+          line.includes('changedTrackedFiles=1') &&
+          line.includes('changedDependencyFiles=1')
+        ),
         logs.join('\n'),
       );
       return result;
@@ -6072,7 +6127,11 @@ Deno.test('red-team: member-path forwarded callbacks fail closed before cache re
       ['SOUND1041', 'src/index.sts'],
     ];
     assertEquals(
-      toProjectRelativeDiagnostics(preparedResult.diagnostics, tempDirectory),
+      toProjectRelativeDiagnostics(coldPreparedResult.diagnostics, tempDirectory),
+      expectedDiagnostics,
+    );
+    assertEquals(
+      toProjectRelativeDiagnostics(reusedPreparedResult.diagnostics, tempDirectory),
       expectedDiagnostics,
     );
     assertEquals(

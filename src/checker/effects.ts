@@ -16,12 +16,7 @@ import {
   hasCallableType,
   type ParsedEffectsAnnotationContract,
   parseEffectsAnnotationContract,
-  validateEffectsAnnotation,
 } from './effects/annotations.ts';
-import {
-  type CallableEffectContractMismatch,
-  classifyCallableEffectContractMismatch,
-} from './effects/contract_relations.ts';
 import {
   applyEffectRewrites,
   effectNamesToMask,
@@ -453,10 +448,6 @@ function normalizeFailureEffectsForAsyncBoundary(
   return applyEffectRewrites(effects, [{ from: 'fails', to: 'fails.rejects' }], []);
 }
 
-function captureFailureEffects(effects: readonly EffectNameFact[]): readonly EffectNameFact[] {
-  return applyEffectRewrites(effects, [], ['fails']);
-}
-
 function applyContainingCallableBoundaryToEffects(
   effects: readonly EffectNameFact[],
   isAsyncBoundary: boolean,
@@ -804,7 +795,6 @@ function resolveCurrentFunctionTrivialAdapterTarget(
   context: AnalysisContext,
   parameters: readonly ts.ParameterDeclaration[],
   initializer: ts.Expression,
-  seenSymbols: Set<number>,
   allowNonCallableParameterRoot: boolean,
 ): CurrentFunctionAliasTarget | undefined {
   const current = unwrapOuterExpression(initializer);
@@ -960,7 +950,6 @@ function resolveCurrentFunctionAliasTarget(
         context,
         parameters,
         declaration.initializer,
-        seenSymbols,
         allowNonCallableParameterRoot,
       );
       if (adapterTarget) {
@@ -1010,44 +999,6 @@ function resolveCurrentFunctionAliasTarget(
   return undefined;
 }
 
-function getCurrentFunctionMemberParameterIndex(
-  context: AnalysisContext,
-  parameters: readonly ts.ParameterDeclaration[],
-  expression: ts.Expression,
-  memberName: string,
-): number | undefined {
-  if (!ts.isIdentifier(expression)) {
-    return undefined;
-  }
-
-  const symbol = context.checker.getSymbolAtLocation(expression);
-  if (!symbol) {
-    return undefined;
-  }
-
-  for (const [index, parameter] of parameters.entries()) {
-    if (!ts.isIdentifier(parameter.name)) {
-      continue;
-    }
-    const parameterSymbol = context.checker.getSymbolAtLocation(parameter.name);
-    if (parameterSymbol !== symbol) {
-      continue;
-    }
-
-    const type = context.checker.getTypeAtLocation(parameter);
-    const memberSymbol = type.getProperty(memberName);
-    if (!memberSymbol) {
-      continue;
-    }
-    const memberType = context.checker.getTypeOfSymbolAtLocation(memberSymbol, parameter);
-    if (context.checker.getSignaturesOfType(memberType, ts.SignatureKind.Call).length > 0) {
-      return index;
-    }
-  }
-
-  return undefined;
-}
-
 function getSummaryForSignatures(
   context: AnalysisContext,
   signatures: readonly ts.Signature[],
@@ -1078,6 +1029,49 @@ function getSummaryForSignatures(
   return createEffectComposition(effects, unknownReasons);
 }
 
+function getSummaryForCallableSymbol(
+  context: AnalysisContext,
+  symbol: ts.Symbol,
+): EffectComposition | undefined {
+  const canonicalSymbol = context.exportSummaries.canonicalizeSymbol(symbol);
+  const callableDeclarations = (canonicalSymbol.declarations ?? []).filter(
+    isCallableDeclarationNode,
+  );
+  if (callableDeclarations.length === 0) {
+    return undefined;
+  }
+
+  let effects: readonly EffectNameFact[] = [];
+  let unknownReasons: readonly EffectUnknownReasonFact[] = [];
+  for (const declaration of callableDeclarations) {
+    const summary = getEffectSummaryForDeclaration(context, declaration);
+    const signature = context.checker.getSignatureFromDeclaration(declaration);
+    effects = normalizeEffectNames([...effects, ...summary.directEffects]);
+    unknownReasons = mergeEffectUnknownReasons(
+      unknownReasons,
+      signature
+        ? getEffectSummaryUnknownReasonsForSignature(context, signature, summary)
+        : getEffectSummaryUnknownReasons(summary),
+    );
+  }
+
+  return createEffectComposition(effects, unknownReasons);
+}
+
+function getSummaryForShorthandPropertyValue(
+  context: AnalysisContext,
+  property: ts.ShorthandPropertyAssignment,
+): EffectComposition | undefined {
+  const valueSymbol = context.checker.getShorthandAssignmentValueSymbol(property);
+  if (valueSymbol) {
+    const symbolSummary = getSummaryForCallableSymbol(context, valueSymbol);
+    if (symbolSummary) {
+      return symbolSummary;
+    }
+  }
+  return getSummaryForCallableExpression(context, property.name);
+}
+
 function getSummaryForCallableExpression(
   context: AnalysisContext,
   expression: ts.Expression,
@@ -1091,6 +1085,16 @@ function getSummaryForCallableExpression(
         ? getEffectSummaryUnknownReasonsForSignature(context, signature, summary)
         : getEffectSummaryUnknownReasons(summary),
     );
+  }
+
+  if (ts.isIdentifier(expression)) {
+    const symbol = context.checker.getSymbolAtLocation(expression);
+    if (symbol) {
+      const directSummary = getSummaryForCallableSymbol(context, symbol);
+      if (directSummary) {
+        return directSummary;
+      }
+    }
   }
 
   const type = context.checker.getTypeAtLocation(expression);
@@ -1146,7 +1150,64 @@ function getSummaryForObjectLiteralMember(
     }
 
     if (ts.isShorthandPropertyAssignment(property) && property.name.text === memberName) {
-      return getSummaryForCallableExpression(context, property.name);
+      return getSummaryForShorthandPropertyValue(context, property);
+    }
+  }
+
+  return undefined;
+}
+
+function getSummaryForObjectLiteralPath(
+  context: AnalysisContext,
+  expression: ts.ObjectLiteralExpression,
+  memberPath: readonly string[],
+): EffectComposition | undefined {
+  const [memberName, ...remainingPath] = memberPath;
+  if (memberName === undefined) {
+    return undefined;
+  }
+
+  for (const property of expression.properties) {
+    if (ts.isMethodDeclaration(property)) {
+      if (
+        remainingPath.length === 0 && property.name &&
+        getObjectLiteralPropertyName(property.name) === memberName
+      ) {
+        const summary = getEffectSummaryForDeclaration(context, property);
+        const signature = context.checker.getSignatureFromDeclaration(property);
+        return createEffectComposition(
+          summary.directEffects,
+          signature
+            ? getEffectSummaryUnknownReasonsForSignature(context, signature, summary)
+            : getEffectSummaryUnknownReasons(summary),
+        );
+      }
+      continue;
+    }
+
+    if (ts.isPropertyAssignment(property)) {
+      const propertyName = getObjectLiteralPropertyName(property.name);
+      if (propertyName !== memberName) {
+        continue;
+      }
+      const initializer = unwrapOuterExpression(property.initializer);
+      if (remainingPath.length === 0) {
+        return getSummaryForCallableExpression(context, initializer);
+      }
+      if (ts.isObjectLiteralExpression(initializer)) {
+        return getSummaryForObjectLiteralPath(context, initializer, remainingPath);
+      }
+      if (ts.isIdentifier(initializer)) {
+        return getSummaryForLocalMemberPathBinding(context, initializer, remainingPath);
+      }
+      return undefined;
+    }
+
+    if (ts.isShorthandPropertyAssignment(property) && property.name.text === memberName) {
+      if (remainingPath.length === 0) {
+        return getSummaryForShorthandPropertyValue(context, property);
+      }
+      return getSummaryForLocalMemberPathBinding(context, property.name, remainingPath);
     }
   }
 
@@ -1193,6 +1254,37 @@ function getSummaryForLocalMemberBinding(
     const initializer = unwrapOuterExpression(declaration.initializer);
     if (ts.isObjectLiteralExpression(initializer)) {
       const summary = getSummaryForObjectLiteralMember(context, initializer, memberName);
+      if (summary) {
+        return summary;
+      }
+    }
+  }
+
+  return undefined;
+}
+
+function getSummaryForLocalMemberPathBinding(
+  context: AnalysisContext,
+  expression: ts.Expression,
+  memberPath: readonly string[],
+): EffectComposition | undefined {
+  if (memberPath.length === 0 || !ts.isIdentifier(expression)) {
+    return undefined;
+  }
+
+  const symbol = context.checker.getSymbolAtLocation(expression);
+  if (!symbol) {
+    return undefined;
+  }
+
+  for (const declaration of symbol.declarations ?? []) {
+    if (!ts.isVariableDeclaration(declaration) || !declaration.initializer) {
+      continue;
+    }
+
+    const initializer = unwrapOuterExpression(declaration.initializer);
+    if (ts.isObjectLiteralExpression(initializer)) {
+      const summary = getSummaryForObjectLiteralPath(context, initializer, memberPath);
       if (summary) {
         return summary;
       }
@@ -1313,7 +1405,6 @@ function getUnhandledCallableArgumentUnknownReasons(
       context,
       parameters,
       argument,
-      new Set<number>(),
       true,
     ) ?? resolveCurrentFunctionAliasTarget(
       context,
@@ -1399,6 +1490,11 @@ function getSummaryForCallablePath(
     return getSummaryForCallableMember(context, expression, memberPath[0]!);
   }
 
+  const localBindingSummary = getSummaryForLocalMemberPathBinding(context, expression, memberPath);
+  if (localBindingSummary) {
+    return localBindingSummary;
+  }
+
   let currentType = context.checker.getTypeAtLocation(expression);
   for (let index = 0; index < memberPath.length - 1; index += 1) {
     const property = currentType.getProperty(memberPath[index]!);
@@ -1434,7 +1530,6 @@ function summarizeForwardedArgumentInBody(
     return createEffectComposition();
   }
 
-  const memberName = memberPath.length === 1 ? memberPath[0] : undefined;
   const aliasTarget = resolveCurrentFunctionAliasTarget(
     context,
     parameters,
@@ -1475,6 +1570,22 @@ function summarizeForwardedArgumentInBody(
     transformedEffects,
     summary.unknownReasons,
   );
+}
+
+function shouldForwardCurrentFunctionAliasCall(
+  target: CurrentFunctionAliasTarget,
+  signatureSummary: EffectSummaryFact | undefined,
+): boolean {
+  if (target.memberPath.length === 0 || signatureSummary === undefined) {
+    return true;
+  }
+
+  return signatureSummary.directEffects.length === 0 &&
+    signatureSummary.forwardedParameters.length === 0 &&
+    signatureSummary.unknownDirectReasons.length > 0 &&
+    signatureSummary.unknownDirectReasons.every((reason) =>
+      reason.kind === 'unsummarizedDeclarationFrontier'
+    );
 }
 
 function hasAsyncBoundary(declaration: EffectCallableDeclaration): boolean {
@@ -1637,10 +1748,17 @@ function recomputeBodyDeclarationSummary(
       if (node.expression.kind === ts.SyntaxKind.ImportKeyword) {
         appendSummaryDirectEffects(targetSummary, ['host.system', 'suspend.await']);
       } else {
-        const directAliasTarget = ts.isIdentifier(unwrapOuterExpression(node.expression))
-          ? resolveCurrentFunctionAliasTarget(context, parameters, node.expression)
-          : undefined;
-        if (directAliasTarget !== undefined) {
+        const directAliasTarget = resolveCurrentFunctionAliasTarget(
+          context,
+          parameters,
+          node.expression,
+        );
+        const resolvedSignature = context.checker.getResolvedSignature(node);
+        const signatureSummary = getEffectSummaryForSignature(context, resolvedSignature);
+        if (
+          directAliasTarget !== undefined &&
+          shouldForwardCurrentFunctionAliasCall(directAliasTarget, signatureSummary)
+        ) {
           const boundaryTransform = asyncBoundary
             ? failureBoundaryToForwardTransform('reject')
             : failureBoundaryToForwardTransform('preserve');
@@ -1656,8 +1774,6 @@ function recomputeBodyDeclarationSummary(
             directAliasTarget.memberPath,
           );
         } else {
-          const resolvedSignature = context.checker.getResolvedSignature(node);
-          const signatureSummary = getEffectSummaryForSignature(context, resolvedSignature);
           if (signatureSummary) {
             const directEffects =
               (getFreshLocalMutatingCall(context, node, freshLocalProof)?.suppressesMut ??

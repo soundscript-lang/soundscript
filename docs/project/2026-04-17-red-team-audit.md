@@ -424,8 +424,8 @@ Legend:
   even when the projected declaration hash is unchanged, and exported source-surface hashes retain
   SoundScript `#[...]` comments.
 - Residual risk: this covers direct local body-effect drift and direct forwarded callback annotation
-  drift; member-path forwards, rewrite/handle transforms, and package-to-package effect-summary
-  drift should be expanded as separate matrix cases.
+  drift. Batch 35 later covers local member-path forwards and rewrite transforms; broader
+  package-chain effect-summary drift remains separate matrix debt.
 
 ## Batch 14 Findings
 
@@ -446,10 +446,9 @@ Legend:
 - Status: executable coverage added in `tests/integration/red_team_audit_test.ts`.
 - Result: no additional production bug found after the Batch 13 cache fixes. The route refreshes all
   affected local files and preserves cold/warm parity.
-- Residual risk: a true member-path forwarded callback fixture currently fails fresh analysis with
-  an unsummarized declaration frontier, so member-path precision remains a design gap rather than a
-  cache-invalidation finding in this batch. Rewrite transforms still need a dedicated cache-drift
-  fixture.
+- Residual risk: Batch 35 later broadens the local member-path forwarded callback surface and adds a
+  cache-drift fixture. Package-chain member paths and rewrite transforms still need dedicated
+  source-published coverage before they can be marked covered.
 
 ## Batch 15 Findings
 
@@ -475,8 +474,8 @@ Legend:
   now preserve projected effects, package-cache misses force source-policy analysis, and package
   source edits disable prepared snapshot reuse before falling back to full analysis.
 - Residual risk: this covers source-published package-to-package effect summary drift through a
-  direct wrapper. Package chains with member-path forwards or rewrite/handle transforms still depend
-  on the member-path precision design gap documented in Batch 14.
+  direct wrapper. Package chains with member-path forwards or rewrite/handle transforms still need
+  accepted fresh fixtures and package-cache parity coverage.
 
 ## Batch 16 Findings
 
@@ -902,17 +901,25 @@ Legend:
 ### Effect Transform Cache Parity
 
 - Attack: prime persistent checker cache, reused prepared analysis, and an incremental session with
-  a local `#[effects(forward: [{ from: callback, rewrite: [...] }])]` extern helper that rewrites
-  `fails` into `fails.rejects`; then change only the effect annotation to forward the callback
-  directly under a caller that forbids `fails.throws`.
+  two local effect-summary probes: a member-path callback `decoder.inner.decode`, and a local
+  `#[effects(forward: [{ from: callback, rewrite: [...] }])]` extern helper that rewrites `fails`
+  into `fails.rejects`. Then change only the forwarded callback dependency annotation or rewrite
+  annotation while caller source stays stable.
 - Routes: reused prepared analysis, persistent checker cache, dependency signature refresh,
-  annotation-only source hashing, and incremental full-project analysis.
-- Expected result: cold, reused prepared, warm cached, and session routes all reject with the same
-  `SOUND1041` diagnostic after the rewrite transform is removed.
-- Result: no production bug found for local rewrite-transform cache invalidation.
-- Residual risk: true member-path forwarded callback probes and source-published package rewrite
-  chains currently fail closed during fresh analysis with an unsummarized frontier; they remain
-  design gaps rather than stale-cache bugs until the fresh accepted surface is broadened.
+  annotation-only source hashing, object-literal member-path summary recovery, current-parameter
+  member-path forwarding, and incremental full-project analysis.
+- Expected result: cold, reused prepared, warm cached, and session routes all accept the primed
+  clean state and reject with the same `SOUND1041` diagnostic after the dependency effect or rewrite
+  transform changes.
+- Result: confirmed fresh-analysis precision gap fixed for local member-path forwarded callbacks.
+  The effect solver now records property-access calls rooted in current parameters as forwarded
+  member paths before structural signature fallback can add an unsummarized frontier. Consumer-side
+  callback recovery also follows local object-literal member paths and resolves shorthand property
+  values to their callable symbols before falling back to structural signatures. No stale-cache bug
+  was found after the fresh surface was broadened.
+- Residual risk: source-published package rewrite/member-path chains still need accepted fresh
+  fixtures and package-cache parity coverage; package-exported macro/effect transforms remain
+  documented design debt.
 
 ## Batch 36 Findings
 
@@ -981,8 +988,9 @@ Legend:
 
 - Package verification cache reuse for package-exported macros if macro-only packages become a
   cacheable package-source policy route.
-- Accepted source-published package rewrite/member-path effect transforms through package chains if
-  those fresh surfaces are later broadened beyond the current fail-closed behavior.
+- Accepted source-published package rewrite/member-path effect transforms through package chains.
+  Local member-path callback forwarding is now covered by Batch 35; package-chain variants still
+  need accepted fresh fixtures before package-cache parity can be asserted.
 - Build-output/compiler-gate coverage for effect and proof-oracle families where those routes become
   part of the owned acceptance story rather than fail-before-emit checks.
 - File-scoped parity for unimported referenced-project roots if that route is later expected to own
@@ -1336,3 +1344,26 @@ red-team attack, the route matrix it covers, and the residual risk left behind.
   `371.4ms`, reused prepare after `.sts`-only edit `1.2s`, reused `.sts`-local edit `815.9ms`, and
   analyze-only `3.6ms` average samples. This slice changed tests/docs only, so the benchmark is a
   current-tree performance smoke rather than evidence for a production cache-key change.
+- `deno test --allow-all --filter
+  "/(member-path forwarded callback drift|rewrite forwarded effect drift)/"
+  tests/integration/red_team_audit_test.ts`:
+  initially failed because the member-path callback fixture was rejected during fresh analysis with
+  an unsummarized declaration frontier. After broadening local member-path forwarding precision in
+  `src/checker/effects.ts`, passed, 2 tests in `9s`.
+- `deno test --allow-all --filter "effects" src/service/analyze_project_test.ts
+  src/checker/engine/context_test.ts src/frontend/typescript_effect_declarations_test.ts`:
+  initially caught a Promise-continuation regression from over-broad member-call forwarding. After
+  limiting current-parameter member forwarding to absent or unsummarized structural signatures,
+  passed, 12 tests in `7s`.
+- `deno test --allow-all tests/integration/red_team_audit_test.ts`: passed, 51 tests in `3m15s`
+  after the member-path production fix and lint cleanup.
+- `deno task check`: passed after the member-path production fix.
+- `deno fmt --check src/checker/effects.ts tests/integration/red_team_audit_test.ts
+  docs/project/2026-04-17-red-team-audit.md`:
+  passed.
+- `deno lint src/checker/effects.ts tests/integration/red_team_audit_test.ts`: passed after removing
+  stale unused helpers/imports from the touched effect-summary module.
+- `deno bench --allow-all tests/bench/mixed_project_analysis_bench.ts`: passed on Apple M5 Pro with
+  cold prepare `1.4s`, `.sts`-local cold prepare `854.8ms`, reused prepare after `.ts`-only edit
+  `354.1ms`, reused prepare after `.sts`-only edit `1.1s`, reused `.sts`-local edit `711.6ms`, and
+  analyze-only `2.3ms` average samples.
