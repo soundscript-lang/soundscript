@@ -2114,7 +2114,7 @@ Deno.test('compiler wasm-gc emitter produces runnable legacy Map set and size re
 
   assertEquals(
     snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
-    ['dynamic_object', 'finite_union', 'string'],
+    ['dynamic_object', 'finite_union', 'map', 'string'],
   );
   assertEquals(mainPlan?.bodyStatus, 'emittable');
   await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
@@ -2124,7 +2124,7 @@ Deno.test('compiler wasm-gc emitter produces runnable legacy Map set and size re
     true,
   );
   assertEquals(wat.includes('f64.const 1'), true);
-  assertEquals(wat.includes('map_runtime'), false);
+  assertEquals(wat.includes('map_runtime'), true);
   assertEquals(wat.includes('set_runtime'), false);
   const result = await new Deno.Command('wasm-tools', {
     args: ['parse', watPath, '-o', wasmPath],
@@ -2177,13 +2177,13 @@ Deno.test('compiler wasm-gc emitter produces runnable legacy Map has checks', as
 
   assertEquals(
     snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
-    ['dynamic_object', 'finite_union', 'string'],
+    ['dynamic_object', 'finite_union', 'map', 'string'],
   );
   assertEquals(mainPlan?.bodyStatus, 'emittable');
   await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
   const wat = await Deno.readTextFile(watPath);
   assertEquals(wat.includes('local.set $dynamic_has'), true);
-  assertEquals(wat.includes('map_runtime'), false);
+  assertEquals(wat.includes('map_runtime'), true);
   const result = await new Deno.Command('wasm-tools', {
     args: ['parse', watPath, '-o', wasmPath],
     stdout: 'piped',
@@ -2237,7 +2237,7 @@ Deno.test('compiler wasm-gc emitter produces runnable legacy Map get missing che
 
   assertEquals(
     snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
-    ['dynamic_object', 'finite_union', 'string'],
+    ['dynamic_object', 'finite_union', 'map', 'string'],
   );
   assertEquals(mainPlan?.bodyStatus, 'emittable');
   await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
@@ -2246,7 +2246,7 @@ Deno.test('compiler wasm-gc emitter produces runnable legacy Map get missing che
     wat.includes('struct.get $dynamic_object_layout_object_dynamic_1_f64 $value_0'),
     true,
   );
-  assertEquals(wat.includes('map_runtime'), false);
+  assertEquals(wat.includes('map_runtime'), true);
   const result = await new Deno.Command('wasm-tools', {
     args: ['parse', watPath, '-o', wasmPath],
     stdout: 'piped',
@@ -2308,13 +2308,13 @@ Deno.test('compiler wasm-gc emitter produces runnable legacy string-key tagged u
 
   assertEquals(
     snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
-    ['dynamic_object', 'finite_union', 'string'],
+    ['dynamic_object', 'finite_union', 'map', 'string'],
   );
   assertEquals(mainPlan?.bodyStatus, 'emittable');
   await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
   const wat = await Deno.readTextFile(watPath);
   assertEquals(wat.includes('struct.get $tagged_value $number_payload'), true);
-  assertEquals(wat.includes('map_runtime'), false);
+  assertEquals(wat.includes('map_runtime'), true);
   const result = await new Deno.Command('wasm-tools', {
     args: ['parse', watPath, '-o', wasmPath],
     stdout: 'piped',
@@ -2380,12 +2380,12 @@ Deno.test('compiler wasm-gc emitter produces runnable legacy Map values iteratio
 
   assertEquals(
     snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
-    ['array', 'dynamic_object', 'finite_union', 'specialized_object', 'string'],
+    ['array', 'dynamic_object', 'finite_union', 'map', 'specialized_object', 'string'],
   );
   assertEquals(mainPlan?.bodyStatus, 'emittable');
   await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
   const wat = await Deno.readTextFile(watPath);
-  assertEquals(wat.includes('map_runtime'), false);
+  assertEquals(wat.includes('map_runtime'), true);
   assertEquals(wat.includes('array.new_default $array_runtime'), true);
   const result = await new Deno.Command('wasm-tools', {
     args: ['parse', watPath, '-o', wasmPath],
@@ -2448,7 +2448,7 @@ Deno.test('compiler wasm-gc emitter produces runnable legacy numeric Map mutatio
 
   assertEquals(
     snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
-    ['array', 'dynamic_object', 'finite_union', 'specialized_object', 'string'],
+    ['array', 'dynamic_object', 'finite_union', 'map', 'specialized_object', 'string'],
   );
   assertEquals(mainPlan?.bodyStatus, 'emittable');
   await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
@@ -2462,7 +2462,7 @@ Deno.test('compiler wasm-gc emitter produces runnable legacy numeric Map mutatio
     true,
   );
   assertEquals(wat.includes('array.copy $array_runtime $array_runtime'), true);
-  assertEquals(wat.includes('map_runtime'), false);
+  assertEquals(wat.includes('map_runtime'), true);
   const result = await new Deno.Command('wasm-tools', {
     args: ['parse', watPath, '-o', wasmPath],
     stdout: 'piped',
@@ -2512,7 +2512,7 @@ Deno.test('compiler wasm-gc emitter produces runnable legacy number-key string M
 
   assertEquals(
     snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
-    ['array', 'dynamic_object', 'finite_union', 'specialized_object', 'string'],
+    ['array', 'dynamic_object', 'finite_union', 'map', 'specialized_object', 'string'],
   );
   assertEquals(mainPlan?.bodyStatus, 'emittable');
   await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
@@ -2522,7 +2522,7 @@ Deno.test('compiler wasm-gc emitter produces runnable legacy number-key string M
     /struct\.get \$dynamic_object_layout_object_dynamic_2_[^\s]+ \$value_1/.test(wat),
     true,
   );
-  assertEquals(wat.includes('map_runtime'), false);
+  assertEquals(wat.includes('map_runtime'), true);
   const result = await new Deno.Command('wasm-tools', {
     args: ['parse', watPath, '-o', wasmPath],
     stdout: 'piped',
@@ -2579,7 +2579,7 @@ Deno.test('compiler wasm-gc emitter produces runnable legacy number-key boolean 
 
   assertEquals(
     snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
-    ['array', 'dynamic_object', 'finite_union', 'specialized_object', 'string'],
+    ['array', 'dynamic_object', 'finite_union', 'map', 'specialized_object', 'string'],
   );
   assertEquals(mainPlan?.bodyStatus, 'emittable');
   await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
@@ -2590,7 +2590,7 @@ Deno.test('compiler wasm-gc emitter produces runnable legacy number-key boolean 
     true,
   );
   assertEquals(wat.includes('__string_eq'), false);
-  assertEquals(wat.includes('map_runtime'), false);
+  assertEquals(wat.includes('map_runtime'), true);
   const result = await new Deno.Command('wasm-tools', {
     args: ['parse', watPath, '-o', wasmPath],
     stdout: 'piped',
@@ -2645,14 +2645,14 @@ Deno.test('compiler wasm-gc emitter produces runnable legacy number-key string M
 
   assertEquals(
     snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
-    ['array', 'dynamic_object', 'finite_union', 'specialized_object', 'string'],
+    ['array', 'dynamic_object', 'finite_union', 'map', 'specialized_object', 'string'],
   );
   assertEquals(mainPlan?.bodyStatus, 'emittable');
   await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
   const wat = await Deno.readTextFile(watPath);
   assertEquals(wat.includes('array.copy $string_array_runtime $string_array_runtime'), true);
   assertEquals(wat.includes('__string_eq'), false);
-  assertEquals(wat.includes('map_runtime'), false);
+  assertEquals(wat.includes('map_runtime'), true);
   const result = await new Deno.Command('wasm-tools', {
     args: ['parse', watPath, '-o', wasmPath],
     stdout: 'piped',
@@ -2717,14 +2717,14 @@ Deno.test('compiler wasm-gc emitter produces runnable legacy number-key boolean 
 
   assertEquals(
     snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
-    ['array', 'dynamic_object', 'finite_union', 'specialized_object', 'string'],
+    ['array', 'dynamic_object', 'finite_union', 'map', 'specialized_object', 'string'],
   );
   assertEquals(mainPlan?.bodyStatus, 'emittable');
   await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
   const wat = await Deno.readTextFile(watPath);
   assertEquals(wat.includes('array.copy $boolean_array_runtime $boolean_array_runtime'), true);
   assertEquals(wat.includes('__string_eq'), false);
-  assertEquals(wat.includes('map_runtime'), false);
+  assertEquals(wat.includes('map_runtime'), true);
   const result = await new Deno.Command('wasm-tools', {
     args: ['parse', watPath, '-o', wasmPath],
     stdout: 'piped',
@@ -2787,7 +2787,7 @@ Deno.test('compiler wasm-gc emitter produces runnable legacy number-key tagged u
 
   assertEquals(
     snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
-    ['array', 'dynamic_object', 'finite_union', 'specialized_object', 'string'],
+    ['array', 'dynamic_object', 'finite_union', 'map', 'specialized_object', 'string'],
   );
   assertEquals(mainPlan?.bodyStatus, 'emittable');
   await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
@@ -2797,7 +2797,7 @@ Deno.test('compiler wasm-gc emitter produces runnable legacy number-key tagged u
     true,
   );
   assertEquals(wat.includes('__string_eq'), false);
-  assertEquals(wat.includes('map_runtime'), false);
+  assertEquals(wat.includes('map_runtime'), true);
   const result = await new Deno.Command('wasm-tools', {
     args: ['parse', watPath, '-o', wasmPath],
     stdout: 'piped',
@@ -2841,13 +2841,13 @@ Deno.test('compiler wasm-gc emitter produces runnable legacy Set empty size read
 
   assertEquals(
     snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
-    ['array', 'dynamic_object', 'finite_union', 'specialized_object', 'string'],
+    ['array', 'dynamic_object', 'finite_union', 'set', 'specialized_object', 'string'],
   );
   assertEquals(mainPlan?.bodyStatus, 'emittable');
   await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
   const wat = await Deno.readTextFile(watPath);
   assertEquals(wat.includes('(type $string_array_runtime (array (mut externref)))'), true);
-  assertEquals(wat.includes('set_runtime'), false);
+  assertEquals(wat.includes('set_runtime'), true);
   const result = await new Deno.Command('wasm-tools', {
     args: ['parse', watPath, '-o', wasmPath],
     stdout: 'piped',
@@ -2901,7 +2901,7 @@ Deno.test('compiler wasm-gc emitter produces runnable legacy string Set add, has
 
   assertEquals(
     snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
-    ['array', 'dynamic_object', 'finite_union', 'specialized_object', 'string'],
+    ['array', 'dynamic_object', 'finite_union', 'set', 'specialized_object', 'string'],
   );
   assertEquals(mainPlan?.bodyStatus, 'emittable');
   await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
@@ -2909,7 +2909,7 @@ Deno.test('compiler wasm-gc emitter produces runnable legacy string Set add, has
   assertEquals(wat.includes('(type $string_array_runtime (array (mut externref)))'), true);
   assertEquals(wat.includes('array.copy $string_array_runtime $string_array_runtime'), true);
   assertEquals(wat.includes('(import "soundscript" "__string_eq"'), true);
-  assertEquals(wat.includes('set_runtime'), false);
+  assertEquals(wat.includes('set_runtime'), true);
   const result = await new Deno.Command('wasm-tools', {
     args: ['parse', watPath, '-o', wasmPath],
     stdout: 'piped',
@@ -2976,13 +2976,13 @@ Deno.test('compiler wasm-gc emitter produces runnable legacy numeric Set add, ha
 
   assertEquals(
     snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
-    ['array', 'dynamic_object', 'finite_union', 'specialized_object', 'string'],
+    ['array', 'dynamic_object', 'finite_union', 'set', 'specialized_object', 'string'],
   );
   assertEquals(mainPlan?.bodyStatus, 'emittable');
   await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
   const wat = await Deno.readTextFile(watPath);
   assertEquals(wat.includes('array.copy $array_runtime $array_runtime'), true);
-  assertEquals(wat.includes('set_runtime'), false);
+  assertEquals(wat.includes('set_runtime'), true);
   const result = await new Deno.Command('wasm-tools', {
     args: ['parse', watPath, '-o', wasmPath],
     stdout: 'piped',
@@ -3036,7 +3036,7 @@ Deno.test('compiler wasm-gc emitter produces runnable legacy boolean Set add, ha
 
   assertEquals(
     snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
-    ['array', 'dynamic_object', 'finite_union', 'specialized_object', 'string'],
+    ['array', 'dynamic_object', 'finite_union', 'set', 'specialized_object', 'string'],
   );
   assertEquals(mainPlan?.bodyStatus, 'emittable');
   await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
@@ -3044,7 +3044,7 @@ Deno.test('compiler wasm-gc emitter produces runnable legacy boolean Set add, ha
   assertEquals(wat.includes('(type $boolean_array_runtime (array (mut i32)))'), true);
   assertEquals(wat.includes('array.copy $boolean_array_runtime $boolean_array_runtime'), true);
   assertEquals(wat.includes('__string_eq'), false);
-  assertEquals(wat.includes('set_runtime'), false);
+  assertEquals(wat.includes('set_runtime'), true);
   const result = await new Deno.Command('wasm-tools', {
     args: ['parse', watPath, '-o', wasmPath],
     stdout: 'piped',
@@ -3103,14 +3103,14 @@ Deno.test('compiler wasm-gc emitter produces runnable legacy string Set delete a
 
   assertEquals(
     snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
-    ['array', 'dynamic_object', 'finite_union', 'specialized_object', 'string'],
+    ['array', 'dynamic_object', 'finite_union', 'set', 'specialized_object', 'string'],
   );
   assertEquals(mainPlan?.bodyStatus, 'emittable');
   await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
   const wat = await Deno.readTextFile(watPath);
   assertEquals(wat.includes('array.copy $string_array_runtime $string_array_runtime'), true);
   assertEquals(wat.includes('(import "soundscript" "__string_eq"'), true);
-  assertEquals(wat.includes('set_runtime'), false);
+  assertEquals(wat.includes('set_runtime'), true);
   const result = await new Deno.Command('wasm-tools', {
     args: ['parse', watPath, '-o', wasmPath],
     stdout: 'piped',
@@ -3174,14 +3174,14 @@ Deno.test('compiler wasm-gc emitter produces runnable legacy boolean Set delete 
 
   assertEquals(
     snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
-    ['array', 'dynamic_object', 'finite_union', 'specialized_object', 'string'],
+    ['array', 'dynamic_object', 'finite_union', 'set', 'specialized_object', 'string'],
   );
   assertEquals(mainPlan?.bodyStatus, 'emittable');
   await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
   const wat = await Deno.readTextFile(watPath);
   assertEquals(wat.includes('array.copy $boolean_array_runtime $boolean_array_runtime'), true);
   assertEquals(wat.includes('__string_eq'), false);
-  assertEquals(wat.includes('set_runtime'), false);
+  assertEquals(wat.includes('set_runtime'), true);
   const result = await new Deno.Command('wasm-tools', {
     args: ['parse', watPath, '-o', wasmPath],
     stdout: 'piped',
@@ -3240,13 +3240,13 @@ Deno.test('compiler wasm-gc emitter produces runnable legacy numeric Set delete 
 
   assertEquals(
     snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
-    ['array', 'dynamic_object', 'finite_union', 'specialized_object', 'string'],
+    ['array', 'dynamic_object', 'finite_union', 'set', 'specialized_object', 'string'],
   );
   assertEquals(mainPlan?.bodyStatus, 'emittable');
   await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
   const wat = await Deno.readTextFile(watPath);
   assertEquals(wat.includes('array.copy $array_runtime $array_runtime'), true);
-  assertEquals(wat.includes('set_runtime'), false);
+  assertEquals(wat.includes('set_runtime'), true);
   const result = await new Deno.Command('wasm-tools', {
     args: ['parse', watPath, '-o', wasmPath],
     stdout: 'piped',
@@ -5144,6 +5144,60 @@ Deno.test('compiler wasm-gc emitter produces runnable bigint tagged array unions
   assertEquals(typeof main, 'function');
   const value = 30n;
   const fallback = 40n;
+  assertEquals((main as (value: bigint, fallback: bigint) => bigint)(value, fallback), value);
+});
+
+Deno.test('compiler wasm-gc emitter produces runnable bigint tagged Map values', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: { strict: true, target: 'ES2020' },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        export function main(value: bigint, fallback: bigint): bigint {
+          const values = new Map<string, bigint | null>();
+          values.set("selected", value);
+          const selected = values.get("selected");
+          if (selected === null || selected === undefined) {
+            return fallback;
+          }
+          return selected;
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
+  const mainPlan = snapshot.wasmGcPlan.functionPlans.find((func) => func.name === 'main');
+  const watPath = join(tempDirectory, 'wasm-gc-shadow-bigint-tagged-map.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-shadow-bigint-tagged-map.wasm');
+
+  assertEquals(
+    snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
+    ['bigint', 'dynamic_object', 'finite_union', 'map', 'string'],
+  );
+  assertEquals(mainPlan?.bodyStatus, 'emittable');
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
+  const result = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(result.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(result.success, true);
+
+  const wasm = await Deno.readFile(wasmPath);
+  const instance = await WebAssembly.instantiate(wasm);
+  const main = instance.instance.exports['main.ts:main'];
+  assertEquals(typeof main, 'function');
+  const value = 50n;
+  const fallback = 60n;
   assertEquals((main as (value: bigint, fallback: bigint) => bigint)(value, fallback), value);
 });
 

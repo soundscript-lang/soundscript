@@ -565,6 +565,7 @@ export interface CompilerRuntimeAllocateDynamicObjectIR {
   resultName: string;
   representation: CompilerRuntimeDynamicObjectRepresentationRefIR;
   entries: CompilerRuntimeDynamicObjectEntryIR[];
+  compatibilityCollectionFamily?: 'map' | 'set';
 }
 
 export interface CompilerRuntimeCopyDynamicObjectEntriesIR {
@@ -598,6 +599,7 @@ export interface CompilerRuntimeGetDynamicObjectPropertyIR {
   resultName: string;
   representation: CompilerRuntimeDynamicObjectRepresentationRefIR;
   propertyKeyName: string;
+  compatibilityCollectionFamily?: 'map' | 'set';
 }
 
 export interface CompilerRuntimeGetDynamicObjectSizeIR {
@@ -605,6 +607,7 @@ export interface CompilerRuntimeGetDynamicObjectSizeIR {
   objectName: string;
   resultName: string;
   representation: CompilerRuntimeDynamicObjectRepresentationRefIR;
+  compatibilityCollectionFamily?: 'map' | 'set';
 }
 
 export interface CompilerRuntimeDeleteDynamicObjectPropertyIR {
@@ -613,6 +616,7 @@ export interface CompilerRuntimeDeleteDynamicObjectPropertyIR {
   resultName: string;
   representation: CompilerRuntimeDynamicObjectRepresentationRefIR;
   propertyKeyName: string;
+  compatibilityCollectionFamily?: 'map' | 'set';
 }
 
 export interface CompilerRuntimeClearDynamicObjectIR {
@@ -620,6 +624,7 @@ export interface CompilerRuntimeClearDynamicObjectIR {
   objectName: string;
   resultName: string;
   representation: CompilerRuntimeDynamicObjectRepresentationRefIR;
+  compatibilityCollectionFamily?: 'map' | 'set';
 }
 
 export interface CompilerRuntimeSetFallbackObjectPropertyIR {
@@ -636,6 +641,7 @@ export interface CompilerRuntimeSetDynamicObjectPropertyIR {
   representation: CompilerRuntimeDynamicObjectRepresentationRefIR;
   propertyKeyName: string;
   valueName: string;
+  compatibilityCollectionFamily?: 'map' | 'set';
 }
 
 export interface CompilerRuntimeHasSpecializedObjectOwnPropertyIR {
@@ -660,6 +666,7 @@ export interface CompilerRuntimeHasDynamicObjectPropertyIR {
   resultName: string;
   representation: CompilerRuntimeDynamicObjectRepresentationRefIR;
   propertyKeyName: string;
+  compatibilityCollectionFamily?: 'map' | 'set';
 }
 
 export interface CompilerRuntimeListSpecializedObjectKeysIR {
@@ -683,6 +690,7 @@ export interface CompilerRuntimeListDynamicObjectKeysIR {
   objectName: string;
   resultName: string;
   representation: CompilerRuntimeDynamicObjectRepresentationRefIR;
+  compatibilityCollectionFamily?: 'map' | 'set';
 }
 
 export interface CompilerRuntimeListDynamicObjectValuesIR {
@@ -690,6 +698,7 @@ export interface CompilerRuntimeListDynamicObjectValuesIR {
   objectName: string;
   resultName: string;
   representation: CompilerRuntimeDynamicObjectRepresentationRefIR;
+  compatibilityCollectionFamily?: 'map' | 'set';
   resultType:
     | 'owned_array_ref'
     | 'owned_number_array_ref'
@@ -702,6 +711,7 @@ export interface CompilerRuntimeListDynamicObjectEntriesIR {
   objectName: string;
   resultName: string;
   representation: CompilerRuntimeDynamicObjectRepresentationRefIR;
+  compatibilityCollectionFamily?: 'map' | 'set';
   pairValueType: 'owned_string_ref' | 'tagged_ref';
 }
 

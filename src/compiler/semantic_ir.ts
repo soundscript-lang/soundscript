@@ -1432,6 +1432,11 @@ function collectRuntimeOperationFamilies(
           representationsByKey,
           operation.representation,
         );
+        if (
+          'compatibilityCollectionFamily' in operation && operation.compatibilityCollectionFamily
+        ) {
+          families.add(operation.compatibilityCollectionFamily);
+        }
         families.add('finite_union');
         break;
       default:

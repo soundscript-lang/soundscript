@@ -38883,6 +38883,7 @@ function lowerDynamicObjectMembership(
   representation: CompilerRuntimeDynamicObjectRepresentationRefIR,
   propertyKeyName: string,
   context: FunctionLoweringContext,
+  compatibilityCollectionFamily?: 'map' | 'set',
 ): CompilerExpressionIR {
   const resultName = createLocalName('dynamic_has', context.nextLocalId);
   context.nextLocalId += 1;
@@ -38893,6 +38894,7 @@ function lowerDynamicObjectMembership(
     resultName,
     representation,
     propertyKeyName,
+    ...(compatibilityCollectionFamily ? { compatibilityCollectionFamily } : {}),
   };
   context.functionRuntime.operations.push(operation);
   return {
@@ -38907,6 +38909,7 @@ function lowerDynamicObjectDelete(
   representation: CompilerRuntimeDynamicObjectRepresentationRefIR,
   propertyKeyName: string,
   context: FunctionLoweringContext,
+  compatibilityCollectionFamily?: 'map' | 'set',
 ): CompilerExpressionIR {
   const resultName = createLocalName('dynamic_delete', context.nextLocalId);
   context.nextLocalId += 1;
@@ -38917,6 +38920,7 @@ function lowerDynamicObjectDelete(
     resultName,
     representation,
     propertyKeyName,
+    ...(compatibilityCollectionFamily ? { compatibilityCollectionFamily } : {}),
   };
   context.functionRuntime.operations.push(operation);
   return {
@@ -38930,6 +38934,7 @@ function lowerDynamicObjectSize(
   objectName: string,
   representation: CompilerRuntimeDynamicObjectRepresentationRefIR,
   context: FunctionLoweringContext,
+  compatibilityCollectionFamily?: 'map' | 'set',
 ): CompilerExpressionIR {
   const resultName = createLocalName('dynamic_size', context.nextLocalId);
   context.nextLocalId += 1;
@@ -38939,6 +38944,7 @@ function lowerDynamicObjectSize(
     objectName,
     resultName,
     representation,
+    ...(compatibilityCollectionFamily ? { compatibilityCollectionFamily } : {}),
   };
   context.functionRuntime.operations.push(operation);
   return {
@@ -38952,6 +38958,7 @@ function lowerDynamicObjectClear(
   objectName: string,
   representation: CompilerRuntimeDynamicObjectRepresentationRefIR,
   context: FunctionLoweringContext,
+  compatibilityCollectionFamily?: 'map' | 'set',
 ): CompilerExpressionIR {
   const resultName = createLocalName('dynamic_clear', context.nextLocalId);
   context.nextLocalId += 1;
@@ -38961,6 +38968,7 @@ function lowerDynamicObjectClear(
     objectName,
     resultName,
     representation,
+    ...(compatibilityCollectionFamily ? { compatibilityCollectionFamily } : {}),
   };
   context.functionRuntime.operations.push(operation);
   return {
@@ -39003,6 +39011,7 @@ function lowerDynamicObjectPropertyReadAsValueType(
   propertyKeyName: string,
   resultType: CompilerValueType,
   context: FunctionLoweringContext,
+  compatibilityCollectionFamily?: 'map' | 'set',
 ): CompilerExpressionIR {
   const resultName = createLocalName('dynamic_property', context.nextLocalId);
   context.nextLocalId += 1;
@@ -39013,6 +39022,7 @@ function lowerDynamicObjectPropertyReadAsValueType(
     resultName,
     representation,
     propertyKeyName,
+    ...(compatibilityCollectionFamily ? { compatibilityCollectionFamily } : {}),
   };
   context.functionRuntime.operations.push(operation);
   return {
@@ -39503,6 +39513,7 @@ function lowerDynamicObjectKeys(
   objectName: string,
   representation: CompilerRuntimeDynamicObjectRepresentationRefIR,
   context: FunctionLoweringContext,
+  compatibilityCollectionFamily?: 'map' | 'set',
 ): CompilerExpressionIR {
   const resultName = createLocalName('object_keys', context.nextLocalId);
   context.nextLocalId += 1;
@@ -39512,6 +39523,7 @@ function lowerDynamicObjectKeys(
     objectName,
     resultName,
     representation,
+    ...(compatibilityCollectionFamily ? { compatibilityCollectionFamily } : {}),
   };
   context.functionRuntime.operations.push(operation);
   return {
@@ -39530,6 +39542,7 @@ function lowerDynamicObjectValues(
     | 'owned_boolean_array_ref'
     | 'owned_tagged_array_ref',
   context: FunctionLoweringContext,
+  compatibilityCollectionFamily?: 'map' | 'set',
 ): CompilerExpressionIR {
   if (resultType === 'owned_tagged_array_ref') {
     ensureTaggedValueRepresentation(context.runtime);
@@ -39542,6 +39555,7 @@ function lowerDynamicObjectValues(
     objectName,
     resultName,
     representation,
+    ...(compatibilityCollectionFamily ? { compatibilityCollectionFamily } : {}),
     resultType,
   };
   context.functionRuntime.operations.push(operation);
@@ -39557,6 +39571,7 @@ function lowerDynamicObjectEntries(
   representation: CompilerRuntimeDynamicObjectRepresentationRefIR,
   pairValueType: 'owned_string_ref' | 'tagged_ref',
   context: FunctionLoweringContext,
+  compatibilityCollectionFamily?: 'map' | 'set',
 ): CompilerExpressionIR {
   ensureStringRepresentation(context.runtime);
   if (pairValueType === 'tagged_ref') {
@@ -39570,6 +39585,7 @@ function lowerDynamicObjectEntries(
     objectName,
     resultName,
     representation,
+    ...(compatibilityCollectionFamily ? { compatibilityCollectionFamily } : {}),
     pairValueType,
   };
   context.functionRuntime.operations.push(operation);
@@ -60049,6 +60065,7 @@ function lowerInitialStringKeyMapNewExpression(
     resultName,
     representation,
     entries: [],
+    compatibilityCollectionFamily: 'map',
   });
   context.expressionPreludeStatements.push({
     kind: 'local_set',
@@ -60149,6 +60166,7 @@ function lowerInitialNumberKeyMapNewExpression(
     resultName,
     representation,
     entries: [],
+    compatibilityCollectionFamily: 'map',
   });
   context.expressionPreludeStatements.push({
     kind: 'local_set',
@@ -60248,6 +60266,7 @@ function lowerInitialTaggedKeyNumberValueMapNewExpression(
     resultName,
     representation,
     entries: [],
+    compatibilityCollectionFamily: 'map',
   });
   context.expressionPreludeStatements.push({
     kind: 'local_set',
@@ -60309,6 +60328,7 @@ function lowerInitialStringKeySetNewExpression(
     resultName,
     representation,
     entries: [],
+    compatibilityCollectionFamily: 'set',
   });
   context.expressionPreludeStatements.push({
     kind: 'local_set',
@@ -60374,6 +60394,7 @@ function lowerInitialEmptyUnknownSetNewExpression(
     resultName,
     representation,
     entries: [],
+    compatibilityCollectionFamily: 'set',
   });
   context.expressionPreludeStatements.push({
     kind: 'local_set',
@@ -60484,6 +60505,7 @@ function lowerInitialStringKeyMapCallExpression(
       representation,
       propertyKeyName,
       valueName,
+      compatibilityCollectionFamily: 'map',
     });
     return {
       kind: 'local_get',
@@ -60513,6 +60535,7 @@ function lowerInitialStringKeyMapCallExpression(
       propertyKeyName,
       expression,
       context,
+      'map',
     );
   }
 
@@ -60531,7 +60554,13 @@ function lowerInitialStringKeyMapCallExpression(
       'map_key',
     );
     context.expressionPreludeStatements.push(...propertyKeyStatements);
-    return lowerDynamicObjectMembership(objectName, representation, propertyKeyName, context);
+    return lowerDynamicObjectMembership(
+      objectName,
+      representation,
+      propertyKeyName,
+      context,
+      'map',
+    );
   }
 
   if (methodName === 'delete') {
@@ -60555,7 +60584,7 @@ function lowerInitialStringKeyMapCallExpression(
       'map_key',
     );
     context.expressionPreludeStatements.push(...propertyKeyStatements);
-    return lowerDynamicObjectDelete(objectName, representation, propertyKeyName, context);
+    return lowerDynamicObjectDelete(objectName, representation, propertyKeyName, context, 'map');
   }
 
   if (methodName === 'clear') {
@@ -60571,7 +60600,7 @@ function lowerInitialStringKeyMapCallExpression(
         expression,
       );
     }
-    return lowerDynamicObjectClear(objectName, representation, context);
+    return lowerDynamicObjectClear(objectName, representation, context, 'map');
   }
 
   if (methodName === 'keys') {
@@ -60582,7 +60611,7 @@ function lowerInitialStringKeyMapCallExpression(
       );
     }
     return lowerCollectionIteratorObject(
-      lowerDynamicObjectKeys(objectName, representation, context),
+      lowerDynamicObjectKeys(objectName, representation, context, 'map'),
       'owned_array_ref',
       'owned_string_ref',
       context,
@@ -60613,6 +60642,7 @@ function lowerInitialStringKeyMapCallExpression(
         representation,
         iterationValueInfo.valuesArrayType,
         context,
+        'map',
       ),
       iterationValueInfo.valuesArrayType,
       iterationValueInfo.valuesElementType,
@@ -60644,6 +60674,7 @@ function lowerInitialStringKeyMapCallExpression(
         representation,
         iterationValueInfo.entryPairValueType,
         context,
+        'map',
       ),
       'owned_heap_array_ref',
       iterationValueInfo.entryElementType,
@@ -64033,6 +64064,7 @@ function lowerDynamicObjectPropertyRead(
   propertyKeyName: string,
   resultNode: ts.Node,
   context: FunctionLoweringContext,
+  compatibilityCollectionFamily?: 'map' | 'set',
 ): CompilerExpressionIR {
   const resultName = createLocalName('dynamic_property', context.nextLocalId);
   const resultValueType = context.checker.getTypeAtLocation(resultNode);
@@ -64051,6 +64083,7 @@ function lowerDynamicObjectPropertyRead(
     resultName,
     representation,
     propertyKeyName,
+    ...(compatibilityCollectionFamily ? { compatibilityCollectionFamily } : {}),
   };
   context.functionRuntime.operations.push(operation);
   if (resultType === 'heap_ref') {
@@ -64840,7 +64873,7 @@ function lowerPropertyAccessExpression(
         expression.expression,
       );
     }
-    return lowerDynamicObjectSize(objectName, representation, context);
+    return lowerDynamicObjectSize(objectName, representation, context, 'map');
   }
   if (stringKeyMapTypeInfo !== undefined) {
     throw new CompilerUnsupportedError(
