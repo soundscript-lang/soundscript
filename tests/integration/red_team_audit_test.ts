@@ -2203,6 +2203,248 @@ Deno.test('red-team: package effect chains track member-path rewrite drift', asy
   }
 });
 
+Deno.test('red-team: subpath package effect chains track member-path rewrite drift', async () => {
+  const createSubpathPackageJson = (options: {
+    dependencies?: Record<string, string>;
+    exportKey: string;
+    name: string;
+    source: string;
+    types: string;
+  }): string =>
+    JSON.stringify(
+      {
+        name: options.name,
+        version: '1.0.0',
+        type: 'module',
+        exports: {
+          [options.exportKey]: {
+            types: options.types,
+            import: options.types.replace(/\.d\.ts$/, '.js'),
+          },
+        },
+        ...(options.dependencies ? { dependencies: options.dependencies } : {}),
+        soundscript: {
+          version: 1,
+          exports: {
+            [options.exportKey]: {
+              source: options.source,
+            },
+          },
+        },
+      },
+      null,
+      2,
+    );
+  const createPkgBSource = (handlesHost: boolean): string =>
+    [
+      'export interface Decoder {',
+      '  readonly inner: { readonly decode: () => number };',
+      '}',
+      '',
+      handlesHost
+        ? '// #[effects(forward: [{ from: decoder.inner.decode, handle: [host] }])]'
+        : '// #[effects(forward: [decoder.inner.decode])]',
+      'export function audited(decoder: Decoder): number {',
+      '  return decoder.inner.decode();',
+      '}',
+      '',
+    ].join('\n');
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: createSoundscriptTsconfig(),
+    },
+    {
+      path: 'src/index.sts',
+      contents: [
+        'import { sampleFromA } from "pkg-a/sampler";',
+        '',
+        '// #[effects(forbid: [host])]',
+        'export function useSample(): number {',
+        '  return sampleFromA();',
+        '}',
+        '',
+      ].join('\n'),
+    },
+    {
+      path: 'node_modules/pkg-a/package.json',
+      contents: createSubpathPackageJson({
+        dependencies: { 'pkg-b': '1.0.0' },
+        exportKey: './sampler',
+        name: 'pkg-a',
+        source: './src/sampler.sts',
+        types: './dist/sampler.d.ts',
+      }),
+    },
+    {
+      path: 'node_modules/pkg-a/dist/sampler.d.ts',
+      contents: 'export declare function sampleFromA(): number;\n',
+    },
+    {
+      path: 'node_modules/pkg-a/dist/sampler.js',
+      contents: 'export function sampleFromA() { return 1; }\n',
+    },
+    {
+      path: 'node_modules/pkg-a/src/sampler.sts',
+      contents: [
+        'import { audited } from "pkg-b/audit";',
+        '',
+        '// #[effects(add: [host.random])]',
+        'function decode(): number {',
+        '  return 1;',
+        '}',
+        '',
+        'export function sampleFromA(): number {',
+        '  const decoder = { inner: { decode } };',
+        '  return audited(decoder);',
+        '}',
+        '',
+      ].join('\n'),
+    },
+    {
+      path: 'node_modules/pkg-b/package.json',
+      contents: createSubpathPackageJson({
+        exportKey: './audit',
+        name: 'pkg-b',
+        source: './src/audit.sts',
+        types: './dist/audit.d.ts',
+      }),
+    },
+    {
+      path: 'node_modules/pkg-b/dist/audit.d.ts',
+      contents: [
+        'export interface Decoder {',
+        '  readonly inner: { readonly decode: () => number };',
+        '}',
+        'export declare function audited(decoder: Decoder): number;',
+        '',
+      ].join('\n'),
+    },
+    {
+      path: 'node_modules/pkg-b/dist/audit.js',
+      contents: 'export function audited(decoder) { return decoder.inner.decode(); }\n',
+    },
+    {
+      path: 'node_modules/pkg-b/src/audit.sts',
+      contents: createPkgBSource(true),
+    },
+  ]);
+  const projectPath = join(tempDirectory, 'tsconfig.json');
+  const cacheRoot = await Deno.makeTempDir({ prefix: 'soundscript-red-team-cache-' });
+  const baseOptions = { cacheDir: cacheRoot, projectPath, workingDirectory: tempDirectory };
+  const analysisOptions = { projectPath, workingDirectory: tempDirectory };
+  const session = new IncrementalProjectSession();
+
+  try {
+    const initialPreparedProject = prepareProjectAnalysis(analysisOptions);
+    session.prepare(analysisOptions);
+    assertEquals(analyzePreparedProject(initialPreparedProject).diagnostics, []);
+    assertEquals(session.analyzeProject().diagnostics, []);
+    assertEquals(runProgram(baseOptions).diagnostics, []);
+
+    await Deno.remove(resolveCheckerCacheDirectory(projectPath, cacheRoot), { recursive: true });
+    const warmPackageCacheResult = withCapturedTimingLogs((logs) => {
+      const result = runProgram(baseOptions);
+      assert(
+        logs.some((line) =>
+          line.includes('[soundscript:checker] project.packageVerificationCache.result ') &&
+          line.includes('units=2') &&
+          line.includes('hits=2') &&
+          line.includes('misses=0')
+        ),
+        logs.join('\n'),
+      );
+      assert(
+        !logs.some((line) =>
+          line.includes('[soundscript:checker] project.prepare.packageSourcePolicyView ')
+        ),
+        logs.join('\n'),
+      );
+      return result;
+    });
+    assertEquals(warmPackageCacheResult.diagnostics, []);
+
+    await writeProjectFile(
+      tempDirectory,
+      'node_modules/pkg-b/src/audit.sts',
+      createPkgBSource(false),
+    );
+
+    const coldPreparedResult = analyzePreparedProject(prepareProjectAnalysis(analysisOptions));
+    const reusedPreparedResult = analyzePreparedProject(
+      prepareProjectAnalysis(analysisOptions, initialPreparedProject),
+    );
+    session.prepare(analysisOptions);
+    const sessionResult = session.analyzeProject();
+    const coldResult = runProgram({
+      cacheDir: await Deno.makeTempDir({ prefix: 'soundscript-red-team-cache-' }),
+      projectPath,
+      workingDirectory: tempDirectory,
+    });
+    const cachedResult = withCapturedTimingLogs((logs) => {
+      const result = runProgram(baseOptions);
+      assert(
+        logs.some((line) => line.includes('[soundscript:checker] project.cache.read ')),
+        logs.join('\n'),
+      );
+      assert(
+        logs.some((line) =>
+          line.includes('[soundscript:checker] project.packageVerificationCache.result ') &&
+          line.includes('units=2') &&
+          line.includes('hits=0') &&
+          line.includes('misses=2')
+        ),
+        logs.join('\n'),
+      );
+      assert(
+        logs.some((line) =>
+          line.includes('[soundscript:checker] project.cache.incremental ') &&
+          line.includes('changedTrackedFiles=1') &&
+          line.includes('changedPackageSourceDependencyFiles=1')
+        ),
+        logs.join('\n'),
+      );
+      assert(
+        logs.some((line) =>
+          line.includes('[soundscript:checker] project.prepare.packageSourcePolicyView ')
+        ),
+        logs.join('\n'),
+      );
+      return result;
+    });
+
+    const expectedDiagnostics: readonly (readonly [string, string])[] = [
+      ['SOUND1041', 'src/index.sts'],
+    ];
+    assertEquals(
+      toProjectRelativeDiagnostics(coldPreparedResult.diagnostics, tempDirectory),
+      expectedDiagnostics,
+    );
+    assertEquals(
+      toProjectRelativeDiagnostics(reusedPreparedResult.diagnostics, tempDirectory),
+      expectedDiagnostics,
+    );
+    assertEquals(
+      toProjectRelativeDiagnostics(sessionResult.diagnostics, tempDirectory),
+      expectedDiagnostics,
+    );
+    assertEquals(coldResult.exitCode, 1, coldResult.output);
+    assertEquals(toProjectRelativeDiagnostics(coldResult.diagnostics, tempDirectory), [
+      ['SOUND1041', 'src/index.sts'],
+    ]);
+    assertEquals(coldResult.diagnostics[0]?.metadata?.primarySymbol, 'useSample');
+    assertEquals(cachedResult.exitCode, coldResult.exitCode, cachedResult.output);
+    assertFreshAndCachedDiagnosticsMatch(
+      cachedResult.diagnostics,
+      coldResult.diagnostics,
+      tempDirectory,
+    );
+    assertEquals(cachedResult.diagnostics[0]?.metadata?.primarySymbol, 'useSample');
+  } finally {
+    session.dispose();
+  }
+});
+
 Deno.test('red-team: persistent checker cache invalidates local effect summary edits', async () => {
   const tempDirectory = await createTempProject([
     {

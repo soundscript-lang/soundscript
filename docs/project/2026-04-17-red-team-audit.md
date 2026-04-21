@@ -39,6 +39,7 @@ Legend:
 - `batch-40`: covered by the fortieth red-team batch added with this record.
 - `batch-41`: covered by the forty-first red-team batch added with this record.
 - `batch-42`: covered by the forty-second red-team batch added with this record.
+- `batch-43`: covered by the forty-third red-team batch added with this record.
 - `audit-debt`: missing coverage that should be closed before calling the family fully audited.
 - `out-of-scope`: explicitly outside the strong soundness claim.
 - `design-gap`: documented future work, not a current guarantee.
@@ -46,7 +47,7 @@ Legend:
 | Owned family                         | Fresh project | Reused prepared | File-scoped  | Persistent checker cache | Package verification cache | LSP/incremental session | Build cache/output | Compiler/target gate |
 | ------------------------------------ | ------------- | --------------- | ------------ | ------------------------ | -------------------------- | ----------------------- | ------------------ | -------------------- |
 | Prepared/package-source parity       | covered       | covered         | covered      | covered,batch-29         | batch-3                    | covered                 | batch-1,10,28,31   | audit-debt           |
-| Flow/effect invalidation             | covered       | batch-35,40     | covered      | batch-4,35,40            | batch-4,40                 | batch-35,40             | audit-debt         | audit-debt           |
+| Flow/effect invalidation             | covered       | batch-35,40,43  | covered      | batch-4,35,40,43         | batch-4,40,43              | batch-35,40,43          | audit-debt         | audit-debt           |
 | Proof-oracle verification            | covered       | batch-38        | covered      | batch-38                 | batch-38                   | batch-38                | audit-debt         | audit-debt           |
 | BareObject/null-prototype provenance | covered       | covered         | covered      | batch-39                 | covered                    | batch-39                | batch-39           | audit-debt           |
 | `#[value]` parity                    | covered       | batch-1         | batch-1      | batch-1                  | batch-5                    | batch-1                 | batch-1            | covered              |
@@ -1069,11 +1070,31 @@ Legend:
   package-to-package macro chains. File-scoped and LSP/editor macro boundary cells remain separate
   audit debt.
 
+## Batch 43 Findings
+
+### Subpath Package Member-Path Effect Transforms
+
+- Attack: mirror the Batch 40 package-chain effect repro, but publish both packages only through
+  subpath `soundscript.exports` entries. The app imports `pkg-a/sampler`; `pkg-a/sampler` forwards
+  an object-literal member path into `pkg-b/audit`; `pkg-b/audit` first handles the forwarded host
+  effect, then only `pkg-b/src/audit.sts` changes to forward the same member path without the
+  handle.
+- Routes: fresh prepared analysis, reused prepared analysis, incremental full-project session,
+  persistent checker cache, source-published package verification cache, package-to-package
+  dependency summaries, object-literal member-path recovery, subpath `soundscript.exports`
+  resolution, and forwarded-effect handle transforms.
+- Expected result: the primed handled state is accepted across prepared, session, and cached routes;
+  the warm package-cache run proves a two-unit hit without rebuilding the package source policy
+  view; after the `pkg-b` transform edit, cold, reused prepared, session, and cached routes reject
+  with the same `SOUND1041` diagnostic from the app root and the package cache reports two misses.
+- Result: no production bug found after Batch 40 and Batch 42. Subpath-only source-published package
+  exports preserve the same member-path forwarded-effect invalidation behavior as bare
+  `soundscript.source` package chains.
+- Residual risk: build-output/compiler-gate coverage for effect families remains audit debt only if
+  those routes become part of the owned acceptance story rather than fail-before-emit checks.
+
 ## Remaining High-Priority Audit Debt
 
-- Source-published package rewrite/member-path effect transforms through subpath-only
-  `soundscript.exports` variants. Bare `soundscript.source` package-chain variants are covered by
-  Batch 40.
 - Build-output/compiler-gate coverage for effect and proof-oracle families where those routes become
   part of the owned acceptance story rather than fail-before-emit checks.
 - File-scoped parity for unimported referenced-project roots if that route is later expected to own
@@ -1526,3 +1547,17 @@ red-team attack, the route matrix it covers, and the residual risk left behind.
   cold prepare `1.5s`, `.sts`-local cold prepare `878.9ms`, reused prepare after `.ts`-only edit
   `355.8ms`, reused prepare after `.sts`-only edit `1.1s`, reused `.sts`-local edit `746.1ms`, and
   analyze-only `2.1ms` average samples.
+- `deno test --allow-all --filter "subpath package effect chains track member-path rewrite drift"
+  tests/integration/red_team_audit_test.ts`:
+  passed, 1 test in `15s`; no production changes were needed for Batch 43.
+- `deno test --allow-all --filter "/(package effect chains track member-path rewrite
+  drift|subpath package effect chains track member-path rewrite drift|package-to-package effect
+  summary edits|member-path forwarded callback drift|rewrite forwarded effect drift)/"
+  tests/integration/red_team_audit_test.ts`:
+  passed, 5 tests in `1m0s`.
+- `deno test --allow-all tests/integration/red_team_audit_test.ts`: passed, 57 tests in `6m1s`.
+- `deno lint tests/integration/red_team_audit_test.ts`: passed.
+- `deno fmt --check tests/integration/red_team_audit_test.ts
+  docs/project/2026-04-17-red-team-audit.md`:
+  passed.
+- `deno task check`: passed.
