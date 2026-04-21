@@ -37,6 +37,7 @@ Legend:
 - `batch-38`: covered by the thirty-eighth red-team batch added with this record.
 - `batch-39`: covered by the thirty-ninth red-team batch added with this record.
 - `batch-40`: covered by the fortieth red-team batch added with this record.
+- `batch-41`: covered by the forty-first red-team batch added with this record.
 - `audit-debt`: missing coverage that should be closed before calling the family fully audited.
 - `out-of-scope`: explicitly outside the strong soundness claim.
 - `design-gap`: documented future work, not a current guarantee.
@@ -49,7 +50,7 @@ Legend:
 | BareObject/null-prototype provenance | covered       | covered         | covered      | batch-39                 | covered                    | batch-39                | batch-39           | audit-debt           |
 | `#[value]` parity                    | covered       | batch-1         | batch-1      | batch-1                  | batch-5                    | batch-1                 | batch-1            | covered              |
 | Machine numerics                     | covered       | batch-37        | batch-37     | batch-37                 | batch-5                    | batch-37                | batch-1,37         | batch-37             |
-| Macro/capability boundary            | covered       | covered         | audit-debt   | batch-6                  | design-gap                 | audit-debt              | batch-7            | batch-8              |
+| Macro/capability boundary            | covered       | covered         | audit-debt   | batch-6                  | batch-41                   | audit-debt              | batch-7            | batch-8              |
 | Compiler acceptance parity           | covered       | audit-debt      | out-of-scope | out-of-scope             | out-of-scope               | out-of-scope            | batch-1,27,30      | covered,batch-27,30  |
 | Project-reference root ownership     | batch-32      | audit-debt      | audit-debt   | batch-32                 | out-of-scope               | batch-34                | batch-33           | out-of-scope         |
 
@@ -1010,10 +1011,35 @@ Legend:
   reuse is intentionally cacheable. This batch covers bare `soundscript.source` package chains, not
   subpath-only `soundscript.exports` variants.
 
+## Batch 41 Findings
+
+### Macro-Only Package Verification Cache Reuse
+
+- Attack: prime a source-published package whose `soundscript.source` entry is a `.macro.sts` file,
+  clear only the project checker cache, then require the package verification cache to hit without
+  rebuilding the package source policy view. Repeat with a reexporting `.sts` package entry whose
+  macro helper changes expansion output while the public `.d.ts` surface remains stable.
+- Routes: persistent checker cache, package verification cache, direct macro package entrypoints,
+  reexported package macros, macro helper dependency tracking, macro host capability diagnostics,
+  same-kind macro output drift, and cold-vs-warm diagnostic parity.
+- Expected result: unchanged macro-only packages are package-cache reusable (`units=1`, `hits=1`,
+  `misses=0`) and do not fall back to `project.prepare.packageSourcePolicyView`. Macro helper edits
+  miss the package cache, force reanalysis, and match cold diagnostics.
+- Result: confirmed production cacheability gap fixed. Package verification cache discovery now
+  follows package export metadata from a resolved published `.d.ts` surface to a trusted
+  `.macro.sts` source entry without changing normal module resolution semantics, and the cache
+  writer no longer skips units containing `.macro.sts` sources. Existing source/support signatures
+  and tracked-file signatures then invalidate host-effectful helper edits and same-kind macro output
+  drift precisely.
+- Residual risk: source-published macro coverage now includes direct legacy `soundscript.source`
+  macro entries and reexported macro helpers. Subpath-only `soundscript.exports` macro variants and
+  package-to-package macro chains remain follow-up coverage until claimed.
+
 ## Remaining High-Priority Audit Debt
 
-- Package verification cache reuse for package-exported macros if macro-only packages become a
-  cacheable package-source policy route.
+- Package verification cache reuse for subpath-only `soundscript.exports` macro variants and
+  package-to-package macro chains. Direct macro-only legacy `soundscript.source` packages are
+  covered by Batch 41.
 - Source-published package rewrite/member-path effect transforms through subpath-only
   `soundscript.exports` variants. Bare `soundscript.source` package-chain variants are covered by
   Batch 40.
@@ -1417,3 +1443,27 @@ red-team attack, the route matrix it covers, and the residual risk left behind.
   cold prepare `1.3s`, `.sts`-local cold prepare `838.9ms`, reused prepare after `.ts`-only edit
   `360.4ms`, reused prepare after `.sts`-only edit `1.1s`, reused `.sts`-local edit `703.9ms`, and
   analyze-only `2.2ms` average samples.
+- `deno test --allow-all --filter "/(package verification cache reuses source-published macro
+  helper packages|package verification cache invalidates same-kind package macro output drift)/"
+  tests/integration/red_team_audit_test.ts`:
+  initially failed for a direct `.macro.sts` `soundscript.source` package because package
+  verification discovery saw the published `.d.ts` surface and reported `units=0`. After following
+  trusted package export metadata for package-cache discovery and allowing `.macro.sts` units to be
+  written, passed, 2 tests in `24s`.
+- `deno test --allow-all tests/integration/red_team_audit_test.ts`: passed, 53 tests in `4m31s`
+  after the Batch 41 macro-only package cache fix.
+- `deno test --allow-all --filter "package verification cache" src/run_program_test.ts`: passed, 6
+  tests in `26s`.
+- `deno test --allow-all --filter "package macro" src/service/analyze_project_mixed_mode_test.ts
+  src/service/analyze_project_test.ts`:
+  passed, 5 tests in `29s`.
+- `deno lint src/checker/package_verification_cache.ts tests/integration/red_team_audit_test.ts`:
+  passed.
+- `deno fmt --check src/checker/package_verification_cache.ts
+  tests/integration/red_team_audit_test.ts docs/project/2026-04-17-red-team-audit.md`:
+  passed.
+- `deno task check`: passed.
+- `deno bench --allow-all tests/bench/mixed_project_analysis_bench.ts`: passed on Apple M5 Pro with
+  cold prepare `1.4s`, `.sts`-local cold prepare `871.5ms`, reused prepare after `.ts`-only edit
+  `362.8ms`, reused prepare after `.sts`-only edit `1.0s`, reused `.sts`-local edit `709.3ms`, and
+  analyze-only `2.3ms` average samples.

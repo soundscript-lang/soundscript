@@ -5,6 +5,7 @@ import { getSoundscriptToolFingerprint } from '../version.ts';
 import type { RuntimeTarget } from '../project/config.ts';
 import {
   findNearestPackageJsonPath,
+  getSoundScriptPackageExportInfoForResolvedModule,
   getSoundScriptPackageInfoForResolvedModule,
   resolveSoundScriptAwareModule,
   type SoundScriptPackageInfo,
@@ -161,10 +162,6 @@ function isInstalledSoundscriptStdlibSource(fileName: string): boolean {
     normalized.endsWith('.sts');
 }
 
-function isMacroAuthoringSourcePath(fileName: string): boolean {
-  return fileName.endsWith('.macro.sts');
-}
-
 function isSourcePublishedPackageFile(
   fileName: string,
   projectPackageJsonPath: string | undefined,
@@ -191,6 +188,49 @@ function isSourcePublishedPackageFile(
 
   return {
     packageInfo,
+    sourceFilePath,
+  };
+}
+
+function resolveSourcePublishedPackageModule(
+  moduleSpecifier: string,
+  resolvedModule: ts.ResolvedModuleFull,
+  projectPackageJsonPath: string | undefined,
+): { packageInfo: SoundScriptPackageInfo; sourceFilePath: string } | null {
+  const resolvedSourcePath = ts.sys.resolvePath(resolvedModule.resolvedFileName);
+  const directSource = isSourcePublishedPackageFile(resolvedSourcePath, projectPackageJsonPath);
+  if (directSource) {
+    return directSource;
+  }
+
+  const packageExport = getSoundScriptPackageExportInfoForResolvedModule(
+    moduleSpecifier,
+    resolvedSourcePath,
+    ts.sys,
+  );
+  if (!packageExport) {
+    return null;
+  }
+
+  const packageJsonPath = ts.sys.resolvePath(packageExport.packageInfo.packageJsonPath);
+  if (
+    projectPackageJsonPath !== undefined &&
+    normalizePath(packageJsonPath) === normalizePath(projectPackageJsonPath)
+  ) {
+    return null;
+  }
+
+  const sourceFilePath = ts.sys.resolvePath(packageExport.sourceEntryPath);
+  if (
+    !isSoundscriptSourceFile(sourceFilePath) ||
+    isInstalledSoundscriptStdlibSource(sourceFilePath) ||
+    !ts.sys.fileExists(sourceFilePath)
+  ) {
+    return null;
+  }
+
+  return {
+    packageInfo: packageExport.packageInfo,
     sourceFilePath,
   };
 }
@@ -459,12 +499,13 @@ function collectPackageVerificationUnits(
         continue;
       }
 
-      const resolvedSourcePath = ts.sys.resolvePath(resolvedModule.resolvedFileName);
-      const resolvedPackageSource = isSourcePublishedPackageFile(
-        resolvedSourcePath,
+      const resolvedPackageSource = resolveSourcePublishedPackageModule(
+        moduleSpecifier,
+        resolvedModule,
         packageProjectJsonPath,
       );
       if (!resolvedPackageSource) {
+        const resolvedSourcePath = ts.sys.resolvePath(resolvedModule.resolvedFileName);
         if (includeAsPackageSource && packageSource) {
           const packageRoot = ts.sys.resolvePath(packageSource.packageInfo.packageRoot);
           if (
@@ -595,7 +636,14 @@ function collectStaticDependencyPackageSummaries(
         continue;
       }
 
-      const resolvedPath = ts.sys.resolvePath(resolvedModule.resolvedFileName);
+      const resolvedPackageSource = resolveSourcePublishedPackageModule(
+        moduleSpecifier,
+        resolvedModule,
+        undefined,
+      );
+      const resolvedPath = ts.sys.resolvePath(
+        resolvedPackageSource?.sourceFilePath ?? resolvedModule.resolvedFileName,
+      );
       if (isPathWithin(unit.packageRoot, resolvedPath)) {
         continue;
       }
@@ -873,12 +921,6 @@ export function writePackageVerificationCacheEntries(options: {
     },
     () => {
       for (const unit of options.units) {
-        if (
-          unit.sourceFilePaths.some(isMacroAuthoringSourcePath) ||
-          unit.supportFilePaths.some(isMacroAuthoringSourcePath)
-        ) {
-          continue;
-        }
         const unitFilePathSet = new Set(
           unit.sourceFilePaths.map((filePath) => normalizePath(filePath)),
         );
