@@ -5147,6 +5147,173 @@ Deno.test('compiler wasm-gc emitter produces runnable bigint tagged array unions
   assertEquals((main as (value: bigint, fallback: bigint) => bigint)(value, fallback), value);
 });
 
+Deno.test('compiler wasm-gc emitter produces runnable symbol tagged array unions', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: { strict: true },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        export function main(value: symbol, fallback: symbol): symbol {
+          const values: Array<symbol | null> = [null, value];
+          const selected = values[1];
+          if (selected === null) {
+            return fallback;
+          }
+          return selected;
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
+  const mainPlan = snapshot.wasmGcPlan.functionPlans.find((func) => func.name === 'main');
+  const watPath = join(tempDirectory, 'wasm-gc-shadow-symbol-tagged-array.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-shadow-symbol-tagged-array.wasm');
+
+  assertEquals(
+    snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
+    ['array', 'finite_union', 'symbol'],
+  );
+  assertEquals(mainPlan?.bodyStatus, 'emittable');
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
+  const result = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(result.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(result.success, true);
+
+  const wasm = await Deno.readFile(wasmPath);
+  const instance = await WebAssembly.instantiate(wasm);
+  const main = instance.instance.exports['main.ts:main'];
+  assertEquals(typeof main, 'function');
+  const value = Symbol('selected');
+  const fallback = Symbol('fallback');
+  assertEquals((main as (value: symbol, fallback: symbol) => symbol)(value, fallback), value);
+});
+
+Deno.test('compiler wasm-gc emitter produces runnable symbol tagged object fields', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: { strict: true },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        type Box = { value: symbol | null };
+
+        export function main(value: symbol, fallback: symbol): symbol {
+          const box: Box = { value };
+          const selected = box.value;
+          if (selected === null) {
+            return fallback;
+          }
+          return selected;
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
+  const mainPlan = snapshot.wasmGcPlan.functionPlans.find((func) => func.name === 'main');
+  const watPath = join(tempDirectory, 'wasm-gc-shadow-symbol-tagged-object-field.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-shadow-symbol-tagged-object-field.wasm');
+
+  assertEquals(
+    snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
+    ['finite_union', 'specialized_object', 'symbol'],
+  );
+  assertEquals(mainPlan?.bodyStatus, 'emittable');
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
+  const result = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(result.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(result.success, true);
+
+  const wasm = await Deno.readFile(wasmPath);
+  const instance = await WebAssembly.instantiate(wasm);
+  const main = instance.instance.exports['main.ts:main'];
+  assertEquals(typeof main, 'function');
+  const value = Symbol('selected');
+  const fallback = Symbol('fallback');
+  assertEquals((main as (value: symbol, fallback: symbol) => symbol)(value, fallback), value);
+});
+
+Deno.test('compiler wasm-gc emitter produces runnable symbol tagged closure results', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: { strict: true },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        export function main(value: symbol, fallback: symbol): symbol {
+          const choose = (flag: boolean): symbol | null => {
+            return flag ? value : null;
+          };
+          const selected = choose(true);
+          if (selected === null) {
+            return fallback;
+          }
+          return selected;
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
+  const mainPlan = snapshot.wasmGcPlan.functionPlans.find((func) => func.name === 'main');
+  const closurePlan = snapshot.wasmGcPlan.functionPlans.find((func) =>
+    func.closureFunctionId !== undefined
+  );
+  const watPath = join(tempDirectory, 'wasm-gc-shadow-symbol-tagged-closure-result.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-shadow-symbol-tagged-closure-result.wasm');
+
+  assertEquals(
+    snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
+    ['closure', 'finite_union', 'symbol'],
+  );
+  assertEquals(mainPlan?.bodyStatus, 'emittable');
+  assertEquals(closurePlan?.bodyStatus, 'emittable');
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
+  const result = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(result.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(result.success, true);
+
+  const wasm = await Deno.readFile(wasmPath);
+  const instance = await WebAssembly.instantiate(wasm);
+  const main = instance.instance.exports['main.ts:main'];
+  assertEquals(typeof main, 'function');
+  const value = Symbol('selected');
+  const fallback = Symbol('fallback');
+  assertEquals((main as (value: symbol, fallback: symbol) => symbol)(value, fallback), value);
+});
+
 Deno.test('compiler wasm-gc emitter produces runnable bigint tagged Map values', async () => {
   const tempDirectory = await createTempProject([
     {

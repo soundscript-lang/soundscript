@@ -236,10 +236,11 @@ export function getHostTaggedPrimitiveKinds(
     includesNull: boundary.includesNull || undefined,
     includesNumber: boundary.includesNumber || undefined,
     includesString: boundary.includesString || undefined,
+    includesSymbol: boundary.includesSymbol || undefined,
     includesUndefined: boundary.includesUndefined || undefined,
   };
   return kinds.includesBoolean || kinds.includesNull || kinds.includesNumber ||
-      kinds.includesString || kinds.includesUndefined
+      kinds.includesString || kinds.includesSymbol || kinds.includesUndefined
     ? kinds
     : undefined;
 }
@@ -496,6 +497,7 @@ export function getTaggedArrayBoundaryFromHostBoundary(
     includesNull: boundary.elementBoundary.includesNull,
     includesNumber: boundary.elementBoundary.includesNumber,
     includesString: boundary.elementBoundary.includesString,
+    includesSymbol: boundary.elementBoundary.includesSymbol,
     includesUndefined: boundary.elementBoundary.includesUndefined,
     representation: boundary.elementBoundary.heapBoundary?.kind === 'object'
       ? boundary.elementBoundary.heapBoundary.representation
@@ -550,6 +552,7 @@ function taggedBoundaryKindsEqual(
     left.includesNull === right.includesNull &&
     left.includesNumber === right.includesNumber &&
     left.includesString === right.includesString &&
+    left.includesSymbol === right.includesSymbol &&
     left.includesUndefined === right.includesUndefined;
 }
 
@@ -695,6 +698,7 @@ export function getEffectiveFunctionHostFallbackObjectPropertyMetadata(
               includesNull: field.boundary.elementBoundary.includesNull,
               includesNumber: field.boundary.elementBoundary.includesNumber,
               includesString: field.boundary.elementBoundary.includesString,
+              includesSymbol: field.boundary.elementBoundary.includesSymbol,
               includesUndefined: field.boundary.elementBoundary.includesUndefined,
             },
             taggedArrayBoundaryEqual,
@@ -725,6 +729,7 @@ export function getEffectiveFunctionHostFallbackObjectPropertyMetadata(
                 includesNull: field.boundary.includesNull,
                 includesNumber: field.boundary.includesNumber,
                 includesString: field.boundary.includesString,
+                includesSymbol: field.boundary.includesSymbol,
                 includesUndefined: field.boundary.includesUndefined,
               },
             },

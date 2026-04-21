@@ -8,6 +8,7 @@ export interface TaggedBoundaryKindsLike {
   includesNull: boolean;
   includesNumber: boolean;
   includesString: boolean;
+  includesSymbol?: boolean;
   includesUndefined: boolean;
 }
 
@@ -22,6 +23,7 @@ export function toCompilerTaggedPrimitiveBoundaryKinds(
     includesNull: kinds.includesNull || undefined,
     includesNumber: kinds.includesNumber || undefined,
     includesString: kinds.includesString || undefined,
+    includesSymbol: kinds.includesSymbol || undefined,
     includesUndefined: kinds.includesUndefined || undefined,
   };
 }

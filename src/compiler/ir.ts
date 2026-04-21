@@ -1489,6 +1489,7 @@ export interface CompilerTaggedPrimitiveBoundaryKindsIR {
   includesNull?: boolean;
   includesNumber?: boolean;
   includesString?: boolean;
+  includesSymbol?: boolean;
   includesUndefined?: boolean;
 }
 

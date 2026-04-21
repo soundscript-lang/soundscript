@@ -170,6 +170,8 @@ function wasmTypeForCompilerValueType(valueType: string): string {
     case 'symbol_ref':
     case 'bigint_ref':
       return 'externref';
+    case 'tagged_ref':
+      return '(ref null $tagged_value)';
     default:
       return '(ref null eq)';
   }

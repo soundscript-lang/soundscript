@@ -5046,7 +5046,6 @@ export function emitWasmGcModulePlan(plan: WasmGcModulePlanIR): string {
         dynamicObjectTypes.length > 0 || taggedValueTypes.length > 0 ||
         promiseRecordTypes.length > 0
         ? [
-          ...indentLines(plan.typePlans.flatMap(renderTypePlan)),
           ...taggedValueTypes,
           ...promiseRecordTypes,
           ...arrayTypes,
@@ -5056,6 +5055,7 @@ export function emitWasmGcModulePlan(plan: WasmGcModulePlanIR): string {
           ...closureObjectTypes,
           ...closureSignatureTypes,
           ...capturedClosureEnvTypes,
+          ...indentLines(plan.typePlans.flatMap(renderTypePlan)),
         ]
         : ['    ;; none']
     ),

@@ -4,6 +4,7 @@ import {
   getHostTaggedBoundaryKinds,
   isNullType,
   isStringLikeType,
+  isSymbolLikeType,
   isUndefinedType,
 } from './lower_tagged.ts';
 
@@ -86,11 +87,12 @@ function getTaggedArrayElementKinds(type: ts.Type): {
   includesNull: boolean;
   includesNumber: boolean;
   includesString: boolean;
+  includesSymbol: boolean;
   includesUndefined: boolean;
 } | undefined {
   const boundaryKinds = getHostTaggedBoundaryKinds(type);
   if (boundaryKinds) {
-    return { ...boundaryKinds, includesBigInt: false };
+    return { ...boundaryKinds, includesBigInt: false, includesSymbol: false };
   }
   if ((type.flags & ts.TypeFlags.Union) !== 0) {
     const members = (type as ts.UnionType).types;
@@ -100,6 +102,7 @@ function getTaggedArrayElementKinds(type: ts.Type): {
       includesNull: false,
       includesNumber: false,
       includesString: false,
+      includesSymbol: false,
       includesUndefined: false,
     };
     for (const member of members) {
@@ -112,6 +115,7 @@ function getTaggedArrayElementKinds(type: ts.Type): {
       merged.includesNull ||= kinds.includesNull;
       merged.includesNumber ||= kinds.includesNumber;
       merged.includesString ||= kinds.includesString;
+      merged.includesSymbol ||= kinds.includesSymbol;
       merged.includesUndefined ||= kinds.includesUndefined;
     }
     return merged;
@@ -123,6 +127,7 @@ function getTaggedArrayElementKinds(type: ts.Type): {
       includesNull: false,
       includesNumber: true,
       includesString: false,
+      includesSymbol: false,
       includesUndefined: false,
     };
   }
@@ -133,6 +138,7 @@ function getTaggedArrayElementKinds(type: ts.Type): {
       includesNull: false,
       includesNumber: false,
       includesString: false,
+      includesSymbol: false,
       includesUndefined: false,
     };
   }
@@ -143,6 +149,18 @@ function getTaggedArrayElementKinds(type: ts.Type): {
       includesNull: false,
       includesNumber: false,
       includesString: true,
+      includesSymbol: false,
+      includesUndefined: false,
+    };
+  }
+  if (isSymbolLikeType(type)) {
+    return {
+      includesBoolean: false,
+      includesBigInt: false,
+      includesNull: false,
+      includesNumber: false,
+      includesString: false,
+      includesSymbol: true,
       includesUndefined: false,
     };
   }
@@ -153,6 +171,7 @@ function getTaggedArrayElementKinds(type: ts.Type): {
       includesNull: false,
       includesNumber: false,
       includesString: false,
+      includesSymbol: false,
       includesUndefined: false,
     };
   }
@@ -163,6 +182,7 @@ function getTaggedArrayElementKinds(type: ts.Type): {
       includesNull: false,
       includesNumber: false,
       includesString: false,
+      includesSymbol: false,
       includesUndefined: true,
     };
   }
@@ -173,6 +193,7 @@ function getTaggedArrayElementKinds(type: ts.Type): {
       includesNull: true,
       includesNumber: false,
       includesString: false,
+      includesSymbol: false,
       includesUndefined: false,
     };
   }
@@ -211,6 +232,7 @@ export function getSupportedOwnedTaggedArrayKinds(
     includesNull: false,
     includesNumber: false,
     includesString: false,
+    includesSymbol: false,
     includesUndefined: false,
   };
   for (const elementType of elementTypes) {
@@ -223,11 +245,12 @@ export function getSupportedOwnedTaggedArrayKinds(
     merged.includesNull ||= kinds.includesNull;
     merged.includesNumber ||= kinds.includesNumber;
     merged.includesString ||= kinds.includesString;
+    merged.includesSymbol ||= kinds.includesSymbol;
     merged.includesUndefined ||= kinds.includesUndefined;
   }
   return merged.includesBoolean || merged.includesBigInt || merged.includesNull ||
       merged.includesNumber ||
-      merged.includesString || merged.includesUndefined
+      merged.includesString || merged.includesSymbol || merged.includesUndefined
     ? {
       includesBoolean: merged.includesBoolean,
       includesNull: merged.includesNull,

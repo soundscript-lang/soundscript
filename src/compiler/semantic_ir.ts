@@ -1181,6 +1181,9 @@ function compilerHostBoundaryToSemanticType(boundary: CompilerHostBoundaryIR): S
       if (boundary.includesString) {
         arms.push({ kind: 'string' });
       }
+      if (boundary.includesSymbol) {
+        arms.push({ kind: 'symbol' });
+      }
       if (boundary.heapBoundary) {
         arms.push(compilerHostBoundaryToSemanticType(boundary.heapBoundary) as SemanticUnionArmIR);
       }

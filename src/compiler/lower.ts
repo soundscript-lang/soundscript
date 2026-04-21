@@ -21761,6 +21761,8 @@ function isScalarSafeFixedLayoutObjectValueExpression(
       (type.flags & ts.TypeFlags.BooleanLike) !== 0 ||
       isSupportedTaggedHeapNullableType(checker!, type) ||
       isSupportedInternalTaggedHeapUnionType(checker!, type) ||
+      isSymbolLikeType(type) ||
+      isSymbolOrNullableType(type) ||
       getHostTaggedBoundaryKinds(type) !== undefined ||
       isSupportedHeapLocalType(checker!, type) ||
       isSupportedInternalOwnedTaggedHeapArrayType(checker!, type) ||
@@ -21840,6 +21842,8 @@ function isScalarSafeFixedLayoutObjectValueExpression(
     return (type.flags & ts.TypeFlags.NumberLike) !== 0 ||
       (type.flags & ts.TypeFlags.BooleanLike) !== 0 ||
       isStringLikeType(type) ||
+      isSymbolLikeType(type) ||
+      isSymbolOrNullableType(type) ||
       isSupportedTaggedHeapNullableType(checker, type) ||
       isSupportedInternalTaggedHeapUnionType(checker, type) ||
       getHostTaggedBoundaryKinds(type) !== undefined ||
@@ -21887,7 +21891,10 @@ function isScalarSafeFixedLayoutObjectValueExpression(
         isScalarSafeFixedLayoutObjectValueExpression(element, checker)
       );
     }
-    if (isSupportedInternalOwnedTaggedHeapArrayType(checker, type)) {
+    if (
+      isSupportedOwnedTaggedArrayType(checker, type) ||
+      isSupportedInternalOwnedTaggedHeapArrayType(checker, type)
+    ) {
       return expression.elements.every((element) =>
         !ts.isSpreadElement(element) &&
         isScalarSafeFixedLayoutObjectValueExpression(element, checker)
@@ -21921,6 +21928,8 @@ function isScalarSafeFixedLayoutObjectValueExpression(
       return (fieldType.flags & ts.TypeFlags.NumberLike) !== 0 ||
         (fieldType.flags & ts.TypeFlags.BooleanLike) !== 0 ||
         isStringLikeType(fieldType) ||
+        isSymbolLikeType(fieldType) ||
+        isSymbolOrNullableType(fieldType) ||
         isSupportedTaggedHeapNullableType(checker, fieldType) ||
         isSupportedInternalTaggedHeapUnionType(checker, fieldType) ||
         getHostTaggedBoundaryKinds(fieldType) !== undefined ||
@@ -21956,6 +21965,8 @@ function isScalarSafeFixedLayoutObjectValueExpression(
     return (fieldType.flags & ts.TypeFlags.NumberLike) !== 0 ||
       (fieldType.flags & ts.TypeFlags.BooleanLike) !== 0 ||
       isStringLikeType(fieldType) ||
+      isSymbolLikeType(fieldType) ||
+      isSymbolOrNullableType(fieldType) ||
       isSupportedTaggedHeapNullableType(checker, fieldType) ||
       isSupportedInternalTaggedHeapUnionType(checker, fieldType) ||
       getHostTaggedBoundaryKinds(fieldType) !== undefined ||
@@ -22309,6 +22320,7 @@ function createHostTaggedBoundary(
     includesNull: taggedPrimitiveKinds?.includesNull,
     includesNumber: taggedPrimitiveKinds?.includesNumber,
     includesString: taggedPrimitiveKinds?.includesString,
+    includesSymbol: taggedPrimitiveKinds?.includesSymbol,
     includesUndefined: taggedPrimitiveKinds?.includesUndefined,
     heapBoundary,
   };
@@ -22498,6 +22510,7 @@ function encodeSpecializedTaggedPrimitiveKinds(
     kinds.includesNull ? 'n' : '',
     kinds.includesNumber ? 'd' : '',
     kinds.includesString ? 's' : '',
+    kinds.includesSymbol ? 'y' : '',
     kinds.includesUndefined ? 'u' : '',
   ].join('');
 }
@@ -22510,6 +22523,7 @@ function decodeSpecializedTaggedPrimitiveKinds(
     includesNull: encodedKinds.includes('n'),
     includesNumber: encodedKinds.includes('d'),
     includesString: encodedKinds.includes('s'),
+    includesSymbol: encodedKinds.includes('y'),
     includesUndefined: encodedKinds.includes('u'),
   };
 }
@@ -22640,6 +22654,27 @@ function getFixedLayoutPropertyShape(
           includesNumber: false,
           includesString: true,
           includesUndefined: false,
+        }, isOptional),
+      },
+      runtime,
+    );
+  }
+  if (isSymbolLikeType(propertyType) || isSymbolOrNullableType(propertyType)) {
+    const members = (propertyType.flags & ts.TypeFlags.Union) !== 0
+      ? (propertyType as ts.UnionType).types
+      : [propertyType];
+    return finalizeFixedLayoutPropertyShape(
+      {
+        name: property.getName(),
+        optional: isOptional,
+        valueType: 'tagged_ref',
+        taggedPrimitiveKinds: withOptionalUndefinedTaggedKinds({
+          includesBoolean: false,
+          includesNull: members.some((member) => isNullType(member)),
+          includesNumber: false,
+          includesString: false,
+          includesSymbol: true,
+          includesUndefined: members.some((member) => isUndefinedType(member)),
         }, isOptional),
       },
       runtime,
