@@ -624,6 +624,107 @@ Deno.test('red-team: project-reference poison roots are full-project recursive o
   }
 });
 
+Deno.test('red-team: transitive project-reference poison roots are recursively owned', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'app/tsconfig.json',
+      contents: createSoundscriptProjectReferenceTsconfig({
+        noEmit: true,
+        references: [{ path: '../mid' }],
+      }),
+    },
+    {
+      path: 'app/src/index.sts',
+      contents: [
+        'import { midValue } from "../../mid/src/value";',
+        '',
+        'export const exact: string = midValue;',
+        '',
+      ].join('\n'),
+    },
+    {
+      path: 'mid/tsconfig.json',
+      contents: createSoundscriptProjectReferenceTsconfig({
+        composite: true,
+        declaration: true,
+        noEmit: false,
+        references: [{ path: '../lib' }],
+      }),
+    },
+    {
+      path: 'mid/src/value.sts',
+      contents: 'export const midValue: string = "ok";\n',
+    },
+    {
+      path: 'lib/tsconfig.json',
+      contents: createReferencedLibraryTsconfig(false),
+    },
+    {
+      path: 'lib/src/value.sts',
+      contents: 'export const value: string = "ok";\n',
+    },
+  ]);
+  const projectPath = join(tempDirectory, 'app/tsconfig.json');
+  const indexPath = join(tempDirectory, 'app/src/index.sts');
+  const baseOptions = { projectPath, workingDirectory: tempDirectory };
+  const recursiveOptions = { ...baseOptions, analyzeReferences: true };
+  const preparedProject = prepareProjectAnalysis(baseOptions);
+  const session = new IncrementalProjectSession();
+
+  try {
+    assertEquals(analyzePreparedProject(preparedProject).diagnostics, []);
+    assertEquals(analyzePreparedProjectForFile(preparedProject, indexPath).diagnostics, []);
+    session.prepare(recursiveOptions);
+    assertEquals(session.analyzeProject().diagnostics, []);
+
+    await writeProjectFile(
+      tempDirectory,
+      'lib/src/poison.sts',
+      'export const poison: string = 1;\n',
+    );
+
+    const recursiveCliResult = runProgram({
+      checkReferences: true,
+      projectPath,
+      workingDirectory: tempDirectory,
+    });
+    const expectedDiagnostics: readonly (readonly [string, string])[] = [
+      ['TS2322', 'lib/src/poison.sts'],
+    ];
+    assertEquals(
+      toProjectRelativeDiagnostics(recursiveCliResult.diagnostics, tempDirectory),
+      expectedDiagnostics,
+    );
+
+    session.prepare(recursiveOptions);
+    const sessionResult = session.analyzeProject();
+    assertEquals(
+      toProjectRelativeDiagnostics(sessionResult.diagnostics, tempDirectory),
+      expectedDiagnostics,
+    );
+    assertEquals(sessionResult.summary.errors === 0 ? 0 : 1, recursiveCliResult.exitCode);
+
+    const freshPreparedProject = prepareProjectAnalysis(baseOptions);
+    try {
+      assertEquals(analyzePreparedProject(freshPreparedProject).diagnostics, []);
+      assertEquals(analyzePreparedProjectForFile(freshPreparedProject, indexPath).diagnostics, []);
+    } finally {
+      disposePreparedAnalysisProject(freshPreparedProject);
+    }
+
+    const reusedPreparedProject = prepareProjectAnalysis(baseOptions, preparedProject);
+    try {
+      assertEquals(analyzePreparedProject(reusedPreparedProject).diagnostics, []);
+      assertEquals(analyzePreparedProjectForFile(reusedPreparedProject, indexPath).diagnostics, []);
+    } finally {
+      disposePreparedAnalysisProject(reusedPreparedProject, preparedProject);
+    }
+  } finally {
+    session.dispose();
+    disposePreparedAnalysisProject(preparedProject);
+  }
+});
+
 Deno.test('red-team: incremental session rejects stale referenced project source reuse', async () => {
   const tempDirectory = await createTempProject([
     {

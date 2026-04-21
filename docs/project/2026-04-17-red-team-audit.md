@@ -43,21 +43,22 @@ Legend:
 - `batch-44`: covered by the forty-fourth red-team batch added with this record.
 - `batch-45`: covered by the forty-fifth red-team batch added with this record.
 - `batch-46`: covered by the forty-sixth red-team batch added with this record.
+- `batch-47`: covered by the forty-seventh red-team batch added with this record.
 - `audit-debt`: missing coverage that should be closed before calling the family fully audited.
 - `out-of-scope`: explicitly outside the strong soundness claim.
 - `design-gap`: documented future work, not a current guarantee.
 
-| Owned family                         | Fresh project | Reused prepared       | File-scoped           | Persistent checker cache | Package verification cache | LSP/incremental session | Build cache/output | Compiler/target gate |
-| ------------------------------------ | ------------- | --------------------- | --------------------- | ------------------------ | -------------------------- | ----------------------- | ------------------ | -------------------- |
-| Prepared/package-source parity       | covered       | covered               | covered               | covered,batch-29         | batch-3                    | covered                 | batch-1,10,28,31   | audit-debt           |
-| Flow/effect invalidation             | covered       | batch-35,40,43        | covered               | batch-4,35,40,43         | batch-4,40,43              | batch-35,40,43          | batch-44           | batch-44             |
-| Proof-oracle verification            | covered       | batch-38              | covered               | batch-38                 | batch-38                   | batch-38                | batch-44           | batch-44             |
-| BareObject/null-prototype provenance | covered       | covered               | covered               | batch-39                 | covered                    | batch-39                | batch-39           | batch-45             |
-| `#[value]` parity                    | covered       | batch-1               | batch-1               | batch-1                  | batch-5                    | batch-1                 | batch-1            | covered              |
-| Machine numerics                     | covered       | batch-37              | batch-37              | batch-37                 | batch-5                    | batch-37                | batch-1,37         | batch-37             |
-| Macro/capability boundary            | covered       | covered               | audit-debt            | batch-6                  | batch-41,42                | audit-debt              | batch-7            | batch-8              |
-| Compiler acceptance parity           | covered       | audit-debt            | out-of-scope          | out-of-scope             | out-of-scope               | out-of-scope            | batch-1,27,30      | covered,batch-27,30  |
-| Project-reference root ownership     | batch-32      | out-of-scope,batch-46 | out-of-scope,batch-46 | batch-32                 | out-of-scope               | batch-34                | batch-33           | out-of-scope         |
+| Owned family                         | Fresh project | Reused prepared          | File-scoped              | Persistent checker cache | Package verification cache | LSP/incremental session | Build cache/output | Compiler/target gate |
+| ------------------------------------ | ------------- | ------------------------ | ------------------------ | ------------------------ | -------------------------- | ----------------------- | ------------------ | -------------------- |
+| Prepared/package-source parity       | covered       | covered                  | covered                  | covered,batch-29         | batch-3                    | covered                 | batch-1,10,28,31   | audit-debt           |
+| Flow/effect invalidation             | covered       | batch-35,40,43           | covered                  | batch-4,35,40,43         | batch-4,40,43              | batch-35,40,43          | batch-44           | batch-44             |
+| Proof-oracle verification            | covered       | batch-38                 | covered                  | batch-38                 | batch-38                   | batch-38                | batch-44           | batch-44             |
+| BareObject/null-prototype provenance | covered       | covered                  | covered                  | batch-39                 | covered                    | batch-39                | batch-39           | batch-45             |
+| `#[value]` parity                    | covered       | batch-1                  | batch-1                  | batch-1                  | batch-5                    | batch-1                 | batch-1            | covered              |
+| Machine numerics                     | covered       | batch-37                 | batch-37                 | batch-37                 | batch-5                    | batch-37                | batch-1,37         | batch-37             |
+| Macro/capability boundary            | covered       | covered                  | audit-debt               | batch-6                  | batch-41,42                | audit-debt              | batch-7            | batch-8              |
+| Compiler acceptance parity           | covered       | audit-debt               | out-of-scope             | out-of-scope             | out-of-scope               | out-of-scope            | batch-1,27,30      | covered,batch-27,30  |
+| Project-reference root ownership     | batch-32,47   | out-of-scope,batch-46,47 | out-of-scope,batch-46,47 | batch-32                 | out-of-scope               | batch-34,47             | batch-33           | out-of-scope         |
 
 ## Batch 1 Findings
 
@@ -1156,6 +1157,24 @@ Legend:
   ownership, add a dedicated recursive file-scoped mode instead of widening the default low-latency
   file API.
 
+## Batch 47 Findings
+
+### Transitive Project-Reference Poison Roots
+
+- Attack: prime an `app -> mid -> lib` project-reference graph where `app` imports `mid`, `mid`
+  references `lib` without importing its source, and `lib` initially has only a clean root. Then add
+  an unimported `lib/src/poison.sts` root under `lib`'s include pattern.
+- Routes: recursive CLI check, recursive incremental full-project session analysis, fresh prepared
+  analysis, reused prepared analysis, and file-scoped analysis of the app entrypoint.
+- Expected result: recursive CLI and recursive session analysis report the transitive referenced
+  `TS2322` diagnostic from `lib/src/poison.sts`; fresh prepared, reused prepared, and file-scoped
+  app analysis remain intentionally focused on the app graph/requested file.
+- Result: no production bug found. Recursive project-reference ownership is transitive for checker
+  CLI/session routes, while the Batch 46 prepared/file-scoped boundary remains unchanged.
+- Residual risk: this hardens checker/session traversal only. Transitive `build --references`
+  poison-root coverage remains lower-priority breadth coverage because Batch 33 already covers the
+  build route for one-hop references.
+
 ## Remaining High-Priority Audit Debt
 
 - Recursive package support-file tracking for non-`.sts` helper graphs if that source-published
@@ -1645,6 +1664,15 @@ red-team attack, the route matrix it covers, and the residual risk left behind.
   tests/integration/red_team_audit_test.ts`:
   passed, 1 test in `5s`.
 - `deno test --allow-all tests/integration/red_team_audit_test.ts`: passed, 59 tests in `4m54s`.
+- `deno fmt --check tests/integration/red_team_audit_test.ts
+  docs/project/2026-04-17-red-team-audit.md`:
+  passed.
+- `deno lint tests/integration/red_team_audit_test.ts`: passed.
+- `deno task check`: passed.
+- `deno test --allow-all --filter "transitive project-reference poison roots are recursively owned"
+  tests/integration/red_team_audit_test.ts`:
+  passed, 1 test in `15s`.
+- `deno test --allow-all tests/integration/red_team_audit_test.ts`: passed, 60 tests in `7m8s`.
 - `deno fmt --check tests/integration/red_team_audit_test.ts
   docs/project/2026-04-17-red-team-audit.md`:
   passed.
