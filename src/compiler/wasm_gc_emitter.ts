@@ -5066,7 +5066,8 @@ function renderAsyncGeneratorHelperFunctions(plan: WasmGcModulePlanIR): readonly
 
 function renderHostTaggedWrapperHelperFunctions(plan: WasmGcModulePlanIR): readonly string[] {
   const helpers = new Set(plan.wrapperPlan.taggedValueAdapterHelpers);
-  if (helpers.size === 0) {
+  const resultHelpers = new Set(plan.wrapperPlan.taggedValueResultHelpers);
+  if (helpers.size === 0 && resultHelpers.size === 0) {
     return [];
   }
   const helperLines: string[] = [];
@@ -5141,6 +5142,33 @@ function renderHostTaggedWrapperHelperFunctions(plan: WasmGcModulePlanIR): reado
       '    local.get $value',
       '    ref.null eq',
       `    struct.new ${taggedValueTypeName()}`,
+      '  )',
+    );
+  }
+  if (resultHelpers.has('__soundscript_host_tag_type')) {
+    helperLines.push(
+      '  (func $__soundscript_host_tag_type (export "__soundscript_host_tag_type") (param $value (ref null $tagged_value)) (result i32)',
+      '    local.get $value',
+      `    ref.cast (ref ${taggedValueTypeName()})`,
+      `    struct.get ${taggedValueTypeName()} $tag`,
+      '  )',
+    );
+  }
+  if (resultHelpers.has('__soundscript_host_tag_number_payload')) {
+    helperLines.push(
+      '  (func $__soundscript_host_tag_number_payload (export "__soundscript_host_tag_number_payload") (param $value (ref null $tagged_value)) (result f64)',
+      '    local.get $value',
+      `    ref.cast (ref ${taggedValueTypeName()})`,
+      `    struct.get ${taggedValueTypeName()} $number_payload`,
+      '  )',
+    );
+  }
+  if (resultHelpers.has('__soundscript_host_tag_extern_payload')) {
+    helperLines.push(
+      '  (func $__soundscript_host_tag_extern_payload (export "__soundscript_host_tag_extern_payload") (param $value (ref null $tagged_value)) (result externref)',
+      '    local.get $value',
+      `    ref.cast (ref ${taggedValueTypeName()})`,
+      `    struct.get ${taggedValueTypeName()} $extern_payload`,
       '  )',
     );
   }

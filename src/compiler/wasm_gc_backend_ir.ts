@@ -117,6 +117,7 @@ export interface WasmGcWrapperPlanIR {
   kind: 'wasm_gc_wrapper_plan';
   hostCallbackWrappers: readonly WasmGcHostCallbackWrapperPlanIR[];
   taggedValueAdapterHelpers: readonly string[];
+  taggedValueResultHelpers: readonly string[];
 }
 
 export interface WasmGcDiagnosticPlanIR {
@@ -572,8 +573,35 @@ function taggedValueAdapterHelpersForWrappers(
         addTaggedValueAdapterHelpers(helpers, wrapper.paramTaggedPrimitiveKinds[index]);
       }
     });
+  }
+  return [...helpers].sort();
+}
+
+function addTaggedValueResultHelpers(
+  helpers: Set<string>,
+  kinds: CompilerTaggedPrimitiveBoundaryKindsIR | undefined,
+): void {
+  helpers.add('__soundscript_host_tag_type');
+  if (!kinds) {
+    helpers.add('__soundscript_host_tag_extern_payload');
+    helpers.add('__soundscript_host_tag_number_payload');
+    return;
+  }
+  if (kinds.includesBigInt || kinds.includesString || kinds.includesSymbol) {
+    helpers.add('__soundscript_host_tag_extern_payload');
+  }
+  if (kinds.includesBoolean || kinds.includesNumber) {
+    helpers.add('__soundscript_host_tag_number_payload');
+  }
+}
+
+function taggedValueResultHelpersForWrappers(
+  wrappers: readonly WasmGcHostCallbackWrapperPlanIR[],
+): readonly string[] {
+  const helpers = new Set<string>();
+  for (const wrapper of wrappers) {
     if (wrapper.resultType === 'tagged_ref') {
-      addTaggedValueAdapterHelpers(helpers, wrapper.resultTaggedPrimitiveKinds);
+      addTaggedValueResultHelpers(helpers, wrapper.resultTaggedPrimitiveKinds);
     }
   }
   return [...helpers].sort();
@@ -626,6 +654,7 @@ function createWasmGcWrapperPlan(
     });
   }
   const taggedValueAdapterHelpers = taggedValueAdapterHelpersForWrappers(wrappers);
+  const taggedValueResultHelpers = taggedValueResultHelpersForWrappers(wrappers);
   return {
     kind: 'wasm_gc_wrapper_plan',
     hostCallbackWrappers: wrappers.sort((left, right) =>
@@ -634,6 +663,7 @@ function createWasmGcWrapperPlan(
         : left.functionName.localeCompare(right.functionName)
     ),
     taggedValueAdapterHelpers,
+    taggedValueResultHelpers,
   };
 }
 

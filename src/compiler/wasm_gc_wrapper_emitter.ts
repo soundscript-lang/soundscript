@@ -70,6 +70,35 @@ function renderTaggedAdapterHelpers(plan: WasmGcModulePlanIR): string {
 }`;
 }
 
+function renderTaggedResultAdapterHelpers(plan: WasmGcModulePlanIR): string {
+  if (plan.wrapperPlan.taggedValueResultHelpers.length === 0) {
+    return `function untagHostValue(_value) {
+  throw new TypeError('Tagged WasmGC callback result adaptation was not emitted for this module.');
+}`;
+  }
+  return `function untagHostValue(value) {
+  const instance = requireInstance();
+  const exports = instance.exports;
+  const tag = requireExport(exports, '__soundscript_host_tag_type')(value);
+  switch (tag) {
+    case 0:
+      return undefined;
+    case 1:
+      return Boolean(requireExport(exports, '__soundscript_host_tag_number_payload')(value));
+    case 2:
+      return requireExport(exports, '__soundscript_host_tag_number_payload')(value);
+    case 3:
+    case 5:
+    case 7:
+      return requireExport(exports, '__soundscript_host_tag_extern_payload')(value);
+    case 6:
+      return null;
+    default:
+      throw new TypeError('Object-valued tagged WasmGC callback results need host-object wrapper adaptation.');
+  }
+}`;
+}
+
 export function emitWasmGcWrapperModule(plan: WasmGcModulePlanIR): string {
   const wrapperGroups = groupHostCallbackWrappers(plan.wrapperPlan.hostCallbackWrappers);
   const wrapperAssignments = wrapperGroups.map(([, wrappers]) => renderWrapperAssignment(wrappers));
@@ -92,15 +121,14 @@ export function createSoundscriptWasmGcHostImports(hostImports, instanceCell) {
 
   ${renderTaggedAdapterHelpers(plan)}
 
+  ${renderTaggedResultAdapterHelpers(plan)}
+
   function adaptToInternal(valueType, value) {
     return valueType === 'tagged_ref' ? tagHostValue(value) : value;
   }
 
   function adaptToHost(valueType, value) {
-    if (valueType === 'tagged_ref') {
-      throw new TypeError('Tagged WasmGC callback results need explicit host result adapters.');
-    }
-    return value;
+    return valueType === 'tagged_ref' ? untagHostValue(value) : value;
   }
 
   function wrapClosure(signatureId, closureRef, paramTypes, resultType) {

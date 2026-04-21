@@ -539,6 +539,8 @@ Deno.test('compiler runtime manifest is deterministic and pay-for-play for sync 
   assertEquals(snapshot.runtimeManifest.helperRequirements, []);
   assertEquals(snapshot.wasmGcPlan.helperPlans, []);
   assertEquals(snapshot.wasmGcPlan.wrapperPlan.hostCallbackWrappers, []);
+  assertEquals(snapshot.wasmGcPlan.wrapperPlan.taggedValueAdapterHelpers, []);
+  assertEquals(snapshot.wasmGcPlan.wrapperPlan.taggedValueResultHelpers, []);
   assertEquals(snapshot.wasmGcPlan.boundaryPlans, [
     {
       kind: 'boundary_plan',
@@ -6460,6 +6462,8 @@ Deno.test('compiler wasm-gc emitter produces runnable no-capture callbacks throu
     ['closure_call_adapter'],
   );
   assertEquals(snapshot.wasmGcPlan.wrapperPlan.hostCallbackWrappers, []);
+  assertEquals(snapshot.wasmGcPlan.wrapperPlan.taggedValueAdapterHelpers, []);
+  assertEquals(snapshot.wasmGcPlan.wrapperPlan.taggedValueResultHelpers, []);
   await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
   const wat = await Deno.readTextFile(watPath);
   assertEquals(
@@ -6695,6 +6699,7 @@ Deno.test('compiler wasm-gc wrapper glue adapts tagged callbacks passed to host 
       '__soundscript_host_tag_symbol',
     ],
   );
+  assertEquals(snapshot.wasmGcPlan.wrapperPlan.taggedValueResultHelpers, []);
 
   await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
   await Deno.writeTextFile(wrapperPath, emitWasmGcWrapperModule(snapshot.wasmGcPlan));
@@ -6734,6 +6739,223 @@ Deno.test('compiler wasm-gc wrapper glue adapts tagged callbacks passed to host 
   assertEquals(typeof main, 'function');
   const input = Symbol('wrapped');
   assertEquals((main as (input: symbol) => symbol)(input), input);
+});
+
+Deno.test('compiler wasm-gc wrapper glue adapts tagged callback results back to host values', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: {
+          strict: true,
+          module: 'esnext',
+          moduleResolution: 'node',
+        },
+        files: ['main.ts', 'host.d.ts'],
+      }),
+    },
+    {
+      path: 'host.d.ts',
+      contents: `
+        export declare function apply(fn: (value: symbol | null) => symbol | null, input: symbol): symbol;
+      `,
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        import { apply } from "./host";
+
+        export function main(input: symbol): symbol {
+          return apply((value: symbol | null): symbol | null => value, input);
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
+  const watPath = join(tempDirectory, 'wasm-gc-shadow-tagged-callback-result-wrapper.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-shadow-tagged-callback-result-wrapper.wasm');
+  const wrapperPath = join(tempDirectory, 'wasm-gc-shadow-tagged-callback-result-wrapper.mjs');
+
+  assertEquals(
+    snapshot.wasmGcPlan.wrapperPlan.hostCallbackWrappers,
+    [
+      {
+        functionName: 'apply',
+        hostImportModule: 'soundscript_host_function',
+        hostImportName: 'host.d.ts:apply',
+        paramName: 'fn',
+        paramIndex: 0,
+        signatureId: 0,
+        paramTypes: ['tagged_ref'],
+        resultType: 'tagged_ref',
+        paramTaggedPrimitiveKinds: [{ includesNull: true, includesSymbol: true }],
+        resultTaggedPrimitiveKinds: { includesNull: true, includesSymbol: true },
+        reasons: ['tagged_signature'],
+      },
+    ],
+  );
+  assertEquals(
+    snapshot.wasmGcPlan.wrapperPlan.taggedValueAdapterHelpers,
+    [
+      '__soundscript_host_tag_null',
+      '__soundscript_host_tag_symbol',
+    ],
+  );
+  assertEquals(
+    snapshot.wasmGcPlan.wrapperPlan.taggedValueResultHelpers,
+    [
+      '__soundscript_host_tag_extern_payload',
+      '__soundscript_host_tag_type',
+    ],
+  );
+
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
+  await Deno.writeTextFile(wrapperPath, emitWasmGcWrapperModule(snapshot.wasmGcPlan));
+  const wat = await Deno.readTextFile(watPath);
+  assertEquals(wat.includes('(export "__soundscript_host_tag_type")'), true);
+  assertEquals(wat.includes('(export "__soundscript_host_tag_extern_payload")'), true);
+  assertEquals(wat.includes('(export "__soundscript_host_tag_number_payload")'), false);
+  const parseResult = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(parseResult.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(parseResult.success, true);
+
+  const wrapperModule = await import(`file://${wrapperPath}?cacheBust=${crypto.randomUUID()}`);
+  const instanceCell: { instance?: WebAssembly.Instance } = {};
+  const imports = wrapperModule.createSoundscriptWasmGcHostImports(
+    {
+      soundscript_host_function: {
+        'host.d.ts:apply': (fn: (value: symbol | null) => symbol | null, input: symbol): symbol => {
+          assertEquals(fn(input), input);
+          assertEquals(fn(null), null);
+          return input;
+        },
+      },
+    },
+    instanceCell,
+  );
+  const wasm = await Deno.readFile(wasmPath);
+  const instance = (await WebAssembly.instantiate(wasm, imports)).instance;
+  instanceCell.instance = instance;
+  const main = instance.exports['main.ts:main'];
+  assertEquals(typeof main, 'function');
+  const input = Symbol('result');
+  assertEquals((main as (input: symbol) => symbol)(input), input);
+});
+
+Deno.test('compiler wasm-gc wrapper glue adapts only callback params that need wrappers', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: {
+          strict: true,
+          module: 'esnext',
+          moduleResolution: 'node',
+        },
+        files: ['main.ts', 'host.d.ts'],
+      }),
+    },
+    {
+      path: 'host.d.ts',
+      contents: `
+        export declare function combine(
+          direct: (value: number) => number,
+          tagged: (value: symbol | null) => symbol,
+          input: number,
+          token: symbol,
+        ): number;
+      `,
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        import { combine } from "./host";
+
+        export function main(input: number, token: symbol): number {
+          return combine(
+            (value: number): number => value + 1,
+            (value: symbol | null): symbol => value!,
+            input,
+            token,
+          );
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
+  const watPath = join(tempDirectory, 'wasm-gc-shadow-multi-callback-wrapper.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-shadow-multi-callback-wrapper.wasm');
+  const wrapperPath = join(tempDirectory, 'wasm-gc-shadow-multi-callback-wrapper.mjs');
+
+  assertEquals(
+    snapshot.wasmGcPlan.wrapperPlan.hostCallbackWrappers,
+    [
+      {
+        functionName: 'combine',
+        hostImportModule: 'soundscript_host_function',
+        hostImportName: 'host.d.ts:combine',
+        paramName: 'tagged',
+        paramIndex: 1,
+        signatureId: 1,
+        paramTypes: ['tagged_ref'],
+        resultType: 'symbol_ref',
+        paramTaggedPrimitiveKinds: [{ includesNull: true, includesSymbol: true }],
+        reasons: ['tagged_signature'],
+      },
+    ],
+  );
+  assertEquals(snapshot.wasmGcPlan.wrapperPlan.taggedValueResultHelpers, []);
+
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
+  await Deno.writeTextFile(wrapperPath, emitWasmGcWrapperModule(snapshot.wasmGcPlan));
+  const wat = await Deno.readTextFile(watPath);
+  assertEquals(
+    wat.includes(
+      '(import "soundscript_host_function" "host.d.ts:combine" (func $combine (param $direct (ref null $closure_sig_0)) (param $tagged (ref null eq)) (param $input f64) (param $token externref) (result f64)))',
+    ),
+    true,
+  );
+  const parseResult = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(parseResult.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(parseResult.success, true);
+
+  const wrapperModule = await import(`file://${wrapperPath}?cacheBust=${crypto.randomUUID()}`);
+  const instanceCell: { instance?: WebAssembly.Instance } = {};
+  const imports = wrapperModule.createSoundscriptWasmGcHostImports(
+    {
+      soundscript_host_function: {
+        'host.d.ts:combine': (
+          direct: (value: number) => number,
+          tagged: (value: symbol | null) => symbol,
+          input: number,
+          token: symbol,
+        ): number => {
+          assertEquals(direct(input), input + 1);
+          assertEquals(tagged(token), token);
+          return direct(input) + 2;
+        },
+      },
+    },
+    instanceCell,
+  );
+  const wasm = await Deno.readFile(wasmPath);
+  const instance = (await WebAssembly.instantiate(wasm, imports)).instance;
+  instanceCell.instance = instance;
+  const main = instance.exports['main.ts:main'];
+  assertEquals(typeof main, 'function');
+  assertEquals((main as (input: number, token: symbol) => number)(40, Symbol('token')), 43);
 });
 
 Deno.test('compiler wasm-gc wrapper glue adapts captured callbacks passed to host imports', async () => {
