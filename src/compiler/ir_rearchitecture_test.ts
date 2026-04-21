@@ -4184,7 +4184,7 @@ Deno.test('compiler wasm-gc emitter runs async generator next startup', async ()
   assertEquals(promise instanceof Promise, false);
 });
 
-Deno.test('compiler wasm-gc emitter parses async generator for-await frame setup', async () => {
+Deno.test('compiler wasm-gc emitter runs async generator for-await frame startup', async () => {
   const tempDirectory = await createTempProject([
     {
       path: 'tsconfig.json',
@@ -4243,6 +4243,9 @@ Deno.test('compiler wasm-gc emitter parses async generator for-await frame setup
   const instance = await WebAssembly.instantiate(wasm);
   const sum = instance.instance.exports['main.ts:sum'];
   assertEquals(typeof sum, 'function');
+  const promise = (sum as () => unknown)();
+  assertEquals(promise === null, false);
+  assertEquals(promise instanceof Promise, false);
 });
 
 Deno.test('compiler semantic shadow models async frame optional closure fields', async () => {

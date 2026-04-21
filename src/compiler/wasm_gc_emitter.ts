@@ -345,6 +345,12 @@ function generatorResultObjectNames(
       closureObjectNames.has(statement.value.callee.name)
     ) {
       names.add(statement.name);
+    } else if (
+      statement.kind === 'dynamic_object_property_get' &&
+      /^async_frame_for_of_result_object_\d+$/.test(statement.objectName) &&
+      generatorResultPropertyKind(statement.propertyKeyName) !== undefined
+    ) {
+      names.add(statement.objectName);
     }
   });
   return names;
@@ -354,6 +360,8 @@ function generatorResultPropertyKind(name: string): 'value' | 'done' | undefined
   const logicalKey = dynamicObjectLogicalKeyName(name);
   if (
     logicalKey === 'generator_result_value_key' ||
+    logicalKey === 'async_frame_iterator_result_value_key' ||
+    /^async_frame_iterator_result_value_key_\d+$/.test(name) ||
     /^value_\d+$/.test(name) ||
     /^for_of_value_key_\d+$/.test(name)
   ) {
@@ -361,6 +369,8 @@ function generatorResultPropertyKind(name: string): 'value' | 'done' | undefined
   }
   if (
     logicalKey === 'generator_result_done_key' ||
+    logicalKey === 'async_frame_iterator_result_done_key' ||
+    /^async_frame_iterator_result_done_key_\d+$/.test(name) ||
     /^done_\d+$/.test(name) ||
     /^for_of_done_key_\d+$/.test(name)
   ) {
@@ -580,6 +590,10 @@ function dynamicObjectLogicalKeyName(name: string): string {
   if (/^generator_step_key_\d+$/.test(name)) {
     return 'generator_step_key';
   }
+  const frameKey = /^(.+_frame_key)_\d+$/.exec(name);
+  if (frameKey) {
+    return frameKey[1]!;
+  }
   const asyncFrameKey = /^(async_frame_pc_key|value_frame_key)_\d+$/.exec(name);
   if (asyncFrameKey) {
     return asyncFrameKey[1]!;
@@ -597,7 +611,7 @@ function isSplitAsyncFrameDynamicObjectEntry(
   entry: DynamicObjectLocalLayout['entries'][number],
 ): boolean {
   const logicalKey = dynamicObjectLogicalKeyName(entry.keyName);
-  return logicalKey === 'async_frame_pc_key' || logicalKey === 'value_frame_key';
+  return logicalKey === 'async_frame_pc_key' || logicalKey.endsWith('_frame_key');
 }
 
 function isSplitGeneratorObjectDynamicObjectEntry(
@@ -939,9 +953,9 @@ function dynamicObjectPropertyOrigins(
   aliases: ReadonlyMap<string, string>,
 ): ReadonlyMap<string, DynamicObjectPropertyOrigin> {
   const origins = new Map<string, DynamicObjectPropertyOrigin>();
-  for (const statement of func.body) {
+  visitSemanticStatements(func.body, (statement) => {
     if (statement.kind !== 'dynamic_object_property_get') {
-      continue;
+      return;
     }
     const layout = layouts.get(statement.objectName);
     const index = dynamicObjectEntryIndexForValue(
@@ -951,14 +965,14 @@ function dynamicObjectPropertyOrigins(
       statement.valueType,
     );
     if (!layout || index < 0) {
-      continue;
+      return;
     }
     origins.set(statement.targetName, {
       objectName: statement.objectName,
       typeName: layout.typeName,
       index,
     });
-  }
+  });
   return origins;
 }
 

@@ -2356,16 +2356,19 @@ function compilerStatementImmediateExpressionsContainLocalGet(
   statement: CompilerStatementIR,
   name: string,
 ): boolean {
-  if (statement.kind !== 'while') {
-    return compilerTreeContainsLocalGet(statement, name);
-  }
   switch (statement.kind) {
+    case 'if': {
+      if (compilerTreeContainsLocalGet(statement.condition, name)) {
+        return true;
+      }
+      const thenContains = compilerTreeContainsLocalGet(statement.thenBody, name);
+      const elseContains = compilerTreeContainsLocalGet(statement.elseBody, name);
+      return thenContains && elseContains;
+    }
     case 'while':
       return compilerTreeContainsLocalGet(statement.condition, name);
-    default: {
-      const exhaustiveCheck: never = statement;
-      return exhaustiveCheck;
-    }
+    default:
+      return compilerTreeContainsLocalGet(statement, name);
   }
 }
 
@@ -2692,9 +2695,14 @@ function semanticBodyFromCompilerIR(
   const emitPendingStatementsForCompilerStatement = (
     statement: CompilerStatementIR,
     targetBody: SemanticStatementIR[],
+    forceHoistNames: ReadonlySet<string> = new Set(),
   ): void => {
+    const shouldEmitPending = (resultName: string): boolean =>
+      forceHoistNames.has(resultName)
+        ? compilerTreeContainsLocalGet(statement, resultName)
+        : compilerStatementImmediateExpressionsContainLocalGet(statement, resultName);
     for (const [resultName, operation] of [...pendingFieldGetsByResult]) {
-      if (compilerStatementImmediateExpressionsContainLocalGet(statement, resultName)) {
+      if (shouldEmitPending(resultName)) {
         targetBody.push(
           semanticSpecializedObjectFieldGetFromRuntimeOperation(
             operation,
@@ -2705,7 +2713,7 @@ function semanticBodyFromCompilerIR(
       }
     }
     for (const [resultName, operation] of [...pendingFallbackGetsByResult]) {
-      if (compilerStatementImmediateExpressionsContainLocalGet(statement, resultName)) {
+      if (shouldEmitPending(resultName)) {
         targetBody.push(
           semanticFallbackObjectPropertyGetFromRuntimeOperation(operation, valueTypesByName),
         );
@@ -2713,7 +2721,7 @@ function semanticBodyFromCompilerIR(
       }
     }
     for (const [resultName, operation] of [...pendingDynamicGetsByResult]) {
-      if (compilerStatementImmediateExpressionsContainLocalGet(statement, resultName)) {
+      if (shouldEmitPending(resultName)) {
         targetBody.push(
           semanticDynamicObjectPropertyGetFromRuntimeOperation(operation, valueTypesByName),
         );
@@ -2722,35 +2730,35 @@ function semanticBodyFromCompilerIR(
       }
     }
     for (const [resultName, operation] of [...pendingDynamicSizesByResult]) {
-      if (compilerStatementImmediateExpressionsContainLocalGet(statement, resultName)) {
+      if (shouldEmitPending(resultName)) {
         targetBody.push(semanticDynamicObjectSizeFromRuntimeOperation(operation));
         seenAssignments.add(operation.resultName);
         pendingDynamicSizesByResult.delete(resultName);
       }
     }
     for (const [resultName, operation] of [...pendingDynamicHasByResult]) {
-      if (compilerStatementImmediateExpressionsContainLocalGet(statement, resultName)) {
+      if (shouldEmitPending(resultName)) {
         targetBody.push(semanticDynamicObjectHasFromRuntimeOperation(operation));
         seenAssignments.add(operation.resultName);
         pendingDynamicHasByResult.delete(resultName);
       }
     }
     for (const [resultName, operation] of [...pendingDynamicDeletesByResult]) {
-      if (compilerStatementImmediateExpressionsContainLocalGet(statement, resultName)) {
+      if (shouldEmitPending(resultName)) {
         targetBody.push(semanticDynamicObjectDeleteFromRuntimeOperation(operation));
         seenAssignments.add(operation.resultName);
         pendingDynamicDeletesByResult.delete(resultName);
       }
     }
     for (const [resultName, operation] of [...pendingDynamicClearsByResult]) {
-      if (compilerStatementImmediateExpressionsContainLocalGet(statement, resultName)) {
+      if (shouldEmitPending(resultName)) {
         targetBody.push(semanticDynamicObjectClearFromRuntimeOperation(operation));
         seenAssignments.add(operation.resultName);
         pendingDynamicClearsByResult.delete(resultName);
       }
     }
     for (const [resultName, operation] of [...pendingDynamicValuesByResult]) {
-      if (compilerStatementImmediateExpressionsContainLocalGet(statement, resultName)) {
+      if (shouldEmitPending(resultName)) {
         targetBody.push(semanticDynamicObjectValuesFromRuntimeOperation(operation));
         seenAssignments.add(operation.resultName);
         pendingDynamicValuesByResult.delete(resultName);
@@ -2840,8 +2848,27 @@ function semanticBodyFromCompilerIR(
     statements: readonly CompilerStatementIR[],
   ): SemanticStatementIR[] {
     const body: SemanticStatementIR[] = [];
+    const pendingResultNames = new Set([
+      ...pendingFieldGetsByResult.keys(),
+      ...pendingFallbackGetsByResult.keys(),
+      ...pendingDynamicGetsByResult.keys(),
+      ...pendingDynamicSizesByResult.keys(),
+      ...pendingDynamicHasByResult.keys(),
+      ...pendingDynamicDeletesByResult.keys(),
+      ...pendingDynamicClearsByResult.keys(),
+      ...pendingDynamicValuesByResult.keys(),
+    ]);
+    const forceHoistNames = new Set<string>();
+    for (const resultName of pendingResultNames) {
+      const useCount = statements.filter((statement) =>
+        compilerTreeContainsLocalGet(statement, resultName)
+      ).length;
+      if (useCount > 1) {
+        forceHoistNames.add(resultName);
+      }
+    }
     for (const statement of statements) {
-      emitPendingStatementsForCompilerStatement(statement, body);
+      emitPendingStatementsForCompilerStatement(statement, body, forceHoistNames);
       const semanticStatement = convertCompilerStatement(statement);
       body.push(semanticStatement);
       markSeenSemanticStatement(semanticStatement);
