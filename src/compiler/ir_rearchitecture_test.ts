@@ -3949,6 +3949,65 @@ Deno.test('compiler wasm-gc emitter parses minimal sync generator step closures'
   assertEquals(result.success, true);
 });
 
+Deno.test('compiler wasm-gc emitter runs minimal sync generator next calls', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: {
+          strict: true,
+          lib: ['ES2020'],
+        },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        export function* values(): Generator<number, void, unknown> {
+          yield 1;
+          yield 2;
+        }
+
+        export function first(): number {
+          const iterator = values();
+          const result = iterator.next();
+          if (result.done) {
+            return 0;
+          }
+          return result.value;
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
+  const firstPlan = snapshot.wasmGcPlan.functionPlans.find((func) => func.name === 'first');
+  const stepPlan = snapshot.wasmGcPlan.functionPlans.find((func) =>
+    func.name.startsWith('closure_generator_step')
+  );
+  const watPath = join(tempDirectory, 'wasm-gc-shadow-sync-generator-next.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-shadow-sync-generator-next.wasm');
+
+  assertEquals(firstPlan?.bodyStatus, 'emittable');
+  assertEquals(stepPlan?.bodyStatus, 'emittable');
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
+  const result = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(result.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(result.success, true);
+
+  const wasm = await Deno.readFile(wasmPath);
+  const instance = await WebAssembly.instantiate(wasm);
+  const first = instance.instance.exports['main.ts:first'];
+  assertEquals(typeof first, 'function');
+  assertEquals((first as () => number)(), 1);
+});
+
 Deno.test('compiler wasm-gc emitter parses minimal async generator step closures', async () => {
   const tempDirectory = await createTempProject([
     {

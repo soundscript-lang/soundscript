@@ -235,6 +235,7 @@ interface FunctionRenderContext {
     string,
     Extract<SemanticExpressionIR, { kind: 'closure_literal' }>
   >;
+  closureObjectLocalNames: ReadonlySet<string>;
   closureFunctionNames: ReadonlyMap<number, string>;
   fallbackObjectLocalLayouts: ReadonlyMap<string, FallbackObjectLocalLayout>;
   dynamicObjectLocalLayouts: ReadonlyMap<string, DynamicObjectLocalLayout>;
@@ -267,6 +268,7 @@ const EMPTY_RENDER_CONTEXT: FunctionRenderContext = {
   boxLocalValueTypes: new Map(),
   closureLocalLiterals: new Map(),
   closureBoxLocalLiterals: new Map(),
+  closureObjectLocalNames: new Set(),
   closureFunctionNames: new Map(),
   fallbackObjectLocalLayouts: new Map(),
   dynamicObjectLocalLayouts: new Map(),
@@ -320,6 +322,88 @@ function closureBoxLocalLiterals(
   return literals;
 }
 
+function closureObjectLocalNames(func: WasmGcFunctionPlanIR): ReadonlySet<string> {
+  const names = new Set<string>();
+  visitSemanticStatements(func.body, (statement) => {
+    if (statement.kind === 'dynamic_object_property_get' && statement.valueType === 'closure_ref') {
+      names.add(statement.targetName);
+    }
+  });
+  return names;
+}
+
+function generatorResultObjectNames(
+  func: WasmGcFunctionPlanIR,
+  closureObjectNames: ReadonlySet<string>,
+): ReadonlySet<string> {
+  const names = new Set<string>();
+  visitSemanticStatements(func.body, (statement) => {
+    if (
+      statement.kind === 'local_set' &&
+      statement.value.kind === 'closure_call' &&
+      statement.value.callee.kind === 'local_get' &&
+      closureObjectNames.has(statement.value.callee.name)
+    ) {
+      names.add(statement.name);
+    }
+  });
+  return names;
+}
+
+function generatorResultPropertyKind(name: string): 'value' | 'done' | undefined {
+  const logicalKey = dynamicObjectLogicalKeyName(name);
+  if (logicalKey === 'generator_result_value_key' || /^value_\d+$/.test(name)) {
+    return 'value';
+  }
+  if (logicalKey === 'generator_result_done_key' || /^done_\d+$/.test(name)) {
+    return 'done';
+  }
+  return undefined;
+}
+
+function generatorResultLayoutEntries(
+  func: WasmGcFunctionPlanIR,
+  generatorResultNames: ReadonlySet<string>,
+): ReadonlyMap<string, readonly DynamicObjectLocalLayout['entries'][number][]> {
+  const keysByObjectName = new Map<string, { value?: string; done?: string }>();
+  visitSemanticStatements(func.body, (statement) => {
+    if (
+      statement.kind !== 'dynamic_object_property_get' ||
+      !generatorResultNames.has(statement.objectName)
+    ) {
+      return;
+    }
+    const keys = keysByObjectName.get(statement.objectName) ?? {};
+    const propertyKind = generatorResultPropertyKind(statement.propertyKeyName);
+    if (propertyKind === 'value') {
+      keys.value = statement.propertyKeyName;
+    } else if (propertyKind === 'done') {
+      keys.done = statement.propertyKeyName;
+    }
+    keysByObjectName.set(statement.objectName, keys);
+  });
+  return new Map(
+    [...generatorResultNames].map((objectName) => {
+      const keys = keysByObjectName.get(objectName) ?? {};
+      return [
+        objectName,
+        [
+          {
+            keyName: keys.value ?? '__generator_result_value_key',
+            valueName: keys.value ?? '__generator_result_value_key',
+            valueType: 'tagged_ref',
+          },
+          {
+            keyName: keys.done ?? '__generator_result_done_key',
+            valueName: keys.done ?? '__generator_result_done_key',
+            valueType: 'i32',
+          },
+        ],
+      ];
+    }),
+  );
+}
+
 function closureFunctionTargetName(
   functionId: number,
   context: FunctionRenderContext,
@@ -340,6 +424,24 @@ function renderClosureObjectExpression(
     ]),
     `${indent}struct.new ${closureObjectTypeName()}`,
   ];
+}
+
+function renderClosureObjectValueExpression(
+  expression: SemanticExpressionIR,
+  indent: string,
+  context: FunctionRenderContext,
+): readonly string[] {
+  if (expression.kind === 'closure_literal') {
+    return renderClosureObjectExpression(expression, indent, context);
+  }
+  if (expression.kind === 'local_get' && context.closureLocalLiterals.has(expression.name)) {
+    return renderClosureObjectExpression(
+      context.closureLocalLiterals.get(expression.name)!,
+      indent,
+      context,
+    );
+  }
+  return renderExpression(expression, indent, context);
 }
 
 function renderPromiseThenHandlerExpression(
@@ -458,6 +560,18 @@ function dynamicObjectLayoutTypeName(
 }
 
 function dynamicObjectLogicalKeyName(name: string): string {
+  if (name === '__generator_result_value_key' || /^generator_.*_value_key_\d+$/.test(name)) {
+    return 'generator_result_value_key';
+  }
+  if (name === '__generator_result_done_key' || /^generator_.*_done_key_\d+$/.test(name)) {
+    return 'generator_result_done_key';
+  }
+  if (/^generator_(?:frame_)?pc_key_\d+$/.test(name)) {
+    return 'generator_pc_key';
+  }
+  if (/^generator_step_key_\d+$/.test(name)) {
+    return 'generator_step_key';
+  }
   const asyncFrameKey = /^(async_frame_pc_key|value_frame_key)_\d+$/.exec(name);
   if (asyncFrameKey) {
     return asyncFrameKey[1]!;
@@ -478,10 +592,24 @@ function isSplitAsyncFrameDynamicObjectEntry(
   return logicalKey === 'async_frame_pc_key' || logicalKey === 'value_frame_key';
 }
 
-function hasSplitAsyncFrameDynamicObjectEntry(
+function isSplitGeneratorObjectDynamicObjectEntry(
+  entry: DynamicObjectLocalLayout['entries'][number],
+): boolean {
+  const logicalKey = dynamicObjectLogicalKeyName(entry.keyName);
+  return logicalKey === 'generator_pc_key' || logicalKey === 'generator_step_key';
+}
+
+function isModuleScopedDynamicObjectEntry(
+  entry: DynamicObjectLocalLayout['entries'][number],
+): boolean {
+  return isSplitAsyncFrameDynamicObjectEntry(entry) ||
+    isSplitGeneratorObjectDynamicObjectEntry(entry);
+}
+
+function hasModuleScopedDynamicObjectEntry(
   entries: readonly DynamicObjectLocalLayout['entries'][number][],
 ): boolean {
-  return entries.some(isSplitAsyncFrameDynamicObjectEntry);
+  return entries.some(isModuleScopedDynamicObjectEntry);
 }
 
 function mergeDynamicObjectLayoutEntries(
@@ -523,13 +651,17 @@ function dynamicObjectStatementEntry(
       return {
         keyName: statement.propertyKeyName,
         valueName: statement.targetName,
-        valueType: statement.valueType,
+        valueType: dynamicObjectLogicalKeyName(statement.propertyKeyName) === 'generator_pc_key'
+          ? 'f64'
+          : statement.valueType,
       };
     case 'dynamic_object_property_set':
       return {
         keyName: statement.propertyKeyName,
         valueName: statement.valueName ?? statement.propertyKeyName,
-        valueType: statement.valueType,
+        valueType: dynamicObjectLogicalKeyName(statement.propertyKeyName) === 'generator_pc_key'
+          ? 'f64'
+          : statement.valueType,
       };
     default:
       return undefined;
@@ -580,23 +712,23 @@ function dynamicObjectLayoutsByRepresentation(
   for (const func of plan.functionPlans) {
     visitSemanticStatements(func.body, (statement) => {
       if (statement.kind === 'dynamic_object_new') {
-        if (hasSplitAsyncFrameDynamicObjectEntry(statement.entries)) {
+        if (hasModuleScopedDynamicObjectEntry(statement.entries)) {
           addEntries(
             allocationEntriesByRepresentation,
             statement.representationName,
-            statement.entries.filter(isSplitAsyncFrameDynamicObjectEntry),
+            statement.entries.filter(isModuleScopedDynamicObjectEntry),
           );
         }
         return;
       }
       const entry = dynamicObjectStatementEntry(statement);
       if (
-        entry && isSplitAsyncFrameDynamicObjectEntry(entry) &&
+        entry && isModuleScopedDynamicObjectEntry(entry) &&
         statement.kind === 'dynamic_object_property_set'
       ) {
         addEntries(setEntriesByRepresentation, statement.representationName, [entry]);
       } else if (
-        entry && isSplitAsyncFrameDynamicObjectEntry(entry) &&
+        entry && isModuleScopedDynamicObjectEntry(entry) &&
         statement.kind === 'dynamic_object_property_get'
       ) {
         addEntries(getEntriesByRepresentation, statement.representationName, [entry]);
@@ -645,6 +777,9 @@ function dynamicObjectLocalLayouts(
   layoutsByRepresentation: ReadonlyMap<string, DynamicObjectLocalLayout> = new Map(),
 ): ReadonlyMap<string, DynamicObjectLocalLayout> {
   const aliases = localAliases(func);
+  const closureObjectNames = closureObjectLocalNames(func);
+  const generatorResultNames = generatorResultObjectNames(func, closureObjectNames);
+  const generatorResultEntriesByName = generatorResultLayoutEntries(func, generatorResultNames);
   const layouts = new Map<string, DynamicObjectLocalLayout>();
   const layoutForRepresentation = (
     representationName: string,
@@ -652,7 +787,7 @@ function dynamicObjectLocalLayouts(
     existing?: DynamicObjectLocalLayout,
   ): DynamicObjectLocalLayout => {
     const seededLayout = layoutsByRepresentation.get(representationName);
-    if (seededLayout && hasSplitAsyncFrameDynamicObjectEntry(entries)) {
+    if (seededLayout && hasModuleScopedDynamicObjectEntry(entries)) {
       return seededLayout;
     }
     const current = existing?.entries ?? [];
@@ -717,18 +852,20 @@ function dynamicObjectLocalLayouts(
       );
     } else if (statement.kind === 'dynamic_object_property_get') {
       const existing = layouts.get(statement.objectName);
-      if (!existing) {
-        setDynamicObjectLayoutForAliasGroup(
-          layouts,
-          aliases,
-          statement.objectName,
-          layoutForRepresentation(
-            statement.representationName,
-            [dynamicObjectStatementEntry(statement)!],
-            existing,
-          ),
-        );
+      const generatorResultEntries = generatorResultEntriesByName.get(statement.objectName);
+      if (!generatorResultEntries && existing) {
+        return;
       }
+      setDynamicObjectLayoutForAliasGroup(
+        layouts,
+        aliases,
+        statement.objectName,
+        layoutForRepresentation(
+          statement.representationName,
+          generatorResultEntries ?? [dynamicObjectStatementEntry(statement)!],
+          existing,
+        ),
+      );
     }
   };
   func.body.forEach(visitStatement);
@@ -867,6 +1004,21 @@ function renderDynamicObjectStoredValue(
     `${indent}ref.cast (ref ${typeName})`,
     `${indent}struct.get ${typeName} $value_${index}`,
   ];
+  if (storedValueType === 'tagged_ref' && targetValueType === 'f64') {
+    return [
+      ...rawValue,
+      `${indent}ref.cast (ref ${taggedValueTypeName()})`,
+      `${indent}struct.get ${taggedValueTypeName()} $number_payload`,
+    ];
+  }
+  if (storedValueType === 'tagged_ref' && targetValueType === 'i32') {
+    return [
+      ...rawValue,
+      `${indent}ref.cast (ref ${taggedValueTypeName()})`,
+      `${indent}struct.get ${taggedValueTypeName()} $number_payload`,
+      `${indent}i32.trunc_f64_s`,
+    ];
+  }
   if (targetValueType !== 'tagged_ref') {
     return rawValue;
   }
@@ -916,6 +1068,55 @@ function renderDynamicObjectStoredValue(
         `${indent}struct.new ${taggedValueTypeName()}`,
       ];
   }
+}
+
+function renderDynamicObjectSetValue(
+  expression: SemanticExpressionIR,
+  sourceValueType: string,
+  storedValueType: string,
+  indent: string,
+  context: FunctionRenderContext,
+): readonly string[] {
+  if (sourceValueType === storedValueType) {
+    return renderExpression(expression, indent, context);
+  }
+  if (sourceValueType === 'tagged_ref' && storedValueType === 'f64') {
+    return [
+      ...renderExpression(expression, indent, context),
+      `${indent}ref.cast (ref ${taggedValueTypeName()})`,
+      `${indent}struct.get ${taggedValueTypeName()} $number_payload`,
+    ];
+  }
+  if (sourceValueType === 'tagged_ref' && storedValueType === 'i32') {
+    return [
+      ...renderExpression(expression, indent, context),
+      `${indent}ref.cast (ref ${taggedValueTypeName()})`,
+      `${indent}struct.get ${taggedValueTypeName()} $number_payload`,
+      `${indent}i32.trunc_f64_s`,
+    ];
+  }
+  if (storedValueType === 'tagged_ref') {
+    switch (sourceValueType) {
+      case 'f64':
+        return [
+          `${indent}i32.const ${TAGGED_NUMBER_TAG}`,
+          ...renderExpression(expression, indent, context),
+          `${indent}ref.null extern`,
+          `${indent}ref.null eq`,
+          `${indent}struct.new ${taggedValueTypeName()}`,
+        ];
+      case 'i32':
+        return [
+          `${indent}i32.const ${TAGGED_BOOLEAN_TAG}`,
+          ...renderExpression(expression, indent, context),
+          `${indent}f64.convert_i32_s`,
+          `${indent}ref.null extern`,
+          `${indent}ref.null eq`,
+          `${indent}struct.new ${taggedValueTypeName()}`,
+        ];
+    }
+  }
+  return renderExpression(expression, indent, context);
 }
 
 function renderDynamicObjectSizeStatement(
@@ -2391,6 +2592,16 @@ function renderExpression(
           `${indent}call ${closureDispatchFunctionName(expression.signatureId)}`,
         ];
       }
+      if (
+        expression.callee.kind === 'local_get' &&
+        context.closureObjectLocalNames.has(expression.callee.name)
+      ) {
+        return [
+          ...renderExpression(expression.callee, indent, context),
+          ...expression.args.flatMap((arg) => renderExpression(arg, indent, context)),
+          `${indent}call ${closureDispatchFunctionName(expression.signatureId)}`,
+        ];
+      }
       return [
         ...expression.args.flatMap((arg) => renderExpression(arg, indent, context)),
         ...renderExpression(expression.callee, indent, context),
@@ -2609,6 +2820,7 @@ function renderStatement(
         context.localAliases,
         statement.valueType,
       );
+      const storedValueType = layout?.entries[index]?.valueType ?? statement.valueType;
       return [
         `${indent}local.get $${sanitizeIdentifier(statement.objectName)}`,
         `${indent}ref.cast (ref ${typeName})`,
@@ -2620,7 +2832,15 @@ function renderStatement(
         `${indent}struct.set ${typeName} $present_${index}`,
         `${indent}local.get $${sanitizeIdentifier(statement.objectName)}`,
         `${indent}ref.cast (ref ${typeName})`,
-        ...renderExpression(statement.value, indent, context),
+        ...(statement.valueType === 'closure_ref'
+          ? renderClosureObjectValueExpression(statement.value, indent, context)
+          : renderDynamicObjectSetValue(
+            statement.value,
+            statement.valueType,
+            storedValueType,
+            indent,
+            context,
+          )),
         `${indent}struct.set ${typeName} $value_${index}`,
       ];
     }
@@ -2749,6 +2969,7 @@ function renderFunctionPlan(
     boxLocalValueTypes: boxLocalValueTypes(func),
     closureLocalLiterals: closureLocalLiterals(func),
     closureBoxLocalLiterals: closureBoxLocalLiterals(func),
+    closureObjectLocalNames: closureObjectLocalNames(func),
     closureFunctionNames,
     fallbackObjectLocalLayouts: fallbackObjectLocalLayouts(func),
     dynamicObjectLocalLayouts: dynamicLayouts,
@@ -2829,15 +3050,24 @@ function renderStringEqualityImportPlan(plan: WasmGcModulePlanIR): readonly stri
 function collectBoxedClosureDispatchSignatureIdsFromExpression(
   expression: SemanticExpressionIR,
   signatureIds: Set<number>,
+  closureObjectNames: ReadonlySet<string> = new Set(),
 ): void {
   switch (expression.kind) {
     case 'closure_call':
-      if (expression.callee.kind === 'box_get') {
+      if (
+        expression.callee.kind === 'box_get' ||
+        (expression.callee.kind === 'local_get' &&
+          closureObjectNames.has(expression.callee.name))
+      ) {
         signatureIds.add(expression.signatureId);
       }
-      collectBoxedClosureDispatchSignatureIdsFromExpression(expression.callee, signatureIds);
+      collectBoxedClosureDispatchSignatureIdsFromExpression(
+        expression.callee,
+        signatureIds,
+        closureObjectNames,
+      );
       expression.args.forEach((arg) =>
-        collectBoxedClosureDispatchSignatureIdsFromExpression(arg, signatureIds)
+        collectBoxedClosureDispatchSignatureIdsFromExpression(arg, signatureIds, closureObjectNames)
       );
       break;
     case 'call':
@@ -2849,12 +3079,16 @@ function collectBoxedClosureDispatchSignatureIdsFromExpression(
         }
       }
       expression.args.forEach((arg) =>
-        collectBoxedClosureDispatchSignatureIdsFromExpression(arg, signatureIds)
+        collectBoxedClosureDispatchSignatureIdsFromExpression(arg, signatureIds, closureObjectNames)
       );
       break;
     case 'closure_literal':
       expression.captures.forEach((capture) =>
-        collectBoxedClosureDispatchSignatureIdsFromExpression(capture, signatureIds)
+        collectBoxedClosureDispatchSignatureIdsFromExpression(
+          capture,
+          signatureIds,
+          closureObjectNames,
+        )
       );
       break;
     case 'box_new':
@@ -2873,14 +3107,30 @@ function collectBoxedClosureDispatchSignatureIdsFromExpression(
     case 'tagged_has_tag':
     case 'string_to_owned':
     case 'owned_string_to_host':
-      collectBoxedClosureDispatchSignatureIdsFromExpression(expression.value, signatureIds);
+      collectBoxedClosureDispatchSignatureIdsFromExpression(
+        expression.value,
+        signatureIds,
+        closureObjectNames,
+      );
       break;
     case 'box_get':
-      collectBoxedClosureDispatchSignatureIdsFromExpression(expression.box, signatureIds);
+      collectBoxedClosureDispatchSignatureIdsFromExpression(
+        expression.box,
+        signatureIds,
+        closureObjectNames,
+      );
       break;
     case 'binary':
-      collectBoxedClosureDispatchSignatureIdsFromExpression(expression.left, signatureIds);
-      collectBoxedClosureDispatchSignatureIdsFromExpression(expression.right, signatureIds);
+      collectBoxedClosureDispatchSignatureIdsFromExpression(
+        expression.left,
+        signatureIds,
+        closureObjectNames,
+      );
+      collectBoxedClosureDispatchSignatureIdsFromExpression(
+        expression.right,
+        signatureIds,
+        closureObjectNames,
+      );
       break;
     case 'owned_number_array_literal':
     case 'owned_string_array_literal':
@@ -2888,7 +3138,11 @@ function collectBoxedClosureDispatchSignatureIdsFromExpression(
     case 'owned_boolean_array_literal':
     case 'owned_tagged_array_literal':
       expression.elements.forEach((element) =>
-        collectBoxedClosureDispatchSignatureIdsFromExpression(element, signatureIds)
+        collectBoxedClosureDispatchSignatureIdsFromExpression(
+          element,
+          signatureIds,
+          closureObjectNames,
+        )
       );
       break;
     case 'owned_number_array_element':
@@ -2896,33 +3150,77 @@ function collectBoxedClosureDispatchSignatureIdsFromExpression(
     case 'owned_heap_array_element':
     case 'owned_boolean_array_element':
     case 'owned_tagged_array_element':
-      collectBoxedClosureDispatchSignatureIdsFromExpression(expression.value, signatureIds);
-      collectBoxedClosureDispatchSignatureIdsFromExpression(expression.index, signatureIds);
+      collectBoxedClosureDispatchSignatureIdsFromExpression(
+        expression.value,
+        signatureIds,
+        closureObjectNames,
+      );
+      collectBoxedClosureDispatchSignatureIdsFromExpression(
+        expression.index,
+        signatureIds,
+        closureObjectNames,
+      );
       break;
     case 'owned_number_array_push':
     case 'owned_string_array_push':
     case 'owned_boolean_array_push':
     case 'owned_tagged_array_push':
-      collectBoxedClosureDispatchSignatureIdsFromExpression(expression.array, signatureIds);
-      collectBoxedClosureDispatchSignatureIdsFromExpression(expression.value, signatureIds);
+      collectBoxedClosureDispatchSignatureIdsFromExpression(
+        expression.array,
+        signatureIds,
+        closureObjectNames,
+      );
+      collectBoxedClosureDispatchSignatureIdsFromExpression(
+        expression.value,
+        signatureIds,
+        closureObjectNames,
+      );
       break;
     case 'owned_number_array_splice':
     case 'owned_string_array_splice':
     case 'owned_boolean_array_splice':
     case 'owned_tagged_array_splice':
-      collectBoxedClosureDispatchSignatureIdsFromExpression(expression.array, signatureIds);
-      collectBoxedClosureDispatchSignatureIdsFromExpression(expression.start, signatureIds);
-      collectBoxedClosureDispatchSignatureIdsFromExpression(expression.deleteCount, signatureIds);
-      collectBoxedClosureDispatchSignatureIdsFromExpression(expression.items, signatureIds);
+      collectBoxedClosureDispatchSignatureIdsFromExpression(
+        expression.array,
+        signatureIds,
+        closureObjectNames,
+      );
+      collectBoxedClosureDispatchSignatureIdsFromExpression(
+        expression.start,
+        signatureIds,
+        closureObjectNames,
+      );
+      collectBoxedClosureDispatchSignatureIdsFromExpression(
+        expression.deleteCount,
+        signatureIds,
+        closureObjectNames,
+      );
+      collectBoxedClosureDispatchSignatureIdsFromExpression(
+        expression.items,
+        signatureIds,
+        closureObjectNames,
+      );
       break;
     case 'owned_number_array_index_of':
     case 'owned_string_array_index_of':
     case 'owned_boolean_array_index_of':
-      collectBoxedClosureDispatchSignatureIdsFromExpression(expression.array, signatureIds);
-      collectBoxedClosureDispatchSignatureIdsFromExpression(expression.search, signatureIds);
+      collectBoxedClosureDispatchSignatureIdsFromExpression(
+        expression.array,
+        signatureIds,
+        closureObjectNames,
+      );
+      collectBoxedClosureDispatchSignatureIdsFromExpression(
+        expression.search,
+        signatureIds,
+        closureObjectNames,
+      );
       break;
     case 'owned_array_length':
-      collectBoxedClosureDispatchSignatureIdsFromExpression(expression.value, signatureIds);
+      collectBoxedClosureDispatchSignatureIdsFromExpression(
+        expression.value,
+        signatureIds,
+        closureObjectNames,
+      );
       break;
     case 'number_literal':
     case 'boolean_literal':
@@ -2943,42 +3241,91 @@ function collectBoxedClosureDispatchSignatureIdsFromExpression(
 function collectBoxedClosureDispatchSignatureIdsFromStatement(
   statement: SemanticStatementIR,
   signatureIds: Set<number>,
+  closureObjectNames: ReadonlySet<string> = new Set(),
 ): void {
   switch (statement.kind) {
     case 'return':
     case 'local_set':
     case 'expression':
-      collectBoxedClosureDispatchSignatureIdsFromExpression(statement.value, signatureIds);
+      collectBoxedClosureDispatchSignatureIdsFromExpression(
+        statement.value,
+        signatureIds,
+        closureObjectNames,
+      );
       break;
     case 'box_set':
-      collectBoxedClosureDispatchSignatureIdsFromExpression(statement.box, signatureIds);
-      collectBoxedClosureDispatchSignatureIdsFromExpression(statement.value, signatureIds);
+      collectBoxedClosureDispatchSignatureIdsFromExpression(
+        statement.box,
+        signatureIds,
+        closureObjectNames,
+      );
+      collectBoxedClosureDispatchSignatureIdsFromExpression(
+        statement.value,
+        signatureIds,
+        closureObjectNames,
+      );
       break;
     case 'specialized_object_field_set':
-      collectBoxedClosureDispatchSignatureIdsFromExpression(statement.value, signatureIds);
+      collectBoxedClosureDispatchSignatureIdsFromExpression(
+        statement.value,
+        signatureIds,
+        closureObjectNames,
+      );
       break;
     case 'owned_number_array_set':
     case 'owned_string_array_set':
     case 'owned_heap_array_set':
     case 'owned_boolean_array_set':
     case 'owned_tagged_array_set':
-      collectBoxedClosureDispatchSignatureIdsFromExpression(statement.array, signatureIds);
-      collectBoxedClosureDispatchSignatureIdsFromExpression(statement.index, signatureIds);
-      collectBoxedClosureDispatchSignatureIdsFromExpression(statement.value, signatureIds);
+      collectBoxedClosureDispatchSignatureIdsFromExpression(
+        statement.array,
+        signatureIds,
+        closureObjectNames,
+      );
+      collectBoxedClosureDispatchSignatureIdsFromExpression(
+        statement.index,
+        signatureIds,
+        closureObjectNames,
+      );
+      collectBoxedClosureDispatchSignatureIdsFromExpression(
+        statement.value,
+        signatureIds,
+        closureObjectNames,
+      );
       break;
     case 'if':
-      collectBoxedClosureDispatchSignatureIdsFromExpression(statement.condition, signatureIds);
+      collectBoxedClosureDispatchSignatureIdsFromExpression(
+        statement.condition,
+        signatureIds,
+        closureObjectNames,
+      );
       statement.thenBody.forEach((nested) =>
-        collectBoxedClosureDispatchSignatureIdsFromStatement(nested, signatureIds)
+        collectBoxedClosureDispatchSignatureIdsFromStatement(
+          nested,
+          signatureIds,
+          closureObjectNames,
+        )
       );
       statement.elseBody.forEach((nested) =>
-        collectBoxedClosureDispatchSignatureIdsFromStatement(nested, signatureIds)
+        collectBoxedClosureDispatchSignatureIdsFromStatement(
+          nested,
+          signatureIds,
+          closureObjectNames,
+        )
       );
       break;
     case 'while':
-      collectBoxedClosureDispatchSignatureIdsFromExpression(statement.condition, signatureIds);
+      collectBoxedClosureDispatchSignatureIdsFromExpression(
+        statement.condition,
+        signatureIds,
+        closureObjectNames,
+      );
       statement.body.forEach((nested) =>
-        collectBoxedClosureDispatchSignatureIdsFromStatement(nested, signatureIds)
+        collectBoxedClosureDispatchSignatureIdsFromStatement(
+          nested,
+          signatureIds,
+          closureObjectNames,
+        )
       );
       break;
     case 'specialized_object_new':
@@ -2994,10 +3341,18 @@ function collectBoxedClosureDispatchSignatureIdsFromStatement(
     case 'dynamic_object_values':
       break;
     case 'dynamic_object_property_set':
-      collectBoxedClosureDispatchSignatureIdsFromExpression(statement.value, signatureIds);
+      collectBoxedClosureDispatchSignatureIdsFromExpression(
+        statement.value,
+        signatureIds,
+        closureObjectNames,
+      );
       break;
     case 'throw_tagged':
-      collectBoxedClosureDispatchSignatureIdsFromExpression(statement.value, signatureIds);
+      collectBoxedClosureDispatchSignatureIdsFromExpression(
+        statement.value,
+        signatureIds,
+        closureObjectNames,
+      );
       break;
     case 'trap':
     case 'unsupported_statement':
@@ -3012,8 +3367,13 @@ function collectBoxedClosureDispatchSignatureIdsFromStatement(
 function boxedClosureDispatchSignatureIds(plan: WasmGcModulePlanIR): readonly number[] {
   const signatureIds = new Set<number>();
   for (const func of plan.functionPlans) {
+    const closureObjectNames = closureObjectLocalNames(func);
     func.body.forEach((statement) =>
-      collectBoxedClosureDispatchSignatureIdsFromStatement(statement, signatureIds)
+      collectBoxedClosureDispatchSignatureIdsFromStatement(
+        statement,
+        signatureIds,
+        closureObjectNames,
+      )
     );
   }
   return [...signatureIds].sort((left, right) => left - right);
@@ -3030,6 +3390,11 @@ function moduleUsesClosureObjects(plan: WasmGcModulePlanIR): boolean {
         statement.kind === 'box_set' &&
         statement.valueType === 'closure_ref' &&
         statement.value.kind === 'closure_literal'
+      ) {
+        usesClosureObject = true;
+      } else if (
+        statement.kind === 'dynamic_object_property_set' &&
+        statement.valueType === 'closure_ref'
       ) {
         usesClosureObject = true;
       }
