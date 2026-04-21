@@ -44,21 +44,22 @@ Legend:
 - `batch-45`: covered by the forty-fifth red-team batch added with this record.
 - `batch-46`: covered by the forty-sixth red-team batch added with this record.
 - `batch-47`: covered by the forty-seventh red-team batch added with this record.
+- `batch-48`: covered by the forty-eighth red-team batch added with this record.
 - `audit-debt`: missing coverage that should be closed before calling the family fully audited.
 - `out-of-scope`: explicitly outside the strong soundness claim.
 - `design-gap`: documented future work, not a current guarantee.
 
-| Owned family                         | Fresh project | Reused prepared          | File-scoped              | Persistent checker cache | Package verification cache | LSP/incremental session | Build cache/output | Compiler/target gate |
-| ------------------------------------ | ------------- | ------------------------ | ------------------------ | ------------------------ | -------------------------- | ----------------------- | ------------------ | -------------------- |
-| Prepared/package-source parity       | covered       | covered                  | covered                  | covered,batch-29         | batch-3                    | covered                 | batch-1,10,28,31   | audit-debt           |
-| Flow/effect invalidation             | covered       | batch-35,40,43           | covered                  | batch-4,35,40,43         | batch-4,40,43              | batch-35,40,43          | batch-44           | batch-44             |
-| Proof-oracle verification            | covered       | batch-38                 | covered                  | batch-38                 | batch-38                   | batch-38                | batch-44           | batch-44             |
-| BareObject/null-prototype provenance | covered       | covered                  | covered                  | batch-39                 | covered                    | batch-39                | batch-39           | batch-45             |
-| `#[value]` parity                    | covered       | batch-1                  | batch-1                  | batch-1                  | batch-5                    | batch-1                 | batch-1            | covered              |
-| Machine numerics                     | covered       | batch-37                 | batch-37                 | batch-37                 | batch-5                    | batch-37                | batch-1,37         | batch-37             |
-| Macro/capability boundary            | covered       | covered                  | audit-debt               | batch-6                  | batch-41,42                | audit-debt              | batch-7            | batch-8              |
-| Compiler acceptance parity           | covered       | audit-debt               | out-of-scope             | out-of-scope             | out-of-scope               | out-of-scope            | batch-1,27,30      | covered,batch-27,30  |
-| Project-reference root ownership     | batch-32,47   | out-of-scope,batch-46,47 | out-of-scope,batch-46,47 | batch-32                 | out-of-scope               | batch-34,47             | batch-33           | out-of-scope         |
+| Owned family                         | Fresh project  | Reused prepared             | File-scoped                 | Persistent checker cache | Package verification cache | LSP/incremental session | Build cache/output | Compiler/target gate |
+| ------------------------------------ | -------------- | --------------------------- | --------------------------- | ------------------------ | -------------------------- | ----------------------- | ------------------ | -------------------- |
+| Prepared/package-source parity       | covered        | covered                     | covered                     | covered,batch-29         | batch-3                    | covered                 | batch-1,10,28,31   | audit-debt           |
+| Flow/effect invalidation             | covered        | batch-35,40,43              | covered                     | batch-4,35,40,43         | batch-4,40,43              | batch-35,40,43          | batch-44           | batch-44             |
+| Proof-oracle verification            | covered        | batch-38                    | covered                     | batch-38                 | batch-38                   | batch-38                | batch-44           | batch-44             |
+| BareObject/null-prototype provenance | covered        | covered                     | covered                     | batch-39                 | covered                    | batch-39                | batch-39           | batch-45             |
+| `#[value]` parity                    | covered        | batch-1                     | batch-1                     | batch-1                  | batch-5                    | batch-1                 | batch-1            | covered              |
+| Machine numerics                     | covered        | batch-37                    | batch-37                    | batch-37                 | batch-5                    | batch-37                | batch-1,37         | batch-37             |
+| Macro/capability boundary            | covered        | covered                     | audit-debt                  | batch-6                  | batch-41,42                | audit-debt              | batch-7            | batch-8              |
+| Compiler acceptance parity           | covered        | audit-debt                  | out-of-scope                | out-of-scope             | out-of-scope               | out-of-scope            | batch-1,27,30      | covered,batch-27,30  |
+| Project-reference root ownership     | batch-32,47,48 | out-of-scope,batch-46,47,48 | out-of-scope,batch-46,47,48 | batch-32,48              | out-of-scope               | batch-34,47,48          | batch-33           | out-of-scope         |
 
 ## Batch 1 Findings
 
@@ -1175,6 +1176,26 @@ Legend:
   poison-root coverage remains lower-priority breadth coverage because Batch 33 already covers the
   build route for one-hop references.
 
+## Batch 48 Findings
+
+### Project-Reference Graph Retarget Drift
+
+- Attack: prime an `app -> mid -> lib-a` project-reference graph with clean `lib-a` and `lib-b`
+  roots, a clean recursive CLI cache, and clean recursive session analysis. Then edit
+  `mid/tsconfig.json` so the graph retargets from `lib-a` to `lib-b`, while adding `TS2322` poison
+  roots to both the old `lib-a` target and the new `lib-b` target.
+- Routes: cold recursive CLI check, warm recursive CLI check with the original cache root, recursive
+  incremental full-project session analysis, fresh prepared analysis, reused prepared analysis, and
+  file-scoped app analysis.
+- Expected result: cold and warm recursive CLI plus recursive session analysis report only `TS2322`
+  from `lib-b/src/poison.sts`; fresh prepared, reused prepared, and file-scoped app analysis remain
+  intentionally focused on the app graph/requested file.
+- Result: no production bug found. Recursive checker routes drop stale reference graph state when a
+  transitive `tsconfig` reference retargets, and persistent recursive CLI cache reuse does not
+  retain the old clean `lib-a` graph.
+- Residual risk: diamond-reference diagnostic dedupe and transitive `build --references` graph
+  retargeting remain lower-priority breadth coverage.
+
 ## Remaining High-Priority Audit Debt
 
 - Recursive package support-file tracking for non-`.sts` helper graphs if that source-published
@@ -1673,6 +1694,15 @@ red-team attack, the route matrix it covers, and the residual risk left behind.
   tests/integration/red_team_audit_test.ts`:
   passed, 1 test in `15s`.
 - `deno test --allow-all tests/integration/red_team_audit_test.ts`: passed, 60 tests in `7m8s`.
+- `deno fmt --check tests/integration/red_team_audit_test.ts
+  docs/project/2026-04-17-red-team-audit.md`:
+  passed.
+- `deno lint tests/integration/red_team_audit_test.ts`: passed.
+- `deno task check`: passed.
+- `deno test --allow-all --filter "recursive project-reference graph retargets drop stale sessions"
+  tests/integration/red_team_audit_test.ts`:
+  passed, 1 test in `23s`.
+- `deno test --allow-all tests/integration/red_team_audit_test.ts`: passed, 61 tests in `6m39s`.
 - `deno fmt --check tests/integration/red_team_audit_test.ts
   docs/project/2026-04-17-red-team-audit.md`:
   passed.
