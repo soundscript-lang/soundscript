@@ -50,7 +50,8 @@ function isSupportedOwnedHeapArrayElementType(
   checker: ts.TypeChecker,
   type: ts.Type,
 ): boolean {
-  if (isStringLikeType(type) || (type.flags & ts.TypeFlags.NumberLike) !== 0 ||
+  if (
+    isStringLikeType(type) || (type.flags & ts.TypeFlags.NumberLike) !== 0 ||
     (type.flags & ts.TypeFlags.BooleanLike) !== 0 || isUndefinedType(type) || isNullType(type)
   ) {
     return false;
@@ -81,6 +82,7 @@ export function isSupportedOwnedHeapArrayType(checker: ts.TypeChecker, type: ts.
 
 function getTaggedArrayElementKinds(type: ts.Type): {
   includesBoolean: boolean;
+  includesBigInt: boolean;
   includesNull: boolean;
   includesNumber: boolean;
   includesString: boolean;
@@ -88,11 +90,36 @@ function getTaggedArrayElementKinds(type: ts.Type): {
 } | undefined {
   const boundaryKinds = getHostTaggedBoundaryKinds(type);
   if (boundaryKinds) {
-    return boundaryKinds;
+    return { ...boundaryKinds, includesBigInt: false };
+  }
+  if ((type.flags & ts.TypeFlags.Union) !== 0) {
+    const members = (type as ts.UnionType).types;
+    const merged = {
+      includesBoolean: false,
+      includesBigInt: false,
+      includesNull: false,
+      includesNumber: false,
+      includesString: false,
+      includesUndefined: false,
+    };
+    for (const member of members) {
+      const kinds = getTaggedArrayElementKinds(member);
+      if (!kinds) {
+        return undefined;
+      }
+      merged.includesBoolean ||= kinds.includesBoolean;
+      merged.includesBigInt ||= kinds.includesBigInt;
+      merged.includesNull ||= kinds.includesNull;
+      merged.includesNumber ||= kinds.includesNumber;
+      merged.includesString ||= kinds.includesString;
+      merged.includesUndefined ||= kinds.includesUndefined;
+    }
+    return merged;
   }
   if ((type.flags & ts.TypeFlags.NumberLike) !== 0) {
     return {
       includesBoolean: false,
+      includesBigInt: false,
       includesNull: false,
       includesNumber: true,
       includesString: false,
@@ -102,6 +129,7 @@ function getTaggedArrayElementKinds(type: ts.Type): {
   if ((type.flags & ts.TypeFlags.BooleanLike) !== 0) {
     return {
       includesBoolean: true,
+      includesBigInt: false,
       includesNull: false,
       includesNumber: false,
       includesString: false,
@@ -111,15 +139,27 @@ function getTaggedArrayElementKinds(type: ts.Type): {
   if (isStringLikeType(type)) {
     return {
       includesBoolean: false,
+      includesBigInt: false,
       includesNull: false,
       includesNumber: false,
       includesString: true,
       includesUndefined: false,
     };
   }
+  if ((type.flags & ts.TypeFlags.BigIntLike) !== 0) {
+    return {
+      includesBoolean: false,
+      includesBigInt: true,
+      includesNull: false,
+      includesNumber: false,
+      includesString: false,
+      includesUndefined: false,
+    };
+  }
   if (isUndefinedType(type)) {
     return {
       includesBoolean: false,
+      includesBigInt: false,
       includesNull: false,
       includesNumber: false,
       includesString: false,
@@ -129,6 +169,7 @@ function getTaggedArrayElementKinds(type: ts.Type): {
   if (isNullType(type)) {
     return {
       includesBoolean: false,
+      includesBigInt: false,
       includesNull: true,
       includesNumber: false,
       includesString: false,
@@ -148,8 +189,11 @@ export function getSupportedOwnedTaggedArrayKinds(
   includesString: boolean;
   includesUndefined: boolean;
 } | undefined {
-  if (isSupportedOwnedStringArrayType(checker, type) || isSupportedOwnedNumberArrayType(checker, type) ||
-    isSupportedOwnedBooleanArrayType(checker, type)) {
+  if (
+    isSupportedOwnedStringArrayType(checker, type) ||
+    isSupportedOwnedNumberArrayType(checker, type) ||
+    isSupportedOwnedBooleanArrayType(checker, type)
+  ) {
     return undefined;
   }
   if ((type.flags & ts.TypeFlags.Object) === 0) {
@@ -163,6 +207,7 @@ export function getSupportedOwnedTaggedArrayKinds(
   }
   const merged = {
     includesBoolean: false,
+    includesBigInt: false,
     includesNull: false,
     includesNumber: false,
     includesString: false,
@@ -174,14 +219,22 @@ export function getSupportedOwnedTaggedArrayKinds(
       return undefined;
     }
     merged.includesBoolean ||= kinds.includesBoolean;
+    merged.includesBigInt ||= kinds.includesBigInt;
     merged.includesNull ||= kinds.includesNull;
     merged.includesNumber ||= kinds.includesNumber;
     merged.includesString ||= kinds.includesString;
     merged.includesUndefined ||= kinds.includesUndefined;
   }
-  return merged.includesBoolean || merged.includesNull || merged.includesNumber ||
+  return merged.includesBoolean || merged.includesBigInt || merged.includesNull ||
+      merged.includesNumber ||
       merged.includesString || merged.includesUndefined
-    ? merged
+    ? {
+      includesBoolean: merged.includesBoolean,
+      includesNull: merged.includesNull,
+      includesNumber: merged.includesNumber,
+      includesString: merged.includesString,
+      includesUndefined: merged.includesUndefined,
+    }
     : undefined;
 }
 

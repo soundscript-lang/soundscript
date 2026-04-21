@@ -5094,6 +5094,59 @@ Deno.test('compiler wasm-gc emitter produces runnable internal bigint typeof uni
   assertEquals((main as (mode: number, value: bigint) => number)(2, 20n), 10);
 });
 
+Deno.test('compiler wasm-gc emitter produces runnable bigint tagged array unions', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: { strict: true, target: 'ES2020' },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        export function main(value: bigint, fallback: bigint): bigint {
+          const values: Array<bigint | null> = [null, value];
+          const selected = values[1];
+          if (selected === null) {
+            return fallback;
+          }
+          return selected;
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
+  const mainPlan = snapshot.wasmGcPlan.functionPlans.find((func) => func.name === 'main');
+  const watPath = join(tempDirectory, 'wasm-gc-shadow-bigint-tagged-array.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-shadow-bigint-tagged-array.wasm');
+
+  assertEquals(
+    snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
+    ['array', 'bigint', 'finite_union'],
+  );
+  assertEquals(mainPlan?.bodyStatus, 'emittable');
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
+  const result = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(result.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(result.success, true);
+
+  const wasm = await Deno.readFile(wasmPath);
+  const instance = await WebAssembly.instantiate(wasm);
+  const main = instance.instance.exports['main.ts:main'];
+  assertEquals(typeof main, 'function');
+  const value = 30n;
+  const fallback = 40n;
+  assertEquals((main as (value: bigint, fallback: bigint) => bigint)(value, fallback), value);
+});
+
 Deno.test('compiler wasm-gc emitter produces runnable internal array-null unions', async () => {
   const tempDirectory = await createTempProject([
     {
