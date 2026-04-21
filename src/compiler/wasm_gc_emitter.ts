@@ -201,6 +201,14 @@ function closureEnvTypeName(functionId: number): string {
   return `$closure_env_${functionId}`;
 }
 
+function closureObjectTypeName(): string {
+  return '$closure_object';
+}
+
+function closureDispatchFunctionName(signatureId: number): string {
+  return `$closure_dispatch_sig_${signatureId}`;
+}
+
 function boxTypeName(valueType: string): string {
   return `$box_${sanitizeIdentifier(valueType)}`;
 }
@@ -317,6 +325,21 @@ function closureFunctionTargetName(
   context: FunctionRenderContext,
 ): string {
   return context.closureFunctionNames.get(functionId) ?? closureFunctionName(functionId);
+}
+
+function renderClosureObjectExpression(
+  expression: Extract<SemanticExpressionIR, { kind: 'closure_literal' }>,
+  indent: string,
+  context: FunctionRenderContext,
+): readonly string[] {
+  return [
+    `${indent}i32.const ${expression.functionId}`,
+    ...(expression.captures.length === 0 ? [`${indent}ref.null eq`] : [
+      ...expression.captures.flatMap((capture) => renderExpression(capture, indent, context)),
+      `${indent}struct.new ${closureEnvTypeName(expression.functionId)}`,
+    ]),
+    `${indent}struct.new ${closureObjectTypeName()}`,
+  ];
 }
 
 function boxLocalValueTypes(func: WasmGcFunctionPlanIR): ReadonlyMap<string, string> {
@@ -2336,7 +2359,11 @@ function renderExpression(
         ];
       }
       if (expression.callee.kind === 'box_get') {
-        return [`${indent}unreachable`];
+        return [
+          ...renderExpression(expression.callee, indent, context),
+          ...expression.args.flatMap((arg) => renderExpression(arg, indent, context)),
+          `${indent}call ${closureDispatchFunctionName(expression.signatureId)}`,
+        ];
       }
       return [
         ...expression.args.flatMap((arg) => renderExpression(arg, indent, context)),
@@ -2574,7 +2601,9 @@ function renderStatement(
       return [
         ...renderExpression(statement.box, indent, context),
         `${indent}ref.cast (ref ${boxTypeName(statement.valueType)})`,
-        ...renderExpression(statement.value, indent, context),
+        ...(statement.valueType === 'closure_ref' && statement.value.kind === 'closure_literal'
+          ? renderClosureObjectExpression(statement.value, indent, context)
+          : renderExpression(statement.value, indent, context)),
         `${indent}struct.set ${boxTypeName(statement.valueType)} $value`,
       ];
     case 'owned_number_array_set':
@@ -2754,6 +2783,205 @@ function renderStringEqualityImportPlan(plan: WasmGcModulePlanIR): readonly stri
     : [];
 }
 
+function collectBoxedClosureDispatchSignatureIdsFromExpression(
+  expression: SemanticExpressionIR,
+  signatureIds: Set<number>,
+): void {
+  switch (expression.kind) {
+    case 'closure_call':
+      if (expression.callee.kind === 'box_get') {
+        signatureIds.add(expression.signatureId);
+      }
+      collectBoxedClosureDispatchSignatureIdsFromExpression(expression.callee, signatureIds);
+      expression.args.forEach((arg) =>
+        collectBoxedClosureDispatchSignatureIdsFromExpression(arg, signatureIds)
+      );
+      break;
+    case 'call':
+      expression.args.forEach((arg) =>
+        collectBoxedClosureDispatchSignatureIdsFromExpression(arg, signatureIds)
+      );
+      break;
+    case 'closure_literal':
+      expression.captures.forEach((capture) =>
+        collectBoxedClosureDispatchSignatureIdsFromExpression(capture, signatureIds)
+      );
+      break;
+    case 'box_new':
+    case 'tag_number':
+    case 'tag_boolean':
+    case 'tag_string':
+    case 'tag_symbol':
+    case 'tag_heap_object':
+    case 'untag_number':
+    case 'untag_boolean':
+    case 'untag_owned_string':
+    case 'untag_symbol':
+    case 'untag_heap_object':
+    case 'tagged_is_null':
+    case 'tagged_is_undefined':
+    case 'tagged_has_tag':
+    case 'string_to_owned':
+    case 'owned_string_to_host':
+      collectBoxedClosureDispatchSignatureIdsFromExpression(expression.value, signatureIds);
+      break;
+    case 'box_get':
+      collectBoxedClosureDispatchSignatureIdsFromExpression(expression.box, signatureIds);
+      break;
+    case 'binary':
+      collectBoxedClosureDispatchSignatureIdsFromExpression(expression.left, signatureIds);
+      collectBoxedClosureDispatchSignatureIdsFromExpression(expression.right, signatureIds);
+      break;
+    case 'owned_number_array_literal':
+    case 'owned_string_array_literal':
+    case 'owned_heap_array_literal':
+    case 'owned_boolean_array_literal':
+    case 'owned_tagged_array_literal':
+      expression.elements.forEach((element) =>
+        collectBoxedClosureDispatchSignatureIdsFromExpression(element, signatureIds)
+      );
+      break;
+    case 'owned_number_array_element':
+    case 'owned_string_array_element':
+    case 'owned_heap_array_element':
+    case 'owned_boolean_array_element':
+    case 'owned_tagged_array_element':
+      collectBoxedClosureDispatchSignatureIdsFromExpression(expression.value, signatureIds);
+      collectBoxedClosureDispatchSignatureIdsFromExpression(expression.index, signatureIds);
+      break;
+    case 'owned_number_array_push':
+    case 'owned_string_array_push':
+    case 'owned_boolean_array_push':
+    case 'owned_tagged_array_push':
+      collectBoxedClosureDispatchSignatureIdsFromExpression(expression.array, signatureIds);
+      collectBoxedClosureDispatchSignatureIdsFromExpression(expression.value, signatureIds);
+      break;
+    case 'owned_number_array_splice':
+    case 'owned_string_array_splice':
+    case 'owned_boolean_array_splice':
+    case 'owned_tagged_array_splice':
+      collectBoxedClosureDispatchSignatureIdsFromExpression(expression.array, signatureIds);
+      collectBoxedClosureDispatchSignatureIdsFromExpression(expression.start, signatureIds);
+      collectBoxedClosureDispatchSignatureIdsFromExpression(expression.deleteCount, signatureIds);
+      collectBoxedClosureDispatchSignatureIdsFromExpression(expression.items, signatureIds);
+      break;
+    case 'owned_number_array_index_of':
+    case 'owned_string_array_index_of':
+    case 'owned_boolean_array_index_of':
+      collectBoxedClosureDispatchSignatureIdsFromExpression(expression.array, signatureIds);
+      collectBoxedClosureDispatchSignatureIdsFromExpression(expression.search, signatureIds);
+      break;
+    case 'owned_array_length':
+      collectBoxedClosureDispatchSignatureIdsFromExpression(expression.value, signatureIds);
+      break;
+    case 'number_literal':
+    case 'boolean_literal':
+    case 'undefined_literal':
+    case 'null_literal':
+    case 'owned_string_literal':
+    case 'local_get':
+    case 'closure_null':
+    case 'unsupported_expression':
+      break;
+    default: {
+      const exhaustiveCheck: never = expression;
+      return exhaustiveCheck;
+    }
+  }
+}
+
+function collectBoxedClosureDispatchSignatureIdsFromStatement(
+  statement: SemanticStatementIR,
+  signatureIds: Set<number>,
+): void {
+  switch (statement.kind) {
+    case 'return':
+    case 'local_set':
+    case 'expression':
+      collectBoxedClosureDispatchSignatureIdsFromExpression(statement.value, signatureIds);
+      break;
+    case 'box_set':
+      collectBoxedClosureDispatchSignatureIdsFromExpression(statement.box, signatureIds);
+      collectBoxedClosureDispatchSignatureIdsFromExpression(statement.value, signatureIds);
+      break;
+    case 'specialized_object_field_set':
+      collectBoxedClosureDispatchSignatureIdsFromExpression(statement.value, signatureIds);
+      break;
+    case 'owned_number_array_set':
+    case 'owned_string_array_set':
+    case 'owned_heap_array_set':
+    case 'owned_boolean_array_set':
+    case 'owned_tagged_array_set':
+      collectBoxedClosureDispatchSignatureIdsFromExpression(statement.array, signatureIds);
+      collectBoxedClosureDispatchSignatureIdsFromExpression(statement.index, signatureIds);
+      collectBoxedClosureDispatchSignatureIdsFromExpression(statement.value, signatureIds);
+      break;
+    case 'if':
+      collectBoxedClosureDispatchSignatureIdsFromExpression(statement.condition, signatureIds);
+      statement.thenBody.forEach((nested) =>
+        collectBoxedClosureDispatchSignatureIdsFromStatement(nested, signatureIds)
+      );
+      statement.elseBody.forEach((nested) =>
+        collectBoxedClosureDispatchSignatureIdsFromStatement(nested, signatureIds)
+      );
+      break;
+    case 'while':
+      collectBoxedClosureDispatchSignatureIdsFromExpression(statement.condition, signatureIds);
+      statement.body.forEach((nested) =>
+        collectBoxedClosureDispatchSignatureIdsFromStatement(nested, signatureIds)
+      );
+      break;
+    case 'specialized_object_new':
+    case 'specialized_object_field_get':
+    case 'fallback_object_new':
+    case 'fallback_object_property_get':
+    case 'dynamic_object_new':
+    case 'dynamic_object_property_get':
+    case 'dynamic_object_property_set':
+    case 'dynamic_object_size':
+    case 'dynamic_object_has':
+    case 'dynamic_object_delete':
+    case 'dynamic_object_clear':
+    case 'dynamic_object_values':
+    case 'trap':
+    case 'unsupported_statement':
+      break;
+    default: {
+      const exhaustiveCheck: never = statement;
+      return exhaustiveCheck;
+    }
+  }
+}
+
+function boxedClosureDispatchSignatureIds(plan: WasmGcModulePlanIR): readonly number[] {
+  const signatureIds = new Set<number>();
+  for (const func of plan.functionPlans) {
+    func.body.forEach((statement) =>
+      collectBoxedClosureDispatchSignatureIdsFromStatement(statement, signatureIds)
+    );
+  }
+  return [...signatureIds].sort((left, right) => left - right);
+}
+
+function moduleUsesClosureObjects(plan: WasmGcModulePlanIR): boolean {
+  if (boxedClosureDispatchSignatureIds(plan).length > 0) {
+    return true;
+  }
+  let usesClosureObject = false;
+  for (const func of plan.functionPlans) {
+    visitSemanticStatements(func.body, (statement) => {
+      if (
+        statement.kind === 'box_set' &&
+        statement.valueType === 'closure_ref' &&
+        statement.value.kind === 'closure_literal'
+      ) {
+        usesClosureObject = true;
+      }
+    });
+  }
+  return usesClosureObject;
+}
+
 function renderClosureSignatureTypes(plan: WasmGcModulePlanIR): readonly string[] {
   const signatures = new Map<number, string>();
   for (const func of plan.functionPlans) {
@@ -2772,6 +3000,72 @@ function renderClosureSignatureTypes(plan: WasmGcModulePlanIR): readonly string[
   return [...signatures.entries()]
     .sort(([left], [right]) => left - right)
     .map(([, rendered]) => rendered);
+}
+
+function renderClosureObjectTypes(plan: WasmGcModulePlanIR): readonly string[] {
+  return moduleUsesClosureObjects(plan)
+    ? [
+      `  (type ${closureObjectTypeName()} (struct`,
+      '    (field $function_id (mut i32))',
+      '    (field $env (mut (ref null eq)))',
+      '  ))',
+    ]
+    : [];
+}
+
+function renderClosureDispatchHelpers(
+  plan: WasmGcModulePlanIR,
+  closureFunctionNames: ReadonlyMap<number, string>,
+): readonly string[] {
+  return boxedClosureDispatchSignatureIds(plan).flatMap((signatureId) => {
+    const targetFunctions = plan.functionPlans
+      .filter((func) =>
+        func.closureFunctionId !== undefined &&
+        func.closureSignatureId === signatureId &&
+        !func.hostImport
+      )
+      .sort((left, right) => left.closureFunctionId! - right.closureFunctionId!);
+    const signatureSource = targetFunctions[0];
+    if (!signatureSource) {
+      return [];
+    }
+    const runtimeParams = signatureSource.params.slice(signatureSource.closureCaptureCount ?? 0);
+    const result = signatureSource.result.length > 0
+      ? ` (result ${wasmTypeForCompilerValueType(signatureSource.result)})`
+      : '';
+    return [
+      `  (func ${closureDispatchFunctionName(signatureId)} (param $closure (ref null eq))${
+        runtimeParams.map((param, index) =>
+          ` (param $arg_${index} ${wasmTypeForCompilerValueType(param.wasmType)})`
+        ).join('')
+      }${result}`,
+      ...targetFunctions.flatMap((func) => {
+        const functionId = func.closureFunctionId!;
+        const captureCount = func.closureCaptureCount ?? 0;
+        return [
+          '    local.get $closure',
+          `    ref.cast (ref ${closureObjectTypeName()})`,
+          `    struct.get ${closureObjectTypeName()} $function_id`,
+          `    i32.const ${functionId}`,
+          '    i32.eq',
+          '    if',
+          ...Array.from({ length: captureCount }, (_, index) => [
+            '      local.get $closure',
+            `      ref.cast (ref ${closureObjectTypeName()})`,
+            `      struct.get ${closureObjectTypeName()} $env`,
+            `      ref.cast (ref ${closureEnvTypeName(functionId)})`,
+            `      struct.get ${closureEnvTypeName(functionId)} $capture_${index}`,
+          ]).flat(),
+          ...runtimeParams.map((_, index) => `      local.get $arg_${index}`),
+          `      call ${closureFunctionNames.get(functionId) ?? closureFunctionName(functionId)}`,
+          '      return',
+          '    end',
+        ];
+      }),
+      '    unreachable',
+      '  )',
+    ];
+  });
 }
 
 function renderDeclaredClosureElements(
@@ -3413,12 +3707,14 @@ export function emitWasmGcModulePlan(plan: WasmGcModulePlanIR): string {
   const arrayTypes = renderArrayTypes(plan);
   const boxTypes = renderBoxTypes(plan);
   const closureSignatureTypes = renderClosureSignatureTypes(plan);
+  const closureObjectTypes = renderClosureObjectTypes(plan);
   const capturedClosureEnvTypes = renderCapturedClosureEnvTypes(plan);
   const fallbackObjectTypes = renderFallbackObjectTypes(plan);
   const dynamicObjectTypes = renderDynamicObjectTypes(plan, dynamicLayoutsByRepresentation);
   const taggedValueTypes = renderTaggedValueType(plan);
   const promiseRecordTypes = renderPromiseRecordTypes(plan);
   const promiseHelperFunctions = renderPromiseHelperFunctions(plan);
+  const closureDispatchHelpers = renderClosureDispatchHelpers(plan, closureFunctionNames);
   const hostImportPlans = plan.functionPlans.flatMap(renderHostImportPlan);
   const stringEqualityImportPlans = renderStringEqualityImportPlan(plan);
   const lines = [
@@ -3430,7 +3726,8 @@ export function emitWasmGcModulePlan(plan: WasmGcModulePlanIR): string {
     '  ;; types',
     ...(
       plan.typePlans.length > 0 || arrayTypes.length > 0 || boxTypes.length > 0 ||
-        closureSignatureTypes.length > 0 || capturedClosureEnvTypes.length > 0 ||
+        closureSignatureTypes.length > 0 || closureObjectTypes.length > 0 ||
+        capturedClosureEnvTypes.length > 0 ||
         fallbackObjectTypes.length > 0 ||
         dynamicObjectTypes.length > 0 || taggedValueTypes.length > 0 ||
         promiseRecordTypes.length > 0
@@ -3442,6 +3739,7 @@ export function emitWasmGcModulePlan(plan: WasmGcModulePlanIR): string {
           ...fallbackObjectTypes,
           ...dynamicObjectTypes,
           ...boxTypes,
+          ...closureObjectTypes,
           ...closureSignatureTypes,
           ...capturedClosureEnvTypes,
         ]
@@ -3451,10 +3749,12 @@ export function emitWasmGcModulePlan(plan: WasmGcModulePlanIR): string {
       ? ['  ;; imports', ...hostImportPlans, ...stringEqualityImportPlans]
       : []),
     '  ;; helpers',
-    ...(plan.helperPlans.length > 0
+    ...(plan.helperPlans.length > 0 || promiseHelperFunctions.length > 0 ||
+        closureDispatchHelpers.length > 0
       ? [
         ...indentLines(plan.helperPlans.map(renderHelperPlan)),
         ...promiseHelperFunctions,
+        ...closureDispatchHelpers,
       ]
       : [
         '    ;; none',

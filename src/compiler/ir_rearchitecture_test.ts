@@ -3354,6 +3354,8 @@ Deno.test('compiler wasm-gc emitter produces runnable no-capture closure calls',
   await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
   const wat = await Deno.readTextFile(watPath);
   assertEquals(wat.includes('(type $closure_sig_0 (func (param f64) (result f64)))'), true);
+  assertEquals(wat.includes('(type $closure_object (struct'), false);
+  assertEquals(wat.includes('(func $closure_dispatch_sig_0'), false);
   assertEquals(wat.includes('ref.func $closure_0'), true);
   assertEquals(wat.includes('call_ref $closure_sig_0'), true);
   const result = await new Deno.Command('wasm-tools', {
@@ -3403,6 +3405,8 @@ Deno.test('compiler wasm-gc emitter produces runnable captured closure calls', a
   const wat = await Deno.readTextFile(watPath);
   assertEquals(wat.includes('(type $box_f64 (struct (field $value (mut f64))))'), true);
   assertEquals(wat.includes('(type $closure_env_0 (struct'), true);
+  assertEquals(wat.includes('(type $closure_object (struct'), false);
+  assertEquals(wat.includes('(func $closure_dispatch_sig_0'), false);
   assertEquals(wat.includes('struct.new $closure_env_0'), true);
   assertEquals(wat.includes('struct.get $closure_env_0 $capture_0'), true);
   assertEquals(wat.includes('call $closure_0'), true);
@@ -3649,6 +3653,52 @@ Deno.test('compiler wasm-gc emitter runs compiler-owned async frame startup', as
   const promise = (main as () => unknown)();
   assertEquals(promise === null, false);
   assertEquals(promise instanceof Promise, false);
+});
+
+Deno.test('compiler wasm-gc emitter dispatches boxed async continuation closures', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: {
+          strict: true,
+          lib: ['ES2020'],
+        },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        export async function main(): Promise<number> {
+          const value = await Promise.resolve(4);
+          return value + 1;
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
+  const watPath = join(tempDirectory, 'wasm-gc-shadow-async-boxed-dispatch.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-shadow-async-boxed-dispatch.wasm');
+
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
+  const wat = await Deno.readTextFile(watPath);
+  const resumeStart = wat.indexOf('(func $closure_async_frame_resume');
+  const stepStart = wat.indexOf('(func $closure_async_frame_step', resumeStart);
+  const resumeBody = wat.slice(resumeStart, stepStart);
+  assertEquals(wat.includes('(type $closure_object (struct'), true);
+  assertEquals(wat.includes('(func $closure_dispatch_sig_0'), true);
+  assertEquals(resumeBody.includes('call $closure_dispatch_sig_0'), true);
+  assertEquals(resumeBody.includes('unreachable'), false);
+  const result = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(result.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(result.success, true);
 });
 
 Deno.test('compiler wasm-gc emitter produces runnable internal number-null unions', async () => {
