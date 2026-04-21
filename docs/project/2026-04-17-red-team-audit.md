@@ -51,6 +51,8 @@ Legend:
 - `batch-52`: covered by the fifty-second red-team batch added with this record.
 - `batch-53`: covered by the fifty-third red-team batch added with this record.
 - `batch-54`: covered by the fifty-fourth red-team batch added with this record.
+- `batch-55`: covered by the fifty-fifth red-team batch added with this record.
+- `batch-56`: covered by the fifty-sixth red-team batch added with this record.
 - `audit-debt`: missing coverage that should be closed before calling the family fully audited.
 - `out-of-scope`: explicitly outside the strong soundness claim.
 - `design-gap`: documented future work, not a current guarantee.
@@ -63,7 +65,7 @@ Legend:
 | BareObject/null-prototype provenance | covered           | covered                        | covered                        | batch-39                 | covered                    | batch-39                | batch-39            | batch-45             |
 | `#[value]` parity                    | covered           | batch-1                        | batch-1                        | batch-1                  | batch-5                    | batch-1                 | batch-1             | covered              |
 | Machine numerics                     | covered           | batch-37                       | batch-37                       | batch-37                 | batch-5                    | batch-37                | batch-1,37          | batch-37             |
-| Macro/capability boundary            | covered,batch-54  | covered,batch-53,54            | batch-53,54                    | batch-6,53,54            | batch-41,42,54             | batch-53,54             | batch-7             | batch-8              |
+| Macro/capability boundary            | covered,batch-54  | covered,batch-53,54            | batch-53,54,55                 | batch-6,53,54            | batch-41,42,54             | batch-53,54,55          | batch-7,56          | batch-8              |
 | Compiler acceptance parity           | covered           | audit-debt                     | out-of-scope                   | out-of-scope             | out-of-scope               | out-of-scope            | batch-1,27,30       | covered,batch-27,30  |
 | Project-reference root ownership     | batch-32,47,48,49 | out-of-scope,batch-46,47,48,49 | out-of-scope,batch-46,47,48,49 | batch-32,48,49           | out-of-scope               | batch-34,47,48,49       | batch-33,50,51      | out-of-scope         |
 
@@ -1344,6 +1346,47 @@ Legend:
 - Residual risk: this batch targets editor/LSP-style package macro drift and frontend macro reuse,
   not build/runtime output for package-exported macros.
 
+## Batch 55 Findings
+
+### Package-Exported Macro Output Drift Through Editor Worker
+
+- Attack: open a consumer document in the editor diagnostics worker where `Foo()` is imported from a
+  source-published package macro and initially expands to numeric expression `1`. Then mutate only
+  the package macro helper on disk so the same macro emits string expression `"wrong"` while the
+  open consumer text, package declaration surface, macro import, and macro site kind remain stable.
+- Routes: `runEditorDiagnosticsWorker` with `syncDocument` open-document state, the worker-held
+  `IncrementalProjectSession`, file-scoped `analyzeFile`, and serialized editor-visible diagnostics.
+- Expected result: the first editor diagnostics request for `src/demo.sts` is clean, and the second
+  request through the same worker/project state reports the consumer-file `TS2322` diagnostic.
+- Result: executable worker-level coverage added in `src/editor/editor_diagnostics_worker_test.ts`;
+  no production change was needed for this route after the Batch 54 macro reuse fix.
+- Residual risk: this proves the worker diagnostics route with a stable open consumer document. A
+  later LSP-service slice can still cover mixed open-document overrides where an unrelated document
+  changes in the same request as package macro helper drift.
+
+## Batch 56 Findings
+
+### Package-Exported Macro Build Runtime Output Drift
+
+- Attack: build a source-published consumer package that imports compile-time macro `Foo()` from a
+  source-published dependency package. `Foo()` initially expands to numeric expression `1`; then
+  only the dependency package macro helper changes so the same macro expands to numeric expression
+  `2`.
+- Routes: `buildProject`, unchanged build-cache hit reuse, stale build-cache invalidation after
+  dependency package helper drift, build manifest tracked files, emitted ESM implementation output,
+  package wrapper import, and plain Node package-name import smoke.
+- Expected result: the initial and unchanged warm builds emit no runtime import of the macro package
+  or `.sts` source, and Node observes `value === 1` through the built package entrypoint. After
+  helper drift, a cold build and a warm build from stale cache both materialize `value === 2`, the
+  warm build reruns analysis instead of hitting the stale build cache, and the emitted runtime
+  output still does not import the macro provider or copied Soundscript source.
+- Result: executable coverage added in `tests/integration/red_team_audit_test.ts`; no production
+  change was needed. The build manifest tracks the dependency package macro helper file, and
+  build-cache reuse invalidates when that package helper's same-kind output changes.
+- Residual risk: this covers package-exported macro build/runtime output for a direct dependency.
+  Package-to-package macro build/runtime diamonds remain breadth coverage if the package build claim
+  is later broadened beyond direct dependency invalidation.
+
 ## Remaining High-Priority Audit Debt
 
 - Recursive package support-file tracking for non-`.sts` helper graphs if that source-published
@@ -1931,3 +1974,22 @@ red-team attack, the route matrix it covers, and the residual risk left behind.
   edit `350.2ms`, reused prepare after `.sts`-only edit `1.1s`, reused `.sts`-local edit `714.4ms`,
   and analyze-only `2.2ms` average samples. An immediately preceding run was slower on reuse paths,
   so the rerun is the recorded performance sample.
+- `deno test --allow-all --filter "editor diagnostics worker reports package macro helper output
+  drift for open document" src/editor/editor_diagnostics_worker_test.ts`:
+  passed, 1 test in `4s` with 3 filtered out; the worker-visible diagnostics changed from clean to
+  consumer-file `TS2322` after package macro helper same-kind output drift.
+- `deno test --allow-all --filter "package build output refreshes package-exported macro helper
+  drift" tests/integration/red_team_audit_test.ts`:
+  passed, 1 test in `13s` with 68 filtered out; the built package wrapper and plain Node import
+  observed the dependency macro helper value change from `1` to `2` after stale build-cache
+  invalidation.
+- `deno test --allow-all src/editor/editor_diagnostics_worker_test.ts`: passed, 4 tests in `6s`; the
+  configured `.ts` Soundscript include probe now uses a real browser ambient host value instead of
+  the checker-exempt `console` global.
+- `deno test --allow-all tests/integration/red_team_audit_test.ts`: passed, 69 tests in `8m30s`;
+  this covered the Batch 56 build/runtime output drift case in the broader cache/parity suite.
+- `deno task check`,
+  `deno fmt --check src/editor/editor_diagnostics_worker_test.ts
+  tests/integration/red_team_audit_test.ts docs/project/2026-04-17-red-team-audit.md`,
+  `deno lint src/editor/editor_diagnostics_worker_test.ts tests/integration/red_team_audit_test.ts`,
+  and `git diff --check`: passed after the Batch 55/56 updates.

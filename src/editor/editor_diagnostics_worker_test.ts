@@ -112,10 +112,10 @@ async function collectExpectedDiagnostics(
   );
 }
 
-async function startWorkerHarness(): Promise<{
+function startWorkerHarness(): {
   close(): Promise<void>;
   request(method: string, params?: Record<string, unknown>): Promise<WorkerResponse>;
-}> {
+} {
   const input = new TransformStream<Uint8Array, Uint8Array>();
   const output = new TransformStream<Uint8Array, Uint8Array>();
   const workerPromise = runEditorDiagnosticsWorker({
@@ -231,6 +231,7 @@ Deno.test('editor diagnostics worker treats configured TypeScript files from sou
     'tsconfig.json': JSON.stringify(
       {
         compilerOptions: {
+          lib: ['ES2024', 'DOM', 'DOM.AsyncIterable'],
           strict: true,
           noEmit: true,
           target: 'ES2022',
@@ -239,12 +240,13 @@ Deno.test('editor diagnostics worker treats configured TypeScript files from sou
         include: ['src/**/*.sts'],
         soundscript: {
           include: ['src/demo.ts'],
+          target: 'js-browser',
         },
       },
       null,
       2,
     ),
-    'src/demo.ts': 'console.log(42);\n',
+    'src/demo.ts': 'document.title;\n',
   });
 
   const projectPath = join(tempDirectory, 'tsconfig.json');
@@ -257,7 +259,7 @@ Deno.test('editor diagnostics worker treats configured TypeScript files from sou
 
     const syncResponse = await worker.request('syncDocument', {
       filePath,
-      text: 'console.log(42);\n',
+      text: 'document.title;\n',
       version: 1,
     });
     assertEquals(syncResponse.error, undefined);
@@ -272,7 +274,7 @@ Deno.test('editor diagnostics worker treats configured TypeScript files from sou
       projectPath,
       tempDirectory,
       filePath,
-      new Map([[filePath, 'console.log(42);\n']]),
+      new Map([[filePath, 'document.title;\n']]),
     );
     assertEquals(
       normalizeSerializedDiagnostics(diagnosticsResponse.result?.diagnostics ?? []),
@@ -342,6 +344,109 @@ Deno.test('editor diagnostics worker does not leak sibling diagnostics onto a cl
     assertEquals(expectedDiagnostics, []);
     assertEquals(
       normalizeSerializedDiagnostics(barrelDiagnosticsResponse.result?.diagnostics ?? []),
+      expectedDiagnostics,
+    );
+  } finally {
+    await worker.close();
+  }
+});
+
+Deno.test('editor diagnostics worker reports package macro helper output drift for open document', async () => {
+  const demoText = [
+    'import { Foo } from "sound-pkg";',
+    'export const value: number = Foo();',
+    '',
+  ].join('\n');
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/demo.sts': demoText,
+    'node_modules/sound-pkg/package.json': JSON.stringify(
+      {
+        name: 'sound-pkg',
+        version: '1.0.0',
+        type: 'module',
+        types: './dist/index.d.ts',
+        soundscript: {
+          source: './src/index.sts',
+        },
+      },
+      null,
+      2,
+    ),
+    'node_modules/sound-pkg/dist/index.d.ts': 'export declare function Foo(): number;\n',
+    'node_modules/sound-pkg/src/index.sts': 'export { Foo } from "./macros.macro.sts";\n',
+    'node_modules/sound-pkg/src/macros.macro.sts': [
+      "import 'sts:macros';",
+      "import { helperExpression } from './helper.macro.sts';",
+      '',
+      '// #[macro(call)]',
+      'export function Foo() {',
+      '  return {',
+      '    expand(ctx: any) {',
+      '      return ctx.output.expr(ctx.quote.expr`${helperExpression}`);',
+      '    },',
+      '  };',
+      '}',
+      '',
+    ].join('\n'),
+    'node_modules/sound-pkg/src/helper.macro.sts': 'export const helperExpression = "1";\n',
+  });
+
+  const projectPath = join(tempDirectory, 'tsconfig.json');
+  const filePath = join(tempDirectory, 'src/demo.sts');
+  const helperPath = join(tempDirectory, 'node_modules/sound-pkg/src/helper.macro.sts');
+  const worker = await startWorkerHarness();
+
+  try {
+    const initializeResponse = await worker.request('initialize');
+    assertEquals(initializeResponse.error, undefined);
+
+    const syncResponse = await worker.request('syncDocument', {
+      filePath,
+      text: demoText,
+      version: 1,
+    });
+    assertEquals(syncResponse.error, undefined);
+
+    const cleanDiagnosticsResponse = await worker.request('diagnostics', {
+      filePath,
+      projectPath,
+    });
+    assertEquals(cleanDiagnosticsResponse.error, undefined);
+    assertEquals(
+      normalizeSerializedDiagnostics(cleanDiagnosticsResponse.result?.diagnostics ?? []),
+      [],
+    );
+
+    await Deno.writeTextFile(helperPath, 'export const helperExpression = \'"wrong"\';\n');
+
+    const driftDiagnosticsResponse = await worker.request('diagnostics', {
+      filePath,
+      projectPath,
+    });
+    assertEquals(driftDiagnosticsResponse.error, undefined);
+
+    const expectedDiagnostics = await collectExpectedDiagnostics(
+      projectPath,
+      tempDirectory,
+      filePath,
+      new Map([[filePath, demoText]]),
+    );
+    assertEquals(expectedDiagnostics.map((diagnostic) => diagnostic.code), ['TS2322']);
+    assertEquals(
+      normalizeSerializedDiagnostics(driftDiagnosticsResponse.result?.diagnostics ?? []),
       expectedDiagnostics,
     );
   } finally {

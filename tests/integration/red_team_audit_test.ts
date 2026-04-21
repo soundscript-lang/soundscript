@@ -8173,6 +8173,251 @@ Deno.test('red-team: package build cache invalidates same-kind macro output help
   await assertBuiltValue('changed');
 });
 
+Deno.test('red-team: package build output refreshes package-exported macro helper drift', async () => {
+  const consumerPackageName = 'red-team-macro-consumer';
+  const providerPackageName = 'red-team-macro-provider';
+  const tempDirectory = await createTempProject([
+    {
+      path: 'package.json',
+      contents: `${
+        JSON.stringify(
+          {
+            name: consumerPackageName,
+            version: '1.0.0',
+            type: 'module',
+            soundscript: {
+              version: 1,
+              exports: {
+                '.': { source: './src/index.sts' },
+              },
+            },
+          },
+          null,
+          2,
+        )
+      }\n`,
+    },
+    {
+      path: 'tsconfig.json',
+      contents: createSoundscriptTsconfig(['src/**/*.sts']),
+    },
+    {
+      path: 'src/index.sts',
+      contents: [
+        `import { Foo } from "${providerPackageName}";`,
+        'export const value: number = Foo();',
+        '',
+      ].join('\n'),
+    },
+    {
+      path: `node_modules/${providerPackageName}/package.json`,
+      contents: JSON.stringify(
+        {
+          name: providerPackageName,
+          version: '1.0.0',
+          type: 'module',
+          exports: {
+            '.': {
+              types: './dist/index.d.ts',
+              import: './dist/index.js',
+            },
+          },
+          soundscript: {
+            version: 1,
+            exports: {
+              '.': { source: './src/index.sts' },
+            },
+          },
+        },
+        null,
+        2,
+      ),
+    },
+    {
+      path: `node_modules/${providerPackageName}/dist/index.d.ts`,
+      contents: 'export declare function Foo(): number;\n',
+    },
+    {
+      path: `node_modules/${providerPackageName}/dist/index.js`,
+      contents: [
+        'export function Foo() {',
+        `  throw new Error("${providerPackageName} Foo leaked to runtime");`,
+        '}',
+        '',
+      ].join('\n'),
+    },
+    {
+      path: `node_modules/${providerPackageName}/src/index.sts`,
+      contents: 'export { Foo } from "./macros.macro.sts";\n',
+    },
+    {
+      path: `node_modules/${providerPackageName}/src/macros.macro.sts`,
+      contents: [
+        "import 'sts:macros';",
+        "import { helperExpression } from './helper.macro.sts';",
+        '',
+        '// #[macro(call)]',
+        'export function Foo() {',
+        '  return {',
+        '    expand(ctx: any) {',
+        '      return ctx.output.expr(ctx.quote.expr`${helperExpression}`);',
+        '    },',
+        '  };',
+        '}',
+        '',
+      ].join('\n'),
+    },
+    {
+      path: `node_modules/${providerPackageName}/src/helper.macro.sts`,
+      contents: 'export const helperExpression = "1";\n',
+    },
+  ]);
+  const projectPath = join(tempDirectory, 'tsconfig.json');
+  const outDir = join(tempDirectory, 'dist');
+  const coldOutDir = join(tempDirectory, 'dist-cold');
+  const installRoot = join(tempDirectory, 'runtime-smoke');
+  const linkedConsumerPath = join(installRoot, 'node_modules', consumerPackageName);
+  const providerHelperPath = join(
+    tempDirectory,
+    'node_modules',
+    providerPackageName,
+    'src/helper.macro.sts',
+  );
+  const cacheDirectory = resolveCheckerCacheDirectory(projectPath);
+  const staleCacheDirectory = join(tempDirectory, '.stale-package-macro-build-cache');
+  const readBuiltImplementation = (directory: string): Promise<string> =>
+    Deno.readTextFile(join(directory, 'esm/src/index.js'));
+  const readTrackedBuildFiles = async (): Promise<ReadonlySet<string>> => {
+    const manifest = JSON.parse(
+      await Deno.readTextFile(
+        join(resolveCheckerCacheDirectory(projectPath), 'build-manifest.json'),
+      ),
+    ) as { trackedFiles: Record<string, string> };
+    const realTrackedFiles = await Promise.all(
+      Object.keys(manifest.trackedFiles).map(async (path) => {
+        try {
+          return await Deno.realPath(path);
+        } catch {
+          return path;
+        }
+      }),
+    );
+    return new Set(realTrackedFiles);
+  };
+  const linkBuiltConsumer = async (directory: string): Promise<void> => {
+    await Deno.remove(linkedConsumerPath, { recursive: true }).catch(() => undefined);
+    await Deno.mkdir(dirname(linkedConsumerPath), { recursive: true });
+    await Deno.symlink(directory, linkedConsumerPath, { type: 'dir' });
+  };
+  const assertRuntimeValue = async (directory: string, expected: number): Promise<void> => {
+    await linkBuiltConsumer(directory);
+    const smoke = await new Deno.Command('node', {
+      args: [
+        '--input-type=module',
+        '-e',
+        [
+          `const { value } = await import(${JSON.stringify(consumerPackageName)});`,
+          `if (value !== ${JSON.stringify(expected)}) {`,
+          '  throw new Error(`unexpected package macro value ${value}`);',
+          '}',
+        ].join('\n'),
+      ],
+      cwd: installRoot,
+      stderr: 'piped',
+      stdout: 'piped',
+    }).output();
+    assertEquals(
+      smoke.code,
+      0,
+      new TextDecoder().decode(smoke.stderr) || new TextDecoder().decode(smoke.stdout),
+    );
+  };
+  const assertRuntimeOutputIsMacroMaterialized = async (
+    directory: string,
+    expected: number,
+  ): Promise<void> => {
+    const output = await readBuiltImplementation(directory);
+    assert(output.includes(JSON.stringify(expected)), output);
+    assert(!output.includes(providerPackageName), output);
+    assert(!output.includes('.sts'), output);
+    assert(!output.includes('soundscript/src'), output);
+  };
+
+  const firstBuild = await buildProject({
+    outDir,
+    projectPath,
+    workingDirectory: tempDirectory,
+  });
+  assertEquals(firstBuild.exitCode, 0, firstBuild.output);
+  await assertRuntimeOutputIsMacroMaterialized(outDir, 1);
+  await assertRuntimeValue(outDir, 1);
+  const firstTrackedFiles = await readTrackedBuildFiles();
+  assert(firstTrackedFiles.has(await Deno.realPath(providerHelperPath)));
+
+  const firstArtifacts = await collectFileContents(outDir);
+  const warmUnchangedBuild = await withCapturedTimingLogsAsync(async (logs) => {
+    const result = await buildProject({
+      outDir,
+      projectPath,
+      workingDirectory: tempDirectory,
+    });
+    assert(
+      logs.some((line) =>
+        line.includes('[soundscript:checker] project.build.cache.read ') &&
+        line.includes('status=hit')
+      ),
+      logs.join('\n'),
+    );
+    assert(
+      !logs.some((line) => line.includes('[soundscript:checker] project.build.analysis ')),
+      logs.join('\n'),
+    );
+    return result;
+  });
+  assertEquals(warmUnchangedBuild.exitCode, 0, warmUnchangedBuild.output);
+  assertEquals(await collectFileContents(outDir), firstArtifacts);
+  await assertRuntimeValue(outDir, 1);
+
+  await Deno.rename(cacheDirectory, staleCacheDirectory);
+  await writeProjectFile(
+    tempDirectory,
+    `node_modules/${providerPackageName}/src/helper.macro.sts`,
+    'export const helperExpression = "2";\n',
+  );
+
+  const coldBuild = await buildProject({
+    outDir: coldOutDir,
+    projectPath,
+    workingDirectory: tempDirectory,
+  });
+  assertEquals(coldBuild.exitCode, 0, coldBuild.output);
+  await assertRuntimeOutputIsMacroMaterialized(coldOutDir, 2);
+  await assertRuntimeValue(coldOutDir, 2);
+  await Deno.remove(cacheDirectory, { recursive: true });
+  await Deno.rename(staleCacheDirectory, cacheDirectory);
+
+  const warmStaleBuild = await withCapturedTimingLogsAsync(async (logs) => {
+    const result = await buildProject({
+      outDir,
+      projectPath,
+      workingDirectory: tempDirectory,
+    });
+    const buildCacheRead = logs.find((line) =>
+      line.includes('[soundscript:checker] project.build.cache.read ')
+    );
+    assert(buildCacheRead && !buildCacheRead.includes('status=hit'), logs.join('\n'));
+    assert(
+      logs.some((line) => line.includes('[soundscript:checker] project.build.analysis ')),
+      logs.join('\n'),
+    );
+    return result;
+  });
+  assertEquals(warmStaleBuild.exitCode, 0, warmStaleBuild.output);
+  assertEquals(await readBuiltImplementation(outDir), await readBuiltImplementation(coldOutDir));
+  await assertRuntimeOutputIsMacroMaterialized(outDir, 2);
+  await assertRuntimeValue(outDir, 2);
+});
+
 Deno.test('red-team: package build output tracks export-map projection edits', async () => {
   const createPackageJson = (exportKey: './alpha' | './beta', source: string): string =>
     `${
