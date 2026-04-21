@@ -842,6 +842,10 @@ Deno.test('red-team: recursive project-reference graph retargets drop stale sess
         logs.some((line) => line.includes('[soundscript:checker] runProgram.references.total ')),
         logs.join('\n'),
       );
+      assert(
+        logs.some((line) => line.includes('[soundscript:checker] project.cache.read ')),
+        logs.join('\n'),
+      );
       return result;
     });
     assertEquals(warmCliResult.exitCode, coldCliResult.exitCode, warmCliResult.output);
@@ -857,6 +861,181 @@ Deno.test('red-team: recursive project-reference graph retargets drop stale sess
       expectedDiagnostics,
     );
     assertEquals(sessionResult.summary.errors === 0 ? 0 : 1, coldCliResult.exitCode);
+
+    const freshPreparedProject = prepareProjectAnalysis(baseOptions);
+    try {
+      assertEquals(analyzePreparedProject(freshPreparedProject).diagnostics, []);
+      assertEquals(analyzePreparedProjectForFile(freshPreparedProject, indexPath).diagnostics, []);
+    } finally {
+      disposePreparedAnalysisProject(freshPreparedProject);
+    }
+
+    const reusedPreparedProject = prepareProjectAnalysis(baseOptions, preparedProject);
+    try {
+      assertEquals(analyzePreparedProject(reusedPreparedProject).diagnostics, []);
+      assertEquals(analyzePreparedProjectForFile(reusedPreparedProject, indexPath).diagnostics, []);
+    } finally {
+      disposePreparedAnalysisProject(reusedPreparedProject, preparedProject);
+    }
+  } finally {
+    session.dispose();
+    disposePreparedAnalysisProject(preparedProject);
+  }
+});
+
+Deno.test('red-team: diamond project-reference graph retarget dedupes recursive diagnostics', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'app/tsconfig.json',
+      contents: createSoundscriptProjectReferenceTsconfig({
+        noEmit: true,
+        references: [{ path: '../mid-a' }, { path: '../mid-b' }],
+      }),
+    },
+    {
+      path: 'app/src/index.sts',
+      contents: [
+        'import { aValue } from "../../mid-a/src/value";',
+        'import { bValue } from "../../mid-b/src/value";',
+        '',
+        'export const exactA: string = aValue;',
+        'export const exactB: string = bValue;',
+        '',
+      ].join('\n'),
+    },
+    {
+      path: 'mid-a/tsconfig.json',
+      contents: createSoundscriptProjectReferenceTsconfig({
+        composite: true,
+        declaration: true,
+        noEmit: false,
+        references: [{ path: '../lib-a' }],
+      }),
+    },
+    {
+      path: 'mid-a/src/value.sts',
+      contents: 'export const aValue: string = "a";\n',
+    },
+    {
+      path: 'mid-b/tsconfig.json',
+      contents: createSoundscriptProjectReferenceTsconfig({
+        composite: true,
+        declaration: true,
+        noEmit: false,
+        references: [{ path: '../lib-a' }],
+      }),
+    },
+    {
+      path: 'mid-b/src/value.sts',
+      contents: 'export const bValue: string = "b";\n',
+    },
+    {
+      path: 'lib-a/tsconfig.json',
+      contents: createReferencedLibraryTsconfig(false),
+    },
+    {
+      path: 'lib-a/src/value.sts',
+      contents: 'export const value: string = "ok";\n',
+    },
+    {
+      path: 'lib-b/tsconfig.json',
+      contents: createReferencedLibraryTsconfig(false),
+    },
+    {
+      path: 'lib-b/src/value.sts',
+      contents: 'export const value: string = "ok";\n',
+    },
+  ]);
+  const projectPath = join(tempDirectory, 'app/tsconfig.json');
+  const indexPath = join(tempDirectory, 'app/src/index.sts');
+  const cacheRoot = await Deno.makeTempDir({ prefix: 'soundscript-red-team-cache-' });
+  const baseOptions = { projectPath, workingDirectory: tempDirectory };
+  const recursiveOptions = { ...baseOptions, analyzeReferences: true };
+  const preparedProject = prepareProjectAnalysis(baseOptions);
+  const session = new IncrementalProjectSession();
+
+  try {
+    assertEquals(analyzePreparedProject(preparedProject).diagnostics, []);
+    assertEquals(analyzePreparedProjectForFile(preparedProject, indexPath).diagnostics, []);
+    assertEquals(
+      runProgram({
+        cacheDir: cacheRoot,
+        checkReferences: true,
+        projectPath,
+        workingDirectory: tempDirectory,
+      }).diagnostics,
+      [],
+    );
+    session.prepare(recursiveOptions);
+    assertEquals(session.analyzeProject().diagnostics, []);
+
+    await writeProjectFile(
+      tempDirectory,
+      'mid-a/tsconfig.json',
+      createSoundscriptProjectReferenceTsconfig({
+        composite: true,
+        declaration: true,
+        noEmit: false,
+        references: [{ path: '../lib-b' }],
+      }),
+    );
+    await writeProjectFile(
+      tempDirectory,
+      'lib-a/src/poison.sts',
+      'export const poison: string = 1;\n',
+    );
+    await writeProjectFile(
+      tempDirectory,
+      'lib-b/src/poison.sts',
+      'export const poison: string = 1;\n',
+    );
+
+    const expectedDiagnostics: readonly (readonly [string, string])[] = [
+      ['TS2322', 'lib-a/src/poison.sts'],
+      ['TS2322', 'lib-b/src/poison.sts'],
+    ];
+    const coldCliResult = runProgram({
+      cacheDir: await Deno.makeTempDir({ prefix: 'soundscript-red-team-cache-' }),
+      checkReferences: true,
+      projectPath,
+      workingDirectory: tempDirectory,
+    });
+    assertEquals(
+      toProjectRelativeDiagnostics(coldCliResult.diagnostics, tempDirectory),
+      expectedDiagnostics,
+    );
+
+    const warmCliResult = withCapturedTimingLogs((logs) => {
+      const result = runProgram({
+        cacheDir: cacheRoot,
+        checkReferences: true,
+        projectPath,
+        workingDirectory: tempDirectory,
+      });
+      assert(
+        logs.some((line) => line.includes('[soundscript:checker] runProgram.references.total ')),
+        logs.join('\n'),
+      );
+      assert(
+        logs.some((line) => line.includes('[soundscript:checker] project.cache.read ')),
+        logs.join('\n'),
+      );
+      return result;
+    });
+    assertEquals(warmCliResult.exitCode, coldCliResult.exitCode, warmCliResult.output);
+    assertEquals(
+      toProjectRelativeDiagnostics(warmCliResult.diagnostics, tempDirectory),
+      expectedDiagnostics,
+    );
+
+    session.prepare(recursiveOptions);
+    const sessionResult = session.analyzeProject();
+    assertEquals(
+      toProjectRelativeDiagnostics(sessionResult.diagnostics, tempDirectory),
+      expectedDiagnostics,
+    );
+    assertEquals(sessionResult.summary.errors === 0 ? 0 : 1, coldCliResult.exitCode);
+    assertEquals(sessionResult.summary, { total: 2, errors: 2, warnings: 0, messages: 0 });
 
     const freshPreparedProject = prepareProjectAnalysis(baseOptions);
     try {
