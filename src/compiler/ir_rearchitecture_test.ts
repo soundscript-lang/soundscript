@@ -3732,7 +3732,7 @@ Deno.test('compiler wasm-gc emitter parses bigint tagged Promise.then payloads',
   await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
   const wat = await Deno.readTextFile(watPath);
   assertEquals(wat.includes('i32.const 7'), true);
-  assertEquals(wat.includes('struct.get $tagged_value $extern_payload'), true);
+  assertEquals(wat.includes('struct.get $tagged_value $heap_payload'), true);
   assertEquals(wat.includes('Promise.resolve'), false);
   assertEquals(wat.includes('jspi'), false);
   const result = await new Deno.Command('wasm-tools', {
@@ -4287,6 +4287,7 @@ Deno.test('compiler wasm-gc emitter runs sync generator bigint payload loops', a
   );
   const watPath = join(tempDirectory, 'wasm-gc-shadow-sync-generator-bigint-payload.wat');
   const wasmPath = join(tempDirectory, 'wasm-gc-shadow-sync-generator-bigint-payload.wasm');
+  const wrapperPath = join(tempDirectory, 'wasm-gc-shadow-sync-generator-bigint-payload.mjs');
 
   assertEquals(
     snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
@@ -4305,9 +4306,10 @@ Deno.test('compiler wasm-gc emitter runs sync generator bigint payload loops', a
   assertEquals(firstPlan?.bodyStatus, 'emittable');
   assertEquals(stepPlan?.bodyStatus, 'emittable');
   await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
+  await Deno.writeTextFile(wrapperPath, emitWasmGcWrapperModule(snapshot.wasmGcPlan));
   const wat = await Deno.readTextFile(watPath);
   assertEquals(wat.includes('i32.const 7'), true);
-  assertEquals(wat.includes('struct.get $tagged_value $extern_payload'), true);
+  assertEquals(wat.includes('struct.get $tagged_value $heap_payload'), true);
   const result = await new Deno.Command('wasm-tools', {
     args: ['parse', watPath, '-o', wasmPath],
     stdout: 'piped',
@@ -4319,7 +4321,8 @@ Deno.test('compiler wasm-gc emitter runs sync generator bigint payload loops', a
 
   const wasm = await Deno.readFile(wasmPath);
   const instance = await WebAssembly.instantiate(wasm);
-  const first = instance.instance.exports['main.ts:first'];
+  const exports = await createWasmGcWrappedExports(wrapperPath, instance.instance);
+  const first = exports['main.ts:first'];
   assertEquals(typeof first, 'function');
   assertEquals((first as (value: bigint, fallback: bigint) => bigint)(70n, 80n), 70n);
 });
@@ -4637,6 +4640,7 @@ Deno.test('compiler wasm-gc emitter runs async generator bigint payload for-awai
   );
   const watPath = join(tempDirectory, 'wasm-gc-shadow-async-generator-bigint-payload.wat');
   const wasmPath = join(tempDirectory, 'wasm-gc-shadow-async-generator-bigint-payload.wasm');
+  const wrapperPath = join(tempDirectory, 'wasm-gc-shadow-async-generator-bigint-payload.mjs');
 
   assertEquals(
     snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
@@ -4656,9 +4660,10 @@ Deno.test('compiler wasm-gc emitter runs async generator bigint payload for-awai
   assertEquals(firstPlan?.bodyStatus, 'emittable');
   assertEquals(stepPlan?.bodyStatus, 'emittable');
   await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
+  await Deno.writeTextFile(wrapperPath, emitWasmGcWrapperModule(snapshot.wasmGcPlan));
   const wat = await Deno.readTextFile(watPath);
   assertEquals(wat.includes('i32.const 7'), true);
-  assertEquals(wat.includes('struct.get $tagged_value $extern_payload'), true);
+  assertEquals(wat.includes('struct.get $tagged_value $heap_payload'), true);
   assertEquals(wat.includes('Promise.resolve'), false);
   assertEquals(wat.includes('jspi'), false);
   const result = await new Deno.Command('wasm-tools', {
@@ -4672,7 +4677,8 @@ Deno.test('compiler wasm-gc emitter runs async generator bigint payload for-awai
 
   const wasm = await Deno.readFile(wasmPath);
   const instance = await WebAssembly.instantiate(wasm);
-  const first = instance.instance.exports['main.ts:first'];
+  const exports = await createWasmGcWrappedExports(wrapperPath, instance.instance);
+  const first = exports['main.ts:first'];
   assertEquals(typeof first, 'function');
   const promise = (first as (value: bigint, fallback: bigint) => unknown)(70n, 80n);
   assertEquals(promise === null, false);
@@ -4790,13 +4796,15 @@ Deno.test('compiler wasm-gc emitter runs async generator bigint payload mirror s
   const selectedPlan = snapshot.wasmGcPlan.functionPlans.find((func) => func.name === 'selected');
   const watPath = join(tempDirectory, 'wasm-gc-shadow-async-generator-bigint-mirror.wat');
   const wasmPath = join(tempDirectory, 'wasm-gc-shadow-async-generator-bigint-mirror.wasm');
+  const wrapperPath = join(tempDirectory, 'wasm-gc-shadow-async-generator-bigint-mirror.mjs');
 
   assertEquals(firstPlan?.bodyStatus, 'emittable');
   assertEquals(selectedPlan?.bodyStatus, 'emittable');
   await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
+  await Deno.writeTextFile(wrapperPath, emitWasmGcWrapperModule(snapshot.wasmGcPlan));
   const wat = await Deno.readTextFile(watPath);
   assertEquals(wat.includes('i32.const 7'), true);
-  assertEquals(wat.includes('struct.get $tagged_value $extern_payload'), true);
+  assertEquals(wat.includes('struct.get $tagged_value $heap_payload'), true);
   assertEquals(wat.includes('Promise.resolve'), false);
   assertEquals(wat.includes('jspi'), false);
   const result = await new Deno.Command('wasm-tools', {
@@ -4810,7 +4818,8 @@ Deno.test('compiler wasm-gc emitter runs async generator bigint payload mirror s
 
   const wasm = await Deno.readFile(wasmPath);
   const instance = await WebAssembly.instantiate(wasm);
-  const first = instance.instance.exports['main.ts:first'];
+  const exports = await createWasmGcWrappedExports(wrapperPath, instance.instance);
+  const first = exports['main.ts:first'];
   assertEquals(typeof first, 'function');
   const promise = (first as (value: bigint) => unknown)(70n);
   assertEquals(promise === null, false);
@@ -5556,6 +5565,7 @@ Deno.test('compiler wasm-gc emitter produces runnable internal bigint-null union
   const mainPlan = snapshot.wasmGcPlan.functionPlans.find((func) => func.name === 'main');
   const watPath = join(tempDirectory, 'wasm-gc-shadow-bigint-union.wat');
   const wasmPath = join(tempDirectory, 'wasm-gc-shadow-bigint-union.wasm');
+  const wrapperPath = join(tempDirectory, 'wasm-gc-shadow-bigint-union.mjs');
 
   assertEquals(
     snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
@@ -5564,8 +5574,9 @@ Deno.test('compiler wasm-gc emitter produces runnable internal bigint-null union
   assertEquals(maybePlan?.bodyStatus, 'emittable');
   assertEquals(mainPlan?.bodyStatus, 'emittable');
   await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
+  await Deno.writeTextFile(wrapperPath, emitWasmGcWrapperModule(snapshot.wasmGcPlan));
   const wat = await Deno.readTextFile(watPath);
-  assertEquals(wat.includes('struct.get $tagged_value $extern_payload'), true);
+  assertEquals(wat.includes('struct.get $tagged_value $heap_payload'), true);
   const result = await new Deno.Command('wasm-tools', {
     args: ['parse', watPath, '-o', wasmPath],
     stdout: 'piped',
@@ -5577,7 +5588,8 @@ Deno.test('compiler wasm-gc emitter produces runnable internal bigint-null union
 
   const wasm = await Deno.readFile(wasmPath);
   const instance = await WebAssembly.instantiate(wasm);
-  const main = instance.instance.exports['main.ts:main'];
+  const exports = await createWasmGcWrappedExports(wrapperPath, instance.instance);
+  const main = exports['main.ts:main'];
   assertEquals(typeof main, 'function');
   const value = 10n;
   const fallback = 20n;
@@ -5631,6 +5643,7 @@ Deno.test('compiler wasm-gc emitter produces runnable internal bigint typeof uni
   const mainPlan = snapshot.wasmGcPlan.functionPlans.find((func) => func.name === 'main');
   const watPath = join(tempDirectory, 'wasm-gc-shadow-bigint-typeof-union.wat');
   const wasmPath = join(tempDirectory, 'wasm-gc-shadow-bigint-typeof-union.wasm');
+  const wrapperPath = join(tempDirectory, 'wasm-gc-shadow-bigint-typeof-union.mjs');
 
   assertEquals(
     snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
@@ -5638,6 +5651,7 @@ Deno.test('compiler wasm-gc emitter produces runnable internal bigint typeof uni
   );
   assertEquals(mainPlan?.bodyStatus, 'emittable');
   await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
+  await Deno.writeTextFile(wrapperPath, emitWasmGcWrapperModule(snapshot.wasmGcPlan));
   const wat = await Deno.readTextFile(watPath);
   assertEquals(wat.includes('i32.const 7'), true);
   const result = await new Deno.Command('wasm-tools', {
@@ -5651,7 +5665,8 @@ Deno.test('compiler wasm-gc emitter produces runnable internal bigint typeof uni
 
   const wasm = await Deno.readFile(wasmPath);
   const instance = await WebAssembly.instantiate(wasm);
-  const main = instance.instance.exports['main.ts:main'];
+  const exports = await createWasmGcWrappedExports(wrapperPath, instance.instance);
+  const main = exports['main.ts:main'];
   assertEquals(typeof main, 'function');
   assertEquals((main as (mode: number, value: bigint) => number)(0, 20n), 1);
   assertEquals((main as (mode: number, value: bigint) => number)(1, 20n), 9);
@@ -5686,6 +5701,7 @@ Deno.test('compiler wasm-gc emitter produces runnable bigint tagged array unions
   const mainPlan = snapshot.wasmGcPlan.functionPlans.find((func) => func.name === 'main');
   const watPath = join(tempDirectory, 'wasm-gc-shadow-bigint-tagged-array.wat');
   const wasmPath = join(tempDirectory, 'wasm-gc-shadow-bigint-tagged-array.wasm');
+  const wrapperPath = join(tempDirectory, 'wasm-gc-shadow-bigint-tagged-array.mjs');
 
   assertEquals(
     snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
@@ -5693,6 +5709,7 @@ Deno.test('compiler wasm-gc emitter produces runnable bigint tagged array unions
   );
   assertEquals(mainPlan?.bodyStatus, 'emittable');
   await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
+  await Deno.writeTextFile(wrapperPath, emitWasmGcWrapperModule(snapshot.wasmGcPlan));
   const result = await new Deno.Command('wasm-tools', {
     args: ['parse', watPath, '-o', wasmPath],
     stdout: 'piped',
@@ -5704,7 +5721,8 @@ Deno.test('compiler wasm-gc emitter produces runnable bigint tagged array unions
 
   const wasm = await Deno.readFile(wasmPath);
   const instance = await WebAssembly.instantiate(wasm);
-  const main = instance.instance.exports['main.ts:main'];
+  const exports = await createWasmGcWrappedExports(wrapperPath, instance.instance);
+  const main = exports['main.ts:main'];
   assertEquals(typeof main, 'function');
   const value = 30n;
   const fallback = 40n;
@@ -5741,6 +5759,7 @@ Deno.test('compiler wasm-gc emitter produces runnable bigint tagged object field
   const mainPlan = snapshot.wasmGcPlan.functionPlans.find((func) => func.name === 'main');
   const watPath = join(tempDirectory, 'wasm-gc-shadow-bigint-tagged-object-field.wat');
   const wasmPath = join(tempDirectory, 'wasm-gc-shadow-bigint-tagged-object-field.wasm');
+  const wrapperPath = join(tempDirectory, 'wasm-gc-shadow-bigint-tagged-object-field.mjs');
 
   assertEquals(
     snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
@@ -5748,6 +5767,7 @@ Deno.test('compiler wasm-gc emitter produces runnable bigint tagged object field
   );
   assertEquals(mainPlan?.bodyStatus, 'emittable');
   await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
+  await Deno.writeTextFile(wrapperPath, emitWasmGcWrapperModule(snapshot.wasmGcPlan));
   const result = await new Deno.Command('wasm-tools', {
     args: ['parse', watPath, '-o', wasmPath],
     stdout: 'piped',
@@ -5759,7 +5779,8 @@ Deno.test('compiler wasm-gc emitter produces runnable bigint tagged object field
 
   const wasm = await Deno.readFile(wasmPath);
   const instance = await WebAssembly.instantiate(wasm);
-  const main = instance.instance.exports['main.ts:main'];
+  const exports = await createWasmGcWrappedExports(wrapperPath, instance.instance);
+  const main = exports['main.ts:main'];
   assertEquals(typeof main, 'function');
   assertEquals((main as (value: bigint, fallback: bigint) => bigint)(90n, 100n), 90n);
 });
@@ -5797,6 +5818,7 @@ Deno.test('compiler wasm-gc emitter produces runnable bigint tagged closure resu
   );
   const watPath = join(tempDirectory, 'wasm-gc-shadow-bigint-tagged-closure-result.wat');
   const wasmPath = join(tempDirectory, 'wasm-gc-shadow-bigint-tagged-closure-result.wasm');
+  const wrapperPath = join(tempDirectory, 'wasm-gc-shadow-bigint-tagged-closure-result.mjs');
 
   assertEquals(
     snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
@@ -5805,6 +5827,7 @@ Deno.test('compiler wasm-gc emitter produces runnable bigint tagged closure resu
   assertEquals(mainPlan?.bodyStatus, 'emittable');
   assertEquals(closurePlan?.bodyStatus, 'emittable');
   await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
+  await Deno.writeTextFile(wrapperPath, emitWasmGcWrapperModule(snapshot.wasmGcPlan));
   const result = await new Deno.Command('wasm-tools', {
     args: ['parse', watPath, '-o', wasmPath],
     stdout: 'piped',
@@ -5816,7 +5839,8 @@ Deno.test('compiler wasm-gc emitter produces runnable bigint tagged closure resu
 
   const wasm = await Deno.readFile(wasmPath);
   const instance = await WebAssembly.instantiate(wasm);
-  const main = instance.instance.exports['main.ts:main'];
+  const exports = await createWasmGcWrappedExports(wrapperPath, instance.instance);
+  const main = exports['main.ts:main'];
   assertEquals(typeof main, 'function');
   assertEquals((main as (value: bigint, fallback: bigint) => bigint)(110n, 120n), 110n);
 });
@@ -6026,6 +6050,7 @@ Deno.test('compiler wasm-gc emitter produces runnable bigint tagged Map values',
   const mainPlan = snapshot.wasmGcPlan.functionPlans.find((func) => func.name === 'main');
   const watPath = join(tempDirectory, 'wasm-gc-shadow-bigint-tagged-map.wat');
   const wasmPath = join(tempDirectory, 'wasm-gc-shadow-bigint-tagged-map.wasm');
+  const wrapperPath = join(tempDirectory, 'wasm-gc-shadow-bigint-tagged-map.mjs');
 
   assertEquals(
     snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
@@ -6033,6 +6058,7 @@ Deno.test('compiler wasm-gc emitter produces runnable bigint tagged Map values',
   );
   assertEquals(mainPlan?.bodyStatus, 'emittable');
   await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
+  await Deno.writeTextFile(wrapperPath, emitWasmGcWrapperModule(snapshot.wasmGcPlan));
   const result = await new Deno.Command('wasm-tools', {
     args: ['parse', watPath, '-o', wasmPath],
     stdout: 'piped',
@@ -6044,7 +6070,8 @@ Deno.test('compiler wasm-gc emitter produces runnable bigint tagged Map values',
 
   const wasm = await Deno.readFile(wasmPath);
   const instance = await WebAssembly.instantiate(wasm);
-  const main = instance.instance.exports['main.ts:main'];
+  const exports = await createWasmGcWrappedExports(wrapperPath, instance.instance);
+  const main = exports['main.ts:main'];
   assertEquals(typeof main, 'function');
   const value = 50n;
   const fallback = 60n;
@@ -6083,6 +6110,7 @@ Deno.test('compiler wasm-gc emitter produces runnable bigint tagged Set values',
   const mainPlan = snapshot.wasmGcPlan.functionPlans.find((func) => func.name === 'main');
   const watPath = join(tempDirectory, 'wasm-gc-shadow-bigint-tagged-set.wat');
   const wasmPath = join(tempDirectory, 'wasm-gc-shadow-bigint-tagged-set.wasm');
+  const wrapperPath = join(tempDirectory, 'wasm-gc-shadow-bigint-tagged-set.mjs');
 
   assertEquals(
     snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
@@ -6092,6 +6120,7 @@ Deno.test('compiler wasm-gc emitter produces runnable bigint tagged Set values',
   await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
   const wat = await Deno.readTextFile(watPath);
   assertEquals(wat.includes('(import "soundscript" "__extern_eq"'), true);
+  await Deno.writeTextFile(wrapperPath, emitWasmGcWrapperModule(snapshot.wasmGcPlan));
   const result = await new Deno.Command('wasm-tools', {
     args: ['parse', watPath, '-o', wasmPath],
     stdout: 'piped',
@@ -6107,7 +6136,8 @@ Deno.test('compiler wasm-gc emitter produces runnable bigint tagged Set values',
       __extern_eq: Object.is,
     },
   });
-  const main = instance.instance.exports['main.ts:main'];
+  const exports = await createWasmGcWrappedExports(wrapperPath, instance.instance);
+  const main = exports['main.ts:main'];
   assertEquals(typeof main, 'function');
   assertEquals((main as (value: bigint) => number)(70n), 11);
 });
@@ -6626,6 +6656,7 @@ Deno.test('compiler wasm-gc emitter produces runnable bigint callbacks through h
   const applyPlan = snapshot.wasmGcPlan.functionPlans.find((func) => func.name === 'apply');
   const watPath = join(tempDirectory, 'wasm-gc-shadow-host-bigint-callback.wat');
   const wasmPath = join(tempDirectory, 'wasm-gc-shadow-host-bigint-callback.wasm');
+  const wrapperPath = join(tempDirectory, 'wasm-gc-shadow-host-bigint-callback.mjs');
 
   assertEquals(applyPlan?.hostImport, {
     module: 'soundscript_host_function',
@@ -6636,6 +6667,7 @@ Deno.test('compiler wasm-gc emitter produces runnable bigint callbacks through h
     ['bigint', 'closure', 'host_handle'],
   );
   await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
+  await Deno.writeTextFile(wrapperPath, emitWasmGcWrapperModule(snapshot.wasmGcPlan));
   const wat = await Deno.readTextFile(watPath);
   assertEquals(wat.includes('closure_call_adapter'), true);
   assertEquals(wat.includes('Promise.resolve'), false);
@@ -6649,16 +6681,24 @@ Deno.test('compiler wasm-gc emitter produces runnable bigint callbacks through h
   assertEquals(stderr, '');
   assertEquals(result.success, true);
 
-  const wasm = await Deno.readFile(wasmPath);
-  const instance = await WebAssembly.instantiate(wasm, {
-    soundscript_host_function: {
-      'host.d.ts:apply': (fn: (value: bigint) => bigint, input: bigint): bigint => {
-        assertEquals(fn(input), input);
-        return fn(input);
+  const wrapperModule = await import(`file://${wrapperPath}?cacheBust=${crypto.randomUUID()}`);
+  const instanceCell: { instance?: WebAssembly.Instance } = {};
+  const imports = wrapperModule.createSoundscriptWasmGcHostImports(
+    {
+      soundscript_host_function: {
+        'host.d.ts:apply': (fn: (value: bigint) => bigint, input: bigint): bigint => {
+          assertEquals(fn(input), input);
+          return fn(input);
+        },
       },
     },
-  });
-  const main = instance.instance.exports['main.ts:main'];
+    instanceCell,
+  );
+  const wasm = await Deno.readFile(wasmPath);
+  const instance = (await WebAssembly.instantiate(wasm, imports)).instance;
+  instanceCell.instance = instance;
+  const exports = await createWasmGcWrappedExports(wrapperPath, instanceCell);
+  const main = exports['main.ts:main'];
   assertEquals(typeof main, 'function');
   assertEquals((main as (input: bigint) => bigint)(70n), 70n);
 });
@@ -7317,6 +7357,165 @@ Deno.test('compiler wasm-gc wrapper glue adapts imported symbol params and prese
   assertEquals(exports['main.ts:same'](Symbol('token')), 1);
 });
 
+Deno.test('compiler wasm-gc wrapper glue adapts exported bigint params and results', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: {
+          strict: true,
+          module: 'esnext',
+          moduleResolution: 'node',
+          target: 'ES2020',
+        },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        export function echo(value: bigint): bigint {
+          return value;
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
+  const watPath = join(tempDirectory, 'wasm-gc-shadow-export-bigint-wrapper.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-shadow-export-bigint-wrapper.wasm');
+  const wrapperPath = join(tempDirectory, 'wasm-gc-shadow-export-bigint-wrapper.mjs');
+
+  assertEquals(snapshot.wasmGcPlan.wrapperPlan.exportWrappers, [
+    {
+      exportName: 'main.ts:echo',
+      wasmExportName: 'main.ts:echo',
+      paramTypes: ['bigint_ref'],
+      resultType: 'bigint_ref',
+    },
+  ]);
+
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
+  await Deno.writeTextFile(wrapperPath, emitWasmGcWrapperModule(snapshot.wasmGcPlan));
+  const wat = await Deno.readTextFile(watPath);
+  const wrapper = await Deno.readTextFile(wrapperPath);
+  assertEquals(wat.includes('(type $bigint_runtime (struct'), true);
+  assertEquals(
+    wat.includes(
+      '(func $echo (export "main.ts:echo") (param $value (ref null $bigint_runtime)) (result (ref null $bigint_runtime))',
+    ),
+    true,
+  );
+  assertEquals(wat.includes('(export "__soundscript_bigint_from_host")'), true);
+  assertEquals(wat.includes('(export "__soundscript_bigint_to_host")'), true);
+  assertEquals(wrapper.includes('bigintToInternal'), true);
+  assertEquals(wrapper.includes('bigintFromInternal'), true);
+  assertEquals(wrapper.includes('symbolToInternal'), false);
+  assertEquals(wrapper.includes('symbolFromInternal'), false);
+  const parseResult = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(parseResult.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(parseResult.success, true);
+
+  const wasm = await Deno.readFile(wasmPath);
+  const instance = (await WebAssembly.instantiate(wasm)).instance;
+  const exports = await createWasmGcWrappedExports(wrapperPath, instance);
+  const echo = exports['main.ts:echo'] as (value: bigint) => bigint;
+  assertEquals(echo(70n), 70n);
+});
+
+Deno.test('compiler wasm-gc wrapper glue adapts imported bigint params and results', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: {
+          strict: true,
+          module: 'esnext',
+          moduleResolution: 'node',
+          target: 'ES2020',
+        },
+        files: ['main.ts', 'host.d.ts'],
+      }),
+    },
+    {
+      path: 'host.d.ts',
+      contents: `
+        export declare function mirror(value: bigint): bigint;
+      `,
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        import { mirror } from "./host";
+
+        export function main(value: bigint): bigint {
+          return mirror(value);
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
+  const watPath = join(tempDirectory, 'wasm-gc-shadow-import-bigint-wrapper.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-shadow-import-bigint-wrapper.wasm');
+  const wrapperPath = join(tempDirectory, 'wasm-gc-shadow-import-bigint-wrapper.mjs');
+
+  assertEquals(snapshot.wasmGcPlan.wrapperPlan.hostImportWrappers, [
+    {
+      functionName: 'mirror',
+      hostImportModule: 'soundscript_host_function',
+      hostImportName: 'host.d.ts:mirror',
+      paramTypes: ['bigint_ref'],
+      resultType: 'bigint_ref',
+    },
+  ]);
+
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
+  await Deno.writeTextFile(wrapperPath, emitWasmGcWrapperModule(snapshot.wasmGcPlan));
+  const wat = await Deno.readTextFile(watPath);
+  const wrapper = await Deno.readTextFile(wrapperPath);
+  assertEquals(
+    wat.includes(
+      '(import "soundscript_host_function" "host.d.ts:mirror" (func $mirror (param $value (ref null $bigint_runtime)) (result (ref null $bigint_runtime)))',
+    ),
+    true,
+  );
+  assertEquals(wrapper.includes('bigintToInternal'), true);
+  assertEquals(wrapper.includes('bigintFromInternal'), true);
+  assertEquals(wrapper.includes('symbolToInternal'), false);
+  assertEquals(wrapper.includes('symbolFromInternal'), false);
+  const parseResult = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(parseResult.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(parseResult.success, true);
+
+  const instanceCell: { instance?: WebAssembly.Instance } = {};
+  const wrapperModule = await import(`file://${wrapperPath}?cacheBust=${crypto.randomUUID()}`);
+  const imports = wrapperModule.createSoundscriptWasmGcHostImports(
+    {
+      soundscript_host_function: {
+        'host.d.ts:mirror': (value: bigint): bigint => value,
+      },
+    },
+    instanceCell,
+  );
+  const wasm = await Deno.readFile(wasmPath);
+  const instance = (await WebAssembly.instantiate(wasm, imports)).instance;
+  instanceCell.instance = instance;
+  const exports = await createWasmGcWrappedExports(wrapperPath, instanceCell);
+  const main = exports['main.ts:main'] as (value: bigint) => bigint;
+  assertEquals(main(80n), 80n);
+});
+
 Deno.test('compiler wasm-gc wrapper glue adapts exported string params and results', async () => {
   const tempDirectory = await createTempProject([
     {
@@ -7419,9 +7618,12 @@ Deno.test('compiler wasm-gc wrapper glue keeps string export helpers pay-for-pla
   assertEquals(wat.includes('__soundscript_string_append_code_unit'), false);
   assertEquals(wat.includes('__soundscript_symbol_from_host'), false);
   assertEquals(wat.includes('__soundscript_symbol_to_host'), false);
+  assertEquals(wat.includes('__soundscript_bigint_from_host'), false);
+  assertEquals(wat.includes('__soundscript_bigint_to_host'), false);
   assertEquals(wrapper.includes('createSoundscriptWasmGcExports'), true);
   assertEquals(wrapper.includes('stringToInternal'), false);
   assertEquals(wrapper.includes('symbolToInternal'), false);
+  assertEquals(wrapper.includes('bigintToInternal'), false);
 });
 
 Deno.test('compiler wasm-gc emitter explains manifest-driven helpers and boundary types', async () => {

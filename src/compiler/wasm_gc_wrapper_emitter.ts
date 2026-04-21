@@ -46,12 +46,14 @@ function renderWrapperAssignment(
   callbackWrappers: readonly WasmGcHostCallbackWrapperPlanIR[],
 ): string {
   const first = hostImportWrapper ?? callbackWrappers[0]!;
-  const stringAdaptations = hostImportWrapper
+  const boundaryAdaptations = hostImportWrapper
     ? hostImportWrapper.paramTypes.map((paramType, index) =>
       isStringValueType(paramType)
         ? `    adaptedArgs[${index}] = stringFromInternal(args[${index}]);`
         : isSymbolValueType(paramType)
         ? `    adaptedArgs[${index}] = symbolFromInternal(args[${index}]);`
+        : isBigIntValueType(paramType)
+        ? `    adaptedArgs[${index}] = bigintFromInternal(args[${index}]);`
         : ''
     ).filter((line) => line.length > 0)
     : [];
@@ -64,6 +66,8 @@ function renderWrapperAssignment(
     ? '    return stringToInternal(result);'
     : hostImportWrapper && isSymbolValueType(hostImportWrapper.resultType)
     ? '    return symbolToInternal(result);'
+    : hostImportWrapper && isBigIntValueType(hostImportWrapper.resultType)
+    ? '    return bigintToInternal(result);'
     : '    return result;';
   return `  installWrappedHostImport(imports, hostImports, ${
     JSON.stringify(first.hostImportModule)
@@ -72,7 +76,7 @@ function renderWrapperAssignment(
     JSON.stringify(first.hostImportName)
   });
     const adaptedArgs = args.slice();
-${[...stringAdaptations, ...callbackAdaptations].join('\n')}
+${[...boundaryAdaptations, ...callbackAdaptations].join('\n')}
     const result = target(...adaptedArgs);
 ${resultReturn}
   });`;
@@ -104,7 +108,7 @@ function renderTaggedAdapterHelpers(plan: WasmGcModulePlanIR): string {
   }
   if (helpers.has('__soundscript_host_tag_bigint')) {
     cases.push(`    case 'bigint':
-      return requireExport(exports, '__soundscript_host_tag_bigint')(value);`);
+      return requireExport(exports, '__soundscript_host_tag_bigint')(bigintToInternal(value));`);
   }
   return `function tagHostValue(value) {
   const instance = requireInstance();
@@ -139,12 +143,15 @@ function renderTaggedResultAdapterHelpers(plan: WasmGcModulePlanIR): string {
   }
   if (resultHelpers.has('__soundscript_host_tag_extern_payload')) {
     cases.push(`    case 3:
-    case 7:
       return requireExport(exports, '__soundscript_host_tag_extern_payload')(value);`);
   }
   if (resultHelpers.has('__soundscript_host_tag_symbol_payload')) {
     cases.push(`    case 5:
       return symbolFromInternal(requireExport(exports, '__soundscript_host_tag_symbol_payload')(value));`);
+  }
+  if (resultHelpers.has('__soundscript_host_tag_bigint_payload')) {
+    cases.push(`    case 7:
+      return bigintFromInternal(requireExport(exports, '__soundscript_host_tag_bigint_payload')(value));`);
   }
   return `function untagHostValue(value) {
   const instance = requireInstance();
@@ -170,10 +177,20 @@ function isSymbolValueType(valueType: string): boolean {
   return valueType === 'symbol_ref';
 }
 
+function isBigIntValueType(valueType: string): boolean {
+  return valueType === 'bigint_ref';
+}
+
 function taggedKindsIncludeSymbol(
   kinds: WasmGcHostCallbackWrapperPlanIR['paramTaggedPrimitiveKinds'][number] | undefined,
 ): boolean {
   return kinds?.includesSymbol === true;
+}
+
+function taggedKindsIncludeBigInt(
+  kinds: WasmGcHostCallbackWrapperPlanIR['paramTaggedPrimitiveKinds'][number] | undefined,
+): boolean {
+  return kinds?.includesBigInt === true;
 }
 
 function wrapperUsesStringValues(wrapper: {
@@ -190,6 +207,13 @@ function wrapperUsesSymbolValues(wrapper: {
   return wrapper.paramTypes.some(isSymbolValueType) || isSymbolValueType(wrapper.resultType);
 }
 
+function wrapperUsesBigIntValues(wrapper: {
+  paramTypes: readonly string[];
+  resultType: string;
+}): boolean {
+  return wrapper.paramTypes.some(isBigIntValueType) || isBigIntValueType(wrapper.resultType);
+}
+
 function hostImportSurfaceNeedsStringAdapters(plan: WasmGcModulePlanIR): boolean {
   return plan.wrapperPlan.hostImportWrappers.some(wrapperUsesStringValues);
 }
@@ -203,6 +227,15 @@ function hostImportSurfaceNeedsSymbolAdapters(plan: WasmGcModulePlanIR): boolean
     );
 }
 
+function hostImportSurfaceNeedsBigIntAdapters(plan: WasmGcModulePlanIR): boolean {
+  return plan.wrapperPlan.hostImportWrappers.some(wrapperUsesBigIntValues) ||
+    plan.wrapperPlan.hostCallbackWrappers.some((wrapper) =>
+      wrapperUsesBigIntValues(wrapper) ||
+      wrapper.paramTaggedPrimitiveKinds.some(taggedKindsIncludeBigInt) ||
+      taggedKindsIncludeBigInt(wrapper.resultTaggedPrimitiveKinds)
+    );
+}
+
 function exportSurfaceNeedsStringAdapters(plan: WasmGcModulePlanIR): boolean {
   return plan.wrapperPlan.exportWrappers.some(wrapperUsesStringValues);
 }
@@ -211,21 +244,33 @@ function exportSurfaceNeedsSymbolAdapters(plan: WasmGcModulePlanIR): boolean {
   return plan.wrapperPlan.exportWrappers.some(wrapperUsesSymbolValues);
 }
 
+function exportSurfaceNeedsBigIntAdapters(plan: WasmGcModulePlanIR): boolean {
+  return plan.wrapperPlan.exportWrappers.some(wrapperUsesBigIntValues);
+}
+
 function moduleNeedsSymbolAdapters(plan: WasmGcModulePlanIR): boolean {
   return hostImportSurfaceNeedsSymbolAdapters(plan) || exportSurfaceNeedsSymbolAdapters(plan);
 }
 
-function renderSharedSymbolCacheHelpers(plan: WasmGcModulePlanIR): string {
-  if (!moduleNeedsSymbolAdapters(plan)) {
+function moduleNeedsBigIntAdapters(plan: WasmGcModulePlanIR): boolean {
+  return hostImportSurfaceNeedsBigIntAdapters(plan) || exportSurfaceNeedsBigIntAdapters(plan);
+}
+
+function moduleNeedsBoundaryCache(plan: WasmGcModulePlanIR): boolean {
+  return moduleNeedsSymbolAdapters(plan) || moduleNeedsBigIntAdapters(plan);
+}
+
+function renderSharedBoundaryCacheHelpers(plan: WasmGcModulePlanIR): string {
+  if (!moduleNeedsBoundaryCache(plan)) {
     return '';
   }
-  return `const symbolCachesByInstance = new WeakMap();
+  return `const boundaryCachesByInstance = new WeakMap();
 
-function symbolCacheForInstance(instance) {
-  let cache = symbolCachesByInstance.get(instance);
+function boundaryCacheForInstance(instance) {
+  let cache = boundaryCachesByInstance.get(instance);
   if (!cache) {
     cache = { hostToInternal: new Map() };
-    symbolCachesByInstance.set(instance, cache);
+    boundaryCachesByInstance.set(instance, cache);
   }
   return cache;
 }
@@ -271,7 +316,7 @@ function stringFromInternal(value) {
     throw new TypeError('Soundscript WasmGC symbol host import result must be a symbol.');
   }
   const instance = requireInstance();
-  const cache = symbolCacheForInstance(instance);
+  const cache = boundaryCacheForInstance(instance);
   const existing = cache.hostToInternal.get(value);
   if (existing !== undefined) {
     return existing;
@@ -287,6 +332,30 @@ function symbolFromInternal(value) {
   }
   const instance = requireInstance();
   return requireExport(instance.exports, '__soundscript_symbol_to_host')(value);
+}`);
+  }
+  if (hostImportSurfaceNeedsBigIntAdapters(plan)) {
+    helpers.push(`function bigintToInternal(value) {
+  if (typeof value !== 'bigint') {
+    throw new TypeError('Soundscript WasmGC bigint host import result must be a bigint.');
+  }
+  const instance = requireInstance();
+  const cache = boundaryCacheForInstance(instance);
+  const existing = cache.hostToInternal.get(value);
+  if (existing !== undefined) {
+    return existing;
+  }
+  const internal = requireExport(instance.exports, '__soundscript_bigint_from_host')(value);
+  cache.hostToInternal.set(value, internal);
+  return internal;
+}
+
+function bigintFromInternal(value) {
+  if (value == null) {
+    throw new TypeError('Soundscript WasmGC bigint host import argument was null.');
+  }
+  const instance = requireInstance();
+  return requireExport(instance.exports, '__soundscript_bigint_to_host')(value);
 }`);
   }
   return helpers.join('\n\n');
@@ -325,7 +394,7 @@ function renderExportBoundaryAdapterHelpers(plan: WasmGcModulePlanIR): string {
     if (typeof value !== 'symbol') {
       throw new TypeError('Soundscript WasmGC symbol export argument must be a symbol.');
     }
-    const cache = symbolCacheForInstance(instance);
+    const cache = boundaryCacheForInstance(instance);
     const existing = cache.hostToInternal.get(value);
     if (existing !== undefined) {
       return existing;
@@ -342,32 +411,80 @@ function renderExportBoundaryAdapterHelpers(plan: WasmGcModulePlanIR): string {
     return requireExport(wasmExports, '__soundscript_symbol_to_host')(value);
   }`);
   }
+  if (exportSurfaceNeedsBigIntAdapters(plan)) {
+    helpers.push(`function bigintToInternal(value) {
+    if (typeof value !== 'bigint') {
+      throw new TypeError('Soundscript WasmGC bigint export argument must be a bigint.');
+    }
+    const cache = boundaryCacheForInstance(instance);
+    const existing = cache.hostToInternal.get(value);
+    if (existing !== undefined) {
+      return existing;
+    }
+    const internal = requireExport(wasmExports, '__soundscript_bigint_from_host')(value);
+    cache.hostToInternal.set(value, internal);
+    return internal;
+  }
+
+  function bigintFromInternal(value) {
+    if (value == null) {
+      throw new TypeError('Soundscript WasmGC bigint export returned null.');
+    }
+    return requireExport(wasmExports, '__soundscript_bigint_to_host')(value);
+  }`);
+  }
   return helpers.join('\n\n  ');
 }
 
 function renderAdaptToInternalFunction(plan: WasmGcModulePlanIR): string {
-  return moduleNeedsSymbolAdapters(plan)
-    ? `function adaptToInternal(valueType, value) {
-    if (valueType === 'tagged_ref') {
+  const branches = [
+    `    if (valueType === 'tagged_ref') {
       return tagHostValue(value);
-    }
-    return valueType === 'symbol_ref' ? symbolToInternal(value) : value;
-  }`
-    : `function adaptToInternal(valueType, value) {
-    return valueType === 'tagged_ref' ? tagHostValue(value) : value;
+    }`,
+    ...(moduleNeedsSymbolAdapters(plan)
+      ? [
+        `    if (valueType === 'symbol_ref') {
+      return symbolToInternal(value);
+    }`,
+      ]
+      : []),
+    ...(moduleNeedsBigIntAdapters(plan)
+      ? [
+        `    if (valueType === 'bigint_ref') {
+      return bigintToInternal(value);
+    }`,
+      ]
+      : []),
+    '    return value;',
+  ];
+  return `function adaptToInternal(valueType, value) {
+${branches.join('\n')}
   }`;
 }
 
 function renderAdaptToHostFunction(plan: WasmGcModulePlanIR): string {
-  return moduleNeedsSymbolAdapters(plan)
-    ? `function adaptToHost(valueType, value) {
-    if (valueType === 'tagged_ref') {
+  const branches = [
+    `    if (valueType === 'tagged_ref') {
       return untagHostValue(value);
-    }
-    return valueType === 'symbol_ref' ? symbolFromInternal(value) : value;
-  }`
-    : `function adaptToHost(valueType, value) {
-    return valueType === 'tagged_ref' ? untagHostValue(value) : value;
+    }`,
+    ...(moduleNeedsSymbolAdapters(plan)
+      ? [
+        `    if (valueType === 'symbol_ref') {
+      return symbolFromInternal(value);
+    }`,
+      ]
+      : []),
+    ...(moduleNeedsBigIntAdapters(plan)
+      ? [
+        `    if (valueType === 'bigint_ref') {
+      return bigintFromInternal(value);
+    }`,
+      ]
+      : []),
+    '    return value;',
+  ];
+  return `function adaptToHost(valueType, value) {
+${branches.join('\n')}
   }`;
 }
 
@@ -377,6 +494,8 @@ function renderExportWrapperInvocation(wrapper: WasmGcExportWrapperPlanIR): stri
       ? `stringToInternal(args[${index}])`
       : isSymbolValueType(paramType)
       ? `symbolToInternal(args[${index}])`
+      : isBigIntValueType(paramType)
+      ? `bigintToInternal(args[${index}])`
       : `args[${index}]`
   ).join(', ');
   const rawResult = `requireExport(wasmExports, ${
@@ -386,6 +505,8 @@ function renderExportWrapperInvocation(wrapper: WasmGcExportWrapperPlanIR): stri
     ? `stringFromInternal(${rawResult})`
     : isSymbolValueType(wrapper.resultType)
     ? `symbolFromInternal(${rawResult})`
+    : isBigIntValueType(wrapper.resultType)
+    ? `bigintFromInternal(${rawResult})`
     : rawResult;
   return `    ${JSON.stringify(wrapper.exportName)}: (...args) => ${result},`;
 }
@@ -434,7 +555,7 @@ export function emitWasmGcWrapperModule(plan: WasmGcModulePlanIR): string {
     renderWrapperAssignment(hostImportWrapper, callbackWrappers)
   );
   return `// Generated by the Soundscript wasm-gc shadow wrapper emitter.
-${renderSharedSymbolCacheHelpers(plan)}
+${renderSharedBoundaryCacheHelpers(plan)}
 export function createSoundscriptWasmGcHostImports(hostImports, instanceCell) {
   function requireInstance() {
     if (!instanceCell || !instanceCell.instance) {

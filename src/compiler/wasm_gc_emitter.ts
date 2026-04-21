@@ -151,7 +151,7 @@ function wasmTypeForCompilerValueType(valueType: string): string {
     case 'symbol_ref':
       return `(ref null ${symbolRuntimeTypeName()})`;
     case 'bigint_ref':
-      return 'externref';
+      return `(ref null ${bigintRuntimeTypeName()})`;
     case 'tagged_ref':
       return `(ref null ${taggedValueTypeName()})`;
     case 'heap_ref':
@@ -188,6 +188,10 @@ function stringRuntimeTypeName(): string {
 
 function symbolRuntimeTypeName(): string {
   return '$symbol_runtime';
+}
+
+function bigintRuntimeTypeName(): string {
+  return '$bigint_runtime';
 }
 
 function wasmTypeForHostFunctionParam(
@@ -1056,7 +1060,7 @@ function renderDefaultValueForCompilerType(valueType: string, indent: string): r
     case 'symbol_ref':
       return [`${indent}ref.null ${symbolRuntimeTypeName()}`];
     case 'bigint_ref':
-      return [`${indent}ref.null extern`];
+      return [`${indent}ref.null ${bigintRuntimeTypeName()}`];
     case 'tagged_ref':
       return renderTaggedUndefined(indent);
     case 'owned_number_array_ref':
@@ -1146,8 +1150,8 @@ function renderDynamicObjectStoredValue(
       return [
         `${indent}i32.const ${TAGGED_BIGINT_TAG}`,
         `${indent}f64.const 0`,
+        `${indent}ref.null extern`,
         ...rawValue,
-        `${indent}ref.null eq`,
         `${indent}struct.new ${taggedValueTypeName()}`,
       ];
     default:
@@ -1217,8 +1221,8 @@ function renderDynamicObjectSetValue(
         return [
           `${indent}i32.const ${TAGGED_BIGINT_TAG}`,
           `${indent}f64.const 0`,
+          `${indent}ref.null extern`,
           ...renderExpression(expression, indent, context),
-          `${indent}ref.null eq`,
           `${indent}struct.new ${taggedValueTypeName()}`,
         ];
     }
@@ -2554,7 +2558,7 @@ function renderTaggedArrayIndexOfExpression(
     `${indent}                ref.eq`,
     `${indent}              else`,
     ...currentTag,
-    `${indent}                i32.const ${TAGGED_HEAP_OBJECT_TAG}`,
+    `${indent}                i32.const ${TAGGED_BIGINT_TAG}`,
     `${indent}                i32.eq`,
     `${indent}                if (result i32)`,
     ...currentValue,
@@ -2563,11 +2567,22 @@ function renderTaggedArrayIndexOfExpression(
     `${indent}                  struct.get ${taggedValueTypeName()} $heap_payload`,
     `${indent}                  ref.eq`,
     `${indent}                else`,
+    ...currentTag,
+    `${indent}                  i32.const ${TAGGED_HEAP_OBJECT_TAG}`,
+    `${indent}                  i32.eq`,
+    `${indent}                  if (result i32)`,
     ...currentValue,
-    `${indent}                  struct.get ${taggedValueTypeName()} $extern_payload`,
+    `${indent}                    struct.get ${taggedValueTypeName()} $heap_payload`,
     ...searchValue,
-    `${indent}                  struct.get ${taggedValueTypeName()} $extern_payload`,
-    `${indent}                  call $${sanitizeIdentifier(EXTERN_EQUAL_FUNCTION_NAME)}`,
+    `${indent}                    struct.get ${taggedValueTypeName()} $heap_payload`,
+    `${indent}                    ref.eq`,
+    `${indent}                  else`,
+    ...currentValue,
+    `${indent}                    struct.get ${taggedValueTypeName()} $extern_payload`,
+    ...searchValue,
+    `${indent}                    struct.get ${taggedValueTypeName()} $extern_payload`,
+    `${indent}                    call $${sanitizeIdentifier(EXTERN_EQUAL_FUNCTION_NAME)}`,
+    `${indent}                  end`,
     `${indent}                end`,
     `${indent}              end`,
     `${indent}            end`,
@@ -2701,8 +2716,8 @@ function renderExpression(
       return [
         `${indent}i32.const ${TAGGED_BIGINT_TAG}`,
         `${indent}f64.const 0`,
+        `${indent}ref.null extern`,
         ...renderExpression(expression.value, indent, context),
-        `${indent}ref.null eq`,
         `${indent}struct.new ${taggedValueTypeName()}`,
       ];
     case 'tag_heap_object':
@@ -2744,7 +2759,8 @@ function renderExpression(
       return [
         ...renderExpression(expression.value, indent, context),
         `${indent}ref.cast (ref ${taggedValueTypeName()})`,
-        `${indent}struct.get ${taggedValueTypeName()} $extern_payload`,
+        `${indent}struct.get ${taggedValueTypeName()} $heap_payload`,
+        `${indent}ref.cast (ref ${bigintRuntimeTypeName()})`,
       ];
     case 'untag_heap_object':
       return [
@@ -3513,6 +3529,21 @@ function taggedKindsIncludeSymbol(
   return kinds?.includesSymbol === true;
 }
 
+function taggedKindsIncludeBigInt(
+  kinds:
+    | NonNullable<
+      WasmGcModulePlanIR['wrapperPlan']['hostCallbackWrappers'][number][
+        'resultTaggedPrimitiveKinds'
+      ]
+    >
+    | WasmGcModulePlanIR['wrapperPlan']['hostCallbackWrappers'][number][
+      'paramTaggedPrimitiveKinds'
+    ][number]
+    | undefined,
+): boolean {
+  return kinds?.includesBigInt === true;
+}
+
 function wrapperPlanUsesSymbolBoundaryHelpers(plan: WasmGcModulePlanIR): boolean {
   const wrappers = [...plan.wrapperPlan.exportWrappers, ...plan.wrapperPlan.hostImportWrappers];
   return wrappers.some((wrapper) =>
@@ -3524,6 +3555,20 @@ function wrapperPlanUsesSymbolBoundaryHelpers(plan: WasmGcModulePlanIR): boolean
       wrapper.resultType === 'symbol_ref' ||
       wrapper.paramTaggedPrimitiveKinds.some(taggedKindsIncludeSymbol) ||
       taggedKindsIncludeSymbol(wrapper.resultTaggedPrimitiveKinds)
+    );
+}
+
+function wrapperPlanUsesBigIntBoundaryHelpers(plan: WasmGcModulePlanIR): boolean {
+  const wrappers = [...plan.wrapperPlan.exportWrappers, ...plan.wrapperPlan.hostImportWrappers];
+  return wrappers.some((wrapper) =>
+    wrapper.paramTypes.some((paramType) => paramType === 'bigint_ref') ||
+    wrapper.resultType === 'bigint_ref'
+  ) ||
+    plan.wrapperPlan.hostCallbackWrappers.some((wrapper) =>
+      wrapper.paramTypes.some((paramType) => paramType === 'bigint_ref') ||
+      wrapper.resultType === 'bigint_ref' ||
+      wrapper.paramTaggedPrimitiveKinds.some(taggedKindsIncludeBigInt) ||
+      taggedKindsIncludeBigInt(wrapper.resultTaggedPrimitiveKinds)
     );
 }
 
@@ -3599,6 +3644,23 @@ function renderSymbolBoundaryWrapperHelperFunctions(plan: WasmGcModulePlanIR): r
     '    local.get $value',
     `    ref.cast (ref ${symbolRuntimeTypeName()})`,
     `    struct.get ${symbolRuntimeTypeName()} $host_value`,
+    '  )',
+  ];
+}
+
+function renderBigIntBoundaryWrapperHelperFunctions(plan: WasmGcModulePlanIR): readonly string[] {
+  if (!wrapperPlanUsesBigIntBoundaryHelpers(plan)) {
+    return [];
+  }
+  return [
+    `  (func $__soundscript_bigint_from_host (export "__soundscript_bigint_from_host") (param $value externref) (result (ref null ${bigintRuntimeTypeName()}))`,
+    '    local.get $value',
+    `    struct.new ${bigintRuntimeTypeName()}`,
+    '  )',
+    `  (func $__soundscript_bigint_to_host (export "__soundscript_bigint_to_host") (param $value (ref null ${bigintRuntimeTypeName()})) (result externref)`,
+    '    local.get $value',
+    `    ref.cast (ref ${bigintRuntimeTypeName()})`,
+    `    struct.get ${bigintRuntimeTypeName()} $host_value`,
     '  )',
   ];
 }
@@ -4631,6 +4693,19 @@ function renderSymbolRuntimeTypes(plan: WasmGcModulePlanIR): readonly string[] {
     : [];
 }
 
+function renderBigIntRuntimeTypes(plan: WasmGcModulePlanIR): readonly string[] {
+  const usesBigIntRuntime = plan.typePlans.some((typePlan) =>
+    typePlan.source === 'runtime_family' && typePlan.family === 'bigint'
+  );
+  return usesBigIntRuntime
+    ? [
+      `  (type ${bigintRuntimeTypeName()} (struct`,
+      '    (field $host_value externref)',
+      '  ))',
+    ]
+    : [];
+}
+
 function renderBoxTypes(plan: WasmGcModulePlanIR): readonly string[] {
   const valueTypes = new Set<string>();
   for (const func of plan.functionPlans) {
@@ -5466,11 +5541,11 @@ function renderHostTaggedWrapperHelperFunctions(plan: WasmGcModulePlanIR): reado
   }
   if (helpers.has('__soundscript_host_tag_bigint')) {
     helperLines.push(
-      '  (func $__soundscript_host_tag_bigint (export "__soundscript_host_tag_bigint") (param $value externref) (result (ref null $tagged_value))',
+      `  (func $__soundscript_host_tag_bigint (export "__soundscript_host_tag_bigint") (param $value (ref null ${bigintRuntimeTypeName()})) (result (ref null $tagged_value))`,
       `    i32.const ${TAGGED_BIGINT_TAG}`,
       '    f64.const 0',
+      '    ref.null extern',
       '    local.get $value',
-      '    ref.null eq',
       `    struct.new ${taggedValueTypeName()}`,
       '  )',
     );
@@ -5512,6 +5587,16 @@ function renderHostTaggedWrapperHelperFunctions(plan: WasmGcModulePlanIR): reado
       '  )',
     );
   }
+  if (resultHelpers.has('__soundscript_host_tag_bigint_payload')) {
+    helperLines.push(
+      `  (func $__soundscript_host_tag_bigint_payload (export "__soundscript_host_tag_bigint_payload") (param $value (ref null $tagged_value)) (result (ref null ${bigintRuntimeTypeName()}))`,
+      '    local.get $value',
+      `    ref.cast (ref ${taggedValueTypeName()})`,
+      `    struct.get ${taggedValueTypeName()} $heap_payload`,
+      `    ref.cast (ref ${bigintRuntimeTypeName()})`,
+      '  )',
+    );
+  }
   return helperLines;
 }
 
@@ -5524,6 +5609,7 @@ export function emitWasmGcModulePlan(plan: WasmGcModulePlanIR): string {
   );
   const stringRuntimeTypes = renderStringRuntimeTypes(plan);
   const symbolRuntimeTypes = renderSymbolRuntimeTypes(plan);
+  const bigintRuntimeTypes = renderBigIntRuntimeTypes(plan);
   const arrayTypes = renderArrayTypes(plan);
   const boxTypes = renderBoxTypes(plan);
   const closureSignatureTypes = renderClosureSignatureTypes(plan);
@@ -5536,6 +5622,7 @@ export function emitWasmGcModulePlan(plan: WasmGcModulePlanIR): string {
   const stringEqualityHelperFunctions = renderStringEqualityHelperFunctions(plan);
   const stringExportWrapperHelperFunctions = renderStringExportWrapperHelperFunctions(plan);
   const symbolBoundaryWrapperHelperFunctions = renderSymbolBoundaryWrapperHelperFunctions(plan);
+  const bigintBoundaryWrapperHelperFunctions = renderBigIntBoundaryWrapperHelperFunctions(plan);
   const promiseHelperFunctions = renderPromiseHelperFunctions(plan);
   const asyncGeneratorHelperFunctions = renderAsyncGeneratorHelperFunctions(plan);
   const closureDispatchHelpers = renderClosureDispatchHelpers(plan, closureFunctionNames);
@@ -5557,6 +5644,7 @@ export function emitWasmGcModulePlan(plan: WasmGcModulePlanIR): string {
     ...(
       plan.typePlans.length > 0 || stringRuntimeTypes.length > 0 || arrayTypes.length > 0 ||
         symbolRuntimeTypes.length > 0 ||
+        bigintRuntimeTypes.length > 0 ||
         boxTypes.length > 0 ||
         closureSignatureTypes.length > 0 || closureObjectTypes.length > 0 ||
         capturedClosureEnvTypes.length > 0 ||
@@ -5568,6 +5656,7 @@ export function emitWasmGcModulePlan(plan: WasmGcModulePlanIR): string {
           ...promiseRecordTypes,
           ...stringRuntimeTypes,
           ...symbolRuntimeTypes,
+          ...bigintRuntimeTypes,
           ...arrayTypes,
           ...fallbackObjectTypes,
           ...dynamicObjectTypes,
@@ -5600,6 +5689,7 @@ export function emitWasmGcModulePlan(plan: WasmGcModulePlanIR): string {
         ...stringEqualityHelperFunctions,
         ...stringExportWrapperHelperFunctions,
         ...symbolBoundaryWrapperHelperFunctions,
+        ...bigintBoundaryWrapperHelperFunctions,
         ...promiseHelperFunctions,
         ...hostTaggedWrapperHelperFunctions,
         ...closureDispatchHelpers,

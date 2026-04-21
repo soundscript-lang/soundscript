@@ -222,7 +222,7 @@ function wasmTypeForCompilerValueType(valueType: string): string {
     case 'symbol_ref':
       return '(ref null $symbol_runtime)';
     case 'bigint_ref':
-      return 'externref';
+      return '(ref null $bigint_runtime)';
     case 'tagged_ref':
       return '(ref null $tagged_value)';
     default:
@@ -609,8 +609,11 @@ function addTaggedValueResultHelpers(
     helpers.add('__soundscript_host_tag_number_payload');
     return;
   }
-  if (kinds.includesBigInt || kinds.includesString) {
+  if (kinds.includesString) {
     helpers.add('__soundscript_host_tag_extern_payload');
+  }
+  if (kinds.includesBigInt) {
+    helpers.add('__soundscript_host_tag_bigint_payload');
   }
   if (kinds.includesSymbol) {
     helpers.add('__soundscript_host_tag_symbol_payload');
@@ -634,7 +637,7 @@ function taggedValueResultHelpersForWrappers(
 
 function isWasmGcWrapperValueType(valueType: string): boolean {
   return valueType === 'string_ref' || valueType === 'owned_string_ref' ||
-    valueType === 'symbol_ref';
+    valueType === 'symbol_ref' || valueType === 'bigint_ref';
 }
 
 function createWasmGcExportWrapperPlan(
