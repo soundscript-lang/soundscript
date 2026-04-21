@@ -3510,7 +3510,61 @@ Deno.test('compiler wasm-gc emitter parses compiler-owned async Promise returns'
   const wat = await Deno.readTextFile(watPath);
   assertEquals(wat.includes('struct.new $tagged_value'), true);
   assertEquals(wat.includes('call $soundscript_promise_resolve'), true);
+  assertEquals(wat.includes('(func $soundscript_promise_reject '), false);
+  assertEquals(wat.includes('(func $soundscript_promise_new_pending'), false);
+  assertEquals(wat.includes('(func $soundscript_promise_then'), false);
   assertEquals(wat.includes('Promise.resolve'), false);
+  assertEquals(wat.includes('jspi'), false);
+  const result = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(result.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(result.success, true);
+});
+
+Deno.test('compiler wasm-gc emitter parses compiler-owned Promise.reject returns', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: {
+          strict: true,
+          lib: ['ES2020'],
+        },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        export function value(): Promise<number> {
+          return Promise.reject(4);
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
+  const valuePlan = snapshot.wasmGcPlan.functionPlans.find((func) => func.name === 'value');
+  const watPath = join(tempDirectory, 'wasm-gc-shadow-promise-reject.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-shadow-promise-reject.wasm');
+
+  assertEquals(
+    snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
+    ['closure', 'finite_union', 'promise'],
+  );
+  assertEquals(valuePlan?.bodyStatus, 'emittable');
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
+  const wat = await Deno.readTextFile(watPath);
+  assertEquals(wat.includes('call $soundscript_promise_reject'), true);
+  assertEquals(wat.includes('(func $soundscript_promise_resolve '), false);
+  assertEquals(wat.includes('(func $soundscript_promise_new_pending'), false);
+  assertEquals(wat.includes('(func $soundscript_promise_then'), false);
+  assertEquals(wat.includes('i32.const 2'), true);
+  assertEquals(wat.includes('Promise.reject'), false);
   assertEquals(wat.includes('jspi'), false);
   const result = await new Deno.Command('wasm-tools', {
     args: ['parse', watPath, '-o', wasmPath],

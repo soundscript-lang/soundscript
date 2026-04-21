@@ -3668,31 +3668,84 @@ function renderTaggedValueType(plan: WasmGcModulePlanIR): readonly string[] {
     : [];
 }
 
+function semanticTreeContainsCall(value: unknown, callee: string): boolean {
+  if (value === null || typeof value !== 'object') {
+    return false;
+  }
+  if (Array.isArray(value)) {
+    return value.some((item) => semanticTreeContainsCall(item, callee));
+  }
+  const record = value as Record<string, unknown>;
+  if (record.kind === 'call' && record.callee === callee) {
+    return true;
+  }
+  return Object.values(record).some((item) => semanticTreeContainsCall(item, callee));
+}
+
+function moduleCallsFunction(plan: WasmGcModulePlanIR, callee: string): boolean {
+  return plan.functionPlans.some((func) => semanticTreeContainsCall(func.body, callee));
+}
+
 function renderPromiseHelperFunctions(plan: WasmGcModulePlanIR): readonly string[] {
   const usesPromiseResolution = plan.helperPlans.some((helper) =>
     helper.family === 'promise' && helper.name === 'promise_resolution_ops'
   );
+  const usesPromiseResolve = moduleCallsFunction(plan, '__soundscript_promise_resolve');
+  const usesPromiseReject = moduleCallsFunction(plan, '__soundscript_promise_reject');
+  const usesPromiseNewPending = moduleCallsFunction(plan, '__soundscript_promise_new_pending');
+  const usesPromiseThen = moduleCallsFunction(plan, '__soundscript_promise_then');
+  const usesPromiseResolveInto = moduleCallsFunction(plan, '__soundscript_promise_resolve_into');
+  const usesPromiseRejectInto = moduleCallsFunction(plan, '__soundscript_promise_reject_into');
   return usesPromiseResolution
     ? [
-      `  (func $soundscript_promise_resolve (param $value (ref null ${taggedValueTypeName()})) (result (ref null eq))`,
-      '    i32.const 1',
-      '    local.get $value',
-      '    struct.new $promise_runtime',
-      '  )',
-      `  (func $soundscript_promise_new_pending (result (ref null eq))`,
-      '    i32.const 0',
-      ...renderTaggedUndefined('    '),
-      '    struct.new $promise_runtime',
-      '  )',
-      `  (func $soundscript_promise_then (param $receiver (ref null eq)) (param $on_fulfilled (ref null eq)) (param $on_rejected (ref null eq)) (result (ref null eq))`,
-      '    local.get $receiver',
-      '  )',
-      `  (func $soundscript_promise_resolve_into (param $target_tagged (ref null ${taggedValueTypeName()})) (param $value (ref null ${taggedValueTypeName()})) (result (ref null ${taggedValueTypeName()}))`,
-      ...renderTaggedUndefined('    '),
-      '  )',
-      `  (func $soundscript_promise_reject_into (param $target_tagged (ref null ${taggedValueTypeName()})) (param $value (ref null ${taggedValueTypeName()})) (result (ref null ${taggedValueTypeName()}))`,
-      ...renderTaggedUndefined('    '),
-      '  )',
+      ...(usesPromiseResolve
+        ? [
+          `  (func $soundscript_promise_resolve (param $value (ref null ${taggedValueTypeName()})) (result (ref null eq))`,
+          '    i32.const 1',
+          '    local.get $value',
+          '    struct.new $promise_runtime',
+          '  )',
+        ]
+        : []),
+      ...(usesPromiseReject
+        ? [
+          `  (func $soundscript_promise_reject (param $value (ref null ${taggedValueTypeName()})) (result (ref null eq))`,
+          '    i32.const 2',
+          '    local.get $value',
+          '    struct.new $promise_runtime',
+          '  )',
+        ]
+        : []),
+      ...(usesPromiseNewPending
+        ? [
+          `  (func $soundscript_promise_new_pending (result (ref null eq))`,
+          '    i32.const 0',
+          ...renderTaggedUndefined('    '),
+          '    struct.new $promise_runtime',
+          '  )',
+        ]
+        : []),
+      ...(usesPromiseThen
+        ? [
+          `  (func $soundscript_promise_then (param $receiver (ref null eq)) (param $on_fulfilled (ref null eq)) (param $on_rejected (ref null eq)) (result (ref null eq))`,
+          '    local.get $receiver',
+          '  )',
+        ]
+        : []),
+      ...(usesPromiseResolveInto
+        ? [
+          `  (func $soundscript_promise_resolve_into (param $target_tagged (ref null ${taggedValueTypeName()})) (param $value (ref null ${taggedValueTypeName()})) (result (ref null ${taggedValueTypeName()}))`,
+          ...renderTaggedUndefined('    '),
+          '  )',
+        ]
+        : []),
+      ...(usesPromiseRejectInto
+        ? [
+          `  (func $soundscript_promise_reject_into (param $target_tagged (ref null ${taggedValueTypeName()})) (param $value (ref null ${taggedValueTypeName()})) (result (ref null ${taggedValueTypeName()}))`,
+          ...renderTaggedUndefined('    '),
+          '  )',
+        ]
+        : []),
     ]
     : [];
 }
