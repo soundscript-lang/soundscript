@@ -16935,6 +16935,9 @@ function isSupportedTaggedMapKeyType(checker: ts.TypeChecker, type: ts.Type): bo
   if ((type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown | ts.TypeFlags.BooleanLike)) !== 0) {
     return true;
   }
+  if (isSymbolLikeType(type) || isSymbolOrNullableType(type)) {
+    return true;
+  }
   return isTaggedCompilerUnionType(type) ||
     isSupportedTaggedHeapNullableType(checker, type) ||
     isSupportedInternalTaggedHeapUnionType(checker, type) ||
@@ -17042,6 +17045,7 @@ function getSupportedSetElementTypeInfo(
   if (
     isSupportedInternalTaggedHeapUnionType(checker, elementType) ||
     isSupportedTaggedHeapNullableType(checker, elementType) ||
+    isSymbolOrNullableType(elementType) ||
     isTaggedCompilerUnionType(elementType) ||
     isDefinitelyUndefinedType(elementType) ||
     isDefinitelyNullType(elementType)
