@@ -55,6 +55,7 @@ Legend:
 - `batch-56`: covered by the fifty-sixth red-team batch added with this record.
 - `batch-57`: covered by the fifty-seventh red-team batch added with this record.
 - `batch-58`: covered by the fifty-eighth red-team batch added with this record.
+- `batch-59`: covered by the fifty-ninth red-team batch added with this record.
 - `audit-debt`: missing coverage that should be closed before calling the family fully audited.
 - `out-of-scope`: explicitly outside the strong soundness claim.
 - `design-gap`: documented future work, not a current guarantee.
@@ -67,7 +68,7 @@ Legend:
 | BareObject/null-prototype provenance | covered           | covered                        | covered                        | batch-39                 | covered                    | batch-39                | batch-39            | batch-45             |
 | `#[value]` parity                    | covered           | batch-1                        | batch-1                        | batch-1                  | batch-5                    | batch-1                 | batch-1             | covered              |
 | Machine numerics                     | covered           | batch-37                       | batch-37                       | batch-37                 | batch-5                    | batch-37                | batch-1,37          | batch-37             |
-| Macro/capability boundary            | covered,batch-54  | covered,batch-53,54            | batch-53,54,55,57,58           | batch-6,53,54            | batch-41,42,54             | batch-53,54,55,57,58    | batch-7,56          | batch-8              |
+| Macro/capability boundary            | covered,batch-54  | covered,batch-53,54            | batch-53,54,55,57,58           | batch-6,53,54            | batch-41,42,54             | batch-53,54,55,57,58    | batch-7,56,59       | batch-8              |
 | Compiler acceptance parity           | covered           | audit-debt                     | out-of-scope                   | out-of-scope             | out-of-scope               | out-of-scope            | batch-1,27,30       | covered,batch-27,30  |
 | Project-reference root ownership     | batch-32,47,48,49 | out-of-scope,batch-46,47,48,49 | out-of-scope,batch-46,47,48,49 | batch-32,48,49           | out-of-scope               | batch-34,47,48,49       | batch-33,50,51      | out-of-scope         |
 
@@ -1435,10 +1436,49 @@ Legend:
   is intentionally documented in the test rather than changed here to avoid broad LSP work on every
   edit.
 
+## Batch 59 Findings
+
+### Package Runtime Diamond Macro Helper Drift
+
+- Attack: build a package diamond where `app` imports built `mid-a` and `mid-b`, and both middle
+  packages materialize a macro from the same source-published leaf package during their own package
+  builds. Prime cold outputs and unchanged warm build-cache hits, then edit only the leaf
+  `helper.macro.sts` so the macro expands from `"L1"` to `"L2"`.
+- Routes: `buildProject` for both middle packages and the app package, unchanged build-cache hit
+  reuse, package-to-package source-published macro dependency tracking, emitted ESM implementation
+  inspection, package output hashing, app-level Node package import, and runtime package resolution
+  through built `node_modules` links.
+- Expected result: unchanged warm builds hash-match the cold outputs and skip analysis; after the
+  leaf macro helper drift, stale warm builds miss and rerun analysis, emitted middle-package JS
+  contains the new materialized macro value, no runtime JS imports the macro provider, `.macro`,
+  `.sts`, or `soundscript/src`, and plain Node observes `A:L2|B:L2` through the built app package.
+- Result: executable coverage added in `tests/integration/red_team_audit_test.ts`. No production bug
+  was found. This closes the combined Batch 52 plus Batch 56 gap: package diamond runtime wiring now
+  has a macro-helper drift oracle instead of only pure package imports or a direct macro dependency.
+- Residual risk: this covers middle packages that consume the shared macro directly. A later breadth
+  variant can cover middle packages that only reexport a macro subpath or barrel before the app
+  materializes it.
+
+### Recursive Non-`.sts` Support-File Tracking Decision
+
+- Decision: recursive non-`.sts` support-file tracking remains intentionally outside the current
+  strong soundness claim. It is a documented design gap, not an owned audit bug.
+- Evidence: the current claim covers local `.sts`, source-published `.sts` package roots/subpaths,
+  and macro-expanded prepared views of `.sts`. The public macro contract requires user macro graphs
+  to stay in `.macro.sts` and forbids crossing `.ts`, `.js`, projected `.d.ts`, or other foreign
+  source kinds.
+- Expected behavior today: package graphs that rely on local non-`.sts` support files must fail
+  closed at the package/source boundary or remain outside the strongest package-cache guarantee.
+- Future requirement: if a future package-source design admits non-`.sts` support files, the cache
+  key must recursively fingerprint the complete support graph, including imports, reexports,
+  type-only imports, dynamic imports, package metadata, runtime target, and resolved real paths, or
+  continue to fail closed.
+
 ## Remaining High-Priority Audit Debt
 
-- Recursive package support-file tracking for non-`.sts` helper graphs if that source-published
-  package boundary is ever brought into scope.
+- No remaining high-priority debt is being carried for recursive non-`.sts` support-file tracking
+  under the current claim boundary. It stays a design gap unless the source-published package
+  guarantee is explicitly broadened beyond `.sts` and `.macro.sts` graphs.
 
 ## Verification Log
 
@@ -2075,3 +2115,19 @@ red-team attack, the route matrix it covers, and the residual risk left behind.
   the required `.macro.sts` module suffix, and rejected import-equals syntax now asserts that no
   `#[interop]` quick fix is offered because TypeScript rejects that syntax before checker-owned
   boundary analysis.
+- `deno test --allow-all --filter "package build output refreshes diamond macro helper drift"
+  tests/integration/red_team_audit_test.ts`:
+  passed, 1 test in `34s`; this covered the Batch 59 package-to-package macro diamond runtime smoke
+  and observed the built app value change from `A:L1|B:L1` to `A:L2|B:L2`.
+- `deno test --allow-all --filter
+  "/package build output preserves diamond Node imports|package build output refreshes diamond macro
+  helper drift/" tests/integration/red_team_audit_test.ts`:
+  passed, 2 tests in `43s`, proving the new macro diamond case did not disturb the existing pure
+  package-diamond Node import smoke.
+- `deno fmt --check tests/integration/red_team_audit_test.ts
+  docs/project/2026-04-17-red-team-audit.md`,
+  `deno lint
+  tests/integration/red_team_audit_test.ts`,
+  `git diff --check -- tests/integration/red_team_audit_test.ts
+  docs/project/2026-04-17-red-team-audit.md`,
+  and `deno task check`: passed after the Batch 59 test and audit-document updates.
