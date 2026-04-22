@@ -619,6 +619,75 @@ export interface CompilerRuntimeClearMapIR {
   resultName: string;
 }
 
+export type CompilerRuntimeSetStorageArrayType =
+  | 'owned_array_ref'
+  | 'owned_number_array_ref'
+  | 'owned_boolean_array_ref'
+  | 'owned_tagged_array_ref';
+
+export type CompilerRuntimeSetStorageElementType =
+  | 'owned_string_ref'
+  | 'f64'
+  | 'i32'
+  | 'tagged_ref';
+
+export interface CompilerRuntimeAllocateSetIR {
+  kind: 'allocate_set';
+  resultName: string;
+  valuesArrayType: CompilerRuntimeSetStorageArrayType;
+  valuesElementType: CompilerRuntimeSetStorageElementType;
+}
+
+export interface CompilerRuntimeGetSetSizeIR {
+  kind: 'get_set_size';
+  objectName: string;
+  resultName: string;
+  valuesArrayType: CompilerRuntimeSetStorageArrayType;
+}
+
+export interface CompilerRuntimeGetSetValuesIR {
+  kind: 'get_set_values';
+  objectName: string;
+  resultName: string;
+  valuesArrayType: CompilerRuntimeSetStorageArrayType;
+}
+
+export interface CompilerRuntimeAddSetValueIR {
+  kind: 'add_set_value';
+  objectName: string;
+  valueName: string;
+  valuesArrayType: CompilerRuntimeSetStorageArrayType;
+  valuesElementType: CompilerRuntimeSetStorageElementType;
+  valueKinds?: CompilerTaggedPrimitiveBoundaryKindsIR;
+}
+
+export interface CompilerRuntimeHasSetValueIR {
+  kind: 'has_set_value';
+  objectName: string;
+  valueName: string;
+  resultName: string;
+  valuesArrayType: CompilerRuntimeSetStorageArrayType;
+  valuesElementType: CompilerRuntimeSetStorageElementType;
+  valueKinds?: CompilerTaggedPrimitiveBoundaryKindsIR;
+}
+
+export interface CompilerRuntimeDeleteSetValueIR {
+  kind: 'delete_set_value';
+  objectName: string;
+  valueName: string;
+  resultName: string;
+  valuesArrayType: CompilerRuntimeSetStorageArrayType;
+  valuesElementType: CompilerRuntimeSetStorageElementType;
+  valueKinds?: CompilerTaggedPrimitiveBoundaryKindsIR;
+}
+
+export interface CompilerRuntimeClearSetIR {
+  kind: 'clear_set';
+  objectName: string;
+  resultName: string;
+  valuesArrayType: CompilerRuntimeSetStorageArrayType;
+}
+
 export interface CompilerRuntimeCopyDynamicObjectEntriesIR {
   kind: 'copy_dynamic_object_entries';
   targetObjectName: string;
@@ -777,6 +846,13 @@ export type CompilerRuntimeOperationIR =
   | CompilerRuntimeHasMapEntryIR
   | CompilerRuntimeDeleteMapEntryIR
   | CompilerRuntimeClearMapIR
+  | CompilerRuntimeAllocateSetIR
+  | CompilerRuntimeGetSetSizeIR
+  | CompilerRuntimeGetSetValuesIR
+  | CompilerRuntimeAddSetValueIR
+  | CompilerRuntimeHasSetValueIR
+  | CompilerRuntimeDeleteSetValueIR
+  | CompilerRuntimeClearSetIR
   | CompilerRuntimeCopyDynamicObjectEntriesIR
   | CompilerRuntimeGetSpecializedObjectFieldIR
   | CompilerRuntimeGetFallbackObjectPropertyIR

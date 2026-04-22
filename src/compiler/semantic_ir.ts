@@ -322,6 +322,7 @@ export type SemanticExpressionIR =
     kind: 'owned_tagged_array_index_of';
     array: SemanticExpressionIR;
     search: SemanticExpressionIR;
+    kinds?: CompilerTaggedPrimitiveBoundaryKindsIR;
     representation: 'f64';
   }
   | {
@@ -556,6 +557,100 @@ export type SemanticStatementIR =
     kind: 'map_clear';
     targetName: string;
     objectName: string;
+  }
+  | {
+    kind: 'set_new';
+    targetName: string;
+    valuesArrayType:
+      | 'owned_array_ref'
+      | 'owned_number_array_ref'
+      | 'owned_boolean_array_ref'
+      | 'owned_tagged_array_ref';
+    valuesElementType:
+      | 'owned_string_ref'
+      | 'f64'
+      | 'i32'
+      | 'tagged_ref';
+  }
+  | {
+    kind: 'set_size';
+    targetName: string;
+    objectName: string;
+    valuesArrayType:
+      | 'owned_array_ref'
+      | 'owned_number_array_ref'
+      | 'owned_boolean_array_ref'
+      | 'owned_tagged_array_ref';
+  }
+  | {
+    kind: 'set_values';
+    targetName: string;
+    objectName: string;
+    valuesArrayType:
+      | 'owned_array_ref'
+      | 'owned_number_array_ref'
+      | 'owned_boolean_array_ref'
+      | 'owned_tagged_array_ref';
+  }
+  | {
+    kind: 'set_add';
+    objectName: string;
+    valueName: string;
+    valuesArrayType:
+      | 'owned_array_ref'
+      | 'owned_number_array_ref'
+      | 'owned_boolean_array_ref'
+      | 'owned_tagged_array_ref';
+    valuesElementType:
+      | 'owned_string_ref'
+      | 'f64'
+      | 'i32'
+      | 'tagged_ref';
+    valueKinds?: CompilerTaggedPrimitiveBoundaryKindsIR;
+  }
+  | {
+    kind: 'set_has';
+    targetName: string;
+    objectName: string;
+    valueName: string;
+    valuesArrayType:
+      | 'owned_array_ref'
+      | 'owned_number_array_ref'
+      | 'owned_boolean_array_ref'
+      | 'owned_tagged_array_ref';
+    valuesElementType:
+      | 'owned_string_ref'
+      | 'f64'
+      | 'i32'
+      | 'tagged_ref';
+    valueKinds?: CompilerTaggedPrimitiveBoundaryKindsIR;
+  }
+  | {
+    kind: 'set_delete';
+    targetName: string;
+    objectName: string;
+    valueName: string;
+    valuesArrayType:
+      | 'owned_array_ref'
+      | 'owned_number_array_ref'
+      | 'owned_boolean_array_ref'
+      | 'owned_tagged_array_ref';
+    valuesElementType:
+      | 'owned_string_ref'
+      | 'f64'
+      | 'i32'
+      | 'tagged_ref';
+    valueKinds?: CompilerTaggedPrimitiveBoundaryKindsIR;
+  }
+  | {
+    kind: 'set_clear';
+    targetName: string;
+    objectName: string;
+    valuesArrayType:
+      | 'owned_array_ref'
+      | 'owned_number_array_ref'
+      | 'owned_boolean_array_ref'
+      | 'owned_tagged_array_ref';
   }
   | {
     kind: 'box_set';
@@ -1530,6 +1625,25 @@ function collectRuntimeOperationFamilies(
           families.add('finite_union');
         }
         break;
+      case 'allocate_set':
+      case 'get_set_size':
+      case 'get_set_values':
+      case 'add_set_value':
+      case 'has_set_value':
+      case 'delete_set_value':
+      case 'clear_set':
+        families.add('array');
+        families.add('set');
+        if ('valuesArrayType' in operation && operation.valuesArrayType === 'owned_array_ref') {
+          families.add('string');
+        }
+        if (
+          ('valuesElementType' in operation && operation.valuesElementType === 'tagged_ref') ||
+          operation.kind === 'clear_set'
+        ) {
+          families.add('finite_union');
+        }
+        break;
       default:
         break;
     }
@@ -2208,6 +2322,7 @@ function semanticExpressionFromCompilerIR(
         kind: 'owned_tagged_array_index_of',
         array: semanticExpressionFromCompilerIR(expression.array),
         search: semanticExpressionFromCompilerIR(expression.search),
+        kinds: expression.kinds,
         representation: 'f64',
       };
     case 'owned_string_array_element':
@@ -2824,6 +2939,91 @@ function semanticMapClearFromRuntimeOperation(
   };
 }
 
+function semanticSetNewFromRuntimeOperation(
+  operation: Extract<CompilerRuntimeOperationIR, { kind: 'allocate_set' }>,
+): SemanticStatementIR {
+  return {
+    kind: 'set_new',
+    targetName: operation.resultName,
+    valuesArrayType: operation.valuesArrayType,
+    valuesElementType: operation.valuesElementType,
+  };
+}
+
+function semanticSetSizeFromRuntimeOperation(
+  operation: Extract<CompilerRuntimeOperationIR, { kind: 'get_set_size' }>,
+): SemanticStatementIR {
+  return {
+    kind: 'set_size',
+    targetName: operation.resultName,
+    objectName: operation.objectName,
+    valuesArrayType: operation.valuesArrayType,
+  };
+}
+
+function semanticSetValuesFromRuntimeOperation(
+  operation: Extract<CompilerRuntimeOperationIR, { kind: 'get_set_values' }>,
+): SemanticStatementIR {
+  return {
+    kind: 'set_values',
+    targetName: operation.resultName,
+    objectName: operation.objectName,
+    valuesArrayType: operation.valuesArrayType,
+  };
+}
+
+function semanticSetAddFromRuntimeOperation(
+  operation: Extract<CompilerRuntimeOperationIR, { kind: 'add_set_value' }>,
+): SemanticStatementIR {
+  return {
+    kind: 'set_add',
+    objectName: operation.objectName,
+    valueName: operation.valueName,
+    valuesArrayType: operation.valuesArrayType,
+    valuesElementType: operation.valuesElementType,
+    ...(operation.valueKinds ? { valueKinds: operation.valueKinds } : {}),
+  };
+}
+
+function semanticSetHasFromRuntimeOperation(
+  operation: Extract<CompilerRuntimeOperationIR, { kind: 'has_set_value' }>,
+): SemanticStatementIR {
+  return {
+    kind: 'set_has',
+    targetName: operation.resultName,
+    objectName: operation.objectName,
+    valueName: operation.valueName,
+    valuesArrayType: operation.valuesArrayType,
+    valuesElementType: operation.valuesElementType,
+    ...(operation.valueKinds ? { valueKinds: operation.valueKinds } : {}),
+  };
+}
+
+function semanticSetDeleteFromRuntimeOperation(
+  operation: Extract<CompilerRuntimeOperationIR, { kind: 'delete_set_value' }>,
+): SemanticStatementIR {
+  return {
+    kind: 'set_delete',
+    targetName: operation.resultName,
+    objectName: operation.objectName,
+    valueName: operation.valueName,
+    valuesArrayType: operation.valuesArrayType,
+    valuesElementType: operation.valuesElementType,
+    ...(operation.valueKinds ? { valueKinds: operation.valueKinds } : {}),
+  };
+}
+
+function semanticSetClearFromRuntimeOperation(
+  operation: Extract<CompilerRuntimeOperationIR, { kind: 'clear_set' }>,
+): SemanticStatementIR {
+  return {
+    kind: 'set_clear',
+    targetName: operation.resultName,
+    objectName: operation.objectName,
+    valuesArrayType: operation.valuesArrayType,
+  };
+}
+
 function semanticBodyFromCompilerIR(
   func: CompilerFunctionIR,
   operations: readonly CompilerRuntimeOperationIR[],
@@ -2865,6 +3065,32 @@ function semanticBodyFromCompilerIR(
     Extract<CompilerRuntimeOperationIR, { kind: 'clear_map' }>
   >();
   const mapSetsAfterAllocation: Extract<CompilerRuntimeOperationIR, { kind: 'set_map_entry' }>[] =
+    [];
+  const setAllocationsByResult = new Map<
+    string,
+    Extract<CompilerRuntimeOperationIR, { kind: 'allocate_set' }>
+  >();
+  const pendingSetSizesByResult = new Map<
+    string,
+    Extract<CompilerRuntimeOperationIR, { kind: 'get_set_size' }>
+  >();
+  const pendingSetValuesByResult = new Map<
+    string,
+    Extract<CompilerRuntimeOperationIR, { kind: 'get_set_values' }>
+  >();
+  const pendingSetHasByResult = new Map<
+    string,
+    Extract<CompilerRuntimeOperationIR, { kind: 'has_set_value' }>
+  >();
+  const pendingSetDeletesByResult = new Map<
+    string,
+    Extract<CompilerRuntimeOperationIR, { kind: 'delete_set_value' }>
+  >();
+  const pendingSetClearsByResult = new Map<
+    string,
+    Extract<CompilerRuntimeOperationIR, { kind: 'clear_set' }>
+  >();
+  const setAddsAfterAllocation: Extract<CompilerRuntimeOperationIR, { kind: 'add_set_value' }>[] =
     [];
   const pendingInitialDynamicSetsByObject = new Map<
     string,
@@ -2940,11 +3166,26 @@ function semanticBodyFromCompilerIR(
       pendingMapDeletesByResult.set(operation.resultName, operation);
     } else if (operation.kind === 'clear_map') {
       pendingMapClearsByResult.set(operation.resultName, operation);
+    } else if (operation.kind === 'allocate_set') {
+      setAllocationsByResult.set(operation.resultName, operation);
+    } else if (operation.kind === 'get_set_size') {
+      pendingSetSizesByResult.set(operation.resultName, operation);
+    } else if (operation.kind === 'get_set_values') {
+      pendingSetValuesByResult.set(operation.resultName, operation);
+    } else if (operation.kind === 'add_set_value') {
+      setAddsAfterAllocation.push(operation);
+    } else if (operation.kind === 'has_set_value') {
+      pendingSetHasByResult.set(operation.resultName, operation);
+    } else if (operation.kind === 'delete_set_value') {
+      pendingSetDeletesByResult.set(operation.resultName, operation);
+    } else if (operation.kind === 'clear_set') {
+      pendingSetClearsByResult.set(operation.resultName, operation);
     }
   }
 
   const seenAssignments = new Set(func.params.map((param) => param.name));
   const allocatedMaps = new Set<string>();
+  const allocatedSets = new Set<string>();
   const storageBackedMaps = new Set(
     [...mapAllocationsByResult.values()]
       .filter((operation) => operation.storage === true)
@@ -2958,6 +3199,7 @@ function semanticBodyFromCompilerIR(
   );
   const emittedDynamicSetIndexes = new Set<number>();
   const emittedMapSetIndexes = new Set<number>();
+  const emittedSetAddIndexes = new Set<number>();
   const flushMapSets = (targetBody: SemanticStatementIR[]): void => {
     mapSetsAfterAllocation.forEach((operation, index) => {
       if (
@@ -2970,6 +3212,19 @@ function semanticBodyFromCompilerIR(
       }
       targetBody.push(semanticMapSetFromRuntimeOperation(operation, valueTypesByName));
       emittedMapSetIndexes.add(index);
+    });
+  };
+  const flushSetAdds = (targetBody: SemanticStatementIR[]): void => {
+    setAddsAfterAllocation.forEach((operation, index) => {
+      if (
+        emittedSetAddIndexes.has(index) ||
+        !allocatedSets.has(operation.objectName) ||
+        !seenAssignments.has(operation.valueName)
+      ) {
+        return;
+      }
+      targetBody.push(semanticSetAddFromRuntimeOperation(operation));
+      emittedSetAddIndexes.add(index);
     });
   };
   const flushDynamicPropertySets = (targetBody: SemanticStatementIR[]): void => {
@@ -3096,6 +3351,41 @@ function semanticBodyFromCompilerIR(
         pendingMapClearsByResult.delete(resultName);
       }
     }
+    for (const [resultName, operation] of [...pendingSetSizesByResult]) {
+      if (shouldEmitPending(resultName)) {
+        targetBody.push(semanticSetSizeFromRuntimeOperation(operation));
+        seenAssignments.add(operation.resultName);
+        pendingSetSizesByResult.delete(resultName);
+      }
+    }
+    for (const [resultName, operation] of [...pendingSetValuesByResult]) {
+      if (shouldEmitPending(resultName)) {
+        targetBody.push(semanticSetValuesFromRuntimeOperation(operation));
+        seenAssignments.add(operation.resultName);
+        pendingSetValuesByResult.delete(resultName);
+      }
+    }
+    for (const [resultName, operation] of [...pendingSetHasByResult]) {
+      if (shouldEmitPending(resultName)) {
+        targetBody.push(semanticSetHasFromRuntimeOperation(operation));
+        seenAssignments.add(operation.resultName);
+        pendingSetHasByResult.delete(resultName);
+      }
+    }
+    for (const [resultName, operation] of [...pendingSetDeletesByResult]) {
+      if (shouldEmitPending(resultName)) {
+        targetBody.push(semanticSetDeleteFromRuntimeOperation(operation));
+        seenAssignments.add(operation.resultName);
+        pendingSetDeletesByResult.delete(resultName);
+      }
+    }
+    for (const [resultName, operation] of [...pendingSetClearsByResult]) {
+      if (shouldEmitPending(resultName)) {
+        targetBody.push(semanticSetClearFromRuntimeOperation(operation));
+        seenAssignments.add(operation.resultName);
+        pendingSetClearsByResult.delete(resultName);
+      }
+    }
   };
 
   const markSeenSemanticStatement = (semanticStatement: SemanticStatementIR): void => {
@@ -3121,6 +3411,12 @@ function semanticBodyFromCompilerIR(
         if (storageBackedMaps.has(semanticStatement.value.name)) {
           storageBackedMaps.add(semanticStatement.name);
         }
+      }
+      if (
+        semanticStatement.value.kind === 'local_get' &&
+        allocatedSets.has(semanticStatement.value.name)
+      ) {
+        allocatedSets.add(semanticStatement.name);
       }
     }
   };
@@ -3155,6 +3451,17 @@ function semanticBodyFromCompilerIR(
       );
       seenAssignments.add(statement.name);
       allocatedMaps.add(statement.name);
+      return semanticStatement;
+    } else if (
+      statement.kind === 'local_set' &&
+      statement.value.kind === 'heap_placeholder' &&
+      setAllocationsByResult.has(statement.name)
+    ) {
+      const semanticStatement = semanticSetNewFromRuntimeOperation(
+        setAllocationsByResult.get(statement.name)!,
+      );
+      seenAssignments.add(statement.name);
+      allocatedSets.add(statement.name);
       return semanticStatement;
     } else if (
       statement.kind === 'local_set' &&
@@ -3214,6 +3521,11 @@ function semanticBodyFromCompilerIR(
       ...pendingMapHasByResult.keys(),
       ...pendingMapDeletesByResult.keys(),
       ...pendingMapClearsByResult.keys(),
+      ...pendingSetSizesByResult.keys(),
+      ...pendingSetValuesByResult.keys(),
+      ...pendingSetHasByResult.keys(),
+      ...pendingSetDeletesByResult.keys(),
+      ...pendingSetClearsByResult.keys(),
     ]);
     const forceHoistNames = new Set<string>();
     for (const resultName of pendingResultNames) {
@@ -3230,6 +3542,7 @@ function semanticBodyFromCompilerIR(
       body.push(semanticStatement);
       markSeenSemanticStatement(semanticStatement);
       flushMapSets(body);
+      flushSetAdds(body);
       flushDynamicPropertySets(body);
     }
     return body;
@@ -3372,6 +3685,13 @@ function collectUnsupportedStatementKinds(
     case 'map_has':
     case 'map_delete':
     case 'map_clear':
+    case 'set_new':
+    case 'set_size':
+    case 'set_values':
+    case 'set_add':
+    case 'set_has':
+    case 'set_delete':
+    case 'set_clear':
       break;
     case 'dynamic_object_property_set':
       collectUnsupportedExpressionKinds(statement.value, kinds);

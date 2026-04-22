@@ -2965,7 +2965,7 @@ Deno.test('compiler wasm-gc emitter produces runnable legacy number-key tagged u
   assertEquals((main as () => number)(), 218);
 });
 
-Deno.test('compiler wasm-gc emitter produces runnable legacy Set empty size reads', async () => {
+Deno.test('compiler wasm-gc emitter produces runnable explicit Set empty size reads', async () => {
   const tempDirectory = await createTempProject([
     {
       path: 'tsconfig.json',
@@ -2987,31 +2987,21 @@ Deno.test('compiler wasm-gc emitter produces runnable legacy Set empty size read
   const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
   const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
   const mainPlan = snapshot.wasmGcPlan.functionPlans.find((func) => func.name === 'main');
-  const watPath = join(tempDirectory, 'wasm-gc-shadow-legacy-set-size.wat');
-  const wasmPath = join(tempDirectory, 'wasm-gc-shadow-legacy-set-size.wasm');
+  const watPath = join(tempDirectory, 'wasm-gc-shadow-explicit-set-size.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-shadow-explicit-set-size.wasm');
 
   assertEquals(
     snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
-    ['array', 'dynamic_object', 'finite_union', 'set', 'specialized_object', 'string'],
+    ['array', 'set', 'string'],
   );
   assertEquals(mainPlan?.bodyStatus, 'emittable');
+  assertEquals(mainPlan?.body.some((statement) => statement.kind === 'set_new'), true);
+  assertEquals(mainPlan?.body.some((statement) => statement.kind === 'set_size'), true);
   assertEquals(
     mainPlan?.body.some((statement) =>
       statement.kind === 'dynamic_object_new' && statement.collectionFamily === 'set'
     ),
-    true,
-  );
-  assertEquals(
-    mainPlan?.body.some((statement) =>
-      statement.kind === 'dynamic_object_property_set' && statement.collectionFamily === 'set'
-    ),
-    true,
-  );
-  assertEquals(
-    mainPlan?.body.some((statement) =>
-      statement.kind === 'dynamic_object_property_get' && statement.collectionFamily === 'set'
-    ),
-    true,
+    false,
   );
   await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
   const wat = await Deno.readTextFile(watPath);
@@ -3037,7 +3027,7 @@ Deno.test('compiler wasm-gc emitter produces runnable legacy Set empty size read
   assertEquals((main as () => number)(), 0);
 });
 
-Deno.test('compiler wasm-gc emitter produces runnable legacy string Set add, has, and size', async () => {
+Deno.test('compiler wasm-gc emitter produces runnable explicit string Set add, has, and size', async () => {
   const tempDirectory = await createTempProject([
     {
       path: 'tsconfig.json',
@@ -3069,14 +3059,21 @@ Deno.test('compiler wasm-gc emitter produces runnable legacy string Set add, has
   const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
   const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
   const mainPlan = snapshot.wasmGcPlan.functionPlans.find((func) => func.name === 'main');
-  const watPath = join(tempDirectory, 'wasm-gc-shadow-legacy-set-string.wat');
-  const wasmPath = join(tempDirectory, 'wasm-gc-shadow-legacy-set-string.wasm');
+  const watPath = join(tempDirectory, 'wasm-gc-shadow-explicit-set-string.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-shadow-explicit-set-string.wasm');
 
   assertEquals(
     snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
-    ['array', 'dynamic_object', 'finite_union', 'set', 'specialized_object', 'string'],
+    ['array', 'set', 'string'],
   );
   assertEquals(mainPlan?.bodyStatus, 'emittable');
+  assertEquals(mainPlan?.body.some((statement) => statement.kind === 'set_add'), true);
+  assertEquals(mainPlan?.body.some((statement) => statement.kind === 'set_has'), true);
+  assertEquals(mainPlan?.body.some((statement) => statement.kind === 'set_size'), true);
+  assertEquals(
+    mainPlan?.body.some((statement) => statement.kind === 'dynamic_object_new'),
+    false,
+  );
   await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
   const wat = await Deno.readTextFile(watPath);
   assertEquals(
@@ -3085,6 +3082,7 @@ Deno.test('compiler wasm-gc emitter produces runnable legacy string Set add, has
   );
   assertEquals(wat.includes('array.copy $string_array_runtime $string_array_runtime'), true);
   assertEquals(wat.includes('(import "soundscript" "__string_eq"'), false);
+  assertEquals(wat.includes('$soundscript_string_eq'), true);
   assertEquals(wat.includes('set_runtime'), true);
   const result = await new Deno.Command('wasm-tools', {
     args: ['parse', watPath, '-o', wasmPath],
@@ -3102,7 +3100,7 @@ Deno.test('compiler wasm-gc emitter produces runnable legacy string Set add, has
   assertEquals((main as () => number)(), 21);
 });
 
-Deno.test('compiler wasm-gc emitter produces runnable legacy numeric Set add, has, and size', async () => {
+Deno.test('compiler wasm-gc emitter produces runnable explicit numeric Set add, has, and size', async () => {
   const tempDirectory = await createTempProject([
     {
       path: 'tsconfig.json',
@@ -3133,14 +3131,21 @@ Deno.test('compiler wasm-gc emitter produces runnable legacy numeric Set add, ha
   const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
   const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
   const mainPlan = snapshot.wasmGcPlan.functionPlans.find((func) => func.name === 'main');
-  const watPath = join(tempDirectory, 'wasm-gc-shadow-legacy-set-number.wat');
-  const wasmPath = join(tempDirectory, 'wasm-gc-shadow-legacy-set-number.wasm');
+  const watPath = join(tempDirectory, 'wasm-gc-shadow-explicit-set-number.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-shadow-explicit-set-number.wasm');
 
   assertEquals(
     snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
-    ['array', 'dynamic_object', 'finite_union', 'set', 'specialized_object', 'string'],
+    ['array', 'set'],
   );
   assertEquals(mainPlan?.bodyStatus, 'emittable');
+  assertEquals(mainPlan?.body.some((statement) => statement.kind === 'set_add'), true);
+  assertEquals(mainPlan?.body.some((statement) => statement.kind === 'set_has'), true);
+  assertEquals(mainPlan?.body.some((statement) => statement.kind === 'set_size'), true);
+  assertEquals(
+    mainPlan?.body.some((statement) => statement.kind === 'dynamic_object_new'),
+    false,
+  );
   await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
   const wat = await Deno.readTextFile(watPath);
   assertEquals(wat.includes('array.copy $array_runtime $array_runtime'), true);
@@ -3161,7 +3166,7 @@ Deno.test('compiler wasm-gc emitter produces runnable legacy numeric Set add, ha
   assertEquals((main as () => number)(), 21);
 });
 
-Deno.test('compiler wasm-gc emitter produces runnable legacy boolean Set add, has, and size', async () => {
+Deno.test('compiler wasm-gc emitter produces runnable explicit boolean Set add, has, and size', async () => {
   const tempDirectory = await createTempProject([
     {
       path: 'tsconfig.json',
@@ -3193,14 +3198,21 @@ Deno.test('compiler wasm-gc emitter produces runnable legacy boolean Set add, ha
   const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
   const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
   const mainPlan = snapshot.wasmGcPlan.functionPlans.find((func) => func.name === 'main');
-  const watPath = join(tempDirectory, 'wasm-gc-shadow-legacy-set-boolean.wat');
-  const wasmPath = join(tempDirectory, 'wasm-gc-shadow-legacy-set-boolean.wasm');
+  const watPath = join(tempDirectory, 'wasm-gc-shadow-explicit-set-boolean.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-shadow-explicit-set-boolean.wasm');
 
   assertEquals(
     snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
-    ['array', 'dynamic_object', 'finite_union', 'set', 'specialized_object', 'string'],
+    ['array', 'set'],
   );
   assertEquals(mainPlan?.bodyStatus, 'emittable');
+  assertEquals(mainPlan?.body.some((statement) => statement.kind === 'set_add'), true);
+  assertEquals(mainPlan?.body.some((statement) => statement.kind === 'set_has'), true);
+  assertEquals(mainPlan?.body.some((statement) => statement.kind === 'set_size'), true);
+  assertEquals(
+    mainPlan?.body.some((statement) => statement.kind === 'dynamic_object_new'),
+    false,
+  );
   await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
   const wat = await Deno.readTextFile(watPath);
   assertEquals(wat.includes('(type $boolean_array_runtime (array (mut i32)))'), true);
@@ -3224,7 +3236,7 @@ Deno.test('compiler wasm-gc emitter produces runnable legacy boolean Set add, ha
   assertEquals((main as (flag: number) => number)(0), 22);
 });
 
-Deno.test('compiler wasm-gc emitter produces runnable legacy string Set delete and clear', async () => {
+Deno.test('compiler wasm-gc emitter produces runnable explicit string Set delete and clear', async () => {
   const tempDirectory = await createTempProject([
     {
       path: 'tsconfig.json',
@@ -3260,18 +3272,25 @@ Deno.test('compiler wasm-gc emitter produces runnable legacy string Set delete a
   const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
   const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
   const mainPlan = snapshot.wasmGcPlan.functionPlans.find((func) => func.name === 'main');
-  const watPath = join(tempDirectory, 'wasm-gc-shadow-legacy-set-string-delete.wat');
-  const wasmPath = join(tempDirectory, 'wasm-gc-shadow-legacy-set-string-delete.wasm');
+  const watPath = join(tempDirectory, 'wasm-gc-shadow-explicit-set-string-delete.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-shadow-explicit-set-string-delete.wasm');
 
   assertEquals(
     snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
-    ['array', 'dynamic_object', 'finite_union', 'set', 'specialized_object', 'string'],
+    ['array', 'finite_union', 'set', 'string'],
   );
   assertEquals(mainPlan?.bodyStatus, 'emittable');
+  assertEquals(mainPlan?.body.some((statement) => statement.kind === 'set_delete'), true);
+  assertEquals(mainPlan?.body.some((statement) => statement.kind === 'set_clear'), true);
+  assertEquals(
+    mainPlan?.body.some((statement) => statement.kind === 'dynamic_object_new'),
+    false,
+  );
   await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
   const wat = await Deno.readTextFile(watPath);
   assertEquals(wat.includes('array.copy $string_array_runtime $string_array_runtime'), true);
   assertEquals(wat.includes('(import "soundscript" "__string_eq"'), false);
+  assertEquals(wat.includes('$soundscript_string_eq'), true);
   assertEquals(wat.includes('set_runtime'), true);
   const result = await new Deno.Command('wasm-tools', {
     args: ['parse', watPath, '-o', wasmPath],
@@ -3289,7 +3308,7 @@ Deno.test('compiler wasm-gc emitter produces runnable legacy string Set delete a
   assertEquals((main as () => number)(), 212);
 });
 
-Deno.test('compiler wasm-gc emitter produces runnable legacy boolean Set delete and clear', async () => {
+Deno.test('compiler wasm-gc emitter produces runnable explicit boolean Set delete and clear', async () => {
   const tempDirectory = await createTempProject([
     {
       path: 'tsconfig.json',
@@ -3325,14 +3344,20 @@ Deno.test('compiler wasm-gc emitter produces runnable legacy boolean Set delete 
   const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
   const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
   const mainPlan = snapshot.wasmGcPlan.functionPlans.find((func) => func.name === 'main');
-  const watPath = join(tempDirectory, 'wasm-gc-shadow-legacy-set-boolean-delete.wat');
-  const wasmPath = join(tempDirectory, 'wasm-gc-shadow-legacy-set-boolean-delete.wasm');
+  const watPath = join(tempDirectory, 'wasm-gc-shadow-explicit-set-boolean-delete.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-shadow-explicit-set-boolean-delete.wasm');
 
   assertEquals(
     snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
-    ['array', 'dynamic_object', 'finite_union', 'set', 'specialized_object', 'string'],
+    ['array', 'finite_union', 'set'],
   );
   assertEquals(mainPlan?.bodyStatus, 'emittable');
+  assertEquals(mainPlan?.body.some((statement) => statement.kind === 'set_delete'), true);
+  assertEquals(mainPlan?.body.some((statement) => statement.kind === 'set_clear'), true);
+  assertEquals(
+    mainPlan?.body.some((statement) => statement.kind === 'dynamic_object_new'),
+    false,
+  );
   await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
   const wat = await Deno.readTextFile(watPath);
   assertEquals(wat.includes('array.copy $boolean_array_runtime $boolean_array_runtime'), true);
@@ -3355,7 +3380,7 @@ Deno.test('compiler wasm-gc emitter produces runnable legacy boolean Set delete 
   assertEquals((main as (flag: number) => number)(0), 210);
 });
 
-Deno.test('compiler wasm-gc emitter produces runnable legacy numeric Set delete and clear', async () => {
+Deno.test('compiler wasm-gc emitter produces runnable explicit numeric Set delete and clear', async () => {
   const tempDirectory = await createTempProject([
     {
       path: 'tsconfig.json',
@@ -3391,14 +3416,20 @@ Deno.test('compiler wasm-gc emitter produces runnable legacy numeric Set delete 
   const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
   const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
   const mainPlan = snapshot.wasmGcPlan.functionPlans.find((func) => func.name === 'main');
-  const watPath = join(tempDirectory, 'wasm-gc-shadow-legacy-set-number-delete.wat');
-  const wasmPath = join(tempDirectory, 'wasm-gc-shadow-legacy-set-number-delete.wasm');
+  const watPath = join(tempDirectory, 'wasm-gc-shadow-explicit-set-number-delete.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-shadow-explicit-set-number-delete.wasm');
 
   assertEquals(
     snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
-    ['array', 'dynamic_object', 'finite_union', 'set', 'specialized_object', 'string'],
+    ['array', 'finite_union', 'set'],
   );
   assertEquals(mainPlan?.bodyStatus, 'emittable');
+  assertEquals(mainPlan?.body.some((statement) => statement.kind === 'set_delete'), true);
+  assertEquals(mainPlan?.body.some((statement) => statement.kind === 'set_clear'), true);
+  assertEquals(
+    mainPlan?.body.some((statement) => statement.kind === 'dynamic_object_new'),
+    false,
+  );
   await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
   const wat = await Deno.readTextFile(watPath);
   assertEquals(wat.includes('array.copy $array_runtime $array_runtime'), true);
@@ -3417,6 +3448,87 @@ Deno.test('compiler wasm-gc emitter produces runnable legacy numeric Set delete 
   const main = instance.instance.exports['main.ts:main'];
   assertEquals(typeof main, 'function');
   assertEquals((main as () => number)(), 312);
+});
+
+Deno.test('compiler wasm-gc emitter produces runnable explicit Set values iteration after delete and clear', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: { strict: true },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        export function main(): number {
+          const set = new Set<number>();
+          set.add(2);
+          set.add(5);
+          set.add(7);
+          set.delete(5);
+          const values = set.values();
+          const first = values.next().value ?? 0;
+          const second = values.next().value ?? 0;
+          const thirdDone = values.next().done === true;
+          let score = first * 10 + second;
+          if (thirdDone) {
+            score = score + 0;
+          } else {
+            score = score + 1000;
+          }
+          set.clear();
+          const afterClearDone = set.values().next().done === true;
+          if (afterClearDone) {
+            score = score + 0;
+          } else {
+            score = score + 2000;
+          }
+          return score + set.size;
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
+  const mainPlan = snapshot.wasmGcPlan.functionPlans.find((func) => func.name === 'main');
+  const watPath = join(tempDirectory, 'wasm-gc-shadow-explicit-set-values-after-delete-clear.wat');
+  const wasmPath = join(
+    tempDirectory,
+    'wasm-gc-shadow-explicit-set-values-after-delete-clear.wasm',
+  );
+
+  assertEquals(
+    snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
+    ['array', 'dynamic_object', 'finite_union', 'set', 'specialized_object', 'string'],
+  );
+  assertEquals(mainPlan?.bodyStatus, 'emittable');
+  assertEquals(mainPlan?.body.some((statement) => statement.kind === 'set_values'), true);
+  assertEquals(
+    mainPlan?.body.some((statement) =>
+      statement.kind === 'dynamic_object_property_get' && statement.collectionFamily === 'set'
+    ),
+    false,
+  );
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
+  const wat = await Deno.readTextFile(watPath);
+  assertEquals(wat.includes('struct.get $set_runtime $storage'), true);
+  assertEquals(wat.includes('dynamic_object_layout'), true);
+  const result = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(result.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(result.success, true);
+
+  const wasm = await Deno.readFile(wasmPath);
+  const instance = await WebAssembly.instantiate(wasm);
+  const main = instance.instance.exports['main.ts:main'];
+  assertEquals(typeof main, 'function');
+  assertEquals((main as () => number)(), 27);
 });
 
 Deno.test('compiler wasm-gc emitter produces runnable class instance field and method reads', async () => {
@@ -6278,9 +6390,15 @@ Deno.test('compiler wasm-gc emitter produces runnable bigint tagged Set values',
 
   assertEquals(
     snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
-    ['array', 'bigint', 'dynamic_object', 'finite_union', 'set', 'specialized_object', 'string'],
+    ['array', 'bigint', 'finite_union', 'set'],
   );
   assertEquals(mainPlan?.bodyStatus, 'emittable');
+  assertEquals(mainPlan?.body.some((statement) => statement.kind === 'set_add'), true);
+  assertEquals(mainPlan?.body.some((statement) => statement.kind === 'set_has'), true);
+  assertEquals(
+    mainPlan?.body.some((statement) => statement.kind === 'dynamic_object_new'),
+    false,
+  );
   await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
   const wat = await Deno.readTextFile(watPath);
   assertEquals(wat.includes('(import "soundscript" "__extern_eq"'), true);
@@ -6471,9 +6589,15 @@ Deno.test('compiler wasm-gc emitter produces runnable symbol tagged Set values',
 
   assertEquals(
     snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
-    ['array', 'dynamic_object', 'finite_union', 'set', 'specialized_object', 'string', 'symbol'],
+    ['array', 'finite_union', 'set', 'symbol'],
   );
   assertEquals(mainPlan?.bodyStatus, 'emittable');
+  assertEquals(mainPlan?.body.some((statement) => statement.kind === 'set_add'), true);
+  assertEquals(mainPlan?.body.some((statement) => statement.kind === 'set_has'), true);
+  assertEquals(
+    mainPlan?.body.some((statement) => statement.kind === 'dynamic_object_new'),
+    false,
+  );
   await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
   await Deno.writeTextFile(wrapperPath, emitWasmGcWrapperModule(snapshot.wasmGcPlan));
   const wat = await Deno.readTextFile(watPath);

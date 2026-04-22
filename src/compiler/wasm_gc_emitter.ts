@@ -1715,6 +1715,426 @@ function renderMapClearStatement(
   ];
 }
 
+type SetValuesArrayType = Extract<SemanticStatementIR, { kind: 'set_new' }>['valuesArrayType'];
+type SetValuesElementType = Extract<SemanticStatementIR, { kind: 'set_new' }>['valuesElementType'];
+
+function setArrayRuntimeType(valuesArrayType: SetValuesArrayType): string {
+  switch (valuesArrayType) {
+    case 'owned_array_ref':
+      return '$string_array_runtime';
+    case 'owned_number_array_ref':
+      return '$array_runtime';
+    case 'owned_boolean_array_ref':
+      return '$boolean_array_runtime';
+    case 'owned_tagged_array_ref':
+      return '$tagged_array_runtime';
+    default: {
+      const exhaustiveCheck: never = valuesArrayType;
+      return exhaustiveCheck;
+    }
+  }
+}
+
+function setArraySourceScratch(valuesArrayType: SetValuesArrayType): string {
+  switch (valuesArrayType) {
+    case 'owned_array_ref':
+      return STRING_ARRAY_SOURCE_SCRATCH;
+    case 'owned_number_array_ref':
+      return ARRAY_SOURCE_SCRATCH;
+    case 'owned_boolean_array_ref':
+      return BOOLEAN_ARRAY_SOURCE_SCRATCH;
+    case 'owned_tagged_array_ref':
+      return TAGGED_ARRAY_SOURCE_SCRATCH;
+    default: {
+      const exhaustiveCheck: never = valuesArrayType;
+      return exhaustiveCheck;
+    }
+  }
+}
+
+function setArrayResultScratch(valuesArrayType: SetValuesArrayType): string {
+  switch (valuesArrayType) {
+    case 'owned_array_ref':
+      return STRING_ARRAY_RESULT_SCRATCH;
+    case 'owned_number_array_ref':
+      return ARRAY_RESULT_SCRATCH;
+    case 'owned_boolean_array_ref':
+      return BOOLEAN_ARRAY_RESULT_SCRATCH;
+    case 'owned_tagged_array_ref':
+      return TAGGED_ARRAY_RESULT_SCRATCH;
+    default: {
+      const exhaustiveCheck: never = valuesArrayType;
+      return exhaustiveCheck;
+    }
+  }
+}
+
+function setArraySourceExpression(valuesArrayType: SetValuesArrayType): SemanticExpressionIR {
+  return {
+    kind: 'local_get',
+    name: setArraySourceScratch(valuesArrayType),
+    representation: valuesArrayType,
+  };
+}
+
+function setValueExpression(
+  valueName: string,
+  valuesElementType: SetValuesElementType,
+): SemanticExpressionIR {
+  return {
+    kind: 'local_get',
+    name: valueName,
+    representation: valuesElementType,
+  };
+}
+
+function setArrayIndexOfExpression(
+  valueName: string,
+  valuesArrayType: SetValuesArrayType,
+  valuesElementType: SetValuesElementType,
+  valueKinds?: Extract<SemanticExpressionIR, { kind: 'owned_tagged_array_index_of' }>['kinds'],
+): SemanticExpressionIR {
+  const array = setArraySourceExpression(valuesArrayType);
+  const search = setValueExpression(valueName, valuesElementType);
+  switch (valuesArrayType) {
+    case 'owned_array_ref':
+      return {
+        kind: 'owned_string_array_index_of',
+        array,
+        search,
+        representation: 'f64',
+      };
+    case 'owned_number_array_ref':
+      return {
+        kind: 'owned_number_array_index_of',
+        array,
+        search,
+        representation: 'f64',
+      };
+    case 'owned_boolean_array_ref':
+      return {
+        kind: 'owned_boolean_array_index_of',
+        array,
+        search,
+        representation: 'f64',
+      };
+    case 'owned_tagged_array_ref':
+      return {
+        kind: 'owned_tagged_array_index_of',
+        array,
+        search,
+        ...(valueKinds ? { kinds: valueKinds } : {}),
+        representation: 'f64',
+      };
+    default: {
+      const exhaustiveCheck: never = valuesArrayType;
+      return exhaustiveCheck;
+    }
+  }
+}
+
+function setArrayPushExpression(
+  valueName: string,
+  valuesArrayType: SetValuesArrayType,
+  valuesElementType: SetValuesElementType,
+): SemanticExpressionIR {
+  const array = setArraySourceExpression(valuesArrayType);
+  const value = setValueExpression(valueName, valuesElementType);
+  switch (valuesArrayType) {
+    case 'owned_array_ref':
+      return {
+        kind: 'owned_string_array_push',
+        array,
+        value,
+        representation: 'f64',
+      };
+    case 'owned_number_array_ref':
+      return {
+        kind: 'owned_number_array_push',
+        array,
+        value,
+        representation: 'f64',
+      };
+    case 'owned_boolean_array_ref':
+      return {
+        kind: 'owned_boolean_array_push',
+        array,
+        value,
+        representation: 'f64',
+      };
+    case 'owned_tagged_array_ref':
+      return {
+        kind: 'owned_tagged_array_push',
+        array,
+        value,
+        representation: 'f64',
+      };
+    default: {
+      const exhaustiveCheck: never = valuesArrayType;
+      return exhaustiveCheck;
+    }
+  }
+}
+
+function setArrayEmptyLiteral(valuesArrayType: SetValuesArrayType): SemanticExpressionIR {
+  switch (valuesArrayType) {
+    case 'owned_array_ref':
+      return { kind: 'owned_string_array_literal', elements: [], representation: valuesArrayType };
+    case 'owned_number_array_ref':
+      return { kind: 'owned_number_array_literal', elements: [], representation: valuesArrayType };
+    case 'owned_boolean_array_ref':
+      return {
+        kind: 'owned_boolean_array_literal',
+        elements: [],
+        representation: valuesArrayType,
+      };
+    case 'owned_tagged_array_ref':
+      return { kind: 'owned_tagged_array_literal', elements: [], representation: valuesArrayType };
+    default: {
+      const exhaustiveCheck: never = valuesArrayType;
+      return exhaustiveCheck;
+    }
+  }
+}
+
+function setArraySpliceAtResultExpression(
+  valuesArrayType: SetValuesArrayType,
+): SemanticExpressionIR {
+  const array = setArraySourceExpression(valuesArrayType);
+  const start: SemanticExpressionIR = {
+    kind: 'local_get',
+    name: setArrayResultScratch(valuesArrayType),
+    representation: 'f64',
+  };
+  const deleteCount: SemanticExpressionIR = {
+    kind: 'number_literal',
+    value: 1,
+    representation: 'f64',
+  };
+  const items = setArrayEmptyLiteral(valuesArrayType);
+  switch (valuesArrayType) {
+    case 'owned_array_ref':
+      return {
+        kind: 'owned_string_array_splice',
+        array,
+        start,
+        deleteCount,
+        items,
+        representation: valuesArrayType,
+      };
+    case 'owned_number_array_ref':
+      return {
+        kind: 'owned_number_array_splice',
+        array,
+        start,
+        deleteCount,
+        items,
+        representation: valuesArrayType,
+      };
+    case 'owned_boolean_array_ref':
+      return {
+        kind: 'owned_boolean_array_splice',
+        array,
+        start,
+        deleteCount,
+        items,
+        representation: valuesArrayType,
+      };
+    case 'owned_tagged_array_ref':
+      return {
+        kind: 'owned_tagged_array_splice',
+        array,
+        start,
+        deleteCount,
+        items,
+        representation: valuesArrayType,
+      };
+    default: {
+      const exhaustiveCheck: never = valuesArrayType;
+      return exhaustiveCheck;
+    }
+  }
+}
+
+function renderSetStorageLoad(
+  objectName: string,
+  valuesArrayType: SetValuesArrayType,
+  indent: string,
+): readonly string[] {
+  const runtimeType = setArrayRuntimeType(valuesArrayType);
+  return [
+    `${indent}local.get $${sanitizeIdentifier(objectName)}`,
+    `${indent}ref.cast (ref $set_runtime)`,
+    `${indent}struct.get $set_runtime $storage`,
+    `${indent}ref.cast (ref ${runtimeType})`,
+    `${indent}local.set $${sanitizeIdentifier(setArraySourceScratch(valuesArrayType))}`,
+  ];
+}
+
+function renderSetStorageStore(
+  objectName: string,
+  valuesArrayType: SetValuesArrayType,
+  indent: string,
+): readonly string[] {
+  return [
+    `${indent}local.get $${sanitizeIdentifier(objectName)}`,
+    `${indent}ref.cast (ref $set_runtime)`,
+    `${indent}local.get $${sanitizeIdentifier(setArraySourceScratch(valuesArrayType))}`,
+    `${indent}struct.set $set_runtime $storage`,
+  ];
+}
+
+function renderSetNewStatement(
+  statement: Extract<SemanticStatementIR, { kind: 'set_new' }>,
+  indent: string,
+): readonly string[] {
+  return [
+    `${indent}array.new_fixed ${setArrayRuntimeType(statement.valuesArrayType)} 0`,
+    `${indent}struct.new $set_runtime`,
+    `${indent}local.set $${sanitizeIdentifier(statement.targetName)}`,
+  ];
+}
+
+function renderSetSizeStatement(
+  statement: Extract<SemanticStatementIR, { kind: 'set_size' }>,
+  indent: string,
+): readonly string[] {
+  return [
+    ...renderSetStorageLoad(statement.objectName, statement.valuesArrayType, indent),
+    `${indent}local.get $${sanitizeIdentifier(setArraySourceScratch(statement.valuesArrayType))}`,
+    `${indent}ref.as_non_null`,
+    `${indent}array.len`,
+    `${indent}f64.convert_i32_s`,
+    `${indent}local.set $${sanitizeIdentifier(statement.targetName)}`,
+  ];
+}
+
+function renderSetValuesStatement(
+  statement: Extract<SemanticStatementIR, { kind: 'set_values' }>,
+  indent: string,
+): readonly string[] {
+  return [
+    `${indent}local.get $${sanitizeIdentifier(statement.objectName)}`,
+    `${indent}ref.cast (ref $set_runtime)`,
+    `${indent}struct.get $set_runtime $storage`,
+    `${indent}ref.cast (ref ${setArrayRuntimeType(statement.valuesArrayType)})`,
+    `${indent}local.set $${sanitizeIdentifier(statement.targetName)}`,
+  ];
+}
+
+function renderSetAddStatement(
+  statement: Extract<SemanticStatementIR, { kind: 'set_add' }>,
+  indent: string,
+  context: FunctionRenderContext,
+): readonly string[] {
+  const resultScratch = setArrayResultScratch(statement.valuesArrayType);
+  return [
+    ...renderSetStorageLoad(statement.objectName, statement.valuesArrayType, indent),
+    ...renderExpression(
+      setArrayIndexOfExpression(
+        statement.valueName,
+        statement.valuesArrayType,
+        statement.valuesElementType,
+        statement.valueKinds,
+      ),
+      indent,
+      context,
+    ),
+    `${indent}local.set $${sanitizeIdentifier(resultScratch)}`,
+    `${indent}local.get $${sanitizeIdentifier(resultScratch)}`,
+    `${indent}f64.const 0`,
+    `${indent}f64.lt`,
+    `${indent}if`,
+    ...renderExpression(
+      setArrayPushExpression(
+        statement.valueName,
+        statement.valuesArrayType,
+        statement.valuesElementType,
+        statement.valueKinds,
+      ),
+      `${indent}  `,
+      context,
+    ),
+    `${indent}  drop`,
+    ...renderSetStorageStore(statement.objectName, statement.valuesArrayType, `${indent}  `),
+    `${indent}end`,
+  ];
+}
+
+function renderSetHasStatement(
+  statement: Extract<SemanticStatementIR, { kind: 'set_has' }>,
+  indent: string,
+  context: FunctionRenderContext,
+): readonly string[] {
+  return [
+    ...renderSetStorageLoad(statement.objectName, statement.valuesArrayType, indent),
+    ...renderExpression(
+      setArrayIndexOfExpression(
+        statement.valueName,
+        statement.valuesArrayType,
+        statement.valuesElementType,
+        statement.valueKinds,
+      ),
+      indent,
+      context,
+    ),
+    `${indent}f64.const 0`,
+    `${indent}f64.ge`,
+    `${indent}local.set $${sanitizeIdentifier(statement.targetName)}`,
+  ];
+}
+
+function renderSetDeleteStatement(
+  statement: Extract<SemanticStatementIR, { kind: 'set_delete' }>,
+  indent: string,
+  context: FunctionRenderContext,
+): readonly string[] {
+  const resultScratch = setArrayResultScratch(statement.valuesArrayType);
+  return [
+    ...renderSetStorageLoad(statement.objectName, statement.valuesArrayType, indent),
+    ...renderExpression(
+      setArrayIndexOfExpression(
+        statement.valueName,
+        statement.valuesArrayType,
+        statement.valuesElementType,
+      ),
+      indent,
+      context,
+    ),
+    `${indent}local.set $${sanitizeIdentifier(resultScratch)}`,
+    `${indent}i32.const 0`,
+    `${indent}local.set $${sanitizeIdentifier(statement.targetName)}`,
+    `${indent}local.get $${sanitizeIdentifier(resultScratch)}`,
+    `${indent}f64.const 0`,
+    `${indent}f64.ge`,
+    `${indent}if`,
+    ...renderExpression(
+      setArraySpliceAtResultExpression(statement.valuesArrayType),
+      `${indent}  `,
+      context,
+    ),
+    `${indent}  drop`,
+    ...renderSetStorageStore(statement.objectName, statement.valuesArrayType, `${indent}  `),
+    `${indent}  i32.const 1`,
+    `${indent}  local.set $${sanitizeIdentifier(statement.targetName)}`,
+    `${indent}end`,
+  ];
+}
+
+function renderSetClearStatement(
+  statement: Extract<SemanticStatementIR, { kind: 'set_clear' }>,
+  indent: string,
+): readonly string[] {
+  return [
+    `${indent}local.get $${sanitizeIdentifier(statement.objectName)}`,
+    `${indent}ref.cast (ref $set_runtime)`,
+    `${indent}array.new_fixed ${setArrayRuntimeType(statement.valuesArrayType)} 0`,
+    `${indent}struct.set $set_runtime $storage`,
+    ...renderTaggedUndefined(indent),
+    `${indent}local.set $${sanitizeIdentifier(statement.targetName)}`,
+  ];
+}
+
 function renderDynamicObjectHasStatement(
   statement: Extract<SemanticStatementIR, { kind: 'dynamic_object_has' }>,
   indent: string,
@@ -1984,6 +2404,37 @@ type ArrayScratchUse =
   | 'tagged_array_index_of'
   | 'map_storage';
 
+function addSetArrayScratchUse(
+  valuesArrayType: SetValuesArrayType,
+  uses: Set<ArrayScratchUse>,
+  needsIndexOf: boolean,
+): void {
+  switch (valuesArrayType) {
+    case 'owned_array_ref':
+      uses.add('string_array');
+      if (needsIndexOf) {
+        uses.add('string_array_index_of');
+      }
+      break;
+    case 'owned_number_array_ref':
+      uses.add('number_array');
+      break;
+    case 'owned_boolean_array_ref':
+      uses.add('boolean_array');
+      break;
+    case 'owned_tagged_array_ref':
+      uses.add('tagged_array');
+      if (needsIndexOf) {
+        uses.add('tagged_array_index_of');
+      }
+      break;
+    default: {
+      const exhaustiveCheck: never = valuesArrayType;
+      return exhaustiveCheck;
+    }
+  }
+}
+
 function collectNumberArrayScratchFromExpression(
   expression: SemanticExpressionIR,
   uses: Set<ArrayScratchUse>,
@@ -2196,6 +2647,19 @@ function collectNumberArrayScratchFromStatement(
     case 'map_delete':
     case 'map_clear':
       uses.add('map_storage');
+      break;
+    case 'set_new':
+      break;
+    case 'set_size':
+      addSetArrayScratchUse(statement.valuesArrayType, uses, false);
+      break;
+    case 'set_values':
+    case 'set_clear':
+      break;
+    case 'set_add':
+    case 'set_has':
+    case 'set_delete':
+      addSetArrayScratchUse(statement.valuesArrayType, uses, true);
       break;
     case 'dynamic_object_property_set':
       collectNumberArrayScratchFromExpression(statement.value, uses);
@@ -2973,6 +3437,19 @@ function renderTaggedArrayIndexOfExpression(
     ...searchValue,
     `${indent}    struct.get ${taggedValueTypeName()} $tag`,
   ];
+  const includesString = expression.kinds === undefined ||
+    expression.kinds.includesString === true;
+  const stringComparison = includesString
+    ? [
+      ...currentValue,
+      `${indent}              struct.get ${taggedValueTypeName()} $heap_payload`,
+      `${indent}              ref.cast (ref ${stringRuntimeTypeName()})`,
+      ...searchValue,
+      `${indent}              struct.get ${taggedValueTypeName()} $heap_payload`,
+      `${indent}              ref.cast (ref ${stringRuntimeTypeName()})`,
+      `${indent}              call $${sanitizeIdentifier(STRING_EQUAL_FUNCTION_NAME)}`,
+    ]
+    : [`${indent}              i32.const 0`];
   return [
     ...renderTaggedArraySource(expression.array, indent, context),
     ...renderExpression(expression.search, indent, context),
@@ -3034,13 +3511,7 @@ function renderTaggedArrayIndexOfExpression(
     `${indent}            i32.const ${TAGGED_STRING_TAG}`,
     `${indent}            i32.eq`,
     `${indent}            if (result i32)`,
-    ...currentValue,
-    `${indent}              struct.get ${taggedValueTypeName()} $heap_payload`,
-    `${indent}              ref.cast (ref ${stringRuntimeTypeName()})`,
-    ...searchValue,
-    `${indent}              struct.get ${taggedValueTypeName()} $heap_payload`,
-    `${indent}              ref.cast (ref ${stringRuntimeTypeName()})`,
-    `${indent}              call $${sanitizeIdentifier(STRING_EQUAL_FUNCTION_NAME)}`,
+    ...stringComparison,
     `${indent}            else`,
     ...currentTag,
     `${indent}              i32.const ${TAGGED_SYMBOL_TAG}`,
@@ -3721,6 +4192,20 @@ function renderStatement(
       return renderMapDeleteStatement(statement, indent);
     case 'map_clear':
       return renderMapClearStatement(statement, indent);
+    case 'set_new':
+      return renderSetNewStatement(statement, indent);
+    case 'set_size':
+      return renderSetSizeStatement(statement, indent);
+    case 'set_values':
+      return renderSetValuesStatement(statement, indent);
+    case 'set_add':
+      return renderSetAddStatement(statement, indent, context);
+    case 'set_has':
+      return renderSetHasStatement(statement, indent, context);
+    case 'set_delete':
+      return renderSetDeleteStatement(statement, indent, context);
+    case 'set_clear':
+      return renderSetClearStatement(statement, indent);
     case 'dynamic_object_has':
       return renderDynamicObjectHasStatement(statement, indent, context);
     case 'dynamic_object_delete':
@@ -4492,6 +4977,13 @@ function collectBoxedClosureDispatchSignatureIdsFromStatement(
     case 'map_has':
     case 'map_delete':
     case 'map_clear':
+    case 'set_new':
+    case 'set_size':
+    case 'set_values':
+    case 'set_add':
+    case 'set_has':
+    case 'set_delete':
+    case 'set_clear':
       break;
     case 'dynamic_object_property_set':
       collectBoxedClosureDispatchSignatureIdsFromExpression(
@@ -4853,6 +5345,13 @@ function collectBoxValueTypesFromStatement(
     case 'map_has':
     case 'map_delete':
     case 'map_clear':
+    case 'set_new':
+    case 'set_size':
+    case 'set_values':
+    case 'set_add':
+    case 'set_has':
+    case 'set_delete':
+    case 'set_clear':
       break;
     case 'dynamic_object_property_set':
       collectBoxValueTypesFromExpression(statement.value, valueTypes);
@@ -5162,6 +5661,15 @@ function collectArrayRuntimeTypesFromStatement(
     case 'map_clear':
       runtimeTypes.add('string');
       runtimeTypes.add('tagged');
+      break;
+    case 'set_new':
+    case 'set_size':
+    case 'set_values':
+    case 'set_add':
+    case 'set_has':
+    case 'set_delete':
+    case 'set_clear':
+      addArrayRuntimeForValueType(statement.valuesArrayType, runtimeTypes);
       break;
     case 'dynamic_object_property_set':
       collectArrayRuntimeTypesFromExpression(statement.value, runtimeTypes);

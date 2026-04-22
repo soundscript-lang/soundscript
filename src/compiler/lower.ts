@@ -83,6 +83,8 @@ import type {
   CompilerRuntimeRepresentationRefIR,
   CompilerRuntimeSetDynamicObjectPropertyIR,
   CompilerRuntimeSetFallbackObjectPropertyIR,
+  CompilerRuntimeSetStorageArrayType,
+  CompilerRuntimeSetStorageElementType,
   CompilerRuntimeSpecializedObjectFieldIR,
   CompilerRuntimeSpecializedObjectFieldValueType,
   CompilerRuntimeSpecializedObjectHostClassConstructorIR,
@@ -226,6 +228,7 @@ interface BoundSymbol {
   ownedOnly?: boolean;
   compilerOwnedMap?: boolean;
   compilerOwnedMapStorage?: boolean;
+  compilerOwnedSet?: boolean;
   parameter?: boolean;
 }
 
@@ -573,6 +576,7 @@ interface FunctionRuntimeLoweringState {
   emptyUnknownSetLocals: Set<string>;
   compilerOwnedMapLocals: Set<string>;
   compilerOwnedMapStorageLocals: Set<string>;
+  compilerOwnedSetLocals: Set<string>;
   heapObjectRepresentationsByLocal: Map<string, CompilerRuntimeObjectRepresentationRef>;
   ownedArrayAliasGroupIdByLocal: Map<string, string>;
   ownedArrayAliasLocalsByGroupId: Map<string, Set<string>>;
@@ -647,6 +651,7 @@ function createFunctionRuntimeLoweringState(): FunctionRuntimeLoweringState {
     emptyUnknownSetLocals: new Set(),
     compilerOwnedMapLocals: new Set(),
     compilerOwnedMapStorageLocals: new Set(),
+    compilerOwnedSetLocals: new Set(),
     heapObjectRepresentationsByLocal: new Map(),
     ownedArrayAliasGroupIdByLocal: new Map(),
     ownedArrayAliasLocalsByGroupId: new Map(),
@@ -39512,6 +39517,165 @@ function lowerCompilerOwnedMapClear(
   };
 }
 
+function appendCompilerOwnedSetValue(
+  objectName: string,
+  valueName: string,
+  valuesArrayType: CompilerRuntimeSetStorageArrayType,
+  valuesElementType: CompilerRuntimeSetStorageElementType,
+  context: FunctionLoweringContext,
+  valueKinds?: CompilerTaggedPrimitiveBoundaryKindsIR,
+): void {
+  context.functionRuntime.operations.push({
+    kind: 'add_set_value',
+    objectName,
+    valueName,
+    valuesArrayType,
+    valuesElementType,
+    ...(valueKinds ? { valueKinds } : {}),
+  });
+}
+
+function lowerCompilerOwnedSetSize(
+  objectName: string,
+  valuesArrayType: CompilerRuntimeSetStorageArrayType,
+  context: FunctionLoweringContext,
+): CompilerExpressionIR {
+  const resultName = createLocalName('set_size', context.nextLocalId);
+  context.nextLocalId += 1;
+  context.locals.push({ name: resultName, type: 'f64' });
+  context.functionRuntime.operations.push({
+    kind: 'get_set_size',
+    objectName,
+    resultName,
+    valuesArrayType,
+  });
+  return {
+    kind: 'local_get',
+    name: resultName,
+    type: 'f64',
+  };
+}
+
+function lowerCompilerOwnedSetValuesArray(
+  objectName: string,
+  valuesArrayType: CompilerRuntimeSetStorageArrayType,
+  context: FunctionLoweringContext,
+  baseName: string,
+): CompilerExpressionIR {
+  const resultName = createLocalName(baseName, context.nextLocalId);
+  context.nextLocalId += 1;
+  context.locals.push({ name: resultName, type: valuesArrayType });
+  context.functionRuntime.operations.push({
+    kind: 'get_set_values',
+    objectName,
+    resultName,
+    valuesArrayType,
+  });
+  return {
+    kind: 'local_get',
+    name: resultName,
+    type: valuesArrayType,
+  };
+}
+
+function lowerCompilerOwnedSetAdd(
+  objectName: string,
+  valueName: string,
+  valuesArrayType: CompilerRuntimeSetStorageArrayType,
+  valuesElementType: CompilerRuntimeSetStorageElementType,
+  context: FunctionLoweringContext,
+  valueKinds?: CompilerTaggedPrimitiveBoundaryKindsIR,
+): CompilerExpressionIR {
+  appendCompilerOwnedSetValue(
+    objectName,
+    valueName,
+    valuesArrayType,
+    valuesElementType,
+    context,
+    valueKinds,
+  );
+  return {
+    kind: 'local_get',
+    name: objectName,
+    type: 'heap_ref',
+  };
+}
+
+function lowerCompilerOwnedSetHas(
+  objectName: string,
+  valueName: string,
+  valuesArrayType: CompilerRuntimeSetStorageArrayType,
+  valuesElementType: CompilerRuntimeSetStorageElementType,
+  context: FunctionLoweringContext,
+  valueKinds?: CompilerTaggedPrimitiveBoundaryKindsIR,
+): CompilerExpressionIR {
+  const resultName = createLocalName('set_has', context.nextLocalId);
+  context.nextLocalId += 1;
+  context.locals.push({ name: resultName, type: 'i32' });
+  context.functionRuntime.operations.push({
+    kind: 'has_set_value',
+    objectName,
+    valueName,
+    resultName,
+    valuesArrayType,
+    valuesElementType,
+    ...(valueKinds ? { valueKinds } : {}),
+  });
+  return {
+    kind: 'local_get',
+    name: resultName,
+    type: 'i32',
+  };
+}
+
+function lowerCompilerOwnedSetDelete(
+  objectName: string,
+  valueName: string,
+  valuesArrayType: CompilerRuntimeSetStorageArrayType,
+  valuesElementType: CompilerRuntimeSetStorageElementType,
+  context: FunctionLoweringContext,
+  valueKinds?: CompilerTaggedPrimitiveBoundaryKindsIR,
+): CompilerExpressionIR {
+  const resultName = createLocalName('set_deleted', context.nextLocalId);
+  context.nextLocalId += 1;
+  context.locals.push({ name: resultName, type: 'i32' });
+  context.functionRuntime.operations.push({
+    kind: 'delete_set_value',
+    objectName,
+    valueName,
+    resultName,
+    valuesArrayType,
+    valuesElementType,
+    ...(valueKinds ? { valueKinds } : {}),
+  });
+  return {
+    kind: 'local_get',
+    name: resultName,
+    type: 'i32',
+  };
+}
+
+function lowerCompilerOwnedSetClear(
+  objectName: string,
+  valuesArrayType: CompilerRuntimeSetStorageArrayType,
+  context: FunctionLoweringContext,
+): CompilerExpressionIR {
+  const resultName = createLocalName('set_clear', context.nextLocalId);
+  context.nextLocalId += 1;
+  context.locals.push({ name: resultName, type: 'tagged_ref' });
+  context.functionRuntime.operations.push({
+    kind: 'clear_set',
+    objectName,
+    resultName,
+    valuesArrayType,
+  });
+  return {
+    kind: 'local_get',
+    name: resultName,
+    type: 'tagged_ref',
+  };
+}
+
 function lowerDynamicObjectClear(
   objectName: string,
   representation: CompilerRuntimeDynamicObjectRepresentationRefIR,
@@ -60978,17 +61142,16 @@ function lowerInitialStringKeySetNewExpression(
       expression,
     );
   }
-  const representation = ensureObjectDynamicRepresentation(context.runtime);
   const resultName = createLocalName('set', context.nextLocalId);
   context.nextLocalId += 1;
   context.locals.push({ name: resultName, type: 'heap_ref' });
   context.functionRuntime.operations.push({
-    kind: 'allocate_dynamic_object',
+    kind: 'allocate_set',
     resultName,
-    representation,
-    entries: [],
-    compatibilityCollectionFamily: 'set',
+    valuesArrayType: setTypeInfo.valuesArrayType,
+    valuesElementType: setTypeInfo.valuesElementType,
   });
+  context.functionRuntime.compilerOwnedSetLocals.add(resultName);
   context.expressionPreludeStatements.push({
     kind: 'local_set',
     name: resultName,
@@ -60998,15 +61161,6 @@ function lowerInitialStringKeySetNewExpression(
       type: 'heap_ref',
     },
   });
-  context.functionRuntime.heapObjectRepresentationsByLocal.set(resultName, representation);
-  const valuesName = initializeSupportedSetValuesArrayProperty(
-    resultName,
-    representation,
-    setTypeInfo,
-    createOwnedArrayEmptyLiteral(setTypeInfo.valuesArrayType),
-    context,
-    'set',
-  );
   const valuesArgument = expression.arguments?.[0];
   if (valuesArgument) {
     const directValues = getDirectStringKeySetConstructorValues(valuesArgument, context.checker);
@@ -61023,7 +61177,16 @@ function lowerInitialStringKeySetNewExpression(
         'set_value',
         true,
       );
-      appendSupportedSetValueIfAbsent(valuesName, setTypeInfo, valueName, context);
+      appendCompilerOwnedSetValue(
+        resultName,
+        valueName,
+        setTypeInfo.valuesArrayType,
+        setTypeInfo.valuesElementType,
+        context,
+        setTypeInfo.valuesElementType === 'tagged_ref'
+          ? getTaggedKeyNumberValueMapOperationKinds(value, context)
+          : undefined,
+      );
     }
   }
   return {
@@ -62363,7 +62526,10 @@ function lowerInitialStringKeySetCallExpression(
     objectName = materialized.name;
     representation = materialized.representation;
   }
-  if (representation?.kind !== 'dynamic_object_representation') {
+  const compilerOwnedSetReceiver = (ts.isIdentifier(receiver) &&
+    lookupSymbol(context, receiver.text)?.compilerOwnedSet === true) ||
+    context.functionRuntime.compilerOwnedSetLocals.has(objectName);
+  if (!compilerOwnedSetReceiver && representation?.kind !== 'dynamic_object_representation') {
     throw new CompilerUnsupportedError(
       'Set receivers currently require compiler-owned Set values in compiler subset.',
       receiver,
@@ -62383,18 +62549,36 @@ function lowerInitialStringKeySetCallExpression(
         expression,
       );
     }
+    const valueName = materializeLoweredExpressionToLocal(
+      lowerExpressionAsValueType(expression.arguments[0]!, setTypeInfo.valuesElementType, context),
+      context,
+      'set_value',
+      true,
+    );
+    if (compilerOwnedSetReceiver) {
+      return lowerCompilerOwnedSetAdd(
+        objectName,
+        valueName,
+        setTypeInfo.valuesArrayType,
+        setTypeInfo.valuesElementType,
+        context,
+        setTypeInfo.valuesElementType === 'tagged_ref'
+          ? getTaggedKeyNumberValueMapOperationKinds(expression.arguments[0]!, context)
+          : undefined,
+      );
+    }
+    if (representation?.kind !== 'dynamic_object_representation') {
+      throw new CompilerUnsupportedError(
+        'Set receivers currently require compiler-owned Set values in compiler subset.',
+        receiver,
+      );
+    }
     const valuesName = materializeSupportedSetValuesArray(
       objectName,
       representation,
       setTypeInfo,
       context,
       'set_values',
-    );
-    const valueName = materializeLoweredExpressionToLocal(
-      lowerExpressionAsValueType(expression.arguments[0]!, setTypeInfo.valuesElementType, context),
-      context,
-      'set_value',
-      true,
     );
     appendSupportedSetValueIfAbsent(valuesName, setTypeInfo, valueName, context);
     return {
@@ -62411,18 +62595,36 @@ function lowerInitialStringKeySetCallExpression(
         expression,
       );
     }
+    const valueName = materializeLoweredExpressionToLocal(
+      lowerExpressionAsValueType(expression.arguments[0]!, setTypeInfo.valuesElementType, context),
+      context,
+      'set_value',
+      true,
+    );
+    if (compilerOwnedSetReceiver) {
+      return lowerCompilerOwnedSetHas(
+        objectName,
+        valueName,
+        setTypeInfo.valuesArrayType,
+        setTypeInfo.valuesElementType,
+        context,
+        setTypeInfo.valuesElementType === 'tagged_ref'
+          ? getTaggedKeyNumberValueMapOperationKinds(expression.arguments[0]!, context)
+          : undefined,
+      );
+    }
+    if (representation?.kind !== 'dynamic_object_representation') {
+      throw new CompilerUnsupportedError(
+        'Set receivers currently require compiler-owned Set values in compiler subset.',
+        receiver,
+      );
+    }
     const valuesName = materializeSupportedSetValuesArray(
       objectName,
       representation,
       setTypeInfo,
       context,
       'set_values',
-    );
-    const valueName = materializeLoweredExpressionToLocal(
-      lowerExpressionAsValueType(expression.arguments[0]!, setTypeInfo.valuesElementType, context),
-      context,
-      'set_value',
-      true,
     );
     return {
       kind: 'binary',
@@ -62457,18 +62659,36 @@ function lowerInitialStringKeySetCallExpression(
         expression,
       );
     }
+    const valueName = materializeLoweredExpressionToLocal(
+      lowerExpressionAsValueType(expression.arguments[0]!, setTypeInfo.valuesElementType, context),
+      context,
+      'set_value',
+      true,
+    );
+    if (compilerOwnedSetReceiver) {
+      return lowerCompilerOwnedSetDelete(
+        objectName,
+        valueName,
+        setTypeInfo.valuesArrayType,
+        setTypeInfo.valuesElementType,
+        context,
+        setTypeInfo.valuesElementType === 'tagged_ref'
+          ? getTaggedKeyNumberValueMapOperationKinds(expression.arguments[0]!, context)
+          : undefined,
+      );
+    }
+    if (representation?.kind !== 'dynamic_object_representation') {
+      throw new CompilerUnsupportedError(
+        'Set receivers currently require compiler-owned Set values in compiler subset.',
+        receiver,
+      );
+    }
     const valuesName = materializeSupportedSetValuesArray(
       objectName,
       representation,
       setTypeInfo,
       context,
       'set_values',
-    );
-    const valueName = materializeLoweredExpressionToLocal(
-      lowerExpressionAsValueType(expression.arguments[0]!, setTypeInfo.valuesElementType, context),
-      context,
-      'set_value',
-      true,
     );
     const indexName = createLocalName('set_index', context.nextLocalId);
     context.nextLocalId += 1;
@@ -62557,6 +62777,19 @@ function lowerInitialStringKeySetCallExpression(
         expression,
       );
     }
+    if (compilerOwnedSetReceiver) {
+      return lowerCompilerOwnedSetClear(
+        objectName,
+        setTypeInfo.valuesArrayType,
+        context,
+      );
+    }
+    if (representation?.kind !== 'dynamic_object_representation') {
+      throw new CompilerUnsupportedError(
+        'Set receivers currently require compiler-owned Set values in compiler subset.',
+        receiver,
+      );
+    }
     initializeSupportedSetValuesArrayProperty(
       objectName,
       representation,
@@ -62576,6 +62809,26 @@ function lowerInitialStringKeySetCallExpression(
       throw new CompilerUnsupportedError(
         `Set ${methodName} calls must not receive arguments.`,
         expression,
+      );
+    }
+    if (compilerOwnedSetReceiver) {
+      return lowerCollectionIteratorObject(
+        lowerCompilerOwnedSetValuesArray(
+          objectName,
+          setTypeInfo.valuesArrayType,
+          context,
+          `set_${methodName}_values`,
+        ),
+        setTypeInfo.valuesArrayType,
+        setTypeInfo.valuesElementType,
+        context,
+        `set_${methodName}_iterator`,
+      );
+    }
+    if (representation?.kind !== 'dynamic_object_representation') {
+      throw new CompilerUnsupportedError(
+        'Set receivers currently require compiler-owned Set values in compiler subset.',
+        receiver,
       );
     }
     return lowerCollectionIteratorObject(
@@ -62598,6 +62851,31 @@ function lowerInitialStringKeySetCallExpression(
       throw new CompilerUnsupportedError(
         'Set entries calls must not receive arguments.',
         expression,
+      );
+    }
+    if (compilerOwnedSetReceiver) {
+      const valuesName = materializeLoweredExpressionToLocal(
+        lowerCompilerOwnedSetValuesArray(
+          objectName,
+          setTypeInfo.valuesArrayType,
+          context,
+          'set_entries_values',
+        ),
+        context,
+        'set_entries_values',
+      );
+      return lowerCollectionIteratorObject(
+        lowerSupportedSetEntriesArray(valuesName, setTypeInfo, context, 'set_entries'),
+        'owned_heap_array_ref',
+        setTypeInfo.entryElementType,
+        context,
+        'set_entries_iterator',
+      );
+    }
+    if (representation?.kind !== 'dynamic_object_representation') {
+      throw new CompilerUnsupportedError(
+        'Set receivers currently require compiler-owned Set values in compiler subset.',
+        receiver,
       );
     }
     const valuesName = materializeSupportedSetValuesArray(
@@ -65605,6 +65883,8 @@ function lowerPropertyAccessExpression(
   }
   const stringKeySetTypeInfo = getSupportedStringKeySetTypeInfo(context.checker, receiverType);
   if (expression.name.text === 'size' && stringKeySetTypeInfo !== undefined) {
+    const compilerOwnedSetReceiver = ts.isIdentifier(expression.expression) &&
+      lookupSymbol(context, expression.expression.text)?.compilerOwnedSet === true;
     let objectName = getHeapObjectValueNameFromExpression(expression.expression, context);
     let representation = getHeapObjectRepresentationFromExpression(expression.expression, context);
     if (!objectName) {
@@ -65615,6 +65895,15 @@ function lowerPropertyAccessExpression(
       );
       objectName = materialized.name;
       representation = materialized.representation;
+    }
+    if (
+      compilerOwnedSetReceiver || context.functionRuntime.compilerOwnedSetLocals.has(objectName)
+    ) {
+      return lowerCompilerOwnedSetSize(
+        objectName,
+        stringKeySetTypeInfo.valuesArrayType,
+        context,
+      );
     }
     if (representation?.kind !== 'dynamic_object_representation') {
       throw new CompilerUnsupportedError(
@@ -67474,11 +67763,18 @@ function lowerVariableStatement(
     const compilerOwnedMapStorageAlias = compilerOwnedMapAlias &&
       loweredInitializer?.kind === 'local_get' &&
       context.functionRuntime.compilerOwnedMapStorageLocals.has(loweredInitializer.name);
+    const compilerOwnedSetAlias = !capturedByClosure &&
+      type === 'heap_ref' &&
+      loweredInitializer?.kind === 'local_get' &&
+      context.functionRuntime.compilerOwnedSetLocals.has(loweredInitializer.name);
     if (compilerOwnedMapAlias) {
       context.functionRuntime.compilerOwnedMapLocals.add(emittedName);
     }
     if (compilerOwnedMapStorageAlias) {
       context.functionRuntime.compilerOwnedMapStorageLocals.add(emittedName);
+    }
+    if (compilerOwnedSetAlias) {
+      context.functionRuntime.compilerOwnedSetLocals.add(emittedName);
     }
     currentScope(context).set(declaration.name.text, {
       emittedName,
@@ -67518,6 +67814,7 @@ function lowerVariableStatement(
         hostAliasValue === undefined,
       compilerOwnedMap: compilerOwnedMapAlias,
       compilerOwnedMapStorage: compilerOwnedMapStorageAlias,
+      compilerOwnedSet: compilerOwnedSetAlias,
     });
     const hostTaggedObjectPropertyAccessInfo = declaration.initializer
       ? getHostTaggedObjectPropertyAccessInfo(declaration.initializer, context)
