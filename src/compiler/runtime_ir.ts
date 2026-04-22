@@ -646,6 +646,7 @@ export type CompilerRuntimeSetStorageArrayType =
   | 'owned_tagged_array_ref';
 
 export type CompilerRuntimeSetStorageElementType =
+  | 'heap_ref'
   | 'owned_string_ref'
   | 'owned_heap_array_ref'
   | 'owned_array_ref'

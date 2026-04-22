@@ -607,6 +607,7 @@ export type SemanticStatementIR =
       | 'owned_boolean_array_ref'
       | 'owned_tagged_array_ref';
     valuesElementType:
+      | 'heap_ref'
       | 'owned_string_ref'
       | 'owned_heap_array_ref'
       | 'owned_array_ref'
@@ -650,6 +651,7 @@ export type SemanticStatementIR =
       | 'owned_boolean_array_ref'
       | 'owned_tagged_array_ref';
     valuesElementType:
+      | 'heap_ref'
       | 'owned_string_ref'
       | 'owned_heap_array_ref'
       | 'owned_array_ref'
@@ -673,6 +675,7 @@ export type SemanticStatementIR =
       | 'owned_boolean_array_ref'
       | 'owned_tagged_array_ref';
     valuesElementType:
+      | 'heap_ref'
       | 'owned_string_ref'
       | 'owned_heap_array_ref'
       | 'owned_array_ref'
@@ -696,6 +699,7 @@ export type SemanticStatementIR =
       | 'owned_boolean_array_ref'
       | 'owned_tagged_array_ref';
     valuesElementType:
+      | 'heap_ref'
       | 'owned_string_ref'
       | 'owned_heap_array_ref'
       | 'owned_array_ref'
