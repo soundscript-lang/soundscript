@@ -1,3 +1,4 @@
+import type { CompilerValueType } from './ir.ts';
 import type { SemanticExpressionIR, SemanticStatementIR, SemanticTypeIR } from './semantic_ir.ts';
 import type {
   WasmGcBoundaryPlanIR,
@@ -1638,6 +1639,7 @@ function mapValuesArrayRuntimeType(
 
 function renderMapTaggedValueForResultType(
   resultType: Extract<SemanticStatementIR, { kind: 'map_values' }>['resultType'],
+  resultElementType: CompilerValueType | undefined,
   indent: string,
 ): readonly string[] {
   switch (resultType) {
@@ -1651,7 +1653,9 @@ function renderMapTaggedValueForResultType(
       return [
         `${indent}ref.as_non_null`,
         `${indent}struct.get ${taggedValueTypeName()} $heap_payload`,
-        `${indent}ref.cast (ref $array_runtime)`,
+        `${indent}ref.cast ${
+          wasmTypeForCompilerValueType(resultElementType ?? 'owned_number_array_ref')
+        }`,
       ];
     case 'owned_number_array_ref':
       return [
@@ -1705,7 +1709,11 @@ function renderMapValuesStatement(
     `${indent}    ref.as_non_null`,
     `${indent}    local.get $${sanitizeIdentifier(MAP_INDEX_SCRATCH)}`,
     `${indent}    array.get $tagged_array_runtime`,
-    ...renderMapTaggedValueForResultType(statement.resultType, `${indent}    `),
+    ...renderMapTaggedValueForResultType(
+      statement.resultType,
+      statement.resultElementType,
+      `${indent}    `,
+    ),
     `${indent}    array.set ${runtimeType}`,
     `${indent}    local.get $${sanitizeIdentifier(MAP_INDEX_SCRATCH)}`,
     `${indent}    i32.const 1`,
@@ -2377,6 +2385,7 @@ function renderDynamicObjectClearStatement(
 
 function dynamicObjectValuesArrayInfo(
   resultType: Extract<SemanticStatementIR, { kind: 'dynamic_object_values' }>['resultType'],
+  resultElementType: CompilerValueType | undefined,
 ): {
   runtimeType: string;
   sourceScratch: string;
@@ -2399,7 +2408,7 @@ function dynamicObjectValuesArrayInfo(
         sourceScratch: HEAP_ARRAY_SOURCE_SCRATCH,
         tmpScratch: HEAP_ARRAY_TMP_SCRATCH,
         lengthScratch: HEAP_ARRAY_LENGTH_SCRATCH,
-        targetValueType: 'owned_number_array_ref',
+        targetValueType: resultElementType ?? 'heap_ref',
       };
     case 'owned_number_array_ref':
       return {
@@ -2434,9 +2443,10 @@ function renderDynamicObjectValuesAppend(
   layout: DynamicObjectLocalLayout,
   index: number,
   resultType: Extract<SemanticStatementIR, { kind: 'dynamic_object_values' }>['resultType'],
+  resultElementType: CompilerValueType | undefined,
   indent: string,
 ): readonly string[] {
-  const info = dynamicObjectValuesArrayInfo(resultType);
+  const info = dynamicObjectValuesArrayInfo(resultType, resultElementType);
   const target = sanitizeIdentifier(targetName);
   return [
     `${indent}local.get $${target}`,
@@ -2496,6 +2506,7 @@ function renderDynamicObjectValuesStatement(
         layout,
         index,
         statement.resultType,
+        statement.resultElementType,
         `${indent}  `,
       ),
       `${indent}end`,
@@ -2856,6 +2867,8 @@ function collectNumberArrayScratchFromStatement(
     case 'dynamic_object_values':
       if (statement.resultType === 'owned_array_ref') {
         uses.add('string_array');
+      } else if (statement.resultType === 'owned_heap_array_ref') {
+        uses.add('heap_array');
       } else if (statement.resultType === 'owned_number_array_ref') {
         uses.add('number_array');
       } else if (statement.resultType === 'owned_boolean_array_ref') {
@@ -4854,7 +4867,7 @@ function renderStringEqualityHelperFunctions(plan: WasmGcModulePlanIR): readonly
       '              if',
       '                i32.const 0',
       '                local.set $result',
-      '                br 1',
+      '                br 2',
       '              end',
       '              local.get $index',
       '              i32.const 1',
@@ -5246,6 +5259,7 @@ function renderMapBoundaryValueAtResult(
       : info.suffix === 'boolean'
       ? 'owned_boolean_array_ref'
       : 'owned_number_array_ref',
+    undefined,
     indent,
   );
 }
@@ -6490,6 +6504,9 @@ function collectArrayRuntimeTypesFromStatement(
       runtimeTypes.add('string');
       runtimeTypes.add('tagged');
       addArrayRuntimeForValueType(statement.resultType, runtimeTypes);
+      if (statement.resultElementType) {
+        addArrayRuntimeForValueType(statement.resultElementType, runtimeTypes);
+      }
       break;
     case 'set_new':
     case 'set_size':
@@ -6505,6 +6522,9 @@ function collectArrayRuntimeTypesFromStatement(
       break;
     case 'dynamic_object_values':
       addArrayRuntimeForValueType(statement.resultType, runtimeTypes);
+      if (statement.resultElementType) {
+        addArrayRuntimeForValueType(statement.resultElementType, runtimeTypes);
+      }
       break;
     case 'throw_tagged':
       collectArrayRuntimeTypesFromExpression(statement.value, runtimeTypes);

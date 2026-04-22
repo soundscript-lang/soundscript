@@ -537,6 +537,7 @@ export type SemanticStatementIR =
       | 'owned_number_array_ref'
       | 'owned_boolean_array_ref'
       | 'owned_tagged_array_ref';
+    resultElementType?: CompilerValueType;
   }
   | {
     kind: 'map_new';
@@ -577,6 +578,7 @@ export type SemanticStatementIR =
       | 'owned_number_array_ref'
       | 'owned_boolean_array_ref'
       | 'owned_tagged_array_ref';
+    resultElementType?: CompilerValueType;
   }
   | {
     kind: 'map_has';
@@ -606,7 +608,11 @@ export type SemanticStatementIR =
       | 'owned_tagged_array_ref';
     valuesElementType:
       | 'owned_string_ref'
+      | 'owned_heap_array_ref'
+      | 'owned_array_ref'
       | 'owned_number_array_ref'
+      | 'owned_boolean_array_ref'
+      | 'owned_tagged_array_ref'
       | 'f64'
       | 'i32'
       | 'tagged_ref';
@@ -645,7 +651,11 @@ export type SemanticStatementIR =
       | 'owned_tagged_array_ref';
     valuesElementType:
       | 'owned_string_ref'
+      | 'owned_heap_array_ref'
+      | 'owned_array_ref'
       | 'owned_number_array_ref'
+      | 'owned_boolean_array_ref'
+      | 'owned_tagged_array_ref'
       | 'f64'
       | 'i32'
       | 'tagged_ref';
@@ -664,7 +674,11 @@ export type SemanticStatementIR =
       | 'owned_tagged_array_ref';
     valuesElementType:
       | 'owned_string_ref'
+      | 'owned_heap_array_ref'
+      | 'owned_array_ref'
       | 'owned_number_array_ref'
+      | 'owned_boolean_array_ref'
+      | 'owned_tagged_array_ref'
       | 'f64'
       | 'i32'
       | 'tagged_ref';
@@ -683,7 +697,11 @@ export type SemanticStatementIR =
       | 'owned_tagged_array_ref';
     valuesElementType:
       | 'owned_string_ref'
+      | 'owned_heap_array_ref'
+      | 'owned_array_ref'
       | 'owned_number_array_ref'
+      | 'owned_boolean_array_ref'
+      | 'owned_tagged_array_ref'
       | 'f64'
       | 'i32'
       | 'tagged_ref';
@@ -1652,6 +1670,9 @@ function collectRuntimeOperationFamilies(
         ) {
           families.add(operation.compatibilityCollectionFamily);
         }
+        if ('resultElementType' in operation && operation.resultElementType) {
+          addValueTypeFamilies(families, operation.resultElementType);
+        }
         families.add('finite_union');
         break;
       case 'allocate_map':
@@ -1676,6 +1697,9 @@ function collectRuntimeOperationFamilies(
         ) {
           families.add('finite_union');
         }
+        if (operation.kind === 'get_map_values' && operation.resultElementType) {
+          addValueTypeFamilies(families, operation.resultElementType);
+        }
         break;
       case 'allocate_set':
       case 'get_set_size':
@@ -1688,6 +1712,9 @@ function collectRuntimeOperationFamilies(
         families.add('set');
         if ('valuesArrayType' in operation && operation.valuesArrayType === 'owned_array_ref') {
           families.add('string');
+        }
+        if ('valuesElementType' in operation) {
+          addValueTypeFamilies(families, operation.valuesElementType);
         }
         if (
           ('valuesElementType' in operation && operation.valuesElementType === 'tagged_ref') ||
@@ -2933,6 +2960,7 @@ function semanticDynamicObjectValuesFromRuntimeOperation(
     representationName: operation.representation.name,
     ...compatibilityCollectionFamilyField(operation),
     resultType: operation.resultType,
+    resultElementType: operation.resultElementType,
   };
 }
 
@@ -3000,6 +3028,7 @@ function semanticMapValuesFromRuntimeOperation(
     targetName: operation.resultName,
     objectName: operation.objectName,
     resultType: operation.resultType,
+    resultElementType: operation.resultElementType,
   };
 }
 

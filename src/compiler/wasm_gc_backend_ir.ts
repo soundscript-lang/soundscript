@@ -1156,6 +1156,7 @@ function rewriteCollectionBoundaryStatements(
           targetName: statement.targetName,
           objectName: statement.objectName,
           resultType: statement.resultType,
+          resultElementType: statement.resultElementType,
         };
       }
       if (

@@ -615,6 +615,7 @@ export interface CompilerRuntimeGetMapValuesIR {
     | 'owned_number_array_ref'
     | 'owned_boolean_array_ref'
     | 'owned_tagged_array_ref';
+  resultElementType?: CompilerValueType;
 }
 
 export interface CompilerRuntimeHasMapEntryIR {
@@ -646,7 +647,11 @@ export type CompilerRuntimeSetStorageArrayType =
 
 export type CompilerRuntimeSetStorageElementType =
   | 'owned_string_ref'
+  | 'owned_heap_array_ref'
+  | 'owned_array_ref'
   | 'owned_number_array_ref'
+  | 'owned_boolean_array_ref'
+  | 'owned_tagged_array_ref'
   | 'f64'
   | 'i32'
   | 'tagged_ref';
@@ -845,6 +850,7 @@ export interface CompilerRuntimeListDynamicObjectValuesIR {
     | 'owned_number_array_ref'
     | 'owned_boolean_array_ref'
     | 'owned_tagged_array_ref';
+  resultElementType?: CompilerValueType;
 }
 
 export interface CompilerRuntimeListDynamicObjectEntriesIR {

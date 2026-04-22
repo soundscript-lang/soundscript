@@ -16079,6 +16079,8 @@ function lowerSupportedCollectionForEachStatement(
         representation,
         iterationValueInfo.valuesArrayType,
         context,
+        undefined,
+        iterationValueInfo.valuesElementType,
       ),
       context,
       'map_for_each_values',
@@ -17327,7 +17329,7 @@ interface SupportedSetElementTypeInfo {
     | 'owned_number_array_ref'
     | 'owned_boolean_array_ref'
     | 'owned_tagged_array_ref';
-  valuesElementType: 'owned_string_ref' | 'owned_number_array_ref' | 'f64' | 'i32' | 'tagged_ref';
+  valuesElementType: CompilerRuntimeSetStorageElementType;
   entryElementType:
     | 'owned_array_ref'
     | 'owned_heap_array_ref'
@@ -17335,6 +17337,28 @@ interface SupportedSetElementTypeInfo {
     | 'owned_boolean_array_ref'
     | 'owned_tagged_array_ref';
   entryElementInfos: readonly [OwnedArrayBindingElementInfo, OwnedArrayBindingElementInfo];
+}
+
+function getSupportedOwnedArrayPayloadElementType(
+  checker: ts.TypeChecker,
+  type: ts.Type,
+): CompilerRuntimeSetStorageElementType | undefined {
+  if (isSupportedOwnedStringArrayType(checker, type)) {
+    return 'owned_array_ref';
+  }
+  if (isSupportedOwnedNumberArrayType(checker, type)) {
+    return 'owned_number_array_ref';
+  }
+  if (isSupportedOwnedBooleanArrayType(checker, type)) {
+    return 'owned_boolean_array_ref';
+  }
+  if (isSupportedOwnedTaggedArrayType(checker, type)) {
+    return 'owned_tagged_array_ref';
+  }
+  if (isSupportedOwnedHeapArrayType(checker, type)) {
+    return 'owned_heap_array_ref';
+  }
+  return undefined;
 }
 
 function getSupportedSetElementTypeInfo(
@@ -17365,12 +17389,13 @@ function getSupportedSetElementTypeInfo(
       entryElementInfos: [{ type: 'i32' }, { type: 'i32' }],
     };
   }
-  if (isSupportedOwnedNumberArrayType(checker, elementType)) {
+  const arrayPayloadElementType = getSupportedOwnedArrayPayloadElementType(checker, elementType);
+  if (arrayPayloadElementType) {
     return {
       valuesArrayType: 'owned_heap_array_ref',
-      valuesElementType: 'owned_number_array_ref',
+      valuesElementType: arrayPayloadElementType,
       entryElementType: 'owned_heap_array_ref',
-      entryElementInfos: [{ type: 'owned_number_array_ref' }, { type: 'owned_number_array_ref' }],
+      entryElementInfos: [{ type: arrayPayloadElementType }, { type: arrayPayloadElementType }],
     };
   }
   if (
@@ -17526,11 +17551,12 @@ function getSupportedCollectionIteratorTypeInfo(
       elementType: 'i32',
     };
   }
-  if (isSupportedOwnedNumberArrayType(checker, yieldedType)) {
+  const arrayPayloadElementType = getSupportedOwnedArrayPayloadElementType(checker, yieldedType);
+  if (arrayPayloadElementType) {
     return {
       kind,
       valuesArrayType: 'owned_heap_array_ref',
-      elementType: 'owned_number_array_ref',
+      elementType: arrayPayloadElementType,
     };
   }
   if (
@@ -20206,7 +20232,7 @@ function getSupportedStringKeyMapIterationValueInfo(
     | 'owned_number_array_ref'
     | 'owned_boolean_array_ref'
     | 'owned_tagged_array_ref';
-  valuesElementType: 'owned_string_ref' | 'owned_number_array_ref' | 'f64' | 'i32' | 'tagged_ref';
+  valuesElementType: CompilerRuntimeSetStorageElementType;
   entryPairValueType: 'owned_string_ref' | 'tagged_ref';
   entryElementType: 'owned_array_ref' | 'owned_heap_array_ref' | 'owned_tagged_array_ref';
   entryElementInfos: readonly [OwnedArrayBindingElementInfo, OwnedArrayBindingElementInfo];
@@ -20238,13 +20264,14 @@ function getSupportedStringKeyMapIterationValueInfo(
       entryElementInfos: [{ type: 'owned_string_ref' }, { type: 'i32' }],
     };
   }
-  if (isSupportedOwnedNumberArrayType(checker, valueType)) {
+  const arrayPayloadElementType = getSupportedOwnedArrayPayloadElementType(checker, valueType);
+  if (arrayPayloadElementType) {
     return {
       valuesArrayType: 'owned_heap_array_ref',
-      valuesElementType: 'owned_number_array_ref',
+      valuesElementType: arrayPayloadElementType,
       entryPairValueType: 'tagged_ref',
       entryElementType: 'owned_heap_array_ref',
-      entryElementInfos: [{ type: 'owned_string_ref' }, { type: 'owned_number_array_ref' }],
+      entryElementInfos: [{ type: 'owned_string_ref' }, { type: arrayPayloadElementType }],
     };
   }
   if (
@@ -20310,13 +20337,17 @@ function createStringKeyMapEntryTaggedValueExpression(
         name: valueName,
         type: 'tagged_ref',
       };
+    case 'owned_heap_array_ref':
+    case 'owned_array_ref':
     case 'owned_number_array_ref':
+    case 'owned_boolean_array_ref':
+    case 'owned_tagged_array_ref':
       return {
         kind: 'tag_heap_object',
         value: {
           kind: 'local_get',
           name: valueName,
-          type: 'owned_number_array_ref',
+          type: iterationValueInfo.valuesElementType,
         },
         type: 'tagged_ref',
       };
@@ -20768,6 +20799,7 @@ function tryLowerCollectionForOfIterableExpression(
               compilerOwnedMapObjectName,
               iterationValueInfo.valuesArrayType,
               context,
+              iterationValueInfo.valuesElementType,
             ),
             arrayType: iterationValueInfo.valuesArrayType,
             elementType: iterationValueInfo.valuesElementType,
@@ -20784,6 +20816,7 @@ function tryLowerCollectionForOfIterableExpression(
               compilerOwnedMapObjectName,
               iterationValueInfo.valuesArrayType,
               context,
+              iterationValueInfo.valuesElementType,
             ),
             context,
             'map_entries_values',
@@ -20831,6 +20864,8 @@ function tryLowerCollectionForOfIterableExpression(
             representation,
             iterationValueInfo.valuesArrayType,
             context,
+            undefined,
+            iterationValueInfo.valuesElementType,
           ),
           arrayType: iterationValueInfo.valuesArrayType,
           elementType: iterationValueInfo.valuesElementType,
@@ -21051,6 +21086,7 @@ function tryLowerCollectionForOfIterableExpression(
           compilerOwnedMapObjectName,
           iterationValueInfo.valuesArrayType,
           context,
+          iterationValueInfo.valuesElementType,
         ),
         context,
         'map_iterable_values',
@@ -40126,6 +40162,7 @@ function lowerCompilerOwnedMapValuesArray(
     | 'owned_boolean_array_ref'
     | 'owned_tagged_array_ref',
   context: FunctionLoweringContext,
+  resultElementType?: CompilerValueType,
 ): CompilerExpressionIR {
   context.functionRuntime.compilerOwnedMapStorageLocals.add(objectName);
   const resultName = createLocalName('map_values', context.nextLocalId);
@@ -40136,6 +40173,7 @@ function lowerCompilerOwnedMapValuesArray(
     objectName,
     resultName,
     resultType,
+    ...(resultElementType ? { resultElementType } : {}),
   });
   return {
     kind: 'local_get',
@@ -40957,6 +40995,7 @@ function lowerDynamicObjectValues(
     | 'owned_tagged_array_ref',
   context: FunctionLoweringContext,
   compatibilityCollectionFamily?: 'map' | 'set',
+  resultElementType?: CompilerValueType,
 ): CompilerExpressionIR {
   if (resultType === 'owned_tagged_array_ref') {
     ensureTaggedValueRepresentation(context.runtime);
@@ -40971,6 +41010,7 @@ function lowerDynamicObjectValues(
     representation,
     ...(compatibilityCollectionFamily ? { compatibilityCollectionFamily } : {}),
     resultType,
+    ...(resultElementType ? { resultElementType } : {}),
   };
   context.functionRuntime.operations.push(operation);
   return {
@@ -62227,6 +62267,7 @@ function lowerInitialStringKeyMapCallExpression(
           objectName,
           iterationValueInfo.valuesArrayType,
           context,
+          iterationValueInfo.valuesElementType,
         ),
         iterationValueInfo.valuesArrayType,
         iterationValueInfo.valuesElementType,
@@ -62247,6 +62288,7 @@ function lowerInitialStringKeyMapCallExpression(
         iterationValueInfo.valuesArrayType,
         context,
         'map',
+        iterationValueInfo.valuesElementType,
       ),
       iterationValueInfo.valuesArrayType,
       iterationValueInfo.valuesElementType,
@@ -62283,6 +62325,7 @@ function lowerInitialStringKeyMapCallExpression(
           objectName,
           iterationValueInfo.valuesArrayType,
           context,
+          iterationValueInfo.valuesElementType,
         ),
         context,
         'map_entries_values',
