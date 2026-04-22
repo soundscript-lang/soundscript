@@ -269,6 +269,12 @@ export type SemanticExpressionIR =
     representation: 'f64';
   }
   | {
+    kind: 'owned_heap_array_push';
+    array: SemanticExpressionIR;
+    value: SemanticExpressionIR;
+    representation: 'f64';
+  }
+  | {
     kind: 'owned_number_array_splice';
     array: SemanticExpressionIR;
     start: SemanticExpressionIR;
@@ -540,6 +546,11 @@ export type SemanticStatementIR =
     targetName: string;
     objectName: string;
     keyName: string;
+  }
+  | {
+    kind: 'map_keys';
+    targetName: string;
+    objectName: string;
   }
   | {
     kind: 'map_values';
@@ -1620,6 +1631,7 @@ function collectRuntimeOperationFamilies(
       case 'get_map_size':
       case 'set_map_entry':
       case 'get_map_entry':
+      case 'get_map_keys':
       case 'get_map_values':
       case 'has_map_entry':
       case 'delete_map_entry':
@@ -1628,6 +1640,7 @@ function collectRuntimeOperationFamilies(
         if (
           operation.kind === 'set_map_entry' ||
           operation.kind === 'get_map_entry' ||
+          operation.kind === 'get_map_keys' ||
           operation.kind === 'get_map_values' ||
           operation.kind === 'has_map_entry' ||
           operation.kind === 'delete_map_entry' ||
@@ -2268,6 +2281,13 @@ function semanticExpressionFromCompilerIR(
     case 'owned_tagged_array_push':
       return {
         kind: 'owned_tagged_array_push',
+        array: semanticExpressionFromCompilerIR(expression.array),
+        value: semanticExpressionFromCompilerIR(expression.value),
+        representation: 'f64',
+      };
+    case 'owned_heap_array_push':
+      return {
+        kind: 'owned_heap_array_push',
         array: semanticExpressionFromCompilerIR(expression.array),
         value: semanticExpressionFromCompilerIR(expression.value),
         representation: 'f64',
@@ -2919,6 +2939,16 @@ function semanticMapGetFromRuntimeOperation(
   };
 }
 
+function semanticMapKeysFromRuntimeOperation(
+  operation: Extract<CompilerRuntimeOperationIR, { kind: 'get_map_keys' }>,
+): SemanticStatementIR {
+  return {
+    kind: 'map_keys',
+    targetName: operation.resultName,
+    objectName: operation.objectName,
+  };
+}
+
 function semanticMapValuesFromRuntimeOperation(
   operation: Extract<CompilerRuntimeOperationIR, { kind: 'get_map_values' }>,
 ): SemanticStatementIR {
@@ -3075,6 +3105,10 @@ function semanticBodyFromCompilerIR(
     string,
     Extract<CompilerRuntimeOperationIR, { kind: 'get_map_entry' }>
   >();
+  const pendingMapKeysByResult = new Map<
+    string,
+    Extract<CompilerRuntimeOperationIR, { kind: 'get_map_keys' }>
+  >();
   const pendingMapValuesByResult = new Map<
     string,
     Extract<CompilerRuntimeOperationIR, { kind: 'get_map_values' }>
@@ -3187,6 +3221,8 @@ function semanticBodyFromCompilerIR(
       mapSetsAfterAllocation.push(operation);
     } else if (operation.kind === 'get_map_entry') {
       pendingMapGetsByResult.set(operation.resultName, operation);
+    } else if (operation.kind === 'get_map_keys') {
+      pendingMapKeysByResult.set(operation.resultName, operation);
     } else if (operation.kind === 'get_map_values') {
       pendingMapValuesByResult.set(operation.resultName, operation);
     } else if (operation.kind === 'has_map_entry') {
@@ -3357,6 +3393,13 @@ function semanticBodyFromCompilerIR(
         targetBody.push(semanticMapGetFromRuntimeOperation(operation));
         seenAssignments.add(operation.resultName);
         pendingMapGetsByResult.delete(resultName);
+      }
+    }
+    for (const [resultName, operation] of [...pendingMapKeysByResult]) {
+      if (shouldEmitPending(resultName)) {
+        targetBody.push(semanticMapKeysFromRuntimeOperation(operation));
+        seenAssignments.add(operation.resultName);
+        pendingMapKeysByResult.delete(resultName);
       }
     }
     for (const [resultName, operation] of [...pendingMapValuesByResult]) {
@@ -3554,6 +3597,7 @@ function semanticBodyFromCompilerIR(
       ...pendingDynamicValuesByResult.keys(),
       ...pendingMapSizesByResult.keys(),
       ...pendingMapGetsByResult.keys(),
+      ...pendingMapKeysByResult.keys(),
       ...pendingMapValuesByResult.keys(),
       ...pendingMapHasByResult.keys(),
       ...pendingMapDeletesByResult.keys(),
@@ -3616,6 +3660,7 @@ function collectUnsupportedExpressionKinds(
     case 'owned_string_array_push':
     case 'owned_boolean_array_push':
     case 'owned_tagged_array_push':
+    case 'owned_heap_array_push':
       collectUnsupportedExpressionKinds(expression.array, kinds);
       collectUnsupportedExpressionKinds(expression.value, kinds);
       break;
@@ -3719,6 +3764,7 @@ function collectUnsupportedStatementKinds(
     case 'map_size':
     case 'map_set':
     case 'map_get':
+    case 'map_keys':
     case 'map_values':
     case 'map_has':
     case 'map_delete':

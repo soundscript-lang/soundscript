@@ -89,6 +89,7 @@ function moduleUsesMapStorage(plan: WasmGcModulePlanIR): boolean {
         (statement.kind === 'map_new' && statement.storage) ||
         statement.kind === 'map_set' ||
         statement.kind === 'map_get' ||
+        statement.kind === 'map_keys' ||
         statement.kind === 'map_has' ||
         statement.kind === 'map_delete' ||
         statement.kind === 'map_clear'
@@ -1596,6 +1597,18 @@ function renderMapGetStatement(
   ];
 }
 
+function renderMapKeysStatement(
+  statement: Extract<SemanticStatementIR, { kind: 'map_keys' }>,
+  indent: string,
+): readonly string[] {
+  return [
+    ...renderMapStorageLoad(statement.objectName, indent),
+    `${indent}local.get $${sanitizeIdentifier(MAP_KEYS_SCRATCH)}`,
+    `${indent}ref.as_non_null`,
+    `${indent}local.set $${sanitizeIdentifier(statement.targetName)}`,
+  ];
+}
+
 function mapValuesArrayRuntimeType(
   resultType: Extract<SemanticStatementIR, { kind: 'map_values' }>['resultType'],
 ): string {
@@ -2475,6 +2488,9 @@ const TAGGED_ARRAY_LENGTH_SCRATCH = '__soundscript_tagged_array_length';
 const TAGGED_ARRAY_RESULT_SCRATCH = '__soundscript_tagged_array_result';
 const TAGGED_ARRAY_SEARCH_SCRATCH = '__soundscript_tagged_array_search';
 const TAGGED_ARRAY_CURRENT_SCRATCH = '__soundscript_tagged_array_current';
+const HEAP_ARRAY_SOURCE_SCRATCH = '__soundscript_heap_array_source';
+const HEAP_ARRAY_TMP_SCRATCH = '__soundscript_heap_array_tmp';
+const HEAP_ARRAY_LENGTH_SCRATCH = '__soundscript_heap_array_length';
 const MAP_KEYS_SCRATCH = '__soundscript_map_keys';
 const MAP_VALUES_SCRATCH = '__soundscript_map_values';
 const MAP_KEYS_TMP_SCRATCH = '__soundscript_map_keys_tmp';
@@ -2496,6 +2512,7 @@ type ArrayScratchUse =
   | 'boolean_array'
   | 'tagged_array'
   | 'tagged_array_index_of'
+  | 'heap_array'
   | 'map_storage';
 
 function addSetArrayScratchUse(
@@ -2551,6 +2568,11 @@ function collectNumberArrayScratchFromExpression(
       break;
     case 'owned_tagged_array_push':
       uses.add('tagged_array');
+      collectNumberArrayScratchFromExpression(expression.array, uses);
+      collectNumberArrayScratchFromExpression(expression.value, uses);
+      break;
+    case 'owned_heap_array_push':
+      uses.add('heap_array');
       collectNumberArrayScratchFromExpression(expression.array, uses);
       collectNumberArrayScratchFromExpression(expression.value, uses);
       break;
@@ -2737,6 +2759,7 @@ function collectNumberArrayScratchFromStatement(
       break;
     case 'map_set':
     case 'map_get':
+    case 'map_keys':
     case 'map_values':
     case 'map_has':
     case 'map_delete':
@@ -2829,6 +2852,13 @@ function numberArrayScratchLocals(func: WasmGcFunctionPlanIR): readonly {
         { name: TAGGED_ARRAY_RESULT_SCRATCH, wasmType: 'f64' },
         { name: TAGGED_ARRAY_SEARCH_SCRATCH, wasmType: `(ref null ${taggedValueTypeName()})` },
         { name: TAGGED_ARRAY_CURRENT_SCRATCH, wasmType: `(ref null ${taggedValueTypeName()})` },
+      ]
+      : []),
+    ...(uses.has('heap_array')
+      ? [
+        { name: HEAP_ARRAY_SOURCE_SCRATCH, wasmType: '(ref null $heap_array_runtime)' },
+        { name: HEAP_ARRAY_TMP_SCRATCH, wasmType: '(ref null $heap_array_runtime)' },
+        { name: HEAP_ARRAY_LENGTH_SCRATCH, wasmType: 'i32' },
       ]
       : []),
     ...(uses.has('map_storage')
@@ -3459,6 +3489,51 @@ function renderTaggedArrayPushExpression(
   ];
 }
 
+function renderHeapArrayPushExpression(
+  expression: Extract<SemanticExpressionIR, { kind: 'owned_heap_array_push' }>,
+  indent: string,
+  context: FunctionRenderContext,
+): readonly string[] {
+  const arrayLocalName = expression.array.kind === 'local_get' ? expression.array.name : undefined;
+  return [
+    ...renderExpression(expression.array, indent, context),
+    `${indent}local.set $${sanitizeIdentifier(HEAP_ARRAY_SOURCE_SCRATCH)}`,
+    `${indent}local.get $${sanitizeIdentifier(HEAP_ARRAY_SOURCE_SCRATCH)}`,
+    `${indent}ref.as_non_null`,
+    `${indent}array.len`,
+    `${indent}local.set $${sanitizeIdentifier(HEAP_ARRAY_LENGTH_SCRATCH)}`,
+    `${indent}local.get $${sanitizeIdentifier(HEAP_ARRAY_LENGTH_SCRATCH)}`,
+    `${indent}i32.const 1`,
+    `${indent}i32.add`,
+    `${indent}array.new_default $heap_array_runtime`,
+    `${indent}local.set $${sanitizeIdentifier(HEAP_ARRAY_TMP_SCRATCH)}`,
+    `${indent}local.get $${sanitizeIdentifier(HEAP_ARRAY_TMP_SCRATCH)}`,
+    `${indent}ref.as_non_null`,
+    `${indent}i32.const 0`,
+    `${indent}local.get $${sanitizeIdentifier(HEAP_ARRAY_SOURCE_SCRATCH)}`,
+    `${indent}ref.as_non_null`,
+    `${indent}i32.const 0`,
+    `${indent}local.get $${sanitizeIdentifier(HEAP_ARRAY_LENGTH_SCRATCH)}`,
+    `${indent}array.copy $heap_array_runtime $heap_array_runtime`,
+    `${indent}local.get $${sanitizeIdentifier(HEAP_ARRAY_TMP_SCRATCH)}`,
+    `${indent}ref.as_non_null`,
+    `${indent}local.get $${sanitizeIdentifier(HEAP_ARRAY_LENGTH_SCRATCH)}`,
+    ...renderExpression(expression.value, indent, context),
+    `${indent}array.set $heap_array_runtime`,
+    ...(arrayLocalName
+      ? [
+        `${indent}local.get $${sanitizeIdentifier(HEAP_ARRAY_TMP_SCRATCH)}`,
+        `${indent}ref.as_non_null`,
+        `${indent}local.set $${sanitizeIdentifier(arrayLocalName)}`,
+      ]
+      : []),
+    `${indent}local.get $${sanitizeIdentifier(HEAP_ARRAY_LENGTH_SCRATCH)}`,
+    `${indent}f64.convert_i32_s`,
+    `${indent}f64.const 1`,
+    `${indent}f64.add`,
+  ];
+}
+
 function renderTaggedArraySpliceExpression(
   expression: Extract<SemanticExpressionIR, { kind: 'owned_tagged_array_splice' }>,
   indent: string,
@@ -3886,6 +3961,8 @@ function renderExpression(
       return renderBooleanArrayPushExpression(expression, indent, context);
     case 'owned_tagged_array_push':
       return renderTaggedArrayPushExpression(expression, indent, context);
+    case 'owned_heap_array_push':
+      return renderHeapArrayPushExpression(expression, indent, context);
     case 'owned_number_array_splice':
       return renderNumberArraySpliceExpression(expression, indent, context);
     case 'owned_string_array_splice':
@@ -4281,6 +4358,8 @@ function renderStatement(
       return renderMapSetStatement(statement, indent);
     case 'map_get':
       return renderMapGetStatement(statement, indent);
+    case 'map_keys':
+      return renderMapKeysStatement(statement, indent);
     case 'map_values':
       return renderMapValuesStatement(statement, indent);
     case 'map_has':
@@ -4890,6 +4969,7 @@ function collectBoxedClosureDispatchSignatureIdsFromExpression(
     case 'owned_string_array_push':
     case 'owned_boolean_array_push':
     case 'owned_tagged_array_push':
+    case 'owned_heap_array_push':
       collectBoxedClosureDispatchSignatureIdsFromExpression(
         expression.array,
         signatureIds,
@@ -5071,6 +5151,7 @@ function collectBoxedClosureDispatchSignatureIdsFromStatement(
     case 'map_size':
     case 'map_set':
     case 'map_get':
+    case 'map_keys':
     case 'map_values':
     case 'map_has':
     case 'map_delete':
@@ -5346,6 +5427,7 @@ function collectBoxValueTypesFromExpression(
     case 'owned_string_array_push':
     case 'owned_boolean_array_push':
     case 'owned_tagged_array_push':
+    case 'owned_heap_array_push':
       collectBoxValueTypesFromExpression(expression.array, valueTypes);
       collectBoxValueTypesFromExpression(expression.value, valueTypes);
       break;
@@ -5440,6 +5522,7 @@ function collectBoxValueTypesFromStatement(
     case 'map_size':
     case 'map_set':
     case 'map_get':
+    case 'map_keys':
     case 'map_values':
     case 'map_has':
     case 'map_delete':
@@ -5540,6 +5623,11 @@ function collectArrayRuntimeTypesFromExpression(
       break;
     case 'owned_tagged_array_push':
       runtimeTypes.add('tagged');
+      collectArrayRuntimeTypesFromExpression(expression.array, runtimeTypes);
+      collectArrayRuntimeTypesFromExpression(expression.value, runtimeTypes);
+      break;
+    case 'owned_heap_array_push':
+      runtimeTypes.add('heap');
       collectArrayRuntimeTypesFromExpression(expression.array, runtimeTypes);
       collectArrayRuntimeTypesFromExpression(expression.value, runtimeTypes);
       break;
@@ -5755,6 +5843,7 @@ function collectArrayRuntimeTypesFromStatement(
       break;
     case 'map_set':
     case 'map_get':
+    case 'map_keys':
     case 'map_has':
     case 'map_delete':
     case 'map_clear':

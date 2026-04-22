@@ -599,6 +599,12 @@ export interface CompilerRuntimeGetMapEntryIR {
   resultName: string;
 }
 
+export interface CompilerRuntimeGetMapKeysIR {
+  kind: 'get_map_keys';
+  objectName: string;
+  resultName: string;
+}
+
 export interface CompilerRuntimeGetMapValuesIR {
   kind: 'get_map_values';
   objectName: string;
@@ -854,6 +860,7 @@ export type CompilerRuntimeOperationIR =
   | CompilerRuntimeGetMapSizeIR
   | CompilerRuntimeSetMapEntryIR
   | CompilerRuntimeGetMapEntryIR
+  | CompilerRuntimeGetMapKeysIR
   | CompilerRuntimeGetMapValuesIR
   | CompilerRuntimeHasMapEntryIR
   | CompilerRuntimeDeleteMapEntryIR

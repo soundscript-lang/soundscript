@@ -6269,7 +6269,11 @@ function collectCompilerOwnedStringKeyMapLocalSymbolInfo(
     propertyAccess: ts.PropertyAccessExpression,
   ): boolean => {
     if (
-      propertyAccess.name.text !== 'values' ||
+      (
+        propertyAccess.name.text !== 'keys' &&
+        propertyAccess.name.text !== 'values' &&
+        propertyAccess.name.text !== 'entries'
+      ) ||
       !ts.isCallExpression(propertyAccess.parent) ||
       propertyAccess.parent.expression !== propertyAccess ||
       propertyAccess.parent.arguments.length !== 0
@@ -6322,6 +6326,13 @@ function collectCompilerOwnedStringKeyMapLocalSymbolInfo(
             isAllowedMapClearUse(symbol, node.parent) ||
             isAllowedMapIteratorUse(symbol, node.parent))
         ) {
+          return;
+        }
+        if (
+          ts.isForOfStatement(node.parent) &&
+          node.parent.expression === node
+        ) {
+          storageBacked.add(symbol);
           return;
         }
         disqualified.add(symbol);
@@ -20100,6 +20111,267 @@ function getSupportedStringKeyMapIterationValueInfo(
   return undefined;
 }
 
+type SupportedStringKeyMapIterationValueInfo = NonNullable<
+  ReturnType<typeof getSupportedStringKeyMapIterationValueInfo>
+>;
+
+function createStringKeyMapEntryTaggedValueExpression(
+  valueName: string,
+  iterationValueInfo: SupportedStringKeyMapIterationValueInfo,
+): CompilerExpressionIR {
+  switch (iterationValueInfo.valuesElementType) {
+    case 'owned_string_ref':
+      return {
+        kind: 'tag_string',
+        value: {
+          kind: 'local_get',
+          name: valueName,
+          type: 'owned_string_ref',
+        },
+        type: 'tagged_ref',
+      };
+    case 'f64':
+      return {
+        kind: 'tag_number',
+        value: {
+          kind: 'local_get',
+          name: valueName,
+          type: 'f64',
+        },
+        type: 'tagged_ref',
+      };
+    case 'i32':
+      return {
+        kind: 'tag_boolean',
+        value: {
+          kind: 'local_get',
+          name: valueName,
+          type: 'i32',
+        },
+        type: 'tagged_ref',
+      };
+    case 'tagged_ref':
+      return {
+        kind: 'local_get',
+        name: valueName,
+        type: 'tagged_ref',
+      };
+    default: {
+      const exhaustiveCheck: never = iterationValueInfo.valuesElementType;
+      return exhaustiveCheck;
+    }
+  }
+}
+
+function createStringKeyMapEntryPairExpression(
+  keyName: string,
+  valueName: string,
+  iterationValueInfo: SupportedStringKeyMapIterationValueInfo,
+): CompilerExpressionIR {
+  if (iterationValueInfo.entryElementType === 'owned_array_ref') {
+    return {
+      kind: 'owned_string_array_literal',
+      elements: [
+        {
+          kind: 'local_get',
+          name: keyName,
+          type: 'owned_string_ref',
+        },
+        {
+          kind: 'local_get',
+          name: valueName,
+          type: 'owned_string_ref',
+        },
+      ],
+      type: 'owned_array_ref',
+    };
+  }
+  return {
+    kind: 'owned_tagged_array_literal',
+    elements: [
+      {
+        kind: 'tag_string',
+        value: {
+          kind: 'local_get',
+          name: keyName,
+          type: 'owned_string_ref',
+        },
+        type: 'tagged_ref',
+      },
+      createStringKeyMapEntryTaggedValueExpression(valueName, iterationValueInfo),
+    ],
+    type: 'owned_tagged_array_ref',
+  };
+}
+
+function lowerSupportedStringKeyMapEntriesArray(
+  keysName: string,
+  valuesName: string,
+  iterationValueInfo: SupportedStringKeyMapIterationValueInfo,
+  context: FunctionLoweringContext,
+  baseName: string,
+): CompilerExpressionIR {
+  const resultName = createLocalName(`${baseName}_entries`, context.nextLocalId);
+  context.nextLocalId += 1;
+  context.locals.push({ name: resultName, type: 'owned_heap_array_ref' });
+  const lengthName = createLocalName(`${baseName}_length`, context.nextLocalId);
+  context.nextLocalId += 1;
+  context.locals.push({ name: lengthName, type: 'f64' });
+  const indexName = createLocalName(`${baseName}_index`, context.nextLocalId);
+  context.nextLocalId += 1;
+  context.locals.push({ name: indexName, type: 'f64' });
+  const keyName = createLocalName(`${baseName}_key`, context.nextLocalId);
+  context.nextLocalId += 1;
+  context.locals.push({ name: keyName, type: 'owned_string_ref' });
+  const valueName = createLocalName(`${baseName}_value`, context.nextLocalId);
+  context.nextLocalId += 1;
+  context.locals.push({ name: valueName, type: iterationValueInfo.valuesElementType });
+  const pairName = createLocalName(`${baseName}_pair`, context.nextLocalId);
+  context.nextLocalId += 1;
+  context.locals.push({ name: pairName, type: iterationValueInfo.entryElementType });
+
+  context.expressionPreludeStatements.push(
+    {
+      kind: 'local_set',
+      name: resultName,
+      value: createOwnedArrayEmptyLiteral('owned_heap_array_ref'),
+    },
+    {
+      kind: 'local_set',
+      name: lengthName,
+      value: {
+        kind: 'owned_array_length',
+        value: {
+          kind: 'local_get',
+          name: keysName,
+          type: 'owned_array_ref',
+        },
+        type: 'f64',
+      },
+    },
+    {
+      kind: 'local_set',
+      name: indexName,
+      value: {
+        kind: 'number_literal',
+        value: 0,
+      },
+    },
+    {
+      kind: 'while',
+      condition: {
+        kind: 'binary',
+        op: 'f64.lt',
+        left: {
+          kind: 'local_get',
+          name: indexName,
+          type: 'f64',
+        },
+        right: {
+          kind: 'local_get',
+          name: lengthName,
+          type: 'f64',
+        },
+        type: 'i32',
+      },
+      body: [
+        {
+          kind: 'local_set',
+          name: keyName,
+          value: createOwnedArrayElementExpression(
+            keysName,
+            'owned_array_ref',
+            indexName,
+            'owned_string_ref',
+          ),
+        },
+        {
+          kind: 'local_set',
+          name: valueName,
+          value: createOwnedArrayElementExpression(
+            valuesName,
+            iterationValueInfo.valuesArrayType,
+            indexName,
+            iterationValueInfo.valuesElementType,
+          ),
+        },
+        {
+          kind: 'local_set',
+          name: pairName,
+          value: createStringKeyMapEntryPairExpression(keyName, valueName, iterationValueInfo),
+        },
+        {
+          kind: 'expression',
+          value: createOwnedArrayPushExpression(
+            resultName,
+            'owned_heap_array_ref',
+            {
+              kind: 'local_get',
+              name: pairName,
+              type: iterationValueInfo.entryElementType,
+            },
+            iterationValueInfo.entryElementType,
+          ),
+        },
+        {
+          kind: 'local_set',
+          name: indexName,
+          value: {
+            kind: 'binary',
+            op: 'f64.add',
+            left: {
+              kind: 'local_get',
+              name: indexName,
+              type: 'f64',
+            },
+            right: {
+              kind: 'number_literal',
+              value: 1,
+            },
+            type: 'f64',
+          },
+        },
+      ],
+    },
+  );
+
+  return {
+    kind: 'local_get',
+    name: resultName,
+    type: 'owned_heap_array_ref',
+  };
+}
+
+function getCompilerOwnedMapObjectNameForExpression(
+  expression: ts.Expression,
+  context: FunctionLoweringContext,
+): string | undefined {
+  const objectName = getHeapObjectValueNameFromExpression(expression, context);
+  if (!objectName) {
+    return undefined;
+  }
+  const symbolOwned = ts.isIdentifier(expression) &&
+    lookupSymbol(context, expression.text)?.compilerOwnedMap === true;
+  return symbolOwned || context.functionRuntime.compilerOwnedMapLocals.has(objectName)
+    ? objectName
+    : undefined;
+}
+
+function getCompilerOwnedSetObjectNameForExpression(
+  expression: ts.Expression,
+  context: FunctionLoweringContext,
+): string | undefined {
+  const objectName = getHeapObjectValueNameFromExpression(expression, context);
+  if (!objectName) {
+    return undefined;
+  }
+  const symbolOwned = ts.isIdentifier(expression) &&
+    lookupSymbol(context, expression.text)?.compilerOwnedSet === true;
+  return symbolOwned || context.functionRuntime.compilerOwnedSetLocals.has(objectName)
+    ? objectName
+    : undefined;
+}
+
 function getDynamicCollectionReceiverForIteration(
   receiver: ts.Expression,
   context: FunctionLoweringContext,
@@ -20285,6 +20557,67 @@ function tryLowerCollectionForOfIterableExpression(
           expression,
         );
       }
+      const compilerOwnedMapObjectName = getCompilerOwnedMapObjectNameForExpression(
+        receiver,
+        context,
+      );
+      if (compilerOwnedMapObjectName) {
+        if (methodName === 'keys') {
+          return {
+            arrayValue: lowerCompilerOwnedMapKeysArray(compilerOwnedMapObjectName, context),
+            arrayType: 'owned_array_ref',
+            elementType: 'owned_string_ref',
+          };
+        }
+        const iterationValueInfo = getSupportedStringKeyMapIterationValueInfo(
+          context.checker,
+          mapTypeInfo.valueType,
+        );
+        if (!iterationValueInfo) {
+          throw new CompilerUnsupportedError(
+            'Map iteration currently supports only string, number, boolean, and tagged value types in compiler subset.',
+            expression,
+          );
+        }
+        if (methodName === 'values') {
+          return {
+            arrayValue: lowerCompilerOwnedMapValuesArray(
+              compilerOwnedMapObjectName,
+              iterationValueInfo.valuesArrayType,
+              context,
+            ),
+            arrayType: iterationValueInfo.valuesArrayType,
+            elementType: iterationValueInfo.valuesElementType,
+          };
+        }
+        if (methodName === 'entries') {
+          const keysName = materializeLoweredExpressionToLocal(
+            lowerCompilerOwnedMapKeysArray(compilerOwnedMapObjectName, context),
+            context,
+            'map_entries_keys',
+          );
+          const valuesName = materializeLoweredExpressionToLocal(
+            lowerCompilerOwnedMapValuesArray(
+              compilerOwnedMapObjectName,
+              iterationValueInfo.valuesArrayType,
+              context,
+            ),
+            context,
+            'map_entries_values',
+          );
+          return {
+            arrayValue: lowerSupportedStringKeyMapEntriesArray(
+              keysName,
+              valuesName,
+              iterationValueInfo,
+              context,
+              'map_entries',
+            ),
+            arrayType: 'owned_heap_array_ref',
+            elementType: iterationValueInfo.entryElementType,
+          };
+        }
+      }
       const { objectName, representation } = getDynamicCollectionReceiverForIteration(
         receiver,
         context,
@@ -20420,6 +20753,46 @@ function tryLowerCollectionForOfIterableExpression(
           expression,
         );
       }
+      const compilerOwnedSetObjectName = getCompilerOwnedSetObjectNameForExpression(
+        receiver,
+        context,
+      );
+      if (compilerOwnedSetObjectName) {
+        if (methodName === 'keys' || methodName === 'values') {
+          return {
+            arrayValue: lowerCompilerOwnedSetValuesArray(
+              compilerOwnedSetObjectName,
+              setTypeInfo.valuesArrayType,
+              context,
+              `set_${methodName}_values`,
+            ),
+            arrayType: setTypeInfo.valuesArrayType,
+            elementType: setTypeInfo.valuesElementType,
+          };
+        }
+        if (methodName === 'entries') {
+          const valuesName = materializeLoweredExpressionToLocal(
+            lowerCompilerOwnedSetValuesArray(
+              compilerOwnedSetObjectName,
+              setTypeInfo.valuesArrayType,
+              context,
+              `set_${methodName}_values`,
+            ),
+            context,
+            `set_${methodName}_values`,
+          );
+          return {
+            arrayValue: lowerSupportedSetEntriesArray(
+              valuesName,
+              setTypeInfo,
+              context,
+              `set_${methodName}`,
+            ),
+            arrayType: 'owned_heap_array_ref',
+            elementType: setTypeInfo.entryElementType,
+          };
+        }
+      }
       const { objectName, representation } = getDynamicCollectionReceiverForIteration(
         receiver,
         context,
@@ -20474,6 +20847,37 @@ function tryLowerCollectionForOfIterableExpression(
         'Map iteration currently supports only string, number, boolean, and tagged value types in compiler subset.',
         expression,
       );
+    }
+    const compilerOwnedMapObjectName = getCompilerOwnedMapObjectNameForExpression(
+      expression,
+      context,
+    );
+    if (compilerOwnedMapObjectName) {
+      const keysName = materializeLoweredExpressionToLocal(
+        lowerCompilerOwnedMapKeysArray(compilerOwnedMapObjectName, context),
+        context,
+        'map_iterable_keys',
+      );
+      const valuesName = materializeLoweredExpressionToLocal(
+        lowerCompilerOwnedMapValuesArray(
+          compilerOwnedMapObjectName,
+          iterationValueInfo.valuesArrayType,
+          context,
+        ),
+        context,
+        'map_iterable_values',
+      );
+      return {
+        arrayValue: lowerSupportedStringKeyMapEntriesArray(
+          keysName,
+          valuesName,
+          iterationValueInfo,
+          context,
+          'map_iterable',
+        ),
+        arrayType: 'owned_heap_array_ref',
+        elementType: iterationValueInfo.entryElementType,
+      };
     }
     const { objectName, representation } = getDynamicCollectionReceiverForIteration(
       expression,
@@ -20538,6 +20942,22 @@ function tryLowerCollectionForOfIterableExpression(
     context.checker.getTypeAtLocation(expression),
   );
   if (setTypeInfo) {
+    const compilerOwnedSetObjectName = getCompilerOwnedSetObjectNameForExpression(
+      expression,
+      context,
+    );
+    if (compilerOwnedSetObjectName) {
+      return {
+        arrayValue: lowerCompilerOwnedSetValuesArray(
+          compilerOwnedSetObjectName,
+          setTypeInfo.valuesArrayType,
+          context,
+          'set_iterable',
+        ),
+        arrayType: setTypeInfo.valuesArrayType,
+        elementType: setTypeInfo.valuesElementType,
+      };
+    }
     const { objectName, representation } = getDynamicCollectionReceiverForIteration(
       expression,
       context,
@@ -39470,6 +39890,26 @@ function lowerCompilerOwnedMapGet(
   };
 }
 
+function lowerCompilerOwnedMapKeysArray(
+  objectName: string,
+  context: FunctionLoweringContext,
+): CompilerExpressionIR {
+  context.functionRuntime.compilerOwnedMapStorageLocals.add(objectName);
+  const resultName = createLocalName('map_keys', context.nextLocalId);
+  context.nextLocalId += 1;
+  context.locals.push({ name: resultName, type: 'owned_array_ref' });
+  context.functionRuntime.operations.push({
+    kind: 'get_map_keys',
+    objectName,
+    resultName,
+  });
+  return {
+    kind: 'local_get',
+    name: resultName,
+    type: 'owned_array_ref',
+  };
+}
+
 function lowerCompilerOwnedMapValuesArray(
   objectName: string,
   resultType:
@@ -39479,6 +39919,7 @@ function lowerCompilerOwnedMapValuesArray(
     | 'owned_tagged_array_ref',
   context: FunctionLoweringContext,
 ): CompilerExpressionIR {
+  context.functionRuntime.compilerOwnedMapStorageLocals.add(objectName);
   const resultName = createLocalName('map_values', context.nextLocalId);
   context.nextLocalId += 1;
   context.locals.push({ name: resultName, type: resultType });
@@ -61531,9 +61972,12 @@ function lowerInitialStringKeyMapCallExpression(
       );
     }
     if (compilerOwnedMapReceiver) {
-      throw new CompilerUnsupportedError(
-        'Explicit Map keys iteration is not supported yet in compiler subset.',
-        expression,
+      return lowerCollectionIteratorObject(
+        lowerCompilerOwnedMapKeysArray(objectName, context),
+        'owned_array_ref',
+        'owned_string_ref',
+        context,
+        'map_keys_iterator',
       );
     }
     if (representation?.kind !== 'dynamic_object_representation') {
@@ -61620,9 +62064,32 @@ function lowerInitialStringKeyMapCallExpression(
       );
     }
     if (compilerOwnedMapReceiver) {
-      throw new CompilerUnsupportedError(
-        'Explicit Map entries iteration is not supported yet in compiler subset.',
-        expression,
+      const keysName = materializeLoweredExpressionToLocal(
+        lowerCompilerOwnedMapKeysArray(objectName, context),
+        context,
+        'map_entries_keys',
+      );
+      const valuesName = materializeLoweredExpressionToLocal(
+        lowerCompilerOwnedMapValuesArray(
+          objectName,
+          iterationValueInfo.valuesArrayType,
+          context,
+        ),
+        context,
+        'map_entries_values',
+      );
+      return lowerCollectionIteratorObject(
+        lowerSupportedStringKeyMapEntriesArray(
+          keysName,
+          valuesName,
+          iterationValueInfo,
+          context,
+          'map_entries',
+        ),
+        'owned_heap_array_ref',
+        iterationValueInfo.entryElementType,
+        context,
+        'map_entries_iterator',
       );
     }
     if (representation?.kind !== 'dynamic_object_representation') {
