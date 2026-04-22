@@ -1621,6 +1621,8 @@ function mapValuesArrayRuntimeType(
   switch (resultType) {
     case 'owned_array_ref':
       return '$string_array_runtime';
+    case 'owned_heap_array_ref':
+      return '$heap_array_runtime';
     case 'owned_number_array_ref':
       return '$array_runtime';
     case 'owned_boolean_array_ref':
@@ -1644,6 +1646,12 @@ function renderMapTaggedValueForResultType(
         `${indent}ref.as_non_null`,
         `${indent}struct.get ${taggedValueTypeName()} $heap_payload`,
         `${indent}ref.cast (ref ${stringRuntimeTypeName()})`,
+      ];
+    case 'owned_heap_array_ref':
+      return [
+        `${indent}ref.as_non_null`,
+        `${indent}struct.get ${taggedValueTypeName()} $heap_payload`,
+        `${indent}ref.cast (ref $array_runtime)`,
       ];
     case 'owned_number_array_ref':
       return [
@@ -1835,6 +1843,8 @@ function setArrayRuntimeType(valuesArrayType: SetValuesArrayType): string {
   switch (valuesArrayType) {
     case 'owned_array_ref':
       return '$string_array_runtime';
+    case 'owned_heap_array_ref':
+      return '$heap_array_runtime';
     case 'owned_number_array_ref':
       return '$array_runtime';
     case 'owned_boolean_array_ref':
@@ -1852,6 +1862,8 @@ function setArraySourceScratch(valuesArrayType: SetValuesArrayType): string {
   switch (valuesArrayType) {
     case 'owned_array_ref':
       return STRING_ARRAY_SOURCE_SCRATCH;
+    case 'owned_heap_array_ref':
+      return HEAP_ARRAY_SOURCE_SCRATCH;
     case 'owned_number_array_ref':
       return ARRAY_SOURCE_SCRATCH;
     case 'owned_boolean_array_ref':
@@ -1869,6 +1881,8 @@ function setArrayResultScratch(valuesArrayType: SetValuesArrayType): string {
   switch (valuesArrayType) {
     case 'owned_array_ref':
       return STRING_ARRAY_RESULT_SCRATCH;
+    case 'owned_heap_array_ref':
+      return HEAP_ARRAY_RESULT_SCRATCH;
     case 'owned_number_array_ref':
       return ARRAY_RESULT_SCRATCH;
     case 'owned_boolean_array_ref':
@@ -1917,6 +1931,13 @@ function setArrayIndexOfExpression(
         search,
         representation: 'f64',
       };
+    case 'owned_heap_array_ref':
+      return {
+        kind: 'owned_heap_array_index_of',
+        array,
+        search,
+        representation: 'f64',
+      };
     case 'owned_number_array_ref':
       return {
         kind: 'owned_number_array_index_of',
@@ -1961,6 +1982,13 @@ function setArrayPushExpression(
         value,
         representation: 'f64',
       };
+    case 'owned_heap_array_ref':
+      return {
+        kind: 'owned_heap_array_push',
+        array,
+        value,
+        representation: 'f64',
+      };
     case 'owned_number_array_ref':
       return {
         kind: 'owned_number_array_push',
@@ -1993,6 +2021,8 @@ function setArrayEmptyLiteral(valuesArrayType: SetValuesArrayType): SemanticExpr
   switch (valuesArrayType) {
     case 'owned_array_ref':
       return { kind: 'owned_string_array_literal', elements: [], representation: valuesArrayType };
+    case 'owned_heap_array_ref':
+      return { kind: 'owned_heap_array_literal', elements: [], representation: valuesArrayType };
     case 'owned_number_array_ref':
       return { kind: 'owned_number_array_literal', elements: [], representation: valuesArrayType };
     case 'owned_boolean_array_ref':
@@ -2029,6 +2059,15 @@ function setArraySpliceAtResultExpression(
     case 'owned_array_ref':
       return {
         kind: 'owned_string_array_splice',
+        array,
+        start,
+        deleteCount,
+        items,
+        representation: valuesArrayType,
+      };
+    case 'owned_heap_array_ref':
+      return {
+        kind: 'owned_heap_array_splice',
         array,
         start,
         deleteCount,
@@ -2354,6 +2393,14 @@ function dynamicObjectValuesArrayInfo(
         lengthScratch: STRING_ARRAY_LENGTH_SCRATCH,
         targetValueType: 'owned_string_ref',
       };
+    case 'owned_heap_array_ref':
+      return {
+        runtimeType: '$heap_array_runtime',
+        sourceScratch: HEAP_ARRAY_SOURCE_SCRATCH,
+        tmpScratch: HEAP_ARRAY_TMP_SCRATCH,
+        lengthScratch: HEAP_ARRAY_LENGTH_SCRATCH,
+        targetValueType: 'owned_number_array_ref',
+      };
     case 'owned_number_array_ref':
       return {
         runtimeType: '$array_runtime',
@@ -2495,7 +2542,11 @@ const TAGGED_ARRAY_SEARCH_SCRATCH = '__soundscript_tagged_array_search';
 const TAGGED_ARRAY_CURRENT_SCRATCH = '__soundscript_tagged_array_current';
 const HEAP_ARRAY_SOURCE_SCRATCH = '__soundscript_heap_array_source';
 const HEAP_ARRAY_TMP_SCRATCH = '__soundscript_heap_array_tmp';
+const HEAP_ARRAY_INDEX_SCRATCH = '__soundscript_heap_array_index';
 const HEAP_ARRAY_LENGTH_SCRATCH = '__soundscript_heap_array_length';
+const HEAP_ARRAY_RESULT_SCRATCH = '__soundscript_heap_array_result';
+const HEAP_ARRAY_SEARCH_SCRATCH = '__soundscript_heap_array_search';
+const HEAP_ARRAY_CURRENT_SCRATCH = '__soundscript_heap_array_current';
 const MAP_KEYS_SCRATCH = '__soundscript_map_keys';
 const MAP_VALUES_SCRATCH = '__soundscript_map_values';
 const MAP_KEYS_TMP_SCRATCH = '__soundscript_map_keys_tmp';
@@ -2531,6 +2582,9 @@ function addSetArrayScratchUse(
       if (needsIndexOf) {
         uses.add('string_array_index_of');
       }
+      break;
+    case 'owned_heap_array_ref':
+      uses.add('heap_array');
       break;
     case 'owned_number_array_ref':
       uses.add('number_array');
@@ -2609,6 +2663,13 @@ function collectNumberArrayScratchFromExpression(
       collectNumberArrayScratchFromExpression(expression.deleteCount, uses);
       collectNumberArrayScratchFromExpression(expression.items, uses);
       break;
+    case 'owned_heap_array_splice':
+      uses.add('heap_array');
+      collectNumberArrayScratchFromExpression(expression.array, uses);
+      collectNumberArrayScratchFromExpression(expression.start, uses);
+      collectNumberArrayScratchFromExpression(expression.deleteCount, uses);
+      collectNumberArrayScratchFromExpression(expression.items, uses);
+      break;
     case 'owned_tagged_array_index_of':
       uses.add('tagged_array');
       uses.add('tagged_array_index_of');
@@ -2617,6 +2678,11 @@ function collectNumberArrayScratchFromExpression(
       break;
     case 'owned_number_array_index_of':
       uses.add('number_array');
+      collectNumberArrayScratchFromExpression(expression.array, uses);
+      collectNumberArrayScratchFromExpression(expression.search, uses);
+      break;
+    case 'owned_heap_array_index_of':
+      uses.add('heap_array');
       collectNumberArrayScratchFromExpression(expression.array, uses);
       collectNumberArrayScratchFromExpression(expression.search, uses);
       break;
@@ -2863,7 +2929,11 @@ function numberArrayScratchLocals(func: WasmGcFunctionPlanIR): readonly {
       ? [
         { name: HEAP_ARRAY_SOURCE_SCRATCH, wasmType: '(ref null $heap_array_runtime)' },
         { name: HEAP_ARRAY_TMP_SCRATCH, wasmType: '(ref null $heap_array_runtime)' },
+        { name: HEAP_ARRAY_INDEX_SCRATCH, wasmType: 'i32' },
         { name: HEAP_ARRAY_LENGTH_SCRATCH, wasmType: 'i32' },
+        { name: HEAP_ARRAY_RESULT_SCRATCH, wasmType: 'f64' },
+        { name: HEAP_ARRAY_SEARCH_SCRATCH, wasmType: '(ref null eq)' },
+        { name: HEAP_ARRAY_CURRENT_SCRATCH, wasmType: '(ref null eq)' },
       ]
       : []),
     ...(uses.has('map_storage')
@@ -3494,6 +3564,30 @@ function renderTaggedArrayPushExpression(
   ];
 }
 
+function renderHeapArraySource(
+  expression: SemanticExpressionIR,
+  indent: string,
+  context: FunctionRenderContext,
+): readonly string[] {
+  return [
+    ...renderExpression(expression, indent, context),
+    `${indent}local.set $${sanitizeIdentifier(HEAP_ARRAY_SOURCE_SCRATCH)}`,
+  ];
+}
+
+function renderHeapArrayStorageUpdate(
+  arrayLocalName: string | undefined,
+  indent: string,
+): readonly string[] {
+  return arrayLocalName
+    ? [
+      `${indent}local.get $${sanitizeIdentifier(HEAP_ARRAY_TMP_SCRATCH)}`,
+      `${indent}ref.as_non_null`,
+      `${indent}local.set $${sanitizeIdentifier(arrayLocalName)}`,
+    ]
+    : [];
+}
+
 function renderHeapArrayPushExpression(
   expression: Extract<SemanticExpressionIR, { kind: 'owned_heap_array_push' }>,
   indent: string,
@@ -3501,8 +3595,7 @@ function renderHeapArrayPushExpression(
 ): readonly string[] {
   const arrayLocalName = expression.array.kind === 'local_get' ? expression.array.name : undefined;
   return [
-    ...renderExpression(expression.array, indent, context),
-    `${indent}local.set $${sanitizeIdentifier(HEAP_ARRAY_SOURCE_SCRATCH)}`,
+    ...renderHeapArraySource(expression.array, indent, context),
     `${indent}local.get $${sanitizeIdentifier(HEAP_ARRAY_SOURCE_SCRATCH)}`,
     `${indent}ref.as_non_null`,
     `${indent}array.len`,
@@ -3525,17 +3618,106 @@ function renderHeapArrayPushExpression(
     `${indent}local.get $${sanitizeIdentifier(HEAP_ARRAY_LENGTH_SCRATCH)}`,
     ...renderExpression(expression.value, indent, context),
     `${indent}array.set $heap_array_runtime`,
-    ...(arrayLocalName
-      ? [
-        `${indent}local.get $${sanitizeIdentifier(HEAP_ARRAY_TMP_SCRATCH)}`,
-        `${indent}ref.as_non_null`,
-        `${indent}local.set $${sanitizeIdentifier(arrayLocalName)}`,
-      ]
-      : []),
+    ...renderHeapArrayStorageUpdate(arrayLocalName, indent),
     `${indent}local.get $${sanitizeIdentifier(HEAP_ARRAY_LENGTH_SCRATCH)}`,
     `${indent}f64.convert_i32_s`,
     `${indent}f64.const 1`,
     `${indent}f64.add`,
+  ];
+}
+
+function renderHeapArraySpliceExpression(
+  expression: Extract<SemanticExpressionIR, { kind: 'owned_heap_array_splice' }>,
+  indent: string,
+  context: FunctionRenderContext,
+): readonly string[] {
+  const arrayLocalName = expression.array.kind === 'local_get' ? expression.array.name : undefined;
+  return [
+    ...renderHeapArraySource(expression.array, indent, context),
+    ...renderIndexExpression(expression.start, indent, context),
+    `${indent}local.set $${sanitizeIdentifier(HEAP_ARRAY_INDEX_SCRATCH)}`,
+    `${indent}local.get $${sanitizeIdentifier(HEAP_ARRAY_SOURCE_SCRATCH)}`,
+    `${indent}ref.as_non_null`,
+    `${indent}array.len`,
+    `${indent}local.set $${sanitizeIdentifier(HEAP_ARRAY_LENGTH_SCRATCH)}`,
+    `${indent}local.get $${sanitizeIdentifier(HEAP_ARRAY_LENGTH_SCRATCH)}`,
+    `${indent}i32.const 1`,
+    `${indent}i32.sub`,
+    `${indent}array.new_default $heap_array_runtime`,
+    `${indent}local.set $${sanitizeIdentifier(HEAP_ARRAY_TMP_SCRATCH)}`,
+    `${indent}local.get $${sanitizeIdentifier(HEAP_ARRAY_TMP_SCRATCH)}`,
+    `${indent}ref.as_non_null`,
+    `${indent}i32.const 0`,
+    `${indent}local.get $${sanitizeIdentifier(HEAP_ARRAY_SOURCE_SCRATCH)}`,
+    `${indent}ref.as_non_null`,
+    `${indent}i32.const 0`,
+    `${indent}local.get $${sanitizeIdentifier(HEAP_ARRAY_INDEX_SCRATCH)}`,
+    `${indent}array.copy $heap_array_runtime $heap_array_runtime`,
+    `${indent}local.get $${sanitizeIdentifier(HEAP_ARRAY_TMP_SCRATCH)}`,
+    `${indent}ref.as_non_null`,
+    `${indent}local.get $${sanitizeIdentifier(HEAP_ARRAY_INDEX_SCRATCH)}`,
+    `${indent}local.get $${sanitizeIdentifier(HEAP_ARRAY_SOURCE_SCRATCH)}`,
+    `${indent}ref.as_non_null`,
+    `${indent}local.get $${sanitizeIdentifier(HEAP_ARRAY_INDEX_SCRATCH)}`,
+    `${indent}i32.const 1`,
+    `${indent}i32.add`,
+    `${indent}local.get $${sanitizeIdentifier(HEAP_ARRAY_LENGTH_SCRATCH)}`,
+    `${indent}local.get $${sanitizeIdentifier(HEAP_ARRAY_INDEX_SCRATCH)}`,
+    `${indent}i32.sub`,
+    `${indent}i32.const 1`,
+    `${indent}i32.sub`,
+    `${indent}array.copy $heap_array_runtime $heap_array_runtime`,
+    ...renderHeapArrayStorageUpdate(arrayLocalName, indent),
+    `${indent}local.get $${sanitizeIdentifier(HEAP_ARRAY_TMP_SCRATCH)}`,
+    `${indent}ref.as_non_null`,
+  ];
+}
+
+function renderHeapArrayIndexOfExpression(
+  expression: Extract<SemanticExpressionIR, { kind: 'owned_heap_array_index_of' }>,
+  indent: string,
+  context: FunctionRenderContext,
+): readonly string[] {
+  return [
+    ...renderHeapArraySource(expression.array, indent, context),
+    ...renderExpression(expression.search, indent, context),
+    `${indent}local.set $${sanitizeIdentifier(HEAP_ARRAY_SEARCH_SCRATCH)}`,
+    `${indent}i32.const 0`,
+    `${indent}local.set $${sanitizeIdentifier(HEAP_ARRAY_INDEX_SCRATCH)}`,
+    `${indent}local.get $${sanitizeIdentifier(HEAP_ARRAY_SOURCE_SCRATCH)}`,
+    `${indent}ref.as_non_null`,
+    `${indent}array.len`,
+    `${indent}local.set $${sanitizeIdentifier(HEAP_ARRAY_LENGTH_SCRATCH)}`,
+    `${indent}f64.const -1`,
+    `${indent}local.set $${sanitizeIdentifier(HEAP_ARRAY_RESULT_SCRATCH)}`,
+    `${indent}block`,
+    `${indent}  loop`,
+    `${indent}    local.get $${sanitizeIdentifier(HEAP_ARRAY_INDEX_SCRATCH)}`,
+    `${indent}    local.get $${sanitizeIdentifier(HEAP_ARRAY_LENGTH_SCRATCH)}`,
+    `${indent}    i32.ge_u`,
+    `${indent}    br_if 1`,
+    `${indent}    local.get $${sanitizeIdentifier(HEAP_ARRAY_SOURCE_SCRATCH)}`,
+    `${indent}    ref.as_non_null`,
+    `${indent}    local.get $${sanitizeIdentifier(HEAP_ARRAY_INDEX_SCRATCH)}`,
+    `${indent}    array.get $heap_array_runtime`,
+    `${indent}    local.set $${sanitizeIdentifier(HEAP_ARRAY_CURRENT_SCRATCH)}`,
+    `${indent}    local.get $${sanitizeIdentifier(HEAP_ARRAY_CURRENT_SCRATCH)}`,
+    `${indent}    local.get $${sanitizeIdentifier(HEAP_ARRAY_SEARCH_SCRATCH)}`,
+    `${indent}    ref.eq`,
+    `${indent}    if`,
+    `${indent}      local.get $${sanitizeIdentifier(HEAP_ARRAY_INDEX_SCRATCH)}`,
+    `${indent}      f64.convert_i32_s`,
+    `${indent}      local.set $${sanitizeIdentifier(HEAP_ARRAY_RESULT_SCRATCH)}`,
+    `${indent}      br 2`,
+    `${indent}    end`,
+    `${indent}    local.get $${sanitizeIdentifier(HEAP_ARRAY_INDEX_SCRATCH)}`,
+    `${indent}    i32.const 1`,
+    `${indent}    i32.add`,
+    `${indent}    local.set $${sanitizeIdentifier(HEAP_ARRAY_INDEX_SCRATCH)}`,
+    `${indent}    br 0`,
+    `${indent}  end`,
+    `${indent}end`,
+    `${indent}local.get $${sanitizeIdentifier(HEAP_ARRAY_RESULT_SCRATCH)}`,
   ];
 }
 
@@ -3976,6 +4158,8 @@ function renderExpression(
       return renderBooleanArraySpliceExpression(expression, indent, context);
     case 'owned_tagged_array_splice':
       return renderTaggedArraySpliceExpression(expression, indent, context);
+    case 'owned_heap_array_splice':
+      return renderHeapArraySpliceExpression(expression, indent, context);
     case 'owned_number_array_index_of':
       return renderNumberArrayIndexOfExpression(expression, indent, context);
     case 'owned_string_array_index_of':
@@ -3984,6 +4168,8 @@ function renderExpression(
       return renderBooleanArrayIndexOfExpression(expression, indent, context);
     case 'owned_tagged_array_index_of':
       return renderTaggedArrayIndexOfExpression(expression, indent, context);
+    case 'owned_heap_array_index_of':
+      return renderHeapArrayIndexOfExpression(expression, indent, context);
     case 'owned_string_array_element':
       return [
         ...renderExpression(expression.value, indent, context),
@@ -5419,6 +5605,7 @@ function collectBoxedClosureDispatchSignatureIdsFromExpression(
     case 'owned_string_array_splice':
     case 'owned_boolean_array_splice':
     case 'owned_tagged_array_splice':
+    case 'owned_heap_array_splice':
       collectBoxedClosureDispatchSignatureIdsFromExpression(
         expression.array,
         signatureIds,
@@ -5444,6 +5631,7 @@ function collectBoxedClosureDispatchSignatureIdsFromExpression(
     case 'owned_string_array_index_of':
     case 'owned_boolean_array_index_of':
     case 'owned_tagged_array_index_of':
+    case 'owned_heap_array_index_of':
       collectBoxedClosureDispatchSignatureIdsFromExpression(
         expression.array,
         signatureIds,
@@ -5869,6 +6057,7 @@ function collectBoxValueTypesFromExpression(
     case 'owned_string_array_splice':
     case 'owned_boolean_array_splice':
     case 'owned_tagged_array_splice':
+    case 'owned_heap_array_splice':
       collectBoxValueTypesFromExpression(expression.array, valueTypes);
       collectBoxValueTypesFromExpression(expression.start, valueTypes);
       collectBoxValueTypesFromExpression(expression.deleteCount, valueTypes);
@@ -5878,6 +6067,7 @@ function collectBoxValueTypesFromExpression(
     case 'owned_string_array_index_of':
     case 'owned_boolean_array_index_of':
     case 'owned_tagged_array_index_of':
+    case 'owned_heap_array_index_of':
       collectBoxValueTypesFromExpression(expression.array, valueTypes);
       collectBoxValueTypesFromExpression(expression.search, valueTypes);
       break;
@@ -6093,6 +6283,13 @@ function collectArrayRuntimeTypesFromExpression(
       collectArrayRuntimeTypesFromExpression(expression.deleteCount, runtimeTypes);
       collectArrayRuntimeTypesFromExpression(expression.items, runtimeTypes);
       break;
+    case 'owned_heap_array_splice':
+      runtimeTypes.add('heap');
+      collectArrayRuntimeTypesFromExpression(expression.array, runtimeTypes);
+      collectArrayRuntimeTypesFromExpression(expression.start, runtimeTypes);
+      collectArrayRuntimeTypesFromExpression(expression.deleteCount, runtimeTypes);
+      collectArrayRuntimeTypesFromExpression(expression.items, runtimeTypes);
+      break;
     case 'owned_number_array_index_of':
       runtimeTypes.add('number');
       collectArrayRuntimeTypesFromExpression(expression.array, runtimeTypes);
@@ -6110,6 +6307,11 @@ function collectArrayRuntimeTypesFromExpression(
       break;
     case 'owned_tagged_array_index_of':
       runtimeTypes.add('tagged');
+      collectArrayRuntimeTypesFromExpression(expression.array, runtimeTypes);
+      collectArrayRuntimeTypesFromExpression(expression.search, runtimeTypes);
+      break;
+    case 'owned_heap_array_index_of':
+      runtimeTypes.add('heap');
       collectArrayRuntimeTypesFromExpression(expression.array, runtimeTypes);
       collectArrayRuntimeTypesFromExpression(expression.search, runtimeTypes);
       break;

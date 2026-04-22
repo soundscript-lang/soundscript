@@ -307,6 +307,14 @@ export type SemanticExpressionIR =
     representation: 'owned_tagged_array_ref';
   }
   | {
+    kind: 'owned_heap_array_splice';
+    array: SemanticExpressionIR;
+    start: SemanticExpressionIR;
+    deleteCount: SemanticExpressionIR;
+    items: SemanticExpressionIR;
+    representation: 'owned_heap_array_ref';
+  }
+  | {
     kind: 'owned_number_array_index_of';
     array: SemanticExpressionIR;
     search: SemanticExpressionIR;
@@ -329,6 +337,12 @@ export type SemanticExpressionIR =
     array: SemanticExpressionIR;
     search: SemanticExpressionIR;
     kinds?: CompilerTaggedPrimitiveBoundaryKindsIR;
+    representation: 'f64';
+  }
+  | {
+    kind: 'owned_heap_array_index_of';
+    array: SemanticExpressionIR;
+    search: SemanticExpressionIR;
     representation: 'f64';
   }
   | {
@@ -519,6 +533,7 @@ export type SemanticStatementIR =
     collectionFamily?: 'map' | 'set';
     resultType:
       | 'owned_array_ref'
+      | 'owned_heap_array_ref'
       | 'owned_number_array_ref'
       | 'owned_boolean_array_ref'
       | 'owned_tagged_array_ref';
@@ -558,6 +573,7 @@ export type SemanticStatementIR =
     objectName: string;
     resultType:
       | 'owned_array_ref'
+      | 'owned_heap_array_ref'
       | 'owned_number_array_ref'
       | 'owned_boolean_array_ref'
       | 'owned_tagged_array_ref';
@@ -584,11 +600,13 @@ export type SemanticStatementIR =
     targetName: string;
     valuesArrayType:
       | 'owned_array_ref'
+      | 'owned_heap_array_ref'
       | 'owned_number_array_ref'
       | 'owned_boolean_array_ref'
       | 'owned_tagged_array_ref';
     valuesElementType:
       | 'owned_string_ref'
+      | 'owned_number_array_ref'
       | 'f64'
       | 'i32'
       | 'tagged_ref';
@@ -599,6 +617,7 @@ export type SemanticStatementIR =
     objectName: string;
     valuesArrayType:
       | 'owned_array_ref'
+      | 'owned_heap_array_ref'
       | 'owned_number_array_ref'
       | 'owned_boolean_array_ref'
       | 'owned_tagged_array_ref';
@@ -609,6 +628,7 @@ export type SemanticStatementIR =
     objectName: string;
     valuesArrayType:
       | 'owned_array_ref'
+      | 'owned_heap_array_ref'
       | 'owned_number_array_ref'
       | 'owned_boolean_array_ref'
       | 'owned_tagged_array_ref';
@@ -619,11 +639,13 @@ export type SemanticStatementIR =
     valueName: string;
     valuesArrayType:
       | 'owned_array_ref'
+      | 'owned_heap_array_ref'
       | 'owned_number_array_ref'
       | 'owned_boolean_array_ref'
       | 'owned_tagged_array_ref';
     valuesElementType:
       | 'owned_string_ref'
+      | 'owned_number_array_ref'
       | 'f64'
       | 'i32'
       | 'tagged_ref';
@@ -636,11 +658,13 @@ export type SemanticStatementIR =
     valueName: string;
     valuesArrayType:
       | 'owned_array_ref'
+      | 'owned_heap_array_ref'
       | 'owned_number_array_ref'
       | 'owned_boolean_array_ref'
       | 'owned_tagged_array_ref';
     valuesElementType:
       | 'owned_string_ref'
+      | 'owned_number_array_ref'
       | 'f64'
       | 'i32'
       | 'tagged_ref';
@@ -653,11 +677,13 @@ export type SemanticStatementIR =
     valueName: string;
     valuesArrayType:
       | 'owned_array_ref'
+      | 'owned_heap_array_ref'
       | 'owned_number_array_ref'
       | 'owned_boolean_array_ref'
       | 'owned_tagged_array_ref';
     valuesElementType:
       | 'owned_string_ref'
+      | 'owned_number_array_ref'
       | 'f64'
       | 'i32'
       | 'tagged_ref';
@@ -669,6 +695,7 @@ export type SemanticStatementIR =
     objectName: string;
     valuesArrayType:
       | 'owned_array_ref'
+      | 'owned_heap_array_ref'
       | 'owned_number_array_ref'
       | 'owned_boolean_array_ref'
       | 'owned_tagged_array_ref';
@@ -2328,6 +2355,15 @@ function semanticExpressionFromCompilerIR(
         items: semanticExpressionFromCompilerIR(expression.items),
         representation: 'owned_tagged_array_ref',
       };
+    case 'owned_heap_array_splice':
+      return {
+        kind: 'owned_heap_array_splice',
+        array: semanticExpressionFromCompilerIR(expression.array),
+        start: semanticExpressionFromCompilerIR(expression.start),
+        deleteCount: semanticExpressionFromCompilerIR(expression.deleteCount),
+        items: semanticExpressionFromCompilerIR(expression.items),
+        representation: 'owned_heap_array_ref',
+      };
     case 'owned_number_array_index_of':
       return {
         kind: 'owned_number_array_index_of',
@@ -2355,6 +2391,13 @@ function semanticExpressionFromCompilerIR(
         array: semanticExpressionFromCompilerIR(expression.array),
         search: semanticExpressionFromCompilerIR(expression.search),
         kinds: expression.kinds,
+        representation: 'f64',
+      };
+    case 'owned_heap_array_index_of':
+      return {
+        kind: 'owned_heap_array_index_of',
+        array: semanticExpressionFromCompilerIR(expression.array),
+        search: semanticExpressionFromCompilerIR(expression.search),
         representation: 'f64',
       };
     case 'owned_string_array_element':
@@ -3668,6 +3711,7 @@ function collectUnsupportedExpressionKinds(
     case 'owned_string_array_splice':
     case 'owned_boolean_array_splice':
     case 'owned_tagged_array_splice':
+    case 'owned_heap_array_splice':
       collectUnsupportedExpressionKinds(expression.array, kinds);
       collectUnsupportedExpressionKinds(expression.start, kinds);
       collectUnsupportedExpressionKinds(expression.deleteCount, kinds);
@@ -3677,6 +3721,7 @@ function collectUnsupportedExpressionKinds(
     case 'owned_string_array_index_of':
     case 'owned_boolean_array_index_of':
     case 'owned_tagged_array_index_of':
+    case 'owned_heap_array_index_of':
       collectUnsupportedExpressionKinds(expression.array, kinds);
       collectUnsupportedExpressionKinds(expression.search, kinds);
       break;

@@ -17323,12 +17323,14 @@ function getSupportedCompilerOwnedCollectionObjectRepresentation(
 interface SupportedSetElementTypeInfo {
   valuesArrayType:
     | 'owned_array_ref'
+    | 'owned_heap_array_ref'
     | 'owned_number_array_ref'
     | 'owned_boolean_array_ref'
     | 'owned_tagged_array_ref';
-  valuesElementType: 'owned_string_ref' | 'f64' | 'i32' | 'tagged_ref';
+  valuesElementType: 'owned_string_ref' | 'owned_number_array_ref' | 'f64' | 'i32' | 'tagged_ref';
   entryElementType:
     | 'owned_array_ref'
+    | 'owned_heap_array_ref'
     | 'owned_number_array_ref'
     | 'owned_boolean_array_ref'
     | 'owned_tagged_array_ref';
@@ -17361,6 +17363,14 @@ function getSupportedSetElementTypeInfo(
       valuesElementType: 'i32',
       entryElementType: 'owned_boolean_array_ref',
       entryElementInfos: [{ type: 'i32' }, { type: 'i32' }],
+    };
+  }
+  if (isSupportedOwnedNumberArrayType(checker, elementType)) {
+    return {
+      valuesArrayType: 'owned_heap_array_ref',
+      valuesElementType: 'owned_number_array_ref',
+      entryElementType: 'owned_heap_array_ref',
+      entryElementInfos: [{ type: 'owned_number_array_ref' }, { type: 'owned_number_array_ref' }],
     };
   }
   if (
@@ -17516,6 +17526,13 @@ function getSupportedCollectionIteratorTypeInfo(
       elementType: 'i32',
     };
   }
+  if (isSupportedOwnedNumberArrayType(checker, yieldedType)) {
+    return {
+      kind,
+      valuesArrayType: 'owned_heap_array_ref',
+      elementType: 'owned_number_array_ref',
+    };
+  }
   if (
     isSupportedInternalTaggedHeapUnionType(checker, yieldedType) ||
     isSupportedTaggedHeapNullableType(checker, yieldedType) ||
@@ -17536,7 +17553,11 @@ function getSupportedMapEntryIteratorTypeInfo(
   checker: ts.TypeChecker,
   yieldedType: ts.Type,
 ): {
-  elementType: 'owned_array_ref' | 'owned_number_array_ref' | 'owned_tagged_array_ref';
+  elementType:
+    | 'owned_array_ref'
+    | 'owned_heap_array_ref'
+    | 'owned_number_array_ref'
+    | 'owned_tagged_array_ref';
   elementInfos: readonly [OwnedArrayBindingElementInfo, OwnedArrayBindingElementInfo];
 } | undefined {
   if ((yieldedType.flags & ts.TypeFlags.Object) === 0) {
@@ -17576,6 +17597,7 @@ function getSupportedSetEntryIteratorTypeInfo(
 ): {
   elementType:
     | 'owned_array_ref'
+    | 'owned_heap_array_ref'
     | 'owned_number_array_ref'
     | 'owned_boolean_array_ref'
     | 'owned_tagged_array_ref';
@@ -19437,6 +19459,7 @@ function createOwnedArrayIndexOfExpression(
   arrayName: string,
   arrayType:
     | 'owned_array_ref'
+    | 'owned_heap_array_ref'
     | 'owned_number_array_ref'
     | 'owned_boolean_array_ref'
     | 'owned_tagged_array_ref',
@@ -19451,6 +19474,17 @@ function createOwnedArrayIndexOfExpression(
           kind: 'local_get',
           name: arrayName,
           type: 'owned_array_ref',
+        },
+        search: searchExpression,
+        type: 'f64',
+      };
+    case 'owned_heap_array_ref':
+      return {
+        kind: 'owned_heap_array_index_of',
+        array: {
+          kind: 'local_get',
+          name: arrayName,
+          type: 'owned_heap_array_ref',
         },
         search: searchExpression,
         type: 'f64',
@@ -19500,6 +19534,7 @@ function createOwnedArrayDeleteAtExpression(
   arrayName: string,
   arrayType:
     | 'owned_array_ref'
+    | 'owned_heap_array_ref'
     | 'owned_number_array_ref'
     | 'owned_boolean_array_ref'
     | 'owned_tagged_array_ref',
@@ -19522,6 +19557,22 @@ function createOwnedArrayDeleteAtExpression(
         },
         items: emptyItems,
         type: 'owned_array_ref',
+      };
+    case 'owned_heap_array_ref':
+      return {
+        kind: 'owned_heap_array_splice',
+        array: {
+          kind: 'local_get',
+          name: arrayName,
+          type: 'owned_heap_array_ref',
+        },
+        start: indexExpression,
+        deleteCount: {
+          kind: 'number_literal',
+          value: 1,
+        },
+        items: emptyItems,
+        type: 'owned_heap_array_ref',
       };
     case 'owned_number_array_ref':
       return {
@@ -19765,6 +19816,23 @@ function lowerSupportedSetEntriesArray(
                 },
               ],
               type: 'owned_boolean_array_ref',
+            }
+            : setTypeInfo.entryElementType === 'owned_heap_array_ref'
+            ? {
+              kind: 'owned_heap_array_literal',
+              elements: [
+                {
+                  kind: 'local_get',
+                  name: valueName,
+                  type: setTypeInfo.valuesElementType,
+                },
+                {
+                  kind: 'local_get',
+                  name: valueName,
+                  type: setTypeInfo.valuesElementType,
+                },
+              ],
+              type: 'owned_heap_array_ref',
             }
             : {
               kind: 'owned_tagged_array_literal',
@@ -20134,12 +20202,13 @@ function getSupportedStringKeyMapIterationValueInfo(
 ): {
   valuesArrayType:
     | 'owned_array_ref'
+    | 'owned_heap_array_ref'
     | 'owned_number_array_ref'
     | 'owned_boolean_array_ref'
     | 'owned_tagged_array_ref';
-  valuesElementType: 'owned_string_ref' | 'f64' | 'i32' | 'tagged_ref';
+  valuesElementType: 'owned_string_ref' | 'owned_number_array_ref' | 'f64' | 'i32' | 'tagged_ref';
   entryPairValueType: 'owned_string_ref' | 'tagged_ref';
-  entryElementType: 'owned_array_ref' | 'owned_tagged_array_ref';
+  entryElementType: 'owned_array_ref' | 'owned_heap_array_ref' | 'owned_tagged_array_ref';
   entryElementInfos: readonly [OwnedArrayBindingElementInfo, OwnedArrayBindingElementInfo];
 } | undefined {
   if (isStringLikeType(valueType)) {
@@ -20167,6 +20236,15 @@ function getSupportedStringKeyMapIterationValueInfo(
       entryPairValueType: 'tagged_ref',
       entryElementType: 'owned_tagged_array_ref',
       entryElementInfos: [{ type: 'owned_string_ref' }, { type: 'i32' }],
+    };
+  }
+  if (isSupportedOwnedNumberArrayType(checker, valueType)) {
+    return {
+      valuesArrayType: 'owned_heap_array_ref',
+      valuesElementType: 'owned_number_array_ref',
+      entryPairValueType: 'tagged_ref',
+      entryElementType: 'owned_heap_array_ref',
+      entryElementInfos: [{ type: 'owned_string_ref' }, { type: 'owned_number_array_ref' }],
     };
   }
   if (
@@ -20232,6 +20310,16 @@ function createStringKeyMapEntryTaggedValueExpression(
         name: valueName,
         type: 'tagged_ref',
       };
+    case 'owned_number_array_ref':
+      return {
+        kind: 'tag_heap_object',
+        value: {
+          kind: 'local_get',
+          name: valueName,
+          type: 'owned_number_array_ref',
+        },
+        type: 'tagged_ref',
+      };
     default: {
       const exhaustiveCheck: never = iterationValueInfo.valuesElementType;
       return exhaustiveCheck;
@@ -20260,6 +20348,24 @@ function createStringKeyMapEntryPairExpression(
         },
       ],
       type: 'owned_array_ref',
+    };
+  }
+  if (iterationValueInfo.entryElementType === 'owned_heap_array_ref') {
+    return {
+      kind: 'owned_heap_array_literal',
+      elements: [
+        {
+          kind: 'local_get',
+          name: keyName,
+          type: 'owned_string_ref',
+        },
+        {
+          kind: 'local_get',
+          name: valueName,
+          type: iterationValueInfo.valuesElementType,
+        },
+      ],
+      type: 'owned_heap_array_ref',
     };
   }
   return {
@@ -40015,6 +40121,7 @@ function lowerCompilerOwnedMapValuesArray(
   objectName: string,
   resultType:
     | 'owned_array_ref'
+    | 'owned_heap_array_ref'
     | 'owned_number_array_ref'
     | 'owned_boolean_array_ref'
     | 'owned_tagged_array_ref',
@@ -40844,6 +40951,7 @@ function lowerDynamicObjectValues(
   representation: CompilerRuntimeDynamicObjectRepresentationRefIR,
   resultType:
     | 'owned_array_ref'
+    | 'owned_heap_array_ref'
     | 'owned_number_array_ref'
     | 'owned_boolean_array_ref'
     | 'owned_tagged_array_ref',
@@ -69557,12 +69665,6 @@ function lowerForOfLoopBody(
     if (!isOwnedArrayValueType(elementType)) {
       throw new CompilerUnsupportedError(
         'for...of array binding patterns currently require compiler-owned array elements in the compiler subset.',
-        loopDeclaration.name,
-      );
-    }
-    if (elementType === 'owned_heap_array_ref') {
-      throw new CompilerUnsupportedError(
-        'for...of array binding patterns over nested heap-array elements are not supported in compiler subset.',
         loopDeclaration.name,
       );
     }
