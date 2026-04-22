@@ -4863,3 +4863,146 @@ Deno.test(
     assertEquals(result.diagnostics[0]?.filePath, filePath);
   },
 );
+
+Deno.test('analyzeProject allows macros to consume JSX without jsxImportSource', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+          moduleResolution: 'bundler',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/macros.macro.sts': [
+      "import { macroSignature } from 'sts:macros';",
+      '',
+      '// #[macro(call)]',
+      'export function Consume() {',
+      '  return {',
+      '    signature: macroSignature.of(macroSignature.expr("node")),',
+      '    expand(ctx: any) {',
+      '      return ctx.output.expr(ctx.quote.expr`1`);',
+      '    },',
+      '  };',
+      '}',
+      '',
+    ].join('\n'),
+    'src/demo.sts': [
+      "import { Consume } from './macros.macro';",
+      'export const value: number = Consume(<button />);',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics, []);
+});
+
+Deno.test('analyzeProject requires jsxImportSource when macro-expanded output keeps JSX', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+          moduleResolution: 'bundler',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/macros.macro.sts': [
+      "import 'sts:macros';",
+      '',
+      '// #[macro(call)]',
+      'export function Emit() {',
+      '  return {',
+      '    expand(ctx: any) {',
+      '      return ctx.output.expr(ctx.quote.expr`<button />`);',
+      '    },',
+      '  };',
+      '}',
+      '',
+    ].join('\n'),
+    'src/demo.sts': [
+      "import { Emit } from './macros.macro';",
+      'export const node = Emit();',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(
+    result.diagnostics.map((diagnostic) => diagnostic.code),
+    ['SOUNDSCRIPT_JSX_IMPORT_SOURCE_REQUIRED'],
+  );
+  assertEquals(result.diagnostics[0]?.filePath, join(tempDirectory, 'src/demo.sts'));
+});
+
+Deno.test('analyzeProject lowers macro-expanded JSX through configured jsxImportSource', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+          moduleResolution: 'bundler',
+          jsxImportSource: './jsx',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/jsx/jsx-runtime.d.ts': [
+      'export declare function jsx(type: unknown, props: unknown, key?: unknown): unknown;',
+      'export declare const Fragment: unique symbol;',
+      '',
+    ].join('\n'),
+    'src/macros.macro.sts': [
+      "import 'sts:macros';",
+      '',
+      '// #[macro(call)]',
+      'export function Emit() {',
+      '  return {',
+      '    expand(ctx: any) {',
+      '      return ctx.output.expr(ctx.quote.expr`<button />`);',
+      '    },',
+      '  };',
+      '}',
+      '',
+    ].join('\n'),
+    'src/demo.sts': [
+      "import { Emit } from './macros.macro';",
+      'export const node = Emit();',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics, []);
+});

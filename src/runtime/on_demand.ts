@@ -3,9 +3,7 @@ import ts from 'typescript';
 import { measureCheckerTiming } from '../checker/timing.ts';
 import { createSoundStdlibCompilerHost } from '../bundled/sound_stdlib.ts';
 import { loadConfig, type LoadedConfig } from '../project/config.ts';
-import {
-  withBuiltinMacroSupport,
-} from '../frontend/builtin_macro_support.ts';
+import { withBuiltinMacroSupport } from '../frontend/builtin_macro_support.ts';
 import { dirname, join } from '../platform/path.ts';
 import {
   createPreparedProgram,
@@ -17,20 +15,18 @@ import {
   detectRuntimeTypeScriptSupport,
   emitPreparedSoundscriptModuleDirect,
   emitTypeScriptModuleDirect,
-  type RuntimeTransformArtifact,
   runtimeRequiresJavaScriptFallback,
+  type RuntimeTransformArtifact,
   transpilePreparedSoundscriptModuleToEsm,
   transpileTypeScriptModuleToEsm,
 } from './transform.ts';
-import {
-  collectRuntimeSemanticClosure,
-} from './semantic_closure.ts';
+import { collectRuntimeSemanticClosure } from './semantic_closure.ts';
 import {
   createDeferredRuntimeExpansion,
   createPreparedRuntimeProgram,
   createSemanticRuntimeExpansion,
-  expandSemanticPlaceholdersOnDeferredSourceFile,
   type DeferredRuntimeExpansion,
+  expandSemanticPlaceholdersOnDeferredSourceFile,
   finalizeRuntimeExpandedSourceFile,
   type SemanticRuntimeExpansion,
 } from './runtime_macro_pipeline.ts';
@@ -203,17 +199,38 @@ function getPreparedSourceFile(
   );
 }
 
+function assertPreparedSourceFileHasNoBlockingDiagnostics(
+  fileName: string,
+  preparedFile: NonNullable<ReturnType<typeof getPreparedSourceFile>>,
+): void {
+  const diagnostics = preparedFile.diagnostics.filter((diagnostic) =>
+    diagnostic.category === 'error'
+  );
+  if (diagnostics.length === 0) {
+    return;
+  }
+
+  const detail = diagnostics.map((diagnostic) => `${diagnostic.code}: ${diagnostic.message}`).join(
+    '\n',
+  );
+  throw new Error(
+    `Cannot transform ${fileName} because Soundscript preparation failed.\n${detail}`,
+  );
+}
+
 function preparedProgramIncludesFile(
   preparedProgram: PreparedProgram,
   fileName: string,
 ): boolean {
-  return preparedProgram.program.getSourceFile(preparedProgram.toProgramFileName(fileName)) !== undefined;
+  return preparedProgram.program.getSourceFile(preparedProgram.toProgramFileName(fileName)) !==
+    undefined;
 }
 
 function transpileSemanticSourceFile(
   sourceFile: ts.SourceFile,
   fileName: string,
   projectPath: string,
+  compilerOptions: ts.CompilerOptions,
   runtimeTypeScriptSupport: ReturnType<typeof detectRuntimeTypeScriptSupport>,
 ): OnDemandTransformResult {
   return measureCheckerTiming(
@@ -229,6 +246,7 @@ function transpileSemanticSourceFile(
           {
             moduleSpecifierMode: 'preserve',
             target: ts.ScriptTarget.ES2022,
+            jsxImportSource: compilerOptions.jsxImportSource,
           },
         )
         : transpileTypeScriptModuleToEsm(
@@ -239,6 +257,7 @@ function transpileSemanticSourceFile(
             module: ts.ModuleKind.ES2022,
             moduleSpecifierMode: 'preserve',
             target: ts.ScriptTarget.ES2022,
+            jsxImportSource: compilerOptions.jsxImportSource,
           },
         );
       return {
@@ -313,12 +332,14 @@ function transpilePreparedSourceFile(
   preparedProgram: PreparedProgram,
   fileName: string,
   projectPath: string,
+  compilerOptions: ts.CompilerOptions,
   runtimeTypeScriptSupport: ReturnType<typeof detectRuntimeTypeScriptSupport>,
 ): OnDemandTransformResult {
   const preparedFile = getPreparedSourceFile(preparedProgram, fileName);
   if (!preparedFile) {
     throw new Error(`Missing prepared source file for ${fileName}.`);
   }
+  assertPreparedSourceFileHasNoBlockingDiagnostics(fileName, preparedFile);
 
   const artifact = runtimeTypeScriptSupport !== false &&
       !runtimeRequiresJavaScriptFallback(preparedFile.rewrittenText, fileName)
@@ -328,6 +349,7 @@ function transpilePreparedSourceFile(
       {
         moduleSpecifierMode: 'preserve',
         target: ts.ScriptTarget.ES2022,
+        jsxImportSource: compilerOptions.jsxImportSource,
       },
     )
     : transpilePreparedSoundscriptModuleToEsm(
@@ -338,6 +360,7 @@ function transpilePreparedSourceFile(
         module: ts.ModuleKind.ES2022,
         moduleSpecifierMode: 'preserve',
         target: ts.ScriptTarget.ES2022,
+        jsxImportSource: compilerOptions.jsxImportSource,
       },
     );
   return {
@@ -351,6 +374,7 @@ function transpileDeferredExpandedSourceFile(
   expansion: DeferredRuntimeExpansion,
   fileName: string,
   projectPath: string,
+  compilerOptions: ts.CompilerOptions,
   runtimeTypeScriptSupport: ReturnType<typeof detectRuntimeTypeScriptSupport>,
 ): OnDemandTransformResult {
   const cachedArtifact = expansion.emittedArtifactsByFile.get(fileName);
@@ -380,6 +404,7 @@ function transpileDeferredExpandedSourceFile(
           {
             moduleSpecifierMode: 'preserve',
             target: ts.ScriptTarget.ES2022,
+            jsxImportSource: compilerOptions.jsxImportSource,
           },
         )
         : transpileTypeScriptModuleToEsm(
@@ -390,6 +415,7 @@ function transpileDeferredExpandedSourceFile(
             module: ts.ModuleKind.ES2022,
             moduleSpecifierMode: 'preserve',
             target: ts.ScriptTarget.ES2022,
+            jsxImportSource: compilerOptions.jsxImportSource,
           },
         );
       return {
@@ -548,8 +574,9 @@ export function createOnDemandTransformer(
       }
       const sourceHash = ts.sys.createHash?.(sourceText) ?? sourceText;
       const session = getProjectSession(projectContext);
+      const jsxImportSourceSignature = projectContext.compilerOptions.jsxImportSource ?? '';
       const preparedCacheKey =
-        `${projectContext.projectPath}\u0000prepared\u0000${fileName}\u0000${sourceHash}`;
+        `${projectContext.projectPath}\u0000prepared\u0000${fileName}\u0000${sourceHash}\u0000${jsxImportSourceSignature}`;
       const cachedPrepared = soundscriptCache.get(preparedCacheKey);
       if (cachedPrepared) {
         return cachedPrepared;
@@ -577,6 +604,7 @@ export function createOnDemandTransformer(
               isolatedPreparedProgram,
               fileName,
               projectContext.projectPath,
+              projectContext.compilerOptions,
               runtimeTypeScriptSupport,
             );
             soundscriptCache.set(preparedCacheKey, result);
@@ -600,6 +628,7 @@ export function createOnDemandTransformer(
             preparedProgram,
             fileName,
             projectContext.projectPath,
+            projectContext.compilerOptions,
             runtimeTypeScriptSupport,
           );
           soundscriptCache.set(preparedCacheKey, result);
@@ -613,7 +642,8 @@ export function createOnDemandTransformer(
 
         if (session.semanticRequiredSourceHashes.get(fileName) !== sourceHash) {
           const deferredExpansion = ensureDeferredExpansionForPreparedProgram(session);
-          const semanticRequiredPlaceholders = deferredExpansion.semanticRequiredPlaceholderIdsByFile
+          const semanticRequiredPlaceholders = deferredExpansion
+            .semanticRequiredPlaceholderIdsByFile
             .get(preparedProgram.toProgramFileName(fileName));
           if (!semanticRequiredPlaceholders || semanticRequiredPlaceholders.size === 0) {
             session.macroModeHintsByFile.set(fileName, { mode: 'deferred', sourceHash });
@@ -622,6 +652,7 @@ export function createOnDemandTransformer(
               deferredExpansion,
               fileName,
               projectContext.projectPath,
+              projectContext.compilerOptions,
               runtimeTypeScriptSupport,
             );
           }
@@ -658,6 +689,7 @@ export function createOnDemandTransformer(
           semanticSourceFile,
           fileName,
           projectContext.projectPath,
+          projectContext.compilerOptions,
           runtimeTypeScriptSupport,
         );
         emittedArtifactsForSignature.set(fileName, { result, sourceHash });
@@ -687,7 +719,9 @@ export function createOnDemandTransformer(
       findNearestProjectPath(fileName) ??
       (options.workingDirectory ? join(options.workingDirectory, 'tsconfig.json') : fileName);
     const sourceHash = ts.sys.createHash?.(sourceText) ?? sourceText;
-    const cacheKey = `${projectPath}\u0000${fileName}\u0000${sourceHash}`;
+    const jsxImportSourceSignature = projectContext?.compilerOptions.jsxImportSource ?? '';
+    const cacheKey =
+      `${projectPath}\u0000${fileName}\u0000${sourceHash}\u0000${jsxImportSourceSignature}`;
     const cached = typeScriptCache.get(cacheKey);
     if (cached) {
       return cached;
@@ -701,6 +735,7 @@ export function createOnDemandTransformer(
         {
           moduleSpecifierMode: 'preserve',
           target: ts.ScriptTarget.ES2022,
+          jsxImportSource: projectContext?.compilerOptions.jsxImportSource,
         },
       )
       : transpileTypeScriptModuleToEsm(
@@ -711,6 +746,7 @@ export function createOnDemandTransformer(
           module: ts.ModuleKind.ES2022,
           moduleSpecifierMode: 'preserve',
           target: ts.ScriptTarget.ES2022,
+          jsxImportSource: projectContext?.compilerOptions.jsxImportSource,
         },
       );
     const result = {

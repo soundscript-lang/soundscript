@@ -278,7 +278,7 @@ void value;
   assert(!prepared.rewrittenText.includes('const lib: unknown = __sts_projected_type_'));
 });
 
-Deno.test('createPreparedCompilerHost lowers JSX syntax in .sts files to react/jsx-runtime helper calls', () => {
+Deno.test('createPreparedCompilerHost requires jsxImportSource before lowering JSX syntax', () => {
   const fileName = '/virtual/index.sts';
   const host = createPreparedCompilerHost(
     createBaseHost(
@@ -299,9 +299,43 @@ Deno.test('createPreparedCompilerHost lowers JSX syntax in .sts files to react/j
   const prepared = host.getPreparedSourceFile(fileName);
 
   assert(prepared);
-  assertStringIncludes(prepared.rewrittenText, "from 'react/jsx-runtime';");
+  assertEquals(host.frontendDiagnostics().map((diagnostic) => diagnostic.code), [
+    'SOUNDSCRIPT_JSX_IMPORT_SOURCE_REQUIRED',
+  ]);
+  assertEquals(prepared.rewrittenText.includes('react/jsx-runtime'), false);
+  assertEquals(prepared.rewrittenText.includes('__ss_jsx('), false);
+});
+
+Deno.test('createPreparedCompilerHost lowers JSX syntax through configured jsxImportSource helper calls', () => {
+  const fileName = '/virtual/index.sts';
+  const host = createPreparedCompilerHost(
+    createBaseHost(
+      new Map([
+        [
+          fileName,
+          [
+            'export function main(count: number) {',
+            "  return <button>{count === 0 ? 'hello' : 'goodbye'}</button>;",
+            '}',
+            '',
+          ].join('\n'),
+        ],
+      ]),
+    ),
+    new Map(),
+    new Map(),
+    undefined,
+    { jsxImportSource: '@example/jsx' },
+  );
+
+  const prepared = host.getPreparedSourceFile(fileName);
+
+  assert(prepared);
+  assertEquals(host.frontendDiagnostics(), []);
+  assertStringIncludes(prepared.rewrittenText, "from '@example/jsx/jsx-runtime';");
   assertStringIncludes(prepared.rewrittenText, '__ss_jsx(');
   assertEquals(prepared.rewrittenText.includes('<button>'), false);
+  assertEquals(prepared.rewrittenText.includes('react/jsx-runtime'), false);
 });
 
 Deno.test('createPreparedCompilerHost preserves malformed-file structure and diagnostics', () => {

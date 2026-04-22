@@ -291,7 +291,7 @@ export function normalizeSoundCompilerOptions(
     erasableSyntaxOnly: true,
     exactOptionalPropertyTypes: true,
     experimentalDecorators: false,
-    jsx: ts.JsxEmit.ReactJSX,
+    jsx: ts.JsxEmit.Preserve,
     noEmit: true,
     noFallthroughCasesInSwitch: true,
     noImplicitOverride: true,

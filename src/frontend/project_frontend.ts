@@ -319,16 +319,21 @@ function createUniqueGeneratedBindingName(
   return uniqueName;
 }
 
-function lowerJsxSyntaxToRuntimeCalls(
+function quoteImportModuleSpecifier(moduleSpecifier: string): string {
+  return `'${moduleSpecifier.replaceAll('\\', '\\\\').replaceAll("'", "\\'")}'`;
+}
+
+export function lowerJsxSyntaxToRuntimeCalls(
   fileName: string,
   rewrittenText: string,
   isSoundscriptFile: (fileName: string) => boolean = isSoundscriptSourceFile,
-): string {
+  jsxImportSource?: string,
+): { diagnostics: readonly MergedDiagnostic[]; rewrittenText: string } {
   if (
     !isSoundscriptFile(fileName) ||
     !rewrittenText.includes('<')
   ) {
-    return rewrittenText;
+    return { diagnostics: [], rewrittenText };
   }
 
   const sourceFile = ts.createSourceFile(
@@ -338,22 +343,36 @@ function lowerJsxSyntaxToRuntimeCalls(
     true,
     scriptKindForSourceFileName(fileName),
   );
-  let containsJsx = false;
+  let firstJsxNode: ts.JsxElement | ts.JsxSelfClosingElement | ts.JsxFragment | undefined;
 
   const markIfJsx = (node: ts.Node): void => {
-    if (containsJsx) {
+    if (firstJsxNode) {
       return;
     }
     if (ts.isJsxElement(node) || ts.isJsxSelfClosingElement(node) || ts.isJsxFragment(node)) {
-      containsJsx = true;
+      firstJsxNode = node;
       return;
     }
     ts.forEachChild(node, markIfJsx);
   };
 
   ts.forEachChild(sourceFile, markIfJsx);
-  if (!containsJsx) {
-    return rewrittenText;
+  if (!firstJsxNode) {
+    return { diagnostics: [], rewrittenText };
+  }
+
+  if (!jsxImportSource || jsxImportSource.trim().length === 0) {
+    return {
+      diagnostics: [
+        createJsxImportSourceRequiredDiagnostic(
+          fileName,
+          rewrittenText,
+          firstJsxNode.getStart(sourceFile),
+          firstJsxNode.getEnd(),
+        ),
+      ],
+      rewrittenText,
+    };
   }
 
   const topLevelBindingNames = new Set(collectTopLevelBindingNames(sourceFile));
@@ -606,7 +625,7 @@ function lowerJsxSyntaxToRuntimeCalls(
 
   ts.forEachChild(sourceFile, collectReplacements);
   if (replacements.length === 0) {
-    return rewrittenText;
+    return { diagnostics: [], rewrittenText };
   }
 
   let loweredText = rewrittenText;
@@ -620,14 +639,22 @@ function lowerJsxSyntaxToRuntimeCalls(
   if (usesFragment) {
     helperSpecifiers.push(`Fragment as ${fragmentHelperName}`);
   }
+  const runtimeModuleSpecifier = `${jsxImportSource}/jsx-runtime`;
   const importBlock = [
     '// #[interop]',
-    `import { ${helperSpecifiers.join(', ')} } from 'react/jsx-runtime';`,
+    `import { ${helperSpecifiers.join(', ')} } from ${
+      quoteImportModuleSpecifier(runtimeModuleSpecifier)
+    };`,
     '',
   ].join('\n');
   const { prefix, suffix } = splitLeadingNonAnnotationTrivia(loweredText);
   const finalText = `${prefix}${importBlock}${suffix}`;
-  return rewrittenText.endsWith('\n') && !finalText.endsWith('\n') ? `${finalText}\n` : finalText;
+  return {
+    diagnostics: [],
+    rewrittenText: rewrittenText.endsWith('\n') && !finalText.endsWith('\n')
+      ? `${finalText}\n`
+      : finalText,
+  };
 }
 
 function splitLeadingNonAnnotationTrivia(text: string): { prefix: string; suffix: string } {
@@ -818,6 +845,8 @@ interface CachedBuiltinAnnotatedSourceFileEntry {
 interface CachedBuiltinFinalSourceFileEntry {
   diagnosticPreparedFile: PreparedSourceFile | undefined;
   finalOverrideText: string;
+  frontendDiagnostics: readonly MergedDiagnostic[];
+  jsxImportSource: string | undefined;
   normalizedText: string | undefined;
   placeholderSignature: string;
   preparedOriginalText: string | undefined;
@@ -863,6 +892,8 @@ interface PersistentCachedPreparedSourceFileEntrySnapshot {
 interface PersistentCachedBuiltinFinalSourceFileEntrySnapshot {
   diagnosticPreparedFile: PersistentPreparedSourceFileSnapshot | undefined;
   finalOverrideText: string;
+  frontendDiagnostics?: readonly MergedDiagnostic[];
+  jsxImportSource?: string | undefined;
   normalizedText: string | undefined;
   placeholderSignature: string;
   preparedOriginalText: string | undefined;
@@ -3607,6 +3638,31 @@ function createExpansionDisabledDiagnostic(
   };
 }
 
+function createJsxImportSourceRequiredDiagnostic(
+  fileName: string,
+  originalText: string,
+  startPosition: number,
+  endPosition: number,
+): MergedDiagnostic {
+  const start = getLineAndColumn(originalText, startPosition);
+  const end = getLineAndColumn(originalText, endPosition);
+
+  return {
+    source: 'cli',
+    code: 'SOUNDSCRIPT_JSX_IMPORT_SOURCE_REQUIRED',
+    category: 'error',
+    message:
+      'JSX syntax in Soundscript requires compilerOptions.jsxImportSource so the runtime is explicit.',
+    hint:
+      'Set compilerOptions.jsxImportSource to the package that provides jsx-runtime helpers, or consume the JSX in a macro before generic lowering.',
+    filePath: fileName,
+    line: start.line,
+    column: start.column,
+    endLine: end.line,
+    endColumn: end.column,
+  };
+}
+
 function scriptKindForSourceFile(fileName: string): ts.ScriptKind {
   const lowered = fileName.toLowerCase();
   if (lowered.endsWith('.sts') || lowered.endsWith('.tsx') || lowered.endsWith('.jsx')) {
@@ -3875,6 +3931,7 @@ export function prepareSourceFile(
   alwaysAvailableMacroSiteKinds: ReadonlyMap<string, ImportedMacroSiteKind> = new Map(),
   preserveMacroAuthoring = false,
   isSoundscriptFile: (fileName: string) => boolean = isSoundscriptSourceFile,
+  jsxImportSource?: string,
 ): PreparedSourceFile {
   const rewriteInputText = !preserveMacroAuthoring && sourceTextLooksLikeMacroModule(text)
     ? stripMacroFactoryAuthoringFromText(fileName, text)
@@ -3946,16 +4003,24 @@ export function prepareSourceFile(
     ? `${rewriteResult.rewrittenText}\n${MACRO_HELPER_PREAMBLE}`
     : rewriteResult.rewrittenText;
 
-  const finalRewrittenText = diagnostics.length === 0
+  const preludeRewrittenText = diagnostics.length === 0
+    ? injectPreludeImports(fileName, text, rewrittenText, isSoundscriptFile)
+    : rewrittenText;
+  const shouldLowerJsxBeforeExpansion = diagnostics.length === 0 &&
+    rewriteResult.replacements.length === 0;
+  const jsxLoweringResult = shouldLowerJsxBeforeExpansion
     ? lowerJsxSyntaxToRuntimeCalls(
       fileName,
-      injectPreludeImports(fileName, text, rewrittenText, isSoundscriptFile),
+      preludeRewrittenText,
       isSoundscriptFile,
+      jsxImportSource,
     )
-    : rewrittenText;
+    : { diagnostics: [], rewrittenText: preludeRewrittenText };
+  const finalDiagnostics = [...diagnostics, ...jsxLoweringResult.diagnostics];
+  const finalRewrittenText = jsxLoweringResult.rewrittenText;
 
   return {
-    diagnostics,
+    diagnostics: finalDiagnostics,
     originalText: text,
     postRewriteStage: finalRewrittenText === rewrittenText
       ? undefined
@@ -4319,6 +4384,7 @@ export function createPreparedCompilerHost(
         alwaysAvailableMacroSiteKinds,
         preserveMacroAuthoring,
         isConfiguredSoundscriptFile,
+        compilerOptions.jsxImportSource,
       )
       : {
         diagnostics: [],
@@ -5164,6 +5230,8 @@ export function hydratePersistentPreparedCompilerHostReuseSnapshot(
       diagnosticPreparedFile: entry.diagnosticPreparedFile
         ? restorePreparedSourceFile(entry.diagnosticPreparedFile)
         : undefined,
+      frontendDiagnostics: entry.frontendDiagnostics ?? [],
+      jsxImportSource: entry.jsxImportSource,
     });
   }
   if (snapshot.builtinStageReuseStates) {

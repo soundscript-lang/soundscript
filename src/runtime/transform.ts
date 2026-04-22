@@ -280,6 +280,7 @@ export function runtimeRequiresJavaScriptFallback(
 }
 
 interface RuntimeTranspileOptions {
+  jsxImportSource?: string;
   module?: ts.ModuleKind;
   moduleSpecifierMode?: ModuleSpecifierMode;
   sourceMapFileName?: string;
@@ -298,7 +299,8 @@ function transpileModule(
 ): ts.TranspileOutput {
   return ts.transpileModule(sourceText, {
     compilerOptions: {
-      jsx: ts.JsxEmit.ReactJSX,
+      jsx: options.jsxImportSource ? ts.JsxEmit.ReactJSX : ts.JsxEmit.Preserve,
+      jsxImportSource: options.jsxImportSource,
       module: options.module ?? ts.ModuleKind.ES2022,
       sourceMap: true,
       target: options.target ?? ts.ScriptTarget.ES2022,

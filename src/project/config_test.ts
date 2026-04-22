@@ -392,7 +392,7 @@ Deno.test('loadConfig preserves explicit compilerOptions.types over runtime defa
   assertEquals(loadedConfig.commandLine.options.types, []);
 });
 
-Deno.test('loadConfig always enables JSX emit for soundscript programs', async () => {
+Deno.test('loadConfig preserves JSX emit for Soundscript programs', async () => {
   const tempDirectory = await Deno.makeTempDir({ prefix: 'soundscript-config-jsx-' });
   const projectPath = join(tempDirectory, 'tsconfig.json');
   await Deno.mkdir(join(tempDirectory, 'src'), { recursive: true });
@@ -416,7 +416,36 @@ Deno.test('loadConfig always enables JSX emit for soundscript programs', async (
   const loadedConfig = loadConfig(projectPath);
 
   assertEquals(loadedConfig.commandLine.options.jsx, ts.JsxEmit.Preserve);
-  assertEquals(loadedConfig.frontierCommandLine.options.jsx, ts.JsxEmit.ReactJSX);
+  assertEquals(loadedConfig.frontierCommandLine.options.jsx, ts.JsxEmit.Preserve);
+});
+
+Deno.test('loadConfig preserves explicit jsxImportSource for Soundscript lowering', async () => {
+  const tempDirectory = await Deno.makeTempDir({ prefix: 'soundscript-config-jsx-source-' });
+  const projectPath = join(tempDirectory, 'tsconfig.json');
+  await Deno.mkdir(join(tempDirectory, 'src'), { recursive: true });
+  await Deno.writeTextFile(join(tempDirectory, 'src/main.sts'), 'export const main = 1;\n');
+  await Deno.writeTextFile(
+    projectPath,
+    JSON.stringify(
+      {
+        compilerOptions: {
+          jsx: 'preserve',
+          jsxImportSource: '@example/jsx',
+          module: 'ESNext',
+          target: 'ES2022',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+  );
+
+  const loadedConfig = loadConfig(projectPath);
+
+  assertEquals(loadedConfig.commandLine.options.jsx, ts.JsxEmit.Preserve);
+  assertEquals(loadedConfig.frontierCommandLine.options.jsx, ts.JsxEmit.Preserve);
+  assertEquals(loadedConfig.frontierCommandLine.options.jsxImportSource, '@example/jsx');
 });
 
 Deno.test('loadConfig preserves pure TypeScript compiler options when no soundscript roots are present', async () => {
@@ -505,7 +534,7 @@ Deno.test('loadConfig splits host and frontier roots for soundscript.include Typ
   assertEquals(loadedConfig.hostRootNames, [join(tempDirectory, 'src/types.d.ts')]);
   assertEquals(loadedConfig.commandLine.options.jsx, ts.JsxEmit.Preserve);
   assertEquals(loadedConfig.commandLine.options.strict, false);
-  assertEquals(loadedConfig.frontierCommandLine.options.jsx, ts.JsxEmit.ReactJSX);
+  assertEquals(loadedConfig.frontierCommandLine.options.jsx, ts.JsxEmit.Preserve);
   assertEquals(loadedConfig.frontierCommandLine.options.strict, true);
 });
 

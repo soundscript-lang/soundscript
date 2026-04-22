@@ -30,7 +30,10 @@ interface TempProjectFile {
   path: string;
 }
 
-function createSoundscriptTsconfig(include: readonly string[] = ['src/**/*.sts']): string {
+function createSoundscriptTsconfig(
+  include: readonly string[] = ['src/**/*.sts'],
+  extraCompilerOptions: Record<string, unknown> = {},
+): string {
   return `${
     JSON.stringify(
       {
@@ -40,6 +43,7 @@ function createSoundscriptTsconfig(include: readonly string[] = ['src/**/*.sts']
           target: 'ES2022',
           module: 'ESNext',
           moduleResolution: 'Bundler',
+          ...extraCompilerOptions,
         },
         include,
       },
@@ -4770,6 +4774,7 @@ Deno.test('red-team: persistent checker cache invalidates jsx runtime path retar
         {
           compilerOptions: {
             baseUrl: '.',
+            jsxImportSource: 'react',
             module: 'ESNext',
             moduleResolution: 'Bundler',
             noEmit: true,
@@ -4939,7 +4944,7 @@ Deno.test('red-team: persistent checker cache invalidates jsx runtime package ex
   const tempDirectory = await createTempProject([
     {
       path: 'tsconfig.json',
-      contents: createSoundscriptTsconfig(),
+      contents: createSoundscriptTsconfig(['src/**/*.sts'], { jsxImportSource: 'react' }),
     },
     {
       path: 'src/index.sts',
@@ -7467,7 +7472,7 @@ Deno.test('red-team: package build cache invalidates jsx runtime package export 
     },
     {
       path: 'tsconfig.json',
-      contents: createSoundscriptTsconfig(['src/**/*.sts']),
+      contents: createSoundscriptTsconfig(['src/**/*.sts'], { jsxImportSource: 'react' }),
     },
     {
       path: 'src/index.sts',
@@ -7638,7 +7643,7 @@ Deno.test('red-team: package build cache refreshes jsx runtime package export de
     },
     {
       path: 'tsconfig.json',
-      contents: createSoundscriptTsconfig(['src/**/*.sts']),
+      contents: createSoundscriptTsconfig(['src/**/*.sts'], { jsxImportSource: 'react' }),
     },
     {
       path: 'src/index.sts',

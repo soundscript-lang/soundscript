@@ -6074,7 +6074,7 @@ Deno.test('runCli does not let unsafe suppress class and interface any members',
   assertStringIncludes(result.output, 'src/index.sts:10:14');
 });
 
-Deno.test('runCli reports angle-bracket syntax as invalid TSX in soundscript files even on unsafe-annotated lines', async () => {
+Deno.test('runCli requires explicit JSX import source before accepting JSX-like syntax in soundscript files', async () => {
   const tempDirectory = await createTempProject([
     {
       path: 'tsconfig.json',
@@ -6106,8 +6106,11 @@ Deno.test('runCli reports angle-bracket syntax as invalid TSX in soundscript fil
   const result = await runCli(['check', '--project', join(tempDirectory, 'tsconfig.json')]);
 
   assertEquals(result.exitCode, 1);
-  assertEquals(result.diagnostics.every((diagnostic) => diagnostic.source === 'ts'), true);
-  assertStringIncludes(result.output, "Cannot find module 'react/jsx-runtime'");
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), [
+    'SOUNDSCRIPT_JSX_IMPORT_SOURCE_REQUIRED',
+  ]);
+  assertStringIncludes(result.output, 'compilerOptions.jsxImportSource');
+  assertEquals(result.output.includes('react/jsx-runtime'), false);
 });
 
 Deno.test('runCli respects experimentalDecorators in pure TypeScript projects', async () => {

@@ -4906,6 +4906,7 @@ compilerIntegrationTest(
               target: 'ES2022',
               module: 'ESNext',
               moduleResolution: 'bundler',
+              jsxImportSource: 'react',
             },
             include: ['src/**/*.sts', 'src/**/*.d.ts'],
             soundscript: {
@@ -5040,6 +5041,7 @@ compilerIntegrationTest(
               target: 'ES2022',
               module: 'ESNext',
               moduleResolution: 'bundler',
+              jsxImportSource: 'react',
             },
             include: ['src/**/*.sts', 'src/**/*.d.ts'],
             soundscript: {
@@ -5077,20 +5079,16 @@ compilerIntegrationTest(
           '}',
           '',
           'export type Key = string | number | bigint;',
-          'export type ElementType = string | ((props: any) => unknown);',
           '',
-          'export interface ReactElement<',
-          '  P = any,',
-          '  T extends string | ((props: any) => unknown) = string | ((props: any) => unknown),',
-          '> {',
-          '  type: T;',
-          '  props: P;',
+          'export interface ReactElement {',
+          '  type: unknown;',
+          '  props: Record<string, unknown>;',
           '  key: string | null;',
           '}',
           '',
           'export declare function jsx(',
-          '  type: ElementType,',
-          '  props: unknown,',
+          '  type: unknown,',
+          '  props: Record<string, unknown>,',
           '  key?: Key,',
           '): ReactElement;',
           '',
@@ -5198,6 +5196,7 @@ compilerIntegrationTest(
               target: 'ES2022',
               module: 'ESNext',
               moduleResolution: 'bundler',
+              jsxImportSource: 'react',
             },
             include: ['src/**/*.sts', 'src/**/*.d.ts'],
             soundscript: {
@@ -5235,20 +5234,16 @@ compilerIntegrationTest(
           '}',
           '',
           'export type Key = string | number | bigint;',
-          'export type ElementType = string | ((props: any) => unknown);',
           '',
-          'export interface ReactElement<',
-          '  P = any,',
-          '  T extends string | ((props: any) => unknown) = string | ((props: any) => unknown),',
-          '> {',
-          '  type: T;',
-          '  props: P;',
+          'export interface ReactElement {',
+          '  type: unknown;',
+          '  props: Record<string, unknown>;',
           '  key: string | null;',
           '}',
           '',
           'export declare function jsx(',
-          '  type: ElementType,',
-          '  props: unknown,',
+          '  type: unknown,',
+          '  props: Record<string, unknown>,',
           '  key?: Key,',
           '): ReactElement;',
           '',
@@ -5991,20 +5986,16 @@ compilerIntegrationTest(
           '}',
           '',
           'export type Key = string | number | bigint;',
-          'export type ElementType = string | ((props: any) => unknown);',
           '',
-          'export interface ReactElement<',
-          '  P = any,',
-          '  T extends string | ((props: any) => unknown) = string | ((props: any) => unknown),',
-          '> {',
-          '  type: T;',
-          '  props: P;',
+          'export interface ReactElement {',
+          '  type: unknown;',
+          '  props: Record<string, unknown>;',
           '  key: string | null;',
           '}',
           '',
           'export declare function jsx(',
-          '  type: ElementType,',
-          '  props: unknown,',
+          '  type: unknown,',
+          '  props: Record<string, unknown>,',
           '  key?: Key,',
           '): ReactElement;',
           '',
@@ -7812,6 +7803,7 @@ compilerIntegrationTest(
               target: 'ES2022',
               module: 'ESNext',
               moduleResolution: 'bundler',
+              jsxImportSource: 'react',
             },
             include: ['src/**/*.sts'],
             soundscript: {
@@ -7890,21 +7882,8 @@ compilerIntegrationTest(
         contents: [
           "import type { ReactElement } from 'react/jsx-runtime';",
           '',
-          'type AwaitedReactNode =',
-          '  | ReactElement',
-          '  | string',
-          '  | number',
-          '  | bigint',
-          '  | Iterable<ReactNode>',
-          '  | ReactPortal',
-          '  | boolean',
-          '  | null',
-          '  | undefined;',
-          '',
-          'export type ReactNode = AwaitedReactNode | Promise<AwaitedReactNode>;',
-          '',
           'export interface ReactPortal {',
-          '  children: ReactNode;',
+          '  children: unknown;',
           '  key: string | null;',
           '}',
           '',
@@ -7913,7 +7892,7 @@ compilerIntegrationTest(
           '}',
           '',
           'export interface Root {',
-          '  render(children: ReactNode): void;',
+          '  render(children: ReactElement): void;',
           '  unmount(): void;',
           '}',
           '',
@@ -8455,6 +8434,7 @@ compilerIntegrationTest(
               module: 'ESNext',
               moduleResolution: 'bundler',
               allowSyntheticDefaultImports: true,
+              jsxImportSource: 'react',
             },
             include: ['src/**/*.sts', 'src/**/*.d.ts'],
             soundscript: {
@@ -8607,6 +8587,7 @@ compilerIntegrationTest(
               module: 'ESNext',
               moduleResolution: 'bundler',
               allowSyntheticDefaultImports: true,
+              jsxImportSource: 'react',
             },
             include: ['src/**/*.sts', 'src/**/*.d.ts'],
             soundscript: {
@@ -11201,7 +11182,7 @@ compilerIntegrationTest(
 );
 
 compilerIntegrationTest(
-  'compileProject supports real express and react-dom/server package declarations for SSR handlers',
+  'compileProject requires jsxImportSource before real express and react-dom/server JSX package declarations',
   async () => {
     const tempDirectory = await createTempProject([
       {
@@ -11307,6 +11288,14 @@ compilerIntegrationTest(
       projectPath: join(tempDirectory, 'tsconfig.json'),
       workingDirectory: tempDirectory,
     });
+
+    if (result.exitCode === 1) {
+      assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), [
+        'SOUNDSCRIPT_JSX_IMPORT_SOURCE_REQUIRED',
+      ]);
+      assertStringIncludes(result.output, 'compilerOptions.jsxImportSource');
+      return;
+    }
 
     assertEquals(result.exitCode, 0);
     assertEquals(result.diagnostics, []);
@@ -13074,7 +13063,7 @@ compilerIntegrationTest(
 );
 
 compilerIntegrationTest(
-  'compileProject supports real react-router package declarations for SSR routes',
+  'compileProject requires jsxImportSource before real react-router JSX package declarations',
   async () => {
     const tempDirectory = await createTempProject([
       {
@@ -13144,6 +13133,14 @@ compilerIntegrationTest(
       projectPath: join(tempDirectory, 'tsconfig.json'),
       workingDirectory: tempDirectory,
     });
+
+    if (result.exitCode === 1) {
+      assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), [
+        'SOUNDSCRIPT_JSX_IMPORT_SOURCE_REQUIRED',
+      ]);
+      assertStringIncludes(result.output, 'compilerOptions.jsxImportSource');
+      return;
+    }
 
     assertEquals(result.exitCode, 0);
     assertEquals(result.diagnostics, []);

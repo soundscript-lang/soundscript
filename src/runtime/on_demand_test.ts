@@ -1,4 +1,4 @@
-import { assertEquals, assertStringIncludes } from '@std/assert';
+import { assertEquals, assertRejects, assertStringIncludes } from '@std/assert';
 import { dirname, join } from '@std/path';
 
 import { writeInstalledStdlibPackage } from '../../tests/support/test_installed_stdlib.ts';
@@ -302,8 +302,8 @@ Deno.test('createOnDemandTransformer avoids the full expanded runtime program fo
   assertEquals(fullExpandedProgramBuilds.length, 0, logs.join('\n'));
 });
 
-Deno.test('createOnDemandTransformer lowers JSX in .sts files without requiring tsconfig jsx', async () => {
-  const root = await Deno.makeTempDir({ prefix: 'soundscript-on-demand-jsx-' });
+Deno.test('createOnDemandTransformer requires jsxImportSource before lowering JSX in .sts files', async () => {
+  const root = await Deno.makeTempDir({ prefix: 'soundscript-on-demand-jsx-required-' });
   await writeProjectFile(
     root,
     'tsconfig.json',
@@ -331,11 +331,52 @@ Deno.test('createOnDemandTransformer lowers JSX in .sts files without requiring 
   );
 
   const transformer = createOnDemandTransformer({ workingDirectory: root });
+
+  await assertRejects(
+    async () => {
+      await transformer.transformModule(join(root, 'src/main.sts'));
+    },
+    Error,
+    'SOUNDSCRIPT_JSX_IMPORT_SOURCE_REQUIRED',
+  );
+});
+
+Deno.test('createOnDemandTransformer lowers JSX in .sts files through configured jsxImportSource', async () => {
+  const root = await Deno.makeTempDir({ prefix: 'soundscript-on-demand-jsx-' });
+  await writeProjectFile(
+    root,
+    'tsconfig.json',
+    JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          target: 'ES2022',
+          module: 'ESNext',
+          moduleResolution: 'Bundler',
+          jsxImportSource: '@example/jsx',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+  );
+  await writeProjectFile(
+    root,
+    'src/main.sts',
+    [
+      'export const view = <section><h1>Hello</h1></section>;',
+      '',
+    ].join('\n'),
+  );
+
+  const transformer = createOnDemandTransformer({ workingDirectory: root });
   const transformed = await transformer.transformModule(join(root, 'src/main.sts'));
 
   assertEquals(transformed.transformMode, 'soundscript-prepared');
-  assertStringIncludes(transformed.code, 'react/jsx-runtime');
+  assertStringIncludes(transformed.code, '@example/jsx/jsx-runtime');
   assertEquals(transformed.code.includes('<section>'), false);
+  assertEquals(transformed.code.includes('react/jsx-runtime'), false);
 });
 
 Deno.test('createOnDemandTransformer resolves shipped package source through soundscript.exports', async () => {

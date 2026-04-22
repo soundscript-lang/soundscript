@@ -65,6 +65,7 @@ import {
   type CreatePreparedProgramOptions,
   getLineAndCharacterOfPosition,
   type ImportedMacroSiteKind,
+  lowerJsxSyntaxToRuntimeCalls,
   mapProgramRangeToSource,
   persistPreparedProgramBuildInfo,
   type PreparedProgram,
@@ -558,6 +559,93 @@ function createPlaceholderSignature(
   const placeholderIds = [...placeholdersById.keys()].sort((left, right) => left - right).join(',');
   const augmentIds = [...augmentPlaceholderIds].sort((left, right) => left - right).join(',');
   return `${placeholderIds}|${augmentIds}`;
+}
+
+function withFinalRewriteText(
+  sourceFileName: string,
+  preparedFile: PreparedSourceFile | undefined,
+  rewrittenText: string,
+): PreparedSourceFile | undefined {
+  if (!preparedFile || preparedFile.rewrittenText === rewrittenText) {
+    return preparedFile;
+  }
+
+  return {
+    ...preparedFile,
+    postRewriteStage: buildRewriteStageFromTexts(
+      sourceFileName,
+      preparedFile.rewriteResult.rewrittenText,
+      rewrittenText,
+    ),
+    rewrittenText,
+  };
+}
+
+function applyFinalJsxLowering(
+  context: BuiltinProgramStageContext,
+  sourceFileName: string,
+  finalText: string,
+  diagnosticPreparedFile: PreparedSourceFile | undefined,
+): {
+  diagnosticPreparedFile: PreparedSourceFile | undefined;
+  finalOverrideText: string;
+  frontendDiagnostics: readonly MergedDiagnostic[];
+} {
+  const lowered = lowerJsxSyntaxToRuntimeCalls(
+    sourceFileName,
+    finalText,
+    context.preparedProgram.isSoundscriptSourceFile,
+    context.supportedOptions.options.jsxImportSource,
+  );
+
+  return {
+    diagnosticPreparedFile: withFinalRewriteText(
+      sourceFileName,
+      diagnosticPreparedFile,
+      lowered.rewrittenText,
+    ),
+    finalOverrideText: lowered.rewrittenText,
+    frontendDiagnostics: lowered.diagnostics,
+  };
+}
+
+function frontendDiagnosticKey(diagnostic: MergedDiagnostic): string {
+  const stableParts = [
+    diagnostic.source,
+    diagnostic.code,
+    diagnostic.category,
+    diagnostic.message,
+    diagnostic.filePath ?? '',
+  ];
+  if (diagnostic.code === 'SOUNDSCRIPT_JSX_IMPORT_SOURCE_REQUIRED') {
+    return stableParts.join('\u0000');
+  }
+  return [
+    ...stableParts,
+    diagnostic.line ?? '',
+    diagnostic.column ?? '',
+    diagnostic.endLine ?? '',
+    diagnostic.endColumn ?? '',
+  ].join('\u0000');
+}
+
+function pushUniqueFrontendDiagnostics(
+  target: MergedDiagnostic[],
+  diagnostics: readonly MergedDiagnostic[],
+): void {
+  if (diagnostics.length === 0) {
+    return;
+  }
+
+  const existing = new Set(target.map(frontendDiagnosticKey));
+  for (const diagnostic of diagnostics) {
+    const key = frontendDiagnosticKey(diagnostic);
+    if (existing.has(key)) {
+      continue;
+    }
+    existing.add(key);
+    target.push(diagnostic);
+  }
 }
 
 export function getBuiltinMacroDefinitionsBySpecifier(): ReadonlyMap<
@@ -1449,9 +1537,15 @@ function createBuiltinEmitStagePreparation(
           cachedFinalArtifact?.sourceText === sourceFile.text &&
           cachedFinalArtifact.preparedOriginalText === preparedSource?.originalText &&
           cachedFinalArtifact.preparedRewrittenText === preparedSource?.rewrittenText &&
+          cachedFinalArtifact.jsxImportSource ===
+            context.supportedOptions.options.jsxImportSource &&
           cachedFinalArtifact.normalizedText === normalizedText &&
           cachedFinalArtifact.placeholderSignature === placeholderSignature
         ) {
+          pushUniqueFrontendDiagnostics(
+            context.frontendDiagnostics,
+            cachedFinalArtifact.frontendDiagnostics,
+          );
           if (cachedFinalArtifact.diagnosticPreparedFile) {
             context.diagnosticPreparedFiles.set(
               sourceFileName,
@@ -1482,13 +1576,27 @@ function createBuiltinEmitStagePreparation(
             annotatedStage.augmentPlaceholderIdsByFile.get(sourceFileName) ?? new Set(),
             true,
           );
-          diagnosticPreparedFile = preparedFile;
-          finalOverrideText = cleanedProgramText;
-          context.diagnosticPreparedFiles.set(sourceFileName, preparedFile);
-          finalOverrides.set(sourceFileName, cleanedProgramText);
+          const jsxLowering = applyFinalJsxLowering(
+            context,
+            sourceFileName,
+            cleanedProgramText,
+            preparedFile,
+          );
+          pushUniqueFrontendDiagnostics(
+            context.frontendDiagnostics,
+            jsxLowering.frontendDiagnostics,
+          );
+          diagnosticPreparedFile = jsxLowering.diagnosticPreparedFile;
+          finalOverrideText = jsxLowering.finalOverrideText;
+          if (diagnosticPreparedFile) {
+            context.diagnosticPreparedFiles.set(sourceFileName, diagnosticPreparedFile);
+          }
+          finalOverrides.set(sourceFileName, finalOverrideText);
           finalArtifactCache.set(sourceFileName, {
             diagnosticPreparedFile,
             finalOverrideText,
+            frontendDiagnostics: jsxLowering.frontendDiagnostics,
+            jsxImportSource: context.supportedOptions.options.jsxImportSource,
             normalizedText,
             placeholderSignature,
             preparedOriginalText: preparedSource?.originalText,
@@ -1510,15 +1618,27 @@ function createBuiltinEmitStagePreparation(
             rewriteResult: preparedSource.rewriteResult,
             rewrittenText: finalText,
           };
-          context.diagnosticPreparedFiles.set(sourceFileName, diagnosticPreparedFile);
         } else if (preparedSource?.postRewriteStage) {
           diagnosticPreparedFile = preparedSource;
-          context.diagnosticPreparedFiles.set(sourceFileName, preparedSource);
         }
-        finalOverrides.set(sourceFileName, finalText);
+        const jsxLowering = applyFinalJsxLowering(
+          context,
+          sourceFileName,
+          finalText,
+          diagnosticPreparedFile,
+        );
+        pushUniqueFrontendDiagnostics(context.frontendDiagnostics, jsxLowering.frontendDiagnostics);
+        diagnosticPreparedFile = jsxLowering.diagnosticPreparedFile;
+        finalOverrideText = jsxLowering.finalOverrideText;
+        if (diagnosticPreparedFile) {
+          context.diagnosticPreparedFiles.set(sourceFileName, diagnosticPreparedFile);
+        }
+        finalOverrides.set(sourceFileName, finalOverrideText);
         finalArtifactCache.set(sourceFileName, {
           diagnosticPreparedFile,
           finalOverrideText,
+          frontendDiagnostics: jsxLowering.frontendDiagnostics,
+          jsxImportSource: context.supportedOptions.options.jsxImportSource,
           normalizedText,
           placeholderSignature,
           preparedOriginalText: preparedSource?.originalText,
@@ -1638,7 +1758,7 @@ function createBuiltinFinalProgram(
     { always: true },
   );
   persistPreparedProgramBuildInfo(expandedProgram);
-  context.frontendDiagnostics.push(...expandedProgram.frontendDiagnostics());
+  pushUniqueFrontendDiagnostics(context.frontendDiagnostics, expandedProgram.frontendDiagnostics());
   return expandedProgram;
 }
 
