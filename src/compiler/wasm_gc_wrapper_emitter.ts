@@ -267,6 +267,29 @@ function wrapperUsesSetBoundaryAdapters(wrapper: {
   return wrapperCollectionBoundaryAdapters(wrapper).some((adapter) => adapter.startsWith('set_'));
 }
 
+function collectionBoundaryAdapterUsesNumberArray(
+  adapter: WasmGcCollectionBoundaryAdapterIR,
+): boolean {
+  return adapter === 'map_string_number_array' || adapter === 'set_number_array';
+}
+
+function wrapperUsesNumberArrayBoundaryAdapters(wrapper: {
+  paramBoundaryAdapters?: readonly (WasmGcCollectionBoundaryAdapterIR | undefined)[];
+  resultBoundaryAdapter?: WasmGcCollectionBoundaryAdapterIR;
+}): boolean {
+  return wrapperCollectionBoundaryAdapters(wrapper).some(collectionBoundaryAdapterUsesNumberArray);
+}
+
+function wrapperUsesCollectionBoundaryAdapter(
+  wrapper: {
+    paramBoundaryAdapters?: readonly (WasmGcCollectionBoundaryAdapterIR | undefined)[];
+    resultBoundaryAdapter?: WasmGcCollectionBoundaryAdapterIR;
+  },
+  adapter: WasmGcCollectionBoundaryAdapterIR,
+): boolean {
+  return wrapperCollectionBoundaryAdapters(wrapper).includes(adapter);
+}
+
 function hostImportSurfaceNeedsStringAdapters(plan: WasmGcModulePlanIR): boolean {
   return plan.wrapperPlan.hostImportWrappers.some(wrapperUsesStringValues) ||
     plan.wrapperPlan.hostImportWrappers.some(wrapperUsesMapBoundaryAdapters) ||
@@ -293,6 +316,19 @@ function hostImportSurfaceNeedsBigIntAdapters(plan: WasmGcModulePlanIR): boolean
     );
 }
 
+function hostImportSurfaceNeedsNumberArrayAdapters(plan: WasmGcModulePlanIR): boolean {
+  return plan.wrapperPlan.hostImportWrappers.some(wrapperUsesNumberArrayBoundaryAdapters);
+}
+
+function hostImportSurfaceUsesCollectionBoundaryAdapter(
+  plan: WasmGcModulePlanIR,
+  adapter: WasmGcCollectionBoundaryAdapterIR,
+): boolean {
+  return plan.wrapperPlan.hostImportWrappers.some((wrapper) =>
+    wrapperUsesCollectionBoundaryAdapter(wrapper, adapter)
+  );
+}
+
 function exportSurfaceNeedsStringAdapters(plan: WasmGcModulePlanIR): boolean {
   return plan.wrapperPlan.exportWrappers.some(wrapperUsesStringValues) ||
     plan.wrapperPlan.exportWrappers.some(wrapperUsesMapBoundaryAdapters) ||
@@ -307,6 +343,19 @@ function exportSurfaceNeedsSymbolAdapters(plan: WasmGcModulePlanIR): boolean {
 
 function exportSurfaceNeedsBigIntAdapters(plan: WasmGcModulePlanIR): boolean {
   return plan.wrapperPlan.exportWrappers.some(wrapperUsesBigIntValues);
+}
+
+function exportSurfaceNeedsNumberArrayAdapters(plan: WasmGcModulePlanIR): boolean {
+  return plan.wrapperPlan.exportWrappers.some(wrapperUsesNumberArrayBoundaryAdapters);
+}
+
+function exportSurfaceUsesCollectionBoundaryAdapter(
+  plan: WasmGcModulePlanIR,
+  adapter: WasmGcCollectionBoundaryAdapterIR,
+): boolean {
+  return plan.wrapperPlan.exportWrappers.some((wrapper) =>
+    wrapperUsesCollectionBoundaryAdapter(wrapper, adapter)
+  );
 }
 
 function exportSurfaceNeedsMapToInternalAdapters(plan: WasmGcModulePlanIR): boolean {
@@ -389,6 +438,14 @@ function boundaryCacheForInstance(instance) {
 
 function renderHostImportBoundaryAdapterHelpers(plan: WasmGcModulePlanIR): string {
   const helpers: string[] = [];
+  const usesMapStringNumberArray = hostImportSurfaceUsesCollectionBoundaryAdapter(
+    plan,
+    'map_string_number_array',
+  );
+  const usesSetNumberArray = hostImportSurfaceUsesCollectionBoundaryAdapter(
+    plan,
+    'set_number_array',
+  );
   if (hostImportSurfaceNeedsStringAdapters(plan)) {
     helpers.push(`function stringToInternal(value) {
   if (typeof value !== 'string') {
@@ -467,6 +524,39 @@ function bigintFromInternal(value) {
   return requireExport(instance.exports, '__soundscript_bigint_to_host')(value);
 }`);
   }
+  if (hostImportSurfaceNeedsNumberArrayAdapters(plan)) {
+    helpers.push(`function numberArrayToInternal(value) {
+  if (!Array.isArray(value)) {
+    throw new TypeError('Soundscript WasmGC number array host import result must be an Array.');
+  }
+  const instance = requireInstance();
+  const exports = instance.exports;
+  const push = requireExport(exports, '__soundscript_number_array_push');
+  let result = requireExport(exports, '__soundscript_number_array_new')();
+  for (const entry of value) {
+    if (typeof entry !== 'number') {
+      throw new TypeError('Soundscript WasmGC number array boundary value must contain only numbers.');
+    }
+    result = push(result, entry);
+  }
+  return result;
+}
+
+function numberArrayFromInternal(value) {
+  if (value == null) {
+    throw new TypeError('Soundscript WasmGC number array host import argument was null.');
+  }
+  const instance = requireInstance();
+  const exports = instance.exports;
+  const length = requireExport(exports, '__soundscript_number_array_length')(value);
+  const valueAt = requireExport(exports, '__soundscript_number_array_value_at');
+  const result = [];
+  for (let index = 0; index < length; index += 1) {
+    result.push(valueAt(value, index));
+  }
+  return result;
+}`);
+  }
   if (hostImportSurfaceNeedsMapToInternalAdapters(plan)) {
     helpers.push(`function mapBoundaryValueToInternal(adapter, value) {
   if (adapter === 'map_string_number') {
@@ -484,6 +574,13 @@ function bigintFromInternal(value) {
   if (adapter === 'map_string_string') {
     return stringToInternal(value);
   }
+${
+      usesMapStringNumberArray
+        ? `  if (adapter === 'map_string_number_array') {
+    return numberArrayToInternal(value);
+  }`
+        : ''
+    }
   throw new TypeError(\`Unsupported Soundscript WasmGC Map boundary adapter \${adapter}.\`);
 }
 
@@ -517,6 +614,13 @@ function mapToInternal(adapter, value) {
   if (adapter === 'map_string_string') {
     return stringFromInternal(value);
   }
+${
+      usesMapStringNumberArray
+        ? `  if (adapter === 'map_string_number_array') {
+    return numberArrayFromInternal(value);
+  }`
+        : ''
+    }
   throw new TypeError(\`Unsupported Soundscript WasmGC Map boundary adapter \${adapter}.\`);
 }
 
@@ -557,6 +661,13 @@ function mapFromInternal(adapter, value) {
   if (adapter === 'set_string') {
     return stringToInternal(value);
   }
+${
+      usesSetNumberArray
+        ? `  if (adapter === 'set_number_array') {
+    return numberArrayToInternal(value);
+  }`
+        : ''
+    }
   throw new TypeError(\`Unsupported Soundscript WasmGC Set boundary adapter \${adapter}.\`);
 }
 
@@ -587,6 +698,13 @@ function setToInternal(adapter, value) {
   if (adapter === 'set_string') {
     return stringFromInternal(value);
   }
+${
+      usesSetNumberArray
+        ? `  if (adapter === 'set_number_array') {
+    return numberArrayFromInternal(value);
+  }`
+        : ''
+    }
   throw new TypeError(\`Unsupported Soundscript WasmGC Set boundary adapter \${adapter}.\`);
 }
 
@@ -611,6 +729,14 @@ function setFromInternal(adapter, value) {
 
 function renderExportBoundaryAdapterHelpers(plan: WasmGcModulePlanIR): string {
   const helpers: string[] = [];
+  const usesMapStringNumberArray = exportSurfaceUsesCollectionBoundaryAdapter(
+    plan,
+    'map_string_number_array',
+  );
+  const usesSetNumberArray = exportSurfaceUsesCollectionBoundaryAdapter(
+    plan,
+    'set_number_array',
+  );
   if (exportSurfaceNeedsStringAdapters(plan)) {
     helpers.push(`function stringToInternal(value) {
     if (typeof value !== 'string') {
@@ -681,6 +807,35 @@ function renderExportBoundaryAdapterHelpers(plan: WasmGcModulePlanIR): string {
     return requireExport(wasmExports, '__soundscript_bigint_to_host')(value);
   }`);
   }
+  if (exportSurfaceNeedsNumberArrayAdapters(plan)) {
+    helpers.push(`function numberArrayToInternal(value) {
+    if (!Array.isArray(value)) {
+      throw new TypeError('Soundscript WasmGC number array export argument must be an Array.');
+    }
+    const push = requireExport(wasmExports, '__soundscript_number_array_push');
+    let result = requireExport(wasmExports, '__soundscript_number_array_new')();
+    for (const entry of value) {
+      if (typeof entry !== 'number') {
+        throw new TypeError('Soundscript WasmGC number array boundary value must contain only numbers.');
+      }
+      result = push(result, entry);
+    }
+    return result;
+  }
+
+  function numberArrayFromInternal(value) {
+    if (value == null) {
+      throw new TypeError('Soundscript WasmGC number array export result was null.');
+    }
+    const length = requireExport(wasmExports, '__soundscript_number_array_length')(value);
+    const valueAt = requireExport(wasmExports, '__soundscript_number_array_value_at');
+    const result = [];
+    for (let index = 0; index < length; index += 1) {
+      result.push(valueAt(value, index));
+    }
+    return result;
+  }`);
+  }
   if (exportSurfaceNeedsMapToInternalAdapters(plan)) {
     helpers.push(`function mapBoundaryValueToInternal(adapter, value) {
     if (adapter === 'map_string_number') {
@@ -697,6 +852,13 @@ function renderExportBoundaryAdapterHelpers(plan: WasmGcModulePlanIR): string {
     }
     if (adapter === 'map_string_string') {
       return stringToInternal(value);
+    }
+${
+      usesMapStringNumberArray
+        ? `    if (adapter === 'map_string_number_array') {
+      return numberArrayToInternal(value);
+    }`
+        : ''
     }
     throw new TypeError(\`Unsupported Soundscript WasmGC Map boundary adapter \${adapter}.\`);
   }
@@ -728,6 +890,13 @@ function renderExportBoundaryAdapterHelpers(plan: WasmGcModulePlanIR): string {
     }
     if (adapter === 'map_string_string') {
       return stringFromInternal(value);
+    }
+${
+      usesMapStringNumberArray
+        ? `    if (adapter === 'map_string_number_array') {
+      return numberArrayFromInternal(value);
+    }`
+        : ''
     }
     throw new TypeError(\`Unsupported Soundscript WasmGC Map boundary adapter \${adapter}.\`);
   }
@@ -767,6 +936,13 @@ function renderExportBoundaryAdapterHelpers(plan: WasmGcModulePlanIR): string {
     if (adapter === 'set_string') {
       return stringToInternal(value);
     }
+${
+      usesSetNumberArray
+        ? `    if (adapter === 'set_number_array') {
+      return numberArrayToInternal(value);
+    }`
+        : ''
+    }
     throw new TypeError(\`Unsupported Soundscript WasmGC Set boundary adapter \${adapter}.\`);
   }
 
@@ -794,6 +970,13 @@ function renderExportBoundaryAdapterHelpers(plan: WasmGcModulePlanIR): string {
     }
     if (adapter === 'set_string') {
       return stringFromInternal(value);
+    }
+${
+      usesSetNumberArray
+        ? `    if (adapter === 'set_number_array') {
+      return numberArrayFromInternal(value);
+    }`
+        : ''
     }
     throw new TypeError(\`Unsupported Soundscript WasmGC Set boundary adapter \${adapter}.\`);
   }

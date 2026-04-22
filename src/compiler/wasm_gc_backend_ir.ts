@@ -117,9 +117,11 @@ export interface WasmGcHostCallbackWrapperPlanIR {
 export type WasmGcCollectionBoundaryAdapterIR =
   | 'map_string_boolean'
   | 'map_string_number'
+  | 'map_string_number_array'
   | 'map_string_string'
   | 'set_boolean'
   | 'set_number'
+  | 'set_number_array'
   | 'set_string';
 
 export interface WasmGcExportWrapperPlanIR {
@@ -843,11 +845,17 @@ function collectionBoundaryAdapterForSemanticType(
   if (type.kind === 'map') {
     const keyKind = collectionScalarKindForSemanticType(type.key);
     const valueKind = collectionScalarKindForSemanticType(type.value);
+    const valueArrayElementKind = type.value.kind === 'array'
+      ? collectionScalarKindForSemanticType(type.value.element)
+      : undefined;
     if (keyKind === 'string' && valueKind === 'boolean') {
       return 'map_string_boolean';
     }
     if (keyKind === 'string' && valueKind === 'number') {
       return 'map_string_number';
+    }
+    if (keyKind === 'string' && valueArrayElementKind === 'number') {
+      return 'map_string_number_array';
     }
     if (keyKind === 'string' && valueKind === 'string') {
       return 'map_string_string';
@@ -855,11 +863,17 @@ function collectionBoundaryAdapterForSemanticType(
   }
   if (type.kind === 'set') {
     const valueKind = collectionScalarKindForSemanticType(type.value);
+    const valueArrayElementKind = type.value.kind === 'array'
+      ? collectionScalarKindForSemanticType(type.value.element)
+      : undefined;
     if (valueKind === 'boolean') {
       return 'set_boolean';
     }
     if (valueKind === 'number') {
       return 'set_number';
+    }
+    if (valueArrayElementKind === 'number') {
+      return 'set_number_array';
     }
     if (valueKind === 'string') {
       return 'set_string';
@@ -894,12 +908,14 @@ function collectionBoundaryResultForFunction(
 
 function collectionAdapterMapValueType(
   adapter: WasmGcCollectionBoundaryAdapterIR,
-): 'owned_string_ref' | 'f64' | 'i32' | undefined {
+): 'owned_string_ref' | 'owned_number_array_ref' | 'f64' | 'i32' | undefined {
   switch (adapter) {
     case 'map_string_boolean':
       return 'i32';
     case 'map_string_number':
       return 'f64';
+    case 'map_string_number_array':
+      return 'owned_number_array_ref';
     case 'map_string_string':
       return 'owned_string_ref';
     default:
@@ -913,12 +929,15 @@ function collectionAdapterSetArrayType(
   | 'owned_array_ref'
   | 'owned_number_array_ref'
   | 'owned_boolean_array_ref'
+  | 'owned_tagged_array_ref'
   | undefined {
   switch (adapter) {
     case 'set_boolean':
       return 'owned_boolean_array_ref';
     case 'set_number':
       return 'owned_number_array_ref';
+    case 'set_number_array':
+      return 'owned_tagged_array_ref';
     case 'set_string':
       return 'owned_array_ref';
     default:
