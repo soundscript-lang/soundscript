@@ -64,7 +64,14 @@ function renderRuntimeFamilyTypePlan(plan: WasmGcTypePlanIR): readonly string[] 
   if (plan.family === 'array') {
     return [];
   }
-  if (plan.family === 'map' || plan.family === 'set') {
+  if (plan.family === 'map') {
+    return [
+      `  (type ${plan.name} (struct`,
+      '    (field $size (mut f64))',
+      '  ))',
+    ];
+  }
+  if (plan.family === 'set') {
     return [
       `  (type ${plan.name} (struct`,
       '    (field $storage (mut (ref null eq)))',
@@ -1267,6 +1274,29 @@ function renderDynamicObjectSizeStatement(
   ];
 }
 
+function renderMapNewStatement(
+  statement: Extract<SemanticStatementIR, { kind: 'map_new' }>,
+  indent: string,
+): readonly string[] {
+  return [
+    `${indent}f64.const 0`,
+    `${indent}struct.new $map_runtime`,
+    `${indent}local.set $${sanitizeIdentifier(statement.targetName)}`,
+  ];
+}
+
+function renderMapSizeStatement(
+  statement: Extract<SemanticStatementIR, { kind: 'map_size' }>,
+  indent: string,
+): readonly string[] {
+  return [
+    `${indent}local.get $${sanitizeIdentifier(statement.objectName)}`,
+    `${indent}ref.cast (ref $map_runtime)`,
+    `${indent}struct.get $map_runtime $size`,
+    `${indent}local.set $${sanitizeIdentifier(statement.targetName)}`,
+  ];
+}
+
 function renderDynamicObjectHasStatement(
   statement: Extract<SemanticStatementIR, { kind: 'dynamic_object_has' }>,
   indent: string,
@@ -1725,6 +1755,8 @@ function collectNumberArrayScratchFromStatement(
     case 'dynamic_object_has':
     case 'dynamic_object_delete':
     case 'dynamic_object_clear':
+    case 'map_new':
+    case 'map_size':
       break;
     case 'dynamic_object_property_set':
       collectNumberArrayScratchFromExpression(statement.value, uses);
@@ -3219,6 +3251,10 @@ function renderStatement(
     }
     case 'dynamic_object_size':
       return renderDynamicObjectSizeStatement(statement, indent, context);
+    case 'map_new':
+      return renderMapNewStatement(statement, indent);
+    case 'map_size':
+      return renderMapSizeStatement(statement, indent);
     case 'dynamic_object_has':
       return renderDynamicObjectHasStatement(statement, indent, context);
     case 'dynamic_object_delete':
@@ -3981,6 +4017,8 @@ function collectBoxedClosureDispatchSignatureIdsFromStatement(
     case 'dynamic_object_delete':
     case 'dynamic_object_clear':
     case 'dynamic_object_values':
+    case 'map_new':
+    case 'map_size':
       break;
     case 'dynamic_object_property_set':
       collectBoxedClosureDispatchSignatureIdsFromExpression(
@@ -4335,6 +4373,8 @@ function collectBoxValueTypesFromStatement(
     case 'dynamic_object_delete':
     case 'dynamic_object_clear':
     case 'dynamic_object_values':
+    case 'map_new':
+    case 'map_size':
       break;
     case 'dynamic_object_property_set':
       collectBoxValueTypesFromExpression(statement.value, valueTypes);
@@ -4626,6 +4666,8 @@ function collectArrayRuntimeTypesFromStatement(
     case 'dynamic_object_has':
     case 'dynamic_object_delete':
     case 'dynamic_object_clear':
+    case 'map_new':
+    case 'map_size':
       break;
     case 'dynamic_object_property_set':
       collectArrayRuntimeTypesFromExpression(statement.value, runtimeTypes);

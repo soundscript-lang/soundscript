@@ -517,6 +517,15 @@ export type SemanticStatementIR =
       | 'owned_tagged_array_ref';
   }
   | {
+    kind: 'map_new';
+    targetName: string;
+  }
+  | {
+    kind: 'map_size';
+    targetName: string;
+    objectName: string;
+  }
+  | {
     kind: 'box_set';
     box: SemanticExpressionIR;
     value: SemanticExpressionIR;
@@ -1469,6 +1478,10 @@ function collectRuntimeOperationFamilies(
           families.add(operation.compatibilityCollectionFamily);
         }
         families.add('finite_union');
+        break;
+      case 'allocate_map':
+      case 'get_map_size':
+        families.add('map');
         break;
       default:
         break;
@@ -2686,6 +2699,25 @@ function semanticDynamicObjectValuesFromRuntimeOperation(
   };
 }
 
+function semanticMapNewFromRuntimeOperation(
+  operation: Extract<CompilerRuntimeOperationIR, { kind: 'allocate_map' }>,
+): SemanticStatementIR {
+  return {
+    kind: 'map_new',
+    targetName: operation.resultName,
+  };
+}
+
+function semanticMapSizeFromRuntimeOperation(
+  operation: Extract<CompilerRuntimeOperationIR, { kind: 'get_map_size' }>,
+): SemanticStatementIR {
+  return {
+    kind: 'map_size',
+    targetName: operation.resultName,
+    objectName: operation.objectName,
+  };
+}
+
 function semanticBodyFromCompilerIR(
   func: CompilerFunctionIR,
   operations: readonly CompilerRuntimeOperationIR[],
@@ -2702,6 +2734,14 @@ function semanticBodyFromCompilerIR(
   const pendingDynamicDeletesByResult = new Map<string, DynamicObjectDeleteOperationIR>();
   const pendingDynamicClearsByResult = new Map<string, DynamicObjectClearOperationIR>();
   const pendingDynamicValuesByResult = new Map<string, DynamicObjectValuesOperationIR>();
+  const mapAllocationsByResult = new Map<
+    string,
+    Extract<CompilerRuntimeOperationIR, { kind: 'allocate_map' }>
+  >();
+  const pendingMapSizesByResult = new Map<
+    string,
+    Extract<CompilerRuntimeOperationIR, { kind: 'get_map_size' }>
+  >();
   const pendingInitialDynamicSetsByObject = new Map<
     string,
     DynamicObjectPropertySetOperationIR[]
@@ -2762,6 +2802,10 @@ function semanticBodyFromCompilerIR(
       pendingDynamicClearsByResult.set(operation.resultName, operation);
     } else if (operation.kind === 'list_dynamic_object_values') {
       pendingDynamicValuesByResult.set(operation.resultName, operation);
+    } else if (operation.kind === 'allocate_map') {
+      mapAllocationsByResult.set(operation.resultName, operation);
+    } else if (operation.kind === 'get_map_size') {
+      pendingMapSizesByResult.set(operation.resultName, operation);
     }
   }
 
@@ -2862,6 +2906,13 @@ function semanticBodyFromCompilerIR(
         pendingDynamicValuesByResult.delete(resultName);
       }
     }
+    for (const [resultName, operation] of [...pendingMapSizesByResult]) {
+      if (shouldEmitPending(resultName)) {
+        targetBody.push(semanticMapSizeFromRuntimeOperation(operation));
+        seenAssignments.add(operation.resultName);
+        pendingMapSizesByResult.delete(resultName);
+      }
+    }
   };
 
   const markSeenSemanticStatement = (semanticStatement: SemanticStatementIR): void => {
@@ -2899,6 +2950,16 @@ function semanticBodyFromCompilerIR(
       const semanticStatement = semanticFallbackObjectNewFromRuntimeOperation(
         fallbackAllocationsByResult.get(statement.name)!,
         valueTypesByName,
+      );
+      seenAssignments.add(statement.name);
+      return semanticStatement;
+    } else if (
+      statement.kind === 'local_set' &&
+      statement.value.kind === 'heap_placeholder' &&
+      mapAllocationsByResult.has(statement.name)
+    ) {
+      const semanticStatement = semanticMapNewFromRuntimeOperation(
+        mapAllocationsByResult.get(statement.name)!,
       );
       seenAssignments.add(statement.name);
       return semanticStatement;
@@ -2955,6 +3016,7 @@ function semanticBodyFromCompilerIR(
       ...pendingDynamicDeletesByResult.keys(),
       ...pendingDynamicClearsByResult.keys(),
       ...pendingDynamicValuesByResult.keys(),
+      ...pendingMapSizesByResult.keys(),
     ]);
     const forceHoistNames = new Set<string>();
     for (const resultName of pendingResultNames) {
@@ -3105,6 +3167,8 @@ function collectUnsupportedStatementKinds(
     case 'dynamic_object_delete':
     case 'dynamic_object_clear':
     case 'dynamic_object_values':
+    case 'map_new':
+    case 'map_size':
       break;
     case 'dynamic_object_property_set':
       collectUnsupportedExpressionKinds(statement.value, kinds);

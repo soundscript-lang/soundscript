@@ -224,6 +224,7 @@ interface BoundSymbol {
   ownedBooleanArrayAliasValue?: CompilerExpressionIR;
   ownedTaggedArrayAliasValue?: CompilerExpressionIR;
   ownedOnly?: boolean;
+  compilerOwnedMap?: boolean;
   parameter?: boolean;
 }
 
@@ -233,6 +234,7 @@ interface FunctionLoweringContext {
   capturedLocalSymbols: ReadonlySet<ts.Symbol>;
   classes: ReadonlyMap<ts.Symbol, ts.ClassDeclaration>;
   referencedLocalSymbols: ReadonlySet<ts.Symbol>;
+  readOnlyEmptyMapLocalSymbols: ReadonlySet<ts.Symbol>;
   checker: ts.TypeChecker;
   closures: ModuleClosureLoweringState;
   currentFunction: CompilerFunctionIR;
@@ -567,6 +569,7 @@ const HOST_TAGGED_OBJECT_VALUE_BOUNDARY_KINDS: CompilerTaggedPrimitiveBoundaryKi
 interface FunctionRuntimeLoweringState {
   deferredObjectKeysPlaceholderLocals: Set<string>;
   emptyUnknownSetLocals: Set<string>;
+  compilerOwnedMapLocals: Set<string>;
   heapObjectRepresentationsByLocal: Map<string, CompilerRuntimeObjectRepresentationRef>;
   ownedArrayAliasGroupIdByLocal: Map<string, string>;
   ownedArrayAliasLocalsByGroupId: Map<string, Set<string>>;
@@ -639,6 +642,7 @@ function createFunctionRuntimeLoweringState(): FunctionRuntimeLoweringState {
   return {
     deferredObjectKeysPlaceholderLocals: new Set(),
     emptyUnknownSetLocals: new Set(),
+    compilerOwnedMapLocals: new Set(),
     heapObjectRepresentationsByLocal: new Map(),
     ownedArrayAliasGroupIdByLocal: new Map(),
     ownedArrayAliasLocalsByGroupId: new Map(),
@@ -5172,7 +5176,8 @@ function getVariableDeclarationLoweringInfo(
       (isSupportedTaggedKeyNumberValueMapNewExpression(declaration.initializer, context)
         ? ensureObjectDynamicRepresentation(context.runtime)
         : undefined) ??
-      (isSupportedStringKeyMapNewExpression(declaration.initializer, context)
+      (isSupportedStringKeyMapNewExpression(declaration.initializer, context) &&
+          !shouldLowerStringKeyMapNewAsCompilerOwnedMap(declaration.initializer, context)
         ? ensureObjectDynamicRepresentation(context.runtime)
         : undefined) ??
       getNumberKeyMapSetResultRepresentationFromExpression(declaration.initializer, context) ??
@@ -6166,6 +6171,75 @@ function collectReferencedLocalSymbolsFromFunctionLike(
   return referencedSymbols;
 }
 
+function isZeroArgMapNewExpression(
+  expression: ts.Expression,
+): expression is ts.NewExpression {
+  return ts.isNewExpression(expression) &&
+    (expression.arguments?.length ?? 0) === 0 &&
+    ts.isIdentifier(expression.expression) &&
+    expression.expression.text === 'Map';
+}
+
+function collectReadOnlyEmptyMapLocalSymbolsFromFunctionLike(
+  declaration: BodyFunctionLikeDeclaration,
+  checker: ts.TypeChecker,
+): ReadonlySet<ts.Symbol> {
+  const candidates = new Set<ts.Symbol>();
+  const disqualified = new Set<ts.Symbol>();
+
+  const addCandidate = (name: ts.Identifier): void => {
+    const symbol = checker.getSymbolAtLocation(name);
+    if (symbol) {
+      candidates.add(symbol);
+    }
+  };
+
+  const visitDeclarations = (node: ts.Node): void => {
+    if (ts.isFunctionLike(node) && node !== declaration) {
+      return;
+    }
+    if (
+      ts.isVariableDeclaration(node) &&
+      ts.isIdentifier(node.name) &&
+      ts.isVariableDeclarationList(node.parent) &&
+      (node.parent.flags & ts.NodeFlags.Const) !== 0 &&
+      node.initializer &&
+      isZeroArgMapNewExpression(node.initializer)
+    ) {
+      addCandidate(node.name);
+    }
+    ts.forEachChild(node, visitDeclarations);
+  };
+
+  const visitUses = (node: ts.Node): void => {
+    if (ts.isFunctionLike(node) && node !== declaration) {
+      return;
+    }
+    if (ts.isIdentifier(node)) {
+      const symbol = checker.getSymbolAtLocation(node);
+      if (symbol && candidates.has(symbol)) {
+        if (ts.isVariableDeclaration(node.parent) && node.parent.name === node) {
+          return;
+        }
+        if (
+          ts.isPropertyAccessExpression(node.parent) &&
+          node.parent.expression === node &&
+          node.parent.name.text === 'size'
+        ) {
+          return;
+        }
+        disqualified.add(symbol);
+      }
+    }
+    ts.forEachChild(node, visitUses);
+  };
+
+  const bodyStatements = getFunctionLikeBodyStatements(declaration);
+  bodyStatements.forEach(visitDeclarations);
+  bodyStatements.forEach(visitUses);
+  return new Set([...candidates].filter((symbol) => !disqualified.has(symbol)));
+}
+
 function lowerClosureFunctionLike(
   declaration: BodyFunctionLikeDeclaration,
   context: FunctionLoweringContext,
@@ -6625,6 +6699,10 @@ function lowerClosureFunctionLike(
     capturedLocalSymbols,
     classes: context.classes,
     referencedLocalSymbols: collectReferencedLocalSymbolsFromFunctionLike(
+      declaration,
+      context.checker,
+    ),
+    readOnlyEmptyMapLocalSymbols: collectReadOnlyEmptyMapLocalSymbolsFromFunctionLike(
       declaration,
       context.checker,
     ),
@@ -7392,6 +7470,7 @@ function adaptClosureExpressionToTargetSignature(
     capturedLocalSymbols: new Set(),
     classes: context.classes,
     referencedLocalSymbols: new Set(),
+    readOnlyEmptyMapLocalSymbols: new Set(),
     checker: context.checker,
     closures: context.closures,
     currentFunction: {
@@ -17353,6 +17432,24 @@ function isSupportedStringKeyMapNewExpression(
       undefined;
 }
 
+function shouldLowerStringKeyMapNewAsCompilerOwnedMap(
+  expression: ts.NewExpression,
+  context: FunctionLoweringContext,
+): boolean {
+  if ((expression.arguments?.length ?? 0) !== 0) {
+    return false;
+  }
+  if (
+    !ts.isVariableDeclaration(expression.parent) ||
+    expression.parent.initializer !== expression ||
+    !ts.isIdentifier(expression.parent.name)
+  ) {
+    return false;
+  }
+  const symbol = context.checker.getSymbolAtLocation(expression.parent.name);
+  return symbol !== undefined && context.readOnlyEmptyMapLocalSymbols.has(symbol);
+}
+
 function isSupportedNumberKeyMapNewExpression(
   expression: ts.Expression,
   context: FunctionLoweringContext,
@@ -21416,6 +21513,7 @@ function lowerClassStaticTaggedArrayInitializerFunction(
     capturedLocalSymbols: new Set(),
     classes: context.classes,
     referencedLocalSymbols: new Set(),
+    readOnlyEmptyMapLocalSymbols: new Set(),
     checker: context.checker,
     closures: context.closures,
     currentFunction: header,
@@ -21547,6 +21645,7 @@ function lowerClassStaticHeapInitializerFunction(
     capturedLocalSymbols: new Set(),
     classes: context.classes,
     referencedLocalSymbols: new Set(),
+    readOnlyEmptyMapLocalSymbols: new Set(),
     checker: context.checker,
     closures: context.closures,
     currentFunction: header,
@@ -29049,7 +29148,10 @@ function getHeapObjectRepresentationFromExpression(
   if (isSupportedTaggedKeyNumberValueMapNewExpression(expression, context)) {
     return ensureObjectDynamicRepresentation(context.runtime);
   }
-  if (isSupportedStringKeyMapNewExpression(expression, context)) {
+  if (
+    isSupportedStringKeyMapNewExpression(expression, context) &&
+    !shouldLowerStringKeyMapNewAsCompilerOwnedMap(expression, context)
+  ) {
     return ensureObjectDynamicRepresentation(context.runtime);
   }
   if (isSupportedStringKeySetNewExpression(expression, context)) {
@@ -29454,6 +29556,9 @@ function lowerHostClassConstructorBoundaryExpression(
     classes: context.classes,
     referencedLocalSymbols: constructorDeclaration
       ? collectReferencedLocalSymbolsFromFunctionLike(constructorDeclaration, context.checker)
+      : new Set(),
+    readOnlyEmptyMapLocalSymbols: constructorDeclaration
+      ? collectReadOnlyEmptyMapLocalSymbolsFromFunctionLike(constructorDeclaration, context.checker)
       : new Set(),
     checker: context.checker,
     closures: context.closures,
@@ -39144,6 +39249,25 @@ function lowerDynamicObjectSize(
   };
 }
 
+function lowerCompilerOwnedMapSize(
+  objectName: string,
+  context: FunctionLoweringContext,
+): CompilerExpressionIR {
+  const resultName = createLocalName('map_size', context.nextLocalId);
+  context.nextLocalId += 1;
+  context.locals.push({ name: resultName, type: 'f64' });
+  context.functionRuntime.operations.push({
+    kind: 'get_map_size',
+    objectName,
+    resultName,
+  });
+  return {
+    kind: 'local_get',
+    name: resultName,
+    type: 'f64',
+  };
+}
+
 function lowerDynamicObjectClear(
   objectName: string,
   representation: CompilerRuntimeDynamicObjectRepresentationRefIR,
@@ -45555,6 +45679,7 @@ function lowerAsyncContinuationClosure(
     capturedLocalSymbols: context.capturedLocalSymbols,
     classes: context.classes,
     referencedLocalSymbols: new Set(),
+    readOnlyEmptyMapLocalSymbols: new Set(),
     checker: context.checker,
     closures: context.closures,
     currentFunction: closureHeader,
@@ -46384,6 +46509,7 @@ function lowerAsyncLoopControlContinuationClosure(
     capturedLocalSymbols: context.capturedLocalSymbols,
     classes: context.classes,
     referencedLocalSymbols: new Set(),
+    readOnlyEmptyMapLocalSymbols: new Set(),
     checker: context.checker,
     closures: context.closures,
     currentFunction: closureHeader,
@@ -46547,6 +46673,7 @@ function lowerAsyncFunctionCompletionContinuationClosure(
     capturedLocalSymbols: context.capturedLocalSymbols,
     classes: context.classes,
     referencedLocalSymbols: new Set(),
+    readOnlyEmptyMapLocalSymbols: new Set(),
     checker: context.checker,
     closures: context.closures,
     currentFunction: closureHeader,
@@ -46743,6 +46870,7 @@ function lowerAsyncWhileLoopControlHandlerClosure(
     capturedLocalSymbols: context.capturedLocalSymbols,
     classes: context.classes,
     referencedLocalSymbols: new Set(),
+    readOnlyEmptyMapLocalSymbols: new Set(),
     checker: context.checker,
     closures: context.closures,
     currentFunction: closureHeader,
@@ -46990,6 +47118,7 @@ function lowerAsyncForLoopControlHandlerClosure(
     capturedLocalSymbols: context.capturedLocalSymbols,
     classes: context.classes,
     referencedLocalSymbols: new Set(),
+    readOnlyEmptyMapLocalSymbols: new Set(),
     checker: context.checker,
     closures: context.closures,
     currentFunction: closureHeader,
@@ -47241,6 +47370,7 @@ function lowerAsyncWhileStatementToPromiseExpression(
     capturedLocalSymbols: context.capturedLocalSymbols,
     classes: context.classes,
     referencedLocalSymbols: new Set(),
+    readOnlyEmptyMapLocalSymbols: new Set(),
     checker: context.checker,
     closures: context.closures,
     currentFunction: closureHeader,
@@ -47636,6 +47766,7 @@ function lowerAsyncForStatementToPromiseExpression(
     capturedLocalSymbols: context.capturedLocalSymbols,
     classes: context.classes,
     referencedLocalSymbols: new Set(),
+    readOnlyEmptyMapLocalSymbols: new Set(),
     checker: context.checker,
     closures: context.closures,
     currentFunction: closureHeader,
@@ -48243,6 +48374,7 @@ function lowerSyncScopedClosure(
     capturedLocalSymbols: context.capturedLocalSymbols,
     classes: context.classes,
     referencedLocalSymbols: new Set(),
+    readOnlyEmptyMapLocalSymbols: new Set(),
     checker: context.checker,
     closures: context.closures,
     currentFunction: closureHeader,
@@ -49735,6 +49867,7 @@ function lowerFrameAsyncResumeClosure(
     capturedLocalSymbols: context.capturedLocalSymbols,
     classes: context.classes,
     referencedLocalSymbols: new Set(),
+    readOnlyEmptyMapLocalSymbols: new Set(),
     checker: context.checker,
     closures: context.closures,
     currentFunction: closureHeader,
@@ -49975,6 +50108,7 @@ function lowerFrameGeneratorResumeClosure(
     capturedLocalSymbols: context.capturedLocalSymbols,
     classes: context.classes,
     referencedLocalSymbols: new Set(),
+    readOnlyEmptyMapLocalSymbols: new Set(),
     checker: context.checker,
     closures: context.closures,
     currentFunction: closureHeader,
@@ -50315,6 +50449,7 @@ function lowerFrameGeneratorDirectResumeClosure(
     capturedLocalSymbols: context.capturedLocalSymbols,
     classes: context.classes,
     referencedLocalSymbols: new Set(),
+    readOnlyEmptyMapLocalSymbols: new Set(),
     checker: context.checker,
     closures: context.closures,
     currentFunction: closureHeader,
@@ -50634,6 +50769,7 @@ function lowerFrameGeneratorIteratorResultResumeClosure(
     capturedLocalSymbols: context.capturedLocalSymbols,
     classes: context.classes,
     referencedLocalSymbols: new Set(),
+    readOnlyEmptyMapLocalSymbols: new Set(),
     checker: context.checker,
     closures: context.closures,
     currentFunction: closureHeader,
@@ -50849,6 +50985,7 @@ function lowerAsyncGeneratorDelegateResumeClosure(
     capturedLocalSymbols: context.capturedLocalSymbols,
     classes: context.classes,
     referencedLocalSymbols: new Set(),
+    readOnlyEmptyMapLocalSymbols: new Set(),
     checker: context.checker,
     closures: context.closures,
     currentFunction: closureHeader,
@@ -51619,6 +51756,7 @@ function lowerFrameAsyncFunctionLikeBody(
     capturedLocalSymbols: context.capturedLocalSymbols,
     classes: context.classes,
     referencedLocalSymbols: new Set(),
+    readOnlyEmptyMapLocalSymbols: new Set(),
     checker: context.checker,
     closures: context.closures,
     currentFunction: closureHeader,
@@ -55562,6 +55700,7 @@ function lowerGeneratorFunctionLikeBody(
     capturedLocalSymbols: context.capturedLocalSymbols,
     classes: context.classes,
     referencedLocalSymbols: new Set(),
+    readOnlyEmptyMapLocalSymbols: new Set(),
     checker: context.checker,
     closures: context.closures,
     currentFunction: closureHeader,
@@ -60287,6 +60426,30 @@ function lowerInitialStringKeyMapNewExpression(
       'Map construction currently supports zero arguments or one direct entry array literal in compiler subset.',
       expression,
     );
+  }
+  if (shouldLowerStringKeyMapNewAsCompilerOwnedMap(expression, context)) {
+    const resultName = createLocalName('map', context.nextLocalId);
+    context.nextLocalId += 1;
+    context.locals.push({ name: resultName, type: 'heap_ref' });
+    context.functionRuntime.operations.push({
+      kind: 'allocate_map',
+      resultName,
+    });
+    context.functionRuntime.compilerOwnedMapLocals.add(resultName);
+    context.expressionPreludeStatements.push({
+      kind: 'local_set',
+      name: resultName,
+      value: {
+        kind: 'heap_placeholder',
+        debugName: 'map_instance',
+        type: 'heap_ref',
+      },
+    });
+    return {
+      kind: 'local_get',
+      name: resultName,
+      type: 'heap_ref',
+    };
   }
   const mapTypeInfo = getSupportedStringKeyMapTypeInfo(
     context.checker,
@@ -65103,6 +65266,8 @@ function lowerPropertyAccessExpression(
   }
   const stringKeyMapTypeInfo = getSupportedStringKeyMapTypeInfo(context.checker, receiverType);
   if (expression.name.text === 'size' && stringKeyMapTypeInfo !== undefined) {
+    const compilerOwnedMapReceiver = ts.isIdentifier(expression.expression) &&
+      lookupSymbol(context, expression.expression.text)?.compilerOwnedMap === true;
     let objectName = getHeapObjectValueNameFromExpression(expression.expression, context);
     let representation = getHeapObjectRepresentationFromExpression(expression.expression, context);
     if (!objectName) {
@@ -65113,6 +65278,11 @@ function lowerPropertyAccessExpression(
       );
       objectName = materialized.name;
       representation = materialized.representation;
+    }
+    if (
+      compilerOwnedMapReceiver || context.functionRuntime.compilerOwnedMapLocals.has(objectName)
+    ) {
+      return lowerCompilerOwnedMapSize(objectName, context);
     }
     if (representation?.kind !== 'dynamic_object_representation') {
       throw new CompilerUnsupportedError(
@@ -66992,6 +67162,13 @@ function lowerVariableStatement(
     if (!ownedStringAliasValue && !predeclaredCapturedBinding) {
       context.locals.push({ name: emittedName, type: capturedByClosure ? 'box_ref' : type });
     }
+    const compilerOwnedMapAlias = !capturedByClosure &&
+      type === 'heap_ref' &&
+      loweredInitializer?.kind === 'local_get' &&
+      context.functionRuntime.compilerOwnedMapLocals.has(loweredInitializer.name);
+    if (compilerOwnedMapAlias) {
+      context.functionRuntime.compilerOwnedMapLocals.add(emittedName);
+    }
     currentScope(context).set(declaration.name.text, {
       emittedName,
       type: capturedByClosure ? 'box_ref' : type,
@@ -67028,6 +67205,7 @@ function lowerVariableStatement(
         : undefined,
       ownedOnly: !capturedByClosure && ownedStringAliasValue !== undefined &&
         hostAliasValue === undefined,
+      compilerOwnedMap: compilerOwnedMapAlias,
     });
     const hostTaggedObjectPropertyAccessInfo = declaration.initializer
       ? getHostTaggedObjectPropertyAccessInfo(declaration.initializer, context)
@@ -70703,6 +70881,10 @@ function lowerFunction(
     capturedLocalSymbols,
     classes: context.classes,
     referencedLocalSymbols: collectReferencedLocalSymbols(declaration, context.checker),
+    readOnlyEmptyMapLocalSymbols: collectReadOnlyEmptyMapLocalSymbolsFromFunctionLike(
+      declaration,
+      context.checker,
+    ),
     checker: context.checker,
     closures: context.closures,
     currentFunction: header,

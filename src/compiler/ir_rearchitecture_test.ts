@@ -2107,6 +2107,62 @@ Deno.test('compiler wasm-gc emitter produces runnable dynamic object alias write
   assertEquals((read as (flag: number) => number)(1), 4);
 });
 
+Deno.test('compiler wasm-gc emitter uses explicit Map runtime for read-only empty Map size reads', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: { strict: true },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        export function main(): number {
+          const map = new Map<string, number>();
+          return map.size;
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
+  const mainPlan = snapshot.wasmGcPlan.functionPlans.find((func) => func.name === 'main');
+  const watPath = join(tempDirectory, 'wasm-gc-shadow-explicit-map-empty-size.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-shadow-explicit-map-empty-size.wasm');
+
+  assertEquals(
+    snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
+    ['map'],
+  );
+  assertEquals(mainPlan?.bodyStatus, 'emittable');
+  assertEquals(mainPlan?.body.some((statement) => statement.kind === 'map_new'), true);
+  assertEquals(mainPlan?.body.some((statement) => statement.kind === 'map_size'), true);
+  assertEquals(
+    mainPlan?.body.some((statement) => statement.kind === 'dynamic_object_new'),
+    false,
+  );
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
+  const wat = await Deno.readTextFile(watPath);
+  assertEquals(wat.includes('(type $map_runtime (struct'), true);
+  assertEquals(wat.includes('dynamic_object_layout'), false);
+  const result = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(result.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(result.success, true);
+
+  const wasm = await Deno.readFile(wasmPath);
+  const instance = await WebAssembly.instantiate(wasm);
+  const main = instance.instance.exports['main.ts:main'];
+  assertEquals(typeof main, 'function');
+  assertEquals((main as () => number)(), 0);
+});
+
 Deno.test('compiler wasm-gc emitter produces runnable legacy Map set and size reads', async () => {
   const tempDirectory = await createTempProject([
     {
