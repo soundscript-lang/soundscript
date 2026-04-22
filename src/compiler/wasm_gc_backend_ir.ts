@@ -114,11 +114,21 @@ export interface WasmGcHostCallbackWrapperPlanIR {
   reasons: readonly WasmGcHostCallbackWrapperReasonIR[];
 }
 
+export type WasmGcCollectionBoundaryAdapterIR =
+  | 'map_string_boolean'
+  | 'map_string_number'
+  | 'map_string_string'
+  | 'set_boolean'
+  | 'set_number'
+  | 'set_string';
+
 export interface WasmGcExportWrapperPlanIR {
   exportName: string;
   wasmExportName: string;
   paramTypes: readonly string[];
   resultType: string;
+  paramBoundaryAdapters?: readonly (WasmGcCollectionBoundaryAdapterIR | undefined)[];
+  resultBoundaryAdapter?: WasmGcCollectionBoundaryAdapterIR;
 }
 
 export interface WasmGcHostImportWrapperPlanIR {
@@ -127,6 +137,8 @@ export interface WasmGcHostImportWrapperPlanIR {
   hostImportName: string;
   paramTypes: readonly string[];
   resultType: string;
+  paramBoundaryAdapters?: readonly (WasmGcCollectionBoundaryAdapterIR | undefined)[];
+  resultBoundaryAdapter?: WasmGcCollectionBoundaryAdapterIR;
 }
 
 export interface WasmGcWrapperPlanIR {
@@ -642,28 +654,48 @@ function isWasmGcWrapperValueType(valueType: string): boolean {
 
 function createWasmGcExportWrapperPlan(
   functionPlans: readonly WasmGcFunctionPlanIR[],
+  boundarySurfaces: readonly SemanticBoundarySurfaceIR[],
 ): readonly WasmGcExportWrapperPlanIR[] {
+  const exportSurfacesByName = new Map(
+    boundarySurfaces
+      .filter((surface) => surface.direction === 'export')
+      .map((surface) => [surfaceExportName(surface), surface] as const),
+  );
   return functionPlans
     .filter((func) => !func.hostImport && func.exportName.length > 0)
-    .map((func) => ({
-      exportName: func.exportName,
-      wasmExportName: func.exportName,
-      paramTypes: func.params.map((param) => param.wasmType),
-      resultType: func.result,
-    }))
+    .map((func) => {
+      const surface = exportSurfacesByName.get(func.exportName);
+      const paramBoundaryAdapters = surface?.params.map((param) =>
+        collectionBoundaryAdapterForSemanticType(param.type)
+      );
+      const hasParamBoundaryAdapters = paramBoundaryAdapters?.some((adapter) =>
+        adapter !== undefined
+      ) === true;
+      const wrapper: WasmGcExportWrapperPlanIR = {
+        exportName: func.exportName,
+        wasmExportName: func.exportName,
+        paramTypes: func.params.map((param) => param.wasmType),
+        resultType: func.result,
+        ...(hasParamBoundaryAdapters ? { paramBoundaryAdapters } : {}),
+      };
+      return wrapper;
+    })
     .filter((wrapper) =>
       wrapper.paramTypes.some(isWasmGcWrapperValueType) ||
-      isWasmGcWrapperValueType(wrapper.resultType)
+      isWasmGcWrapperValueType(wrapper.resultType) ||
+      wrapper.paramBoundaryAdapters?.some((adapter) => adapter !== undefined) === true
     )
     .sort((left, right) => left.exportName.localeCompare(right.exportName));
 }
 
 function createWasmGcHostImportWrapperPlan(
   functionPlans: readonly WasmGcFunctionPlanIR[],
+  boundarySurfaces: readonly SemanticBoundarySurfaceIR[],
 ): readonly WasmGcHostImportWrapperPlanIR[] {
+  void boundarySurfaces;
   return functionPlans
     .filter((func) => func.hostImport !== undefined)
-    .map((func) => ({
+    .map((func): WasmGcHostImportWrapperPlanIR => ({
       functionName: func.name,
       hostImportModule: func.hostImport!.module,
       hostImportName: func.hostImport!.name,
@@ -672,7 +704,9 @@ function createWasmGcHostImportWrapperPlan(
     }))
     .filter((wrapper) =>
       wrapper.paramTypes.some(isWasmGcWrapperValueType) ||
-      isWasmGcWrapperValueType(wrapper.resultType)
+      isWasmGcWrapperValueType(wrapper.resultType) ||
+      wrapper.paramBoundaryAdapters?.some((adapter) => adapter !== undefined) === true ||
+      wrapper.resultBoundaryAdapter !== undefined
     )
     .sort((left, right) =>
       left.hostImportModule === right.hostImportModule
@@ -691,6 +725,7 @@ function closureSignatureUsesWrapperValues(signature: {
 
 function createWasmGcWrapperPlan(
   functionPlans: readonly WasmGcFunctionPlanIR[],
+  boundarySurfaces: readonly SemanticBoundarySurfaceIR[],
 ): WasmGcWrapperPlanIR {
   const capturedParams = callsiteCapturedClosureParams(functionPlans);
   const wrappers: WasmGcHostCallbackWrapperPlanIR[] = [];
@@ -740,8 +775,8 @@ function createWasmGcWrapperPlan(
   }
   const taggedValueAdapterHelpers = taggedValueAdapterHelpersForWrappers(wrappers);
   const taggedValueResultHelpers = taggedValueResultHelpersForWrappers(wrappers);
-  const hostImportWrappers = createWasmGcHostImportWrapperPlan(functionPlans);
-  const exportWrappers = createWasmGcExportWrapperPlan(functionPlans);
+  const hostImportWrappers = createWasmGcHostImportWrapperPlan(functionPlans, boundarySurfaces);
+  const exportWrappers = createWasmGcExportWrapperPlan(functionPlans, boundarySurfaces);
   return {
     kind: 'wasm_gc_wrapper_plan',
     hostCallbackWrappers: wrappers.sort((left, right) =>
@@ -756,13 +791,202 @@ function createWasmGcWrapperPlan(
   };
 }
 
+function sourceFileBaseName(fileName: string): string {
+  return fileName.split(/[\\/]/).pop() ?? fileName;
+}
+
+function surfaceExportName(surface: SemanticBoundarySurfaceIR): string {
+  return `${sourceFileBaseName(surface.fileName)}:${surface.name}`;
+}
+
+function collectionScalarKindForSemanticType(
+  type: SemanticTypeIR,
+): 'boolean' | 'number' | 'string' | undefined {
+  switch (type.kind) {
+    case 'boolean':
+      return 'boolean';
+    case 'number':
+      return 'number';
+    case 'string':
+      return 'string';
+    default:
+      return undefined;
+  }
+}
+
+function collectionBoundaryAdapterForSemanticType(
+  type: SemanticTypeIR,
+): WasmGcCollectionBoundaryAdapterIR | undefined {
+  if (type.kind === 'map') {
+    const keyKind = collectionScalarKindForSemanticType(type.key);
+    const valueKind = collectionScalarKindForSemanticType(type.value);
+    if (keyKind === 'string' && valueKind === 'boolean') {
+      return 'map_string_boolean';
+    }
+    if (keyKind === 'string' && valueKind === 'number') {
+      return 'map_string_number';
+    }
+    if (keyKind === 'string' && valueKind === 'string') {
+      return 'map_string_string';
+    }
+  }
+  if (type.kind === 'set') {
+    const valueKind = collectionScalarKindForSemanticType(type.value);
+    if (valueKind === 'boolean') {
+      return 'set_boolean';
+    }
+    if (valueKind === 'number') {
+      return 'set_number';
+    }
+    if (valueKind === 'string') {
+      return 'set_string';
+    }
+  }
+  return undefined;
+}
+
+function collectionBoundaryParamsForFunction(
+  func: WasmGcFunctionPlanIR,
+  surface: SemanticBoundarySurfaceIR | undefined,
+): ReadonlyMap<string, WasmGcCollectionBoundaryAdapterIR> {
+  if (!surface) {
+    return new Map();
+  }
+  return new Map(
+    func.params.flatMap((param, index) => {
+      const surfaceParam = surface.params[index];
+      const adapter = surfaceParam
+        ? collectionBoundaryAdapterForSemanticType(surfaceParam.type)
+        : undefined;
+      return adapter ? [[param.name, adapter] as const] : [];
+    }),
+  );
+}
+
+function collectionAdapterMapValueType(
+  adapter: WasmGcCollectionBoundaryAdapterIR,
+): 'owned_string_ref' | 'f64' | 'i32' | undefined {
+  switch (adapter) {
+    case 'map_string_boolean':
+      return 'i32';
+    case 'map_string_number':
+      return 'f64';
+    case 'map_string_string':
+      return 'owned_string_ref';
+    default:
+      return undefined;
+  }
+}
+
+function collectionAdapterSetArrayType(
+  adapter: WasmGcCollectionBoundaryAdapterIR,
+):
+  | 'owned_array_ref'
+  | 'owned_number_array_ref'
+  | 'owned_boolean_array_ref'
+  | undefined {
+  switch (adapter) {
+    case 'set_boolean':
+      return 'owned_boolean_array_ref';
+    case 'set_number':
+      return 'owned_number_array_ref';
+    case 'set_string':
+      return 'owned_array_ref';
+    default:
+      return undefined;
+  }
+}
+
+function rewriteCollectionBoundaryStatements(
+  statements: readonly SemanticStatementIR[],
+  collectionParams: ReadonlyMap<string, WasmGcCollectionBoundaryAdapterIR>,
+): readonly SemanticStatementIR[] {
+  return statements.map((statement): SemanticStatementIR => {
+    if (statement.kind === 'if') {
+      return {
+        ...statement,
+        thenBody: rewriteCollectionBoundaryStatements(statement.thenBody, collectionParams),
+        elseBody: rewriteCollectionBoundaryStatements(statement.elseBody, collectionParams),
+      };
+    }
+    if (statement.kind === 'while') {
+      return {
+        ...statement,
+        body: rewriteCollectionBoundaryStatements(statement.body, collectionParams),
+      };
+    }
+    const adapter = 'objectName' in statement
+      ? collectionParams.get(statement.objectName)
+      : undefined;
+    if (!adapter) {
+      return statement;
+    }
+    const mapValueType = collectionAdapterMapValueType(adapter);
+    if (mapValueType) {
+      if (statement.kind === 'dynamic_object_size') {
+        return {
+          kind: 'map_size',
+          targetName: statement.targetName,
+          objectName: statement.objectName,
+          storage: true,
+        };
+      }
+      if (statement.kind === 'dynamic_object_values') {
+        return {
+          kind: 'map_values',
+          targetName: statement.targetName,
+          objectName: statement.objectName,
+          resultType: statement.resultType,
+        };
+      }
+    }
+    const setArrayType = collectionAdapterSetArrayType(adapter);
+    if (setArrayType && statement.kind === 'dynamic_object_property_get') {
+      return {
+        kind: 'set_values',
+        targetName: statement.targetName,
+        objectName: statement.objectName,
+        valuesArrayType: setArrayType,
+      };
+    }
+    return statement;
+  });
+}
+
+function rewriteCollectionBoundaryFunctions(
+  functionPlans: readonly WasmGcFunctionPlanIR[],
+  boundarySurfaces: readonly SemanticBoundarySurfaceIR[],
+): readonly WasmGcFunctionPlanIR[] {
+  const exportSurfacesByName = new Map(
+    boundarySurfaces
+      .filter((surface) => surface.direction === 'export')
+      .map((surface) => [surfaceExportName(surface), surface] as const),
+  );
+  return functionPlans.map((func) => {
+    if (func.hostImport || func.exportName.length === 0) {
+      return func;
+    }
+    const collectionParams = collectionBoundaryParamsForFunction(
+      func,
+      exportSurfacesByName.get(func.exportName),
+    );
+    if (collectionParams.size === 0) {
+      return func;
+    }
+    return {
+      ...func,
+      body: rewriteCollectionBoundaryStatements(func.body, collectionParams),
+    };
+  });
+}
+
 export function createWasmGcModulePlan(
   semantic: SemanticModuleIR,
   runtimeManifest: RuntimeManifestIR,
 ): WasmGcModulePlanIR {
   const families = runtimeManifest.familyRequirements.map((requirement) => requirement.family);
   const deferred = new Set(WASM_GC_BACKEND_CAPABILITIES.deferredRuntimeFamilies);
-  const functionPlans: WasmGcFunctionPlanIR[] = semantic.functions.map((func) => ({
+  const rawFunctionPlans: WasmGcFunctionPlanIR[] = semantic.functions.map((func) => ({
     name: func.name,
     exportName: func.exportName,
     params: func.params.map((param) => ({
@@ -796,6 +1020,10 @@ export function createWasmGcModulePlan(
       : {}),
     ...(func.hostImport !== undefined ? { hostImport: func.hostImport } : {}),
   }));
+  const functionPlans = rewriteCollectionBoundaryFunctions(
+    rawFunctionPlans,
+    semantic.boundarySurfaces,
+  );
   return {
     kind: 'wasm_gc_module_plan',
     capabilities: WASM_GC_BACKEND_CAPABILITIES,
@@ -820,7 +1048,7 @@ export function createWasmGcModulePlan(
     boundaryPlans: semantic.boundarySurfaces.map((surface) =>
       createBoundaryPlan(surface, runtimeManifest)
     ),
-    wrapperPlan: createWasmGcWrapperPlan(functionPlans),
+    wrapperPlan: createWasmGcWrapperPlan(functionPlans, semantic.boundarySurfaces),
     diagnostics: families
       .filter((family) => deferred.has(family))
       .map((family) => ({

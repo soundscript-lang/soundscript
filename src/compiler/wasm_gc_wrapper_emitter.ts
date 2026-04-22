@@ -1,4 +1,5 @@
 import type {
+  WasmGcCollectionBoundaryAdapterIR,
   WasmGcExportWrapperPlanIR,
   WasmGcHostCallbackWrapperPlanIR,
   WasmGcHostImportWrapperPlanIR,
@@ -68,6 +69,14 @@ function renderWrapperAssignment(
     ? '    return symbolToInternal(result);'
     : hostImportWrapper && isBigIntValueType(hostImportWrapper.resultType)
     ? '    return bigintToInternal(result);'
+    : hostImportWrapper?.resultBoundaryAdapter?.startsWith('map_')
+    ? `    return mapToInternal(${
+      JSON.stringify(hostImportWrapper.resultBoundaryAdapter)
+    }, result);`
+    : hostImportWrapper?.resultBoundaryAdapter?.startsWith('set_')
+    ? `    return setToInternal(${
+      JSON.stringify(hostImportWrapper.resultBoundaryAdapter)
+    }, result);`
     : '    return result;';
   return `  installWrappedHostImport(imports, hostImports, ${
     JSON.stringify(first.hostImportModule)
@@ -214,8 +223,40 @@ function wrapperUsesBigIntValues(wrapper: {
   return wrapper.paramTypes.some(isBigIntValueType) || isBigIntValueType(wrapper.resultType);
 }
 
+function wrapperCollectionBoundaryAdapters(
+  wrapper: {
+    paramBoundaryAdapters?: readonly (WasmGcCollectionBoundaryAdapterIR | undefined)[];
+    resultBoundaryAdapter?: WasmGcCollectionBoundaryAdapterIR;
+  },
+): readonly WasmGcCollectionBoundaryAdapterIR[] {
+  return [
+    ...(wrapper.paramBoundaryAdapters?.filter((
+      adapter,
+    ): adapter is WasmGcCollectionBoundaryAdapterIR => adapter !== undefined) ?? []),
+    ...(wrapper.resultBoundaryAdapter ? [wrapper.resultBoundaryAdapter] : []),
+  ];
+}
+
+function wrapperUsesMapBoundaryAdapters(wrapper: {
+  paramBoundaryAdapters?: readonly (WasmGcCollectionBoundaryAdapterIR | undefined)[];
+  resultBoundaryAdapter?: WasmGcCollectionBoundaryAdapterIR;
+}): boolean {
+  return wrapperCollectionBoundaryAdapters(wrapper).some((adapter) => adapter.startsWith('map_'));
+}
+
+function wrapperUsesSetBoundaryAdapters(wrapper: {
+  paramBoundaryAdapters?: readonly (WasmGcCollectionBoundaryAdapterIR | undefined)[];
+  resultBoundaryAdapter?: WasmGcCollectionBoundaryAdapterIR;
+}): boolean {
+  return wrapperCollectionBoundaryAdapters(wrapper).some((adapter) => adapter.startsWith('set_'));
+}
+
 function hostImportSurfaceNeedsStringAdapters(plan: WasmGcModulePlanIR): boolean {
-  return plan.wrapperPlan.hostImportWrappers.some(wrapperUsesStringValues);
+  return plan.wrapperPlan.hostImportWrappers.some(wrapperUsesStringValues) ||
+    plan.wrapperPlan.hostImportWrappers.some(wrapperUsesMapBoundaryAdapters) ||
+    plan.wrapperPlan.hostImportWrappers.some((wrapper) =>
+      wrapperCollectionBoundaryAdapters(wrapper).some((adapter) => adapter.endsWith('_string'))
+    );
 }
 
 function hostImportSurfaceNeedsSymbolAdapters(plan: WasmGcModulePlanIR): boolean {
@@ -237,7 +278,11 @@ function hostImportSurfaceNeedsBigIntAdapters(plan: WasmGcModulePlanIR): boolean
 }
 
 function exportSurfaceNeedsStringAdapters(plan: WasmGcModulePlanIR): boolean {
-  return plan.wrapperPlan.exportWrappers.some(wrapperUsesStringValues);
+  return plan.wrapperPlan.exportWrappers.some(wrapperUsesStringValues) ||
+    plan.wrapperPlan.exportWrappers.some(wrapperUsesMapBoundaryAdapters) ||
+    plan.wrapperPlan.exportWrappers.some((wrapper) =>
+      wrapperCollectionBoundaryAdapters(wrapper).some((adapter) => adapter.endsWith('_string'))
+    );
 }
 
 function exportSurfaceNeedsSymbolAdapters(plan: WasmGcModulePlanIR): boolean {
@@ -246,6 +291,16 @@ function exportSurfaceNeedsSymbolAdapters(plan: WasmGcModulePlanIR): boolean {
 
 function exportSurfaceNeedsBigIntAdapters(plan: WasmGcModulePlanIR): boolean {
   return plan.wrapperPlan.exportWrappers.some(wrapperUsesBigIntValues);
+}
+
+function moduleNeedsMapBoundaryAdapters(plan: WasmGcModulePlanIR): boolean {
+  return plan.wrapperPlan.exportWrappers.some(wrapperUsesMapBoundaryAdapters) ||
+    plan.wrapperPlan.hostImportWrappers.some(wrapperUsesMapBoundaryAdapters);
+}
+
+function moduleNeedsSetBoundaryAdapters(plan: WasmGcModulePlanIR): boolean {
+  return plan.wrapperPlan.exportWrappers.some(wrapperUsesSetBoundaryAdapters) ||
+    plan.wrapperPlan.hostImportWrappers.some(wrapperUsesSetBoundaryAdapters);
 }
 
 function moduleNeedsSymbolAdapters(plan: WasmGcModulePlanIR): boolean {
@@ -433,6 +488,77 @@ function renderExportBoundaryAdapterHelpers(plan: WasmGcModulePlanIR): string {
     return requireExport(wasmExports, '__soundscript_bigint_to_host')(value);
   }`);
   }
+  if (moduleNeedsMapBoundaryAdapters(plan)) {
+    helpers.push(`function mapBoundaryValueToInternal(adapter, value) {
+    if (adapter === 'map_string_number') {
+      if (typeof value !== 'number') {
+        throw new TypeError('Soundscript WasmGC Map boundary value must be a number.');
+      }
+      return value;
+    }
+    if (adapter === 'map_string_boolean') {
+      if (typeof value !== 'boolean') {
+        throw new TypeError('Soundscript WasmGC Map boundary value must be a boolean.');
+      }
+      return value ? 1 : 0;
+    }
+    if (adapter === 'map_string_string') {
+      return stringToInternal(value);
+    }
+    throw new TypeError(\`Unsupported Soundscript WasmGC Map boundary adapter \${adapter}.\`);
+  }
+
+  function mapToInternal(adapter, value) {
+    if (!(value instanceof Map)) {
+      throw new TypeError('Soundscript WasmGC Map export argument must be a Map.');
+    }
+    const suffix = adapter.slice('map_string_'.length);
+    const create = requireExport(wasmExports, \`__soundscript_map_new_string_\${suffix}\`);
+    const set = requireExport(wasmExports, \`__soundscript_map_set_string_\${suffix}\`);
+    const result = create();
+    for (const [key, entry] of value) {
+      if (typeof key !== 'string') {
+        throw new TypeError('Soundscript WasmGC Map boundary keys must be strings.');
+      }
+      set(result, stringToInternal(key), mapBoundaryValueToInternal(adapter, entry));
+    }
+    return result;
+  }`);
+  }
+  if (moduleNeedsSetBoundaryAdapters(plan)) {
+    helpers.push(`function setBoundaryValueToInternal(adapter, value) {
+    if (adapter === 'set_number') {
+      if (typeof value !== 'number') {
+        throw new TypeError('Soundscript WasmGC Set boundary value must be a number.');
+      }
+      return value;
+    }
+    if (adapter === 'set_boolean') {
+      if (typeof value !== 'boolean') {
+        throw new TypeError('Soundscript WasmGC Set boundary value must be a boolean.');
+      }
+      return value ? 1 : 0;
+    }
+    if (adapter === 'set_string') {
+      return stringToInternal(value);
+    }
+    throw new TypeError(\`Unsupported Soundscript WasmGC Set boundary adapter \${adapter}.\`);
+  }
+
+  function setToInternal(adapter, value) {
+    if (!(value instanceof Set)) {
+      throw new TypeError('Soundscript WasmGC Set export argument must be a Set.');
+    }
+    const suffix = adapter.slice('set_'.length);
+    const create = requireExport(wasmExports, \`__soundscript_set_new_\${suffix}\`);
+    const add = requireExport(wasmExports, \`__soundscript_set_add_\${suffix}\`);
+    const result = create();
+    for (const entry of value) {
+      add(result, setBoundaryValueToInternal(adapter, entry));
+    }
+    return result;
+  }`);
+  }
   return helpers.join('\n\n  ');
 }
 
@@ -489,15 +615,22 @@ ${branches.join('\n')}
 }
 
 function renderExportWrapperInvocation(wrapper: WasmGcExportWrapperPlanIR): string {
-  const adaptedArgs = wrapper.paramTypes.map((paramType, index) =>
-    isStringValueType(paramType)
+  const adaptedArgs = wrapper.paramTypes.map((paramType, index) => {
+    const boundaryAdapter = wrapper.paramBoundaryAdapters?.[index];
+    if (boundaryAdapter?.startsWith('map_')) {
+      return `mapToInternal(${JSON.stringify(boundaryAdapter)}, args[${index}])`;
+    }
+    if (boundaryAdapter?.startsWith('set_')) {
+      return `setToInternal(${JSON.stringify(boundaryAdapter)}, args[${index}])`;
+    }
+    return isStringValueType(paramType)
       ? `stringToInternal(args[${index}])`
       : isSymbolValueType(paramType)
       ? `symbolToInternal(args[${index}])`
       : isBigIntValueType(paramType)
       ? `bigintToInternal(args[${index}])`
-      : `args[${index}]`
-  ).join(', ');
+      : `args[${index}]`;
+  }).join(', ');
   const rawResult = `requireExport(wasmExports, ${
     JSON.stringify(wrapper.wasmExportName)
   })(${adaptedArgs})`;

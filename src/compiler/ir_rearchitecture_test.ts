@@ -8071,6 +8071,118 @@ Deno.test('compiler wasm-gc wrapper glue adapts imported bigint params and resul
   assertEquals(main(80n), 80n);
 });
 
+Deno.test('compiler wasm-gc wrapper glue adapts exported Map params from JS Map', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: {
+          strict: true,
+          module: 'esnext',
+          moduleResolution: 'node',
+        },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        export function score(map: Map<string, number>): number {
+          let total = map.size;
+          for (const value of map.values()) {
+            total = total + value;
+          }
+          return total;
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
+  const watPath = join(tempDirectory, 'wasm-gc-shadow-export-map-param-wrapper.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-shadow-export-map-param-wrapper.wasm');
+  const wrapperPath = join(tempDirectory, 'wasm-gc-shadow-export-map-param-wrapper.mjs');
+
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
+  await Deno.writeTextFile(wrapperPath, emitWasmGcWrapperModule(snapshot.wasmGcPlan));
+  const wat = await Deno.readTextFile(watPath);
+  const wrapper = await Deno.readTextFile(wrapperPath);
+  assertEquals(wat.includes('(export "__soundscript_map_new_string_number")'), true);
+  assertEquals(wat.includes('(export "__soundscript_map_set_string_number")'), true);
+  assertEquals(wrapper.includes('mapToInternal'), true);
+  assertEquals(wrapper.includes('setToInternal'), false);
+  const parseResult = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(parseResult.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(parseResult.success, true);
+
+  const wasm = await Deno.readFile(wasmPath);
+  const instance = (await WebAssembly.instantiate(wasm)).instance;
+  const exports = await createWasmGcWrappedExports(wrapperPath, instance);
+  const score = exports['main.ts:score'] as (map: Map<string, number>) => number;
+  assertEquals(score(new Map([['left', 2], ['right', 7]])), 11);
+});
+
+Deno.test('compiler wasm-gc wrapper glue adapts exported Set params from JS Set', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: {
+          strict: true,
+          module: 'esnext',
+          moduleResolution: 'node',
+        },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        export function score(set: Set<number>): number {
+          let total = set.size;
+          for (const value of set.values()) {
+            total = total + value;
+          }
+          return total;
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
+  const watPath = join(tempDirectory, 'wasm-gc-shadow-export-set-param-wrapper.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-shadow-export-set-param-wrapper.wasm');
+  const wrapperPath = join(tempDirectory, 'wasm-gc-shadow-export-set-param-wrapper.mjs');
+
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
+  await Deno.writeTextFile(wrapperPath, emitWasmGcWrapperModule(snapshot.wasmGcPlan));
+  const wat = await Deno.readTextFile(watPath);
+  const wrapper = await Deno.readTextFile(wrapperPath);
+  assertEquals(wat.includes('(export "__soundscript_set_new_number")'), true);
+  assertEquals(wat.includes('(export "__soundscript_set_add_number")'), true);
+  assertEquals(wrapper.includes('setToInternal'), true);
+  assertEquals(wrapper.includes('mapToInternal'), false);
+  const parseResult = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(parseResult.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(parseResult.success, true);
+
+  const wasm = await Deno.readFile(wasmPath);
+  const instance = (await WebAssembly.instantiate(wasm)).instance;
+  const exports = await createWasmGcWrappedExports(wrapperPath, instance);
+  const score = exports['main.ts:score'] as (set: Set<number>) => number;
+  assertEquals(score(new Set([3, 5, 3])), 10);
+});
+
 Deno.test('compiler wasm-gc wrapper glue adapts exported string params and results', async () => {
   const tempDirectory = await createTempProject([
     {
