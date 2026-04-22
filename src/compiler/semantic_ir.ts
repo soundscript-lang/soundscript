@@ -519,11 +519,13 @@ export type SemanticStatementIR =
   | {
     kind: 'map_new';
     targetName: string;
+    storage: boolean;
   }
   | {
     kind: 'map_size';
     targetName: string;
     objectName: string;
+    storage: boolean;
   }
   | {
     kind: 'map_set';
@@ -531,6 +533,18 @@ export type SemanticStatementIR =
     keyName: string;
     valueName: string;
     valueType: CompilerValueType;
+  }
+  | {
+    kind: 'map_get';
+    targetName: string;
+    objectName: string;
+    keyName: string;
+  }
+  | {
+    kind: 'map_has';
+    targetName: string;
+    objectName: string;
+    keyName: string;
   }
   | {
     kind: 'box_set';
@@ -1489,7 +1503,17 @@ function collectRuntimeOperationFamilies(
       case 'allocate_map':
       case 'get_map_size':
       case 'set_map_entry':
+      case 'get_map_entry':
+      case 'has_map_entry':
         families.add('map');
+        if (
+          operation.kind === 'set_map_entry' ||
+          operation.kind === 'get_map_entry' ||
+          operation.kind === 'has_map_entry' ||
+          (operation.kind === 'allocate_map' && operation.storage === true)
+        ) {
+          families.add('finite_union');
+        }
         break;
       default:
         break;
@@ -2713,16 +2737,19 @@ function semanticMapNewFromRuntimeOperation(
   return {
     kind: 'map_new',
     targetName: operation.resultName,
+    storage: operation.storage === true,
   };
 }
 
 function semanticMapSizeFromRuntimeOperation(
   operation: Extract<CompilerRuntimeOperationIR, { kind: 'get_map_size' }>,
+  storageBackedMaps: ReadonlySet<string>,
 ): SemanticStatementIR {
   return {
     kind: 'map_size',
     targetName: operation.resultName,
     objectName: operation.objectName,
+    storage: storageBackedMaps.has(operation.objectName),
   };
 }
 
@@ -2736,6 +2763,28 @@ function semanticMapSetFromRuntimeOperation(
     keyName: operation.keyName,
     valueName: operation.valueName,
     valueType: valueTypesByName.get(operation.valueName) ?? 'tagged_ref',
+  };
+}
+
+function semanticMapGetFromRuntimeOperation(
+  operation: Extract<CompilerRuntimeOperationIR, { kind: 'get_map_entry' }>,
+): SemanticStatementIR {
+  return {
+    kind: 'map_get',
+    targetName: operation.resultName,
+    objectName: operation.objectName,
+    keyName: operation.keyName,
+  };
+}
+
+function semanticMapHasFromRuntimeOperation(
+  operation: Extract<CompilerRuntimeOperationIR, { kind: 'has_map_entry' }>,
+): SemanticStatementIR {
+  return {
+    kind: 'map_has',
+    targetName: operation.resultName,
+    objectName: operation.objectName,
+    keyName: operation.keyName,
   };
 }
 
@@ -2762,6 +2811,14 @@ function semanticBodyFromCompilerIR(
   const pendingMapSizesByResult = new Map<
     string,
     Extract<CompilerRuntimeOperationIR, { kind: 'get_map_size' }>
+  >();
+  const pendingMapGetsByResult = new Map<
+    string,
+    Extract<CompilerRuntimeOperationIR, { kind: 'get_map_entry' }>
+  >();
+  const pendingMapHasByResult = new Map<
+    string,
+    Extract<CompilerRuntimeOperationIR, { kind: 'has_map_entry' }>
   >();
   const mapSetsAfterAllocation: Extract<CompilerRuntimeOperationIR, { kind: 'set_map_entry' }>[] =
     [];
@@ -2831,11 +2888,20 @@ function semanticBodyFromCompilerIR(
       pendingMapSizesByResult.set(operation.resultName, operation);
     } else if (operation.kind === 'set_map_entry') {
       mapSetsAfterAllocation.push(operation);
+    } else if (operation.kind === 'get_map_entry') {
+      pendingMapGetsByResult.set(operation.resultName, operation);
+    } else if (operation.kind === 'has_map_entry') {
+      pendingMapHasByResult.set(operation.resultName, operation);
     }
   }
 
   const seenAssignments = new Set(func.params.map((param) => param.name));
   const allocatedMaps = new Set<string>();
+  const storageBackedMaps = new Set(
+    [...mapAllocationsByResult.values()]
+      .filter((operation) => operation.storage === true)
+      .map((operation) => operation.resultName),
+  );
   const allocatedDynamicObjects = new Set<string>();
   const dynamicRepresentationNameByObjectName = new Map(
     (func.heapLocalRepresentations ?? [])
@@ -2949,9 +3015,23 @@ function semanticBodyFromCompilerIR(
     }
     for (const [resultName, operation] of [...pendingMapSizesByResult]) {
       if (shouldEmitPending(resultName)) {
-        targetBody.push(semanticMapSizeFromRuntimeOperation(operation));
+        targetBody.push(semanticMapSizeFromRuntimeOperation(operation, storageBackedMaps));
         seenAssignments.add(operation.resultName);
         pendingMapSizesByResult.delete(resultName);
+      }
+    }
+    for (const [resultName, operation] of [...pendingMapGetsByResult]) {
+      if (shouldEmitPending(resultName)) {
+        targetBody.push(semanticMapGetFromRuntimeOperation(operation));
+        seenAssignments.add(operation.resultName);
+        pendingMapGetsByResult.delete(resultName);
+      }
+    }
+    for (const [resultName, operation] of [...pendingMapHasByResult]) {
+      if (shouldEmitPending(resultName)) {
+        targetBody.push(semanticMapHasFromRuntimeOperation(operation));
+        seenAssignments.add(operation.resultName);
+        pendingMapHasByResult.delete(resultName);
       }
     }
   };
@@ -2976,6 +3056,9 @@ function semanticBodyFromCompilerIR(
         allocatedMaps.has(semanticStatement.value.name)
       ) {
         allocatedMaps.add(semanticStatement.name);
+        if (storageBackedMaps.has(semanticStatement.value.name)) {
+          storageBackedMaps.add(semanticStatement.name);
+        }
       }
     }
   };
@@ -3065,6 +3148,8 @@ function semanticBodyFromCompilerIR(
       ...pendingDynamicClearsByResult.keys(),
       ...pendingDynamicValuesByResult.keys(),
       ...pendingMapSizesByResult.keys(),
+      ...pendingMapGetsByResult.keys(),
+      ...pendingMapHasByResult.keys(),
     ]);
     const forceHoistNames = new Set<string>();
     for (const resultName of pendingResultNames) {
@@ -3219,6 +3304,8 @@ function collectUnsupportedStatementKinds(
     case 'map_new':
     case 'map_size':
     case 'map_set':
+    case 'map_get':
+    case 'map_has':
       break;
     case 'dynamic_object_property_set':
       collectUnsupportedExpressionKinds(statement.value, kinds);

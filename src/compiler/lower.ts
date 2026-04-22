@@ -225,6 +225,7 @@ interface BoundSymbol {
   ownedTaggedArrayAliasValue?: CompilerExpressionIR;
   ownedOnly?: boolean;
   compilerOwnedMap?: boolean;
+  compilerOwnedMapStorage?: boolean;
   parameter?: boolean;
 }
 
@@ -235,6 +236,7 @@ interface FunctionLoweringContext {
   classes: ReadonlyMap<ts.Symbol, ts.ClassDeclaration>;
   referencedLocalSymbols: ReadonlySet<ts.Symbol>;
   readOnlyEmptyMapLocalSymbols: ReadonlySet<ts.Symbol>;
+  compilerOwnedMapStorageLocalSymbols?: ReadonlySet<ts.Symbol>;
   checker: ts.TypeChecker;
   closures: ModuleClosureLoweringState;
   currentFunction: CompilerFunctionIR;
@@ -570,6 +572,7 @@ interface FunctionRuntimeLoweringState {
   deferredObjectKeysPlaceholderLocals: Set<string>;
   emptyUnknownSetLocals: Set<string>;
   compilerOwnedMapLocals: Set<string>;
+  compilerOwnedMapStorageLocals: Set<string>;
   heapObjectRepresentationsByLocal: Map<string, CompilerRuntimeObjectRepresentationRef>;
   ownedArrayAliasGroupIdByLocal: Map<string, string>;
   ownedArrayAliasLocalsByGroupId: Map<string, Set<string>>;
@@ -643,6 +646,7 @@ function createFunctionRuntimeLoweringState(): FunctionRuntimeLoweringState {
     deferredObjectKeysPlaceholderLocals: new Set(),
     emptyUnknownSetLocals: new Set(),
     compilerOwnedMapLocals: new Set(),
+    compilerOwnedMapStorageLocals: new Set(),
     heapObjectRepresentationsByLocal: new Map(),
     ownedArrayAliasGroupIdByLocal: new Map(),
     ownedArrayAliasLocalsByGroupId: new Map(),
@@ -6180,12 +6184,18 @@ function isZeroArgMapNewExpression(
     expression.expression.text === 'Map';
 }
 
-function collectReadOnlyEmptyMapLocalSymbolsFromFunctionLike(
+interface CompilerOwnedStringKeyMapLocalSymbolInfo {
+  all: ReadonlySet<ts.Symbol>;
+  storageBacked: ReadonlySet<ts.Symbol>;
+}
+
+function collectCompilerOwnedStringKeyMapLocalSymbolInfo(
   declaration: BodyFunctionLikeDeclaration,
   checker: ts.TypeChecker,
-): ReadonlySet<ts.Symbol> {
+): CompilerOwnedStringKeyMapLocalSymbolInfo {
   const candidates = new Set<ts.Symbol>();
   const disqualified = new Set<ts.Symbol>();
+  const storageBacked = new Set<ts.Symbol>();
   const setKeysBySymbol = new Map<ts.Symbol, Set<string>>();
 
   const addCandidate = (name: ts.Identifier): void => {
@@ -6222,6 +6232,27 @@ function collectReadOnlyEmptyMapLocalSymbolsFromFunctionLike(
       return false;
     }
     seenKeys.add(key);
+    storageBacked.add(symbol);
+    return true;
+  };
+
+  const isAllowedMapLookupUse = (
+    symbol: ts.Symbol,
+    propertyAccess: ts.PropertyAccessExpression,
+  ): boolean => {
+    if (
+      propertyAccess.name.text !== 'get' && propertyAccess.name.text !== 'has'
+    ) {
+      return false;
+    }
+    if (
+      !ts.isCallExpression(propertyAccess.parent) ||
+      propertyAccess.parent.expression !== propertyAccess ||
+      propertyAccess.parent.arguments.length !== 1
+    ) {
+      return false;
+    }
+    storageBacked.add(symbol);
     return true;
   };
 
@@ -6262,7 +6293,8 @@ function collectReadOnlyEmptyMapLocalSymbolsFromFunctionLike(
         if (
           ts.isPropertyAccessExpression(node.parent) &&
           node.parent.expression === node &&
-          isAllowedMapSetUse(symbol, node.parent)
+          (isAllowedMapSetUse(symbol, node.parent) ||
+            isAllowedMapLookupUse(symbol, node.parent))
         ) {
           return;
         }
@@ -6275,7 +6307,25 @@ function collectReadOnlyEmptyMapLocalSymbolsFromFunctionLike(
   const bodyStatements = getFunctionLikeBodyStatements(declaration);
   bodyStatements.forEach(visitDeclarations);
   bodyStatements.forEach(visitUses);
-  return new Set([...candidates].filter((symbol) => !disqualified.has(symbol)));
+  const all = new Set([...candidates].filter((symbol) => !disqualified.has(symbol)));
+  return {
+    all,
+    storageBacked: new Set([...storageBacked].filter((symbol) => all.has(symbol))),
+  };
+}
+
+function collectReadOnlyEmptyMapLocalSymbolsFromFunctionLike(
+  declaration: BodyFunctionLikeDeclaration,
+  checker: ts.TypeChecker,
+): ReadonlySet<ts.Symbol> {
+  return collectCompilerOwnedStringKeyMapLocalSymbolInfo(declaration, checker).all;
+}
+
+function collectCompilerOwnedMapStorageLocalSymbolsFromFunctionLike(
+  declaration: BodyFunctionLikeDeclaration,
+  checker: ts.TypeChecker,
+): ReadonlySet<ts.Symbol> {
+  return collectCompilerOwnedStringKeyMapLocalSymbolInfo(declaration, checker).storageBacked;
 }
 
 function lowerClosureFunctionLike(
@@ -6741,6 +6791,10 @@ function lowerClosureFunctionLike(
       context.checker,
     ),
     readOnlyEmptyMapLocalSymbols: collectReadOnlyEmptyMapLocalSymbolsFromFunctionLike(
+      declaration,
+      context.checker,
+    ),
+    compilerOwnedMapStorageLocalSymbols: collectCompilerOwnedMapStorageLocalSymbolsFromFunctionLike(
       declaration,
       context.checker,
     ),
@@ -17486,6 +17540,22 @@ function shouldLowerStringKeyMapNewAsCompilerOwnedMap(
   }
   const symbol = context.checker.getSymbolAtLocation(expression.parent.name);
   return symbol !== undefined && context.readOnlyEmptyMapLocalSymbols.has(symbol);
+}
+
+function shouldLowerStringKeyMapNewWithCompilerOwnedStorage(
+  expression: ts.NewExpression,
+  context: FunctionLoweringContext,
+): boolean {
+  if (
+    !ts.isVariableDeclaration(expression.parent) ||
+    expression.parent.initializer !== expression ||
+    !ts.isIdentifier(expression.parent.name)
+  ) {
+    return false;
+  }
+  const symbol = context.checker.getSymbolAtLocation(expression.parent.name);
+  return symbol !== undefined &&
+    context.compilerOwnedMapStorageLocalSymbols?.has(symbol) === true;
 }
 
 function isSupportedNumberKeyMapNewExpression(
@@ -29598,6 +29668,12 @@ function lowerHostClassConstructorBoundaryExpression(
     readOnlyEmptyMapLocalSymbols: constructorDeclaration
       ? collectReadOnlyEmptyMapLocalSymbolsFromFunctionLike(constructorDeclaration, context.checker)
       : new Set(),
+    compilerOwnedMapStorageLocalSymbols: constructorDeclaration
+      ? collectCompilerOwnedMapStorageLocalSymbolsFromFunctionLike(
+        constructorDeclaration,
+        context.checker,
+      )
+      : new Set(),
     checker: context.checker,
     closures: context.closures,
     currentFunction: closureHeader,
@@ -39331,6 +39407,7 @@ function lowerCompilerOwnedMapSet(
   valueName: string,
   context: FunctionLoweringContext,
 ): CompilerExpressionIR {
+  context.functionRuntime.compilerOwnedMapStorageLocals.add(objectName);
   context.functionRuntime.operations.push({
     kind: 'set_map_entry',
     objectName,
@@ -39342,6 +39419,50 @@ function lowerCompilerOwnedMapSet(
     kind: 'local_get',
     name: objectName,
     type: 'heap_ref',
+  };
+}
+
+function lowerCompilerOwnedMapGet(
+  objectName: string,
+  keyName: string,
+  context: FunctionLoweringContext,
+): CompilerExpressionIR {
+  context.functionRuntime.compilerOwnedMapStorageLocals.add(objectName);
+  const resultName = createLocalName('map_value', context.nextLocalId);
+  context.nextLocalId += 1;
+  context.locals.push({ name: resultName, type: 'tagged_ref' });
+  context.functionRuntime.operations.push({
+    kind: 'get_map_entry',
+    objectName,
+    keyName,
+    resultName,
+  });
+  return {
+    kind: 'local_get',
+    name: resultName,
+    type: 'tagged_ref',
+  };
+}
+
+function lowerCompilerOwnedMapHas(
+  objectName: string,
+  keyName: string,
+  context: FunctionLoweringContext,
+): CompilerExpressionIR {
+  context.functionRuntime.compilerOwnedMapStorageLocals.add(objectName);
+  const resultName = createLocalName('map_has', context.nextLocalId);
+  context.nextLocalId += 1;
+  context.locals.push({ name: resultName, type: 'i32' });
+  context.functionRuntime.operations.push({
+    kind: 'has_map_entry',
+    objectName,
+    keyName,
+    resultName,
+  });
+  return {
+    kind: 'local_get',
+    name: resultName,
+    type: 'i32',
   };
 }
 
@@ -60505,14 +60626,19 @@ function lowerInitialStringKeyMapNewExpression(
     );
   }
   if (shouldLowerStringKeyMapNewAsCompilerOwnedMap(expression, context)) {
+    const storage = shouldLowerStringKeyMapNewWithCompilerOwnedStorage(expression, context);
     const resultName = createLocalName('map', context.nextLocalId);
     context.nextLocalId += 1;
     context.locals.push({ name: resultName, type: 'heap_ref' });
     context.functionRuntime.operations.push({
       kind: 'allocate_map',
       resultName,
+      ...(storage ? { storage: true } : {}),
     });
     context.functionRuntime.compilerOwnedMapLocals.add(resultName);
+    if (storage) {
+      context.functionRuntime.compilerOwnedMapStorageLocals.add(resultName);
+    }
     context.expressionPreludeStatements.push({
       kind: 'local_set',
       name: resultName,
@@ -61007,7 +61133,7 @@ function lowerInitialStringKeyMapCallExpression(
     };
   }
 
-  if (representation?.kind !== 'dynamic_object_representation') {
+  if (!compilerOwnedMapReceiver && representation?.kind !== 'dynamic_object_representation') {
     throw new CompilerUnsupportedError(
       'Map receivers currently require compiler-owned Map values in compiler subset.',
       receiver,
@@ -61029,6 +61155,15 @@ function lowerInitialStringKeyMapCallExpression(
       'map_key',
     );
     context.expressionPreludeStatements.push(...propertyKeyStatements);
+    if (compilerOwnedMapReceiver) {
+      return lowerCompilerOwnedMapGet(objectName, propertyKeyName, context);
+    }
+    if (representation?.kind !== 'dynamic_object_representation') {
+      throw new CompilerUnsupportedError(
+        'Map receivers currently require compiler-owned Map values in compiler subset.',
+        receiver,
+      );
+    }
     return lowerDynamicObjectPropertyRead(
       objectName,
       representation,
@@ -61054,12 +61189,28 @@ function lowerInitialStringKeyMapCallExpression(
       'map_key',
     );
     context.expressionPreludeStatements.push(...propertyKeyStatements);
+    if (compilerOwnedMapReceiver) {
+      return lowerCompilerOwnedMapHas(objectName, propertyKeyName, context);
+    }
+    if (representation?.kind !== 'dynamic_object_representation') {
+      throw new CompilerUnsupportedError(
+        'Map receivers currently require compiler-owned Map values in compiler subset.',
+        receiver,
+      );
+    }
     return lowerDynamicObjectMembership(
       objectName,
       representation,
       propertyKeyName,
       context,
       'map',
+    );
+  }
+
+  if (representation?.kind !== 'dynamic_object_representation') {
+    throw new CompilerUnsupportedError(
+      'Map receivers currently require compiler-owned Map values in compiler subset.',
+      receiver,
     );
   }
 
@@ -67256,8 +67407,14 @@ function lowerVariableStatement(
       type === 'heap_ref' &&
       loweredInitializer?.kind === 'local_get' &&
       context.functionRuntime.compilerOwnedMapLocals.has(loweredInitializer.name);
+    const compilerOwnedMapStorageAlias = compilerOwnedMapAlias &&
+      loweredInitializer?.kind === 'local_get' &&
+      context.functionRuntime.compilerOwnedMapStorageLocals.has(loweredInitializer.name);
     if (compilerOwnedMapAlias) {
       context.functionRuntime.compilerOwnedMapLocals.add(emittedName);
+    }
+    if (compilerOwnedMapStorageAlias) {
+      context.functionRuntime.compilerOwnedMapStorageLocals.add(emittedName);
     }
     currentScope(context).set(declaration.name.text, {
       emittedName,
@@ -67296,6 +67453,7 @@ function lowerVariableStatement(
       ownedOnly: !capturedByClosure && ownedStringAliasValue !== undefined &&
         hostAliasValue === undefined,
       compilerOwnedMap: compilerOwnedMapAlias,
+      compilerOwnedMapStorage: compilerOwnedMapStorageAlias,
     });
     const hostTaggedObjectPropertyAccessInfo = declaration.initializer
       ? getHostTaggedObjectPropertyAccessInfo(declaration.initializer, context)
@@ -70972,6 +71130,10 @@ function lowerFunction(
     classes: context.classes,
     referencedLocalSymbols: collectReferencedLocalSymbols(declaration, context.checker),
     readOnlyEmptyMapLocalSymbols: collectReadOnlyEmptyMapLocalSymbolsFromFunctionLike(
+      declaration,
+      context.checker,
+    ),
+    compilerOwnedMapStorageLocalSymbols: collectCompilerOwnedMapStorageLocalSymbolsFromFunctionLike(
       declaration,
       context.checker,
     ),

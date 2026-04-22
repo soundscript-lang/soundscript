@@ -81,6 +81,35 @@ function renderRuntimeFamilyTypePlan(plan: WasmGcTypePlanIR): readonly string[] 
   return [`  ;; runtime-family ${plan.family} type ${plan.name} kind=${plan.wasmKind}`];
 }
 
+function moduleUsesMapStorage(plan: WasmGcModulePlanIR): boolean {
+  return plan.functionPlans.some((func) => {
+    let found = false;
+    visitSemanticStatements(func.body, (statement) => {
+      if (
+        (statement.kind === 'map_new' && statement.storage) ||
+        statement.kind === 'map_set' ||
+        statement.kind === 'map_get' ||
+        statement.kind === 'map_has'
+      ) {
+        found = true;
+      }
+    });
+    return found;
+  });
+}
+
+function renderMapStorageRuntimeTypes(plan: WasmGcModulePlanIR): readonly string[] {
+  return moduleUsesMapStorage(plan)
+    ? [
+      '  (type $map_storage_runtime (struct',
+      '    (field $size (mut f64))',
+      '    (field $keys (mut (ref null eq)))',
+      '    (field $values (mut (ref null eq)))',
+      '  ))',
+    ]
+    : [];
+}
+
 function renderObjectLayoutTypePlan(plan: WasmGcTypePlanIR): readonly string[] {
   const fields = plan.fields ?? [];
   if (fields.length === 0) {
@@ -278,6 +307,7 @@ interface FunctionRenderContext {
   fallbackObjectLocalLayouts: ReadonlyMap<string, FallbackObjectLocalLayout>;
   dynamicObjectLocalLayouts: ReadonlyMap<string, DynamicObjectLocalLayout>;
   dynamicObjectPropertyOrigins: ReadonlyMap<string, DynamicObjectPropertyOrigin>;
+  mapStorageLocalNames: ReadonlySet<string>;
   hostImportClosureWrapperArgIndicesByCallee: ReadonlyMap<string, ReadonlySet<number>>;
   localAliases: ReadonlyMap<string, string>;
   stringLiteralCodeUnits: readonly (readonly number[])[];
@@ -313,6 +343,7 @@ const EMPTY_RENDER_CONTEXT: FunctionRenderContext = {
   fallbackObjectLocalLayouts: new Map(),
   dynamicObjectLocalLayouts: new Map(),
   dynamicObjectPropertyOrigins: new Map(),
+  mapStorageLocalNames: new Set(),
   hostImportClosureWrapperArgIndicesByCallee: new Map(),
   localAliases: new Map(),
   stringLiteralCodeUnits: [],
@@ -597,6 +628,34 @@ function resolveLocalAlias(name: string, aliases: ReadonlyMap<string, string>): 
     current = aliases.get(current)!;
   }
   return current;
+}
+
+function mapStorageLocalNames(func: WasmGcFunctionPlanIR): ReadonlySet<string> {
+  const names = new Set<string>();
+  const visitStatement = (statement: SemanticStatementIR): void => {
+    if (statement.kind === 'if') {
+      statement.thenBody.forEach(visitStatement);
+      statement.elseBody.forEach(visitStatement);
+      return;
+    }
+    if (statement.kind === 'while') {
+      statement.body.forEach(visitStatement);
+      return;
+    }
+    if (statement.kind === 'map_new' && statement.storage) {
+      names.add(statement.targetName);
+      return;
+    }
+    if (
+      statement.kind === 'local_set' &&
+      statement.value.kind === 'local_get' &&
+      names.has(statement.value.name)
+    ) {
+      names.add(statement.name);
+    }
+  };
+  func.body.forEach(visitStatement);
+  return names;
 }
 
 function fallbackObjectLayoutTypeName(
@@ -1278,6 +1337,15 @@ function renderMapNewStatement(
   statement: Extract<SemanticStatementIR, { kind: 'map_new' }>,
   indent: string,
 ): readonly string[] {
+  if (statement.storage) {
+    return [
+      `${indent}f64.const 0`,
+      `${indent}array.new_fixed $string_array_runtime 0`,
+      `${indent}array.new_fixed $tagged_array_runtime 0`,
+      `${indent}struct.new $map_storage_runtime`,
+      `${indent}local.set $${sanitizeIdentifier(statement.targetName)}`,
+    ];
+  }
   return [
     `${indent}f64.const 0`,
     `${indent}struct.new $map_runtime`,
@@ -1289,28 +1357,240 @@ function renderMapSizeStatement(
   statement: Extract<SemanticStatementIR, { kind: 'map_size' }>,
   indent: string,
 ): readonly string[] {
+  const typeName = statement.storage ? '$map_storage_runtime' : '$map_runtime';
   return [
     `${indent}local.get $${sanitizeIdentifier(statement.objectName)}`,
-    `${indent}ref.cast (ref $map_runtime)`,
-    `${indent}struct.get $map_runtime $size`,
+    `${indent}ref.cast (ref ${typeName})`,
+    `${indent}struct.get ${typeName} $size`,
     `${indent}local.set $${sanitizeIdentifier(statement.targetName)}`,
   ];
+}
+
+function renderMapStorageLoad(
+  objectName: string,
+  indent: string,
+): readonly string[] {
+  return [
+    `${indent}local.get $${sanitizeIdentifier(objectName)}`,
+    `${indent}ref.cast (ref $map_storage_runtime)`,
+    `${indent}struct.get $map_storage_runtime $keys`,
+    `${indent}ref.cast (ref $string_array_runtime)`,
+    `${indent}local.set $${sanitizeIdentifier(MAP_KEYS_SCRATCH)}`,
+    `${indent}local.get $${sanitizeIdentifier(objectName)}`,
+    `${indent}ref.cast (ref $map_storage_runtime)`,
+    `${indent}struct.get $map_storage_runtime $values`,
+    `${indent}ref.cast (ref $tagged_array_runtime)`,
+    `${indent}local.set $${sanitizeIdentifier(MAP_VALUES_SCRATCH)}`,
+    `${indent}local.get $${sanitizeIdentifier(MAP_KEYS_SCRATCH)}`,
+    `${indent}ref.as_non_null`,
+    `${indent}array.len`,
+    `${indent}local.set $${sanitizeIdentifier(MAP_LENGTH_SCRATCH)}`,
+  ];
+}
+
+function renderMapLookupLoop(
+  keyName: string,
+  foundBody: readonly string[],
+  indent: string,
+): readonly string[] {
+  return [
+    `${indent}i32.const 0`,
+    `${indent}local.set $${sanitizeIdentifier(MAP_INDEX_SCRATCH)}`,
+    `${indent}block`,
+    `${indent}  loop`,
+    `${indent}    local.get $${sanitizeIdentifier(MAP_INDEX_SCRATCH)}`,
+    `${indent}    local.get $${sanitizeIdentifier(MAP_LENGTH_SCRATCH)}`,
+    `${indent}    i32.ge_u`,
+    `${indent}    br_if 1`,
+    `${indent}    local.get $${sanitizeIdentifier(MAP_KEYS_SCRATCH)}`,
+    `${indent}    ref.as_non_null`,
+    `${indent}    local.get $${sanitizeIdentifier(MAP_INDEX_SCRATCH)}`,
+    `${indent}    array.get $string_array_runtime`,
+    `${indent}    local.get $${sanitizeIdentifier(keyName)}`,
+    `${indent}    call $${sanitizeIdentifier(STRING_EQUAL_FUNCTION_NAME)}`,
+    `${indent}    if`,
+    ...foundBody,
+    `${indent}      br 2`,
+    `${indent}    end`,
+    `${indent}    local.get $${sanitizeIdentifier(MAP_INDEX_SCRATCH)}`,
+    `${indent}    i32.const 1`,
+    `${indent}    i32.add`,
+    `${indent}    local.set $${sanitizeIdentifier(MAP_INDEX_SCRATCH)}`,
+    `${indent}    br 0`,
+    `${indent}  end`,
+    `${indent}end`,
+  ];
+}
+
+function renderMapTaggedValueFromLocal(
+  valueName: string,
+  valueType: string,
+  indent: string,
+): readonly string[] {
+  switch (valueType) {
+    case 'tagged_ref':
+      return [`${indent}local.get $${sanitizeIdentifier(valueName)}`];
+    case 'f64':
+      return [
+        `${indent}i32.const ${TAGGED_NUMBER_TAG}`,
+        `${indent}local.get $${sanitizeIdentifier(valueName)}`,
+        `${indent}ref.null extern`,
+        `${indent}ref.null eq`,
+        `${indent}struct.new ${taggedValueTypeName()}`,
+      ];
+    case 'i32':
+      return [
+        `${indent}i32.const ${TAGGED_BOOLEAN_TAG}`,
+        `${indent}local.get $${sanitizeIdentifier(valueName)}`,
+        `${indent}f64.convert_i32_s`,
+        `${indent}ref.null extern`,
+        `${indent}ref.null eq`,
+        `${indent}struct.new ${taggedValueTypeName()}`,
+      ];
+    case 'owned_string_ref':
+    case 'string_ref':
+      return [
+        `${indent}i32.const ${TAGGED_STRING_TAG}`,
+        `${indent}f64.const 0`,
+        `${indent}ref.null extern`,
+        `${indent}local.get $${sanitizeIdentifier(valueName)}`,
+        `${indent}struct.new ${taggedValueTypeName()}`,
+      ];
+    case 'symbol_ref':
+      return [
+        `${indent}i32.const ${TAGGED_SYMBOL_TAG}`,
+        `${indent}f64.const 0`,
+        `${indent}ref.null extern`,
+        `${indent}local.get $${sanitizeIdentifier(valueName)}`,
+        `${indent}struct.new ${taggedValueTypeName()}`,
+      ];
+    case 'bigint_ref':
+      return [
+        `${indent}i32.const ${TAGGED_BIGINT_TAG}`,
+        `${indent}f64.const 0`,
+        `${indent}ref.null extern`,
+        `${indent}local.get $${sanitizeIdentifier(valueName)}`,
+        `${indent}struct.new ${taggedValueTypeName()}`,
+      ];
+    default:
+      return [
+        `${indent}i32.const ${TAGGED_HEAP_OBJECT_TAG}`,
+        `${indent}f64.const 0`,
+        `${indent}ref.null extern`,
+        `${indent}local.get $${sanitizeIdentifier(valueName)}`,
+        `${indent}struct.new ${taggedValueTypeName()}`,
+      ];
+  }
 }
 
 function renderMapSetStatement(
   statement: Extract<SemanticStatementIR, { kind: 'map_set' }>,
   indent: string,
 ): readonly string[] {
-  void statement;
   return [
+    ...renderMapStorageLoad(statement.objectName, indent),
+    `${indent}i32.const -1`,
+    `${indent}local.set $${sanitizeIdentifier(MAP_FOUND_SCRATCH)}`,
+    ...renderMapLookupLoop(statement.keyName, [
+      `${indent}      local.get $${sanitizeIdentifier(MAP_INDEX_SCRATCH)}`,
+      `${indent}      local.set $${sanitizeIdentifier(MAP_FOUND_SCRATCH)}`,
+    ], indent),
+    `${indent}local.get $${sanitizeIdentifier(MAP_FOUND_SCRATCH)}`,
+    `${indent}i32.const 0`,
+    `${indent}i32.ge_s`,
+    `${indent}if`,
+    `${indent}  local.get $${sanitizeIdentifier(MAP_VALUES_SCRATCH)}`,
+    `${indent}  ref.as_non_null`,
+    `${indent}  local.get $${sanitizeIdentifier(MAP_FOUND_SCRATCH)}`,
+    ...renderMapTaggedValueFromLocal(statement.valueName, statement.valueType, `${indent}  `),
+    `${indent}  array.set $tagged_array_runtime`,
+    `${indent}else`,
+    `${indent}  local.get $${sanitizeIdentifier(MAP_LENGTH_SCRATCH)}`,
+    `${indent}  i32.const 1`,
+    `${indent}  i32.add`,
+    `${indent}  array.new_default $string_array_runtime`,
+    `${indent}  local.set $${sanitizeIdentifier(MAP_KEYS_TMP_SCRATCH)}`,
+    `${indent}  local.get $${sanitizeIdentifier(MAP_KEYS_TMP_SCRATCH)}`,
+    `${indent}  ref.as_non_null`,
+    `${indent}  i32.const 0`,
+    `${indent}  local.get $${sanitizeIdentifier(MAP_KEYS_SCRATCH)}`,
+    `${indent}  ref.as_non_null`,
+    `${indent}  i32.const 0`,
+    `${indent}  local.get $${sanitizeIdentifier(MAP_LENGTH_SCRATCH)}`,
+    `${indent}  array.copy $string_array_runtime $string_array_runtime`,
+    `${indent}  local.get $${sanitizeIdentifier(MAP_KEYS_TMP_SCRATCH)}`,
+    `${indent}  ref.as_non_null`,
+    `${indent}  local.get $${sanitizeIdentifier(MAP_LENGTH_SCRATCH)}`,
+    `${indent}  local.get $${sanitizeIdentifier(statement.keyName)}`,
+    `${indent}  array.set $string_array_runtime`,
+    `${indent}  local.get $${sanitizeIdentifier(statement.objectName)}`,
+    `${indent}  ref.cast (ref $map_storage_runtime)`,
+    `${indent}  local.get $${sanitizeIdentifier(MAP_KEYS_TMP_SCRATCH)}`,
+    `${indent}  struct.set $map_storage_runtime $keys`,
+    `${indent}  local.get $${sanitizeIdentifier(MAP_LENGTH_SCRATCH)}`,
+    `${indent}  i32.const 1`,
+    `${indent}  i32.add`,
+    `${indent}  array.new_default $tagged_array_runtime`,
+    `${indent}  local.set $${sanitizeIdentifier(MAP_VALUES_TMP_SCRATCH)}`,
+    `${indent}  local.get $${sanitizeIdentifier(MAP_VALUES_TMP_SCRATCH)}`,
+    `${indent}  ref.as_non_null`,
+    `${indent}  i32.const 0`,
+    `${indent}  local.get $${sanitizeIdentifier(MAP_VALUES_SCRATCH)}`,
+    `${indent}  ref.as_non_null`,
+    `${indent}  i32.const 0`,
+    `${indent}  local.get $${sanitizeIdentifier(MAP_LENGTH_SCRATCH)}`,
+    `${indent}  array.copy $tagged_array_runtime $tagged_array_runtime`,
+    `${indent}  local.get $${sanitizeIdentifier(MAP_VALUES_TMP_SCRATCH)}`,
+    `${indent}  ref.as_non_null`,
+    `${indent}  local.get $${sanitizeIdentifier(MAP_LENGTH_SCRATCH)}`,
+    ...renderMapTaggedValueFromLocal(statement.valueName, statement.valueType, `${indent}  `),
+    `${indent}  array.set $tagged_array_runtime`,
     `${indent}local.get $${sanitizeIdentifier(statement.objectName)}`,
-    `${indent}ref.cast (ref $map_runtime)`,
+    `${indent}  ref.cast (ref $map_storage_runtime)`,
+    `${indent}  local.get $${sanitizeIdentifier(MAP_VALUES_TMP_SCRATCH)}`,
+    `${indent}  struct.set $map_storage_runtime $values`,
     `${indent}local.get $${sanitizeIdentifier(statement.objectName)}`,
-    `${indent}ref.cast (ref $map_runtime)`,
-    `${indent}struct.get $map_runtime $size`,
-    `${indent}f64.const 1`,
-    `${indent}f64.add`,
-    `${indent}struct.set $map_runtime $size`,
+    `${indent}  ref.cast (ref $map_storage_runtime)`,
+    `${indent}  local.get $${sanitizeIdentifier(statement.objectName)}`,
+    `${indent}  ref.cast (ref $map_storage_runtime)`,
+    `${indent}  struct.get $map_storage_runtime $size`,
+    `${indent}  f64.const 1`,
+    `${indent}  f64.add`,
+    `${indent}  struct.set $map_storage_runtime $size`,
+    `${indent}end`,
+  ];
+}
+
+function renderMapHasStatement(
+  statement: Extract<SemanticStatementIR, { kind: 'map_has' }>,
+  indent: string,
+): readonly string[] {
+  return [
+    ...renderMapStorageLoad(statement.objectName, indent),
+    `${indent}i32.const 0`,
+    `${indent}local.set $${sanitizeIdentifier(statement.targetName)}`,
+    ...renderMapLookupLoop(statement.keyName, [
+      `${indent}      i32.const 1`,
+      `${indent}      local.set $${sanitizeIdentifier(statement.targetName)}`,
+    ], indent),
+  ];
+}
+
+function renderMapGetStatement(
+  statement: Extract<SemanticStatementIR, { kind: 'map_get' }>,
+  indent: string,
+): readonly string[] {
+  return [
+    ...renderMapStorageLoad(statement.objectName, indent),
+    ...renderTaggedUndefined(indent),
+    `${indent}local.set $${sanitizeIdentifier(statement.targetName)}`,
+    ...renderMapLookupLoop(statement.keyName, [
+      `${indent}      local.get $${sanitizeIdentifier(MAP_VALUES_SCRATCH)}`,
+      `${indent}      ref.as_non_null`,
+      `${indent}      local.get $${sanitizeIdentifier(MAP_INDEX_SCRATCH)}`,
+      `${indent}      array.get $tagged_array_runtime`,
+      `${indent}      local.set $${sanitizeIdentifier(statement.targetName)}`,
+    ], indent),
   ];
 }
 
@@ -1560,6 +1840,13 @@ const TAGGED_ARRAY_LENGTH_SCRATCH = '__soundscript_tagged_array_length';
 const TAGGED_ARRAY_RESULT_SCRATCH = '__soundscript_tagged_array_result';
 const TAGGED_ARRAY_SEARCH_SCRATCH = '__soundscript_tagged_array_search';
 const TAGGED_ARRAY_CURRENT_SCRATCH = '__soundscript_tagged_array_current';
+const MAP_KEYS_SCRATCH = '__soundscript_map_keys';
+const MAP_VALUES_SCRATCH = '__soundscript_map_values';
+const MAP_KEYS_TMP_SCRATCH = '__soundscript_map_keys_tmp';
+const MAP_VALUES_TMP_SCRATCH = '__soundscript_map_values_tmp';
+const MAP_INDEX_SCRATCH = '__soundscript_map_index';
+const MAP_LENGTH_SCRATCH = '__soundscript_map_length';
+const MAP_FOUND_SCRATCH = '__soundscript_map_found';
 const STRING_EQUAL_IMPORT_MODULE = 'soundscript';
 const STRING_EQUAL_IMPORT_NAME = '__string_eq';
 const STRING_EQUAL_FUNCTION_NAME = '__soundscript_string_eq';
@@ -1573,7 +1860,8 @@ type ArrayScratchUse =
   | 'string_array_index_of'
   | 'boolean_array'
   | 'tagged_array'
-  | 'tagged_array_index_of';
+  | 'tagged_array_index_of'
+  | 'map_storage';
 
 function collectNumberArrayScratchFromExpression(
   expression: SemanticExpressionIR,
@@ -1774,7 +2062,17 @@ function collectNumberArrayScratchFromStatement(
     case 'dynamic_object_clear':
     case 'map_new':
     case 'map_size':
+      if (statement.kind === 'map_new' && statement.storage) {
+        uses.add('map_storage');
+      }
+      if (statement.kind === 'map_size' && statement.storage) {
+        uses.add('map_storage');
+      }
+      break;
     case 'map_set':
+    case 'map_get':
+    case 'map_has':
+      uses.add('map_storage');
       break;
     case 'dynamic_object_property_set':
       collectNumberArrayScratchFromExpression(statement.value, uses);
@@ -1820,7 +2118,7 @@ function numberArrayScratchLocals(func: WasmGcFunctionPlanIR): readonly {
         { name: ARRAY_SEARCH_F64_SCRATCH, wasmType: 'f64' },
       ]
       : []),
-    ...(uses.has('string_array')
+    ...(uses.has('string_array') || uses.has('map_storage')
       ? [
         { name: STRING_ARRAY_SOURCE_SCRATCH, wasmType: '(ref null $string_array_runtime)' },
         { name: STRING_ARRAY_TMP_SCRATCH, wasmType: '(ref null $string_array_runtime)' },
@@ -1840,7 +2138,7 @@ function numberArrayScratchLocals(func: WasmGcFunctionPlanIR): readonly {
         { name: BOOLEAN_ARRAY_SEARCH_SCRATCH, wasmType: 'i32' },
       ]
       : []),
-    ...(uses.has('tagged_array')
+    ...(uses.has('tagged_array') || uses.has('map_storage')
       ? [
         { name: TAGGED_ARRAY_SOURCE_SCRATCH, wasmType: '(ref null $tagged_array_runtime)' },
         { name: TAGGED_ARRAY_TMP_SCRATCH, wasmType: '(ref null $tagged_array_runtime)' },
@@ -1849,6 +2147,17 @@ function numberArrayScratchLocals(func: WasmGcFunctionPlanIR): readonly {
         { name: TAGGED_ARRAY_RESULT_SCRATCH, wasmType: 'f64' },
         { name: TAGGED_ARRAY_SEARCH_SCRATCH, wasmType: `(ref null ${taggedValueTypeName()})` },
         { name: TAGGED_ARRAY_CURRENT_SCRATCH, wasmType: `(ref null ${taggedValueTypeName()})` },
+      ]
+      : []),
+    ...(uses.has('map_storage')
+      ? [
+        { name: MAP_KEYS_SCRATCH, wasmType: '(ref null $string_array_runtime)' },
+        { name: MAP_VALUES_SCRATCH, wasmType: '(ref null $tagged_array_runtime)' },
+        { name: MAP_KEYS_TMP_SCRATCH, wasmType: '(ref null $string_array_runtime)' },
+        { name: MAP_VALUES_TMP_SCRATCH, wasmType: '(ref null $tagged_array_runtime)' },
+        { name: MAP_INDEX_SCRATCH, wasmType: 'i32' },
+        { name: MAP_LENGTH_SCRATCH, wasmType: 'i32' },
+        { name: MAP_FOUND_SCRATCH, wasmType: 'i32' },
       ]
       : []),
   ];
@@ -1864,6 +2173,12 @@ function functionUsesTaggedArrayIndexOf(func: WasmGcFunctionPlanIR): boolean {
   const uses = new Set<ArrayScratchUse>();
   func.body.forEach((statement) => collectNumberArrayScratchFromStatement(statement, uses));
   return uses.has('tagged_array_index_of');
+}
+
+function functionUsesMapStorage(func: WasmGcFunctionPlanIR): boolean {
+  const uses = new Set<ArrayScratchUse>();
+  func.body.forEach((statement) => collectNumberArrayScratchFromStatement(statement, uses));
+  return uses.has('map_storage');
 }
 
 function renderNumberArraySource(
@@ -3275,6 +3590,10 @@ function renderStatement(
       return renderMapSizeStatement(statement, indent);
     case 'map_set':
       return renderMapSetStatement(statement, indent);
+    case 'map_get':
+      return renderMapGetStatement(statement, indent);
+    case 'map_has':
+      return renderMapHasStatement(statement, indent);
     case 'dynamic_object_has':
       return renderDynamicObjectHasStatement(statement, indent, context);
     case 'dynamic_object_delete':
@@ -3405,6 +3724,7 @@ function renderFunctionPlan(
     fallbackObjectLocalLayouts: fallbackObjectLocalLayouts(func),
     dynamicObjectLocalLayouts: dynamicLayouts,
     dynamicObjectPropertyOrigins: dynamicObjectPropertyOrigins(func, dynamicLayouts, aliases),
+    mapStorageLocalNames: mapStorageLocalNames(func),
     hostImportClosureWrapperArgIndicesByCallee: hostImportWrapperArgIndicesByCallee,
     localAliases: aliases,
     stringLiteralCodeUnits,
@@ -3485,6 +3805,7 @@ function renderStringEqualityHelperFunctions(plan: WasmGcModulePlanIR): readonly
   );
   const usesStringIndexOf =
     plan.functionPlans.some((func) => !func.hostImport && functionUsesStringArrayIndexOf(func)) ||
+    plan.functionPlans.some((func) => !func.hostImport && functionUsesMapStorage(func)) ||
     (usesStringRuntime &&
       plan.functionPlans.some((func) => !func.hostImport && functionUsesTaggedArrayIndexOf(func)));
   return usesStringIndexOf
@@ -4040,6 +4361,8 @@ function collectBoxedClosureDispatchSignatureIdsFromStatement(
     case 'map_new':
     case 'map_size':
     case 'map_set':
+    case 'map_get':
+    case 'map_has':
       break;
     case 'dynamic_object_property_set':
       collectBoxedClosureDispatchSignatureIdsFromExpression(
@@ -4397,6 +4720,8 @@ function collectBoxValueTypesFromStatement(
     case 'map_new':
     case 'map_size':
     case 'map_set':
+    case 'map_get':
+    case 'map_has':
       break;
     case 'dynamic_object_property_set':
       collectBoxValueTypesFromExpression(statement.value, valueTypes);
@@ -4690,7 +5015,20 @@ function collectArrayRuntimeTypesFromStatement(
     case 'dynamic_object_clear':
     case 'map_new':
     case 'map_size':
+      if (statement.kind === 'map_new' && statement.storage) {
+        runtimeTypes.add('string');
+        runtimeTypes.add('tagged');
+      }
+      if (statement.kind === 'map_size' && statement.storage) {
+        runtimeTypes.add('string');
+        runtimeTypes.add('tagged');
+      }
+      break;
     case 'map_set':
+    case 'map_get':
+    case 'map_has':
+      runtimeTypes.add('string');
+      runtimeTypes.add('tagged');
       break;
     case 'dynamic_object_property_set':
       collectArrayRuntimeTypesFromExpression(statement.value, runtimeTypes);
@@ -4891,6 +5229,7 @@ function renderPromiseRecordTypes(plan: WasmGcModulePlanIR): readonly string[] {
 
 function renderTaggedValueType(plan: WasmGcModulePlanIR): readonly string[] {
   const usesFiniteUnion = plan.helperPlans.some((helper) => helper.family === 'finite_union') ||
+    moduleUsesMapStorage(plan) ||
     plan.functionPlans.some((func) =>
       func.result === 'tagged_ref' ||
       func.params.some((param) => param.wasmType === 'tagged_ref') ||
@@ -5682,6 +6021,7 @@ export function emitWasmGcModulePlan(plan: WasmGcModulePlanIR): string {
   const stringRuntimeTypes = renderStringRuntimeTypes(plan);
   const symbolRuntimeTypes = renderSymbolRuntimeTypes(plan);
   const bigintRuntimeTypes = renderBigIntRuntimeTypes(plan);
+  const mapStorageRuntimeTypes = renderMapStorageRuntimeTypes(plan);
   const arrayTypes = renderArrayTypes(plan);
   const boxTypes = renderBoxTypes(plan);
   const closureSignatureTypes = renderClosureSignatureTypes(plan);
@@ -5717,6 +6057,7 @@ export function emitWasmGcModulePlan(plan: WasmGcModulePlanIR): string {
       plan.typePlans.length > 0 || stringRuntimeTypes.length > 0 || arrayTypes.length > 0 ||
         symbolRuntimeTypes.length > 0 ||
         bigintRuntimeTypes.length > 0 ||
+        mapStorageRuntimeTypes.length > 0 ||
         boxTypes.length > 0 ||
         closureSignatureTypes.length > 0 || closureObjectTypes.length > 0 ||
         capturedClosureEnvTypes.length > 0 ||
@@ -5730,6 +6071,7 @@ export function emitWasmGcModulePlan(plan: WasmGcModulePlanIR): string {
           ...symbolRuntimeTypes,
           ...bigintRuntimeTypes,
           ...arrayTypes,
+          ...mapStorageRuntimeTypes,
           ...fallbackObjectTypes,
           ...dynamicObjectTypes,
           ...boxTypes,

@@ -575,6 +575,7 @@ export interface CompilerRuntimeAllocateDynamicObjectIR {
 export interface CompilerRuntimeAllocateMapIR {
   kind: 'allocate_map';
   resultName: string;
+  storage?: boolean;
 }
 
 export interface CompilerRuntimeGetMapSizeIR {
@@ -589,6 +590,20 @@ export interface CompilerRuntimeSetMapEntryIR {
   keyName: string;
   valueName: string;
   valueType: CompilerValueType;
+}
+
+export interface CompilerRuntimeGetMapEntryIR {
+  kind: 'get_map_entry';
+  objectName: string;
+  keyName: string;
+  resultName: string;
+}
+
+export interface CompilerRuntimeHasMapEntryIR {
+  kind: 'has_map_entry';
+  objectName: string;
+  keyName: string;
+  resultName: string;
 }
 
 export interface CompilerRuntimeCopyDynamicObjectEntriesIR {
@@ -745,6 +760,8 @@ export type CompilerRuntimeOperationIR =
   | CompilerRuntimeAllocateMapIR
   | CompilerRuntimeGetMapSizeIR
   | CompilerRuntimeSetMapEntryIR
+  | CompilerRuntimeGetMapEntryIR
+  | CompilerRuntimeHasMapEntryIR
   | CompilerRuntimeCopyDynamicObjectEntriesIR
   | CompilerRuntimeGetSpecializedObjectFieldIR
   | CompilerRuntimeGetFallbackObjectPropertyIR
