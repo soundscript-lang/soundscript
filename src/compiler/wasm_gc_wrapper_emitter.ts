@@ -237,6 +237,14 @@ function wrapperCollectionBoundaryAdapters(
   ];
 }
 
+function wrapperCollectionParamBoundaryAdapters(wrapper: {
+  paramBoundaryAdapters?: readonly (WasmGcCollectionBoundaryAdapterIR | undefined)[];
+}): readonly WasmGcCollectionBoundaryAdapterIR[] {
+  return wrapper.paramBoundaryAdapters?.filter((
+    adapter,
+  ): adapter is WasmGcCollectionBoundaryAdapterIR => adapter !== undefined) ?? [];
+}
+
 function wrapperUsesMapBoundaryAdapters(wrapper: {
   paramBoundaryAdapters?: readonly (WasmGcCollectionBoundaryAdapterIR | undefined)[];
   resultBoundaryAdapter?: WasmGcCollectionBoundaryAdapterIR;
@@ -293,14 +301,28 @@ function exportSurfaceNeedsBigIntAdapters(plan: WasmGcModulePlanIR): boolean {
   return plan.wrapperPlan.exportWrappers.some(wrapperUsesBigIntValues);
 }
 
-function moduleNeedsMapBoundaryAdapters(plan: WasmGcModulePlanIR): boolean {
-  return plan.wrapperPlan.exportWrappers.some(wrapperUsesMapBoundaryAdapters) ||
-    plan.wrapperPlan.hostImportWrappers.some(wrapperUsesMapBoundaryAdapters);
+function exportSurfaceNeedsMapToInternalAdapters(plan: WasmGcModulePlanIR): boolean {
+  return plan.wrapperPlan.exportWrappers.some((wrapper) =>
+    wrapperCollectionParamBoundaryAdapters(wrapper).some((adapter) => adapter.startsWith('map_'))
+  );
 }
 
-function moduleNeedsSetBoundaryAdapters(plan: WasmGcModulePlanIR): boolean {
-  return plan.wrapperPlan.exportWrappers.some(wrapperUsesSetBoundaryAdapters) ||
-    plan.wrapperPlan.hostImportWrappers.some(wrapperUsesSetBoundaryAdapters);
+function exportSurfaceNeedsMapFromInternalAdapters(plan: WasmGcModulePlanIR): boolean {
+  return plan.wrapperPlan.exportWrappers.some((wrapper) =>
+    wrapper.resultBoundaryAdapter?.startsWith('map_') === true
+  );
+}
+
+function exportSurfaceNeedsSetToInternalAdapters(plan: WasmGcModulePlanIR): boolean {
+  return plan.wrapperPlan.exportWrappers.some((wrapper) =>
+    wrapperCollectionParamBoundaryAdapters(wrapper).some((adapter) => adapter.startsWith('set_'))
+  );
+}
+
+function exportSurfaceNeedsSetFromInternalAdapters(plan: WasmGcModulePlanIR): boolean {
+  return plan.wrapperPlan.exportWrappers.some((wrapper) =>
+    wrapper.resultBoundaryAdapter?.startsWith('set_') === true
+  );
 }
 
 function moduleNeedsSymbolAdapters(plan: WasmGcModulePlanIR): boolean {
@@ -488,7 +510,7 @@ function renderExportBoundaryAdapterHelpers(plan: WasmGcModulePlanIR): string {
     return requireExport(wasmExports, '__soundscript_bigint_to_host')(value);
   }`);
   }
-  if (moduleNeedsMapBoundaryAdapters(plan)) {
+  if (exportSurfaceNeedsMapToInternalAdapters(plan)) {
     helpers.push(`function mapBoundaryValueToInternal(adapter, value) {
     if (adapter === 'map_string_number') {
       if (typeof value !== 'number') {
@@ -525,7 +547,39 @@ function renderExportBoundaryAdapterHelpers(plan: WasmGcModulePlanIR): string {
     return result;
   }`);
   }
-  if (moduleNeedsSetBoundaryAdapters(plan)) {
+  if (exportSurfaceNeedsMapFromInternalAdapters(plan)) {
+    helpers.push(`function mapBoundaryValueFromInternal(adapter, value) {
+    if (adapter === 'map_string_number') {
+      return value;
+    }
+    if (adapter === 'map_string_boolean') {
+      return Boolean(value);
+    }
+    if (adapter === 'map_string_string') {
+      return stringFromInternal(value);
+    }
+    throw new TypeError(\`Unsupported Soundscript WasmGC Map boundary adapter \${adapter}.\`);
+  }
+
+  function mapFromInternal(adapter, value) {
+    if (value == null) {
+      throw new TypeError('Soundscript WasmGC Map export result was null.');
+    }
+    const suffix = adapter.slice('map_string_'.length);
+    const size = requireExport(wasmExports, \`__soundscript_map_size_string_\${suffix}\`)(value);
+    const keyAt = requireExport(wasmExports, \`__soundscript_map_key_at_string_\${suffix}\`);
+    const valueAt = requireExport(wasmExports, \`__soundscript_map_value_at_string_\${suffix}\`);
+    const result = new Map();
+    for (let index = 0; index < size; index += 1) {
+      result.set(
+        stringFromInternal(keyAt(value, index)),
+        mapBoundaryValueFromInternal(adapter, valueAt(value, index)),
+      );
+    }
+    return result;
+  }`);
+  }
+  if (exportSurfaceNeedsSetToInternalAdapters(plan)) {
     helpers.push(`function setBoundaryValueToInternal(adapter, value) {
     if (adapter === 'set_number') {
       if (typeof value !== 'number') {
@@ -555,6 +609,34 @@ function renderExportBoundaryAdapterHelpers(plan: WasmGcModulePlanIR): string {
     const result = create();
     for (const entry of value) {
       add(result, setBoundaryValueToInternal(adapter, entry));
+    }
+    return result;
+  }`);
+  }
+  if (exportSurfaceNeedsSetFromInternalAdapters(plan)) {
+    helpers.push(`function setBoundaryValueFromInternal(adapter, value) {
+    if (adapter === 'set_number') {
+      return value;
+    }
+    if (adapter === 'set_boolean') {
+      return Boolean(value);
+    }
+    if (adapter === 'set_string') {
+      return stringFromInternal(value);
+    }
+    throw new TypeError(\`Unsupported Soundscript WasmGC Set boundary adapter \${adapter}.\`);
+  }
+
+  function setFromInternal(adapter, value) {
+    if (value == null) {
+      throw new TypeError('Soundscript WasmGC Set export result was null.');
+    }
+    const suffix = adapter.slice('set_'.length);
+    const size = requireExport(wasmExports, \`__soundscript_set_size_\${suffix}\`)(value);
+    const valueAt = requireExport(wasmExports, \`__soundscript_set_value_at_\${suffix}\`);
+    const result = new Set();
+    for (let index = 0; index < size; index += 1) {
+      result.add(setBoundaryValueFromInternal(adapter, valueAt(value, index)));
     }
     return result;
   }`);
@@ -640,6 +722,10 @@ function renderExportWrapperInvocation(wrapper: WasmGcExportWrapperPlanIR): stri
     ? `symbolFromInternal(${rawResult})`
     : isBigIntValueType(wrapper.resultType)
     ? `bigintFromInternal(${rawResult})`
+    : wrapper.resultBoundaryAdapter?.startsWith('map_')
+    ? `mapFromInternal(${JSON.stringify(wrapper.resultBoundaryAdapter)}, ${rawResult})`
+    : wrapper.resultBoundaryAdapter?.startsWith('set_')
+    ? `setFromInternal(${JSON.stringify(wrapper.resultBoundaryAdapter)}, ${rawResult})`
     : rawResult;
   return `    ${JSON.stringify(wrapper.exportName)}: (...args) => ${result},`;
 }

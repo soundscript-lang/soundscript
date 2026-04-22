@@ -671,19 +671,24 @@ function createWasmGcExportWrapperPlan(
       const hasParamBoundaryAdapters = paramBoundaryAdapters?.some((adapter) =>
         adapter !== undefined
       ) === true;
+      const resultBoundaryAdapter = surface
+        ? collectionBoundaryAdapterForSemanticType(surface.result)
+        : undefined;
       const wrapper: WasmGcExportWrapperPlanIR = {
         exportName: func.exportName,
         wasmExportName: func.exportName,
         paramTypes: func.params.map((param) => param.wasmType),
         resultType: func.result,
         ...(hasParamBoundaryAdapters ? { paramBoundaryAdapters } : {}),
+        ...(resultBoundaryAdapter ? { resultBoundaryAdapter } : {}),
       };
       return wrapper;
     })
     .filter((wrapper) =>
       wrapper.paramTypes.some(isWasmGcWrapperValueType) ||
       isWasmGcWrapperValueType(wrapper.resultType) ||
-      wrapper.paramBoundaryAdapters?.some((adapter) => adapter !== undefined) === true
+      wrapper.paramBoundaryAdapters?.some((adapter) => adapter !== undefined) === true ||
+      wrapper.resultBoundaryAdapter !== undefined
     )
     .sort((left, right) => left.exportName.localeCompare(right.exportName));
 }
@@ -863,6 +868,12 @@ function collectionBoundaryParamsForFunction(
   );
 }
 
+function collectionBoundaryResultForFunction(
+  surface: SemanticBoundarySurfaceIR | undefined,
+): WasmGcCollectionBoundaryAdapterIR | undefined {
+  return surface ? collectionBoundaryAdapterForSemanticType(surface.result) : undefined;
+}
+
 function collectionAdapterMapValueType(
   adapter: WasmGcCollectionBoundaryAdapterIR,
 ): 'owned_string_ref' | 'f64' | 'i32' | undefined {
@@ -897,32 +908,122 @@ function collectionAdapterSetArrayType(
   }
 }
 
+function collectReturnedLocalNames(
+  statements: readonly SemanticStatementIR[],
+  locals: Set<string>,
+): void {
+  for (const statement of statements) {
+    if (statement.kind === 'return' && statement.value.kind === 'local_get') {
+      locals.add(statement.value.name);
+    } else if (statement.kind === 'if') {
+      collectReturnedLocalNames(statement.thenBody, locals);
+      collectReturnedLocalNames(statement.elseBody, locals);
+    } else if (statement.kind === 'while') {
+      collectReturnedLocalNames(statement.body, locals);
+    }
+  }
+}
+
+function collectLocalAliases(
+  statements: readonly SemanticStatementIR[],
+  aliases: [string, string][],
+): void {
+  for (const statement of statements) {
+    if (statement.kind === 'local_set' && statement.value.kind === 'local_get') {
+      aliases.push([statement.name, statement.value.name]);
+    } else if (statement.kind === 'if') {
+      collectLocalAliases(statement.thenBody, aliases);
+      collectLocalAliases(statement.elseBody, aliases);
+    } else if (statement.kind === 'while') {
+      collectLocalAliases(statement.body, aliases);
+    }
+  }
+}
+
+function collectionResultObjectLocals(
+  statements: readonly SemanticStatementIR[],
+  resultAdapter: WasmGcCollectionBoundaryAdapterIR | undefined,
+): ReadonlySet<string> {
+  if (!resultAdapter) {
+    return new Set();
+  }
+  const locals = new Set<string>();
+  const aliases: [string, string][] = [];
+  collectReturnedLocalNames(statements, locals);
+  collectLocalAliases(statements, aliases);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const [left, right] of aliases) {
+      if (locals.has(left) && !locals.has(right)) {
+        locals.add(right);
+        changed = true;
+      }
+      if (locals.has(right) && !locals.has(left)) {
+        locals.add(left);
+        changed = true;
+      }
+    }
+  }
+  return locals;
+}
+
 function rewriteCollectionBoundaryStatements(
   statements: readonly SemanticStatementIR[],
   collectionParams: ReadonlyMap<string, WasmGcCollectionBoundaryAdapterIR>,
+  collectionResultLocals: ReadonlySet<string>,
+  resultAdapter: WasmGcCollectionBoundaryAdapterIR | undefined,
 ): readonly SemanticStatementIR[] {
   return statements.map((statement): SemanticStatementIR => {
     if (statement.kind === 'if') {
       return {
         ...statement,
-        thenBody: rewriteCollectionBoundaryStatements(statement.thenBody, collectionParams),
-        elseBody: rewriteCollectionBoundaryStatements(statement.elseBody, collectionParams),
+        thenBody: rewriteCollectionBoundaryStatements(
+          statement.thenBody,
+          collectionParams,
+          collectionResultLocals,
+          resultAdapter,
+        ),
+        elseBody: rewriteCollectionBoundaryStatements(
+          statement.elseBody,
+          collectionParams,
+          collectionResultLocals,
+          resultAdapter,
+        ),
       };
     }
     if (statement.kind === 'while') {
       return {
         ...statement,
-        body: rewriteCollectionBoundaryStatements(statement.body, collectionParams),
+        body: rewriteCollectionBoundaryStatements(
+          statement.body,
+          collectionParams,
+          collectionResultLocals,
+          resultAdapter,
+        ),
       };
     }
-    const adapter = 'objectName' in statement
-      ? collectionParams.get(statement.objectName)
+    const objectAdapter = 'objectName' in statement
+      ? collectionParams.get(statement.objectName) ??
+        (collectionResultLocals.has(statement.objectName) ? resultAdapter : undefined)
       : undefined;
+    const targetAdapter =
+      'targetName' in statement && collectionResultLocals.has(statement.targetName)
+        ? resultAdapter
+        : undefined;
+    const adapter = objectAdapter ?? targetAdapter;
     if (!adapter) {
       return statement;
     }
     const mapValueType = collectionAdapterMapValueType(adapter);
     if (mapValueType) {
+      if (statement.kind === 'dynamic_object_new' && statement.collectionFamily === 'map') {
+        return {
+          kind: 'map_new',
+          targetName: statement.targetName,
+          storage: true,
+        };
+      }
       if (statement.kind === 'dynamic_object_size') {
         return {
           kind: 'map_size',
@@ -937,6 +1038,19 @@ function rewriteCollectionBoundaryStatements(
           targetName: statement.targetName,
           objectName: statement.objectName,
           resultType: statement.resultType,
+        };
+      }
+      if (
+        statement.kind === 'dynamic_object_property_set' &&
+        statement.collectionFamily === 'map' &&
+        statement.valueName !== undefined
+      ) {
+        return {
+          kind: 'map_set',
+          objectName: statement.objectName,
+          keyName: statement.propertyKeyName,
+          valueName: statement.valueName,
+          valueType: statement.valueType,
         };
       }
     }
@@ -966,16 +1080,21 @@ function rewriteCollectionBoundaryFunctions(
     if (func.hostImport || func.exportName.length === 0) {
       return func;
     }
-    const collectionParams = collectionBoundaryParamsForFunction(
-      func,
-      exportSurfacesByName.get(func.exportName),
-    );
-    if (collectionParams.size === 0) {
+    const surface = exportSurfacesByName.get(func.exportName);
+    const collectionParams = collectionBoundaryParamsForFunction(func, surface);
+    const resultAdapter = collectionBoundaryResultForFunction(surface);
+    const collectionResultLocals = collectionResultObjectLocals(func.body, resultAdapter);
+    if (collectionParams.size === 0 && collectionResultLocals.size === 0) {
       return func;
     }
     return {
       ...func,
-      body: rewriteCollectionBoundaryStatements(func.body, collectionParams),
+      body: rewriteCollectionBoundaryStatements(
+        func.body,
+        collectionParams,
+        collectionResultLocals,
+        resultAdapter,
+      ),
     };
   });
 }
