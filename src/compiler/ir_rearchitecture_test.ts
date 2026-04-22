@@ -2676,11 +2676,11 @@ Deno.test('compiler wasm-gc emitter produces runnable explicit Map entries itera
           map.set("right", 7);
           map.delete("middle");
           let score = 0;
-          for (const _entry of map.entries()) {
-            score = score + 1;
+          for (const [key, value] of map.entries()) {
+            score = score + key.length * 10 + value;
           }
-          for (const _entry of map) {
-            score = score + 1;
+          for (const [key, value] of map) {
+            score = score + key.length + value;
           }
           map.clear();
           const afterClearDone = map.entries().next().done === true;
@@ -2733,7 +2733,7 @@ Deno.test('compiler wasm-gc emitter produces runnable explicit Map entries itera
   const instance = await WebAssembly.instantiate(wasm);
   const main = instance.instance.exports['main.ts:main'];
   assertEquals(typeof main, 'function');
-  assertEquals((main as () => number)(), 4);
+  assertEquals((main as () => number)(), 117);
 });
 
 Deno.test('compiler wasm-gc emitter produces runnable legacy numeric Map mutation flow', async () => {
@@ -3730,8 +3730,8 @@ Deno.test('compiler wasm-gc emitter produces runnable explicit Set keys and entr
           for (const value of set.keys()) {
             score = score + value;
           }
-          for (const _entry of set.entries()) {
-            score = score + 1;
+          for (const [left, right] of set.entries()) {
+            score = score + left * 10 + right;
           }
           if (thirdDone) {
             score = score + 0;
@@ -3790,7 +3790,7 @@ Deno.test('compiler wasm-gc emitter produces runnable explicit Set keys and entr
   const instance = await WebAssembly.instantiate(wasm);
   const main = instance.instance.exports['main.ts:main'];
   assertEquals(typeof main, 'function');
-  assertEquals((main as () => number)(), 38);
+  assertEquals((main as () => number)(), 135);
 });
 
 Deno.test('compiler wasm-gc emitter produces runnable class instance field and method reads', async () => {

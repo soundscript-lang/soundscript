@@ -11942,11 +11942,19 @@ interface LoweredOwnedArrayBindingSource {
   value: CompilerExpressionIR;
   arrayType: OwnedCallbackArrayType;
   heapElementRepresentation?: CompilerRuntimeRepresentationRefIR<'object'>;
+  elementInfos?: readonly OwnedArrayBindingElementInfo[];
+}
+
+interface OwnedArrayBindingElementInfo {
+  type: CompilerValueType;
+  heapRepresentation?: CompilerRuntimeRepresentationRefIR<'object'>;
+  taggedPrimitiveKinds?: CompilerTaggedPrimitiveBoundaryKindsIR;
 }
 
 interface OwnedArrayBindingSourceInfo {
   arrayType: OwnedCallbackArrayType;
   heapElementRepresentation?: CompilerRuntimeRepresentationRefIR<'object'>;
+  elementInfos?: readonly OwnedArrayBindingElementInfo[];
 }
 
 interface LoweredObjectBindingSource {
@@ -12060,6 +12068,88 @@ function createOwnedArrayElementExpression(
       };
     default: {
       const exhaustiveCheck: never = elementType;
+      return exhaustiveCheck;
+    }
+  }
+}
+
+function createOwnedArrayTaggedElementExpression(
+  arrayName: string,
+  arrayType: OwnedCallbackArrayType,
+  index: number,
+  elementType: CompilerValueType = 'tagged_ref',
+): CompilerExpressionIR {
+  const indexExpression: CompilerExpressionIR = {
+    kind: 'number_literal',
+    value: index,
+  };
+  const localArrayExpression: CompilerExpressionIR = {
+    kind: 'local_get',
+    name: arrayName,
+    type: arrayType,
+  };
+  switch (arrayType) {
+    case 'owned_array_ref':
+      return {
+        kind: 'tag_string',
+        value: {
+          kind: 'owned_string_array_element',
+          value: localArrayExpression,
+          index: indexExpression,
+          type: 'owned_string_ref',
+        },
+        type: 'tagged_ref',
+      };
+    case 'owned_number_array_ref':
+      return {
+        kind: 'tag_number',
+        value: {
+          kind: 'owned_number_array_element',
+          value: localArrayExpression,
+          index: indexExpression,
+          type: 'f64',
+        },
+        type: 'tagged_ref',
+      };
+    case 'owned_boolean_array_ref':
+      return {
+        kind: 'tag_boolean',
+        value: {
+          kind: 'owned_boolean_array_element',
+          value: localArrayExpression,
+          index: indexExpression,
+          type: 'i32',
+        },
+        type: 'tagged_ref',
+      };
+    case 'owned_tagged_array_ref':
+      return {
+        kind: 'owned_tagged_array_element',
+        value: localArrayExpression,
+        index: indexExpression,
+        type: 'tagged_ref',
+      };
+    case 'owned_heap_array_ref': {
+      const heapElementType: OwnedHeapArrayElementType = elementType === 'owned_heap_array_ref' ||
+          elementType === 'owned_array_ref' ||
+          elementType === 'owned_number_array_ref' ||
+          elementType === 'owned_boolean_array_ref' ||
+          elementType === 'owned_tagged_array_ref'
+        ? elementType
+        : 'heap_ref';
+      return {
+        kind: 'tag_heap_object',
+        value: {
+          kind: 'owned_heap_array_element',
+          value: localArrayExpression,
+          index: indexExpression,
+          type: heapElementType,
+        },
+        type: 'tagged_ref',
+      };
+    }
+    default: {
+      const exhaustiveCheck: never = arrayType;
       return exhaustiveCheck;
     }
   }
@@ -12339,15 +12429,63 @@ function lowerTaggedBindingAssignmentToSymbol(
           value: taggedValue,
           type: 'owned_string_ref',
         };
+      case 'symbol_ref':
+        return {
+          kind: 'untag_symbol',
+          value: taggedValue,
+          type: 'symbol_ref',
+        };
+      case 'bigint_ref':
+        return {
+          kind: 'untag_bigint',
+          value: taggedValue,
+          type: 'bigint_ref',
+        };
       case 'heap_ref':
         return {
           kind: 'untag_heap_object',
           value: taggedValue,
           type: 'heap_ref',
         };
+      case 'closure_ref':
+        return {
+          kind: 'untag_heap_object',
+          value: taggedValue,
+          type: 'closure_ref',
+        };
+      case 'owned_heap_array_ref':
+        return {
+          kind: 'untag_heap_object',
+          value: taggedValue,
+          type: 'owned_heap_array_ref',
+        };
+      case 'owned_array_ref':
+        return {
+          kind: 'untag_heap_object',
+          value: taggedValue,
+          type: 'owned_array_ref',
+        };
+      case 'owned_number_array_ref':
+        return {
+          kind: 'untag_heap_object',
+          value: taggedValue,
+          type: 'owned_number_array_ref',
+        };
+      case 'owned_boolean_array_ref':
+        return {
+          kind: 'untag_heap_object',
+          value: taggedValue,
+          type: 'owned_boolean_array_ref',
+        };
+      case 'owned_tagged_array_ref':
+        return {
+          kind: 'untag_heap_object',
+          value: taggedValue,
+          type: 'owned_tagged_array_ref',
+        };
       default:
         throw new CompilerUnsupportedError(
-          'Destructuring assignments currently support only number, boolean, string, heap-object, and tagged local targets in compiler subset.',
+          'Destructuring assignments currently support only scalar, heap-object, array, and tagged local targets in compiler subset.',
           target,
         );
     }
@@ -12719,6 +12857,8 @@ function lowerOwnedArrayBindingPatternIntoScope(
     const capturedByClosure = declarationSymbol
       ? context.capturedLocalSymbols.has(declarationSymbol)
       : false;
+    const elementInfo = source.elementInfos?.[index];
+    const elementValueType = elementInfo?.type ?? 'tagged_ref';
     const emittedName = createLocalName(name.text, context.nextLocalId);
     context.nextLocalId += 1;
     if (element.dotDotDotToken) {
@@ -12752,121 +12892,33 @@ function lowerOwnedArrayBindingPatternIntoScope(
       }
       continue;
     }
-    context.locals.push({ name: emittedName, type: capturedByClosure ? 'box_ref' : 'tagged_ref' });
-    currentScope(context).set(name.text, {
+    context.locals.push({
+      name: emittedName,
+      type: capturedByClosure ? 'box_ref' : elementValueType,
+    });
+    const boundSymbol: BoundSymbol = {
       emittedName,
-      type: capturedByClosure ? 'box_ref' : 'tagged_ref',
-      boxedValueType: capturedByClosure ? 'tagged_ref' : undefined,
-      heapRepresentation: source.heapElementRepresentation,
-    });
+      type: capturedByClosure ? 'box_ref' : elementValueType,
+      boxedValueType: capturedByClosure ? elementValueType : undefined,
+      heapRepresentation: elementInfo?.heapRepresentation ?? source.heapElementRepresentation,
+      taggedPrimitiveKinds: elementInfo?.taggedPrimitiveKinds,
+    };
+    currentScope(context).set(name.text, boundSymbol);
 
-    const extractedName = createLocalName(`${name.text}_element`, context.nextLocalId);
-    context.nextLocalId += 1;
-    context.locals.push({ name: extractedName, type: 'tagged_ref' });
-    statements.push({
-      kind: 'local_set',
-      name: extractedName,
-      value: createOwnedArrayAtExpression(sourceName, source.arrayType, index),
-    });
-
-    if (element.initializer) {
-      const loweredDefault = lowerExpressionAsValueType(element.initializer, 'tagged_ref', context);
-      statements.push(...consumeExpressionPreludeStatements(context));
-      if (capturedByClosure) {
-        statements.push({
-          kind: 'local_set',
-          name: emittedName,
-          value: {
-            kind: 'box_new',
-            value: loweredDefault,
-            valueType: 'tagged_ref',
-            type: 'box_ref',
-          },
-        });
-        statements.push({
-          kind: 'if',
-          condition: {
-            kind: 'tagged_is_undefined',
-            value: {
-              kind: 'local_get',
-              name: extractedName,
-              type: 'tagged_ref',
-            },
-            negated: false,
-            type: 'i32',
-          },
-          thenBody: [],
-          elseBody: [{
-            kind: 'box_set',
-            box: {
-              kind: 'local_get',
-              name: emittedName,
-              type: 'box_ref',
-            },
-            value: {
-              kind: 'local_get',
-              name: extractedName,
-              type: 'tagged_ref',
-            },
-            valueType: 'tagged_ref',
-          }],
-        });
-      } else {
-        statements.push({
-          kind: 'local_set',
-          name: emittedName,
-          value: loweredDefault,
-        });
-        statements.push({
-          kind: 'if',
-          condition: {
-            kind: 'tagged_is_undefined',
-            value: {
-              kind: 'local_get',
-              name: extractedName,
-              type: 'tagged_ref',
-            },
-            negated: false,
-            type: 'i32',
-          },
-          thenBody: [],
-          elseBody: [{
-            kind: 'local_set',
-            name: emittedName,
-            value: {
-              kind: 'local_get',
-              name: extractedName,
-              type: 'tagged_ref',
-            },
-          }],
-        });
-      }
-    } else if (capturedByClosure) {
-      statements.push({
-        kind: 'local_set',
-        name: emittedName,
-        value: {
-          kind: 'box_new',
-          value: {
-            kind: 'local_get',
-            name: extractedName,
-            type: 'tagged_ref',
-          },
-          valueType: 'tagged_ref',
-          type: 'box_ref',
-        },
-      });
-    } else {
-      statements.push({
-        kind: 'local_set',
-        name: emittedName,
-        value: {
-          kind: 'local_get',
-          name: extractedName,
-          type: 'tagged_ref',
-        },
-      });
-    }
+    statements.push(
+      ...lowerTaggedBindingAssignmentToSymbol(
+        name,
+        boundSymbol,
+        createOwnedArrayTaggedElementExpression(
+          sourceName,
+          source.arrayType,
+          index,
+          elementValueType,
+        ),
+        context,
+        element.initializer,
+      ),
+    );
 
     index += 1;
   }
@@ -17280,6 +17332,7 @@ interface SupportedSetElementTypeInfo {
     | 'owned_number_array_ref'
     | 'owned_boolean_array_ref'
     | 'owned_tagged_array_ref';
+  entryElementInfos: readonly [OwnedArrayBindingElementInfo, OwnedArrayBindingElementInfo];
 }
 
 function getSupportedSetElementTypeInfo(
@@ -17291,6 +17344,7 @@ function getSupportedSetElementTypeInfo(
       valuesArrayType: 'owned_array_ref',
       valuesElementType: 'owned_string_ref',
       entryElementType: 'owned_array_ref',
+      entryElementInfos: [{ type: 'owned_string_ref' }, { type: 'owned_string_ref' }],
     };
   }
   if ((elementType.flags & ts.TypeFlags.NumberLike) !== 0) {
@@ -17298,6 +17352,7 @@ function getSupportedSetElementTypeInfo(
       valuesArrayType: 'owned_number_array_ref',
       valuesElementType: 'f64',
       entryElementType: 'owned_number_array_ref',
+      entryElementInfos: [{ type: 'f64' }, { type: 'f64' }],
     };
   }
   if ((elementType.flags & ts.TypeFlags.BooleanLike) !== 0) {
@@ -17305,6 +17360,7 @@ function getSupportedSetElementTypeInfo(
       valuesArrayType: 'owned_boolean_array_ref',
       valuesElementType: 'i32',
       entryElementType: 'owned_boolean_array_ref',
+      entryElementInfos: [{ type: 'i32' }, { type: 'i32' }],
     };
   }
   if (
@@ -17319,6 +17375,7 @@ function getSupportedSetElementTypeInfo(
       valuesArrayType: 'owned_tagged_array_ref',
       valuesElementType: 'tagged_ref',
       entryElementType: 'owned_tagged_array_ref',
+      entryElementInfos: [{ type: 'tagged_ref' }, { type: 'tagged_ref' }],
     };
   }
   return undefined;
@@ -17394,6 +17451,7 @@ interface SupportedCollectionIteratorTypeInfo {
   kind: 'map_iterator' | 'set_iterator';
   valuesArrayType: OwnedCallbackArrayType;
   elementType: OwnedCallbackElementType;
+  elementInfos?: readonly OwnedArrayBindingElementInfo[];
 }
 
 function getSupportedCollectionIteratorTypeInfo(
@@ -17422,6 +17480,7 @@ function getSupportedCollectionIteratorTypeInfo(
         kind,
         valuesArrayType: 'owned_heap_array_ref',
         elementType: entryTypeInfo.elementType,
+        elementInfos: entryTypeInfo.elementInfos,
       };
     }
   }
@@ -17432,6 +17491,7 @@ function getSupportedCollectionIteratorTypeInfo(
         kind,
         valuesArrayType: 'owned_heap_array_ref',
         elementType: entryTypeInfo.elementType,
+        elementInfos: entryTypeInfo.elementInfos,
       };
     }
   }
@@ -17477,6 +17537,7 @@ function getSupportedMapEntryIteratorTypeInfo(
   yieldedType: ts.Type,
 ): {
   elementType: 'owned_array_ref' | 'owned_number_array_ref' | 'owned_tagged_array_ref';
+  elementInfos: readonly [OwnedArrayBindingElementInfo, OwnedArrayBindingElementInfo];
 } | undefined {
   if ((yieldedType.flags & ts.TypeFlags.Object) === 0) {
     return undefined;
@@ -17494,7 +17555,10 @@ function getSupportedMapEntryIteratorTypeInfo(
     (keyType.flags & ts.TypeFlags.NumberLike) !== 0 &&
     (valueType.flags & ts.TypeFlags.NumberLike) !== 0
   ) {
-    return { elementType: 'owned_number_array_ref' };
+    return {
+      elementType: 'owned_number_array_ref',
+      elementInfos: [{ type: 'f64' }, { type: 'f64' }],
+    };
   }
   if (!isStringLikeType(keyType)) {
     return undefined;
@@ -17503,7 +17567,7 @@ function getSupportedMapEntryIteratorTypeInfo(
   if (!valueInfo) {
     return undefined;
   }
-  return { elementType: valueInfo.entryElementType };
+  return { elementType: valueInfo.entryElementType, elementInfos: valueInfo.entryElementInfos };
 }
 
 function getSupportedSetEntryIteratorTypeInfo(
@@ -17515,6 +17579,7 @@ function getSupportedSetEntryIteratorTypeInfo(
     | 'owned_number_array_ref'
     | 'owned_boolean_array_ref'
     | 'owned_tagged_array_ref';
+  elementInfos: readonly [OwnedArrayBindingElementInfo, OwnedArrayBindingElementInfo];
 } | undefined {
   if ((yieldedType.flags & ts.TypeFlags.Object) === 0) {
     return undefined;
@@ -17537,7 +17602,13 @@ function getSupportedSetEntryIteratorTypeInfo(
   ) {
     return undefined;
   }
-  return { elementType: keyInfo.entryElementType };
+  return {
+    elementType: keyInfo.entryElementType,
+    elementInfos: [
+      { type: keyInfo.valuesElementType },
+      { type: valueInfo.valuesElementType },
+    ],
+  };
 }
 
 function isArrayConstructorValue(
@@ -20069,6 +20140,7 @@ function getSupportedStringKeyMapIterationValueInfo(
   valuesElementType: 'owned_string_ref' | 'f64' | 'i32' | 'tagged_ref';
   entryPairValueType: 'owned_string_ref' | 'tagged_ref';
   entryElementType: 'owned_array_ref' | 'owned_tagged_array_ref';
+  entryElementInfos: readonly [OwnedArrayBindingElementInfo, OwnedArrayBindingElementInfo];
 } | undefined {
   if (isStringLikeType(valueType)) {
     return {
@@ -20076,6 +20148,7 @@ function getSupportedStringKeyMapIterationValueInfo(
       valuesElementType: 'owned_string_ref',
       entryPairValueType: 'owned_string_ref',
       entryElementType: 'owned_array_ref',
+      entryElementInfos: [{ type: 'owned_string_ref' }, { type: 'owned_string_ref' }],
     };
   }
   if ((valueType.flags & ts.TypeFlags.NumberLike) !== 0) {
@@ -20084,6 +20157,7 @@ function getSupportedStringKeyMapIterationValueInfo(
       valuesElementType: 'f64',
       entryPairValueType: 'tagged_ref',
       entryElementType: 'owned_tagged_array_ref',
+      entryElementInfos: [{ type: 'owned_string_ref' }, { type: 'f64' }],
     };
   }
   if ((valueType.flags & ts.TypeFlags.BooleanLike) !== 0) {
@@ -20092,6 +20166,7 @@ function getSupportedStringKeyMapIterationValueInfo(
       valuesElementType: 'i32',
       entryPairValueType: 'tagged_ref',
       entryElementType: 'owned_tagged_array_ref',
+      entryElementInfos: [{ type: 'owned_string_ref' }, { type: 'i32' }],
     };
   }
   if (
@@ -20106,6 +20181,7 @@ function getSupportedStringKeyMapIterationValueInfo(
       valuesElementType: 'tagged_ref',
       entryPairValueType: 'tagged_ref',
       entryElementType: 'owned_tagged_array_ref',
+      entryElementInfos: [{ type: 'owned_string_ref' }, { type: 'tagged_ref' }],
     };
   }
   return undefined;
@@ -20530,6 +20606,7 @@ function tryLowerCollectionForOfIterableExpression(
   arrayType: OwnedCallbackArrayType;
   elementType: OwnedCallbackElementType;
   heapElementRepresentation?: CompilerRuntimeRepresentationRefIR<'object'>;
+  elementInfos?: readonly OwnedArrayBindingElementInfo[];
 } | undefined {
   if (ts.isParenthesizedExpression(expression)) {
     return tryLowerCollectionForOfIterableExpression(expression.expression, context);
@@ -20615,6 +20692,7 @@ function tryLowerCollectionForOfIterableExpression(
             ),
             arrayType: 'owned_heap_array_ref',
             elementType: iterationValueInfo.entryElementType,
+            elementInfos: iterationValueInfo.entryElementInfos,
           };
         }
       }
@@ -20672,6 +20750,7 @@ function tryLowerCollectionForOfIterableExpression(
           ),
           arrayType: 'owned_heap_array_ref',
           elementType: iterationValueInfo.entryElementType,
+          elementInfos: iterationValueInfo.entryElementInfos,
         };
       }
     }
@@ -20739,6 +20818,7 @@ function tryLowerCollectionForOfIterableExpression(
           ),
           arrayType: 'owned_heap_array_ref',
           elementType: 'owned_number_array_ref',
+          elementInfos: [{ type: 'f64' }, { type: numberKeyMapTypeInfo.valuesElementType }],
         };
       }
     }
@@ -20790,6 +20870,7 @@ function tryLowerCollectionForOfIterableExpression(
             ),
             arrayType: 'owned_heap_array_ref',
             elementType: setTypeInfo.entryElementType,
+            elementInfos: setTypeInfo.entryElementInfos,
           };
         }
       }
@@ -20828,6 +20909,7 @@ function tryLowerCollectionForOfIterableExpression(
           ),
           arrayType: 'owned_heap_array_ref',
           elementType: setTypeInfo.entryElementType,
+          elementInfos: setTypeInfo.entryElementInfos,
         };
       }
     }
@@ -20877,6 +20959,7 @@ function tryLowerCollectionForOfIterableExpression(
         ),
         arrayType: 'owned_heap_array_ref',
         elementType: iterationValueInfo.entryElementType,
+        elementInfos: iterationValueInfo.entryElementInfos,
       };
     }
     const { objectName, representation } = getDynamicCollectionReceiverForIteration(
@@ -20893,6 +20976,7 @@ function tryLowerCollectionForOfIterableExpression(
       ),
       arrayType: 'owned_heap_array_ref',
       elementType: iterationValueInfo.entryElementType,
+      elementInfos: iterationValueInfo.entryElementInfos,
     };
   }
 
@@ -20934,6 +21018,7 @@ function tryLowerCollectionForOfIterableExpression(
       ),
       arrayType: 'owned_heap_array_ref',
       elementType: 'owned_number_array_ref',
+      elementInfos: [{ type: 'f64' }, { type: numberKeyMapTypeInfo.valuesElementType }],
     };
   }
 
@@ -66521,6 +66606,14 @@ function lowerPropertyAccessExpression(
     );
   }
   if (expression.name.text === 'length') {
+    const ownedStringReceiver = tryLowerOwnedStringExpression(expression.expression, context);
+    if (ownedStringReceiver) {
+      return {
+        kind: 'owned_string_length',
+        value: ownedStringReceiver,
+        type: 'f64',
+      };
+    }
     const ownedStringArrayReceiver = tryLowerOwnedObjectKeysExpression(
       expression.expression,
       context,
@@ -67299,7 +67392,82 @@ function getCompilerScalarValueTypeForLowering(
       return boundValueType;
     }
   }
+  if (
+    ts.isPropertyAccessExpression(expression) &&
+    expression.name.text === 'length' &&
+    isCompilerOwnedLengthReceiverExpression(expression.expression, context)
+  ) {
+    return 'f64';
+  }
+  if (ts.isBinaryExpression(expression)) {
+    const loweredBinaryType = tryGetLoweredBinaryScalarValueType(expression, context);
+    if (loweredBinaryType) {
+      return loweredBinaryType;
+    }
+  }
   return getCompilerScalarValueType(context.checker, expression);
+}
+
+function isCompilerOwnedLengthReceiverExpression(
+  expression: ts.Expression,
+  context: FunctionLoweringContext,
+): boolean {
+  if (ts.isParenthesizedExpression(expression)) {
+    return isCompilerOwnedLengthReceiverExpression(expression.expression, context);
+  }
+  if (!ts.isIdentifier(expression)) {
+    return false;
+  }
+  const boundValueType = getBoundSymbolValueType(lookupSymbol(context, expression.text));
+  return boundValueType === 'owned_string_ref' ||
+    boundValueType === 'string_ref' ||
+    boundValueType === 'owned_array_ref' ||
+    boundValueType === 'owned_heap_array_ref' ||
+    boundValueType === 'owned_number_array_ref' ||
+    boundValueType === 'owned_boolean_array_ref' ||
+    boundValueType === 'owned_tagged_array_ref';
+}
+
+function tryGetLoweredBinaryScalarValueType(
+  expression: ts.BinaryExpression,
+  context: FunctionLoweringContext,
+): CompilerValueType | undefined {
+  const numericOperator = expression.operatorToken.kind === ts.SyntaxKind.PlusToken ||
+    expression.operatorToken.kind === ts.SyntaxKind.MinusToken ||
+    expression.operatorToken.kind === ts.SyntaxKind.AsteriskToken ||
+    expression.operatorToken.kind === ts.SyntaxKind.SlashToken;
+  const comparisonOperator = expression.operatorToken.kind === ts.SyntaxKind.GreaterThanToken ||
+    expression.operatorToken.kind === ts.SyntaxKind.GreaterThanEqualsToken ||
+    expression.operatorToken.kind === ts.SyntaxKind.LessThanToken ||
+    expression.operatorToken.kind === ts.SyntaxKind.LessThanEqualsToken;
+  const equalityOperator =
+    expression.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken ||
+    expression.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsEqualsToken;
+  if (!numericOperator && !comparisonOperator && !equalityOperator) {
+    return undefined;
+  }
+
+  let leftType: CompilerValueType;
+  let rightType: CompilerValueType;
+  try {
+    leftType = getCompilerScalarValueTypeForLowering(expression.left, context);
+    rightType = getCompilerScalarValueTypeForLowering(expression.right, context);
+  } catch (error) {
+    if (error instanceof CompilerUnsupportedError) {
+      return undefined;
+    }
+    throw error;
+  }
+  if (leftType !== rightType) {
+    return undefined;
+  }
+  if (numericOperator) {
+    return leftType === 'f64' ? 'f64' : undefined;
+  }
+  if (comparisonOperator) {
+    return leftType === 'f64' ? 'i32' : undefined;
+  }
+  return leftType === 'f64' || leftType === 'i32' ? 'i32' : undefined;
 }
 
 function createLocalName(sourceName: string, nextLocalId: number): string {
@@ -69315,6 +69483,7 @@ function lowerForOfLoopBody(
   elementType: CompilerValueType,
   heapElementRepresentation: CompilerRuntimeRepresentationRefIR<'object'> | undefined,
   taggedPrimitiveKinds: CompilerTaggedPrimitiveBoundaryKindsIR | undefined,
+  arrayBindingElementInfos: readonly OwnedArrayBindingElementInfo[] | undefined,
   bodyStatements: readonly ts.Statement[],
   capturedLoopBinding: boolean,
   context: FunctionLoweringContext,
@@ -69387,7 +69556,7 @@ function lowerForOfLoopBody(
         ...lowerOwnedArrayBindingPatternIntoScope(
           loopDeclaration.name,
           elementName,
-          { arrayType: elementType },
+          { arrayType: elementType, elementInfos: arrayBindingElementInfos },
           context,
         ),
         ...lowerStatementList(bodyStatements, context),
@@ -69466,6 +69635,7 @@ function lowerForOfStatement(
   let arrayType: OwnedCallbackArrayType | undefined;
   let elementType: OwnedCallbackElementType | undefined;
   let heapElementRepresentation: CompilerRuntimeRepresentationRefIR<'object'> | undefined;
+  let arrayBindingElementInfos: readonly OwnedArrayBindingElementInfo[] | undefined;
 
   const collectionIterable = tryLowerCollectionForOfIterableExpression(
     statement.expression,
@@ -69476,6 +69646,7 @@ function lowerForOfStatement(
     arrayType = collectionIterable.arrayType;
     elementType = collectionIterable.elementType;
     heapElementRepresentation = collectionIterable.heapElementRepresentation;
+    arrayBindingElementInfos = collectionIterable.elementInfos;
   }
 
   const ownedHeapArray = tryLowerOwnedHeapArrayExpression(statement.expression, context);
@@ -69688,6 +69859,7 @@ function lowerForOfStatement(
       yieldedValueInfo.type,
       yieldedValueInfo.type === 'heap_ref' ? yieldedValueInfo.heapRepresentation : undefined,
       yieldedValueInfo.taggedPrimitiveKinds,
+      undefined,
       bodyStatements,
       capturedLoopBinding,
       loopContext,
@@ -69909,6 +70081,7 @@ function lowerForOfStatement(
         loopValueInfo.type,
         loopValueInfo.type === 'heap_ref' ? loopValueInfo.heapRepresentation : undefined,
         loopValueInfo.taggedPrimitiveKinds,
+        collectionIteratorTypeInfo.elementInfos,
         bodyStatements,
         capturedLoopBinding,
         loopContext,
@@ -70075,6 +70248,7 @@ function lowerForOfStatement(
     elementType,
     heapElementRepresentation,
     undefined,
+    arrayBindingElementInfos,
     bodyStatements,
     capturedLoopBinding,
     loopContext,
