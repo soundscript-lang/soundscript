@@ -13,6 +13,11 @@ import {
   type SemanticTypeIR,
 } from './semantic_ir.ts';
 import { createRuntimeManifestFromSemanticModule } from './runtime_manifest_ir.ts';
+import {
+  createCollectionBoundaryAdapter,
+  selectWasmGcStorage,
+  valueBoundaryFromSemanticType,
+} from './value_boundary_ir.ts';
 import { createWasmGcModulePlan } from './wasm_gc_backend_ir.ts';
 import { emitWasmGcModulePlan } from './wasm_gc_emitter.ts';
 import { emitWasmGcWrapperModule } from './wasm_gc_wrapper_emitter.ts';
@@ -466,6 +471,101 @@ Deno.test('compiler semantic type classifier recurses through collection and sca
       },
     ],
   });
+});
+
+Deno.test('compiler value boundary classifier preserves recursive collection shapes', async () => {
+  const target = await createSemanticTypeFixture(
+    `
+      type Foo = { kind: "foo"; value: string };
+      type Bar = { kind: "bar"; value: number };
+      export type Target = Array<Map<string, Foo | Bar>>;
+    `,
+    'Target',
+  );
+  const symbolSet = await createSemanticTypeFixture(
+    `
+      export type Target = Set<symbol | bigint>;
+    `,
+    'Target',
+  );
+  const mapStringArrays = await createSemanticTypeFixture(
+    `
+      export type Target = Map<string, string[]>;
+    `,
+    'Target',
+  );
+
+  const boundary = valueBoundaryFromSemanticType(target);
+  assertEquals(boundary, {
+    kind: 'array',
+    element: {
+      kind: 'map',
+      key: { kind: 'string' },
+      value: {
+        kind: 'union',
+        arms: [
+          {
+            kind: 'object',
+            layoutName: 'Bar',
+            fields: [
+              { name: 'kind', value: { kind: 'string' } },
+              { name: 'value', value: { kind: 'number' } },
+            ],
+          },
+          {
+            kind: 'object',
+            layoutName: 'Foo',
+            fields: [
+              { name: 'kind', value: { kind: 'string' } },
+              { name: 'value', value: { kind: 'string' } },
+            ],
+          },
+        ],
+      },
+    },
+  });
+  assertEquals(selectWasmGcStorage(boundary), {
+    kind: 'array',
+    arrayType: 'owned_heap_array_ref',
+    element: {
+      kind: 'map',
+      key: { kind: 'owned_string_ref' },
+      value: { kind: 'tagged_ref' },
+    },
+  });
+  assertEquals(selectWasmGcStorage(valueBoundaryFromSemanticType(symbolSet)), {
+    kind: 'set',
+    value: { kind: 'tagged_ref' },
+  });
+  assertEquals(createCollectionBoundaryAdapter(mapStringArrays), {
+    kind: 'map',
+    adapterKey: 'map:{"kind":"string"}:{"element":{"kind":"string"},"kind":"array"}',
+    suffix: 'string_array',
+    key: { kind: 'string' },
+    value: { kind: 'array', element: { kind: 'string' } },
+    storage: {
+      kind: 'map',
+      key: { kind: 'owned_string_ref' },
+      value: {
+        kind: 'array',
+        arrayType: 'owned_array_ref',
+        element: { kind: 'owned_string_ref' },
+      },
+    },
+  });
+});
+
+Deno.test('compiler wasm-gc collection boundary adapters are structured instead of cross-product enums', async () => {
+  const backendSource = await Deno.readTextFile(
+    new URL('./wasm_gc_backend_ir.ts', import.meta.url),
+  );
+
+  assertEquals(backendSource.includes("'map_string_number_array'"), false);
+  assertEquals(backendSource.includes("'set_number_array'"), false);
+  assertEquals(
+    backendSource.includes('export type WasmGcCollectionBoundaryAdapterIR =\n  |'),
+    false,
+  );
 });
 
 Deno.test('compiler semantic type classifier models overloaded callables', async () => {
@@ -8904,8 +9004,8 @@ Deno.test('compiler wasm-gc wrapper glue adapts Map params with array payloads a
   assertEquals(wat.includes('(export "__soundscript_number_array_push")'), true);
   assertEquals(wat.includes('(export "__soundscript_number_array_length")'), true);
   assertEquals(wat.includes('(export "__soundscript_number_array_value_at")'), true);
-  assertEquals(wrapper.includes('numberArrayToInternal'), true);
-  assertEquals(wrapper.includes('numberArrayFromInternal'), true);
+  assertEquals(wrapper.includes('arrayToInternal'), true);
+  assertEquals(wrapper.includes('arrayFromInternal'), true);
   const parseResult = await new Deno.Command('wasm-tools', {
     args: ['parse', watPath, '-o', wasmPath],
     stdout: 'piped',
@@ -8982,8 +9082,8 @@ Deno.test('compiler wasm-gc wrapper glue adapts Map results with array payloads 
   assertEquals(wat.includes('(export "__soundscript_map_size_string_number_array")'), true);
   assertEquals(wat.includes('(export "__soundscript_map_key_at_string_number_array")'), true);
   assertEquals(wat.includes('(export "__soundscript_map_value_at_string_number_array")'), true);
-  assertEquals(wrapper.includes('numberArrayToInternal'), true);
-  assertEquals(wrapper.includes('numberArrayFromInternal'), true);
+  assertEquals(wrapper.includes('arrayToInternal'), true);
+  assertEquals(wrapper.includes('arrayFromInternal'), true);
   const parseResult = await new Deno.Command('wasm-tools', {
     args: ['parse', watPath, '-o', wasmPath],
     stdout: 'piped',
@@ -9062,8 +9162,8 @@ Deno.test('compiler wasm-gc wrapper glue adapts Set params with array payloads a
   assertEquals(wat.includes('(export "__soundscript_number_array_push")'), true);
   assertEquals(wat.includes('(export "__soundscript_number_array_length")'), true);
   assertEquals(wat.includes('(export "__soundscript_number_array_value_at")'), true);
-  assertEquals(wrapper.includes('numberArrayToInternal'), true);
-  assertEquals(wrapper.includes('numberArrayFromInternal'), true);
+  assertEquals(wrapper.includes('arrayToInternal'), true);
+  assertEquals(wrapper.includes('arrayFromInternal'), true);
   const parseResult = await new Deno.Command('wasm-tools', {
     args: ['parse', watPath, '-o', wasmPath],
     stdout: 'piped',
@@ -9139,8 +9239,8 @@ Deno.test('compiler wasm-gc wrapper glue adapts Set results with array payloads 
   assertEquals(wat.includes('(export "__soundscript_set_add_number_array")'), true);
   assertEquals(wat.includes('(export "__soundscript_set_size_number_array")'), true);
   assertEquals(wat.includes('(export "__soundscript_set_value_at_number_array")'), true);
-  assertEquals(wrapper.includes('numberArrayToInternal'), true);
-  assertEquals(wrapper.includes('numberArrayFromInternal'), true);
+  assertEquals(wrapper.includes('arrayToInternal'), true);
+  assertEquals(wrapper.includes('arrayFromInternal'), true);
   const parseResult = await new Deno.Command('wasm-tools', {
     args: ['parse', watPath, '-o', wasmPath],
     stdout: 'piped',
@@ -9168,6 +9268,179 @@ Deno.test('compiler wasm-gc wrapper glue adapts Set results with array payloads 
   const result = forward();
   assertEquals(result instanceof Set, true);
   assertEquals([...result.values()], [[1, 2], [3, 5]]);
+});
+
+Deno.test('compiler wasm-gc wrapper glue adapts non-number collection array payloads recursively', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: {
+          strict: true,
+          module: 'esnext',
+          moduleResolution: 'node',
+        },
+        files: ['main.ts', 'host.d.ts'],
+      }),
+    },
+    {
+      path: 'host.d.ts',
+      contents: `
+        export declare function scoreWords(map: Map<string, string[]>): number;
+        export declare function makeFlags(): Set<boolean[]>;
+      `,
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        import { scoreWords, makeFlags } from "./host";
+
+        export function forwardWords(map: Map<string, string[]>): number {
+          return scoreWords(map);
+        }
+
+        export function forwardFlags(): Set<boolean[]> {
+          return makeFlags();
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
+  const watPath = join(tempDirectory, 'wasm-gc-shadow-non-number-array-wrapper.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-shadow-non-number-array-wrapper.wasm');
+  const wrapperPath = join(tempDirectory, 'wasm-gc-shadow-non-number-array-wrapper.mjs');
+
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
+  await Deno.writeTextFile(wrapperPath, emitWasmGcWrapperModule(snapshot.wasmGcPlan));
+  const wat = await Deno.readTextFile(watPath);
+  const wrapper = await Deno.readTextFile(wrapperPath);
+  assertEquals(wat.includes('(export "__soundscript_map_new_string_string_array")'), true);
+  assertEquals(wat.includes('(export "__soundscript_map_set_string_string_array")'), true);
+  assertEquals(wat.includes('(export "__soundscript_set_new_boolean_array")'), true);
+  assertEquals(wat.includes('(export "__soundscript_set_add_boolean_array")'), true);
+  assertEquals(wat.includes('(export "__soundscript_string_array_new")'), true);
+  assertEquals(wat.includes('(export "__soundscript_boolean_array_new")'), true);
+  assertEquals(wrapper.includes('arrayToInternal'), true);
+  assertEquals(wrapper.includes('arrayFromInternal'), true);
+  assertEquals(wrapper.includes('numberArrayToInternal'), false);
+  const parseResult = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(parseResult.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(parseResult.success, true);
+
+  const instanceCell: { instance?: WebAssembly.Instance } = {};
+  const wrapperModule = await import(`file://${wrapperPath}?cacheBust=${crypto.randomUUID()}`);
+  const imports = wrapperModule.createSoundscriptWasmGcHostImports(
+    {
+      soundscript_host_function: {
+        'host.d.ts:scoreWords': (map: Map<string, string[]>): number => {
+          assertEquals(map instanceof Map, true);
+          assertEquals([...map.entries()], [['left', ['a', 'bc']], ['right', ['def']]]);
+          return map.get('left')![1].length + map.get('right')![0].length;
+        },
+        'host.d.ts:makeFlags': (): Set<boolean[]> => new Set([[true, false], [true, true]]),
+      },
+    },
+    instanceCell,
+  );
+  const wasm = await Deno.readFile(wasmPath);
+  const instance = (await WebAssembly.instantiate(wasm, imports)).instance;
+  instanceCell.instance = instance;
+  const exports = await createWasmGcWrappedExports(wrapperPath, instanceCell);
+  const forwardWords = exports['main.ts:forwardWords'] as (
+    map: Map<string, string[]>,
+  ) => number;
+  const forwardFlags = exports['main.ts:forwardFlags'] as () => Set<boolean[]>;
+  assertEquals(forwardWords(new Map([['left', ['a', 'bc']], ['right', ['def']]])), 5);
+  assertEquals([...forwardFlags().values()], [[true, false], [true, true]]);
+});
+
+Deno.test('compiler wasm-gc wrapper glue adapts reciprocal non-number collection array payloads', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: {
+          strict: true,
+          module: 'esnext',
+          moduleResolution: 'node',
+        },
+        files: ['main.ts', 'host.d.ts'],
+      }),
+    },
+    {
+      path: 'host.d.ts',
+      contents: `
+        export declare function makeWords(): Map<string, string[]>;
+        export declare function scoreFlags(set: Set<boolean[]>): number;
+      `,
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        import { makeWords, scoreFlags } from "./host";
+
+        export function forwardWords(): Map<string, string[]> {
+          return makeWords();
+        }
+
+        export function forwardFlags(set: Set<boolean[]>): number {
+          return scoreFlags(set);
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
+  const watPath = join(tempDirectory, 'wasm-gc-shadow-reciprocal-non-number-array-wrapper.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-shadow-reciprocal-non-number-array-wrapper.wasm');
+  const wrapperPath = join(tempDirectory, 'wasm-gc-shadow-reciprocal-non-number-array-wrapper.mjs');
+
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
+  await Deno.writeTextFile(wrapperPath, emitWasmGcWrapperModule(snapshot.wasmGcPlan));
+  const wat = await Deno.readTextFile(watPath);
+  assertEquals(wat.includes('(export "__soundscript_map_value_at_string_string_array")'), true);
+  assertEquals(wat.includes('(export "__soundscript_set_value_at_boolean_array")'), true);
+  const parseResult = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(parseResult.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(parseResult.success, true);
+
+  const instanceCell: { instance?: WebAssembly.Instance } = {};
+  const wrapperModule = await import(`file://${wrapperPath}?cacheBust=${crypto.randomUUID()}`);
+  const imports = wrapperModule.createSoundscriptWasmGcHostImports(
+    {
+      soundscript_host_function: {
+        'host.d.ts:makeWords': (): Map<string, string[]> =>
+          new Map([['left', ['a', 'bc']], ['right', ['def']]]),
+        'host.d.ts:scoreFlags': (set: Set<boolean[]>): number => {
+          assertEquals(set instanceof Set, true);
+          assertEquals([...set.values()], [[true, false], [true, true]]);
+          return [...set.values()].flat().filter(Boolean).length;
+        },
+      },
+    },
+    instanceCell,
+  );
+  const wasm = await Deno.readFile(wasmPath);
+  const instance = (await WebAssembly.instantiate(wasm, imports)).instance;
+  instanceCell.instance = instance;
+  const exports = await createWasmGcWrappedExports(wrapperPath, instanceCell);
+  const forwardWords = exports['main.ts:forwardWords'] as () => Map<string, string[]>;
+  const forwardFlags = exports['main.ts:forwardFlags'] as (
+    set: Set<boolean[]>,
+  ) => number;
+  assertEquals([...forwardWords().entries()], [['left', ['a', 'bc']], ['right', ['def']]]);
+  assertEquals(forwardFlags(new Set([[true, false], [true, true]])), 3);
 });
 
 Deno.test('compiler wasm-gc wrapper glue adapts exported Set params from JS Set', async () => {

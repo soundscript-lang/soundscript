@@ -10,6 +10,12 @@ import type {
   WasmGcModulePlanIR,
   WasmGcTypePlanIR,
 } from './wasm_gc_backend_ir.ts';
+import {
+  compilerValueTypeForStorage,
+  type ValueBoundaryIR,
+  valueCollectionAdapterKey,
+  type ValueStoragePlanIR,
+} from './value_boundary_ir.ts';
 
 function sanitizeIdentifier(value: string): string {
   const sanitized = value.replace(/[^A-Za-z0-9_]+/g, '_').replace(/^_+|_+$/g, '');
@@ -84,9 +90,7 @@ function renderRuntimeFamilyTypePlan(plan: WasmGcTypePlanIR): readonly string[] 
 }
 
 function moduleUsesMapStorage(plan: WasmGcModulePlanIR): boolean {
-  if (
-    [...wrapperPlanCollectionBoundaryAdapters(plan)].some((adapter) => adapter.startsWith('map_'))
-  ) {
+  if (wrapperPlanCollectionBoundaryAdapters(plan).some((adapter) => adapter.kind === 'map')) {
     return true;
   }
   return plan.functionPlans.some((func) => {
@@ -4799,9 +4803,8 @@ function renderStringEqualityHelperFunctions(plan: WasmGcModulePlanIR): readonly
     plan.functionPlans.some((func) => !func.hostImport && functionUsesStringArrayIndexOf(func)) ||
     plan.functionPlans.some((func) => !func.hostImport && functionUsesMapStorage(func)) ||
     [...wrapperPlanCollectionHostToInternalBoundaryAdapters(plan)].some((adapter) =>
-      adapter.startsWith('map_')
+      adapter.kind === 'map' || (adapter.kind === 'set' && adapter.value.kind === 'string')
     ) ||
-    wrapperPlanCollectionHostToInternalBoundaryAdapters(plan).has('set_string') ||
     (usesStringRuntime &&
       plan.functionPlans.some((func) => !func.hostImport && functionUsesTaggedArrayIndexOf(func)));
   return usesStringIndexOf
@@ -4892,8 +4895,41 @@ function wrapperPlanUsesStringBoundaryHelpers(plan: WasmGcModulePlanIR): boolean
       paramType === 'string_ref' || paramType === 'owned_string_ref'
     ) || wrapper.resultType === 'string_ref' || wrapper.resultType === 'owned_string_ref'
   ) || [...wrapperPlanCollectionBoundaryAdapters(plan)].some((adapter) =>
-    adapter.startsWith('map_string_') || adapter.endsWith('_string')
+    valueBoundaryUsesString(adapter.kind === 'map' ? adapter.key : adapter.value) ||
+    (adapter.kind === 'map' && valueBoundaryUsesString(adapter.value))
   );
+}
+
+function valueBoundaryUsesString(boundary: ValueBoundaryIR): boolean {
+  switch (boundary.kind) {
+    case 'string':
+      return true;
+    case 'array':
+      return valueBoundaryUsesString(boundary.element);
+    case 'tuple':
+      return boundary.elements.some(valueBoundaryUsesString);
+    case 'map':
+      return valueBoundaryUsesString(boundary.key) || valueBoundaryUsesString(boundary.value);
+    case 'set':
+      return valueBoundaryUsesString(boundary.value);
+    case 'union':
+      return boundary.arms.some(valueBoundaryUsesString);
+    case 'promise':
+      return boundary.value ? valueBoundaryUsesString(boundary.value) : false;
+    case 'sync_generator':
+    case 'async_generator':
+      return [boundary.yield, boundary.return, boundary.next].some((value) =>
+        value ? valueBoundaryUsesString(value) : false
+      );
+    case 'closure':
+      return boundary.signatures?.some((signature) =>
+        signature.params.some(valueBoundaryUsesString) || valueBoundaryUsesString(signature.result)
+      ) ?? false;
+    case 'object':
+      return boundary.fields?.some((field) => valueBoundaryUsesString(field.value)) ?? false;
+    default:
+      return false;
+  }
 }
 
 function taggedKindsIncludeSymbol(
@@ -5049,61 +5085,86 @@ function renderBigIntBoundaryWrapperHelperFunctions(plan: WasmGcModulePlanIR): r
 
 function wrapperPlanCollectionBoundaryAdapters(
   plan: WasmGcModulePlanIR,
-): ReadonlySet<WasmGcCollectionBoundaryAdapterIR> {
-  return new Set([
+): readonly WasmGcCollectionBoundaryAdapterIR[] {
+  return uniqueCollectionBoundaryAdapters([
     ...wrapperPlanCollectionHostToInternalBoundaryAdapters(plan),
     ...wrapperPlanCollectionInternalToHostBoundaryAdapters(plan),
   ]);
 }
 
-function collectionBoundaryAdapterUsesNumberArray(
-  adapter: WasmGcCollectionBoundaryAdapterIR,
-): boolean {
-  return adapter === 'map_string_number_array' || adapter === 'set_number_array';
+function uniqueCollectionBoundaryAdapters(
+  adapters: Iterable<WasmGcCollectionBoundaryAdapterIR>,
+): readonly WasmGcCollectionBoundaryAdapterIR[] {
+  const unique = new Map<string, WasmGcCollectionBoundaryAdapterIR>();
+  for (const adapter of adapters) {
+    unique.set(valueCollectionAdapterKey(adapter), adapter);
+  }
+  return [...unique.values()].sort((left, right) =>
+    valueCollectionAdapterKey(left).localeCompare(valueCollectionAdapterKey(right))
+  );
 }
 
-function wrapperPlanCollectionBoundaryUsesNumberArray(plan: WasmGcModulePlanIR): boolean {
-  return [...wrapperPlanCollectionBoundaryAdapters(plan)].some(
-    collectionBoundaryAdapterUsesNumberArray,
-  );
+function collectionBoundaryAdapterUsesArrayPayload(
+  adapter: WasmGcCollectionBoundaryAdapterIR,
+): boolean {
+  return (adapter.kind === 'map' ? adapter.value : adapter.value).kind === 'array';
+}
+
+function collectionBoundaryAdapterArrayPayloadKinds(
+  plan: WasmGcModulePlanIR,
+): readonly ('boolean' | 'number' | 'string')[] {
+  const kinds = new Set<'boolean' | 'number' | 'string'>();
+  for (const adapter of wrapperPlanCollectionBoundaryAdapters(plan)) {
+    const value = adapter.kind === 'map' ? adapter.value : adapter.value;
+    if (value.kind !== 'array') {
+      continue;
+    }
+    if (
+      value.element.kind === 'boolean' || value.element.kind === 'number' ||
+      value.element.kind === 'string'
+    ) {
+      kinds.add(value.element.kind);
+    }
+  }
+  return [...kinds].sort();
 }
 
 function wrapperPlanCollectionHostToInternalBoundaryAdapters(
   plan: WasmGcModulePlanIR,
-): ReadonlySet<WasmGcCollectionBoundaryAdapterIR> {
-  const adapters = new Set<WasmGcCollectionBoundaryAdapterIR>();
+): readonly WasmGcCollectionBoundaryAdapterIR[] {
+  const adapters: WasmGcCollectionBoundaryAdapterIR[] = [];
   for (const wrapper of plan.wrapperPlan.exportWrappers) {
     wrapper.paramBoundaryAdapters?.forEach((adapter) => {
       if (adapter) {
-        adapters.add(adapter);
+        adapters.push(adapter);
       }
     });
   }
   for (const wrapper of plan.wrapperPlan.hostImportWrappers) {
     if (wrapper.resultBoundaryAdapter) {
-      adapters.add(wrapper.resultBoundaryAdapter);
+      adapters.push(wrapper.resultBoundaryAdapter);
     }
   }
-  return adapters;
+  return uniqueCollectionBoundaryAdapters(adapters);
 }
 
 function wrapperPlanCollectionInternalToHostBoundaryAdapters(
   plan: WasmGcModulePlanIR,
-): ReadonlySet<WasmGcCollectionBoundaryAdapterIR> {
-  const adapters = new Set<WasmGcCollectionBoundaryAdapterIR>();
+): readonly WasmGcCollectionBoundaryAdapterIR[] {
+  const adapters: WasmGcCollectionBoundaryAdapterIR[] = [];
   for (const wrapper of plan.wrapperPlan.exportWrappers) {
     if (wrapper.resultBoundaryAdapter) {
-      adapters.add(wrapper.resultBoundaryAdapter);
+      adapters.push(wrapper.resultBoundaryAdapter);
     }
   }
   for (const wrapper of plan.wrapperPlan.hostImportWrappers) {
     wrapper.paramBoundaryAdapters?.forEach((adapter) => {
       if (adapter) {
-        adapters.add(adapter);
+        adapters.push(adapter);
       }
     });
   }
-  return adapters;
+  return uniqueCollectionBoundaryAdapters(adapters);
 }
 
 function mapBoundaryAdapterValueInfo(
@@ -5112,29 +5173,23 @@ function mapBoundaryAdapterValueInfo(
   | {
     suffix: string;
     wasmType: string;
-    valueType: 'f64' | 'i32' | 'string_ref' | 'owned_number_array_ref';
+    valueType: CompilerValueType;
+    valueStorage: ValueStoragePlanIR;
   }
   | undefined {
-  switch (adapter) {
-    case 'map_string_boolean':
-      return { suffix: 'boolean', wasmType: 'i32', valueType: 'i32' };
-    case 'map_string_number':
-      return { suffix: 'number', wasmType: 'f64', valueType: 'f64' };
-    case 'map_string_number_array':
-      return {
-        suffix: 'number_array',
-        wasmType: '(ref null eq)',
-        valueType: 'owned_number_array_ref',
-      };
-    case 'map_string_string':
-      return {
-        suffix: 'string',
-        wasmType: `(ref null ${stringRuntimeTypeName()})`,
-        valueType: 'string_ref',
-      };
-    default:
-      return undefined;
+  if (adapter.kind !== 'map') {
+    return undefined;
   }
+  const valueStorage = adapter.storage.value;
+  const valueType = compilerValueTypeForStorage(valueStorage);
+  return {
+    suffix: adapter.suffix,
+    wasmType: valueStorage.kind === 'array'
+      ? '(ref null eq)'
+      : wasmTypeForCompilerValueType(valueType),
+    valueType,
+    valueStorage,
+  };
 }
 
 function setBoundaryAdapterValueInfo(adapter: WasmGcCollectionBoundaryAdapterIR):
@@ -5143,96 +5198,107 @@ function setBoundaryAdapterValueInfo(adapter: WasmGcCollectionBoundaryAdapterIR)
     wasmType: string;
     valuesArrayType: SetValuesArrayType;
     valuesElementType: SetValuesElementType;
+    valueStorage: ValueStoragePlanIR;
+    payloadValueType?: CompilerValueType;
   }
   | undefined {
-  switch (adapter) {
-    case 'set_boolean':
-      return {
-        suffix: 'boolean',
-        wasmType: 'i32',
-        valuesArrayType: 'owned_boolean_array_ref',
-        valuesElementType: 'i32',
-      };
-    case 'set_number':
-      return {
-        suffix: 'number',
-        wasmType: 'f64',
-        valuesArrayType: 'owned_number_array_ref',
-        valuesElementType: 'f64',
-      };
-    case 'set_number_array':
-      return {
-        suffix: 'number_array',
-        wasmType: '(ref null eq)',
-        valuesArrayType: 'owned_tagged_array_ref',
-        valuesElementType: 'tagged_ref',
-      };
-    case 'set_string':
-      return {
-        suffix: 'string',
-        wasmType: `(ref null ${stringRuntimeTypeName()})`,
-        valuesArrayType: 'owned_array_ref',
-        valuesElementType: 'owned_string_ref',
-      };
-    default:
-      return undefined;
+  if (adapter.kind !== 'set') {
+    return undefined;
   }
+  const valueStorage = adapter.storage.value;
+  if (valueStorage.kind === 'array') {
+    return {
+      suffix: adapter.suffix,
+      wasmType: '(ref null eq)',
+      valuesArrayType: 'owned_tagged_array_ref',
+      valuesElementType: 'tagged_ref',
+      payloadValueType: valueStorage.arrayType,
+      valueStorage,
+    };
+  }
+  const valueType = compilerValueTypeForStorage(valueStorage);
+  const valuesElementType: SetValuesElementType = valueType === 'f64' || valueType === 'i32' ||
+      valueType === 'owned_string_ref'
+    ? valueType
+    : 'tagged_ref';
+  return {
+    suffix: adapter.suffix,
+    wasmType: wasmTypeForCompilerValueType(valueType),
+    valuesArrayType: valueType === 'f64'
+      ? 'owned_number_array_ref'
+      : valueType === 'i32'
+      ? 'owned_boolean_array_ref'
+      : valueType === 'owned_string_ref'
+      ? 'owned_array_ref'
+      : 'owned_tagged_array_ref',
+    valuesElementType,
+    valueStorage,
+  };
 }
 
-function renderNumberArrayBoundaryWrapperHelperFunctions(
+function renderArrayBoundaryWrapperHelperFunctions(
   plan: WasmGcModulePlanIR,
 ): readonly string[] {
-  if (!wrapperPlanCollectionBoundaryUsesNumberArray(plan)) {
-    return [];
-  }
-  return [
-    '  (func $__soundscript_number_array_new (export "__soundscript_number_array_new") (result (ref null eq))',
-    '    array.new_fixed $array_runtime 0',
-    '  )',
-    '  (func $__soundscript_number_array_push (export "__soundscript_number_array_push") (param $array (ref null eq)) (param $value f64) (result (ref null eq))',
-    '    (local $source (ref null $array_runtime))',
-    '    (local $target (ref null $array_runtime))',
-    '    (local $length i32)',
-    '    local.get $array',
-    '    ref.cast (ref $array_runtime)',
-    '    local.set $source',
-    '    local.get $source',
-    '    ref.as_non_null',
-    '    array.len',
-    '    local.set $length',
-    '    local.get $length',
-    '    i32.const 1',
-    '    i32.add',
-    '    array.new_default $array_runtime',
-    '    local.set $target',
-    '    local.get $target',
-    '    ref.as_non_null',
-    '    i32.const 0',
-    '    local.get $source',
-    '    ref.as_non_null',
-    '    i32.const 0',
-    '    local.get $length',
-    '    array.copy $array_runtime $array_runtime',
-    '    local.get $target',
-    '    ref.as_non_null',
-    '    local.get $length',
-    '    local.get $value',
-    '    array.set $array_runtime',
-    '    local.get $target',
-    '  )',
-    '  (func $__soundscript_number_array_length (export "__soundscript_number_array_length") (param $array (ref null eq)) (result f64)',
-    '    local.get $array',
-    '    ref.cast (ref $array_runtime)',
-    '    array.len',
-    '    f64.convert_i32_s',
-    '  )',
-    '  (func $__soundscript_number_array_value_at (export "__soundscript_number_array_value_at") (param $array (ref null eq)) (param $index i32) (result f64)',
-    '    local.get $array',
-    '    ref.cast (ref $array_runtime)',
-    '    local.get $index',
-    '    array.get $array_runtime',
-    '  )',
-  ];
+  return collectionBoundaryAdapterArrayPayloadKinds(plan).flatMap((kind) => {
+    const runtimeType = kind === 'number'
+      ? '$array_runtime'
+      : kind === 'boolean'
+      ? '$boolean_array_runtime'
+      : '$string_array_runtime';
+    const valueType = kind === 'number'
+      ? 'f64'
+      : kind === 'boolean'
+      ? 'i32'
+      : `(ref null ${stringRuntimeTypeName()})`;
+    return [
+      `  (func $__soundscript_${kind}_array_new (export "__soundscript_${kind}_array_new") (result (ref null eq))`,
+      `    array.new_fixed ${runtimeType} 0`,
+      '  )',
+      `  (func $__soundscript_${kind}_array_push (export "__soundscript_${kind}_array_push") (param $array (ref null eq)) (param $value ${valueType}) (result (ref null eq))`,
+      `    (local $source (ref null ${runtimeType}))`,
+      `    (local $target (ref null ${runtimeType}))`,
+      '    (local $length i32)',
+      '    local.get $array',
+      `    ref.cast (ref ${runtimeType})`,
+      '    local.set $source',
+      '    local.get $source',
+      '    ref.as_non_null',
+      '    array.len',
+      '    local.set $length',
+      '    local.get $length',
+      '    i32.const 1',
+      '    i32.add',
+      `    array.new_default ${runtimeType}`,
+      '    local.set $target',
+      '    local.get $target',
+      '    ref.as_non_null',
+      '    i32.const 0',
+      '    local.get $source',
+      '    ref.as_non_null',
+      '    i32.const 0',
+      '    local.get $length',
+      `    array.copy ${runtimeType} ${runtimeType}`,
+      '    local.get $target',
+      '    ref.as_non_null',
+      '    local.get $length',
+      '    local.get $value',
+      `    array.set ${runtimeType}`,
+      '    local.get $target',
+      '  )',
+      `  (func $__soundscript_${kind}_array_length (export "__soundscript_${kind}_array_length") (param $array (ref null eq)) (result f64)`,
+      '    local.get $array',
+      `    ref.cast (ref ${runtimeType})`,
+      '    array.len',
+      '    f64.convert_i32_s',
+      '  )',
+      `  (func $__soundscript_${kind}_array_value_at (export "__soundscript_${kind}_array_value_at") (param $array (ref null eq)) (param $index i32) (result ${valueType})`,
+      '    local.get $array',
+      `    ref.cast (ref ${runtimeType})`,
+      '    local.get $index',
+      `    array.get ${runtimeType}`,
+      '  )',
+    ];
+  });
 }
 
 function renderTaggedHeapObjectPayload(indent: string): readonly string[] {
@@ -5246,17 +5312,17 @@ function renderMapBoundaryValueAtResult(
   adapter: WasmGcCollectionBoundaryAdapterIR,
   indent: string,
 ): readonly string[] {
-  if (adapter === 'map_string_number_array') {
-    return renderTaggedHeapObjectPayload(indent);
-  }
   const info = mapBoundaryAdapterValueInfo(adapter);
   if (!info) {
     return [];
   }
+  if (info.valueStorage.kind === 'array') {
+    return renderTaggedHeapObjectPayload(indent);
+  }
   return renderMapTaggedValueForResultType(
-    info.suffix === 'string'
+    info.valueType === 'owned_string_ref'
       ? 'owned_array_ref'
-      : info.suffix === 'boolean'
+      : info.valueType === 'i32'
       ? 'owned_boolean_array_ref'
       : 'owned_number_array_ref',
     undefined,
@@ -5268,10 +5334,11 @@ function renderSetBoundaryValueAtResult(
   adapter: WasmGcCollectionBoundaryAdapterIR,
   indent: string,
 ): readonly string[] {
-  return adapter === 'set_number_array' ? renderTaggedHeapObjectPayload(indent) : [];
+  const info = setBoundaryAdapterValueInfo(adapter);
+  return info?.valueStorage.kind === 'array' ? renderTaggedHeapObjectPayload(indent) : [];
 }
 
-function renderSetNumberArrayBoundaryAddStatement(indent: string): readonly string[] {
+function renderSetTaggedBoundaryAddStatement(indent: string): readonly string[] {
   return [
     `${indent}local.get $set`,
     `${indent}ref.cast (ref $set_runtime)`,
@@ -5391,14 +5458,22 @@ function renderSetBoundaryWrapperHelperFunctions(plan: WasmGcModulePlanIR): read
     .sort((left, right) => left.suffix.localeCompare(right.suffix));
   return [
     ...hostToInternalAdapters.flatMap((
-      { adapter, suffix, wasmType, valuesArrayType, valuesElementType },
+      {
+        adapter,
+        suffix,
+        wasmType,
+        valuesArrayType,
+        valuesElementType,
+        valueStorage,
+        payloadValueType,
+      },
     ) => [
       `  (func $__soundscript_set_new_${suffix} (export "__soundscript_set_new_${suffix}") (result (ref null eq))`,
       `    array.new_fixed ${setArrayRuntimeType(valuesArrayType)} 0`,
       '    struct.new $set_runtime',
       '  )',
       `  (func $__soundscript_set_add_${suffix} (export "__soundscript_set_add_${suffix}") (param $set (ref null eq)) (param $value ${wasmType})`,
-      ...(adapter === 'set_number_array'
+      ...(valueStorage.kind === 'array'
         ? [
           `    (local $${
             sanitizeIdentifier('__soundscript_set_add_boundary_tagged_value')
@@ -5427,14 +5502,14 @@ function renderSetBoundaryWrapperHelperFunctions(plan: WasmGcModulePlanIR): read
           bodyStatus: 'emittable',
           unsupportedBodyKinds: [],
         }).map((local) => `    (local $${sanitizeIdentifier(local.name)} ${local.wasmType})`)),
-      ...(adapter === 'set_number_array'
+      ...(valueStorage.kind === 'array'
         ? [
-          ...renderMapTaggedValueFromLocal('value', 'owned_number_array_ref', '    '),
+          ...renderMapTaggedValueFromLocal('value', payloadValueType ?? 'heap_ref', '    '),
           `    local.set $${sanitizeIdentifier('__soundscript_set_add_boundary_tagged_value')}`,
         ]
         : []),
-      ...(adapter === 'set_number_array'
-        ? renderSetNumberArrayBoundaryAddStatement('    ')
+      ...(valueStorage.kind === 'array'
+        ? renderSetTaggedBoundaryAddStatement('    ')
         : renderSetAddStatement(
           {
             kind: 'set_add',
@@ -6203,6 +6278,27 @@ function addArrayRuntimeForValueType(valueType: string, runtimeTypes: Set<string
   }
 }
 
+function collectArrayRuntimeTypesFromStorage(
+  storage: ValueStoragePlanIR,
+  runtimeTypes: Set<string>,
+): void {
+  addArrayRuntimeForValueType(compilerValueTypeForStorage(storage), runtimeTypes);
+  switch (storage.kind) {
+    case 'array':
+      collectArrayRuntimeTypesFromStorage(storage.element, runtimeTypes);
+      break;
+    case 'map':
+      collectArrayRuntimeTypesFromStorage(storage.key, runtimeTypes);
+      collectArrayRuntimeTypesFromStorage(storage.value, runtimeTypes);
+      break;
+    case 'set':
+      collectArrayRuntimeTypesFromStorage(storage.value, runtimeTypes);
+      break;
+    default:
+      break;
+  }
+}
+
 function collectArrayRuntimeTypesFromExpression(
   expression: SemanticExpressionIR,
   runtimeTypes: Set<string>,
@@ -6550,14 +6646,14 @@ function renderArrayTypes(plan: WasmGcModulePlanIR): readonly string[] {
     );
   }
   for (const adapter of wrapperPlanCollectionBoundaryAdapters(plan)) {
-    if (adapter.startsWith('map_')) {
+    if (adapter.kind === 'map') {
       runtimeTypes.add('string');
       runtimeTypes.add('tagged');
     }
-    if (collectionBoundaryAdapterUsesNumberArray(adapter)) {
-      runtimeTypes.add('number');
+    if (collectionBoundaryAdapterUsesArrayPayload(adapter)) {
       runtimeTypes.add('tagged');
     }
+    collectArrayRuntimeTypesFromStorage(adapter.storage, runtimeTypes);
     const setInfo = setBoundaryAdapterValueInfo(adapter);
     if (setInfo) {
       addArrayRuntimeForValueType(setInfo.valuesArrayType, runtimeTypes);
@@ -6734,8 +6830,8 @@ function renderPromiseRecordTypes(plan: WasmGcModulePlanIR): readonly string[] {
 function renderTaggedValueType(plan: WasmGcModulePlanIR): readonly string[] {
   const usesFiniteUnion = plan.helperPlans.some((helper) => helper.family === 'finite_union') ||
     moduleUsesMapStorage(plan) ||
-    [...wrapperPlanCollectionBoundaryAdapters(plan)].some((adapter) =>
-      adapter.startsWith('map_') || adapter === 'set_number_array'
+    wrapperPlanCollectionBoundaryAdapters(plan).some((adapter) =>
+      adapter.kind === 'map' || collectionBoundaryAdapterUsesArrayPayload(adapter)
     ) ||
     plan.functionPlans.some((func) =>
       func.result === 'tagged_ref' ||
@@ -7542,7 +7638,7 @@ export function emitWasmGcModulePlan(plan: WasmGcModulePlanIR): string {
   const stringExportWrapperHelperFunctions = renderStringExportWrapperHelperFunctions(plan);
   const symbolBoundaryWrapperHelperFunctions = renderSymbolBoundaryWrapperHelperFunctions(plan);
   const bigintBoundaryWrapperHelperFunctions = renderBigIntBoundaryWrapperHelperFunctions(plan);
-  const numberArrayBoundaryWrapperHelperFunctions = renderNumberArrayBoundaryWrapperHelperFunctions(
+  const arrayBoundaryWrapperHelperFunctions = renderArrayBoundaryWrapperHelperFunctions(
     plan,
   );
   const mapBoundaryWrapperHelperFunctions = renderMapBoundaryWrapperHelperFunctions(plan);
@@ -7608,7 +7704,7 @@ export function emitWasmGcModulePlan(plan: WasmGcModulePlanIR): string {
         stringExportWrapperHelperFunctions.length > 0 ||
         symbolBoundaryWrapperHelperFunctions.length > 0 ||
         bigintBoundaryWrapperHelperFunctions.length > 0 ||
-        numberArrayBoundaryWrapperHelperFunctions.length > 0 ||
+        arrayBoundaryWrapperHelperFunctions.length > 0 ||
         mapBoundaryWrapperHelperFunctions.length > 0 ||
         setBoundaryWrapperHelperFunctions.length > 0 ||
         promiseHelperFunctions.length > 0 ||
@@ -7620,7 +7716,7 @@ export function emitWasmGcModulePlan(plan: WasmGcModulePlanIR): string {
         ...stringExportWrapperHelperFunctions,
         ...symbolBoundaryWrapperHelperFunctions,
         ...bigintBoundaryWrapperHelperFunctions,
-        ...numberArrayBoundaryWrapperHelperFunctions,
+        ...arrayBoundaryWrapperHelperFunctions,
         ...mapBoundaryWrapperHelperFunctions,
         ...setBoundaryWrapperHelperFunctions,
         ...promiseHelperFunctions,

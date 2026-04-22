@@ -101,6 +101,11 @@ import {
   createCompilerRuntimeOrdinaryObjectPrototypeMembership,
 } from './runtime_ir.ts';
 import {
+  compilerValueTypeForStorage,
+  selectWasmGcStorage,
+  type ValueBoundaryIR,
+} from './value_boundary_ir.ts';
+import {
   getEffectiveFunctionHeapParamRepresentation,
   getEffectiveFunctionHeapParamRepresentationsByName,
   getEffectiveFunctionHeapResultRepresentation,
@@ -17339,24 +17344,72 @@ interface SupportedSetElementTypeInfo {
   entryElementInfos: readonly [OwnedArrayBindingElementInfo, OwnedArrayBindingElementInfo];
 }
 
+function getSupportedOwnedArrayPayloadBoundary(
+  checker: ts.TypeChecker,
+  type: ts.Type,
+): Extract<ValueBoundaryIR, { kind: 'array' }> | undefined {
+  if (isSupportedOwnedStringArrayType(checker, type)) {
+    return { kind: 'array', element: { kind: 'string' } };
+  }
+  if (isSupportedOwnedNumberArrayType(checker, type)) {
+    return { kind: 'array', element: { kind: 'number' } };
+  }
+  if (isSupportedOwnedBooleanArrayType(checker, type)) {
+    return { kind: 'array', element: { kind: 'boolean' } };
+  }
+  if (isSupportedOwnedTaggedArrayType(checker, type)) {
+    return { kind: 'array', element: { kind: 'union', arms: [] } };
+  }
+  if (isSupportedOwnedHeapArrayType(checker, type)) {
+    return { kind: 'array', element: { kind: 'host_handle' } };
+  }
+  return undefined;
+}
+
+function compilerSetStorageElementTypeForValueBoundary(
+  boundary: ValueBoundaryIR,
+): CompilerRuntimeSetStorageElementType | undefined {
+  const storage = selectWasmGcStorage(boundary);
+  const valueType = compilerValueTypeForStorage(storage);
+  switch (valueType) {
+    case 'owned_string_ref':
+    case 'owned_heap_array_ref':
+    case 'owned_array_ref':
+    case 'owned_number_array_ref':
+    case 'owned_boolean_array_ref':
+    case 'owned_tagged_array_ref':
+    case 'f64':
+    case 'i32':
+    case 'tagged_ref':
+      return valueType;
+    default:
+      return undefined;
+  }
+}
+
 function getSupportedOwnedArrayPayloadElementType(
   checker: ts.TypeChecker,
   type: ts.Type,
 ): CompilerRuntimeSetStorageElementType | undefined {
-  if (isSupportedOwnedStringArrayType(checker, type)) {
-    return 'owned_array_ref';
+  const boundary = getSupportedOwnedArrayPayloadBoundary(checker, type);
+  if (!boundary) {
+    return undefined;
   }
-  if (isSupportedOwnedNumberArrayType(checker, type)) {
-    return 'owned_number_array_ref';
+  return compilerSetStorageElementTypeForValueBoundary(boundary);
+}
+
+function getSupportedScalarCollectionElementType(
+  checker: ts.TypeChecker,
+  type: ts.Type,
+): CompilerRuntimeSetStorageElementType | undefined {
+  if (isStringLikeType(type)) {
+    return compilerSetStorageElementTypeForValueBoundary({ kind: 'string' });
   }
-  if (isSupportedOwnedBooleanArrayType(checker, type)) {
-    return 'owned_boolean_array_ref';
+  if ((type.flags & ts.TypeFlags.NumberLike) !== 0) {
+    return compilerSetStorageElementTypeForValueBoundary({ kind: 'number' });
   }
-  if (isSupportedOwnedTaggedArrayType(checker, type)) {
-    return 'owned_tagged_array_ref';
-  }
-  if (isSupportedOwnedHeapArrayType(checker, type)) {
-    return 'owned_heap_array_ref';
+  if ((type.flags & ts.TypeFlags.BooleanLike) !== 0) {
+    return compilerSetStorageElementTypeForValueBoundary({ kind: 'boolean' });
   }
   return undefined;
 }
@@ -17365,7 +17418,8 @@ function getSupportedSetElementTypeInfo(
   checker: ts.TypeChecker,
   elementType: ts.Type,
 ): SupportedSetElementTypeInfo | undefined {
-  if (isStringLikeType(elementType)) {
+  const scalarElementType = getSupportedScalarCollectionElementType(checker, elementType);
+  if (scalarElementType === 'owned_string_ref') {
     return {
       valuesArrayType: 'owned_array_ref',
       valuesElementType: 'owned_string_ref',
@@ -17373,7 +17427,7 @@ function getSupportedSetElementTypeInfo(
       entryElementInfos: [{ type: 'owned_string_ref' }, { type: 'owned_string_ref' }],
     };
   }
-  if ((elementType.flags & ts.TypeFlags.NumberLike) !== 0) {
+  if (scalarElementType === 'f64') {
     return {
       valuesArrayType: 'owned_number_array_ref',
       valuesElementType: 'f64',
@@ -17381,7 +17435,7 @@ function getSupportedSetElementTypeInfo(
       entryElementInfos: [{ type: 'f64' }, { type: 'f64' }],
     };
   }
-  if ((elementType.flags & ts.TypeFlags.BooleanLike) !== 0) {
+  if (scalarElementType === 'i32') {
     return {
       valuesArrayType: 'owned_boolean_array_ref',
       valuesElementType: 'i32',
@@ -17530,21 +17584,22 @@ function getSupportedCollectionIteratorTypeInfo(
       };
     }
   }
-  if (isStringLikeType(yieldedType)) {
+  const scalarYieldedType = getSupportedScalarCollectionElementType(checker, yieldedType);
+  if (scalarYieldedType === 'owned_string_ref') {
     return {
       kind,
       valuesArrayType: 'owned_array_ref',
       elementType: 'owned_string_ref',
     };
   }
-  if ((yieldedType.flags & ts.TypeFlags.NumberLike) !== 0) {
+  if (scalarYieldedType === 'f64') {
     return {
       kind,
       valuesArrayType: 'owned_number_array_ref',
       elementType: 'f64',
     };
   }
-  if ((yieldedType.flags & ts.TypeFlags.BooleanLike) !== 0) {
+  if (scalarYieldedType === 'i32') {
     return {
       kind,
       valuesArrayType: 'owned_boolean_array_ref',
@@ -20237,7 +20292,8 @@ function getSupportedStringKeyMapIterationValueInfo(
   entryElementType: 'owned_array_ref' | 'owned_heap_array_ref' | 'owned_tagged_array_ref';
   entryElementInfos: readonly [OwnedArrayBindingElementInfo, OwnedArrayBindingElementInfo];
 } | undefined {
-  if (isStringLikeType(valueType)) {
+  const scalarValueType = getSupportedScalarCollectionElementType(checker, valueType);
+  if (scalarValueType === 'owned_string_ref') {
     return {
       valuesArrayType: 'owned_array_ref',
       valuesElementType: 'owned_string_ref',
@@ -20246,7 +20302,7 @@ function getSupportedStringKeyMapIterationValueInfo(
       entryElementInfos: [{ type: 'owned_string_ref' }, { type: 'owned_string_ref' }],
     };
   }
-  if ((valueType.flags & ts.TypeFlags.NumberLike) !== 0) {
+  if (scalarValueType === 'f64') {
     return {
       valuesArrayType: 'owned_number_array_ref',
       valuesElementType: 'f64',
@@ -20255,7 +20311,7 @@ function getSupportedStringKeyMapIterationValueInfo(
       entryElementInfos: [{ type: 'owned_string_ref' }, { type: 'f64' }],
     };
   }
-  if ((valueType.flags & ts.TypeFlags.BooleanLike) !== 0) {
+  if (scalarValueType === 'i32') {
     return {
       valuesArrayType: 'owned_boolean_array_ref',
       valuesElementType: 'i32',

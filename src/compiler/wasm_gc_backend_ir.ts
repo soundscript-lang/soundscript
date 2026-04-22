@@ -1,5 +1,5 @@
 import type { RuntimeHelperRequirementIR, RuntimeManifestIR } from './runtime_manifest_ir.ts';
-import type { CompilerTaggedPrimitiveBoundaryKindsIR } from './ir.ts';
+import type { CompilerTaggedPrimitiveBoundaryKindsIR, CompilerValueType } from './ir.ts';
 import {
   collectSemanticRuntimeFamiliesFromTypes,
   type SemanticBoundarySurfaceIR,
@@ -11,6 +11,13 @@ import {
   type SemanticStatementIR,
   type SemanticTypeIR,
 } from './semantic_ir.ts';
+import {
+  compilerValueTypeForStorage,
+  createCollectionBoundaryAdapter,
+  valueCollectionAdapterKey,
+  type ValueCollectionBoundaryAdapterIR,
+  type ValueStoragePlanIR,
+} from './value_boundary_ir.ts';
 
 export interface BackendCapabilities {
   target: 'wasm-gc';
@@ -114,15 +121,7 @@ export interface WasmGcHostCallbackWrapperPlanIR {
   reasons: readonly WasmGcHostCallbackWrapperReasonIR[];
 }
 
-export type WasmGcCollectionBoundaryAdapterIR =
-  | 'map_string_boolean'
-  | 'map_string_number'
-  | 'map_string_number_array'
-  | 'map_string_string'
-  | 'set_boolean'
-  | 'set_number'
-  | 'set_number_array'
-  | 'set_string';
+export type WasmGcCollectionBoundaryAdapterIR = ValueCollectionBoundaryAdapterIR;
 
 export interface WasmGcExportWrapperPlanIR {
   exportName: string;
@@ -824,62 +823,10 @@ function surfaceExportName(surface: SemanticBoundarySurfaceIR): string {
   return `${sourceFileBaseName(surface.fileName)}:${surface.name}`;
 }
 
-function collectionScalarKindForSemanticType(
-  type: SemanticTypeIR,
-): 'boolean' | 'number' | 'string' | undefined {
-  switch (type.kind) {
-    case 'boolean':
-      return 'boolean';
-    case 'number':
-      return 'number';
-    case 'string':
-      return 'string';
-    default:
-      return undefined;
-  }
-}
-
 function collectionBoundaryAdapterForSemanticType(
   type: SemanticTypeIR,
 ): WasmGcCollectionBoundaryAdapterIR | undefined {
-  if (type.kind === 'map') {
-    const keyKind = collectionScalarKindForSemanticType(type.key);
-    const valueKind = collectionScalarKindForSemanticType(type.value);
-    const valueArrayElementKind = type.value.kind === 'array'
-      ? collectionScalarKindForSemanticType(type.value.element)
-      : undefined;
-    if (keyKind === 'string' && valueKind === 'boolean') {
-      return 'map_string_boolean';
-    }
-    if (keyKind === 'string' && valueKind === 'number') {
-      return 'map_string_number';
-    }
-    if (keyKind === 'string' && valueArrayElementKind === 'number') {
-      return 'map_string_number_array';
-    }
-    if (keyKind === 'string' && valueKind === 'string') {
-      return 'map_string_string';
-    }
-  }
-  if (type.kind === 'set') {
-    const valueKind = collectionScalarKindForSemanticType(type.value);
-    const valueArrayElementKind = type.value.kind === 'array'
-      ? collectionScalarKindForSemanticType(type.value.element)
-      : undefined;
-    if (valueKind === 'boolean') {
-      return 'set_boolean';
-    }
-    if (valueKind === 'number') {
-      return 'set_number';
-    }
-    if (valueArrayElementKind === 'number') {
-      return 'set_number_array';
-    }
-    if (valueKind === 'string') {
-      return 'set_string';
-    }
-  }
-  return undefined;
+  return createCollectionBoundaryAdapter(type);
 }
 
 function collectionBoundaryParamsForFunction(
@@ -908,19 +855,8 @@ function collectionBoundaryResultForFunction(
 
 function collectionAdapterMapValueType(
   adapter: WasmGcCollectionBoundaryAdapterIR,
-): 'owned_string_ref' | 'owned_number_array_ref' | 'f64' | 'i32' | undefined {
-  switch (adapter) {
-    case 'map_string_boolean':
-      return 'i32';
-    case 'map_string_number':
-      return 'f64';
-    case 'map_string_number_array':
-      return 'owned_number_array_ref';
-    case 'map_string_string':
-      return 'owned_string_ref';
-    default:
-      return undefined;
-  }
+): CompilerValueType | undefined {
+  return adapter.kind === 'map' ? compilerValueTypeForStorage(adapter.storage.value) : undefined;
 }
 
 function collectionAdapterSetArrayType(
@@ -931,17 +867,21 @@ function collectionAdapterSetArrayType(
   | 'owned_boolean_array_ref'
   | 'owned_tagged_array_ref'
   | undefined {
-  switch (adapter) {
-    case 'set_boolean':
-      return 'owned_boolean_array_ref';
-    case 'set_number':
-      return 'owned_number_array_ref';
-    case 'set_number_array':
+  if (adapter.kind !== 'set') {
+    return undefined;
+  }
+  const valueStorage = adapter.storage.value;
+  switch (valueStorage.kind) {
+    case 'array':
       return 'owned_tagged_array_ref';
-    case 'set_string':
+    case 'f64':
+      return 'owned_number_array_ref';
+    case 'i32':
+      return 'owned_boolean_array_ref';
+    case 'owned_string_ref':
       return 'owned_array_ref';
     default:
-      return undefined;
+      return 'owned_tagged_array_ref';
   }
 }
 
