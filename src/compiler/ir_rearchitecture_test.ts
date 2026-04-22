@@ -2223,7 +2223,7 @@ Deno.test('compiler wasm-gc emitter uses explicit Map runtime for set and size r
   assertEquals((main as () => number)(), 1);
 });
 
-Deno.test('compiler wasm-gc emitter keeps duplicate Map set keys on compatibility path', async () => {
+Deno.test('compiler wasm-gc emitter updates duplicate Map set keys on explicit runtime path', async () => {
   const tempDirectory = await createTempProject([
     {
       path: 'tsconfig.json',
@@ -2247,24 +2247,30 @@ Deno.test('compiler wasm-gc emitter keeps duplicate Map set keys on compatibilit
   const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
   const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
   const mainPlan = snapshot.wasmGcPlan.functionPlans.find((func) => func.name === 'main');
-  const watPath = join(tempDirectory, 'wasm-gc-shadow-map-duplicate-set-size.wat');
-  const wasmPath = join(tempDirectory, 'wasm-gc-shadow-map-duplicate-set-size.wasm');
+  const watPath = join(tempDirectory, 'wasm-gc-shadow-explicit-map-duplicate-set-size.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-shadow-explicit-map-duplicate-set-size.wasm');
 
   assertEquals(
     snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
-    ['dynamic_object', 'finite_union', 'map', 'string'],
+    ['finite_union', 'map', 'string'],
   );
   assertEquals(mainPlan?.bodyStatus, 'emittable');
   assertEquals(
-    mainPlan?.body.some((statement) =>
-      statement.kind === 'dynamic_object_new' && statement.collectionFamily === 'map'
-    ),
+    mainPlan?.body.some((statement) => statement.kind === 'dynamic_object_new'),
+    false,
+  );
+  assertEquals(
+    mainPlan?.body.filter((statement) => statement.kind === 'map_set').length,
+    2,
+  );
+  assertEquals(
+    mainPlan?.body.some((statement) => statement.kind === 'map_size'),
     true,
   );
-  assertEquals(mainPlan?.body.some((statement) => statement.kind === 'map_set'), false);
   await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
   const wat = await Deno.readTextFile(watPath);
-  assertEquals(wat.includes('dynamic_object_layout'), true);
+  assertEquals(wat.includes('dynamic_object_layout'), false);
+  assertEquals(wat.includes('$map_storage_runtime'), true);
   const result = await new Deno.Command('wasm-tools', {
     args: ['parse', watPath, '-o', wasmPath],
     stdout: 'piped',
@@ -2411,7 +2417,7 @@ Deno.test('compiler wasm-gc emitter uses explicit Map runtime for get missing ch
   assertEquals((main as () => number)(), 13);
 });
 
-Deno.test('compiler wasm-gc emitter produces runnable legacy string-key tagged union Map values', async () => {
+Deno.test('compiler wasm-gc emitter uses explicit Map runtime for tagged value mutation', async () => {
   const tempDirectory = await createTempProject([
     {
       path: 'tsconfig.json',
@@ -2451,18 +2457,25 @@ Deno.test('compiler wasm-gc emitter produces runnable legacy string-key tagged u
   const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
   const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
   const mainPlan = snapshot.wasmGcPlan.functionPlans.find((func) => func.name === 'main');
-  const watPath = join(tempDirectory, 'wasm-gc-shadow-legacy-string-map-tagged-values.wat');
-  const wasmPath = join(tempDirectory, 'wasm-gc-shadow-legacy-string-map-tagged-values.wasm');
+  const watPath = join(tempDirectory, 'wasm-gc-shadow-explicit-string-map-tagged-values.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-shadow-explicit-string-map-tagged-values.wasm');
 
   assertEquals(
     snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
-    ['dynamic_object', 'finite_union', 'map', 'string'],
+    ['finite_union', 'map', 'string'],
   );
   assertEquals(mainPlan?.bodyStatus, 'emittable');
+  assertEquals(mainPlan?.body.some((statement) => statement.kind === 'map_delete'), true);
+  assertEquals(mainPlan?.body.some((statement) => statement.kind === 'map_clear'), true);
+  assertEquals(
+    mainPlan?.body.some((statement) => statement.kind === 'dynamic_object_new'),
+    false,
+  );
   await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
   const wat = await Deno.readTextFile(watPath);
   assertEquals(wat.includes('struct.get $tagged_value $number_payload'), true);
-  assertEquals(wat.includes('map_runtime'), true);
+  assertEquals(wat.includes('$map_storage_runtime'), true);
+  assertEquals(wat.includes('dynamic_object_layout'), false);
   const result = await new Deno.Command('wasm-tools', {
     args: ['parse', watPath, '-o', wasmPath],
     stdout: 'piped',

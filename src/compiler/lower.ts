@@ -6196,21 +6196,12 @@ function collectCompilerOwnedStringKeyMapLocalSymbolInfo(
   const candidates = new Set<ts.Symbol>();
   const disqualified = new Set<ts.Symbol>();
   const storageBacked = new Set<ts.Symbol>();
-  const setKeysBySymbol = new Map<ts.Symbol, Set<string>>();
 
   const addCandidate = (name: ts.Identifier): void => {
     const symbol = checker.getSymbolAtLocation(name);
     if (symbol) {
       candidates.add(symbol);
-      setKeysBySymbol.set(symbol, new Set());
     }
-  };
-
-  const getStaticStringKey = (expression: ts.Expression): string | undefined => {
-    if (ts.isStringLiteral(expression) || ts.isNoSubstitutionTemplateLiteral(expression)) {
-      return expression.text;
-    }
-    return undefined;
   };
 
   const isAllowedMapSetUse = (
@@ -6226,22 +6217,18 @@ function collectCompilerOwnedStringKeyMapLocalSymbolInfo(
     ) {
       return false;
     }
-    const key = getStaticStringKey(propertyAccess.parent.arguments[0]!);
-    const seenKeys = setKeysBySymbol.get(symbol);
-    if (key === undefined || !seenKeys || seenKeys.has(key)) {
-      return false;
-    }
-    seenKeys.add(key);
     storageBacked.add(symbol);
     return true;
   };
 
-  const isAllowedMapLookupUse = (
+  const isAllowedMapSingleArgumentUse = (
     symbol: ts.Symbol,
     propertyAccess: ts.PropertyAccessExpression,
   ): boolean => {
     if (
-      propertyAccess.name.text !== 'get' && propertyAccess.name.text !== 'has'
+      propertyAccess.name.text !== 'get' &&
+      propertyAccess.name.text !== 'has' &&
+      propertyAccess.name.text !== 'delete'
     ) {
       return false;
     }
@@ -6249,6 +6236,22 @@ function collectCompilerOwnedStringKeyMapLocalSymbolInfo(
       !ts.isCallExpression(propertyAccess.parent) ||
       propertyAccess.parent.expression !== propertyAccess ||
       propertyAccess.parent.arguments.length !== 1
+    ) {
+      return false;
+    }
+    storageBacked.add(symbol);
+    return true;
+  };
+
+  const isAllowedMapClearUse = (
+    symbol: ts.Symbol,
+    propertyAccess: ts.PropertyAccessExpression,
+  ): boolean => {
+    if (
+      propertyAccess.name.text !== 'clear' ||
+      !ts.isCallExpression(propertyAccess.parent) ||
+      propertyAccess.parent.expression !== propertyAccess ||
+      propertyAccess.parent.arguments.length !== 0
     ) {
       return false;
     }
@@ -6294,7 +6297,8 @@ function collectCompilerOwnedStringKeyMapLocalSymbolInfo(
           ts.isPropertyAccessExpression(node.parent) &&
           node.parent.expression === node &&
           (isAllowedMapSetUse(symbol, node.parent) ||
-            isAllowedMapLookupUse(symbol, node.parent))
+            isAllowedMapSingleArgumentUse(symbol, node.parent) ||
+            isAllowedMapClearUse(symbol, node.parent))
         ) {
           return;
         }
@@ -39466,6 +39470,48 @@ function lowerCompilerOwnedMapHas(
   };
 }
 
+function lowerCompilerOwnedMapDelete(
+  objectName: string,
+  keyName: string,
+  context: FunctionLoweringContext,
+): CompilerExpressionIR {
+  context.functionRuntime.compilerOwnedMapStorageLocals.add(objectName);
+  const resultName = createLocalName('map_deleted', context.nextLocalId);
+  context.nextLocalId += 1;
+  context.locals.push({ name: resultName, type: 'i32' });
+  context.functionRuntime.operations.push({
+    kind: 'delete_map_entry',
+    objectName,
+    keyName,
+    resultName,
+  });
+  return {
+    kind: 'local_get',
+    name: resultName,
+    type: 'i32',
+  };
+}
+
+function lowerCompilerOwnedMapClear(
+  objectName: string,
+  context: FunctionLoweringContext,
+): CompilerExpressionIR {
+  context.functionRuntime.compilerOwnedMapStorageLocals.add(objectName);
+  const resultName = createLocalName('map_clear', context.nextLocalId);
+  context.nextLocalId += 1;
+  context.locals.push({ name: resultName, type: 'tagged_ref' });
+  context.functionRuntime.operations.push({
+    kind: 'clear_map',
+    objectName,
+    resultName,
+  });
+  return {
+    kind: 'local_get',
+    name: resultName,
+    type: 'tagged_ref',
+  };
+}
+
 function lowerDynamicObjectClear(
   objectName: string,
   representation: CompilerRuntimeDynamicObjectRepresentationRefIR,
@@ -61207,13 +61253,6 @@ function lowerInitialStringKeyMapCallExpression(
     );
   }
 
-  if (representation?.kind !== 'dynamic_object_representation') {
-    throw new CompilerUnsupportedError(
-      'Map receivers currently require compiler-owned Map values in compiler subset.',
-      receiver,
-    );
-  }
-
   if (methodName === 'delete') {
     if (mapTypeInfo.readonly) {
       throw new CompilerUnsupportedError(
@@ -61235,6 +61274,15 @@ function lowerInitialStringKeyMapCallExpression(
       'map_key',
     );
     context.expressionPreludeStatements.push(...propertyKeyStatements);
+    if (compilerOwnedMapReceiver) {
+      return lowerCompilerOwnedMapDelete(objectName, propertyKeyName, context);
+    }
+    if (representation?.kind !== 'dynamic_object_representation') {
+      throw new CompilerUnsupportedError(
+        'Map receivers currently require compiler-owned Map values in compiler subset.',
+        receiver,
+      );
+    }
     return lowerDynamicObjectDelete(objectName, representation, propertyKeyName, context, 'map');
   }
 
@@ -61251,7 +61299,23 @@ function lowerInitialStringKeyMapCallExpression(
         expression,
       );
     }
+    if (compilerOwnedMapReceiver) {
+      return lowerCompilerOwnedMapClear(objectName, context);
+    }
+    if (representation?.kind !== 'dynamic_object_representation') {
+      throw new CompilerUnsupportedError(
+        'Map receivers currently require compiler-owned Map values in compiler subset.',
+        receiver,
+      );
+    }
     return lowerDynamicObjectClear(objectName, representation, context, 'map');
+  }
+
+  if (representation?.kind !== 'dynamic_object_representation') {
+    throw new CompilerUnsupportedError(
+      'Map receivers currently require compiler-owned Map values in compiler subset.',
+      receiver,
+    );
   }
 
   if (methodName === 'keys') {

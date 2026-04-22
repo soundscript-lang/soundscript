@@ -89,7 +89,9 @@ function moduleUsesMapStorage(plan: WasmGcModulePlanIR): boolean {
         (statement.kind === 'map_new' && statement.storage) ||
         statement.kind === 'map_set' ||
         statement.kind === 'map_get' ||
-        statement.kind === 'map_has'
+        statement.kind === 'map_has' ||
+        statement.kind === 'map_delete' ||
+        statement.kind === 'map_clear'
       ) {
         found = true;
       }
@@ -1594,6 +1596,125 @@ function renderMapGetStatement(
   ];
 }
 
+function renderMapDeleteStatement(
+  statement: Extract<SemanticStatementIR, { kind: 'map_delete' }>,
+  indent: string,
+): readonly string[] {
+  return [
+    ...renderMapStorageLoad(statement.objectName, indent),
+    `${indent}i32.const -1`,
+    `${indent}local.set $${sanitizeIdentifier(MAP_FOUND_SCRATCH)}`,
+    ...renderMapLookupLoop(statement.keyName, [
+      `${indent}      local.get $${sanitizeIdentifier(MAP_INDEX_SCRATCH)}`,
+      `${indent}      local.set $${sanitizeIdentifier(MAP_FOUND_SCRATCH)}`,
+    ], indent),
+    `${indent}i32.const 0`,
+    `${indent}local.set $${sanitizeIdentifier(statement.targetName)}`,
+    `${indent}local.get $${sanitizeIdentifier(MAP_FOUND_SCRATCH)}`,
+    `${indent}i32.const 0`,
+    `${indent}i32.ge_s`,
+    `${indent}if`,
+    `${indent}  i32.const 1`,
+    `${indent}  local.set $${sanitizeIdentifier(statement.targetName)}`,
+    `${indent}  local.get $${sanitizeIdentifier(MAP_LENGTH_SCRATCH)}`,
+    `${indent}  i32.const 1`,
+    `${indent}  i32.sub`,
+    `${indent}  local.set $${sanitizeIdentifier(MAP_LENGTH_SCRATCH)}`,
+    `${indent}  local.get $${sanitizeIdentifier(MAP_LENGTH_SCRATCH)}`,
+    `${indent}  array.new_default $string_array_runtime`,
+    `${indent}  local.set $${sanitizeIdentifier(MAP_KEYS_TMP_SCRATCH)}`,
+    `${indent}  local.get $${sanitizeIdentifier(MAP_LENGTH_SCRATCH)}`,
+    `${indent}  array.new_default $tagged_array_runtime`,
+    `${indent}  local.set $${sanitizeIdentifier(MAP_VALUES_TMP_SCRATCH)}`,
+    `${indent}  local.get $${sanitizeIdentifier(MAP_FOUND_SCRATCH)}`,
+    `${indent}  i32.const 0`,
+    `${indent}  i32.gt_s`,
+    `${indent}  if`,
+    `${indent}    local.get $${sanitizeIdentifier(MAP_KEYS_TMP_SCRATCH)}`,
+    `${indent}    ref.as_non_null`,
+    `${indent}    i32.const 0`,
+    `${indent}    local.get $${sanitizeIdentifier(MAP_KEYS_SCRATCH)}`,
+    `${indent}    ref.as_non_null`,
+    `${indent}    i32.const 0`,
+    `${indent}    local.get $${sanitizeIdentifier(MAP_FOUND_SCRATCH)}`,
+    `${indent}    array.copy $string_array_runtime $string_array_runtime`,
+    `${indent}    local.get $${sanitizeIdentifier(MAP_VALUES_TMP_SCRATCH)}`,
+    `${indent}    ref.as_non_null`,
+    `${indent}    i32.const 0`,
+    `${indent}    local.get $${sanitizeIdentifier(MAP_VALUES_SCRATCH)}`,
+    `${indent}    ref.as_non_null`,
+    `${indent}    i32.const 0`,
+    `${indent}    local.get $${sanitizeIdentifier(MAP_FOUND_SCRATCH)}`,
+    `${indent}    array.copy $tagged_array_runtime $tagged_array_runtime`,
+    `${indent}  end`,
+    `${indent}  local.get $${sanitizeIdentifier(MAP_FOUND_SCRATCH)}`,
+    `${indent}  local.get $${sanitizeIdentifier(MAP_LENGTH_SCRATCH)}`,
+    `${indent}  i32.lt_s`,
+    `${indent}  if`,
+    `${indent}    local.get $${sanitizeIdentifier(MAP_KEYS_TMP_SCRATCH)}`,
+    `${indent}    ref.as_non_null`,
+    `${indent}    local.get $${sanitizeIdentifier(MAP_FOUND_SCRATCH)}`,
+    `${indent}    local.get $${sanitizeIdentifier(MAP_KEYS_SCRATCH)}`,
+    `${indent}    ref.as_non_null`,
+    `${indent}    local.get $${sanitizeIdentifier(MAP_FOUND_SCRATCH)}`,
+    `${indent}    i32.const 1`,
+    `${indent}    i32.add`,
+    `${indent}    local.get $${sanitizeIdentifier(MAP_LENGTH_SCRATCH)}`,
+    `${indent}    local.get $${sanitizeIdentifier(MAP_FOUND_SCRATCH)}`,
+    `${indent}    i32.sub`,
+    `${indent}    array.copy $string_array_runtime $string_array_runtime`,
+    `${indent}    local.get $${sanitizeIdentifier(MAP_VALUES_TMP_SCRATCH)}`,
+    `${indent}    ref.as_non_null`,
+    `${indent}    local.get $${sanitizeIdentifier(MAP_FOUND_SCRATCH)}`,
+    `${indent}    local.get $${sanitizeIdentifier(MAP_VALUES_SCRATCH)}`,
+    `${indent}    ref.as_non_null`,
+    `${indent}    local.get $${sanitizeIdentifier(MAP_FOUND_SCRATCH)}`,
+    `${indent}    i32.const 1`,
+    `${indent}    i32.add`,
+    `${indent}    local.get $${sanitizeIdentifier(MAP_LENGTH_SCRATCH)}`,
+    `${indent}    local.get $${sanitizeIdentifier(MAP_FOUND_SCRATCH)}`,
+    `${indent}    i32.sub`,
+    `${indent}    array.copy $tagged_array_runtime $tagged_array_runtime`,
+    `${indent}  end`,
+    `${indent}  local.get $${sanitizeIdentifier(statement.objectName)}`,
+    `${indent}  ref.cast (ref $map_storage_runtime)`,
+    `${indent}  local.get $${sanitizeIdentifier(MAP_KEYS_TMP_SCRATCH)}`,
+    `${indent}  struct.set $map_storage_runtime $keys`,
+    `${indent}  local.get $${sanitizeIdentifier(statement.objectName)}`,
+    `${indent}  ref.cast (ref $map_storage_runtime)`,
+    `${indent}  local.get $${sanitizeIdentifier(MAP_VALUES_TMP_SCRATCH)}`,
+    `${indent}  struct.set $map_storage_runtime $values`,
+    `${indent}  local.get $${sanitizeIdentifier(statement.objectName)}`,
+    `${indent}  ref.cast (ref $map_storage_runtime)`,
+    `${indent}  local.get $${sanitizeIdentifier(MAP_LENGTH_SCRATCH)}`,
+    `${indent}  f64.convert_i32_s`,
+    `${indent}  struct.set $map_storage_runtime $size`,
+    `${indent}end`,
+  ];
+}
+
+function renderMapClearStatement(
+  statement: Extract<SemanticStatementIR, { kind: 'map_clear' }>,
+  indent: string,
+): readonly string[] {
+  return [
+    `${indent}local.get $${sanitizeIdentifier(statement.objectName)}`,
+    `${indent}ref.cast (ref $map_storage_runtime)`,
+    `${indent}f64.const 0`,
+    `${indent}struct.set $map_storage_runtime $size`,
+    `${indent}local.get $${sanitizeIdentifier(statement.objectName)}`,
+    `${indent}ref.cast (ref $map_storage_runtime)`,
+    `${indent}array.new_fixed $string_array_runtime 0`,
+    `${indent}struct.set $map_storage_runtime $keys`,
+    `${indent}local.get $${sanitizeIdentifier(statement.objectName)}`,
+    `${indent}ref.cast (ref $map_storage_runtime)`,
+    `${indent}array.new_fixed $tagged_array_runtime 0`,
+    `${indent}struct.set $map_storage_runtime $values`,
+    ...renderTaggedUndefined(indent),
+    `${indent}local.set $${sanitizeIdentifier(statement.targetName)}`,
+  ];
+}
+
 function renderDynamicObjectHasStatement(
   statement: Extract<SemanticStatementIR, { kind: 'dynamic_object_has' }>,
   indent: string,
@@ -2072,6 +2193,8 @@ function collectNumberArrayScratchFromStatement(
     case 'map_set':
     case 'map_get':
     case 'map_has':
+    case 'map_delete':
+    case 'map_clear':
       uses.add('map_storage');
       break;
     case 'dynamic_object_property_set':
@@ -3594,6 +3717,10 @@ function renderStatement(
       return renderMapGetStatement(statement, indent);
     case 'map_has':
       return renderMapHasStatement(statement, indent);
+    case 'map_delete':
+      return renderMapDeleteStatement(statement, indent);
+    case 'map_clear':
+      return renderMapClearStatement(statement, indent);
     case 'dynamic_object_has':
       return renderDynamicObjectHasStatement(statement, indent, context);
     case 'dynamic_object_delete':
@@ -4363,6 +4490,8 @@ function collectBoxedClosureDispatchSignatureIdsFromStatement(
     case 'map_set':
     case 'map_get':
     case 'map_has':
+    case 'map_delete':
+    case 'map_clear':
       break;
     case 'dynamic_object_property_set':
       collectBoxedClosureDispatchSignatureIdsFromExpression(
@@ -4722,6 +4851,8 @@ function collectBoxValueTypesFromStatement(
     case 'map_set':
     case 'map_get':
     case 'map_has':
+    case 'map_delete':
+    case 'map_clear':
       break;
     case 'dynamic_object_property_set':
       collectBoxValueTypesFromExpression(statement.value, valueTypes);
@@ -5027,6 +5158,8 @@ function collectArrayRuntimeTypesFromStatement(
     case 'map_set':
     case 'map_get':
     case 'map_has':
+    case 'map_delete':
+    case 'map_clear':
       runtimeTypes.add('string');
       runtimeTypes.add('tagged');
       break;

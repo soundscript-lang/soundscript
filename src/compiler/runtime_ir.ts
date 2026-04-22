@@ -606,6 +606,19 @@ export interface CompilerRuntimeHasMapEntryIR {
   resultName: string;
 }
 
+export interface CompilerRuntimeDeleteMapEntryIR {
+  kind: 'delete_map_entry';
+  objectName: string;
+  keyName: string;
+  resultName: string;
+}
+
+export interface CompilerRuntimeClearMapIR {
+  kind: 'clear_map';
+  objectName: string;
+  resultName: string;
+}
+
 export interface CompilerRuntimeCopyDynamicObjectEntriesIR {
   kind: 'copy_dynamic_object_entries';
   targetObjectName: string;
@@ -762,6 +775,8 @@ export type CompilerRuntimeOperationIR =
   | CompilerRuntimeSetMapEntryIR
   | CompilerRuntimeGetMapEntryIR
   | CompilerRuntimeHasMapEntryIR
+  | CompilerRuntimeDeleteMapEntryIR
+  | CompilerRuntimeClearMapIR
   | CompilerRuntimeCopyDynamicObjectEntriesIR
   | CompilerRuntimeGetSpecializedObjectFieldIR
   | CompilerRuntimeGetFallbackObjectPropertyIR
