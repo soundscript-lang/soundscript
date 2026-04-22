@@ -6986,6 +6986,273 @@ Deno.test('red-team: compiler target gate rejects package-imported WeakMap after
   );
 });
 
+Deno.test('red-team: compiler source-published package roots and subpaths use owned source for wasm target gates', async () => {
+  const packageName = 'soundscript-red-team-compiler-owned-source-package';
+  const createPackageJson = (): string =>
+    `${
+      JSON.stringify(
+        {
+          name: packageName,
+          version: '1.0.0',
+          type: 'module',
+          exports: {
+            '.': {
+              types: './dist/index.d.ts',
+              import: './dist/index.js',
+            },
+            './math': {
+              types: './dist/math.d.ts',
+              import: './dist/math.js',
+            },
+          },
+          soundscript: {
+            version: 1,
+            exports: {
+              '.': { source: './src/index.sts' },
+              './math': { source: './src/math.sts' },
+            },
+          },
+        },
+        null,
+        2,
+      )
+    }\n`;
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.local.json',
+      contents: createSoundscriptTsconfig(['local/**/*.sts']),
+    },
+    {
+      path: 'local/index.sts',
+      contents: [
+        'import { getRootValue } from "./root.sts";',
+        'import { getSubpathValue } from "./math.sts";',
+        '',
+        'export function total(input: number): number {',
+        '  const rootCheck: number = getRootValue();',
+        '  const subpathCheck: number = getSubpathValue();',
+        '  return rootCheck + subpathCheck + input;',
+        '}',
+        '',
+      ].join('\n'),
+    },
+    {
+      path: 'local/root.sts',
+      contents: 'export function getRootValue(): number { return 3; }\n',
+    },
+    {
+      path: 'local/math.sts',
+      contents: 'export function getSubpathValue(): number { return 4; }\n',
+    },
+    {
+      path: 'tsconfig.package-consumer.json',
+      contents: createSoundscriptTsconfig(['consumer/**/*.sts']),
+    },
+    {
+      path: 'consumer/index.sts',
+      contents: [
+        `import { getRootValue } from ${JSON.stringify(packageName)};`,
+        `import { getSubpathValue } from ${JSON.stringify(`${packageName}/math`)};`,
+        '',
+        'export function total(input: number): number {',
+        '  const rootCheck: number = getRootValue();',
+        '  const subpathCheck: number = getSubpathValue();',
+        '  return rootCheck + subpathCheck + input;',
+        '}',
+        '',
+      ].join('\n'),
+    },
+    {
+      path: `node_modules/${packageName}/package.json`,
+      contents: createPackageJson(),
+    },
+    {
+      path: `node_modules/${packageName}/dist/index.d.ts`,
+      contents: 'export declare function getRootValue(): string;\n',
+    },
+    {
+      path: `node_modules/${packageName}/dist/index.js`,
+      contents: 'export function getRootValue() { return "wrong-declaration-route"; }\n',
+    },
+    {
+      path: `node_modules/${packageName}/dist/math.d.ts`,
+      contents: 'export declare function getSubpathValue(): string;\n',
+    },
+    {
+      path: `node_modules/${packageName}/dist/math.js`,
+      contents: 'export function getSubpathValue() { return "wrong-declaration-route"; }\n',
+    },
+    {
+      path: `node_modules/${packageName}/src/index.sts`,
+      contents: 'export function getRootValue(): number { return 3; }\n',
+    },
+    {
+      path: `node_modules/${packageName}/src/math.sts`,
+      contents: 'export function getSubpathValue(): number { return 4; }\n',
+    },
+  ]);
+
+  const localCompile = compileProject({
+    projectPath: join(tempDirectory, 'tsconfig.local.json'),
+    target: 'wasm-node',
+    workingDirectory: tempDirectory,
+  });
+  assertEquals(localCompile.exitCode, 0, localCompile.output);
+  assertEquals(localCompile.diagnostics, []);
+
+  const packageCompile = compileProject({
+    projectPath: join(tempDirectory, 'tsconfig.package-consumer.json'),
+    target: 'wasm-node',
+    workingDirectory: tempDirectory,
+  });
+  assertEquals(packageCompile.exitCode, localCompile.exitCode, packageCompile.output);
+  assertEquals(packageCompile.diagnostics, localCompile.diagnostics);
+});
+
+Deno.test('red-team: compiler target gate reports package subpath barrel source diagnostics', async () => {
+  const packageName = 'soundscript-red-team-compiler-subpath-barrel-gate';
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: createSoundscriptTsconfig(['src/**/*.sts']),
+    },
+    {
+      path: 'src/index.sts',
+      contents: [
+        `import { unsupportedWeakMap } from ${JSON.stringify(`${packageName}/weak-barrel`)};`,
+        '',
+        'export function main(): number {',
+        '  return unsupportedWeakMap();',
+        '}',
+        '',
+      ].join('\n'),
+    },
+    {
+      path: `node_modules/${packageName}/package.json`,
+      contents: `${
+        JSON.stringify(
+          {
+            name: packageName,
+            version: '1.0.0',
+            type: 'module',
+            exports: {
+              './weak-barrel': {
+                types: './dist/weak-barrel.d.ts',
+                import: './dist/weak-barrel.js',
+              },
+            },
+            soundscript: {
+              version: 1,
+              exports: {
+                './weak-barrel': { source: './src/weak-barrel.sts' },
+              },
+            },
+          },
+          null,
+          2,
+        )
+      }\n`,
+    },
+    {
+      path: `node_modules/${packageName}/dist/weak-barrel.d.ts`,
+      contents: 'export declare function unsupportedWeakMap(): number;\n',
+    },
+    {
+      path: `node_modules/${packageName}/dist/weak-barrel.js`,
+      contents: 'export function unsupportedWeakMap() { return 7; }\n',
+    },
+    {
+      path: `node_modules/${packageName}/src/weak-barrel.sts`,
+      contents: 'export { unsupportedWeakMap } from "./weak.sts";\n',
+    },
+    {
+      path: `node_modules/${packageName}/src/weak.sts`,
+      contents: [
+        'type Box = { value: number };',
+        '',
+        'export function unsupportedWeakMap(): number {',
+        '  const key: Box = { value: 1 };',
+        '  const map = new WeakMap<Box, number>();',
+        '  map.set(key, 7);',
+        '  return map.get(key) ?? 0;',
+        '}',
+        '',
+      ].join('\n'),
+    },
+  ]);
+
+  const result = compileProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    target: 'wasm-node',
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.exitCode, 1, result.output);
+  assertEquals(
+    result.diagnostics.map((diagnostic) => [diagnostic.source, diagnostic.code]),
+    [['compiler', 'COMPILER2001']],
+  );
+  const diagnosticPath = result.diagnostics[0]?.filePath?.replaceAll('\\', '/') ?? '';
+  assert(
+    diagnosticPath.endsWith(`node_modules/${packageName}/src/weak-barrel.sts`),
+    JSON.stringify(result.diagnostics, null, 2),
+  );
+});
+
+Deno.test('red-team: compileProject rechecks source drift across consecutive wasm target compilations', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: createSoundscriptTsconfig(['src/**/*.sts']),
+    },
+    {
+      path: 'src/index.sts',
+      contents: [
+        'export function main(input: number): number {',
+        '  return input + 1;',
+        '}',
+        '',
+      ].join('\n'),
+    },
+  ]);
+  const compileOptions = {
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    target: 'wasm-node' as const,
+    workingDirectory: tempDirectory,
+  };
+
+  const firstCompile = compileProject(compileOptions);
+  assertEquals(firstCompile.exitCode, 0, firstCompile.output);
+  assertEquals(firstCompile.diagnostics, []);
+
+  await writeProjectFile(
+    tempDirectory,
+    'src/index.sts',
+    [
+      'type Box = { value: number };',
+      '',
+      'export function main(): number {',
+      '  const key: Box = { value: 1 };',
+      '  const map = new WeakMap<Box, number>();',
+      '  map.set(key, 7);',
+      '  return map.get(key) ?? 0;',
+      '}',
+      '',
+    ].join('\n'),
+  );
+
+  const secondCompile = compileProject(compileOptions);
+  assertEquals(secondCompile.exitCode, 1, secondCompile.output);
+  assertEquals(
+    secondCompile.diagnostics.map((diagnostic) => [
+      diagnostic.source,
+      diagnostic.code,
+      diagnostic.filePath,
+    ]),
+    [['compiler', 'COMPILER2001', join(tempDirectory, 'src/index.sts')]],
+  );
+});
+
 Deno.test('red-team: package build cache invalidates non-jsx package export retargets', async () => {
   const createDependencyPackageJson = (typesPath: string): string =>
     `${
@@ -9539,6 +9806,391 @@ Deno.test('red-team: package build output refreshes diamond macro helper drift',
   assert(await hashPackageOutput(outDir('mid-a')) !== firstHashes['mid-a']);
   assert(await hashPackageOutput(outDir('mid-b')) !== firstHashes['mid-b']);
   await assertInstalledCombined('A:L2|B:L2');
+});
+
+Deno.test('red-team: package build output rejects diamond macro subpath barrel type drift', async () => {
+  const leafName = 'red-team-diamond-macro-subpath-leaf';
+  const midAName = 'red-team-diamond-macro-subpath-mid-a';
+  const midBName = 'red-team-diamond-macro-subpath-mid-b';
+  const appName = 'red-team-diamond-macro-subpath-app';
+  const createPackageJson = (
+    name: string,
+    dependencies: Record<string, string> = {},
+  ): string =>
+    `${
+      JSON.stringify(
+        {
+          name,
+          version: '1.0.0',
+          type: 'module',
+          ...(Object.keys(dependencies).length > 0 ? { dependencies } : {}),
+          soundscript: {
+            version: 1,
+            exports: {
+              '.': { source: './src/index.sts' },
+            },
+          },
+        },
+        null,
+        2,
+      )
+    }\n`;
+  const createMacroLeafPackageJson = (): string =>
+    `${
+      JSON.stringify(
+        {
+          name: leafName,
+          version: '1.0.0',
+          type: 'module',
+          exports: {
+            './macros': {
+              types: './dist/macros.d.ts',
+              import: './dist/macros.js',
+            },
+          },
+          soundscript: {
+            version: 1,
+            exports: {
+              './macros': { source: './src/macros.macro.sts' },
+            },
+          },
+        },
+        null,
+        2,
+      )
+    }\n`;
+  const tempDirectory = await createTempProject([
+    {
+      path: 'packages/leaf/package.json',
+      contents: createMacroLeafPackageJson(),
+    },
+    {
+      path: 'packages/leaf/tsconfig.json',
+      contents: createSoundscriptTsconfig(['src/**/*.sts']),
+    },
+    {
+      path: 'packages/leaf/src/macros.macro.sts',
+      contents: [
+        "import 'sts:macros';",
+        "import { helperExpression } from './helper.macro.sts';",
+        '',
+        '// #[macro(call)]',
+        'export function Stamp() {',
+        '  return {',
+        '    expand(ctx: any) {',
+        '      return ctx.output.expr(ctx.quote.expr`${helperExpression}`);',
+        '    },',
+        '  };',
+        '}',
+        '',
+      ].join('\n'),
+    },
+    {
+      path: 'packages/leaf/src/helper.macro.sts',
+      contents: 'export const helperExpression = "1";\n',
+    },
+    {
+      path: 'packages/mid-a/package.json',
+      contents: createPackageJson(midAName, { [leafName]: '1.0.0' }),
+    },
+    {
+      path: 'packages/mid-a/tsconfig.json',
+      contents: createSoundscriptTsconfig(['src/**/*.sts']),
+    },
+    {
+      path: 'packages/mid-a/src/index.sts',
+      contents: [
+        `import { Stamp } from "${leafName}/macros";`,
+        '',
+        'export const a: number = Stamp();',
+        '',
+      ].join('\n'),
+    },
+    {
+      path: 'packages/mid-b/package.json',
+      contents: createPackageJson(midBName, { [leafName]: '1.0.0' }),
+    },
+    {
+      path: 'packages/mid-b/tsconfig.json',
+      contents: createSoundscriptTsconfig(['src/**/*.sts']),
+    },
+    {
+      path: 'packages/mid-b/src/barrel.sts',
+      contents: `export { Stamp } from "${leafName}/macros";\n`,
+    },
+    {
+      path: 'packages/mid-b/src/index.sts',
+      contents: [
+        'import { Stamp } from "./barrel.sts";',
+        '',
+        'export const b: number = Stamp();',
+        '',
+      ].join('\n'),
+    },
+    {
+      path: 'packages/app/package.json',
+      contents: createPackageJson(appName, {
+        [midAName]: '1.0.0',
+        [midBName]: '1.0.0',
+      }),
+    },
+    {
+      path: 'packages/app/tsconfig.json',
+      contents: createSoundscriptTsconfig(['src/**/*.sts']),
+    },
+    {
+      path: 'packages/app/src/index.sts',
+      contents: [
+        `import { a } from "${midAName}";`,
+        `import { b } from "${midBName}";`,
+        '',
+        'export const combined: number = a + b;',
+        '',
+      ].join('\n'),
+    },
+  ]);
+  const packages = {
+    app: {
+      name: appName,
+      root: join(tempDirectory, 'packages/app'),
+    },
+    leaf: {
+      name: leafName,
+      root: join(tempDirectory, 'packages/leaf'),
+    },
+    'mid-a': {
+      name: midAName,
+      root: join(tempDirectory, 'packages/mid-a'),
+    },
+    'mid-b': {
+      name: midBName,
+      root: join(tempDirectory, 'packages/mid-b'),
+    },
+  } as const;
+  type BuiltPackageName = keyof typeof packages;
+  type ConsumerPackageName = Exclude<BuiltPackageName, 'leaf'>;
+  const projectPath = (name: BuiltPackageName): string =>
+    join(packages[name].root, 'tsconfig.json');
+  const outDir = (name: BuiltPackageName): string => join(packages[name].root, 'dist');
+  const coldOutDir = (name: ConsumerPackageName): string => join(packages[name].root, 'dist-cold');
+  const cacheDirectory = (name: ConsumerPackageName): string =>
+    resolveCheckerCacheDirectory(projectPath(name));
+  const staleCacheDirectory = (name: ConsumerPackageName): string =>
+    join(packages[name].root, `.stale-${name}-build-cache`);
+  const symlinkPackage = async (
+    nodeModulesRoot: string,
+    packageName: string,
+    targetPath: string,
+  ): Promise<void> => {
+    await Deno.mkdir(nodeModulesRoot, { recursive: true });
+    const linkPath = join(nodeModulesRoot, packageName);
+    await Deno.remove(linkPath, { recursive: true }).catch(() => undefined);
+    await Deno.symlink(targetPath, linkPath, { type: 'dir' });
+  };
+  const linkBuiltDependencyForBuild = async (
+    consumer: ConsumerPackageName,
+    producer: Exclude<BuiltPackageName, 'app'>,
+  ): Promise<void> => {
+    await symlinkPackage(
+      join(packages[consumer].root, 'node_modules'),
+      packages[producer].name,
+      outDir(producer),
+    );
+  };
+  const buildPackage = async (name: BuiltPackageName, directory = outDir(name)) => {
+    const result = await buildProject({
+      outDir: directory,
+      projectPath: projectPath(name),
+      workingDirectory: packages[name].root,
+    });
+    assertEquals(result.exitCode, 0, result.output);
+    return result;
+  };
+  const warmBuildPackage = async (name: ConsumerPackageName) => {
+    const result = await withCapturedTimingLogsAsync(async (logs) => {
+      const buildResult = await buildProject({
+        outDir: outDir(name),
+        projectPath: projectPath(name),
+        workingDirectory: packages[name].root,
+      });
+      assert(
+        logs.some((line) =>
+          line.includes('[soundscript:checker] project.build.cache.read ') &&
+          line.includes('status=hit')
+        ),
+        logs.join('\n'),
+      );
+      assert(
+        !logs.some((line) => line.includes('[soundscript:checker] project.build.analysis ')),
+        logs.join('\n'),
+      );
+      return buildResult;
+    });
+    assertEquals(result.exitCode, 0, result.output);
+    return result;
+  };
+  const staleWarmFailedBuildPackage = async (name: ConsumerPackageName) =>
+    await withCapturedTimingLogsAsync(async (logs) => {
+      const result = await buildProject({
+        outDir: outDir(name),
+        projectPath: projectPath(name),
+        workingDirectory: packages[name].root,
+      });
+      const buildCacheRead = logs.find((line) =>
+        line.includes('[soundscript:checker] project.build.cache.read ')
+      );
+      assert(buildCacheRead && !buildCacheRead.includes('status=hit'), logs.join('\n'));
+      assert(
+        logs.some((line) => line.includes('[soundscript:checker] project.build.analysis ')),
+        logs.join('\n'),
+      );
+      return result;
+    });
+  const readTrackedFiles = async (
+    name: ConsumerPackageName,
+  ): Promise<ReadonlySet<string>> => {
+    const manifest = JSON.parse(
+      await Deno.readTextFile(
+        join(resolveCheckerCacheDirectory(projectPath(name)), 'build-manifest.json'),
+      ),
+    ) as { trackedFiles: Record<string, string> };
+    return new Set(
+      await Promise.all(
+        Object.keys(manifest.trackedFiles).map(async (path) => {
+          try {
+            return await Deno.realPath(path);
+          } catch {
+            return path;
+          }
+        }),
+      ),
+    );
+  };
+  const assertNoMacroProviderRuntimeSpecifier = async (
+    name: ConsumerPackageName,
+    expectedRuntimeImports: readonly string[] = [],
+  ): Promise<void> => {
+    const implementation = await Deno.readTextFile(join(outDir(name), 'esm/src/index.js'));
+    for (const expectedRuntimeImport of expectedRuntimeImports) {
+      assert(implementation.includes(`"${expectedRuntimeImport}"`), implementation);
+    }
+    assert(!implementation.includes(leafName), implementation);
+    assert(!implementation.includes('.macro'), implementation);
+    assert(!implementation.includes('.sts'), implementation);
+    assert(!implementation.includes('soundscript/src'), implementation);
+  };
+  const assertInstalledCombined = async (expected: number): Promise<void> => {
+    const installRoot = join(tempDirectory, 'runtime-install');
+    await symlinkPackage(join(installRoot, 'node_modules'), appName, outDir('app'));
+    await symlinkPackage(join(outDir('app'), 'node_modules'), midAName, outDir('mid-a'));
+    await symlinkPackage(join(outDir('app'), 'node_modules'), midBName, outDir('mid-b'));
+    const smoke = await new Deno.Command('node', {
+      args: [
+        '--input-type=module',
+        '-e',
+        [
+          `const mod = await import(${JSON.stringify(appName)});`,
+          `if (mod.combined !== ${JSON.stringify(expected)}) {`,
+          '  throw new Error(`unexpected combined value ${mod.combined}`);',
+          '}',
+        ].join('\n'),
+      ],
+      cwd: installRoot,
+      stderr: 'piped',
+      stdout: 'piped',
+    }).output();
+    assertEquals(
+      smoke.code,
+      0,
+      new TextDecoder().decode(smoke.stderr) || new TextDecoder().decode(smoke.stdout),
+    );
+  };
+
+  await buildPackage('leaf');
+  await linkBuiltDependencyForBuild('mid-a', 'leaf');
+  await linkBuiltDependencyForBuild('mid-b', 'leaf');
+  await buildPackage('mid-a');
+  await buildPackage('mid-b');
+  await linkBuiltDependencyForBuild('app', 'mid-a');
+  await linkBuiltDependencyForBuild('app', 'mid-b');
+  await buildPackage('app');
+
+  const publishedHelperPath = join(outDir('leaf'), 'soundscript/src/helper.macro.sts');
+  const originalHelperPath = join(packages.leaf.root, 'src/helper.macro.sts');
+  const midATrackedFiles = await readTrackedFiles('mid-a');
+  const midBTrackedFiles = await readTrackedFiles('mid-b');
+  assert(midATrackedFiles.has(await Deno.realPath(publishedHelperPath)));
+  assert(midBTrackedFiles.has(await Deno.realPath(publishedHelperPath)));
+  assert(!midATrackedFiles.has(await Deno.realPath(originalHelperPath)));
+  assert(!midBTrackedFiles.has(await Deno.realPath(originalHelperPath)));
+  await assertNoMacroProviderRuntimeSpecifier('mid-a');
+  await assertNoMacroProviderRuntimeSpecifier('mid-b');
+  await assertNoMacroProviderRuntimeSpecifier('app', [midAName, midBName]);
+  await assertInstalledCombined(2);
+
+  const firstHashes = {
+    app: await hashPackageOutput(outDir('app')),
+    'mid-a': await hashPackageOutput(outDir('mid-a')),
+    'mid-b': await hashPackageOutput(outDir('mid-b')),
+  };
+  await warmBuildPackage('mid-a');
+  await warmBuildPackage('mid-b');
+  await warmBuildPackage('app');
+  assertEquals(await hashPackageOutput(outDir('mid-a')), firstHashes['mid-a']);
+  assertEquals(await hashPackageOutput(outDir('mid-b')), firstHashes['mid-b']);
+  assertEquals(await hashPackageOutput(outDir('app')), firstHashes.app);
+  await assertInstalledCombined(2);
+
+  await Deno.rename(cacheDirectory('mid-a'), staleCacheDirectory('mid-a'));
+  await Deno.rename(cacheDirectory('mid-b'), staleCacheDirectory('mid-b'));
+  await writeProjectFile(
+    tempDirectory,
+    'packages/leaf/dist/soundscript/src/helper.macro.sts',
+    'export const helperExpression = \'"wrong"\';\n',
+  );
+
+  const coldMidAResult = await buildProject({
+    outDir: coldOutDir('mid-a'),
+    projectPath: projectPath('mid-a'),
+    workingDirectory: packages['mid-a'].root,
+  });
+  const coldMidBResult = await buildProject({
+    outDir: coldOutDir('mid-b'),
+    projectPath: projectPath('mid-b'),
+    workingDirectory: packages['mid-b'].root,
+  });
+  assertEquals(coldMidAResult.exitCode, 1, coldMidAResult.output);
+  assertEquals(coldMidBResult.exitCode, 1, coldMidBResult.output);
+  assertEquals(toProjectRelativeDiagnostics(coldMidAResult.diagnostics, packages['mid-a'].root), [
+    ['TS2322', 'src/index.sts'],
+  ]);
+  assertEquals(toProjectRelativeDiagnostics(coldMidBResult.diagnostics, packages['mid-b'].root), [
+    ['TS2322', 'src/index.sts'],
+  ]);
+
+  await Deno.remove(cacheDirectory('mid-a'), { recursive: true });
+  await Deno.remove(cacheDirectory('mid-b'), { recursive: true });
+  await Deno.rename(staleCacheDirectory('mid-a'), cacheDirectory('mid-a'));
+  await Deno.rename(staleCacheDirectory('mid-b'), cacheDirectory('mid-b'));
+  await Deno.remove(outDir('mid-a'), { recursive: true });
+  await Deno.remove(outDir('mid-b'), { recursive: true });
+
+  const staleMidAResult = await staleWarmFailedBuildPackage('mid-a');
+  const staleMidBResult = await staleWarmFailedBuildPackage('mid-b');
+  assertEquals(staleMidAResult.exitCode, coldMidAResult.exitCode, staleMidAResult.output);
+  assertEquals(staleMidBResult.exitCode, coldMidBResult.exitCode, staleMidBResult.output);
+  assertEquals(
+    toProjectRelativeDiagnostics(staleMidAResult.diagnostics, packages['mid-a'].root),
+    toProjectRelativeDiagnostics(coldMidAResult.diagnostics, packages['mid-a'].root),
+  );
+  assertEquals(
+    toProjectRelativeDiagnostics(staleMidBResult.diagnostics, packages['mid-b'].root),
+    toProjectRelativeDiagnostics(coldMidBResult.diagnostics, packages['mid-b'].root),
+  );
+  assertEquals(staleMidAResult.artifacts, undefined);
+  assertEquals(staleMidBResult.artifacts, undefined);
+  assertEquals(await pathExists(join(outDir('mid-a'), 'esm/src/index.js')), false);
+  assertEquals(await pathExists(join(outDir('mid-b'), 'esm/src/index.js')), false);
 });
 
 Deno.test('red-team: cached effect summaries track member-path forwarded callback drift', async () => {

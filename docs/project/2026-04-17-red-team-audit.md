@@ -56,20 +56,23 @@ Legend:
 - `batch-57`: covered by the fifty-seventh red-team batch added with this record.
 - `batch-58`: covered by the fifty-eighth red-team batch added with this record.
 - `batch-59`: covered by the fifty-ninth red-team batch added with this record.
+- `batch-60`: covered by the sixtieth red-team batch added with this record.
+- `batch-61`: covered by the sixty-first red-team batch added with this record.
+- `batch-62`: covered by the sixty-second red-team batch added with this record.
 - `audit-debt`: missing coverage that should be closed before calling the family fully audited.
 - `out-of-scope`: explicitly outside the strong soundness claim.
 - `design-gap`: documented future work, not a current guarantee.
 
 | Owned family                         | Fresh project     | Reused prepared                | File-scoped                    | Persistent checker cache | Package verification cache | LSP/incremental session | Build cache/output  | Compiler/target gate |
 | ------------------------------------ | ----------------- | ------------------------------ | ------------------------------ | ------------------------ | -------------------------- | ----------------------- | ------------------- | -------------------- |
-| Prepared/package-source parity       | covered           | covered                        | covered                        | covered,batch-29         | batch-3                    | covered                 | batch-1,10,28,31,52 | audit-debt           |
+| Prepared/package-source parity       | covered           | covered                        | covered                        | covered,batch-29         | batch-3                    | covered                 | batch-1,10,28,31,52 | batch-60             |
 | Flow/effect invalidation             | covered           | batch-35,40,43                 | covered                        | batch-4,35,40,43         | batch-4,40,43              | batch-35,40,43          | batch-44            | batch-44             |
 | Proof-oracle verification            | covered           | batch-38                       | covered                        | batch-38                 | batch-38                   | batch-38                | batch-44            | batch-44             |
 | BareObject/null-prototype provenance | covered           | covered                        | covered                        | batch-39                 | covered                    | batch-39                | batch-39            | batch-45             |
 | `#[value]` parity                    | covered           | batch-1                        | batch-1                        | batch-1                  | batch-5                    | batch-1                 | batch-1             | covered              |
 | Machine numerics                     | covered           | batch-37                       | batch-37                       | batch-37                 | batch-5                    | batch-37                | batch-1,37          | batch-37             |
-| Macro/capability boundary            | covered,batch-54  | covered,batch-53,54            | batch-53,54,55,57,58           | batch-6,53,54            | batch-41,42,54             | batch-53,54,55,57,58    | batch-7,56,59       | batch-8              |
-| Compiler acceptance parity           | covered           | audit-debt                     | out-of-scope                   | out-of-scope             | out-of-scope               | out-of-scope            | batch-1,27,30       | covered,batch-27,30  |
+| Macro/capability boundary            | covered,batch-54  | covered,batch-53,54            | batch-53,54,55,57,58           | batch-6,53,54            | batch-41,42,54             | batch-53,54,55,57,58    | batch-7,56,59,62    | batch-8              |
+| Compiler acceptance parity           | covered           | out-of-scope,batch-61          | out-of-scope                   | out-of-scope             | out-of-scope               | out-of-scope            | batch-1,27,30       | covered,batch-27,30  |
 | Project-reference root ownership     | batch-32,47,48,49 | out-of-scope,batch-46,47,48,49 | out-of-scope,batch-46,47,48,49 | batch-32,48,49           | out-of-scope               | batch-34,47,48,49       | batch-33,50,51      | out-of-scope         |
 
 ## Batch 1 Findings
@@ -1474,10 +1477,75 @@ Legend:
   type-only imports, dynamic imports, package metadata, runtime target, and resolved real paths, or
   continue to fail closed.
 
+## Batch 60 Findings
+
+### Source-Published Compiler Target-Gate Parity
+
+- Attack: compile a local authored Wasm-target fixture and an equivalent consumer importing a
+  source-published package root plus subpath while the package's `.d.ts` declarations intentionally
+  lie about return types. Separately, import an unsupported `WeakMap` surface through a
+  source-published package subpath barrel.
+- Routes: `compileProject(..., target: "wasm-node")`, package root `soundscript.exports["."]`,
+  package subpath `soundscript.exports["./math"]`, package subpath barrel source, compiler-owned
+  diagnostics, and declaration-vs-source authority.
+- Expected result: the accepted package consumer compiles with the same success shape as local
+  authored source, proving the compiler did not trust the lying declarations. The rejected barrel
+  route fails with compiler-owned `COMPILER2001` on package `.sts` source instead of treating the
+  package as a foreign declaration surface.
+- Result: executable coverage added in `tests/integration/red_team_audit_test.ts`. No production bug
+  was found; source-published package source remains owned by the compiler target gate for root,
+  subpath, and barrel routes.
+- Residual risk: successful local-barrel lowering remains outside this batch because the current
+  compiler subset rejects that shape; the rejected barrel route still proves source ownership and
+  diagnostic authority.
+
+## Batch 61 Findings
+
+### Compiler Fresh-State Boundary
+
+- Attack: call `compileProject` successfully on valid source, mutate the same `.sts` file to an
+  unsupported `WeakMap` surface, then call `compileProject` again with identical options in the same
+  process.
+- Routes: compiler frontend construction, TypeScript program creation, compiler-owned unsupported
+  diagnostics, and process-local source drift without any explicit prepared-project reuse API.
+- Expected result: the second compile reads the mutated source and reports `COMPILER2001` on the
+  changed `.sts` file; no previous success, artifacts, or prepared frontend state is reused.
+- Result: executable coverage added in `tests/integration/red_team_audit_test.ts`. No production bug
+  was found. `compileProject` has no reused-prepared or persistent-cache interface today; each call
+  constructs a fresh compiler frontend program and disposes it before returning.
+- Residual risk: the `Compiler acceptance parity / Reused prepared` matrix cell is now explicitly
+  out of scope for current APIs. If a reusable compiler-prepared entrypoint is added, it must become
+  a new owned route with stale-state tests.
+
+## Batch 62 Findings
+
+### Macro Diamond Subpath Barrel Type Drift
+
+- Attack: build a macro-only leaf package whose public macro is exposed through
+  `soundscript.exports["./macros"]`, then build a package diamond where `mid-a` imports that macro
+  subpath directly and `mid-b` imports it through a local barrel. Prime valid cold and unchanged
+  warm outputs, then edit only the built leaf package's copied `soundscript/src/helper.macro.sts` so
+  the macro expands from `1` to `"wrong"`.
+- Routes: built source-published macro package output, downstream package build manifests, unchanged
+  build-cache hit reuse, copied macro-helper source tracking, stale build-cache invalidation,
+  emitted JS runtime import inspection, cold-vs-stale diagnostic parity, and plain Node import of
+  the valid app package.
+- Expected result: unchanged warm builds hit and hash-match; valid emitted JS imports no macro
+  provider, `.macro`, `.sts`, or `soundscript/src` runtime path; after helper type drift, cold and
+  stale warm middle-package builds both fail with matching `TS2322` diagnostics and do not recreate
+  stale emitted JS.
+- Result: executable coverage added in `tests/integration/red_team_audit_test.ts`. No production bug
+  was found. The middle-package manifests track the built package's copied macro helper rather than
+  the original workspace source, and stale cached middle-package builds miss after the copied helper
+  drifts.
+- Residual risk: this is the last high-value macro/package runtime bypass identified in this audit.
+  Further variants, such as larger diamonds or additional macro site kinds, are breadth hardening
+  rather than current high-priority audit debt.
+
 ## Remaining High-Priority Audit Debt
 
-- No remaining high-priority debt is being carried for recursive non-`.sts` support-file tracking
-  under the current claim boundary. It stays a design gap unless the source-published package
+- No unresolved `audit-debt` cells remain in the claim matrix for currently owned guarantees.
+- Recursive non-`.sts` support-file tracking stays a design gap unless the source-published package
   guarantee is explicitly broadened beyond `.sts` and `.macro.sts` graphs.
 
 ## Verification Log
@@ -2131,3 +2199,37 @@ red-team attack, the route matrix it covers, and the residual risk left behind.
   `git diff --check -- tests/integration/red_team_audit_test.ts
   docs/project/2026-04-17-red-team-audit.md`,
   and `deno task check`: passed after the Batch 59 test and audit-document updates.
+- `deno test --allow-all --filter
+  "/compiler source-published package roots and subpaths use owned source|compiler target gate
+  reports package subpath barrel source diagnostics|compileProject rechecks source drift across
+  consecutive wasm target compilations/" tests/integration/red_team_audit_test.ts`:
+  passed in the Writer pass, covering the Batch 60 and Batch 61 compiler target-gate fixtures.
+- `deno test --allow-all --filter
+  "/compiler target gate rejects value classes after JS package build cache reuse|compiler target
+  gate rejects package-imported WeakMap after JS package build cache reuse|compiler source-published
+  package roots and subpaths use owned source|compiler target gate reports package subpath barrel
+  source diagnostics|compileProject rechecks source drift across consecutive wasm target
+  compilations/" tests/integration/red_team_audit_test.ts`:
+  passed in the Writer pass, proving the new compiler fixtures alongside the existing compiler
+  target-gate coverage.
+- `deno test --allow-all --filter "package build output rejects diamond macro subpath barrel type
+  drift" tests/integration/red_team_audit_test.ts`:
+  passed, 1 test in `4m3s`; the first red run failed because the app smoke used invalid
+  string-plus-number concatenation, so the fixture was tightened to numeric composition before the
+  macro cache assertion was evaluated.
+- `deno test --allow-all --filter
+  "/compiler source-published package roots and subpaths use owned source|compiler target gate
+  reports package subpath barrel source diagnostics|compileProject rechecks source drift across
+  consecutive wasm target compilations|package build output rejects diamond macro subpath barrel
+  type drift/" tests/integration/red_team_audit_test.ts`:
+  passed, 4 tests in `5m29s`, covering Batches 60-62 together.
+- `deno fmt --check tests/integration/red_team_audit_test.ts
+  docs/project/2026-04-17-red-team-audit.md`,
+  `deno lint
+  tests/integration/red_team_audit_test.ts`,
+  `git diff --check -- tests/integration/red_team_audit_test.ts
+  docs/project/2026-04-17-red-team-audit.md`,
+  and `deno task check`: passed after restoring the audit changes on top of the `0.1.37`
+  version-bump commit.
+- `deno test --allow-all tests/integration/red_team_audit_test.ts`: passed, 74 tests in `11m2s`,
+  covering the complete red-team audit integration suite after Batches 60-62.
