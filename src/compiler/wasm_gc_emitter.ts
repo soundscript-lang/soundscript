@@ -1297,6 +1297,23 @@ function renderMapSizeStatement(
   ];
 }
 
+function renderMapSetStatement(
+  statement: Extract<SemanticStatementIR, { kind: 'map_set' }>,
+  indent: string,
+): readonly string[] {
+  void statement;
+  return [
+    `${indent}local.get $${sanitizeIdentifier(statement.objectName)}`,
+    `${indent}ref.cast (ref $map_runtime)`,
+    `${indent}local.get $${sanitizeIdentifier(statement.objectName)}`,
+    `${indent}ref.cast (ref $map_runtime)`,
+    `${indent}struct.get $map_runtime $size`,
+    `${indent}f64.const 1`,
+    `${indent}f64.add`,
+    `${indent}struct.set $map_runtime $size`,
+  ];
+}
+
 function renderDynamicObjectHasStatement(
   statement: Extract<SemanticStatementIR, { kind: 'dynamic_object_has' }>,
   indent: string,
@@ -1757,6 +1774,7 @@ function collectNumberArrayScratchFromStatement(
     case 'dynamic_object_clear':
     case 'map_new':
     case 'map_size':
+    case 'map_set':
       break;
     case 'dynamic_object_property_set':
       collectNumberArrayScratchFromExpression(statement.value, uses);
@@ -3255,6 +3273,8 @@ function renderStatement(
       return renderMapNewStatement(statement, indent);
     case 'map_size':
       return renderMapSizeStatement(statement, indent);
+    case 'map_set':
+      return renderMapSetStatement(statement, indent);
     case 'dynamic_object_has':
       return renderDynamicObjectHasStatement(statement, indent, context);
     case 'dynamic_object_delete':
@@ -4019,6 +4039,7 @@ function collectBoxedClosureDispatchSignatureIdsFromStatement(
     case 'dynamic_object_values':
     case 'map_new':
     case 'map_size':
+    case 'map_set':
       break;
     case 'dynamic_object_property_set':
       collectBoxedClosureDispatchSignatureIdsFromExpression(
@@ -4375,6 +4396,7 @@ function collectBoxValueTypesFromStatement(
     case 'dynamic_object_values':
     case 'map_new':
     case 'map_size':
+    case 'map_set':
       break;
     case 'dynamic_object_property_set':
       collectBoxValueTypesFromExpression(statement.value, valueTypes);
@@ -4668,6 +4690,7 @@ function collectArrayRuntimeTypesFromStatement(
     case 'dynamic_object_clear':
     case 'map_new':
     case 'map_size':
+    case 'map_set':
       break;
     case 'dynamic_object_property_set':
       collectArrayRuntimeTypesFromExpression(statement.value, runtimeTypes);

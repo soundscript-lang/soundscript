@@ -6186,12 +6186,43 @@ function collectReadOnlyEmptyMapLocalSymbolsFromFunctionLike(
 ): ReadonlySet<ts.Symbol> {
   const candidates = new Set<ts.Symbol>();
   const disqualified = new Set<ts.Symbol>();
+  const setKeysBySymbol = new Map<ts.Symbol, Set<string>>();
 
   const addCandidate = (name: ts.Identifier): void => {
     const symbol = checker.getSymbolAtLocation(name);
     if (symbol) {
       candidates.add(symbol);
+      setKeysBySymbol.set(symbol, new Set());
     }
+  };
+
+  const getStaticStringKey = (expression: ts.Expression): string | undefined => {
+    if (ts.isStringLiteral(expression) || ts.isNoSubstitutionTemplateLiteral(expression)) {
+      return expression.text;
+    }
+    return undefined;
+  };
+
+  const isAllowedMapSetUse = (
+    symbol: ts.Symbol,
+    propertyAccess: ts.PropertyAccessExpression,
+  ): boolean => {
+    if (
+      propertyAccess.name.text !== 'set' ||
+      !ts.isCallExpression(propertyAccess.parent) ||
+      propertyAccess.parent.expression !== propertyAccess ||
+      !ts.isExpressionStatement(propertyAccess.parent.parent) ||
+      propertyAccess.parent.arguments.length !== 2
+    ) {
+      return false;
+    }
+    const key = getStaticStringKey(propertyAccess.parent.arguments[0]!);
+    const seenKeys = setKeysBySymbol.get(symbol);
+    if (key === undefined || !seenKeys || seenKeys.has(key)) {
+      return false;
+    }
+    seenKeys.add(key);
+    return true;
   };
 
   const visitDeclarations = (node: ts.Node): void => {
@@ -6225,6 +6256,13 @@ function collectReadOnlyEmptyMapLocalSymbolsFromFunctionLike(
           ts.isPropertyAccessExpression(node.parent) &&
           node.parent.expression === node &&
           node.parent.name.text === 'size'
+        ) {
+          return;
+        }
+        if (
+          ts.isPropertyAccessExpression(node.parent) &&
+          node.parent.expression === node &&
+          isAllowedMapSetUse(symbol, node.parent)
         ) {
           return;
         }
@@ -39268,6 +39306,45 @@ function lowerCompilerOwnedMapSize(
   };
 }
 
+function getKnownLocalValueType(
+  name: string,
+  context: FunctionLoweringContext,
+): CompilerValueType {
+  const local = context.locals.find((candidate) => candidate.name === name) ??
+    context.currentFunction.params.find((candidate) => candidate.name === name);
+  if (local) {
+    return local.type;
+  }
+  for (let index = context.scopes.length - 1; index >= 0; index -= 1) {
+    for (const bound of context.scopes[index]!.values()) {
+      if (bound.emittedName === name) {
+        return bound.type === 'box_ref' ? bound.boxedValueType ?? bound.type : bound.type;
+      }
+    }
+  }
+  return 'tagged_ref';
+}
+
+function lowerCompilerOwnedMapSet(
+  objectName: string,
+  keyName: string,
+  valueName: string,
+  context: FunctionLoweringContext,
+): CompilerExpressionIR {
+  context.functionRuntime.operations.push({
+    kind: 'set_map_entry',
+    objectName,
+    keyName,
+    valueName,
+    valueType: getKnownLocalValueType(valueName, context),
+  });
+  return {
+    kind: 'local_get',
+    name: objectName,
+    type: 'heap_ref',
+  };
+}
+
 function lowerDynamicObjectClear(
   objectName: string,
   representation: CompilerRuntimeDynamicObjectRepresentationRefIR,
@@ -60867,12 +60944,9 @@ function lowerInitialStringKeyMapCallExpression(
     objectName = materialized.name;
     representation = materialized.representation;
   }
-  if (representation?.kind !== 'dynamic_object_representation') {
-    throw new CompilerUnsupportedError(
-      'Map receivers currently require compiler-owned Map values in compiler subset.',
-      receiver,
-    );
-  }
+  const compilerOwnedMapReceiver = (ts.isIdentifier(receiver) &&
+    lookupSymbol(context, receiver.text)?.compilerOwnedMap === true) ||
+    context.functionRuntime.compilerOwnedMapLocals.has(objectName);
 
   if (methodName === 'set') {
     if (mapTypeInfo.readonly) {
@@ -60909,6 +60983,15 @@ function lowerInitialStringKeyMapCallExpression(
       valueHeapRepresentation,
     );
     context.expressionPreludeStatements.push(...valueStatements);
+    if (compilerOwnedMapReceiver) {
+      return lowerCompilerOwnedMapSet(objectName, propertyKeyName, valueName, context);
+    }
+    if (representation?.kind !== 'dynamic_object_representation') {
+      throw new CompilerUnsupportedError(
+        'Map receivers currently require compiler-owned Map values in compiler subset.',
+        receiver,
+      );
+    }
     context.functionRuntime.operations.push({
       kind: 'set_dynamic_object_property',
       objectName,
@@ -60922,6 +61005,13 @@ function lowerInitialStringKeyMapCallExpression(
       name: objectName,
       type: 'heap_ref',
     };
+  }
+
+  if (representation?.kind !== 'dynamic_object_representation') {
+    throw new CompilerUnsupportedError(
+      'Map receivers currently require compiler-owned Map values in compiler subset.',
+      receiver,
+    );
   }
 
   if (methodName === 'get') {

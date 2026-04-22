@@ -1,4 +1,8 @@
-import type { CompilerHostBoundaryIR, CompilerTaggedPrimitiveBoundaryKindsIR } from './ir.ts';
+import type {
+  CompilerHostBoundaryIR,
+  CompilerTaggedPrimitiveBoundaryKindsIR,
+  CompilerValueType,
+} from './ir.ts';
 
 export type CompilerRuntimeRepresentationFamily = 'array' | 'object' | 'string';
 
@@ -579,6 +583,14 @@ export interface CompilerRuntimeGetMapSizeIR {
   resultName: string;
 }
 
+export interface CompilerRuntimeSetMapEntryIR {
+  kind: 'set_map_entry';
+  objectName: string;
+  keyName: string;
+  valueName: string;
+  valueType: CompilerValueType;
+}
+
 export interface CompilerRuntimeCopyDynamicObjectEntriesIR {
   kind: 'copy_dynamic_object_entries';
   targetObjectName: string;
@@ -732,6 +744,7 @@ export type CompilerRuntimeOperationIR =
   | CompilerRuntimeAllocateDynamicObjectIR
   | CompilerRuntimeAllocateMapIR
   | CompilerRuntimeGetMapSizeIR
+  | CompilerRuntimeSetMapEntryIR
   | CompilerRuntimeCopyDynamicObjectEntriesIR
   | CompilerRuntimeGetSpecializedObjectFieldIR
   | CompilerRuntimeGetFallbackObjectPropertyIR
