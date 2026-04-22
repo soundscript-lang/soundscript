@@ -49,7 +49,15 @@ function renderWrapperAssignment(
   const first = hostImportWrapper ?? callbackWrappers[0]!;
   const boundaryAdaptations = hostImportWrapper
     ? hostImportWrapper.paramTypes.map((paramType, index) =>
-      isStringValueType(paramType)
+      hostImportWrapper.paramBoundaryAdapters?.[index]?.startsWith('map_')
+        ? `    adaptedArgs[${index}] = mapFromInternal(${
+          JSON.stringify(hostImportWrapper.paramBoundaryAdapters[index])
+        }, args[${index}]);`
+        : hostImportWrapper.paramBoundaryAdapters?.[index]?.startsWith('set_')
+        ? `    adaptedArgs[${index}] = setFromInternal(${
+          JSON.stringify(hostImportWrapper.paramBoundaryAdapters[index])
+        }, args[${index}]);`
+        : isStringValueType(paramType)
         ? `    adaptedArgs[${index}] = stringFromInternal(args[${index}]);`
         : isSymbolValueType(paramType)
         ? `    adaptedArgs[${index}] = symbolFromInternal(args[${index}]);`
@@ -325,6 +333,30 @@ function exportSurfaceNeedsSetFromInternalAdapters(plan: WasmGcModulePlanIR): bo
   );
 }
 
+function hostImportSurfaceNeedsMapToInternalAdapters(plan: WasmGcModulePlanIR): boolean {
+  return plan.wrapperPlan.hostImportWrappers.some((wrapper) =>
+    wrapper.resultBoundaryAdapter?.startsWith('map_') === true
+  );
+}
+
+function hostImportSurfaceNeedsMapFromInternalAdapters(plan: WasmGcModulePlanIR): boolean {
+  return plan.wrapperPlan.hostImportWrappers.some((wrapper) =>
+    wrapperCollectionParamBoundaryAdapters(wrapper).some((adapter) => adapter.startsWith('map_'))
+  );
+}
+
+function hostImportSurfaceNeedsSetToInternalAdapters(plan: WasmGcModulePlanIR): boolean {
+  return plan.wrapperPlan.hostImportWrappers.some((wrapper) =>
+    wrapper.resultBoundaryAdapter?.startsWith('set_') === true
+  );
+}
+
+function hostImportSurfaceNeedsSetFromInternalAdapters(plan: WasmGcModulePlanIR): boolean {
+  return plan.wrapperPlan.hostImportWrappers.some((wrapper) =>
+    wrapperCollectionParamBoundaryAdapters(wrapper).some((adapter) => adapter.startsWith('set_'))
+  );
+}
+
 function moduleNeedsSymbolAdapters(plan: WasmGcModulePlanIR): boolean {
   return hostImportSurfaceNeedsSymbolAdapters(plan) || exportSurfaceNeedsSymbolAdapters(plan);
 }
@@ -433,6 +465,145 @@ function bigintFromInternal(value) {
   }
   const instance = requireInstance();
   return requireExport(instance.exports, '__soundscript_bigint_to_host')(value);
+}`);
+  }
+  if (hostImportSurfaceNeedsMapToInternalAdapters(plan)) {
+    helpers.push(`function mapBoundaryValueToInternal(adapter, value) {
+  if (adapter === 'map_string_number') {
+    if (typeof value !== 'number') {
+      throw new TypeError('Soundscript WasmGC Map host import result value must be a number.');
+    }
+    return value;
+  }
+  if (adapter === 'map_string_boolean') {
+    if (typeof value !== 'boolean') {
+      throw new TypeError('Soundscript WasmGC Map host import result value must be a boolean.');
+    }
+    return value ? 1 : 0;
+  }
+  if (adapter === 'map_string_string') {
+    return stringToInternal(value);
+  }
+  throw new TypeError(\`Unsupported Soundscript WasmGC Map boundary adapter \${adapter}.\`);
+}
+
+function mapToInternal(adapter, value) {
+  if (!(value instanceof Map)) {
+    throw new TypeError('Soundscript WasmGC Map host import result must be a Map.');
+  }
+  const instance = requireInstance();
+  const exports = instance.exports;
+  const suffix = adapter.slice('map_string_'.length);
+  const create = requireExport(exports, \`__soundscript_map_new_string_\${suffix}\`);
+  const set = requireExport(exports, \`__soundscript_map_set_string_\${suffix}\`);
+  const result = create();
+  for (const [key, entry] of value) {
+    if (typeof key !== 'string') {
+      throw new TypeError('Soundscript WasmGC Map boundary keys must be strings.');
+    }
+    set(result, stringToInternal(key), mapBoundaryValueToInternal(adapter, entry));
+  }
+  return result;
+}`);
+  }
+  if (hostImportSurfaceNeedsMapFromInternalAdapters(plan)) {
+    helpers.push(`function mapBoundaryValueFromInternal(adapter, value) {
+  if (adapter === 'map_string_number') {
+    return value;
+  }
+  if (adapter === 'map_string_boolean') {
+    return Boolean(value);
+  }
+  if (adapter === 'map_string_string') {
+    return stringFromInternal(value);
+  }
+  throw new TypeError(\`Unsupported Soundscript WasmGC Map boundary adapter \${adapter}.\`);
+}
+
+function mapFromInternal(adapter, value) {
+  if (value == null) {
+    throw new TypeError('Soundscript WasmGC Map host import argument was null.');
+  }
+  const instance = requireInstance();
+  const exports = instance.exports;
+  const suffix = adapter.slice('map_string_'.length);
+  const size = requireExport(exports, \`__soundscript_map_size_string_\${suffix}\`)(value);
+  const keyAt = requireExport(exports, \`__soundscript_map_key_at_string_\${suffix}\`);
+  const valueAt = requireExport(exports, \`__soundscript_map_value_at_string_\${suffix}\`);
+  const result = new Map();
+  for (let index = 0; index < size; index += 1) {
+    result.set(
+      stringFromInternal(keyAt(value, index)),
+      mapBoundaryValueFromInternal(adapter, valueAt(value, index)),
+    );
+  }
+  return result;
+}`);
+  }
+  if (hostImportSurfaceNeedsSetToInternalAdapters(plan)) {
+    helpers.push(`function setBoundaryValueToInternal(adapter, value) {
+  if (adapter === 'set_number') {
+    if (typeof value !== 'number') {
+      throw new TypeError('Soundscript WasmGC Set host import result value must be a number.');
+    }
+    return value;
+  }
+  if (adapter === 'set_boolean') {
+    if (typeof value !== 'boolean') {
+      throw new TypeError('Soundscript WasmGC Set host import result value must be a boolean.');
+    }
+    return value ? 1 : 0;
+  }
+  if (adapter === 'set_string') {
+    return stringToInternal(value);
+  }
+  throw new TypeError(\`Unsupported Soundscript WasmGC Set boundary adapter \${adapter}.\`);
+}
+
+function setToInternal(adapter, value) {
+  if (!(value instanceof Set)) {
+    throw new TypeError('Soundscript WasmGC Set host import result must be a Set.');
+  }
+  const instance = requireInstance();
+  const exports = instance.exports;
+  const suffix = adapter.slice('set_'.length);
+  const create = requireExport(exports, \`__soundscript_set_new_\${suffix}\`);
+  const add = requireExport(exports, \`__soundscript_set_add_\${suffix}\`);
+  const result = create();
+  for (const entry of value) {
+    add(result, setBoundaryValueToInternal(adapter, entry));
+  }
+  return result;
+}`);
+  }
+  if (hostImportSurfaceNeedsSetFromInternalAdapters(plan)) {
+    helpers.push(`function setBoundaryValueFromInternal(adapter, value) {
+  if (adapter === 'set_number') {
+    return value;
+  }
+  if (adapter === 'set_boolean') {
+    return Boolean(value);
+  }
+  if (adapter === 'set_string') {
+    return stringFromInternal(value);
+  }
+  throw new TypeError(\`Unsupported Soundscript WasmGC Set boundary adapter \${adapter}.\`);
+}
+
+function setFromInternal(adapter, value) {
+  if (value == null) {
+    throw new TypeError('Soundscript WasmGC Set host import argument was null.');
+  }
+  const instance = requireInstance();
+  const exports = instance.exports;
+  const suffix = adapter.slice('set_'.length);
+  const size = requireExport(exports, \`__soundscript_set_size_\${suffix}\`)(value);
+  const valueAt = requireExport(exports, \`__soundscript_set_value_at_\${suffix}\`);
+  const result = new Set();
+  for (let index = 0; index < size; index += 1) {
+    result.add(setBoundaryValueFromInternal(adapter, valueAt(value, index)));
+  }
+  return result;
 }`);
   }
   return helpers.join('\n\n');

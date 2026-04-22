@@ -34769,14 +34769,21 @@ function createAmbientHostFunctionHeader(
       };
     }
     if (isSupportedHeapLocalType(checker, parameterType)) {
-      const representation = getAmbientHostProjectedObjectBoundaryRepresentation(
-        checker,
-        parameterType,
-        parameter.name,
-        runtime,
-        classes,
-        true,
-      );
+      const compilerOwnedCollectionRepresentation =
+        getSupportedCompilerOwnedCollectionObjectRepresentation(
+          checker,
+          parameterType,
+          runtime,
+        );
+      const representation = compilerOwnedCollectionRepresentation ??
+        getAmbientHostProjectedObjectBoundaryRepresentation(
+          checker,
+          parameterType,
+          parameter.name,
+          runtime,
+          classes,
+          true,
+        );
       if (!representation) {
         throw new CompilerUnsupportedError(
           'Ambient host function declarations currently require fixed-layout or fallback object boundaries for non-Promise heap params in compiler subset.',
@@ -34856,6 +34863,12 @@ function createAmbientHostFunctionHeader(
       runtime,
       classes,
     );
+  const compilerOwnedCollectionResultRepresentation =
+    getSupportedCompilerOwnedCollectionObjectRepresentation(
+      checker,
+      returnType,
+      runtime,
+    );
   const callableObjectResultRepresentation =
     getAmbientHostProjectedCallableObjectBoundaryRepresentation(
       checker,
@@ -34889,6 +34902,9 @@ function createAmbientHostFunctionHeader(
     hostImportGeneratorResult = true;
     resultType = 'heap_ref';
     heapResultRepresentation = ensureObjectDynamicRepresentation(runtime);
+  } else if (compilerOwnedCollectionResultRepresentation) {
+    resultType = 'heap_ref';
+    heapResultRepresentation = compilerOwnedCollectionResultRepresentation;
   } else if (internalAmbientDeclarationObjectResultRepresentation) {
     ensureHostPromiseBridgeSupportForRepresentation(
       internalAmbientDeclarationObjectResultRepresentation,

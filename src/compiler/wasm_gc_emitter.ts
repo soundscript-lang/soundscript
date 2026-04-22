@@ -4849,37 +4849,45 @@ function wrapperPlanCollectionBoundaryAdapters(
   plan: WasmGcModulePlanIR,
 ): ReadonlySet<WasmGcCollectionBoundaryAdapterIR> {
   return new Set([
-    ...wrapperPlanCollectionParamBoundaryAdapters(plan),
-    ...wrapperPlanCollectionResultBoundaryAdapters(plan),
+    ...wrapperPlanCollectionHostToInternalBoundaryAdapters(plan),
+    ...wrapperPlanCollectionInternalToHostBoundaryAdapters(plan),
   ]);
 }
 
-function wrapperPlanCollectionParamBoundaryAdapters(
+function wrapperPlanCollectionHostToInternalBoundaryAdapters(
   plan: WasmGcModulePlanIR,
 ): ReadonlySet<WasmGcCollectionBoundaryAdapterIR> {
   const adapters = new Set<WasmGcCollectionBoundaryAdapterIR>();
-  for (
-    const wrapper of [...plan.wrapperPlan.exportWrappers, ...plan.wrapperPlan.hostImportWrappers]
-  ) {
+  for (const wrapper of plan.wrapperPlan.exportWrappers) {
     wrapper.paramBoundaryAdapters?.forEach((adapter) => {
       if (adapter) {
         adapters.add(adapter);
       }
     });
   }
-  return adapters;
-}
-
-function wrapperPlanCollectionResultBoundaryAdapters(
-  plan: WasmGcModulePlanIR,
-): ReadonlySet<WasmGcCollectionBoundaryAdapterIR> {
-  const adapters = new Set<WasmGcCollectionBoundaryAdapterIR>();
-  for (
-    const wrapper of [...plan.wrapperPlan.exportWrappers, ...plan.wrapperPlan.hostImportWrappers]
-  ) {
+  for (const wrapper of plan.wrapperPlan.hostImportWrappers) {
     if (wrapper.resultBoundaryAdapter) {
       adapters.add(wrapper.resultBoundaryAdapter);
     }
+  }
+  return adapters;
+}
+
+function wrapperPlanCollectionInternalToHostBoundaryAdapters(
+  plan: WasmGcModulePlanIR,
+): ReadonlySet<WasmGcCollectionBoundaryAdapterIR> {
+  const adapters = new Set<WasmGcCollectionBoundaryAdapterIR>();
+  for (const wrapper of plan.wrapperPlan.exportWrappers) {
+    if (wrapper.resultBoundaryAdapter) {
+      adapters.add(wrapper.resultBoundaryAdapter);
+    }
+  }
+  for (const wrapper of plan.wrapperPlan.hostImportWrappers) {
+    wrapper.paramBoundaryAdapters?.forEach((adapter) => {
+      if (adapter) {
+        adapters.add(adapter);
+      }
+    });
   }
   return adapters;
 }
@@ -4939,20 +4947,20 @@ function setBoundaryAdapterValueInfo(adapter: WasmGcCollectionBoundaryAdapterIR)
 }
 
 function renderMapBoundaryWrapperHelperFunctions(plan: WasmGcModulePlanIR): readonly string[] {
-  const paramAdapters = [...wrapperPlanCollectionParamBoundaryAdapters(plan)]
+  const hostToInternalAdapters = [...wrapperPlanCollectionHostToInternalBoundaryAdapters(plan)]
     .flatMap((adapter) => {
       const info = mapBoundaryAdapterValueInfo(adapter);
       return info ? [{ adapter, ...info }] : [];
     })
     .sort((left, right) => left.suffix.localeCompare(right.suffix));
-  const resultAdapters = [...wrapperPlanCollectionResultBoundaryAdapters(plan)]
+  const internalToHostAdapters = [...wrapperPlanCollectionInternalToHostBoundaryAdapters(plan)]
     .flatMap((adapter) => {
       const info = mapBoundaryAdapterValueInfo(adapter);
       return info ? [{ adapter, ...info }] : [];
     })
     .sort((left, right) => left.suffix.localeCompare(right.suffix));
   return [
-    ...paramAdapters.flatMap(({ suffix, wasmType, valueType }) => [
+    ...hostToInternalAdapters.flatMap(({ suffix, wasmType, valueType }) => [
       `  (func $__soundscript_map_new_string_${suffix} (export "__soundscript_map_new_string_${suffix}") (result (ref null eq))`,
       '    f64.const 0',
       '    array.new_fixed $string_array_runtime 0',
@@ -4979,7 +4987,7 @@ function renderMapBoundaryWrapperHelperFunctions(plan: WasmGcModulePlanIR): read
       ),
       '  )',
     ]),
-    ...resultAdapters.flatMap(({ suffix, wasmType }) => [
+    ...internalToHostAdapters.flatMap(({ suffix, wasmType }) => [
       `  (func $__soundscript_map_size_string_${suffix} (export "__soundscript_map_size_string_${suffix}") (param $map (ref null eq)) (result f64)`,
       '    local.get $map',
       '    ref.cast (ref $map_storage_runtime)',
@@ -5014,20 +5022,22 @@ function renderMapBoundaryWrapperHelperFunctions(plan: WasmGcModulePlanIR): read
 }
 
 function renderSetBoundaryWrapperHelperFunctions(plan: WasmGcModulePlanIR): readonly string[] {
-  const paramAdapters = [...wrapperPlanCollectionParamBoundaryAdapters(plan)]
+  const hostToInternalAdapters = [...wrapperPlanCollectionHostToInternalBoundaryAdapters(plan)]
     .flatMap((adapter) => {
       const info = setBoundaryAdapterValueInfo(adapter);
       return info ? [{ adapter, ...info }] : [];
     })
     .sort((left, right) => left.suffix.localeCompare(right.suffix));
-  const resultAdapters = [...wrapperPlanCollectionResultBoundaryAdapters(plan)]
+  const internalToHostAdapters = [...wrapperPlanCollectionInternalToHostBoundaryAdapters(plan)]
     .flatMap((adapter) => {
       const info = setBoundaryAdapterValueInfo(adapter);
       return info ? [{ adapter, ...info }] : [];
     })
     .sort((left, right) => left.suffix.localeCompare(right.suffix));
   return [
-    ...paramAdapters.flatMap(({ suffix, wasmType, valuesArrayType, valuesElementType }) => [
+    ...hostToInternalAdapters.flatMap((
+      { suffix, wasmType, valuesArrayType, valuesElementType },
+    ) => [
       `  (func $__soundscript_set_new_${suffix} (export "__soundscript_set_new_${suffix}") (result (ref null eq))`,
       `    array.new_fixed ${setArrayRuntimeType(valuesArrayType)} 0`,
       '    struct.new $set_runtime',
@@ -5062,7 +5072,7 @@ function renderSetBoundaryWrapperHelperFunctions(plan: WasmGcModulePlanIR): read
       ),
       '  )',
     ]),
-    ...resultAdapters.flatMap(({ suffix, wasmType, valuesArrayType }) => [
+    ...internalToHostAdapters.flatMap(({ suffix, wasmType, valuesArrayType }) => [
       `  (func $__soundscript_set_size_${suffix} (export "__soundscript_set_size_${suffix}") (param $set (ref null eq)) (result f64)`,
       '    local.get $set',
       '    ref.cast (ref $set_runtime)',
