@@ -2492,7 +2492,7 @@ Deno.test('compiler wasm-gc emitter uses explicit Map runtime for tagged value m
   assertEquals((main as () => number)(), 218);
 });
 
-Deno.test('compiler wasm-gc emitter produces runnable legacy Map values iteration after delete and clear', async () => {
+Deno.test('compiler wasm-gc emitter produces runnable explicit Map values iteration after delete and clear', async () => {
   const tempDirectory = await createTempProject([
     {
       path: 'tsconfig.json',
@@ -2535,17 +2535,27 @@ Deno.test('compiler wasm-gc emitter produces runnable legacy Map values iteratio
   const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
   const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
   const mainPlan = snapshot.wasmGcPlan.functionPlans.find((func) => func.name === 'main');
-  const watPath = join(tempDirectory, 'wasm-gc-shadow-legacy-map-values-after-delete-clear.wat');
-  const wasmPath = join(tempDirectory, 'wasm-gc-shadow-legacy-map-values-after-delete-clear.wasm');
+  const watPath = join(tempDirectory, 'wasm-gc-shadow-explicit-map-values-after-delete-clear.wat');
+  const wasmPath = join(
+    tempDirectory,
+    'wasm-gc-shadow-explicit-map-values-after-delete-clear.wasm',
+  );
 
   assertEquals(
     snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
     ['array', 'dynamic_object', 'finite_union', 'map', 'specialized_object', 'string'],
   );
   assertEquals(mainPlan?.bodyStatus, 'emittable');
+  assertEquals(mainPlan?.body.some((statement) => statement.kind === 'map_values'), true);
+  assertEquals(
+    mainPlan?.body.some((statement) =>
+      statement.kind === 'dynamic_object_values' && statement.collectionFamily === 'map'
+    ),
+    false,
+  );
   await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
   const wat = await Deno.readTextFile(watPath);
-  assertEquals(wat.includes('map_runtime'), true);
+  assertEquals(wat.includes('$map_storage_runtime'), true);
   assertEquals(wat.includes('array.new_default $array_runtime'), true);
   const result = await new Deno.Command('wasm-tools', {
     args: ['parse', watPath, '-o', wasmPath],

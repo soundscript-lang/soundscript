@@ -1596,6 +1596,100 @@ function renderMapGetStatement(
   ];
 }
 
+function mapValuesArrayRuntimeType(
+  resultType: Extract<SemanticStatementIR, { kind: 'map_values' }>['resultType'],
+): string {
+  switch (resultType) {
+    case 'owned_array_ref':
+      return '$string_array_runtime';
+    case 'owned_number_array_ref':
+      return '$array_runtime';
+    case 'owned_boolean_array_ref':
+      return '$boolean_array_runtime';
+    case 'owned_tagged_array_ref':
+      return '$tagged_array_runtime';
+    default: {
+      const exhaustiveCheck: never = resultType;
+      return exhaustiveCheck;
+    }
+  }
+}
+
+function renderMapTaggedValueForResultType(
+  resultType: Extract<SemanticStatementIR, { kind: 'map_values' }>['resultType'],
+  indent: string,
+): readonly string[] {
+  switch (resultType) {
+    case 'owned_array_ref':
+      return [
+        `${indent}ref.as_non_null`,
+        `${indent}struct.get ${taggedValueTypeName()} $heap_payload`,
+        `${indent}ref.cast (ref ${stringRuntimeTypeName()})`,
+      ];
+    case 'owned_number_array_ref':
+      return [
+        `${indent}ref.as_non_null`,
+        `${indent}struct.get ${taggedValueTypeName()} $number_payload`,
+      ];
+    case 'owned_boolean_array_ref':
+      return [
+        `${indent}ref.as_non_null`,
+        `${indent}struct.get ${taggedValueTypeName()} $number_payload`,
+        `${indent}i32.trunc_f64_s`,
+      ];
+    case 'owned_tagged_array_ref':
+      return [];
+    default: {
+      const exhaustiveCheck: never = resultType;
+      return exhaustiveCheck;
+    }
+  }
+}
+
+function renderMapValuesStatement(
+  statement: Extract<SemanticStatementIR, { kind: 'map_values' }>,
+  indent: string,
+): readonly string[] {
+  const runtimeType = mapValuesArrayRuntimeType(statement.resultType);
+  if (statement.resultType === 'owned_tagged_array_ref') {
+    return [
+      ...renderMapStorageLoad(statement.objectName, indent),
+      `${indent}local.get $${sanitizeIdentifier(MAP_VALUES_SCRATCH)}`,
+      `${indent}ref.as_non_null`,
+      `${indent}local.set $${sanitizeIdentifier(statement.targetName)}`,
+    ];
+  }
+  return [
+    ...renderMapStorageLoad(statement.objectName, indent),
+    `${indent}local.get $${sanitizeIdentifier(MAP_LENGTH_SCRATCH)}`,
+    `${indent}array.new_default ${runtimeType}`,
+    `${indent}local.set $${sanitizeIdentifier(statement.targetName)}`,
+    `${indent}i32.const 0`,
+    `${indent}local.set $${sanitizeIdentifier(MAP_INDEX_SCRATCH)}`,
+    `${indent}block`,
+    `${indent}  loop`,
+    `${indent}    local.get $${sanitizeIdentifier(MAP_INDEX_SCRATCH)}`,
+    `${indent}    local.get $${sanitizeIdentifier(MAP_LENGTH_SCRATCH)}`,
+    `${indent}    i32.ge_u`,
+    `${indent}    br_if 1`,
+    `${indent}    local.get $${sanitizeIdentifier(statement.targetName)}`,
+    `${indent}    local.get $${sanitizeIdentifier(MAP_INDEX_SCRATCH)}`,
+    `${indent}    local.get $${sanitizeIdentifier(MAP_VALUES_SCRATCH)}`,
+    `${indent}    ref.as_non_null`,
+    `${indent}    local.get $${sanitizeIdentifier(MAP_INDEX_SCRATCH)}`,
+    `${indent}    array.get $tagged_array_runtime`,
+    ...renderMapTaggedValueForResultType(statement.resultType, `${indent}    `),
+    `${indent}    array.set ${runtimeType}`,
+    `${indent}    local.get $${sanitizeIdentifier(MAP_INDEX_SCRATCH)}`,
+    `${indent}    i32.const 1`,
+    `${indent}    i32.add`,
+    `${indent}    local.set $${sanitizeIdentifier(MAP_INDEX_SCRATCH)}`,
+    `${indent}    br 0`,
+    `${indent}  end`,
+    `${indent}end`,
+  ];
+}
+
 function renderMapDeleteStatement(
   statement: Extract<SemanticStatementIR, { kind: 'map_delete' }>,
   indent: string,
@@ -2643,6 +2737,7 @@ function collectNumberArrayScratchFromStatement(
       break;
     case 'map_set':
     case 'map_get':
+    case 'map_values':
     case 'map_has':
     case 'map_delete':
     case 'map_clear':
@@ -4186,6 +4281,8 @@ function renderStatement(
       return renderMapSetStatement(statement, indent);
     case 'map_get':
       return renderMapGetStatement(statement, indent);
+    case 'map_values':
+      return renderMapValuesStatement(statement, indent);
     case 'map_has':
       return renderMapHasStatement(statement, indent);
     case 'map_delete':
@@ -4974,6 +5071,7 @@ function collectBoxedClosureDispatchSignatureIdsFromStatement(
     case 'map_size':
     case 'map_set':
     case 'map_get':
+    case 'map_values':
     case 'map_has':
     case 'map_delete':
     case 'map_clear':
@@ -5342,6 +5440,7 @@ function collectBoxValueTypesFromStatement(
     case 'map_size':
     case 'map_set':
     case 'map_get':
+    case 'map_values':
     case 'map_has':
     case 'map_delete':
     case 'map_clear':
@@ -5661,6 +5760,11 @@ function collectArrayRuntimeTypesFromStatement(
     case 'map_clear':
       runtimeTypes.add('string');
       runtimeTypes.add('tagged');
+      break;
+    case 'map_values':
+      runtimeTypes.add('string');
+      runtimeTypes.add('tagged');
+      addArrayRuntimeForValueType(statement.resultType, runtimeTypes);
       break;
     case 'set_new':
     case 'set_size':

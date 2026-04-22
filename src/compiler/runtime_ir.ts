@@ -599,6 +599,17 @@ export interface CompilerRuntimeGetMapEntryIR {
   resultName: string;
 }
 
+export interface CompilerRuntimeGetMapValuesIR {
+  kind: 'get_map_values';
+  objectName: string;
+  resultName: string;
+  resultType:
+    | 'owned_array_ref'
+    | 'owned_number_array_ref'
+    | 'owned_boolean_array_ref'
+    | 'owned_tagged_array_ref';
+}
+
 export interface CompilerRuntimeHasMapEntryIR {
   kind: 'has_map_entry';
   objectName: string;
@@ -843,6 +854,7 @@ export type CompilerRuntimeOperationIR =
   | CompilerRuntimeGetMapSizeIR
   | CompilerRuntimeSetMapEntryIR
   | CompilerRuntimeGetMapEntryIR
+  | CompilerRuntimeGetMapValuesIR
   | CompilerRuntimeHasMapEntryIR
   | CompilerRuntimeDeleteMapEntryIR
   | CompilerRuntimeClearMapIR

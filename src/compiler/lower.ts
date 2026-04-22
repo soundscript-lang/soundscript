@@ -6264,6 +6264,22 @@ function collectCompilerOwnedStringKeyMapLocalSymbolInfo(
     return true;
   };
 
+  const isAllowedMapIteratorUse = (
+    symbol: ts.Symbol,
+    propertyAccess: ts.PropertyAccessExpression,
+  ): boolean => {
+    if (
+      propertyAccess.name.text !== 'values' ||
+      !ts.isCallExpression(propertyAccess.parent) ||
+      propertyAccess.parent.expression !== propertyAccess ||
+      propertyAccess.parent.arguments.length !== 0
+    ) {
+      return false;
+    }
+    storageBacked.add(symbol);
+    return true;
+  };
+
   const visitDeclarations = (node: ts.Node): void => {
     if (ts.isFunctionLike(node) && node !== declaration) {
       return;
@@ -6303,7 +6319,8 @@ function collectCompilerOwnedStringKeyMapLocalSymbolInfo(
           node.parent.expression === node &&
           (isAllowedMapSetUse(symbol, node.parent) ||
             isAllowedMapSingleArgumentUse(symbol, node.parent) ||
-            isAllowedMapClearUse(symbol, node.parent))
+            isAllowedMapClearUse(symbol, node.parent) ||
+            isAllowedMapIteratorUse(symbol, node.parent))
         ) {
           return;
         }
@@ -39453,6 +39470,31 @@ function lowerCompilerOwnedMapGet(
   };
 }
 
+function lowerCompilerOwnedMapValuesArray(
+  objectName: string,
+  resultType:
+    | 'owned_array_ref'
+    | 'owned_number_array_ref'
+    | 'owned_boolean_array_ref'
+    | 'owned_tagged_array_ref',
+  context: FunctionLoweringContext,
+): CompilerExpressionIR {
+  const resultName = createLocalName('map_values', context.nextLocalId);
+  context.nextLocalId += 1;
+  context.locals.push({ name: resultName, type: resultType });
+  context.functionRuntime.operations.push({
+    kind: 'get_map_values',
+    objectName,
+    resultName,
+    resultType,
+  });
+  return {
+    kind: 'local_get',
+    name: resultName,
+    type: resultType,
+  };
+}
+
 function lowerCompilerOwnedMapHas(
   objectName: string,
   keyName: string,
@@ -61474,7 +61516,7 @@ function lowerInitialStringKeyMapCallExpression(
     return lowerDynamicObjectClear(objectName, representation, context, 'map');
   }
 
-  if (representation?.kind !== 'dynamic_object_representation') {
+  if (!compilerOwnedMapReceiver && representation?.kind !== 'dynamic_object_representation') {
     throw new CompilerUnsupportedError(
       'Map receivers currently require compiler-owned Map values in compiler subset.',
       receiver,
@@ -61486,6 +61528,18 @@ function lowerInitialStringKeyMapCallExpression(
       throw new CompilerUnsupportedError(
         'Map keys calls must not receive arguments.',
         expression,
+      );
+    }
+    if (compilerOwnedMapReceiver) {
+      throw new CompilerUnsupportedError(
+        'Explicit Map keys iteration is not supported yet in compiler subset.',
+        expression,
+      );
+    }
+    if (representation?.kind !== 'dynamic_object_representation') {
+      throw new CompilerUnsupportedError(
+        'Map receivers currently require compiler-owned Map values in compiler subset.',
+        receiver,
       );
     }
     return lowerCollectionIteratorObject(
@@ -61512,6 +61566,25 @@ function lowerInitialStringKeyMapCallExpression(
       throw new CompilerUnsupportedError(
         'Map values iteration currently supports only string, number, boolean, and tagged value types in compiler subset.',
         expression,
+      );
+    }
+    if (compilerOwnedMapReceiver) {
+      return lowerCollectionIteratorObject(
+        lowerCompilerOwnedMapValuesArray(
+          objectName,
+          iterationValueInfo.valuesArrayType,
+          context,
+        ),
+        iterationValueInfo.valuesArrayType,
+        iterationValueInfo.valuesElementType,
+        context,
+        'map_values_iterator',
+      );
+    }
+    if (representation?.kind !== 'dynamic_object_representation') {
+      throw new CompilerUnsupportedError(
+        'Map receivers currently require compiler-owned Map values in compiler subset.',
+        receiver,
       );
     }
     return lowerCollectionIteratorObject(
@@ -61544,6 +61617,18 @@ function lowerInitialStringKeyMapCallExpression(
       throw new CompilerUnsupportedError(
         'Map entries iteration currently supports only string, number, boolean, and tagged value types in compiler subset.',
         expression,
+      );
+    }
+    if (compilerOwnedMapReceiver) {
+      throw new CompilerUnsupportedError(
+        'Explicit Map entries iteration is not supported yet in compiler subset.',
+        expression,
+      );
+    }
+    if (representation?.kind !== 'dynamic_object_representation') {
+      throw new CompilerUnsupportedError(
+        'Map receivers currently require compiler-owned Map values in compiler subset.',
+        receiver,
       );
     }
     return lowerCollectionIteratorObject(

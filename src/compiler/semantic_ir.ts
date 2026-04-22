@@ -542,6 +542,16 @@ export type SemanticStatementIR =
     keyName: string;
   }
   | {
+    kind: 'map_values';
+    targetName: string;
+    objectName: string;
+    resultType:
+      | 'owned_array_ref'
+      | 'owned_number_array_ref'
+      | 'owned_boolean_array_ref'
+      | 'owned_tagged_array_ref';
+  }
+  | {
     kind: 'map_has';
     targetName: string;
     objectName: string;
@@ -1610,6 +1620,7 @@ function collectRuntimeOperationFamilies(
       case 'get_map_size':
       case 'set_map_entry':
       case 'get_map_entry':
+      case 'get_map_values':
       case 'has_map_entry':
       case 'delete_map_entry':
       case 'clear_map':
@@ -1617,6 +1628,7 @@ function collectRuntimeOperationFamilies(
         if (
           operation.kind === 'set_map_entry' ||
           operation.kind === 'get_map_entry' ||
+          operation.kind === 'get_map_values' ||
           operation.kind === 'has_map_entry' ||
           operation.kind === 'delete_map_entry' ||
           operation.kind === 'clear_map' ||
@@ -2907,6 +2919,17 @@ function semanticMapGetFromRuntimeOperation(
   };
 }
 
+function semanticMapValuesFromRuntimeOperation(
+  operation: Extract<CompilerRuntimeOperationIR, { kind: 'get_map_values' }>,
+): SemanticStatementIR {
+  return {
+    kind: 'map_values',
+    targetName: operation.resultName,
+    objectName: operation.objectName,
+    resultType: operation.resultType,
+  };
+}
+
 function semanticMapHasFromRuntimeOperation(
   operation: Extract<CompilerRuntimeOperationIR, { kind: 'has_map_entry' }>,
 ): SemanticStatementIR {
@@ -3052,6 +3075,10 @@ function semanticBodyFromCompilerIR(
     string,
     Extract<CompilerRuntimeOperationIR, { kind: 'get_map_entry' }>
   >();
+  const pendingMapValuesByResult = new Map<
+    string,
+    Extract<CompilerRuntimeOperationIR, { kind: 'get_map_values' }>
+  >();
   const pendingMapHasByResult = new Map<
     string,
     Extract<CompilerRuntimeOperationIR, { kind: 'has_map_entry' }>
@@ -3160,6 +3187,8 @@ function semanticBodyFromCompilerIR(
       mapSetsAfterAllocation.push(operation);
     } else if (operation.kind === 'get_map_entry') {
       pendingMapGetsByResult.set(operation.resultName, operation);
+    } else if (operation.kind === 'get_map_values') {
+      pendingMapValuesByResult.set(operation.resultName, operation);
     } else if (operation.kind === 'has_map_entry') {
       pendingMapHasByResult.set(operation.resultName, operation);
     } else if (operation.kind === 'delete_map_entry') {
@@ -3328,6 +3357,13 @@ function semanticBodyFromCompilerIR(
         targetBody.push(semanticMapGetFromRuntimeOperation(operation));
         seenAssignments.add(operation.resultName);
         pendingMapGetsByResult.delete(resultName);
+      }
+    }
+    for (const [resultName, operation] of [...pendingMapValuesByResult]) {
+      if (shouldEmitPending(resultName)) {
+        targetBody.push(semanticMapValuesFromRuntimeOperation(operation));
+        seenAssignments.add(operation.resultName);
+        pendingMapValuesByResult.delete(resultName);
       }
     }
     for (const [resultName, operation] of [...pendingMapHasByResult]) {
@@ -3518,6 +3554,7 @@ function semanticBodyFromCompilerIR(
       ...pendingDynamicValuesByResult.keys(),
       ...pendingMapSizesByResult.keys(),
       ...pendingMapGetsByResult.keys(),
+      ...pendingMapValuesByResult.keys(),
       ...pendingMapHasByResult.keys(),
       ...pendingMapDeletesByResult.keys(),
       ...pendingMapClearsByResult.keys(),
@@ -3682,6 +3719,7 @@ function collectUnsupportedStatementKinds(
     case 'map_size':
     case 'map_set':
     case 'map_get':
+    case 'map_values':
     case 'map_has':
     case 'map_delete':
     case 'map_clear':
