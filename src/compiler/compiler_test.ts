@@ -4586,6 +4586,152 @@ compilerIntegrationTest(
 );
 
 compilerIntegrationTest(
+  'compileProject emits a WasmGC-backed public wrapper for wasm-node array-valued object results',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+            },
+            include: ['src/**/*.ts'],
+            soundscript: {
+              target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          'interface Bag {',
+          '  names: string[];',
+          '  counts: number[];',
+          '  flags: boolean[];',
+          '}',
+          '',
+          'export function make(): Bag {',
+          '  return {',
+          '    names: ["ant", "bee"],',
+          '    counts: [1, 2],',
+          '    flags: [true, false],',
+          '  };',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts?.wrapperPath);
+
+    const wrapperSource = await Deno.readTextFile(result.artifacts.wrapperPath);
+    assertStringIncludes(wrapperSource, 'createSoundscriptWasmGcHostImports');
+    assertStringIncludes(wrapperSource, 'createSoundscriptWasmGcExports');
+
+    const instance = await instantiateCompiledModuleInJs(tempDirectory);
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'make');
+    const exported = instance.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+    assertEquals(exported(), {
+      names: ['ant', 'bee'],
+      counts: [1, 2],
+      flags: [true, false],
+    });
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject emits a WasmGC-backed public wrapper for wasm-node array-valued object params',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+            },
+            include: ['src/**/*.ts'],
+            soundscript: {
+              target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          'interface Bag {',
+          '  names: string[];',
+          '  counts: number[];',
+          '  flags: boolean[];',
+          '}',
+          '',
+          'export function score(bag: Bag): number {',
+          '  const countScore = bag.counts[0] * 10 + bag.counts[1];',
+          '  const nameScore = bag.names.length * 100;',
+          '  const flagScore = bag.flags[0] === true ? 1 : 0;',
+          '  return nameScore + countScore + flagScore;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts?.wrapperPath);
+
+    const wrapperSource = await Deno.readTextFile(result.artifacts.wrapperPath);
+    assertStringIncludes(wrapperSource, 'createSoundscriptWasmGcHostImports');
+    assertStringIncludes(wrapperSource, 'createSoundscriptWasmGcExports');
+
+    const instance = await instantiateCompiledModuleInJs(tempDirectory);
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'score');
+    const exported = instance.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+    assertEquals(
+      exported({
+        names: ['ant', 'bee'],
+        counts: [1, 2],
+        flags: [true, false],
+      }),
+      213,
+    );
+  },
+);
+
+compilerIntegrationTest(
   'compileProject copies back wasm-node fixed-layout object param mutations through the WasmGC public wrapper',
   async () => {
     const tempDirectory = await createTempProject([
@@ -4713,6 +4859,182 @@ compilerIntegrationTest(
     assertStrictEquals(returned, payload);
     assertStrictEquals(returned.pair, payload.pair);
     assertEquals(payload, { pair: { left: 4, right: 4 }, total: 8 });
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject adapts wasm-node imported host array-valued object params and results through the WasmGC public wrapper',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+            },
+            include: ['src/**/*.ts'],
+            soundscript: {
+              target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          'interface Bag {',
+          '  names: string[];',
+          '  counts: number[];',
+          '  flags: boolean[];',
+          '}',
+          '',
+          'declare function adjust(bag: Bag): Bag;',
+          '',
+          'export function main(): number {',
+          '  const bag = adjust({',
+          '    names: ["ant", "bee"],',
+          '    counts: [1, 2],',
+          '    flags: [false, false],',
+          '  });',
+          '  const nameScore = bag.names.length * 100;',
+          '  const countScore = bag.counts[0] * 10 + bag.counts[1];',
+          '  const flagScore = bag.flags[0] === true ? 1 : 0;',
+          '  return nameScore + countScore + flagScore;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts?.wrapperPath);
+
+    const wrapperSource = await Deno.readTextFile(result.artifacts.wrapperPath);
+    assertStringIncludes(wrapperSource, 'createSoundscriptWasmGcHostImports');
+    assertStringIncludes(wrapperSource, 'createSoundscriptWasmGcExports');
+
+    const instance = await instantiateCompiledModuleInJs(tempDirectory, {
+      hostFunctions: {
+        'src/index.ts:adjust': (input: unknown) => {
+          const bag = input as {
+            names: string[];
+            counts: number[];
+            flags: boolean[];
+          };
+          bag.names = ['ant', 'yak'];
+          bag.counts = [4, 2];
+          bag.flags = [true, false];
+          return bag;
+        },
+      },
+    });
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instance.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+    assertEquals(exported(), 243);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject copies back wasm-node array-valued object param mutations through the WasmGC public wrapper',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+            },
+            include: ['src/**/*.ts'],
+            soundscript: {
+              target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          'interface Bag {',
+          '  names: string[];',
+          '  counts: number[];',
+          '  flags: boolean[];',
+          '}',
+          '',
+          'export function update(bag: Bag): Bag {',
+          '  bag.names[0] = "yak";',
+          '  bag.counts[0] = bag.counts[0] + 3;',
+          '  bag.flags[0] = true;',
+          '  return bag;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts?.wrapperPath);
+
+    const wrapperSource = await Deno.readTextFile(result.artifacts.wrapperPath);
+    assertStringIncludes(wrapperSource, 'createSoundscriptWasmGcHostImports');
+    assertStringIncludes(wrapperSource, 'createSoundscriptWasmGcExports');
+
+    const instance = await instantiateCompiledModuleInJs(tempDirectory);
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'update');
+    const exported = instance.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+    const names = ['ant'];
+    const counts = [4, 7];
+    const flags = [false];
+    const bag: {
+      names: string[];
+      counts: number[];
+      flags: boolean[];
+    } = {
+      names,
+      counts,
+      flags,
+    };
+    const returned = exported(bag);
+    assertStrictEquals(returned, bag);
+    assertStrictEquals(bag.names, names);
+    assertStrictEquals(bag.counts, counts);
+    assertStrictEquals(bag.flags, flags);
+    assertEquals(bag, {
+      names: ['yak'],
+      counts: [7, 7],
+      flags: [true],
+    });
   },
 );
 

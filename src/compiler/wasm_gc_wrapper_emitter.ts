@@ -112,6 +112,14 @@ function objectBoundaryFieldWasmType(boundary: ValueBoundaryIR): string {
   );
 }
 
+function objectBoundaryFieldWasmTypeMatches(boundary: ValueBoundaryIR, wasmType: string): boolean {
+  if (objectBoundaryFieldWasmType(boundary) === wasmType) {
+    return true;
+  }
+  const valueType = compilerValueTypeForStorage(selectWasmGcStorage(boundary));
+  return wasmType === '(ref null eq)' && valueType !== 'f64' && valueType !== 'i32';
+}
+
 function specializedObjectLayoutTypePlanForBoundary(
   plan: WasmGcModulePlanIR,
   boundary: Extract<ValueBoundaryIR, { kind: 'object' }>,
@@ -119,18 +127,13 @@ function specializedObjectLayoutTypePlanForBoundary(
   if (!valueBoundarySupportsWasmGcSpecializedObjectWrapper(boundary)) {
     return undefined;
   }
-  const fields = boundary.fields ?? [];
-  const expectedFields = fields.map((field) => ({
-    name: field.name,
-    wasmType: objectBoundaryFieldWasmType(field.value),
-  }));
   return plan.typePlans.find((typePlan) =>
     typePlan.source === 'object_layout' &&
     typePlan.family === 'specialized_object' &&
-    (typePlan.fields?.length ?? 0) === expectedFields.length &&
-    expectedFields.every((field, index) =>
+    (typePlan.fields?.length ?? 0) === (boundary.fields?.length ?? 0) &&
+    (boundary.fields ?? []).every((field, index) =>
       typePlan.fields?.[index]?.name === field.name &&
-      typePlan.fields?.[index]?.wasmType === field.wasmType
+      objectBoundaryFieldWasmTypeMatches(field.value, typePlan.fields?.[index]?.wasmType ?? '')
     )
   );
 }
@@ -1136,6 +1139,10 @@ function arrayToInternal(boundary, value, state) {
   if (!Array.isArray(value)) {
     throw new TypeError('Soundscript WasmGC array host import result must be an Array.');
   }
+  const existing = state?.hostToInternal.get(value);
+  if (existing !== undefined) {
+    return existing;
+  }
   const instance = requireInstance();
   const exports = instance.exports;
   const suffix = arrayBoundarySuffix(boundary);
@@ -1144,10 +1151,12 @@ function arrayToInternal(boundary, value, state) {
   for (const entry of value) {
     result = push(result, boundaryValueToInternal(boundary.element, entry, undefined, state));
   }
+  state?.hostToInternal.set(value, result);
+  state?.internalToHost.set(result, value);
   return result;
 }
 
-function arrayFromInternal(boundary, value, state) {
+function syncInternalArrayToHost(boundary, value, host, state) {
   if (value == null) {
     throw new TypeError('Soundscript WasmGC array host import argument was null.');
   }
@@ -1156,11 +1165,25 @@ function arrayFromInternal(boundary, value, state) {
   const suffix = arrayBoundarySuffix(boundary);
   const length = requireExport(exports, \`__soundscript_\${suffix}_length\`)(value);
   const valueAt = requireExport(exports, \`__soundscript_\${suffix}_value_at\`);
-  const result = [];
+  host.length = 0;
   for (let index = 0; index < length; index += 1) {
-    result.push(boundaryValueFromInternal(boundary.element, valueAt(value, index), undefined, state));
+    host.push(boundaryValueFromInternal(boundary.element, valueAt(value, index), undefined, state));
   }
-  return result;
+  return host;
+}
+
+function arrayFromInternal(boundary, value, state) {
+  if (value == null) {
+    throw new TypeError('Soundscript WasmGC array host import argument was null.');
+  }
+  const existing = state?.internalToHost.get(value);
+  if (Array.isArray(existing)) {
+    return syncInternalArrayToHost(boundary, value, existing, state);
+  }
+  const result = [];
+  state?.internalToHost.set(value, result);
+  state?.hostToInternal.set(result, value);
+  return syncInternalArrayToHost(boundary, value, result, state);
 }`);
   }
   if (usesNestedCollectionAdapters) {
@@ -1680,27 +1703,47 @@ function renderExportBoundaryAdapterHelpers(plan: WasmGcModulePlanIR): string {
     if (!Array.isArray(value)) {
       throw new TypeError('Soundscript WasmGC array export argument must be an Array.');
     }
+    const existing = state?.hostToInternal.get(value);
+    if (existing !== undefined) {
+      return existing;
+    }
     const suffix = arrayBoundarySuffix(boundary);
     const push = requireExport(wasmExports, \`__soundscript_\${suffix}_push\`);
     let result = requireExport(wasmExports, \`__soundscript_\${suffix}_new\`)();
     for (const entry of value) {
       result = push(result, boundaryValueToInternal(boundary.element, entry, undefined, state));
     }
+    state?.hostToInternal.set(value, result);
+    state?.internalToHost.set(result, value);
     return result;
   }
 
-  function arrayFromInternal(boundary, value, state) {
+  function syncInternalArrayToHost(boundary, value, host, state) {
     if (value == null) {
       throw new TypeError('Soundscript WasmGC array export result was null.');
     }
     const suffix = arrayBoundarySuffix(boundary);
     const length = requireExport(wasmExports, \`__soundscript_\${suffix}_length\`)(value);
     const valueAt = requireExport(wasmExports, \`__soundscript_\${suffix}_value_at\`);
-    const result = [];
+    host.length = 0;
     for (let index = 0; index < length; index += 1) {
-      result.push(boundaryValueFromInternal(boundary.element, valueAt(value, index), undefined, state));
+      host.push(boundaryValueFromInternal(boundary.element, valueAt(value, index), undefined, state));
     }
-    return result;
+    return host;
+  }
+
+  function arrayFromInternal(boundary, value, state) {
+    if (value == null) {
+      throw new TypeError('Soundscript WasmGC array export result was null.');
+    }
+    const existing = state?.internalToHost.get(value);
+    if (Array.isArray(existing)) {
+      return syncInternalArrayToHost(boundary, value, existing, state);
+    }
+    const result = [];
+    state?.internalToHost.set(value, result);
+    state?.hostToInternal.set(result, value);
+    return syncInternalArrayToHost(boundary, value, result, state);
   }`);
   }
   if (usesNestedCollectionAdapters) {

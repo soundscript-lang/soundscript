@@ -209,6 +209,14 @@ function boundaryValueWasmType(boundary: ValueBoundaryIR): string {
   );
 }
 
+function boundaryFieldWasmTypeMatches(boundary: ValueBoundaryIR, wasmType: string): boolean {
+  if (boundaryValueWasmType(boundary) === wasmType) {
+    return true;
+  }
+  const valueType = compilerValueTypeForStorage(selectWasmGcStorage(boundary));
+  return wasmType === '(ref null eq)' && valueType !== 'f64' && valueType !== 'i32';
+}
+
 function specializedObjectLayoutTypePlanForBoundary(
   plan: WasmGcModulePlanIR,
   boundary: Extract<ValueBoundaryIR, { kind: 'object' }>,
@@ -216,18 +224,13 @@ function specializedObjectLayoutTypePlanForBoundary(
   if (!valueBoundarySupportsWasmGcSpecializedObjectWrapper(boundary)) {
     return undefined;
   }
-  const fields = boundary.fields ?? [];
-  const expectedFields = fields.map((field) => ({
-    name: field.name,
-    wasmType: boundaryValueWasmType(field.value),
-  }));
   return plan.typePlans.find((typePlan) =>
     typePlan.source === 'object_layout' &&
     typePlan.family === 'specialized_object' &&
-    (typePlan.fields?.length ?? 0) === expectedFields.length &&
-    expectedFields.every((field, index) =>
+    (typePlan.fields?.length ?? 0) === (boundary.fields?.length ?? 0) &&
+    (boundary.fields ?? []).every((field, index) =>
       typePlan.fields?.[index]?.name === field.name &&
-      typePlan.fields?.[index]?.wasmType === field.wasmType
+      boundaryFieldWasmTypeMatches(field.value, typePlan.fields?.[index]?.wasmType ?? '')
     )
   );
 }
@@ -423,6 +426,7 @@ interface FunctionRenderContext {
   mapStorageLocalNames: ReadonlySet<string>;
   hostImportClosureWrapperArgIndicesByCallee: ReadonlyMap<string, ReadonlySet<number>>;
   localAliases: ReadonlyMap<string, string>;
+  localWasmTypes: ReadonlyMap<string, string>;
   stringLiteralCodeUnits: readonly (readonly number[])[];
 }
 
@@ -459,6 +463,7 @@ const EMPTY_RENDER_CONTEXT: FunctionRenderContext = {
   mapStorageLocalNames: new Set(),
   hostImportClosureWrapperArgIndicesByCallee: new Map(),
   localAliases: new Map(),
+  localWasmTypes: new Map(),
   stringLiteralCodeUnits: [],
 };
 
@@ -1140,6 +1145,41 @@ function dynamicObjectLocalLayouts(
   };
   func.body.forEach(visitStatement);
   return layouts;
+}
+
+function localWasmTypes(func: WasmGcFunctionPlanIR): ReadonlyMap<string, string> {
+  return new Map([
+    ...func.params.map((param) => [param.name, param.wasmType] as const),
+    ...func.locals.map((local) => [local.name, local.wasmType] as const),
+  ]);
+}
+
+function needsSpecializedObjectFieldCast(targetWasmType: string): boolean {
+  switch (targetWasmType) {
+    case 'owned_string_ref':
+    case 'symbol_ref':
+    case 'bigint_ref':
+    case 'owned_number_array_ref':
+    case 'owned_array_ref':
+    case 'owned_boolean_array_ref':
+    case 'owned_heap_array_ref':
+    case 'owned_tagged_array_ref':
+      return true;
+    default:
+      return false;
+  }
+}
+
+function specializedObjectFieldTargetCast(
+  targetName: string,
+  indent: string,
+  context: FunctionRenderContext,
+): readonly string[] | undefined {
+  const targetWasmType = context.localWasmTypes.get(targetName);
+  if (!targetWasmType || !needsSpecializedObjectFieldCast(targetWasmType)) {
+    return undefined;
+  }
+  return [`${indent}ref.cast ${wasmTypeForCompilerValueType(targetWasmType)}`];
 }
 
 function dynamicObjectEntryIndexForValue(
@@ -4487,6 +4527,7 @@ function renderStatement(
         `${indent}struct.get ${objectLayoutTypeName(statement.representationName)} $${
           sanitizeIdentifier(statement.fieldName)
         }`,
+        ...(specializedObjectFieldTargetCast(statement.targetName, indent, context) ?? []),
         `${indent}local.set $${sanitizeIdentifier(statement.targetName)}`,
       ];
     case 'specialized_object_field_set':
@@ -4822,6 +4863,7 @@ function renderFunctionPlan(
     mapStorageLocalNames: mapStorageLocalNames(func),
     hostImportClosureWrapperArgIndicesByCallee: hostImportWrapperArgIndicesByCallee,
     localAliases: aliases,
+    localWasmTypes: localWasmTypes(func),
     stringLiteralCodeUnits,
   };
   const scratchLocals = numberArrayScratchLocals(func);
@@ -5314,6 +5356,10 @@ function collectArrayBoundaryPayloadKinds(
       boundary.element.kind === 'string')
   ) {
     kinds.add(boundary.element.kind);
+    return;
+  }
+  if (boundary.kind === 'object') {
+    boundary.fields?.forEach((field) => collectArrayBoundaryPayloadKinds(field.value, kinds));
     return;
   }
   if (boundary.kind === 'map') {

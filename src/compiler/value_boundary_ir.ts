@@ -205,14 +205,24 @@ function valueBoundaryIsTaggedScalar(boundary: ValueBoundaryIR): boolean {
 function valueBoundarySupportsWasmGcSpecializedObjectWrapperFieldValue(
   boundary: ValueBoundaryIR,
 ): boolean {
-  if (valueBoundaryIsTaggedScalar(boundary)) {
+  const normalized = normalizeValueBoundary(boundary);
+  if (valueBoundaryIsTaggedScalar(normalized)) {
     return true;
   }
-  if (boundary.kind === 'union') {
-    return normalizeUnionArms(boundary.arms).every(valueBoundaryIsTaggedScalar);
+  switch (normalized.kind) {
+    case 'union':
+      return normalizeUnionArms(normalized.arms).every(valueBoundaryIsTaggedScalar);
+    case 'object':
+      return valueBoundarySupportsWasmGcSpecializedObjectWrapper(normalized);
+    case 'array':
+      return normalized.element.kind === 'boolean' || normalized.element.kind === 'number' ||
+        normalized.element.kind === 'string';
+    case 'map':
+    case 'set':
+      return createCollectionBoundaryAdapterForBoundary(normalized) !== undefined;
+    default:
+      return false;
   }
-  return boundary.kind === 'object' &&
-    valueBoundarySupportsWasmGcSpecializedObjectWrapper(boundary);
 }
 
 export function valueBoundaryCanUseWasmGcSpecializedObjectWrapper(
@@ -660,10 +670,12 @@ export function collectionBoundaryAdaptersForValueBoundaries(
     if (!boundary) {
       continue;
     }
-    const adapter = createCollectionBoundaryAdapterForBoundary(boundary);
-    if (adapter) {
-      unique.set(adapter.adapterKey, adapter);
-    }
+    visitValueBoundary(boundary, (candidate) => {
+      const adapter = createCollectionBoundaryAdapterForBoundary(candidate);
+      if (adapter) {
+        unique.set(adapter.adapterKey, adapter);
+      }
+    });
   }
   return [...unique.values()].sort((left, right) =>
     valueCollectionAdapterKey(left).localeCompare(valueCollectionAdapterKey(right))
