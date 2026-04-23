@@ -2,6 +2,7 @@ import ts from 'typescript';
 
 import {
   classifySharedSemanticType,
+  collectSharedSemanticObjectLayoutsFromTypes,
   createSharedSemanticBoundarySurfacesFromProgram,
   createSharedSemanticTypeSnapshotsFromProgram,
   type NormalizedSharedSemanticUnionArmIR,
@@ -1446,107 +1447,10 @@ export function collectSemanticRuntimeFamiliesFromTypes(
   return [...families].sort();
 }
 
-function objectLayoutNameForBoundary(
-  boundary: Extract<SemanticUnionArmIR, { kind: 'object' }>,
-): string {
-  if (boundary.layoutName) {
-    return boundary.layoutName;
-  }
-  return `object:${(boundary.fields ?? []).map((field) => field.name).join(',')}`;
-}
-
-function collectSemanticObjectLayoutsFromType(
-  layoutsByKey: Map<string, SemanticObjectLayoutIR>,
-  boundary: SemanticTypeIR,
-): void {
-  if (boundary.kind === 'finite_union') {
-    boundary.arms.forEach((arm) => collectSemanticObjectLayoutsFromType(layoutsByKey, arm));
-    return;
-  }
-  switch (boundary.kind) {
-    case 'union':
-      boundary.arms.forEach((arm) => collectSemanticObjectLayoutsFromType(layoutsByKey, arm));
-      break;
-    case 'array':
-      collectSemanticObjectLayoutsFromType(layoutsByKey, boundary.element);
-      break;
-    case 'map':
-      collectSemanticObjectLayoutsFromType(layoutsByKey, boundary.key);
-      collectSemanticObjectLayoutsFromType(layoutsByKey, boundary.value);
-      break;
-    case 'set':
-      collectSemanticObjectLayoutsFromType(layoutsByKey, boundary.value);
-      break;
-    case 'promise':
-      if (boundary.value) {
-        collectSemanticObjectLayoutsFromType(layoutsByKey, boundary.value);
-      }
-      break;
-    case 'generator':
-      if (boundary.yield) {
-        collectSemanticObjectLayoutsFromType(layoutsByKey, boundary.yield);
-      }
-      if (boundary.return) {
-        collectSemanticObjectLayoutsFromType(layoutsByKey, boundary.return);
-      }
-      if (boundary.next) {
-        collectSemanticObjectLayoutsFromType(layoutsByKey, boundary.next);
-      }
-      break;
-    case 'closure':
-      boundary.signatures?.forEach((signature) => {
-        signature.params.forEach((param) =>
-          collectSemanticObjectLayoutsFromType(layoutsByKey, param)
-        );
-        collectSemanticObjectLayoutsFromType(layoutsByKey, signature.result);
-      });
-      break;
-    case 'object': {
-      const name = objectLayoutNameForBoundary(boundary);
-      const layout: SemanticObjectLayoutIR = {
-        name,
-        family: boundary.dynamic
-          ? 'dynamic_object'
-          : boundary.fallback
-          ? 'fallback_object'
-          : 'specialized_object',
-        fields: (boundary.fields ?? []).map((field) => field.name),
-      };
-      layoutsByKey.set(`${layout.family}:${layout.name}:${layout.fields.join(',')}`, layout);
-      boundary.fields?.forEach((field) =>
-        collectSemanticObjectLayoutsFromType(layoutsByKey, field.type)
-      );
-      break;
-    }
-    case 'undefined':
-    case 'null':
-    case 'boolean':
-    case 'number':
-    case 'string':
-    case 'bigint':
-    case 'symbol':
-    case 'class_constructor':
-    case 'machine_numeric':
-    case 'value_class':
-    case 'host_handle':
-      break;
-    default: {
-      const exhaustiveCheck: never = boundary;
-      return exhaustiveCheck;
-    }
-  }
-}
-
 export function collectSemanticObjectLayoutsFromTypes(
   types: readonly SemanticTypeIR[],
 ): readonly SemanticObjectLayoutIR[] {
-  const layoutsByKey = new Map<string, SemanticObjectLayoutIR>();
-  types.forEach((type) => collectSemanticObjectLayoutsFromType(layoutsByKey, type));
-  return [...layoutsByKey.values()].sort((left, right) =>
-    left.family === right.family
-      ? left.name.localeCompare(right.name)
-      : left.family.localeCompare(right.family)
-  );
+  return collectSharedSemanticObjectLayoutsFromTypes(types) as readonly SemanticObjectLayoutIR[];
 }
 
 function hostBoundaryContainsObjectProjection(boundary: CompilerHostBoundaryIR): boolean {
