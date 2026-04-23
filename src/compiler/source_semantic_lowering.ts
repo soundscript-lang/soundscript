@@ -167,7 +167,54 @@ function lowerExpression(
           representation: 'f64',
         };
       }
+      if (
+        expression.property === 'length' &&
+        (
+          object.representation === 'owned_number_array_ref' ||
+          object.representation === 'owned_boolean_array_ref' ||
+          object.representation === 'owned_array_ref' ||
+          object.representation === 'owned_heap_array_ref' ||
+          object.representation === 'owned_tagged_array_ref'
+        )
+      ) {
+        context.runtimeFamilies.add('array');
+        return {
+          kind: 'owned_array_length',
+          value: object,
+          representation: 'f64',
+        };
+      }
       context.unsupportedKinds.add(`property_access:${expression.property}`);
+      return { kind: 'undefined_literal', representation: 'tagged_ref' };
+    }
+    case 'element_access': {
+      const object = lowerExpression(expression.object, context);
+      const index = expression.index
+        ? lowerExpression(expression.index, context)
+        : { kind: 'undefined_literal', representation: 'tagged_ref' } as SemanticExpressionIR;
+      if (object.representation === 'owned_number_array_ref' && index.representation === 'f64') {
+        context.runtimeFamilies.add('array');
+        return {
+          kind: 'owned_number_array_element',
+          value: object,
+          index,
+          representation: 'f64',
+        };
+      }
+      context.unsupportedKinds.add('element_access');
+      return { kind: 'undefined_literal', representation: 'tagged_ref' };
+    }
+    case 'array_literal': {
+      const elements = expression.elements.map((element) => lowerExpression(element, context));
+      if (elements.every((element) => element.representation === 'f64')) {
+        context.runtimeFamilies.add('array');
+        return {
+          kind: 'owned_number_array_literal',
+          elements,
+          representation: 'owned_number_array_ref',
+        };
+      }
+      context.unsupportedKinds.add('array_literal');
       return { kind: 'undefined_literal', representation: 'tagged_ref' };
     }
     case 'binary_expression': {
