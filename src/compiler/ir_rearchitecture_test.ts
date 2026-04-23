@@ -9680,6 +9680,14 @@ Deno.test('compiler wasm-gc wrapper glue adapts nested collection payloads recur
   assertEquals(wrapper.includes('setToInternal'), true);
   assertEquals(wrapper.includes('setFromInternal'), true);
   assertEquals(wrapper.includes('collectionBoundarySuffix'), true);
+  assertEquals(wrapper.includes('boundaryValueToInternal'), true);
+  assertEquals(wrapper.includes('boundaryValueFromInternal'), true);
+  assertEquals(wrapper.includes('mapBoundaryValueToInternal'), false);
+  assertEquals(wrapper.includes('mapBoundaryValueFromInternal'), false);
+  assertEquals(wrapper.includes('setBoundaryValueToInternal'), false);
+  assertEquals(wrapper.includes('setBoundaryValueFromInternal'), false);
+  assertEquals(wrapper.includes('arrayElementToInternal'), false);
+  assertEquals(wrapper.includes('arrayElementFromInternal'), false);
   const parseResult = await new Deno.Command('wasm-tools', {
     args: ['parse', watPath, '-o', wasmPath],
     stdout: 'piped',
