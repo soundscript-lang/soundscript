@@ -1132,6 +1132,57 @@ Deno.test('compiler SourceHIR semantic lowering emits runnable number array bodi
   assertEquals((score as () => number)(), 6);
 });
 
+Deno.test('compiler SourceHIR semantic lowering emits runnable internal function calls', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: { strict: true },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        function double(value: number): number {
+          return value * 2;
+        }
+
+        export function run(input: number): number {
+          return double(input) + 1;
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
+  const semantic = createSemanticModuleFromSourceHIR(snapshot.source, snapshot.sharedFacts);
+  const manifest = createRuntimeManifestFromSemanticModule(semantic);
+  const plan = createWasmGcModulePlan(semantic, manifest);
+  const doublePlan = plan.functionPlans.find((func) => func.name === 'double');
+  const runPlan = plan.functionPlans.find((func) => func.name === 'run');
+  const watPath = join(tempDirectory, 'wasm-gc-source-call.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-source-call.wasm');
+
+  assertEquals(doublePlan?.bodyStatus, 'emittable');
+  assertEquals(runPlan?.bodyStatus, 'emittable');
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(plan));
+  const result = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(result.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(result.success, true);
+
+  const wasm = await Deno.readFile(wasmPath);
+  const instance = await WebAssembly.instantiate(wasm);
+  const run = instance.instance.exports['main.ts:run'];
+  assertEquals(typeof run, 'function');
+  assertEquals((run as (input: number) => number)(4), 9);
+});
+
 Deno.test('compiler wasm-gc backend plan explains boundary helper emission from manifest', async () => {
   const tempDirectory = await createTempProject([
     {

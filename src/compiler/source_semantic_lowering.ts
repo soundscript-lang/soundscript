@@ -15,9 +15,22 @@ import {
   type SemanticStatementIR,
   type SemanticTypeIR,
 } from './semantic_ir.ts';
-import type { SharedSemanticFactsIR } from '../semantic/shared_semantic_facts.ts';
+import type {
+  SharedSemanticFactsIR,
+  SharedSemanticFunctionTypeSnapshotIR,
+} from '../semantic/shared_semantic_facts.ts';
+
+interface SourceSemanticFunctionSignature {
+  boundary?: SemanticBoundarySurfaceIR;
+  params: readonly {
+    name: string;
+    type: SemanticTypeIR;
+  }[];
+  result: SemanticTypeIR;
+}
 
 interface FunctionLoweringContext {
+  functionResultRepresentations: Map<string, CompilerValueType>;
   localRepresentations: Map<string, CompilerValueType>;
   locals: { name: string; representation: CompilerValueType }[];
   runtimeFamilies: Set<SemanticRuntimeFamilyId>;
@@ -217,6 +230,23 @@ function lowerExpression(
       context.unsupportedKinds.add('array_literal');
       return { kind: 'undefined_literal', representation: 'tagged_ref' };
     }
+    case 'call_expression': {
+      if (expression.callee.kind !== 'identifier') {
+        context.unsupportedKinds.add('call_expression');
+        return { kind: 'undefined_literal', representation: 'tagged_ref' };
+      }
+      const representation = context.functionResultRepresentations.get(expression.callee.name);
+      if (!representation) {
+        context.unsupportedKinds.add(`unknown_call:${expression.callee.name}`);
+        return { kind: 'undefined_literal', representation: 'tagged_ref' };
+      }
+      return {
+        kind: 'call',
+        callee: expression.callee.name,
+        args: expression.args.map((arg) => lowerExpression(arg, context)),
+        representation,
+      };
+    }
     case 'binary_expression': {
       const left = lowerExpression(expression.left, context);
       const right = lowerExpression(expression.right, context);
@@ -331,26 +361,72 @@ function findBoundarySurface(
   ) as SemanticBoundarySurfaceIR | undefined;
 }
 
+function findFunctionTypeSnapshot(
+  sharedFacts: SharedSemanticFactsIR,
+  module: SourceModuleIR,
+  func: SourceFunctionIR,
+): SharedSemanticFunctionTypeSnapshotIR | undefined {
+  return sharedFacts.typeSnapshots.find((
+    snapshot,
+  ): snapshot is SharedSemanticFunctionTypeSnapshotIR =>
+    snapshot.kind === 'function_type' &&
+    snapshot.fileName === module.fileName &&
+    snapshot.name === func.name
+  );
+}
+
+function findFunctionSignature(
+  sharedFacts: SharedSemanticFactsIR,
+  module: SourceModuleIR,
+  func: SourceFunctionIR,
+): SourceSemanticFunctionSignature | undefined {
+  const boundary = findBoundarySurface(sharedFacts, module, func);
+  if (boundary) {
+    return {
+      boundary,
+      params: boundary.params.map((param) => ({
+        name: param.name,
+        type: param.type as SemanticTypeIR,
+      })),
+      result: boundary.result as SemanticTypeIR,
+    };
+  }
+  const snapshot = findFunctionTypeSnapshot(sharedFacts, module, func);
+  if (!snapshot) {
+    return undefined;
+  }
+  return {
+    params: snapshot.params.map((param) => ({
+      name: param.name,
+      type: param.type as SemanticTypeIR,
+    })),
+    result: snapshot.result as SemanticTypeIR,
+  };
+}
+
 function lowerFunction(
   module: SourceModuleIR,
   func: SourceFunctionIR,
   sharedFacts: SharedSemanticFactsIR,
+  functionResultRepresentations: Map<string, CompilerValueType>,
   stringLiteralIds: Map<string, number>,
   stringLiterals: string[],
 ): SemanticFunctionIR {
-  const boundary = findBoundarySurface(sharedFacts, module, func);
+  const signature = findFunctionSignature(sharedFacts, module, func);
+  const boundary = signature?.boundary;
   const localRepresentations = new Map<string, CompilerValueType>();
-  const params = (boundary?.params ?? []).map((param) => {
-    const representation = representationForSemanticType(param.type as SemanticTypeIR);
+  const params = (signature?.params ?? []).map((param) => {
+    const representation = representationForSemanticType(param.type);
     localRepresentations.set(param.name, representation);
     return {
       name: param.name,
       representation,
-      hostBoundary: param.type as SemanticTypeIR,
+      ...(boundary ? { hostBoundary: param.type } : {}),
     };
   });
   const unsupportedKinds = new Set<string>();
   const context: FunctionLoweringContext = {
+    functionResultRepresentations,
     localRepresentations,
     locals: [],
     runtimeFamilies: new Set(),
@@ -358,18 +434,16 @@ function lowerFunction(
     stringLiterals,
     unsupportedKinds,
   };
-  if (!boundary && func.exported) {
-    unsupportedKinds.add('missing_boundary_surface');
+  if (!signature) {
+    unsupportedKinds.add('missing_function_signature');
   }
   const body = lowerFunctionBody(func, context);
   const unsupportedBodyKinds = [...unsupportedKinds].sort();
-  const result = boundary
-    ? representationForSemanticType(boundary.result as SemanticTypeIR)
-    : 'tagged_ref';
-  const runtimeFamilies = boundary
+  const result = signature ? representationForSemanticType(signature.result) : 'tagged_ref';
+  const runtimeFamilies = signature
     ? collectSemanticRuntimeFamiliesFromTypes([
-      ...boundary.params.map((param) => param.type as SemanticTypeIR),
-      boundary.result as SemanticTypeIR,
+      ...signature.params.map((param) => param.type),
+      signature.result,
     ])
     : [];
   const functionRuntimeFamilies = [...new Set([...runtimeFamilies, ...context.runtimeFamilies])]
@@ -377,7 +451,7 @@ function lowerFunction(
 
   return {
     name: func.name,
-    exportName: boundary ? `${boundary.path}:${boundary.name}` : func.name,
+    exportName: boundary ? `${boundary.path}:${boundary.name}` : '',
     params,
     locals: context.locals,
     result,
@@ -405,9 +479,28 @@ export function createSemanticModuleFromSourceHIR(
 ): SemanticModuleIR {
   const stringLiteralIds = new Map<string, number>();
   const stringLiterals: string[] = [];
+  const functionResultRepresentations = new Map<string, CompilerValueType>();
+  for (const module of source.modules) {
+    for (const func of module.functions) {
+      const signature = findFunctionSignature(sharedFacts, module, func);
+      if (signature) {
+        functionResultRepresentations.set(
+          func.name,
+          representationForSemanticType(signature.result),
+        );
+      }
+    }
+  }
   const functions = source.modules.flatMap((module) =>
     module.functions.map((func) =>
-      lowerFunction(module, func, sharedFacts, stringLiteralIds, stringLiterals)
+      lowerFunction(
+        module,
+        func,
+        sharedFacts,
+        functionResultRepresentations,
+        stringLiteralIds,
+        stringLiterals,
+      )
     )
   );
   const boundarySurfaces = sharedFacts.boundarySurfaces.map((surface) => ({
