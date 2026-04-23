@@ -242,6 +242,77 @@ Deno.test(
 );
 
 Deno.test(
+  'analyzeProject does not overflow on bound call arguments inside escaping expressions',
+  async () => {
+    const tempDirectory = await createTempProject({
+      'tsconfig.json': JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+          },
+          include: ['src/**/*.sts'],
+        },
+        null,
+        2,
+      ),
+      'src/index.sts': [
+        'interface ReadResult {',
+        '  readonly done: boolean;',
+        '  readonly value: string;',
+        '}',
+        '',
+        'interface Reader {',
+        '  read(): Promise<ReadResult>;',
+        '}',
+        '',
+        'interface Source {',
+        '  getReader(): Reader;',
+        '}',
+        '',
+        'function accept(value: string): void {',
+        '  void value;',
+        '}',
+        '',
+        'export async function consume(source: Source): Promise<string> {',
+        '  const reader = source.getReader();',
+        '  let buffered = "";',
+        '  while (true) {',
+        '    const result = await reader.read();',
+        '    if (result.done === true) {',
+        '      break;',
+        '    }',
+        '    buffered += result.value;',
+        '    while (true) {',
+        '      const newlineIndex = buffered.indexOf("\\n");',
+        '      if (newlineIndex < 0) {',
+        '        break;',
+        '      }',
+        '      const line = buffered.slice(0, newlineIndex).trim();',
+        '      buffered = buffered.slice(newlineIndex + 1);',
+        '      if (line !== "") {',
+        '        accept(line);',
+        '      }',
+        '    }',
+        '  }',
+        '  return buffered;',
+        '}',
+        '',
+      ].join('\n'),
+    });
+
+    const result = await analyzeProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), []);
+  },
+);
+
+Deno.test(
   'analyzeProject invalidates narrowing for conservative fresh-local builder paths',
   async () => {
     const tempDirectory = await createTempProject({

@@ -689,7 +689,13 @@ function opaqueArgumentExpressionAffectsNarrow(
   narrowPath: NormalizedPath,
   state: AnalysisState,
   activeDeclarations: Set<ts.FunctionLikeDeclaration> = new Set(),
+  seenExpressions: Set<ts.Expression> = new Set(),
 ): boolean {
+  expression = ts.isParenthesizedExpression(expression) ? expression.expression : expression;
+  if (seenExpressions.has(expression)) {
+    return false;
+  }
+
   const pathInfo = getExpressionPathInfo(context, expression, state);
   if (
     pathInfo.sourcePath &&
@@ -724,7 +730,7 @@ function opaqueArgumentExpressionAffectsNarrow(
         expression,
         narrowPath,
         state,
-        new Set(),
+        seenExpressions,
         activeDeclarations,
       )
     ) {
@@ -737,7 +743,7 @@ function opaqueArgumentExpressionAffectsNarrow(
         expression,
         narrowPath,
         state,
-        new Set(),
+        seenExpressions,
         activeDeclarations,
       )
     ) {
@@ -1929,7 +1935,14 @@ function escapingExpressionAffectsNarrow(
           {
             includeCollectionCallbacks: false,
             opaqueArgumentAffectsNarrow: (argument) =>
-              opaqueArgumentExpressionAffectsNarrow(context, argument, narrowPath, state),
+              opaqueArgumentExpressionAffectsNarrow(
+                context,
+                argument,
+                narrowPath,
+                state,
+                activeDeclarations,
+                seenExpressions,
+              ),
             respectEffectPreservation: false,
           },
           activeDeclarations,
