@@ -43,7 +43,9 @@ import { CompilerUnsupportedError } from './errors.ts';
 import { lowerProgramToCompilerIR, validateHonestHeapBoundarySurfaces } from './lower.ts';
 import { createCompilerIrDebugSnapshot } from './compiler_ir_debug.ts';
 import {
+  compilerValueTypeForStorage,
   createCollectionBoundaryAdapterForBoundary,
+  selectWasmGcStorage,
   valueBoundaryFromSemanticType,
   type ValueBoundaryIR,
   valueBoundarySupportsWasmGcSpecializedObjectWrapper,
@@ -55,6 +57,7 @@ import {
   packageCompilerOutput,
 } from './toolchain.ts';
 import { emitWasmGcModulePlan } from './wasm_gc_emitter.ts';
+import type { WasmGcModulePlanIR } from './wasm_gc_backend_ir.ts';
 import { emitWasmGcWrapperModule } from './wasm_gc_wrapper_emitter.ts';
 import { emitCompilerModuleToWat } from './wat_emitter.ts';
 
@@ -541,6 +544,103 @@ function findUnsupportedValueClass(program: ts.Program): ts.ClassDeclaration | u
   return undefined;
 }
 
+function wasmTypeForPublicCompilerValueType(valueType: string): string {
+  switch (valueType) {
+    case 'f64':
+    case 'i32':
+      return valueType;
+    case 'string_ref':
+    case 'owned_string_ref':
+      return '(ref null $string_runtime)';
+    case 'symbol_ref':
+      return '(ref null $symbol_runtime)';
+    case 'bigint_ref':
+      return '(ref null $bigint_runtime)';
+    case 'tagged_ref':
+      return '(ref null $tagged_value)';
+    case 'owned_number_array_ref':
+      return '(ref $array_runtime)';
+    case 'owned_array_ref':
+      return '(ref $string_array_runtime)';
+    case 'owned_boolean_array_ref':
+      return '(ref $boolean_array_runtime)';
+    case 'owned_heap_array_ref':
+      return '(ref $heap_array_runtime)';
+    case 'owned_tagged_array_ref':
+      return '(ref $tagged_array_runtime)';
+    default:
+      return '(ref null eq)';
+  }
+}
+
+function wasmTypeForPublicBoundaryField(boundary: ValueBoundaryIR): string {
+  return wasmTypeForPublicCompilerValueType(
+    compilerValueTypeForStorage(selectWasmGcStorage(boundary)),
+  );
+}
+
+function publicObjectBoundaryFieldWasmTypeMatches(
+  boundary: ValueBoundaryIR,
+  wasmType: string,
+): boolean {
+  if (wasmTypeForPublicBoundaryField(boundary) === wasmType) {
+    return true;
+  }
+  const valueType = compilerValueTypeForStorage(selectWasmGcStorage(boundary));
+  return wasmType === '(ref null eq)' && valueType !== 'f64' && valueType !== 'i32';
+}
+
+function wasmGcPlanHasSpecializedObjectBoundary(
+  plan: WasmGcModulePlanIR,
+  boundary: Extract<ValueBoundaryIR, { kind: 'object' }>,
+): boolean {
+  return plan.typePlans.some((typePlan) =>
+    typePlan.source === 'object_layout' &&
+    typePlan.family === 'specialized_object' &&
+    (typePlan.fields?.length ?? 0) === (boundary.fields?.length ?? 0) &&
+    (boundary.fields ?? []).every((field, index) =>
+      typePlan.fields?.[index]?.name === field.name &&
+      publicObjectBoundaryFieldWasmTypeMatches(
+        field.value,
+        typePlan.fields?.[index]?.wasmType ?? '',
+      )
+    )
+  );
+}
+
+function isWasmGcPublicBoundarySupported(
+  boundary: ValueBoundaryIR,
+  plan: WasmGcModulePlanIR,
+): boolean {
+  switch (boundary.kind) {
+    case 'undefined':
+    case 'null':
+    case 'boolean':
+    case 'number':
+    case 'string':
+    case 'symbol':
+    case 'bigint':
+      return true;
+    case 'array':
+      return isWasmGcPublicBoundarySupported(boundary.element, plan);
+    case 'object':
+      return valueBoundarySupportsWasmGcSpecializedObjectWrapper(boundary) &&
+        wasmGcPlanHasSpecializedObjectBoundary(plan, boundary);
+    case 'map':
+      return boundary.key.kind === 'string' &&
+        isWasmGcPublicBoundarySupported(boundary.value, plan) &&
+        createCollectionBoundaryAdapterForBoundary(boundary) !== undefined;
+    case 'set':
+      return isWasmGcPublicBoundarySupported(boundary.value, plan) &&
+        createCollectionBoundaryAdapterForBoundary(boundary) !== undefined;
+    case 'union':
+      return boundary.arms.every((arm) => isWasmGcPublicUnionArmSupported(arm, plan)) &&
+        hasDistinctWasmGcObjectUnionArmShapes(boundary.arms);
+    default:
+      return false;
+  }
+}
+
 function isWasmGcPublicTaggedScalarBoundary(boundary: ValueBoundaryIR): boolean {
   switch (boundary.kind) {
     case 'undefined':
@@ -556,32 +656,37 @@ function isWasmGcPublicTaggedScalarBoundary(boundary: ValueBoundaryIR): boolean 
   }
 }
 
-function isWasmGcPublicBoundarySupported(boundary: ValueBoundaryIR): boolean {
-  switch (boundary.kind) {
-    case 'undefined':
-    case 'null':
-    case 'boolean':
-    case 'number':
-    case 'string':
-    case 'symbol':
-    case 'bigint':
-      return true;
-    case 'array':
-      return isWasmGcPublicBoundarySupported(boundary.element);
-    case 'object':
-      return valueBoundarySupportsWasmGcSpecializedObjectWrapper(boundary);
-    case 'map':
-      return boundary.key.kind === 'string' &&
-        isWasmGcPublicBoundarySupported(boundary.value) &&
-        createCollectionBoundaryAdapterForBoundary(boundary) !== undefined;
-    case 'set':
-      return isWasmGcPublicBoundarySupported(boundary.value) &&
-        createCollectionBoundaryAdapterForBoundary(boundary) !== undefined;
-    case 'union':
-      return boundary.arms.every(isWasmGcPublicTaggedScalarBoundary);
-    default:
+function isWasmGcPublicUnionArmSupported(
+  boundary: ValueBoundaryIR,
+  plan: WasmGcModulePlanIR,
+): boolean {
+  return isWasmGcPublicTaggedScalarBoundary(boundary) ||
+    (boundary.kind === 'object' &&
+      valueBoundarySupportsWasmGcSpecializedObjectWrapper(boundary) &&
+      wasmGcPlanHasSpecializedObjectBoundary(plan, boundary));
+}
+
+function wasmGcObjectBoundaryStructuralKey(
+  boundary: Extract<ValueBoundaryIR, { kind: 'object' }>,
+): string {
+  return (boundary.fields ?? []).map((field) =>
+    compilerValueTypeForStorage(selectWasmGcStorage(field.value))
+  ).join('|');
+}
+
+function hasDistinctWasmGcObjectUnionArmShapes(arms: readonly ValueBoundaryIR[]): boolean {
+  const objectShapeKeys = new Set<string>();
+  for (const arm of arms) {
+    if (arm.kind !== 'object') {
+      continue;
+    }
+    const shapeKey = wasmGcObjectBoundaryStructuralKey(arm);
+    if (objectShapeKeys.has(shapeKey)) {
       return false;
+    }
+    objectShapeKeys.add(shapeKey);
   }
+  return true;
 }
 
 function areWasmGcPublicBoundariesSupported(
@@ -589,7 +694,7 @@ function areWasmGcPublicBoundariesSupported(
 ): boolean {
   return snapshot.semantic.boundarySurfaces.every((surface) =>
     [...surface.params.map((param) => param.type), surface.result].every((type) =>
-      isWasmGcPublicBoundarySupported(valueBoundaryFromSemanticType(type))
+      isWasmGcPublicBoundarySupported(valueBoundaryFromSemanticType(type), snapshot.wasmGcPlan)
     )
   );
 }

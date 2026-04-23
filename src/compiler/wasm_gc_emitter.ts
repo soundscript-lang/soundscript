@@ -270,6 +270,10 @@ function renderSpecializedObjectBoundaryHelpers(
         ...((typePlan.fields ?? []).map((_field, index) => `    local.get $field_${index}`)),
         `    struct.new ${typePlan.name}`,
         '  )',
+        `  (func $__soundscript_object_is_${helperBase} (export "__soundscript_object_is_${helperBase}") (param $value (ref null eq)) (result i32)`,
+        '    local.get $value',
+        `    ref.test (ref ${typePlan.name})`,
+        '  )',
       );
       for (const field of typePlan.fields ?? []) {
         lines.push(
@@ -7816,6 +7820,17 @@ function renderHostTaggedWrapperHelperFunctions(plan: WasmGcModulePlanIR): reado
       '  )',
     );
   }
+  if (helpers.has('__soundscript_host_tag_heap_object')) {
+    helperLines.push(
+      '  (func $__soundscript_host_tag_heap_object (export "__soundscript_host_tag_heap_object") (param $value (ref null eq)) (result (ref null $tagged_value))',
+      `    i32.const ${TAGGED_HEAP_OBJECT_TAG}`,
+      '    f64.const 0',
+      '    ref.null extern',
+      '    local.get $value',
+      `    struct.new ${taggedValueTypeName()}`,
+      '  )',
+    );
+  }
   if (resultHelpers.has('__soundscript_host_tag_type')) {
     helperLines.push(
       '  (func $__soundscript_host_tag_type (export "__soundscript_host_tag_type") (param $value (ref null $tagged_value)) (result i32)',
@@ -7840,6 +7855,15 @@ function renderHostTaggedWrapperHelperFunctions(plan: WasmGcModulePlanIR): reado
       '    local.get $value',
       `    ref.cast (ref ${taggedValueTypeName()})`,
       `    struct.get ${taggedValueTypeName()} $extern_payload`,
+      '  )',
+    );
+  }
+  if (resultHelpers.has('__soundscript_host_tag_heap_payload')) {
+    helperLines.push(
+      `  (func $__soundscript_host_tag_heap_payload (export "__soundscript_host_tag_heap_payload") (param $value (ref null $tagged_value)) (result (ref null eq))`,
+      '    local.get $value',
+      `    ref.cast (ref ${taggedValueTypeName()})`,
+      `    struct.get ${taggedValueTypeName()} $heap_payload`,
       '  )',
     );
   }

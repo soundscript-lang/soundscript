@@ -601,6 +601,54 @@ function addTaggedValueAdapterHelpers(
   }
 }
 
+function valueBoundaryIsTaggedHeapArm(boundary: ValueBoundaryIR): boolean {
+  switch (boundary.kind) {
+    case 'object':
+    case 'array':
+    case 'map':
+    case 'set':
+    case 'closure':
+    case 'constructor':
+    case 'class_instance':
+    case 'promise':
+    case 'sync_generator':
+    case 'async_generator':
+    case 'host_handle':
+      return true;
+    case 'union':
+      return boundary.arms.some(valueBoundaryIsTaggedHeapArm);
+    default:
+      return false;
+  }
+}
+
+function addTaggedValueAdapterHelpersForBoundary(
+  helpers: Set<string>,
+  boundary: ValueBoundaryIR | undefined,
+  taggedContext = false,
+): void {
+  if (!boundary) {
+    return;
+  }
+  if (boundary.kind === 'union') {
+    for (const arm of boundary.arms) {
+      addTaggedValueAdapterHelpersForBoundary(helpers, arm, true);
+    }
+    return;
+  }
+  if (!taggedContext) {
+    return;
+  }
+  const kinds: CompilerTaggedPrimitiveBoundaryKindsIR = {};
+  if (addBoundaryTaggedPrimitiveKinds(kinds, boundary)) {
+    addTaggedValueAdapterHelpers(helpers, compactTaggedPrimitiveKinds(kinds));
+    return;
+  }
+  if (valueBoundaryIsTaggedHeapArm(boundary)) {
+    helpers.add('__soundscript_host_tag_heap_object');
+  }
+}
+
 function taggedValueAdapterHelpersForWrappers(
   wrappers: readonly WasmGcHostCallbackWrapperPlanIR[],
 ): readonly string[] {
@@ -636,6 +684,34 @@ function addTaggedValueResultHelpers(
   }
   if (kinds.includesBoolean || kinds.includesNumber) {
     helpers.add('__soundscript_host_tag_number_payload');
+  }
+}
+
+function addTaggedValueResultHelpersForBoundary(
+  helpers: Set<string>,
+  boundary: ValueBoundaryIR | undefined,
+  taggedContext = false,
+): void {
+  if (!boundary) {
+    return;
+  }
+  if (boundary.kind === 'union') {
+    helpers.add('__soundscript_host_tag_type');
+    for (const arm of boundary.arms) {
+      addTaggedValueResultHelpersForBoundary(helpers, arm, true);
+    }
+    return;
+  }
+  if (!taggedContext) {
+    return;
+  }
+  const kinds: CompilerTaggedPrimitiveBoundaryKindsIR = {};
+  if (addBoundaryTaggedPrimitiveKinds(kinds, boundary)) {
+    addTaggedValueResultHelpers(helpers, compactTaggedPrimitiveKinds(kinds));
+    return;
+  }
+  if (valueBoundaryIsTaggedHeapArm(boundary)) {
+    helpers.add('__soundscript_host_tag_heap_payload');
   }
 }
 
@@ -703,7 +779,7 @@ function valueBoundaryNeedsWrapper(boundary: ValueBoundaryIR | undefined): boole
     case 'set':
       return createCollectionBoundaryAdapterForBoundary(boundary) !== undefined;
     case 'union':
-      return taggedPrimitiveKindsForValueBoundary(boundary) !== undefined;
+      return true;
     default:
       return false;
   }
@@ -726,10 +802,7 @@ function taggedValueAdapterHelpersForBoundaries(
 ): readonly string[] {
   const helpers = new Set<string>();
   for (const boundary of boundaries) {
-    const kinds = taggedPrimitiveKindsForValueBoundary(boundary);
-    if (kinds) {
-      addTaggedValueAdapterHelpers(helpers, kinds);
-    }
+    addTaggedValueAdapterHelpersForBoundary(helpers, boundary);
   }
   return [...helpers].sort();
 }
@@ -739,10 +812,7 @@ function taggedValueResultHelpersForBoundaries(
 ): readonly string[] {
   const helpers = new Set<string>();
   for (const boundary of boundaries) {
-    const kinds = taggedPrimitiveKindsForValueBoundary(boundary);
-    if (kinds) {
-      addTaggedValueResultHelpers(helpers, kinds);
-    }
+    addTaggedValueResultHelpersForBoundary(helpers, boundary);
   }
   return [...helpers].sort();
 }

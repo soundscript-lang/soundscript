@@ -65,6 +65,7 @@ interface SpecializedObjectBoundaryHelperPlan {
   boundary: Extract<ValueBoundaryIR, { kind: 'object' }>;
   createExportName: string;
   key: string;
+  testExportName: string;
   fields: readonly {
     getExportName: string;
     name: string;
@@ -167,6 +168,7 @@ function wrapperObjectBoundaries(
         boundary: candidate,
         createExportName: `__soundscript_object_new_${helperBase}`,
         key: boundaryKey,
+        testExportName: `__soundscript_object_is_${helperBase}`,
         fields: fields.map((field) => ({
           getExportName: `__soundscript_object_get_${helperBase}_${
             sanitizeBoundaryHelperIdentifier(field.name)
@@ -310,6 +312,14 @@ function renderTaggedAdapterHelpers(plan: WasmGcModulePlanIR): string {
     cases.push(`    case 'bigint':
       return requireExport(exports, '__soundscript_host_tag_bigint')(bigintToInternal(value));`);
   }
+  const heapHelper = helpers.has('__soundscript_host_tag_heap_object')
+    ? `function tagHostHeapObject(value) {
+  const instance = requireInstance();
+  return requireExport(instance.exports, '__soundscript_host_tag_heap_object')(value);
+}`
+    : `function tagHostHeapObject(_value) {
+  throw new TypeError('Tagged WasmGC heap-object adaptation was not emitted for this module.');
+}`;
   return `function tagHostValue(value) {
   const instance = requireInstance();
   const exports = instance.exports;
@@ -324,7 +334,9 @@ ${cases.join('\n')}
     default:
       throw new TypeError('Object-valued tagged WasmGC callback arguments need host-object wrapper adaptation.');
   }
-}`;
+}
+
+${heapHelper}`;
 }
 
 function renderTaggedResultAdapterHelpers(plan: WasmGcModulePlanIR): string {
@@ -360,6 +372,14 @@ function renderTaggedResultAdapterHelpers(plan: WasmGcModulePlanIR): string {
     cases.push(`    case 7:
       return bigintFromInternal(requireExport(exports, '__soundscript_host_tag_bigint_payload')(value));`);
   }
+  const heapHelper = resultHelpers.has('__soundscript_host_tag_heap_payload')
+    ? `function untagHostHeapObject(value) {
+  const instance = requireInstance();
+  return requireExport(instance.exports, '__soundscript_host_tag_heap_payload')(value);
+}`
+    : `function untagHostHeapObject(_value) {
+  throw new TypeError('Tagged WasmGC heap-object result adaptation was not emitted for this module.');
+}`;
   return `function untagHostValue(value) {
   const instance = requireInstance();
   const exports = instance.exports;
@@ -373,7 +393,9 @@ ${cases.join('\n')}
     default:
       throw new TypeError('Object-valued tagged WasmGC callback results need host-object wrapper adaptation.');
   }
-}`;
+}
+
+${heapHelper}`;
 }
 
 function renderExportTaggedBoundaryHelpers(plan: WasmGcModulePlanIR): string {
@@ -406,6 +428,13 @@ function renderExportTaggedBoundaryHelpers(plan: WasmGcModulePlanIR): string {
     tagCases.push(`      case 'bigint':
         return requireExport(wasmExports, '__soundscript_host_tag_bigint')(bigintToInternal(value));`);
   }
+  const tagHeapHelper = adapterHelpers.has('__soundscript_host_tag_heap_object')
+    ? `  function tagHostHeapObject(value) {
+    return requireExport(wasmExports, '__soundscript_host_tag_heap_object')(value);
+  }`
+    : `  function tagHostHeapObject(_value) {
+    throw new TypeError('Tagged WasmGC heap-object export argument adaptation was not emitted for this module.');
+  }`;
   const untagCases: string[] = [];
   if (resultHelpers.has('__soundscript_host_tag_number_payload')) {
     untagCases.push(`      case 1:
@@ -432,6 +461,13 @@ function renderExportTaggedBoundaryHelpers(plan: WasmGcModulePlanIR): string {
     untagCases.push(`      case 7:
         return bigintFromInternal(requireExport(wasmExports, '__soundscript_host_tag_bigint_payload')(value));`);
   }
+  const untagHeapHelper = resultHelpers.has('__soundscript_host_tag_heap_payload')
+    ? `  function untagHostHeapObject(value) {
+    return requireExport(wasmExports, '__soundscript_host_tag_heap_payload')(value);
+  }`
+    : `  function untagHostHeapObject(_value) {
+    throw new TypeError('Tagged WasmGC heap-object export result adaptation was not emitted for this module.');
+  }`;
   return `function tagHostValue(value) {
     if (value === undefined) {
       return requireExport(wasmExports, '__soundscript_host_tag_undefined')();
@@ -457,7 +493,11 @@ ${untagCases.join('\n')}
       default:
         throw new TypeError('Object-valued tagged WasmGC export results need host-object wrapper adaptation.');
     }
-  }`;
+  }
+
+${tagHeapHelper}
+
+${untagHeapHelper}`;
 }
 
 function isStringValueType(valueType: string): boolean {
@@ -1281,6 +1321,7 @@ function collectionBoundaryAdapter(boundary) {
           {
             createExportName: helper.createExportName,
             fields: helper.fields,
+            testExportName: helper.testExportName,
           },
         ]),
       )
@@ -1393,31 +1434,63 @@ function syncBoundaryObjectsToInternal(state) {
 }`);
   }
   if (usesBoundaryValueAdapters) {
-    helpers.push(`function unionBoundaryValueToInternal(boundary, value) {
+    helpers.push(`function hostValueMatchesUnionArm(arm, value) {
+  if (arm.kind === 'undefined') {
+    return value === undefined;
+  }
+  if (arm.kind === 'null') {
+    return value === null;
+  }
+  if (arm.kind === 'boolean' || arm.kind === 'number' || arm.kind === 'string' ||
+    arm.kind === 'symbol' || arm.kind === 'bigint') {
+    return typeof value === arm.kind;
+  }
+  if (arm.kind === 'object') {
+    return isSupportedBoundaryObjectValue(value) &&
+      (arm.fields ?? []).every((field) => Object.prototype.hasOwnProperty.call(value, field.name));
+  }
+  return false;
+}
+
+function unionBoundaryValueToInternal(boundary, value, state) {
   for (const arm of boundary.arms ?? []) {
-    if (arm.kind === 'undefined' && value === undefined) {
+    if (!hostValueMatchesUnionArm(arm, value)) {
+      continue;
+    }
+    if (arm.kind === 'undefined' || arm.kind === 'null' || arm.kind === 'boolean' ||
+      arm.kind === 'number' || arm.kind === 'string' || arm.kind === 'symbol' ||
+      arm.kind === 'bigint') {
       return tagHostValue(value);
     }
-    if (arm.kind === 'null' && value === null) {
-      return tagHostValue(value);
-    }
-    if (arm.kind === 'boolean' && typeof value === 'boolean') {
-      return tagHostValue(value);
-    }
-    if (arm.kind === 'number' && typeof value === 'number') {
-      return tagHostValue(value);
-    }
-    if (arm.kind === 'string' && typeof value === 'string') {
-      return tagHostValue(value);
-    }
-    if (arm.kind === 'symbol' && typeof value === 'symbol') {
-      return tagHostValue(value);
-    }
-    if (arm.kind === 'bigint' && typeof value === 'bigint') {
-      return tagHostValue(value);
+    if (arm.kind === 'object') {
+      return tagHostHeapObject(objectToInternal(arm, value, state));
     }
   }
   throw new TypeError('Soundscript WasmGC union boundary value did not match any supported arm.');
+}
+
+function internalHeapValueMatchesUnionArm(arm, value) {
+  if (arm.kind !== 'object') {
+    return false;
+  }
+  const helper = objectBoundaryHelper(arm);
+  const instance = requireInstance();
+  return Boolean(requireExport(instance.exports, helper.testExportName)(value));
+}
+
+function unionBoundaryValueFromInternal(boundary, value, state) {
+  const instance = requireInstance();
+  const tag = requireExport(instance.exports, '__soundscript_host_tag_type')(value);
+  if (tag !== 4) {
+    return untagHostValue(value);
+  }
+  const heapValue = untagHostHeapObject(value);
+  for (const arm of boundary.arms ?? []) {
+    if (internalHeapValueMatchesUnionArm(arm, heapValue)) {
+      return objectFromInternal(arm, heapValue, state);
+    }
+  }
+  throw new TypeError('Soundscript WasmGC union boundary heap value did not match any supported object arm.');
 }
 
 function boundaryValueToInternal(boundary, value, adapter, state) {
@@ -1444,7 +1517,7 @@ ${
         : ''
     }
   if (boundary.kind === 'union') {
-    return unionBoundaryValueToInternal(boundary, value);
+    return unionBoundaryValueToInternal(boundary, value, state);
   }
 ${
       usesSymbolAdapters
@@ -1514,7 +1587,7 @@ ${
         : ''
     }
   if (boundary.kind === 'union') {
-    return untagHostValue(value);
+    return unionBoundaryValueFromInternal(boundary, value, state);
   }
 ${
       usesSymbolAdapters
@@ -1881,6 +1954,7 @@ function renderExportBoundaryAdapterHelpers(plan: WasmGcModulePlanIR): string {
           {
             createExportName: helper.createExportName,
             fields: helper.fields,
+            testExportName: helper.testExportName,
           },
         ]),
       )
@@ -1987,31 +2061,61 @@ function renderExportBoundaryAdapterHelpers(plan: WasmGcModulePlanIR): string {
   }`);
   }
   if (usesBoundaryValueAdapters) {
-    helpers.push(`function unionBoundaryValueToInternal(boundary, value) {
+    helpers.push(`function hostValueMatchesUnionArm(arm, value) {
+    if (arm.kind === 'undefined') {
+      return value === undefined;
+    }
+    if (arm.kind === 'null') {
+      return value === null;
+    }
+    if (arm.kind === 'boolean' || arm.kind === 'number' || arm.kind === 'string' ||
+      arm.kind === 'symbol' || arm.kind === 'bigint') {
+      return typeof value === arm.kind;
+    }
+    if (arm.kind === 'object') {
+      return isSupportedBoundaryObjectValue(value) &&
+        (arm.fields ?? []).every((field) => Object.prototype.hasOwnProperty.call(value, field.name));
+    }
+    return false;
+  }
+
+  function unionBoundaryValueToInternal(boundary, value, state) {
     for (const arm of boundary.arms ?? []) {
-      if (arm.kind === 'undefined' && value === undefined) {
+      if (!hostValueMatchesUnionArm(arm, value)) {
+        continue;
+      }
+      if (arm.kind === 'undefined' || arm.kind === 'null' || arm.kind === 'boolean' ||
+        arm.kind === 'number' || arm.kind === 'string' || arm.kind === 'symbol' ||
+        arm.kind === 'bigint') {
         return tagHostValue(value);
       }
-      if (arm.kind === 'null' && value === null) {
-        return tagHostValue(value);
-      }
-      if (arm.kind === 'boolean' && typeof value === 'boolean') {
-        return tagHostValue(value);
-      }
-      if (arm.kind === 'number' && typeof value === 'number') {
-        return tagHostValue(value);
-      }
-      if (arm.kind === 'string' && typeof value === 'string') {
-        return tagHostValue(value);
-      }
-      if (arm.kind === 'symbol' && typeof value === 'symbol') {
-        return tagHostValue(value);
-      }
-      if (arm.kind === 'bigint' && typeof value === 'bigint') {
-        return tagHostValue(value);
+      if (arm.kind === 'object') {
+        return tagHostHeapObject(objectToInternal(arm, value, state));
       }
     }
     throw new TypeError('Soundscript WasmGC union boundary value did not match any supported arm.');
+  }
+
+  function internalHeapValueMatchesUnionArm(arm, value) {
+    if (arm.kind !== 'object') {
+      return false;
+    }
+    const helper = objectBoundaryHelper(arm);
+    return Boolean(requireExport(wasmExports, helper.testExportName)(value));
+  }
+
+  function unionBoundaryValueFromInternal(boundary, value, state) {
+    const tag = requireExport(wasmExports, '__soundscript_host_tag_type')(value);
+    if (tag !== 4) {
+      return untagHostValue(value);
+    }
+    const heapValue = untagHostHeapObject(value);
+    for (const arm of boundary.arms ?? []) {
+      if (internalHeapValueMatchesUnionArm(arm, heapValue)) {
+        return objectFromInternal(arm, heapValue, state);
+      }
+    }
+    throw new TypeError('Soundscript WasmGC union boundary heap value did not match any supported object arm.');
   }
 
   function boundaryValueToInternal(boundary, value, adapter, state) {
@@ -2038,7 +2142,7 @@ ${
         : ''
     }
     if (boundary.kind === 'union') {
-      return unionBoundaryValueToInternal(boundary, value);
+      return unionBoundaryValueToInternal(boundary, value, state);
     }
 ${
       usesSymbolAdapters
@@ -2108,7 +2212,7 @@ ${
         : ''
     }
     if (boundary.kind === 'union') {
-      return untagHostValue(value);
+      return unionBoundaryValueFromInternal(boundary, value, state);
     }
 ${
       usesSymbolAdapters
