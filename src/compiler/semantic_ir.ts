@@ -4,9 +4,15 @@ import {
   classifySharedSemanticType,
   createSharedSemanticBoundarySurfacesFromProgram,
   createSharedSemanticTypeSnapshotsFromProgram,
+  type NormalizedSharedSemanticUnionArmIR,
   normalizeSharedSemanticUnionBoundary,
   type SharedSemanticBoundarySurfaceIR,
+  type SharedSemanticCallableSignatureIR,
+  type SharedSemanticObjectFieldIR,
+  type SharedSemanticScalarKind,
+  type SharedSemanticTypeIR,
   type SharedSemanticUnionArmIR,
+  type SharedSemanticUnionBoundaryIR,
 } from '../semantic/shared_semantic_facts.ts';
 import type {
   CompilerExpressionIR,
@@ -44,65 +50,13 @@ export type SemanticRuntimeFamilyId =
   | 'machine_numeric'
   | 'value_class';
 
-export type SemanticScalarKind =
-  | 'undefined'
-  | 'null'
-  | 'boolean'
-  | 'number'
-  | 'string'
-  | 'bigint'
-  | 'symbol';
-
-export type SemanticTypeIR = SemanticUnionBoundaryIR | SemanticUnionArmIR;
-
-export interface SemanticObjectFieldIR {
-  name: string;
-  type: SemanticTypeIR;
-}
-
-export interface SemanticCallableSignatureIR {
-  id: number;
-  params: readonly SemanticTypeIR[];
-  result: SemanticTypeIR;
-}
-
-export type SemanticUnionArmIR =
-  | { kind: 'union'; arms: readonly SemanticUnionArmIR[] }
-  | { kind: SemanticScalarKind; owned?: boolean; deferred?: boolean }
-  | {
-    kind: 'object';
-    layoutName?: string;
-    dynamic?: boolean;
-    fallback?: boolean;
-    fields?: readonly SemanticObjectFieldIR[];
-  }
-  | { kind: 'array'; element: SemanticTypeIR; carrierType?: string }
-  | { kind: 'map'; key: SemanticTypeIR; value: SemanticTypeIR }
-  | { kind: 'set'; value: SemanticTypeIR }
-  | { kind: 'promise'; value?: SemanticTypeIR }
-  | {
-    kind: 'generator';
-    async: boolean;
-    yield?: SemanticTypeIR;
-    return?: SemanticTypeIR;
-    next?: SemanticTypeIR;
-  }
-  | {
-    kind: 'closure';
-    signatureIds?: readonly number[];
-    signatures?: readonly SemanticCallableSignatureIR[];
-  }
-  | { kind: 'class_constructor'; classTagId?: number; className?: string }
-  | { kind: 'machine_numeric'; numericKind: string; deferred: true }
-  | { kind: 'value_class'; name: string; deferred: true }
-  | { kind: 'host_handle' };
-
-export type NormalizedSemanticUnionArmIR = Exclude<SemanticUnionArmIR, { kind: 'union' }>;
-
-export interface SemanticUnionBoundaryIR {
-  kind: 'finite_union';
-  arms: readonly NormalizedSemanticUnionArmIR[];
-}
+export type SemanticScalarKind = SharedSemanticScalarKind;
+export type SemanticTypeIR = SharedSemanticTypeIR;
+export type SemanticObjectFieldIR = SharedSemanticObjectFieldIR;
+export type SemanticCallableSignatureIR = SharedSemanticCallableSignatureIR;
+export type SemanticUnionArmIR = SharedSemanticUnionArmIR;
+export type NormalizedSemanticUnionArmIR = NormalizedSharedSemanticUnionArmIR;
+export type SemanticUnionBoundaryIR = SharedSemanticUnionBoundaryIR;
 
 export interface SemanticValueIR {
   name: string;
