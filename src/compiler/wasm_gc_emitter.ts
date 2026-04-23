@@ -5012,7 +5012,7 @@ function renderStringEqualityHelperFunctions(plan: WasmGcModulePlanIR): readonly
     plan.functionPlans.some((func) => !func.hostImport && functionUsesStringArrayIndexOf(func)) ||
     plan.functionPlans.some((func) => !func.hostImport && functionUsesMapStorage(func)) ||
     [...wrapperPlanCollectionHostToInternalBoundaryAdapters(plan)].some((adapter) =>
-      adapter.kind === 'map' || (adapter.kind === 'set' && adapter.value.kind === 'string')
+      adapter.kind === 'map' || (adapter.kind === 'set' && valueBoundaryUsesString(adapter.value))
     ) ||
     (usesStringRuntime &&
       plan.functionPlans.some((func) => !func.hostImport && functionUsesTaggedArrayIndexOf(func)));
@@ -5634,6 +5634,9 @@ function renderMapBoundaryValueAtResult(
   if (info.valueType === 'heap_ref') {
     return renderTaggedHeapObjectPayload(indent);
   }
+  if (info.valueType === 'tagged_ref') {
+    return [];
+  }
   return renderMapTaggedValueForResultType(
     info.valueType === 'owned_string_ref'
       ? 'owned_array_ref'
@@ -5860,7 +5863,14 @@ function renderSetBoundaryWrapperHelperFunctions(plan: WasmGcModulePlanIR): read
 }
 
 function renderExternEqualityImportPlan(plan: WasmGcModulePlanIR): readonly string[] {
-  return plan.functionPlans.some((func) => !func.hostImport && functionUsesTaggedArrayIndexOf(func))
+  const wrapperUsesTaggedSetIndexOf = [...wrapperPlanCollectionHostToInternalBoundaryAdapters(plan)]
+    .some((adapter) =>
+      adapter.kind === 'set' && compilerValueTypeForStorage(adapter.storage.value) === 'tagged_ref'
+    );
+  return plan.functionPlans.some((func) =>
+      !func.hostImport && functionUsesTaggedArrayIndexOf(func)
+    ) ||
+      wrapperUsesTaggedSetIndexOf
     ? [
       `  (import ${JSON.stringify(EXTERN_EQUAL_IMPORT_MODULE)} ${
         JSON.stringify(EXTERN_EQUAL_IMPORT_NAME)

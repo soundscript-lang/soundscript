@@ -1360,6 +1360,9 @@ function arrayFromInternal(boundary, value, state) {
   if (boundary.kind === 'number' || boundary.kind === 'boolean' || boundary.kind === 'string') {
     return boundary.kind;
   }
+  if (boundary.kind === 'union') {
+    return 'tagged';
+  }
   if (boundary.kind === 'array') {
     return \`\${collectionBoundarySuffix(boundary.element)}_array\`;
   }
@@ -2092,6 +2095,9 @@ function renderExportBoundaryAdapterHelpers(plan: WasmGcModulePlanIR): string {
     helpers.push(`function collectionBoundarySuffix(boundary) {
     if (boundary.kind === 'number' || boundary.kind === 'boolean' || boundary.kind === 'string') {
       return boundary.kind;
+    }
+    if (boundary.kind === 'union') {
+      return 'tagged';
     }
     if (boundary.kind === 'array') {
       return \`\${collectionBoundarySuffix(boundary.element)}_array\`;

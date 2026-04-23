@@ -479,6 +479,8 @@ export function collectionAdapterSuffixForBoundary(
       return 'boolean';
     case 'string':
       return 'string';
+    case 'union':
+      return 'tagged';
     case 'array': {
       const elementSuffix = collectionAdapterSuffixForBoundary(boundary.element);
       return elementSuffix ? `${elementSuffix}_array` : undefined;

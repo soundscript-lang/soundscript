@@ -687,6 +687,30 @@ function addTaggedObjectFieldResultHelpers(
   }
 }
 
+function nestedValueBoundaries(boundary: ValueBoundaryIR): readonly ValueBoundaryIR[] {
+  switch (boundary.kind) {
+    case 'object':
+      return (boundary.fields ?? []).map((field) => field.value);
+    case 'array':
+      return [boundary.element];
+    case 'tuple':
+      return boundary.elements;
+    case 'map':
+      return [boundary.key, boundary.value];
+    case 'set':
+      return [boundary.value];
+    case 'promise':
+      return boundary.value ? [boundary.value] : [];
+    case 'sync_generator':
+    case 'async_generator':
+      return [boundary.yield, boundary.return, boundary.next].filter(
+        (value): value is ValueBoundaryIR => value !== undefined,
+      );
+    default:
+      return [];
+  }
+}
+
 function addTaggedValueAdapterHelpersForBoundary(
   helpers: Set<string>,
   boundary: ValueBoundaryIR | undefined,
@@ -701,6 +725,9 @@ function addTaggedValueAdapterHelpersForBoundary(
       addTaggedValueAdapterHelpersForBoundary(helpers, arm, true);
     }
     return;
+  }
+  for (const nested of nestedValueBoundaries(boundary)) {
+    addTaggedValueAdapterHelpersForBoundary(helpers, nested);
   }
   if (!taggedContext) {
     return;
@@ -768,6 +795,9 @@ function addTaggedValueResultHelpersForBoundary(
       addTaggedValueResultHelpersForBoundary(helpers, arm, true);
     }
     return;
+  }
+  for (const nested of nestedValueBoundaries(boundary)) {
+    addTaggedValueResultHelpersForBoundary(helpers, nested);
   }
   if (!taggedContext) {
     return;
