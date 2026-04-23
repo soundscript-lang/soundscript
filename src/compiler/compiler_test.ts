@@ -3828,6 +3828,120 @@ compilerIntegrationTest(
   },
 );
 
+compilerIntegrationTest(
+  'compileProject adapts exported Map results with union payloads through the JS boundary',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+            },
+            include: ['src/**/*.ts'],
+            soundscript: {
+              target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          'export function main(): Map<string, string | number> {',
+          '  const values = new Map<string, string | number>();',
+          '  values.set("left", 4);',
+          '  values.set("right", "abc");',
+          '  return values;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileTempProject(tempDirectory);
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts?.wrapperPath);
+    const wrapperSource = await Deno.readTextFile(result.artifacts.wrapperPath);
+    assertStringIncludes(wrapperSource, 'createSoundscriptWasmGcHostImports');
+    const instance = await instantiateCompiledModuleInJs(tempDirectory);
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instance.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+    const values = exported();
+    assert(values instanceof Map);
+    assertEquals([...values.entries()], [['left', 4], ['right', 'abc']]);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject adapts exported Set results with union payloads through the JS boundary',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+            },
+            include: ['src/**/*.ts'],
+            soundscript: {
+              target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          'export function main(): Set<string | number> {',
+          '  const values = new Set<string | number>();',
+          '  values.add(4);',
+          '  values.add("abc");',
+          '  return values;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileTempProject(tempDirectory);
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts?.wrapperPath);
+    const wrapperSource = await Deno.readTextFile(result.artifacts.wrapperPath);
+    assertStringIncludes(wrapperSource, 'createSoundscriptWasmGcHostImports');
+    const instance = await instantiateCompiledModuleInJs(tempDirectory);
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instance.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+    const values = exported();
+    assert(values instanceof Set);
+    assertEquals([...values.values()], [4, 'abc']);
+  },
+);
+
 compilerIntegrationTest('compileProject executes Array.from over Map entry iterables', async () => {
   const tempDirectory = await createCompilerTestProject([
     'export function main(): number {',
