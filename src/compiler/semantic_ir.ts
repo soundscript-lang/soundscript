@@ -1,6 +1,11 @@
 import ts from 'typescript';
 import { normalize, relative } from '../platform/path.ts';
 
+import {
+  classifySharedSemanticType,
+  normalizeSharedSemanticUnionBoundary,
+  type SharedSemanticUnionArmIR,
+} from '../semantic/shared_semantic_facts.ts';
 import type {
   CompilerExpressionIR,
   CompilerFunctionIR,
@@ -12,7 +17,6 @@ import type {
   CompilerUnionBoundaryIR,
   CompilerValueType,
 } from './ir.ts';
-import { isNullType, isStringLikeType, isSymbolLikeType, isUndefinedType } from './lower_tagged.ts';
 import type { CompilerRuntimeOperationIR, CompilerRuntimeRepresentationIR } from './runtime_ir.ts';
 
 export type SemanticRuntimeFamilyId =
@@ -864,344 +868,12 @@ export interface SemanticModuleIR {
   diagnostics: readonly SemanticDiagnosticIR[];
 }
 
-function stableStringify(value: unknown): string {
-  if (value === undefined) {
-    return 'null';
-  }
-  if (value === null || typeof value !== 'object') {
-    return JSON.stringify(value);
-  }
-  if (Array.isArray(value)) {
-    return `[${value.map((item) => stableStringify(item)).join(',')}]`;
-  }
-  const objectValue = value as Record<string, unknown>;
-  return `{${
-    Object.keys(objectValue)
-      .filter((key) => objectValue[key] !== undefined)
-      .sort()
-      .map((key) => `${JSON.stringify(key)}:${stableStringify(objectValue[key])}`)
-      .join(',')
-  }}`;
-}
-
-function typeKey(type: SemanticTypeIR): string {
-  return stableStringify(type);
-}
-
-function normalizeType(type: SemanticTypeIR): SemanticTypeIR {
-  if (type.kind === 'finite_union') {
-    return normalizeSemanticUnionBoundary(type.arms);
-  }
-  if (type.kind === 'union') {
-    return normalizeSemanticUnionBoundary(type.arms);
-  }
-  if (type.kind === 'array') {
-    return { ...type, element: normalizeType(type.element) };
-  }
-  if (type.kind === 'map') {
-    return { ...type, key: normalizeType(type.key), value: normalizeType(type.value) };
-  }
-  if (type.kind === 'set') {
-    return { ...type, value: normalizeType(type.value) };
-  }
-  if (type.kind === 'promise' && type.value) {
-    return { ...type, value: normalizeType(type.value) };
-  }
-  if (type.kind === 'generator') {
-    return {
-      ...type,
-      yield: type.yield ? normalizeType(type.yield) : undefined,
-      return: type.return ? normalizeType(type.return) : undefined,
-      next: type.next ? normalizeType(type.next) : undefined,
-    };
-  }
-  if (type.kind === 'object' && type.fields) {
-    return {
-      ...type,
-      fields: type.fields.map((field) => ({ ...field, type: normalizeType(field.type) })),
-    };
-  }
-  if (type.kind === 'closure' && type.signatures) {
-    return {
-      ...type,
-      signatures: type.signatures.map((signature) => ({
-        ...signature,
-        params: signature.params.map(normalizeType),
-        result: normalizeType(signature.result),
-      })),
-    };
-  }
-  return type;
-}
-
-function pushNormalizedArm(
-  armsByKey: Map<string, NormalizedSemanticUnionArmIR>,
-  arm: SemanticUnionArmIR,
-): void {
-  if (arm.kind === 'union') {
-    for (const nested of arm.arms) {
-      pushNormalizedArm(armsByKey, nested);
-    }
-    return;
-  }
-  const normalized = normalizeType(arm) as NormalizedSemanticUnionArmIR;
-  armsByKey.set(typeKey(normalized), normalized);
-}
-
 export function normalizeSemanticUnionBoundary(
   arms: readonly SemanticUnionArmIR[],
 ): SemanticUnionBoundaryIR {
-  const armsByKey = new Map<string, NormalizedSemanticUnionArmIR>();
-  for (const arm of arms) {
-    pushNormalizedArm(armsByKey, arm);
-  }
-  return {
-    kind: 'finite_union',
-    arms: [...armsByKey.entries()]
-      .sort(([left], [right]) => left.localeCompare(right))
-      .map(([, arm]) => arm),
-  };
-}
-
-interface SemanticTypeClassifierState {
-  checker: ts.TypeChecker;
-  node: ts.Node;
-  visiting: Set<string>;
-  depth: number;
-}
-
-function typeReferenceArguments(
-  checker: ts.TypeChecker,
-  type: ts.Type,
-): readonly ts.Type[] {
-  if ((type.flags & ts.TypeFlags.Object) !== 0) {
-    const args = checker.getTypeArguments(type as ts.TypeReference);
-    if (args.length > 0) {
-      return args;
-    }
-  }
-  const apparentType = checker.getApparentType(type);
-  if ((apparentType.flags & ts.TypeFlags.Object) !== 0) {
-    return checker.getTypeArguments(apparentType as ts.TypeReference);
-  }
-  return [];
-}
-
-function runtimeFamilySymbolName(checker: ts.TypeChecker, type: ts.Type): string | undefined {
-  const apparentType = checker.getApparentType(type);
-  return apparentType.getSymbol()?.getName() ??
-    type.getSymbol()?.getName() ??
-    apparentType.aliasSymbol?.getName() ??
-    type.aliasSymbol?.getName();
-}
-
-function declaredTypeName(checker: ts.TypeChecker, type: ts.Type): string | undefined {
-  const apparentType = checker.getApparentType(type);
-  return type.getSymbol()?.getName() ??
-    type.aliasSymbol?.getName() ??
-    apparentType.getSymbol()?.getName() ??
-    apparentType.aliasSymbol?.getName();
-}
-
-function objectLayoutName(checker: ts.TypeChecker, type: ts.Type): string | undefined {
-  const name = type.aliasSymbol?.getName() ?? type.getSymbol()?.getName() ??
-    checker.getApparentType(type).getSymbol()?.getName();
-  return name === '__type' ? undefined : name;
-}
-
-function classifyArrayElementType(
-  state: SemanticTypeClassifierState,
-  elementTypes: readonly ts.Type[],
-): SemanticTypeIR {
-  if (elementTypes.length === 0) {
-    return { kind: 'host_handle' };
-  }
-  if (elementTypes.length === 1) {
-    return classifySemanticTypeInner(state, elementTypes[0]);
-  }
-  return normalizeSemanticUnionBoundary(
-    elementTypes.map((elementType) =>
-      classifySemanticTypeInner(state, elementType) as SemanticUnionArmIR
-    ),
-  );
-}
-
-function classifyCallableSignature(
-  state: SemanticTypeClassifierState,
-  signature: ts.Signature,
-  id: number,
-): SemanticCallableSignatureIR {
-  const signatureNode = signature.getDeclaration() ?? state.node;
-  return {
-    id,
-    params: signature.getParameters().map((param) =>
-      classifySemanticTypeInner(
-        state,
-        state.checker.getTypeOfSymbolAtLocation(param, signatureNode),
-      )
-    ),
-    result: classifySemanticTypeInner(state, state.checker.getReturnTypeOfSignature(signature)),
-  };
-}
-
-function classifyObjectFields(
-  state: SemanticTypeClassifierState,
-  type: ts.Type,
-): readonly SemanticObjectFieldIR[] | undefined {
-  const properties = state.checker.getPropertiesOfType(type)
-    .filter((property) => property.getName() !== 'constructor')
-    .sort((left, right) => left.getName().localeCompare(right.getName()));
-  if (properties.length === 0) {
-    return undefined;
-  }
-  return properties.map((property) => {
-    const declaration = property.valueDeclaration ?? property.declarations?.[0] ?? state.node;
-    return {
-      name: property.getName(),
-      type: classifySemanticTypeInner(
-        state,
-        state.checker.getTypeOfSymbolAtLocation(property, declaration),
-      ),
-    };
-  });
-}
-
-function classifySemanticTypeInner(
-  state: SemanticTypeClassifierState,
-  type: ts.Type,
-): SemanticTypeIR {
-  const checker = state.checker;
-  const constraint = checker.getBaseConstraintOfType(type);
-  if (constraint && constraint !== type) {
-    return classifySemanticTypeInner(state, constraint);
-  }
-
-  if (isUndefinedType(type) || (type.flags & ts.TypeFlags.Void) !== 0) {
-    return { kind: 'undefined' };
-  }
-  if (isNullType(type)) {
-    return { kind: 'null' };
-  }
-  if ((type.flags & ts.TypeFlags.BooleanLike) !== 0) {
-    return { kind: 'boolean' };
-  }
-  if ((type.flags & ts.TypeFlags.NumberLike) !== 0) {
-    return { kind: 'number' };
-  }
-  if (isStringLikeType(type)) {
-    return { kind: 'string' };
-  }
-  if ((type.flags & ts.TypeFlags.BigIntLike) !== 0) {
-    return { kind: 'bigint' };
-  }
-  if (isSymbolLikeType(type)) {
-    return { kind: 'symbol' };
-  }
-
-  if (type.isUnion()) {
-    return normalizeSemanticUnionBoundary(
-      type.types.map((member) => classifySemanticTypeInner(state, member) as SemanticUnionArmIR),
-    );
-  }
-  if (type.isIntersection()) {
-    const members = type.types.map((member) => classifySemanticTypeInner(state, member));
-    const objectMembers = members.filter((
-      member,
-    ): member is Extract<SemanticUnionArmIR, { kind: 'object' }> => member.kind === 'object');
-    if (objectMembers.length === members.length) {
-      return {
-        kind: 'object',
-        layoutName: objectMembers.map((member) => member.layoutName).filter(Boolean).join('&') ||
-          undefined,
-        fields: objectMembers.flatMap((member) => member.fields ?? []),
-      };
-    }
-    return normalizeSemanticUnionBoundary(members as readonly SemanticUnionArmIR[]);
-  }
-
-  if (checker.isArrayType(type) || checker.isTupleType(type)) {
-    return {
-      kind: 'array',
-      element: classifyArrayElementType(state, typeReferenceArguments(checker, type)),
-    };
-  }
-
-  const symbolName = runtimeFamilySymbolName(checker, type);
-  const typeArguments = typeReferenceArguments(checker, type);
-  if (symbolName === 'Map' || symbolName === 'ReadonlyMap') {
-    return {
-      kind: 'map',
-      key: typeArguments[0]
-        ? classifySemanticTypeInner(state, typeArguments[0])
-        : { kind: 'host_handle' },
-      value: typeArguments[1]
-        ? classifySemanticTypeInner(state, typeArguments[1])
-        : { kind: 'host_handle' },
-    };
-  }
-  if (symbolName === 'Set' || symbolName === 'ReadonlySet') {
-    return {
-      kind: 'set',
-      value: typeArguments[0]
-        ? classifySemanticTypeInner(state, typeArguments[0])
-        : { kind: 'host_handle' },
-    };
-  }
-  if (symbolName === 'Promise' || symbolName === 'PromiseLike') {
-    return {
-      kind: 'promise',
-      value: typeArguments[0] ? classifySemanticTypeInner(state, typeArguments[0]) : undefined,
-    };
-  }
-  if (symbolName === 'Generator') {
-    return {
-      kind: 'generator',
-      async: false,
-      yield: typeArguments[0] ? classifySemanticTypeInner(state, typeArguments[0]) : undefined,
-      return: typeArguments[1] ? classifySemanticTypeInner(state, typeArguments[1]) : undefined,
-      next: typeArguments[2] ? classifySemanticTypeInner(state, typeArguments[2]) : undefined,
-    };
-  }
-  if (symbolName === 'AsyncGenerator') {
-    return {
-      kind: 'generator',
-      async: true,
-      yield: typeArguments[0] ? classifySemanticTypeInner(state, typeArguments[0]) : undefined,
-      return: typeArguments[1] ? classifySemanticTypeInner(state, typeArguments[1]) : undefined,
-      next: typeArguments[2] ? classifySemanticTypeInner(state, typeArguments[2]) : undefined,
-    };
-  }
-
-  const constructSignatures = checker.getSignaturesOfType(type, ts.SignatureKind.Construct);
-  if (constructSignatures.length > 0) {
-    return { kind: 'class_constructor', className: declaredTypeName(checker, type) };
-  }
-
-  const callSignatures = checker.getSignaturesOfType(type, ts.SignatureKind.Call);
-  if (callSignatures.length > 0) {
-    return {
-      kind: 'closure',
-      signatures: callSignatures.map((signature, id) =>
-        classifyCallableSignature(state, signature, id)
-      ),
-    };
-  }
-
-  if ((type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0) {
-    return { kind: 'host_handle' };
-  }
-
-  const layoutName = objectLayoutName(checker, type);
-  const visitKey = `${layoutName ?? checker.typeToString(type, state.node)}:${type.flags}`;
-  if (state.depth >= 8 || state.visiting.has(visitKey)) {
-    return { kind: 'object', layoutName };
-  }
-  state.visiting.add(visitKey);
-  state.depth += 1;
-  const fields = classifyObjectFields(state, type);
-  state.depth -= 1;
-  state.visiting.delete(visitKey);
-  return { kind: 'object', layoutName, fields };
+  return normalizeSharedSemanticUnionBoundary(
+    arms as readonly SharedSemanticUnionArmIR[],
+  ) as SemanticUnionBoundaryIR;
 }
 
 export function classifySemanticType(
@@ -1209,14 +881,7 @@ export function classifySemanticType(
   type: ts.Type,
   node: ts.Node,
 ): SemanticTypeIR {
-  return normalizeType(
-    classifySemanticTypeInner({
-      checker,
-      node,
-      visiting: new Set(),
-      depth: 0,
-    }, type),
-  );
+  return classifySharedSemanticType(checker, type, node) as SemanticTypeIR;
 }
 
 function sourceFileBelongsToProject(sourceFile: ts.SourceFile, projectDirectory: string): boolean {
