@@ -640,8 +640,7 @@ function isWasmGcPublicBoundarySupported(
       return isWasmGcPublicBoundarySupported(boundary.value, plan) &&
         createCollectionBoundaryAdapterForBoundary(boundary) !== undefined;
     case 'union':
-      return boundary.arms.every((arm) => isWasmGcPublicUnionArmSupported(arm, plan)) &&
-        hasDistinctWasmGcObjectUnionArmShapes(boundary.arms);
+      return boundary.arms.every((arm) => isWasmGcPublicUnionArmSupported(arm, plan));
     default:
       return false;
   }
@@ -670,29 +669,6 @@ function isWasmGcPublicUnionArmSupported(
     (boundary.kind === 'object' &&
       valueBoundarySupportsWasmGcSpecializedObjectWrapper(boundary) &&
       wasmGcPlanHasSpecializedObjectBoundary(plan, boundary));
-}
-
-function wasmGcObjectBoundaryStructuralKey(
-  boundary: Extract<ValueBoundaryIR, { kind: 'object' }>,
-): string {
-  return (boundary.fields ?? []).map((field) =>
-    compilerValueTypeForStorage(selectWasmGcStorage(field.value))
-  ).join('|');
-}
-
-function hasDistinctWasmGcObjectUnionArmShapes(arms: readonly ValueBoundaryIR[]): boolean {
-  const objectShapeKeys = new Set<string>();
-  for (const arm of arms) {
-    if (arm.kind !== 'object') {
-      continue;
-    }
-    const shapeKey = wasmGcObjectBoundaryStructuralKey(arm);
-    if (objectShapeKeys.has(shapeKey)) {
-      return false;
-    }
-    objectShapeKeys.add(shapeKey);
-  }
-  return true;
 }
 
 function areWasmGcPublicBoundariesSupported(

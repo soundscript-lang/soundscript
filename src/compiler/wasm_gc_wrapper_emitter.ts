@@ -65,6 +65,7 @@ interface SpecializedObjectBoundaryHelperPlan {
   boundary: Extract<ValueBoundaryIR, { kind: 'object' }>;
   createExportName: string;
   key: string;
+  layoutId: number;
   testExportName: string;
   fields: readonly {
     getExportName: string;
@@ -151,6 +152,15 @@ function sanitizeBoundaryHelperIdentifier(value: string): string {
   return sanitized.length > 0 ? sanitized : 'value';
 }
 
+function stableLayoutId(value: string): number {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0) + 1;
+}
+
 function wrapperObjectBoundaries(
   plan: WasmGcModulePlanIR,
 ): readonly SpecializedObjectBoundaryHelperPlan[] {
@@ -175,6 +185,7 @@ function wrapperObjectBoundaries(
         boundary: candidate,
         createExportName: `__soundscript_object_new_${helperBase}`,
         key: boundaryKey,
+        layoutId: stableLayoutId(typePlan.name),
         testExportName: `__soundscript_object_is_${helperBase}`,
         fields: fields.map((field, index) => ({
           getExportName: `__soundscript_object_get_${helperBase}_${
@@ -321,9 +332,9 @@ function renderTaggedAdapterHelpers(plan: WasmGcModulePlanIR): string {
       return requireExport(exports, '__soundscript_host_tag_bigint')(bigintToInternal(value));`);
   }
   const heapHelper = helpers.has('__soundscript_host_tag_heap_object')
-    ? `function tagHostHeapObject(value) {
+    ? `function tagHostHeapObject(value, layoutId) {
   const instance = requireInstance();
-  return requireExport(instance.exports, '__soundscript_host_tag_heap_object')(value);
+  return requireExport(instance.exports, '__soundscript_host_tag_heap_object')(value, layoutId);
 }`
     : `function tagHostHeapObject(_value) {
   throw new TypeError('Tagged WasmGC heap-object adaptation was not emitted for this module.');
@@ -384,9 +395,18 @@ function renderTaggedResultAdapterHelpers(plan: WasmGcModulePlanIR): string {
     ? `function untagHostHeapObject(value) {
   const instance = requireInstance();
   return requireExport(instance.exports, '__soundscript_host_tag_heap_payload')(value);
+}
+
+function untagHostHeapObjectId(value) {
+  const instance = requireInstance();
+  return requireExport(instance.exports, '__soundscript_host_tag_heap_id')(value);
 }`
     : `function untagHostHeapObject(_value) {
   throw new TypeError('Tagged WasmGC heap-object result adaptation was not emitted for this module.');
+}
+
+function untagHostHeapObjectId(_value) {
+  throw new TypeError('Tagged WasmGC heap-object result identity adaptation was not emitted for this module.');
 }`;
   return `function untagHostValue(value) {
   const instance = requireInstance();
@@ -437,8 +457,8 @@ function renderExportTaggedBoundaryHelpers(plan: WasmGcModulePlanIR): string {
         return requireExport(wasmExports, '__soundscript_host_tag_bigint')(bigintToInternal(value));`);
   }
   const tagHeapHelper = adapterHelpers.has('__soundscript_host_tag_heap_object')
-    ? `  function tagHostHeapObject(value) {
-    return requireExport(wasmExports, '__soundscript_host_tag_heap_object')(value);
+    ? `  function tagHostHeapObject(value, layoutId) {
+    return requireExport(wasmExports, '__soundscript_host_tag_heap_object')(value, layoutId);
   }`
     : `  function tagHostHeapObject(_value) {
     throw new TypeError('Tagged WasmGC heap-object export argument adaptation was not emitted for this module.');
@@ -472,9 +492,17 @@ function renderExportTaggedBoundaryHelpers(plan: WasmGcModulePlanIR): string {
   const untagHeapHelper = resultHelpers.has('__soundscript_host_tag_heap_payload')
     ? `  function untagHostHeapObject(value) {
     return requireExport(wasmExports, '__soundscript_host_tag_heap_payload')(value);
+  }
+
+  function untagHostHeapObjectId(value) {
+    return requireExport(wasmExports, '__soundscript_host_tag_heap_id')(value);
   }`
     : `  function untagHostHeapObject(_value) {
     throw new TypeError('Tagged WasmGC heap-object export result adaptation was not emitted for this module.');
+  }
+
+  function untagHostHeapObjectId(_value) {
+    throw new TypeError('Tagged WasmGC heap-object export result identity adaptation was not emitted for this module.');
   }`;
   return `function tagHostValue(value) {
     if (value === undefined) {
@@ -1329,6 +1357,7 @@ function collectionBoundaryAdapter(boundary) {
           {
             createExportName: helper.createExportName,
             fields: helper.fields,
+            layoutId: helper.layoutId,
             testExportName: helper.testExportName,
           },
         ]),
@@ -1487,7 +1516,8 @@ function unionBoundaryValueToInternal(boundary, value, state) {
       return tagHostValue(value);
     }
     if (arm.kind === 'object') {
-      return tagHostHeapObject(objectToInternal(arm, value, state));
+      const helper = objectBoundaryHelper(arm);
+      return tagHostHeapObject(objectToInternal(arm, value, state), helper.layoutId);
     }
   }
   throw new TypeError('Soundscript WasmGC union boundary value did not match any supported arm.');
@@ -1509,6 +1539,13 @@ function unionBoundaryValueFromInternal(boundary, value, state) {
     return untagHostValue(value);
   }
   const heapValue = untagHostHeapObject(value);
+  const heapLayoutId = untagHostHeapObjectId(value);
+  for (const arm of boundary.arms ?? []) {
+    const helper = arm.kind === 'object' ? objectBoundaryHelper(arm) : undefined;
+    if (helper && helper.layoutId === heapLayoutId) {
+      return objectFromInternal(arm, heapValue, state);
+    }
+  }
   for (const arm of boundary.arms ?? []) {
     if (internalHeapValueMatchesUnionArm(arm, heapValue)) {
       return objectFromInternal(arm, heapValue, state);
@@ -1978,6 +2015,7 @@ function renderExportBoundaryAdapterHelpers(plan: WasmGcModulePlanIR): string {
           {
             createExportName: helper.createExportName,
             fields: helper.fields,
+            layoutId: helper.layoutId,
             testExportName: helper.testExportName,
           },
         ]),
@@ -2130,7 +2168,8 @@ function renderExportBoundaryAdapterHelpers(plan: WasmGcModulePlanIR): string {
         return tagHostValue(value);
       }
       if (arm.kind === 'object') {
-        return tagHostHeapObject(objectToInternal(arm, value, state));
+        const helper = objectBoundaryHelper(arm);
+        return tagHostHeapObject(objectToInternal(arm, value, state), helper.layoutId);
       }
     }
     throw new TypeError('Soundscript WasmGC union boundary value did not match any supported arm.');
@@ -2150,6 +2189,13 @@ function renderExportBoundaryAdapterHelpers(plan: WasmGcModulePlanIR): string {
       return untagHostValue(value);
     }
     const heapValue = untagHostHeapObject(value);
+    const heapLayoutId = untagHostHeapObjectId(value);
+    for (const arm of boundary.arms ?? []) {
+      const helper = arm.kind === 'object' ? objectBoundaryHelper(arm) : undefined;
+      if (helper && helper.layoutId === heapLayoutId) {
+        return objectFromInternal(arm, heapValue, state);
+      }
+    }
     for (const arm of boundary.arms ?? []) {
       if (internalHeapValueMatchesUnionArm(arm, heapValue)) {
         return objectFromInternal(arm, heapValue, state);

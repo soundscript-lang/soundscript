@@ -766,6 +766,7 @@ function addTaggedValueResultHelpersForBoundary(
   }
   if (valueBoundaryIsTaggedHeapArm(boundary)) {
     helpers.add('__soundscript_host_tag_heap_payload');
+    helpers.add('__soundscript_host_tag_heap_id');
   }
 }
 

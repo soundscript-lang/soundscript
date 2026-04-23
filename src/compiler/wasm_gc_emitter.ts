@@ -381,6 +381,15 @@ function objectLayoutTypeName(representationName: string): string {
   return `$object_layout_${sanitizeIdentifier(representationName)}`;
 }
 
+function stableLayoutId(value: string): number {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0) + 1;
+}
+
 function closureSignatureTypeName(signatureId: number): string {
   return `$closure_sig_${signatureId}`;
 }
@@ -436,6 +445,7 @@ interface FunctionRenderContext {
   mapStorageLocalNames: ReadonlySet<string>;
   hostImportClosureWrapperArgIndicesByCallee: ReadonlyMap<string, ReadonlySet<number>>;
   localAliases: ReadonlyMap<string, string>;
+  objectLayoutIdsByLocal: ReadonlyMap<string, number>;
   localWasmTypes: ReadonlyMap<string, string>;
   stringLiteralCodeUnits: readonly (readonly number[])[];
 }
@@ -473,6 +483,7 @@ const EMPTY_RENDER_CONTEXT: FunctionRenderContext = {
   mapStorageLocalNames: new Set(),
   hostImportClosureWrapperArgIndicesByCallee: new Map(),
   localAliases: new Map(),
+  objectLayoutIdsByLocal: new Map(),
   localWasmTypes: new Map(),
   stringLiteralCodeUnits: [],
 };
@@ -1162,6 +1173,31 @@ function localWasmTypes(func: WasmGcFunctionPlanIR): ReadonlyMap<string, string>
     ...func.params.map((param) => [param.name, param.wasmType] as const),
     ...func.locals.map((local) => [local.name, local.wasmType] as const),
   ]);
+}
+
+function collectObjectLayoutIdsByLocalFromStatements(
+  statements: readonly SemanticStatementIR[],
+  layouts: Map<string, number>,
+): void {
+  for (const statement of statements) {
+    if (statement.kind === 'specialized_object_new') {
+      layouts.set(
+        statement.targetName,
+        stableLayoutId(objectLayoutTypeName(statement.representationName)),
+      );
+    } else if (statement.kind === 'if') {
+      collectObjectLayoutIdsByLocalFromStatements(statement.thenBody, layouts);
+      collectObjectLayoutIdsByLocalFromStatements(statement.elseBody, layouts);
+    } else if (statement.kind === 'while') {
+      collectObjectLayoutIdsByLocalFromStatements(statement.body, layouts);
+    }
+  }
+}
+
+function objectLayoutIdsByLocal(func: WasmGcFunctionPlanIR): ReadonlyMap<string, number> {
+  const layouts = new Map<string, number>();
+  collectObjectLayoutIdsByLocalFromStatements(func.body, layouts);
+  return layouts;
 }
 
 function needsSpecializedObjectFieldCast(targetWasmType: string): boolean {
@@ -4216,14 +4252,18 @@ function renderExpression(
         ...renderExpression(expression.value, indent, context),
         `${indent}struct.new ${taggedValueTypeName()}`,
       ];
-    case 'tag_heap_object':
+    case 'tag_heap_object': {
+      const layoutId = expression.value.kind === 'local_get'
+        ? context.objectLayoutIdsByLocal.get(expression.value.name) ?? 0
+        : 0;
       return [
         `${indent}i32.const ${TAGGED_HEAP_OBJECT_TAG}`,
-        `${indent}f64.const 0`,
+        `${indent}f64.const ${layoutId}`,
         `${indent}ref.null extern`,
         ...renderExpression(expression.value, indent, context),
         `${indent}struct.new ${taggedValueTypeName()}`,
       ];
+    }
     case 'untag_number':
       return [
         ...renderExpression(expression.value, indent, context),
@@ -4880,6 +4920,7 @@ function renderFunctionPlan(
     mapStorageLocalNames: mapStorageLocalNames(func),
     hostImportClosureWrapperArgIndicesByCallee: hostImportWrapperArgIndicesByCallee,
     localAliases: aliases,
+    objectLayoutIdsByLocal: objectLayoutIdsByLocal(func),
     localWasmTypes: localWasmTypes(func),
     stringLiteralCodeUnits,
   };
@@ -7828,9 +7869,9 @@ function renderHostTaggedWrapperHelperFunctions(plan: WasmGcModulePlanIR): reado
   }
   if (helpers.has('__soundscript_host_tag_heap_object')) {
     helperLines.push(
-      '  (func $__soundscript_host_tag_heap_object (export "__soundscript_host_tag_heap_object") (param $value (ref null eq)) (result (ref null $tagged_value))',
+      '  (func $__soundscript_host_tag_heap_object (export "__soundscript_host_tag_heap_object") (param $value (ref null eq)) (param $layout_id f64) (result (ref null $tagged_value))',
       `    i32.const ${TAGGED_HEAP_OBJECT_TAG}`,
-      '    f64.const 0',
+      '    local.get $layout_id',
       '    ref.null extern',
       '    local.get $value',
       `    struct.new ${taggedValueTypeName()}`,
@@ -7870,6 +7911,15 @@ function renderHostTaggedWrapperHelperFunctions(plan: WasmGcModulePlanIR): reado
       '    local.get $value',
       `    ref.cast (ref ${taggedValueTypeName()})`,
       `    struct.get ${taggedValueTypeName()} $heap_payload`,
+      '  )',
+    );
+  }
+  if (resultHelpers.has('__soundscript_host_tag_heap_id')) {
+    helperLines.push(
+      '  (func $__soundscript_host_tag_heap_id (export "__soundscript_host_tag_heap_id") (param $value (ref null $tagged_value)) (result f64)',
+      '    local.get $value',
+      `    ref.cast (ref ${taggedValueTypeName()})`,
+      `    struct.get ${taggedValueTypeName()} $number_payload`,
       '  )',
     );
   }
