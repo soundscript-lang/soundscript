@@ -211,7 +211,9 @@ function valueBoundarySupportsWasmGcSpecializedObjectWrapperFieldValue(
   }
   switch (normalized.kind) {
     case 'union':
-      return normalizeUnionArms(normalized.arms).every(valueBoundaryIsTaggedScalar);
+      return normalizeUnionArms(normalized.arms).every(
+        valueBoundarySupportsWasmGcSpecializedObjectWrapperFieldValue,
+      );
     case 'object':
       return valueBoundarySupportsWasmGcSpecializedObjectWrapper(normalized);
     case 'array':

@@ -210,17 +210,23 @@ function boundaryValueWasmType(boundary: ValueBoundaryIR): string {
 }
 
 function boundaryFieldWasmTypeMatches(boundary: ValueBoundaryIR, wasmType: string): boolean {
-  if (boundaryValueWasmType(boundary) === wasmType) {
-    return true;
-  }
+  if (boundaryFieldWasmTypeExactlyMatches(boundary, wasmType)) return true;
+  const valueType = compilerValueTypeForStorage(selectWasmGcStorage(boundary));
+  return wasmType === '(ref null eq)' && valueType !== 'f64' && valueType !== 'i32';
+}
+
+function boundaryFieldWasmTypeExactlyMatches(
+  boundary: ValueBoundaryIR,
+  wasmType: string,
+): boolean {
+  if (boundaryValueWasmType(boundary) === wasmType) return true;
   if (
     wasmType === `(ref null ${taggedValueTypeName()})` &&
     (boundary.kind === 'string' || boundary.kind === 'symbol' || boundary.kind === 'bigint')
   ) {
     return true;
   }
-  const valueType = compilerValueTypeForStorage(selectWasmGcStorage(boundary));
-  return wasmType === '(ref null eq)' && valueType !== 'f64' && valueType !== 'i32';
+  return false;
 }
 
 function specializedObjectLayoutTypePlanForBoundary(
@@ -230,15 +236,19 @@ function specializedObjectLayoutTypePlanForBoundary(
   if (!valueBoundarySupportsWasmGcSpecializedObjectWrapper(boundary)) {
     return undefined;
   }
-  return plan.typePlans.find((typePlan) =>
-    typePlan.source === 'object_layout' &&
-    typePlan.family === 'specialized_object' &&
-    (typePlan.fields?.length ?? 0) === (boundary.fields?.length ?? 0) &&
-    (boundary.fields ?? []).every((field, index) =>
-      typePlan.fields?.[index]?.name === field.name &&
-      boundaryFieldWasmTypeMatches(field.value, typePlan.fields?.[index]?.wasmType ?? '')
-    )
-  );
+  const matches = (
+    predicate: (boundary: ValueBoundaryIR, wasmType: string) => boolean,
+  ): WasmGcTypePlanIR | undefined =>
+    plan.typePlans.find((typePlan) =>
+      typePlan.source === 'object_layout' &&
+      typePlan.family === 'specialized_object' &&
+      (typePlan.fields?.length ?? 0) === (boundary.fields?.length ?? 0) &&
+      (boundary.fields ?? []).every((field, index) =>
+        typePlan.fields?.[index]?.name === field.name &&
+        predicate(field.value, typePlan.fields?.[index]?.wasmType ?? '')
+      )
+    );
+  return matches(boundaryFieldWasmTypeExactlyMatches) ?? matches(boundaryFieldWasmTypeMatches);
 }
 
 function objectBoundaryHelperExportBaseName(typePlan: WasmGcTypePlanIR): string {

@@ -5928,6 +5928,116 @@ compilerIntegrationTest(
 );
 
 compilerIntegrationTest(
+  'compileProject adapts wasm-node nested collection union fields through the WasmGC public wrapper',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+            },
+            include: ['src/**/*.ts'],
+            soundscript: {
+              target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          'type Bag = {',
+          '  values: number[] | null;',
+          '  scores: Map<string, number> | null;',
+          '  flags: Set<number> | null;',
+          '};',
+          '',
+          'export function make(flag: boolean): Bag {',
+          '  if (flag) {',
+          '    const scores = new Map<string, number>();',
+          '    scores.set("left", 4);',
+          '    scores.set("right", 6);',
+          '    const flags = new Set<number>();',
+          '    flags.add(3);',
+          '    flags.add(5);',
+          '    return { values: [2, 8], scores, flags };',
+          '  }',
+          '  return { values: null, scores: null, flags: null };',
+          '}',
+          '',
+          'export function score(value: Bag): number {',
+          '  const values = value.values;',
+          '  const scores = value.scores;',
+          '  const flags = value.flags;',
+          '  const valuesScore = values === null ? 0 : values[0] + values[1];',
+          '  const mapScore = scores === null ? 0 : (scores.get("left") ?? 0) + (scores.get("right") ?? 0);',
+          '  const setScore = flags === null ? 0 : (flags.has(3) ? 10 : 0) + (flags.has(5) ? 1 : 0);',
+          '  return valuesScore + mapScore + setScore;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts?.wrapperPath);
+
+    const wrapperSource = await Deno.readTextFile(result.artifacts.wrapperPath);
+    assertStringIncludes(wrapperSource, 'arrayToInternal');
+    assertStringIncludes(wrapperSource, 'arrayFromInternal');
+    assertStringIncludes(wrapperSource, 'mapToInternal');
+    assertStringIncludes(wrapperSource, 'mapFromInternal');
+    assertStringIncludes(wrapperSource, 'setToInternal');
+    assertStringIncludes(wrapperSource, 'setFromInternal');
+
+    const instance = await instantiateCompiledModuleInJs(tempDirectory);
+    const makeName = await resolveQualifiedExportName(tempDirectory, 'make');
+    const make = instance.exports[makeName];
+    if (typeof make !== 'function') {
+      throw new Error(`Expected exported function "${makeName}".`);
+    }
+    const positive = make(true) as {
+      values: number[];
+      scores: Map<string, number>;
+      flags: Set<number>;
+    };
+    assertEquals(positive.values, [2, 8]);
+    assertEquals([...positive.scores.entries()], [['left', 4], ['right', 6]]);
+    assertEquals([...positive.flags.values()], [3, 5]);
+    assertEquals(make(false), { values: null, scores: null, flags: null });
+
+    const scoreName = await resolveQualifiedExportName(tempDirectory, 'score');
+    const score = instance.exports[scoreName];
+    if (typeof score !== 'function') {
+      throw new Error(`Expected exported function "${scoreName}".`);
+    }
+    assertEquals(
+      score({
+        values: [1, 2],
+        scores: new Map([['left', 3], ['right', 4]]),
+        flags: new Set([3, 5]),
+      }),
+      21,
+    );
+    assertEquals(score({ values: null, scores: null, flags: null }), 0);
+  },
+);
+
+compilerIntegrationTest(
   'compileProject rethrows uncaught soundscript builtin Error throws through wasm-node wrappers',
   async () => {
     const tempDirectory = await createTempProject([

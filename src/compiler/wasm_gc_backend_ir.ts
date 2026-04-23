@@ -638,6 +638,12 @@ function addTaggedObjectFieldAdapterHelpers(
     return;
   }
   if (boundary.kind === 'union') {
+    if (insideObjectField) {
+      for (const arm of boundary.arms) {
+        addTaggedValueAdapterHelpersForBoundary(helpers, arm, true);
+      }
+      return;
+    }
     for (const arm of boundary.arms) {
       addTaggedObjectFieldAdapterHelpers(helpers, arm, insideObjectField);
     }
@@ -662,6 +668,13 @@ function addTaggedObjectFieldResultHelpers(
     return;
   }
   if (boundary.kind === 'union') {
+    if (insideObjectField) {
+      helpers.add('__soundscript_host_tag_type');
+      for (const arm of boundary.arms) {
+        addTaggedValueResultHelpersForBoundary(helpers, arm, true);
+      }
+      return;
+    }
     for (const arm of boundary.arms) {
       addTaggedObjectFieldResultHelpers(helpers, arm, insideObjectField);
     }
