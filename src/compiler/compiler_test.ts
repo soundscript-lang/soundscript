@@ -4448,6 +4448,57 @@ compilerIntegrationTest(
 );
 
 compilerIntegrationTest(
+  'compileProject does not use the WasmGC public wrapper path for wasm-wasi',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+            },
+            include: ['src/**/*.ts'],
+            soundscript: {
+              target: 'wasm-wasi',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          'export function echo(text: string): string {',
+          '  return text;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assertEquals(result.artifacts.wrapperPath, undefined);
+    const wat = await Deno.readTextFile(result.artifacts.watPath!);
+    assertFalse(wat.includes('soundscript wasm-gc shadow module'));
+    assertStringIncludes(wat, '(export "src/index.ts:echo")');
+    assertStringIncludes(wat, '(module');
+  },
+);
+
+compilerIntegrationTest(
   'instantiateCompiledModuleInJs adapts wasm-node public string boundaries through the packaged wrapper',
   async () => {
     const tempDirectory = await createTempProject([

@@ -684,6 +684,10 @@ function areWasmGcPublicBoundariesSupported(
   );
 }
 
+function targetSupportsWasmGcPublicWrapper(target: RuntimeTarget): boolean {
+  return target === 'wasm-browser' || target === 'wasm-node';
+}
+
 export function compileProject(options: CompileProjectOptions): CompileProjectResult {
   const {
     analysisPreparedProgram,
@@ -733,7 +737,8 @@ export function compileProject(options: CompileProjectOptions): CompileProjectRe
     try {
       validateHonestHeapBoundarySurfaces(program);
       const snapshot = createCompilerIrDebugSnapshot(program, dirname(options.projectPath));
-      const canUseWasmGcPublicPath = snapshot.wasmGcPlan.diagnostics.length === 0 &&
+      const canUseWasmGcPublicPath = targetSupportsWasmGcPublicWrapper(runtime.target) &&
+        snapshot.wasmGcPlan.diagnostics.length === 0 &&
         areWasmGcPublicBoundariesSupported(snapshot) &&
         snapshot.wasmGcPlan.functionPlans.every((func) => func.bodyStatus === 'emittable');
       const toolchain = canUseWasmGcPublicPath
