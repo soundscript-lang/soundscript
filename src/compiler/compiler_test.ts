@@ -4330,6 +4330,10 @@ compilerIntegrationTest(
     const wrapperSource = await Deno.readTextFile(result.artifacts.wrapperPath);
     assertStringIncludes(wrapperSource, 'createSoundscriptWasmGcHostImports');
     assertStringIncludes(wrapperSource, 'createSoundscriptWasmGcExports');
+    assertStringIncludes(wrapperSource, 'arrayToInternal');
+    assertStringIncludes(wrapperSource, 'arrayFromInternal');
+    assertFalse(wrapperSource.includes('mapToInternal'));
+    assertFalse(wrapperSource.includes('setToInternal'));
 
     const instance = await instantiateCompiledModuleInJs(tempDirectory);
     const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
@@ -5721,6 +5725,85 @@ compilerIntegrationTest(
     const right = { right: 8 };
     assertStrictEquals(echo(left), left);
     assertStrictEquals(echo(right), right);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject adapts wasm-node array union arms through the WasmGC public wrapper',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+            },
+            include: ['src/**/*.ts'],
+            soundscript: {
+              target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          'type Result = number[] | null;',
+          '',
+          'export function choose(flag: boolean): Result {',
+          '  if (flag) {',
+          '    return [3, 5];',
+          '  }',
+          '  return null;',
+          '}',
+          '',
+          'export function sum(values: Result): number {',
+          '  if (values === null) {',
+          '    return 0;',
+          '  }',
+          '  return values[0] + values[1];',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts?.wrapperPath);
+
+    const wrapperSource = await Deno.readTextFile(result.artifacts.wrapperPath);
+    assertStringIncludes(wrapperSource, 'createSoundscriptWasmGcHostImports');
+    assertStringIncludes(wrapperSource, 'createSoundscriptWasmGcExports');
+
+    const instance = await instantiateCompiledModuleInJs(tempDirectory);
+    const chooseName = await resolveQualifiedExportName(tempDirectory, 'choose');
+    const choose = instance.exports[chooseName];
+    if (typeof choose !== 'function') {
+      throw new Error(`Expected exported function "${chooseName}".`);
+    }
+    assertEquals(choose(true), [3, 5]);
+    assertEquals(choose(false), null);
+
+    const sumName = await resolveQualifiedExportName(tempDirectory, 'sum');
+    const sum = instance.exports[sumName];
+    if (typeof sum !== 'function') {
+      throw new Error(`Expected exported function "${sumName}".`);
+    }
+    assertEquals(sum([4, 6]), 10);
+    assertEquals(sum(null), 0);
   },
 );
 
