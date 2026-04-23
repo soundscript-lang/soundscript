@@ -4230,6 +4230,118 @@ compilerIntegrationTest(
 );
 
 compilerIntegrationTest(
+  'instantiateCompiledModuleInJs adapts wasm-node public string boundaries through the packaged wrapper',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+            },
+            include: ['src/**/*.ts'],
+            soundscript: {
+              target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          'export function echo(text: string): string {',
+          '  return text;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    const instance = await instantiateCompiledModuleInJs(tempDirectory);
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'echo');
+    const exported = instance.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+    assertEquals(exported('A😀'), 'A😀');
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject emits a WasmGC-backed public wrapper for wasm-node modules with internal object layouts',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+            },
+            include: ['src/**/*.ts'],
+            soundscript: {
+              target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          'export function main(): number {',
+          '  const box = { value: 4 };',
+          '  return box.value;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assert(result.artifacts.wrapperPath);
+
+    const wrapperSource = await Deno.readTextFile(result.artifacts.wrapperPath);
+    assertStringIncludes(wrapperSource, 'createSoundscriptWasmGcHostImports');
+    assertStringIncludes(wrapperSource, 'createSoundscriptWasmGcExports');
+
+    const instance = await instantiateCompiledModuleInJs(tempDirectory);
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instance.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+    assertEquals(exported(), 4);
+  },
+);
+
+compilerIntegrationTest(
   'compileProject rethrows uncaught soundscript builtin Error throws through wasm-node wrappers',
   async () => {
     const tempDirectory = await createTempProject([

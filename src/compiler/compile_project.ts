@@ -641,7 +641,6 @@ export function compileProject(options: CompileProjectOptions): CompileProjectRe
       validateHonestHeapBoundarySurfaces(program);
       const snapshot = createCompilerIrDebugSnapshot(program, dirname(options.projectPath));
       const canUseWasmGcPublicPath = snapshot.wasmGcPlan.diagnostics.length === 0 &&
-        snapshot.semantic.objectLayouts.length === 0 &&
         areWasmGcPublicBoundariesSupported(snapshot) &&
         snapshot.wasmGcPlan.functionPlans.every((func) => func.bodyStatus === 'emittable');
       const toolchain = canUseWasmGcPublicPath

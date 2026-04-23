@@ -172,6 +172,10 @@ export function getWatPath(tempDirectory: string): string {
   return join(getOutputDirectory(tempDirectory), 'module.wat');
 }
 
+export function getWrapperPath(tempDirectory: string): string {
+  return join(getOutputDirectory(tempDirectory), 'module.js');
+}
+
 export async function readWatArtifact(tempDirectory: string): Promise<string> {
   return await Deno.readTextFile(getWatPath(tempDirectory));
 }
@@ -197,13 +201,41 @@ export async function instantiateCompiledModuleInJs(
   options?: {
     hostFunctions?: Record<string, (...args: unknown[]) => unknown>;
     imports?: WebAssembly.Imports;
+    modules?: Record<string, Record<string, unknown>>;
   },
-): Promise<WebAssembly.Instance> {
+): Promise<{
+  exports: WebAssembly.Exports;
+  instance: WebAssembly.Instance;
+}> {
+  const wrapperPath = getWrapperPath(tempDirectory);
+  try {
+    const wrapperStat = await Deno.stat(wrapperPath);
+    if (wrapperStat.isFile) {
+      const wrapperModule = await import(`file://${wrapperPath}?cacheBust=${crypto.randomUUID()}`);
+      if (typeof wrapperModule.instantiate !== 'function') {
+        throw new Error(`Expected packaged wrapper "${wrapperPath}" to export instantiate().`);
+      }
+      return await wrapperModule.instantiate({
+        hostFunctions: options?.hostFunctions,
+        imports: options?.imports,
+        modules: options?.modules,
+      });
+    }
+  } catch (error) {
+    if (!(error instanceof Deno.errors.NotFound)) {
+      throw error;
+    }
+  }
+
   const wasmBytes = await readCompiledWasmBytes(tempDirectory);
-  return await instantiateSoundscriptWasmModule(wasmBytes, {
+  const instance = await instantiateSoundscriptWasmModule(wasmBytes, {
     hostFunctions: options?.hostFunctions,
     imports: options?.imports,
   });
+  return {
+    exports: instance.exports,
+    instance,
+  };
 }
 
 export async function readWatArtifactForProject(projectDirectory: string): Promise<string> {
