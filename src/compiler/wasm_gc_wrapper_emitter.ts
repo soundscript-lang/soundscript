@@ -520,8 +520,7 @@ function collectionBoundaryAdapterForBoundary(
 function collectionBoundaryAdapterClosureForBoundary(
   boundary: ValueBoundaryIR,
 ): readonly WasmGcCollectionBoundaryAdapterIR[] {
-  const adapter = collectionBoundaryAdapterForBoundary(boundary);
-  return adapter ? collectionBoundaryAdapterClosure(adapter) : [];
+  return expandCollectionBoundaryAdapters(collectionBoundaryAdaptersForValueBoundaries([boundary]));
 }
 
 function wrapperCollectionBoundaryAdapters(wrapper: {
@@ -568,6 +567,16 @@ function wrapperCollectionParamBoundaryAdapterClosure(wrapper: {
   paramBoundaries?: readonly ValueBoundaryIR[];
 }): readonly WasmGcCollectionBoundaryAdapterIR[] {
   return expandCollectionBoundaryAdapters(wrapperCollectionParamBoundaryAdapters(wrapper));
+}
+
+function wrapperObjectParamBoundaryAdapterClosure(wrapper: {
+  paramBoundaries?: readonly ValueBoundaryIR[];
+}): readonly WasmGcCollectionBoundaryAdapterIR[] {
+  return expandCollectionBoundaryAdapters(
+    collectionBoundaryAdaptersForValueBoundaries(
+      (wrapper.paramBoundaries ?? []).filter((boundary) => boundary?.kind === 'object'),
+    ),
+  );
 }
 
 function collectionBoundaryAdapterValueBoundary(
@@ -777,13 +786,44 @@ function boundaryUsesCollection(boundary: ValueBoundaryIR): boolean {
   }
 }
 
+function boundaryUsesNestedCollection(boundary: ValueBoundaryIR, nested = false): boolean {
+  switch (boundary.kind) {
+    case 'map':
+      return nested || boundaryUsesNestedCollection(boundary.key, true) ||
+        boundaryUsesNestedCollection(boundary.value, true);
+    case 'set':
+      return nested || boundaryUsesNestedCollection(boundary.value, true);
+    case 'object':
+      return boundary.fields?.some((field) => boundaryUsesNestedCollection(field.value, true)) ??
+        false;
+    case 'array':
+      return boundaryUsesNestedCollection(boundary.element, true);
+    case 'tuple':
+      return boundary.elements.some((element) => boundaryUsesNestedCollection(element, true));
+    case 'union':
+      return boundary.arms.some((arm) => boundaryUsesNestedCollection(arm, true));
+    case 'closure':
+      return boundary.signatures?.some((signature) =>
+        signature.params.some((param) => boundaryUsesNestedCollection(param, true)) ||
+        boundaryUsesNestedCollection(signature.result, true)
+      ) ?? false;
+    case 'promise':
+      return boundary.value ? boundaryUsesNestedCollection(boundary.value, true) : false;
+    case 'sync_generator':
+    case 'async_generator':
+      return [boundary.yield, boundary.return, boundary.next].some((value) =>
+        value ? boundaryUsesNestedCollection(value, true) : false
+      );
+    default:
+      return false;
+  }
+}
+
 function wrapperUsesNestedCollectionBoundaryAdapters(wrapper: {
   paramBoundaries?: readonly ValueBoundaryIR[];
   resultBoundary?: ValueBoundaryIR;
 }): boolean {
-  return wrapperCollectionBoundaryAdapters(wrapper).some((adapter) =>
-    boundaryUsesCollection(collectionBoundaryAdapterValueBoundary(adapter))
-  );
+  return wrapperValueBoundaries(wrapper).some((boundary) => boundaryUsesNestedCollection(boundary));
 }
 
 function boundaryUsesString(boundary: ValueBoundaryIR): boolean {
@@ -947,6 +987,10 @@ function exportSurfaceNeedsMapFromInternalAdapters(plan: WasmGcModulePlanIR): bo
         adapter.kind === 'map'
       )
       : false
+  ) || plan.wrapperPlan.exportWrappers.some((wrapper) =>
+    wrapperObjectParamBoundaryAdapterClosure(wrapper).some((adapter) =>
+      adapter.kind === 'map'
+    )
   );
 }
 
@@ -963,6 +1007,10 @@ function exportSurfaceNeedsSetFromInternalAdapters(plan: WasmGcModulePlanIR): bo
         adapter.kind === 'set'
       )
       : false
+  ) || plan.wrapperPlan.exportWrappers.some((wrapper) =>
+    wrapperObjectParamBoundaryAdapterClosure(wrapper).some((adapter) =>
+      adapter.kind === 'set'
+    )
   );
 }
 

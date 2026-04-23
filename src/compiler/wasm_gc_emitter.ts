@@ -1155,19 +1155,26 @@ function localWasmTypes(func: WasmGcFunctionPlanIR): ReadonlyMap<string, string>
 }
 
 function needsSpecializedObjectFieldCast(targetWasmType: string): boolean {
-  switch (targetWasmType) {
-    case 'owned_string_ref':
-    case 'symbol_ref':
-    case 'bigint_ref':
-    case 'owned_number_array_ref':
-    case 'owned_array_ref':
-    case 'owned_boolean_array_ref':
-    case 'owned_heap_array_ref':
-    case 'owned_tagged_array_ref':
-      return true;
-    default:
-      return false;
+  return targetWasmType.startsWith('(ref') &&
+    targetWasmType !== '(ref null eq)' &&
+    targetWasmType !== '(ref eq)';
+}
+
+function resolvedLocalWasmType(
+  targetName: string,
+  context: FunctionRenderContext,
+): string | undefined {
+  if (context.fallbackObjectLocalLayouts.has(targetName)) {
+    return `(ref null ${context.fallbackObjectLocalLayouts.get(targetName)!.typeName})`;
   }
+  if (context.dynamicObjectLocalLayouts.has(targetName)) {
+    return `(ref null ${context.dynamicObjectLocalLayouts.get(targetName)!.typeName})`;
+  }
+  if (context.boxLocalValueTypes.has(targetName)) {
+    return `(ref null ${boxTypeName(context.boxLocalValueTypes.get(targetName)!)})`;
+  }
+  const targetWasmType = context.localWasmTypes.get(targetName);
+  return targetWasmType ? wasmTypeForCompilerValueType(targetWasmType) : undefined;
 }
 
 function specializedObjectFieldTargetCast(
@@ -1175,11 +1182,11 @@ function specializedObjectFieldTargetCast(
   indent: string,
   context: FunctionRenderContext,
 ): readonly string[] | undefined {
-  const targetWasmType = context.localWasmTypes.get(targetName);
+  const targetWasmType = resolvedLocalWasmType(targetName, context);
   if (!targetWasmType || !needsSpecializedObjectFieldCast(targetWasmType)) {
     return undefined;
   }
-  return [`${indent}ref.cast ${wasmTypeForCompilerValueType(targetWasmType)}`];
+  return [`${indent}ref.cast ${targetWasmType}`];
 }
 
 function dynamicObjectEntryIndexForValue(
@@ -5389,12 +5396,21 @@ function wrapperPlanCollectionHostToInternalBoundaryAdapters(
   return uniqueCollectionBoundaryAdapters(adapters);
 }
 
+function wrapperObjectParamCollectionBoundaryAdapters(
+  wrapper: WasmGcModulePlanIR['wrapperPlan']['exportWrappers'][number],
+): readonly WasmGcCollectionBoundaryAdapterIR[] {
+  return collectionBoundaryAdaptersForValueBoundaries(
+    (wrapper.paramBoundaries ?? []).filter((boundary) => boundary?.kind === 'object'),
+  );
+}
+
 function wrapperPlanCollectionInternalToHostBoundaryAdapters(
   plan: WasmGcModulePlanIR,
 ): readonly WasmGcCollectionBoundaryAdapterIR[] {
   const adapters: WasmGcCollectionBoundaryAdapterIR[] = [];
   for (const wrapper of plan.wrapperPlan.exportWrappers) {
     adapters.push(...collectionBoundaryAdaptersForValueBoundaries([wrapper.resultBoundary]));
+    adapters.push(...wrapperObjectParamCollectionBoundaryAdapters(wrapper));
   }
   for (const wrapper of plan.wrapperPlan.hostImportWrappers) {
     adapters.push(...collectionBoundaryAdaptersForValueBoundaries(wrapper.paramBoundaries ?? []));

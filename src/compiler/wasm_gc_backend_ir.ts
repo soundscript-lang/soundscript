@@ -956,6 +956,30 @@ function collectionBoundaryResultForFunction(
     : undefined;
 }
 
+function objectBoundaryForValue(
+  boundary: ValueBoundaryIR,
+): Extract<ValueBoundaryIR, { kind: 'object' }> | undefined {
+  return boundary.kind === 'object' ? boundary : undefined;
+}
+
+function objectBoundaryParamsForFunction(
+  func: WasmGcFunctionPlanIR,
+  surface: SemanticBoundarySurfaceIR | undefined,
+): ReadonlyMap<string, Extract<ValueBoundaryIR, { kind: 'object' }>> {
+  if (!surface) {
+    return new Map();
+  }
+  return new Map(
+    func.params.flatMap((param, index) => {
+      const surfaceParam = surface.params[index];
+      const boundary = surfaceParam
+        ? objectBoundaryForValue(valueBoundaryFromSemanticType(surfaceParam.type))
+        : undefined;
+      return boundary ? [[param.name, boundary] as const] : [];
+    }),
+  );
+}
+
 function collectionAdapterMapValueType(
   adapter: WasmGcCollectionBoundaryAdapterIR,
 ): CompilerValueType | undefined {
@@ -1036,7 +1060,9 @@ function addCollectionBoundaryLocal(
 
 interface HostImportCollectionBoundaryUse {
   paramAdapters: readonly (WasmGcCollectionBoundaryAdapterIR | undefined)[];
+  paramObjectBoundaries: readonly (Extract<ValueBoundaryIR, { kind: 'object' }> | undefined)[];
   resultAdapter?: WasmGcCollectionBoundaryAdapterIR;
+  resultObjectBoundary?: Extract<ValueBoundaryIR, { kind: 'object' }>;
 }
 
 function hostImportCollectionBoundaryUses(
@@ -1057,32 +1083,59 @@ function hostImportCollectionBoundaryUses(
     if (!surface) {
       continue;
     }
-    const paramAdapters = surface.params.map((param) =>
-      createCollectionBoundaryAdapterForBoundary(valueBoundaryFromSemanticType(param.type))
+    const paramBoundaries = surface.params.map((param) =>
+      valueBoundaryFromSemanticType(param.type)
     );
-    const resultAdapter = createCollectionBoundaryAdapterForBoundary(
-      valueBoundaryFromSemanticType(surface.result),
+    const paramAdapters = paramBoundaries.map((boundary) =>
+      createCollectionBoundaryAdapterForBoundary(boundary)
     );
-    if (paramAdapters.some((adapter) => adapter !== undefined) || resultAdapter !== undefined) {
+    const paramObjectBoundaries = paramBoundaries.map((boundary) =>
+      objectBoundaryForValue(boundary)
+    );
+    const resultBoundary = valueBoundaryFromSemanticType(surface.result);
+    const resultAdapter = createCollectionBoundaryAdapterForBoundary(resultBoundary);
+    const resultObjectBoundary = objectBoundaryForValue(resultBoundary);
+    if (
+      paramAdapters.some((adapter) => adapter !== undefined) ||
+      paramObjectBoundaries.some((boundary) => boundary !== undefined) ||
+      resultAdapter !== undefined ||
+      resultObjectBoundary !== undefined
+    ) {
       uses.set(func.name, {
         paramAdapters,
+        paramObjectBoundaries,
         ...(resultAdapter ? { resultAdapter } : {}),
+        ...(resultObjectBoundary ? { resultObjectBoundary } : {}),
       });
     }
   }
   return uses;
 }
 
+function addObjectBoundaryLocal(
+  locals: Map<string, Extract<ValueBoundaryIR, { kind: 'object' }>>,
+  name: string,
+  boundary: Extract<ValueBoundaryIR, { kind: 'object' }>,
+): void {
+  if (!locals.has(name)) {
+    locals.set(name, boundary);
+  }
+}
+
 function collectHostImportCollectionBoundaryLocals(
   statements: readonly SemanticStatementIR[],
   hostImportBoundaries: ReadonlyMap<string, HostImportCollectionBoundaryUse>,
   locals: Map<string, WasmGcCollectionBoundaryAdapterIR>,
+  objectLocals: Map<string, Extract<ValueBoundaryIR, { kind: 'object' }>>,
 ): void {
   for (const statement of statements) {
     if (statement.kind === 'local_set' && statement.value.kind === 'call') {
       const boundary = hostImportBoundaries.get(statement.value.callee);
       if (boundary?.resultAdapter) {
         addCollectionBoundaryLocal(locals, statement.name, boundary.resultAdapter);
+      }
+      if (boundary?.resultObjectBoundary) {
+        addObjectBoundaryLocal(objectLocals, statement.name, boundary.resultObjectBoundary);
       }
     }
     visitSemanticExpressionTree(statement, (expression) => {
@@ -1094,6 +1147,12 @@ function collectHostImportCollectionBoundaryLocals(
         const arg = expression.args[index];
         if (adapter && arg?.kind === 'local_get') {
           addCollectionBoundaryLocal(locals, arg.name, adapter);
+        }
+      });
+      boundary?.paramObjectBoundaries.forEach((objectBoundary, index) => {
+        const arg = expression.args[index];
+        if (objectBoundary && arg?.kind === 'local_get') {
+          addObjectBoundaryLocal(objectLocals, arg.name, objectBoundary);
         }
       });
     });
@@ -1124,15 +1183,96 @@ function propagateCollectionBoundaryAliases(
   }
 }
 
+function propagateObjectBoundaryAliases(
+  statements: readonly SemanticStatementIR[],
+  locals: Map<string, Extract<ValueBoundaryIR, { kind: 'object' }>>,
+): void {
+  const aliases: [string, string][] = [];
+  collectLocalAliases(statements, aliases);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const [left, right] of aliases) {
+      const leftBoundary = locals.get(left);
+      const rightBoundary = locals.get(right);
+      if (leftBoundary && !rightBoundary) {
+        locals.set(right, leftBoundary);
+        changed = true;
+      }
+      if (rightBoundary && !leftBoundary) {
+        locals.set(left, rightBoundary);
+        changed = true;
+      }
+    }
+  }
+}
+
+function collectObjectFieldCollectionBoundaryLocals(
+  statements: readonly SemanticStatementIR[],
+  objectLocals: Map<string, Extract<ValueBoundaryIR, { kind: 'object' }>>,
+  collectionLocals: Map<string, WasmGcCollectionBoundaryAdapterIR>,
+): boolean {
+  let changed = false;
+  for (const statement of statements) {
+    if (statement.kind === 'specialized_object_field_get') {
+      const objectBoundary = objectLocals.get(statement.objectName);
+      const fieldBoundary = objectBoundary?.fields?.find((field) =>
+        field.name === statement.fieldName
+      )
+        ?.value;
+      if (fieldBoundary) {
+        const fieldCollectionAdapter = createCollectionBoundaryAdapterForBoundary(fieldBoundary);
+        if (fieldCollectionAdapter && !collectionLocals.has(statement.targetName)) {
+          collectionLocals.set(statement.targetName, fieldCollectionAdapter);
+          changed = true;
+        }
+        const fieldObjectBoundary = objectBoundaryForValue(fieldBoundary);
+        if (fieldObjectBoundary && !objectLocals.has(statement.targetName)) {
+          objectLocals.set(statement.targetName, fieldObjectBoundary);
+          changed = true;
+        }
+      }
+    } else if (statement.kind === 'if') {
+      changed = collectObjectFieldCollectionBoundaryLocals(
+        statement.thenBody,
+        objectLocals,
+        collectionLocals,
+      ) || changed;
+      changed = collectObjectFieldCollectionBoundaryLocals(
+        statement.elseBody,
+        objectLocals,
+        collectionLocals,
+      ) || changed;
+    } else if (statement.kind === 'while') {
+      changed = collectObjectFieldCollectionBoundaryLocals(
+        statement.body,
+        objectLocals,
+        collectionLocals,
+      ) || changed;
+    }
+  }
+  return changed;
+}
+
 function collectionBoundaryLocalsForFunction(
   statements: readonly SemanticStatementIR[],
   resultAdapter: WasmGcCollectionBoundaryAdapterIR | undefined,
+  objectParams: ReadonlyMap<string, Extract<ValueBoundaryIR, { kind: 'object' }>>,
   hostImportBoundaries: ReadonlyMap<string, HostImportCollectionBoundaryUse>,
 ): ReadonlyMap<string, WasmGcCollectionBoundaryAdapterIR> {
   const locals = new Map<string, WasmGcCollectionBoundaryAdapterIR>();
+  const objectLocals = new Map<string, Extract<ValueBoundaryIR, { kind: 'object' }>>(objectParams);
   collectReturnedLocalNames(statements, resultAdapter, locals);
-  collectHostImportCollectionBoundaryLocals(statements, hostImportBoundaries, locals);
-  propagateCollectionBoundaryAliases(statements, locals);
+  collectHostImportCollectionBoundaryLocals(statements, hostImportBoundaries, locals, objectLocals);
+  let changed = true;
+  while (changed) {
+    const previousCollectionSize = locals.size;
+    const previousObjectSize = objectLocals.size;
+    propagateCollectionBoundaryAliases(statements, locals);
+    propagateObjectBoundaryAliases(statements, objectLocals);
+    collectObjectFieldCollectionBoundaryLocals(statements, objectLocals, locals);
+    changed = locals.size !== previousCollectionSize || objectLocals.size !== previousObjectSize;
+  }
   return locals;
 }
 
@@ -1204,6 +1344,37 @@ function rewriteCollectionBoundaryStatements(
           resultElementType: statement.resultElementType,
         };
       }
+      if (statement.kind === 'dynamic_object_property_get') {
+        return {
+          kind: 'map_get',
+          targetName: statement.targetName,
+          objectName: statement.objectName,
+          keyName: statement.propertyKeyName,
+        };
+      }
+      if (statement.kind === 'dynamic_object_has') {
+        return {
+          kind: 'map_has',
+          targetName: statement.targetName,
+          objectName: statement.objectName,
+          keyName: statement.propertyKeyName,
+        };
+      }
+      if (statement.kind === 'dynamic_object_delete') {
+        return {
+          kind: 'map_delete',
+          targetName: statement.targetName,
+          objectName: statement.objectName,
+          keyName: statement.propertyKeyName,
+        };
+      }
+      if (statement.kind === 'dynamic_object_clear') {
+        return {
+          kind: 'map_clear',
+          targetName: statement.targetName,
+          objectName: statement.objectName,
+        };
+      }
       if (
         statement.kind === 'dynamic_object_property_set' &&
         statement.collectionFamily === 'map' &&
@@ -1249,10 +1420,12 @@ function rewriteCollectionBoundaryFunctions(
       ? exportSurfacesByName.get(func.exportName)
       : undefined;
     const collectionParams = collectionBoundaryParamsForFunction(func, surface);
+    const objectParams = objectBoundaryParamsForFunction(func, surface);
     const resultAdapter = collectionBoundaryResultForFunction(surface);
     const collectionLocals = collectionBoundaryLocalsForFunction(
       func.body,
       resultAdapter,
+      objectParams,
       hostImportBoundaries,
     );
     if (collectionParams.size === 0 && collectionLocals.size === 0) {

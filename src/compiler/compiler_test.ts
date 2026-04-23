@@ -5039,6 +5039,235 @@ compilerIntegrationTest(
 );
 
 compilerIntegrationTest(
+  'compileProject emits a WasmGC-backed public wrapper for wasm-node map-set-valued object results',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+            },
+            include: ['src/**/*.ts'],
+            soundscript: {
+              target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          'interface Bag {',
+          '  values: Map<string, number>;',
+          '  flags: Set<string>;',
+          '}',
+          '',
+          'export function make(): Bag {',
+          '  const values = new Map<string, number>();',
+          '  values.set("left", 4);',
+          '  values.set("right", 2);',
+          '  const flags = new Set<string>();',
+          '  flags.add("ant");',
+          '  flags.add("bee");',
+          '  return { values, flags };',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts?.wrapperPath);
+
+    const wrapperSource = await Deno.readTextFile(result.artifacts.wrapperPath);
+    assertStringIncludes(wrapperSource, 'createSoundscriptWasmGcHostImports');
+    assertStringIncludes(wrapperSource, 'createSoundscriptWasmGcExports');
+
+    const instance = await instantiateCompiledModuleInJs(tempDirectory);
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'make');
+    const exported = instance.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+    const bag = exported();
+    assert(bag.values instanceof Map);
+    assertEquals([...bag.values.entries()], [['left', 4], ['right', 2]]);
+    assert(bag.flags instanceof Set);
+    assertEquals([...bag.flags.values()], ['ant', 'bee']);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject emits a WasmGC-backed public wrapper for wasm-node map-set-valued object params',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+            },
+            include: ['src/**/*.ts'],
+            soundscript: {
+              target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          'interface Bag {',
+          '  values: Map<string, number>;',
+          '  flags: Set<string>;',
+          '}',
+          '',
+          'export function score(bag: Bag): number {',
+          '  const left = bag.values.get("left");',
+          '  const count = left === undefined ? 0 : left * 10;',
+          '  const flag = bag.flags.has("bee") ? 1 : 0;',
+          '  return count + flag;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts?.wrapperPath);
+
+    const wrapperSource = await Deno.readTextFile(result.artifacts.wrapperPath);
+    assertStringIncludes(wrapperSource, 'createSoundscriptWasmGcHostImports');
+    assertStringIncludes(wrapperSource, 'createSoundscriptWasmGcExports');
+
+    const instance = await instantiateCompiledModuleInJs(tempDirectory);
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'score');
+    const exported = instance.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+    assertEquals(
+      exported({
+        values: new Map([['left', 4], ['right', 2]]),
+        flags: new Set(['ant', 'bee']),
+      }),
+      41,
+    );
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject adapts wasm-node imported host map-set-valued object params and results through the WasmGC public wrapper',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+            },
+            include: ['src/**/*.ts'],
+            soundscript: {
+              target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          'interface Bag {',
+          '  values: Map<string, number>;',
+          '  flags: Set<string>;',
+          '}',
+          '',
+          'declare function adjust(bag: Bag): Bag;',
+          '',
+          'export function main(): number {',
+          '  const values = new Map<string, number>();',
+          '  values.set("left", 1);',
+          '  const flags = new Set<string>();',
+          '  const bag = adjust({ values, flags });',
+          '  const left = bag.values.get("left");',
+          '  const count = left === undefined ? 0 : left * 10;',
+          '  const flag = bag.flags.has("bee") ? 1 : 0;',
+          '  return count + flag;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts?.wrapperPath);
+
+    const wrapperSource = await Deno.readTextFile(result.artifacts.wrapperPath);
+    assertStringIncludes(wrapperSource, 'createSoundscriptWasmGcHostImports');
+    assertStringIncludes(wrapperSource, 'createSoundscriptWasmGcExports');
+
+    const instance = await instantiateCompiledModuleInJs(tempDirectory, {
+      hostFunctions: {
+        'src/index.ts:adjust': (input: unknown) => {
+          const bag = input as {
+            values: Map<string, number>;
+            flags: Set<string>;
+          };
+          bag.values = new Map([['left', 4], ['right', 2]]);
+          bag.flags = new Set(['ant', 'bee']);
+          return bag;
+        },
+      },
+    });
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instance.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+    assertEquals(exported(), 41);
+  },
+);
+
+compilerIntegrationTest(
   'compileProject adapts wasm-node imported host fixed-layout object params and results through the WasmGC public wrapper',
   async () => {
     const tempDirectory = await createTempProject([
