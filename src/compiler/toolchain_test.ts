@@ -38,4 +38,23 @@ for (const runtimeTarget of ['wasm-browser', 'wasm-node'] as const) {
     assertEquals((await Deno.stat(wrapperPath)).isFile, true);
     assertEquals((await Deno.stat(declarationsPath)).isFile, true);
   });
+
+  Deno.test(`packageCompilerOutput preserves explicit ${runtimeTarget} wrapper module text`, async () => {
+    const tempDirectory = await Deno.makeTempDir({ prefix: 'soundscript-toolchain-wrapper-' });
+    const projectPath = join(tempDirectory, 'tsconfig.json');
+    const outputDirectory = join(tempDirectory, 'soundscript-out');
+    const wrapperPath = join(outputDirectory, 'module.js');
+    const wrapperModuleText = 'export const packagedBy = "wasm-gc";\n';
+
+    await Deno.writeTextFile(projectPath, '{}\n');
+
+    packageCompilerOutput({
+      projectPath,
+      runtimeTarget,
+      wat: '(module (func (export "main") (result f64) f64.const 1))\n',
+      wrapperModuleText,
+    });
+
+    assertEquals(await Deno.readTextFile(wrapperPath), wrapperModuleText);
+  });
 }

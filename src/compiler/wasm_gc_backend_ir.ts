@@ -921,12 +921,8 @@ function createWasmGcWrapperPlan(
   };
 }
 
-function sourceFileBaseName(fileName: string): string {
-  return fileName.split(/[\\/]/).pop() ?? fileName;
-}
-
 function surfaceExportName(surface: SemanticBoundarySurfaceIR): string {
-  return `${sourceFileBaseName(surface.fileName)}:${surface.name}`;
+  return `${surface.path}:${surface.name}`;
 }
 
 function collectionBoundaryParamsForFunction(

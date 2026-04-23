@@ -41,11 +41,20 @@ function isDeclarationRootFileName(fileName: string): boolean {
 }
 import { CompilerUnsupportedError } from './errors.ts';
 import { lowerProgramToCompilerIR, validateHonestHeapBoundarySurfaces } from './lower.ts';
+import { createCompilerIrDebugSnapshot } from './compiler_ir_debug.ts';
+import {
+  createCollectionBoundaryAdapterForBoundary,
+  valueBoundaryFromSemanticType,
+  type ValueBoundaryIR,
+} from './value_boundary_ir.ts';
 import {
   CompilerToolchainError,
   type CompilerToolchainResult,
+  createWasmGcPublicWrapperModuleText,
   packageCompilerOutput,
 } from './toolchain.ts';
+import { emitWasmGcModulePlan } from './wasm_gc_emitter.ts';
+import { emitWasmGcWrapperModule } from './wasm_gc_wrapper_emitter.ts';
 import { emitCompilerModuleToWat } from './wat_emitter.ts';
 
 export interface CompileProjectOptions {
@@ -531,6 +540,57 @@ function findUnsupportedValueClass(program: ts.Program): ts.ClassDeclaration | u
   return undefined;
 }
 
+function isWasmGcPublicTaggedScalarBoundary(boundary: ValueBoundaryIR): boolean {
+  switch (boundary.kind) {
+    case 'undefined':
+    case 'null':
+    case 'boolean':
+    case 'number':
+    case 'string':
+    case 'symbol':
+    case 'bigint':
+      return true;
+    default:
+      return false;
+  }
+}
+
+function isWasmGcPublicBoundarySupported(boundary: ValueBoundaryIR): boolean {
+  switch (boundary.kind) {
+    case 'undefined':
+    case 'null':
+    case 'boolean':
+    case 'number':
+    case 'string':
+    case 'symbol':
+    case 'bigint':
+      return true;
+    case 'array':
+      return isWasmGcPublicBoundarySupported(boundary.element);
+    case 'map':
+      return boundary.key.kind === 'string' &&
+        isWasmGcPublicBoundarySupported(boundary.value) &&
+        createCollectionBoundaryAdapterForBoundary(boundary) !== undefined;
+    case 'set':
+      return isWasmGcPublicBoundarySupported(boundary.value) &&
+        createCollectionBoundaryAdapterForBoundary(boundary) !== undefined;
+    case 'union':
+      return boundary.arms.every(isWasmGcPublicTaggedScalarBoundary);
+    default:
+      return false;
+  }
+}
+
+function areWasmGcPublicBoundariesSupported(
+  snapshot: ReturnType<typeof createCompilerIrDebugSnapshot>,
+): boolean {
+  return snapshot.semantic.boundarySurfaces.every((surface) =>
+    [...surface.params.map((param) => param.type), surface.result].every((type) =>
+      isWasmGcPublicBoundarySupported(valueBoundaryFromSemanticType(type))
+    )
+  );
+}
+
 export function compileProject(options: CompileProjectOptions): CompileProjectResult {
   const {
     analysisPreparedProgram,
@@ -579,14 +639,32 @@ export function compileProject(options: CompileProjectOptions): CompileProjectRe
 
     try {
       validateHonestHeapBoundarySurfaces(program);
-      const module = lowerProgramToCompilerIR(program, dirname(options.projectPath));
-      const wat = emitCompilerModuleToWat(module);
-      const toolchain = packageCompilerOutput({
-        jsHostImports: module.jsHostImports,
-        projectPath: options.projectPath,
-        runtimeTarget: runtime.target,
-        wat,
-      });
+      const snapshot = createCompilerIrDebugSnapshot(program, dirname(options.projectPath));
+      const canUseWasmGcPublicPath = snapshot.wasmGcPlan.diagnostics.length === 0 &&
+        snapshot.semantic.objectLayouts.length === 0 &&
+        areWasmGcPublicBoundariesSupported(snapshot) &&
+        snapshot.wasmGcPlan.functionPlans.every((func) => func.bodyStatus === 'emittable');
+      const toolchain = canUseWasmGcPublicPath
+        ? packageCompilerOutput({
+          jsHostImports: snapshot.legacyJsHostImports,
+          projectPath: options.projectPath,
+          runtimeTarget: runtime.target,
+          wat: emitWasmGcModulePlan(snapshot.wasmGcPlan),
+          wrapperModuleText: createWasmGcPublicWrapperModuleText({
+            jsHostImports: snapshot.legacyJsHostImports,
+            projectPath: options.projectPath,
+            wasmGcWrapperModuleText: emitWasmGcWrapperModule(snapshot.wasmGcPlan),
+          }),
+        })
+        : (() => {
+          const module = lowerProgramToCompilerIR(program, dirname(options.projectPath));
+          return packageCompilerOutput({
+            jsHostImports: module.jsHostImports,
+            projectPath: options.projectPath,
+            runtimeTarget: runtime.target,
+            wat: emitCompilerModuleToWat(module),
+          });
+        })();
       return {
         artifacts: {
           declarationsPath: toolchain.declarationsPath,

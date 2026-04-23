@@ -17071,6 +17071,10 @@ function getDynamicObjectValuesHelperName(
       return 'list_dynamic_object_number_values';
     case 'owned_boolean_array_ref':
       return 'list_dynamic_object_boolean_values';
+    case 'owned_heap_array_ref':
+      throw new Error(
+        'Heap-array dynamic object value helpers are not implemented in the legacy WAT emitter.',
+      );
     case 'owned_tagged_array_ref':
       return 'list_dynamic_object_tagged_values';
   }

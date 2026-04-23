@@ -1,4 +1,9 @@
-import { makeDirectorySync, readTextFileSync, removePathSync, writeTextFileSync } from '../platform/host.ts';
+import {
+  makeDirectorySync,
+  readTextFileSync,
+  removePathSync,
+  writeTextFileSync,
+} from '../platform/host.ts';
 import { dirname, fromFileUrl, join, normalize, relative } from '../platform/path.ts';
 
 import type { RuntimeTarget } from '../project/config.ts';
@@ -30,6 +35,7 @@ export interface PackageCompilerOutputOptions {
   projectPath: string;
   runtimeTarget: RuntimeTarget;
   wat: string;
+  wrapperModuleText?: string;
 }
 
 function getOutputDirectory(projectPath: string): string {
@@ -92,7 +98,7 @@ function rebaseWrapperModuleSpecifier(
   );
 }
 
-function createRuntimeWrapperModuleText(
+function createInteropWrapperSupportModuleText(
   jsHostImports: readonly CompilerJsHostImportIR[],
   projectPath: string,
 ): string {
@@ -110,8 +116,6 @@ function createRuntimeWrapperModuleText(
   }));
   const bindingsText = JSON.stringify(wrapperBindings, null, 2);
   return [
-    "import { instantiateSoundscriptWasmModule } from './runtime.js';",
-    '',
     `const interopHostBindings = ${bindingsText};`,
     'const interopModuleCache = new Map();',
     '',
@@ -128,7 +132,7 @@ function createRuntimeWrapperModuleText(
     '    return await existing;',
     '  }',
     '  const loadedPromise = binding.relative',
-    "    ? import(new URL(binding.moduleSpecifier, import.meta.url).href)",
+    '    ? import(new URL(binding.moduleSpecifier, import.meta.url).href)',
     '    : import(binding.moduleSpecifier);',
     '  interopModuleCache.set(cacheKey, loadedPromise);',
     '  return await loadedPromise;',
@@ -137,14 +141,14 @@ function createRuntimeWrapperModuleText(
     'async function createInteropHostFunctions(providedHostFunctions = {}, providedModules = {}) {',
     '  const hostFunctions = { ...providedHostFunctions };',
     '  for (const binding of interopHostBindings) {',
-    "    if (!binding.hostImportCallUsed && binding.hostImportValueUsed && Object.prototype.hasOwnProperty.call(hostFunctions, `${binding.hostImportName}__value`)) {",
+    '    if (!binding.hostImportCallUsed && binding.hostImportValueUsed && Object.prototype.hasOwnProperty.call(hostFunctions, `${binding.hostImportName}__value`)) {',
     '      continue;',
     '    }',
     '    if (Object.prototype.hasOwnProperty.call(hostFunctions, binding.hostImportName)) {',
-    "      if (binding.hostImportValueUsed && !Object.prototype.hasOwnProperty.call(hostFunctions, `${binding.hostImportName}__value`)) {",
-    "        hostFunctions[`${binding.hostImportName}__value`] = () => hostFunctions[binding.hostImportName];",
+    '      if (binding.hostImportValueUsed && !Object.prototype.hasOwnProperty.call(hostFunctions, `${binding.hostImportName}__value`)) {',
+    '        hostFunctions[`${binding.hostImportName}__value`] = () => hostFunctions[binding.hostImportName];',
     '      }',
-      '      continue;',
+    '      continue;',
     '    }',
     '    const hostModule = await loadInteropModule(binding, providedModules);',
     "    const exportedValue = binding.importKind === 'global'",
@@ -155,7 +159,7 @@ function createRuntimeWrapperModuleText(
     "    const resolvedHostValue = binding.bindingKind === 'constructor'",
     '      ? (() => {',
     "        if (typeof exportedValue !== 'function') {",
-    "          throw new TypeError(`Expected interop import \"${binding.hostImportName}\" to resolve to a constructor.`);",
+    '          throw new TypeError(`Expected interop import "${binding.hostImportName}" to resolve to a constructor.`);',
     '        }',
     '        return exportedValue;',
     '      })()',
@@ -165,24 +169,24 @@ function createRuntimeWrapperModuleText(
     '          return exportedValue;',
     '        }',
     "        if ((typeof exportedValue !== 'function' && typeof exportedValue !== 'object') || exportedValue === null) {",
-    "          throw new TypeError(`Expected interop import \"${binding.hostImportName}\" to resolve to a property owner.`);",
+    '          throw new TypeError(`Expected interop import "${binding.hostImportName}" to resolve to a property owner.`);',
     '        }',
     '        return exportedValue[binding.memberName];',
     '      })()',
     "      : binding.bindingKind === 'static_method'",
     '      ? (() => {',
     "        if ((typeof exportedValue !== 'function' && typeof exportedValue !== 'object') || exportedValue === null) {",
-    "          throw new TypeError(`Expected interop import \"${binding.hostImportName}\" to resolve to a static method owner.`);",
+    '          throw new TypeError(`Expected interop import "${binding.hostImportName}" to resolve to a static method owner.`);',
     '        }',
     '        const methodValue = exportedValue[binding.memberName];',
     "        if (typeof methodValue !== 'function') {",
-    "          throw new TypeError(`Expected interop import \"${binding.hostImportName}\" to resolve to a function.`);",
+    '          throw new TypeError(`Expected interop import "${binding.hostImportName}" to resolve to a function.`);',
     '        }',
     '        return methodValue;',
     '      })()',
     '      : (() => {',
     "        if (typeof exportedValue !== 'function') {",
-    "          throw new TypeError(`Expected interop import \"${binding.hostImportName}\" to resolve to a function.`);",
+    '          throw new TypeError(`Expected interop import "${binding.hostImportName}" to resolve to a function.`);',
     '        }',
     '        return exportedValue;',
     '      })();',
@@ -190,7 +194,7 @@ function createRuntimeWrapperModuleText(
     "      hostFunctions[binding.hostImportName] = binding.bindingKind === 'constructor'",
     '        ? (() => {',
     "          if (typeof exportedValue !== 'function') {",
-    "            throw new TypeError(`Expected interop import \"${binding.hostImportName}\" to resolve to a constructor.`);",
+    '            throw new TypeError(`Expected interop import "${binding.hostImportName}" to resolve to a constructor.`);',
     '          }',
     '          return (...args) => new exportedValue(...args);',
     '        })()',
@@ -200,24 +204,24 @@ function createRuntimeWrapperModuleText(
     '            return () => exportedValue;',
     '          }',
     "          if ((typeof exportedValue !== 'function' && typeof exportedValue !== 'object') || exportedValue === null) {",
-    "            throw new TypeError(`Expected interop import \"${binding.hostImportName}\" to resolve to a property owner.`);",
+    '            throw new TypeError(`Expected interop import "${binding.hostImportName}" to resolve to a property owner.`);',
     '          }',
     '          return () => exportedValue[binding.memberName];',
     '        })()',
     "        : binding.bindingKind === 'static_method'",
     '        ? (() => {',
     "          if ((typeof exportedValue !== 'function' && typeof exportedValue !== 'object') || exportedValue === null) {",
-    "            throw new TypeError(`Expected interop import \"${binding.hostImportName}\" to resolve to a static method owner.`);",
+    '            throw new TypeError(`Expected interop import "${binding.hostImportName}" to resolve to a static method owner.`);',
     '          }',
     '          const methodValue = exportedValue[binding.memberName];',
     "          if (typeof methodValue !== 'function') {",
-    "            throw new TypeError(`Expected interop import \"${binding.hostImportName}\" to resolve to a function.`);",
+    '            throw new TypeError(`Expected interop import "${binding.hostImportName}" to resolve to a function.`);',
     '          }',
     '          return (...args) => exportedValue[binding.memberName](...args);',
     '        })()',
     '        : (() => {',
     "          if (typeof exportedValue !== 'function') {",
-    "            throw new TypeError(`Expected interop import \"${binding.hostImportName}\" to resolve to a function.`);",
+    '            throw new TypeError(`Expected interop import "${binding.hostImportName}" to resolve to a function.`);',
     '          }',
     '          return exportedValue;',
     '        })();',
@@ -228,6 +232,17 @@ function createRuntimeWrapperModuleText(
     '  }',
     '  return hostFunctions;',
     '}',
+  ].join('\n');
+}
+
+function createRuntimeWrapperModuleText(
+  jsHostImports: readonly CompilerJsHostImportIR[],
+  projectPath: string,
+): string {
+  return [
+    "import { instantiateSoundscriptWasmModule } from './runtime.js';",
+    '',
+    createInteropWrapperSupportModuleText(jsHostImports, projectPath),
     '',
     'export async function instantiate(options = {}) {',
     '  const hostFunctions = await createInteropHostFunctions(options.hostFunctions, options.modules);',
@@ -238,6 +253,51 @@ function createRuntimeWrapperModuleText(
     '  return {',
     '    instance,',
     '    exports: instance.exports,',
+    '  };',
+    '}',
+    '',
+    'export default instantiate;',
+    '',
+  ].join('\n');
+}
+
+export interface CreateWasmGcPublicWrapperModuleTextOptions {
+  jsHostImports?: readonly CompilerJsHostImportIR[];
+  projectPath: string;
+  wasmGcWrapperModuleText: string;
+}
+
+export function createWasmGcPublicWrapperModuleText(
+  options: CreateWasmGcPublicWrapperModuleTextOptions,
+): string {
+  return [
+    "import { instantiateSoundscriptWasmModule } from './runtime.js';",
+    '',
+    createInteropWrapperSupportModuleText(options.jsHostImports ?? [], options.projectPath),
+    '',
+    options.wasmGcWrapperModuleText.trimEnd(),
+    '',
+    'export async function instantiate(options = {}) {',
+    '  const hostFunctions = await createInteropHostFunctions(options.hostFunctions, options.modules);',
+    '  const instanceCell = { instance: null };',
+    '  const hostImports = {',
+    '    ...(options.imports ?? {}),',
+    '    soundscript_host_function: {',
+    "      ...((options.imports?.soundscript_host_function && typeof options.imports.soundscript_host_function === 'object')",
+    '        ? options.imports.soundscript_host_function',
+    '        : {}),',
+    '      ...hostFunctions,',
+    '    },',
+    '  };',
+    '  const imports = createSoundscriptWasmGcHostImports(hostImports, instanceCell);',
+    "  const instance = await instantiateSoundscriptWasmModule(options.wasmSource ?? new URL('./module.wasm', import.meta.url), {",
+    '    imports,',
+    '  });',
+    '  instanceCell.instance = instance;',
+    '  const wrappedExports = createSoundscriptWasmGcExports(instance);',
+    '  return {',
+    '    instance,',
+    '    exports: { ...instance.exports, ...wrappedExports },',
     '  };',
     '}',
     '',
@@ -293,7 +353,8 @@ export function packageCompilerOutput(
   if (WRAPPED_RUNTIME_TARGETS.has(options.runtimeTarget)) {
     writeTextFileSync(
       wrapperPath,
-      createRuntimeWrapperModuleText(options.jsHostImports ?? [], options.projectPath),
+      options.wrapperModuleText ??
+        createRuntimeWrapperModuleText(options.jsHostImports ?? [], options.projectPath),
     );
     writeTextFileSync(declarationsPath, createRuntimeWrapperDeclarationsText());
   } else {

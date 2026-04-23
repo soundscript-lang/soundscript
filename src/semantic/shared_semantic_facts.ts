@@ -1,6 +1,6 @@
 import ts from 'typescript';
 
-import { normalize } from '../platform/path.ts';
+import { normalize, relative } from '../platform/path.ts';
 
 export type SharedSemanticScalarKind =
   | 'undefined'
@@ -94,6 +94,7 @@ export interface SharedSemanticBoundarySurfaceIR {
   kind: 'function_boundary';
   direction: 'import' | 'export';
   fileName: string;
+  path: string;
   name: string;
   params: readonly {
     name: string;
@@ -622,6 +623,7 @@ function boundarySurfaceDirection(
 
 function createFunctionBoundarySurface(
   checker: ts.TypeChecker,
+  projectDirectory: string,
   sourceFile: ts.SourceFile,
   node: ts.FunctionDeclaration,
 ): SharedSemanticBoundarySurfaceIR | undefined {
@@ -643,6 +645,7 @@ function createFunctionBoundarySurface(
     kind: 'function_boundary',
     direction,
     fileName: sourceFile.fileName,
+    path: relative(projectDirectory, sourceFile.fileName).replaceAll('\\', '/'),
     name: node.name?.text ?? '<anonymous>',
     params,
     result,
@@ -660,7 +663,12 @@ export function createSharedSemanticBoundarySurfacesFromProgram(
         if (!ts.isFunctionDeclaration(statement)) {
           return [];
         }
-        const surface = createFunctionBoundarySurface(checker, sourceFile, statement);
+        const surface = createFunctionBoundarySurface(
+          checker,
+          projectDirectory,
+          sourceFile,
+          statement,
+        );
         return surface ? [surface] : [];
       })
     )

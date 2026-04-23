@@ -1,6 +1,7 @@
 import ts from 'typescript';
 
 import { lowerProgramToCompilerIR } from './lower.ts';
+import type { CompilerJsHostImportIR } from './ir.ts';
 import {
   createRuntimeManifestFromSemanticModule,
   type RuntimeManifestIR,
@@ -24,6 +25,7 @@ export interface CompilerIrDebugSnapshot {
     kind: 'source_hir';
     modules: readonly SourceModuleIR[];
   };
+  legacyJsHostImports: readonly CompilerJsHostImportIR[];
   sharedFacts: SharedSemanticFactsIR;
   semantic: SemanticModuleIR;
   runtimeManifest: RuntimeManifestIR;
@@ -86,6 +88,7 @@ export function createCompilerIrDebugSnapshot(
   return {
     kind: 'compiler_ir_debug_snapshot',
     source,
+    legacyJsHostImports: legacyModule.jsHostImports ?? [],
     sharedFacts,
     semantic,
     runtimeManifest,

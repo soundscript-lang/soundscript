@@ -303,6 +303,7 @@ Deno.test('compiler debug snapshot keeps type-only aliases out of runtime manife
       kind: 'function_boundary',
       direction: 'export',
       fileName: join(tempDirectory, 'main.ts'),
+      path: 'main.ts',
       name: 'add',
       params: [
         { name: 'left', type: { kind: 'number' } },
