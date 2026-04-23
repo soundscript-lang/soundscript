@@ -2964,10 +2964,16 @@ Deno.test('compiler wasm-gc emitter produces runnable explicit Map iteration wit
           for (const inner of outer.values()) {
             score = score + inner.size;
             if (inner.has("aa")) {
-              score = score + 2;
+              const value = inner.get("aa");
+              if (value !== undefined) {
+                score = score + value;
+              }
             }
             if (inner.has("c")) {
-              score = score + 4;
+              const value = inner.get("c");
+              if (value !== undefined) {
+                score = score + value;
+              }
             }
             for (const [key, value] of inner.entries()) {
               score = score + key.length + value;
@@ -2976,7 +2982,10 @@ Deno.test('compiler wasm-gc emitter produces runnable explicit Map iteration wit
           for (const [group, inner] of outer.entries()) {
             score = score + group.length + inner.size;
             if (inner.has("bbb")) {
-              score = score + 3;
+              const value = inner.get("bbb");
+              if (value !== undefined) {
+                score = score + value;
+              }
             }
           }
           return score;

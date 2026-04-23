@@ -17579,6 +17579,71 @@ function getCompilerOwnedStringKeyMapTypeInfoFromExpression(
   return valueType ? { readonly: false, valueType } : undefined;
 }
 
+function getCompilerTaggedPrimitiveKindsForMapGetValueType(
+  type: ts.Type,
+): CompilerTaggedPrimitiveBoundaryKindsIR | undefined {
+  const directKinds = getHostTaggedBoundaryKinds(type);
+  if (directKinds) {
+    return withOptionalUndefinedTaggedKinds(
+      toCompilerTaggedPrimitiveBoundaryKinds(directKinds)!,
+      true,
+    );
+  }
+  if ((type.flags & ts.TypeFlags.NumberLike) !== 0) {
+    return { includesNumber: true, includesUndefined: true };
+  }
+  if ((type.flags & ts.TypeFlags.BooleanLike) !== 0) {
+    return { includesBoolean: true, includesUndefined: true };
+  }
+  if (isStringLikeType(type)) {
+    return { includesString: true, includesUndefined: true };
+  }
+  if (isSymbolLikeType(type)) {
+    return { includesSymbol: true, includesUndefined: true };
+  }
+  if ((type.flags & ts.TypeFlags.BigIntLike) !== 0) {
+    return { includesBigInt: true, includesUndefined: true };
+  }
+  if (isUndefinedType(type)) {
+    return { includesUndefined: true };
+  }
+  if (isNullType(type)) {
+    return { includesNull: true, includesUndefined: true };
+  }
+  return undefined;
+}
+
+function getCompilerOwnedStringKeyMapGetValueType(
+  expression: ts.Expression,
+  context: FunctionLoweringContext,
+): ts.Type | undefined {
+  if (ts.isParenthesizedExpression(expression)) {
+    return getCompilerOwnedStringKeyMapGetValueType(expression.expression, context);
+  }
+  if (
+    !ts.isCallExpression(expression) ||
+    !ts.isPropertyAccessExpression(expression.expression) ||
+    expression.expression.name.text !== 'get'
+  ) {
+    return undefined;
+  }
+  const receiver = expression.expression.expression;
+  return (
+    getSupportedStringKeyMapTypeInfo(
+      context.checker,
+      context.checker.getTypeAtLocation(receiver),
+    ) ?? getCompilerOwnedStringKeyMapTypeInfoFromExpression(receiver, context)
+  )?.valueType;
+}
+
+function getCompilerOwnedStringKeyMapGetTaggedPrimitiveKinds(
+  expression: ts.Expression,
+  context: FunctionLoweringContext,
+): CompilerTaggedPrimitiveBoundaryKindsIR | undefined {
+  const valueType = getCompilerOwnedStringKeyMapGetValueType(expression, context);
+  return valueType ? getCompilerTaggedPrimitiveKindsForMapGetValueType(valueType) : undefined;
+}
+
 function getSupportedStringKeySetTypeInfo(
   checker: ts.TypeChecker,
   type: ts.Type,
@@ -67915,15 +67980,41 @@ function getBoundIdentifierTaggedPrimitiveKinds(
   return lookupSymbol(context, expression.text)?.taggedPrimitiveKinds;
 }
 
+function taggedPrimitiveKindsRepresentMaybeNumber(
+  kinds: CompilerTaggedPrimitiveBoundaryKindsIR | undefined,
+): boolean {
+  return kinds?.includesNumber === true &&
+    kinds.includesBigInt !== true &&
+    kinds.includesBoolean !== true &&
+    kinds.includesNull !== true &&
+    kinds.includesString !== true &&
+    kinds.includesSymbol !== true;
+}
+
 function getCompilerScalarValueTypeForLowering(
   expression: ts.Expression,
   context: FunctionLoweringContext,
 ): CompilerValueType {
   if (ts.isIdentifier(expression)) {
-    const boundValueType = getBoundSymbolValueType(lookupSymbol(context, expression.text));
+    const boundSymbol = lookupSymbol(context, expression.text);
+    const boundValueType = getBoundSymbolValueType(boundSymbol);
     if (boundValueType === 'f64' || boundValueType === 'i32') {
       return boundValueType;
     }
+    if (
+      boundValueType === 'tagged_ref' &&
+      taggedPrimitiveKindsRepresentMaybeNumber(boundSymbol?.taggedPrimitiveKinds)
+    ) {
+      return 'f64';
+    }
+  }
+  if (
+    ts.isCallExpression(expression) &&
+    taggedPrimitiveKindsRepresentMaybeNumber(
+      getCompilerOwnedStringKeyMapGetTaggedPrimitiveKinds(expression, context),
+    )
+  ) {
+    return 'f64';
   }
   if (
     ts.isPropertyAccessExpression(expression) &&
@@ -69051,6 +69142,9 @@ function lowerVariableStatement(
       type === 'heap_ref' &&
       loweredInitializer?.kind === 'local_get' &&
       context.functionRuntime.compilerOwnedSetLocals.has(loweredInitializer.name);
+    const compilerOwnedMapGetTaggedPrimitiveKinds = type === 'tagged_ref' && declaration.initializer
+      ? getCompilerOwnedStringKeyMapGetTaggedPrimitiveKinds(declaration.initializer, context)
+      : undefined;
     if (compilerOwnedMapAlias) {
       context.functionRuntime.compilerOwnedMapLocals.add(emittedName);
     }
@@ -69070,6 +69164,7 @@ function lowerVariableStatement(
         : type === 'tagged_ref'
         ? taggedHeapUnionObjectRepresentation
         : undefined,
+      taggedPrimitiveKinds: compilerOwnedMapGetTaggedPrimitiveKinds,
       hostBoundary: ambientHostBoundaryInitializer,
       ambientHostSourceHeader,
       aliasValue: hostAliasValue,
