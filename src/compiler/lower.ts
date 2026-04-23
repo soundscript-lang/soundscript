@@ -17700,6 +17700,37 @@ function getCompilerOwnedSetTypeInfoFromExpression(
   };
 }
 
+function recordCompilerOwnedCollectionLocalFromExpression(
+  expression: ts.Expression,
+  localName: string,
+  context: FunctionLoweringContext,
+): void {
+  const expressionType = context.checker.getTypeAtLocation(expression);
+  if (getSupportedStringKeyMapTypeInfo(context.checker, expressionType)) {
+    context.functionRuntime.compilerOwnedMapLocals.add(localName);
+    context.functionRuntime.compilerOwnedMapStorageLocals.add(localName);
+  }
+  if (getSupportedStringKeySetTypeInfo(context.checker, expressionType)) {
+    context.functionRuntime.compilerOwnedSetLocals.add(localName);
+  }
+}
+
+function propagateCompilerOwnedCollectionLocalAlias(
+  sourceName: string,
+  targetName: string,
+  context: FunctionLoweringContext,
+): void {
+  if (context.functionRuntime.compilerOwnedMapLocals.has(sourceName)) {
+    context.functionRuntime.compilerOwnedMapLocals.add(targetName);
+  }
+  if (context.functionRuntime.compilerOwnedMapStorageLocals.has(sourceName)) {
+    context.functionRuntime.compilerOwnedMapStorageLocals.add(targetName);
+  }
+  if (context.functionRuntime.compilerOwnedSetLocals.has(sourceName)) {
+    context.functionRuntime.compilerOwnedSetLocals.add(targetName);
+  }
+}
+
 function getSupportedStringKeySetReceiverTypeInfo(
   checker: ts.TypeChecker,
   type: ts.Type,
@@ -29922,6 +29953,9 @@ function materializeHeapExpressionToLocal(
       context,
     );
   }
+  if (loweredExpression.kind === 'local_get' && loweredExpression.type === 'heap_ref') {
+    propagateCompilerOwnedCollectionLocalAlias(loweredExpression.name, tempName, context);
+  }
   return {
     name: tempName,
     representation,
@@ -30028,6 +30062,9 @@ function forceMaterializeHeapExpressionToLocal(
       getProvenSpecializedObjectOwnPropertyKeyOrderFromExpression(expression, context),
       context,
     );
+  }
+  if (loweredExpression.kind === 'local_get' && loweredExpression.type === 'heap_ref') {
+    propagateCompilerOwnedCollectionLocalAlias(loweredExpression.name, tempName, context);
   }
   return {
     name: tempName,
@@ -67562,6 +67599,9 @@ function lowerPropertyAccessExpression(
   }
   context.nextLocalId += 1;
   context.locals.push({ name: resultName, type: resultType });
+  if (resultType === 'heap_ref') {
+    recordCompilerOwnedCollectionLocalFromExpression(expression, resultName, context);
+  }
   context.functionRuntime.operations.push({
     kind: 'get_specialized_object_field',
     objectName: stableObjectName,

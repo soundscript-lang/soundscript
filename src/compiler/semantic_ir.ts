@@ -3353,7 +3353,7 @@ function semanticBodyFromCompilerIR(
     mapSetsAfterAllocation.forEach((operation, index) => {
       if (
         emittedMapSetIndexes.has(index) ||
-        !allocatedMaps.has(operation.objectName) ||
+        !seenAssignments.has(operation.objectName) ||
         !seenAssignments.has(operation.keyName) ||
         !seenAssignments.has(operation.valueName)
       ) {
@@ -3367,7 +3367,7 @@ function semanticBodyFromCompilerIR(
     setAddsAfterAllocation.forEach((operation, index) => {
       if (
         emittedSetAddIndexes.has(index) ||
-        !allocatedSets.has(operation.objectName) ||
+        !seenAssignments.has(operation.objectName) ||
         !seenAssignments.has(operation.valueName)
       ) {
         return;
@@ -3380,7 +3380,7 @@ function semanticBodyFromCompilerIR(
     dynamicSetsAfterAllocation.forEach((operation, index) => {
       if (
         emittedDynamicSetIndexes.has(index) ||
-        !allocatedDynamicObjects.has(operation.objectName) ||
+        !seenAssignments.has(operation.objectName) ||
         !seenAssignments.has(operation.propertyKeyName) ||
         !seenAssignments.has(operation.valueName)
       ) {

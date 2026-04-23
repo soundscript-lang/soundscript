@@ -1571,6 +1571,10 @@ ${
   if (!(value instanceof Map)) {
     throw new TypeError('Soundscript WasmGC Map host import result must be a Map.');
   }
+  const existing = state?.hostToInternal.get(value);
+  if (existing !== undefined) {
+    return existing;
+  }
   const instance = requireInstance();
   const exports = instance.exports;
   const suffix = adapter.suffix;
@@ -1583,11 +1587,13 @@ ${
     }
     set(result, stringToInternal(key), boundaryValueToInternal(adapter.value, entry, undefined, state));
   }
+  state?.hostToInternal.set(value, result);
+  state?.internalToHost.set(result, value);
   return result;
 }`);
   }
   if (needsMapFromInternalAdapters) {
-    helpers.push(`function mapFromInternal(adapter, value, state) {
+    helpers.push(`function syncInternalMapToHost(adapter, value, host, state) {
   if (value == null) {
     throw new TypeError('Soundscript WasmGC Map host import argument was null.');
   }
@@ -1597,20 +1603,38 @@ ${
   const size = requireExport(exports, \`__soundscript_map_size_string_\${suffix}\`)(value);
   const keyAt = requireExport(exports, \`__soundscript_map_key_at_string_\${suffix}\`);
   const valueAt = requireExport(exports, \`__soundscript_map_value_at_string_\${suffix}\`);
-  const result = new Map();
+  host.clear();
   for (let index = 0; index < size; index += 1) {
-    result.set(
+    host.set(
       stringFromInternal(keyAt(value, index)),
       boundaryValueFromInternal(adapter.value, valueAt(value, index), undefined, state),
     );
   }
-  return result;
+  return host;
+}
+
+function mapFromInternal(adapter, value, state) {
+  if (value == null) {
+    throw new TypeError('Soundscript WasmGC Map host import argument was null.');
+  }
+  const existing = state?.internalToHost.get(value);
+  if (existing instanceof Map) {
+    return syncInternalMapToHost(adapter, value, existing, state);
+  }
+  const result = new Map();
+  state?.internalToHost.set(value, result);
+  state?.hostToInternal.set(result, value);
+  return syncInternalMapToHost(adapter, value, result, state);
 }`);
   }
   if (needsSetToInternalAdapters) {
     helpers.push(`function setToInternal(adapter, value, state) {
   if (!(value instanceof Set)) {
     throw new TypeError('Soundscript WasmGC Set host import result must be a Set.');
+  }
+  const existing = state?.hostToInternal.get(value);
+  if (existing !== undefined) {
+    return existing;
   }
   const instance = requireInstance();
   const exports = instance.exports;
@@ -1621,11 +1645,13 @@ ${
   for (const entry of value) {
     add(result, boundaryValueToInternal(adapter.value, entry, undefined, state));
   }
+  state?.hostToInternal.set(value, result);
+  state?.internalToHost.set(result, value);
   return result;
 }`);
   }
   if (needsSetFromInternalAdapters) {
-    helpers.push(`function setFromInternal(adapter, value, state) {
+    helpers.push(`function syncInternalSetToHost(adapter, value, host, state) {
   if (value == null) {
     throw new TypeError('Soundscript WasmGC Set host import argument was null.');
   }
@@ -1634,11 +1660,25 @@ ${
   const suffix = adapter.suffix;
   const size = requireExport(exports, \`__soundscript_set_size_\${suffix}\`)(value);
   const valueAt = requireExport(exports, \`__soundscript_set_value_at_\${suffix}\`);
-  const result = new Set();
+  host.clear();
   for (let index = 0; index < size; index += 1) {
-    result.add(boundaryValueFromInternal(adapter.value, valueAt(value, index), undefined, state));
+    host.add(boundaryValueFromInternal(adapter.value, valueAt(value, index), undefined, state));
   }
-  return result;
+  return host;
+}
+
+function setFromInternal(adapter, value, state) {
+  if (value == null) {
+    throw new TypeError('Soundscript WasmGC Set host import argument was null.');
+  }
+  const existing = state?.internalToHost.get(value);
+  if (existing instanceof Set) {
+    return syncInternalSetToHost(adapter, value, existing, state);
+  }
+  const result = new Set();
+  state?.internalToHost.set(value, result);
+  state?.hostToInternal.set(result, value);
+  return syncInternalSetToHost(adapter, value, result, state);
 }`);
   }
   return helpers.join('\n\n');
@@ -2125,6 +2165,10 @@ ${
     if (!(value instanceof Map)) {
       throw new TypeError('Soundscript WasmGC Map export argument must be a Map.');
     }
+    const existing = state?.hostToInternal.get(value);
+    if (existing !== undefined) {
+      return existing;
+    }
     const suffix = adapter.suffix;
     const create = requireExport(wasmExports, \`__soundscript_map_new_string_\${suffix}\`);
     const set = requireExport(wasmExports, \`__soundscript_map_set_string_\${suffix}\`);
@@ -2135,11 +2179,13 @@ ${
       }
       set(result, stringToInternal(key), boundaryValueToInternal(adapter.value, entry, undefined, state));
     }
+    state?.hostToInternal.set(value, result);
+    state?.internalToHost.set(result, value);
     return result;
   }`);
   }
   if (needsMapFromInternalAdapters) {
-    helpers.push(`function mapFromInternal(adapter, value, state) {
+    helpers.push(`function syncInternalMapToHost(adapter, value, host, state) {
     if (value == null) {
       throw new TypeError('Soundscript WasmGC Map export result was null.');
     }
@@ -2147,20 +2193,38 @@ ${
     const size = requireExport(wasmExports, \`__soundscript_map_size_string_\${suffix}\`)(value);
     const keyAt = requireExport(wasmExports, \`__soundscript_map_key_at_string_\${suffix}\`);
     const valueAt = requireExport(wasmExports, \`__soundscript_map_value_at_string_\${suffix}\`);
-    const result = new Map();
+    host.clear();
     for (let index = 0; index < size; index += 1) {
-      result.set(
+      host.set(
         stringFromInternal(keyAt(value, index)),
         boundaryValueFromInternal(adapter.value, valueAt(value, index), undefined, state),
       );
     }
-    return result;
+    return host;
+  }
+
+  function mapFromInternal(adapter, value, state) {
+    if (value == null) {
+      throw new TypeError('Soundscript WasmGC Map export result was null.');
+    }
+    const existing = state?.internalToHost.get(value);
+    if (existing instanceof Map) {
+      return syncInternalMapToHost(adapter, value, existing, state);
+    }
+    const result = new Map();
+    state?.internalToHost.set(value, result);
+    state?.hostToInternal.set(result, value);
+    return syncInternalMapToHost(adapter, value, result, state);
   }`);
   }
   if (needsSetToInternalAdapters) {
     helpers.push(`function setToInternal(adapter, value, state) {
     if (!(value instanceof Set)) {
       throw new TypeError('Soundscript WasmGC Set export argument must be a Set.');
+    }
+    const existing = state?.hostToInternal.get(value);
+    if (existing !== undefined) {
+      return existing;
     }
     const suffix = adapter.suffix;
     const create = requireExport(wasmExports, \`__soundscript_set_new_\${suffix}\`);
@@ -2169,22 +2233,38 @@ ${
     for (const entry of value) {
       add(result, boundaryValueToInternal(adapter.value, entry, undefined, state));
     }
+    state?.hostToInternal.set(value, result);
+    state?.internalToHost.set(result, value);
     return result;
   }`);
   }
   if (needsSetFromInternalAdapters) {
-    helpers.push(`function setFromInternal(adapter, value, state) {
+    helpers.push(`function syncInternalSetToHost(adapter, value, host, state) {
     if (value == null) {
       throw new TypeError('Soundscript WasmGC Set export result was null.');
     }
     const suffix = adapter.suffix;
     const size = requireExport(wasmExports, \`__soundscript_set_size_\${suffix}\`)(value);
     const valueAt = requireExport(wasmExports, \`__soundscript_set_value_at_\${suffix}\`);
-    const result = new Set();
+    host.clear();
     for (let index = 0; index < size; index += 1) {
-      result.add(boundaryValueFromInternal(adapter.value, valueAt(value, index), undefined, state));
+      host.add(boundaryValueFromInternal(adapter.value, valueAt(value, index), undefined, state));
     }
-    return result;
+    return host;
+  }
+
+  function setFromInternal(adapter, value, state) {
+    if (value == null) {
+      throw new TypeError('Soundscript WasmGC Set export result was null.');
+    }
+    const existing = state?.internalToHost.get(value);
+    if (existing instanceof Set) {
+      return syncInternalSetToHost(adapter, value, existing, state);
+    }
+    const result = new Set();
+    state?.internalToHost.set(value, result);
+    state?.hostToInternal.set(result, value);
+    return syncInternalSetToHost(adapter, value, result, state);
   }`);
   }
   return helpers.join('\n\n  ');
