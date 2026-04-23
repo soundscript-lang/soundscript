@@ -6038,6 +6038,76 @@ compilerIntegrationTest(
 );
 
 compilerIntegrationTest(
+  'compileProject narrows wasm-node nested collection union fields across direct property reads',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+            },
+            include: ['src/**/*.ts'],
+            soundscript: {
+              target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          'type Bag = {',
+          '  values: number[] | null;',
+          '  scores: Map<string, number> | null;',
+          '  flags: Set<number> | null;',
+          '};',
+          '',
+          'export function score(value: Bag): number {',
+          '  const valuesScore = value.values === null ? 0 : value.values[0] + value.values[1];',
+          '  const mapScore = value.scores === null ? 0 : (value.scores.get("left") ?? 0) + (value.scores.get("right") ?? 0);',
+          '  const setScore = value.flags === null ? 0 : (value.flags.has(3) ? 10 : 0) + (value.flags.has(5) ? 1 : 0);',
+          '  return valuesScore + mapScore + setScore;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+
+    const instance = await instantiateCompiledModuleInJs(tempDirectory);
+    const scoreName = await resolveQualifiedExportName(tempDirectory, 'score');
+    const score = instance.exports[scoreName];
+    if (typeof score !== 'function') {
+      throw new Error(`Expected exported function "${scoreName}".`);
+    }
+    assertEquals(
+      score({
+        values: [1, 2],
+        scores: new Map([['left', 3], ['right', 4]]),
+        flags: new Set([3, 5]),
+      }),
+      21,
+    );
+    assertEquals(score({ values: null, scores: null, flags: null }), 0);
+  },
+);
+
+compilerIntegrationTest(
   'compileProject rethrows uncaught soundscript builtin Error throws through wasm-node wrappers',
   async () => {
     const tempDirectory = await createTempProject([

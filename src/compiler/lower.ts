@@ -5670,6 +5670,9 @@ function lowerExpressionAsValueType(
       return lowered;
     }
     const expressionType = context.checker.getTypeAtLocation(expression);
+    const compilerOwnedCollectionType =
+      getSupportedStringKeyMapTypeInfo(context.checker, expressionType) !== undefined ||
+      getSupportedStringKeySetTypeInfo(context.checker, expressionType) !== undefined;
     const internalAmbientRepresentation = getInternalAmbientDeclarationObjectRepresentation(
       context.checker,
       expressionType,
@@ -5682,21 +5685,25 @@ function lowerExpressionAsValueType(
       lowered.type === 'tagged_ref' &&
       (
         isSupportedHeapLocalType(context.checker, expressionType) ||
+        getSupportedStringKeyMapTypeInfo(context.checker, expressionType) ||
+        getSupportedStringKeySetTypeInfo(context.checker, expressionType) ||
         isHostTaggedObjectExpression(expression, context) ||
         internalAmbientRepresentation
       )
     ) {
       return {
         kind: 'untag_heap_object',
-        heapRepresentation: getAmbientHostImportedBoundaryRepresentationFromExpression(
-          expression,
-          context,
-        ) ??
-          (ts.isIdentifier(expression)
-            ? lookupSymbol(context, expression.text)?.heapRepresentation
-            : undefined) ??
-          getHeapObjectRepresentationFromExpression(expression, context) ??
-          internalAmbientRepresentation,
+        heapRepresentation: compilerOwnedCollectionType
+          ? undefined
+          : getAmbientHostImportedBoundaryRepresentationFromExpression(
+            expression,
+            context,
+          ) ??
+            (ts.isIdentifier(expression)
+              ? lookupSymbol(context, expression.text)?.heapRepresentation
+              : undefined) ??
+            getHeapObjectRepresentationFromExpression(expression, context) ??
+            internalAmbientRepresentation,
         value: lowered,
         type: 'heap_ref',
       };
@@ -25379,7 +25386,43 @@ function tryLowerSpecializedObjectFieldAsValueType(
     expression.name.text,
   );
   if (!fieldLayout || fieldLayout.valueType !== expectedType) {
-    return undefined;
+    if (
+      !fieldLayout ||
+      fieldLayout.valueType !== 'tagged_ref' ||
+      getSupportedOwnedArrayValueTypeForType(
+          context.checker,
+          context.checker.getTypeAtLocation(expression),
+        ) !== expectedType
+    ) {
+      return undefined;
+    }
+    if (!objectName) {
+      const materialized = materializeHeapExpressionToLocal(
+        expression.expression,
+        context,
+        expression.name.text,
+      );
+      objectName = materialized.name;
+    }
+    const taggedResultName = createLocalName(`${expression.name.text}_tagged`, context.nextLocalId);
+    context.nextLocalId += 1;
+    context.locals.push({ name: taggedResultName, type: 'tagged_ref' });
+    context.functionRuntime.operations.push({
+      kind: 'get_specialized_object_field',
+      objectName,
+      resultName: taggedResultName,
+      representation: boundaryRepresentation,
+      fieldIndex: fieldLayout.fieldIndex,
+    });
+    return {
+      kind: 'untag_heap_object',
+      value: {
+        kind: 'local_get',
+        name: taggedResultName,
+        type: 'tagged_ref',
+      },
+      type: expectedType,
+    };
   }
   if (!objectName) {
     const materialized = materializeHeapExpressionToLocal(
@@ -29980,6 +30023,9 @@ function materializeHeapExpressionToLocal(
   }
   if (loweredExpression.kind === 'local_get' && loweredExpression.type === 'heap_ref') {
     propagateCompilerOwnedCollectionLocalAlias(loweredExpression.name, tempName, context);
+  }
+  if (getLoweredExpressionValueType(loweredExpression) === 'heap_ref') {
+    recordCompilerOwnedCollectionLocalFromExpression(expression, tempName, context);
   }
   return {
     name: tempName,
@@ -67603,12 +67649,12 @@ function lowerPropertyAccessExpression(
     );
   }
 
-  const fieldIndex = getSpecializedObjectFieldIndex(
+  const fieldLayout = getSpecializedObjectFieldValueLayout(
     context.runtime,
     boundaryRepresentation,
     expression.name.text,
   );
-  if (fieldIndex === undefined) {
+  if (fieldLayout === undefined) {
     throw new CompilerUnsupportedError(
       'Only known fixed-layout object properties can be read in compiler subset.',
       expression.name,
@@ -67623,11 +67669,36 @@ function lowerPropertyAccessExpression(
   if (closureSignatureId !== undefined) {
     annotateSpecializedClosureFieldSignature(
       boundaryRepresentation,
-      fieldIndex,
+      fieldLayout.fieldIndex,
       closureSignatureId,
       expression.name,
       context,
     );
+  }
+  if (fieldLayout.valueType === 'tagged_ref' && resultType === 'heap_ref') {
+    const taggedResultName = createLocalName(
+      `${expression.name.text}_tagged`,
+      context.nextLocalId,
+    );
+    context.nextLocalId += 1;
+    context.locals.push({ name: taggedResultName, type: 'tagged_ref' });
+    context.functionRuntime.operations.push({
+      kind: 'get_specialized_object_field',
+      objectName: stableObjectName,
+      resultName: taggedResultName,
+      representation: boundaryRepresentation,
+      fieldIndex: fieldLayout.fieldIndex,
+      closureSignatureId,
+    });
+    return {
+      kind: 'untag_heap_object',
+      value: {
+        kind: 'local_get',
+        name: taggedResultName,
+        type: 'tagged_ref',
+      },
+      type: resultType,
+    };
   }
   context.nextLocalId += 1;
   context.locals.push({ name: resultName, type: resultType });
@@ -67639,7 +67710,7 @@ function lowerPropertyAccessExpression(
     objectName: stableObjectName,
     resultName,
     representation: boundaryRepresentation,
-    fieldIndex,
+    fieldIndex: fieldLayout.fieldIndex,
     closureSignatureId,
   });
   return {

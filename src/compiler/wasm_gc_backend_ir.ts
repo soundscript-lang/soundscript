@@ -1038,6 +1038,7 @@ function createWasmGcWrapperPlan(
   ];
   const internalToHostBoundaries = [
     ...hostImportWrappers.flatMap((wrapper) => wrapper.paramBoundaries ?? []),
+    ...exportWrappers.flatMap((wrapper) => wrapper.paramBoundaries ?? []),
     ...exportWrappers.map((wrapper) => wrapper.resultBoundary),
   ];
   const taggedValueAdapterHelpers = mergeSortedUniqueStrings(
