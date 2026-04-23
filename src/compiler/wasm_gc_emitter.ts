@@ -213,6 +213,12 @@ function boundaryFieldWasmTypeMatches(boundary: ValueBoundaryIR, wasmType: strin
   if (boundaryValueWasmType(boundary) === wasmType) {
     return true;
   }
+  if (
+    wasmType === `(ref null ${taggedValueTypeName()})` &&
+    (boundary.kind === 'string' || boundary.kind === 'symbol' || boundary.kind === 'bigint')
+  ) {
+    return true;
+  }
   const valueType = compilerValueTypeForStorage(selectWasmGcStorage(boundary));
   return wasmType === '(ref null eq)' && valueType !== 'f64' && valueType !== 'i32';
 }

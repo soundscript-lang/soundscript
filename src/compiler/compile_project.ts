@@ -586,6 +586,12 @@ function publicObjectBoundaryFieldWasmTypeMatches(
   if (wasmTypeForPublicBoundaryField(boundary) === wasmType) {
     return true;
   }
+  if (
+    wasmType === '(ref null $tagged_value)' &&
+    (boundary.kind === 'string' || boundary.kind === 'symbol' || boundary.kind === 'bigint')
+  ) {
+    return true;
+  }
   const valueType = compilerValueTypeForStorage(selectWasmGcStorage(boundary));
   return wasmType === '(ref null eq)' && valueType !== 'f64' && valueType !== 'i32';
 }

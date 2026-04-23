@@ -70,6 +70,7 @@ interface SpecializedObjectBoundaryHelperPlan {
     getExportName: string;
     name: string;
     setExportName: string;
+    wasmType: string;
   }[];
 }
 
@@ -115,6 +116,12 @@ function objectBoundaryFieldWasmType(boundary: ValueBoundaryIR): string {
 
 function objectBoundaryFieldWasmTypeMatches(boundary: ValueBoundaryIR, wasmType: string): boolean {
   if (objectBoundaryFieldWasmType(boundary) === wasmType) {
+    return true;
+  }
+  if (
+    wasmType === '(ref null $tagged_value)' &&
+    (boundary.kind === 'string' || boundary.kind === 'symbol' || boundary.kind === 'bigint')
+  ) {
     return true;
   }
   const valueType = compilerValueTypeForStorage(selectWasmGcStorage(boundary));
@@ -169,7 +176,7 @@ function wrapperObjectBoundaries(
         createExportName: `__soundscript_object_new_${helperBase}`,
         key: boundaryKey,
         testExportName: `__soundscript_object_is_${helperBase}`,
-        fields: fields.map((field) => ({
+        fields: fields.map((field, index) => ({
           getExportName: `__soundscript_object_get_${helperBase}_${
             sanitizeBoundaryHelperIdentifier(field.name)
           }`,
@@ -177,6 +184,7 @@ function wrapperObjectBoundaries(
           setExportName: `__soundscript_object_set_${helperBase}_${
             sanitizeBoundaryHelperIdentifier(field.name)
           }`,
+          wasmType: typePlan.fields?.[index]?.wasmType ?? '',
         })),
       });
     });
@@ -1349,6 +1357,22 @@ function isSupportedBoundaryObjectValue(value) {
     !(value instanceof Map) && !(value instanceof Set);
 }
 
+function objectFieldValueToInternal(boundary, value, field, state) {
+  if (field.wasmType === '(ref null $tagged_value)' &&
+    (boundary.kind === 'string' || boundary.kind === 'symbol' || boundary.kind === 'bigint')) {
+    return tagHostValue(value);
+  }
+  return boundaryValueToInternal(boundary, value, undefined, state);
+}
+
+function objectFieldValueFromInternal(boundary, value, field, state) {
+  if (field.wasmType === '(ref null $tagged_value)' &&
+    (boundary.kind === 'string' || boundary.kind === 'symbol' || boundary.kind === 'bigint')) {
+    return untagHostValue(value);
+  }
+  return boundaryValueFromInternal(boundary, value, undefined, state);
+}
+
 function objectToInternal(boundary, value, state) {
   if (!isSupportedBoundaryObjectValue(value)) {
     throw new TypeError('Soundscript WasmGC object host import result must be a plain object.');
@@ -1361,10 +1385,10 @@ function objectToInternal(boundary, value, state) {
   const exports = instance.exports;
   const helper = objectBoundaryHelper(boundary);
   const internal = requireExport(exports, helper.createExportName)(...helper.fields.map((field) =>
-    boundaryValueToInternal(
+    objectFieldValueToInternal(
       boundary.fields.find((candidate) => candidate.name === field.name).value,
       value[field.name],
-      undefined,
+      field,
       state,
     )
   ));
@@ -1379,10 +1403,10 @@ function syncInternalObjectToHost(boundary, internal, host, state) {
   const exports = instance.exports;
   const helper = objectBoundaryHelper(boundary);
   for (const field of helper.fields) {
-    host[field.name] = boundaryValueFromInternal(
+    host[field.name] = objectFieldValueFromInternal(
       boundary.fields.find((candidate) => candidate.name === field.name).value,
       requireExport(exports, field.getExportName)(internal),
-      undefined,
+      field,
       state,
     );
   }
@@ -1411,10 +1435,10 @@ function syncHostObjectToInternal(boundary, host, internal, state) {
   for (const field of helper.fields) {
     requireExport(exports, field.setExportName)(
       internal,
-      boundaryValueToInternal(
+      objectFieldValueToInternal(
         boundary.fields.find((candidate) => candidate.name === field.name).value,
         host[field.name],
-        undefined,
+        field,
         state,
       ),
     );
@@ -1982,6 +2006,22 @@ function renderExportBoundaryAdapterHelpers(plan: WasmGcModulePlanIR): string {
       !(value instanceof Map) && !(value instanceof Set);
   }
 
+  function objectFieldValueToInternal(boundary, value, field, state) {
+    if (field.wasmType === '(ref null $tagged_value)' &&
+      (boundary.kind === 'string' || boundary.kind === 'symbol' || boundary.kind === 'bigint')) {
+      return tagHostValue(value);
+    }
+    return boundaryValueToInternal(boundary, value, undefined, state);
+  }
+
+  function objectFieldValueFromInternal(boundary, value, field, state) {
+    if (field.wasmType === '(ref null $tagged_value)' &&
+      (boundary.kind === 'string' || boundary.kind === 'symbol' || boundary.kind === 'bigint')) {
+      return untagHostValue(value);
+    }
+    return boundaryValueFromInternal(boundary, value, undefined, state);
+  }
+
   function objectToInternal(boundary, value, state) {
     if (!isSupportedBoundaryObjectValue(value)) {
       throw new TypeError('Soundscript WasmGC object export argument must be a plain object.');
@@ -1992,10 +2032,10 @@ function renderExportBoundaryAdapterHelpers(plan: WasmGcModulePlanIR): string {
     }
     const helper = objectBoundaryHelper(boundary);
     const internal = requireExport(wasmExports, helper.createExportName)(...helper.fields.map((field) =>
-      boundaryValueToInternal(
+      objectFieldValueToInternal(
         boundary.fields.find((candidate) => candidate.name === field.name).value,
         value[field.name],
-        undefined,
+        field,
         state,
       )
     ));
@@ -2008,10 +2048,10 @@ function renderExportBoundaryAdapterHelpers(plan: WasmGcModulePlanIR): string {
   function syncInternalObjectToHost(boundary, internal, host, state) {
     const helper = objectBoundaryHelper(boundary);
     for (const field of helper.fields) {
-      host[field.name] = boundaryValueFromInternal(
+      host[field.name] = objectFieldValueFromInternal(
         boundary.fields.find((candidate) => candidate.name === field.name).value,
         requireExport(wasmExports, field.getExportName)(internal),
-        undefined,
+        field,
         state,
       );
     }
@@ -2038,10 +2078,10 @@ function renderExportBoundaryAdapterHelpers(plan: WasmGcModulePlanIR): string {
     for (const field of helper.fields) {
       requireExport(wasmExports, field.setExportName)(
         internal,
-        boundaryValueToInternal(
+        objectFieldValueToInternal(
           boundary.fields.find((candidate) => candidate.name === field.name).value,
           host[field.name],
-          undefined,
+          field,
           state,
         ),
       );

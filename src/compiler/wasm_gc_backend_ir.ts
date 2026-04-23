@@ -622,6 +622,58 @@ function valueBoundaryIsTaggedHeapArm(boundary: ValueBoundaryIR): boolean {
   }
 }
 
+function valueBoundaryIsTaggedObjectFieldScalar(boundary: ValueBoundaryIR): boolean {
+  return boundary.kind === 'string' || boundary.kind === 'symbol' || boundary.kind === 'bigint';
+}
+
+function addTaggedObjectFieldAdapterHelpers(
+  helpers: Set<string>,
+  boundary: ValueBoundaryIR,
+  insideObjectField = false,
+): void {
+  if (boundary.kind === 'object') {
+    for (const field of boundary.fields ?? []) {
+      addTaggedObjectFieldAdapterHelpers(helpers, field.value, true);
+    }
+    return;
+  }
+  if (boundary.kind === 'union') {
+    for (const arm of boundary.arms) {
+      addTaggedObjectFieldAdapterHelpers(helpers, arm, insideObjectField);
+    }
+    return;
+  }
+  if (insideObjectField && valueBoundaryIsTaggedObjectFieldScalar(boundary)) {
+    const kinds: CompilerTaggedPrimitiveBoundaryKindsIR = {};
+    addBoundaryTaggedPrimitiveKinds(kinds, boundary);
+    addTaggedValueAdapterHelpers(helpers, compactTaggedPrimitiveKinds(kinds));
+  }
+}
+
+function addTaggedObjectFieldResultHelpers(
+  helpers: Set<string>,
+  boundary: ValueBoundaryIR,
+  insideObjectField = false,
+): void {
+  if (boundary.kind === 'object') {
+    for (const field of boundary.fields ?? []) {
+      addTaggedObjectFieldResultHelpers(helpers, field.value, true);
+    }
+    return;
+  }
+  if (boundary.kind === 'union') {
+    for (const arm of boundary.arms) {
+      addTaggedObjectFieldResultHelpers(helpers, arm, insideObjectField);
+    }
+    return;
+  }
+  if (insideObjectField && valueBoundaryIsTaggedObjectFieldScalar(boundary)) {
+    const kinds: CompilerTaggedPrimitiveBoundaryKindsIR = {};
+    addBoundaryTaggedPrimitiveKinds(kinds, boundary);
+    addTaggedValueResultHelpers(helpers, compactTaggedPrimitiveKinds(kinds));
+  }
+}
+
 function addTaggedValueAdapterHelpersForBoundary(
   helpers: Set<string>,
   boundary: ValueBoundaryIR | undefined,
@@ -630,6 +682,7 @@ function addTaggedValueAdapterHelpersForBoundary(
   if (!boundary) {
     return;
   }
+  addTaggedObjectFieldAdapterHelpers(helpers, boundary);
   if (boundary.kind === 'union') {
     for (const arm of boundary.arms) {
       addTaggedValueAdapterHelpersForBoundary(helpers, arm, true);
@@ -695,6 +748,7 @@ function addTaggedValueResultHelpersForBoundary(
   if (!boundary) {
     return;
   }
+  addTaggedObjectFieldResultHelpers(helpers, boundary);
   if (boundary.kind === 'union') {
     helpers.add('__soundscript_host_tag_type');
     for (const arm of boundary.arms) {

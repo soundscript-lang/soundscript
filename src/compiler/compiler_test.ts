@@ -5579,6 +5579,72 @@ compilerIntegrationTest(
 );
 
 compilerIntegrationTest(
+  'compileProject adapts wasm-node string-field object union results through the WasmGC public wrapper',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+            },
+            include: ['src/**/*.ts'],
+            soundscript: {
+              target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          'type Left = { left: number };',
+          'type Right = { right: string };',
+          'type Result = Left | Right;',
+          '',
+          'export function choose(flag: boolean): Result {',
+          '  if (flag) {',
+          '    return { left: 4 };',
+          '  }',
+          '  return { right: "bee" };',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts?.wrapperPath);
+
+    const wrapperSource = await Deno.readTextFile(result.artifacts.wrapperPath);
+    assertStringIncludes(wrapperSource, 'createSoundscriptWasmGcHostImports');
+    assertStringIncludes(wrapperSource, 'createSoundscriptWasmGcExports');
+
+    const instance = await instantiateCompiledModuleInJs(tempDirectory);
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'choose');
+    const exported = instance.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+    assertEquals(exported(true), { left: 4 });
+    assertEquals(exported(false), { right: 'bee' });
+  },
+);
+
+compilerIntegrationTest(
   'compileProject rethrows uncaught soundscript builtin Error throws through wasm-node wrappers',
   async () => {
     const tempDirectory = await createTempProject([
