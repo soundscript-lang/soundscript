@@ -14,6 +14,9 @@ import {
 import {
   compilerValueTypeForStorage,
   createCollectionBoundaryAdapter,
+  createCollectionBoundaryAdapterForBoundary,
+  valueBoundaryFromSemanticType,
+  type ValueBoundaryIR,
   valueCollectionAdapterKey,
   type ValueCollectionBoundaryAdapterIR,
   type ValueStoragePlanIR,
@@ -128,6 +131,8 @@ export interface WasmGcExportWrapperPlanIR {
   wasmExportName: string;
   paramTypes: readonly string[];
   resultType: string;
+  paramBoundaries?: readonly ValueBoundaryIR[];
+  resultBoundary?: ValueBoundaryIR;
   paramBoundaryAdapters?: readonly (WasmGcCollectionBoundaryAdapterIR | undefined)[];
   resultBoundaryAdapter?: WasmGcCollectionBoundaryAdapterIR;
 }
@@ -138,6 +143,8 @@ export interface WasmGcHostImportWrapperPlanIR {
   hostImportName: string;
   paramTypes: readonly string[];
   resultType: string;
+  paramBoundaries?: readonly ValueBoundaryIR[];
+  resultBoundary?: ValueBoundaryIR;
   paramBoundaryAdapters?: readonly (WasmGcCollectionBoundaryAdapterIR | undefined)[];
   resultBoundaryAdapter?: WasmGcCollectionBoundaryAdapterIR;
 }
@@ -623,7 +630,7 @@ function addTaggedValueResultHelpers(
     return;
   }
   if (kinds.includesString) {
-    helpers.add('__soundscript_host_tag_extern_payload');
+    helpers.add('__soundscript_host_tag_string_payload');
   }
   if (kinds.includesBigInt) {
     helpers.add('__soundscript_host_tag_bigint_payload');
@@ -633,6 +640,74 @@ function addTaggedValueResultHelpers(
   }
   if (kinds.includesBoolean || kinds.includesNumber) {
     helpers.add('__soundscript_host_tag_number_payload');
+  }
+}
+
+function addBoundaryTaggedPrimitiveKinds(
+  kinds: CompilerTaggedPrimitiveBoundaryKindsIR,
+  boundary: ValueBoundaryIR,
+): boolean {
+  switch (boundary.kind) {
+    case 'undefined':
+      kinds.includesUndefined = true;
+      return true;
+    case 'null':
+      kinds.includesNull = true;
+      return true;
+    case 'boolean':
+      kinds.includesBoolean = true;
+      return true;
+    case 'number':
+      kinds.includesNumber = true;
+      return true;
+    case 'string':
+      kinds.includesString = true;
+      return true;
+    case 'symbol':
+      kinds.includesSymbol = true;
+      return true;
+    case 'bigint':
+      kinds.includesBigInt = true;
+      return true;
+    default:
+      return false;
+  }
+}
+
+function taggedPrimitiveKindsForValueBoundary(
+  boundary: ValueBoundaryIR | undefined,
+): CompilerTaggedPrimitiveBoundaryKindsIR | undefined {
+  if (!boundary || boundary.kind !== 'union') {
+    return undefined;
+  }
+  const kinds: CompilerTaggedPrimitiveBoundaryKindsIR = {};
+  for (const arm of boundary.arms) {
+    if (!addBoundaryTaggedPrimitiveKinds(kinds, arm)) {
+      return undefined;
+    }
+  }
+  return compactTaggedPrimitiveKinds(kinds);
+}
+
+function valueBoundaryNeedsWrapper(boundary: ValueBoundaryIR | undefined): boolean {
+  if (!boundary) {
+    return false;
+  }
+  switch (boundary.kind) {
+    case 'string':
+    case 'symbol':
+    case 'bigint':
+      return true;
+    case 'array':
+      return boundary.element.kind === 'boolean' || boundary.element.kind === 'number' ||
+        boundary.element.kind === 'string';
+    case 'map':
+    case 'set':
+      return createCollectionBoundaryAdapterForBoundary(boundary) !== undefined;
+    case 'union':
+      return taggedPrimitiveKindsForValueBoundary(boundary) !== undefined;
+    default:
+      return false;
   }
 }
 
@@ -646,6 +721,36 @@ function taggedValueResultHelpersForWrappers(
     }
   }
   return [...helpers].sort();
+}
+
+function taggedValueAdapterHelpersForBoundaries(
+  boundaries: Iterable<ValueBoundaryIR | undefined>,
+): readonly string[] {
+  const helpers = new Set<string>();
+  for (const boundary of boundaries) {
+    const kinds = taggedPrimitiveKindsForValueBoundary(boundary);
+    if (kinds) {
+      addTaggedValueAdapterHelpers(helpers, kinds);
+    }
+  }
+  return [...helpers].sort();
+}
+
+function taggedValueResultHelpersForBoundaries(
+  boundaries: Iterable<ValueBoundaryIR | undefined>,
+): readonly string[] {
+  const helpers = new Set<string>();
+  for (const boundary of boundaries) {
+    const kinds = taggedPrimitiveKindsForValueBoundary(boundary);
+    if (kinds) {
+      addTaggedValueResultHelpers(helpers, kinds);
+    }
+  }
+  return [...helpers].sort();
+}
+
+function mergeSortedUniqueStrings(...values: readonly (readonly string[])[]): readonly string[] {
+  return [...new Set(values.flat())].sort();
 }
 
 function isWasmGcWrapperValueType(valueType: string): boolean {
@@ -666,6 +771,11 @@ function createWasmGcExportWrapperPlan(
     .filter((func) => !func.hostImport && func.exportName.length > 0)
     .map((func) => {
       const surface = exportSurfacesByName.get(func.exportName);
+      const paramBoundaries = surface?.params.map((param) =>
+        valueBoundaryFromSemanticType(param.type)
+      );
+      const hasParamBoundaries = paramBoundaries?.some(valueBoundaryNeedsWrapper) === true;
+      const resultBoundary = surface ? valueBoundaryFromSemanticType(surface.result) : undefined;
       const paramBoundaryAdapters = surface?.params.map((param) =>
         collectionBoundaryAdapterForSemanticType(param.type)
       );
@@ -680,6 +790,8 @@ function createWasmGcExportWrapperPlan(
         wasmExportName: func.exportName,
         paramTypes: func.params.map((param) => param.wasmType),
         resultType: func.result,
+        ...(hasParamBoundaries ? { paramBoundaries } : {}),
+        ...(valueBoundaryNeedsWrapper(resultBoundary) ? { resultBoundary } : {}),
         ...(hasParamBoundaryAdapters ? { paramBoundaryAdapters } : {}),
         ...(resultBoundaryAdapter ? { resultBoundaryAdapter } : {}),
       };
@@ -688,6 +800,8 @@ function createWasmGcExportWrapperPlan(
     .filter((wrapper) =>
       wrapper.paramTypes.some(isWasmGcWrapperValueType) ||
       isWasmGcWrapperValueType(wrapper.resultType) ||
+      wrapper.paramBoundaries?.some(valueBoundaryNeedsWrapper) === true ||
+      valueBoundaryNeedsWrapper(wrapper.resultBoundary) ||
       wrapper.paramBoundaryAdapters?.some((adapter) => adapter !== undefined) === true ||
       wrapper.resultBoundaryAdapter !== undefined
     )
@@ -707,6 +821,11 @@ function createWasmGcHostImportWrapperPlan(
     .filter((func) => func.hostImport !== undefined)
     .map((func): WasmGcHostImportWrapperPlanIR => {
       const surface = importSurfacesByName.get(func.hostImport!.name);
+      const paramBoundaries = surface?.params.map((param) =>
+        valueBoundaryFromSemanticType(param.type)
+      );
+      const hasParamBoundaries = paramBoundaries?.some(valueBoundaryNeedsWrapper) === true;
+      const resultBoundary = surface ? valueBoundaryFromSemanticType(surface.result) : undefined;
       const paramBoundaryAdapters = surface?.params.map((param) =>
         collectionBoundaryAdapterForSemanticType(param.type)
       );
@@ -722,6 +841,8 @@ function createWasmGcHostImportWrapperPlan(
         hostImportName: func.hostImport!.name,
         paramTypes: func.params.map((param) => param.wasmType),
         resultType: func.result,
+        ...(hasParamBoundaries ? { paramBoundaries } : {}),
+        ...(valueBoundaryNeedsWrapper(resultBoundary) ? { resultBoundary } : {}),
         ...(hasParamBoundaryAdapters ? { paramBoundaryAdapters } : {}),
         ...(resultBoundaryAdapter ? { resultBoundaryAdapter } : {}),
       };
@@ -729,6 +850,8 @@ function createWasmGcHostImportWrapperPlan(
     .filter((wrapper) =>
       wrapper.paramTypes.some(isWasmGcWrapperValueType) ||
       isWasmGcWrapperValueType(wrapper.resultType) ||
+      wrapper.paramBoundaries?.some(valueBoundaryNeedsWrapper) === true ||
+      valueBoundaryNeedsWrapper(wrapper.resultBoundary) ||
       wrapper.paramBoundaryAdapters?.some((adapter) => adapter !== undefined) === true ||
       wrapper.resultBoundaryAdapter !== undefined
     )
@@ -797,10 +920,24 @@ function createWasmGcWrapperPlan(
       });
     });
   }
-  const taggedValueAdapterHelpers = taggedValueAdapterHelpersForWrappers(wrappers);
-  const taggedValueResultHelpers = taggedValueResultHelpersForWrappers(wrappers);
   const hostImportWrappers = createWasmGcHostImportWrapperPlan(functionPlans, boundarySurfaces);
   const exportWrappers = createWasmGcExportWrapperPlan(functionPlans, boundarySurfaces);
+  const hostToInternalBoundaries = [
+    ...exportWrappers.flatMap((wrapper) => wrapper.paramBoundaries ?? []),
+    ...hostImportWrappers.map((wrapper) => wrapper.resultBoundary),
+  ];
+  const internalToHostBoundaries = [
+    ...hostImportWrappers.flatMap((wrapper) => wrapper.paramBoundaries ?? []),
+    ...exportWrappers.map((wrapper) => wrapper.resultBoundary),
+  ];
+  const taggedValueAdapterHelpers = mergeSortedUniqueStrings(
+    taggedValueAdapterHelpersForWrappers(wrappers),
+    taggedValueAdapterHelpersForBoundaries(hostToInternalBoundaries),
+  );
+  const taggedValueResultHelpers = mergeSortedUniqueStrings(
+    taggedValueResultHelpersForWrappers(wrappers),
+    taggedValueResultHelpersForBoundaries(internalToHostBoundaries),
+  );
   return {
     kind: 'wasm_gc_wrapper_plan',
     hostCallbackWrappers: wrappers.sort((left, right) =>

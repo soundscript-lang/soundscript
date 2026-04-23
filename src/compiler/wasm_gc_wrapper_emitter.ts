@@ -47,28 +47,63 @@ function groupHostImportWrapperKeys(
     );
 }
 
+function renderBoundaryAdapterArgument(
+  adapter: WasmGcCollectionBoundaryAdapterIR | undefined,
+): string {
+  return adapter ? `, ${JSON.stringify(adapter)}` : '';
+}
+
+function renderHostToInternalBoundaryExpression(
+  boundary: ValueBoundaryIR | undefined,
+  valueExpression: string,
+  adapter?: WasmGcCollectionBoundaryAdapterIR,
+): string {
+  return boundary && boundaryUsesValueAdapter(boundary)
+    ? `boundaryValueToInternal(${JSON.stringify(boundary)}, ${valueExpression}${
+      renderBoundaryAdapterArgument(adapter)
+    })`
+    : valueExpression;
+}
+
+function renderInternalToHostBoundaryExpression(
+  boundary: ValueBoundaryIR | undefined,
+  valueExpression: string,
+  adapter?: WasmGcCollectionBoundaryAdapterIR,
+): string {
+  return boundary && boundaryUsesValueAdapter(boundary)
+    ? `boundaryValueFromInternal(${JSON.stringify(boundary)}, ${valueExpression}${
+      renderBoundaryAdapterArgument(adapter)
+    })`
+    : valueExpression;
+}
+
+function renderInternalToHostBoundaryAssignment(
+  targetExpression: string,
+  boundary: ValueBoundaryIR | undefined,
+  valueExpression: string,
+  adapter?: WasmGcCollectionBoundaryAdapterIR,
+): string {
+  if (!boundary || !boundaryUsesValueAdapter(boundary)) {
+    return '';
+  }
+  return `    ${targetExpression} = ${
+    renderInternalToHostBoundaryExpression(boundary, valueExpression, adapter)
+  };`;
+}
+
 function renderWrapperAssignment(
   hostImportWrapper: WasmGcHostImportWrapperPlanIR | undefined,
   callbackWrappers: readonly WasmGcHostCallbackWrapperPlanIR[],
 ): string {
   const first = hostImportWrapper ?? callbackWrappers[0]!;
   const boundaryAdaptations = hostImportWrapper
-    ? hostImportWrapper.paramTypes.map((paramType, index) =>
-      hostImportWrapper.paramBoundaryAdapters?.[index]?.kind === 'map'
-        ? `    adaptedArgs[${index}] = mapFromInternal(${
-          JSON.stringify(hostImportWrapper.paramBoundaryAdapters[index])
-        }, args[${index}]);`
-        : hostImportWrapper.paramBoundaryAdapters?.[index]?.kind === 'set'
-        ? `    adaptedArgs[${index}] = setFromInternal(${
-          JSON.stringify(hostImportWrapper.paramBoundaryAdapters[index])
-        }, args[${index}]);`
-        : isStringValueType(paramType)
-        ? `    adaptedArgs[${index}] = stringFromInternal(args[${index}]);`
-        : isSymbolValueType(paramType)
-        ? `    adaptedArgs[${index}] = symbolFromInternal(args[${index}]);`
-        : isBigIntValueType(paramType)
-        ? `    adaptedArgs[${index}] = bigintFromInternal(args[${index}]);`
-        : ''
+    ? hostImportWrapper.paramTypes.map((_paramType, index) =>
+      renderInternalToHostBoundaryAssignment(
+        `adaptedArgs[${index}]`,
+        hostImportWrapper.paramBoundaries?.[index],
+        `args[${index}]`,
+        hostImportWrapper.paramBoundaryAdapters?.[index],
+      )
     ).filter((line) => line.length > 0)
     : [];
   const callbackAdaptations = callbackWrappers.map((wrapper) =>
@@ -76,20 +111,14 @@ function renderWrapperAssignment(
       JSON.stringify(wrapper.paramTypes)
     }, ${JSON.stringify(wrapper.resultType)});`
   );
-  const resultReturn = hostImportWrapper && isStringValueType(hostImportWrapper.resultType)
-    ? '    return stringToInternal(result);'
-    : hostImportWrapper && isSymbolValueType(hostImportWrapper.resultType)
-    ? '    return symbolToInternal(result);'
-    : hostImportWrapper && isBigIntValueType(hostImportWrapper.resultType)
-    ? '    return bigintToInternal(result);'
-    : hostImportWrapper?.resultBoundaryAdapter?.kind === 'map'
-    ? `    return mapToInternal(${
-      JSON.stringify(hostImportWrapper.resultBoundaryAdapter)
-    }, result);`
-    : hostImportWrapper?.resultBoundaryAdapter?.kind === 'set'
-    ? `    return setToInternal(${
-      JSON.stringify(hostImportWrapper.resultBoundaryAdapter)
-    }, result);`
+  const resultReturn = hostImportWrapper
+    ? `    return ${
+      renderHostToInternalBoundaryExpression(
+        hostImportWrapper.resultBoundary,
+        'result',
+        hostImportWrapper.resultBoundaryAdapter,
+      )
+    };`
     : '    return result;';
   return `  installWrappedHostImport(imports, hostImports, ${
     JSON.stringify(first.hostImportModule)
@@ -122,7 +151,7 @@ function renderTaggedAdapterHelpers(plan: WasmGcModulePlanIR): string {
   }
   if (helpers.has('__soundscript_host_tag_string')) {
     cases.push(`    case 'string':
-      return requireExport(exports, '__soundscript_host_tag_string')(value);`);
+      return requireExport(exports, '__soundscript_host_tag_string')(stringToInternal(value));`);
   }
   if (helpers.has('__soundscript_host_tag_symbol')) {
     cases.push(`    case 'symbol':
@@ -163,9 +192,16 @@ function renderTaggedResultAdapterHelpers(plan: WasmGcModulePlanIR): string {
     case 2:
       return requireExport(exports, '__soundscript_host_tag_number_payload')(value);`);
   }
-  if (resultHelpers.has('__soundscript_host_tag_extern_payload')) {
+  if (
+    resultHelpers.has('__soundscript_host_tag_extern_payload') &&
+    !resultHelpers.has('__soundscript_host_tag_string_payload')
+  ) {
     cases.push(`    case 3:
       return requireExport(exports, '__soundscript_host_tag_extern_payload')(value);`);
+  }
+  if (resultHelpers.has('__soundscript_host_tag_string_payload')) {
+    cases.push(`    case 3:
+      return stringFromInternal(requireExport(exports, '__soundscript_host_tag_string_payload')(value));`);
   }
   if (resultHelpers.has('__soundscript_host_tag_symbol_payload')) {
     cases.push(`    case 5:
@@ -191,6 +227,90 @@ ${cases.join('\n')}
 }`;
 }
 
+function renderExportTaggedBoundaryHelpers(plan: WasmGcModulePlanIR): string {
+  const exportUsesFiniteUnions = plan.wrapperPlan.exportWrappers.some((wrapper) =>
+    wrapperValueBoundaries(wrapper).some(boundaryUsesFiniteUnion)
+  );
+  if (!exportUsesFiniteUnions) {
+    return '';
+  }
+  const adapterHelpers = new Set(plan.wrapperPlan.taggedValueAdapterHelpers);
+  const resultHelpers = new Set(plan.wrapperPlan.taggedValueResultHelpers);
+  const tagCases: string[] = [];
+  if (adapterHelpers.has('__soundscript_host_tag_number')) {
+    tagCases.push(`      case 'number':
+        return requireExport(wasmExports, '__soundscript_host_tag_number')(value);`);
+  }
+  if (adapterHelpers.has('__soundscript_host_tag_boolean')) {
+    tagCases.push(`      case 'boolean':
+        return requireExport(wasmExports, '__soundscript_host_tag_boolean')(value ? 1 : 0);`);
+  }
+  if (adapterHelpers.has('__soundscript_host_tag_string')) {
+    tagCases.push(`      case 'string':
+        return requireExport(wasmExports, '__soundscript_host_tag_string')(stringToInternal(value));`);
+  }
+  if (adapterHelpers.has('__soundscript_host_tag_symbol')) {
+    tagCases.push(`      case 'symbol':
+        return requireExport(wasmExports, '__soundscript_host_tag_symbol')(symbolToInternal(value));`);
+  }
+  if (adapterHelpers.has('__soundscript_host_tag_bigint')) {
+    tagCases.push(`      case 'bigint':
+        return requireExport(wasmExports, '__soundscript_host_tag_bigint')(bigintToInternal(value));`);
+  }
+  const untagCases: string[] = [];
+  if (resultHelpers.has('__soundscript_host_tag_number_payload')) {
+    untagCases.push(`      case 1:
+        return Boolean(requireExport(wasmExports, '__soundscript_host_tag_number_payload')(value));
+      case 2:
+        return requireExport(wasmExports, '__soundscript_host_tag_number_payload')(value);`);
+  }
+  if (
+    resultHelpers.has('__soundscript_host_tag_extern_payload') &&
+    !resultHelpers.has('__soundscript_host_tag_string_payload')
+  ) {
+    untagCases.push(`      case 3:
+        return requireExport(wasmExports, '__soundscript_host_tag_extern_payload')(value);`);
+  }
+  if (resultHelpers.has('__soundscript_host_tag_string_payload')) {
+    untagCases.push(`      case 3:
+        return stringFromInternal(requireExport(wasmExports, '__soundscript_host_tag_string_payload')(value));`);
+  }
+  if (resultHelpers.has('__soundscript_host_tag_symbol_payload')) {
+    untagCases.push(`      case 5:
+        return symbolFromInternal(requireExport(wasmExports, '__soundscript_host_tag_symbol_payload')(value));`);
+  }
+  if (resultHelpers.has('__soundscript_host_tag_bigint_payload')) {
+    untagCases.push(`      case 7:
+        return bigintFromInternal(requireExport(wasmExports, '__soundscript_host_tag_bigint_payload')(value));`);
+  }
+  return `function tagHostValue(value) {
+    if (value === undefined) {
+      return requireExport(wasmExports, '__soundscript_host_tag_undefined')();
+    }
+    if (value === null) {
+      return requireExport(wasmExports, '__soundscript_host_tag_null')();
+    }
+    switch (typeof value) {
+${tagCases.join('\n')}
+      default:
+        throw new TypeError('Object-valued tagged WasmGC export arguments need host-object wrapper adaptation.');
+    }
+  }
+
+  function untagHostValue(value) {
+    const tag = requireExport(wasmExports, '__soundscript_host_tag_type')(value);
+    switch (tag) {
+      case 0:
+        return undefined;
+      case 6:
+        return null;
+${untagCases.join('\n')}
+      default:
+        throw new TypeError('Object-valued tagged WasmGC export results need host-object wrapper adaptation.');
+    }
+  }`;
+}
+
 function isStringValueType(valueType: string): boolean {
   return valueType === 'string_ref' || valueType === 'owned_string_ref';
 }
@@ -213,6 +333,12 @@ function taggedKindsIncludeBigInt(
   kinds: WasmGcHostCallbackWrapperPlanIR['paramTaggedPrimitiveKinds'][number] | undefined,
 ): boolean {
   return kinds?.includesBigInt === true;
+}
+
+function taggedKindsIncludeString(
+  kinds: WasmGcHostCallbackWrapperPlanIR['paramTaggedPrimitiveKinds'][number] | undefined,
+): boolean {
+  return kinds?.includesString === true;
 }
 
 function wrapperUsesStringValues(wrapper: {
@@ -326,6 +452,119 @@ function boundaryUsesArray(boundary: ValueBoundaryIR): boolean {
   }
 }
 
+function wrapperValueBoundaries(wrapper: {
+  paramBoundaries?: readonly ValueBoundaryIR[];
+  resultBoundary?: ValueBoundaryIR;
+}): readonly ValueBoundaryIR[] {
+  return [
+    ...(wrapper.paramBoundaries ?? []),
+    ...(wrapper.resultBoundary ? [wrapper.resultBoundary] : []),
+  ];
+}
+
+function boundaryUsesSymbol(boundary: ValueBoundaryIR): boolean {
+  switch (boundary.kind) {
+    case 'symbol':
+      return true;
+    case 'array':
+      return boundaryUsesSymbol(boundary.element);
+    case 'tuple':
+      return boundary.elements.some(boundaryUsesSymbol);
+    case 'map':
+      return boundaryUsesSymbol(boundary.key) || boundaryUsesSymbol(boundary.value);
+    case 'set':
+      return boundaryUsesSymbol(boundary.value);
+    case 'union':
+      return boundary.arms.some(boundaryUsesSymbol);
+    case 'promise':
+      return boundary.value ? boundaryUsesSymbol(boundary.value) : false;
+    case 'sync_generator':
+    case 'async_generator':
+      return [boundary.yield, boundary.return, boundary.next].some((value) =>
+        value ? boundaryUsesSymbol(value) : false
+      );
+    case 'closure':
+      return boundary.signatures?.some((signature) =>
+        signature.params.some(boundaryUsesSymbol) || boundaryUsesSymbol(signature.result)
+      ) ?? false;
+    case 'object':
+      return boundary.fields?.some((field) => boundaryUsesSymbol(field.value)) ?? false;
+    default:
+      return false;
+  }
+}
+
+function boundaryUsesBigInt(boundary: ValueBoundaryIR): boolean {
+  switch (boundary.kind) {
+    case 'bigint':
+      return true;
+    case 'array':
+      return boundaryUsesBigInt(boundary.element);
+    case 'tuple':
+      return boundary.elements.some(boundaryUsesBigInt);
+    case 'map':
+      return boundaryUsesBigInt(boundary.key) || boundaryUsesBigInt(boundary.value);
+    case 'set':
+      return boundaryUsesBigInt(boundary.value);
+    case 'union':
+      return boundary.arms.some(boundaryUsesBigInt);
+    case 'promise':
+      return boundary.value ? boundaryUsesBigInt(boundary.value) : false;
+    case 'sync_generator':
+    case 'async_generator':
+      return [boundary.yield, boundary.return, boundary.next].some((value) =>
+        value ? boundaryUsesBigInt(value) : false
+      );
+    case 'closure':
+      return boundary.signatures?.some((signature) =>
+        signature.params.some(boundaryUsesBigInt) || boundaryUsesBigInt(signature.result)
+      ) ?? false;
+    case 'object':
+      return boundary.fields?.some((field) => boundaryUsesBigInt(field.value)) ?? false;
+    default:
+      return false;
+  }
+}
+
+function boundaryUsesFiniteUnion(boundary: ValueBoundaryIR): boolean {
+  switch (boundary.kind) {
+    case 'union':
+      return true;
+    case 'array':
+      return boundaryUsesFiniteUnion(boundary.element);
+    case 'tuple':
+      return boundary.elements.some(boundaryUsesFiniteUnion);
+    case 'map':
+      return boundaryUsesFiniteUnion(boundary.key) || boundaryUsesFiniteUnion(boundary.value);
+    case 'set':
+      return boundaryUsesFiniteUnion(boundary.value);
+    default:
+      return false;
+  }
+}
+
+function boundaryUsesValueAdapter(boundary: ValueBoundaryIR): boolean {
+  switch (boundary.kind) {
+    case 'string':
+    case 'symbol':
+    case 'bigint':
+    case 'array':
+    case 'map':
+    case 'set':
+    case 'union':
+      return true;
+    default:
+      return false;
+  }
+}
+
+function wrapperUsesBoundaryValueAdapters(wrapper: {
+  paramBoundaries?: readonly ValueBoundaryIR[];
+  resultBoundary?: ValueBoundaryIR;
+}): boolean {
+  return wrapperValueBoundaries(wrapper).some(boundaryUsesValueAdapter);
+}
+
 function collectionBoundaryAdapterUsesArrayPayload(
   adapter: WasmGcCollectionBoundaryAdapterIR,
 ): boolean {
@@ -403,6 +642,13 @@ function wrapperUsesCollectionBoundaryAdapter(
 
 function hostImportSurfaceNeedsStringAdapters(plan: WasmGcModulePlanIR): boolean {
   return plan.wrapperPlan.hostImportWrappers.some(wrapperUsesStringValues) ||
+    plan.wrapperPlan.hostImportWrappers.some((wrapper) =>
+      wrapperValueBoundaries(wrapper).some(boundaryUsesString)
+    ) ||
+    plan.wrapperPlan.hostCallbackWrappers.some((wrapper) =>
+      wrapper.paramTaggedPrimitiveKinds.some(taggedKindsIncludeString) ||
+      taggedKindsIncludeString(wrapper.resultTaggedPrimitiveKinds)
+    ) ||
     plan.wrapperPlan.hostImportWrappers.some(wrapperUsesMapBoundaryAdapters) ||
     plan.wrapperPlan.hostImportWrappers.some((wrapper) =>
       wrapperCollectionBoundaryAdapters(wrapper).some(collectionAdapterUsesString)
@@ -411,6 +657,9 @@ function hostImportSurfaceNeedsStringAdapters(plan: WasmGcModulePlanIR): boolean
 
 function hostImportSurfaceNeedsSymbolAdapters(plan: WasmGcModulePlanIR): boolean {
   return plan.wrapperPlan.hostImportWrappers.some(wrapperUsesSymbolValues) ||
+    plan.wrapperPlan.hostImportWrappers.some((wrapper) =>
+      wrapperValueBoundaries(wrapper).some(boundaryUsesSymbol)
+    ) ||
     plan.wrapperPlan.hostCallbackWrappers.some((wrapper) =>
       wrapperUsesSymbolValues(wrapper) ||
       wrapper.paramTaggedPrimitiveKinds.some(taggedKindsIncludeSymbol) ||
@@ -420,6 +669,9 @@ function hostImportSurfaceNeedsSymbolAdapters(plan: WasmGcModulePlanIR): boolean
 
 function hostImportSurfaceNeedsBigIntAdapters(plan: WasmGcModulePlanIR): boolean {
   return plan.wrapperPlan.hostImportWrappers.some(wrapperUsesBigIntValues) ||
+    plan.wrapperPlan.hostImportWrappers.some((wrapper) =>
+      wrapperValueBoundaries(wrapper).some(boundaryUsesBigInt)
+    ) ||
     plan.wrapperPlan.hostCallbackWrappers.some((wrapper) =>
       wrapperUsesBigIntValues(wrapper) ||
       wrapper.paramTaggedPrimitiveKinds.some(taggedKindsIncludeBigInt) ||
@@ -428,7 +680,9 @@ function hostImportSurfaceNeedsBigIntAdapters(plan: WasmGcModulePlanIR): boolean
 }
 
 function hostImportSurfaceNeedsArrayAdapters(plan: WasmGcModulePlanIR): boolean {
-  return plan.wrapperPlan.hostImportWrappers.some(wrapperUsesArrayBoundaryAdapters);
+  return plan.wrapperPlan.hostImportWrappers.some((wrapper) =>
+    wrapperValueBoundaries(wrapper).some(boundaryUsesArray)
+  ) || plan.wrapperPlan.hostImportWrappers.some(wrapperUsesArrayBoundaryAdapters);
 }
 
 function hostImportSurfaceNeedsNestedCollectionAdapters(plan: WasmGcModulePlanIR): boolean {
@@ -446,6 +700,9 @@ function hostImportSurfaceUsesCollectionBoundaryAdapter(
 
 function exportSurfaceNeedsStringAdapters(plan: WasmGcModulePlanIR): boolean {
   return plan.wrapperPlan.exportWrappers.some(wrapperUsesStringValues) ||
+    plan.wrapperPlan.exportWrappers.some((wrapper) =>
+      wrapperValueBoundaries(wrapper).some(boundaryUsesString)
+    ) ||
     plan.wrapperPlan.exportWrappers.some(wrapperUsesMapBoundaryAdapters) ||
     plan.wrapperPlan.exportWrappers.some((wrapper) =>
       wrapperCollectionBoundaryAdapters(wrapper).some(collectionAdapterUsesString)
@@ -453,15 +710,23 @@ function exportSurfaceNeedsStringAdapters(plan: WasmGcModulePlanIR): boolean {
 }
 
 function exportSurfaceNeedsSymbolAdapters(plan: WasmGcModulePlanIR): boolean {
-  return plan.wrapperPlan.exportWrappers.some(wrapperUsesSymbolValues);
+  return plan.wrapperPlan.exportWrappers.some(wrapperUsesSymbolValues) ||
+    plan.wrapperPlan.exportWrappers.some((wrapper) =>
+      wrapperValueBoundaries(wrapper).some(boundaryUsesSymbol)
+    );
 }
 
 function exportSurfaceNeedsBigIntAdapters(plan: WasmGcModulePlanIR): boolean {
-  return plan.wrapperPlan.exportWrappers.some(wrapperUsesBigIntValues);
+  return plan.wrapperPlan.exportWrappers.some(wrapperUsesBigIntValues) ||
+    plan.wrapperPlan.exportWrappers.some((wrapper) =>
+      wrapperValueBoundaries(wrapper).some(boundaryUsesBigInt)
+    );
 }
 
 function exportSurfaceNeedsArrayAdapters(plan: WasmGcModulePlanIR): boolean {
-  return plan.wrapperPlan.exportWrappers.some(wrapperUsesArrayBoundaryAdapters);
+  return plan.wrapperPlan.exportWrappers.some((wrapper) =>
+    wrapperValueBoundaries(wrapper).some(boundaryUsesArray)
+  ) || plan.wrapperPlan.exportWrappers.some(wrapperUsesArrayBoundaryAdapters);
 }
 
 function exportSurfaceNeedsNestedCollectionAdapters(plan: WasmGcModulePlanIR): boolean {
@@ -581,7 +846,10 @@ function renderHostImportBoundaryAdapterHelpers(plan: WasmGcModulePlanIR): strin
   const needsMapFromInternalAdapters = hostImportSurfaceNeedsMapFromInternalAdapters(plan);
   const needsSetToInternalAdapters = hostImportSurfaceNeedsSetToInternalAdapters(plan);
   const needsSetFromInternalAdapters = hostImportSurfaceNeedsSetFromInternalAdapters(plan);
-  const usesBoundaryValueAdapters = usesArrayAdapters ||
+  const usesBoundaryValueAdapters = plan.wrapperPlan.hostImportWrappers.some(
+    wrapperUsesBoundaryValueAdapters,
+  ) ||
+    usesArrayAdapters ||
     needsMapToInternalAdapters ||
     needsMapFromInternalAdapters ||
     needsSetToInternalAdapters ||
@@ -743,7 +1011,34 @@ function collectionBoundaryAdapter(boundary) {
 }`);
   }
   if (usesBoundaryValueAdapters) {
-    helpers.push(`function boundaryValueToInternal(boundary, value) {
+    helpers.push(`function unionBoundaryValueToInternal(boundary, value) {
+  for (const arm of boundary.arms ?? []) {
+    if (arm.kind === 'undefined' && value === undefined) {
+      return tagHostValue(value);
+    }
+    if (arm.kind === 'null' && value === null) {
+      return tagHostValue(value);
+    }
+    if (arm.kind === 'boolean' && typeof value === 'boolean') {
+      return tagHostValue(value);
+    }
+    if (arm.kind === 'number' && typeof value === 'number') {
+      return tagHostValue(value);
+    }
+    if (arm.kind === 'string' && typeof value === 'string') {
+      return tagHostValue(value);
+    }
+    if (arm.kind === 'symbol' && typeof value === 'symbol') {
+      return tagHostValue(value);
+    }
+    if (arm.kind === 'bigint' && typeof value === 'bigint') {
+      return tagHostValue(value);
+    }
+  }
+  throw new TypeError('Soundscript WasmGC union boundary value did not match any supported arm.');
+}
+
+function boundaryValueToInternal(boundary, value, adapter) {
   if (boundary.kind === 'number') {
     if (typeof value !== 'number') {
       throw new TypeError('Soundscript WasmGC boundary value must be a number.');
@@ -758,6 +1053,9 @@ function collectionBoundaryAdapter(boundary) {
   }
   if (boundary.kind === 'string') {
     return stringToInternal(value);
+  }
+  if (boundary.kind === 'union') {
+    return unionBoundaryValueToInternal(boundary, value);
   }
 ${
       usesSymbolAdapters
@@ -781,19 +1079,35 @@ ${
         : ''
     }
 ${
-      usesNestedCollectionAdapters
+      needsMapToInternalAdapters || usesNestedCollectionAdapters
         ? `  if (boundary.kind === 'map') {
-    return mapToInternal(collectionBoundaryAdapter(boundary), value);
+    const mapAdapter = adapter${
+          usesNestedCollectionAdapters ? ' ?? collectionBoundaryAdapter(boundary)' : ''
+        };
+    if (!mapAdapter) {
+      throw new TypeError('Soundscript WasmGC Map boundary adapter was not emitted.');
+    }
+    return mapToInternal(mapAdapter, value);
   }
-  if (boundary.kind === 'set') {
-    return setToInternal(collectionBoundaryAdapter(boundary), value);
+`
+        : ''
+    }${
+      needsSetToInternalAdapters || usesNestedCollectionAdapters
+        ? `  if (boundary.kind === 'set') {
+    const setAdapter = adapter${
+          usesNestedCollectionAdapters ? ' ?? collectionBoundaryAdapter(boundary)' : ''
+        };
+    if (!setAdapter) {
+      throw new TypeError('Soundscript WasmGC Set boundary adapter was not emitted.');
+    }
+    return setToInternal(setAdapter, value);
   }`
         : ''
     }
   throw new TypeError(\`Unsupported Soundscript WasmGC boundary value \${boundary.kind}.\`);
 }
 
-function boundaryValueFromInternal(boundary, value) {
+function boundaryValueFromInternal(boundary, value, adapter) {
   if (boundary.kind === 'number') {
     return value;
   }
@@ -802,6 +1116,9 @@ function boundaryValueFromInternal(boundary, value) {
   }
   if (boundary.kind === 'string') {
     return stringFromInternal(value);
+  }
+  if (boundary.kind === 'union') {
+    return untagHostValue(value);
   }
 ${
       usesSymbolAdapters
@@ -825,12 +1142,28 @@ ${
         : ''
     }
 ${
-      usesNestedCollectionAdapters
+      needsMapFromInternalAdapters || usesNestedCollectionAdapters
         ? `  if (boundary.kind === 'map') {
-    return mapFromInternal(collectionBoundaryAdapter(boundary), value);
+    const mapAdapter = adapter${
+          usesNestedCollectionAdapters ? ' ?? collectionBoundaryAdapter(boundary)' : ''
+        };
+    if (!mapAdapter) {
+      throw new TypeError('Soundscript WasmGC Map boundary adapter was not emitted.');
+    }
+    return mapFromInternal(mapAdapter, value);
   }
-  if (boundary.kind === 'set') {
-    return setFromInternal(collectionBoundaryAdapter(boundary), value);
+`
+        : ''
+    }${
+      needsSetFromInternalAdapters || usesNestedCollectionAdapters
+        ? `  if (boundary.kind === 'set') {
+    const setAdapter = adapter${
+          usesNestedCollectionAdapters ? ' ?? collectionBoundaryAdapter(boundary)' : ''
+        };
+    if (!setAdapter) {
+      throw new TypeError('Soundscript WasmGC Set boundary adapter was not emitted.');
+    }
+    return setFromInternal(setAdapter, value);
   }`
         : ''
     }
@@ -925,7 +1258,10 @@ function renderExportBoundaryAdapterHelpers(plan: WasmGcModulePlanIR): string {
   const needsMapFromInternalAdapters = exportSurfaceNeedsMapFromInternalAdapters(plan);
   const needsSetToInternalAdapters = exportSurfaceNeedsSetToInternalAdapters(plan);
   const needsSetFromInternalAdapters = exportSurfaceNeedsSetFromInternalAdapters(plan);
-  const usesBoundaryValueAdapters = usesArrayAdapters ||
+  const usesBoundaryValueAdapters = plan.wrapperPlan.exportWrappers.some(
+    wrapperUsesBoundaryValueAdapters,
+  ) ||
+    usesArrayAdapters ||
     needsMapToInternalAdapters ||
     needsMapFromInternalAdapters ||
     needsSetToInternalAdapters ||
@@ -999,6 +1335,10 @@ function renderExportBoundaryAdapterHelpers(plan: WasmGcModulePlanIR): string {
     }
     return requireExport(wasmExports, '__soundscript_bigint_to_host')(value);
   }`);
+  }
+  const taggedBoundaryHelpers = renderExportTaggedBoundaryHelpers(plan);
+  if (taggedBoundaryHelpers.length > 0) {
+    helpers.push(taggedBoundaryHelpers);
   }
   if (exportSurfaceNeedsArrayAdapters(plan)) {
     helpers.push(`function arrayBoundarySuffix(boundary) {
@@ -1075,7 +1415,34 @@ function renderExportBoundaryAdapterHelpers(plan: WasmGcModulePlanIR): string {
   }`);
   }
   if (usesBoundaryValueAdapters) {
-    helpers.push(`function boundaryValueToInternal(boundary, value) {
+    helpers.push(`function unionBoundaryValueToInternal(boundary, value) {
+    for (const arm of boundary.arms ?? []) {
+      if (arm.kind === 'undefined' && value === undefined) {
+        return tagHostValue(value);
+      }
+      if (arm.kind === 'null' && value === null) {
+        return tagHostValue(value);
+      }
+      if (arm.kind === 'boolean' && typeof value === 'boolean') {
+        return tagHostValue(value);
+      }
+      if (arm.kind === 'number' && typeof value === 'number') {
+        return tagHostValue(value);
+      }
+      if (arm.kind === 'string' && typeof value === 'string') {
+        return tagHostValue(value);
+      }
+      if (arm.kind === 'symbol' && typeof value === 'symbol') {
+        return tagHostValue(value);
+      }
+      if (arm.kind === 'bigint' && typeof value === 'bigint') {
+        return tagHostValue(value);
+      }
+    }
+    throw new TypeError('Soundscript WasmGC union boundary value did not match any supported arm.');
+  }
+
+  function boundaryValueToInternal(boundary, value, adapter) {
     if (boundary.kind === 'number') {
       if (typeof value !== 'number') {
         throw new TypeError('Soundscript WasmGC boundary value must be a number.');
@@ -1090,6 +1457,9 @@ function renderExportBoundaryAdapterHelpers(plan: WasmGcModulePlanIR): string {
     }
     if (boundary.kind === 'string') {
       return stringToInternal(value);
+    }
+    if (boundary.kind === 'union') {
+      return unionBoundaryValueToInternal(boundary, value);
     }
 ${
       usesSymbolAdapters
@@ -1113,19 +1483,35 @@ ${
         : ''
     }
 ${
-      usesNestedCollectionAdapters
+      needsMapToInternalAdapters || usesNestedCollectionAdapters
         ? `    if (boundary.kind === 'map') {
-      return mapToInternal(collectionBoundaryAdapter(boundary), value);
+      const mapAdapter = adapter${
+          usesNestedCollectionAdapters ? ' ?? collectionBoundaryAdapter(boundary)' : ''
+        };
+      if (!mapAdapter) {
+        throw new TypeError('Soundscript WasmGC Map boundary adapter was not emitted.');
+      }
+      return mapToInternal(mapAdapter, value);
     }
-    if (boundary.kind === 'set') {
-      return setToInternal(collectionBoundaryAdapter(boundary), value);
+`
+        : ''
+    }${
+      needsSetToInternalAdapters || usesNestedCollectionAdapters
+        ? `    if (boundary.kind === 'set') {
+      const setAdapter = adapter${
+          usesNestedCollectionAdapters ? ' ?? collectionBoundaryAdapter(boundary)' : ''
+        };
+      if (!setAdapter) {
+        throw new TypeError('Soundscript WasmGC Set boundary adapter was not emitted.');
+      }
+      return setToInternal(setAdapter, value);
     }`
         : ''
     }
     throw new TypeError(\`Unsupported Soundscript WasmGC boundary value \${boundary.kind}.\`);
   }
 
-  function boundaryValueFromInternal(boundary, value) {
+  function boundaryValueFromInternal(boundary, value, adapter) {
     if (boundary.kind === 'number') {
       return value;
     }
@@ -1134,6 +1520,9 @@ ${
     }
     if (boundary.kind === 'string') {
       return stringFromInternal(value);
+    }
+    if (boundary.kind === 'union') {
+      return untagHostValue(value);
     }
 ${
       usesSymbolAdapters
@@ -1157,12 +1546,28 @@ ${
         : ''
     }
 ${
-      usesNestedCollectionAdapters
+      needsMapFromInternalAdapters || usesNestedCollectionAdapters
         ? `    if (boundary.kind === 'map') {
-      return mapFromInternal(collectionBoundaryAdapter(boundary), value);
+      const mapAdapter = adapter${
+          usesNestedCollectionAdapters ? ' ?? collectionBoundaryAdapter(boundary)' : ''
+        };
+      if (!mapAdapter) {
+        throw new TypeError('Soundscript WasmGC Map boundary adapter was not emitted.');
+      }
+      return mapFromInternal(mapAdapter, value);
     }
-    if (boundary.kind === 'set') {
-      return setFromInternal(collectionBoundaryAdapter(boundary), value);
+`
+        : ''
+    }${
+      needsSetFromInternalAdapters || usesNestedCollectionAdapters
+        ? `    if (boundary.kind === 'set') {
+      const setAdapter = adapter${
+          usesNestedCollectionAdapters ? ' ?? collectionBoundaryAdapter(boundary)' : ''
+        };
+      if (!setAdapter) {
+        throw new TypeError('Soundscript WasmGC Set boundary adapter was not emitted.');
+      }
+      return setFromInternal(setAdapter, value);
     }`
         : ''
     }
@@ -1292,36 +1697,21 @@ ${branches.join('\n')}
 }
 
 function renderExportWrapperInvocation(wrapper: WasmGcExportWrapperPlanIR): string {
-  const adaptedArgs = wrapper.paramTypes.map((paramType, index) => {
-    const boundaryAdapter = wrapper.paramBoundaryAdapters?.[index];
-    if (boundaryAdapter?.kind === 'map') {
-      return `mapToInternal(${JSON.stringify(boundaryAdapter)}, args[${index}])`;
-    }
-    if (boundaryAdapter?.kind === 'set') {
-      return `setToInternal(${JSON.stringify(boundaryAdapter)}, args[${index}])`;
-    }
-    return isStringValueType(paramType)
-      ? `stringToInternal(args[${index}])`
-      : isSymbolValueType(paramType)
-      ? `symbolToInternal(args[${index}])`
-      : isBigIntValueType(paramType)
-      ? `bigintToInternal(args[${index}])`
-      : `args[${index}]`;
-  }).join(', ');
+  const adaptedArgs = wrapper.paramTypes.map((_paramType, index) =>
+    renderHostToInternalBoundaryExpression(
+      wrapper.paramBoundaries?.[index],
+      `args[${index}]`,
+      wrapper.paramBoundaryAdapters?.[index],
+    )
+  ).join(', ');
   const rawResult = `requireExport(wasmExports, ${
     JSON.stringify(wrapper.wasmExportName)
   })(${adaptedArgs})`;
-  const result = isStringValueType(wrapper.resultType)
-    ? `stringFromInternal(${rawResult})`
-    : isSymbolValueType(wrapper.resultType)
-    ? `symbolFromInternal(${rawResult})`
-    : isBigIntValueType(wrapper.resultType)
-    ? `bigintFromInternal(${rawResult})`
-    : wrapper.resultBoundaryAdapter?.kind === 'map'
-    ? `mapFromInternal(${JSON.stringify(wrapper.resultBoundaryAdapter)}, ${rawResult})`
-    : wrapper.resultBoundaryAdapter?.kind === 'set'
-    ? `setFromInternal(${JSON.stringify(wrapper.resultBoundaryAdapter)}, ${rawResult})`
-    : rawResult;
+  const result = renderInternalToHostBoundaryExpression(
+    wrapper.resultBoundary,
+    rawResult,
+    wrapper.resultBoundaryAdapter,
+  );
   return `    ${JSON.stringify(wrapper.exportName)}: (...args) => ${result},`;
 }
 

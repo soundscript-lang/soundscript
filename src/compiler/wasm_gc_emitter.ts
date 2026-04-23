@@ -4894,11 +4894,18 @@ function wrapperPlanUsesStringBoundaryHelpers(plan: WasmGcModulePlanIR): boolean
   return wrappers.some((wrapper) =>
     wrapper.paramTypes.some((paramType) =>
       paramType === 'string_ref' || paramType === 'owned_string_ref'
-    ) || wrapper.resultType === 'string_ref' || wrapper.resultType === 'owned_string_ref'
-  ) || [...wrapperPlanCollectionBoundaryAdapters(plan)].some((adapter) =>
-    valueBoundaryUsesString(adapter.kind === 'map' ? adapter.key : adapter.value) ||
-    (adapter.kind === 'map' && valueBoundaryUsesString(adapter.value))
-  );
+    ) || wrapper.resultType === 'string_ref' || wrapper.resultType === 'owned_string_ref' ||
+    wrapper.paramBoundaries?.some(valueBoundaryUsesString) === true ||
+    (wrapper.resultBoundary ? valueBoundaryUsesString(wrapper.resultBoundary) : false)
+  ) ||
+    plan.wrapperPlan.hostCallbackWrappers.some((wrapper) =>
+      wrapper.paramTaggedPrimitiveKinds.some(taggedKindsIncludeString) ||
+      taggedKindsIncludeString(wrapper.resultTaggedPrimitiveKinds)
+    ) ||
+    [...wrapperPlanCollectionBoundaryAdapters(plan)].some((adapter) =>
+      valueBoundaryUsesString(adapter.kind === 'map' ? adapter.key : adapter.value) ||
+      (adapter.kind === 'map' && valueBoundaryUsesString(adapter.value))
+    );
 }
 
 function valueBoundaryUsesString(boundary: ValueBoundaryIR): boolean {
@@ -4963,11 +4970,66 @@ function taggedKindsIncludeBigInt(
   return kinds?.includesBigInt === true;
 }
 
+function taggedKindsIncludeString(
+  kinds:
+    | NonNullable<
+      WasmGcModulePlanIR['wrapperPlan']['hostCallbackWrappers'][number][
+        'resultTaggedPrimitiveKinds'
+      ]
+    >
+    | WasmGcModulePlanIR['wrapperPlan']['hostCallbackWrappers'][number][
+      'paramTaggedPrimitiveKinds'
+    ][number]
+    | undefined,
+): boolean {
+  return kinds?.includesString === true;
+}
+
+function valueBoundaryUsesSymbol(boundary: ValueBoundaryIR): boolean {
+  switch (boundary.kind) {
+    case 'symbol':
+      return true;
+    case 'array':
+      return valueBoundaryUsesSymbol(boundary.element);
+    case 'tuple':
+      return boundary.elements.some(valueBoundaryUsesSymbol);
+    case 'map':
+      return valueBoundaryUsesSymbol(boundary.key) || valueBoundaryUsesSymbol(boundary.value);
+    case 'set':
+      return valueBoundaryUsesSymbol(boundary.value);
+    case 'union':
+      return boundary.arms.some(valueBoundaryUsesSymbol);
+    default:
+      return false;
+  }
+}
+
+function valueBoundaryUsesBigInt(boundary: ValueBoundaryIR): boolean {
+  switch (boundary.kind) {
+    case 'bigint':
+      return true;
+    case 'array':
+      return valueBoundaryUsesBigInt(boundary.element);
+    case 'tuple':
+      return boundary.elements.some(valueBoundaryUsesBigInt);
+    case 'map':
+      return valueBoundaryUsesBigInt(boundary.key) || valueBoundaryUsesBigInt(boundary.value);
+    case 'set':
+      return valueBoundaryUsesBigInt(boundary.value);
+    case 'union':
+      return boundary.arms.some(valueBoundaryUsesBigInt);
+    default:
+      return false;
+  }
+}
+
 function wrapperPlanUsesSymbolBoundaryHelpers(plan: WasmGcModulePlanIR): boolean {
   const wrappers = [...plan.wrapperPlan.exportWrappers, ...plan.wrapperPlan.hostImportWrappers];
   return wrappers.some((wrapper) =>
     wrapper.paramTypes.some((paramType) => paramType === 'symbol_ref') ||
-    wrapper.resultType === 'symbol_ref'
+    wrapper.resultType === 'symbol_ref' ||
+    wrapper.paramBoundaries?.some(valueBoundaryUsesSymbol) === true ||
+    (wrapper.resultBoundary ? valueBoundaryUsesSymbol(wrapper.resultBoundary) : false)
   ) ||
     plan.wrapperPlan.hostCallbackWrappers.some((wrapper) =>
       wrapper.paramTypes.some((paramType) => paramType === 'symbol_ref') ||
@@ -4981,7 +5043,9 @@ function wrapperPlanUsesBigIntBoundaryHelpers(plan: WasmGcModulePlanIR): boolean
   const wrappers = [...plan.wrapperPlan.exportWrappers, ...plan.wrapperPlan.hostImportWrappers];
   return wrappers.some((wrapper) =>
     wrapper.paramTypes.some((paramType) => paramType === 'bigint_ref') ||
-    wrapper.resultType === 'bigint_ref'
+    wrapper.resultType === 'bigint_ref' ||
+    wrapper.paramBoundaries?.some(valueBoundaryUsesBigInt) === true ||
+    (wrapper.resultBoundary ? valueBoundaryUsesBigInt(wrapper.resultBoundary) : false)
   ) ||
     plan.wrapperPlan.hostCallbackWrappers.some((wrapper) =>
       wrapper.paramTypes.some((paramType) => paramType === 'bigint_ref') ||
@@ -5129,7 +5193,43 @@ function collectionBoundaryAdapterArrayPayloadKinds(
       kinds.add(value.element.kind);
     }
   }
+  for (
+    const wrapper of [...plan.wrapperPlan.exportWrappers, ...plan.wrapperPlan.hostImportWrappers]
+  ) {
+    for (const boundary of [...(wrapper.paramBoundaries ?? []), wrapper.resultBoundary]) {
+      collectArrayBoundaryPayloadKinds(boundary, kinds);
+    }
+  }
   return [...kinds].sort();
+}
+
+function collectArrayBoundaryPayloadKinds(
+  boundary: ValueBoundaryIR | undefined,
+  kinds: Set<'boolean' | 'number' | 'string'>,
+): void {
+  if (!boundary) {
+    return;
+  }
+  if (
+    boundary.kind === 'array' &&
+    (boundary.element.kind === 'boolean' || boundary.element.kind === 'number' ||
+      boundary.element.kind === 'string')
+  ) {
+    kinds.add(boundary.element.kind);
+    return;
+  }
+  if (boundary.kind === 'map') {
+    collectArrayBoundaryPayloadKinds(boundary.key, kinds);
+    collectArrayBoundaryPayloadKinds(boundary.value, kinds);
+    return;
+  }
+  if (boundary.kind === 'set') {
+    collectArrayBoundaryPayloadKinds(boundary.value, kinds);
+    return;
+  }
+  if (boundary.kind === 'union') {
+    boundary.arms.forEach((arm) => collectArrayBoundaryPayloadKinds(arm, kinds));
+  }
 }
 
 function wrapperPlanCollectionHostToInternalBoundaryAdapters(
@@ -7537,11 +7637,11 @@ function renderHostTaggedWrapperHelperFunctions(plan: WasmGcModulePlanIR): reado
   }
   if (helpers.has('__soundscript_host_tag_string')) {
     helperLines.push(
-      '  (func $__soundscript_host_tag_string (export "__soundscript_host_tag_string") (param $value externref) (result (ref null $tagged_value))',
+      `  (func $__soundscript_host_tag_string (export "__soundscript_host_tag_string") (param $value (ref null ${stringRuntimeTypeName()})) (result (ref null $tagged_value))`,
       `    i32.const ${TAGGED_STRING_TAG}`,
       '    f64.const 0',
+      '    ref.null extern',
       '    local.get $value',
-      '    ref.null eq',
       `    struct.new ${taggedValueTypeName()}`,
       '  )',
     );
@@ -7592,6 +7692,16 @@ function renderHostTaggedWrapperHelperFunctions(plan: WasmGcModulePlanIR): reado
       '    local.get $value',
       `    ref.cast (ref ${taggedValueTypeName()})`,
       `    struct.get ${taggedValueTypeName()} $extern_payload`,
+      '  )',
+    );
+  }
+  if (resultHelpers.has('__soundscript_host_tag_string_payload')) {
+    helperLines.push(
+      `  (func $__soundscript_host_tag_string_payload (export "__soundscript_host_tag_string_payload") (param $value (ref null $tagged_value)) (result (ref null ${stringRuntimeTypeName()}))`,
+      '    local.get $value',
+      `    ref.cast (ref ${taggedValueTypeName()})`,
+      `    struct.get ${taggedValueTypeName()} $heap_payload`,
+      `    ref.cast (ref ${stringRuntimeTypeName()})`,
       '  )',
     );
   }
