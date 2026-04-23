@@ -1,9 +1,11 @@
 import ts from 'typescript';
-import { normalize, relative } from '../platform/path.ts';
 
 import {
   classifySharedSemanticType,
+  createSharedSemanticBoundarySurfacesFromProgram,
+  createSharedSemanticTypeSnapshotsFromProgram,
   normalizeSharedSemanticUnionBoundary,
+  type SharedSemanticBoundarySurfaceIR,
   type SharedSemanticUnionArmIR,
 } from '../semantic/shared_semantic_facts.ts';
 import type {
@@ -884,125 +886,30 @@ export function classifySemanticType(
   return classifySharedSemanticType(checker, type, node) as SemanticTypeIR;
 }
 
-function sourceFileBelongsToProject(sourceFile: ts.SourceFile, projectDirectory: string): boolean {
-  const normalizedFileName = normalize(ts.sys.resolvePath(sourceFile.fileName));
-  const normalizedProjectDirectory = normalize(ts.sys.resolvePath(projectDirectory));
-  return normalizedFileName === normalizedProjectDirectory ||
-    normalizedFileName.startsWith(`${normalizedProjectDirectory}/`);
-}
-
-function hasModifier(node: ts.Node, kind: ts.SyntaxKind): boolean {
-  return ts.canHaveModifiers(node) &&
-    ts.getModifiers(node)?.some((modifier) => modifier.kind === kind) === true;
-}
-
-function isExportedDeclaration(node: ts.Node): boolean {
-  return hasModifier(node, ts.SyntaxKind.ExportKeyword);
-}
-
-function functionTypeSnapshot(
-  checker: ts.TypeChecker,
-  sourceFile: ts.SourceFile,
-  node: ts.FunctionDeclaration,
-): SemanticFunctionTypeSnapshotIR | undefined {
-  const signature = checker.getSignatureFromDeclaration(node);
-  if (!signature) {
-    return undefined;
-  }
-  return {
-    kind: 'function_type',
-    fileName: sourceFile.fileName,
-    name: node.name?.text ?? '<anonymous>',
-    exported: isExportedDeclaration(node),
-    async: hasModifier(node, ts.SyntaxKind.AsyncKeyword),
-    generator: node.asteriskToken !== undefined,
-    params: node.parameters.map((param) => ({
-      name: param.name.getText(sourceFile),
-      type: classifySemanticType(checker, checker.getTypeAtLocation(param), param),
-    })),
-    result: classifySemanticType(checker, checker.getReturnTypeOfSignature(signature), node),
-  };
-}
-
-function typeAliasSnapshot(
-  checker: ts.TypeChecker,
-  sourceFile: ts.SourceFile,
-  node: ts.TypeAliasDeclaration,
-): SemanticTypeAliasSnapshotIR {
-  return {
-    kind: 'type_alias',
-    fileName: sourceFile.fileName,
-    name: node.name.text,
-    type: classifySemanticType(checker, checker.getTypeAtLocation(node.type), node),
-  };
-}
-
-function projectSourceFiles(
-  program: ts.Program,
-  projectDirectory: string,
-  options?: { includeDeclarationFiles?: boolean },
-): readonly ts.SourceFile[] {
-  return program.getSourceFiles()
-    .filter((sourceFile) =>
-      (options?.includeDeclarationFiles || !sourceFile.isDeclarationFile) &&
-      sourceFileBelongsToProject(sourceFile, projectDirectory)
-    );
-}
-
 export function createSemanticTypeSnapshotsFromProgram(
   program: ts.Program,
   projectDirectory: string,
 ): readonly SemanticTypeSnapshotIR[] {
-  const checker = program.getTypeChecker();
-  return projectSourceFiles(program, projectDirectory)
-    .flatMap((sourceFile) =>
-      sourceFile.statements.flatMap((statement): SemanticTypeSnapshotIR[] => {
-        if (ts.isFunctionDeclaration(statement)) {
-          const snapshot = functionTypeSnapshot(checker, sourceFile, statement);
-          return snapshot ? [snapshot] : [];
-        }
-        if (ts.isTypeAliasDeclaration(statement)) {
-          return [typeAliasSnapshot(checker, sourceFile, statement)];
-        }
-        return [];
-      })
-    );
+  return createSharedSemanticTypeSnapshotsFromProgram(
+    program,
+    projectDirectory,
+  ) as readonly SemanticTypeSnapshotIR[];
 }
 
-function boundarySurfaceDirection(
-  sourceFile: ts.SourceFile,
-  node: ts.FunctionDeclaration,
-): SemanticBoundarySurfaceIR['direction'] | undefined {
-  if (
-    sourceFile.isDeclarationFile || hasModifier(node, ts.SyntaxKind.DeclareKeyword) || !node.body
-  ) {
-    return 'import';
-  }
-  return isExportedDeclaration(node) ? 'export' : undefined;
-}
-
-function createFunctionBoundarySurface(
-  checker: ts.TypeChecker,
-  projectDirectory: string,
-  sourceFile: ts.SourceFile,
-  node: ts.FunctionDeclaration,
-): SemanticBoundarySurfaceIR | undefined {
-  const direction = boundarySurfaceDirection(sourceFile, node);
-  const signature = checker.getSignatureFromDeclaration(node);
-  if (!direction || !signature) {
-    return undefined;
-  }
-  const params = node.parameters.map((param) => ({
-    name: param.name.getText(sourceFile),
-    type: classifySemanticType(checker, checker.getTypeAtLocation(param), param),
+function semanticBoundarySurfaceFromShared(
+  surface: SharedSemanticBoundarySurfaceIR,
+): SemanticBoundarySurfaceIR {
+  const params = surface.params.map((param) => ({
+    name: param.name,
+    type: param.type as SemanticTypeIR,
   }));
-  const result = classifySemanticType(checker, checker.getReturnTypeOfSignature(signature), node);
+  const result = surface.result as SemanticTypeIR;
   return {
-    kind: 'function_boundary',
-    direction,
-    fileName: sourceFile.fileName,
-    path: relative(projectDirectory, sourceFile.fileName).replaceAll('\\', '/'),
-    name: node.name?.text ?? '<anonymous>',
+    kind: surface.kind,
+    direction: surface.direction,
+    fileName: surface.fileName,
+    path: surface.path,
+    name: surface.name,
     params,
     result,
     runtimeFamilies: collectSemanticRuntimeFamiliesFromTypes([
@@ -1016,31 +923,9 @@ export function createSemanticBoundarySurfacesFromProgram(
   program: ts.Program,
   projectDirectory: string,
 ): readonly SemanticBoundarySurfaceIR[] {
-  const checker = program.getTypeChecker();
-  return projectSourceFiles(program, projectDirectory, { includeDeclarationFiles: true })
-    .flatMap((sourceFile) =>
-      sourceFile.statements.flatMap((statement): SemanticBoundarySurfaceIR[] => {
-        if (!ts.isFunctionDeclaration(statement)) {
-          return [];
-        }
-        const surface = createFunctionBoundarySurface(
-          checker,
-          projectDirectory,
-          sourceFile,
-          statement,
-        );
-        return surface ? [surface] : [];
-      })
-    )
-    .sort((left, right) =>
-      left.direction === right.direction
-        ? left.fileName === right.fileName
-          ? left.name.localeCompare(right.name)
-          : left.fileName.localeCompare(right.fileName)
-        : left.direction === 'import'
-        ? -1
-        : 1
-    );
+  return createSharedSemanticBoundarySurfacesFromProgram(program, projectDirectory).map(
+    semanticBoundarySurfaceFromShared,
+  );
 }
 
 function compilerHostBoundaryToSemanticType(boundary: CompilerHostBoundaryIR): SemanticTypeIR {
