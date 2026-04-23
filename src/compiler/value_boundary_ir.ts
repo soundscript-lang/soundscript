@@ -130,6 +130,40 @@ export function normalizeValueBoundary(boundary: ValueBoundaryIR): ValueBoundary
   return arms.length === 1 ? arms[0]! : { kind: 'union', arms };
 }
 
+function valueBoundaryIsTaggedScalar(boundary: ValueBoundaryIR): boolean {
+  switch (boundary.kind) {
+    case 'undefined':
+    case 'null':
+    case 'boolean':
+    case 'number':
+    case 'string':
+    case 'symbol':
+    case 'bigint':
+      return true;
+    default:
+      return false;
+  }
+}
+
+export function valueBoundarySupportsWasmGcSpecializedObjectWrapper(
+  boundary: ValueBoundaryIR | undefined,
+): boundary is Extract<ValueBoundaryIR, { kind: 'object' }> {
+  if (!boundary || boundary.kind !== 'object' || boundary.dynamic || boundary.fallback) {
+    return false;
+  }
+  if (!boundary.fields || boundary.fields.length === 0) {
+    return false;
+  }
+  return boundary.fields.every((field) => {
+    if (valueBoundaryIsTaggedScalar(field.value)) {
+      return true;
+    }
+    return field.value.kind === 'union' && normalizeUnionArms(field.value.arms).every(
+      valueBoundaryIsTaggedScalar,
+    );
+  });
+}
+
 export function valueBoundaryFromSemanticType(type: SemanticTypeIR): ValueBoundaryIR {
   switch (type.kind) {
     case 'finite_union':

@@ -46,6 +46,7 @@ import {
   createCollectionBoundaryAdapterForBoundary,
   valueBoundaryFromSemanticType,
   type ValueBoundaryIR,
+  valueBoundarySupportsWasmGcSpecializedObjectWrapper,
 } from './value_boundary_ir.ts';
 import {
   CompilerToolchainError,
@@ -567,6 +568,8 @@ function isWasmGcPublicBoundarySupported(boundary: ValueBoundaryIR): boolean {
       return true;
     case 'array':
       return isWasmGcPublicBoundarySupported(boundary.element);
+    case 'object':
+      return valueBoundarySupportsWasmGcSpecializedObjectWrapper(boundary);
     case 'map':
       return boundary.key.kind === 'string' &&
         isWasmGcPublicBoundarySupported(boundary.value) &&

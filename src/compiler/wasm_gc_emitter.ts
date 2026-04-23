@@ -14,7 +14,10 @@ import {
   collectionBoundaryAdapterClosure,
   collectionBoundaryAdaptersForValueBoundaries,
   compilerValueTypeForStorage,
+  selectWasmGcStorage,
+  valueBoundaryFromSemanticType,
   type ValueBoundaryIR,
+  valueBoundarySupportsWasmGcSpecializedObjectWrapper,
   valueCollectionAdapterKey,
   type ValueStoragePlanIR,
 } from './value_boundary_ir.ts';
@@ -197,6 +200,97 @@ function renderBoundaryPlan(boundary: WasmGcBoundaryPlanIR): readonly string[] {
     `    ;; wrapper_hooks=${joinOrNone(boundary.wrapperHooks)}`,
     '  )',
   ];
+}
+
+function boundaryValueWasmType(boundary: ValueBoundaryIR): string {
+  return wasmTypeForCompilerValueType(
+    compilerValueTypeForStorage(selectWasmGcStorage(boundary)),
+  );
+}
+
+function specializedObjectLayoutTypePlanForBoundary(
+  plan: WasmGcModulePlanIR,
+  boundary: Extract<ValueBoundaryIR, { kind: 'object' }>,
+): WasmGcTypePlanIR | undefined {
+  if (!valueBoundarySupportsWasmGcSpecializedObjectWrapper(boundary)) {
+    return undefined;
+  }
+  const fields = boundary.fields ?? [];
+  const expectedFields = fields.map((field) => ({
+    name: field.name,
+    wasmType: boundaryValueWasmType(field.value),
+  }));
+  return plan.typePlans.find((typePlan) =>
+    typePlan.source === 'object_layout' &&
+    typePlan.family === 'specialized_object' &&
+    (typePlan.fields?.length ?? 0) === expectedFields.length &&
+    expectedFields.every((field, index) =>
+      typePlan.fields?.[index]?.name === field.name &&
+      typePlan.fields?.[index]?.wasmType === field.wasmType
+    )
+  );
+}
+
+function objectBoundaryHelperExportBaseName(typePlan: WasmGcTypePlanIR): string {
+  return sanitizeIdentifier(typePlan.name);
+}
+
+function renderSpecializedObjectBoundaryHelpers(
+  plan: WasmGcModulePlanIR,
+): readonly string[] {
+  const emitted = new Set<string>();
+  const lines: string[] = [];
+  const boundaries = plan.boundaryPlans.flatMap((boundary) => [
+    ...boundary.params.map((param) => valueBoundaryFromSemanticType(param.type)),
+    valueBoundaryFromSemanticType(boundary.result.type),
+  ]);
+  for (const candidate of boundaries) {
+    if (!valueBoundarySupportsWasmGcSpecializedObjectWrapper(candidate)) {
+      continue;
+    }
+    const typePlan = specializedObjectLayoutTypePlanForBoundary(plan, candidate);
+    if (!typePlan) {
+      continue;
+    }
+    const helperBase = objectBoundaryHelperExportBaseName(typePlan);
+    if (emitted.has(helperBase)) {
+      continue;
+    }
+    emitted.add(helperBase);
+    lines.push(
+      `  (func $__soundscript_object_new_${helperBase} (export "__soundscript_object_new_${helperBase}") ${
+        (typePlan.fields ?? []).map((field, index) => `(param $field_${index} ${field.wasmType})`)
+          .join(' ')
+      } (result (ref null eq))`,
+      ...((typePlan.fields ?? []).map((_field, index) => `    local.get $field_${index}`)),
+      `    struct.new ${typePlan.name}`,
+      '  )',
+    );
+    for (const field of typePlan.fields ?? []) {
+      lines.push(
+        `  (func $__soundscript_object_get_${helperBase}_${
+          sanitizeIdentifier(field.name)
+        } (export "__soundscript_object_get_${helperBase}_${
+          sanitizeIdentifier(field.name)
+        }") (param $value (ref null eq)) (result ${field.wasmType})`,
+        '    local.get $value',
+        `    ref.cast (ref ${typePlan.name})`,
+        `    struct.get ${typePlan.name} $${field.name}`,
+        '  )',
+        `  (func $__soundscript_object_set_${helperBase}_${
+          sanitizeIdentifier(field.name)
+        } (export "__soundscript_object_set_${helperBase}_${
+          sanitizeIdentifier(field.name)
+        }") (param $value (ref null eq)) (param $field ${field.wasmType})`,
+        '    local.get $value',
+        `    ref.cast (ref ${typePlan.name})`,
+        '    local.get $field',
+        `    struct.set ${typePlan.name} $${field.name}`,
+        '  )',
+      );
+    }
+  }
+  return lines;
 }
 
 function wasmTypeForCompilerValueType(valueType: string): string {
@@ -7845,6 +7939,10 @@ export function emitWasmGcModulePlan(plan: WasmGcModulePlanIR): string {
     ...(plan.boundaryPlans.length > 0 ? plan.boundaryPlans.flatMap(renderBoundaryPlan) : [
       '  ;; none',
     ]),
+    '  ;; boundary object helpers',
+    ...(renderSpecializedObjectBoundaryHelpers(plan).length > 0
+      ? renderSpecializedObjectBoundaryHelpers(plan)
+      : ['  ;; none']),
     '  ;; diagnostics',
     ...(plan.diagnostics.length > 0
       ? plan.diagnostics.map((diagnostic) =>

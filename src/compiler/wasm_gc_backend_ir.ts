@@ -16,6 +16,7 @@ import {
   createCollectionBoundaryAdapterForBoundary,
   valueBoundaryFromSemanticType,
   type ValueBoundaryIR,
+  valueBoundarySupportsWasmGcSpecializedObjectWrapper,
   valueCollectionAdapterKey,
   type ValueCollectionBoundaryAdapterIR,
   type ValueStoragePlanIR,
@@ -693,6 +694,8 @@ function valueBoundaryNeedsWrapper(boundary: ValueBoundaryIR | undefined): boole
     case 'symbol':
     case 'bigint':
       return true;
+    case 'object':
+      return valueBoundarySupportsWasmGcSpecializedObjectWrapper(boundary);
     case 'array':
       return boundary.element.kind === 'boolean' || boundary.element.kind === 'number' ||
         boundary.element.kind === 'string';
