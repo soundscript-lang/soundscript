@@ -6,14 +6,17 @@ import {
   type RuntimeManifestIR,
 } from './runtime_manifest_ir.ts';
 import {
-  collectSemanticObjectLayoutsFromTypes,
-  createSemanticBoundarySurfacesFromProgram,
   createSemanticModuleFromCompilerIR,
-  createSemanticTypeSnapshotsFromProgram,
+  type SemanticBoundarySurfaceIR,
   type SemanticModuleIR,
 } from './semantic_ir.ts';
+import {
+  createSharedSemanticFactsFromProgram,
+  type SharedSemanticFactsIR,
+} from '../semantic/shared_semantic_facts.ts';
 import { createSourceHIRFromProgram, type SourceModuleIR } from './source_hir.ts';
 import { createWasmGcModulePlan, type WasmGcModulePlanIR } from './wasm_gc_backend_ir.ts';
+import { collectSemanticRuntimeFamiliesFromTypes } from './semantic_ir.ts';
 
 export interface CompilerIrDebugSnapshot {
   kind: 'compiler_ir_debug_snapshot';
@@ -21,6 +24,7 @@ export interface CompilerIrDebugSnapshot {
     kind: 'source_hir';
     modules: readonly SourceModuleIR[];
   };
+  sharedFacts: SharedSemanticFactsIR;
   semantic: SemanticModuleIR;
   runtimeManifest: RuntimeManifestIR;
   wasmGcPlan: WasmGcModulePlanIR;
@@ -51,21 +55,24 @@ export function createCompilerIrDebugSnapshot(
   projectDirectory: string,
 ): CompilerIrDebugSnapshot {
   const source = createSourceHIRFromProgram(program, projectDirectory);
+  const sharedFacts = createSharedSemanticFactsFromProgram(program, projectDirectory);
   const legacyModule = lowerProgramToCompilerIR(program, projectDirectory);
-  const boundarySurfaces = createSemanticBoundarySurfacesFromProgram(program, projectDirectory);
-  const boundaryFamilies = boundarySurfaces.flatMap((surface) => [...surface.runtimeFamilies]);
-  const boundaryObjectLayouts = collectSemanticObjectLayoutsFromTypes(
-    boundarySurfaces.flatMap((surface) => [
+  const boundarySurfaces: readonly SemanticBoundarySurfaceIR[] = sharedFacts.boundarySurfaces.map((
+    surface,
+  ) => ({
+    ...surface,
+    runtimeFamilies: collectSemanticRuntimeFamiliesFromTypes([
       ...surface.params.map((param) => param.type),
       surface.result,
     ]),
-  );
+  }));
+  const boundaryFamilies = boundarySurfaces.flatMap((surface) => [...surface.runtimeFamilies]);
   const legacySemantic = createSemanticModuleFromCompilerIR(legacyModule);
   const semantic = {
     ...legacySemantic,
-    typeSnapshots: createSemanticTypeSnapshotsFromProgram(program, projectDirectory),
+    typeSnapshots: sharedFacts.typeSnapshots,
     boundarySurfaces,
-    objectLayouts: [...legacySemantic.objectLayouts, ...boundaryObjectLayouts]
+    objectLayouts: [...legacySemantic.objectLayouts, ...sharedFacts.objectLayouts]
       .sort((left, right) =>
         left.family === right.family
           ? left.name.localeCompare(right.name)
@@ -79,6 +86,7 @@ export function createCompilerIrDebugSnapshot(
   return {
     kind: 'compiler_ir_debug_snapshot',
     source,
+    sharedFacts,
     semantic,
     runtimeManifest,
     wasmGcPlan,

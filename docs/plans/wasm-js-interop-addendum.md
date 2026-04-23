@@ -5,6 +5,14 @@
 Record the remaining **JS-host interop** work for `wasm-browser` and `wasm-node` as a concrete
 companion to `docs/plans/compiler-roadmap.md`.
 
+This addendum is intentionally subordinate to the canonical compiler architecture:
+
+- `soundscript -> SourceHIR -> shared semantic facts -> compiler IR -> backend plan -> backend`
+- `wasm-gc` is the first real backend target for v1
+- JS interop is one boundary service inside that architecture, not the architectural center
+- pre-v1 compiler internals may change incompatibly; interop work should not preserve legacy
+  lowering paths for compatibility
+
 This addendum exists because the remaining compiler roadmap correctly identifies host-boundary
 generalization as a major blocker, but the JS-host slice needs its own explicit sequencing and
 success criteria. The main product goal is not merely "some ambient host calls work." The goal is
@@ -81,7 +89,7 @@ The authored contract remains:
 
 ```ts
 // #[interop]
-import React from "react";
+import React from 'react';
 ```
 
 or equivalent named/default/namespace forms.
@@ -116,15 +124,15 @@ Default rule:
   boundaries where useful
 - values too dynamic to specialize should still cross as opaque host-owned handles
 
-This is how the compiler stays compatible with real JS libraries without reopening full
-open-world JS semantics inside the wasm runtime.
+This is how the compiler stays compatible with real JS libraries without reopening full open-world
+JS semantics inside the wasm runtime.
 
 ## Remaining Workstreams
 
 ### 1. Import-Surface Completion
 
-The remaining compiler work should make `#[interop]` imports cover the ordinary JS module forms
-used by mainstream packages.
+The remaining compiler work should make `#[interop]` imports cover the ordinary JS module forms used
+by mainstream packages.
 
 Required work:
 
@@ -146,8 +154,8 @@ Required work:
 
 Completion rule:
 
-- ordinary declaration-backed import forms used by real JS libraries should compile unless they
-  rely on one of the explicit deferred meta-object families
+- ordinary declaration-backed import forms used by real JS libraries should compile unless they rely
+  on one of the explicit deferred meta-object families
 
 ### 2. Object, Method, And Constructor Boundary Completion
 

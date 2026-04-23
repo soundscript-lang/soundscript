@@ -33,9 +33,12 @@ Open planning lives in `docs/plans/`.
 The current active planning set is:
 
 - `docs/plans/beta-to-v1-roadmap.md`
+- `docs/plans/checker-compiler-semantic-consolidation.md`
+- `docs/plans/compiler-roadmap.md`
 - `docs/plans/effect-system-v1.md`
 - `docs/plans/runtime-target-platform-and-interop.md`
 - `docs/plans/wasm-async-runtime-and-host-integration.md`
+- `docs/plans/wasm-js-interop-addendum.md`
 - `docs/plans/test262-migration.md`
 
 Key supporting rationale lives in `docs/reference/`, especially:
@@ -137,7 +140,7 @@ That now also includes making two narrower checker rules part of the explicit po
 - general object `toString()` / `valueOf()` conversion hooks remain banned coercion surface, while
   primitive-family intrinsic conversions stay allowed
 
-### Milestone C: JS-hosted Wasm interop becomes first-class
+### Milestone C: IR-first backends and JS-hosted Wasm interop become first-class
 
 Build the primary deployment story around the 5-target runtime matrix:
 
@@ -151,6 +154,12 @@ This milestone starts with the first four targets. `wasm-wasi` is explicitly las
 
 This includes:
 
+- one backend-neutral compiler architecture:
+  - `soundscript -> SourceHIR -> shared semantic facts -> compiler IR -> backend plan -> backend`
+- shared semantic/type-shape facts consumed by both checker and compiler, without making the checker
+  depend on compiler lowering state
+- `wasm-gc` as the first real backend target for v1
+- future LLVM/native and optimized-JS backends as planned consumers of the same IR stack
 - honest treatment of host objects and callbacks
 - one checker interop policy across targets
 - flat public targets with explicit runtime-adapter behavior instead of a hidden `js` / `wasm` split
@@ -174,6 +183,10 @@ This includes:
 - stronger compile-time and runtime alignment around interop assumptions
 - explicit extern packs such as `externs: ["deno"]` for runtime-specific ambient globals on top of
   the base node-family contract
+
+Pre-v1, this milestone explicitly allows incompatible compiler-internal refactors. Legacy lowering
+paths, temporary Wasm wrapper/runtime ABI details, and duplicate compiler architectures should be
+removed rather than preserved for compatibility.
 
 ### Milestone D: Stdlib, metadata, and lowering contracts converge
 
@@ -247,8 +260,8 @@ The main open workstreams are:
   runtime-family ownership, `#[value]`, machine numerics, and the wider compiler subset
 - docs-first runtime target, extern-pack, and platform clarification for the public target/runtime
   matrix
-- beta/v1 hardening work from `docs/plans/beta-to-v1-roadmap.md`, especially
-  performance, config fidelity, Node typings, docs/examples, and release confidence gates
+- beta/v1 hardening work from `docs/plans/beta-to-v1-roadmap.md`, especially performance, config
+  fidelity, Node typings, docs/examples, and release confidence gates
 - remaining stdlib hardening and package/interop work, especially around projected declaration
   boundaries and wrapper recovery
 - explicit null-prototype and dynamic-boundary modeling beyond the current `BareObject` and narrow

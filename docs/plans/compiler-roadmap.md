@@ -2,19 +2,33 @@
 
 ## Goal
 
-Record the remaining **compiler/backend/toolchain** work now that the checker, frontend, and much
-of the async/generator substrate are already in place.
+Record the remaining **compiler/backend/toolchain** work now that the checker, frontend, and much of
+the async/generator substrate are already in place.
 
-This plan is intentionally narrower than the broader beta/v1 product roadmap. It is about taking
-the current compiler from "substantial kept subset with explicit gaps" to "coherent backend with
-few remaining deliberate exclusions."
+This plan is intentionally narrower than the broader beta/v1 product roadmap. It is about taking the
+current compiler from "substantial kept subset with explicit gaps" to "coherent backend with few
+remaining deliberate exclusions."
+
+The canonical architecture direction is now:
+
+- `soundscript -> SourceHIR -> shared semantic facts -> compiler SemanticIR -> RuntimeManifestIR -> BackendPlanIR -> backend`
+- `wasm-gc` is the first real backend target for v1
+- LLVM/native and optimized JS are future backends fed by the same IR stack
+- JS interop is one boundary service inside that architecture, not the architectural center
+- pre-v1 compiler/backend internals may change incompatibly; legacy lowering paths should be deleted
+  once replaced
 
 ## Current Baseline
 
 Important current facts in the repo:
 
-- frame-backed async, sync generators, async generators, `yield*`, and `for await...of` now exist
-  in the compiler-owned runtime family
+- the repo now has explicit `SourceHIR`, compiler `SemanticIR`, `RuntimeManifestIR`, WasmGC backend
+  plan/emission modules, and a separate shared semantic-facts extraction layer for checker-safe
+  type-shape and boundary facts
+- the public `compileProject` Wasm path still routes through the older `lower.ts -> wat_emitter.ts`
+  pipeline, so the main compiler task is still full cutover rather than incremental feature growth
+- frame-backed async, sync generators, async generators, `yield*`, and `for await...of` now exist in
+  the compiler-owned runtime family
 - host Promise and generator bridges exist for JS-backed Wasm targets
 - heavy compiler execution suites already run through bounded child-process harnesses rather than
   giant in-process `deno test` files
@@ -26,8 +40,8 @@ Important current facts in the repo:
   `targetFlags`
 
 That means the remaining compiler work is no longer primarily about inventing first-pass async
-semantics. The main job is now close-out, generalization, target/runtime-family completion, native
-Wasm representation work, and optional optimization tooling.
+semantics. The main job is now IR cutover, close-out, generalization, target/runtime-family
+completion, native Wasm representation work, and optional optimization tooling.
 
 ## Main Workstreams
 
@@ -121,13 +135,13 @@ Required work:
 
 - expose the same information through macro runtime context
 - validate `experimentalWasiShim` only on `wasm-browser`
-- keep direct WASI/component-style imports as the preferred host path on `wasm-wasi` and
-  `wasm-node` where available, with JS/JSPI remaining boundary-only interop machinery
+- keep direct WASI/component-style imports as the preferred host path on `wasm-wasi` and `wasm-node`
+  where available, with JS/JSPI remaining boundary-only interop machinery
 
 ### 4. Wasm-Native Value Representations
 
 The next backend-quality step is moving typed Wasm execution off the current JS-helper/object-style
- path where the language contract permits it.
+path where the language contract permits it.
 
 Required work:
 
@@ -206,8 +220,8 @@ Explicitly still deferred after this roadmap unless reopened by a later plan:
 
 ## Verification Strategy
 
-The remaining compiler work should be verified through bounded, behavior-owned gates rather than
-ad hoc broad suite runs.
+The remaining compiler work should be verified through bounded, behavior-owned gates rather than ad
+hoc broad suite runs.
 
 Required evidence:
 
@@ -223,8 +237,8 @@ Required evidence:
    - plain symbol creation/equality/collection use
    - machine-numeric typed-path IR/WAT evidence and boundary boxing
    - Wasm `#[value]` no-allocation typed paths and boundary boxing
-3. memory stays within the current bounded child-process envelope; regressions in grouped harness RSS
-   block further feature work until fixed
+3. memory stays within the current bounded child-process envelope; regressions in grouped harness
+   RSS block further feature work until fixed
 4. Binaryen/Wasmtime smoke validation for simple no-import Wasm outputs:
    - raw `module.wasm`
    - optimized `module.binaryen.wasm`

@@ -8,13 +8,15 @@ without starting that migration yet.
 The immediate decision is:
 
 - do not make the checker consume the current compiler `SemanticIR` directly
-- do extract shared semantic/type-shape services once the WasmGC compiler path is more mature
+- do extract and grow shared semantic/type-shape services between checker and compiler without
+  making checker policy depend on compiler lowering state
 - keep checker policy, compiler lowering, and backend representation separate until the shared
   semantic layer has enough evidence from real compiler gates
 
-This plan is deliberately deferred. The current priority remains compiler maturation: WasmGC shadow
-execution, runtime-family manifests, finite union algebra, generic JS interop, and parity with the
-existing compiler/runtime gates.
+This plan remains partially deferred. The shared semantic-facts extraction layer is now active, but
+checker migration onto that layer still waits on more compiler maturation: WasmGC shadow execution,
+runtime-family manifests, finite union algebra, generic JS interop, and parity with the existing
+compiler/runtime gates.
 
 ## Current Baseline
 
@@ -27,6 +29,8 @@ The repo currently has separate but increasingly overlapping semantic systems:
 - the rearchitecture path in `src/compiler/source_hir.ts`, `src/compiler/semantic_ir.ts`,
   `src/compiler/runtime_manifest_ir.ts`, and `src/compiler/wasm_gc_backend_ir.ts` currently runs in
   shadow mode for representative WasmGC gates
+- `src/semantic/shared_semantic_facts.ts` now owns checker-safe recursive type-shape, boundary, and
+  object-layout extraction intended to be shared by checker and compiler
 - `SourceHIR` is AST-near and source-span-oriented
 - current compiler `SemanticIR` is still partially derived from legacy compiler IR and therefore
   already contains compiler/backend concepts such as value representations, runtime families,
@@ -172,9 +176,9 @@ The guiding principle is:
 
 ## Migration Sequence
 
-### Phase 0: Pause Until Compiler Matures
+### Phase 0: Keep Compiler Maturation Ahead Of Checker Migration
 
-Do not start consolidation while the WasmGC path is still proving basic runtime families.
+Do not start direct checker migration while the WasmGC path is still proving basic runtime families.
 
 Prerequisites before starting:
 

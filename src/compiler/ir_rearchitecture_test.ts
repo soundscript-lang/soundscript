@@ -6,6 +6,11 @@ import {
   renderCompilerIrDebugSnapshot,
 } from './compiler_ir_debug.ts';
 import {
+  classifySharedSemanticType,
+  createSharedSemanticFactsFromProgram,
+  normalizeSharedSemanticUnionBoundary,
+} from '../semantic/shared_semantic_facts.ts';
+import {
   classifySemanticType,
   normalizeSemanticUnionBoundary,
   type SemanticModuleIR,
@@ -72,6 +77,40 @@ async function createSemanticTypeFixture(
     throw new Error(`Missing type alias ${typeName}.`);
   }
   return classifySemanticType(checker, checker.getTypeAtLocation(declaration.type), declaration);
+}
+
+async function createSharedSemanticTypeFixture(
+  source: string,
+  typeName: string,
+) {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: { strict: true },
+        files: ['main.ts'],
+      }),
+    },
+    { path: 'main.ts', contents: source },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const checker = program.getTypeChecker();
+  const sourceFile = program.getSourceFiles().find((candidate) =>
+    candidate.fileName.endsWith('main.ts')
+  );
+  const declaration = sourceFile?.statements.find((
+    statement,
+  ): statement is ts.TypeAliasDeclaration =>
+    ts.isTypeAliasDeclaration(statement) && statement.name.text === typeName
+  );
+  if (!declaration) {
+    throw new Error(`Missing type alias ${typeName}.`);
+  }
+  return classifySharedSemanticType(
+    checker,
+    checker.getTypeAtLocation(declaration.type),
+    declaration,
+  );
 }
 
 async function createWasmGcWrappedExports(
@@ -221,6 +260,14 @@ Deno.test('compiler debug snapshot exposes checker semantic type snapshots', asy
   assertEquals(add && add.kind === 'function_type' ? add.result : undefined, {
     kind: 'number',
   });
+  assertEquals(snapshot.sharedFacts.typeSnapshots, snapshot.semantic.typeSnapshots);
+  assertEquals(snapshot.sharedFacts.objectLayouts, [
+    {
+      name: 'Box',
+      family: 'specialized_object',
+      fields: ['value'],
+    },
+  ]);
 });
 
 Deno.test('compiler debug snapshot keeps type-only aliases out of runtime manifest', async () => {
@@ -265,6 +312,88 @@ Deno.test('compiler debug snapshot keeps type-only aliases out of runtime manife
       runtimeFamilies: [],
     },
   ]);
+});
+
+Deno.test('shared semantic facts classify recursive type shapes identically to compiler semantic classification', async () => {
+  const source = `
+    type Box = { value: symbol | bigint };
+    type Target = Promise<Map<string, Box | number[]>>;
+  `;
+
+  const shared = await createSharedSemanticTypeFixture(source, 'Target');
+  const compiler = await createSemanticTypeFixture(source, 'Target');
+
+  assertEquals(shared, compiler);
+});
+
+Deno.test('shared semantic union normalization matches compiler semantic normalization for nested recursive arms', () => {
+  const shared = normalizeSharedSemanticUnionBoundary([
+    {
+      kind: 'union',
+      arms: [{ kind: 'string' }, { kind: 'number' }],
+    },
+    { kind: 'number' },
+    {
+      kind: 'map',
+      key: { kind: 'string' },
+      value: {
+        kind: 'union',
+        arms: [{ kind: 'boolean' }, { kind: 'boolean' }],
+      },
+    },
+  ]);
+  const compiler = normalizeSemanticUnionBoundary([
+    {
+      kind: 'union',
+      arms: [{ kind: 'string' }, { kind: 'number' }],
+    },
+    { kind: 'number' },
+    {
+      kind: 'map',
+      key: { kind: 'string' },
+      value: {
+        kind: 'union',
+        arms: [{ kind: 'boolean' }, { kind: 'boolean' }],
+      },
+    },
+  ]);
+
+  assertEquals(shared, compiler);
+});
+
+Deno.test('compiler debug snapshot exposes shared semantic facts between SourceHIR and compiler semantic IR', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: { strict: true },
+        files: ['main.ts', 'ambient.d.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        export function create(input: number): number {
+          return input + 1;
+        }
+      `,
+    },
+    {
+      path: 'ambient.d.ts',
+      contents: `
+        export declare function consume(input: Map<string, number[]>): Promise<Set<number>>;
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const sharedFacts = createSharedSemanticFactsFromProgram(program, tempDirectory);
+  const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
+
+  assertEquals(snapshot.sharedFacts, sharedFacts);
+  assertEquals(
+    snapshot.sharedFacts.boundarySurfaces.map((surface) => surface.direction),
+    ['import', 'export'],
+  );
 });
 
 Deno.test('compiler debug snapshot derives manifest families from exported boundary surfaces', async () => {

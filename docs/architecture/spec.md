@@ -69,14 +69,26 @@ last target to support.
 The intended pipeline is:
 
 - TypeScript source enters the checker and policy engine
-- checker results feed both diagnostics and compiler-relevant hints or metadata
-- the compiler lowers accepted programs into Wasm GC as the primary semantic backend
+- source is normalized into shared `SourceHIR`
+- checker-safe type-shape and boundary facts are extracted into shared semantic facts consumed by
+  both checker and compiler
+- checker results feed diagnostics plus compiler-relevant hints and semantic facts
+- the compiler lowers accepted programs into compiler-owned IR and backend plans
+- `wasm-gc` is the first real backend target for v1
+- future LLVM/native and optimized-JS backends are expected to consume the same IR stack rather than
+  define separate compiler architectures
 - emitted Wasm may flow through Binaryen or similar optimization passes before final packaging, but
   those optimizers do not define language semantics
-- JS-hosted adapters provide the primary runtime boundary for browser and node-family hosts
+- JS-hosted adapters provide one runtime boundary service for browser and node-family hosts; they do
+  not define the compiler architecture
 - WASI/component-style adapters provide the standalone Wasm boundary when `wasm-wasi` is targeted
 - stdlib design and metadata validation support both checker and compiler phases rather than
   belonging to a separate product
+
+Pre-v1, compiler/backend internals are intentionally unstable. Temporary Wasm wrapper/runtime ABI
+details, legacy lowering paths, and experimental backend plan shapes may change incompatibly and
+should be deleted once replaced. Backwards compatibility is not a reason to preserve duplicate
+compiler architectures before v1.
 
 Checker-visible representation hints remain part of this architecture. Value-like annotations such
 as `// #[value]` exist to express fixed-layout, stack-allocation-friendly constraints that the
@@ -972,8 +984,8 @@ For compile targets that are in scope, checker/compiler parity is part of the cl
 accepted fully Soundscript-authored programs must either lower successfully or be rejected by an
 explicit compiler-owned target-availability diagnostic.
 
-The maintained owner ledger for that claim lives in `docs/project/soundness-ownership-ledger.md`, including
-the owning suites and matrix axes for each currently owned semantic family.
+The maintained owner ledger for that claim lives in `docs/project/soundness-ownership-ledger.md`,
+including the owning suites and matrix axes for each currently owned semantic family.
 
 ### Current Implementation Status Snapshot
 
@@ -1021,6 +1033,9 @@ Implemented:
 - the experimental compiler path is real code: `soundscript compile` calls into a Wasm/WAT toolchain
   with dedicated tests covering strings, arrays, `Map`, `Set`, `Promise`, object
   specialization/fallback, tagged boundaries, macro-expanded input, and JS boundary adaptation
+- a shared semantic-facts extraction layer now exists for checker-safe type-shape, boundary, and
+  object-layout facts between `SourceHIR` and compiler-owned semantic/backend planning, though the
+  public Wasm compile path has not finished cutting over to that IR pipeline yet
 - the repo already includes a manifest-driven selective `test262` harness with asserted versus
   backlog tracking and isolated subprocess execution
 
