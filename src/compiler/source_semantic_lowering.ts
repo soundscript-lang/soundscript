@@ -20,6 +20,7 @@ import type { SharedSemanticFactsIR } from '../semantic/shared_semantic_facts.ts
 interface FunctionLoweringContext {
   localRepresentations: Map<string, CompilerValueType>;
   locals: { name: string; representation: CompilerValueType }[];
+  runtimeFamilies: Set<SemanticRuntimeFamilyId>;
   stringLiteralIds: Map<string, number>;
   stringLiterals: string[];
   unsupportedKinds: Set<string>;
@@ -132,6 +133,7 @@ function lowerExpression(
             representation: 'i32',
           };
         case 'string':
+          context.runtimeFamilies.add('string');
           return {
             kind: 'owned_string_literal',
             literalId: getStringLiteralId(context, expression.text),
@@ -154,6 +156,19 @@ function lowerExpression(
         return { kind: 'undefined_literal', representation: 'tagged_ref' };
       }
       return { kind: 'local_get', name: expression.name, representation };
+    }
+    case 'property_access': {
+      const object = lowerExpression(expression.object, context);
+      if (expression.property === 'length' && object.representation === 'owned_string_ref') {
+        context.runtimeFamilies.add('string');
+        return {
+          kind: 'owned_string_length',
+          value: object,
+          representation: 'f64',
+        };
+      }
+      context.unsupportedKinds.add(`property_access:${expression.property}`);
+      return { kind: 'undefined_literal', representation: 'tagged_ref' };
     }
     case 'binary_expression': {
       const left = lowerExpression(expression.left, context);
@@ -291,6 +306,7 @@ function lowerFunction(
   const context: FunctionLoweringContext = {
     localRepresentations,
     locals: [],
+    runtimeFamilies: new Set(),
     stringLiteralIds,
     stringLiterals,
     unsupportedKinds,
@@ -309,6 +325,8 @@ function lowerFunction(
       boundary.result as SemanticTypeIR,
     ])
     : [];
+  const functionRuntimeFamilies = [...new Set([...runtimeFamilies, ...context.runtimeFamilies])]
+    .sort();
 
   return {
     name: func.name,
@@ -319,7 +337,7 @@ function lowerFunction(
     body,
     bodyStatus: unsupportedBodyKinds.length === 0 ? 'emittable' : 'stub',
     unsupportedBodyKinds,
-    runtimeFamilies,
+    runtimeFamilies: functionRuntimeFamilies,
     hostImported: false,
     hostExported: func.exported,
     unionBoundaries: [],

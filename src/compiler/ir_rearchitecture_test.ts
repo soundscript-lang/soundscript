@@ -1033,6 +1033,55 @@ Deno.test('compiler SourceHIR semantic lowering preserves primitive structured c
   assertEquals(sumDown?.body.some((statement) => statement.kind === 'while'), true);
 });
 
+Deno.test('compiler SourceHIR semantic lowering emits runnable string body runtime families', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: { strict: true },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        export function length(): number {
+          return "A😀".length;
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
+  const semantic = createSemanticModuleFromSourceHIR(snapshot.source, snapshot.sharedFacts);
+  const manifest = createRuntimeManifestFromSemanticModule(semantic);
+  const plan = createWasmGcModulePlan(semantic, manifest);
+  const lengthPlan = plan.functionPlans.find((func) => func.name === 'length');
+  const watPath = join(tempDirectory, 'wasm-gc-source-string.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-source-string.wasm');
+
+  assertEquals(
+    manifest.familyRequirements.map((requirement) => requirement.family),
+    ['string'],
+  );
+  assertEquals(lengthPlan?.bodyStatus, 'emittable');
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(plan));
+  const result = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(result.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(result.success, true);
+
+  const wasm = await Deno.readFile(wasmPath);
+  const instance = await WebAssembly.instantiate(wasm);
+  const length = instance.instance.exports['main.ts:length'];
+  assertEquals(typeof length, 'function');
+  assertEquals((length as () => number)(), 3);
+});
+
 Deno.test('compiler wasm-gc backend plan explains boundary helper emission from manifest', async () => {
   const tempDirectory = await createTempProject([
     {
