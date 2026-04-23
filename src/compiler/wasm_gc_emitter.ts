@@ -20,6 +20,7 @@ import {
   valueBoundarySupportsWasmGcSpecializedObjectWrapper,
   valueCollectionAdapterKey,
   type ValueStoragePlanIR,
+  visitValueBoundary,
 } from './value_boundary_ir.ts';
 
 function sanitizeIdentifier(value: string): string {
@@ -244,51 +245,53 @@ function renderSpecializedObjectBoundaryHelpers(
     ...boundary.params.map((param) => valueBoundaryFromSemanticType(param.type)),
     valueBoundaryFromSemanticType(boundary.result.type),
   ]);
-  for (const candidate of boundaries) {
-    if (!valueBoundarySupportsWasmGcSpecializedObjectWrapper(candidate)) {
-      continue;
-    }
-    const typePlan = specializedObjectLayoutTypePlanForBoundary(plan, candidate);
-    if (!typePlan) {
-      continue;
-    }
-    const helperBase = objectBoundaryHelperExportBaseName(typePlan);
-    if (emitted.has(helperBase)) {
-      continue;
-    }
-    emitted.add(helperBase);
-    lines.push(
-      `  (func $__soundscript_object_new_${helperBase} (export "__soundscript_object_new_${helperBase}") ${
-        (typePlan.fields ?? []).map((field, index) => `(param $field_${index} ${field.wasmType})`)
-          .join(' ')
-      } (result (ref null eq))`,
-      ...((typePlan.fields ?? []).map((_field, index) => `    local.get $field_${index}`)),
-      `    struct.new ${typePlan.name}`,
-      '  )',
-    );
-    for (const field of typePlan.fields ?? []) {
+  for (const boundary of boundaries) {
+    visitValueBoundary(boundary, (candidate) => {
+      if (!valueBoundarySupportsWasmGcSpecializedObjectWrapper(candidate)) {
+        return;
+      }
+      const typePlan = specializedObjectLayoutTypePlanForBoundary(plan, candidate);
+      if (!typePlan) {
+        return;
+      }
+      const helperBase = objectBoundaryHelperExportBaseName(typePlan);
+      if (emitted.has(helperBase)) {
+        return;
+      }
+      emitted.add(helperBase);
       lines.push(
-        `  (func $__soundscript_object_get_${helperBase}_${
-          sanitizeIdentifier(field.name)
-        } (export "__soundscript_object_get_${helperBase}_${
-          sanitizeIdentifier(field.name)
-        }") (param $value (ref null eq)) (result ${field.wasmType})`,
-        '    local.get $value',
-        `    ref.cast (ref ${typePlan.name})`,
-        `    struct.get ${typePlan.name} $${field.name}`,
-        '  )',
-        `  (func $__soundscript_object_set_${helperBase}_${
-          sanitizeIdentifier(field.name)
-        } (export "__soundscript_object_set_${helperBase}_${
-          sanitizeIdentifier(field.name)
-        }") (param $value (ref null eq)) (param $field ${field.wasmType})`,
-        '    local.get $value',
-        `    ref.cast (ref ${typePlan.name})`,
-        '    local.get $field',
-        `    struct.set ${typePlan.name} $${field.name}`,
+        `  (func $__soundscript_object_new_${helperBase} (export "__soundscript_object_new_${helperBase}") ${
+          (typePlan.fields ?? []).map((field, index) => `(param $field_${index} ${field.wasmType})`)
+            .join(' ')
+        } (result (ref null eq))`,
+        ...((typePlan.fields ?? []).map((_field, index) => `    local.get $field_${index}`)),
+        `    struct.new ${typePlan.name}`,
         '  )',
       );
-    }
+      for (const field of typePlan.fields ?? []) {
+        lines.push(
+          `  (func $__soundscript_object_get_${helperBase}_${
+            sanitizeIdentifier(field.name)
+          } (export "__soundscript_object_get_${helperBase}_${
+            sanitizeIdentifier(field.name)
+          }") (param $value (ref null eq)) (result ${field.wasmType})`,
+          '    local.get $value',
+          `    ref.cast (ref ${typePlan.name})`,
+          `    struct.get ${typePlan.name} $${field.name}`,
+          '  )',
+          `  (func $__soundscript_object_set_${helperBase}_${
+            sanitizeIdentifier(field.name)
+          } (export "__soundscript_object_set_${helperBase}_${
+            sanitizeIdentifier(field.name)
+          }") (param $value (ref null eq)) (param $field ${field.wasmType})`,
+          '    local.get $value',
+          `    ref.cast (ref ${typePlan.name})`,
+          '    local.get $field',
+          `    struct.set ${typePlan.name} $${field.name}`,
+          '  )',
+        );
+      }
+    });
   }
   return lines;
 }

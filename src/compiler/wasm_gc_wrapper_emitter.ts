@@ -12,9 +12,11 @@ import {
   compilerValueTypeForStorage,
   createCollectionBoundaryAdapterForBoundary,
   selectWasmGcStorage,
+  valueBoundaryCanUseWasmGcSpecializedObjectWrapper,
   type ValueBoundaryIR,
   valueBoundarySupportsWasmGcSpecializedObjectWrapper,
   valueCollectionAdapterKey,
+  visitValueBoundary,
 } from './value_boundary_ir.ts';
 
 function hostImportWrapperKey(moduleName: string, importName: string): string {
@@ -147,29 +149,31 @@ function wrapperObjectBoundaries(
     ...plan.wrapperPlan.exportWrappers.flatMap((wrapper) => wrapperValueBoundaries(wrapper)),
   ];
   for (const boundary of boundaries) {
-    if (!valueBoundarySupportsWasmGcSpecializedObjectWrapper(boundary)) {
-      continue;
-    }
-    const typePlan = specializedObjectLayoutTypePlanForBoundary(plan, boundary);
-    if (!typePlan) {
-      continue;
-    }
-    const fields = boundary.fields ?? [];
-    const helperBase = sanitizeBoundaryHelperIdentifier(typePlan.name);
-    const boundaryKey = JSON.stringify(boundary);
-    unique.set(boundaryKey, {
-      boundary,
-      createExportName: `__soundscript_object_new_${helperBase}`,
-      key: boundaryKey,
-      fields: fields.map((field) => ({
-        getExportName: `__soundscript_object_get_${helperBase}_${
-          sanitizeBoundaryHelperIdentifier(field.name)
-        }`,
-        name: field.name,
-        setExportName: `__soundscript_object_set_${helperBase}_${
-          sanitizeBoundaryHelperIdentifier(field.name)
-        }`,
-      })),
+    visitValueBoundary(boundary, (candidate) => {
+      if (!valueBoundarySupportsWasmGcSpecializedObjectWrapper(candidate)) {
+        return;
+      }
+      const typePlan = specializedObjectLayoutTypePlanForBoundary(plan, candidate);
+      if (!typePlan) {
+        return;
+      }
+      const fields = candidate.fields ?? [];
+      const helperBase = sanitizeBoundaryHelperIdentifier(typePlan.name);
+      const boundaryKey = JSON.stringify(candidate);
+      unique.set(boundaryKey, {
+        boundary: candidate,
+        createExportName: `__soundscript_object_new_${helperBase}`,
+        key: boundaryKey,
+        fields: fields.map((field) => ({
+          getExportName: `__soundscript_object_get_${helperBase}_${
+            sanitizeBoundaryHelperIdentifier(field.name)
+          }`,
+          name: field.name,
+          setExportName: `__soundscript_object_set_${helperBase}_${
+            sanitizeBoundaryHelperIdentifier(field.name)
+          }`,
+        })),
+      });
     });
   }
   return [...unique.values()].sort((left, right) => left.key.localeCompare(right.key));
@@ -717,8 +721,12 @@ function wrapperUsesBoundaryValueAdapters(wrapper: {
 }
 
 function boundaryUsesSpecializedObjectWrapper(boundary: ValueBoundaryIR): boolean {
-  if (valueBoundarySupportsWasmGcSpecializedObjectWrapper(boundary)) {
-    return true;
+  if (boundary.kind === 'object') {
+    if (valueBoundaryCanUseWasmGcSpecializedObjectWrapper(boundary)) {
+      return true;
+    }
+    return boundary.fields?.some((field) => boundaryUsesSpecializedObjectWrapper(field.value)) ??
+      false;
   }
   switch (boundary.kind) {
     case 'array':

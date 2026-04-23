@@ -1162,6 +1162,8 @@ Deno.test('compiler wasm-gc emitter emits scalar boundary stubs without runtime 
       '    ;; adapters=none',
       '    ;; wrapper_hooks=none',
       '  )',
+      '  ;; boundary object helpers',
+      '  ;; none',
       '  ;; diagnostics',
       '    ;; none',
       ')',

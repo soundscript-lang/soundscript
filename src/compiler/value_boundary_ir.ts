@@ -130,6 +130,63 @@ export function normalizeValueBoundary(boundary: ValueBoundaryIR): ValueBoundary
   return arms.length === 1 ? arms[0]! : { kind: 'union', arms };
 }
 
+export function visitValueBoundary(
+  boundary: ValueBoundaryIR,
+  visitor: (boundary: ValueBoundaryIR) => void,
+): void {
+  visitor(boundary);
+  switch (boundary.kind) {
+    case 'object':
+      for (const field of boundary.fields ?? []) {
+        visitValueBoundary(field.value, visitor);
+      }
+      return;
+    case 'array':
+      visitValueBoundary(boundary.element, visitor);
+      return;
+    case 'tuple':
+      for (const element of boundary.elements) {
+        visitValueBoundary(element, visitor);
+      }
+      return;
+    case 'map':
+      visitValueBoundary(boundary.key, visitor);
+      visitValueBoundary(boundary.value, visitor);
+      return;
+    case 'set':
+      visitValueBoundary(boundary.value, visitor);
+      return;
+    case 'closure':
+      for (const signature of boundary.signatures ?? []) {
+        for (const param of signature.params) {
+          visitValueBoundary(param, visitor);
+        }
+        visitValueBoundary(signature.result, visitor);
+      }
+      return;
+    case 'promise':
+      if (boundary.value) {
+        visitValueBoundary(boundary.value, visitor);
+      }
+      return;
+    case 'sync_generator':
+    case 'async_generator':
+      for (const value of [boundary.yield, boundary.return, boundary.next]) {
+        if (value) {
+          visitValueBoundary(value, visitor);
+        }
+      }
+      return;
+    case 'union':
+      for (const arm of boundary.arms) {
+        visitValueBoundary(arm, visitor);
+      }
+      return;
+    default:
+      return;
+  }
+}
+
 function valueBoundaryIsTaggedScalar(boundary: ValueBoundaryIR): boolean {
   switch (boundary.kind) {
     case 'undefined':
@@ -145,23 +202,37 @@ function valueBoundaryIsTaggedScalar(boundary: ValueBoundaryIR): boolean {
   }
 }
 
-export function valueBoundarySupportsWasmGcSpecializedObjectWrapper(
+function valueBoundarySupportsWasmGcSpecializedObjectWrapperFieldValue(
+  boundary: ValueBoundaryIR,
+): boolean {
+  if (valueBoundaryIsTaggedScalar(boundary)) {
+    return true;
+  }
+  if (boundary.kind === 'union') {
+    return normalizeUnionArms(boundary.arms).every(valueBoundaryIsTaggedScalar);
+  }
+  return boundary.kind === 'object' &&
+    valueBoundarySupportsWasmGcSpecializedObjectWrapper(boundary);
+}
+
+export function valueBoundaryCanUseWasmGcSpecializedObjectWrapper(
   boundary: ValueBoundaryIR | undefined,
-): boundary is Extract<ValueBoundaryIR, { kind: 'object' }> {
+): boolean {
   if (!boundary || boundary.kind !== 'object' || boundary.dynamic || boundary.fallback) {
     return false;
   }
   if (!boundary.fields || boundary.fields.length === 0) {
     return false;
   }
-  return boundary.fields.every((field) => {
-    if (valueBoundaryIsTaggedScalar(field.value)) {
-      return true;
-    }
-    return field.value.kind === 'union' && normalizeUnionArms(field.value.arms).every(
-      valueBoundaryIsTaggedScalar,
-    );
-  });
+  return boundary.fields.every((field) =>
+    valueBoundarySupportsWasmGcSpecializedObjectWrapperFieldValue(field.value)
+  );
+}
+
+export function valueBoundarySupportsWasmGcSpecializedObjectWrapper(
+  boundary: ValueBoundaryIR | undefined,
+): boundary is Extract<ValueBoundaryIR, { kind: 'object' }> {
+  return valueBoundaryCanUseWasmGcSpecializedObjectWrapper(boundary);
 }
 
 export function valueBoundaryFromSemanticType(type: SemanticTypeIR): ValueBoundaryIR {

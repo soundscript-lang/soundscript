@@ -4402,6 +4402,69 @@ compilerIntegrationTest(
 );
 
 compilerIntegrationTest(
+  'compileProject emits a WasmGC-backed public wrapper for wasm-node nested fixed-layout object results',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+            },
+            include: ['src/**/*.ts'],
+            soundscript: {
+              target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          'type Pair = { left: number; right: number };',
+          'type Payload = { pair: Pair; total: number };',
+          '',
+          'export function make(left: number, right: number): Payload {',
+          '  const pair = { left, right };',
+          '  const total = left + right;',
+          '  return { pair, total };',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts?.wrapperPath);
+
+    const wrapperSource = await Deno.readTextFile(result.artifacts.wrapperPath);
+    assertStringIncludes(wrapperSource, 'createSoundscriptWasmGcHostImports');
+    assertStringIncludes(wrapperSource, 'createSoundscriptWasmGcExports');
+
+    const instance = await instantiateCompiledModuleInJs(tempDirectory);
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'make');
+    const exported = instance.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+    assertEquals(exported(1, 2), { pair: { left: 1, right: 2 }, total: 3 });
+  },
+);
+
+compilerIntegrationTest(
   'compileProject emits a WasmGC-backed public wrapper for wasm-node fixed-layout object params',
   async () => {
     const tempDirectory = await createTempProject([
@@ -4458,6 +4521,67 @@ compilerIntegrationTest(
       throw new Error(`Expected exported function "${exportName}".`);
     }
     assertEquals(exported({ left: 3, right: 4 }), 34);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject emits a WasmGC-backed public wrapper for wasm-node nested fixed-layout object params',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+            },
+            include: ['src/**/*.ts'],
+            soundscript: {
+              target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          'type Pair = { left: number; right: number };',
+          'type Payload = { pair: Pair; total: number };',
+          '',
+          'export function sum(payload: Payload): number {',
+          '  return payload.pair.left * 100 + payload.pair.right * 10 + payload.total;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts?.wrapperPath);
+
+    const wrapperSource = await Deno.readTextFile(result.artifacts.wrapperPath);
+    assertStringIncludes(wrapperSource, 'createSoundscriptWasmGcHostImports');
+    assertStringIncludes(wrapperSource, 'createSoundscriptWasmGcExports');
+
+    const instance = await instantiateCompiledModuleInJs(tempDirectory);
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'sum');
+    const exported = instance.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+    assertEquals(exported({ pair: { left: 1, right: 2 }, total: 3 }), 123);
   },
 );
 
@@ -4522,6 +4646,73 @@ compilerIntegrationTest(
     const returned = exported(pair);
     assertStrictEquals(returned, pair);
     assertEquals(pair, { left: 4, right: 4 });
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject copies back wasm-node nested fixed-layout object param mutations through the WasmGC public wrapper',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+            },
+            include: ['src/**/*.ts'],
+            soundscript: {
+              target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          'type Pair = { left: number; right: number };',
+          'type Payload = { pair: Pair; total: number };',
+          '',
+          'export function bump(payload: Payload): Payload {',
+          '  payload.pair.left = payload.pair.left + 1;',
+          '  payload.total = payload.total + 1;',
+          '  return payload;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts?.wrapperPath);
+
+    const wrapperSource = await Deno.readTextFile(result.artifacts.wrapperPath);
+    assertStringIncludes(wrapperSource, 'createSoundscriptWasmGcHostImports');
+    assertStringIncludes(wrapperSource, 'createSoundscriptWasmGcExports');
+
+    const instance = await instantiateCompiledModuleInJs(tempDirectory);
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'bump');
+    const exported = instance.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+    const payload = { pair: { left: 3, right: 4 }, total: 7 };
+    const returned = exported(payload);
+    assertStrictEquals(returned, payload);
+    assertStrictEquals(returned.pair, payload.pair);
+    assertEquals(payload, { pair: { left: 4, right: 4 }, total: 8 });
   },
 );
 
@@ -4593,6 +4784,82 @@ compilerIntegrationTest(
       throw new Error(`Expected exported function "${exportName}".`);
     }
     assertEquals(exported(), 54);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject adapts wasm-node imported host nested fixed-layout object params and results through the WasmGC public wrapper',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+            },
+            include: ['src/**/*.ts'],
+            soundscript: {
+              target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          'type Pair = { left: number; right: number };',
+          'type Payload = { pair: Pair; total: number };',
+          '',
+          'declare function bump(payload: Payload): Payload;',
+          '',
+          'export function main(): number {',
+          '  const pair = { left: 3, right: 4 };',
+          '  const total = 7;',
+          '  const payload = { pair, total };',
+          '  const result = bump(payload);',
+          '  return result.pair.left * 100 + result.pair.right * 10 + result.total;',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts?.wrapperPath);
+
+    const wrapperSource = await Deno.readTextFile(result.artifacts.wrapperPath);
+    assertStringIncludes(wrapperSource, 'createSoundscriptWasmGcHostImports');
+    assertStringIncludes(wrapperSource, 'createSoundscriptWasmGcExports');
+
+    const instance = await instantiateCompiledModuleInJs(tempDirectory, {
+      hostFunctions: {
+        'src/index.ts:bump': (input: unknown) => {
+          const payload = input as { pair: { left: number; right: number }; total: number };
+          payload.pair.left += 2;
+          payload.total += 2;
+          return payload;
+        },
+      },
+    });
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instance.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+    assertEquals(exported(), 549);
   },
 );
 
