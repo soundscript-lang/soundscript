@@ -67731,6 +67731,13 @@ function getCompilerScalarValueTypeForLowering(
   ) {
     return 'f64';
   }
+  if (
+    ts.isPropertyAccessExpression(expression) &&
+    expression.name.text === 'size' &&
+    isCompilerOwnedCollectionSizeReceiverExpression(expression.expression, context)
+  ) {
+    return 'f64';
+  }
   if (ts.isBinaryExpression(expression)) {
     const loweredBinaryType = tryGetLoweredBinaryScalarValueType(expression, context);
     if (loweredBinaryType) {
@@ -67738,6 +67745,26 @@ function getCompilerScalarValueTypeForLowering(
     }
   }
   return getCompilerScalarValueType(context.checker, expression);
+}
+
+function isCompilerOwnedCollectionSizeReceiverExpression(
+  expression: ts.Expression,
+  context: FunctionLoweringContext,
+): boolean {
+  if (ts.isParenthesizedExpression(expression)) {
+    return isCompilerOwnedCollectionSizeReceiverExpression(expression.expression, context);
+  }
+  if (!ts.isIdentifier(expression)) {
+    return false;
+  }
+  const bound = lookupSymbol(context, expression.text);
+  if (!bound || bound.type !== 'heap_ref') {
+    return false;
+  }
+  return bound.compilerOwnedMap === true ||
+    bound.compilerOwnedSet === true ||
+    context.functionRuntime.compilerOwnedMapLocals.has(bound.emittedName) ||
+    context.functionRuntime.compilerOwnedSetLocals.has(bound.emittedName);
 }
 
 function isCompilerOwnedLengthReceiverExpression(

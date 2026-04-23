@@ -2872,6 +2872,7 @@ Deno.test('compiler wasm-gc emitter produces runnable explicit Map iteration wit
 
           let score = map.size;
           for (const values of map.values()) {
+            score = score + values.size;
             if (values.has("aa")) {
               score = score + 2;
             }
@@ -2914,7 +2915,7 @@ Deno.test('compiler wasm-gc emitter produces runnable explicit Map iteration wit
   const instance = await WebAssembly.instantiate(wasm);
   const main = instance.instance.exports['main.ts:main'];
   assertEquals(typeof main, 'function');
-  assertEquals((main as () => number)(), 10);
+  assertEquals((main as () => number)(), 13);
 });
 
 Deno.test('compiler wasm-gc emitter produces runnable explicit Map keys iteration after delete and clear', async () => {
