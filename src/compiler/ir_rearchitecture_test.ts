@@ -5,6 +5,7 @@ import {
   createCompilerIrDebugSnapshot,
   renderCompilerIrDebugSnapshot,
 } from './compiler_ir_debug.ts';
+import { createSemanticModuleFromSourceHIR } from './source_semantic_lowering.ts';
 import {
   classifySharedSemanticType,
   createSharedSemanticFactsFromProgram,
@@ -943,6 +944,51 @@ Deno.test('compiler semantic shadow captures primitive function bodies for wasm-
   ]);
   assertEquals(plan?.bodyStatus, 'emittable');
   assertEquals(plan?.unsupportedBodyKinds, []);
+});
+
+Deno.test('compiler SourceHIR semantic lowering captures primitive function bodies without legacy IR', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: { strict: true },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        export function add(left: number, right: number): number {
+          return left + right;
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
+  const semantic = createSemanticModuleFromSourceHIR(snapshot.source, snapshot.sharedFacts);
+  const manifest = createRuntimeManifestFromSemanticModule(semantic);
+  const plan = createWasmGcModulePlan(semantic, manifest);
+  const add = semantic.functions.find((func) => func.name === 'add');
+  const addPlan = plan.functionPlans.find((func) => func.name === 'add');
+
+  assertEquals(add?.body, [
+    {
+      kind: 'return',
+      value: {
+        kind: 'binary',
+        op: 'f64.add',
+        representation: 'f64',
+        left: { kind: 'local_get', name: 'left', representation: 'f64' },
+        right: { kind: 'local_get', name: 'right', representation: 'f64' },
+      },
+    },
+    { kind: 'trap' },
+  ]);
+  assertEquals(add?.params.map((param) => param.representation), ['f64', 'f64']);
+  assertEquals(add?.result, 'f64');
+  assertEquals(addPlan?.bodyStatus, 'emittable');
+  assertEquals(addPlan?.unsupportedBodyKinds, []);
 });
 
 Deno.test('compiler wasm-gc backend plan explains boundary helper emission from manifest', async () => {
