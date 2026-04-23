@@ -547,6 +547,24 @@ export function collectionBoundaryAdapterClosure(
   );
 }
 
+export function collectionBoundaryAdaptersForValueBoundaries(
+  boundaries: Iterable<ValueBoundaryIR | undefined>,
+): readonly ValueCollectionBoundaryAdapterIR[] {
+  const unique = new Map<string, ValueCollectionBoundaryAdapterIR>();
+  for (const boundary of boundaries) {
+    if (!boundary) {
+      continue;
+    }
+    const adapter = createCollectionBoundaryAdapterForBoundary(boundary);
+    if (adapter) {
+      unique.set(adapter.adapterKey, adapter);
+    }
+  }
+  return [...unique.values()].sort((left, right) =>
+    valueCollectionAdapterKey(left).localeCompare(valueCollectionAdapterKey(right))
+  );
+}
+
 export function collectRuntimeFamiliesForValueBoundary(
   families: Set<SemanticRuntimeFamilyId>,
   boundary: ValueBoundaryIR,

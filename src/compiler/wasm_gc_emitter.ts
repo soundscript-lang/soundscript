@@ -12,6 +12,7 @@ import type {
 } from './wasm_gc_backend_ir.ts';
 import {
   collectionBoundaryAdapterClosure,
+  collectionBoundaryAdaptersForValueBoundaries,
   compilerValueTypeForStorage,
   type ValueBoundaryIR,
   valueCollectionAdapterKey,
@@ -5237,16 +5238,10 @@ function wrapperPlanCollectionHostToInternalBoundaryAdapters(
 ): readonly WasmGcCollectionBoundaryAdapterIR[] {
   const adapters: WasmGcCollectionBoundaryAdapterIR[] = [];
   for (const wrapper of plan.wrapperPlan.exportWrappers) {
-    wrapper.paramBoundaryAdapters?.forEach((adapter) => {
-      if (adapter) {
-        adapters.push(adapter);
-      }
-    });
+    adapters.push(...collectionBoundaryAdaptersForValueBoundaries(wrapper.paramBoundaries ?? []));
   }
   for (const wrapper of plan.wrapperPlan.hostImportWrappers) {
-    if (wrapper.resultBoundaryAdapter) {
-      adapters.push(wrapper.resultBoundaryAdapter);
-    }
+    adapters.push(...collectionBoundaryAdaptersForValueBoundaries([wrapper.resultBoundary]));
   }
   return uniqueCollectionBoundaryAdapters(adapters);
 }
@@ -5256,16 +5251,10 @@ function wrapperPlanCollectionInternalToHostBoundaryAdapters(
 ): readonly WasmGcCollectionBoundaryAdapterIR[] {
   const adapters: WasmGcCollectionBoundaryAdapterIR[] = [];
   for (const wrapper of plan.wrapperPlan.exportWrappers) {
-    if (wrapper.resultBoundaryAdapter) {
-      adapters.push(wrapper.resultBoundaryAdapter);
-    }
+    adapters.push(...collectionBoundaryAdaptersForValueBoundaries([wrapper.resultBoundary]));
   }
   for (const wrapper of plan.wrapperPlan.hostImportWrappers) {
-    wrapper.paramBoundaryAdapters?.forEach((adapter) => {
-      if (adapter) {
-        adapters.push(adapter);
-      }
-    });
+    adapters.push(...collectionBoundaryAdaptersForValueBoundaries(wrapper.paramBoundaries ?? []));
   }
   return uniqueCollectionBoundaryAdapters(adapters);
 }

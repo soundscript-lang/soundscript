@@ -568,6 +568,69 @@ Deno.test('compiler wasm-gc collection boundary adapters are structured instead 
   );
 });
 
+Deno.test('compiler wasm-gc wrapper plans keep collection adapters derived from value boundaries', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: {
+          strict: true,
+          module: 'esnext',
+          moduleResolution: 'node',
+        },
+        files: ['main.ts', 'host.d.ts'],
+      }),
+    },
+    {
+      path: 'host.d.ts',
+      contents: `
+        export declare function mirror(value: Map<string, number>): Map<string, number>;
+      `,
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        import { mirror } from "./host";
+
+        export function roundTrip(value: Map<string, number>): Map<string, number> {
+          return mirror(value);
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
+  const serializedWrapperPlan = JSON.stringify(snapshot.wasmGcPlan.wrapperPlan);
+
+  assertEquals(serializedWrapperPlan.includes('paramBoundaryAdapters'), false);
+  assertEquals(serializedWrapperPlan.includes('resultBoundaryAdapter'), false);
+  assertEquals(snapshot.wasmGcPlan.wrapperPlan.hostImportWrappers, [
+    {
+      functionName: 'mirror',
+      hostImportModule: 'soundscript_host_function',
+      hostImportName: 'host.d.ts:mirror',
+      paramTypes: ['heap_ref'],
+      resultType: 'heap_ref',
+      paramBoundaries: [
+        { kind: 'map', key: { kind: 'string' }, value: { kind: 'number' } },
+      ],
+      resultBoundary: { kind: 'map', key: { kind: 'string' }, value: { kind: 'number' } },
+    },
+  ]);
+  assertEquals(snapshot.wasmGcPlan.wrapperPlan.exportWrappers, [
+    {
+      exportName: 'main.ts:roundTrip',
+      wasmExportName: 'main.ts:roundTrip',
+      paramTypes: ['heap_ref'],
+      resultType: 'heap_ref',
+      paramBoundaries: [
+        { kind: 'map', key: { kind: 'string' }, value: { kind: 'number' } },
+      ],
+      resultBoundary: { kind: 'map', key: { kind: 'string' }, value: { kind: 'number' } },
+    },
+  ]);
+});
+
 Deno.test('compiler semantic type classifier models overloaded callables', async () => {
   const classified = await createSemanticTypeFixture(
     `

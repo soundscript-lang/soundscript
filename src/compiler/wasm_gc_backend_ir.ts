@@ -13,7 +13,6 @@ import {
 } from './semantic_ir.ts';
 import {
   compilerValueTypeForStorage,
-  createCollectionBoundaryAdapter,
   createCollectionBoundaryAdapterForBoundary,
   valueBoundaryFromSemanticType,
   type ValueBoundaryIR,
@@ -133,8 +132,6 @@ export interface WasmGcExportWrapperPlanIR {
   resultType: string;
   paramBoundaries?: readonly ValueBoundaryIR[];
   resultBoundary?: ValueBoundaryIR;
-  paramBoundaryAdapters?: readonly (WasmGcCollectionBoundaryAdapterIR | undefined)[];
-  resultBoundaryAdapter?: WasmGcCollectionBoundaryAdapterIR;
 }
 
 export interface WasmGcHostImportWrapperPlanIR {
@@ -145,8 +142,6 @@ export interface WasmGcHostImportWrapperPlanIR {
   resultType: string;
   paramBoundaries?: readonly ValueBoundaryIR[];
   resultBoundary?: ValueBoundaryIR;
-  paramBoundaryAdapters?: readonly (WasmGcCollectionBoundaryAdapterIR | undefined)[];
-  resultBoundaryAdapter?: WasmGcCollectionBoundaryAdapterIR;
 }
 
 export interface WasmGcWrapperPlanIR {
@@ -776,15 +771,6 @@ function createWasmGcExportWrapperPlan(
       );
       const hasParamBoundaries = paramBoundaries?.some(valueBoundaryNeedsWrapper) === true;
       const resultBoundary = surface ? valueBoundaryFromSemanticType(surface.result) : undefined;
-      const paramBoundaryAdapters = surface?.params.map((param) =>
-        collectionBoundaryAdapterForSemanticType(param.type)
-      );
-      const hasParamBoundaryAdapters = paramBoundaryAdapters?.some((adapter) =>
-        adapter !== undefined
-      ) === true;
-      const resultBoundaryAdapter = surface
-        ? collectionBoundaryAdapterForSemanticType(surface.result)
-        : undefined;
       const wrapper: WasmGcExportWrapperPlanIR = {
         exportName: func.exportName,
         wasmExportName: func.exportName,
@@ -792,8 +778,6 @@ function createWasmGcExportWrapperPlan(
         resultType: func.result,
         ...(hasParamBoundaries ? { paramBoundaries } : {}),
         ...(valueBoundaryNeedsWrapper(resultBoundary) ? { resultBoundary } : {}),
-        ...(hasParamBoundaryAdapters ? { paramBoundaryAdapters } : {}),
-        ...(resultBoundaryAdapter ? { resultBoundaryAdapter } : {}),
       };
       return wrapper;
     })
@@ -801,9 +785,7 @@ function createWasmGcExportWrapperPlan(
       wrapper.paramTypes.some(isWasmGcWrapperValueType) ||
       isWasmGcWrapperValueType(wrapper.resultType) ||
       wrapper.paramBoundaries?.some(valueBoundaryNeedsWrapper) === true ||
-      valueBoundaryNeedsWrapper(wrapper.resultBoundary) ||
-      wrapper.paramBoundaryAdapters?.some((adapter) => adapter !== undefined) === true ||
-      wrapper.resultBoundaryAdapter !== undefined
+      valueBoundaryNeedsWrapper(wrapper.resultBoundary)
     )
     .sort((left, right) => left.exportName.localeCompare(right.exportName));
 }
@@ -826,15 +808,6 @@ function createWasmGcHostImportWrapperPlan(
       );
       const hasParamBoundaries = paramBoundaries?.some(valueBoundaryNeedsWrapper) === true;
       const resultBoundary = surface ? valueBoundaryFromSemanticType(surface.result) : undefined;
-      const paramBoundaryAdapters = surface?.params.map((param) =>
-        collectionBoundaryAdapterForSemanticType(param.type)
-      );
-      const hasParamBoundaryAdapters = paramBoundaryAdapters?.some((adapter) =>
-        adapter !== undefined
-      ) === true;
-      const resultBoundaryAdapter = surface
-        ? collectionBoundaryAdapterForSemanticType(surface.result)
-        : undefined;
       return {
         functionName: func.name,
         hostImportModule: func.hostImport!.module,
@@ -843,17 +816,13 @@ function createWasmGcHostImportWrapperPlan(
         resultType: func.result,
         ...(hasParamBoundaries ? { paramBoundaries } : {}),
         ...(valueBoundaryNeedsWrapper(resultBoundary) ? { resultBoundary } : {}),
-        ...(hasParamBoundaryAdapters ? { paramBoundaryAdapters } : {}),
-        ...(resultBoundaryAdapter ? { resultBoundaryAdapter } : {}),
       };
     })
     .filter((wrapper) =>
       wrapper.paramTypes.some(isWasmGcWrapperValueType) ||
       isWasmGcWrapperValueType(wrapper.resultType) ||
       wrapper.paramBoundaries?.some(valueBoundaryNeedsWrapper) === true ||
-      valueBoundaryNeedsWrapper(wrapper.resultBoundary) ||
-      wrapper.paramBoundaryAdapters?.some((adapter) => adapter !== undefined) === true ||
-      wrapper.resultBoundaryAdapter !== undefined
+      valueBoundaryNeedsWrapper(wrapper.resultBoundary)
     )
     .sort((left, right) =>
       left.hostImportModule === right.hostImportModule
@@ -960,12 +929,6 @@ function surfaceExportName(surface: SemanticBoundarySurfaceIR): string {
   return `${sourceFileBaseName(surface.fileName)}:${surface.name}`;
 }
 
-function collectionBoundaryAdapterForSemanticType(
-  type: SemanticTypeIR,
-): WasmGcCollectionBoundaryAdapterIR | undefined {
-  return createCollectionBoundaryAdapter(type);
-}
-
 function collectionBoundaryParamsForFunction(
   func: WasmGcFunctionPlanIR,
   surface: SemanticBoundarySurfaceIR | undefined,
@@ -977,7 +940,9 @@ function collectionBoundaryParamsForFunction(
     func.params.flatMap((param, index) => {
       const surfaceParam = surface.params[index];
       const adapter = surfaceParam
-        ? collectionBoundaryAdapterForSemanticType(surfaceParam.type)
+        ? createCollectionBoundaryAdapterForBoundary(
+          valueBoundaryFromSemanticType(surfaceParam.type),
+        )
         : undefined;
       return adapter ? [[param.name, adapter] as const] : [];
     }),
@@ -987,7 +952,9 @@ function collectionBoundaryParamsForFunction(
 function collectionBoundaryResultForFunction(
   surface: SemanticBoundarySurfaceIR | undefined,
 ): WasmGcCollectionBoundaryAdapterIR | undefined {
-  return surface ? collectionBoundaryAdapterForSemanticType(surface.result) : undefined;
+  return surface
+    ? createCollectionBoundaryAdapterForBoundary(valueBoundaryFromSemanticType(surface.result))
+    : undefined;
 }
 
 function collectionAdapterMapValueType(
@@ -1092,9 +1059,11 @@ function hostImportCollectionBoundaryUses(
       continue;
     }
     const paramAdapters = surface.params.map((param) =>
-      collectionBoundaryAdapterForSemanticType(param.type)
+      createCollectionBoundaryAdapterForBoundary(valueBoundaryFromSemanticType(param.type))
     );
-    const resultAdapter = collectionBoundaryAdapterForSemanticType(surface.result);
+    const resultAdapter = createCollectionBoundaryAdapterForBoundary(
+      valueBoundaryFromSemanticType(surface.result),
+    );
     if (paramAdapters.some((adapter) => adapter !== undefined) || resultAdapter !== undefined) {
       uses.set(func.name, {
         paramAdapters,
