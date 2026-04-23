@@ -1,7 +1,7 @@
 import ts from 'typescript';
 
+import { classifySharedSemanticType } from '../semantic/shared_semantic_facts.ts';
 import type { CompilerValueType } from './ir.ts';
-import { isNullType, isStringLikeType, isSymbolLikeType, isUndefinedType } from './lower_tagged.ts';
 import type { SemanticRuntimeFamilyId, SemanticTypeIR } from './semantic_ir.ts';
 
 export type ValueBoundaryIR =
@@ -342,114 +342,27 @@ export function valueBoundaryFromSemanticType(type: SemanticTypeIR): ValueBounda
   }
 }
 
-function typeReferenceArguments(
-  checker: ts.TypeChecker,
-  type: ts.Type,
-): readonly ts.Type[] {
-  const apparentType = checker.getApparentType(type);
-  if ((apparentType.flags & ts.TypeFlags.Object) === 0) {
-    return [];
-  }
-  return checker.getTypeArguments(apparentType as ts.TypeReference);
-}
+const valueBoundaryFallbackNode = ts.createSourceFile(
+  '__soundscript_value_boundary.ts',
+  '',
+  ts.ScriptTarget.Latest,
+);
 
-function runtimeFamilySymbolName(checker: ts.TypeChecker, type: ts.Type): string | undefined {
-  const apparentType = checker.getApparentType(type);
-  return apparentType.aliasSymbol?.getName() ?? apparentType.getSymbol()?.getName();
+function classificationNodeForType(type: ts.Type): ts.Node {
+  return type.symbol?.valueDeclaration ??
+    type.symbol?.declarations?.[0] ??
+    type.aliasSymbol?.declarations?.[0] ??
+    valueBoundaryFallbackNode;
 }
 
 export function valueBoundaryFromTsType(
   checker: ts.TypeChecker,
   type: ts.Type,
+  node: ts.Node = classificationNodeForType(type),
 ): ValueBoundaryIR {
-  const constraint = checker.getBaseConstraintOfType(type);
-  if (constraint && constraint !== type) {
-    return valueBoundaryFromTsType(checker, constraint);
-  }
-
-  if (isUndefinedType(type) || (type.flags & ts.TypeFlags.Void) !== 0) {
-    return { kind: 'undefined' };
-  }
-  if (isNullType(type)) {
-    return { kind: 'null' };
-  }
-  if ((type.flags & ts.TypeFlags.BooleanLike) !== 0) {
-    return { kind: 'boolean' };
-  }
-  if ((type.flags & ts.TypeFlags.NumberLike) !== 0) {
-    return { kind: 'number' };
-  }
-  if (isStringLikeType(type)) {
-    return { kind: 'string' };
-  }
-  if ((type.flags & ts.TypeFlags.BigIntLike) !== 0) {
-    return { kind: 'bigint' };
-  }
-  if (isSymbolLikeType(type)) {
-    return { kind: 'symbol' };
-  }
-  if (type.isUnion()) {
-    return normalizeValueBoundary({
-      kind: 'union',
-      arms: type.types.map((member) => valueBoundaryFromTsType(checker, member)),
-    });
-  }
-  if (checker.isArrayType(type) || checker.isTupleType(type)) {
-    const elementTypes = typeReferenceArguments(checker, type);
-    return {
-      kind: 'array',
-      element: elementTypes.length === 0 ? { kind: 'host_handle' } : normalizeValueBoundary({
-        kind: 'union',
-        arms: elementTypes.map((elementType) => valueBoundaryFromTsType(checker, elementType)),
-      }),
-    };
-  }
-
-  const symbolName = runtimeFamilySymbolName(checker, type);
-  const typeArguments = typeReferenceArguments(checker, type);
-  if (symbolName === 'Map' || symbolName === 'ReadonlyMap') {
-    return {
-      kind: 'map',
-      key: typeArguments[0]
-        ? valueBoundaryFromTsType(checker, typeArguments[0])
-        : { kind: 'host_handle' },
-      value: typeArguments[1]
-        ? valueBoundaryFromTsType(checker, typeArguments[1])
-        : { kind: 'host_handle' },
-    };
-  }
-  if (symbolName === 'Set' || symbolName === 'ReadonlySet') {
-    return {
-      kind: 'set',
-      value: typeArguments[0]
-        ? valueBoundaryFromTsType(checker, typeArguments[0])
-        : { kind: 'host_handle' },
-    };
-  }
-  if (symbolName === 'Promise' || symbolName === 'PromiseLike') {
-    return {
-      kind: 'promise',
-      value: typeArguments[0] ? valueBoundaryFromTsType(checker, typeArguments[0]) : undefined,
-    };
-  }
-  if (symbolName === 'Generator') {
-    return {
-      kind: 'sync_generator',
-      yield: typeArguments[0] ? valueBoundaryFromTsType(checker, typeArguments[0]) : undefined,
-      return: typeArguments[1] ? valueBoundaryFromTsType(checker, typeArguments[1]) : undefined,
-      next: typeArguments[2] ? valueBoundaryFromTsType(checker, typeArguments[2]) : undefined,
-    };
-  }
-  if (symbolName === 'AsyncGenerator') {
-    return {
-      kind: 'async_generator',
-      yield: typeArguments[0] ? valueBoundaryFromTsType(checker, typeArguments[0]) : undefined,
-      return: typeArguments[1] ? valueBoundaryFromTsType(checker, typeArguments[1]) : undefined,
-      next: typeArguments[2] ? valueBoundaryFromTsType(checker, typeArguments[2]) : undefined,
-    };
-  }
-
-  return { kind: 'host_handle' };
+  return valueBoundaryFromSemanticType(
+    classifySharedSemanticType(checker, type, node) as SemanticTypeIR,
+  );
 }
 
 function arrayStorageForElement(

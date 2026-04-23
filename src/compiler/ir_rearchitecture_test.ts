@@ -22,6 +22,7 @@ import {
   createCollectionBoundaryAdapter,
   selectWasmGcStorage,
   valueBoundaryFromSemanticType,
+  valueBoundaryFromTsType,
 } from './value_boundary_ir.ts';
 import { createWasmGcModulePlan } from './wasm_gc_backend_ir.ts';
 import { emitWasmGcModulePlan } from './wasm_gc_emitter.ts';
@@ -683,6 +684,47 @@ Deno.test('compiler value boundary classifier preserves recursive collection sha
       },
     },
   });
+});
+
+Deno.test('compiler value boundary TS classifier reuses shared semantic facts', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: { strict: true },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        type Box = { value: symbol | bigint };
+        export type Target =
+          | Map<string, Promise<Box | number[]>>
+          | Set<symbol | bigint>;
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const checker = program.getTypeChecker();
+  const sourceFile = program.getSourceFiles().find((candidate) =>
+    candidate.fileName.endsWith('main.ts')
+  );
+  const declaration = sourceFile?.statements.find((
+    statement,
+  ): statement is ts.TypeAliasDeclaration =>
+    ts.isTypeAliasDeclaration(statement) && statement.name.text === 'Target'
+  );
+  if (!declaration) {
+    throw new Error('Missing type alias Target.');
+  }
+  const type = checker.getTypeAtLocation(declaration.type);
+  const shared = classifySharedSemanticType(checker, type, declaration);
+
+  assertEquals(
+    valueBoundaryFromTsType(checker, type, declaration),
+    valueBoundaryFromSemanticType(shared as SemanticTypeIR),
+  );
 });
 
 Deno.test('compiler wasm-gc collection boundary adapters are structured instead of cross-product enums', async () => {
