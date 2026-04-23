@@ -820,6 +820,89 @@ Deno.test('analyzeProject preserves pure .ts nodenext package conditions', async
   assertEquals(result.diagnostics, []);
 });
 
+Deno.test('analyzeProject preserves host .ts nodenext package conditions with soundscript.include', async () => {
+  const tempDirectory = await createTempProject({
+    'package.json': JSON.stringify({ type: 'module' }, null, 2),
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'NodeNext',
+          moduleResolution: 'NodeNext',
+        },
+        include: ['src/**/*.ts'],
+        soundscript: {
+          include: ['src/frontier.ts'],
+        },
+      },
+      null,
+      2,
+    ),
+    'node_modules/dual-pkg/package.json': JSON.stringify(
+      {
+        name: 'dual-pkg',
+        exports: {
+          '.': {
+            require: {
+              types: './index.d.ts',
+              default: './index.js',
+            },
+            types: './index.d.mts',
+            default: './index.mjs',
+          },
+        },
+      },
+      null,
+      2,
+    ),
+    'node_modules/dual-pkg/index.d.mts': [
+      'declare class DualPkg {',
+      '  constructor(options: { apiKey: string });',
+      '}',
+      'export default DualPkg;',
+      '',
+    ].join('\n'),
+    'node_modules/dual-pkg/index.d.ts': [
+      'declare namespace DualPkg {',
+      '  interface Options {',
+      '    apiKey: string;',
+      '  }',
+      '}',
+      'export = DualPkg;',
+      '',
+    ].join('\n'),
+    'src/index.ts': [
+      "import DualPkg from 'dual-pkg';",
+      "const client = new DualPkg({ apiKey: 'test' });",
+      'void client;',
+      '',
+    ].join('\n'),
+    'src/frontier.ts': [
+      'const dict = Object.create(null);',
+      'const plain: object = dict;',
+      'void plain;',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(
+    summarizeDiagnostics(result.diagnostics),
+    [[
+      'SOUND1024',
+      join(tempDirectory, 'src/frontier.ts'),
+      2,
+      7,
+    ]],
+  );
+});
+
 Deno.test('analyzeProject keeps the checked-in macro authoring example editor-clean', async () => {
   const tempDirectory = await stageMacroAuthoringExampleProject();
   const result = await analyzeProject({

@@ -4438,6 +4438,14 @@ export function createPreparedCompilerHost(
     environmentSignature: string,
     shouldCreateNewSourceFile?: boolean,
   ): ts.SourceFile {
+    const sourceFileOptions = createSourceFileOptionsWithImpliedNodeFormat(
+      fileName,
+      languageVersion,
+    );
+    const sourceFileEnvironmentSignature = [
+      environmentSignature,
+      sourceFileOptions.impliedNodeFormat ?? '',
+    ].join('\u0000');
     const recordMiss = (reason: SourceFileCacheMissReason): void => {
       const fileCounts = cacheKind === 'projectedDeclaration'
         ? sourceFileCacheStats.projectedDeclarationMissFiles
@@ -4451,7 +4459,9 @@ export function createPreparedCompilerHost(
 
     if (!shouldCreateNewSourceFile) {
       const cached = cache.get(fileName);
-      if (cached?.text === text && cached.environmentSignature === environmentSignature) {
+      if (
+        cached?.text === text && cached.environmentSignature === sourceFileEnvironmentSignature
+      ) {
         if (cacheKind === 'projectedDeclaration') {
           sourceFileCacheStats.projectedDeclarationHits += 1;
         } else {
@@ -4480,7 +4490,7 @@ export function createPreparedCompilerHost(
     const sourceFile = ts.createSourceFile(
       fileName,
       text,
-      languageVersion,
+      sourceFileOptions,
       true,
       scriptKindForSourceFileName(toSourceFileName(fileName)),
     );
@@ -4488,12 +4498,31 @@ export function createPreparedCompilerHost(
     changedProgramSourceFiles.add(fileName);
     if (!shouldCreateNewSourceFile) {
       cache.set(fileName, {
-        environmentSignature,
+        environmentSignature: sourceFileEnvironmentSignature,
         sourceFile,
         text,
       });
     }
     return sourceFile;
+  }
+
+  function createSourceFileOptionsWithImpliedNodeFormat(
+    fileName: string,
+    languageVersion: ts.ScriptTarget | ts.CreateSourceFileOptions,
+  ): ts.CreateSourceFileOptions {
+    const baseOptions = typeof languageVersion === 'number' ? { languageVersion } : languageVersion;
+    if (baseOptions.impliedNodeFormat !== undefined) {
+      return baseOptions;
+    }
+    return {
+      ...baseOptions,
+      impliedNodeFormat: ts.getImpliedNodeFormatForFile(
+        toSourceFileName(fileName),
+        reusableState.moduleResolutionCache,
+        createModuleResolutionHost(),
+        compilerOptions,
+      ),
+    };
   }
 
   function createModuleResolutionHost(): ts.ModuleResolutionHost {
@@ -4560,6 +4589,25 @@ export function createPreparedCompilerHost(
     return undefined;
   }
 
+  function stdlibDeclarationPathForResolvedFile(fileName: string): string | null {
+    const installedRuntimeDeclarationPath = installedRuntimeStdlibDeclarationPath(fileName);
+    if (installedRuntimeDeclarationPath) {
+      return installedRuntimeDeclarationPath;
+    }
+
+    const sourceFileName = toSourceFileName(fileName).replaceAll('\\', '/');
+    if (
+      !sourceFileName.includes('/src/stdlib/') ||
+      !sourceFileName.endsWith('.ts') ||
+      sourceFileName.endsWith('.d.ts')
+    ) {
+      return null;
+    }
+
+    const declarationPath = sourceFileName.replace(/\.ts$/u, '.d.ts');
+    return baseHost.fileExists(declarationPath) ? declarationPath : null;
+  }
+
   function resolveModuleNames(
     moduleNames: string[],
     containingFile: string,
@@ -4567,6 +4615,8 @@ export function createPreparedCompilerHost(
     redirectedReference?: ts.ResolvedProjectReference,
     options?: ts.CompilerOptions,
     containingSourceFile?: ts.SourceFile,
+    resolutionModesByIndex?: readonly ts.ResolutionMode[],
+    baseResolvedModulesByIndex?: readonly (ts.ResolvedModule | undefined)[],
   ): (ts.ResolvedModule | undefined)[] {
     const sourceContainingFile = toSourceFileName(containingFile);
     if (shouldUsePlainHostModuleResolution()) {
@@ -4596,21 +4646,22 @@ export function createPreparedCompilerHost(
       );
     }
     const moduleResolutionHost = createModuleResolutionHost();
-    const resolutionMode = containingSourceFile?.impliedNodeFormat;
     const canReuseResolvedModuleMemo = !invalidateModuleResolutions ||
       reuseResolvedModulesOnInvalidation;
     const resolvedModules: (ts.ResolvedModule | undefined)[] = new Array(moduleNames.length);
     const unresolvedIndexes: number[] = [];
     const unresolvedModuleNames: string[] = [];
     const redirectedReferenceKey = redirectedReference?.sourceFile.fileName ?? '';
-    const effectiveOptions = options ?? {};
-    const optionSignature = createModuleResolutionOptionSignature(options);
-    const cacheKeys = moduleNames.map((moduleName) =>
+    const effectiveOptions = options ?? compilerOptions;
+    const optionSignature = createModuleResolutionOptionSignature(effectiveOptions);
+    const cacheKeys = moduleNames.map((moduleName, moduleIndex) =>
       [
         sourceContainingFile,
         moduleName,
         optionSignature,
         redirectedReferenceKey,
+        resolutionModesByIndex?.[moduleIndex] ??
+          containingSourceFile?.impliedNodeFormat ?? '',
       ].join('\u0000')
     );
     for (const [index, cacheKey] of cacheKeys.entries()) {
@@ -4630,9 +4681,13 @@ export function createPreparedCompilerHost(
       unresolvedModuleNames.push(moduleNames[index]);
       sourceFileCacheStats.resolvedModuleMemoMisses += 1;
     }
-    const baseResolvedModules = unresolvedModuleNames.length > 0
+    const baseResolutionIndexes = baseResolvedModulesByIndex === undefined
+      ? unresolvedIndexes
+      : unresolvedIndexes.filter((index) => moduleNames[index].startsWith('sts:'));
+    const baseResolutionModuleNames = baseResolutionIndexes.map((index) => moduleNames[index]);
+    const baseResolvedModules = baseResolutionModuleNames.length > 0
       ? baseHost.resolveModuleNames?.(
-        unresolvedModuleNames,
+        baseResolutionModuleNames,
         sourceContainingFile,
         reusedNames,
         redirectedReference,
@@ -4640,8 +4695,18 @@ export function createPreparedCompilerHost(
         containingSourceFile,
       )
       : undefined;
+    const baseResolvedModulesByFallbackIndex = new Map<number, ts.ResolvedModule | undefined>();
+    for (const [index, originalIndex] of baseResolutionIndexes.entries()) {
+      baseResolvedModulesByFallbackIndex.set(originalIndex, baseResolvedModules?.[index]);
+    }
 
-    const resolveModuleAtIndex = (moduleName: string, baseResolved?: ts.ResolvedModule) => {
+    const resolveModuleAtIndex = (
+      moduleName: string,
+      originalIndex: number,
+      baseResolved?: ts.ResolvedModule,
+    ) => {
+      const resolutionMode = resolutionModesByIndex?.[originalIndex] ??
+        containingSourceFile?.impliedNodeFormat;
       const preferredSoundscript = resolvePreferredSoundscriptModule(
         moduleName,
         sourceContainingFile,
@@ -4650,14 +4715,14 @@ export function createPreparedCompilerHost(
         redirectedReference,
       );
       if (preferredSoundscript) {
-        const installedRuntimeDeclarationPath = installedRuntimeStdlibDeclarationPath(
+        const stdlibDeclarationPath = stdlibDeclarationPathForResolvedFile(
           preferredSoundscript.resolvedFileName,
         );
-        if (installedRuntimeDeclarationPath) {
+        if (stdlibDeclarationPath) {
           return {
             ...preferredSoundscript,
             extension: ts.Extension.Dts,
-            resolvedFileName: installedRuntimeDeclarationPath,
+            resolvedFileName: stdlibDeclarationPath,
           };
         }
         if (
@@ -4692,14 +4757,14 @@ export function createPreparedCompilerHost(
           baseResolved,
           moduleResolutionHost,
         );
-        const installedRuntimeDeclarationPath = installedRuntimeStdlibDeclarationPath(
+        const stdlibDeclarationPath = stdlibDeclarationPathForResolvedFile(
           remapped.resolvedFileName,
         );
-        if (installedRuntimeDeclarationPath) {
+        if (stdlibDeclarationPath) {
           return {
             ...remapped,
             extension: ts.Extension.Dts,
-            resolvedFileName: installedRuntimeDeclarationPath,
+            resolvedFileName: stdlibDeclarationPath,
           };
         }
         if (projectedDeclarationOverrides.has(toSourceFileName(remapped.resolvedFileName))) {
@@ -4755,14 +4820,14 @@ export function createPreparedCompilerHost(
         resolvedOrFallback,
         moduleResolutionHost,
       );
-      const installedRuntimeDeclarationPath = installedRuntimeStdlibDeclarationPath(
+      const stdlibDeclarationPath = stdlibDeclarationPathForResolvedFile(
         remapped.resolvedFileName,
       );
-      if (installedRuntimeDeclarationPath) {
+      if (stdlibDeclarationPath) {
         return {
           ...remapped,
           extension: ts.Extension.Dts,
-          resolvedFileName: installedRuntimeDeclarationPath,
+          resolvedFileName: stdlibDeclarationPath,
         };
       }
       if (projectedDeclarationOverrides.has(toSourceFileName(remapped.resolvedFileName))) {
@@ -4789,10 +4854,12 @@ export function createPreparedCompilerHost(
         : remapped;
     };
 
-    for (const [pendingIndex, originalIndex] of unresolvedIndexes.entries()) {
+    for (const originalIndex of unresolvedIndexes) {
       const resolvedModule = resolveModuleAtIndex(
         moduleNames[originalIndex],
-        baseResolvedModules?.[pendingIndex],
+        originalIndex,
+        baseResolvedModulesByIndex?.[originalIndex] ??
+          baseResolvedModulesByFallbackIndex.get(originalIndex),
       );
       const cacheKey = cacheKeys[originalIndex];
       reusableState.resolvedModulesByKey.set(cacheKey, resolvedModule ?? null);
@@ -4909,27 +4976,52 @@ export function createPreparedCompilerHost(
         return getPreparedSourceFile(fileName)?.rewrittenText ?? baseHost.readFile(sourceFileName);
       },
       resolveModuleNames,
-      ...(shouldUsePlainHostModuleResolution() && baseResolveModuleNameLiterals
-        ? {
-          resolveModuleNameLiterals(
+      resolveModuleNameLiterals(
+        moduleLiterals,
+        containingFile,
+        redirectedReference,
+        options,
+        containingSourceFile,
+        reusedNames,
+      ) {
+        if (shouldUsePlainHostModuleResolution() && baseResolveModuleNameLiterals) {
+          return baseResolveModuleNameLiterals(
             moduleLiterals,
             containingFile,
             redirectedReference,
             options,
             containingSourceFile,
             reusedNames,
-          ) {
-            return baseResolveModuleNameLiterals(
-              moduleLiterals,
-              containingFile,
-              redirectedReference,
-              options,
-              containingSourceFile,
-              reusedNames,
-            );
-          },
+          );
         }
-        : {}),
+
+        const effectiveOptions = options ?? compilerOptions;
+        const resolutionModesByIndex = moduleLiterals.map((moduleLiteral) =>
+          ts.getModeForUsageLocation(containingSourceFile, moduleLiteral, effectiveOptions)
+        );
+        const baseResolvedModulesByIndex = baseResolveModuleNameLiterals?.(
+          moduleLiterals,
+          containingFile,
+          redirectedReference,
+          effectiveOptions,
+          containingSourceFile,
+          reusedNames,
+        ).map((resolution, index) =>
+          moduleLiterals[index].text.startsWith('sts:') ? undefined : resolution.resolvedModule
+        );
+        return resolveModuleNames(
+          moduleLiterals.map((moduleLiteral) => moduleLiteral.text),
+          containingFile,
+          reusedNames?.map((reusedName) => reusedName.text),
+          redirectedReference,
+          effectiveOptions,
+          containingSourceFile,
+          resolutionModesByIndex,
+          baseResolvedModulesByIndex,
+        ).map((resolvedModule) => ({
+          resolvedModule: resolvedModule as ts.ResolvedModuleFull | undefined,
+        }));
+      },
     },
     reuseState: reusableState,
     sourceFileCacheStats(): {
