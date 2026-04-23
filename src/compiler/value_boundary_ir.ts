@@ -453,15 +453,26 @@ export function collectionAdapterSuffixForBoundary(
       const elementSuffix = collectionAdapterSuffixForBoundary(boundary.element);
       return elementSuffix ? `${elementSuffix}_array` : undefined;
     }
+    case 'map': {
+      if (boundary.key.kind !== 'string') {
+        return undefined;
+      }
+      const valueSuffix = collectionAdapterSuffixForBoundary(boundary.value);
+      return valueSuffix ? `map_string_${valueSuffix}` : undefined;
+    }
+    case 'set': {
+      const valueSuffix = collectionAdapterSuffixForBoundary(boundary.value);
+      return valueSuffix ? `set_${valueSuffix}` : undefined;
+    }
     default:
       return undefined;
   }
 }
 
-export function createCollectionBoundaryAdapter(
-  type: SemanticTypeIR,
+export function createCollectionBoundaryAdapterForBoundary(
+  sourceBoundary: ValueBoundaryIR,
 ): ValueCollectionBoundaryAdapterIR | undefined {
-  const boundary = valueBoundaryFromSemanticType(type);
+  const boundary = normalizeValueBoundary(sourceBoundary);
   const storage = selectWasmGcStorage(boundary);
   if (
     boundary.kind === 'map' &&
@@ -495,6 +506,45 @@ export function createCollectionBoundaryAdapter(
     };
   }
   return undefined;
+}
+
+export function createCollectionBoundaryAdapter(
+  type: SemanticTypeIR,
+): ValueCollectionBoundaryAdapterIR | undefined {
+  return createCollectionBoundaryAdapterForBoundary(valueBoundaryFromSemanticType(type));
+}
+
+export function collectionBoundaryAdapterClosure(
+  adapter: ValueCollectionBoundaryAdapterIR,
+): readonly ValueCollectionBoundaryAdapterIR[] {
+  const unique = new Map<string, ValueCollectionBoundaryAdapterIR>();
+  const visitBoundary = (boundary: ValueBoundaryIR): void => {
+    if (boundary.kind === 'map' || boundary.kind === 'set') {
+      const nested = createCollectionBoundaryAdapterForBoundary(boundary);
+      if (nested && !unique.has(nested.adapterKey)) {
+        unique.set(nested.adapterKey, nested);
+        visitBoundary(nested.value);
+      }
+      return;
+    }
+    if (boundary.kind === 'array') {
+      visitBoundary(boundary.element);
+      return;
+    }
+    if (boundary.kind === 'tuple') {
+      boundary.elements.forEach(visitBoundary);
+      return;
+    }
+    if (boundary.kind === 'union') {
+      boundary.arms.forEach(visitBoundary);
+    }
+  };
+
+  unique.set(adapter.adapterKey, adapter);
+  visitBoundary(adapter.value);
+  return [...unique.values()].sort((left, right) =>
+    valueCollectionAdapterKey(left).localeCompare(valueCollectionAdapterKey(right))
+  );
 }
 
 export function collectRuntimeFamiliesForValueBoundary(

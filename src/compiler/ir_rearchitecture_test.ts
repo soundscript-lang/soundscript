@@ -8805,6 +8805,7 @@ Deno.test('compiler wasm-gc wrapper glue adapts imported Map params to JS Map', 
   assertEquals(wrapper.includes('setFromInternal'), false);
   assertEquals(wrapper.includes('numberArrayToInternal'), false);
   assertEquals(wrapper.includes('numberArrayFromInternal'), false);
+  assertEquals(wrapper.includes('collectionBoundarySuffix'), false);
   const parseResult = await new Deno.Command('wasm-tools', {
     args: ['parse', watPath, '-o', wasmPath],
     stdout: 'piped',
@@ -9619,6 +9620,110 @@ Deno.test('compiler wasm-gc wrapper glue adapts reciprocal non-number collection
   ) => number;
   assertEquals([...forwardWords().entries()], [['left', ['a', 'bc']], ['right', ['def']]]);
   assertEquals(forwardFlags(new Set([[true, false], [true, true]])), 3);
+});
+
+Deno.test('compiler wasm-gc wrapper glue adapts nested collection payloads recursively', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: {
+          strict: true,
+          module: 'esnext',
+          moduleResolution: 'node',
+        },
+        files: ['main.ts', 'host.d.ts'],
+      }),
+    },
+    {
+      path: 'host.d.ts',
+      contents: `
+        export declare function scoreNested(map: Map<string, Set<string>>): number;
+        export declare function makeNested(): Map<string, Set<string>>;
+      `,
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        import { makeNested, scoreNested } from "./host";
+
+        export function forwardNested(map: Map<string, Set<string>>): number {
+          return scoreNested(map);
+        }
+
+        export function roundtripNested(): Map<string, Set<string>> {
+          return makeNested();
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
+  const watPath = join(tempDirectory, 'wasm-gc-shadow-nested-collection-wrapper.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-shadow-nested-collection-wrapper.wasm');
+  const wrapperPath = join(tempDirectory, 'wasm-gc-shadow-nested-collection-wrapper.mjs');
+
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
+  await Deno.writeTextFile(wrapperPath, emitWasmGcWrapperModule(snapshot.wasmGcPlan));
+  const wat = await Deno.readTextFile(watPath);
+  const wrapper = await Deno.readTextFile(wrapperPath);
+  assertEquals(wat.includes('(export "__soundscript_map_new_string_set_string")'), true);
+  assertEquals(wat.includes('(export "__soundscript_map_set_string_set_string")'), true);
+  assertEquals(wat.includes('(export "__soundscript_map_size_string_set_string")'), true);
+  assertEquals(wat.includes('(export "__soundscript_map_value_at_string_set_string")'), true);
+  assertEquals(wat.includes('(export "__soundscript_set_new_string")'), true);
+  assertEquals(wat.includes('(export "__soundscript_set_add_string")'), true);
+  assertEquals(wat.includes('(export "__soundscript_set_size_string")'), true);
+  assertEquals(wat.includes('(export "__soundscript_set_value_at_string")'), true);
+  assertEquals(wrapper.includes('mapToInternal'), true);
+  assertEquals(wrapper.includes('mapFromInternal'), true);
+  assertEquals(wrapper.includes('setToInternal'), true);
+  assertEquals(wrapper.includes('setFromInternal'), true);
+  assertEquals(wrapper.includes('collectionBoundarySuffix'), true);
+  const parseResult = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(parseResult.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(parseResult.success, true);
+
+  const instanceCell: { instance?: WebAssembly.Instance } = {};
+  const wrapperModule = await import(`file://${wrapperPath}?cacheBust=${crypto.randomUUID()}`);
+  const imports = wrapperModule.createSoundscriptWasmGcHostImports(
+    {
+      soundscript_host_function: {
+        'host.d.ts:scoreNested': (map: Map<string, Set<string>>): number => {
+          assertEquals(map instanceof Map, true);
+          assertEquals([...map.entries()].map(([key, set]) => [key, [...set.values()]]), [
+            ['left', ['a', 'bc']],
+            ['right', ['def']],
+          ]);
+          return map.get('left')!.size + [...map.get('right')!.values()][0]!.length;
+        },
+        'host.d.ts:makeNested': (): Map<string, Set<string>> =>
+          new Map([['left', new Set(['a', 'bc'])], ['right', new Set(['def'])]]),
+      },
+    },
+    instanceCell,
+  );
+  const wasm = await Deno.readFile(wasmPath);
+  const instance = (await WebAssembly.instantiate(wasm, imports)).instance;
+  instanceCell.instance = instance;
+  const exports = await createWasmGcWrappedExports(wrapperPath, instanceCell);
+  const forwardNested = exports['main.ts:forwardNested'] as (
+    map: Map<string, Set<string>>,
+  ) => number;
+  const roundtripNested = exports['main.ts:roundtripNested'] as () => Map<string, Set<string>>;
+  assertEquals(
+    forwardNested(new Map([['left', new Set(['a', 'bc'])], ['right', new Set(['def'])]])),
+    5,
+  );
+  assertEquals([...roundtripNested().entries()].map(([key, set]) => [key, [...set.values()]]), [
+    ['left', ['a', 'bc']],
+    ['right', ['def']],
+  ]);
 });
 
 Deno.test('compiler wasm-gc wrapper glue adapts exported Set params from JS Set', async () => {

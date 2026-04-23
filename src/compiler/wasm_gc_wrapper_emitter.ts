@@ -5,7 +5,11 @@ import type {
   WasmGcHostImportWrapperPlanIR,
   WasmGcModulePlanIR,
 } from './wasm_gc_backend_ir.ts';
-import { valueCollectionAdapterKey } from './value_boundary_ir.ts';
+import {
+  collectionBoundaryAdapterClosure,
+  type ValueBoundaryIR,
+  valueCollectionAdapterKey,
+} from './value_boundary_ir.ts';
 
 function hostImportWrapperKey(moduleName: string, importName: string): string {
   return `${moduleName}\0${importName}`;
@@ -254,27 +258,106 @@ function wrapperCollectionParamBoundaryAdapters(wrapper: {
   ): adapter is WasmGcCollectionBoundaryAdapterIR => adapter !== undefined) ?? [];
 }
 
+function uniqueCollectionBoundaryAdapters(
+  adapters: Iterable<WasmGcCollectionBoundaryAdapterIR>,
+): readonly WasmGcCollectionBoundaryAdapterIR[] {
+  const unique = new Map<string, WasmGcCollectionBoundaryAdapterIR>();
+  for (const adapter of adapters) {
+    unique.set(valueCollectionAdapterKey(adapter), adapter);
+  }
+  return [...unique.values()].sort((left, right) =>
+    valueCollectionAdapterKey(left).localeCompare(valueCollectionAdapterKey(right))
+  );
+}
+
+function expandCollectionBoundaryAdapters(
+  adapters: Iterable<WasmGcCollectionBoundaryAdapterIR>,
+): readonly WasmGcCollectionBoundaryAdapterIR[] {
+  return uniqueCollectionBoundaryAdapters(
+    [...adapters].flatMap((adapter) => collectionBoundaryAdapterClosure(adapter)),
+  );
+}
+
+function wrapperCollectionBoundaryAdapterClosure(wrapper: {
+  paramBoundaryAdapters?: readonly (WasmGcCollectionBoundaryAdapterIR | undefined)[];
+  resultBoundaryAdapter?: WasmGcCollectionBoundaryAdapterIR;
+}): readonly WasmGcCollectionBoundaryAdapterIR[] {
+  return expandCollectionBoundaryAdapters(wrapperCollectionBoundaryAdapters(wrapper));
+}
+
+function wrapperCollectionParamBoundaryAdapterClosure(wrapper: {
+  paramBoundaryAdapters?: readonly (WasmGcCollectionBoundaryAdapterIR | undefined)[];
+}): readonly WasmGcCollectionBoundaryAdapterIR[] {
+  return expandCollectionBoundaryAdapters(wrapperCollectionParamBoundaryAdapters(wrapper));
+}
+
+function collectionBoundaryAdapterValueBoundary(
+  adapter: WasmGcCollectionBoundaryAdapterIR,
+): ValueBoundaryIR {
+  return adapter.value;
+}
+
 function wrapperUsesMapBoundaryAdapters(wrapper: {
   paramBoundaryAdapters?: readonly (WasmGcCollectionBoundaryAdapterIR | undefined)[];
   resultBoundaryAdapter?: WasmGcCollectionBoundaryAdapterIR;
 }): boolean {
-  return wrapperCollectionBoundaryAdapters(wrapper).some((adapter) => adapter.kind === 'map');
+  return wrapperCollectionBoundaryAdapterClosure(wrapper).some((adapter) => adapter.kind === 'map');
 }
 
 function wrapperUsesSetBoundaryAdapters(wrapper: {
   paramBoundaryAdapters?: readonly (WasmGcCollectionBoundaryAdapterIR | undefined)[];
   resultBoundaryAdapter?: WasmGcCollectionBoundaryAdapterIR;
 }): boolean {
-  return wrapperCollectionBoundaryAdapters(wrapper).some((adapter) => adapter.kind === 'set');
+  return wrapperCollectionBoundaryAdapterClosure(wrapper).some((adapter) => adapter.kind === 'set');
+}
+
+function boundaryUsesArray(boundary: ValueBoundaryIR): boolean {
+  switch (boundary.kind) {
+    case 'array':
+      return true;
+    case 'map':
+      return boundaryUsesArray(boundary.key) || boundaryUsesArray(boundary.value);
+    case 'set':
+      return boundaryUsesArray(boundary.value);
+    case 'union':
+      return boundary.arms.some(boundaryUsesArray);
+    default:
+      return false;
+  }
 }
 
 function collectionBoundaryAdapterUsesArrayPayload(
   adapter: WasmGcCollectionBoundaryAdapterIR,
 ): boolean {
-  return (adapter.kind === 'map' ? adapter.value : adapter.value).kind === 'array';
+  return boundaryUsesArray(collectionBoundaryAdapterValueBoundary(adapter));
 }
 
-function boundaryUsesString(boundary: WasmGcCollectionBoundaryAdapterIR['value']): boolean {
+function boundaryUsesCollection(boundary: ValueBoundaryIR): boolean {
+  switch (boundary.kind) {
+    case 'map':
+    case 'set':
+      return true;
+    case 'array':
+      return boundaryUsesCollection(boundary.element);
+    case 'tuple':
+      return boundary.elements.some(boundaryUsesCollection);
+    case 'union':
+      return boundary.arms.some(boundaryUsesCollection);
+    default:
+      return false;
+  }
+}
+
+function wrapperUsesNestedCollectionBoundaryAdapters(wrapper: {
+  paramBoundaryAdapters?: readonly (WasmGcCollectionBoundaryAdapterIR | undefined)[];
+  resultBoundaryAdapter?: WasmGcCollectionBoundaryAdapterIR;
+}): boolean {
+  return wrapperCollectionBoundaryAdapters(wrapper).some((adapter) =>
+    boundaryUsesCollection(collectionBoundaryAdapterValueBoundary(adapter))
+  );
+}
+
+function boundaryUsesString(boundary: ValueBoundaryIR): boolean {
   switch (boundary.kind) {
     case 'string':
       return true;
@@ -301,7 +384,9 @@ function wrapperUsesArrayBoundaryAdapters(wrapper: {
   paramBoundaryAdapters?: readonly (WasmGcCollectionBoundaryAdapterIR | undefined)[];
   resultBoundaryAdapter?: WasmGcCollectionBoundaryAdapterIR;
 }): boolean {
-  return wrapperCollectionBoundaryAdapters(wrapper).some(collectionBoundaryAdapterUsesArrayPayload);
+  return wrapperCollectionBoundaryAdapterClosure(wrapper).some(
+    collectionBoundaryAdapterUsesArrayPayload,
+  );
 }
 
 function wrapperUsesCollectionBoundaryAdapter(
@@ -346,6 +431,10 @@ function hostImportSurfaceNeedsArrayAdapters(plan: WasmGcModulePlanIR): boolean 
   return plan.wrapperPlan.hostImportWrappers.some(wrapperUsesArrayBoundaryAdapters);
 }
 
+function hostImportSurfaceNeedsNestedCollectionAdapters(plan: WasmGcModulePlanIR): boolean {
+  return plan.wrapperPlan.hostImportWrappers.some(wrapperUsesNestedCollectionBoundaryAdapters);
+}
+
 function hostImportSurfaceUsesCollectionBoundaryAdapter(
   plan: WasmGcModulePlanIR,
   adapter: WasmGcCollectionBoundaryAdapterIR,
@@ -375,6 +464,10 @@ function exportSurfaceNeedsArrayAdapters(plan: WasmGcModulePlanIR): boolean {
   return plan.wrapperPlan.exportWrappers.some(wrapperUsesArrayBoundaryAdapters);
 }
 
+function exportSurfaceNeedsNestedCollectionAdapters(plan: WasmGcModulePlanIR): boolean {
+  return plan.wrapperPlan.exportWrappers.some(wrapperUsesNestedCollectionBoundaryAdapters);
+}
+
 function exportSurfaceUsesCollectionBoundaryAdapter(
   plan: WasmGcModulePlanIR,
   adapter: WasmGcCollectionBoundaryAdapterIR,
@@ -386,49 +479,65 @@ function exportSurfaceUsesCollectionBoundaryAdapter(
 
 function exportSurfaceNeedsMapToInternalAdapters(plan: WasmGcModulePlanIR): boolean {
   return plan.wrapperPlan.exportWrappers.some((wrapper) =>
-    wrapperCollectionParamBoundaryAdapters(wrapper).some((adapter) => adapter.kind === 'map')
+    wrapperCollectionParamBoundaryAdapterClosure(wrapper).some((adapter) => adapter.kind === 'map')
   );
 }
 
 function exportSurfaceNeedsMapFromInternalAdapters(plan: WasmGcModulePlanIR): boolean {
   return plan.wrapperPlan.exportWrappers.some((wrapper) =>
-    wrapper.resultBoundaryAdapter?.kind === 'map'
+    wrapper.resultBoundaryAdapter
+      ? collectionBoundaryAdapterClosure(wrapper.resultBoundaryAdapter).some((adapter) =>
+        adapter.kind === 'map'
+      )
+      : false
   );
 }
 
 function exportSurfaceNeedsSetToInternalAdapters(plan: WasmGcModulePlanIR): boolean {
   return plan.wrapperPlan.exportWrappers.some((wrapper) =>
-    wrapperCollectionParamBoundaryAdapters(wrapper).some((adapter) => adapter.kind === 'set')
+    wrapperCollectionParamBoundaryAdapterClosure(wrapper).some((adapter) => adapter.kind === 'set')
   );
 }
 
 function exportSurfaceNeedsSetFromInternalAdapters(plan: WasmGcModulePlanIR): boolean {
   return plan.wrapperPlan.exportWrappers.some((wrapper) =>
-    wrapper.resultBoundaryAdapter?.kind === 'set'
+    wrapper.resultBoundaryAdapter
+      ? collectionBoundaryAdapterClosure(wrapper.resultBoundaryAdapter).some((adapter) =>
+        adapter.kind === 'set'
+      )
+      : false
   );
 }
 
 function hostImportSurfaceNeedsMapToInternalAdapters(plan: WasmGcModulePlanIR): boolean {
   return plan.wrapperPlan.hostImportWrappers.some((wrapper) =>
-    wrapper.resultBoundaryAdapter?.kind === 'map'
+    wrapper.resultBoundaryAdapter
+      ? collectionBoundaryAdapterClosure(wrapper.resultBoundaryAdapter).some((adapter) =>
+        adapter.kind === 'map'
+      )
+      : false
   );
 }
 
 function hostImportSurfaceNeedsMapFromInternalAdapters(plan: WasmGcModulePlanIR): boolean {
   return plan.wrapperPlan.hostImportWrappers.some((wrapper) =>
-    wrapperCollectionParamBoundaryAdapters(wrapper).some((adapter) => adapter.kind === 'map')
+    wrapperCollectionParamBoundaryAdapterClosure(wrapper).some((adapter) => adapter.kind === 'map')
   );
 }
 
 function hostImportSurfaceNeedsSetToInternalAdapters(plan: WasmGcModulePlanIR): boolean {
   return plan.wrapperPlan.hostImportWrappers.some((wrapper) =>
-    wrapper.resultBoundaryAdapter?.kind === 'set'
+    wrapper.resultBoundaryAdapter
+      ? collectionBoundaryAdapterClosure(wrapper.resultBoundaryAdapter).some((adapter) =>
+        adapter.kind === 'set'
+      )
+      : false
   );
 }
 
 function hostImportSurfaceNeedsSetFromInternalAdapters(plan: WasmGcModulePlanIR): boolean {
   return plan.wrapperPlan.hostImportWrappers.some((wrapper) =>
-    wrapperCollectionParamBoundaryAdapters(wrapper).some((adapter) => adapter.kind === 'set')
+    wrapperCollectionParamBoundaryAdapterClosure(wrapper).some((adapter) => adapter.kind === 'set')
   );
 }
 
@@ -465,6 +574,7 @@ function boundaryCacheForInstance(instance) {
 function renderHostImportBoundaryAdapterHelpers(plan: WasmGcModulePlanIR): string {
   const helpers: string[] = [];
   const usesArrayAdapters = hostImportSurfaceNeedsArrayAdapters(plan);
+  const usesNestedCollectionAdapters = hostImportSurfaceNeedsNestedCollectionAdapters(plan);
   if (hostImportSurfaceNeedsStringAdapters(plan)) {
     helpers.push(`function stringToInternal(value) {
   if (typeof value !== 'string') {
@@ -614,6 +724,65 @@ function arrayFromInternal(boundary, value) {
   return result;
 }`);
   }
+  if (usesNestedCollectionAdapters) {
+    helpers.push(`function collectionBoundarySuffix(boundary) {
+  if (boundary.kind === 'number' || boundary.kind === 'boolean' || boundary.kind === 'string') {
+    return boundary.kind;
+  }
+  if (boundary.kind === 'array') {
+    return \`\${collectionBoundarySuffix(boundary.element)}_array\`;
+  }
+  if (boundary.kind === 'map') {
+    if (boundary.key.kind !== 'string') {
+      throw new TypeError('Soundscript WasmGC nested Map boundary keys must be strings.');
+    }
+    return \`map_string_\${collectionBoundarySuffix(boundary.value)}\`;
+  }
+  if (boundary.kind === 'set') {
+    return \`set_\${collectionBoundarySuffix(boundary.value)}\`;
+  }
+  throw new TypeError(\`Unsupported Soundscript WasmGC nested collection boundary \${boundary.kind}.\`);
+}
+
+function collectionBoundaryAdapter(boundary) {
+  if (boundary.kind === 'map') {
+    return {
+      kind: 'map',
+      key: boundary.key,
+      value: boundary.value,
+      suffix: collectionBoundarySuffix(boundary.value),
+    };
+  }
+  if (boundary.kind === 'set') {
+    return {
+      kind: 'set',
+      value: boundary.value,
+      suffix: collectionBoundarySuffix(boundary.value),
+    };
+  }
+  throw new TypeError(\`Unsupported Soundscript WasmGC nested collection adapter \${boundary.kind}.\`);
+}
+
+function collectionValueToInternal(boundary, value) {
+  if (boundary.kind === 'map') {
+    return mapToInternal(collectionBoundaryAdapter(boundary), value);
+  }
+  if (boundary.kind === 'set') {
+    return setToInternal(collectionBoundaryAdapter(boundary), value);
+  }
+  throw new TypeError(\`Unsupported Soundscript WasmGC nested collection value \${boundary.kind}.\`);
+}
+
+function collectionValueFromInternal(boundary, value) {
+  if (boundary.kind === 'map') {
+    return mapFromInternal(collectionBoundaryAdapter(boundary), value);
+  }
+  if (boundary.kind === 'set') {
+    return setFromInternal(collectionBoundaryAdapter(boundary), value);
+  }
+  throw new TypeError(\`Unsupported Soundscript WasmGC nested collection value \${boundary.kind}.\`);
+}`);
+  }
   if (hostImportSurfaceNeedsMapToInternalAdapters(plan)) {
     helpers.push(`function mapBoundaryValueToInternal(adapter, value) {
   if (adapter.value.kind === 'number') {
@@ -631,6 +800,13 @@ function arrayFromInternal(boundary, value) {
   if (adapter.value.kind === 'string') {
     return stringToInternal(value);
   }
+${
+      usesNestedCollectionAdapters
+        ? `  if (adapter.value.kind === 'map' || adapter.value.kind === 'set') {
+    return collectionValueToInternal(adapter.value, value);
+  }`
+        : ''
+    }
 ${
       usesArrayAdapters
         ? `  if (adapter.value.kind === 'array') {
@@ -671,6 +847,13 @@ function mapToInternal(adapter, value) {
   if (adapter.value.kind === 'string') {
     return stringFromInternal(value);
   }
+${
+      usesNestedCollectionAdapters
+        ? `  if (adapter.value.kind === 'map' || adapter.value.kind === 'set') {
+    return collectionValueFromInternal(adapter.value, value);
+  }`
+        : ''
+    }
 ${
       usesArrayAdapters
         ? `  if (adapter.value.kind === 'array') {
@@ -719,6 +902,13 @@ function mapFromInternal(adapter, value) {
     return stringToInternal(value);
   }
 ${
+      usesNestedCollectionAdapters
+        ? `  if (adapter.value.kind === 'map' || adapter.value.kind === 'set') {
+    return collectionValueToInternal(adapter.value, value);
+  }`
+        : ''
+    }
+${
       usesArrayAdapters
         ? `  if (adapter.value.kind === 'array') {
     return arrayToInternal(adapter.value, value);
@@ -756,6 +946,13 @@ function setToInternal(adapter, value) {
     return stringFromInternal(value);
   }
 ${
+      usesNestedCollectionAdapters
+        ? `  if (adapter.value.kind === 'map' || adapter.value.kind === 'set') {
+    return collectionValueFromInternal(adapter.value, value);
+  }`
+        : ''
+    }
+${
       usesArrayAdapters
         ? `  if (adapter.value.kind === 'array') {
     return arrayFromInternal(adapter.value, value);
@@ -787,6 +984,7 @@ function setFromInternal(adapter, value) {
 function renderExportBoundaryAdapterHelpers(plan: WasmGcModulePlanIR): string {
   const helpers: string[] = [];
   const usesArrayAdapters = exportSurfaceNeedsArrayAdapters(plan);
+  const usesNestedCollectionAdapters = exportSurfaceNeedsNestedCollectionAdapters(plan);
   if (exportSurfaceNeedsStringAdapters(plan)) {
     helpers.push(`function stringToInternal(value) {
     if (typeof value !== 'string') {
@@ -924,6 +1122,65 @@ function renderExportBoundaryAdapterHelpers(plan: WasmGcModulePlanIR): string {
     return result;
   }`);
   }
+  if (usesNestedCollectionAdapters) {
+    helpers.push(`function collectionBoundarySuffix(boundary) {
+    if (boundary.kind === 'number' || boundary.kind === 'boolean' || boundary.kind === 'string') {
+      return boundary.kind;
+    }
+    if (boundary.kind === 'array') {
+      return \`\${collectionBoundarySuffix(boundary.element)}_array\`;
+    }
+    if (boundary.kind === 'map') {
+      if (boundary.key.kind !== 'string') {
+        throw new TypeError('Soundscript WasmGC nested Map boundary keys must be strings.');
+      }
+      return \`map_string_\${collectionBoundarySuffix(boundary.value)}\`;
+    }
+    if (boundary.kind === 'set') {
+      return \`set_\${collectionBoundarySuffix(boundary.value)}\`;
+    }
+    throw new TypeError(\`Unsupported Soundscript WasmGC nested collection boundary \${boundary.kind}.\`);
+  }
+
+  function collectionBoundaryAdapter(boundary) {
+    if (boundary.kind === 'map') {
+      return {
+        kind: 'map',
+        key: boundary.key,
+        value: boundary.value,
+        suffix: collectionBoundarySuffix(boundary.value),
+      };
+    }
+    if (boundary.kind === 'set') {
+      return {
+        kind: 'set',
+        value: boundary.value,
+        suffix: collectionBoundarySuffix(boundary.value),
+      };
+    }
+    throw new TypeError(\`Unsupported Soundscript WasmGC nested collection adapter \${boundary.kind}.\`);
+  }
+
+  function collectionValueToInternal(boundary, value) {
+    if (boundary.kind === 'map') {
+      return mapToInternal(collectionBoundaryAdapter(boundary), value);
+    }
+    if (boundary.kind === 'set') {
+      return setToInternal(collectionBoundaryAdapter(boundary), value);
+    }
+    throw new TypeError(\`Unsupported Soundscript WasmGC nested collection value \${boundary.kind}.\`);
+  }
+
+  function collectionValueFromInternal(boundary, value) {
+    if (boundary.kind === 'map') {
+      return mapFromInternal(collectionBoundaryAdapter(boundary), value);
+    }
+    if (boundary.kind === 'set') {
+      return setFromInternal(collectionBoundaryAdapter(boundary), value);
+    }
+    throw new TypeError(\`Unsupported Soundscript WasmGC nested collection value \${boundary.kind}.\`);
+  }`);
+  }
   if (exportSurfaceNeedsMapToInternalAdapters(plan)) {
     helpers.push(`function mapBoundaryValueToInternal(adapter, value) {
     if (adapter.value.kind === 'number') {
@@ -940,6 +1197,13 @@ function renderExportBoundaryAdapterHelpers(plan: WasmGcModulePlanIR): string {
     }
     if (adapter.value.kind === 'string') {
       return stringToInternal(value);
+    }
+${
+      usesNestedCollectionAdapters
+        ? `    if (adapter.value.kind === 'map' || adapter.value.kind === 'set') {
+      return collectionValueToInternal(adapter.value, value);
+    }`
+        : ''
     }
 ${
       usesArrayAdapters
@@ -978,6 +1242,13 @@ ${
     }
     if (adapter.value.kind === 'string') {
       return stringFromInternal(value);
+    }
+${
+      usesNestedCollectionAdapters
+        ? `    if (adapter.value.kind === 'map' || adapter.value.kind === 'set') {
+      return collectionValueFromInternal(adapter.value, value);
+    }`
+        : ''
     }
 ${
       usesArrayAdapters
@@ -1025,6 +1296,13 @@ ${
       return stringToInternal(value);
     }
 ${
+      usesNestedCollectionAdapters
+        ? `    if (adapter.value.kind === 'map' || adapter.value.kind === 'set') {
+      return collectionValueToInternal(adapter.value, value);
+    }`
+        : ''
+    }
+${
       usesArrayAdapters
         ? `    if (adapter.value.kind === 'array') {
       return arrayToInternal(adapter.value, value);
@@ -1058,6 +1336,13 @@ ${
     }
     if (adapter.value.kind === 'string') {
       return stringFromInternal(value);
+    }
+${
+      usesNestedCollectionAdapters
+        ? `    if (adapter.value.kind === 'map' || adapter.value.kind === 'set') {
+      return collectionValueFromInternal(adapter.value, value);
+    }`
+        : ''
     }
 ${
       usesArrayAdapters

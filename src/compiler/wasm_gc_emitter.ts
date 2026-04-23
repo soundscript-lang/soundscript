@@ -11,6 +11,7 @@ import type {
   WasmGcTypePlanIR,
 } from './wasm_gc_backend_ir.ts';
 import {
+  collectionBoundaryAdapterClosure,
   compilerValueTypeForStorage,
   type ValueBoundaryIR,
   valueCollectionAdapterKey,
@@ -5097,7 +5098,9 @@ function uniqueCollectionBoundaryAdapters(
 ): readonly WasmGcCollectionBoundaryAdapterIR[] {
   const unique = new Map<string, WasmGcCollectionBoundaryAdapterIR>();
   for (const adapter of adapters) {
-    unique.set(valueCollectionAdapterKey(adapter), adapter);
+    for (const candidate of collectionBoundaryAdapterClosure(adapter)) {
+      unique.set(valueCollectionAdapterKey(candidate), candidate);
+    }
   }
   return [...unique.values()].sort((left, right) =>
     valueCollectionAdapterKey(left).localeCompare(valueCollectionAdapterKey(right))
@@ -5206,13 +5209,13 @@ function setBoundaryAdapterValueInfo(adapter: WasmGcCollectionBoundaryAdapterIR)
     return undefined;
   }
   const valueStorage = adapter.storage.value;
-  if (valueStorage.kind === 'array') {
+  if (valueStorage.kind === 'array' || valueStorage.kind === 'map' || valueStorage.kind === 'set') {
     return {
       suffix: adapter.suffix,
       wasmType: '(ref null eq)',
       valuesArrayType: 'owned_tagged_array_ref',
       valuesElementType: 'tagged_ref',
-      payloadValueType: valueStorage.arrayType,
+      payloadValueType: valueStorage.kind === 'array' ? valueStorage.arrayType : 'heap_ref',
       valueStorage,
     };
   }
@@ -5319,6 +5322,9 @@ function renderMapBoundaryValueAtResult(
   if (info.valueStorage.kind === 'array') {
     return renderTaggedHeapObjectPayload(indent);
   }
+  if (info.valueType === 'heap_ref') {
+    return renderTaggedHeapObjectPayload(indent);
+  }
   return renderMapTaggedValueForResultType(
     info.valueType === 'owned_string_ref'
       ? 'owned_array_ref'
@@ -5335,7 +5341,7 @@ function renderSetBoundaryValueAtResult(
   indent: string,
 ): readonly string[] {
   const info = setBoundaryAdapterValueInfo(adapter);
-  return info?.valueStorage.kind === 'array' ? renderTaggedHeapObjectPayload(indent) : [];
+  return info?.payloadValueType ? renderTaggedHeapObjectPayload(indent) : [];
 }
 
 function renderSetTaggedBoundaryAddStatement(indent: string): readonly string[] {
@@ -5473,7 +5479,7 @@ function renderSetBoundaryWrapperHelperFunctions(plan: WasmGcModulePlanIR): read
       '    struct.new $set_runtime',
       '  )',
       `  (func $__soundscript_set_add_${suffix} (export "__soundscript_set_add_${suffix}") (param $set (ref null eq)) (param $value ${wasmType})`,
-      ...(valueStorage.kind === 'array'
+      ...(payloadValueType
         ? [
           `    (local $${
             sanitizeIdentifier('__soundscript_set_add_boundary_tagged_value')
@@ -5502,25 +5508,23 @@ function renderSetBoundaryWrapperHelperFunctions(plan: WasmGcModulePlanIR): read
           bodyStatus: 'emittable',
           unsupportedBodyKinds: [],
         }).map((local) => `    (local $${sanitizeIdentifier(local.name)} ${local.wasmType})`)),
-      ...(valueStorage.kind === 'array'
+      ...(payloadValueType
         ? [
-          ...renderMapTaggedValueFromLocal('value', payloadValueType ?? 'heap_ref', '    '),
+          ...renderMapTaggedValueFromLocal('value', payloadValueType, '    '),
           `    local.set $${sanitizeIdentifier('__soundscript_set_add_boundary_tagged_value')}`,
         ]
         : []),
-      ...(valueStorage.kind === 'array'
-        ? renderSetTaggedBoundaryAddStatement('    ')
-        : renderSetAddStatement(
-          {
-            kind: 'set_add',
-            objectName: 'set',
-            valueName: 'value',
-            valuesArrayType,
-            valuesElementType,
-          },
-          '    ',
-          EMPTY_RENDER_CONTEXT,
-        )),
+      ...(payloadValueType ? renderSetTaggedBoundaryAddStatement('    ') : renderSetAddStatement(
+        {
+          kind: 'set_add',
+          objectName: 'set',
+          valueName: 'value',
+          valuesArrayType,
+          valuesElementType,
+        },
+        '    ',
+        EMPTY_RENDER_CONTEXT,
+      )),
       '  )',
     ]),
     ...internalToHostAdapters.flatMap(({ adapter, suffix, wasmType, valuesArrayType }) => [
