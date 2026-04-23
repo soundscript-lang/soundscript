@@ -234,6 +234,7 @@ interface BoundSymbol {
   ownedOnly?: boolean;
   compilerOwnedMap?: boolean;
   compilerOwnedMapStorage?: boolean;
+  compilerOwnedStringKeyMapValueType?: ts.Type;
   compilerOwnedSet?: boolean;
   compilerOwnedSetValuesArrayType?: CompilerRuntimeSetStorageArrayType;
   compilerOwnedSetValuesElementType?: CompilerRuntimeSetStorageElementType;
@@ -6292,6 +6293,33 @@ function collectCompilerOwnedStringKeyMapLocalSymbolInfo(
     return true;
   };
 
+  const isAllowedCollectionPayloadUse = (identifier: ts.Identifier): boolean => {
+    if (!ts.isCallExpression(identifier.parent)) {
+      return false;
+    }
+    const call = identifier.parent;
+    if (!ts.isPropertyAccessExpression(call.expression)) {
+      return false;
+    }
+    const methodName = call.expression.name.text;
+    const receiverType = checker.getTypeAtLocation(call.expression.expression);
+    if (
+      methodName === 'set' &&
+      call.arguments[1] === identifier &&
+      getSupportedStringKeyMapTypeInfo(checker, receiverType) !== undefined
+    ) {
+      return true;
+    }
+    if (
+      methodName === 'add' &&
+      call.arguments[0] === identifier &&
+      getSupportedStringKeySetTypeInfo(checker, receiverType) !== undefined
+    ) {
+      return true;
+    }
+    return false;
+  };
+
   const visitDeclarations = (node: ts.Node): void => {
     if (ts.isFunctionLike(node) && node !== declaration) {
       return;
@@ -6341,6 +6369,9 @@ function collectCompilerOwnedStringKeyMapLocalSymbolInfo(
           node.parent.expression === node
         ) {
           storageBacked.add(symbol);
+          return;
+        }
+        if (isAllowedCollectionPayloadUse(node)) {
           return;
         }
         disqualified.add(symbol);
@@ -11957,6 +11988,11 @@ interface OwnedArrayBindingElementInfo {
   type: CompilerValueType;
   heapRepresentation?: CompilerRuntimeRepresentationRefIR<'object'>;
   taggedPrimitiveKinds?: CompilerTaggedPrimitiveBoundaryKindsIR;
+  compilerOwnedMap?: boolean;
+  compilerOwnedMapStorage?: boolean;
+  compilerOwnedStringKeyMapValueType?: ts.Type;
+  compilerOwnedSetValuesArrayType?: CompilerRuntimeSetStorageArrayType;
+  compilerOwnedSetValuesElementType?: CompilerRuntimeSetStorageElementType;
 }
 
 interface OwnedArrayBindingSourceInfo {
@@ -12904,8 +12940,13 @@ function lowerOwnedArrayBindingPatternIntoScope(
       name: emittedName,
       type: capturedByClosure ? 'box_ref' : elementValueType,
     });
+    const compilerOwnedMapBinding = !capturedByClosure && elementValueType === 'heap_ref' &&
+      elementInfo?.compilerOwnedMap === true;
+    const compilerOwnedMapStorageBinding = compilerOwnedMapBinding &&
+      elementInfo?.compilerOwnedMapStorage === true;
     const compilerOwnedSetTypeInfo = !capturedByClosure && elementValueType === 'heap_ref'
-      ? getSupportedStringKeySetTypeInfo(context.checker, context.checker.getTypeAtLocation(name))
+      ? getCompilerOwnedSetTypeInfoFromArrayBindingElementInfo(elementInfo) ??
+        getSupportedStringKeySetTypeInfo(context.checker, context.checker.getTypeAtLocation(name))
       : undefined;
     const boundSymbol: BoundSymbol = {
       emittedName,
@@ -12913,10 +12954,21 @@ function lowerOwnedArrayBindingPatternIntoScope(
       boxedValueType: capturedByClosure ? elementValueType : undefined,
       heapRepresentation: elementInfo?.heapRepresentation ?? source.heapElementRepresentation,
       taggedPrimitiveKinds: elementInfo?.taggedPrimitiveKinds,
+      compilerOwnedMap: compilerOwnedMapBinding,
+      compilerOwnedMapStorage: compilerOwnedMapStorageBinding,
+      compilerOwnedStringKeyMapValueType: compilerOwnedMapBinding
+        ? elementInfo?.compilerOwnedStringKeyMapValueType
+        : undefined,
       compilerOwnedSet: compilerOwnedSetTypeInfo !== undefined,
       compilerOwnedSetValuesArrayType: compilerOwnedSetTypeInfo?.valuesArrayType,
       compilerOwnedSetValuesElementType: compilerOwnedSetTypeInfo?.valuesElementType,
     };
+    if (boundSymbol.compilerOwnedMap) {
+      context.functionRuntime.compilerOwnedMapLocals.add(emittedName);
+    }
+    if (boundSymbol.compilerOwnedMapStorage) {
+      context.functionRuntime.compilerOwnedMapStorageLocals.add(emittedName);
+    }
     if (boundSymbol.compilerOwnedSet) {
       context.functionRuntime.compilerOwnedSetLocals.add(emittedName);
     }
@@ -17490,8 +17542,14 @@ function getSupportedSetElementTypeInfo(
       valuesElementType: storageInfo.valuesElementType,
       entryElementType: 'owned_heap_array_ref',
       entryElementInfos: [
-        { type: storageInfo.valuesElementType },
-        { type: storageInfo.valuesElementType },
+        {
+          type: storageInfo.valuesElementType,
+          ...getCompilerOwnedCollectionBindingMetadata(checker, elementType),
+        },
+        {
+          type: storageInfo.valuesElementType,
+          ...getCompilerOwnedCollectionBindingMetadata(checker, elementType),
+        },
       ],
     };
   }
@@ -17509,6 +17567,17 @@ function getSupportedSetElementTypeInfo(
 type SupportedStringKeySetTypeInfo =
   & { readonly: boolean; elementType?: ts.Type }
   & SupportedSetElementTypeInfo;
+
+function getCompilerOwnedStringKeyMapTypeInfoFromExpression(
+  expression: ts.Expression,
+  context: FunctionLoweringContext,
+): { readonly: boolean; valueType: ts.Type } | undefined {
+  if (!ts.isIdentifier(expression)) {
+    return undefined;
+  }
+  const valueType = lookupSymbol(context, expression.text)?.compilerOwnedStringKeyMapValueType;
+  return valueType ? { readonly: false, valueType } : undefined;
+}
 
 function getSupportedStringKeySetTypeInfo(
   checker: ts.TypeChecker,
@@ -17622,6 +17691,10 @@ interface SupportedCollectionIteratorTypeInfo {
   valuesArrayType: OwnedCallbackArrayType;
   elementType: OwnedCallbackElementType;
   elementInfos?: readonly OwnedArrayBindingElementInfo[];
+  compilerOwnedMapElement?: boolean;
+  compilerOwnedMapStorageElement?: boolean;
+  compilerOwnedStringKeyMapValueType?: ts.Type;
+  compilerOwnedSetElementTypeInfo?: SupportedStringKeySetTypeInfo;
 }
 
 function getSupportedCollectionIteratorTypeInfo(
@@ -17693,6 +17766,19 @@ function getSupportedCollectionIteratorTypeInfo(
       kind,
       valuesArrayType: 'owned_heap_array_ref',
       elementType: arrayPayloadElementType,
+    };
+  }
+  const collectionStorageInfo = getSupportedCollectionElementStorageInfo(checker, yieldedType);
+  if (collectionStorageInfo) {
+    return {
+      kind,
+      valuesArrayType: collectionStorageInfo.valuesArrayType,
+      elementType: collectionStorageInfo.valuesElementType,
+      ...getCompilerOwnedCollectionForOfElementInfo(
+        checker,
+        yieldedType,
+        collectionStorageInfo.valuesElementType,
+      ),
     };
   }
   if (
@@ -17923,7 +18009,7 @@ function isSupportedStringCollectionIteratorCreationCallExpression(
   const mapTypeInfo = getSupportedStringKeyMapTypeInfo(
     context.checker,
     context.checker.getTypeAtLocation(receiver),
-  );
+  ) ?? getCompilerOwnedStringKeyMapTypeInfoFromExpression(receiver, context);
   if (
     mapTypeInfo &&
     (
@@ -20407,7 +20493,13 @@ function getSupportedStringKeyMapIterationValueInfo(
       valuesElementType: storageInfo.valuesElementType,
       entryPairValueType: 'tagged_ref',
       entryElementType: 'owned_heap_array_ref',
-      entryElementInfos: [{ type: 'owned_string_ref' }, { type: storageInfo.valuesElementType }],
+      entryElementInfos: [
+        { type: 'owned_string_ref' },
+        {
+          type: storageInfo.valuesElementType,
+          ...getCompilerOwnedCollectionBindingMetadata(checker, valueType),
+        },
+      ],
     };
   }
   if (storageInfo?.valuesElementType === 'tagged_ref') {
@@ -20425,6 +20517,92 @@ function getSupportedStringKeyMapIterationValueInfo(
 type SupportedStringKeyMapIterationValueInfo = NonNullable<
   ReturnType<typeof getSupportedStringKeyMapIterationValueInfo>
 >;
+
+function getCompilerOwnedCollectionBindingMetadata(
+  checker: ts.TypeChecker,
+  type: ts.Type,
+): Pick<
+  OwnedArrayBindingElementInfo,
+  | 'compilerOwnedMap'
+  | 'compilerOwnedMapStorage'
+  | 'compilerOwnedStringKeyMapValueType'
+  | 'compilerOwnedSetValuesArrayType'
+  | 'compilerOwnedSetValuesElementType'
+> {
+  const setTypeInfo = getSupportedStringKeySetTypeInfo(checker, type);
+  if (setTypeInfo) {
+    return {
+      compilerOwnedSetValuesArrayType: setTypeInfo.valuesArrayType,
+      compilerOwnedSetValuesElementType: setTypeInfo.valuesElementType,
+    };
+  }
+  const stringKeyMapTypeInfo = getSupportedStringKeyMapTypeInfo(checker, type);
+  if (stringKeyMapTypeInfo) {
+    return {
+      compilerOwnedMap: true,
+      compilerOwnedMapStorage: true,
+      compilerOwnedStringKeyMapValueType: stringKeyMapTypeInfo.valueType,
+    };
+  }
+  if (
+    getSupportedNumberKeyMapTypeInfo(checker, type) ||
+    getSupportedTaggedKeyNumberValueMapTypeInfo(checker, type)
+  ) {
+    return { compilerOwnedMap: true, compilerOwnedMapStorage: true };
+  }
+  return {};
+}
+
+function getCompilerOwnedSetTypeInfoFromArrayBindingElementInfo(
+  elementInfo: OwnedArrayBindingElementInfo | undefined,
+): SupportedStringKeySetTypeInfo | undefined {
+  if (
+    !elementInfo?.compilerOwnedSetValuesArrayType ||
+    !elementInfo.compilerOwnedSetValuesElementType
+  ) {
+    return undefined;
+  }
+  return {
+    readonly: false,
+    valuesArrayType: elementInfo.compilerOwnedSetValuesArrayType,
+    valuesElementType: elementInfo.compilerOwnedSetValuesElementType,
+    entryElementType: elementInfo.compilerOwnedSetValuesArrayType === 'owned_heap_array_ref'
+      ? 'owned_heap_array_ref'
+      : elementInfo.compilerOwnedSetValuesArrayType === 'owned_tagged_array_ref'
+      ? 'owned_tagged_array_ref'
+      : elementInfo.compilerOwnedSetValuesArrayType,
+    entryElementInfos: [
+      { type: elementInfo.compilerOwnedSetValuesElementType },
+      { type: elementInfo.compilerOwnedSetValuesElementType },
+    ],
+  };
+}
+
+function getCompilerOwnedCollectionForOfElementInfo(
+  checker: ts.TypeChecker,
+  type: ts.Type,
+  elementType: CompilerRuntimeSetStorageElementType,
+): {
+  compilerOwnedMapElement?: boolean;
+  compilerOwnedMapStorageElement?: boolean;
+  compilerOwnedStringKeyMapValueType?: ts.Type;
+  compilerOwnedSetElementTypeInfo?: SupportedStringKeySetTypeInfo;
+} {
+  if (elementType !== 'heap_ref') {
+    return {};
+  }
+  const stringKeyMapTypeInfo = getSupportedStringKeyMapTypeInfo(checker, type);
+  return {
+    compilerOwnedMapElement: stringKeyMapTypeInfo !== undefined ||
+      getSupportedNumberKeyMapTypeInfo(checker, type) !== undefined ||
+      getSupportedTaggedKeyNumberValueMapTypeInfo(checker, type) !== undefined,
+    compilerOwnedMapStorageElement: stringKeyMapTypeInfo !== undefined ||
+      getSupportedNumberKeyMapTypeInfo(checker, type) !== undefined ||
+      getSupportedTaggedKeyNumberValueMapTypeInfo(checker, type) !== undefined,
+    compilerOwnedStringKeyMapValueType: stringKeyMapTypeInfo?.valueType,
+    compilerOwnedSetElementTypeInfo: getSupportedStringKeySetTypeInfo(checker, type),
+  };
+}
 
 function createStringKeyMapEntryTaggedValueExpression(
   valueName: string,
@@ -20875,6 +21053,9 @@ function tryLowerCollectionForOfIterableExpression(
   elementType: OwnedCallbackElementType;
   heapElementRepresentation?: CompilerRuntimeRepresentationRefIR<'object'>;
   elementInfos?: readonly OwnedArrayBindingElementInfo[];
+  compilerOwnedMapElement?: boolean;
+  compilerOwnedMapStorageElement?: boolean;
+  compilerOwnedStringKeyMapValueType?: ts.Type;
   compilerOwnedSetElementTypeInfo?: SupportedStringKeySetTypeInfo;
 } | undefined {
   if (ts.isParenthesizedExpression(expression)) {
@@ -20895,7 +21076,7 @@ function tryLowerCollectionForOfIterableExpression(
     const mapTypeInfo = getSupportedStringKeyMapTypeInfo(
       context.checker,
       context.checker.getTypeAtLocation(receiver),
-    );
+    ) ?? getCompilerOwnedStringKeyMapTypeInfoFromExpression(receiver, context);
     if (mapTypeInfo) {
       if (expression.arguments.length !== 0) {
         throw new CompilerUnsupportedError(
@@ -20935,9 +21116,11 @@ function tryLowerCollectionForOfIterableExpression(
             ),
             arrayType: iterationValueInfo.valuesArrayType,
             elementType: iterationValueInfo.valuesElementType,
-            compilerOwnedSetElementTypeInfo: iterationValueInfo.valuesElementType === 'heap_ref'
-              ? getSupportedStringKeySetTypeInfo(context.checker, mapTypeInfo.valueType)
-              : undefined,
+            ...getCompilerOwnedCollectionForOfElementInfo(
+              context.checker,
+              mapTypeInfo.valueType,
+              iterationValueInfo.valuesElementType,
+            ),
           };
         }
         if (methodName === 'entries') {
@@ -21004,9 +21187,11 @@ function tryLowerCollectionForOfIterableExpression(
           ),
           arrayType: iterationValueInfo.valuesArrayType,
           elementType: iterationValueInfo.valuesElementType,
-          compilerOwnedSetElementTypeInfo: iterationValueInfo.valuesElementType === 'heap_ref'
-            ? getSupportedStringKeySetTypeInfo(context.checker, mapTypeInfo.valueType)
-            : undefined,
+          ...getCompilerOwnedCollectionForOfElementInfo(
+            context.checker,
+            mapTypeInfo.valueType,
+            iterationValueInfo.valuesElementType,
+          ),
         };
       }
       if (methodName === 'entries') {
@@ -21129,10 +21314,13 @@ function tryLowerCollectionForOfIterableExpression(
             ),
             arrayType: setTypeInfo.valuesArrayType,
             elementType: setTypeInfo.valuesElementType,
-            compilerOwnedSetElementTypeInfo: setTypeInfo.valuesElementType === 'heap_ref' &&
-                setTypeInfo.elementType
-              ? getSupportedStringKeySetTypeInfo(context.checker, setTypeInfo.elementType)
-              : undefined,
+            ...(setTypeInfo.elementType
+              ? getCompilerOwnedCollectionForOfElementInfo(
+                context.checker,
+                setTypeInfo.elementType,
+                setTypeInfo.valuesElementType,
+              )
+              : {}),
           };
         }
         if (methodName === 'entries') {
@@ -21175,10 +21363,13 @@ function tryLowerCollectionForOfIterableExpression(
           ),
           arrayType: setTypeInfo.valuesArrayType,
           elementType: setTypeInfo.valuesElementType,
-          compilerOwnedSetElementTypeInfo: setTypeInfo.valuesElementType === 'heap_ref' &&
-              setTypeInfo.elementType
-            ? getSupportedStringKeySetTypeInfo(context.checker, setTypeInfo.elementType)
-            : undefined,
+          ...(setTypeInfo.elementType
+            ? getCompilerOwnedCollectionForOfElementInfo(
+              context.checker,
+              setTypeInfo.elementType,
+              setTypeInfo.valuesElementType,
+            )
+            : {}),
         };
       }
       if (methodName === 'entries') {
@@ -21207,7 +21398,7 @@ function tryLowerCollectionForOfIterableExpression(
   const mapTypeInfo = getSupportedStringKeyMapTypeInfo(
     context.checker,
     context.checker.getTypeAtLocation(expression),
-  );
+  ) ?? getCompilerOwnedStringKeyMapTypeInfoFromExpression(expression, context);
   if (mapTypeInfo) {
     const iterationValueInfo = getSupportedStringKeyMapIterationValueInfo(
       context.checker,
@@ -21333,10 +21524,13 @@ function tryLowerCollectionForOfIterableExpression(
         ),
         arrayType: setTypeInfo.valuesArrayType,
         elementType: setTypeInfo.valuesElementType,
-        compilerOwnedSetElementTypeInfo: setTypeInfo.valuesElementType === 'heap_ref' &&
-            setTypeInfo.elementType
-          ? getSupportedStringKeySetTypeInfo(context.checker, setTypeInfo.elementType)
-          : undefined,
+        ...(setTypeInfo.elementType
+          ? getCompilerOwnedCollectionForOfElementInfo(
+            context.checker,
+            setTypeInfo.elementType,
+            setTypeInfo.valuesElementType,
+          )
+          : {}),
       };
     }
     const { objectName, representation } = getDynamicCollectionReceiverForIteration(
@@ -21354,10 +21548,13 @@ function tryLowerCollectionForOfIterableExpression(
       ),
       arrayType: setTypeInfo.valuesArrayType,
       elementType: setTypeInfo.valuesElementType,
-      compilerOwnedSetElementTypeInfo: setTypeInfo.valuesElementType === 'heap_ref' &&
-          setTypeInfo.elementType
-        ? getSupportedStringKeySetTypeInfo(context.checker, setTypeInfo.elementType)
-        : undefined,
+      ...(setTypeInfo.elementType
+        ? getCompilerOwnedCollectionForOfElementInfo(
+          context.checker,
+          setTypeInfo.elementType,
+          setTypeInfo.valuesElementType,
+        )
+        : {}),
     };
   }
 
@@ -40221,6 +40418,9 @@ function lowerCompilerOwnedMapSize(
     kind: 'get_map_size',
     objectName,
     resultName,
+    ...(context.functionRuntime.compilerOwnedMapStorageLocals.has(objectName)
+      ? { storage: true }
+      : {}),
   });
   return {
     kind: 'local_get',
@@ -62158,7 +62358,7 @@ function lowerInitialStringKeyMapCallExpression(
   const mapTypeInfo = getSupportedStringKeyMapTypeInfo(
     context.checker,
     context.checker.getTypeAtLocation(receiver),
-  );
+  ) ?? getCompilerOwnedStringKeyMapTypeInfoFromExpression(receiver, context);
   if (!mapTypeInfo) {
     return undefined;
   }
@@ -66811,7 +67011,8 @@ function lowerPropertyAccessExpression(
       expression,
     );
   }
-  const stringKeyMapTypeInfo = getSupportedStringKeyMapTypeInfo(context.checker, receiverType);
+  const stringKeyMapTypeInfo = getSupportedStringKeyMapTypeInfo(context.checker, receiverType) ??
+    getCompilerOwnedStringKeyMapTypeInfoFromExpression(expression.expression, context);
   if (expression.name.text === 'size' && stringKeyMapTypeInfo !== undefined) {
     const compilerOwnedMapReceiver = ts.isIdentifier(expression.expression) &&
       lookupSymbol(context, expression.expression.text)?.compilerOwnedMap === true;
@@ -68842,6 +69043,10 @@ function lowerVariableStatement(
     const compilerOwnedMapStorageAlias = compilerOwnedMapAlias &&
       loweredInitializer?.kind === 'local_get' &&
       context.functionRuntime.compilerOwnedMapStorageLocals.has(loweredInitializer.name);
+    const compilerOwnedStringKeyMapValueType = compilerOwnedMapAlias &&
+        declaration.initializer && ts.isIdentifier(declaration.initializer)
+      ? lookupSymbol(context, declaration.initializer.text)?.compilerOwnedStringKeyMapValueType
+      : undefined;
     const compilerOwnedSetAlias = !capturedByClosure &&
       type === 'heap_ref' &&
       loweredInitializer?.kind === 'local_get' &&
@@ -68893,6 +69098,7 @@ function lowerVariableStatement(
         hostAliasValue === undefined,
       compilerOwnedMap: compilerOwnedMapAlias,
       compilerOwnedMapStorage: compilerOwnedMapStorageAlias,
+      compilerOwnedStringKeyMapValueType,
       compilerOwnedSet: compilerOwnedSetAlias,
     });
     const hostTaggedObjectPropertyAccessInfo = declaration.initializer
@@ -69843,6 +70049,9 @@ function lowerForOfLoopBody(
   heapElementRepresentation: CompilerRuntimeRepresentationRefIR<'object'> | undefined,
   taggedPrimitiveKinds: CompilerTaggedPrimitiveBoundaryKindsIR | undefined,
   arrayBindingElementInfos: readonly OwnedArrayBindingElementInfo[] | undefined,
+  compilerOwnedMapElement: boolean | undefined,
+  compilerOwnedMapStorageElement: boolean | undefined,
+  compilerOwnedStringKeyMapValueType: ts.Type | undefined,
   compilerOwnedSetElementTypeInfo: SupportedStringKeySetTypeInfo | undefined,
   bodyStatements: readonly ts.Statement[],
   capturedLoopBinding: boolean,
@@ -69850,6 +70059,10 @@ function lowerForOfLoopBody(
 ): CompilerStatementIR[] {
   let body: CompilerStatementIR[];
   if (ts.isIdentifier(loopDeclaration.name)) {
+    const compilerOwnedMapBinding = !capturedLoopBinding && elementType === 'heap_ref' &&
+      compilerOwnedMapElement === true;
+    const compilerOwnedMapStorageBinding = compilerOwnedMapBinding &&
+      compilerOwnedMapStorageElement === true;
     const compilerOwnedSetTypeInfo = !capturedLoopBinding && elementType === 'heap_ref'
       ? compilerOwnedSetElementTypeInfo ?? getSupportedStringKeySetTypeInfo(
         context.checker,
@@ -69857,6 +70070,12 @@ function lowerForOfLoopBody(
       )
       : undefined;
     const compilerOwnedSetBinding = compilerOwnedSetTypeInfo !== undefined;
+    if (compilerOwnedMapBinding) {
+      context.functionRuntime.compilerOwnedMapLocals.add(elementName);
+    }
+    if (compilerOwnedMapStorageBinding) {
+      context.functionRuntime.compilerOwnedMapStorageLocals.add(elementName);
+    }
     if (compilerOwnedSetBinding) {
       context.functionRuntime.compilerOwnedSetLocals.add(elementName);
     }
@@ -69902,6 +70121,11 @@ function lowerForOfLoopBody(
             type: elementType,
             heapRepresentation: elementType === 'heap_ref' ? heapElementRepresentation : undefined,
             taggedPrimitiveKinds,
+            compilerOwnedMap: compilerOwnedMapBinding,
+            compilerOwnedMapStorage: compilerOwnedMapStorageBinding,
+            compilerOwnedStringKeyMapValueType: compilerOwnedMapBinding
+              ? compilerOwnedStringKeyMapValueType
+              : undefined,
             compilerOwnedSet: compilerOwnedSetBinding,
             compilerOwnedSetValuesArrayType: compilerOwnedSetTypeInfo?.valuesArrayType,
             compilerOwnedSetValuesElementType: compilerOwnedSetTypeInfo?.valuesElementType,
@@ -69974,7 +70198,9 @@ function resolveCollectionIteratorForOfLoopValueInfo(
   iteratorTypeInfo: SupportedCollectionIteratorTypeInfo,
   context: FunctionLoweringContext,
 ): ResolvedClosureAbiValueIR {
-  if (ts.isArrayBindingPattern(loopDeclaration.name)) {
+  if (
+    ts.isArrayBindingPattern(loopDeclaration.name) || iteratorTypeInfo.elementType !== 'tagged_ref'
+  ) {
     return { type: iteratorTypeInfo.elementType };
   }
   return resolveClosureAbiValueType(
@@ -70003,6 +70229,9 @@ function lowerForOfStatement(
   let elementType: OwnedCallbackElementType | undefined;
   let heapElementRepresentation: CompilerRuntimeRepresentationRefIR<'object'> | undefined;
   let arrayBindingElementInfos: readonly OwnedArrayBindingElementInfo[] | undefined;
+  let compilerOwnedMapElement: boolean | undefined;
+  let compilerOwnedMapStorageElement: boolean | undefined;
+  let compilerOwnedStringKeyMapValueType: ts.Type | undefined;
   let compilerOwnedSetElementTypeInfo: SupportedStringKeySetTypeInfo | undefined;
 
   const collectionIterable = tryLowerCollectionForOfIterableExpression(
@@ -70015,6 +70244,9 @@ function lowerForOfStatement(
     elementType = collectionIterable.elementType;
     heapElementRepresentation = collectionIterable.heapElementRepresentation;
     arrayBindingElementInfos = collectionIterable.elementInfos;
+    compilerOwnedMapElement = collectionIterable.compilerOwnedMapElement;
+    compilerOwnedMapStorageElement = collectionIterable.compilerOwnedMapStorageElement;
+    compilerOwnedStringKeyMapValueType = collectionIterable.compilerOwnedStringKeyMapValueType;
     compilerOwnedSetElementTypeInfo = collectionIterable.compilerOwnedSetElementTypeInfo;
   }
 
@@ -70228,6 +70460,9 @@ function lowerForOfStatement(
       yieldedValueInfo.type,
       yieldedValueInfo.type === 'heap_ref' ? yieldedValueInfo.heapRepresentation : undefined,
       yieldedValueInfo.taggedPrimitiveKinds,
+      undefined,
+      undefined,
+      undefined,
       undefined,
       undefined,
       bodyStatements,
@@ -70452,7 +70687,10 @@ function lowerForOfStatement(
         loopValueInfo.type === 'heap_ref' ? loopValueInfo.heapRepresentation : undefined,
         loopValueInfo.taggedPrimitiveKinds,
         collectionIteratorTypeInfo.elementInfos,
-        undefined,
+        collectionIteratorTypeInfo.compilerOwnedMapElement,
+        collectionIteratorTypeInfo.compilerOwnedMapStorageElement,
+        collectionIteratorTypeInfo.compilerOwnedStringKeyMapValueType,
+        collectionIteratorTypeInfo.compilerOwnedSetElementTypeInfo,
         bodyStatements,
         capturedLoopBinding,
         loopContext,
@@ -70620,6 +70858,9 @@ function lowerForOfStatement(
     heapElementRepresentation,
     undefined,
     arrayBindingElementInfos,
+    compilerOwnedMapElement,
+    compilerOwnedMapStorageElement,
+    compilerOwnedStringKeyMapValueType,
     compilerOwnedSetElementTypeInfo,
     bodyStatements,
     capturedLoopBinding,

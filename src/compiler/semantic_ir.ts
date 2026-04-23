@@ -2986,7 +2986,7 @@ function semanticMapSizeFromRuntimeOperation(
     kind: 'map_size',
     targetName: operation.resultName,
     objectName: operation.objectName,
-    storage: storageBackedMaps.has(operation.objectName),
+    storage: operation.storage === true || storageBackedMaps.has(operation.objectName),
   };
 }
 

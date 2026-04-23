@@ -2880,6 +2880,25 @@ Deno.test('compiler wasm-gc emitter produces runnable explicit Map iteration wit
               score = score + value.length;
             }
           }
+          for (const [key, values] of map.entries()) {
+            score = score + key.length + values.size;
+            if (values.has("bbb")) {
+              score = score + 5;
+            }
+            if (values.has("c")) {
+              score = score + 7;
+            }
+            for (const value of values) {
+              score = score + value.length;
+            }
+          }
+          const iterator = map.values();
+          for (const values of iterator) {
+            score = score + values.size;
+            if (values.has("aa")) {
+              score = score + 11;
+            }
+          }
           return score;
         }
       `,
@@ -2893,7 +2912,7 @@ Deno.test('compiler wasm-gc emitter produces runnable explicit Map iteration wit
 
   assertEquals(
     snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
-    ['array', 'finite_union', 'map', 'set', 'string'],
+    ['array', 'dynamic_object', 'finite_union', 'map', 'set', 'specialized_object', 'string'],
   );
   assertEquals(mainPlan?.bodyStatus, 'emittable');
   assertEquals(JSON.stringify(mainPlan?.body).includes('"kind":"map_values"'), true);
@@ -2915,7 +2934,86 @@ Deno.test('compiler wasm-gc emitter produces runnable explicit Map iteration wit
   const instance = await WebAssembly.instantiate(wasm);
   const main = instance.instance.exports['main.ts:main'];
   assertEquals(typeof main, 'function');
-  assertEquals((main as () => number)(), 13);
+  assertEquals((main as () => number)(), 57);
+});
+
+Deno.test('compiler wasm-gc emitter produces runnable explicit Map iteration with nested Map payloads', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: { strict: true },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        export function main(): number {
+          const left = new Map<string, number>();
+          left.set("aa", 2);
+          left.set("bbb", 3);
+          const right = new Map<string, number>();
+          right.set("c", 4);
+
+          const outer = new Map<string, Map<string, number>>();
+          outer.set("left", left);
+          outer.set("right", right);
+
+          let score = outer.size;
+          for (const inner of outer.values()) {
+            score = score + inner.size;
+            if (inner.has("aa")) {
+              score = score + 2;
+            }
+            if (inner.has("c")) {
+              score = score + 4;
+            }
+            for (const [key, value] of inner.entries()) {
+              score = score + key.length + value;
+            }
+          }
+          for (const [group, inner] of outer.entries()) {
+            score = score + group.length + inner.size;
+            if (inner.has("bbb")) {
+              score = score + 3;
+            }
+          }
+          return score;
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
+  const mainPlan = snapshot.wasmGcPlan.functionPlans.find((func) => func.name === 'main');
+  const watPath = join(tempDirectory, 'wasm-gc-shadow-explicit-map-nested-map-payloads.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-shadow-explicit-map-nested-map-payloads.wasm');
+
+  assertEquals(
+    snapshot.runtimeManifest.familyRequirements.map((requirement) => requirement.family),
+    ['array', 'finite_union', 'map', 'string'],
+  );
+  assertEquals(mainPlan?.bodyStatus, 'emittable');
+  assertEquals(JSON.stringify(mainPlan?.body).includes('"kind":"map_values"'), true);
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
+  const wat = await Deno.readTextFile(watPath);
+  assertEquals(wat.includes('$map_storage_runtime'), true);
+  assertEquals(wat.includes('map_string_map'), false);
+  const result = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(result.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(result.success, true);
+
+  const wasm = await Deno.readFile(wasmPath);
+  const instance = await WebAssembly.instantiate(wasm);
+  const main = instance.instance.exports['main.ts:main'];
+  assertEquals(typeof main, 'function');
+  assertEquals((main as () => number)(), 41);
 });
 
 Deno.test('compiler wasm-gc emitter produces runnable explicit Map keys iteration after delete and clear', async () => {

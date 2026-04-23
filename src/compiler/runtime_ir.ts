@@ -582,6 +582,7 @@ export interface CompilerRuntimeGetMapSizeIR {
   kind: 'get_map_size';
   objectName: string;
   resultName: string;
+  storage?: boolean;
 }
 
 export interface CompilerRuntimeSetMapEntryIR {
