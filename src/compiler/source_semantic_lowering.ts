@@ -19,6 +19,7 @@ import type { SharedSemanticFactsIR } from '../semantic/shared_semantic_facts.ts
 
 interface FunctionLoweringContext {
   localRepresentations: Map<string, CompilerValueType>;
+  locals: { name: string; representation: CompilerValueType }[];
   stringLiteralIds: Map<string, number>;
   stringLiterals: string[];
   unsupportedKinds: Set<string>;
@@ -181,6 +182,37 @@ function lowerStatement(
   context: FunctionLoweringContext,
 ): readonly SemanticStatementIR[] {
   switch (statement.kind) {
+    case 'variable_declaration': {
+      return statement.declarations.flatMap((declaration): SemanticStatementIR[] => {
+        if (declaration.binding.kind !== 'identifier_binding' || !declaration.initializer) {
+          context.unsupportedKinds.add('variable_declaration');
+          return [{ kind: 'unsupported_statement', sourceKind: 'variable_declaration' }];
+        }
+        const value = lowerExpression(declaration.initializer, context);
+        context.localRepresentations.set(declaration.binding.name, value.representation);
+        context.locals.push({
+          name: declaration.binding.name,
+          representation: value.representation,
+        });
+        return [{ kind: 'local_set', name: declaration.binding.name, value }];
+      });
+    }
+    case 'expression_statement': {
+      if (
+        statement.expression.kind === 'assignment_expression' &&
+        statement.expression.operator === '=' &&
+        statement.expression.left.kind === 'identifier'
+      ) {
+        const value = lowerExpression(statement.expression.right, context);
+        const target = statement.expression.left.name;
+        if (!context.localRepresentations.has(target)) {
+          context.unsupportedKinds.add(`unbound_assignment:${target}`);
+          return [{ kind: 'unsupported_statement', sourceKind: 'assignment_expression' }];
+        }
+        return [{ kind: 'local_set', name: target, value }];
+      }
+      return [{ kind: 'expression', value: lowerExpression(statement.expression, context) }];
+    }
     case 'return':
       return [{
         kind: 'return',
@@ -188,6 +220,29 @@ function lowerStatement(
           ? lowerExpression(statement.expression, context)
           : { kind: 'undefined_literal', representation: 'tagged_ref' },
       }];
+    case 'if': {
+      const condition = lowerExpression(statement.test, context);
+      if (condition.representation !== 'i32') {
+        context.unsupportedKinds.add('if_condition');
+      }
+      return [{
+        kind: 'if',
+        condition,
+        thenBody: statement.consequent.flatMap((child) => [...lowerStatement(child, context)]),
+        elseBody: statement.alternate.flatMap((child) => [...lowerStatement(child, context)]),
+      }];
+    }
+    case 'while': {
+      const condition = lowerExpression(statement.test, context);
+      if (condition.representation !== 'i32') {
+        context.unsupportedKinds.add('while_condition');
+      }
+      return [{
+        kind: 'while',
+        condition,
+        body: statement.body.flatMap((child) => [...lowerStatement(child, context)]),
+      }];
+    }
     default:
       context.unsupportedKinds.add(statement.kind);
       return [{ kind: 'unsupported_statement', sourceKind: statement.kind }];
@@ -235,6 +290,7 @@ function lowerFunction(
   const unsupportedKinds = new Set<string>();
   const context: FunctionLoweringContext = {
     localRepresentations,
+    locals: [],
     stringLiteralIds,
     stringLiterals,
     unsupportedKinds,
@@ -258,7 +314,7 @@ function lowerFunction(
     name: func.name,
     exportName: boundary ? `${boundary.path}:${boundary.name}` : func.name,
     params,
-    locals: [],
+    locals: context.locals,
     result,
     body,
     bodyStatus: unsupportedBodyKinds.length === 0 ? 'emittable' : 'stub',

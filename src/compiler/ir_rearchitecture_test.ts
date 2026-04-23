@@ -991,6 +991,48 @@ Deno.test('compiler SourceHIR semantic lowering captures primitive function bodi
   assertEquals(addPlan?.unsupportedBodyKinds, []);
 });
 
+Deno.test('compiler SourceHIR semantic lowering preserves primitive structured control flow', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: { strict: true },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        export function sumDown(limit: number): number {
+          let total = 0;
+          let current = limit;
+          while (current > 0) {
+            if (current > 1) {
+              total = total + current;
+            }
+            current = current - 1;
+          }
+          return total;
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
+  const semantic = createSemanticModuleFromSourceHIR(snapshot.source, snapshot.sharedFacts);
+  const manifest = createRuntimeManifestFromSemanticModule(semantic);
+  const plan = createWasmGcModulePlan(semantic, manifest);
+  const sumDown = semantic.functions.find((func) => func.name === 'sumDown');
+  const sumDownPlan = plan.functionPlans.find((func) => func.name === 'sumDown');
+
+  assertEquals(sumDown?.locals.map((local) => local.name), ['total', 'current']);
+  assertEquals(sumDown?.bodyStatus, 'emittable');
+  assertEquals(sumDown?.unsupportedBodyKinds, []);
+  assertEquals(sumDownPlan?.bodyStatus, 'emittable');
+  assertEquals(sumDownPlan?.unsupportedBodyKinds, []);
+  assertEquals(sumDown?.body.some((statement) => statement.kind === 'while'), true);
+});
+
 Deno.test('compiler wasm-gc backend plan explains boundary helper emission from manifest', async () => {
   const tempDirectory = await createTempProject([
     {
