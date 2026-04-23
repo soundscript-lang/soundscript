@@ -6371,6 +6371,13 @@ function collectCompilerOwnedStringKeyMapLocalSymbolInfo(
           storageBacked.add(symbol);
           return;
         }
+        if (
+          ts.isReturnStatement(node.parent) &&
+          node.parent.expression === node
+        ) {
+          storageBacked.add(symbol);
+          return;
+        }
         if (isAllowedCollectionPayloadUse(node)) {
           return;
         }
@@ -17713,6 +17720,24 @@ function recordCompilerOwnedCollectionLocalFromExpression(
   if (getSupportedStringKeySetTypeInfo(context.checker, expressionType)) {
     context.functionRuntime.compilerOwnedSetLocals.add(localName);
   }
+}
+
+function isTaggedHeapLocalExpression(
+  expression: ts.Expression,
+  context: FunctionLoweringContext,
+): boolean {
+  if (ts.isParenthesizedExpression(expression)) {
+    return isTaggedHeapLocalExpression(expression.expression, context);
+  }
+  if (ts.isAsExpression(expression)) {
+    return isTaggedHeapLocalExpression(expression.expression, context);
+  }
+  if (!ts.isIdentifier(expression)) {
+    return false;
+  }
+  const bound = lookupSymbol(context, expression.text);
+  return bound?.type === 'tagged_ref' ||
+    (bound?.type === 'box_ref' && bound.boxedValueType === 'tagged_ref');
 }
 
 function propagateCompilerOwnedCollectionLocalAlias(
@@ -62471,6 +62496,10 @@ function lowerInitialStringKeyMapCallExpression(
     objectName = materialized.name;
     representation = materialized.representation;
   }
+  if (isTaggedHeapLocalExpression(receiver, context)) {
+    context.functionRuntime.compilerOwnedMapLocals.add(objectName);
+    context.functionRuntime.compilerOwnedMapStorageLocals.add(objectName);
+  }
   const compilerOwnedMapReceiver = (ts.isIdentifier(receiver) &&
     lookupSymbol(context, receiver.text)?.compilerOwnedMap === true) ||
     context.functionRuntime.compilerOwnedMapLocals.has(objectName);
@@ -63791,6 +63820,9 @@ function lowerInitialStringKeySetCallExpression(
     const materialized = materializeHeapExpressionToLocal(receiver, context, 'set_object');
     objectName = materialized.name;
     representation = materialized.representation;
+  }
+  if (isTaggedHeapLocalExpression(receiver, context)) {
+    context.functionRuntime.compilerOwnedSetLocals.add(objectName);
   }
   const compilerOwnedSetReceiver = (ts.isIdentifier(receiver) &&
     lookupSymbol(context, receiver.text)?.compilerOwnedSet === true) ||

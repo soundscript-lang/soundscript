@@ -667,6 +667,8 @@ function isWasmGcPublicUnionArmSupported(
 ): boolean {
   return isWasmGcPublicTaggedScalarBoundary(boundary) ||
     (boundary.kind === 'array' && isWasmGcPublicBoundarySupported(boundary, plan)) ||
+    (boundary.kind === 'map' && isWasmGcPublicBoundarySupported(boundary, plan)) ||
+    (boundary.kind === 'set' && isWasmGcPublicBoundarySupported(boundary, plan)) ||
     (boundary.kind === 'object' &&
       valueBoundarySupportsWasmGcSpecializedObjectWrapper(boundary) &&
       wasmGcPlanHasSpecializedObjectBoundary(plan, boundary));

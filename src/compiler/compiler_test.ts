@@ -5808,6 +5808,126 @@ compilerIntegrationTest(
 );
 
 compilerIntegrationTest(
+  'compileProject adapts wasm-node collection union arms through the WasmGC public wrapper',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+            },
+            include: ['src/**/*.ts'],
+            soundscript: {
+              target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/index.ts',
+        contents: [
+          'type MapResult = Map<string, number> | null;',
+          'type SetResult = Set<number> | null;',
+          '',
+          'export function chooseMap(flag: boolean): MapResult {',
+          '  if (flag) {',
+          '    const map = new Map<string, number>();',
+          '    map.set("left", 2);',
+          '    map.set("right", 7);',
+          '    return map;',
+          '  }',
+          '  return null;',
+          '}',
+          '',
+          'export function scoreMap(value: MapResult): number {',
+          '  if (value === null) {',
+          '    return 0;',
+          '  }',
+          '  return (value.get("left") ?? 0) + (value.get("right") ?? 0);',
+          '}',
+          '',
+          'export function chooseSet(flag: boolean): SetResult {',
+          '  if (flag) {',
+          '    const set = new Set<number>();',
+          '    set.add(3);',
+          '    set.add(5);',
+          '    return set;',
+          '  }',
+          '  return null;',
+          '}',
+          '',
+          'export function scoreSet(value: SetResult): number {',
+          '  if (value === null) {',
+          '    return 0;',
+          '  }',
+          '  return (value.has(3) ? 10 : 0) + (value.has(5) ? 1 : 0);',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts?.wrapperPath);
+
+    const wrapperSource = await Deno.readTextFile(result.artifacts.wrapperPath);
+    assertStringIncludes(wrapperSource, 'createSoundscriptWasmGcHostImports');
+    assertStringIncludes(wrapperSource, 'createSoundscriptWasmGcExports');
+    assertStringIncludes(wrapperSource, 'mapToInternal');
+    assertStringIncludes(wrapperSource, 'mapFromInternal');
+    assertStringIncludes(wrapperSource, 'setToInternal');
+    assertStringIncludes(wrapperSource, 'setFromInternal');
+
+    const instance = await instantiateCompiledModuleInJs(tempDirectory);
+    const chooseMapName = await resolveQualifiedExportName(tempDirectory, 'chooseMap');
+    const chooseMap = instance.exports[chooseMapName];
+    if (typeof chooseMap !== 'function') {
+      throw new Error(`Expected exported function "${chooseMapName}".`);
+    }
+    assertEquals([...chooseMap(true).entries()], [['left', 2], ['right', 7]]);
+    assertEquals(chooseMap(false), null);
+
+    const scoreMapName = await resolveQualifiedExportName(tempDirectory, 'scoreMap');
+    const scoreMap = instance.exports[scoreMapName];
+    if (typeof scoreMap !== 'function') {
+      throw new Error(`Expected exported function "${scoreMapName}".`);
+    }
+    assertEquals(scoreMap(new Map([['left', 4], ['right', 6]])), 10);
+    assertEquals(scoreMap(null), 0);
+
+    const chooseSetName = await resolveQualifiedExportName(tempDirectory, 'chooseSet');
+    const chooseSet = instance.exports[chooseSetName];
+    if (typeof chooseSet !== 'function') {
+      throw new Error(`Expected exported function "${chooseSetName}".`);
+    }
+    assertEquals([...chooseSet(true).values()], [3, 5]);
+    assertEquals(chooseSet(false), null);
+
+    const scoreSetName = await resolveQualifiedExportName(tempDirectory, 'scoreSet');
+    const scoreSet = instance.exports[scoreSetName];
+    if (typeof scoreSet !== 'function') {
+      throw new Error(`Expected exported function "${scoreSetName}".`);
+    }
+    assertEquals(scoreSet(new Set([3, 5])), 11);
+    assertEquals(scoreSet(null), 0);
+  },
+);
+
+compilerIntegrationTest(
   'compileProject rethrows uncaught soundscript builtin Error throws through wasm-node wrappers',
   async () => {
     const tempDirectory = await createTempProject([

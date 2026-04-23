@@ -785,6 +785,31 @@ function boundaryUsesFiniteUnion(boundary: ValueBoundaryIR): boolean {
   }
 }
 
+function boundaryUsesUnionArmKind(
+  boundary: ValueBoundaryIR,
+  kind: ValueBoundaryIR['kind'],
+): boolean {
+  let found = false;
+  visitValueBoundary(boundary, (candidate) => {
+    if (candidate.kind === 'union' && candidate.arms.some((arm) => arm.kind === kind)) {
+      found = true;
+    }
+  });
+  return found;
+}
+
+function wrapperUsesUnionArmKind(
+  wrapper: {
+    paramBoundaries?: readonly ValueBoundaryIR[];
+    resultBoundary?: ValueBoundaryIR;
+  },
+  kind: ValueBoundaryIR['kind'],
+): boolean {
+  return wrapperValueBoundaries(wrapper).some((boundary) =>
+    boundaryUsesUnionArmKind(boundary, kind)
+  );
+}
+
 function boundaryUsesValueAdapter(boundary: ValueBoundaryIR): boolean {
   switch (boundary.kind) {
     case 'string':
@@ -1164,6 +1189,15 @@ function renderHostImportBoundaryAdapterHelpers(plan: WasmGcModulePlanIR): strin
   const needsMapFromInternalAdapters = hostImportSurfaceNeedsMapFromInternalAdapters(plan);
   const needsSetToInternalAdapters = hostImportSurfaceNeedsSetToInternalAdapters(plan);
   const needsSetFromInternalAdapters = hostImportSurfaceNeedsSetFromInternalAdapters(plan);
+  const usesArrayUnionArms = plan.wrapperPlan.hostImportWrappers.some((wrapper) =>
+    wrapperUsesUnionArmKind(wrapper, 'array')
+  );
+  const usesMapUnionArms = plan.wrapperPlan.hostImportWrappers.some((wrapper) =>
+    wrapperUsesUnionArmKind(wrapper, 'map')
+  );
+  const usesSetUnionArms = plan.wrapperPlan.hostImportWrappers.some((wrapper) =>
+    wrapperUsesUnionArmKind(wrapper, 'set')
+  );
   const usesBoundaryValueAdapters = plan.wrapperPlan.hostImportWrappers.some(
     wrapperUsesBoundaryValueAdapters,
   ) ||
@@ -1502,9 +1536,27 @@ function syncBoundaryObjectsToInternal(state) {
     return isSupportedBoundaryObjectValue(value) &&
       (arm.fields ?? []).every((field) => Object.prototype.hasOwnProperty.call(value, field.name));
   }
-  if (arm.kind === 'array') {
+${
+      usesArrayUnionArms
+        ? `  if (arm.kind === 'array') {
     return Array.isArray(value);
-  }
+  }`
+        : ''
+    }
+${
+      usesMapUnionArms
+        ? `  if (arm.kind === 'map') {
+    return value instanceof Map;
+  }`
+        : ''
+    }
+${
+      usesSetUnionArms
+        ? `  if (arm.kind === 'set') {
+    return value instanceof Set;
+  }`
+        : ''
+    }
   return false;
 }
 
@@ -1522,8 +1574,26 @@ function unionBoundaryValueToInternal(boundary, value, state) {
       const helper = objectBoundaryHelper(arm);
       return tagHostHeapObject(objectToInternal(arm, value, state), helper.layoutId);
     }
-    if (arm.kind === 'array') {
+${
+      usesArrayUnionArms
+        ? `    if (arm.kind === 'array') {
       return tagHostHeapObject(arrayToInternal(arm, value, state), 0);
+    }`
+        : ''
+    }
+${
+      usesMapUnionArms
+        ? `    if (arm.kind === 'map') {
+      return tagHostHeapObject(mapToInternal(collectionBoundaryAdapter(arm), value, state), 0);
+    }`
+        : ''
+    }
+${
+      usesSetUnionArms
+        ? `    if (arm.kind === 'set') {
+      return tagHostHeapObject(setToInternal(collectionBoundaryAdapter(arm), value, state), 0);
+    }`
+        : ''
     }
   }
   throw new TypeError('Soundscript WasmGC union boundary value did not match any supported arm.');
@@ -1557,10 +1627,30 @@ function unionBoundaryValueFromInternal(boundary, value, state) {
       return objectFromInternal(arm, heapValue, state);
     }
   }
-  const arrayArms = (boundary.arms ?? []).filter((arm) => arm.kind === 'array');
+${
+      usesArrayUnionArms
+        ? `  const arrayArms = (boundary.arms ?? []).filter((arm) => arm.kind === 'array');
   if (arrayArms.length === 1) {
     return arrayFromInternal(arrayArms[0], heapValue, state);
-  }
+  }`
+        : ''
+    }
+${
+      usesMapUnionArms
+        ? `  const mapArms = (boundary.arms ?? []).filter((arm) => arm.kind === 'map');
+  if (mapArms.length === 1) {
+    return mapFromInternal(collectionBoundaryAdapter(mapArms[0]), heapValue, state);
+  }`
+        : ''
+    }
+${
+      usesSetUnionArms
+        ? `  const setArms = (boundary.arms ?? []).filter((arm) => arm.kind === 'set');
+  if (setArms.length === 1) {
+    return setFromInternal(collectionBoundaryAdapter(setArms[0]), heapValue, state);
+  }`
+        : ''
+    }
   throw new TypeError('Soundscript WasmGC union boundary heap value did not match any supported object arm.');
 }
 
@@ -1840,6 +1930,15 @@ function renderExportBoundaryAdapterHelpers(plan: WasmGcModulePlanIR): string {
   const needsMapFromInternalAdapters = exportSurfaceNeedsMapFromInternalAdapters(plan);
   const needsSetToInternalAdapters = exportSurfaceNeedsSetToInternalAdapters(plan);
   const needsSetFromInternalAdapters = exportSurfaceNeedsSetFromInternalAdapters(plan);
+  const usesArrayUnionArms = plan.wrapperPlan.exportWrappers.some((wrapper) =>
+    wrapperUsesUnionArmKind(wrapper, 'array')
+  );
+  const usesMapUnionArms = plan.wrapperPlan.exportWrappers.some((wrapper) =>
+    wrapperUsesUnionArmKind(wrapper, 'map')
+  );
+  const usesSetUnionArms = plan.wrapperPlan.exportWrappers.some((wrapper) =>
+    wrapperUsesUnionArmKind(wrapper, 'set')
+  );
   const usesBoundaryValueAdapters = plan.wrapperPlan.exportWrappers.some(
     wrapperUsesBoundaryValueAdapters,
   ) ||
@@ -2164,8 +2263,26 @@ function renderExportBoundaryAdapterHelpers(plan: WasmGcModulePlanIR): string {
       return isSupportedBoundaryObjectValue(value) &&
         (arm.fields ?? []).every((field) => Object.prototype.hasOwnProperty.call(value, field.name));
     }
-    if (arm.kind === 'array') {
+${
+      usesArrayUnionArms
+        ? `    if (arm.kind === 'array') {
       return Array.isArray(value);
+    }`
+        : ''
+    }
+${
+      usesMapUnionArms
+        ? `    if (arm.kind === 'map') {
+      return value instanceof Map;
+    }`
+        : ''
+    }
+${
+      usesSetUnionArms
+        ? `    if (arm.kind === 'set') {
+      return value instanceof Set;
+    }`
+        : ''
     }
     return false;
   }
@@ -2184,9 +2301,27 @@ function renderExportBoundaryAdapterHelpers(plan: WasmGcModulePlanIR): string {
         const helper = objectBoundaryHelper(arm);
         return tagHostHeapObject(objectToInternal(arm, value, state), helper.layoutId);
       }
-      if (arm.kind === 'array') {
+${
+      usesArrayUnionArms
+        ? `      if (arm.kind === 'array') {
         return tagHostHeapObject(arrayToInternal(arm, value, state), 0);
-      }
+      }`
+        : ''
+    }
+${
+      usesMapUnionArms
+        ? `      if (arm.kind === 'map') {
+        return tagHostHeapObject(mapToInternal(collectionBoundaryAdapter(arm), value, state), 0);
+      }`
+        : ''
+    }
+${
+      usesSetUnionArms
+        ? `      if (arm.kind === 'set') {
+        return tagHostHeapObject(setToInternal(collectionBoundaryAdapter(arm), value, state), 0);
+      }`
+        : ''
+    }
     }
     throw new TypeError('Soundscript WasmGC union boundary value did not match any supported arm.');
   }
@@ -2217,9 +2352,29 @@ function renderExportBoundaryAdapterHelpers(plan: WasmGcModulePlanIR): string {
         return objectFromInternal(arm, heapValue, state);
       }
     }
-    const arrayArms = (boundary.arms ?? []).filter((arm) => arm.kind === 'array');
+${
+      usesArrayUnionArms
+        ? `    const arrayArms = (boundary.arms ?? []).filter((arm) => arm.kind === 'array');
     if (arrayArms.length === 1) {
       return arrayFromInternal(arrayArms[0], heapValue, state);
+    }`
+        : ''
+    }
+${
+      usesMapUnionArms
+        ? `    const mapArms = (boundary.arms ?? []).filter((arm) => arm.kind === 'map');
+    if (mapArms.length === 1) {
+      return mapFromInternal(collectionBoundaryAdapter(mapArms[0]), heapValue, state);
+    }`
+        : ''
+    }
+${
+      usesSetUnionArms
+        ? `    const setArms = (boundary.arms ?? []).filter((arm) => arm.kind === 'set');
+    if (setArms.length === 1) {
+      return setFromInternal(collectionBoundaryAdapter(setArms[0]), heapValue, state);
+    }`
+        : ''
     }
     throw new TypeError('Soundscript WasmGC union boundary heap value did not match any supported object arm.');
   }
