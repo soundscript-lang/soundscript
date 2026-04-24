@@ -521,6 +521,21 @@ function lowerUpdateExpression(
   };
 }
 
+function compoundAssignmentBinaryOperator(operator: string): string | undefined {
+  switch (operator) {
+    case '+=':
+      return '+';
+    case '-=':
+      return '-';
+    case '*=':
+      return '*';
+    case '/=':
+      return '/';
+    default:
+      return undefined;
+  }
+}
+
 function lowerExpression(
   expression: SourceExpressionIR,
   context: FunctionLoweringContext,
@@ -895,18 +910,41 @@ function lowerStatement(
     case 'expression_statement': {
       if (
         statement.expression.kind === 'assignment_expression' &&
-        statement.expression.operator === '='
+        (statement.expression.operator === '=' ||
+          compoundAssignmentBinaryOperator(statement.expression.operator) !== undefined)
       ) {
         const assignment = statement.expression;
         if (assignment.left.kind === 'identifier') {
-          const value = lowerExpression(assignment.right, context);
           const target = assignment.left.name;
-          if (!context.localRepresentations.has(target)) {
+          const targetRepresentation = context.localRepresentations.get(target);
+          if (!targetRepresentation) {
             context.unsupportedKinds.add(`unbound_assignment:${target}`);
             return [{ kind: 'unsupported_statement', sourceKind: 'assignment_expression' }];
           }
+          const right = lowerExpression(assignment.right, context);
+          const compoundOperator = compoundAssignmentBinaryOperator(assignment.operator);
+          let value = right;
+          if (compoundOperator) {
+            const left: SemanticExpressionIR = {
+              kind: 'local_get',
+              name: target,
+              representation: targetRepresentation,
+            };
+            const binary = binaryOperatorForSource(compoundOperator, left, right);
+            if (!binary || binary.representation !== targetRepresentation) {
+              context.unsupportedKinds.add(`compound_assignment:${assignment.operator}`);
+              return [{ kind: 'unsupported_statement', sourceKind: 'assignment_expression' }];
+            }
+            value = {
+              kind: 'binary',
+              op: binary.op,
+              left,
+              right,
+              representation: binary.representation,
+            };
+          }
           const statements = takePendingStatements(context);
-          const arrayLocal = arrayLocalInfoForInitializer(
+          const arrayLocal = compoundOperator ? undefined : arrayLocalInfoForInitializer(
             assignment.right,
             value,
             context,
