@@ -7233,6 +7233,12 @@ function moduleUsesClosureObjects(plan: WasmGcModulePlanIR): boolean {
       ) {
         usesClosureObject = true;
       } else if (
+        statement.kind === 'local_set' &&
+        statement.value.representation === 'closure_ref' &&
+        statement.value.kind === 'global_get'
+      ) {
+        usesClosureObject = true;
+      } else if (
         statement.kind === 'dynamic_object_property_set' &&
         statement.valueType === 'closure_ref'
       ) {

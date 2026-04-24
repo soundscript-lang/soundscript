@@ -25,8 +25,10 @@ Important current facts in the repo:
 - the repo now has explicit `SourceHIR`, compiler `SemanticIR`, `RuntimeManifestIR`, WasmGC backend
   plan/emission modules, and a separate shared semantic-facts extraction layer for checker-safe
   type-shape and boundary facts
-- the public `compileProject` Wasm path still routes through the older `lower.ts -> wat_emitter.ts`
-  pipeline, so the main compiler task is still full cutover rather than incremental feature growth
+- the public `compileProject` Wasm path now builds SourceHIR, shared semantic facts, source-owned
+  SemanticIR, RuntimeManifestIR, and a WasmGC plan before choosing a backend; pure core modules
+  without host imports can select the SourceHIR WasmGC plan first, while legacy lowering remains the
+  fallback for uncut families
 - frame-backed async, sync generators, async generators, `yield*`, and `for await...of` now exist in
   the compiler-owned runtime family
 - host Promise and generator bridges exist for JS-backed Wasm targets

@@ -1,0 +1,154 @@
+export type WasmGcCutoverStatus =
+  | 'legacy-only'
+  | 'ir-shadowed'
+  | 'wasm-gc-emittable'
+  | 'explicit-diagnostic-needed';
+
+export type WasmGcCoreGateFamily =
+  | 'primitives'
+  | 'control_flow'
+  | 'locals'
+  | 'strings'
+  | 'arrays'
+  | 'objects'
+  | 'closures'
+  | 'classes'
+  | 'constructors'
+  | 'unions'
+  | 'map_set'
+  | 'promises'
+  | 'generators'
+  | 'async_frames'
+  | 'errors'
+  | 'try_catch_finally';
+
+export interface WasmGcCutoverInventoryEntry {
+  family: WasmGcCoreGateFamily;
+  status: WasmGcCutoverStatus;
+  focusedGate: string;
+  nextCutoverStep: string;
+}
+
+export const WASM_GC_CORE_GATE_FAMILIES: readonly WasmGcCoreGateFamily[] = [
+  'primitives',
+  'control_flow',
+  'locals',
+  'strings',
+  'arrays',
+  'objects',
+  'closures',
+  'classes',
+  'constructors',
+  'unions',
+  'map_set',
+  'promises',
+  'generators',
+  'async_frames',
+  'errors',
+  'try_catch_finally',
+];
+
+export const WASM_GC_CORE_CUTOVER_INVENTORY: readonly WasmGcCutoverInventoryEntry[] = [
+  {
+    family: 'primitives',
+    status: 'wasm-gc-emittable',
+    focusedGate: 'compiler SourceHIR semantic lowering captures primitive function bodies without legacy IR',
+    nextCutoverStep: 'Route public pure-core primitive compiles through the SourceHIR WasmGC plan.',
+  },
+  {
+    family: 'control_flow',
+    status: 'wasm-gc-emittable',
+    focusedGate: 'compiler SourceHIR semantic lowering preserves primitive structured control flow',
+    nextCutoverStep: 'Keep structured control-flow lowering on SourceHIR SemanticIR and add legacy-free compileProject assertions.',
+  },
+  {
+    family: 'locals',
+    status: 'wasm-gc-emittable',
+    focusedGate: 'compiler SourceHIR semantic lowering preserves primitive structured control flow',
+    nextCutoverStep: 'Expand direct SourceHIR local representation coverage before deleting legacy local lowering.',
+  },
+  {
+    family: 'strings',
+    status: 'wasm-gc-emittable',
+    focusedGate: 'compiler SourceHIR semantic lowering emits runnable parenthesized expressions',
+    nextCutoverStep: 'Keep owned string helpers manifest-gated and move remaining string operations off legacy WAT helpers.',
+  },
+  {
+    family: 'arrays',
+    status: 'wasm-gc-emittable',
+    focusedGate: 'compiler SourceHIR semantic lowering emits runnable array element reads',
+    nextCutoverStep: 'Use recursive value storage plans for all array payloads before deleting legacy array lowering.',
+  },
+  {
+    family: 'objects',
+    status: 'ir-shadowed',
+    focusedGate: 'compileProject emits Wasm GC WAT for specialized fixed-layout ordinary-object reads',
+    nextCutoverStep: 'Promote SourceHIR object layouts to the public WasmGC path for specialized and fallback objects.',
+  },
+  {
+    family: 'closures',
+    status: 'ir-shadowed',
+    focusedGate: 'compiler wasm-gc wrapper emits erased closure object exports',
+    nextCutoverStep: 'Move closure signatures and captures from legacy compatibility metadata into SourceHIR SemanticIR.',
+  },
+  {
+    family: 'classes',
+    status: 'legacy-only',
+    focusedGate: 'compileProject supports cached imported host constructor objects through helper returns and tagged globals',
+    nextCutoverStep: 'Add class declarations, instance layouts, and static surfaces to SourceHIR SemanticIR.',
+  },
+  {
+    family: 'constructors',
+    status: 'legacy-only',
+    focusedGate: 'compileProject supports cached imported host constructor objects through helper returns and tagged globals',
+    nextCutoverStep: 'Represent constructor values as first-class SemanticIR values before adding public WasmGC routing.',
+  },
+  {
+    family: 'unions',
+    status: 'ir-shadowed',
+    focusedGate: 'compiler value boundary TS classifier reuses shared semantic facts',
+    nextCutoverStep: 'Make finite union algebra feed ordinary lowering, storage planning, and target diagnostics uniformly.',
+  },
+  {
+    family: 'map_set',
+    status: 'ir-shadowed',
+    focusedGate: 'compiler wasm-gc collection boundary adapters are structured instead of cross-product enums',
+    nextCutoverStep: 'Complete Map/Set lowering from recursive value boundaries instead of legacy collection operations.',
+  },
+  {
+    family: 'promises',
+    status: 'ir-shadowed',
+    focusedGate: 'compileProject executes the kept Promise subset',
+    nextCutoverStep: 'Move promise frame records and completion paths into SourceHIR SemanticIR without JS Promise substrate.',
+  },
+  {
+    family: 'generators',
+    status: 'ir-shadowed',
+    focusedGate: 'compileProject executes the kept sync generator subset',
+    nextCutoverStep: 'Route sync generator frames through canonical SemanticIR completion records.',
+  },
+  {
+    family: 'async_frames',
+    status: 'ir-shadowed',
+    focusedGate: 'compiler wasm-gc emitter runs async frame resume smoke cases',
+    nextCutoverStep: 'Make async frame lowering source-owned and keep JSPI limited to host-promise boundaries.',
+  },
+  {
+    family: 'errors',
+    status: 'ir-shadowed',
+    focusedGate: 'compileProject rethrows uncaught sync builtin Error throws to host',
+    nextCutoverStep: 'Represent builtin Error construction, throw, and boundary projection as manifest-gated runtime families.',
+  },
+  {
+    family: 'try_catch_finally',
+    status: 'ir-shadowed',
+    focusedGate: 'compileProject catches sync builtin Error throws',
+    nextCutoverStep: 'Normalize sync try/catch/finally onto the same completion model used by async and generator frames.',
+  },
+];
+
+export const WASM_GC_LEGACY_FEATURE_FREEZE = {
+  legacyFiles: ['src/compiler/lower.ts', 'src/compiler/wat_emitter.ts'],
+  policy:
+    'New core Wasm backend feature work must start in SourceHIR, shared semantic facts, compiler SemanticIR, RuntimeManifestIR, or WasmGcModulePlanIR before touching legacy lowering.',
+} as const;

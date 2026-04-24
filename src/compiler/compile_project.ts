@@ -60,7 +60,7 @@ import { emitWasmGcModulePlan } from './wasm_gc_emitter.ts';
 import type { WasmGcModulePlanIR } from './wasm_gc_backend_ir.ts';
 import { emitWasmGcWrapperModule } from './wasm_gc_wrapper_emitter.ts';
 import { emitCompilerModuleToWat } from './wat_emitter.ts';
-import type { SemanticStatementIR } from './semantic_ir.ts';
+import type { SemanticModuleIR, SemanticStatementIR } from './semantic_ir.ts';
 
 export interface CompileProjectOptions {
   projectPath: string;
@@ -77,6 +77,7 @@ export interface CompileProjectResult {
 
 export interface CompileArtifacts {
   backend: 'wasm-gc' | 'legacy-wasm';
+  backendPlanSource?: 'source-hir' | 'legacy-ir';
   declarationsPath?: string;
   runtimePath?: string;
   wasmPath?: string;
@@ -679,11 +680,12 @@ function isWasmGcPublicUnionArmSupported(
 }
 
 function areWasmGcPublicBoundariesSupported(
-  snapshot: ReturnType<typeof createCompilerIrDebugSnapshot>,
+  semantic: Pick<SemanticModuleIR, 'boundarySurfaces'>,
+  plan: WasmGcModulePlanIR,
 ): boolean {
-  return snapshot.semantic.boundarySurfaces.every((surface) =>
+  return semantic.boundarySurfaces.every((surface) =>
     [...surface.params.map((param) => param.type), surface.result].every((type) =>
-      isWasmGcPublicBoundarySupported(valueBoundaryFromSemanticType(type), snapshot.wasmGcPlan)
+      isWasmGcPublicBoundarySupported(valueBoundaryFromSemanticType(type), plan)
     )
   );
 }
@@ -714,6 +716,18 @@ function areWasmGcPublicFunctionBodiesSupported(
 
 function targetSupportsWasmGcPublicWrapper(target: RuntimeTarget): boolean {
   return target === 'wasm-browser' || target === 'wasm-node';
+}
+
+function canUseWasmGcPublicPlan(
+  runtimeTarget: RuntimeTarget,
+  semantic: Pick<SemanticModuleIR, 'boundarySurfaces'>,
+  plan: WasmGcModulePlanIR,
+): boolean {
+  return targetSupportsWasmGcPublicWrapper(runtimeTarget) &&
+    plan.diagnostics.length === 0 &&
+    areWasmGcPublicBoundariesSupported(semantic, plan) &&
+    areWasmGcPublicFunctionBodiesSupported(plan) &&
+    plan.functionPlans.every((func) => func.bodyStatus === 'emittable');
 }
 
 export function compileProject(options: CompileProjectOptions): CompileProjectResult {
@@ -765,14 +779,37 @@ export function compileProject(options: CompileProjectOptions): CompileProjectRe
     try {
       validateHonestHeapBoundarySurfaces(program);
       const snapshot = createCompilerIrDebugSnapshot(program, dirname(options.projectPath));
-      const canUseWasmGcPublicPath = targetSupportsWasmGcPublicWrapper(runtime.target) &&
-        snapshot.wasmGcPlan.diagnostics.length === 0 &&
-        areWasmGcPublicBoundariesSupported(snapshot) &&
-        areWasmGcPublicFunctionBodiesSupported(snapshot.wasmGcPlan) &&
-        snapshot.wasmGcPlan.functionPlans.every((func) => func.bodyStatus === 'emittable');
-      const packaged = canUseWasmGcPublicPath
+      const canUseSourceWasmGcPublicPath = snapshot.legacyJsHostImports.length === 0 &&
+        canUseWasmGcPublicPlan(
+          runtime.target,
+          snapshot.sourceSemantic,
+          snapshot.sourceWasmGcPlan,
+        );
+      const canUseLegacyWasmGcPublicPath = canUseWasmGcPublicPlan(
+        runtime.target,
+        snapshot.semantic,
+        snapshot.wasmGcPlan,
+      );
+      const packaged = canUseSourceWasmGcPublicPath
         ? {
           backend: 'wasm-gc' as const,
+          backendPlanSource: 'source-hir' as const,
+          toolchain: packageCompilerOutput({
+            jsHostImports: snapshot.legacyJsHostImports,
+            projectPath: options.projectPath,
+            runtimeTarget: runtime.target,
+            wat: emitWasmGcModulePlan(snapshot.sourceWasmGcPlan),
+            wrapperModuleText: createWasmGcPublicWrapperModuleText({
+              jsHostImports: snapshot.legacyJsHostImports,
+              projectPath: options.projectPath,
+              wasmGcWrapperModuleText: emitWasmGcWrapperModule(snapshot.sourceWasmGcPlan),
+            }),
+          }),
+        }
+        : canUseLegacyWasmGcPublicPath
+        ? {
+          backend: 'wasm-gc' as const,
+          backendPlanSource: 'legacy-ir' as const,
           toolchain: packageCompilerOutput({
             jsHostImports: snapshot.legacyJsHostImports,
             projectPath: options.projectPath,
@@ -789,6 +826,7 @@ export function compileProject(options: CompileProjectOptions): CompileProjectRe
           const module = lowerProgramToCompilerIR(program, dirname(options.projectPath));
           return {
             backend: 'legacy-wasm' as const,
+            backendPlanSource: undefined,
             toolchain: packageCompilerOutput({
               jsHostImports: module.jsHostImports,
               projectPath: options.projectPath,
@@ -797,10 +835,11 @@ export function compileProject(options: CompileProjectOptions): CompileProjectRe
             }),
           };
         })();
-      const { backend, toolchain } = packaged;
+      const { backend, backendPlanSource, toolchain } = packaged;
       return {
         artifacts: {
           backend,
+          backendPlanSource,
           declarationsPath: toolchain.declarationsPath,
           runtimePath: toolchain.runtimePath,
           wasmPath: toolchain.wasmPath,

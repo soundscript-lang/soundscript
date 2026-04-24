@@ -5,6 +5,7 @@ import {
   createCompilerIrDebugSnapshot,
   renderCompilerIrDebugSnapshot,
 } from './compiler_ir_debug.ts';
+import { compileProject } from './compile_project.ts';
 import { createSemanticModuleFromSourceHIR } from './source_semantic_lowering.ts';
 import { createSourceHIRFromProgram } from './source_hir.ts';
 import {
@@ -29,6 +30,11 @@ import {
 import { createWasmGcModulePlan } from './wasm_gc_backend_ir.ts';
 import { emitWasmGcModulePlan } from './wasm_gc_emitter.ts';
 import { emitWasmGcWrapperModule } from './wasm_gc_wrapper_emitter.ts';
+import {
+  WASM_GC_CORE_CUTOVER_INVENTORY,
+  WASM_GC_CORE_GATE_FAMILIES,
+  WASM_GC_LEGACY_FEATURE_FREEZE,
+} from './wasm_gc_cutover_inventory.ts';
 import {
   createCompilerProgram,
   createTempProject,
@@ -132,6 +138,29 @@ function createSourceSemanticSnapshot(program: ts.Program, projectDirectory: str
     sharedFacts: createSharedSemanticFactsFromProgram(program, projectDirectory),
   };
 }
+
+Deno.test('compiler wasm-gc cutover inventory locks the core language gate families', () => {
+  assertEquals(
+    WASM_GC_CORE_CUTOVER_INVENTORY.map((entry) => entry.family).sort(),
+    [...WASM_GC_CORE_GATE_FAMILIES].sort(),
+  );
+  assertEquals(
+    WASM_GC_CORE_CUTOVER_INVENTORY.every((entry) =>
+      entry.focusedGate.length > 0 && entry.nextCutoverStep.length > 0
+    ),
+    true,
+  );
+  assertEquals(WASM_GC_LEGACY_FEATURE_FREEZE.legacyFiles, [
+    'src/compiler/lower.ts',
+    'src/compiler/wat_emitter.ts',
+  ]);
+  assertEquals(
+    WASM_GC_LEGACY_FEATURE_FREEZE.policy.includes('SourceHIR') &&
+      WASM_GC_LEGACY_FEATURE_FREEZE.policy.includes('SemanticIR') &&
+      WASM_GC_LEGACY_FEATURE_FREEZE.policy.includes('WasmGcModulePlanIR'),
+    true,
+  );
+});
 
 Deno.test('compiler shadow SourceHIR preserves structured control flow and lvalue roles', async () => {
   const tempDirectory = await createTempProject([
@@ -1072,6 +1101,37 @@ Deno.test('compiler runtime manifest is deterministic and pay-for-play for sync 
   assertEquals(rendered, renderCompilerIrDebugSnapshot(snapshot));
 });
 
+Deno.test('compiler debug snapshot exposes source-owned semantic and wasm-gc plans before legacy fallback', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: { strict: true },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        export function add(left: number, right: number): number {
+          return left + right;
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
+  const add = snapshot.sourceSemantic.functions.find((func) => func.name === 'add');
+  const plan = snapshot.sourceWasmGcPlan.functionPlans.find((func) => func.name === 'add');
+
+  assertEquals(add?.bodyStatus, 'emittable');
+  assertEquals(add?.unsupportedBodyKinds, []);
+  assertEquals(plan?.bodyStatus, 'emittable');
+  assertEquals(snapshot.sourceRuntimeManifest.familyRequirements, []);
+  assertEquals(snapshot.legacySemantic.kind, 'semantic_module');
+  assertEquals(snapshot.legacyWasmGcPlan.kind, 'wasm_gc_module_plan');
+});
+
 Deno.test('compiler semantic shadow captures primitive function bodies for wasm-gc planning', async () => {
   const tempDirectory = await createTempProject([
     {
@@ -1155,6 +1215,51 @@ Deno.test('compiler SourceHIR semantic lowering captures primitive function bodi
   assertEquals(add?.result, 'f64');
   assertEquals(addPlan?.bodyStatus, 'emittable');
   assertEquals(addPlan?.unsupportedBodyKinds, []);
+});
+
+Deno.test('compileProject selects the source-hir wasm-gc plan for pure core scalar modules', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+          },
+          include: ['src/**/*.ts'],
+          soundscript: {
+            target: 'wasm-node',
+          },
+        },
+        null,
+        2,
+      ),
+    },
+    {
+      path: 'src/index.ts',
+      contents: `
+        export function score(left: number, right: number): number {
+          let total = left + right;
+          if (total > 5) {
+            total = total - 1;
+          }
+          return total;
+        }
+      `,
+    },
+  ]);
+  const result = compileProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.exitCode, 0);
+  assertEquals(result.diagnostics, []);
+  assertEquals(result.artifacts?.backend, 'wasm-gc');
+  assertEquals(result.artifacts?.backendPlanSource, 'source-hir');
 });
 
 Deno.test('compiler SourceHIR semantic lowering preserves primitive structured control flow', async () => {

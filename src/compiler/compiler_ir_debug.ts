@@ -15,6 +15,7 @@ import {
   createSharedSemanticFactsFromProgram,
   type SharedSemanticFactsIR,
 } from '../semantic/shared_semantic_facts.ts';
+import { createSemanticModuleFromSourceHIR } from './source_semantic_lowering.ts';
 import { createSourceHIRFromProgram, type SourceModuleIR } from './source_hir.ts';
 import { createWasmGcModulePlan, type WasmGcModulePlanIR } from './wasm_gc_backend_ir.ts';
 import { collectSemanticRuntimeFamiliesFromTypes } from './semantic_ir.ts';
@@ -26,7 +27,13 @@ export interface CompilerIrDebugSnapshot {
     modules: readonly SourceModuleIR[];
   };
   legacyJsHostImports: readonly CompilerJsHostImportIR[];
+  legacySemantic: SemanticModuleIR;
+  legacyRuntimeManifest: RuntimeManifestIR;
+  legacyWasmGcPlan: WasmGcModulePlanIR;
   sharedFacts: SharedSemanticFactsIR;
+  sourceSemantic: SemanticModuleIR;
+  sourceRuntimeManifest: RuntimeManifestIR;
+  sourceWasmGcPlan: WasmGcModulePlanIR;
   semantic: SemanticModuleIR;
   runtimeManifest: RuntimeManifestIR;
   wasmGcPlan: WasmGcModulePlanIR;
@@ -58,6 +65,9 @@ export function createCompilerIrDebugSnapshot(
 ): CompilerIrDebugSnapshot {
   const source = createSourceHIRFromProgram(program, projectDirectory);
   const sharedFacts = createSharedSemanticFactsFromProgram(program, projectDirectory);
+  const sourceSemantic = createSemanticModuleFromSourceHIR(source, sharedFacts);
+  const sourceRuntimeManifest = createRuntimeManifestFromSemanticModule(sourceSemantic);
+  const sourceWasmGcPlan = createWasmGcModulePlan(sourceSemantic, sourceRuntimeManifest);
   const legacyModule = lowerProgramToCompilerIR(program, projectDirectory);
   const boundarySurfaces: readonly SemanticBoundarySurfaceIR[] = sharedFacts.boundarySurfaces.map((
     surface,
@@ -89,7 +99,13 @@ export function createCompilerIrDebugSnapshot(
     kind: 'compiler_ir_debug_snapshot',
     source,
     legacyJsHostImports: legacyModule.jsHostImports ?? [],
+    legacySemantic: semantic,
+    legacyRuntimeManifest: runtimeManifest,
+    legacyWasmGcPlan: wasmGcPlan,
     sharedFacts,
+    sourceSemantic,
+    sourceRuntimeManifest,
+    sourceWasmGcPlan,
     semantic,
     runtimeManifest,
     wasmGcPlan,
