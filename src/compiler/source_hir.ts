@@ -392,6 +392,15 @@ function lowerExpression(
     return lowerExpression(sourceFile, expression.expression, role);
   }
 
+  if (
+    ts.isAsExpression(expression) ||
+    ts.isTypeAssertionExpression(expression) ||
+    ts.isNonNullExpression(expression) ||
+    ts.isSatisfiesExpression(expression)
+  ) {
+    return lowerExpression(sourceFile, expression.expression, role);
+  }
+
   if (ts.isIdentifier(expression) && expression.text === 'undefined') {
     return {
       kind: 'literal',
