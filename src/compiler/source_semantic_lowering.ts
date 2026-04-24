@@ -404,17 +404,50 @@ function lowerStatement(
     case 'expression_statement': {
       if (
         statement.expression.kind === 'assignment_expression' &&
-        statement.expression.operator === '=' &&
-        statement.expression.left.kind === 'identifier'
+        statement.expression.operator === '='
       ) {
-        const value = lowerExpression(statement.expression.right, context);
-        const target = statement.expression.left.name;
-        if (!context.localRepresentations.has(target)) {
-          context.unsupportedKinds.add(`unbound_assignment:${target}`);
-          return [{ kind: 'unsupported_statement', sourceKind: 'assignment_expression' }];
+        const assignment = statement.expression;
+        if (assignment.left.kind === 'identifier') {
+          const value = lowerExpression(assignment.right, context);
+          const target = assignment.left.name;
+          if (!context.localRepresentations.has(target)) {
+            context.unsupportedKinds.add(`unbound_assignment:${target}`);
+            return [{ kind: 'unsupported_statement', sourceKind: 'assignment_expression' }];
+          }
+          const statements = takePendingStatements(context);
+          return [...statements, { kind: 'local_set', name: target, value }];
         }
-        const statements = takePendingStatements(context);
-        return [...statements, { kind: 'local_set', name: target, value }];
+        if (
+          assignment.left.kind === 'property_access' &&
+          assignment.left.object.kind === 'identifier'
+        ) {
+          const objectName = assignment.left.object.name;
+          const propertyName = assignment.left.property;
+          const objectLayout = context.objectLocals.get(objectName);
+          const fieldIndex = objectLayout?.fields.findIndex((field) =>
+            field.name === propertyName
+          ) ?? -1;
+          if (objectLayout && fieldIndex >= 0) {
+            const field = objectLayout.fields[fieldIndex]!;
+            const value = lowerExpression(assignment.right, context);
+            if (value.representation !== field.representation) {
+              context.unsupportedKinds.add(`property_assignment:${field.name}`);
+              return [{ kind: 'unsupported_statement', sourceKind: 'assignment_expression' }];
+            }
+            context.runtimeFamilies.add('specialized_object');
+            return [
+              ...takePendingStatements(context),
+              {
+                kind: 'specialized_object_field_set',
+                objectName,
+                representationName: objectLayout.representationName,
+                fieldIndex,
+                fieldName: field.name,
+                value,
+              },
+            ];
+          }
+        }
       }
       const value = lowerExpression(statement.expression, context);
       return [...takePendingStatements(context), { kind: 'expression', value }];
