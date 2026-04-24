@@ -2774,6 +2774,7 @@ const MAP_FOUND_SCRATCH = '__soundscript_map_found';
 const STRING_EQUAL_IMPORT_MODULE = 'soundscript';
 const STRING_EQUAL_IMPORT_NAME = '__string_eq';
 const STRING_EQUAL_FUNCTION_NAME = '__soundscript_string_eq';
+const STRING_CONCAT_FUNCTION_NAME = '__soundscript_string_concat';
 const EXTERN_EQUAL_IMPORT_MODULE = 'soundscript';
 const EXTERN_EQUAL_IMPORT_NAME = '__extern_eq';
 const EXTERN_EQUAL_FUNCTION_NAME = '__soundscript_extern_eq';
@@ -4532,6 +4533,13 @@ function renderExpression(
         `${indent}struct.get ${boxTypeName(expression.valueType)} $value`,
       ];
     case 'binary':
+      if (expression.op === 'string.concat') {
+        return [
+          ...renderExpression(expression.left, indent, context),
+          ...renderExpression(expression.right, indent, context),
+          `${indent}call $${sanitizeIdentifier(STRING_CONCAT_FUNCTION_NAME)}`,
+        ];
+      }
       if (expression.op === 'symbol.eq') {
         return [
           ...renderExpression(expression.left, indent, context),
@@ -5318,6 +5326,66 @@ function renderStringExportWrapperHelperFunctions(plan: WasmGcModulePlanIR): rea
     `    struct.get ${stringRuntimeTypeName()} $code_units`,
     '    local.get $index',
     `    array.get ${stringCodeUnitArrayTypeName()}`,
+    '  )',
+  ];
+}
+
+function renderStringConcatHelperFunctions(plan: WasmGcModulePlanIR): readonly string[] {
+  const usesStringConcat = plan.helperPlans.some((helper) =>
+    helper.family === 'string' && helper.name === 'string_concat' && helper.kind === 'operation'
+  );
+  if (!usesStringConcat) {
+    return [];
+  }
+  return [
+    `  (func $${
+      sanitizeIdentifier(STRING_CONCAT_FUNCTION_NAME)
+    } (param $left (ref null ${stringRuntimeTypeName()})) (param $right (ref null ${stringRuntimeTypeName()})) (result (ref null ${stringRuntimeTypeName()}))`,
+    `    (local $left_units (ref null ${stringCodeUnitArrayTypeName()}))`,
+    `    (local $right_units (ref null ${stringCodeUnitArrayTypeName()}))`,
+    `    (local $new_units (ref null ${stringCodeUnitArrayTypeName()}))`,
+    '    (local $left_length i32)',
+    '    (local $right_length i32)',
+    '    local.get $left',
+    `    ref.cast (ref ${stringRuntimeTypeName()})`,
+    `    struct.get ${stringRuntimeTypeName()} $code_units`,
+    '    local.set $left_units',
+    '    local.get $right',
+    `    ref.cast (ref ${stringRuntimeTypeName()})`,
+    `    struct.get ${stringRuntimeTypeName()} $code_units`,
+    '    local.set $right_units',
+    '    local.get $left_units',
+    '    ref.as_non_null',
+    '    array.len',
+    '    local.set $left_length',
+    '    local.get $right_units',
+    '    ref.as_non_null',
+    '    array.len',
+    '    local.set $right_length',
+    '    local.get $left_length',
+    '    local.get $right_length',
+    '    i32.add',
+    `    array.new_default ${stringCodeUnitArrayTypeName()}`,
+    '    local.set $new_units',
+    '    local.get $new_units',
+    '    ref.as_non_null',
+    '    i32.const 0',
+    '    local.get $left_units',
+    '    ref.as_non_null',
+    '    i32.const 0',
+    '    local.get $left_length',
+    `    array.copy ${stringCodeUnitArrayTypeName()} ${stringCodeUnitArrayTypeName()}`,
+    '    local.get $new_units',
+    '    ref.as_non_null',
+    '    local.get $left_length',
+    '    local.get $right_units',
+    '    ref.as_non_null',
+    '    i32.const 0',
+    '    local.get $right_length',
+    `    array.copy ${stringCodeUnitArrayTypeName()} ${stringCodeUnitArrayTypeName()}`,
+    '    local.get $new_units',
+    '    ref.as_non_null',
+    `    struct.new ${stringRuntimeTypeName()}`,
     '  )',
   ];
 }
@@ -7997,6 +8065,7 @@ export function emitWasmGcModulePlan(plan: WasmGcModulePlanIR): string {
   const taggedValueTypes = renderTaggedValueType(plan);
   const promiseRecordTypes = renderPromiseRecordTypes(plan);
   const stringEqualityHelperFunctions = renderStringEqualityHelperFunctions(plan);
+  const stringConcatHelperFunctions = renderStringConcatHelperFunctions(plan);
   const stringExportWrapperHelperFunctions = renderStringExportWrapperHelperFunctions(plan);
   const symbolBoundaryWrapperHelperFunctions = renderSymbolBoundaryWrapperHelperFunctions(plan);
   const bigintBoundaryWrapperHelperFunctions = renderBigIntBoundaryWrapperHelperFunctions(plan);
@@ -8063,6 +8132,7 @@ export function emitWasmGcModulePlan(plan: WasmGcModulePlanIR): string {
       : []),
     '  ;; helpers',
     ...(plan.helperPlans.length > 0 || stringEqualityHelperFunctions.length > 0 ||
+        stringConcatHelperFunctions.length > 0 ||
         stringExportWrapperHelperFunctions.length > 0 ||
         symbolBoundaryWrapperHelperFunctions.length > 0 ||
         bigintBoundaryWrapperHelperFunctions.length > 0 ||
@@ -8075,6 +8145,7 @@ export function emitWasmGcModulePlan(plan: WasmGcModulePlanIR): string {
       ? [
         ...indentLines(plan.helperPlans.map(renderHelperPlan)),
         ...stringEqualityHelperFunctions,
+        ...stringConcatHelperFunctions,
         ...stringExportWrapperHelperFunctions,
         ...symbolBoundaryWrapperHelperFunctions,
         ...bigintBoundaryWrapperHelperFunctions,

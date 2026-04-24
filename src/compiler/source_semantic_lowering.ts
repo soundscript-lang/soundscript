@@ -338,6 +338,20 @@ function lowerExpression(
     case 'binary_expression': {
       const left = lowerExpression(expression.left, context);
       const right = lowerExpression(expression.right, context);
+      if (
+        expression.operator === '+' &&
+        left.representation === 'owned_string_ref' &&
+        right.representation === 'owned_string_ref'
+      ) {
+        context.runtimeFamilies.add('string');
+        return {
+          kind: 'binary',
+          op: 'string.concat',
+          left,
+          right,
+          representation: 'owned_string_ref',
+        };
+      }
       const binary = binaryOperatorForSource(expression.operator, left, right);
       if (!binary) {
         context.unsupportedKinds.add(`binary_expression:${expression.operator}`);

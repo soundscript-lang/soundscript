@@ -131,6 +131,9 @@ function collectRequiredFamilies(
   semantic: SemanticModuleIR,
 ): Set<SemanticRuntimeFamilyId> {
   const families = new Set(semantic.runtimeFamilies);
+  if (semanticModuleUsesStringConcat(semantic)) {
+    families.add('string');
+  }
   let changed = true;
   while (changed) {
     changed = false;
@@ -146,10 +149,54 @@ function collectRequiredFamilies(
   return families;
 }
 
+function semanticTreeUsesStringConcat(value: unknown): boolean {
+  if (Array.isArray(value)) {
+    return value.some(semanticTreeUsesStringConcat);
+  }
+  if (typeof value !== 'object' || value === null) {
+    return false;
+  }
+  if (
+    (value as { kind?: unknown }).kind === 'binary' &&
+    (value as { op?: unknown }).op === 'string.concat'
+  ) {
+    return true;
+  }
+  return Object.values(value).some(semanticTreeUsesStringConcat);
+}
+
+function semanticModuleUsesStringConcat(semantic: SemanticModuleIR): boolean {
+  return semantic.functions.some((func) => semanticTreeUsesStringConcat(func.body));
+}
+
+function operationHelperRequirementsForSemanticModule(
+  semantic: SemanticModuleIR,
+): readonly RuntimeHelperRequirementIR[] {
+  return [
+    ...(semanticModuleUsesStringConcat(semantic)
+      ? [
+        {
+          family: 'string',
+          name: 'string_concat',
+          kind: 'operation',
+        } as const,
+      ]
+      : []),
+  ];
+}
+
 export function createRuntimeManifestFromSemanticModule(
   semantic: SemanticModuleIR,
 ): RuntimeManifestIR {
   const families = [...collectRequiredFamilies(semantic)].sort();
+  const helperRequirements = [
+    ...families.flatMap((family) => [...FAMILY_HELPERS[family]]),
+    ...operationHelperRequirementsForSemanticModule(semantic),
+  ].sort((left, right) =>
+    left.family === right.family
+      ? left.name.localeCompare(right.name)
+      : left.family.localeCompare(right.family)
+  );
   return {
     kind: 'runtime_manifest',
     familyRequirements: families.map((family) => ({
@@ -157,11 +204,6 @@ export function createRuntimeManifestFromSemanticModule(
       reason: 'semantic_ir',
       dependencies: [...(FAMILY_DEPENDENCIES.get(family) ?? [])].sort(),
     })),
-    helperRequirements: families.flatMap((family) => [...FAMILY_HELPERS[family]])
-      .sort((left, right) =>
-        left.family === right.family
-          ? left.name.localeCompare(right.name)
-          : left.family.localeCompare(right.family)
-      ),
+    helperRequirements,
   };
 }
