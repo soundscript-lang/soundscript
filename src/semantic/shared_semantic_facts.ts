@@ -256,6 +256,7 @@ export function normalizeSharedSemanticUnionBoundary(
 interface SharedSemanticTypeClassifierState {
   checker: ts.TypeChecker;
   node: ts.Node;
+  projectDirectory?: string;
   visiting: Set<string>;
   depth: number;
 }
@@ -297,6 +298,52 @@ function objectLayoutName(checker: ts.TypeChecker, type: ts.Type): string | unde
   const name = type.aliasSymbol?.getName() ?? type.getSymbol()?.getName() ??
     checker.getApparentType(type).getSymbol()?.getName();
   return name === '__type' ? undefined : name;
+}
+
+function isProjectSemanticSourceFile(
+  sourceFile: ts.SourceFile,
+  projectDirectory: string,
+): boolean {
+  return sourceFileBelongsToProject(sourceFile, projectDirectory) &&
+    !isDependencySourceFile(sourceFile);
+}
+
+function declarationsForType(checker: ts.TypeChecker, type: ts.Type): readonly ts.Declaration[] {
+  const apparentType = checker.getApparentType(type);
+  return [
+    ...(type.getSymbol()?.declarations ?? []),
+    ...(type.aliasSymbol?.declarations ?? []),
+    ...(apparentType.getSymbol()?.declarations ?? []),
+    ...(apparentType.aliasSymbol?.declarations ?? []),
+  ];
+}
+
+function typeHasProjectDeclaration(
+  state: SharedSemanticTypeClassifierState,
+  type: ts.Type,
+): boolean {
+  if (!state.projectDirectory) {
+    return true;
+  }
+  const declarations = declarationsForType(state.checker, type);
+  if (declarations.length === 0) {
+    return true;
+  }
+  return declarations.some((declaration) =>
+    isProjectSemanticSourceFile(declaration.getSourceFile(), state.projectDirectory!)
+  );
+}
+
+function typeVisitKey(checker: ts.TypeChecker, type: ts.Type, node: ts.Node): string {
+  const typeId = (type as { id?: number }).id;
+  if (typeof typeId === 'number') {
+    return `id:${typeId}`;
+  }
+  const symbolName = type.aliasSymbol?.getName() ?? type.getSymbol()?.getName();
+  if (symbolName) {
+    return `symbol:${symbolName}:${type.flags}`;
+  }
+  return `text:${checker.typeToString(type, node)}:${type.flags}`;
 }
 
 function classifyArrayElementType(
@@ -391,122 +438,136 @@ function classifySharedSemanticTypeInner(
     return { kind: 'symbol' };
   }
 
-  if (type.isUnion()) {
-    return normalizeSharedSemanticUnionBoundary(
-      type.types.map((member) =>
-        classifySharedSemanticTypeInner(state, member) as SharedSemanticUnionArmIR
-      ),
-    );
-  }
-  if (type.isIntersection()) {
-    const members = type.types.map((member) => classifySharedSemanticTypeInner(state, member));
-    const objectMembers = members.filter((
-      member,
-    ): member is Extract<SharedSemanticUnionArmIR, { kind: 'object' }> => member.kind === 'object');
-    if (objectMembers.length === members.length) {
-      return {
-        kind: 'object',
-        layoutName: objectMembers.map((member) => member.layoutName).filter(Boolean).join('&') ||
-          undefined,
-        fields: objectMembers.flatMap((member) => member.fields ?? []),
-      };
-    }
-    return normalizeSharedSemanticUnionBoundary(members as readonly SharedSemanticUnionArmIR[]);
-  }
-
-  if (checker.isArrayType(type) || checker.isTupleType(type)) {
-    return {
-      kind: 'array',
-      element: classifyArrayElementType(state, typeReferenceArguments(checker, type)),
-    };
-  }
-
-  const symbolName = runtimeFamilySymbolName(checker, type);
-  const typeArguments = typeReferenceArguments(checker, type);
-  if (symbolName === 'Map' || symbolName === 'ReadonlyMap') {
-    return {
-      kind: 'map',
-      key: typeArguments[0]
-        ? classifySharedSemanticTypeInner(state, typeArguments[0])
-        : { kind: 'host_handle' },
-      value: typeArguments[1]
-        ? classifySharedSemanticTypeInner(state, typeArguments[1])
-        : { kind: 'host_handle' },
-    };
-  }
-  if (symbolName === 'Set' || symbolName === 'ReadonlySet') {
-    return {
-      kind: 'set',
-      value: typeArguments[0]
-        ? classifySharedSemanticTypeInner(state, typeArguments[0])
-        : { kind: 'host_handle' },
-    };
-  }
-  if (symbolName === 'Promise' || symbolName === 'PromiseLike') {
-    return {
-      kind: 'promise',
-      value: typeArguments[0]
-        ? classifySharedSemanticTypeInner(state, typeArguments[0])
-        : undefined,
-    };
-  }
-  if (symbolName === 'Generator') {
-    return {
-      kind: 'generator',
-      async: false,
-      yield: typeArguments[0]
-        ? classifySharedSemanticTypeInner(state, typeArguments[0])
-        : undefined,
-      return: typeArguments[1]
-        ? classifySharedSemanticTypeInner(state, typeArguments[1])
-        : undefined,
-      next: typeArguments[2] ? classifySharedSemanticTypeInner(state, typeArguments[2]) : undefined,
-    };
-  }
-  if (symbolName === 'AsyncGenerator') {
-    return {
-      kind: 'generator',
-      async: true,
-      yield: typeArguments[0]
-        ? classifySharedSemanticTypeInner(state, typeArguments[0])
-        : undefined,
-      return: typeArguments[1]
-        ? classifySharedSemanticTypeInner(state, typeArguments[1])
-        : undefined,
-      next: typeArguments[2] ? classifySharedSemanticTypeInner(state, typeArguments[2]) : undefined,
-    };
-  }
-
-  const constructSignatures = checker.getSignaturesOfType(type, ts.SignatureKind.Construct);
-  if (constructSignatures.length > 0) {
-    return { kind: 'class_constructor', className: declaredTypeName(checker, type) };
-  }
-
-  const callSignatures = checker.getSignaturesOfType(type, ts.SignatureKind.Call);
-  if (callSignatures.length > 0) {
-    return {
-      kind: 'closure',
-      signatures: callSignatures.map((signature, id) =>
-        classifyCallableSignature(state, signature, id)
-      ),
-    };
-  }
-
-  if ((type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0) {
+  const visitKey = typeVisitKey(checker, type, state.node);
+  if (state.depth >= 16 || state.visiting.has(visitKey)) {
     return { kind: 'host_handle' };
   }
 
-  const layoutName = objectLayoutName(checker, type);
-  const visitKey = `${layoutName ?? checker.typeToString(type, state.node)}:${type.flags}`;
-  if (state.depth >= 8 || state.visiting.has(visitKey)) {
-    return { kind: 'object', layoutName };
-  }
   state.visiting.add(visitKey);
   state.depth += 1;
-  const fields = classifyObjectFields(state, type);
-  state.depth -= 1;
-  state.visiting.delete(visitKey);
-  return { kind: 'object', layoutName, fields };
+  try {
+    if (type.isUnion()) {
+      return normalizeSharedSemanticUnionBoundary(
+        type.types.map((member) =>
+          classifySharedSemanticTypeInner(state, member) as SharedSemanticUnionArmIR
+        ),
+      );
+    }
+    if (type.isIntersection()) {
+      const members = type.types.map((member) => classifySharedSemanticTypeInner(state, member));
+      const objectMembers = members.filter((
+        member,
+      ): member is Extract<SharedSemanticUnionArmIR, { kind: 'object' }> =>
+        member.kind === 'object'
+      );
+      if (objectMembers.length === members.length) {
+        return {
+          kind: 'object',
+          layoutName: objectMembers.map((member) => member.layoutName).filter(Boolean).join('&') ||
+            undefined,
+          fields: objectMembers.flatMap((member) => member.fields ?? []),
+        };
+      }
+      return normalizeSharedSemanticUnionBoundary(members as readonly SharedSemanticUnionArmIR[]);
+    }
+
+    if (checker.isArrayType(type) || checker.isTupleType(type)) {
+      return {
+        kind: 'array',
+        element: classifyArrayElementType(state, typeReferenceArguments(checker, type)),
+      };
+    }
+
+    const symbolName = runtimeFamilySymbolName(checker, type);
+    const typeArguments = typeReferenceArguments(checker, type);
+    if (symbolName === 'Map' || symbolName === 'ReadonlyMap') {
+      return {
+        kind: 'map',
+        key: typeArguments[0]
+          ? classifySharedSemanticTypeInner(state, typeArguments[0])
+          : { kind: 'host_handle' },
+        value: typeArguments[1]
+          ? classifySharedSemanticTypeInner(state, typeArguments[1])
+          : { kind: 'host_handle' },
+      };
+    }
+    if (symbolName === 'Set' || symbolName === 'ReadonlySet') {
+      return {
+        kind: 'set',
+        value: typeArguments[0]
+          ? classifySharedSemanticTypeInner(state, typeArguments[0])
+          : { kind: 'host_handle' },
+      };
+    }
+    if (symbolName === 'Promise' || symbolName === 'PromiseLike') {
+      return {
+        kind: 'promise',
+        value: typeArguments[0]
+          ? classifySharedSemanticTypeInner(state, typeArguments[0])
+          : undefined,
+      };
+    }
+    if (symbolName === 'Generator') {
+      return {
+        kind: 'generator',
+        async: false,
+        yield: typeArguments[0]
+          ? classifySharedSemanticTypeInner(state, typeArguments[0])
+          : undefined,
+        return: typeArguments[1]
+          ? classifySharedSemanticTypeInner(state, typeArguments[1])
+          : undefined,
+        next: typeArguments[2]
+          ? classifySharedSemanticTypeInner(state, typeArguments[2])
+          : undefined,
+      };
+    }
+    if (symbolName === 'AsyncGenerator') {
+      return {
+        kind: 'generator',
+        async: true,
+        yield: typeArguments[0]
+          ? classifySharedSemanticTypeInner(state, typeArguments[0])
+          : undefined,
+        return: typeArguments[1]
+          ? classifySharedSemanticTypeInner(state, typeArguments[1])
+          : undefined,
+        next: typeArguments[2]
+          ? classifySharedSemanticTypeInner(state, typeArguments[2])
+          : undefined,
+      };
+    }
+
+    const constructSignatures = checker.getSignaturesOfType(type, ts.SignatureKind.Construct);
+    if (constructSignatures.length > 0) {
+      return { kind: 'class_constructor', className: declaredTypeName(checker, type) };
+    }
+
+    const callSignatures = checker.getSignaturesOfType(type, ts.SignatureKind.Call);
+    if (callSignatures.length > 0) {
+      return {
+        kind: 'closure',
+        signatures: callSignatures.map((signature, id) =>
+          classifyCallableSignature(state, signature, id)
+        ),
+      };
+    }
+
+    if ((type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0) {
+      return { kind: 'host_handle' };
+    }
+
+    if (!typeHasProjectDeclaration(state, type)) {
+      return { kind: 'host_handle' };
+    }
+
+    const layoutName = objectLayoutName(checker, type);
+    const fields = classifyObjectFields(state, type);
+    return { kind: 'object', layoutName, fields };
+  } finally {
+    state.depth -= 1;
+    state.visiting.delete(visitKey);
+  }
 }
 
 export function classifySharedSemanticType(
@@ -524,11 +585,33 @@ export function classifySharedSemanticType(
   );
 }
 
+function classifyProjectSharedSemanticType(
+  checker: ts.TypeChecker,
+  type: ts.Type,
+  node: ts.Node,
+  projectDirectory: string,
+): SharedSemanticTypeIR {
+  return normalizeType(
+    classifySharedSemanticTypeInner({
+      checker,
+      node,
+      projectDirectory,
+      visiting: new Set(),
+      depth: 0,
+    }, type),
+  );
+}
+
 function sourceFileBelongsToProject(sourceFile: ts.SourceFile, projectDirectory: string): boolean {
   const normalizedFileName = normalize(ts.sys.resolvePath(sourceFile.fileName));
   const normalizedProjectDirectory = normalize(ts.sys.resolvePath(projectDirectory));
   return normalizedFileName === normalizedProjectDirectory ||
     normalizedFileName.startsWith(`${normalizedProjectDirectory}/`);
+}
+
+function isDependencySourceFile(sourceFile: ts.SourceFile): boolean {
+  const normalizedFileName = normalize(ts.sys.resolvePath(sourceFile.fileName));
+  return normalizedFileName.includes('/node_modules/');
 }
 
 function hasModifier(node: ts.Node, kind: ts.SyntaxKind): boolean {
@@ -544,6 +627,7 @@ function functionTypeSnapshot(
   checker: ts.TypeChecker,
   sourceFile: ts.SourceFile,
   node: ts.FunctionDeclaration,
+  projectDirectory: string,
 ): SharedSemanticFunctionTypeSnapshotIR | undefined {
   const signature = checker.getSignatureFromDeclaration(node);
   if (!signature) {
@@ -558,9 +642,19 @@ function functionTypeSnapshot(
     generator: node.asteriskToken !== undefined,
     params: node.parameters.map((param) => ({
       name: param.name.getText(sourceFile),
-      type: classifySharedSemanticType(checker, checker.getTypeAtLocation(param), param),
+      type: classifyProjectSharedSemanticType(
+        checker,
+        checker.getTypeAtLocation(param),
+        param,
+        projectDirectory,
+      ),
     })),
-    result: classifySharedSemanticType(checker, checker.getReturnTypeOfSignature(signature), node),
+    result: classifyProjectSharedSemanticType(
+      checker,
+      checker.getReturnTypeOfSignature(signature),
+      node,
+      projectDirectory,
+    ),
   };
 }
 
@@ -568,12 +662,18 @@ function typeAliasSnapshot(
   checker: ts.TypeChecker,
   sourceFile: ts.SourceFile,
   node: ts.TypeAliasDeclaration,
+  projectDirectory: string,
 ): SharedSemanticTypeAliasSnapshotIR {
   return {
     kind: 'type_alias',
     fileName: sourceFile.fileName,
     name: node.name.text,
-    type: classifySharedSemanticType(checker, checker.getTypeAtLocation(node.type), node),
+    type: classifyProjectSharedSemanticType(
+      checker,
+      checker.getTypeAtLocation(node.type),
+      node,
+      projectDirectory,
+    ),
   };
 }
 
@@ -585,7 +685,8 @@ function projectSourceFiles(
   return program.getSourceFiles()
     .filter((sourceFile) =>
       (options?.includeDeclarationFiles || !sourceFile.isDeclarationFile) &&
-      sourceFileBelongsToProject(sourceFile, projectDirectory)
+      sourceFileBelongsToProject(sourceFile, projectDirectory) &&
+      !isDependencySourceFile(sourceFile)
     );
 }
 
@@ -598,11 +699,11 @@ export function createSharedSemanticTypeSnapshotsFromProgram(
     .flatMap((sourceFile) =>
       sourceFile.statements.flatMap((statement): SharedSemanticTypeSnapshotIR[] => {
         if (ts.isFunctionDeclaration(statement)) {
-          const snapshot = functionTypeSnapshot(checker, sourceFile, statement);
+          const snapshot = functionTypeSnapshot(checker, sourceFile, statement, projectDirectory);
           return snapshot ? [snapshot] : [];
         }
         if (ts.isTypeAliasDeclaration(statement)) {
-          return [typeAliasSnapshot(checker, sourceFile, statement)];
+          return [typeAliasSnapshot(checker, sourceFile, statement, projectDirectory)];
         }
         return [];
       })
@@ -634,12 +735,18 @@ function createFunctionBoundarySurface(
   }
   const params = node.parameters.map((param) => ({
     name: param.name.getText(sourceFile),
-    type: classifySharedSemanticType(checker, checker.getTypeAtLocation(param), param),
+    type: classifyProjectSharedSemanticType(
+      checker,
+      checker.getTypeAtLocation(param),
+      param,
+      projectDirectory,
+    ),
   }));
-  const result = classifySharedSemanticType(
+  const result = classifyProjectSharedSemanticType(
     checker,
     checker.getReturnTypeOfSignature(signature),
     node,
+    projectDirectory,
   );
   return {
     kind: 'function_boundary',

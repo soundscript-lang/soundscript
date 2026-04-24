@@ -10,6 +10,7 @@ import { DataTypes, Sequelize } from 'sequelize';
 import {
   AppRoutes,
   createInitialTodos,
+  createTodosWithTitles,
   toggleTodoByRouteId,
 } from './app.sts';
 
@@ -117,18 +118,12 @@ async function getTodos(): Promise<TodoList> {
   if (typeof secondCompleted === 'boolean') {
     secondTodoCompleted = secondCompleted;
   }
-  return [
-    {
-      id: fallbackTodos[0].id,
-      title: firstTodoTitle,
-      completed: firstTodoCompleted,
-    },
-    {
-      id: fallbackTodos[1].id,
-      title: secondTodoTitle,
-      completed: secondTodoCompleted,
-    },
-  ];
+  return createTodosWithTitles(
+    firstTodoTitle,
+    firstTodoCompleted,
+    secondTodoTitle,
+    secondTodoCompleted,
+  );
 }
 
 function App(path: string, todos: TodoList) {

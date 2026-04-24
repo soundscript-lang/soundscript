@@ -27,6 +27,7 @@ export interface ArrayRuntimeImportUsage {
   usesHeapParamBoundary: boolean;
   usesHeapParamCopyBack: boolean;
   usesHeapResultBoundary: boolean;
+  usesHeapToHostArrayConversion?: boolean;
   usesStringParamBoundary: boolean;
   usesStringParamCopyBack: boolean;
   usesStringResultBoundary: boolean;
@@ -145,6 +146,7 @@ export function emitArrayRuntimeImports(usage: ArrayRuntimeImportUsage): string[
     usesHeapParamBoundary,
     usesHeapParamCopyBack,
     usesHeapResultBoundary,
+    usesHeapToHostArrayConversion = false,
     usesStringParamBoundary,
     usesStringParamCopyBack,
     usesStringResultBoundary,
@@ -161,7 +163,7 @@ export function emitArrayRuntimeImports(usage: ArrayRuntimeImportUsage): string[
   } = usage;
   if (
     !usesHeapResultBoundary &&
-    !usesHeapParamBoundary && !usesHeapParamCopyBack &&
+    !usesHeapParamBoundary && !usesHeapParamCopyBack && !usesHeapToHostArrayConversion &&
     !usesStringParamBoundary && !usesStringParamCopyBack && !usesStringResultBoundary &&
     !usesNumberParamBoundary && !usesNumberParamCopyBack && !usesNumberResultBoundary &&
     !usesBooleanParamBoundary && !usesBooleanParamCopyBack && !usesBooleanResultBoundary &&
@@ -175,7 +177,7 @@ export function emitArrayRuntimeImports(usage: ArrayRuntimeImportUsage): string[
     usesNumberParamBoundary ||
     usesBooleanParamBoundary || usesTaggedParamBoundary;
   const usesAnyHeapBoundary = usesHeapParamBoundary || usesHeapParamCopyBack ||
-    usesHeapResultBoundary;
+    usesHeapResultBoundary || usesHeapToHostArrayConversion;
   const usesAnyParamCopyBack = usesHeapParamCopyBack || usesStringParamCopyBack ||
     usesNumberParamCopyBack ||
     usesBooleanParamCopyBack || usesTaggedParamCopyBack || usesTaggedResultBoundary ||
@@ -198,8 +200,8 @@ export function emitArrayRuntimeImports(usage: ArrayRuntimeImportUsage): string[
         '(import "soundscript_array" "get" (func $host_array_get (param externref) (param i32) (result externref)))',
       ]
       : []),
-    ...(usesHeapResultBoundary || usesHeapParamCopyBack || usesStringParamBoundary ||
-        usesStringResultBoundary ||
+    ...(usesHeapResultBoundary || usesHeapParamCopyBack || usesHeapToHostArrayConversion ||
+        usesStringParamBoundary || usesStringResultBoundary ||
         usesTaggedParamBoundary || usesTaggedParamCopyBack || usesTaggedResultBoundary
       ? [
         '(import "soundscript_array" "push" (func $host_array_push (param externref) (param externref)))',
@@ -228,7 +230,8 @@ export function emitArrayRuntimeImports(usage: ArrayRuntimeImportUsage): string[
         '(import "soundscript_array" "push_boolean" (func $host_boolean_array_push (param externref) (param i32)))',
       ]
       : []),
-    ...(usesHeapResultBoundary || usesHeapParamCopyBack || usesStringResultBoundary ||
+    ...(usesHeapResultBoundary || usesHeapParamCopyBack || usesHeapToHostArrayConversion ||
+        usesStringResultBoundary ||
         usesTaggedParamCopyBack || usesTaggedResultBoundary
       ? ['(import "soundscript_array" "empty" (func $host_array_empty (result externref)))']
       : []),

@@ -9,6 +9,7 @@
       "DOM",
       "DOM.Iterable"
     ],
+    "jsxImportSource": "react",
     "module": "ESNext",
     "moduleResolution": "bundler",
     "allowSyntheticDefaultImports": true

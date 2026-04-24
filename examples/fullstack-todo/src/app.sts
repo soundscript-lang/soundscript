@@ -85,6 +85,29 @@ export function createTodos(
   ];
 }
 
+export function createTodosWithTitles(
+  firstTodoTitle: string,
+  firstTodoCompleted: boolean,
+  secondTodoTitle: string,
+  secondTodoCompleted: boolean,
+): TodoList {
+  const initialTodos = createInitialTodos();
+  const firstTodo = initialTodos[0];
+  const secondTodo = initialTodos[1];
+  return [
+    {
+      id: firstTodo.id,
+      title: firstTodoTitle,
+      completed: firstTodoCompleted,
+    },
+    {
+      id: secondTodo.id,
+      title: secondTodoTitle,
+      completed: secondTodoCompleted,
+    },
+  ];
+}
+
 interface TodoPageProps {
   todos: TodoList;
 }

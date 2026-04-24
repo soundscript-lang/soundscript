@@ -523,6 +523,162 @@ Deno.test('compiler debug snapshot captures project declaration files as importe
   );
 });
 
+Deno.test('shared semantic facts ignore dependency declarations under node_modules', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: {
+          strict: true,
+          module: 'NodeNext',
+          moduleResolution: 'NodeNext',
+          skipLibCheck: true,
+        },
+        files: ['main.ts', 'host.d.ts', 'node_modules/hostpkg/index.d.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        import type { External } from "hostpkg";
+
+        export function useExternal(value: External): number {
+          return value.count;
+        }
+      `,
+    },
+    {
+      path: 'host.d.ts',
+      contents: `
+        export declare function load(input: Map<string, number[]>): Promise<symbol>;
+      `,
+    },
+    {
+      path: 'node_modules/hostpkg/package.json',
+      contents: JSON.stringify({
+        name: 'hostpkg',
+        version: '1.0.0',
+        types: 'index.d.ts',
+      }),
+    },
+    {
+      path: 'node_modules/hostpkg/index.d.ts',
+      contents: `
+        export interface External {
+          count: number;
+        }
+
+        export declare function shouldNotBecomeBoundary(value: string): string;
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const facts = createSharedSemanticFactsFromProgram(program, tempDirectory);
+
+  assertEquals(
+    facts.boundarySurfaces.map((surface) => ({
+      direction: surface.direction,
+      fileName: surface.fileName.replace(tempDirectory, '<temp>'),
+      name: surface.name,
+    })),
+    [
+      {
+        direction: 'import',
+        fileName: '<temp>/host.d.ts',
+        name: 'load',
+      },
+      {
+        direction: 'export',
+        fileName: '<temp>/main.ts',
+        name: 'useExternal',
+      },
+    ],
+  );
+});
+
+Deno.test('shared semantic facts classify recursive aliases finitely', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: { strict: true },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        type Tree = string | readonly Tree[];
+        export type Target = Tree;
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const facts = createSharedSemanticFactsFromProgram(program, tempDirectory);
+
+  assertEquals(facts.typeSnapshots, [
+    {
+      kind: 'type_alias',
+      fileName: join(tempDirectory, 'main.ts'),
+      name: 'Tree',
+      type: {
+        kind: 'finite_union',
+        arms: [
+          { kind: 'array', element: { kind: 'host_handle' } },
+          { kind: 'string' },
+        ],
+      },
+    },
+    {
+      kind: 'type_alias',
+      fileName: join(tempDirectory, 'main.ts'),
+      name: 'Target',
+      type: {
+        kind: 'finite_union',
+        arms: [
+          { kind: 'array', element: { kind: 'host_handle' } },
+          { kind: 'string' },
+        ],
+      },
+    },
+  ]);
+});
+
+Deno.test('shared semantic facts keep external DOM objects as host handles', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: {
+          strict: true,
+          lib: ['ES2022', 'DOM'],
+        },
+        files: ['host.d.ts'],
+      }),
+    },
+    {
+      path: 'host.d.ts',
+      contents: `
+        export declare function getElement(): Element;
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const facts = createSharedSemanticFactsFromProgram(program, tempDirectory);
+
+  assertEquals(facts.boundarySurfaces, [
+    {
+      kind: 'function_boundary',
+      direction: 'import',
+      fileName: join(tempDirectory, 'host.d.ts'),
+      path: 'host.d.ts',
+      name: 'getElement',
+      params: [],
+      result: { kind: 'host_handle' },
+    },
+  ]);
+});
+
 Deno.test('compiler semantic union algebra flattens and structurally dedupes arms', () => {
   const boundary = normalizeSemanticUnionBoundary([
     { kind: 'number' },

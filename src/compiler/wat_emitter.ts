@@ -33344,6 +33344,8 @@ export function emitCompilerModuleToWat(module: CompilerModuleIR): string {
       usesHeapParamBoundary: moduleUsesOwnedHeapArrayHostParamBoundary(module),
       usesHeapParamCopyBack: moduleUsesOwnedHeapArrayHostParamCopyBack(module),
       usesHeapResultBoundary: moduleUsesOwnedHeapArrayHostResultBoundary(module),
+      usesHeapToHostArrayConversion: moduleUsesOwnedHeapArrayRuntime(module) &&
+        moduleUsesHostFallbackObjectBoundary(module),
       usesStringParamBoundary: moduleUsesOwnedArrayHostParamBoundary(module),
       usesStringParamCopyBack: moduleUsesOwnedArrayHostParamCopyBack(module),
       usesStringResultBoundary: moduleUsesOwnedArrayHostResultBoundary(module),

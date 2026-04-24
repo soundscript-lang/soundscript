@@ -1,5 +1,5 @@
 type ReactPrimitiveChild = string | number | bigint | boolean | null | undefined;
-type ReactElementType = string | ((props: any) => unknown);
+type ReactElementType = unknown;
 
 interface ReactElementShape {
   type: ReactElementType;

@@ -10384,37 +10384,66 @@ compilerIntegrationTest(
 compilerIntegrationTest(
   'checked-in sync-only Wasm flagship examples omit promise runtime and host promise bridges',
   async () => {
-    for (
-      const exampleName of [
-        'examples/react-browser-demo',
-        'examples/express-react-ssr-demo',
-        'examples/fullstack-todo',
-      ]
-    ) {
-      const { result, projectDirectory } = compileCheckedInProject(exampleName);
-      assertEquals(result.exitCode, 0, `${exampleName} should compile cleanly`);
-      assertEquals(result.diagnostics, [], `${exampleName} should compile without diagnostics`);
+    const examples = [
+      {
+        label: 'examples/react-browser-demo',
+        projectDirectory: getExampleProjectPath('examples/react-browser-demo'),
+        projectPath: join(getExampleProjectPath('examples/react-browser-demo'), 'tsconfig.json'),
+      },
+      {
+        label: 'examples/express-react-ssr-demo',
+        projectDirectory: getExampleProjectPath('examples/express-react-ssr-demo'),
+        projectPath: join(
+          getExampleProjectPath('examples/express-react-ssr-demo'),
+          'tsconfig.json',
+        ),
+      },
+      {
+        label: 'examples/express-react-ssr-demo browser',
+        projectDirectory: getExampleProjectPath('examples/express-react-ssr-demo'),
+        projectPath: join(
+          getExampleProjectPath('examples/express-react-ssr-demo'),
+          'browser.tsconfig.json',
+        ),
+      },
+      {
+        label: 'examples/fullstack-todo browser',
+        projectDirectory: getExampleProjectPath('examples/fullstack-todo'),
+        projectPath: join(
+          getExampleProjectPath('examples/fullstack-todo'),
+          'browser.tsconfig.json',
+        ),
+      },
+    ];
 
-      const watOutput = await readWatArtifactForProject(projectDirectory);
+    for (const example of examples) {
+      const result = compileProject({
+        projectPath: example.projectPath,
+        workingDirectory: example.projectDirectory,
+      });
+      assertEquals(result.exitCode, 0, `${example.label} should compile cleanly`);
+      assertEquals(result.diagnostics, [], `${example.label} should compile without diagnostics`);
+
+      const watOutput = await readWatArtifactForProject(example.projectDirectory);
       assertEquals(
         watOutput.includes('__soundscript_promise_new_pending'),
         false,
-        `${exampleName} should not emit internal promise runtime for sync-only example code`,
+        `${example.label} should not emit internal promise runtime for sync-only example code`,
       );
       assertEquals(
         watOutput.includes('$host_promise_to_internal'),
         false,
-        `${exampleName} should not emit host promise import bridges without Promise boundaries`,
+        `${example.label} should not emit host promise import bridges without Promise boundaries`,
       );
       assertEquals(
         watOutput.includes('$host_promise_to_host'),
         false,
-        `${exampleName} should not emit host promise export bridges without Promise boundaries`,
+        `${example.label} should not emit host promise export bridges without Promise boundaries`,
       );
       assertEquals(
         watOutput.includes('"soundscript_promise"'),
         false,
-        `${exampleName} should not import the shared Promise bridge module`,
+        `${example.label} should not import the shared Promise bridge module`,
       );
     }
   },
