@@ -2681,6 +2681,13 @@ function lowerStatement(
         if (arrayLocal) {
           context.arrayLocals.set(declaration.binding.name, arrayLocal);
         }
+        const objectLocal = declaration.initializer.kind === 'identifier' &&
+            value.representation === 'heap_ref'
+          ? context.objectLocals.get(declaration.initializer.name)
+          : undefined;
+        if (objectLocal) {
+          context.objectLocals.set(declaration.binding.name, objectLocal);
+        }
         return [...statements, { kind: 'local_set', name: declaration.binding.name, value }];
       });
     }
@@ -2730,6 +2737,15 @@ function lowerStatement(
             context.arrayLocals.set(target, arrayLocal);
           } else {
             context.arrayLocals.delete(target);
+          }
+          const objectLocal = assignment.right.kind === 'identifier' &&
+              value.representation === 'heap_ref'
+            ? context.objectLocals.get(assignment.right.name)
+            : undefined;
+          if (objectLocal) {
+            context.objectLocals.set(target, objectLocal);
+          } else {
+            context.objectLocals.delete(target);
           }
           return [...statements, { kind: 'local_set', name: target, value }];
         }
