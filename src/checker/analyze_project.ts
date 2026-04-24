@@ -697,6 +697,7 @@ function createPreparedProjectSessionFreshnessSignature(
 function createCurrentProjectSessionFreshnessSignature(
   options: AnalyzeProjectOptions,
   previousPreparedProject: PreparedAnalysisProject,
+  prepareOptions: PrepareProjectAnalysisOptions,
 ): string {
   const loadedConfig = loadConfig(
     options.projectPath,
@@ -719,12 +720,15 @@ function createCurrentProjectSessionFreshnessSignature(
   const typescriptRootNames = allRootNames.filter((fileName) =>
     !loadedConfig.isSoundscriptSourceFile(fileName)
   );
-  const typescriptReachableSoundscriptRootNames = collectSoundscriptDependenciesFromHostRoots(
-    typescriptRootNames,
-    loadedConfig.frontierCommandLine.options,
-    options.fileOverrides,
-    loadedConfig.isSoundscriptSourceFile,
-  );
+  const shouldDeferTypescriptView = prepareOptions.deferTypescriptView === true;
+  const typescriptReachableSoundscriptRootNames = shouldDeferTypescriptView
+    ? []
+    : collectSoundscriptDependenciesFromHostRoots(
+      typescriptRootNames,
+      loadedConfig.frontierCommandLine.options,
+      options.fileOverrides,
+      loadedConfig.isSoundscriptSourceFile,
+    );
   const stsProgramRootNames = combineRootNames(
     combineRootNames(soundscriptRootNames, typescriptReachableSoundscriptRootNames),
     declarationRootNames,
@@ -825,7 +829,11 @@ export class IncrementalProjectSession {
       analyzeProjectOptionsEqual(this.#optionsSnapshot, options) &&
       prepareProjectAnalysisOptionsEqual(this.#prepareOptions, prepareOptions) &&
       this.#preparedProjectFreshnessSignature ===
-        createCurrentProjectSessionFreshnessSignature(options, this.#preparedProject)
+        createCurrentProjectSessionFreshnessSignature(
+          options,
+          this.#preparedProject,
+          prepareOptions,
+        )
     ) {
       if (this.#prepareReferenceSessions(options)) {
         this.#analyzedProject = null;
@@ -1371,16 +1379,26 @@ function createModuleResolutionHostWithOverrides(
       [...fileOverrides.entries()].map(([fileName, text]) => [ts.sys.resolvePath(fileName), text]),
     )
     : new Map<string, string>();
+  const overrideFileNames = new Set(normalizedOverrides.keys());
+  const overrideDirectoryNames = new Set<string>();
+  for (const fileName of overrideFileNames) {
+    let directoryName = dirname(fileName);
+    while (!overrideDirectoryNames.has(directoryName)) {
+      overrideDirectoryNames.add(directoryName);
+      const parentDirectoryName = dirname(directoryName);
+      if (parentDirectoryName === directoryName) {
+        break;
+      }
+      directoryName = parentDirectoryName;
+    }
+  }
 
   return {
     directoryExists(directoryName) {
       const normalizedDirectoryName = ts.sys.resolvePath(directoryName);
       if (
-        [...normalizedOverrides.keys()].some((fileName) =>
-          fileName === normalizedDirectoryName ||
-          fileName.startsWith(`${normalizedDirectoryName}/`) ||
-          fileName.startsWith(`${normalizedDirectoryName}\\`)
-        )
+        overrideFileNames.has(normalizedDirectoryName) ||
+        overrideDirectoryNames.has(normalizedDirectoryName)
       ) {
         return true;
       }
@@ -3847,12 +3865,15 @@ export function prepareProjectAnalysis(
       const typescriptRootNames = allRootNames.filter((fileName) =>
         !loadedConfig.isSoundscriptSourceFile(fileName)
       );
-      const typescriptReachableSoundscriptRootNames = collectSoundscriptDependenciesFromHostRoots(
-        typescriptRootNames,
-        loadedConfig.frontierCommandLine.options,
-        options.fileOverrides,
-        loadedConfig.isSoundscriptSourceFile,
-      );
+      const shouldDeferTypescriptView = prepareOptions.deferTypescriptView === true;
+      const typescriptReachableSoundscriptRootNames = shouldDeferTypescriptView
+        ? []
+        : collectSoundscriptDependenciesFromHostRoots(
+          typescriptRootNames,
+          loadedConfig.frontierCommandLine.options,
+          options.fileOverrides,
+          loadedConfig.isSoundscriptSourceFile,
+        );
       const projectedSoundscriptRootNames = combineRootNames(
         soundscriptRootNames,
         typescriptReachableSoundscriptRootNames,
@@ -3968,7 +3989,6 @@ export function prepareProjectAnalysis(
           { always: true },
         );
       })();
-      const shouldDeferTypescriptView = prepareOptions.deferTypescriptView === true;
       if (shouldDeferTypescriptView) {
         const canReuseLocalProjectedDeclarationOverrides = canReuseStsArtifacts &&
           reusableProject?.localProjectedDeclarationOverrides !== undefined;
@@ -4478,7 +4498,7 @@ function collectPreparedProjectDiagnosticPathsForFile(
     : [filePath];
 }
 
-function collectPreparedProjectCacheDependencyPathsForFile(
+export function collectPreparedProjectCacheDependencyPathsForFile(
   preparedProject: PreparedAnalysisProject,
   filePath: string,
 ): readonly string[] {

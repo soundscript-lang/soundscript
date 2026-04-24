@@ -53,10 +53,10 @@ function createWorkerContext(): WorkerContext {
   };
 }
 
-async function loadedConfigForProject(
+function loadedConfigForProject(
   context: WorkerContext,
   projectPath: string,
-): Promise<LoadedConfig> {
+): LoadedConfig {
   const cached = context.loadedConfigs.get(projectPath);
   if (cached) {
     return cached;
@@ -118,12 +118,12 @@ function fileOverridesForProject(
   return overrides;
 }
 
-async function additionalRootNamesForProject(
+function additionalRootNamesForProject(
   context: WorkerContext,
   projectPath: string,
-): Promise<readonly string[]> {
+): readonly string[] {
   const projectDirectory = dirname(projectPath);
-  const loadedConfig = await loadedConfigForProject(context, projectPath);
+  const loadedConfig = loadedConfigForProject(context, projectPath);
   return [...context.documents.keys()]
     .filter((filePath) =>
       filePath.startsWith(projectDirectory) && loadedConfig.isSoundscriptSourceFile(filePath)
@@ -131,10 +131,10 @@ async function additionalRootNamesForProject(
     .sort();
 }
 
-async function handleRequest(
+function handleRequest(
   context: WorkerContext,
   request: JsonRpcLikeRequest,
-): Promise<unknown> {
+): unknown {
   switch (request.method) {
     case 'initialize':
       return { ok: true };
@@ -173,8 +173,9 @@ async function handleRequest(
         throw new Error('diagnostics requires filePath and projectPath.');
       }
 
+      const loadedConfig = loadedConfigForProject(context, projectPath);
       const fileOverrides = fileOverridesForProject(context, projectPath);
-      const additionalRootNames = await additionalRootNamesForProject(context, projectPath);
+      const additionalRootNames = additionalRootNamesForProject(context, projectPath);
       const cachedProject = context.projects.get(projectPath) ?? {
         analysisSession: new IncrementalProjectSession(),
       };
@@ -185,6 +186,7 @@ async function handleRequest(
           projectPath,
           workingDirectory: dirname(projectPath),
         },
+        { deferTypescriptView: loadedConfig.isSoundscriptSourceFile(filePath) },
       );
       const analyzedProject = cachedProject.analysisSession.analyzeFile(filePath);
       context.projects.set(projectPath, cachedProject);
@@ -239,7 +241,7 @@ export async function runEditorDiagnosticsWorker(
         }
 
         try {
-          const result = await handleRequest(context, request);
+          const result = handleRequest(context, request);
           await writeResponse(writer, {
             id: request.id,
             result,

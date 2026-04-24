@@ -1143,6 +1143,82 @@ Deno.test('prepareProjectAnalysis can defer the ts view for .sts-local work', as
   assertEquals(preparedProject.tsView, null);
 });
 
+Deno.test('prepareProjectAnalysis does not scan host-only roots when the ts view is deferred', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+          moduleResolution: 'Bundler',
+          allowImportingTsExtensions: true,
+        },
+        include: ['src/host.ts', 'src/sound.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/host.ts': 'import { hidden } from "./hidden.sts";\nvoid hidden;\n',
+    'src/hidden.sts': 'export const hidden = Object.create(null);\n',
+    'src/sound.sts': 'export const value: number = 1;\n',
+  });
+
+  const preparedProject = prepareProjectAnalysis(
+    {
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    },
+    undefined,
+    { deferTypescriptView: true },
+  );
+
+  assert(preparedProject.stsView !== null);
+  assertEquals(preparedProject.tsView, null);
+  assertEquals(
+    preparedProject.stsProgramRootNames,
+    [join(tempDirectory, 'src/sound.sts')],
+  );
+});
+
+Deno.test('IncrementalProjectSession reuses deferred prepared projects without scanning host-only roots', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+          moduleResolution: 'Bundler',
+          allowImportingTsExtensions: true,
+        },
+        include: ['src/host.ts', 'src/sound.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/host.ts': 'import { hidden } from "./hidden.sts";\nvoid hidden;\n',
+    'src/hidden.sts': 'export const hidden = Object.create(null);\n',
+    'src/sound.sts': 'export const value: number = 1;\n',
+  });
+  const session = new IncrementalProjectSession();
+  const options = {
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  };
+
+  const firstPreparedProject = session.prepare(options, { deferTypescriptView: true });
+  const secondPreparedProject = session.prepare(options, { deferTypescriptView: true });
+
+  assertStrictEquals(secondPreparedProject, firstPreparedProject);
+  assertEquals(
+    secondPreparedProject.stsProgramRootNames,
+    [join(tempDirectory, 'src/sound.sts')],
+  );
+});
+
 Deno.test('prepareProjectAnalysis skips local projection work for pure local .sts projects', async () => {
   const tempDirectory = await createTempProject({
     'tsconfig.json': JSON.stringify(

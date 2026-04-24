@@ -286,6 +286,84 @@ Deno.test('editor diagnostics worker treats configured TypeScript files from sou
   }
 });
 
+Deno.test('editor diagnostics worker defers the host TypeScript view for file-local soundscript diagnostics', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.ts'],
+        soundscript: {
+          include: ['src/sound.ts'],
+        },
+      },
+      null,
+      2,
+    ),
+    'src/host.ts': [
+      'export const value: number = 1;',
+      'void value;',
+      '',
+    ].join('\n'),
+    'src/sound.ts': [
+      'const dict = Object.create(null);',
+      'const plain: object = dict;',
+      'void plain;',
+      '',
+    ].join('\n'),
+  });
+
+  const projectPath = join(tempDirectory, 'tsconfig.json');
+  const filePath = join(tempDirectory, 'src/sound.ts');
+  const worker = await startWorkerHarness();
+  const originalTimingEnv = Deno.env.get('SOUNDSCRIPT_CHECKER_TIMING');
+  const originalError = console.error;
+  const logs: string[] = [];
+  console.error = (...args: unknown[]) => {
+    logs.push(args.map((arg) => String(arg)).join(' '));
+  };
+
+  try {
+    Deno.env.set('SOUNDSCRIPT_CHECKER_TIMING', '1');
+    const initializeResponse = await worker.request('initialize');
+    assertEquals(initializeResponse.error, undefined);
+
+    const syncResponse = await worker.request('syncDocument', {
+      filePath,
+      text: await Deno.readTextFile(filePath),
+      version: 1,
+    });
+    assertEquals(syncResponse.error, undefined);
+
+    const diagnosticsResponse = await worker.request('diagnostics', {
+      filePath,
+      projectPath,
+    });
+    assertEquals(diagnosticsResponse.error, undefined);
+    assertEquals(
+      normalizeSerializedDiagnostics(diagnosticsResponse.result?.diagnostics ?? [])
+        .map((diagnostic) => diagnostic.code),
+      ['SOUND1024'],
+    );
+    assertEquals(
+      logs.some((line) => line.includes('[soundscript:checker] project.prepare.hostView ')),
+      false,
+    );
+  } finally {
+    if (originalTimingEnv === undefined) {
+      Deno.env.delete('SOUNDSCRIPT_CHECKER_TIMING');
+    } else {
+      Deno.env.set('SOUNDSCRIPT_CHECKER_TIMING', originalTimingEnv);
+    }
+    console.error = originalError;
+    await worker.close();
+  }
+});
+
 Deno.test('editor diagnostics worker does not leak sibling diagnostics onto a clean barrel file', async () => {
   const tempDirectory = await createTempProject({
     'tsconfig.json': JSON.stringify(
