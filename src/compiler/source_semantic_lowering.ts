@@ -2366,6 +2366,18 @@ function addInlineSourceName(
   return internalName;
 }
 
+function rejectUnsupportedClassRuntimeHeritage(
+  classInfo: SourceClassIR,
+  context: FunctionLoweringContext,
+): boolean {
+  const runtimeHeritage = classInfo.heritage.find((heritage) => heritage.kind === 'extends');
+  if (!runtimeHeritage) {
+    return false;
+  }
+  context.unsupportedKinds.add(`class_heritage:${classInfo.name}`);
+  return true;
+}
+
 function lowerClassConstructionDeclaration(
   targetName: string,
   initializer: Extract<SourceExpressionIR, { kind: 'new_expression' }>,
@@ -2379,6 +2391,9 @@ function lowerClassConstructionDeclaration(
   }
   const classInfo = context.classesByName.get(className);
   if (!classInfo) {
+    return undefined;
+  }
+  if (rejectUnsupportedClassRuntimeHeritage(classInfo, context)) {
     return undefined;
   }
   const unsupportedMember = classInfo.members.find((member) =>
@@ -2547,6 +2562,9 @@ function lowerClassStaticPropertyAccessExpression(
   if (!classInfo) {
     return undefined;
   }
+  if (rejectUnsupportedClassRuntimeHeritage(classInfo, context)) {
+    return undefined;
+  }
   const property = classInfo.members.find((
     member,
   ): member is Extract<SourceClassMemberIR, { kind: 'property' }> =>
@@ -2574,6 +2592,9 @@ function lowerClassStaticMethodCallExpression(
     return undefined;
   }
   const classInfo = context.classesByName.get(callee.object.name);
+  if (classInfo && rejectUnsupportedClassRuntimeHeritage(classInfo, context)) {
+    return undefined;
+  }
   const method = classInfo?.members.find((
     member,
   ): member is Extract<SourceClassMemberIR, { kind: 'method' }> =>
@@ -2686,6 +2707,9 @@ function lowerClassMethodCallExpression(
   const objectLocal = context.objectLocals.get(objectName);
   const className = objectLocal?.className;
   const classInfo = className ? context.classesByName.get(className) : undefined;
+  if (classInfo && rejectUnsupportedClassRuntimeHeritage(classInfo, context)) {
+    return undefined;
+  }
   const method = classInfo?.members.find((
     member,
   ): member is Extract<SourceClassMemberIR, { kind: 'method' }> =>

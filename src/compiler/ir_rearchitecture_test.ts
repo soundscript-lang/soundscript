@@ -1217,6 +1217,87 @@ Deno.test('compiler SourceHIR semantic lowering captures primitive function bodi
   assertEquals(addPlan?.unsupportedBodyKinds, []);
 });
 
+Deno.test('compiler SourceHIR captures class heritage facts before lowering policy', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: { strict: true },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        interface Named {
+          value: number;
+        }
+
+        class Base {
+          value: number = 1;
+        }
+
+        class Child extends Base implements Named {
+          extra: number = 2;
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const source = createSourceHIRFromProgram(program, tempDirectory);
+  const child = source.modules[0]?.classes.find((classInfo) => classInfo.name === 'Child');
+
+  assertEquals(child?.heritage.map((heritage) => ({
+    kind: heritage.kind,
+    typeName: heritage.typeName,
+    text: heritage.text,
+  })), [
+    { kind: 'extends', typeName: 'Base', text: 'Base' },
+    { kind: 'implements', typeName: 'Named', text: 'Named' },
+  ]);
+});
+
+Deno.test('compiler SourceHIR semantic lowering rejects inherited class construction explicitly', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: { strict: true },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        class Base {
+          value: number = 1;
+        }
+
+        class Child extends Base {
+          extra: number = 2;
+        }
+
+        export function score(): number {
+          const child = new Child();
+          return 0;
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createSourceSemanticSnapshot(program, tempDirectory);
+  const semantic = createSemanticModuleFromSourceHIR(snapshot.source, snapshot.sharedFacts);
+  const manifest = createRuntimeManifestFromSemanticModule(semantic);
+  const plan = createWasmGcModulePlan(semantic, manifest);
+  const score = semantic.functions.find((func) => func.name === 'score');
+  const scorePlan = plan.functionPlans.find((func) => func.name === 'score');
+
+  assertEquals(score?.bodyStatus, 'stub');
+  assertEquals(score?.unsupportedBodyKinds, ['class_heritage:Child']);
+  assertEquals(scorePlan?.bodyStatus, 'stub');
+  assertEquals(scorePlan?.unsupportedBodyKinds, ['class_heritage:Child']);
+});
+
 Deno.test('compileProject selects the source-hir wasm-gc plan for pure core scalar modules', async () => {
   const tempDirectory = await createTempProject([
     {

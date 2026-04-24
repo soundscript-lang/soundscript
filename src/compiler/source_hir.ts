@@ -34,7 +34,15 @@ export interface SourceClassIR {
   kind: 'source_class';
   name: string;
   exported: boolean;
+  heritage: SourceClassHeritageIR[];
   members: SourceClassMemberIR[];
+  span: SourceSpanIR;
+}
+
+export interface SourceClassHeritageIR {
+  kind: 'extends' | 'implements';
+  typeName: string;
+  text: string;
   span: SourceSpanIR;
 }
 
@@ -1006,11 +1014,26 @@ function lowerClassMember(sourceFile: ts.SourceFile, member: ts.ClassElement): S
   };
 }
 
+function lowerClassHeritage(
+  sourceFile: ts.SourceFile,
+  clause: ts.HeritageClause,
+): SourceClassHeritageIR[] {
+  const kind = clause.token === ts.SyntaxKind.ExtendsKeyword ? 'extends' : 'implements';
+  return clause.types.map((type) => ({
+    kind,
+    typeName: type.expression.getText(sourceFile),
+    text: type.getText(sourceFile),
+    span: spanOf(sourceFile, type),
+  }));
+}
+
 function lowerClass(sourceFile: ts.SourceFile, node: ts.ClassDeclaration): SourceClassIR {
   return {
     kind: 'source_class',
     name: node.name?.text ?? '<anonymous>',
     exported: hasModifier(node, ts.SyntaxKind.ExportKeyword),
+    heritage: node.heritageClauses?.flatMap((clause) => lowerClassHeritage(sourceFile, clause)) ??
+      [],
     members: node.members.map((member) => lowerClassMember(sourceFile, member)),
     span: spanOf(sourceFile, node),
   };
