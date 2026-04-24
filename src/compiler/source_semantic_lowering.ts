@@ -375,6 +375,44 @@ function arrayElementSetStatementForLocal(
   return undefined;
 }
 
+function lowerBooleanLogicalExpression(
+  expression: Extract<SourceExpressionIR, { kind: 'logical_expression' }>,
+  context: FunctionLoweringContext,
+): SemanticExpressionIR | undefined {
+  if (expression.operator !== '&&' && expression.operator !== '||') {
+    return undefined;
+  }
+  const left = lowerExpression(expression.left, context);
+  const leftStatements = takePendingStatements(context);
+  const right = lowerExpression(expression.right, context);
+  const rightStatements = takePendingStatements(context);
+  if (left.representation !== 'i32' || right.representation !== 'i32') {
+    return undefined;
+  }
+  const resultName = nextTempLocalName(context, 'logical');
+  addLocal(context, resultName, 'i32');
+  const result: SemanticExpressionIR = {
+    kind: 'local_get',
+    name: resultName,
+    representation: 'i32',
+  };
+  context.pendingStatements.push(
+    ...leftStatements,
+    { kind: 'local_set', name: resultName, value: left },
+    {
+      kind: 'if',
+      condition: result,
+      thenBody: expression.operator === '&&'
+        ? [...rightStatements, { kind: 'local_set', name: resultName, value: right }]
+        : [],
+      elseBody: expression.operator === '||'
+        ? [...rightStatements, { kind: 'local_set', name: resultName, value: right }]
+        : [],
+    },
+  );
+  return result;
+}
+
 function lowerExpression(
   expression: SourceExpressionIR,
   context: FunctionLoweringContext,
@@ -565,6 +603,14 @@ function lowerExpression(
         right,
         representation: binary.representation,
       };
+    }
+    case 'logical_expression': {
+      const logical = lowerBooleanLogicalExpression(expression, context);
+      if (logical) {
+        return logical;
+      }
+      context.unsupportedKinds.add(`logical_expression:${expression.operator}`);
+      return { kind: 'undefined_literal', representation: 'tagged_ref' };
     }
     default:
       context.unsupportedKinds.add(expression.kind);
@@ -800,10 +846,11 @@ function lowerStatement(
     }
     case 'if': {
       const condition = lowerExpression(statement.test, context);
+      const conditionStatements = takePendingStatements(context);
       if (condition.representation !== 'i32') {
         context.unsupportedKinds.add('if_condition');
       }
-      return [{
+      return [...conditionStatements, {
         kind: 'if',
         condition,
         thenBody: statement.consequent.flatMap((child) => [...lowerStatement(child, context)]),
@@ -812,13 +859,17 @@ function lowerStatement(
     }
     case 'while': {
       const condition = lowerExpression(statement.test, context);
+      const conditionStatements = takePendingStatements(context);
       if (condition.representation !== 'i32') {
         context.unsupportedKinds.add('while_condition');
       }
-      return [{
+      return [...conditionStatements, {
         kind: 'while',
         condition,
-        body: statement.body.flatMap((child) => [...lowerStatement(child, context)]),
+        body: [
+          ...statement.body.flatMap((child) => [...lowerStatement(child, context)]),
+          ...conditionStatements,
+        ],
       }];
     }
     case 'for_of': {

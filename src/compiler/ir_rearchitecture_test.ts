@@ -1033,6 +1033,99 @@ Deno.test('compiler SourceHIR semantic lowering preserves primitive structured c
   assertEquals(sumDown?.body.some((statement) => statement.kind === 'while'), true);
 });
 
+Deno.test('compiler SourceHIR semantic lowering emits runnable boolean logical expressions', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: { strict: true },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        function all(left: number, right: number): boolean {
+          return left > 0 && right > 0;
+        }
+
+        function any(left: number, right: number): boolean {
+          return left > 0 || right > 0;
+        }
+
+        export function cappedLoop(limit: number): number {
+          let current = limit;
+          let total = 0;
+          while (current > 0 && total < 3) {
+            total = total + 1;
+            current = current - 1;
+          }
+          return total;
+        }
+
+        export function score(left: number, right: number, fallback: number): number {
+          let total = 0;
+          if (left > 0 && right > 0) {
+            total = total + 10;
+          }
+          if (left > 0 || fallback > 0) {
+            total = total + 3;
+          }
+          if (all(left, right) || any(right, fallback)) {
+            total = total + 2;
+          }
+          return total;
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createCompilerIrDebugSnapshot(program, tempDirectory);
+  const semantic = createSemanticModuleFromSourceHIR(snapshot.source, snapshot.sharedFacts);
+  const manifest = createRuntimeManifestFromSemanticModule(semantic);
+  const plan = createWasmGcModulePlan(semantic, manifest);
+  const allPlan = plan.functionPlans.find((func) => func.name === 'all');
+  const anyPlan = plan.functionPlans.find((func) => func.name === 'any');
+  const cappedLoopPlan = plan.functionPlans.find((func) => func.name === 'cappedLoop');
+  const scorePlan = plan.functionPlans.find((func) => func.name === 'score');
+  const watPath = join(tempDirectory, 'wasm-gc-source-logical.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-source-logical.wasm');
+
+  assertEquals(manifest.familyRequirements, []);
+  assertEquals(allPlan?.bodyStatus, 'emittable');
+  assertEquals(anyPlan?.bodyStatus, 'emittable');
+  assertEquals(cappedLoopPlan?.bodyStatus, 'emittable');
+  assertEquals(scorePlan?.bodyStatus, 'emittable');
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(plan));
+  const result = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(result.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(result.success, true);
+
+  const wasm = await Deno.readFile(wasmPath);
+  const instance = await WebAssembly.instantiate(wasm);
+  const score = instance.instance.exports['main.ts:score'];
+  const cappedLoop = instance.instance.exports['main.ts:cappedLoop'];
+  assertEquals(typeof score, 'function');
+  assertEquals(typeof cappedLoop, 'function');
+  assertEquals((cappedLoop as (limit: number) => number)(5), 3);
+  assertEquals((cappedLoop as (limit: number) => number)(2), 2);
+  assertEquals((score as (left: number, right: number, fallback: number) => number)(1, 2, 0), 15);
+  assertEquals((score as (left: number, right: number, fallback: number) => number)(1, -1, 0), 3);
+  assertEquals(
+    (score as (left: number, right: number, fallback: number) => number)(-1, -1, 4),
+    5,
+  );
+  assertEquals(
+    (score as (left: number, right: number, fallback: number) => number)(-1, -1, 0),
+    0,
+  );
+});
+
 Deno.test('compiler SourceHIR semantic lowering emits runnable string body runtime families', async () => {
   const tempDirectory = await createTempProject([
     {
