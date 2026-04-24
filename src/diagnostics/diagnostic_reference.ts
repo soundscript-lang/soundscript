@@ -128,7 +128,8 @@ const DIAGNOSTIC_REFERENCES = {
   SOUND1004: {
     code: 'SOUND1004',
     title: 'Numeric enums are banned',
-    summary: 'Numeric enums create broad implicit conversions that conflict with the soundscript subset.',
+    summary:
+      'Numeric enums create broad implicit conversions that conflict with the soundscript subset.',
     repairHeuristic:
       'Replace numeric enums with string literal unions or explicit tagged objects so the runtime representation stays precise and does not rely on implicit numeric conversion behavior.',
     details: [
@@ -1522,6 +1523,34 @@ const DIAGNOSTIC_REFERENCES = {
         title: 'Inspect the failing macro boundary',
         message:
           'Check the macro invocation, its operand types, and any imported macro bindings near the reported span.',
+      },
+    ],
+  },
+  SOUNDSCRIPT_MACRO_RECURSION_LIMIT: {
+    code: 'SOUNDSCRIPT_MACRO_RECURSION_LIMIT',
+    title: 'Macro expansion recursion limit reached',
+    summary: 'A generated macro invocation remained after the configured recursion limit was used.',
+    details: [],
+    suggestions: [
+      {
+        applicability: 'manual',
+        title: 'Increase the recursion limit or remove the generated macro',
+        message:
+          'Raise `macroExpansionRecursionLimit` when another generated stdlib macro expansion round is expected.',
+      },
+    ],
+  },
+  SOUNDSCRIPT_MACRO_GENERATED_NON_STDLIB: {
+    code: 'SOUNDSCRIPT_MACRO_GENERATED_NON_STDLIB',
+    title: 'Generated macro is not stdlib-owned',
+    summary: 'A macro emitted a user or package macro invocation, which is not enabled yet.',
+    details: [],
+    suggestions: [
+      {
+        applicability: 'manual',
+        title: 'Emit a stdlib macro or ordinary code',
+        message:
+          'Only compiler-owned stdlib macros may be emitted by macros in this release; expand user macro output directly instead.',
       },
     ],
   },

@@ -13,6 +13,8 @@ import {
   MACRO_API_MODULE_SPECIFIER,
   withMacroApiModuleResolution,
 } from './macro_api_module_support.ts';
+import { createExpandAdvancedMacroPlaceholderFromDefinition } from './macro_advanced_backend_adapter.ts';
+import { createExpandMacroPlaceholderFromDefinition } from './macro_backend_adapter.ts';
 import {
   collectNamedMacroDefinitions,
   collectNamedMacroExports,
@@ -47,6 +49,7 @@ import {
   toSourceFileName,
 } from './project_frontend.ts';
 import { MacroError } from './macro_errors.ts';
+import type { ParsedMacroInvocation } from './macro_types.ts';
 
 type RewriteMacroExpander = LoadedNamedMacroExports['rewrite'] extends ReadonlyMap<string, infer T>
   ? T
@@ -137,6 +140,7 @@ const STABLE_PROJECT_MACRO_ENVIRONMENT_REUSE_STATE = new WeakMap<
   StableProjectMacroEnvironmentReuseState
 >();
 
+const DEFAULT_MACRO_EXPANSION_RECURSION_LIMIT = 1;
 const PRESERVED_IMPORTED_MACRO_BINDINGS = new Set(['Do']);
 const UNSUPPORTED_AMBIENT_MACRO_GLOBALS = new Set([
   'Bun',
@@ -208,6 +212,8 @@ const MACRO_GRAPH_ERROR_CODES = {
   nonSoundscriptDependency: 'SOUNDSCRIPT_MACRO_NON_SOUNDSCRIPT_DEPENDENCY',
   unsupportedSourceKind: 'SOUNDSCRIPT_MACRO_UNSUPPORTED_SOURCE_KIND',
 } as const;
+const GENERATED_MACRO_RECURSION_LIMIT_CODE = 'SOUNDSCRIPT_MACRO_RECURSION_LIMIT';
+const GENERATED_NON_STDLIB_MACRO_CODE = 'SOUNDSCRIPT_MACRO_GENERATED_NON_STDLIB';
 
 function unsupportedAmbientMacroGlobalError(fileName: string, name: string): Error {
   return new Error(
@@ -285,6 +291,7 @@ export interface ProjectMacroEnvironment {
 
 export interface CreateProjectMacroEnvironmentOptions {
   readonly deferToSemanticExpansion?: boolean;
+  readonly macroExpansionRecursionLimit?: number;
 }
 
 type MacroMutableContainerKind =
@@ -314,6 +321,16 @@ function getStableProjectMacroEnvironmentReuseState(
   };
   STABLE_PROJECT_MACRO_ENVIRONMENT_REUSE_STATE.set(reuseState, nextState);
   return nextState;
+}
+
+function normalizeMacroExpansionRecursionLimit(limit: number | undefined): number {
+  if (limit === undefined) {
+    return DEFAULT_MACRO_EXPANSION_RECURSION_LIMIT;
+  }
+  if (!Number.isInteger(limit) || limit < 0) {
+    throw new Error('macroExpansionRecursionLimit must be a non-negative integer.');
+  }
+  return limit;
 }
 
 function serializeCachedPerFileMacroBindingPlanEntry(
@@ -979,6 +996,9 @@ export function createProjectMacroEnvironment(
     alwaysAvailableDefinitions,
     alwaysAvailableExports,
   );
+  const macroExpansionRecursionLimit = normalizeMacroExpansionRecursionLimit(
+    options.macroExpansionRecursionLimit,
+  );
   const stableReuseState = getStableProjectMacroEnvironmentReuseState(
     preparedProgram.preparedHost.reuseState,
   );
@@ -1034,6 +1054,7 @@ export function createProjectMacroEnvironment(
       preserveRemovedImportStatements ? 'preserveImports:1' : 'preserveImports:0',
       preserveMissingExpanders ? 'preserveMissing:1' : 'preserveMissing:0',
       annotateExpansions ? 'annotate:1' : 'annotate:0',
+      `macroExpansionRecursionLimit:${macroExpansionRecursionLimit}`,
     ].join('\u0003');
   }
 
@@ -1278,6 +1299,7 @@ export function createProjectMacroEnvironment(
       preserveRemovedImportStatements ? 'preserveImports:1' : 'preserveImports:0',
       preserveMissingExpanders ? 'preserveMissing:1' : 'preserveMissing:0',
       annotateExpansions ? 'annotate:1' : 'annotate:0',
+      `macroExpansionRecursionLimit:${macroExpansionRecursionLimit}`,
       preparedSource?.originalText ?? sourceFile.text,
       sourceFile.text,
       expansionDependencySignature,
@@ -1293,6 +1315,346 @@ export function createProjectMacroEnvironment(
       'plain',
       preparedSource?.originalText ?? sourceFile.text,
     ].join('\u0003');
+  }
+
+  let generatedExpansionBuiltinMacroSiteKindsBySpecifier:
+    | ReadonlyMap<string, ReadonlyMap<string, ImportedMacroSiteKind>>
+    | undefined;
+
+  function builtinMacroSiteKindsForGeneratedExpansion(): ReadonlyMap<
+    string,
+    ReadonlyMap<string, ImportedMacroSiteKind>
+  > {
+    if (generatedExpansionBuiltinMacroSiteKindsBySpecifier) {
+      return generatedExpansionBuiltinMacroSiteKindsBySpecifier;
+    }
+
+    const siteKindsBySpecifier = new Map<string, Map<string, ImportedMacroSiteKind>>();
+    for (const [specifier, definitions] of builtinDefinitionsBySpecifier.entries()) {
+      const siteKinds = new Map<string, ImportedMacroSiteKind>();
+      for (const [exportName, definition] of definitions.entries()) {
+        const metadata = getLoadedMacroDefinitionMetadata(definition);
+        if (metadata) {
+          siteKinds.set(exportName, macroSiteKindForFactoryForm(metadata.form));
+        }
+      }
+      if (siteKinds.size > 0) {
+        siteKindsBySpecifier.set(specifier, siteKinds);
+      }
+    }
+
+    generatedExpansionBuiltinMacroSiteKindsBySpecifier = siteKindsBySpecifier;
+    return siteKindsBySpecifier;
+  }
+
+  function createGeneratedMacroError(
+    sourceText: string,
+    invocation: ParsedMacroInvocation,
+    code: string,
+    message: string,
+  ): MacroError {
+    const start = getLineAndColumn(sourceText, invocation.nameSpan.start);
+    const end = getLineAndColumn(sourceText, invocation.nameSpan.end);
+    return new MacroError(message, {
+      code,
+      column: start.column,
+      endColumn: end.column,
+      endLine: end.line,
+      filePath: invocation.nameSpan.fileName,
+      line: start.line,
+      macroName: invocation.nameText,
+    });
+  }
+
+  function createGeneratedExpansionBaseHost(
+    fileOverrides: ReadonlyMap<string, string>,
+  ): ts.CompilerHost {
+    const baseHost = preparedProgram.preparedHost.host;
+    const readOriginalText = (fileName: string): string | undefined => {
+      const sourceFileName = preparedProgram.toSourceFileName(fileName);
+      const override = fileOverrides.get(sourceFileName);
+      if (override !== undefined) {
+        return override;
+      }
+      const preparedSource = preparedProgram.preparedHost.getPreparedSourceFile(sourceFileName);
+      if (preparedSource) {
+        return preparedSource.originalText;
+      }
+      return baseHost.readFile(sourceFileName) ?? baseHost.readFile(fileName);
+    };
+
+    return {
+      ...baseHost,
+      fileExists(fileName: string): boolean {
+        const sourceFileName = preparedProgram.toSourceFileName(fileName);
+        return fileOverrides.has(sourceFileName) ||
+          preparedProgram.preparedHost.getPreparedSourceFile(sourceFileName) !== undefined ||
+          baseHost.fileExists(sourceFileName) ||
+          baseHost.fileExists(fileName);
+      },
+      getSourceFile(
+        fileName: string,
+        languageVersion: ts.ScriptTarget | ts.CreateSourceFileOptions,
+        onError?: (message: string) => void,
+        shouldCreateNewSourceFile?: boolean,
+      ): ts.SourceFile | undefined {
+        const sourceText = readOriginalText(fileName);
+        if (sourceText === undefined) {
+          return baseHost.getSourceFile(
+            fileName,
+            languageVersion,
+            onError,
+            shouldCreateNewSourceFile,
+          );
+        }
+        return ts.createSourceFile(
+          fileName,
+          sourceText,
+          languageVersion,
+          true,
+          scriptKindForHostFile(fileName),
+        );
+      },
+      readFile: readOriginalText,
+    };
+  }
+
+  function createGeneratedExpansionPreparedProgram(
+    sourceFileName: string,
+    sourceText: string,
+  ): PreparedProgram {
+    const fileOverrides = new Map([[sourceFileName, sourceText]]);
+    return createPreparedProgram({
+      alwaysAvailableMacroSiteKinds,
+      baseHost: createGeneratedExpansionBaseHost(fileOverrides),
+      configuredSoundscriptFileNames: preparedProgram.configuredSoundscriptFileNames,
+      fileOverrides,
+      importedMacroSiteKindsBySpecifier: builtinMacroSiteKindsForGeneratedExpansion(),
+      options: preparedProgram.options,
+      rootNames: [sourceFileName],
+      runtime: preparedProgram.runtime,
+    });
+  }
+
+  function addGeneratedStdlibMacroBinding(
+    target: {
+      advancedRegistry: Map<string, AdvancedMacroExpander>;
+      definitions: Map<string, MacroDefinition>;
+      registry: Map<string, RewriteMacroExpander>;
+      siteKindsBySpecifier: Map<string, Map<string, ImportedMacroSiteKind>>;
+    },
+    preparedForGeneratedExpansion: PreparedProgram,
+    localName: string,
+    exportName: string,
+    definition: MacroDefinition,
+    specifier?: string,
+  ): void {
+    if (target.definitions.has(localName)) {
+      return;
+    }
+
+    target.definitions.set(localName, definition);
+    target.registry.set(
+      localName,
+      createExpandMacroPlaceholderFromDefinition(
+        definition,
+        exportName,
+        preparedForGeneratedExpansion,
+        {
+          deferToSemanticExpansion: options.deferToSemanticExpansion,
+        },
+      ),
+    );
+    target.advancedRegistry.set(
+      localName,
+      createExpandAdvancedMacroPlaceholderFromDefinition(
+        preparedForGeneratedExpansion,
+        definition,
+        exportName,
+      ),
+    );
+
+    const metadata = getLoadedMacroDefinitionMetadata(definition);
+    if (!specifier || !metadata) {
+      return;
+    }
+    let siteKinds = target.siteKindsBySpecifier.get(specifier);
+    if (!siteKinds) {
+      siteKinds = new Map();
+      target.siteKindsBySpecifier.set(specifier, siteKinds);
+    }
+    siteKinds.set(exportName, macroSiteKindForFactoryForm(metadata.form));
+  }
+
+  function buildGeneratedStdlibOnlyBindings(
+    preparedForGeneratedExpansion: PreparedProgram,
+    sourceFile: ts.SourceFile,
+    sourceText: string,
+    invocations: readonly ParsedMacroInvocation[],
+  ): PerFileMacroBindings {
+    const registries = {
+      advancedRegistry: new Map<string, AdvancedMacroExpander>(),
+      definitions: new Map<string, MacroDefinition>(),
+      registry: new Map<string, RewriteMacroExpander>(),
+      siteKindsBySpecifier: new Map<string, Map<string, ImportedMacroSiteKind>>(),
+    };
+    const importedBindingsByLocalName = new Map(
+      collectImportedNamedBindings(sourceFile.fileName, sourceText).map((binding) =>
+        [binding.localName, binding] as const
+      ),
+    );
+
+    for (const invocation of invocations) {
+      const macroName = invocation.nameText;
+      const alwaysAvailableDefinition = loadedAlwaysAvailableDefinition(macroName);
+      if (alwaysAvailableDefinition) {
+        addGeneratedStdlibMacroBinding(
+          registries,
+          preparedForGeneratedExpansion,
+          macroName,
+          macroName,
+          alwaysAvailableDefinition,
+        );
+        continue;
+      }
+
+      const importedBinding = importedBindingsByLocalName.get(macroName);
+      const builtinDefinitions = importedBinding
+        ? builtinDefinitionsBySpecifier.get(importedBinding.specifier)
+        : undefined;
+      const builtinDefinition = importedBinding && builtinDefinitions
+        ? builtinDefinitions.get(importedBinding.exportName)
+        : undefined;
+      if (importedBinding && builtinDefinition) {
+        addGeneratedStdlibMacroBinding(
+          registries,
+          preparedForGeneratedExpansion,
+          importedBinding.localName,
+          importedBinding.exportName,
+          builtinDefinition,
+          importedBinding.specifier,
+        );
+        continue;
+      }
+
+      throw createGeneratedMacroError(
+        sourceText,
+        invocation,
+        GENERATED_NON_STDLIB_MACRO_CODE,
+        `Generated macro invocation "${macroName}" is not allowed yet. Macros may only emit compiler-owned stdlib macros in this release.`,
+      );
+    }
+
+    const macroNames = new Set(invocations.map((invocation) => invocation.nameText));
+    const classificationSourceFile = ts.createSourceFile(
+      sourceFile.fileName,
+      sourceText,
+      ts.ScriptTarget.Latest,
+      true,
+      scriptKindForHostFile(sourceFile.fileName),
+    );
+    const importedBindingUsage = new Map(
+      classifyImportedBindingUsage(
+        classificationSourceFile,
+        macroNames,
+        macroInvocationReferenceSpans(invocations),
+      ),
+    );
+    for (const localName of PRESERVED_IMPORTED_MACRO_BINDINGS) {
+      if (importedBindingUsage.get(localName) === 'compileTimeOnly') {
+        importedBindingUsage.set(localName, 'runtimeOnly');
+      }
+    }
+
+    return {
+      advancedRegistry: registries.advancedRegistry,
+      definitions: registries.definitions,
+      expansionDependencySignature: '',
+      importedBindingUsage,
+      registry: registries.registry,
+      siteKindsBySpecifier: registries.siteKindsBySpecifier,
+    };
+  }
+
+  function loadedAlwaysAvailableDefinition(macroName: string): MacroDefinition | undefined {
+    if (!alwaysAvailableDefinitions.has(macroName)) {
+      return undefined;
+    }
+    for (const definitions of builtinDefinitionsBySpecifier.values()) {
+      const definition = definitions.get(macroName);
+      if (definition) {
+        return definition;
+      }
+    }
+    return alwaysAvailableDefinitions.get(macroName);
+  }
+
+  function expandGeneratedStdlibMacros(
+    sourceFile: ts.SourceFile,
+    preserveRemovedImportStatements: boolean,
+    preserveMissingExpanders: boolean,
+    annotateExpansions: boolean,
+  ): ts.SourceFile {
+    const printer = ts.createPrinter();
+    const sourceFileName = preparedProgram.toSourceFileName(sourceFile.fileName);
+    let currentSourceFile = sourceFile;
+    let remainingGeneratedRounds = macroExpansionRecursionLimit;
+
+    while (true) {
+      const sourceText = printer.printFile(currentSourceFile);
+      const generatedPreparedProgram = createGeneratedExpansionPreparedProgram(
+        sourceFileName,
+        sourceText,
+      );
+      try {
+        const programFileName = generatedPreparedProgram.toProgramFileName(sourceFileName);
+        const generatedSourceFile = generatedPreparedProgram.program.getSourceFile(programFileName);
+        const generatedPreparedSource = generatedPreparedProgram.preparedHost
+          .getPreparedSourceFile(sourceFileName);
+        const invocations = [...(generatedPreparedSource?.rewriteResult.macrosById.values() ?? [])];
+        if (invocations.length === 0 || !generatedSourceFile) {
+          return currentSourceFile;
+        }
+        if (remainingGeneratedRounds <= 0) {
+          const firstInvocation = invocations[0]!;
+          throw createGeneratedMacroError(
+            sourceText,
+            firstInvocation,
+            GENERATED_MACRO_RECURSION_LIMIT_CODE,
+            `Macro expansion recursion limit ${macroExpansionRecursionLimit} reached before expanding generated macro "${firstInvocation.nameText}". Increase macroExpansionRecursionLimit to allow another generated expansion round.`,
+          );
+        }
+
+        const bindings = buildGeneratedStdlibOnlyBindings(
+          generatedPreparedProgram,
+          generatedSourceFile,
+          sourceText,
+          invocations,
+        );
+        const expandedGeneratedFiles = expandPreparedProgramWithFileRegistries(
+          generatedPreparedProgram,
+          new Map([[
+            generatedSourceFile.fileName,
+            {
+              advancedRegistry: bindings.advancedRegistry,
+              registry: bindings.registry,
+              siteKindsBySpecifier: bindings.siteKindsBySpecifier,
+            },
+          ]]),
+          preserveMissingExpanders,
+          annotateExpansions,
+          [generatedSourceFile],
+        );
+        currentSourceFile = stripCompileTimeOnlyImportedBindings(
+          expandedGeneratedFiles.get(generatedSourceFile.fileName) ?? generatedSourceFile,
+          bindings.importedBindingUsage,
+          preserveRemovedImportStatements,
+        );
+        remainingGeneratedRounds -= 1;
+      } finally {
+        generatedPreparedProgram.dispose();
+      }
+    }
   }
 
   function resolveImport(
@@ -2862,6 +3224,12 @@ export function createProjectMacroEnvironment(
             sourceFile,
             bindingUsageByFile.get(fileName) ?? new Map(),
             preserveRemovedImportStatements,
+          );
+          finalExpandedSourceFile = expandGeneratedStdlibMacros(
+            finalExpandedSourceFile,
+            preserveRemovedImportStatements,
+            preserveMissingExpanders,
+            annotateExpansions,
           );
         }
 

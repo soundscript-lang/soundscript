@@ -311,6 +311,16 @@ The macro frontend could not parse a macro invocation or branch-block form in th
 Macro expansion failed after parsing. Inspect the diagnostic message and source span for the macro
 that produced the error.
 
+## SOUNDSCRIPT_MACRO_RECURSION_LIMIT
+
+A macro emitted another macro invocation after the configured macro expansion recursion limit was
+exhausted. Increase `macroExpansionRecursionLimit` if another generated expansion round is intended.
+
+## SOUNDSCRIPT_MACRO_GENERATED_NON_STDLIB
+
+A macro emitted a user or package macro invocation. Recursive expansion currently only supports
+compiler-owned stdlib macros emitted by macros.
+
 ## SOUNDSCRIPT_MACRO_UNSUPPORTED_SOURCE_KIND
 
 A user-authored macro import resolved to a non-`.macro.sts` source file. User macro modules must be
