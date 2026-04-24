@@ -215,6 +215,66 @@ function arrayLocalInfoForExpression(
   }
 }
 
+function arrayLocalInfoForRead(
+  source: SourceExpressionIR,
+  expression: SemanticExpressionIR,
+  context: FunctionLoweringContext,
+): SourceSemanticArrayLocal | undefined {
+  if (expression.representation === 'owned_number_array_ref') {
+    return { elementRepresentation: 'f64' };
+  }
+  if (expression.representation === 'owned_boolean_array_ref') {
+    return { elementRepresentation: 'i32' };
+  }
+  if (source.kind === 'identifier') {
+    return context.arrayLocals.get(source.name);
+  }
+  return arrayLocalInfoForExpression(expression);
+}
+
+function arrayElementExpressionForInfo(
+  array: SemanticExpressionIR,
+  index: SemanticExpressionIR,
+  info: SourceSemanticArrayLocal,
+  context: FunctionLoweringContext,
+): SemanticExpressionIR | undefined {
+  if (index.representation !== 'f64') {
+    return undefined;
+  }
+  if (array.representation === 'owned_number_array_ref' && info.elementRepresentation === 'f64') {
+    context.runtimeFamilies.add('array');
+    return {
+      kind: 'owned_number_array_element',
+      value: array,
+      index,
+      representation: 'f64',
+    };
+  }
+  if (
+    array.representation === 'owned_array_ref' &&
+    info.elementRepresentation === 'owned_string_ref'
+  ) {
+    context.runtimeFamilies.add('array');
+    context.runtimeFamilies.add('string');
+    return {
+      kind: 'owned_string_array_element',
+      value: array,
+      index,
+      representation: 'owned_string_ref',
+    };
+  }
+  if (array.representation === 'owned_boolean_array_ref' && info.elementRepresentation === 'i32') {
+    context.runtimeFamilies.add('array');
+    return {
+      kind: 'owned_boolean_array_element',
+      value: array,
+      index,
+      representation: 'i32',
+    };
+  }
+  return undefined;
+}
+
 function arrayElementSetStatementForLocal(
   context: FunctionLoweringContext,
   objectName: string,
@@ -373,43 +433,12 @@ function lowerExpression(
       const index = expression.index
         ? lowerExpression(expression.index, context)
         : { kind: 'undefined_literal', representation: 'tagged_ref' } as SemanticExpressionIR;
-      const arrayLocal = expression.object.kind === 'identifier'
-        ? context.arrayLocals.get(expression.object.name)
-        : undefined;
-      if (object.representation === 'owned_number_array_ref' && index.representation === 'f64') {
-        context.runtimeFamilies.add('array');
-        return {
-          kind: 'owned_number_array_element',
-          value: object,
-          index,
-          representation: 'f64',
-        };
-      }
-      if (
-        arrayLocal?.elementRepresentation === 'owned_string_ref' &&
-        object.representation === 'owned_array_ref' &&
-        index.representation === 'f64'
-      ) {
-        context.runtimeFamilies.add('array');
-        context.runtimeFamilies.add('string');
-        return {
-          kind: 'owned_string_array_element',
-          value: object,
-          index,
-          representation: 'owned_string_ref',
-        };
-      }
-      if (
-        object.representation === 'owned_boolean_array_ref' &&
-        index.representation === 'f64'
-      ) {
-        context.runtimeFamilies.add('array');
-        return {
-          kind: 'owned_boolean_array_element',
-          value: object,
-          index,
-          representation: 'i32',
-        };
+      const arrayLocal = arrayLocalInfoForRead(expression.object, object, context);
+      if (arrayLocal) {
+        const element = arrayElementExpressionForInfo(object, index, arrayLocal, context);
+        if (element) {
+          return element;
+        }
       }
       context.unsupportedKinds.add('element_access');
       return { kind: 'undefined_literal', representation: 'tagged_ref' };
@@ -495,6 +524,90 @@ function lowerExpression(
       context.unsupportedKinds.add(expression.kind);
       return { kind: 'undefined_literal', representation: 'tagged_ref' };
   }
+}
+
+function lowerArrayForOfStatement(
+  statement: Extract<SourceStatementIR, { kind: 'for_of' }>,
+  context: FunctionLoweringContext,
+): readonly SemanticStatementIR[] | undefined {
+  if (statement.await || statement.left.kind !== 'identifier_binding') {
+    return undefined;
+  }
+  const iterable = lowerExpression(statement.right, context);
+  const leadingStatements = takePendingStatements(context);
+  const arrayLocal = arrayLocalInfoForRead(statement.right, iterable, context);
+  if (!arrayLocal) {
+    return undefined;
+  }
+  const arrayName = nextTempLocalName(context, 'for_of_array');
+  const lengthName = nextTempLocalName(context, 'for_of_length');
+  const indexName = nextTempLocalName(context, 'for_of_index');
+  addLocal(context, arrayName, iterable.representation);
+  addLocal(context, lengthName, 'f64');
+  addLocal(context, indexName, 'f64');
+  addLocal(context, statement.left.name, arrayLocal.elementRepresentation);
+  context.arrayLocals.set(arrayName, arrayLocal);
+  const array: SemanticExpressionIR = {
+    kind: 'local_get',
+    name: arrayName,
+    representation: iterable.representation,
+  };
+  const index: SemanticExpressionIR = {
+    kind: 'local_get',
+    name: indexName,
+    representation: 'f64',
+  };
+  const value = arrayElementExpressionForInfo(array, index, arrayLocal, context);
+  if (!value) {
+    return undefined;
+  }
+  return [
+    ...leadingStatements,
+    { kind: 'local_set', name: arrayName, value: iterable },
+    {
+      kind: 'local_set',
+      name: lengthName,
+      value: {
+        kind: 'owned_array_length',
+        value: array,
+        representation: 'f64',
+      },
+    },
+    {
+      kind: 'local_set',
+      name: indexName,
+      value: { kind: 'number_literal', value: 0, representation: 'f64' },
+    },
+    {
+      kind: 'while',
+      condition: {
+        kind: 'binary',
+        op: 'f64.lt',
+        left: index,
+        right: {
+          kind: 'local_get',
+          name: lengthName,
+          representation: 'f64',
+        },
+        representation: 'i32',
+      },
+      body: [
+        { kind: 'local_set', name: statement.left.name, value },
+        ...statement.body.flatMap((child) => [...lowerStatement(child, context)]),
+        {
+          kind: 'local_set',
+          name: indexName,
+          value: {
+            kind: 'binary',
+            op: 'f64.add',
+            left: index,
+            right: { kind: 'number_literal', value: 1, representation: 'f64' },
+            representation: 'f64',
+          },
+        },
+      ],
+    },
+  ];
 }
 
 function lowerStatement(
@@ -653,6 +766,14 @@ function lowerStatement(
         condition,
         body: statement.body.flatMap((child) => [...lowerStatement(child, context)]),
       }];
+    }
+    case 'for_of': {
+      const lowered = lowerArrayForOfStatement(statement, context);
+      if (lowered) {
+        return lowered;
+      }
+      context.unsupportedKinds.add('for_of');
+      return [{ kind: 'unsupported_statement', sourceKind: 'for_of' }];
     }
     default:
       context.unsupportedKinds.add(statement.kind);
