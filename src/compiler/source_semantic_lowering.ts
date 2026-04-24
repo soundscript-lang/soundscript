@@ -35,6 +35,7 @@ interface SourceSemanticFunctionSignature {
 interface SourceSemanticObjectLocal {
   family: 'specialized_object' | 'fallback_object' | 'dynamic_object';
   representationName: string;
+  dynamicValueRepresentation?: CompilerValueType;
   fields: readonly {
     name: string;
     representation: CompilerValueType;
@@ -326,6 +327,20 @@ function registerFallbackObjectLayout(
   };
   context.objectLayoutsByKey.set(`fallback_object:${representationName}`, layout);
   context.runtimeFamilies.add('fallback_object');
+  return representationName;
+}
+
+function registerDynamicObjectLayout(
+  context: FunctionLoweringContext,
+  representationName: string,
+): string {
+  const layout: SemanticObjectLayoutIR = {
+    name: representationName,
+    family: 'dynamic_object',
+    fields: [],
+  };
+  context.objectLayoutsByKey.set(`dynamic_object:${representationName}`, layout);
+  context.runtimeFamilies.add('dynamic_object');
   return representationName;
 }
 
@@ -877,6 +892,34 @@ function lowerExpression(
             representation: field.representation,
           };
         }
+        if (objectLayout?.family === 'dynamic_object' && expression.index) {
+          const materializedKey = materializeOwnedStringKeyExpression(
+            expression.index,
+            context,
+            `dynamic_key_${expression.object.name}`,
+          );
+          const valueType = objectLayout.dynamicValueRepresentation;
+          if (!materializedKey || !valueType) {
+            context.unsupportedKinds.add('dynamic_object_element_access');
+            return { kind: 'undefined_literal', representation: 'tagged_ref' };
+          }
+          const tempName = nextTempLocalName(context, `dynamic_value_${expression.object.name}`);
+          addLocal(context, tempName, valueType);
+          context.pendingStatements.push(...materializedKey.statements, {
+            kind: 'dynamic_object_property_get',
+            targetName: tempName,
+            objectName: expression.object.name,
+            representationName: objectLayout.representationName,
+            propertyKeyName: materializedKey.keyName,
+            valueType,
+          });
+          context.runtimeFamilies.add('dynamic_object');
+          return {
+            kind: 'local_get',
+            name: tempName,
+            representation: valueType,
+          };
+        }
       }
       const object = lowerExpression(expression.object, context);
       const index = expression.index
@@ -1226,13 +1269,26 @@ function objectLocalForSemanticType(
   type: SemanticTypeIR,
   fields: readonly { name: string; representation: CompilerValueType }[],
   context: FunctionLoweringContext,
+  options?: { preferDynamic?: boolean },
 ): SourceSemanticObjectLocal | undefined {
   if (type.kind !== 'object') {
     return undefined;
   }
-  if (type.dynamic) {
-    context.unsupportedKinds.add('dynamic_object_local');
-    return undefined;
+  if (type.dynamic || options?.preferDynamic) {
+    const dynamicValueRepresentation = homogeneousFieldRepresentation(fields);
+    if (!dynamicValueRepresentation) {
+      context.unsupportedKinds.add('dynamic_object_heterogeneous_values');
+      return undefined;
+    }
+    return {
+      family: 'dynamic_object',
+      representationName: registerDynamicObjectLayout(
+        context,
+        type.layoutName ? `dynamic:${type.layoutName}` : sourceObjectLayoutName(fields),
+      ),
+      dynamicValueRepresentation,
+      fields,
+    };
   }
   if (type.fallback) {
     return {
@@ -1280,6 +1336,61 @@ function sourceStaticPropertyKey(expression: SourceExpressionIR | undefined): st
     return undefined;
   }
   return quotedSourceStringValue(expression.text);
+}
+
+function materializeOwnedStringKeyExpression(
+  expression: SourceExpressionIR,
+  context: FunctionLoweringContext,
+  prefix: string,
+): { keyName: string; statements: SemanticStatementIR[] } | undefined {
+  const key = lowerExpression(expression, context);
+  const statements = takePendingStatements(context);
+  if (key.representation !== 'owned_string_ref') {
+    return undefined;
+  }
+  if (key.kind === 'local_get') {
+    return { keyName: key.name, statements };
+  }
+  const keyName = nextTempLocalName(context, prefix);
+  addLocal(context, keyName, 'owned_string_ref');
+  return {
+    keyName,
+    statements: [...statements, { kind: 'local_set', name: keyName, value: key }],
+  };
+}
+
+function materializeStaticOwnedStringKey(
+  key: string,
+  context: FunctionLoweringContext,
+  prefix: string,
+): { keyName: string; statements: SemanticStatementIR[] } {
+  context.runtimeFamilies.add('string');
+  const keyName = nextTempLocalName(context, prefix);
+  addLocal(context, keyName, 'owned_string_ref');
+  return {
+    keyName,
+    statements: [{
+      kind: 'local_set',
+      name: keyName,
+      value: {
+        kind: 'owned_string_literal',
+        literalId: getStringLiteralId(context, JSON.stringify(key)),
+        representation: 'owned_string_ref',
+      },
+    }],
+  };
+}
+
+function homogeneousFieldRepresentation(
+  fields: readonly { name: string; representation: CompilerValueType }[],
+): CompilerValueType | undefined {
+  const [first] = fields;
+  if (!first) {
+    return undefined;
+  }
+  return fields.every((field) => field.representation === first.representation)
+    ? first.representation
+    : undefined;
 }
 
 function objectFieldGetStatementForLocal(
@@ -1516,6 +1627,11 @@ function lowerStatement(
         if (declaration.initializer.kind === 'object_literal') {
           const fieldValueNames: string[] = [];
           const fieldTypes: { name: string; representation: CompilerValueType }[] = [];
+          const loweredProperties: {
+            property: (typeof declaration.initializer.properties)[number];
+            valueName: string;
+            valueType: CompilerValueType;
+          }[] = [];
           const statements: SemanticStatementIR[] = [];
           for (const property of declaration.initializer.properties) {
             const value = lowerExpression(property.value, context);
@@ -1525,10 +1641,20 @@ function lowerStatement(
             statements.push({ kind: 'local_set', name: valueName, value });
             fieldValueNames.push(valueName);
             fieldTypes.push({ name: property.name, representation: value.representation });
+            loweredProperties.push({
+              property,
+              valueName,
+              valueType: value.representation,
+            });
           }
           const localType = localTypeForBinding(declaration.binding, context);
+          const hasComputedProperty = declaration.initializer.properties.some((property) =>
+            property.computedName !== undefined
+          );
           const objectLocal = localType
-            ? objectLocalForSemanticType(localType, fieldTypes, context)
+            ? objectLocalForSemanticType(localType, fieldTypes, context, {
+              preferDynamic: hasComputedProperty,
+            })
             : undefined;
           const resolvedObjectLocal = objectLocal ?? {
             family: 'specialized_object' as const,
@@ -1554,6 +1680,45 @@ function lowerStatement(
               targetName: declaration.binding.name,
               representationName: resolvedObjectLocal.representationName,
               fieldValueNames,
+            });
+          } else if (resolvedObjectLocal.family === 'dynamic_object') {
+            const entries: {
+              keyName: string;
+              valueName: string;
+              valueType: CompilerValueType;
+            }[] = [];
+            for (const lowered of loweredProperties) {
+              const materializedKey = lowered.property.computedName
+                ? materializeOwnedStringKeyExpression(
+                  lowered.property.computedName,
+                  context,
+                  `object_${declaration.binding.name}_key`,
+                )
+                : materializeStaticOwnedStringKey(
+                  lowered.property.name,
+                  context,
+                  `object_${declaration.binding.name}_key`,
+                );
+              if (!materializedKey) {
+                context.unsupportedKinds.add('dynamic_object_key');
+                statements.push({
+                  kind: 'unsupported_statement',
+                  sourceKind: 'variable_declaration',
+                });
+                continue;
+              }
+              statements.push(...materializedKey.statements);
+              entries.push({
+                keyName: materializedKey.keyName,
+                valueName: lowered.valueName,
+                valueType: lowered.valueType,
+              });
+            }
+            statements.push({
+              kind: 'dynamic_object_new',
+              targetName: declaration.binding.name,
+              representationName: resolvedObjectLocal.representationName,
+              entries,
             });
           } else {
             context.unsupportedKinds.add('dynamic_object_local');

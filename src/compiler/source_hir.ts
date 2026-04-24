@@ -270,6 +270,7 @@ export type SourceExpressionIR =
 
 export interface SourceObjectLiteralPropertyIR {
   name: string;
+  computedName?: SourceExpressionIR;
   value: SourceExpressionIR;
   span: SourceSpanIR;
 }
@@ -653,6 +654,9 @@ function lowerExpression(
           if (ts.isPropertyAssignment(property)) {
             return [{
               name: objectLiteralPropertyName(sourceFile, property.name),
+              computedName: ts.isComputedPropertyName(property.name)
+                ? lowerExpression(sourceFile, property.name.expression)
+                : undefined,
               value: lowerExpression(sourceFile, property.initializer),
               span: spanOf(sourceFile, property),
             }];
