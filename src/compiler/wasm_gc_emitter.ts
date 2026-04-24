@@ -3033,6 +3033,7 @@ function collectNumberArrayScratchFromStatement(
       statement.elseBody.forEach((nested) => collectNumberArrayScratchFromStatement(nested, uses));
       break;
     case 'while':
+    case 'do_while':
       collectNumberArrayScratchFromExpression(statement.condition, uses);
       statement.body.forEach((nested) => collectNumberArrayScratchFromStatement(nested, uses));
       statement.continueBody?.forEach((nested) =>
@@ -4925,6 +4926,34 @@ function renderStatement(
         `${indent}end`,
       ];
     }
+    case 'do_while': {
+      const loopIndex = context.loopLabels.length;
+      const labels = {
+        breakLabel: `$__source_loop_break_${loopIndex}`,
+        continueLabel: `$__source_loop_continue_${loopIndex}`,
+        headLabel: `$__source_loop_head_${loopIndex}`,
+      };
+      const loopContext: FunctionRenderContext = {
+        ...context,
+        loopLabels: [...context.loopLabels, labels],
+      };
+      return [
+        `${indent}block ${labels.breakLabel}`,
+        `${indent}  loop ${labels.headLabel}`,
+        `${indent}    block ${labels.continueLabel}`,
+        ...statement.body.flatMap((nested) =>
+          renderStatement(nested, `${indent}      `, loopContext)
+        ),
+        `${indent}    end`,
+        ...(statement.continueBody ?? []).flatMap((nested) =>
+          renderStatement(nested, `${indent}    `, loopContext)
+        ),
+        ...renderExpression(statement.condition, `${indent}    `, context),
+        `${indent}    br_if ${labels.headLabel}`,
+        `${indent}  end`,
+        `${indent}end`,
+      ];
+    }
     case 'break': {
       const labels = context.loopLabels.at(-1);
       return labels ? [`${indent}br ${labels.breakLabel}`] : [`${indent}unreachable`];
@@ -6282,6 +6311,7 @@ function collectBoxedClosureDispatchSignatureIdsFromStatement(
       );
       break;
     case 'while':
+    case 'do_while':
       collectBoxedClosureDispatchSignatureIdsFromExpression(
         statement.condition,
         signatureIds,
@@ -6678,6 +6708,7 @@ function collectBoxValueTypesFromStatement(
       statement.elseBody.forEach((nested) => collectBoxValueTypesFromStatement(nested, valueTypes));
       break;
     case 'while':
+    case 'do_while':
       collectBoxValueTypesFromExpression(statement.condition, valueTypes);
       statement.body.forEach((nested) => collectBoxValueTypesFromStatement(nested, valueTypes));
       statement.continueBody?.forEach((nested) =>
@@ -7031,6 +7062,7 @@ function collectArrayRuntimeTypesFromStatement(
       );
       break;
     case 'while':
+    case 'do_while':
       collectArrayRuntimeTypesFromExpression(statement.condition, runtimeTypes);
       statement.body.forEach((nested) =>
         collectArrayRuntimeTypesFromStatement(nested, runtimeTypes)

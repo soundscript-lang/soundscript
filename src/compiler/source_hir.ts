@@ -57,6 +57,7 @@ export type SourceStatementIR =
   | SourceReturnStatementIR
   | SourceIfStatementIR
   | SourceWhileStatementIR
+  | SourceDoWhileStatementIR
   | SourceForStatementIR
   | SourceForOfStatementIR
   | SourceBreakStatementIR
@@ -99,6 +100,13 @@ export interface SourceWhileStatementIR {
   kind: 'while';
   test: SourceExpressionIR;
   body: SourceStatementIR[];
+  span: SourceSpanIR;
+}
+
+export interface SourceDoWhileStatementIR {
+  kind: 'do_while';
+  body: SourceStatementIR[];
+  test: SourceExpressionIR;
   span: SourceSpanIR;
 }
 
@@ -616,6 +624,15 @@ function lowerStatement(sourceFile: ts.SourceFile, statement: ts.Statement): Sou
       kind: 'while',
       test: lowerExpression(sourceFile, statement.expression),
       body: lowerStatementList(sourceFile, statement.statement),
+      span: spanOf(sourceFile, statement),
+    };
+  }
+
+  if (ts.isDoStatement(statement)) {
+    return {
+      kind: 'do_while',
+      body: lowerStatementList(sourceFile, statement.statement),
+      test: lowerExpression(sourceFile, statement.expression),
       span: spanOf(sourceFile, statement),
     };
   }

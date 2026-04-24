@@ -737,6 +737,12 @@ export type SemanticStatementIR =
     body: readonly SemanticStatementIR[];
     continueBody?: readonly SemanticStatementIR[];
   }
+  | {
+    kind: 'do_while';
+    condition: SemanticExpressionIR;
+    body: readonly SemanticStatementIR[];
+    continueBody?: readonly SemanticStatementIR[];
+  }
   | { kind: 'break' }
   | { kind: 'continue' }
   | { kind: 'throw_tagged'; value: SemanticExpressionIR }
@@ -3308,6 +3314,7 @@ function collectUnsupportedStatementKinds(
       statement.elseBody.forEach((nested) => collectUnsupportedStatementKinds(nested, kinds));
       break;
     case 'while':
+    case 'do_while':
       collectUnsupportedExpressionKinds(statement.condition, kinds);
       statement.body.forEach((nested) => collectUnsupportedStatementKinds(nested, kinds));
       statement.continueBody?.forEach((nested) => collectUnsupportedStatementKinds(nested, kinds));

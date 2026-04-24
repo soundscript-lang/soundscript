@@ -1046,6 +1046,20 @@ function lowerStatement(
         continueBody: conditionStatements,
       }];
     }
+    case 'do_while': {
+      const body = statement.body.flatMap((child) => [...lowerStatement(child, context)]);
+      const condition = lowerExpression(statement.test, context);
+      const conditionStatements = takePendingStatements(context);
+      if (condition.representation !== 'i32') {
+        context.unsupportedKinds.add('do_while_condition');
+      }
+      return [{
+        kind: 'do_while',
+        condition,
+        body,
+        continueBody: conditionStatements,
+      }];
+    }
     case 'for': {
       const initializerStatements = statement.initializer
         ? statement.initializer.kind === 'variable_declaration'
