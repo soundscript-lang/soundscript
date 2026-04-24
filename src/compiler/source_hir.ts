@@ -76,11 +76,28 @@ export type SourceClassMemberIR =
     span: SourceSpanIR;
   }
   | {
+    kind: 'auto_accessor';
+    name: string;
+    static: boolean;
+    privacy: 'public' | 'private';
+    computedName?: SourceExpressionIR;
+    initializer?: SourceExpressionIR;
+    span: SourceSpanIR;
+  }
+  | {
     kind: 'getter' | 'setter';
     name: string;
     static: boolean;
     privacy: 'public' | 'private';
     computedName?: SourceExpressionIR;
+    span: SourceSpanIR;
+  }
+  | {
+    kind: 'static_block';
+    name: 'static';
+    static: true;
+    privacy: 'public';
+    body: SourceStatementIR[];
     span: SourceSpanIR;
   };
 
@@ -998,6 +1015,16 @@ function lowerClassMember(sourceFile: ts.SourceFile, member: ts.ClassElement): S
       span,
     };
   }
+  if (ts.isClassStaticBlockDeclaration(member)) {
+    return {
+      kind: 'static_block',
+      name: 'static',
+      static: true,
+      privacy: 'public',
+      body: lowerStatements(sourceFile, member.body.statements),
+      span,
+    };
+  }
   if (ts.isGetAccessorDeclaration(member)) {
     return {
       kind: 'getter',
@@ -1027,6 +1054,17 @@ function lowerClassMember(sourceFile: ts.SourceFile, member: ts.ClassElement): S
       ...(computedName ? { computedName } : {}),
       params: member.parameters.map((param) => lowerBinding(sourceFile, param.name)),
       body: member.body ? lowerStatements(sourceFile, member.body.statements) : [],
+      span,
+    };
+  }
+  if (ts.isAutoAccessorPropertyDeclaration(member)) {
+    return {
+      kind: 'auto_accessor',
+      name: member.name.getText(sourceFile),
+      static: staticMember,
+      privacy,
+      ...(computedName ? { computedName } : {}),
+      initializer: member.initializer ? lowerExpression(sourceFile, member.initializer) : undefined,
       span,
     };
   }

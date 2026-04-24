@@ -2394,6 +2394,18 @@ function rejectUnsupportedClassMembers(
     context.unsupportedKinds.add(`class_member:computed:${classInfo.name}`);
     return true;
   }
+  const staticBlock = classInfo.members.find((member) => member.kind === 'static_block');
+  if (staticBlock) {
+    context.unsupportedKinds.add(`class_member:static_block:${classInfo.name}`);
+    return true;
+  }
+  const autoAccessor = classInfo.members.find((member) => member.kind === 'auto_accessor');
+  if (autoAccessor) {
+    context.unsupportedKinds.add(
+      `class_member:auto_accessor:${classInfo.name}.${autoAccessor.name}`,
+    );
+    return true;
+  }
   const accessor = classInfo.members.find((member) =>
     member.kind === 'getter' || member.kind === 'setter'
   );

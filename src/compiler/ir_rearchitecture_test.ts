@@ -1340,6 +1340,72 @@ Deno.test('compiler SourceHIR captures computed class member facts before loweri
   );
 });
 
+Deno.test('compiler SourceHIR captures static block and auto-accessor class facts', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: { strict: true, target: 'ES2022' },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        class Counter {
+          static total: number = 0;
+
+          static {
+            Counter.total = 1;
+          }
+
+          accessor value: number = 1;
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const source = createSourceHIRFromProgram(program, tempDirectory);
+  const counter = source.modules[0]?.classes.find((classInfo) => classInfo.name === 'Counter');
+
+  assertEquals(
+    counter?.members.map((member) => ({
+      kind: member.kind,
+      name: member.name,
+      static: member.static,
+      initializerKind: member.kind === 'property' || member.kind === 'auto_accessor'
+        ? member.initializer?.kind
+        : undefined,
+      bodyKinds: member.kind === 'static_block'
+        ? member.body.map((statement) => statement.kind)
+        : undefined,
+    })),
+    [
+      {
+        kind: 'property',
+        name: 'total',
+        static: true,
+        initializerKind: 'literal',
+        bodyKinds: undefined,
+      },
+      {
+        kind: 'static_block',
+        name: 'static',
+        static: true,
+        initializerKind: undefined,
+        bodyKinds: ['expression_statement'],
+      },
+      {
+        kind: 'auto_accessor',
+        name: 'value',
+        static: false,
+        initializerKind: 'literal',
+        bodyKinds: undefined,
+      },
+    ],
+  );
+});
+
 Deno.test('compiler SourceHIR semantic lowering rejects inherited class construction explicitly', async () => {
   const tempDirectory = await createTempProject([
     {
@@ -1457,6 +1523,84 @@ Deno.test('compiler SourceHIR semantic lowering rejects computed class members e
   assertEquals(score?.unsupportedBodyKinds, ['class_member:computed:Counter']);
   assertEquals(scorePlan?.bodyStatus, 'stub');
   assertEquals(scorePlan?.unsupportedBodyKinds, ['class_member:computed:Counter']);
+});
+
+Deno.test('compiler SourceHIR semantic lowering rejects class static blocks explicitly', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: { strict: true, target: 'ES2022' },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        class Counter {
+          static total: number = 0;
+
+          static {
+            Counter.total = 1;
+          }
+        }
+
+        export function score(): number {
+          const counter = new Counter();
+          return 0;
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createSourceSemanticSnapshot(program, tempDirectory);
+  const semantic = createSemanticModuleFromSourceHIR(snapshot.source, snapshot.sharedFacts);
+  const manifest = createRuntimeManifestFromSemanticModule(semantic);
+  const plan = createWasmGcModulePlan(semantic, manifest);
+  const score = semantic.functions.find((func) => func.name === 'score');
+  const scorePlan = plan.functionPlans.find((func) => func.name === 'score');
+
+  assertEquals(score?.bodyStatus, 'stub');
+  assertEquals(score?.unsupportedBodyKinds, ['class_member:static_block:Counter']);
+  assertEquals(scorePlan?.bodyStatus, 'stub');
+  assertEquals(scorePlan?.unsupportedBodyKinds, ['class_member:static_block:Counter']);
+});
+
+Deno.test('compiler SourceHIR semantic lowering rejects class auto-accessors explicitly', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: { strict: true, target: 'ES2022' },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        class Counter {
+          accessor value: number = 1;
+        }
+
+        export function score(): number {
+          const counter = new Counter();
+          return 0;
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createSourceSemanticSnapshot(program, tempDirectory);
+  const semantic = createSemanticModuleFromSourceHIR(snapshot.source, snapshot.sharedFacts);
+  const manifest = createRuntimeManifestFromSemanticModule(semantic);
+  const plan = createWasmGcModulePlan(semantic, manifest);
+  const score = semantic.functions.find((func) => func.name === 'score');
+  const scorePlan = plan.functionPlans.find((func) => func.name === 'score');
+
+  assertEquals(score?.bodyStatus, 'stub');
+  assertEquals(score?.unsupportedBodyKinds, ['class_member:auto_accessor:Counter.value']);
+  assertEquals(scorePlan?.bodyStatus, 'stub');
+  assertEquals(scorePlan?.unsupportedBodyKinds, ['class_member:auto_accessor:Counter.value']);
 });
 
 Deno.test('compileProject selects the source-hir wasm-gc plan for pure core scalar modules', async () => {
