@@ -38,12 +38,36 @@ export interface SourceClassIR {
   span: SourceSpanIR;
 }
 
-export interface SourceClassMemberIR {
-  kind: 'constructor' | 'method' | 'property' | 'getter' | 'setter';
-  name: string;
-  static: boolean;
-  span: SourceSpanIR;
-}
+export type SourceClassMemberIR =
+  | {
+    kind: 'constructor';
+    name: 'constructor';
+    static: false;
+    params: SourceBindingIR[];
+    body: SourceStatementIR[];
+    span: SourceSpanIR;
+  }
+  | {
+    kind: 'method';
+    name: string;
+    static: boolean;
+    params: SourceBindingIR[];
+    body: SourceStatementIR[];
+    span: SourceSpanIR;
+  }
+  | {
+    kind: 'property';
+    name: string;
+    static: boolean;
+    initializer?: SourceExpressionIR;
+    span: SourceSpanIR;
+  }
+  | {
+    kind: 'getter' | 'setter';
+    name: string;
+    static: boolean;
+    span: SourceSpanIR;
+  };
 
 export type SourceBindingIR =
   | { kind: 'identifier_binding'; name: string; span: SourceSpanIR }
@@ -492,6 +516,15 @@ function lowerExpression(
     };
   }
 
+  if (expression.kind === ts.SyntaxKind.ThisKeyword) {
+    return {
+      kind: 'identifier',
+      name: 'this',
+      role,
+      span: spanOf(sourceFile, expression),
+    };
+  }
+
   if (ts.isPropertyAccessExpression(expression)) {
     return {
       kind: 'property_access',
@@ -921,7 +954,14 @@ function lowerClassMember(sourceFile: ts.SourceFile, member: ts.ClassElement): S
   const staticMember = hasModifier(member, ts.SyntaxKind.StaticKeyword);
   const span = spanOf(sourceFile, member);
   if (ts.isConstructorDeclaration(member)) {
-    return { kind: 'constructor', name: 'constructor', static: false, span };
+    return {
+      kind: 'constructor',
+      name: 'constructor',
+      static: false,
+      params: member.parameters.map((param) => lowerBinding(sourceFile, param.name)),
+      body: member.body ? lowerStatements(sourceFile, member.body.statements) : [],
+      span,
+    };
   }
   if (ts.isGetAccessorDeclaration(member)) {
     return {
@@ -944,6 +984,8 @@ function lowerClassMember(sourceFile: ts.SourceFile, member: ts.ClassElement): S
       kind: 'method',
       name: member.name.getText(sourceFile),
       static: staticMember,
+      params: member.parameters.map((param) => lowerBinding(sourceFile, param.name)),
+      body: member.body ? lowerStatements(sourceFile, member.body.statements) : [],
       span,
     };
   }
@@ -952,6 +994,7 @@ function lowerClassMember(sourceFile: ts.SourceFile, member: ts.ClassElement): S
       kind: 'property',
       name: member.name.getText(sourceFile),
       static: staticMember,
+      initializer: member.initializer ? lowerExpression(sourceFile, member.initializer) : undefined,
       span,
     };
   }

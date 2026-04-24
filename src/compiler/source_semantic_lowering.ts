@@ -1,6 +1,7 @@
 import type { CompilerValueType } from './ir.ts';
 import type {
   SourceBindingIR,
+  SourceClassIR,
   SourceExpressionIR,
   SourceFunctionIR,
   SourceModuleIR,
@@ -75,6 +76,7 @@ interface FunctionLoweringContext {
   moduleState: SourceSemanticModuleLoweringState;
   objectLayoutsByKey: Map<string, SemanticObjectLayoutIR>;
   objectLocals: Map<string, SourceSemanticObjectLocal>;
+  classesByName: ReadonlyMap<string, SourceClassIR>;
   pendingStatements: SemanticStatementIR[];
   runtimeFamilies: Set<SemanticRuntimeFamilyId>;
   stringLiteralIds: Map<string, number>;
@@ -2001,6 +2003,7 @@ function lowerArrowFunctionExpression(
     moduleState: parentContext.moduleState,
     objectLayoutsByKey: parentContext.objectLayoutsByKey,
     objectLocals: new Map(),
+    classesByName: parentContext.classesByName,
     pendingStatements: [],
     runtimeFamilies: new Set(),
     stringLiteralIds: parentContext.stringLiteralIds,
@@ -2050,6 +2053,130 @@ function lowerArrowFunctionExpression(
     captureValueTypes: captures.map((capture) => capture.valueType),
     representation: 'closure_ref',
   };
+}
+
+function lowerClassConstructionDeclaration(
+  targetName: string,
+  initializer: Extract<SourceExpressionIR, { kind: 'new_expression' }>,
+  declarationKind: SourceSemanticLocalDeclarationKind,
+  context: FunctionLoweringContext,
+): readonly SemanticStatementIR[] | undefined {
+  if (initializer.callee.kind !== 'identifier') {
+    context.unsupportedKinds.add('class_constructor_callee');
+    return undefined;
+  }
+  const classInfo = context.classesByName.get(initializer.callee.name);
+  if (!classInfo) {
+    return undefined;
+  }
+  const unsupportedMember = classInfo.members.find((member) =>
+    member.static || member.kind === 'method' || member.kind === 'getter' ||
+    member.kind === 'setter'
+  );
+  if (unsupportedMember) {
+    context.unsupportedKinds.add(`class_member:${unsupportedMember.kind}`);
+    return undefined;
+  }
+  const properties = classInfo.members.filter((member) => member.kind === 'property');
+  if (properties.some((property) => !property.initializer)) {
+    context.unsupportedKinds.add('class_property_initializer');
+    return undefined;
+  }
+  const constructor = classInfo.members.find((member) => member.kind === 'constructor');
+  if (constructor && constructor.params.length !== initializer.args.length) {
+    context.unsupportedKinds.add('class_constructor_arity');
+    return undefined;
+  }
+  const constructorParamNames = constructor
+    ? constructor.params.map((param, index) =>
+      param.kind === 'identifier_binding' ? param.name : `__source_class_param_${index}`
+    )
+    : [];
+  const transientNames = ['this', ...constructorParamNames];
+  if (
+    transientNames.includes(targetName) ||
+    transientNames.some((name) =>
+      context.localRepresentations.has(name) ||
+      context.objectLocals.has(name) ||
+      context.arrayLocals.has(name) ||
+      context.closureLocals.has(name) ||
+      context.boxedLocals.has(name)
+    )
+  ) {
+    context.unsupportedKinds.add('class_constructor_binding_collision');
+    return undefined;
+  }
+
+  const statements: SemanticStatementIR[] = [];
+  const fieldValueNames: string[] = [];
+  const fields: { name: string; representation: CompilerValueType }[] = [];
+  for (const property of properties) {
+    if (!property.initializer) {
+      continue;
+    }
+    const value = lowerExpression(property.initializer, context);
+    statements.push(...takePendingStatements(context));
+    const valueName = nextTempLocalName(context, `class_${classInfo.name}_${property.name}`);
+    addLocal(context, valueName, value.representation);
+    statements.push({ kind: 'local_set', name: valueName, value });
+    fieldValueNames.push(valueName);
+    fields.push({ name: property.name, representation: value.representation });
+  }
+  const objectLocal: SourceSemanticObjectLocal = {
+    family: 'specialized_object',
+    representationName: registerSpecializedObjectLayout(context, fields),
+    fields,
+  };
+  addLocal(context, targetName, 'heap_ref');
+  context.localDeclarationKinds.set(targetName, declarationKind);
+  context.objectLocals.set(targetName, objectLocal);
+  statements.push({
+    kind: 'specialized_object_new',
+    targetName,
+    representationName: objectLocal.representationName,
+    fieldValueNames,
+  });
+
+  if (!constructor) {
+    return statements;
+  }
+
+  for (const [index, param] of constructor.params.entries()) {
+    if (param.kind !== 'identifier_binding') {
+      context.unsupportedKinds.add('class_constructor_parameter');
+      return undefined;
+    }
+    const arg = initializer.args[index];
+    if (!arg) {
+      context.unsupportedKinds.add('class_constructor_argument');
+      return undefined;
+    }
+    const value = lowerExpression(arg, context);
+    statements.push(...takePendingStatements(context));
+    addLocal(context, param.name, value.representation);
+    context.localDeclarationKinds.set(param.name, 'param');
+    statements.push({ kind: 'local_set', name: param.name, value });
+  }
+  addLocal(context, 'this', 'heap_ref');
+  context.localDeclarationKinds.set('this', 'param');
+  context.objectLocals.set('this', objectLocal);
+  statements.push({
+    kind: 'local_set',
+    name: 'this',
+    value: { kind: 'local_get', name: targetName, representation: 'heap_ref' },
+  });
+  statements.push(
+    ...constructor.body.flatMap((statement) => [...lowerStatement(statement, context)]),
+  );
+  for (const name of transientNames) {
+    context.localRepresentations.delete(name);
+    context.arrayLocals.delete(name);
+    context.boxedLocals.delete(name);
+    context.closureLocals.delete(name);
+    context.localDeclarationKinds.delete(name);
+    context.objectLocals.delete(name);
+  }
+  return statements;
 }
 
 function lowerStatement(
@@ -2111,6 +2238,18 @@ function lowerStatement(
         if (declaration.binding.kind !== 'identifier_binding' || !declaration.initializer) {
           context.unsupportedKinds.add('variable_declaration');
           return [{ kind: 'unsupported_statement', sourceKind: 'variable_declaration' }];
+        }
+        if (declaration.initializer.kind === 'new_expression') {
+          const classConstruction = lowerClassConstructionDeclaration(
+            declaration.binding.name,
+            declaration.initializer,
+            statement.declarationKind,
+            context,
+          );
+          if (!classConstruction) {
+            return [{ kind: 'unsupported_statement', sourceKind: 'variable_declaration' }];
+          }
+          return [...classConstruction];
         }
         if (declaration.initializer.kind === 'arrow_function') {
           const localType = localTypeForBinding(declaration.binding, context);
@@ -2613,6 +2752,7 @@ function lowerFunction(
   functionResultArrayLocals: Map<string, SourceSemanticArrayLocal>,
   functionResultRepresentations: Map<string, CompilerValueType>,
   objectLayoutsByKey: Map<string, SemanticObjectLayoutIR>,
+  classesByName: ReadonlyMap<string, SourceClassIR>,
   moduleState: SourceSemanticModuleLoweringState,
   stringLiteralIds: Map<string, number>,
   stringLiterals: string[],
@@ -2670,6 +2810,7 @@ function lowerFunction(
     moduleState,
     objectLayoutsByKey,
     objectLocals: new Map(),
+    classesByName,
     pendingStatements: [],
     runtimeFamilies: new Set(),
     stringLiteralIds,
@@ -2778,6 +2919,11 @@ export function createSemanticModuleFromSourceHIR(
     nextClosureFunctionId: 0,
     nextClosureSignatureId: 0,
   };
+  const classesByName = new Map(
+    source.modules.flatMap((module) =>
+      module.classes.map((classInfo) => [classInfo.name, classInfo] as const)
+    ),
+  );
   const functionResultRepresentations = new Map<string, CompilerValueType>();
   const functionResultArrayLocals = new Map<string, SourceSemanticArrayLocal>();
   for (const module of source.modules) {
@@ -2804,6 +2950,7 @@ export function createSemanticModuleFromSourceHIR(
         functionResultArrayLocals,
         functionResultRepresentations,
         objectLayoutsByKey,
+        classesByName,
         moduleState,
         stringLiteralIds,
         stringLiterals,
