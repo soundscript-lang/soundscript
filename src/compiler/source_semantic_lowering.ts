@@ -1087,6 +1087,44 @@ function lowerObjectBindingFromLocal(
   return statements;
 }
 
+function lowerArrayBindingFromLocal(
+  binding: SourceBindingIR,
+  arrayName: string,
+  arrayRepresentation: CompilerValueType,
+  arrayLocal: SourceSemanticArrayLocal,
+  context: FunctionLoweringContext,
+  sourceKind: string,
+): SemanticStatementIR[] | undefined {
+  if (binding.kind !== 'array_binding') {
+    return undefined;
+  }
+  const statements: SemanticStatementIR[] = [];
+  const array = localGetExpression(arrayName, arrayRepresentation);
+  for (const [index, element] of binding.elements.entries()) {
+    if (element.kind !== 'identifier_binding') {
+      context.unsupportedKinds.add('array_binding');
+      return undefined;
+    }
+    const value = arrayElementExpressionForInfo(
+      array,
+      { kind: 'number_literal', value: index, representation: 'f64' },
+      arrayLocal,
+      context,
+    );
+    if (!value) {
+      context.unsupportedKinds.add(`array_binding:${element.name}`);
+      return undefined;
+    }
+    addLocal(context, element.name, arrayLocal.elementRepresentation);
+    statements.push({ kind: 'local_set', name: element.name, value });
+  }
+  if (statements.length === 0) {
+    context.unsupportedKinds.add(sourceKind);
+    return undefined;
+  }
+  return statements;
+}
+
 function lowerStatement(
   statement: SourceStatementIR,
   context: FunctionLoweringContext,
@@ -1130,26 +1168,18 @@ function lowerStatement(
           addLocal(context, arrayName, initializer.representation);
           context.arrayLocals.set(arrayName, arrayLocal);
           statements.push({ kind: 'local_set', name: arrayName, value: initializer });
-          const array = localGetExpression(arrayName, initializer.representation);
-          for (const [index, element] of declaration.binding.elements.entries()) {
-            if (element.kind !== 'identifier_binding') {
-              context.unsupportedKinds.add('array_binding');
-              return [{ kind: 'unsupported_statement', sourceKind: 'variable_declaration' }];
-            }
-            const value = arrayElementExpressionForInfo(
-              array,
-              { kind: 'number_literal', value: index, representation: 'f64' },
-              arrayLocal,
-              context,
-            );
-            if (!value) {
-              context.unsupportedKinds.add(`array_binding:${element.name}`);
-              return [{ kind: 'unsupported_statement', sourceKind: 'variable_declaration' }];
-            }
-            addLocal(context, element.name, arrayLocal.elementRepresentation);
-            statements.push({ kind: 'local_set', name: element.name, value });
+          const bindingStatements = lowerArrayBindingFromLocal(
+            declaration.binding,
+            arrayName,
+            initializer.representation,
+            arrayLocal,
+            context,
+            'variable_declaration',
+          );
+          if (!bindingStatements) {
+            return [{ kind: 'unsupported_statement', sourceKind: 'variable_declaration' }];
           }
-          return statements;
+          return [...statements, ...bindingStatements];
         }
         if (declaration.binding.kind !== 'identifier_binding' || !declaration.initializer) {
           context.unsupportedKinds.add('variable_declaration');
@@ -1547,6 +1577,24 @@ function lowerFunction(
         param.binding,
         param.name,
         objectLayout,
+        context,
+        'parameter_binding',
+      );
+      return statements ?? [{ kind: 'unsupported_statement', sourceKind: 'parameter_binding' }];
+    }
+    if (param.binding.kind === 'array_binding') {
+      const arrayLocal = arrayLocalInfoForSemanticType(param.type);
+      const representation = context.localRepresentations.get(param.name);
+      if (!arrayLocal || !representation) {
+        context.unsupportedKinds.add('parameter_array_binding');
+        return [{ kind: 'unsupported_statement', sourceKind: 'parameter_binding' }];
+      }
+      context.arrayLocals.set(param.name, arrayLocal);
+      const statements = lowerArrayBindingFromLocal(
+        param.binding,
+        param.name,
+        representation,
+        arrayLocal,
         context,
         'parameter_binding',
       );
