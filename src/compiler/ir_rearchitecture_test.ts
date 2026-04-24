@@ -1343,6 +1343,61 @@ Deno.test('compiler SourceHIR semantic lowering emits runnable for loops', async
   assertEquals((sum as (limit: number) => number)(0), 0);
 });
 
+Deno.test('compiler SourceHIR semantic lowering emits runnable update expressions', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: { strict: true },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        export function score(limit: number): number {
+          let total = 0;
+          for (let index = 0; index < limit; index++) {
+            total = total + index;
+          }
+          let value = total;
+          const before = value++;
+          const after = ++value;
+          value--;
+          return before + after + value;
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createSourceSemanticSnapshot(program, tempDirectory);
+  const semantic = createSemanticModuleFromSourceHIR(snapshot.source, snapshot.sharedFacts);
+  const manifest = createRuntimeManifestFromSemanticModule(semantic);
+  const plan = createWasmGcModulePlan(semantic, manifest);
+  const scorePlan = plan.functionPlans.find((func) => func.name === 'score');
+  const watPath = join(tempDirectory, 'wasm-gc-source-update.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-source-update.wasm');
+
+  assertEquals(manifest.familyRequirements, []);
+  assertEquals(scorePlan?.bodyStatus, 'emittable');
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(plan));
+  const result = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(result.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(result.success, true);
+
+  const wasm = await Deno.readFile(wasmPath);
+  const instance = await WebAssembly.instantiate(wasm);
+  const score = instance.instance.exports['main.ts:score'];
+  assertEquals(typeof score, 'function');
+  assertEquals((score as (limit: number) => number)(5), 33);
+  assertEquals((score as (limit: number) => number)(1), 3);
+});
+
 Deno.test('compiler SourceHIR semantic lowering emits runnable string body runtime families', async () => {
   const tempDirectory = await createTempProject([
     {

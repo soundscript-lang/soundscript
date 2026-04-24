@@ -469,6 +469,58 @@ function lowerConditionalExpression(
   return result;
 }
 
+function lowerUpdateExpression(
+  expression: Extract<SourceExpressionIR, { kind: 'update_expression' }>,
+  context: FunctionLoweringContext,
+): SemanticExpressionIR | undefined {
+  if (expression.operand.kind !== 'identifier') {
+    return undefined;
+  }
+  const representation = context.localRepresentations.get(expression.operand.name);
+  if (representation !== 'f64') {
+    return undefined;
+  }
+  const current: SemanticExpressionIR = {
+    kind: 'local_get',
+    name: expression.operand.name,
+    representation: 'f64',
+  };
+  const updated: SemanticExpressionIR = {
+    kind: 'binary',
+    op: expression.operator === '++' ? 'f64.add' : 'f64.sub',
+    left: current,
+    right: { kind: 'number_literal', value: 1, representation: 'f64' },
+    representation: 'f64',
+  };
+  if (expression.prefix) {
+    context.pendingStatements.push({
+      kind: 'local_set',
+      name: expression.operand.name,
+      value: updated,
+    });
+    return {
+      kind: 'local_get',
+      name: expression.operand.name,
+      representation: 'f64',
+    };
+  }
+  const previousName = nextTempLocalName(context, 'update_previous');
+  addLocal(context, previousName, 'f64');
+  context.pendingStatements.push(
+    { kind: 'local_set', name: previousName, value: current },
+    {
+      kind: 'local_set',
+      name: expression.operand.name,
+      value: updated,
+    },
+  );
+  return {
+    kind: 'local_get',
+    name: previousName,
+    representation: 'f64',
+  };
+}
+
 function lowerExpression(
   expression: SourceExpressionIR,
   context: FunctionLoweringContext,
@@ -681,6 +733,14 @@ function lowerExpression(
         value,
         representation: unary.representation,
       };
+    }
+    case 'update_expression': {
+      const updated = lowerUpdateExpression(expression, context);
+      if (updated) {
+        return updated;
+      }
+      context.unsupportedKinds.add(`update_expression:${expression.operator}`);
+      return { kind: 'undefined_literal', representation: 'tagged_ref' };
     }
     case 'conditional_expression': {
       const conditional = lowerConditionalExpression(expression, context);

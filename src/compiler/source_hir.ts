@@ -185,6 +185,13 @@ export type SourceExpressionIR =
     span: SourceSpanIR;
   }
   | {
+    kind: 'update_expression';
+    operator: '++' | '--';
+    operand: SourceExpressionIR;
+    prefix: boolean;
+    span: SourceSpanIR;
+  }
+  | {
     kind: 'conditional_expression';
     test: SourceExpressionIR;
     consequent: SourceExpressionIR;
@@ -266,6 +273,10 @@ function expressionRoleForChild(role: SourceExpressionRole): SourceExpressionRol
 
 function prefixUnaryOperatorForSource(operator: ts.PrefixUnaryOperator): string {
   return ts.tokenToString(operator) ?? syntaxKindName(operator);
+}
+
+function updateOperatorForSource(operator: ts.SyntaxKind): '++' | '--' {
+  return operator === ts.SyntaxKind.PlusPlusToken ? '++' : '--';
 }
 
 function lowerBinding(sourceFile: ts.SourceFile, name: ts.BindingName): SourceBindingIR {
@@ -380,11 +391,35 @@ function lowerExpression(
     };
   }
 
+  if (
+    ts.isPrefixUnaryExpression(expression) &&
+    (expression.operator === ts.SyntaxKind.PlusPlusToken ||
+      expression.operator === ts.SyntaxKind.MinusMinusToken)
+  ) {
+    return {
+      kind: 'update_expression',
+      operator: updateOperatorForSource(expression.operator),
+      operand: lowerLValueExpression(sourceFile, expression.operand),
+      prefix: true,
+      span: spanOf(sourceFile, expression),
+    };
+  }
+
   if (ts.isPrefixUnaryExpression(expression)) {
     return {
       kind: 'unary_expression',
       operator: prefixUnaryOperatorForSource(expression.operator),
       operand: lowerExpression(sourceFile, expression.operand),
+      span: spanOf(sourceFile, expression),
+    };
+  }
+
+  if (ts.isPostfixUnaryExpression(expression)) {
+    return {
+      kind: 'update_expression',
+      operator: updateOperatorForSource(expression.operator),
+      operand: lowerLValueExpression(sourceFile, expression.operand),
+      prefix: false,
       span: spanOf(sourceFile, expression),
     };
   }
