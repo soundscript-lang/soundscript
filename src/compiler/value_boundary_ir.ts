@@ -217,8 +217,7 @@ function valueBoundarySupportsWasmGcSpecializedObjectWrapperFieldValue(
     case 'object':
       return valueBoundarySupportsWasmGcSpecializedObjectWrapper(normalized);
     case 'array':
-      return normalized.element.kind === 'boolean' || normalized.element.kind === 'number' ||
-        normalized.element.kind === 'string';
+      return valueBoundarySupportsWasmGcSpecializedObjectWrapperFieldValue(normalized.element);
     case 'closure':
     case 'host_handle':
       return true;

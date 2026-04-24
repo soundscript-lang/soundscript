@@ -509,6 +509,7 @@ compilerIntegrationTest(
     assertEquals(result.exitCode, 0);
     assertEquals(result.diagnostics, []);
     assert(result.artifacts);
+    assertEquals(result.artifacts.backend, 'wasm-gc');
     assert(result.artifacts.wrapperPath);
 
     let constructed = 0;
@@ -609,6 +610,7 @@ compilerIntegrationTest(
     assertEquals(result.exitCode, 0);
     assertEquals(result.diagnostics, []);
     assert(result.artifacts);
+    assertEquals(result.artifacts.backend, 'wasm-gc');
     assert(result.artifacts.wrapperPath);
 
     let constructed = 0;
@@ -12614,6 +12616,7 @@ compilerIntegrationTest(
     assertEquals(result.exitCode, 0);
     assertEquals(result.diagnostics, []);
     assert(result.artifacts);
+    assertEquals(result.artifacts.backend, 'wasm-gc');
     assert(result.artifacts.wrapperPath);
 
     type RenderedElement = {

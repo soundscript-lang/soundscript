@@ -569,6 +569,33 @@ function valueBoundaryFromClosureSlot(
   }
 }
 
+function forwardedClosureBoundarySource(
+  func: WasmGcFunctionPlanIR,
+  functionPlans: readonly WasmGcFunctionPlanIR[],
+): WasmGcFunctionPlanIR | undefined {
+  const runtimeParams = func.params.slice(func.closureCaptureCount ?? 0);
+  if (func.body.length !== 1) {
+    return undefined;
+  }
+  const [statement] = func.body;
+  if (statement.kind !== 'return') {
+    return undefined;
+  }
+  const value = statement.value;
+  if (value.kind !== 'call') {
+    return undefined;
+  }
+  const callee = functionPlans.find((candidate) => candidate.name === value.callee);
+  if (!callee || callee.params.length !== runtimeParams.length) {
+    return undefined;
+  }
+  const forwardsAllRuntimeParams = value.args.length === runtimeParams.length &&
+    value.args.every((arg, index) =>
+      arg.kind === 'local_get' && arg.name === runtimeParams[index]?.name
+    );
+  return forwardsAllRuntimeParams ? callee : undefined;
+}
+
 function closureSignatureValueTypes(
   functionPlans: readonly WasmGcFunctionPlanIR[],
   closureSignatures: readonly WasmGcClosureSignaturePlanIR[],
@@ -589,23 +616,29 @@ function closureSignatureValueTypes(
   if (signatureSource) {
     const paramTaggedPrimitiveKinds = (signatureSource.closureParamTaggedPrimitiveKinds ?? [])
       .map(compactTaggedPrimitiveKinds);
+    const runtimeParams = signatureSource.params.slice(signatureSource.closureCaptureCount ?? 0);
+    const boundarySource = forwardedClosureBoundarySource(signatureSource, functionPlans) ??
+      signatureSource;
     return {
-      paramTypes: signatureSource.params
-        .slice(signatureSource.closureCaptureCount ?? 0)
-        .map((param) => param.wasmType),
+      paramTypes: runtimeParams.map((param) => param.wasmType),
       resultType: signatureSource.result,
       paramTaggedPrimitiveKinds,
-      paramBoundaries: signatureSource.params
-        .slice(signatureSource.closureCaptureCount ?? 0)
-        .map((param, index) =>
-          valueBoundaryFromClosureSlot(param.wasmType as CompilerValueType, {
+      paramBoundaries: runtimeParams.map((param, index) => {
+        const boundaryParam = boundarySource === signatureSource
+          ? param
+          : boundarySource.params[index];
+        return boundaryParam?.hostBoundary
+          ? valueBoundaryFromSemanticType(boundaryParam.hostBoundary)
+          : valueBoundaryFromClosureSlot(param.wasmType as CompilerValueType, {
             taggedPrimitiveKinds: signatureSource.closureParamTaggedPrimitiveKinds?.[index],
-          })
+          });
+      }),
+      resultBoundary: boundarySource.hostResultBoundary
+        ? valueBoundaryFromSemanticType(boundarySource.hostResultBoundary)
+        : valueBoundaryFromClosureSlot(
+          signatureSource.result as CompilerValueType,
+          { taggedPrimitiveKinds: signatureSource.closureResultTaggedPrimitiveKinds },
         ),
-      resultBoundary: valueBoundaryFromClosureSlot(
-        signatureSource.result as CompilerValueType,
-        { taggedPrimitiveKinds: signatureSource.closureResultTaggedPrimitiveKinds },
-      ),
       ...(compactTaggedPrimitiveKinds(signatureSource.closureResultTaggedPrimitiveKinds) !==
           undefined
         ? {
@@ -1312,6 +1345,279 @@ function closureBoundaryWrappersForBoundaries(
     });
 }
 
+function boundaryMayCarryErasedInternalClosure(boundary: ValueBoundaryIR | undefined): boolean {
+  if (!boundary) {
+    return false;
+  }
+  switch (boundary.kind) {
+    case 'object':
+      return boundary.fallback === true || boundary.dynamic === true ||
+        boundary.fields?.some((field) => boundaryMayCarryErasedInternalClosure(field.value)) ===
+          true;
+    case 'array':
+      return boundaryMayCarryErasedInternalClosure(boundary.element);
+    case 'tuple':
+      return boundary.elements.some(boundaryMayCarryErasedInternalClosure);
+    case 'map':
+      return boundaryMayCarryErasedInternalClosure(boundary.key) ||
+        boundaryMayCarryErasedInternalClosure(boundary.value);
+    case 'set':
+      return boundaryMayCarryErasedInternalClosure(boundary.value);
+    case 'promise':
+      return boundaryMayCarryErasedInternalClosure(boundary.value);
+    case 'sync_generator':
+    case 'async_generator':
+      return [boundary.yield, boundary.return, boundary.next].some(
+        boundaryMayCarryErasedInternalClosure,
+      );
+    case 'union':
+      return boundary.arms.some(boundaryMayCarryErasedInternalClosure);
+    case 'closure':
+    case 'undefined':
+    case 'null':
+    case 'boolean':
+    case 'number':
+    case 'string':
+    case 'symbol':
+    case 'bigint':
+    case 'constructor':
+    case 'class_instance':
+    case 'host_handle':
+    case 'machine_numeric':
+    case 'value_class':
+      return false;
+    default: {
+      const exhaustiveCheck: never = boundary;
+      return exhaustiveCheck;
+    }
+  }
+}
+
+function objectShapeFieldNamesFromLayoutName(layoutName: string | undefined): readonly string[] {
+  if (!layoutName?.startsWith('object.shape.')) {
+    return [];
+  }
+  return layoutName.slice('object.shape.'.length).split('|').map((entry) =>
+    entry.split(':')[0] ?? ''
+  ).filter((name) => name.length > 0);
+}
+
+function fieldNamesKey(fields: readonly string[]): string {
+  return [...fields].sort().join('\0');
+}
+
+function collectKnownObjectBoundaries(
+  boundaries: Iterable<ValueBoundaryIR | undefined>,
+): ReadonlyMap<string, Extract<ValueBoundaryIR, { kind: 'object' }>> {
+  const known = new Map<string, Extract<ValueBoundaryIR, { kind: 'object' }>>();
+  for (const boundary of boundaries) {
+    if (!boundary) {
+      continue;
+    }
+    visitValueBoundary(boundary, (candidate) => {
+      if (
+        candidate.kind !== 'object' || candidate.fallback === true ||
+        candidate.dynamic === true || !candidate.fields?.length
+      ) {
+        return;
+      }
+      const key = fieldNamesKey(candidate.fields.map((field) => field.name));
+      const existing = known.get(key);
+      if (!existing || existing.layoutName?.startsWith('object.shape.') === true) {
+        known.set(key, candidate);
+      }
+    });
+  }
+  return known;
+}
+
+function enrichBoundaryWithKnownObjectShapes(
+  boundary: ValueBoundaryIR | undefined,
+  knownObjectsByFieldNames: ReadonlyMap<string, Extract<ValueBoundaryIR, { kind: 'object' }>>,
+): ValueBoundaryIR | undefined {
+  if (!boundary) {
+    return undefined;
+  }
+  switch (boundary.kind) {
+    case 'object': {
+      const rawFieldNames = objectShapeFieldNamesFromLayoutName(boundary.layoutName);
+      const known = rawFieldNames.length > 0
+        ? knownObjectsByFieldNames.get(fieldNamesKey(rawFieldNames))
+        : undefined;
+      const fields = (known?.fields ?? boundary.fields)?.map((field) => ({
+        name: field.name,
+        value: enrichBoundaryWithKnownObjectShapes(field.value, knownObjectsByFieldNames)!,
+      }));
+      return {
+        ...boundary,
+        ...(fields ? { fields } : {}),
+      };
+    }
+    case 'array':
+      return {
+        ...boundary,
+        element: enrichBoundaryWithKnownObjectShapes(boundary.element, knownObjectsByFieldNames)!,
+      };
+    case 'tuple':
+      return {
+        ...boundary,
+        elements: boundary.elements.map((element) =>
+          enrichBoundaryWithKnownObjectShapes(element, knownObjectsByFieldNames)!
+        ),
+      };
+    case 'map':
+      return {
+        ...boundary,
+        key: enrichBoundaryWithKnownObjectShapes(boundary.key, knownObjectsByFieldNames)!,
+        value: enrichBoundaryWithKnownObjectShapes(boundary.value, knownObjectsByFieldNames)!,
+      };
+    case 'set':
+      return {
+        ...boundary,
+        value: enrichBoundaryWithKnownObjectShapes(boundary.value, knownObjectsByFieldNames)!,
+      };
+    case 'closure':
+      return {
+        ...boundary,
+        ...(boundary.signatures
+          ? {
+            signatures: boundary.signatures.map((signature) => ({
+              ...signature,
+              params: signature.params.map((param) =>
+                enrichBoundaryWithKnownObjectShapes(param, knownObjectsByFieldNames)!
+              ),
+              result: enrichBoundaryWithKnownObjectShapes(
+                signature.result,
+                knownObjectsByFieldNames,
+              )!,
+            })),
+          }
+          : {}),
+      };
+    case 'promise':
+      return {
+        ...boundary,
+        ...(boundary.value
+          ? { value: enrichBoundaryWithKnownObjectShapes(boundary.value, knownObjectsByFieldNames) }
+          : {}),
+      };
+    case 'sync_generator':
+    case 'async_generator':
+      return {
+        ...boundary,
+        ...(boundary.yield
+          ? { yield: enrichBoundaryWithKnownObjectShapes(boundary.yield, knownObjectsByFieldNames) }
+          : {}),
+        ...(boundary.return
+          ? {
+            return: enrichBoundaryWithKnownObjectShapes(
+              boundary.return,
+              knownObjectsByFieldNames,
+            ),
+          }
+          : {}),
+        ...(boundary.next
+          ? { next: enrichBoundaryWithKnownObjectShapes(boundary.next, knownObjectsByFieldNames) }
+          : {}),
+      };
+    case 'union':
+      return normalizeValueBoundary({
+        kind: 'union',
+        arms: boundary.arms.map((arm) =>
+          enrichBoundaryWithKnownObjectShapes(arm, knownObjectsByFieldNames)!
+        ),
+      });
+    default:
+      return boundary;
+  }
+}
+
+function enrichClosureBoundaryWrappers(
+  wrappers: readonly WasmGcClosureBoundaryWrapperPlanIR[],
+  knownObjectsByFieldNames: ReadonlyMap<string, Extract<ValueBoundaryIR, { kind: 'object' }>>,
+): readonly WasmGcClosureBoundaryWrapperPlanIR[] {
+  return wrappers.map((wrapper) => ({
+    ...wrapper,
+    ...(wrapper.paramBoundaries
+      ? {
+        paramBoundaries: wrapper.paramBoundaries.map((boundary) =>
+          enrichBoundaryWithKnownObjectShapes(boundary, knownObjectsByFieldNames)
+        ),
+      }
+      : {}),
+    ...(wrapper.resultBoundary
+      ? {
+        resultBoundary: enrichBoundaryWithKnownObjectShapes(
+          wrapper.resultBoundary,
+          knownObjectsByFieldNames,
+        ),
+      }
+      : {}),
+  }));
+}
+
+function enrichHostImportWrapperBoundaries(
+  wrappers: readonly WasmGcHostImportWrapperPlanIR[],
+  knownObjectsByFieldNames: ReadonlyMap<string, Extract<ValueBoundaryIR, { kind: 'object' }>>,
+): readonly WasmGcHostImportWrapperPlanIR[] {
+  return wrappers.map((wrapper) => ({
+    ...wrapper,
+    ...(wrapper.paramBoundaries
+      ? {
+        paramBoundaries: wrapper.paramBoundaries.map((boundary) =>
+          enrichBoundaryWithKnownObjectShapes(boundary, knownObjectsByFieldNames)
+        ),
+      }
+      : {}),
+    ...(wrapper.resultBoundary
+      ? {
+        resultBoundary: enrichBoundaryWithKnownObjectShapes(
+          wrapper.resultBoundary,
+          knownObjectsByFieldNames,
+        ),
+      }
+      : {}),
+  }));
+}
+
+function enrichExportWrapperBoundaries(
+  wrappers: readonly WasmGcExportWrapperPlanIR[],
+  knownObjectsByFieldNames: ReadonlyMap<string, Extract<ValueBoundaryIR, { kind: 'object' }>>,
+): readonly WasmGcExportWrapperPlanIR[] {
+  return wrappers.map((wrapper) => ({
+    ...wrapper,
+    ...(wrapper.paramBoundaries
+      ? {
+        paramBoundaries: wrapper.paramBoundaries.map((boundary) =>
+          enrichBoundaryWithKnownObjectShapes(boundary, knownObjectsByFieldNames)
+        ),
+      }
+      : {}),
+    ...(wrapper.resultBoundary
+      ? {
+        resultBoundary: enrichBoundaryWithKnownObjectShapes(
+          wrapper.resultBoundary,
+          knownObjectsByFieldNames,
+        ),
+      }
+      : {}),
+  }));
+}
+
+function erasedInternalClosureSignatureIds(
+  functionPlans: readonly WasmGcFunctionPlanIR[],
+  internalToHostBoundaries: Iterable<ValueBoundaryIR | undefined>,
+): readonly number[] {
+  if (![...internalToHostBoundaries].some(boundaryMayCarryErasedInternalClosure)) {
+    return [];
+  }
+  return functionPlans.flatMap((func) =>
+    func.closureFunctionId !== undefined && func.closureSignatureId !== undefined
+      ? [func.closureSignatureId]
+      : []
+  );
+}
+
 function semanticTypeIsHostProjectionObject(type: SemanticTypeIR | undefined): boolean {
   return type?.kind === 'object' && (type.fallback === true || type.dynamic === true);
 }
@@ -1565,8 +1871,29 @@ function createWasmGcWrapperPlan(
       });
     });
   }
-  const hostImportWrappers = createWasmGcHostImportWrapperPlan(functionPlans, boundarySurfaces);
-  const exportWrappers = createWasmGcExportWrapperPlan(functionPlans, boundarySurfaces);
+  const rawHostImportWrappers = createWasmGcHostImportWrapperPlan(functionPlans, boundarySurfaces);
+  const rawExportWrappers = createWasmGcExportWrapperPlan(functionPlans, boundarySurfaces);
+  const rawHostToInternalBoundaries = [
+    ...rawExportWrappers.flatMap((wrapper) => wrapper.paramBoundaries ?? []),
+    ...rawHostImportWrappers.map((wrapper) => wrapper.resultBoundary),
+  ];
+  const rawInternalToHostBoundaries = [
+    ...rawHostImportWrappers.flatMap((wrapper) => wrapper.paramBoundaries ?? []),
+    ...rawExportWrappers.flatMap((wrapper) => wrapper.paramBoundaries ?? []),
+    ...rawExportWrappers.map((wrapper) => wrapper.resultBoundary),
+  ];
+  const knownObjectsByFieldNames = collectKnownObjectBoundaries([
+    ...rawHostToInternalBoundaries,
+    ...rawInternalToHostBoundaries,
+  ]);
+  const hostImportWrappers = enrichHostImportWrapperBoundaries(
+    rawHostImportWrappers,
+    knownObjectsByFieldNames,
+  );
+  const exportWrappers = enrichExportWrapperBoundaries(
+    rawExportWrappers,
+    knownObjectsByFieldNames,
+  );
   const hostToInternalBoundaries = [
     ...exportWrappers.flatMap((wrapper) => wrapper.paramBoundaries ?? []),
     ...hostImportWrappers.map((wrapper) => wrapper.resultBoundary),
@@ -1576,10 +1903,20 @@ function createWasmGcWrapperPlan(
     ...exportWrappers.flatMap((wrapper) => wrapper.paramBoundaries ?? []),
     ...exportWrappers.map((wrapper) => wrapper.resultBoundary),
   ];
-  const closureBoundaryWrappers = closureBoundaryWrappersForBoundaries(
-    [...hostToInternalBoundaries, ...internalToHostBoundaries],
-    functionPlans,
-    closureSignatures,
+  const closureBoundaryWrappers = enrichClosureBoundaryWrappers(
+    mergeClosureBoundaryWrappers([
+      ...closureBoundaryWrappersForBoundaries(
+        [...hostToInternalBoundaries, ...internalToHostBoundaries],
+        functionPlans,
+        closureSignatures,
+      ),
+      ...closureBoundaryWrappersForSignatureIds(
+        erasedInternalClosureSignatureIds(functionPlans, internalToHostBoundaries),
+        functionPlans,
+        closureSignatures,
+      ),
+    ]),
+    knownObjectsByFieldNames,
   );
   const hostObjectProjectionPropertyWrappers = createHostObjectProjectionPropertyWrappers(
     functionPlans,
@@ -1591,22 +1928,32 @@ function createWasmGcWrapperPlan(
     functionPlans,
     closureSignatures,
   );
-  const hostClosureWrappers = mergeClosureBoundaryWrappers([
-    ...closureBoundaryWrappersForBoundaries(
-      hostToInternalBoundaries,
-      functionPlans,
-      closureSignatures,
-    ),
-    ...hostObjectProjectionClosureWrappers,
-  ]);
+  const hostClosureWrappers = enrichClosureBoundaryWrappers(
+    mergeClosureBoundaryWrappers([
+      ...closureBoundaryWrappersForBoundaries(
+        hostToInternalBoundaries,
+        functionPlans,
+        closureSignatures,
+      ),
+      ...hostObjectProjectionClosureWrappers,
+    ]),
+    knownObjectsByFieldNames,
+  );
   const hostClosureParamBoundaries = hostClosureWrappers.flatMap((wrapper) =>
     wrapper.paramBoundaries ?? []
   );
   const hostClosureResultBoundaries = hostClosureWrappers.map((wrapper) => wrapper.resultBoundary);
+  const closureBoundaryParamBoundaries = closureBoundaryWrappers.flatMap((wrapper) =>
+    wrapper.paramBoundaries ?? []
+  );
+  const closureBoundaryResultBoundaries = closureBoundaryWrappers.map((wrapper) =>
+    wrapper.resultBoundary
+  );
   const taggedValueAdapterHelpers = mergeSortedUniqueStrings(
     taggedValueAdapterHelpersForWrappers(wrappers),
     taggedValueAdapterHelpersForClosureBoundaries(closureBoundaryWrappers),
     taggedValueAdapterHelpersForHostClosureWrappers(hostClosureWrappers),
+    taggedValueAdapterHelpersForBoundaries(closureBoundaryParamBoundaries),
     taggedValueAdapterHelpersForBoundaries(hostClosureResultBoundaries),
     taggedValueAdapterHelpersForBoundaries(hostToInternalBoundaries),
   );
@@ -1614,6 +1961,7 @@ function createWasmGcWrapperPlan(
     taggedValueResultHelpersForWrappers(wrappers),
     taggedValueResultHelpersForClosureBoundaries(closureBoundaryWrappers),
     taggedValueResultHelpersForHostClosureWrappers(hostClosureWrappers),
+    taggedValueResultHelpersForBoundaries(closureBoundaryResultBoundaries),
     taggedValueResultHelpersForBoundaries(hostClosureParamBoundaries),
     taggedValueResultHelpersForBoundaries(internalToHostBoundaries),
   );

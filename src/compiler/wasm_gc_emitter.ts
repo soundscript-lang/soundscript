@@ -246,16 +246,28 @@ function specializedObjectLayoutTypePlanForBoundary(
   }
   const matches = (
     predicate: (boundary: ValueBoundaryIR, wasmType: string) => boolean,
+    name?: string,
   ): WasmGcTypePlanIR | undefined =>
     plan.typePlans.find((typePlan) =>
       typePlan.source === 'object_layout' &&
       typePlan.family === 'specialized_object' &&
+      (name === undefined || typePlan.name === name) &&
       (typePlan.fields?.length ?? 0) === (boundary.fields?.length ?? 0) &&
       (boundary.fields ?? []).every((field, index) =>
         typePlan.fields?.[index]?.name === field.name &&
         predicate(field.value, typePlan.fields?.[index]?.wasmType ?? '')
       )
     );
+  const exactTypePlanName = boundary.layoutName
+    ? `$object_layout_${sanitizeIdentifier(boundary.layoutName)}`
+    : undefined;
+  if (exactTypePlanName) {
+    const exactMatch = matches(boundaryFieldWasmTypeExactlyMatches, exactTypePlanName) ??
+      matches(boundaryFieldWasmTypeMatches, exactTypePlanName);
+    if (exactMatch) {
+      return exactMatch;
+    }
+  }
   return matches(boundaryFieldWasmTypeExactlyMatches) ?? matches(boundaryFieldWasmTypeMatches);
 }
 
@@ -278,6 +290,14 @@ function renderSpecializedObjectBoundaryHelpers(
       wrapper.resultBoundary,
     ]),
     ...plan.wrapperPlan.exportWrappers.flatMap((wrapper) => [
+      ...(wrapper.paramBoundaries ?? []),
+      wrapper.resultBoundary,
+    ]),
+    ...plan.wrapperPlan.closureBoundaryWrappers.flatMap((wrapper) => [
+      ...(wrapper.paramBoundaries ?? []),
+      wrapper.resultBoundary,
+    ]),
+    ...plan.wrapperPlan.hostClosureWrappers.flatMap((wrapper) => [
       ...(wrapper.paramBoundaries ?? []),
       wrapper.resultBoundary,
     ]),
@@ -1097,6 +1117,17 @@ function fallbackObjectLayoutTypeName(
   }`;
 }
 
+function fallbackObjectLayoutTypeNameForEntries(
+  representationName: string,
+  entries: readonly { key: string; valueType: CompilerValueType }[],
+): string {
+  return `$fallback_object_layout_${sanitizeIdentifier(representationName)}_${
+    entries.map((entry) =>
+      `${sanitizeIdentifier(entry.key)}_${sanitizeIdentifier(entry.valueType)}`
+    ).join('_') || 'empty'
+  }`;
+}
+
 function fallbackObjectLocalLayouts(
   func: WasmGcFunctionPlanIR,
 ): ReadonlyMap<string, FallbackObjectLocalLayout> {
@@ -1114,9 +1145,9 @@ function fallbackObjectLocalLayouts(
       }
     }
     layouts.set(localName, {
-      typeName: fallbackObjectLayoutTypeName(
+      typeName: fallbackObjectLayoutTypeNameForEntries(
         representationName,
-        merged.map((entry) => entry.key),
+        merged,
       ),
       entries: merged,
     });
@@ -1577,6 +1608,76 @@ function specializedObjectFieldTargetCast(
     return undefined;
   }
   return [`${indent}ref.cast ${targetWasmType}`];
+}
+
+function specializedObjectEncodedFieldValueType(
+  statement: Extract<SemanticStatementIR, { kind: 'specialized_object_field_get' }>,
+): CompilerValueType | undefined {
+  const fields = statement.representationName.split('#')[0]?.split('|') ?? [];
+  const prefix = `${statement.fieldName}:required:`;
+  const field = fields.find((candidate) => candidate.startsWith(prefix));
+  return field?.slice(prefix.length) as CompilerValueType | undefined;
+}
+
+function specializedObjectFieldTargetProjection(
+  statement: Extract<SemanticStatementIR, { kind: 'specialized_object_field_get' }>,
+  indent: string,
+  context: FunctionRenderContext,
+): readonly string[] | undefined {
+  const sourceValueType = specializedObjectEncodedFieldValueType(statement);
+  const targetValueType = context.localWasmTypes.get(statement.targetName) as
+    | CompilerValueType
+    | undefined;
+  if (sourceValueType !== 'tagged_ref' || !targetValueType || targetValueType === 'tagged_ref') {
+    return specializedObjectFieldTargetCast(statement.targetName, indent, context);
+  }
+  switch (targetValueType) {
+    case 'f64':
+      return [
+        `${indent}ref.cast (ref ${taggedValueTypeName()})`,
+        `${indent}struct.get ${taggedValueTypeName()} $number_payload`,
+      ];
+    case 'i32':
+      return [
+        `${indent}ref.cast (ref ${taggedValueTypeName()})`,
+        `${indent}struct.get ${taggedValueTypeName()} $number_payload`,
+        `${indent}i32.trunc_f64_s`,
+      ];
+    case 'string_ref':
+    case 'owned_string_ref':
+      return [
+        `${indent}ref.cast (ref ${taggedValueTypeName()})`,
+        `${indent}struct.get ${taggedValueTypeName()} $heap_payload`,
+        `${indent}ref.cast (ref ${stringRuntimeTypeName()})`,
+      ];
+    case 'symbol_ref':
+      return [
+        `${indent}ref.cast (ref ${taggedValueTypeName()})`,
+        `${indent}struct.get ${taggedValueTypeName()} $heap_payload`,
+        `${indent}ref.cast (ref ${symbolRuntimeTypeName()})`,
+      ];
+    case 'bigint_ref':
+      return [
+        `${indent}ref.cast (ref ${taggedValueTypeName()})`,
+        `${indent}struct.get ${taggedValueTypeName()} $heap_payload`,
+        `${indent}ref.cast (ref ${bigintRuntimeTypeName()})`,
+      ];
+    case 'heap_ref':
+    case 'closure_ref':
+    case 'box_ref':
+    case 'class_constructor_ref':
+      return [
+        `${indent}ref.cast (ref ${taggedValueTypeName()})`,
+        `${indent}struct.get ${taggedValueTypeName()} $heap_payload`,
+        ...(
+          needsSpecializedObjectFieldCast(wasmTypeForCompilerValueType(targetValueType))
+            ? [`${indent}ref.cast ${wasmTypeForCompilerValueType(targetValueType)}`]
+            : []
+        ),
+      ];
+    default:
+      return specializedObjectFieldTargetCast(statement.targetName, indent, context);
+  }
 }
 
 function dynamicObjectEntryIndexForValue(
@@ -3116,6 +3217,7 @@ const EXTERN_EQUAL_FUNCTION_NAME = '__soundscript_extern_eq';
 type ArrayScratchUse =
   | 'number_array'
   | 'string_array'
+  | 'string_equal'
   | 'string_array_index_of'
   | 'boolean_array'
   | 'tagged_array'
@@ -3250,6 +3352,9 @@ function collectNumberArrayScratchFromExpression(
       collectNumberArrayScratchFromExpression(expression.search, uses);
       break;
     case 'binary':
+      if (expression.op === 'string.eq' || expression.op === 'string.ne') {
+        uses.add('string_equal');
+      }
       collectNumberArrayScratchFromExpression(expression.left, uses);
       collectNumberArrayScratchFromExpression(expression.right, uses);
       break;
@@ -3520,6 +3625,12 @@ function functionUsesStringArrayIndexOf(func: WasmGcFunctionPlanIR): boolean {
   const uses = new Set<ArrayScratchUse>();
   func.body.forEach((statement) => collectNumberArrayScratchFromStatement(statement, uses));
   return uses.has('string_array_index_of');
+}
+
+function functionUsesStringEquality(func: WasmGcFunctionPlanIR): boolean {
+  const uses = new Set<ArrayScratchUse>();
+  func.body.forEach((statement) => collectNumberArrayScratchFromStatement(statement, uses));
+  return uses.has('string_equal');
 }
 
 function functionUsesTaggedArrayIndexOf(func: WasmGcFunctionPlanIR): boolean {
@@ -4566,6 +4677,18 @@ function renderExpression(
     case 'local_get':
       return [`${indent}local.get $${sanitizeIdentifier(expression.name)}`];
     case 'global_get':
+      if (expression.representation === 'closure_ref') {
+        const topLevelClosureMatch = /^closure_top_level_value_(\d+)$/.exec(
+          expression.globalName,
+        );
+        if (topLevelClosureMatch) {
+          return [
+            `${indent}i32.const ${Number(topLevelClosureMatch[1])}`,
+            `${indent}ref.null eq`,
+            `${indent}struct.new ${closureObjectTypeName()}`,
+          ];
+        }
+      }
       return [`${indent}global.get $${sanitizeIdentifier(expression.globalName)}`];
     case 'string_to_owned':
     case 'owned_string_to_host':
@@ -4888,6 +5011,14 @@ function renderExpression(
           `${indent}call $${sanitizeIdentifier(STRING_CONCAT_FUNCTION_NAME)}`,
         ];
       }
+      if (expression.op === 'string.eq' || expression.op === 'string.ne') {
+        return [
+          ...renderExpression(expression.left, indent, context),
+          ...renderExpression(expression.right, indent, context),
+          `${indent}call $${sanitizeIdentifier(STRING_EQUAL_FUNCTION_NAME)}`,
+          ...(expression.op === 'string.ne' ? [`${indent}i32.eqz`] : []),
+        ];
+      }
       if (expression.op === 'symbol.eq') {
         return [
           ...renderExpression(expression.left, indent, context),
@@ -4969,7 +5100,7 @@ function renderStatement(
         `${indent}struct.get ${objectLayoutTypeName(statement.representationName)} $${
           sanitizeIdentifier(statement.fieldName)
         }`,
-        ...(specializedObjectFieldTargetCast(statement.targetName, indent, context) ?? []),
+        ...(specializedObjectFieldTargetProjection(statement, indent, context) ?? []),
         `${indent}local.set $${sanitizeIdentifier(statement.targetName)}`,
       ];
     case 'specialized_object_field_set':
@@ -4989,9 +5120,9 @@ function renderStatement(
     case 'fallback_object_new': {
       const layout = context.fallbackObjectLocalLayouts.get(statement.targetName);
       const typeName = layout?.typeName ??
-        fallbackObjectLayoutTypeName(
+        fallbackObjectLayoutTypeNameForEntries(
           statement.representationName,
-          statement.entries.map((entry) => entry.key),
+          statement.entries,
         );
       return [
         ...statement.entries.flatMap((entry) =>
@@ -5603,8 +5734,8 @@ function renderHostHandleHelperFunctions(plan: WasmGcModulePlanIR): readonly str
     : [];
 }
 
-function hostClosureFunctionId(): number {
-  return -1;
+function hostClosureFunctionId(signatureId: number): number {
+  return -signatureId - 1;
 }
 
 function hostClosureFromHostFunctionName(signatureId: number): string {
@@ -5674,7 +5805,7 @@ function renderHostClosureHelperFunctions(plan: WasmGcModulePlanIR): readonly st
     `  (func ${
       hostClosureFromHostFunctionName(wrapper.signatureId)
     } (export "__soundscript_host_closure_from_host_${wrapper.signatureId}") (param $value externref) (result (ref null eq))`,
-    `    i32.const ${hostClosureFunctionId()}`,
+    `    i32.const ${hostClosureFunctionId(wrapper.signatureId)}`,
     '    local.get $value',
     `    struct.new ${typeNameForHostHandleRuntime()}`,
     `    struct.new ${closureObjectTypeName()}`,
@@ -5688,6 +5819,7 @@ function renderStringEqualityHelperFunctions(plan: WasmGcModulePlanIR): readonly
   );
   const usesStringIndexOf =
     plan.functionPlans.some((func) => !func.hostImport && functionUsesStringArrayIndexOf(func)) ||
+    plan.functionPlans.some((func) => !func.hostImport && functionUsesStringEquality(func)) ||
     plan.functionPlans.some((func) => !func.hostImport && functionUsesMapStorage(func)) ||
     [...wrapperPlanCollectionHostToInternalBoundaryAdapters(plan)].some((adapter) =>
       adapter.kind === 'map' || (adapter.kind === 'set' && valueBoundaryUsesString(adapter.value))
@@ -6156,21 +6288,43 @@ function collectionBoundaryAdapterUsesArrayPayload(
   return (adapter.kind === 'map' ? adapter.value : adapter.value).kind === 'array';
 }
 
+type ArrayBoundaryPayloadKind = 'boolean' | 'heap' | 'number' | 'string' | 'tagged';
+
+function arrayBoundaryPayloadKindForBoundary(
+  boundary: ValueBoundaryIR,
+): ArrayBoundaryPayloadKind | undefined {
+  if (boundary.kind !== 'array') {
+    return undefined;
+  }
+  const storage = selectWasmGcStorage(boundary);
+  if (storage.kind !== 'array') {
+    return undefined;
+  }
+  switch (storage.arrayType) {
+    case 'owned_boolean_array_ref':
+      return 'boolean';
+    case 'owned_heap_array_ref':
+      return 'heap';
+    case 'owned_number_array_ref':
+      return 'number';
+    case 'owned_array_ref':
+      return 'string';
+    case 'owned_tagged_array_ref':
+      return 'tagged';
+    default: {
+      const exhaustiveCheck: never = storage.arrayType;
+      return exhaustiveCheck;
+    }
+  }
+}
+
 function collectionBoundaryAdapterArrayPayloadKinds(
   plan: WasmGcModulePlanIR,
-): readonly ('boolean' | 'number' | 'string')[] {
-  const kinds = new Set<'boolean' | 'number' | 'string'>();
+): readonly ArrayBoundaryPayloadKind[] {
+  const kinds = new Set<ArrayBoundaryPayloadKind>();
   for (const adapter of wrapperPlanCollectionBoundaryAdapters(plan)) {
     const value = adapter.kind === 'map' ? adapter.value : adapter.value;
-    if (value.kind !== 'array') {
-      continue;
-    }
-    if (
-      value.element.kind === 'boolean' || value.element.kind === 'number' ||
-      value.element.kind === 'string'
-    ) {
-      kinds.add(value.element.kind);
-    }
+    collectArrayBoundaryPayloadKinds(value, kinds);
   }
   for (
     const wrapper of [...plan.wrapperPlan.exportWrappers, ...plan.wrapperPlan.hostImportWrappers]
@@ -6184,17 +6338,17 @@ function collectionBoundaryAdapterArrayPayloadKinds(
 
 function collectArrayBoundaryPayloadKinds(
   boundary: ValueBoundaryIR | undefined,
-  kinds: Set<'boolean' | 'number' | 'string'>,
+  kinds: Set<ArrayBoundaryPayloadKind>,
 ): void {
   if (!boundary) {
     return;
   }
-  if (
-    boundary.kind === 'array' &&
-    (boundary.element.kind === 'boolean' || boundary.element.kind === 'number' ||
-      boundary.element.kind === 'string')
-  ) {
-    kinds.add(boundary.element.kind);
+  if (boundary.kind === 'array') {
+    const arrayKind = arrayBoundaryPayloadKindForBoundary(boundary);
+    if (arrayKind) {
+      kinds.add(arrayKind);
+    }
+    collectArrayBoundaryPayloadKinds(boundary.element, kinds);
     return;
   }
   if (boundary.kind === 'object') {
@@ -6327,12 +6481,20 @@ function renderArrayBoundaryWrapperHelperFunctions(
       ? '$array_runtime'
       : kind === 'boolean'
       ? '$boolean_array_runtime'
-      : '$string_array_runtime';
+      : kind === 'string'
+      ? '$string_array_runtime'
+      : kind === 'heap'
+      ? '$heap_array_runtime'
+      : '$tagged_array_runtime';
     const valueType = kind === 'number'
       ? 'f64'
       : kind === 'boolean'
       ? 'i32'
-      : `(ref null ${stringRuntimeTypeName()})`;
+      : kind === 'string'
+      ? `(ref null ${stringRuntimeTypeName()})`
+      : kind === 'heap'
+      ? '(ref null eq)'
+      : `(ref null ${taggedValueTypeName()})`;
     return [
       `  (func $__soundscript_${kind}_array_new (export "__soundscript_${kind}_array_new") (result (ref null eq))`,
       `    array.new_fixed ${runtimeType} 0`,
@@ -7128,92 +7290,111 @@ function renderClosureDispatchHelpers(
   plan: WasmGcModulePlanIR,
   closureFunctionNames: ReadonlyMap<number, string>,
 ): readonly string[] {
+  const closureObjectHelperFunctions = moduleUsesClosureObjects(plan) &&
+      plan.wrapperPlan.closureBoundaryWrappers.length > 0
+    ? [
+      `  (func $__soundscript_closure_function_id (export "__soundscript_closure_function_id") (param $value (ref null eq)) (result i32)`,
+      '    local.get $value',
+      `    ref.test (ref ${closureObjectTypeName()})`,
+      '    if (result i32)',
+      '      local.get $value',
+      `      ref.cast (ref ${closureObjectTypeName()})`,
+      `      struct.get ${closureObjectTypeName()} $function_id`,
+      '    else',
+      '      i32.const -2147483648',
+      '    end',
+      '  )',
+    ]
+    : [];
   const hostWrapperSignatureIds = hostCallbackWrapperSignatureIds(plan);
   const closureBoundarySignatureIds = new Set(
     plan.wrapperPlan.closureBoundaryWrappers.map((wrapper) => wrapper.signatureId),
   );
-  return boxedClosureDispatchSignatureIds(plan).flatMap((signatureId) => {
-    const targetFunctions = plan.functionPlans
-      .filter((func) =>
-        func.closureFunctionId !== undefined &&
-        func.closureSignatureId === signatureId &&
-        !func.hostImport
-      )
-      .sort((left, right) => left.closureFunctionId! - right.closureFunctionId!);
-    const hostClosureWrapper = plan.wrapperPlan.hostClosureWrappers.find((wrapper) =>
-      wrapper.signatureId === signatureId
-    );
-    const signatureSource = targetFunctions[0];
-    if (!signatureSource && !hostClosureWrapper) {
-      return [];
-    }
-    const runtimeParams = signatureSource
-      ? signatureSource.params.slice(signatureSource.closureCaptureCount ?? 0).map((param) =>
-        param.wasmType
-      )
-      : hostClosureWrapper!.paramTypes;
-    const resultType = signatureSource?.result ?? hostClosureWrapper!.resultType;
-    const result = resultType.length > 0
-      ? ` (result ${wasmTypeForCompilerValueType(resultType)})`
-      : '';
-    const exportClause = hostWrapperSignatureIds.has(signatureId) ||
-        closureBoundarySignatureIds.has(signatureId)
-      ? ` (export "__soundscript_closure_invoke_${signatureId}")`
-      : '';
-    return [
-      `  (func ${
-        closureDispatchFunctionName(signatureId)
-      }${exportClause} (param $closure (ref null eq))${
-        runtimeParams.map((paramType, index) =>
-          ` (param $arg_${index} ${wasmTypeForCompilerValueType(paramType)})`
-        ).join('')
-      }${result}`,
-      ...(hostClosureWrapper
-        ? [
-          '    local.get $closure',
-          `    ref.cast (ref ${closureObjectTypeName()})`,
-          `    struct.get ${closureObjectTypeName()} $function_id`,
-          `    i32.const ${hostClosureFunctionId()}`,
-          '    i32.eq',
-          '    if',
-          '      local.get $closure',
-          `      ref.cast (ref ${closureObjectTypeName()})`,
-          `      struct.get ${closureObjectTypeName()} $env`,
-          `      ref.cast (ref ${typeNameForHostHandleRuntime()})`,
-          `      struct.get ${typeNameForHostHandleRuntime()} $value`,
-          ...runtimeParams.map((_, index) => `      local.get $arg_${index}`),
-          `      call ${hostClosureCallImportName(signatureId)}`,
-          '      return',
-          '    end',
-        ]
-        : []),
-      ...targetFunctions.flatMap((func) => {
-        const functionId = func.closureFunctionId!;
-        const captureCount = func.closureCaptureCount ?? 0;
-        return [
-          '    local.get $closure',
-          `    ref.cast (ref ${closureObjectTypeName()})`,
-          `    struct.get ${closureObjectTypeName()} $function_id`,
-          `    i32.const ${functionId}`,
-          '    i32.eq',
-          '    if',
-          ...Array.from({ length: captureCount }, (_, index) => [
+  return [
+    ...closureObjectHelperFunctions,
+    ...boxedClosureDispatchSignatureIds(plan).flatMap((signatureId) => {
+      const targetFunctions = plan.functionPlans
+        .filter((func) =>
+          func.closureFunctionId !== undefined &&
+          func.closureSignatureId === signatureId &&
+          !func.hostImport
+        )
+        .sort((left, right) => left.closureFunctionId! - right.closureFunctionId!);
+      const hostClosureWrapper = plan.wrapperPlan.hostClosureWrappers.find((wrapper) =>
+        wrapper.signatureId === signatureId
+      );
+      const signatureSource = targetFunctions[0];
+      if (!signatureSource && !hostClosureWrapper) {
+        return [];
+      }
+      const runtimeParams = signatureSource
+        ? signatureSource.params.slice(signatureSource.closureCaptureCount ?? 0).map((param) =>
+          param.wasmType
+        )
+        : hostClosureWrapper!.paramTypes;
+      const resultType = signatureSource?.result ?? hostClosureWrapper!.resultType;
+      const result = resultType.length > 0
+        ? ` (result ${wasmTypeForCompilerValueType(resultType)})`
+        : '';
+      const exportClause = hostWrapperSignatureIds.has(signatureId) ||
+          closureBoundarySignatureIds.has(signatureId)
+        ? ` (export "__soundscript_closure_invoke_${signatureId}")`
+        : '';
+      return [
+        `  (func ${
+          closureDispatchFunctionName(signatureId)
+        }${exportClause} (param $closure (ref null eq))${
+          runtimeParams.map((paramType, index) =>
+            ` (param $arg_${index} ${wasmTypeForCompilerValueType(paramType)})`
+          ).join('')
+        }${result}`,
+        ...(hostClosureWrapper
+          ? [
+            '    local.get $closure',
+            `    ref.cast (ref ${closureObjectTypeName()})`,
+            `    struct.get ${closureObjectTypeName()} $function_id`,
+            `    i32.const ${hostClosureFunctionId(signatureId)}`,
+            '    i32.eq',
+            '    if',
             '      local.get $closure',
             `      ref.cast (ref ${closureObjectTypeName()})`,
             `      struct.get ${closureObjectTypeName()} $env`,
-            `      ref.cast (ref ${closureEnvTypeName(functionId)})`,
-            `      struct.get ${closureEnvTypeName(functionId)} $capture_${index}`,
-          ]).flat(),
-          ...runtimeParams.map((_, index) => `      local.get $arg_${index}`),
-          `      call ${closureFunctionNames.get(functionId) ?? closureFunctionName(functionId)}`,
-          '      return',
-          '    end',
-        ];
-      }),
-      '    unreachable',
-      '  )',
-    ];
-  });
+            `      ref.cast (ref ${typeNameForHostHandleRuntime()})`,
+            `      struct.get ${typeNameForHostHandleRuntime()} $value`,
+            ...runtimeParams.map((_, index) => `      local.get $arg_${index}`),
+            `      call ${hostClosureCallImportName(signatureId)}`,
+            '      return',
+            '    end',
+          ]
+          : []),
+        ...targetFunctions.flatMap((func) => {
+          const functionId = func.closureFunctionId!;
+          const captureCount = func.closureCaptureCount ?? 0;
+          return [
+            '    local.get $closure',
+            `    ref.cast (ref ${closureObjectTypeName()})`,
+            `    struct.get ${closureObjectTypeName()} $function_id`,
+            `    i32.const ${functionId}`,
+            '    i32.eq',
+            '    if',
+            ...Array.from({ length: captureCount }, (_, index) => [
+              '      local.get $closure',
+              `      ref.cast (ref ${closureObjectTypeName()})`,
+              `      struct.get ${closureObjectTypeName()} $env`,
+              `      ref.cast (ref ${closureEnvTypeName(functionId)})`,
+              `      struct.get ${closureEnvTypeName(functionId)} $capture_${index}`,
+            ]).flat(),
+            ...runtimeParams.map((_, index) => `      local.get $arg_${index}`),
+            `      call ${closureFunctionNames.get(functionId) ?? closureFunctionName(functionId)}`,
+            '      return',
+            '    end',
+          ];
+        }),
+        '    unreachable',
+        '  )',
+      ];
+    }),
+  ];
 }
 
 function renderDeclaredClosureElements(
