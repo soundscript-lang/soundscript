@@ -1074,6 +1074,39 @@ function lowerStatement(
           context.runtimeFamilies.add('specialized_object');
           return statements;
         }
+        if (declaration.binding.kind === 'array_binding' && declaration.initializer) {
+          const initializer = lowerExpression(declaration.initializer, context);
+          const statements = takePendingStatements(context);
+          const arrayLocal = arrayLocalInfoForRead(declaration.initializer, initializer, context);
+          if (!arrayLocal) {
+            context.unsupportedKinds.add('array_binding');
+            return [{ kind: 'unsupported_statement', sourceKind: 'variable_declaration' }];
+          }
+          const arrayName = nextTempLocalName(context, 'array_binding');
+          addLocal(context, arrayName, initializer.representation);
+          context.arrayLocals.set(arrayName, arrayLocal);
+          statements.push({ kind: 'local_set', name: arrayName, value: initializer });
+          const array = localGetExpression(arrayName, initializer.representation);
+          for (const [index, element] of declaration.binding.elements.entries()) {
+            if (element.kind !== 'identifier_binding') {
+              context.unsupportedKinds.add('array_binding');
+              return [{ kind: 'unsupported_statement', sourceKind: 'variable_declaration' }];
+            }
+            const value = arrayElementExpressionForInfo(
+              array,
+              { kind: 'number_literal', value: index, representation: 'f64' },
+              arrayLocal,
+              context,
+            );
+            if (!value) {
+              context.unsupportedKinds.add(`array_binding:${element.name}`);
+              return [{ kind: 'unsupported_statement', sourceKind: 'variable_declaration' }];
+            }
+            addLocal(context, element.name, arrayLocal.elementRepresentation);
+            statements.push({ kind: 'local_set', name: element.name, value });
+          }
+          return statements;
+        }
         if (declaration.binding.kind !== 'identifier_binding' || !declaration.initializer) {
           context.unsupportedKinds.add('variable_declaration');
           return [{ kind: 'unsupported_statement', sourceKind: 'variable_declaration' }];
