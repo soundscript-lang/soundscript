@@ -2378,6 +2378,25 @@ function rejectUnsupportedClassRuntimeHeritage(
   return true;
 }
 
+function rejectUnsupportedClassMembers(
+  classInfo: SourceClassIR,
+  context: FunctionLoweringContext,
+): boolean {
+  const privateMember = classInfo.members.find((member) => member.privacy === 'private');
+  if (privateMember) {
+    context.unsupportedKinds.add(`class_member:private:${classInfo.name}.${privateMember.name}`);
+    return true;
+  }
+  const accessor = classInfo.members.find((member) =>
+    member.kind === 'getter' || member.kind === 'setter'
+  );
+  if (accessor) {
+    context.unsupportedKinds.add(`class_member:${accessor.kind}`);
+    return true;
+  }
+  return false;
+}
+
 function lowerClassConstructionDeclaration(
   targetName: string,
   initializer: Extract<SourceExpressionIR, { kind: 'new_expression' }>,
@@ -2396,11 +2415,7 @@ function lowerClassConstructionDeclaration(
   if (rejectUnsupportedClassRuntimeHeritage(classInfo, context)) {
     return undefined;
   }
-  const unsupportedMember = classInfo.members.find((member) =>
-    member.kind === 'getter' || member.kind === 'setter'
-  );
-  if (unsupportedMember) {
-    context.unsupportedKinds.add(`class_member:${unsupportedMember.kind}`);
+  if (rejectUnsupportedClassMembers(classInfo, context)) {
     return undefined;
   }
   const properties = classInfo.members.filter((
@@ -2565,6 +2580,9 @@ function lowerClassStaticPropertyAccessExpression(
   if (rejectUnsupportedClassRuntimeHeritage(classInfo, context)) {
     return undefined;
   }
+  if (rejectUnsupportedClassMembers(classInfo, context)) {
+    return undefined;
+  }
   const property = classInfo.members.find((
     member,
   ): member is Extract<SourceClassMemberIR, { kind: 'property' }> =>
@@ -2593,6 +2611,9 @@ function lowerClassStaticMethodCallExpression(
   }
   const classInfo = context.classesByName.get(callee.object.name);
   if (classInfo && rejectUnsupportedClassRuntimeHeritage(classInfo, context)) {
+    return undefined;
+  }
+  if (classInfo && rejectUnsupportedClassMembers(classInfo, context)) {
     return undefined;
   }
   const method = classInfo?.members.find((
@@ -2708,6 +2729,9 @@ function lowerClassMethodCallExpression(
   const className = objectLocal?.className;
   const classInfo = className ? context.classesByName.get(className) : undefined;
   if (classInfo && rejectUnsupportedClassRuntimeHeritage(classInfo, context)) {
+    return undefined;
+  }
+  if (classInfo && rejectUnsupportedClassMembers(classInfo, context)) {
     return undefined;
   }
   const method = classInfo?.members.find((

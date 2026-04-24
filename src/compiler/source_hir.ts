@@ -51,6 +51,7 @@ export type SourceClassMemberIR =
     kind: 'constructor';
     name: 'constructor';
     static: false;
+    privacy: 'public' | 'private';
     params: SourceBindingIR[];
     body: SourceStatementIR[];
     span: SourceSpanIR;
@@ -59,6 +60,7 @@ export type SourceClassMemberIR =
     kind: 'method';
     name: string;
     static: boolean;
+    privacy: 'public' | 'private';
     params: SourceBindingIR[];
     body: SourceStatementIR[];
     span: SourceSpanIR;
@@ -67,6 +69,7 @@ export type SourceClassMemberIR =
     kind: 'property';
     name: string;
     static: boolean;
+    privacy: 'public' | 'private';
     initializer?: SourceExpressionIR;
     span: SourceSpanIR;
   }
@@ -74,6 +77,7 @@ export type SourceClassMemberIR =
     kind: 'getter' | 'setter';
     name: string;
     static: boolean;
+    privacy: 'public' | 'private';
     span: SourceSpanIR;
   };
 
@@ -316,6 +320,13 @@ export interface SourceObjectLiteralPropertyIR {
 function hasModifier(node: ts.Node, kind: ts.SyntaxKind): boolean {
   return ts.canHaveModifiers(node) &&
     ts.getModifiers(node)?.some((modifier) => modifier.kind === kind) === true;
+}
+
+function classElementPrivacy(member: ts.ClassElement): 'public' | 'private' {
+  if ('name' in member && member.name && ts.isPrivateIdentifier(member.name)) {
+    return 'private';
+  }
+  return hasModifier(member, ts.SyntaxKind.PrivateKeyword) ? 'private' : 'public';
 }
 
 function spanOf(sourceFile: ts.SourceFile, node: ts.Node): SourceSpanIR {
@@ -960,12 +971,14 @@ function lowerFunction(sourceFile: ts.SourceFile, node: ts.FunctionDeclaration):
 
 function lowerClassMember(sourceFile: ts.SourceFile, member: ts.ClassElement): SourceClassMemberIR {
   const staticMember = hasModifier(member, ts.SyntaxKind.StaticKeyword);
+  const privacy = classElementPrivacy(member);
   const span = spanOf(sourceFile, member);
   if (ts.isConstructorDeclaration(member)) {
     return {
       kind: 'constructor',
       name: 'constructor',
       static: false,
+      privacy,
       params: member.parameters.map((param) => lowerBinding(sourceFile, param.name)),
       body: member.body ? lowerStatements(sourceFile, member.body.statements) : [],
       span,
@@ -976,6 +989,7 @@ function lowerClassMember(sourceFile: ts.SourceFile, member: ts.ClassElement): S
       kind: 'getter',
       name: member.name.getText(sourceFile),
       static: staticMember,
+      privacy,
       span,
     };
   }
@@ -984,6 +998,7 @@ function lowerClassMember(sourceFile: ts.SourceFile, member: ts.ClassElement): S
       kind: 'setter',
       name: member.name.getText(sourceFile),
       static: staticMember,
+      privacy,
       span,
     };
   }
@@ -992,6 +1007,7 @@ function lowerClassMember(sourceFile: ts.SourceFile, member: ts.ClassElement): S
       kind: 'method',
       name: member.name.getText(sourceFile),
       static: staticMember,
+      privacy,
       params: member.parameters.map((param) => lowerBinding(sourceFile, param.name)),
       body: member.body ? lowerStatements(sourceFile, member.body.statements) : [],
       span,
@@ -1002,6 +1018,7 @@ function lowerClassMember(sourceFile: ts.SourceFile, member: ts.ClassElement): S
       kind: 'property',
       name: member.name.getText(sourceFile),
       static: staticMember,
+      privacy,
       initializer: member.initializer ? lowerExpression(sourceFile, member.initializer) : undefined,
       span,
     };
@@ -1010,6 +1027,7 @@ function lowerClassMember(sourceFile: ts.SourceFile, member: ts.ClassElement): S
     kind: 'property',
     name: '<unknown>',
     static: staticMember,
+    privacy,
     span,
   };
 }
