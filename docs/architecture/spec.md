@@ -252,8 +252,8 @@ The canonical ban list is:
   - `debugger`
   - comma operator
   - `void 0`
-  - TypeScript pragma comments such as `@ts-ignore`, `@ts-expect-error`, `@ts-nocheck`, and
-    `@ts-check`
+  - TypeScript pragma and directive comments such as `@ts-ignore`, `@ts-expect-error`,
+    `@ts-nocheck`, `@ts-check`, and triple-slash reference directives
   - angle-bracket assertions
   - labeled statements
   - runtime `this` outside methods, constructors, getters, and setters
@@ -534,9 +534,10 @@ That principle implies:
   `as any as T`, and equivalent multi-step bridge casts are banned outright rather than treated as
   valid proof overrides
 
-TypeScript pragma comments are outside this proof-override model. `soundscript` does not permit
-`@ts-ignore`, `@ts-expect-error`, `@ts-nocheck`, `@ts-check`, or other `@ts-` pragmas because they
-silence or reconfigure checking outside the checker-owned policy surface.
+TypeScript pragma and directive comments are outside this proof-override model. `soundscript` does
+not permit `@ts-ignore`, `@ts-expect-error`, `@ts-nocheck`, `@ts-check`, other `@ts-` pragmas, or
+triple-slash reference directives because they silence or reconfigure checking outside the
+checker-owned policy surface.
 
 Angle-bracket assertions are outside this proof-override model as well. `soundscript` permits only
 the `as` spelling for explicit proof overrides; `<T>expr` assertions are banned outright as a legacy

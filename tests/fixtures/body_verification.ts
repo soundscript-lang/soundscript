@@ -469,6 +469,33 @@ function isCat(x: unknown): x is Cat {
 `,
   ),
   fixture(
+    'type-guard-local-unsafe-cast-still-unverifiable.reject.ts',
+    `// @sound-test: reject
+// @sound-error: SOUND017 "User-defined type guard or assertion body does not match its declared predicate."
+//
+// A local unsafe assertion inside a guard does not make the predicate itself
+// trusted. The predicate must still be automatically verified or explicitly
+// marked unsafe at the function boundary.
+
+interface TodoSnapshot {
+  readonly id: string;
+  readonly title: string;
+  readonly completed: boolean;
+}
+
+function isTodoSnapshot(value: unknown): value is TodoSnapshot {
+  if (value === null || typeof value !== "object") {
+    return false;
+  }
+  // #[unsafe]
+  const record = value as Record<string, unknown>;
+  return typeof record["id"] === "string" &&
+    typeof record["title"] === "string" &&
+    typeof record["completed"] === "boolean";
+}
+`,
+  ),
+  fixture(
     'type-guard-array-target.reject.ts',
     `// @sound-test: reject
 // @sound-error: SOUND017 "User-defined type guard or assertion body does not match its declared predicate."

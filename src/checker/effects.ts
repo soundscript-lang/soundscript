@@ -1601,11 +1601,8 @@ function shouldForwardCurrentFunctionAliasCall(
   target: CurrentFunctionAliasTarget,
   signatureSummary: EffectSummaryFact | undefined,
 ): boolean {
-  const finalMemberName = target.memberPath.at(-1);
   if (
-    finalMemberName === 'apply' ||
-    finalMemberName === 'bind' ||
-    finalMemberName === 'call'
+    target.memberPath.some((member) => member === 'apply' || member === 'bind' || member === 'call')
   ) {
     return false;
   }

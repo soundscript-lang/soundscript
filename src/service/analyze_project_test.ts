@@ -3743,6 +3743,75 @@ Deno.test('analyzeProject reports actionable guidance for banned TypeScript prag
   );
 });
 
+Deno.test('analyzeProject rejects triple-slash lib reference directives', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/index.sts': [
+      '/// <reference lib="dom" />',
+      'const value = 1;',
+      'void value;',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1023']);
+  assertEquals(result.diagnostics[0]?.metadata?.rule, 'typescript_directive_banned');
+  assertEquals(result.diagnostics[0]?.metadata?.primarySymbol, '/// <reference lib="dom" />');
+  assertEquals(
+    result.diagnostics[0]?.metadata?.evidence?.map((fact) => `${fact.label}:${fact.value}`),
+    ['directiveText:/// <reference lib="dom" />'],
+  );
+});
+
+Deno.test('analyzeProject keeps triple-slash directive diagnostics alongside TypeScript errors', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/index.sts': [
+      '/// <reference lib="dom" />',
+      'const value: number = "bad";',
+      'void value;',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assert(result.diagnostics.some((diagnostic) => diagnostic.code === 'TS2322'));
+  assert(result.diagnostics.some((diagnostic) => diagnostic.code === 'SOUND1023'));
+});
+
 Deno.test('analyzeProject gives feature-specific guidance for var declarations', async () => {
   const tempDirectory = await createTempProject({
     'tsconfig.json': JSON.stringify(

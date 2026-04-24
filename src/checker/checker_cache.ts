@@ -11,7 +11,10 @@ import {
 } from '../project/config.ts';
 import { emitProjectedDeclarations } from '../frontend/project_frontend.ts';
 import { projectEffectAnnotationsOntoDeclarationText } from '../frontend/typescript_effect_declarations.ts';
-import { resolveSoundScriptAwareModule } from '../project/soundscript_packages.ts';
+import {
+  getSoundScriptPackageInfoForResolvedModule,
+  resolveSoundScriptAwareModule,
+} from '../project/soundscript_packages.ts';
 import { basename, dirname, join } from '../platform/path.ts';
 import {
   makeDirectorySync,
@@ -48,7 +51,7 @@ import {
   writePackageVerificationCacheEntries,
 } from './package_verification_cache.ts';
 
-const CHECKER_CACHE_SCHEMA_VERSION = 10;
+const CHECKER_CACHE_SCHEMA_VERSION = 11;
 const CHECKER_CACHE_ROOT_DIRECTORY = '.soundscript-cache';
 const CHECKER_CACHE_SUBDIRECTORY = 'checker';
 const CHECKER_CACHE_BUILD_INFO_SUBDIRECTORY = 'buildinfo';
@@ -923,6 +926,13 @@ function staleCacheIncludesPreparedSnapshotBoundaryChange(
   ) {
     return true;
   }
+  if (
+    cacheReadResult.changedTrackedFiles.some((changedFilePath) =>
+      getSoundScriptPackageInfoForResolvedModule(changedFilePath, ts.sys) !== undefined
+    )
+  ) {
+    return true;
+  }
   const packageSourceFiles = cacheReadResult.manifest.files.filter((file) =>
     file.view === 'packageSource'
   );
@@ -1410,48 +1420,52 @@ function writePackageVerificationCacheFromManifest(
 ): void {
   if (
     !(options.useCache ?? true) ||
-    preparedProject.packageVerificationCacheMissUnits.length === 0 ||
-    !preparedProject.packageSourcePolicyView
+    preparedProject.packageVerificationCacheMissUnits.length === 0
   ) {
     return;
   }
 
   let projectedDeclarations: ReadonlyMap<string, string>;
-  try {
-    const emittedProjectedDeclarations = emitProjectedDeclarations(
-      preparedProject.packageSourcePolicyView.analysisPreparedProgram,
-      manifest.files
-        .filter((file) => file.view === 'packageSource')
-        .map((file) => file.filePath),
-    );
-    projectedDeclarations = new Map(
-      [...emittedProjectedDeclarations.entries()].map(([filePath, text]) => {
-        const sourceFile = preparedProject.packageSourcePolicyView!.analysisPreparedProgram.program
-          .getSourceFile(
-            preparedProject.packageSourcePolicyView!.analysisPreparedProgram.toProgramFileName(
-              filePath,
-            ),
-          );
-        return [
-          filePath,
-          sourceFile
-            ? projectEffectAnnotationsOntoDeclarationText(
-              preparedProject.packageSourcePolicyView!.analysisContext,
-              sourceFile,
-              preparedProject.packageSourcePolicyView!.analysisPreparedProgram
-                .toProjectedDeclarationFileName(filePath),
-              text,
-            )
-            : text,
-        ] as const;
-      }),
-    );
-  } catch (error) {
-    logCheckerTiming('project.packageVerificationCache.write.skipped', 0, {
-      error: error instanceof Error ? `${error.name}: ${error.message}` : String(error),
-      projectPath: options.projectPath,
-    }, { always: true });
-    return;
+  if (preparedProject.packageSourcePolicyView) {
+    try {
+      const emittedProjectedDeclarations = emitProjectedDeclarations(
+        preparedProject.packageSourcePolicyView.analysisPreparedProgram,
+        manifest.files
+          .filter((file) => file.view === 'packageSource')
+          .map((file) => file.filePath),
+      );
+      projectedDeclarations = new Map(
+        [...emittedProjectedDeclarations.entries()].map(([filePath, text]) => {
+          const sourceFile = preparedProject.packageSourcePolicyView!.analysisPreparedProgram
+            .program
+            .getSourceFile(
+              preparedProject.packageSourcePolicyView!.analysisPreparedProgram.toProgramFileName(
+                filePath,
+              ),
+            );
+          return [
+            filePath,
+            sourceFile
+              ? projectEffectAnnotationsOntoDeclarationText(
+                preparedProject.packageSourcePolicyView!.analysisContext,
+                sourceFile,
+                preparedProject.packageSourcePolicyView!.analysisPreparedProgram
+                  .toProjectedDeclarationFileName(filePath),
+                text,
+              )
+              : text,
+          ] as const;
+        }),
+      );
+    } catch (error) {
+      logCheckerTiming('project.packageVerificationCache.write.skipped', 0, {
+        error: error instanceof Error ? `${error.name}: ${error.message}` : String(error),
+        projectPath: options.projectPath,
+      }, { always: true });
+      return;
+    }
+  } else {
+    projectedDeclarations = new Map();
   }
 
   try {

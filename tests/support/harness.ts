@@ -145,6 +145,7 @@ export async function runFixtureCase(
     JSON.stringify(
       {
         compilerOptions: {
+          lib: ['ES2024', 'DOM', 'DOM.AsyncIterable'],
           strict: true,
           noEmit: true,
           target: 'ES2022',
@@ -167,7 +168,10 @@ export async function runFixtureCase(
     await writeProjectFile(projectDirectory, relativePath, source);
   }
 
-  const result = await runCli(['check', '--project', projectPath], projectDirectory);
+  const result = await runCli(
+    ['check', '--project', projectPath, '--target', 'js-browser'],
+    projectDirectory,
+  );
 
   return {
     suite,

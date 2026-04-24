@@ -91,10 +91,11 @@ such as `===` instead of loose equality or an explicit null check instead of tru
 
 ## SOUND1023
 
-TypeScript pragma comments are banned in soundscript. `@ts-ignore`, `@ts-expect-error`,
-`@ts-nocheck`, and similar pragmas hide or mutate upstream evidence instead of expressing a checked
-soundscript boundary. Remove the pragma and fix the issue directly or move the unchecked assumption
-to an explicit interop or extern boundary.
+TypeScript pragma and directive comments are banned in soundscript. `@ts-ignore`,
+`@ts-expect-error`, `@ts-nocheck`, and similar pragmas hide upstream evidence, while triple-slash
+reference directives mutate ambient compiler inputs from inside a source file. Remove the comment
+and fix the issue directly, move ambient library choices into project configuration, or move the
+unchecked assumption to an explicit interop or extern boundary.
 
 ## SOUND1024
 

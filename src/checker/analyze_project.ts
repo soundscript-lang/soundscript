@@ -2584,7 +2584,8 @@ function retainSoundDiagnosticsAlongsideTsErrors(
 ): readonly SoundDiagnostic[] {
   return diagnostics.filter((diagnostic): diagnostic is SoundDiagnostic =>
     diagnostic.source === 'sound' &&
-    (diagnostic.code === SOUND_DIAGNOSTIC_CODES.constructionLifecycleViolation ||
+    (diagnostic.code === SOUND_DIAGNOSTIC_CODES.bannedTypeScriptPragma ||
+      diagnostic.code === SOUND_DIAGNOSTIC_CODES.constructionLifecycleViolation ||
       diagnostic.code === SOUND_DIAGNOSTIC_CODES.fieldReadBeforeInitialization)
   );
 }
@@ -4005,7 +4006,7 @@ export function prepareProjectAnalysis(
         return preparedProject;
       }
       const needsSupplementalProjectionViews = typescriptRootNames.length > 0 ||
-        packageVerificationCacheProbe.misses.length > 0 ||
+        packageVerificationCacheProbe.misses.some((unit) => unit.policyRootNames.length > 0) ||
         (stsView !== null &&
           hasNonRootProjectedDeclarationCandidates(
             stsView.program,
@@ -4080,7 +4081,7 @@ export function prepareProjectAnalysis(
         ),
         combineRootNames(
           typescriptReachablePackageSourceRootNames,
-          packageVerificationCacheProbe.misses.flatMap((unit) => unit.rootNames),
+          packageVerificationCacheProbe.misses.flatMap((unit) => unit.policyRootNames),
         ),
       ).sort();
       const packageSourcePolicyContentSignature = packageProjectedDeclarationRootNames.length === 0

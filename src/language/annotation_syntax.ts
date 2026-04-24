@@ -1041,7 +1041,14 @@ function getNodeStartLine(node: ts.Node): number {
 function parseTypeScriptPragma(commentText: string): string | undefined {
   if (commentText.startsWith('//')) {
     const match = commentText.match(/^\/\/\s*(@ts-[a-z-]+)\b/u);
-    return match?.[1];
+    if (match?.[1]) {
+      return match[1];
+    }
+
+    const tripleSlashDirective = commentText
+      .trim()
+      .match(/^\/\/\/\s*<(?:reference|amd-(?:module|dependency))\b[^>]*>/u);
+    return tripleSlashDirective?.[0];
   }
 
   if (!commentText.startsWith('/*')) {

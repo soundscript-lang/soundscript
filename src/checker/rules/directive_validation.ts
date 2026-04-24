@@ -578,8 +578,17 @@ function createBannedTypeScriptPragmaDiagnostic(
   filePath: string,
   pragma: ParsedTypeScriptPragma,
 ): SoundDiagnostic {
-  const example =
-    `Remove \`${pragma.text}\` and express the invariant with checked code, a validated boundary, or a real type fix.`;
+  const isTripleSlashDirective = pragma.text.startsWith('///');
+  const example = isTripleSlashDirective
+    ? `Remove \`${pragma.text}\` and configure compiler libraries through the checked project configuration instead.`
+    : `Remove \`${pragma.text}\` and express the invariant with checked code, a validated boundary, or a real type fix.`;
+  const note = isTripleSlashDirective
+    ? `\`${pragma.text}\` changes TypeScript ambient inputs outside the checked soundscript source boundary.`
+    : `\`${pragma.text}\` suppresses upstream diagnostics instead of expressing a checked soundscript boundary.`;
+  const hint = isTripleSlashDirective
+    ? 'Delete the triple-slash directive and put ambient library choices in the project configuration.'
+    : 'Delete the TypeScript pragma and make the code type-check without suppression.';
+  const textLabel = isTripleSlashDirective ? 'directiveText' : 'pragmaText';
 
   return createDiagnostic(
     filePath,
@@ -589,26 +598,55 @@ function createBannedTypeScriptPragmaDiagnostic(
     `${SOUND_DIAGNOSTIC_MESSAGES.bannedTypeScriptPragma} Remove \`${pragma.text}\` and express the invariant in checked code instead.`,
     {
       metadata: {
-        rule: 'typescript_pragma_banned',
+        rule: isTripleSlashDirective ? 'typescript_directive_banned' : 'typescript_pragma_banned',
         primarySymbol: pragma.text,
         fixability: 'local_rewrite',
-        invariant:
-          'soundscript diagnostics must not depend on TypeScript suppression comments that hide upstream evidence.',
+        invariant: isTripleSlashDirective
+          ? 'soundscript diagnostics must not depend on per-file TypeScript directives that mutate ambient compiler inputs.'
+          : 'soundscript diagnostics must not depend on TypeScript suppression comments that hide upstream evidence.',
         replacementFamily: 'checked_code_without_suppression',
         evidence: [
-          { label: 'pragmaText', value: pragma.text },
+          { label: textLabel, value: pragma.text },
         ],
-        counterexample:
-          'TypeScript pragmas suppress upstream evidence and make soundscript checking depend on hidden unchecked assumptions.',
+        counterexample: isTripleSlashDirective
+          ? 'Triple-slash directives can add ambient libraries or external declarations from inside a source file instead of through the checked project boundary.'
+          : 'TypeScript pragmas suppress upstream evidence and make soundscript checking depend on hidden unchecked assumptions.',
         example,
       },
       notes: [
-        `\`${pragma.text}\` suppresses upstream diagnostics instead of expressing a checked soundscript boundary.`,
+        note,
         `Example: ${example}`,
       ],
-      hint: 'Delete the TypeScript pragma and make the code type-check without suppression.',
+      hint,
     },
   );
+}
+
+function getTripleSlashDirectiveDiagnostics(
+  sourceFile: ts.SourceFile,
+): readonly ParsedTypeScriptPragma[] {
+  const references: readonly ts.FileReference[] = [
+    ...sourceFile.referencedFiles,
+    ...sourceFile.typeReferenceDirectives,
+    ...sourceFile.libReferenceDirectives,
+  ];
+  const lineStarts = sourceFile.getLineStarts();
+
+  return references.flatMap((reference) => {
+    const line = sourceFile.getLineAndCharacterOfPosition(reference.pos).line;
+    const lineStart = lineStarts[line] ?? 0;
+    const nextLineStart = lineStarts[line + 1] ?? sourceFile.text.length;
+    const text = sourceFile.text.slice(lineStart, nextLineStart).trim();
+    if (!text.startsWith('///')) {
+      return [];
+    }
+
+    return [{
+      kind: 'banned-ts-pragma',
+      line: line + 1,
+      text,
+    }];
+  });
 }
 
 function isSupportedValueAnnotationArguments(annotation: ParsedAnnotation): boolean {
@@ -885,6 +923,13 @@ function validateAnnotationBlock(
     }
 
     if (!isKnownAnnotation(annotation.name)) {
+      diagnostics.push(
+        createUnknownAnnotationDiagnostic(
+          filePath,
+          block.startLine,
+          annotation,
+        ),
+      );
       continue;
     }
 
@@ -984,6 +1029,15 @@ export function runAnnotationValidationRules(context: AnalysisContext): SoundDia
   const diagnostics: SoundDiagnostic[] = [];
 
   context.forEachSourceFile((sourceFile) => {
+    for (const entry of getTripleSlashDirectiveDiagnostics(sourceFile)) {
+      diagnostics.push(
+        createBannedTypeScriptPragmaDiagnostic(
+          sourceFile.fileName,
+          entry,
+        ),
+      );
+    }
+
     const annotationLookup = context.getAnnotationLookup(sourceFile);
     for (const entry of annotationLookup.getEntries()) {
       switch (entry.kind) {

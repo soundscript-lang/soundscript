@@ -27,7 +27,7 @@ import type { AnalyzeProjectResult } from '../service/types.ts';
 import type { FileDiagnosticRuleCacheEntry } from './rules/index.ts';
 import type { FlowFileRuleCache } from './rules/flow.ts';
 
-const PACKAGE_VERIFICATION_CACHE_SCHEMA_VERSION = 3;
+const PACKAGE_VERIFICATION_CACHE_SCHEMA_VERSION = 4;
 const PACKAGE_VERIFICATION_CACHE_SUBDIRECTORY = 'package-verification';
 const UNDEFINED_JSON_SENTINEL_KEY = '__soundscriptUndefined';
 const undefinedJsonSentinel = { [UNDEFINED_JSON_SENTINEL_KEY]: true } as const;
@@ -58,6 +58,7 @@ export interface PackageVerificationUnit {
   packageJsonPath: string;
   packageName: string;
   packageRoot: string;
+  policyRootNames: readonly string[];
   rootNames: readonly string[];
   sourceFilePaths: readonly string[];
   sourceSignatures: Readonly<Record<string, string>>;
@@ -166,6 +167,11 @@ function isInstalledSoundscriptStdlibSource(fileName: string): boolean {
   const normalized = ts.sys.resolvePath(fileName).replaceAll('\\', '/');
   return normalized.includes('/node_modules/@soundscript/soundscript/soundscript/') &&
     normalized.endsWith('.sts');
+}
+
+function isMacroAuthoringSourceFileName(fileName: string): boolean {
+  const normalized = fileName.replaceAll('\\', '/');
+  return normalized.endsWith('.macro.sts') || normalized.endsWith('.macro.sts.ts');
 }
 
 function isSourcePublishedPackageFile(
@@ -562,6 +568,9 @@ function collectPackageVerificationUnits(
       })
       .map((filePath) => toPackageRelativePath(packageRoot, filePath))
       .sort();
+    const policyRootNames = rootNames.filter((filePath) =>
+      !isMacroAuthoringSourceFileName(filePath)
+    );
     const cacheId = createPackageVerificationCacheId({
       compilerOptionsSignature,
       packageJsonHash,
@@ -578,6 +587,9 @@ function collectPackageVerificationUnits(
       packageJsonPath: ts.sys.resolvePath(packageInfo.packageJsonPath),
       packageName: packageInfo.name,
       packageRoot,
+      policyRootNames: policyRootNames.map((filePath) =>
+        toPackageAbsolutePath(packageRoot, filePath)
+      ),
       rootNames: rootNames.map((filePath) => toPackageAbsolutePath(packageRoot, filePath)),
       sourceFilePaths,
       sourceSignatures,
