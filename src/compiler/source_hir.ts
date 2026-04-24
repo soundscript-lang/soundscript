@@ -435,6 +435,16 @@ function lowerTemplateExpression(
   return current;
 }
 
+function objectLiteralPropertyName(sourceFile: ts.SourceFile, name: ts.PropertyName): string {
+  if (ts.isIdentifier(name) || ts.isPrivateIdentifier(name)) {
+    return name.text;
+  }
+  if (ts.isStringLiteral(name) || ts.isNumericLiteral(name)) {
+    return name.text;
+  }
+  return name.getText(sourceFile);
+}
+
 function lowerExpression(
   sourceFile: ts.SourceFile,
   expression: ts.Expression,
@@ -639,12 +649,23 @@ function lowerExpression(
     return {
       kind: 'object_literal',
       properties: expression.properties
-        .filter(ts.isPropertyAssignment)
-        .map((property) => ({
-          name: property.name.getText(sourceFile),
-          value: lowerExpression(sourceFile, property.initializer),
-          span: spanOf(sourceFile, property),
-        })),
+        .flatMap((property): SourceObjectLiteralPropertyIR[] => {
+          if (ts.isPropertyAssignment(property)) {
+            return [{
+              name: objectLiteralPropertyName(sourceFile, property.name),
+              value: lowerExpression(sourceFile, property.initializer),
+              span: spanOf(sourceFile, property),
+            }];
+          }
+          if (ts.isShorthandPropertyAssignment(property)) {
+            return [{
+              name: property.name.text,
+              value: lowerExpression(sourceFile, property.name),
+              span: spanOf(sourceFile, property),
+            }];
+          }
+          return [];
+        }),
       span: spanOf(sourceFile, expression),
     };
   }
