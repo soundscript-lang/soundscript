@@ -431,6 +431,44 @@ function lowerBooleanLogicalExpression(
   return result;
 }
 
+function lowerConditionalExpression(
+  expression: Extract<SourceExpressionIR, { kind: 'conditional_expression' }>,
+  context: FunctionLoweringContext,
+): SemanticExpressionIR | undefined {
+  const condition = lowerExpression(expression.test, context);
+  const conditionStatements = takePendingStatements(context);
+  const consequent = lowerExpression(expression.consequent, context);
+  const consequentStatements = takePendingStatements(context);
+  const alternate = lowerExpression(expression.alternate, context);
+  const alternateStatements = takePendingStatements(context);
+  if (
+    condition.representation !== 'i32' || consequent.representation !== alternate.representation
+  ) {
+    return undefined;
+  }
+  const resultName = nextTempLocalName(context, 'conditional');
+  addLocal(context, resultName, consequent.representation);
+  const result: SemanticExpressionIR = {
+    kind: 'local_get',
+    name: resultName,
+    representation: consequent.representation,
+  };
+  context.pendingStatements.push(
+    ...conditionStatements,
+    {
+      kind: 'if',
+      condition,
+      thenBody: [...consequentStatements, {
+        kind: 'local_set',
+        name: resultName,
+        value: consequent,
+      }],
+      elseBody: [...alternateStatements, { kind: 'local_set', name: resultName, value: alternate }],
+    },
+  );
+  return result;
+}
+
 function lowerExpression(
   expression: SourceExpressionIR,
   context: FunctionLoweringContext,
@@ -643,6 +681,14 @@ function lowerExpression(
         value,
         representation: unary.representation,
       };
+    }
+    case 'conditional_expression': {
+      const conditional = lowerConditionalExpression(expression, context);
+      if (conditional) {
+        return conditional;
+      }
+      context.unsupportedKinds.add('conditional_expression');
+      return { kind: 'undefined_literal', representation: 'tagged_ref' };
     }
     default:
       context.unsupportedKinds.add(expression.kind);

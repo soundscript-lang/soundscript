@@ -175,6 +175,13 @@ export type SourceExpressionIR =
     span: SourceSpanIR;
   }
   | {
+    kind: 'conditional_expression';
+    test: SourceExpressionIR;
+    consequent: SourceExpressionIR;
+    alternate: SourceExpressionIR;
+    span: SourceSpanIR;
+  }
+  | {
     kind: 'assignment_expression';
     operator: string;
     left: SourceExpressionIR;
@@ -368,6 +375,16 @@ function lowerExpression(
       kind: 'unary_expression',
       operator: prefixUnaryOperatorForSource(expression.operator),
       operand: lowerExpression(sourceFile, expression.operand),
+      span: spanOf(sourceFile, expression),
+    };
+  }
+
+  if (ts.isConditionalExpression(expression)) {
+    return {
+      kind: 'conditional_expression',
+      test: lowerExpression(sourceFile, expression.condition),
+      consequent: lowerExpression(sourceFile, expression.whenTrue),
+      alternate: lowerExpression(sourceFile, expression.whenFalse),
       span: spanOf(sourceFile, expression),
     };
   }
