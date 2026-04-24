@@ -950,6 +950,42 @@ function lowerStatement(
         ],
       }];
     }
+    case 'for': {
+      const initializerStatements = statement.initializer
+        ? statement.initializer.kind === 'variable_declaration'
+          ? lowerStatement(statement.initializer, context)
+          : lowerStatement(
+            {
+              kind: 'expression_statement',
+              expression: statement.initializer,
+              span: statement.span,
+            },
+            context,
+          )
+        : [];
+      const condition = statement.test
+        ? lowerExpression(statement.test, context)
+        : { kind: 'boolean_literal', value: true, representation: 'i32' } as SemanticExpressionIR;
+      const conditionStatements = takePendingStatements(context);
+      if (condition.representation !== 'i32') {
+        context.unsupportedKinds.add('for_condition');
+      }
+      const incrementStatements = statement.incrementor
+        ? lowerStatement(
+          { kind: 'expression_statement', expression: statement.incrementor, span: statement.span },
+          context,
+        )
+        : [];
+      return [...initializerStatements, ...conditionStatements, {
+        kind: 'while',
+        condition,
+        body: [
+          ...statement.body.flatMap((child) => [...lowerStatement(child, context)]),
+          ...incrementStatements,
+          ...conditionStatements,
+        ],
+      }];
+    }
     case 'for_of': {
       const lowered = lowerArrayForOfStatement(statement, context);
       if (lowered) {

@@ -1292,6 +1292,57 @@ Deno.test('compiler SourceHIR semantic lowering emits runnable conditional expre
   assertEquals((score as (input: number, flag: boolean) => number)(-2, false), 17);
 });
 
+Deno.test('compiler SourceHIR semantic lowering emits runnable for loops', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: { strict: true },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        export function sum(limit: number): number {
+          let total = 0;
+          for (let index = 0; index < limit; index = index + 1) {
+            total = total + index;
+          }
+          return total;
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createSourceSemanticSnapshot(program, tempDirectory);
+  const semantic = createSemanticModuleFromSourceHIR(snapshot.source, snapshot.sharedFacts);
+  const manifest = createRuntimeManifestFromSemanticModule(semantic);
+  const plan = createWasmGcModulePlan(semantic, manifest);
+  const sumPlan = plan.functionPlans.find((func) => func.name === 'sum');
+  const watPath = join(tempDirectory, 'wasm-gc-source-for-loop.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-source-for-loop.wasm');
+
+  assertEquals(manifest.familyRequirements, []);
+  assertEquals(sumPlan?.bodyStatus, 'emittable');
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(plan));
+  const result = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(result.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(result.success, true);
+
+  const wasm = await Deno.readFile(wasmPath);
+  const instance = await WebAssembly.instantiate(wasm);
+  const sum = instance.instance.exports['main.ts:sum'];
+  assertEquals(typeof sum, 'function');
+  assertEquals((sum as (limit: number) => number)(5), 10);
+  assertEquals((sum as (limit: number) => number)(0), 0);
+});
+
 Deno.test('compiler SourceHIR semantic lowering emits runnable string body runtime families', async () => {
   const tempDirectory = await createTempProject([
     {

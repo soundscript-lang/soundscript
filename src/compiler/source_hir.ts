@@ -57,6 +57,7 @@ export type SourceStatementIR =
   | SourceReturnStatementIR
   | SourceIfStatementIR
   | SourceWhileStatementIR
+  | SourceForStatementIR
   | SourceForOfStatementIR
   | SourceTryStatementIR
   | SourceBlockStatementIR
@@ -95,6 +96,15 @@ export interface SourceIfStatementIR {
 export interface SourceWhileStatementIR {
   kind: 'while';
   test: SourceExpressionIR;
+  body: SourceStatementIR[];
+  span: SourceSpanIR;
+}
+
+export interface SourceForStatementIR {
+  kind: 'for';
+  initializer?: SourceVariableDeclarationStatementIR | SourceExpressionIR;
+  test?: SourceExpressionIR;
+  incrementor?: SourceExpressionIR;
   body: SourceStatementIR[];
   span: SourceSpanIR;
 }
@@ -523,6 +533,33 @@ function lowerStatement(sourceFile: ts.SourceFile, statement: ts.Statement): Sou
     return {
       kind: 'while',
       test: lowerExpression(sourceFile, statement.expression),
+      body: lowerStatementList(sourceFile, statement.statement),
+      span: spanOf(sourceFile, statement),
+    };
+  }
+
+  if (ts.isForStatement(statement)) {
+    return {
+      kind: 'for',
+      initializer: statement.initializer
+        ? ts.isVariableDeclarationList(statement.initializer)
+          ? {
+            kind: 'variable_declaration',
+            declarationKind: declarationKindOf(statement.initializer.flags),
+            declarations: statement.initializer.declarations.map((declaration) => ({
+              binding: lowerBinding(sourceFile, declaration.name),
+              initializer: declaration.initializer
+                ? lowerExpression(sourceFile, declaration.initializer)
+                : undefined,
+            })),
+            span: spanOf(sourceFile, statement.initializer),
+          }
+          : lowerExpression(sourceFile, statement.initializer)
+        : undefined,
+      test: statement.condition ? lowerExpression(sourceFile, statement.condition) : undefined,
+      incrementor: statement.incrementor
+        ? lowerExpression(sourceFile, statement.incrementor)
+        : undefined,
       body: lowerStatementList(sourceFile, statement.statement),
       span: spanOf(sourceFile, statement),
     };
