@@ -907,33 +907,26 @@ function lowerExpression(
         return staticProperty;
       }
       if (expression.object.kind === 'identifier') {
-        const objectLayout = context.objectLocals.get(expression.object.name);
-        const field = objectLayout?.fields.find((candidate) =>
-          candidate.name === expression.property
+        const field = lowerObjectPropertyReadFromLocal(
+          expression.object.name,
+          expression.property,
+          context,
         );
-        if (objectLayout && field) {
-          const tempName = nextTempLocalName(context, `field_${expression.object.name}`);
-          addLocal(context, tempName, field.representation);
-          const getStatement = objectFieldGetStatementForLocal(
-            tempName,
-            expression.object.name,
-            objectLayout,
-            expression.property,
-          );
-          if (!getStatement) {
-            context.unsupportedKinds.add(`property_access:${expression.property}`);
-            return { kind: 'undefined_literal', representation: 'tagged_ref' };
-          }
-          context.pendingStatements.push(getStatement);
-          context.runtimeFamilies.add(objectLayout.family);
-          return {
-            kind: 'local_get',
-            name: tempName,
-            representation: field.representation,
-          };
+        if (field) {
+          return field;
         }
       }
       const object = lowerExpression(expression.object, context);
+      if (object.kind === 'local_get') {
+        const field = lowerObjectPropertyReadFromLocal(
+          object.name,
+          expression.property,
+          context,
+        );
+        if (field) {
+          return field;
+        }
+      }
       if (expression.property === 'length' && object.representation === 'owned_string_ref') {
         context.runtimeFamilies.add('string');
         return {
@@ -1101,6 +1094,20 @@ function lowerExpression(
         args: expression.args.map((arg) => lowerExpression(arg, context)),
         representation,
       };
+    }
+    case 'new_expression': {
+      const targetName = nextTempLocalName(context, 'class_instance');
+      const statements = lowerClassConstructionDeclaration(
+        targetName,
+        expression,
+        'const',
+        context,
+      );
+      if (!statements) {
+        return { kind: 'undefined_literal', representation: 'tagged_ref' };
+      }
+      context.pendingStatements.push(...statements);
+      return { kind: 'local_get', name: targetName, representation: 'heap_ref' };
     }
     case 'binary_expression': {
       const left = lowerExpression(expression.left, context);
@@ -1545,6 +1552,37 @@ function objectFieldGetStatementForLocal(
     };
   }
   return undefined;
+}
+
+function lowerObjectPropertyReadFromLocal(
+  objectName: string,
+  propertyName: string,
+  context: FunctionLoweringContext,
+): SemanticExpressionIR | undefined {
+  const objectLayout = context.objectLocals.get(objectName);
+  const field = objectLayout?.fields.find((candidate) => candidate.name === propertyName);
+  if (!objectLayout || !field) {
+    return undefined;
+  }
+  const tempName = nextTempLocalName(context, `field_${objectName}`);
+  addLocal(context, tempName, field.representation);
+  const getStatement = objectFieldGetStatementForLocal(
+    tempName,
+    objectName,
+    objectLayout,
+    propertyName,
+  );
+  if (!getStatement) {
+    context.unsupportedKinds.add(`property_access:${propertyName}`);
+    return { kind: 'undefined_literal', representation: 'tagged_ref' };
+  }
+  context.pendingStatements.push(getStatement);
+  context.runtimeFamilies.add(objectLayout.family);
+  return {
+    kind: 'local_get',
+    name: tempName,
+    representation: field.representation,
+  };
 }
 
 function lowerObjectBindingFromLocal(
@@ -2740,10 +2778,11 @@ function lowerClassMethodCallExpression(
     return undefined;
   }
   const callee = expression.callee;
-  if (callee.object.kind !== 'identifier') {
+  const receiver = materializeClassMethodReceiver(callee.object, context);
+  if (!receiver) {
     return undefined;
   }
-  const objectName = callee.object.name;
+  const objectName = receiver.objectName;
   const objectLocal = context.objectLocals.get(objectName);
   const className = objectLocal?.className;
   const classInfo = className ? context.classesByName.get(className) : undefined;
@@ -2817,7 +2856,7 @@ function lowerClassMethodCallExpression(
     context.unsupportedKinds.add(`class_method_binding_collision:${method.name}`);
     return undefined;
   }
-  const statements: SemanticStatementIR[] = [];
+  const statements: SemanticStatementIR[] = [...receiver.statements];
   for (const [index, param] of paramBindings.entries()) {
     const arg = expression.args[index];
     if (!arg) {
@@ -2854,6 +2893,23 @@ function lowerClassMethodCallExpression(
   clearTransientSourceBindings(context, transientNames);
   context.pendingStatements.push(...statements);
   return { kind: 'local_get', name: resultName, representation: result.representation };
+}
+
+function materializeClassMethodReceiver(
+  expression: SourceExpressionIR,
+  context: FunctionLoweringContext,
+): { objectName: string; statements: SemanticStatementIR[] } | undefined {
+  if (expression.kind === 'identifier') {
+    return { objectName: expression.name, statements: [] };
+  }
+  if (expression.kind !== 'new_expression') {
+    return undefined;
+  }
+  const receiver = lowerExpression(expression, context);
+  if (receiver.kind !== 'local_get') {
+    return undefined;
+  }
+  return { objectName: receiver.name, statements: takePendingStatements(context) };
 }
 
 function lowerStatement(
