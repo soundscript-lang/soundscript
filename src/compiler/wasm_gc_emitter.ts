@@ -271,7 +271,17 @@ function renderSpecializedObjectBoundaryHelpers(
     ...boundary.params.map((param) => valueBoundaryFromSemanticType(param.type)),
     valueBoundaryFromSemanticType(boundary.result.type),
   ]);
-  for (const boundary of boundaries) {
+  const wrapperBoundaries = [
+    ...plan.wrapperPlan.hostImportWrappers.flatMap((wrapper) => [
+      ...(wrapper.paramBoundaries ?? []),
+      wrapper.resultBoundary,
+    ]),
+    ...plan.wrapperPlan.exportWrappers.flatMap((wrapper) => [
+      ...(wrapper.paramBoundaries ?? []),
+      wrapper.resultBoundary,
+    ]),
+  ].filter((boundary): boundary is ValueBoundaryIR => boundary !== undefined);
+  for (const boundary of [...boundaries, ...wrapperBoundaries]) {
     visitValueBoundary(boundary, (candidate) => {
       if (!valueBoundarySupportsWasmGcSpecializedObjectWrapper(candidate)) {
         return;
@@ -587,6 +597,17 @@ function closureObjectLocalNames(func: WasmGcFunctionPlanIR): ReadonlySet<string
   const names = new Set<string>();
   visitSemanticStatements(func.body, (statement) => {
     if (statement.kind === 'dynamic_object_property_get' && statement.valueType === 'closure_ref') {
+      names.add(statement.targetName);
+    } else if (
+      statement.kind === 'fallback_object_property_get' && statement.valueType === 'closure_ref'
+    ) {
+      names.add(statement.targetName);
+    } else if (
+      statement.kind === 'specialized_object_field_get' &&
+      func.locals.some((local) =>
+        local.name === statement.targetName && local.wasmType === 'closure_ref'
+      )
+    ) {
       names.add(statement.targetName);
     }
   });
@@ -5192,8 +5213,54 @@ function moduleUsesHostHandleRuntime(plan: WasmGcModulePlanIR): boolean {
   );
 }
 
+function boundaryUsesHostHandleRuntime(boundary: unknown): boolean {
+  if (typeof boundary !== 'object' || boundary === null || !('kind' in boundary)) {
+    return false;
+  }
+  const candidate = boundary as {
+    kind: string;
+    element?: unknown;
+    elements?: readonly unknown[];
+    key?: unknown;
+    value?: unknown;
+    arms?: readonly unknown[];
+    yield?: unknown;
+    return?: unknown;
+    next?: unknown;
+    signatures?: readonly { params: readonly unknown[]; result: unknown }[];
+    fields?: readonly { value: unknown }[];
+  };
+  if (candidate.kind === 'host_handle') {
+    return true;
+  }
+  return boundaryUsesHostHandleRuntime(candidate.element) ||
+    boundaryUsesHostHandleRuntime(candidate.key) ||
+    boundaryUsesHostHandleRuntime(candidate.value) ||
+    boundaryUsesHostHandleRuntime(candidate.yield) ||
+    boundaryUsesHostHandleRuntime(candidate.return) ||
+    boundaryUsesHostHandleRuntime(candidate.next) ||
+    candidate.elements?.some(boundaryUsesHostHandleRuntime) === true ||
+    candidate.arms?.some(boundaryUsesHostHandleRuntime) === true ||
+    candidate.fields?.some((field) => boundaryUsesHostHandleRuntime(field.value)) === true ||
+    candidate.signatures?.some((signature) =>
+        signature.params.some(boundaryUsesHostHandleRuntime) ||
+        boundaryUsesHostHandleRuntime(signature.result)
+      ) === true;
+}
+
+function moduleUsesDirectHostHandleBoundary(plan: WasmGcModulePlanIR): boolean {
+  return plan.wrapperPlan.hostImportWrappers.some((wrapper) =>
+    wrapper.paramBoundaries?.some(boundaryUsesHostHandleRuntime) === true ||
+    boundaryUsesHostHandleRuntime(wrapper.resultBoundary)
+  ) ||
+    plan.wrapperPlan.exportWrappers.some((wrapper) =>
+      wrapper.paramBoundaries?.some(boundaryUsesHostHandleRuntime) === true ||
+      boundaryUsesHostHandleRuntime(wrapper.resultBoundary)
+    );
+}
+
 function renderHostHandleHelperFunctions(plan: WasmGcModulePlanIR): readonly string[] {
-  return moduleUsesHostHandleRuntime(plan)
+  return moduleUsesDirectHostHandleBoundary(plan)
     ? [
       '  (func $__soundscript_host_handle_from_host (export "__soundscript_host_handle_from_host") (param $value externref) (result (ref null eq))',
       '    local.get $value',
@@ -5210,6 +5277,43 @@ function renderHostHandleHelperFunctions(plan: WasmGcModulePlanIR): readonly str
       '  )',
     ]
     : [];
+}
+
+function hostClosureFunctionId(): number {
+  return -1;
+}
+
+function hostClosureFromHostFunctionName(signatureId: number): string {
+  return `$__soundscript_host_closure_from_host_${signatureId}`;
+}
+
+function hostClosureCallImportName(signatureId: number): string {
+  return `$__soundscript_host_closure_call_${signatureId}`;
+}
+
+function renderHostClosureCallImportPlans(plan: WasmGcModulePlanIR): readonly string[] {
+  return plan.wrapperPlan.hostClosureWrappers.map((wrapper) =>
+    `  (import "soundscript_host_closure" "call_${wrapper.signatureId}" (func ${
+      hostClosureCallImportName(wrapper.signatureId)
+    } (param $fn externref)${
+      wrapper.paramTypes.map((paramType, index) =>
+        ` (param $arg_${index} ${wasmTypeForCompilerValueType(paramType)})`
+      ).join('')
+    } (result ${wasmTypeForCompilerValueType(wrapper.resultType)})))`
+  );
+}
+
+function renderHostClosureHelperFunctions(plan: WasmGcModulePlanIR): readonly string[] {
+  return plan.wrapperPlan.hostClosureWrappers.flatMap((wrapper) => [
+    `  (func ${
+      hostClosureFromHostFunctionName(wrapper.signatureId)
+    } (export "__soundscript_host_closure_from_host_${wrapper.signatureId}") (param $value externref) (result (ref null eq))`,
+    `    i32.const ${hostClosureFunctionId()}`,
+    '    local.get $value',
+    `    struct.new ${typeNameForHostHandleRuntime()}`,
+    `    struct.new ${closureObjectTypeName()}`,
+    '  )',
+  ]);
 }
 
 function renderStringEqualityHelperFunctions(plan: WasmGcModulePlanIR): readonly string[] {
@@ -5311,7 +5415,9 @@ function wrapperPlanUsesStringBoundaryHelpers(plan: WasmGcModulePlanIR): boolean
     wrapper.paramTypes.some((paramType) =>
       paramType === 'string_ref' || paramType === 'owned_string_ref'
     ) || wrapper.resultType === 'string_ref' || wrapper.resultType === 'owned_string_ref' ||
-    wrapper.paramBoundaries?.some(valueBoundaryUsesString) === true ||
+    wrapper.paramBoundaries?.some((boundary) =>
+        boundary ? valueBoundaryUsesString(boundary) : false
+      ) === true ||
     (wrapper.resultBoundary ? valueBoundaryUsesString(wrapper.resultBoundary) : false)
   ) ||
     plan.wrapperPlan.hostCallbackWrappers.some((wrapper) =>
@@ -5444,7 +5550,9 @@ function wrapperPlanUsesSymbolBoundaryHelpers(plan: WasmGcModulePlanIR): boolean
   return wrappers.some((wrapper) =>
     wrapper.paramTypes.some((paramType) => paramType === 'symbol_ref') ||
     wrapper.resultType === 'symbol_ref' ||
-    wrapper.paramBoundaries?.some(valueBoundaryUsesSymbol) === true ||
+    wrapper.paramBoundaries?.some((boundary) =>
+        boundary ? valueBoundaryUsesSymbol(boundary) : false
+      ) === true ||
     (wrapper.resultBoundary ? valueBoundaryUsesSymbol(wrapper.resultBoundary) : false)
   ) ||
     plan.wrapperPlan.hostCallbackWrappers.some((wrapper) =>
@@ -5460,7 +5568,9 @@ function wrapperPlanUsesBigIntBoundaryHelpers(plan: WasmGcModulePlanIR): boolean
   return wrappers.some((wrapper) =>
     wrapper.paramTypes.some((paramType) => paramType === 'bigint_ref') ||
     wrapper.resultType === 'bigint_ref' ||
-    wrapper.paramBoundaries?.some(valueBoundaryUsesBigInt) === true ||
+    wrapper.paramBoundaries?.some((boundary) =>
+        boundary ? valueBoundaryUsesBigInt(boundary) : false
+      ) === true ||
     (wrapper.resultBoundary ? valueBoundaryUsesBigInt(wrapper.resultBoundary) : false)
   ) ||
     plan.wrapperPlan.hostCallbackWrappers.some((wrapper) =>
@@ -6522,6 +6632,12 @@ function boxedClosureDispatchSignatureIds(plan: WasmGcModulePlanIR): readonly nu
   for (const signatureId of hostCallbackWrapperSignatureIds(plan)) {
     signatureIds.add(signatureId);
   }
+  for (const wrapper of plan.wrapperPlan.hostClosureWrappers) {
+    signatureIds.add(wrapper.signatureId);
+  }
+  for (const wrapper of plan.wrapperPlan.closureBoundaryWrappers) {
+    signatureIds.add(wrapper.signatureId);
+  }
   for (const func of plan.functionPlans) {
     const closureObjectNames = closureObjectLocalNames(func);
     func.body.forEach((statement) =>
@@ -6543,6 +6659,9 @@ function boxedClosureDispatchSignatureIds(plan: WasmGcModulePlanIR): readonly nu
 }
 
 function moduleUsesClosureObjects(plan: WasmGcModulePlanIR): boolean {
+  if (plan.wrapperPlan.hostClosureWrappers.length > 0) {
+    return true;
+  }
   if (plan.wrapperPlan.hostCallbackWrappers.length > 0) {
     return true;
   }
@@ -6617,6 +6736,9 @@ function renderClosureDispatchHelpers(
   closureFunctionNames: ReadonlyMap<number, string>,
 ): readonly string[] {
   const hostWrapperSignatureIds = hostCallbackWrapperSignatureIds(plan);
+  const closureBoundarySignatureIds = new Set(
+    plan.wrapperPlan.closureBoundaryWrappers.map((wrapper) => wrapper.signatureId),
+  );
   return boxedClosureDispatchSignatureIds(plan).flatMap((signatureId) => {
     const targetFunctions = plan.functionPlans
       .filter((func) =>
@@ -6625,25 +6747,53 @@ function renderClosureDispatchHelpers(
         !func.hostImport
       )
       .sort((left, right) => left.closureFunctionId! - right.closureFunctionId!);
+    const hostClosureWrapper = plan.wrapperPlan.hostClosureWrappers.find((wrapper) =>
+      wrapper.signatureId === signatureId
+    );
     const signatureSource = targetFunctions[0];
-    if (!signatureSource) {
+    if (!signatureSource && !hostClosureWrapper) {
       return [];
     }
-    const runtimeParams = signatureSource.params.slice(signatureSource.closureCaptureCount ?? 0);
-    const result = signatureSource.result.length > 0
-      ? ` (result ${wasmTypeForCompilerValueType(signatureSource.result)})`
+    const runtimeParams = signatureSource
+      ? signatureSource.params.slice(signatureSource.closureCaptureCount ?? 0).map((param) =>
+        param.wasmType
+      )
+      : hostClosureWrapper!.paramTypes;
+    const resultType = signatureSource?.result ?? hostClosureWrapper!.resultType;
+    const result = resultType.length > 0
+      ? ` (result ${wasmTypeForCompilerValueType(resultType)})`
       : '';
-    const exportClause = hostWrapperSignatureIds.has(signatureId)
+    const exportClause = hostWrapperSignatureIds.has(signatureId) ||
+        closureBoundarySignatureIds.has(signatureId)
       ? ` (export "__soundscript_closure_invoke_${signatureId}")`
       : '';
     return [
       `  (func ${
         closureDispatchFunctionName(signatureId)
       }${exportClause} (param $closure (ref null eq))${
-        runtimeParams.map((param, index) =>
-          ` (param $arg_${index} ${wasmTypeForCompilerValueType(param.wasmType)})`
+        runtimeParams.map((paramType, index) =>
+          ` (param $arg_${index} ${wasmTypeForCompilerValueType(paramType)})`
         ).join('')
       }${result}`,
+      ...(hostClosureWrapper
+        ? [
+          '    local.get $closure',
+          `    ref.cast (ref ${closureObjectTypeName()})`,
+          `    struct.get ${closureObjectTypeName()} $function_id`,
+          `    i32.const ${hostClosureFunctionId()}`,
+          '    i32.eq',
+          '    if',
+          '      local.get $closure',
+          `      ref.cast (ref ${closureObjectTypeName()})`,
+          `      struct.get ${closureObjectTypeName()} $env`,
+          `      ref.cast (ref ${typeNameForHostHandleRuntime()})`,
+          `      struct.get ${typeNameForHostHandleRuntime()} $value`,
+          ...runtimeParams.map((_, index) => `      local.get $arg_${index}`),
+          `      call ${hostClosureCallImportName(signatureId)}`,
+          '      return',
+          '    end',
+        ]
+        : []),
       ...targetFunctions.flatMap((func) => {
         const functionId = func.closureFunctionId!;
         const captureCount = func.closureCaptureCount ?? 0;
@@ -8334,12 +8484,14 @@ export function emitWasmGcModulePlan(plan: WasmGcModulePlanIR): string {
   const promiseHelperFunctions = renderPromiseHelperFunctions(plan);
   const asyncGeneratorHelperFunctions = renderAsyncGeneratorHelperFunctions(plan);
   const closureDispatchHelpers = renderClosureDispatchHelpers(plan, closureFunctionNames);
+  const hostClosureHelperFunctions = renderHostClosureHelperFunctions(plan);
   const hostTaggedWrapperHelperFunctions = renderHostTaggedWrapperHelperFunctions(plan);
   const hostImportWrapperArgIndicesByCallee = hostImportClosureWrapperArgIndicesByCallee(plan);
   const hostImportWrapperArgIndicesByFunction = hostImportClosureWrapperArgIndicesByFunction(plan);
   const hostImportPlans = plan.functionPlans.flatMap((func) =>
     renderHostImportPlan(func, hostImportWrapperArgIndicesByFunction)
   );
+  const hostClosureCallImportPlans = renderHostClosureCallImportPlans(plan);
   const stringEqualityImportPlans = renderStringEqualityImportPlan(plan);
   const externEqualityImportPlans = renderExternEqualityImportPlan(plan);
   const moduleGlobals = plan.moduleGlobals.map(renderModuleGlobalPlan);
@@ -8381,11 +8533,13 @@ export function emitWasmGcModulePlan(plan: WasmGcModulePlanIR): string {
         ]
         : ['    ;; none']
     ),
-    ...(hostImportPlans.length > 0 || stringEqualityImportPlans.length > 0 ||
+    ...(hostImportPlans.length > 0 || hostClosureCallImportPlans.length > 0 ||
+        stringEqualityImportPlans.length > 0 ||
         externEqualityImportPlans.length > 0
       ? [
         '  ;; imports',
         ...hostImportPlans,
+        ...hostClosureCallImportPlans,
         ...stringEqualityImportPlans,
         ...externEqualityImportPlans,
       ]
@@ -8406,6 +8560,7 @@ export function emitWasmGcModulePlan(plan: WasmGcModulePlanIR): string {
         mapBoundaryWrapperHelperFunctions.length > 0 ||
         setBoundaryWrapperHelperFunctions.length > 0 ||
         hostHandleHelperFunctions.length > 0 ||
+        hostClosureHelperFunctions.length > 0 ||
         promiseHelperFunctions.length > 0 ||
         asyncGeneratorHelperFunctions.length > 0 || closureDispatchHelpers.length > 0 ||
         hostTaggedWrapperHelperFunctions.length > 0
@@ -8420,6 +8575,7 @@ export function emitWasmGcModulePlan(plan: WasmGcModulePlanIR): string {
         ...mapBoundaryWrapperHelperFunctions,
         ...setBoundaryWrapperHelperFunctions,
         ...hostHandleHelperFunctions,
+        ...hostClosureHelperFunctions,
         ...promiseHelperFunctions,
         ...hostTaggedWrapperHelperFunctions,
         ...closureDispatchHelpers,

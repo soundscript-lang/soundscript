@@ -409,6 +409,7 @@ compilerIntegrationTest(
     assertEquals(result.exitCode, 0);
     assertEquals(result.diagnostics, []);
     assert(result.artifacts);
+    assertEquals(result.artifacts.backend, 'wasm-gc');
     assert(result.artifacts.wrapperPath);
 
     const wrapperModule = await importCompiledWrapperModule(result.artifacts.wrapperPath);
@@ -4581,6 +4582,86 @@ compilerIntegrationTest(
 );
 
 compilerIntegrationTest(
+  'compileProject emits a WasmGC-backed public wrapper for imported host object methods',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+            },
+            include: ['src/**/*.sts'],
+            soundscript: {
+              target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/host.d.ts',
+        contents: [
+          'export interface Runner {',
+          '  run(value: number): number;',
+          '}',
+          '',
+          'export declare function getRunner(): Runner;',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/index.sts',
+        contents: [
+          '// #[interop]',
+          "import { getRunner } from './host.js';",
+          '',
+          'export function main(): number {',
+          '  const runner = getRunner();',
+          '  return runner.run(41);',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assertEquals(result.artifacts.backend, 'wasm-gc');
+    assert(result.artifacts.wrapperPath);
+
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate({
+      modules: {
+        './host.js': {
+          getRunner: () => ({
+            run: (value: number) => value + 1,
+          }),
+        },
+      },
+    });
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'main');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+    assertEquals(exported(), 42);
+  },
+);
+
+compilerIntegrationTest(
   'compileProject does not use the WasmGC public wrapper path for wasm-wasi',
   async () => {
     const tempDirectory = await createTempProject([
@@ -8651,6 +8732,7 @@ compilerIntegrationTest(
     assertEquals(result.exitCode, 0);
     assertEquals(result.diagnostics, []);
     assert(result.artifacts);
+    assertEquals(result.artifacts.backend, 'wasm-gc');
     assert(result.artifacts.wrapperPath);
 
     const container = { children: { length: 0 }, nodeType: 1, tagName: 'DIV' };

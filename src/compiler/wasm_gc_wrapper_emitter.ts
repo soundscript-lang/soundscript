@@ -1,4 +1,5 @@
 import type {
+  WasmGcClosureBoundaryWrapperPlanIR,
   WasmGcCollectionBoundaryAdapterIR,
   WasmGcExportWrapperPlanIR,
   WasmGcHostCallbackWrapperPlanIR,
@@ -611,16 +612,20 @@ function collectionBoundaryAdapterClosureForBoundary(
 }
 
 function wrapperCollectionBoundaryAdapters(wrapper: {
-  paramBoundaries?: readonly ValueBoundaryIR[];
+  paramBoundaries?: readonly (ValueBoundaryIR | undefined)[];
   resultBoundary?: ValueBoundaryIR;
 }): readonly WasmGcCollectionBoundaryAdapterIR[] {
   return collectionBoundaryAdaptersForValueBoundaries(wrapperValueBoundaries(wrapper));
 }
 
 function wrapperCollectionParamBoundaryAdapters(wrapper: {
-  paramBoundaries?: readonly ValueBoundaryIR[];
+  paramBoundaries?: readonly (ValueBoundaryIR | undefined)[];
 }): readonly WasmGcCollectionBoundaryAdapterIR[] {
-  return collectionBoundaryAdaptersForValueBoundaries(wrapper.paramBoundaries ?? []);
+  return collectionBoundaryAdaptersForValueBoundaries(
+    wrapper.paramBoundaries?.filter((boundary): boundary is ValueBoundaryIR =>
+      boundary !== undefined
+    ) ?? [],
+  );
 }
 
 function uniqueCollectionBoundaryAdapters(
@@ -644,24 +649,26 @@ function expandCollectionBoundaryAdapters(
 }
 
 function wrapperCollectionBoundaryAdapterClosure(wrapper: {
-  paramBoundaries?: readonly ValueBoundaryIR[];
+  paramBoundaries?: readonly (ValueBoundaryIR | undefined)[];
   resultBoundary?: ValueBoundaryIR;
 }): readonly WasmGcCollectionBoundaryAdapterIR[] {
   return expandCollectionBoundaryAdapters(wrapperCollectionBoundaryAdapters(wrapper));
 }
 
 function wrapperCollectionParamBoundaryAdapterClosure(wrapper: {
-  paramBoundaries?: readonly ValueBoundaryIR[];
+  paramBoundaries?: readonly (ValueBoundaryIR | undefined)[];
 }): readonly WasmGcCollectionBoundaryAdapterIR[] {
   return expandCollectionBoundaryAdapters(wrapperCollectionParamBoundaryAdapters(wrapper));
 }
 
 function wrapperObjectParamBoundaryAdapterClosure(wrapper: {
-  paramBoundaries?: readonly ValueBoundaryIR[];
+  paramBoundaries?: readonly (ValueBoundaryIR | undefined)[];
 }): readonly WasmGcCollectionBoundaryAdapterIR[] {
   return expandCollectionBoundaryAdapters(
     collectionBoundaryAdaptersForValueBoundaries(
-      (wrapper.paramBoundaries ?? []).filter((boundary) => boundary?.kind === 'object'),
+      (wrapper.paramBoundaries ?? []).filter((boundary): boundary is ValueBoundaryIR =>
+        boundary?.kind === 'object'
+      ),
     ),
   );
 }
@@ -673,14 +680,14 @@ function collectionBoundaryAdapterValueBoundary(
 }
 
 function wrapperUsesMapBoundaryAdapters(wrapper: {
-  paramBoundaries?: readonly ValueBoundaryIR[];
+  paramBoundaries?: readonly (ValueBoundaryIR | undefined)[];
   resultBoundary?: ValueBoundaryIR;
 }): boolean {
   return wrapperCollectionBoundaryAdapterClosure(wrapper).some((adapter) => adapter.kind === 'map');
 }
 
 function wrapperUsesSetBoundaryAdapters(wrapper: {
-  paramBoundaries?: readonly ValueBoundaryIR[];
+  paramBoundaries?: readonly (ValueBoundaryIR | undefined)[];
   resultBoundary?: ValueBoundaryIR;
 }): boolean {
   return wrapperCollectionBoundaryAdapterClosure(wrapper).some((adapter) => adapter.kind === 'set');
@@ -704,11 +711,13 @@ function boundaryUsesArray(boundary: ValueBoundaryIR): boolean {
 }
 
 function wrapperValueBoundaries(wrapper: {
-  paramBoundaries?: readonly ValueBoundaryIR[];
+  paramBoundaries?: readonly (ValueBoundaryIR | undefined)[];
   resultBoundary?: ValueBoundaryIR;
 }): readonly ValueBoundaryIR[] {
   return [
-    ...(wrapper.paramBoundaries ?? []),
+    ...(wrapper.paramBoundaries?.filter((boundary): boundary is ValueBoundaryIR =>
+      boundary !== undefined
+    ) ?? []),
     ...(wrapper.resultBoundary ? [wrapper.resultBoundary] : []),
   ];
 }
@@ -809,6 +818,34 @@ function boundaryUsesHostHandle(boundary: ValueBoundaryIR): boolean {
   }
 }
 
+function boundaryUsesClosure(boundary: ValueBoundaryIR): boolean {
+  switch (boundary.kind) {
+    case 'closure':
+      return true;
+    case 'array':
+      return boundaryUsesClosure(boundary.element);
+    case 'tuple':
+      return boundary.elements.some(boundaryUsesClosure);
+    case 'map':
+      return boundaryUsesClosure(boundary.key) || boundaryUsesClosure(boundary.value);
+    case 'set':
+      return boundaryUsesClosure(boundary.value);
+    case 'union':
+      return boundary.arms.some(boundaryUsesClosure);
+    case 'promise':
+      return boundary.value ? boundaryUsesClosure(boundary.value) : false;
+    case 'sync_generator':
+    case 'async_generator':
+      return [boundary.yield, boundary.return, boundary.next].some((value) =>
+        value ? boundaryUsesClosure(value) : false
+      );
+    case 'object':
+      return boundary.fields?.some((field) => boundaryUsesClosure(field.value)) ?? false;
+    default:
+      return false;
+  }
+}
+
 function boundaryUsesFiniteUnion(boundary: ValueBoundaryIR): boolean {
   switch (boundary.kind) {
     case 'union':
@@ -843,7 +880,7 @@ function boundaryUsesUnionArmKind(
 
 function wrapperUsesUnionArmKind(
   wrapper: {
-    paramBoundaries?: readonly ValueBoundaryIR[];
+    paramBoundaries?: readonly (ValueBoundaryIR | undefined)[];
     resultBoundary?: ValueBoundaryIR;
   },
   kind: ValueBoundaryIR['kind'],
@@ -855,10 +892,13 @@ function wrapperUsesUnionArmKind(
 
 function boundaryUsesValueAdapter(boundary: ValueBoundaryIR): boolean {
   switch (boundary.kind) {
+    case 'undefined':
+    case 'null':
     case 'string':
     case 'symbol':
     case 'bigint':
     case 'host_handle':
+    case 'closure':
     case 'object':
     case 'array':
     case 'map':
@@ -871,10 +911,14 @@ function boundaryUsesValueAdapter(boundary: ValueBoundaryIR): boolean {
 }
 
 function wrapperUsesBoundaryValueAdapters(wrapper: {
-  paramBoundaries?: readonly ValueBoundaryIR[];
+  paramBoundaries?: readonly (ValueBoundaryIR | undefined)[];
   resultBoundary?: ValueBoundaryIR;
 }): boolean {
   return wrapperValueBoundaries(wrapper).some(boundaryUsesValueAdapter);
+}
+
+function closureBoundaryHelperKey(signatureId: number): string {
+  return String(signatureId);
 }
 
 function boundaryUsesSpecializedObjectWrapper(boundary: ValueBoundaryIR): boolean {
@@ -901,7 +945,7 @@ function boundaryUsesSpecializedObjectWrapper(boundary: ValueBoundaryIR): boolea
 }
 
 function wrapperUsesSpecializedObjectWrappers(wrapper: {
-  paramBoundaries?: readonly ValueBoundaryIR[];
+  paramBoundaries?: readonly (ValueBoundaryIR | undefined)[];
   resultBoundary?: ValueBoundaryIR;
 }): boolean {
   return wrapperValueBoundaries(wrapper).some(boundaryUsesSpecializedObjectWrapper);
@@ -965,7 +1009,7 @@ function boundaryUsesNestedCollection(boundary: ValueBoundaryIR, nested = false)
 }
 
 function wrapperUsesNestedCollectionBoundaryAdapters(wrapper: {
-  paramBoundaries?: readonly ValueBoundaryIR[];
+  paramBoundaries?: readonly (ValueBoundaryIR | undefined)[];
   resultBoundary?: ValueBoundaryIR;
 }): boolean {
   return wrapperValueBoundaries(wrapper).some((boundary) => boundaryUsesNestedCollection(boundary));
@@ -997,7 +1041,7 @@ function collectionAdapterUsesString(adapter: WasmGcCollectionBoundaryAdapterIR)
 }
 
 function wrapperUsesArrayBoundaryAdapters(wrapper: {
-  paramBoundaries?: readonly ValueBoundaryIR[];
+  paramBoundaries?: readonly (ValueBoundaryIR | undefined)[];
   resultBoundary?: ValueBoundaryIR;
 }): boolean {
   return wrapperCollectionBoundaryAdapterClosure(wrapper).some(
@@ -1007,7 +1051,7 @@ function wrapperUsesArrayBoundaryAdapters(wrapper: {
 
 function wrapperUsesCollectionBoundaryAdapter(
   wrapper: {
-    paramBoundaries?: readonly ValueBoundaryIR[];
+    paramBoundaries?: readonly (ValueBoundaryIR | undefined)[];
     resultBoundary?: ValueBoundaryIR;
   },
   adapter: WasmGcCollectionBoundaryAdapterIR,
@@ -1229,6 +1273,9 @@ function renderHostImportBoundaryAdapterHelpers(plan: WasmGcModulePlanIR): strin
   const usesHostHandleAdapters = plan.wrapperPlan.hostImportWrappers.some((wrapper) =>
     wrapperValueBoundaries(wrapper).some(boundaryUsesHostHandle)
   );
+  const usesClosureAdapters = plan.wrapperPlan.hostImportWrappers.some((wrapper) =>
+    wrapperValueBoundaries(wrapper).some(boundaryUsesClosure)
+  );
   const usesArrayAdapters = hostImportSurfaceNeedsArrayAdapters(plan);
   const usesNestedCollectionAdapters = hostImportSurfaceNeedsNestedCollectionAdapters(plan);
   const usesObjectBoundaryAdapters = objectBoundaryHelpers.length > 0;
@@ -1249,6 +1296,7 @@ function renderHostImportBoundaryAdapterHelpers(plan: WasmGcModulePlanIR): strin
     wrapperUsesBoundaryValueAdapters,
   ) ||
     usesHostHandleAdapters ||
+    usesClosureAdapters ||
     usesObjectBoundaryAdapters ||
     usesArrayAdapters ||
     needsMapToInternalAdapters ||
@@ -1299,6 +1347,56 @@ function hostHandleFromInternal(value) {
 function internalValueIsHostHandle(value) {
   const instance = requireInstance();
   return Boolean(requireExport(instance.exports, '__soundscript_host_handle_is')(value));
+}`);
+  }
+  if (usesClosureAdapters) {
+    helpers.push(`const closureBoundaryHelpers = new Map(${
+      JSON.stringify(
+        plan.wrapperPlan.closureBoundaryWrappers.map((wrapper) => [
+          closureBoundaryHelperKey(wrapper.signatureId),
+          wrapper,
+        ]),
+      )
+    });
+
+function closureBoundaryHelper(boundary) {
+  const signatureId = boundary.signatureIds?.[0] ?? boundary.signatures?.[0]?.id;
+  const helper = closureBoundaryHelpers.get(String(signatureId));
+  if (!helper) {
+    throw new TypeError('Soundscript WasmGC closure boundary helper was not emitted for this signature.');
+  }
+  return helper;
+}
+
+function closureToInternal(boundary, value, state) {
+  if (typeof value !== 'function') {
+    throw new TypeError('Soundscript WasmGC closure boundary value must be a function.');
+  }
+  const existing = state?.hostToInternal.get(value);
+  if (existing !== undefined) {
+    return existing;
+  }
+  const helper = closureBoundaryHelper(boundary);
+  const instance = requireInstance();
+  const internal = requireExport(
+    instance.exports,
+    \`__soundscript_host_closure_from_host_\${helper.signatureId}\`,
+  )(value);
+  state?.hostToInternal.set(value, internal);
+  state?.internalToHost.set(internal, value);
+  return internal;
+}
+
+function closureFromInternal(boundary, value, state) {
+  const helper = closureBoundaryHelper(boundary);
+  const existing = state?.internalToHost.get(value);
+  if (typeof existing === 'function') {
+    return existing;
+  }
+  const wrapped = wrapClosure(helper.signatureId, value, helper.paramTypes, helper.resultType);
+  state?.internalToHost.set(value, wrapped);
+  state?.hostToInternal.set(wrapped, value);
+  return wrapped;
 }`);
   }
   if (usesSymbolAdapters) {
@@ -1610,6 +1708,9 @@ function syncBoundaryObjectsToInternal(state) {
     return isSupportedBoundaryObjectValue(value) &&
       (arm.fields ?? []).every((field) => Object.prototype.hasOwnProperty.call(value, field.name));
   }
+  if (arm.kind === 'closure') {
+    return typeof value === 'function';
+  }
 ${
       usesArrayUnionArms
         ? `  if (arm.kind === 'array') {
@@ -1647,6 +1748,9 @@ function unionBoundaryValueToInternal(boundary, value, state) {
     if (arm.kind === 'object') {
       const helper = objectBoundaryHelper(arm);
       return tagHostHeapObject(objectToInternal(arm, value, state), helper.layoutId);
+    }
+    if (arm.kind === 'closure') {
+      return tagHostHeapObject(closureToInternal(arm, value, state), 0);
     }
 ${
       usesArrayUnionArms
@@ -1729,6 +1833,18 @@ ${
 }
 
 function boundaryValueToInternal(boundary, value, adapter, state) {
+  if (boundary.kind === 'undefined') {
+    if (value !== undefined) {
+      throw new TypeError('Soundscript WasmGC boundary value must be undefined.');
+    }
+    return tagHostValue(value);
+  }
+  if (boundary.kind === 'null') {
+    if (value !== null) {
+      throw new TypeError('Soundscript WasmGC boundary value must be null.');
+    }
+    return tagHostValue(value);
+  }
   if (boundary.kind === 'number') {
     if (typeof value !== 'number') {
       throw new TypeError('Soundscript WasmGC boundary value must be a number.');
@@ -1748,6 +1864,13 @@ ${
       usesHostHandleAdapters
         ? `  if (boundary.kind === 'host_handle') {
     return hostHandleToInternal(value);
+  }`
+        : ''
+    }
+${
+      usesClosureAdapters
+        ? `  if (boundary.kind === 'closure') {
+    return closureToInternal(boundary, value, state);
   }`
         : ''
     }
@@ -1812,6 +1935,12 @@ ${
 }
 
 function boundaryValueFromInternal(boundary, value, adapter, state) {
+  if (boundary.kind === 'undefined') {
+    return undefined;
+  }
+  if (boundary.kind === 'null') {
+    return null;
+  }
   if (boundary.kind === 'number') {
     return value;
   }
@@ -1825,6 +1954,13 @@ ${
       usesHostHandleAdapters
         ? `  if (boundary.kind === 'host_handle') {
     return hostHandleFromInternal(value);
+  }`
+        : ''
+    }
+${
+      usesClosureAdapters
+        ? `  if (boundary.kind === 'closure') {
+    return closureFromInternal(boundary, value, state);
   }`
         : ''
     }
@@ -2014,6 +2150,9 @@ function renderExportBoundaryAdapterHelpers(plan: WasmGcModulePlanIR): string {
   const usesHostHandleAdapters = plan.wrapperPlan.exportWrappers.some((wrapper) =>
     wrapperValueBoundaries(wrapper).some(boundaryUsesHostHandle)
   );
+  const usesClosureAdapters = plan.wrapperPlan.exportWrappers.some((wrapper) =>
+    wrapperValueBoundaries(wrapper).some(boundaryUsesClosure)
+  );
   const usesArrayAdapters = exportSurfaceNeedsArrayAdapters(plan);
   const usesNestedCollectionAdapters = exportSurfaceNeedsNestedCollectionAdapters(plan);
   const usesObjectBoundaryAdapters = objectBoundaryHelpers.length > 0;
@@ -2034,6 +2173,7 @@ function renderExportBoundaryAdapterHelpers(plan: WasmGcModulePlanIR): string {
     wrapperUsesBoundaryValueAdapters,
   ) ||
     usesHostHandleAdapters ||
+    usesClosureAdapters ||
     usesObjectBoundaryAdapters ||
     usesArrayAdapters ||
     needsMapToInternalAdapters ||
@@ -2077,6 +2217,55 @@ function renderExportBoundaryAdapterHelpers(plan: WasmGcModulePlanIR): string {
 
   function internalValueIsHostHandle(value) {
     return Boolean(requireExport(wasmExports, '__soundscript_host_handle_is')(value));
+  }`);
+  }
+  if (usesClosureAdapters) {
+    helpers.push(`const closureBoundaryHelpers = new Map(${
+      JSON.stringify(
+        plan.wrapperPlan.closureBoundaryWrappers.map((wrapper) => [
+          closureBoundaryHelperKey(wrapper.signatureId),
+          wrapper,
+        ]),
+      )
+    });
+
+  function closureBoundaryHelper(boundary) {
+    const signatureId = boundary.signatureIds?.[0] ?? boundary.signatures?.[0]?.id;
+    const helper = closureBoundaryHelpers.get(String(signatureId));
+    if (!helper) {
+      throw new TypeError('Soundscript WasmGC closure boundary helper was not emitted for this signature.');
+    }
+    return helper;
+  }
+
+  function closureToInternal(boundary, value, state) {
+    if (typeof value !== 'function') {
+      throw new TypeError('Soundscript WasmGC closure boundary value must be a function.');
+    }
+    const existing = state?.hostToInternal.get(value);
+    if (existing !== undefined) {
+      return existing;
+    }
+    const helper = closureBoundaryHelper(boundary);
+    const internal = requireExport(
+      wasmExports,
+      \`__soundscript_host_closure_from_host_\${helper.signatureId}\`,
+    )(value);
+    state?.hostToInternal.set(value, internal);
+    state?.internalToHost.set(internal, value);
+    return internal;
+  }
+
+  function closureFromInternal(boundary, value, state) {
+    const helper = closureBoundaryHelper(boundary);
+    const existing = state?.internalToHost.get(value);
+    if (typeof existing === 'function') {
+      return existing;
+    }
+    const wrapped = wrapClosure(helper.signatureId, value, helper.paramTypes, helper.resultType);
+    state?.internalToHost.set(value, wrapped);
+    state?.hostToInternal.set(wrapped, value);
+    return wrapped;
   }`);
   }
   if (usesSymbolAdapters) {
@@ -2378,6 +2567,9 @@ ${
       return isSupportedBoundaryObjectValue(value) &&
         (arm.fields ?? []).every((field) => Object.prototype.hasOwnProperty.call(value, field.name));
     }
+    if (arm.kind === 'closure') {
+      return typeof value === 'function';
+    }
 ${
       usesArrayUnionArms
         ? `    if (arm.kind === 'array') {
@@ -2415,6 +2607,9 @@ ${
       if (arm.kind === 'object') {
         const helper = objectBoundaryHelper(arm);
         return tagHostHeapObject(objectToInternal(arm, value, state), helper.layoutId);
+      }
+      if (arm.kind === 'closure') {
+        return tagHostHeapObject(closureToInternal(arm, value, state), 0);
       }
 ${
       usesArrayUnionArms
@@ -2495,6 +2690,18 @@ ${
   }
 
   function boundaryValueToInternal(boundary, value, adapter, state) {
+    if (boundary.kind === 'undefined') {
+      if (value !== undefined) {
+        throw new TypeError('Soundscript WasmGC boundary value must be undefined.');
+      }
+      return tagHostValue(value);
+    }
+    if (boundary.kind === 'null') {
+      if (value !== null) {
+        throw new TypeError('Soundscript WasmGC boundary value must be null.');
+      }
+      return tagHostValue(value);
+    }
     if (boundary.kind === 'number') {
       if (typeof value !== 'number') {
         throw new TypeError('Soundscript WasmGC boundary value must be a number.');
@@ -2514,6 +2721,13 @@ ${
       usesHostHandleAdapters
         ? `    if (boundary.kind === 'host_handle') {
       return hostHandleToInternal(value);
+    }`
+        : ''
+    }
+${
+      usesClosureAdapters
+        ? `    if (boundary.kind === 'closure') {
+      return closureToInternal(boundary, value, state);
     }`
         : ''
     }
@@ -2578,6 +2792,12 @@ ${
   }
 
   function boundaryValueFromInternal(boundary, value, adapter, state) {
+    if (boundary.kind === 'undefined') {
+      return undefined;
+    }
+    if (boundary.kind === 'null') {
+      return null;
+    }
     if (boundary.kind === 'number') {
       return value;
     }
@@ -2591,6 +2811,13 @@ ${
       usesHostHandleAdapters
         ? `    if (boundary.kind === 'host_handle') {
       return hostHandleFromInternal(value);
+    }`
+        : ''
+    }
+${
+      usesClosureAdapters
+        ? `    if (boundary.kind === 'closure') {
+      return closureFromInternal(boundary, value, state);
     }`
         : ''
     }
@@ -2891,6 +3118,32 @@ ${plan.wrapperPlan.exportWrappers.map(renderExportWrapperInvocation).join('\n')}
 `;
 }
 
+function renderHostClosureImportFactory(plan: WasmGcModulePlanIR): string {
+  if (plan.wrapperPlan.hostClosureWrappers.length === 0) {
+    return '';
+  }
+  const entries = plan.wrapperPlan.hostClosureWrappers.map((wrapper) => {
+    const params = wrapper.paramTypes.map((_, index) => `arg${index}`);
+    const jsParams = ['fn', ...params].join(', ');
+    const hostArgs = wrapper.paramTypes.map((paramType, index) =>
+      `adaptToHost(${JSON.stringify(paramType)}, arg${index})`
+    );
+    return `    ${JSON.stringify(`call_${wrapper.signatureId}`)}: (${jsParams}) => {
+      if (typeof fn !== 'function') {
+        throw new TypeError('Soundscript WasmGC host closure value must be a function.');
+      }
+      return adaptToInternal(${JSON.stringify(wrapper.resultType)}, fn(${hostArgs.join(', ')}));
+    },`;
+  });
+  return `function createSoundscriptHostClosureImports() {
+  return {
+${entries.join('\n')}
+  };
+}
+
+`;
+}
+
 export function emitWasmGcWrapperModule(plan: WasmGcModulePlanIR): string {
   const wrapperGroups = groupHostImportWrapperKeys(plan);
   const wrapperAssignments = wrapperGroups.map(([, hostImportWrapper, callbackWrappers]) =>
@@ -2952,7 +3205,17 @@ export function createSoundscriptWasmGcHostImports(hostImports, instanceCell) {
     imports[moduleName][importName] = wrapped;
   }
 
+  ${renderHostClosureImportFactory(plan)}
+
   const imports = { ...(hostImports ?? {}) };
+${
+    plan.wrapperPlan.hostClosureWrappers.length > 0
+      ? `  imports.soundscript_host_closure = {
+    ...(hostImports?.soundscript_host_closure ?? {}),
+    ...createSoundscriptHostClosureImports(),
+  };`
+      : ''
+  }
 ${
     wrapperAssignments.length > 0
       ? wrapperAssignments.join('\n')

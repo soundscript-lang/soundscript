@@ -22,6 +22,7 @@ import {
   valueCollectionAdapterKey,
   type ValueCollectionBoundaryAdapterIR,
   type ValueStoragePlanIR,
+  visitValueBoundary,
 } from './value_boundary_ir.ts';
 
 export interface BackendCapabilities {
@@ -76,6 +77,7 @@ export interface WasmGcFunctionPlanIR {
     wasmType: string;
   }[];
   result: string;
+  hostResultBoundary?: SemanticTypeIR;
   body: readonly SemanticStatementIR[];
   bodyStatus: 'emittable' | 'stub';
   unsupportedBodyKinds: readonly string[];
@@ -129,6 +131,14 @@ export interface WasmGcHostCallbackWrapperPlanIR {
   reasons: readonly WasmGcHostCallbackWrapperReasonIR[];
 }
 
+export interface WasmGcClosureBoundaryWrapperPlanIR {
+  signatureId: number;
+  paramTypes: readonly string[];
+  resultType: string;
+  paramTaggedPrimitiveKinds: readonly (CompilerTaggedPrimitiveBoundaryKindsIR | undefined)[];
+  resultTaggedPrimitiveKinds?: CompilerTaggedPrimitiveBoundaryKindsIR;
+}
+
 export type WasmGcCollectionBoundaryAdapterIR = ValueCollectionBoundaryAdapterIR;
 
 export interface WasmGcExportWrapperPlanIR {
@@ -136,7 +146,7 @@ export interface WasmGcExportWrapperPlanIR {
   wasmExportName: string;
   paramTypes: readonly string[];
   resultType: string;
-  paramBoundaries?: readonly ValueBoundaryIR[];
+  paramBoundaries?: readonly (ValueBoundaryIR | undefined)[];
   resultBoundary?: ValueBoundaryIR;
 }
 
@@ -146,13 +156,15 @@ export interface WasmGcHostImportWrapperPlanIR {
   hostImportName: string;
   paramTypes: readonly string[];
   resultType: string;
-  paramBoundaries?: readonly ValueBoundaryIR[];
+  paramBoundaries?: readonly (ValueBoundaryIR | undefined)[];
   resultBoundary?: ValueBoundaryIR;
 }
 
 export interface WasmGcWrapperPlanIR {
   kind: 'wasm_gc_wrapper_plan';
   hostCallbackWrappers: readonly WasmGcHostCallbackWrapperPlanIR[];
+  closureBoundaryWrappers: readonly WasmGcClosureBoundaryWrapperPlanIR[];
+  hostClosureWrappers: readonly WasmGcClosureBoundaryWrapperPlanIR[];
   hostImportWrappers: readonly WasmGcHostImportWrapperPlanIR[];
   taggedValueAdapterHelpers: readonly string[];
   taggedValueResultHelpers: readonly string[];
@@ -469,6 +481,7 @@ function expressionIsCapturedClosure(
 
 function closureSignatureValueTypes(
   functionPlans: readonly WasmGcFunctionPlanIR[],
+  closureSignatures: readonly WasmGcClosureSignaturePlanIR[],
   signatureId: number,
 ): {
   paramTypes: readonly string[];
@@ -481,21 +494,39 @@ function closureSignatureValueTypes(
     func.closureFunctionId !== undefined &&
     !func.hostImport
   );
-  if (!signatureSource) {
+  if (signatureSource) {
+    const paramTaggedPrimitiveKinds = (signatureSource.closureParamTaggedPrimitiveKinds ?? [])
+      .map(compactTaggedPrimitiveKinds);
+    return {
+      paramTypes: signatureSource.params
+        .slice(signatureSource.closureCaptureCount ?? 0)
+        .map((param) => param.wasmType),
+      resultType: signatureSource.result,
+      paramTaggedPrimitiveKinds,
+      ...(compactTaggedPrimitiveKinds(signatureSource.closureResultTaggedPrimitiveKinds) !==
+          undefined
+        ? {
+          resultTaggedPrimitiveKinds: compactTaggedPrimitiveKinds(
+            signatureSource.closureResultTaggedPrimitiveKinds,
+          ),
+        }
+        : {}),
+    };
+  }
+  const signature = closureSignatures.find((candidate) => candidate.id === signatureId);
+  if (!signature) {
     return undefined;
   }
-  const paramTaggedPrimitiveKinds = (signatureSource.closureParamTaggedPrimitiveKinds ?? [])
-    .map(compactTaggedPrimitiveKinds);
   return {
-    paramTypes: signatureSource.params
-      .slice(signatureSource.closureCaptureCount ?? 0)
-      .map((param) => param.wasmType),
-    resultType: signatureSource.result,
-    paramTaggedPrimitiveKinds,
-    ...(compactTaggedPrimitiveKinds(signatureSource.closureResultTaggedPrimitiveKinds) !== undefined
+    paramTypes: signature.params,
+    resultType: signature.resultType,
+    paramTaggedPrimitiveKinds: (signature.paramTaggedPrimitiveKinds ?? []).map(
+      compactTaggedPrimitiveKinds,
+    ),
+    ...(compactTaggedPrimitiveKinds(signature.resultTaggedPrimitiveKinds) !== undefined
       ? {
         resultTaggedPrimitiveKinds: compactTaggedPrimitiveKinds(
-          signatureSource.closureResultTaggedPrimitiveKinds,
+          signature.resultTaggedPrimitiveKinds,
         ),
       }
       : {}),
@@ -713,6 +744,11 @@ function nestedValueBoundaries(boundary: ValueBoundaryIR): readonly ValueBoundar
       return [boundary.yield, boundary.return, boundary.next].filter(
         (value): value is ValueBoundaryIR => value !== undefined,
       );
+    case 'closure':
+      return (boundary.signatures ?? []).flatMap((signature) => [
+        ...signature.params,
+        signature.result,
+      ]);
     default:
       return [];
   }
@@ -727,6 +763,12 @@ function addTaggedValueAdapterHelpersForBoundary(
     return;
   }
   addTaggedObjectFieldAdapterHelpers(helpers, boundary);
+  if (boundary.kind === 'undefined' || boundary.kind === 'null') {
+    const kinds: CompilerTaggedPrimitiveBoundaryKindsIR = {};
+    addBoundaryTaggedPrimitiveKinds(kinds, boundary);
+    addTaggedValueAdapterHelpers(helpers, compactTaggedPrimitiveKinds(kinds));
+    return;
+  }
   if (boundary.kind === 'union') {
     for (const arm of boundary.arms) {
       addTaggedValueAdapterHelpersForBoundary(helpers, arm, true);
@@ -759,6 +801,32 @@ function taggedValueAdapterHelpersForWrappers(
         addTaggedValueAdapterHelpers(helpers, wrapper.paramTaggedPrimitiveKinds[index]);
       }
     });
+  }
+  return [...helpers].sort();
+}
+
+function taggedValueAdapterHelpersForClosureBoundaries(
+  wrappers: readonly WasmGcClosureBoundaryWrapperPlanIR[],
+): readonly string[] {
+  const helpers = new Set<string>();
+  for (const wrapper of wrappers) {
+    wrapper.paramTypes.forEach((paramType, index) => {
+      if (paramType === 'tagged_ref') {
+        addTaggedValueAdapterHelpers(helpers, wrapper.paramTaggedPrimitiveKinds[index]);
+      }
+    });
+  }
+  return [...helpers].sort();
+}
+
+function taggedValueAdapterHelpersForHostClosureWrappers(
+  wrappers: readonly WasmGcClosureBoundaryWrapperPlanIR[],
+): readonly string[] {
+  const helpers = new Set<string>();
+  for (const wrapper of wrappers) {
+    if (wrapper.resultType === 'tagged_ref') {
+      addTaggedValueAdapterHelpers(helpers, wrapper.resultTaggedPrimitiveKinds);
+    }
   }
   return [...helpers].sort();
 }
@@ -871,6 +939,9 @@ function valueBoundaryNeedsWrapper(boundary: ValueBoundaryIR | undefined): boole
     return false;
   }
   switch (boundary.kind) {
+    case 'undefined':
+    case 'null':
+      return true;
     case 'string':
     case 'symbol':
     case 'bigint':
@@ -891,6 +962,12 @@ function valueBoundaryNeedsWrapper(boundary: ValueBoundaryIR | undefined): boole
   }
 }
 
+function valueBoundaryNeedsHostImportParamWrapper(
+  boundary: ValueBoundaryIR | undefined,
+): boolean {
+  return valueBoundaryNeedsWrapper(boundary) || boundary?.kind === 'object';
+}
+
 function taggedValueResultHelpersForWrappers(
   wrappers: readonly WasmGcHostCallbackWrapperPlanIR[],
 ): readonly string[] {
@@ -899,6 +976,32 @@ function taggedValueResultHelpersForWrappers(
     if (wrapper.resultType === 'tagged_ref') {
       addTaggedValueResultHelpers(helpers, wrapper.resultTaggedPrimitiveKinds);
     }
+  }
+  return [...helpers].sort();
+}
+
+function taggedValueResultHelpersForClosureBoundaries(
+  wrappers: readonly WasmGcClosureBoundaryWrapperPlanIR[],
+): readonly string[] {
+  const helpers = new Set<string>();
+  for (const wrapper of wrappers) {
+    if (wrapper.resultType === 'tagged_ref') {
+      addTaggedValueResultHelpers(helpers, wrapper.resultTaggedPrimitiveKinds);
+    }
+  }
+  return [...helpers].sort();
+}
+
+function taggedValueResultHelpersForHostClosureWrappers(
+  wrappers: readonly WasmGcClosureBoundaryWrapperPlanIR[],
+): readonly string[] {
+  const helpers = new Set<string>();
+  for (const wrapper of wrappers) {
+    wrapper.paramTypes.forEach((paramType, index) => {
+      if (paramType === 'tagged_ref') {
+        addTaggedValueResultHelpers(helpers, wrapper.paramTaggedPrimitiveKinds[index]);
+      }
+    });
   }
   return [...helpers].sort();
 }
@@ -948,7 +1051,8 @@ function createWasmGcExportWrapperPlan(
       const paramBoundaries = surface?.params.map((param) =>
         valueBoundaryFromSemanticType(param.type)
       );
-      const hasParamBoundaries = paramBoundaries?.some(valueBoundaryNeedsWrapper) === true;
+      const hasParamBoundaries =
+        paramBoundaries?.some(valueBoundaryNeedsHostImportParamWrapper) === true;
       const resultBoundary = surface ? valueBoundaryFromSemanticType(surface.result) : undefined;
       const wrapper: WasmGcExportWrapperPlanIR = {
         exportName: func.exportName,
@@ -973,20 +1077,39 @@ function createWasmGcHostImportWrapperPlan(
   functionPlans: readonly WasmGcFunctionPlanIR[],
   boundarySurfaces: readonly SemanticBoundarySurfaceIR[],
 ): readonly WasmGcHostImportWrapperPlanIR[] {
+  const importSurfaces = boundarySurfaces.filter((surface) => surface.direction === 'import');
   const importSurfacesByName = new Map(
-    boundarySurfaces
-      .filter((surface) => surface.direction === 'import')
-      .map((surface) => [surfaceExportName(surface), surface] as const),
+    importSurfaces.map((surface) => [surfaceExportName(surface), surface] as const),
   );
+  const importSurfacesByFunctionName = new Map<
+    string,
+    SemanticBoundarySurfaceIR | undefined
+  >();
+  for (const surface of importSurfaces) {
+    importSurfacesByFunctionName.set(
+      surface.name,
+      importSurfacesByFunctionName.has(surface.name) ? undefined : surface,
+    );
+  }
   return functionPlans
     .filter((func) => func.hostImport !== undefined)
     .map((func): WasmGcHostImportWrapperPlanIR => {
-      const surface = importSurfacesByName.get(func.hostImport!.name);
-      const paramBoundaries = surface?.params.map((param) =>
-        valueBoundaryFromSemanticType(param.type)
-      );
-      const hasParamBoundaries = paramBoundaries?.some(valueBoundaryNeedsWrapper) === true;
-      const resultBoundary = surface ? valueBoundaryFromSemanticType(surface.result) : undefined;
+      const hostImportName = func.hostImport!.name;
+      const surface = importSurfacesByName.get(hostImportName) ??
+        importSurfacesByFunctionName.get(hostImportName.split(':').at(-1) ?? hostImportName) ??
+        importSurfacesByFunctionName.get(func.name);
+      const paramBoundaries = surface
+        ? surface.params.map((param) => valueBoundaryFromSemanticType(param.type))
+        : func.params.map((param) =>
+          param.hostBoundary ? valueBoundaryFromSemanticType(param.hostBoundary) : undefined
+        );
+      const hasParamBoundaries =
+        paramBoundaries?.some(valueBoundaryNeedsHostImportParamWrapper) === true;
+      const resultBoundary = surface
+        ? valueBoundaryFromSemanticType(surface.result)
+        : func.hostResultBoundary
+        ? valueBoundaryFromSemanticType(func.hostResultBoundary)
+        : undefined;
       return {
         functionName: func.name,
         hostImportModule: func.hostImport!.module,
@@ -1000,7 +1123,7 @@ function createWasmGcHostImportWrapperPlan(
     .filter((wrapper) =>
       wrapper.paramTypes.some(isWasmGcWrapperValueType) ||
       isWasmGcWrapperValueType(wrapper.resultType) ||
-      wrapper.paramBoundaries?.some(valueBoundaryNeedsWrapper) === true ||
+      wrapper.paramBoundaries?.some(valueBoundaryNeedsHostImportParamWrapper) === true ||
       valueBoundaryNeedsWrapper(wrapper.resultBoundary)
     )
     .sort((left, right) =>
@@ -1008,6 +1131,51 @@ function createWasmGcHostImportWrapperPlan(
         ? left.hostImportName.localeCompare(right.hostImportName)
         : left.hostImportModule.localeCompare(right.hostImportModule)
     );
+}
+
+function collectClosureSignatureIdsForBoundary(
+  boundary: ValueBoundaryIR | undefined,
+  signatureIds: Set<number>,
+): void {
+  if (!boundary) {
+    return;
+  }
+  if (boundary.kind === 'closure') {
+    for (const signatureId of boundary.signatureIds ?? []) {
+      signatureIds.add(signatureId);
+    }
+    for (const signature of boundary.signatures ?? []) {
+      signatureIds.add(signature.id);
+    }
+  }
+  visitValueBoundary(boundary, (candidate) => {
+    if (candidate.kind !== 'closure') {
+      return;
+    }
+    for (const signatureId of candidate.signatureIds ?? []) {
+      signatureIds.add(signatureId);
+    }
+    for (const signature of candidate.signatures ?? []) {
+      signatureIds.add(signature.id);
+    }
+  });
+}
+
+function closureBoundaryWrappersForBoundaries(
+  boundaries: Iterable<ValueBoundaryIR | undefined>,
+  functionPlans: readonly WasmGcFunctionPlanIR[],
+  closureSignatures: readonly WasmGcClosureSignaturePlanIR[],
+): readonly WasmGcClosureBoundaryWrapperPlanIR[] {
+  const signatureIds = new Set<number>();
+  for (const boundary of boundaries) {
+    collectClosureSignatureIdsForBoundary(boundary, signatureIds);
+  }
+  return [...signatureIds]
+    .sort((left, right) => left - right)
+    .flatMap((signatureId) => {
+      const signature = closureSignatureValueTypes(functionPlans, closureSignatures, signatureId);
+      return signature ? [{ signatureId, ...signature }] : [];
+    });
 }
 
 function closureSignatureUsesWrapperValues(signature: {
@@ -1021,6 +1189,7 @@ function closureSignatureUsesWrapperValues(signature: {
 function createWasmGcWrapperPlan(
   functionPlans: readonly WasmGcFunctionPlanIR[],
   boundarySurfaces: readonly SemanticBoundarySurfaceIR[],
+  closureSignatures: readonly WasmGcClosureSignaturePlanIR[],
 ): WasmGcWrapperPlanIR {
   const capturedParams = callsiteCapturedClosureParams(functionPlans);
   const wrappers: WasmGcHostCallbackWrapperPlanIR[] = [];
@@ -1034,7 +1203,7 @@ function createWasmGcWrapperPlan(
         return;
       }
       const signatureId = param.hostBoundary.signatureIds[0]!;
-      const signature = closureSignatureValueTypes(functionPlans, signatureId);
+      const signature = closureSignatureValueTypes(functionPlans, closureSignatures, signatureId);
       if (!signature) {
         return;
       }
@@ -1079,12 +1248,26 @@ function createWasmGcWrapperPlan(
     ...exportWrappers.flatMap((wrapper) => wrapper.paramBoundaries ?? []),
     ...exportWrappers.map((wrapper) => wrapper.resultBoundary),
   ];
+  const closureBoundaryWrappers = closureBoundaryWrappersForBoundaries(
+    [...hostToInternalBoundaries, ...internalToHostBoundaries],
+    functionPlans,
+    closureSignatures,
+  );
+  const hostClosureWrappers = closureBoundaryWrappersForBoundaries(
+    hostToInternalBoundaries,
+    functionPlans,
+    closureSignatures,
+  );
   const taggedValueAdapterHelpers = mergeSortedUniqueStrings(
     taggedValueAdapterHelpersForWrappers(wrappers),
+    taggedValueAdapterHelpersForClosureBoundaries(closureBoundaryWrappers),
+    taggedValueAdapterHelpersForHostClosureWrappers(hostClosureWrappers),
     taggedValueAdapterHelpersForBoundaries(hostToInternalBoundaries),
   );
   const taggedValueResultHelpers = mergeSortedUniqueStrings(
     taggedValueResultHelpersForWrappers(wrappers),
+    taggedValueResultHelpersForClosureBoundaries(closureBoundaryWrappers),
+    taggedValueResultHelpersForHostClosureWrappers(hostClosureWrappers),
     taggedValueResultHelpersForBoundaries(internalToHostBoundaries),
   );
   return {
@@ -1094,6 +1277,8 @@ function createWasmGcWrapperPlan(
         ? left.paramIndex - right.paramIndex
         : left.functionName.localeCompare(right.functionName)
     ),
+    closureBoundaryWrappers,
+    hostClosureWrappers,
     hostImportWrappers,
     taggedValueAdapterHelpers,
     taggedValueResultHelpers,
@@ -1623,7 +1808,9 @@ export function createWasmGcModulePlan(
   semantic: SemanticModuleIR,
   runtimeManifest: RuntimeManifestIR,
 ): WasmGcModulePlanIR {
-  const families = runtimeManifest.familyRequirements.map((requirement) => requirement.family);
+  const manifestFamilies = runtimeManifest.familyRequirements.map((requirement) =>
+    requirement.family
+  );
   const deferred = new Set(WASM_GC_BACKEND_CAPABILITIES.deferredRuntimeFamilies);
   const rawFunctionPlans: WasmGcFunctionPlanIR[] = semantic.functions.map((func) => ({
     name: func.name,
@@ -1638,6 +1825,9 @@ export function createWasmGcModulePlan(
       wasmType: local.representation,
     })),
     result: func.result,
+    ...(func.hostResultBoundary !== undefined
+      ? { hostResultBoundary: func.hostResultBoundary }
+      : {}),
     body: func.body,
     bodyStatus: func.bodyStatus,
     unsupportedBodyKinds: func.unsupportedBodyKinds,
@@ -1663,6 +1853,17 @@ export function createWasmGcModulePlan(
     rawFunctionPlans,
     semantic.boundarySurfaces,
   );
+  const wrapperPlan = createWasmGcWrapperPlan(
+    functionPlans,
+    semantic.boundarySurfaces,
+    semantic.closureSignatures,
+  );
+  const families = [
+    ...new Set([
+      ...manifestFamilies,
+      ...(wrapperPlan.hostClosureWrappers.length > 0 ? ['host_handle' as const] : []),
+    ]),
+  ];
   return {
     kind: 'wasm_gc_module_plan',
     capabilities: WASM_GC_BACKEND_CAPABILITIES,
@@ -1689,7 +1890,7 @@ export function createWasmGcModulePlan(
     boundaryPlans: semantic.boundarySurfaces.map((surface) =>
       createBoundaryPlan(surface, runtimeManifest)
     ),
-    wrapperPlan: createWasmGcWrapperPlan(functionPlans, semantic.boundarySurfaces),
+    wrapperPlan,
     diagnostics: families
       .filter((family) => deferred.has(family))
       .map((family) => ({

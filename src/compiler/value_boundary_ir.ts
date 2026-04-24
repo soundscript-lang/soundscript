@@ -219,6 +219,9 @@ function valueBoundarySupportsWasmGcSpecializedObjectWrapperFieldValue(
     case 'array':
       return normalized.element.kind === 'boolean' || normalized.element.kind === 'number' ||
         normalized.element.kind === 'string';
+    case 'closure':
+    case 'host_handle':
+      return true;
     case 'map':
     case 'set':
       return createCollectionBoundaryAdapterForBoundary(normalized) !== undefined;

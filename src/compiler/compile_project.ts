@@ -629,6 +629,7 @@ function isWasmGcPublicBoundarySupported(
     case 'symbol':
     case 'bigint':
     case 'host_handle':
+    case 'closure':
       return true;
     case 'array':
       return isWasmGcPublicBoundarySupported(boundary.element, plan);
@@ -687,34 +688,21 @@ function areWasmGcPublicBoundariesSupported(
   );
 }
 
-function wasmGcPublicStatementBodySupported(
-  statement: SemanticStatementIR,
-  localValueTypes: ReadonlyMap<string, string>,
-): boolean {
-  if (statement.kind === 'fallback_object_property_get' && statement.valueType === 'closure_ref') {
-    return false;
-  }
+function wasmGcPublicStatementBodySupported(statement: SemanticStatementIR): boolean {
   if (
-    statement.kind === 'specialized_object_field_get' &&
-    localValueTypes.get(statement.targetName) === 'closure_ref'
+    (statement.kind === 'fallback_object_property_get' ||
+      statement.kind === 'dynamic_object_property_get') &&
+    statement.valueType === 'closure_ref'
   ) {
     return false;
   }
   if (statement.kind === 'if') {
-    return statement.thenBody.every((nested) =>
-      wasmGcPublicStatementBodySupported(nested, localValueTypes)
-    ) &&
-      statement.elseBody.every((nested) =>
-        wasmGcPublicStatementBodySupported(nested, localValueTypes)
-      );
+    return statement.thenBody.every(wasmGcPublicStatementBodySupported) &&
+      statement.elseBody.every(wasmGcPublicStatementBodySupported);
   }
   if (statement.kind === 'while' || statement.kind === 'do_while') {
-    return statement.body.every((nested) =>
-      wasmGcPublicStatementBodySupported(nested, localValueTypes)
-    ) &&
-      (statement.continueBody?.every((nested) =>
-        wasmGcPublicStatementBodySupported(nested, localValueTypes)
-      ) ?? true);
+    return statement.body.every(wasmGcPublicStatementBodySupported) &&
+      (statement.continueBody?.every(wasmGcPublicStatementBodySupported) ?? true);
   }
   return true;
 }
@@ -722,15 +710,7 @@ function wasmGcPublicStatementBodySupported(
 function areWasmGcPublicFunctionBodiesSupported(
   plan: WasmGcModulePlanIR,
 ): boolean {
-  return plan.functionPlans.every((func) => {
-    const localValueTypes = new Map([
-      ...func.params.map((param) => [param.name, param.wasmType] as const),
-      ...func.locals.map((local) => [local.name, local.wasmType] as const),
-    ]);
-    return func.body.every((statement) =>
-      wasmGcPublicStatementBodySupported(statement, localValueTypes)
-    );
-  });
+  return plan.functionPlans.every((func) => func.body.every(wasmGcPublicStatementBodySupported));
 }
 
 function targetSupportsWasmGcPublicWrapper(target: RuntimeTarget): boolean {

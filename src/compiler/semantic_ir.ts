@@ -771,6 +771,7 @@ export interface SemanticFunctionIR {
   closureResultTaggedPrimitiveKinds?: CompilerTaggedPrimitiveBoundaryKindsIR;
   runtimeFamilies: readonly SemanticRuntimeFamilyId[];
   hostImport?: SemanticHostImportIR;
+  hostResultBoundary?: SemanticTypeIR;
   hostImported: boolean;
   hostExported: boolean;
   unionBoundaries: readonly SemanticUnionBoundaryIR[];
@@ -925,6 +926,14 @@ function compilerHostBoundaryToSemanticType(boundary: CompilerHostBoundaryIR): S
         layoutName: boundary.representation.name,
         dynamic: boundary.representation.kind === 'dynamic_object_representation',
         fallback: boundary.representation.kind === 'fallback_object_representation',
+        ...(boundary.fields
+          ? {
+            fields: boundary.fields.map((field) => ({
+              name: field.name,
+              type: compilerHostBoundaryToSemanticType(field.boundary),
+            })),
+          }
+          : {}),
       };
     case 'tagged': {
       const arms: SemanticUnionArmIR[] = [];
@@ -3475,6 +3484,9 @@ export function createSemanticModuleFromCompilerIR(module: CompilerModuleIR): Se
         : {}),
       runtimeFamilies: functionRuntimeFamilies,
       ...(hostImport !== undefined ? { hostImport } : {}),
+      ...(func.hostResultBoundary !== undefined
+        ? { hostResultBoundary: compilerHostBoundaryToSemanticType(func.hostResultBoundary) }
+        : {}),
       hostImported: func.hostImport !== undefined,
       hostExported: !func.name.startsWith('__'),
       unionBoundaries,
