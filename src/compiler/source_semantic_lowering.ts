@@ -55,6 +55,10 @@ interface SourceSemanticClosureLocal {
   signatureId: number;
 }
 
+interface SourceSemanticConstructorLocal {
+  className: string;
+}
+
 type SourceSemanticLocalDeclarationKind = 'const' | 'let' | 'var' | 'param' | 'capture';
 
 interface SourceSemanticModuleLoweringState {
@@ -73,6 +77,7 @@ interface FunctionLoweringContext {
   arrayLocals: Map<string, SourceSemanticArrayLocal>;
   boxedLocals: Map<string, CompilerValueType>;
   closureLocals: Map<string, SourceSemanticClosureLocal>;
+  constructorLocals: Map<string, SourceSemanticConstructorLocal>;
   localDeclarationKinds: Map<string, SourceSemanticLocalDeclarationKind>;
   localTypesByKey: Map<string, SemanticTypeIR>;
   moduleState: SourceSemanticModuleLoweringState;
@@ -333,6 +338,28 @@ function addLocal(
   if (!context.locals.some((local) => local.name === name)) {
     context.locals.push({ name, representation });
   }
+}
+
+function contextHasSourceBinding(context: FunctionLoweringContext, name: string): boolean {
+  return context.localRepresentations.has(name) ||
+    context.objectLocals.has(name) ||
+    context.arrayLocals.has(name) ||
+    context.closureLocals.has(name) ||
+    context.constructorLocals.has(name) ||
+    context.boxedLocals.has(name);
+}
+
+function classNameForConstructorExpression(
+  expression: SourceExpressionIR,
+  context: FunctionLoweringContext,
+): string | undefined {
+  if (expression.kind !== 'identifier') {
+    return undefined;
+  }
+  if (context.classesByName.has(expression.name)) {
+    return expression.name;
+  }
+  return context.constructorLocals.get(expression.name)?.className;
 }
 
 function takePendingStatements(context: FunctionLoweringContext): SemanticStatementIR[] {
@@ -2012,6 +2039,7 @@ function lowerArrowFunctionExpression(
     arrayLocals,
     boxedLocals,
     closureLocals: new Map(),
+    constructorLocals: new Map(),
     localDeclarationKinds,
     localTypesByKey: new Map(),
     moduleState: parentContext.moduleState,
@@ -2075,11 +2103,12 @@ function lowerClassConstructionDeclaration(
   declarationKind: SourceSemanticLocalDeclarationKind,
   context: FunctionLoweringContext,
 ): readonly SemanticStatementIR[] | undefined {
-  if (initializer.callee.kind !== 'identifier') {
+  const className = classNameForConstructorExpression(initializer.callee, context);
+  if (!className) {
     context.unsupportedKinds.add('class_constructor_callee');
     return undefined;
   }
-  const classInfo = context.classesByName.get(initializer.callee.name);
+  const classInfo = context.classesByName.get(className);
   if (!classInfo) {
     return undefined;
   }
@@ -2112,13 +2141,7 @@ function lowerClassConstructionDeclaration(
   const transientNames = ['this', ...constructorParamNames];
   if (
     transientNames.includes(targetName) ||
-    transientNames.some((name) =>
-      context.localRepresentations.has(name) ||
-      context.objectLocals.has(name) ||
-      context.arrayLocals.has(name) ||
-      context.closureLocals.has(name) ||
-      context.boxedLocals.has(name)
-    )
+    transientNames.some((name) => contextHasSourceBinding(context, name))
   ) {
     context.unsupportedKinds.add('class_constructor_binding_collision');
     return undefined;
@@ -2191,6 +2214,7 @@ function lowerClassConstructionDeclaration(
     context.arrayLocals.delete(name);
     context.boxedLocals.delete(name);
     context.closureLocals.delete(name);
+    context.constructorLocals.delete(name);
     context.localDeclarationKinds.delete(name);
     context.objectLocals.delete(name);
   }
@@ -2206,6 +2230,7 @@ function clearTransientSourceBindings(
     context.arrayLocals.delete(name);
     context.boxedLocals.delete(name);
     context.closureLocals.delete(name);
+    context.constructorLocals.delete(name);
     context.localDeclarationKinds.delete(name);
     context.objectLocals.delete(name);
   }
@@ -2286,13 +2311,7 @@ function lowerClassStaticMethodCallExpression(
   const transientNames = [...paramNames, ...methodLocalNames];
   if (
     transientNames.includes(classInfo.name) ||
-    transientNames.some((name) =>
-      context.localRepresentations.has(name) ||
-      context.objectLocals.has(name) ||
-      context.arrayLocals.has(name) ||
-      context.closureLocals.has(name) ||
-      context.boxedLocals.has(name)
-    )
+    transientNames.some((name) => contextHasSourceBinding(context, name))
   ) {
     context.unsupportedKinds.add(`static_class_method_binding_collision:${method.name}`);
     return undefined;
@@ -2378,13 +2397,7 @@ function lowerClassMethodCallExpression(
   const transientNames = ['this', ...paramNames, ...methodLocalNames];
   if (
     transientNames.includes(objectName) ||
-    transientNames.some((name) =>
-      context.localRepresentations.has(name) ||
-      context.objectLocals.has(name) ||
-      context.arrayLocals.has(name) ||
-      context.closureLocals.has(name) ||
-      context.boxedLocals.has(name)
-    )
+    transientNames.some((name) => contextHasSourceBinding(context, name))
   ) {
     context.unsupportedKinds.add(`class_method_binding_collision:${method.name}`);
     return undefined;
@@ -2486,6 +2499,20 @@ function lowerStatement(
         if (declaration.binding.kind !== 'identifier_binding' || !declaration.initializer) {
           context.unsupportedKinds.add('variable_declaration');
           return [{ kind: 'unsupported_statement', sourceKind: 'variable_declaration' }];
+        }
+        if (
+          statement.declarationKind === 'const' &&
+          declaration.initializer.kind === 'identifier'
+        ) {
+          const className = classNameForConstructorExpression(declaration.initializer, context);
+          if (className) {
+            context.constructorLocals.set(declaration.binding.name, { className });
+            context.localDeclarationKinds.set(
+              declaration.binding.name,
+              statement.declarationKind,
+            );
+            return [];
+          }
         }
         if (declaration.initializer.kind === 'new_expression') {
           const classConstruction = lowerClassConstructionDeclaration(
@@ -3051,6 +3078,7 @@ function lowerFunction(
     arrayLocals,
     boxedLocals: new Map(),
     closureLocals: new Map(),
+    constructorLocals: new Map(),
     localDeclarationKinds: new Map(
       params.map((param) => [param.name, 'param' as const]),
     ),
