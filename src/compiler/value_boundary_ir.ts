@@ -334,10 +334,12 @@ export function valueBoundaryFromSemanticType(type: SemanticTypeIR): ValueBounda
         ...(type.fallback ? { fallback: type.fallback } : {}),
         ...(type.fields
           ? {
-            fields: type.fields.map((field) => ({
-              name: field.name,
-              value: valueBoundaryFromSemanticType(field.type),
-            })),
+            fields: type.fields
+              .filter((field) => !field.method)
+              .map((field) => ({
+                name: field.name,
+                value: valueBoundaryFromSemanticType(field.type),
+              })),
           }
           : {}),
       };

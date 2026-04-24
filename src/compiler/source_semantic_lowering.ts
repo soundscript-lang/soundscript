@@ -73,6 +73,7 @@ interface FunctionLoweringContext {
   functionName: string;
   functionResultArrayLocals: Map<string, SourceSemanticArrayLocal>;
   functionResultRepresentations: Map<string, CompilerValueType>;
+  functionResultTypes: Map<string, SemanticTypeIR>;
   localRepresentations: Map<string, CompilerValueType>;
   locals: { name: string; representation: CompilerValueType }[];
   arrayLocals: Map<string, SourceSemanticArrayLocal>;
@@ -917,9 +918,17 @@ function lowerExpression(
         }
       }
       const object = lowerExpression(expression.object, context);
-      if (object.kind === 'local_get') {
+      const objectLayout = objectLocalInfoForRead(expression.object, object, context);
+      if (objectLayout) {
+        const materialized = materializeObjectExpressionForRead(
+          object,
+          objectLayout,
+          context,
+          `object_${expression.property}`,
+        );
+        context.pendingStatements.push(...materialized.statements);
         const field = lowerObjectPropertyReadFromLocal(
-          object.name,
+          materialized.objectName,
           expression.property,
           context,
         );
@@ -1442,11 +1451,20 @@ function objectLocalForParameterType(
   if (type.kind !== 'object' || type.dynamic || !type.fields) {
     return undefined;
   }
-  const fields = type.fields.map((field) => ({
-    name: field.name,
-    representation: representationForSemanticType(field.type as SemanticTypeIR),
-  }));
-  return objectLocalForSemanticType(type, fields, context);
+  const fields = type.fields
+    .filter((field) => !field.method)
+    .map((field) => ({
+      name: field.name,
+      representation: representationForSemanticType(field.type as SemanticTypeIR),
+    }));
+  const objectLocal = objectLocalForSemanticType(type, fields, context);
+  if (!objectLocal) {
+    return undefined;
+  }
+  const className = type.layoutName && context.classesByName.has(type.layoutName)
+    ? type.layoutName
+    : undefined;
+  return className ? { ...objectLocal, className } : objectLocal;
 }
 
 function quotedSourceStringValue(text: string): string | undefined {
@@ -1582,6 +1600,44 @@ function lowerObjectPropertyReadFromLocal(
     kind: 'local_get',
     name: tempName,
     representation: field.representation,
+  };
+}
+
+function objectLocalInfoForRead(
+  source: SourceExpressionIR,
+  expression: SemanticExpressionIR,
+  context: FunctionLoweringContext,
+): SourceSemanticObjectLocal | undefined {
+  if (expression.kind === 'local_get') {
+    return context.objectLocals.get(expression.name);
+  }
+  if (source.kind === 'identifier') {
+    return context.objectLocals.get(source.name);
+  }
+  if (source.kind === 'call_expression' && source.callee.kind === 'identifier') {
+    const resultType = context.functionResultTypes.get(source.callee.name);
+    return resultType ? objectLocalForParameterType(resultType, context) : undefined;
+  }
+  return undefined;
+}
+
+function materializeObjectExpressionForRead(
+  expression: SemanticExpressionIR,
+  objectLayout: SourceSemanticObjectLocal,
+  context: FunctionLoweringContext,
+  prefix: string,
+): { objectName: string; statements: SemanticStatementIR[] } {
+  const leadingStatements = takePendingStatements(context);
+  if (expression.kind === 'local_get') {
+    context.objectLocals.set(expression.name, objectLayout);
+    return { objectName: expression.name, statements: leadingStatements };
+  }
+  const objectName = nextTempLocalName(context, prefix);
+  addLocal(context, objectName, expression.representation);
+  context.objectLocals.set(objectName, objectLayout);
+  return {
+    objectName,
+    statements: [...leadingStatements, { kind: 'local_set', name: objectName, value: expression }],
   };
 }
 
@@ -2324,6 +2380,7 @@ function lowerArrowFunctionExpression(
     functionName: `closure_source_${parentContext.functionName}_${closureFunctionId}`,
     functionResultArrayLocals: parentContext.functionResultArrayLocals,
     functionResultRepresentations: parentContext.functionResultRepresentations,
+    functionResultTypes: parentContext.functionResultTypes,
     localRepresentations,
     locals: [],
     arrayLocals,
@@ -2903,13 +2960,28 @@ function materializeClassMethodReceiver(
     return { objectName: expression.name, statements: [] };
   }
   if (expression.kind !== 'new_expression') {
-    return undefined;
+    const receiver = lowerExpression(expression, context);
+    const objectLayout = objectLocalInfoForRead(expression, receiver, context);
+    return objectLayout
+      ? materializeObjectExpressionForRead(
+        receiver,
+        objectLayout,
+        context,
+        'method_receiver',
+      )
+      : undefined;
   }
   const receiver = lowerExpression(expression, context);
-  if (receiver.kind !== 'local_get') {
+  const objectLayout = objectLocalInfoForRead(expression, receiver, context);
+  if (!objectLayout) {
     return undefined;
   }
-  return { objectName: receiver.name, statements: takePendingStatements(context) };
+  return materializeObjectExpressionForRead(
+    receiver,
+    objectLayout,
+    context,
+    'method_receiver',
+  );
 }
 
 function lowerStatement(
@@ -3514,6 +3586,7 @@ function lowerFunction(
   sharedFacts: SharedSemanticFactsIR,
   functionResultArrayLocals: Map<string, SourceSemanticArrayLocal>,
   functionResultRepresentations: Map<string, CompilerValueType>,
+  functionResultTypes: Map<string, SemanticTypeIR>,
   objectLayoutsByKey: Map<string, SemanticObjectLayoutIR>,
   classesByName: ReadonlyMap<string, SourceClassIR>,
   moduleState: SourceSemanticModuleLoweringState,
@@ -3561,6 +3634,7 @@ function lowerFunction(
     functionName: func.name,
     functionResultArrayLocals,
     functionResultRepresentations,
+    functionResultTypes,
     localRepresentations,
     locals: [],
     arrayLocals,
@@ -3585,6 +3659,18 @@ function lowerFunction(
   };
   if (!signature) {
     unsupportedKinds.add('missing_function_signature');
+  }
+  if (signature) {
+    for (const [index, param] of signature.params.entries()) {
+      const loweredParam = params[index];
+      if (!loweredParam) {
+        continue;
+      }
+      const objectLocal = objectLocalForParameterType(param.type, context);
+      if (objectLocal) {
+        context.objectLocals.set(loweredParam.name, objectLocal);
+      }
+    }
   }
   const parameterBindingStatements = parameterBindings.flatMap((param): SemanticStatementIR[] => {
     if (param.binding.kind === 'object_binding') {
@@ -3690,10 +3776,12 @@ export function createSemanticModuleFromSourceHIR(
   );
   const functionResultRepresentations = new Map<string, CompilerValueType>();
   const functionResultArrayLocals = new Map<string, SourceSemanticArrayLocal>();
+  const functionResultTypes = new Map<string, SemanticTypeIR>();
   for (const module of source.modules) {
     for (const func of module.functions) {
       const signature = findFunctionSignature(sharedFacts, module, func);
       if (signature) {
+        functionResultTypes.set(func.name, signature.result);
         functionResultRepresentations.set(
           func.name,
           representationForSemanticType(signature.result),
@@ -3713,6 +3801,7 @@ export function createSemanticModuleFromSourceHIR(
         sharedFacts,
         functionResultArrayLocals,
         functionResultRepresentations,
+        functionResultTypes,
         objectLayoutsByKey,
         classesByName,
         moduleState,

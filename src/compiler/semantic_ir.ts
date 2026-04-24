@@ -1440,7 +1440,9 @@ function addBoundaryFamilies(
           ? 'fallback_object'
           : 'specialized_object',
       );
-      boundary.fields?.forEach((field) => addBoundaryFamilies(families, field.type));
+      boundary.fields?.filter((field) => !field.method).forEach((field) =>
+        addBoundaryFamilies(families, field.type)
+      );
       break;
     case 'symbol':
       families.add('symbol');

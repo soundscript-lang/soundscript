@@ -15,6 +15,7 @@ export type SharedSemanticTypeIR = SharedSemanticUnionBoundaryIR | SharedSemanti
 
 export interface SharedSemanticObjectFieldIR {
   name: string;
+  method?: boolean;
   type: SharedSemanticTypeIR;
 }
 
@@ -411,8 +412,12 @@ function classifyObjectFields(
   }
   return properties.map((property) => {
     const declaration = property.valueDeclaration ?? property.declarations?.[0] ?? state.node;
+    const method = (property.declarations ?? [declaration]).some((candidate) =>
+      ts.isMethodDeclaration(candidate) || ts.isMethodSignature(candidate)
+    );
     return {
       name: property.getName(),
+      ...(method ? { method } : {}),
       type: classifySharedSemanticTypeInner(
         state,
         state.checker.getTypeOfSymbolAtLocation(property, declaration),
@@ -905,7 +910,13 @@ function objectLayoutNameForBoundary(
   if (boundary.layoutName) {
     return boundary.layoutName;
   }
-  return `object:${(boundary.fields ?? []).map((field) => field.name).join(',')}`;
+  return `object:${objectStorageFieldsForBoundary(boundary).map((field) => field.name).join(',')}`;
+}
+
+function objectStorageFieldsForBoundary(
+  boundary: Extract<SharedSemanticUnionArmIR, { kind: 'object' }>,
+): readonly SharedSemanticObjectFieldIR[] {
+  return (boundary.fields ?? []).filter((field) => !field.method);
 }
 
 function collectSharedSemanticObjectLayoutsFromType(
@@ -956,6 +967,7 @@ function collectSharedSemanticObjectLayoutsFromType(
       break;
     case 'object': {
       const name = objectLayoutNameForBoundary(boundary);
+      const storageFields = objectStorageFieldsForBoundary(boundary);
       const layout: SharedSemanticObjectLayoutIR = {
         name,
         family: boundary.dynamic
@@ -963,10 +975,10 @@ function collectSharedSemanticObjectLayoutsFromType(
           : boundary.fallback
           ? 'fallback_object'
           : 'specialized_object',
-        fields: (boundary.fields ?? []).map((field) => field.name),
+        fields: storageFields.map((field) => field.name),
       };
       layoutsByKey.set(`${layout.family}:${layout.name}:${layout.fields.join(',')}`, layout);
-      boundary.fields?.forEach((field) =>
+      storageFields.forEach((field) =>
         collectSharedSemanticObjectLayoutsFromType(layoutsByKey, field.type)
       );
       break;

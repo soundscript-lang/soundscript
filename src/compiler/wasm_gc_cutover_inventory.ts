@@ -93,15 +93,15 @@ export const WASM_GC_CORE_CUTOVER_INVENTORY: readonly WasmGcCutoverInventoryEntr
   },
   {
     family: 'classes',
-    status: 'legacy-only',
-    focusedGate: 'compileProject supports cached imported host constructor objects through helper returns and tagged globals',
-    nextCutoverStep: 'Add class declarations, instance layouts, and static surfaces to SourceHIR SemanticIR.',
+    status: 'wasm-gc-emittable',
+    focusedGate: 'compiler SourceHIR semantic lowering emits runnable class instance function results',
+    nextCutoverStep: 'Finish unsupported class surfaces deliberately: heritage, private state, computed members, accessors, and static blocks.',
   },
   {
     family: 'constructors',
-    status: 'legacy-only',
-    focusedGate: 'compileProject supports cached imported host constructor objects through helper returns and tagged globals',
-    nextCutoverStep: 'Represent constructor values as first-class SemanticIR values before adding public WasmGC routing.',
+    status: 'wasm-gc-emittable',
+    focusedGate: 'compileProject selects the source-hir wasm-gc plan for direct class construction expressions',
+    nextCutoverStep: 'Promote constructor values from alias metadata into explicit SemanticIR values before deleting legacy constructor paths.',
   },
   {
     family: 'unions',
