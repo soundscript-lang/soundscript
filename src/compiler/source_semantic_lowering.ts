@@ -2394,9 +2394,14 @@ function lowerClassMethodCallExpression(
   preludeStatements.forEach((statement) =>
     collectSourceStatementDeclaredNames(statement, methodLocalNames)
   );
-  const transientNames = ['this', ...paramNames, ...methodLocalNames];
+  const needsSyntheticThis = objectName !== 'this';
+  const transientNames = [
+    ...(needsSyntheticThis ? ['this'] : []),
+    ...paramNames,
+    ...methodLocalNames,
+  ];
   if (
-    transientNames.includes(objectName) ||
+    (needsSyntheticThis && transientNames.includes(objectName)) ||
     transientNames.some((name) => contextHasSourceBinding(context, name))
   ) {
     context.unsupportedKinds.add(`class_method_binding_collision:${method.name}`);
@@ -2419,14 +2424,16 @@ function lowerClassMethodCallExpression(
     context.localDeclarationKinds.set(param.name, 'param');
     statements.push({ kind: 'local_set', name: param.name, value });
   }
-  addLocal(context, 'this', 'heap_ref');
-  context.localDeclarationKinds.set('this', 'param');
-  context.objectLocals.set('this', objectLocal);
-  statements.push({
-    kind: 'local_set',
-    name: 'this',
-    value: { kind: 'local_get', name: objectName, representation: 'heap_ref' },
-  });
+  if (needsSyntheticThis) {
+    addLocal(context, 'this', 'heap_ref');
+    context.localDeclarationKinds.set('this', 'param');
+    context.objectLocals.set('this', objectLocal);
+    statements.push({
+      kind: 'local_set',
+      name: 'this',
+      value: { kind: 'local_get', name: objectName, representation: 'heap_ref' },
+    });
+  }
   statements.push(
     ...preludeStatements.flatMap((statement) => [...lowerStatement(statement, context)]),
   );
