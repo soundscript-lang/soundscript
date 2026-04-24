@@ -1749,6 +1749,56 @@ Deno.test('compileProject selects the source-hir wasm-gc plan for constructor al
   assertEquals(result.artifacts?.backendPlanSource, 'source-hir');
 });
 
+Deno.test('compileProject selects the source-hir wasm-gc plan for constructor shadowed parameter bodies', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+          },
+          include: ['src/**/*.ts'],
+          soundscript: {
+            target: 'wasm-node',
+          },
+        },
+        null,
+        2,
+      ),
+    },
+    {
+      path: 'src/index.ts',
+      contents: `
+        class Counter {
+          value: number = 0;
+
+          constructor(value: number) {
+            this.value = value;
+          }
+        }
+
+        export function score(value: number): number {
+          const counter = new Counter(value);
+          return counter.value + 1;
+        }
+      `,
+    },
+  ]);
+  const result = compileProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.exitCode, 0);
+  assertEquals(result.diagnostics, []);
+  assertEquals(result.artifacts?.backend, 'wasm-gc');
+  assertEquals(result.artifacts?.backendPlanSource, 'source-hir');
+});
+
 Deno.test('compileProject selects the source-hir wasm-gc plan for this method-call bodies', async () => {
   const tempDirectory = await createTempProject([
     {
@@ -1785,8 +1835,8 @@ Deno.test('compileProject selects the source-hir wasm-gc plan for this method-ca
             return this.value;
           }
 
-          add(extra: number): number {
-            return this.bump(extra);
+          add(delta: number): number {
+            return this.bump(delta);
           }
         }
 
@@ -2344,6 +2394,66 @@ Deno.test('compiler SourceHIR semantic lowering emits runnable constructor alias
   assertEquals((score as () => number)(), 42);
 });
 
+Deno.test('compiler SourceHIR semantic lowering emits runnable constructor shadowed parameters', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: { strict: true },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        class Counter {
+          value: number = 0;
+
+          constructor(value: number) {
+            this.value = value;
+          }
+        }
+
+        export function score(value: number): number {
+          const counter = new Counter(value);
+          return counter.value + 1;
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createSourceSemanticSnapshot(program, tempDirectory);
+  const semantic = createSemanticModuleFromSourceHIR(snapshot.source, snapshot.sharedFacts);
+  const manifest = createRuntimeManifestFromSemanticModule(semantic);
+  const plan = createWasmGcModulePlan(semantic, manifest);
+  const scorePlan = plan.functionPlans.find((func) => func.name === 'score');
+  const watPath = join(tempDirectory, 'wasm-gc-source-constructor-shadowed-param.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-source-constructor-shadowed-param.wasm');
+
+  assertEquals(
+    manifest.familyRequirements.map((requirement) => requirement.family),
+    ['specialized_object'],
+  );
+  assertEquals(scorePlan?.bodyStatus, 'emittable');
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(plan));
+  const wat = await Deno.readTextFile(watPath);
+  assertEquals(wat.includes('struct.new $object_layout_source_object_value_f64'), true);
+  const result = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(result.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(result.success, true);
+
+  const wasm = await Deno.readFile(wasmPath);
+  const instance = await WebAssembly.instantiate(wasm);
+  const score = instance.instance.exports['main.ts:score'];
+  assertEquals(typeof score, 'function');
+  assertEquals((score as (value: number) => number)(41), 42);
+});
+
 Deno.test('compiler SourceHIR semantic lowering emits runnable this method calls', async () => {
   const tempDirectory = await createTempProject([
     {
@@ -2368,8 +2478,8 @@ Deno.test('compiler SourceHIR semantic lowering emits runnable this method calls
             return this.value;
           }
 
-          add(extra: number): number {
-            return this.bump(extra);
+          add(delta: number): number {
+            return this.bump(delta);
           }
         }
 

@@ -7,6 +7,7 @@ import type {
   SourceFunctionIR,
   SourceModuleIR,
   SourceStatementIR,
+  SourceVariableDeclarationStatementIR,
 } from './source_hir.ts';
 import {
   collectSemanticRuntimeFamiliesFromTypes,
@@ -1761,6 +1762,257 @@ function collectSourceStatementDeclaredNames(
   }
 }
 
+function sourceRenamesWithoutBindings(
+  renames: ReadonlyMap<string, string>,
+  bindings: readonly SourceBindingIR[],
+): Map<string, string> {
+  const scoped = new Map(renames);
+  const names = new Set<string>();
+  bindings.forEach((binding) => collectSourceBindingNames(binding, names));
+  names.forEach((name) => scoped.delete(name));
+  return scoped;
+}
+
+function renameSourceBindingNames(
+  binding: SourceBindingIR,
+  renames: ReadonlyMap<string, string>,
+): SourceBindingIR {
+  switch (binding.kind) {
+    case 'identifier_binding':
+      return { ...binding, name: renames.get(binding.name) ?? binding.name };
+    case 'object_binding':
+      return {
+        ...binding,
+        elements: binding.elements.map((element) => renameSourceBindingNames(element, renames)),
+      };
+    case 'array_binding':
+      return {
+        ...binding,
+        elements: binding.elements.map((element) => renameSourceBindingNames(element, renames)),
+      };
+    case 'unknown_binding':
+      return binding;
+    default: {
+      const exhaustiveCheck: never = binding;
+      return exhaustiveCheck;
+    }
+  }
+}
+
+function renameSourceExpressionNames(
+  expression: SourceExpressionIR,
+  renames: ReadonlyMap<string, string>,
+): SourceExpressionIR {
+  switch (expression.kind) {
+    case 'identifier':
+      return { ...expression, name: renames.get(expression.name) ?? expression.name };
+    case 'property_access':
+      return {
+        ...expression,
+        object: renameSourceExpressionNames(expression.object, renames),
+      };
+    case 'element_access':
+      return {
+        ...expression,
+        object: renameSourceExpressionNames(expression.object, renames),
+        index: expression.index
+          ? renameSourceExpressionNames(expression.index, renames)
+          : undefined,
+      };
+    case 'binary_expression':
+    case 'logical_expression':
+      return {
+        ...expression,
+        left: renameSourceExpressionNames(expression.left, renames),
+        right: renameSourceExpressionNames(expression.right, renames),
+      };
+    case 'unary_expression':
+    case 'update_expression':
+      return {
+        ...expression,
+        operand: renameSourceExpressionNames(expression.operand, renames),
+      };
+    case 'conditional_expression':
+      return {
+        ...expression,
+        test: renameSourceExpressionNames(expression.test, renames),
+        consequent: renameSourceExpressionNames(expression.consequent, renames),
+        alternate: renameSourceExpressionNames(expression.alternate, renames),
+      };
+    case 'assignment_expression':
+      return {
+        ...expression,
+        left: renameSourceExpressionNames(expression.left, renames),
+        right: renameSourceExpressionNames(expression.right, renames),
+      };
+    case 'call_expression':
+    case 'new_expression':
+      return {
+        ...expression,
+        callee: renameSourceExpressionNames(expression.callee, renames),
+        args: expression.args.map((arg) => renameSourceExpressionNames(arg, renames)),
+      };
+    case 'arrow_function': {
+      const scopedRenames = sourceRenamesWithoutBindings(renames, expression.params);
+      return {
+        ...expression,
+        body: expression.body.map((statement) =>
+          renameSourceStatementNames(statement, scopedRenames)
+        ),
+      };
+    }
+    case 'await_expression':
+      return {
+        ...expression,
+        expression: renameSourceExpressionNames(expression.expression, renames),
+      };
+    case 'array_literal':
+      return {
+        ...expression,
+        elements: expression.elements.map((element) =>
+          renameSourceExpressionNames(element, renames)
+        ),
+      };
+    case 'object_literal':
+      return {
+        ...expression,
+        properties: expression.properties.map((property) => ({
+          ...property,
+          computedName: property.computedName
+            ? renameSourceExpressionNames(property.computedName, renames)
+            : undefined,
+          value: renameSourceExpressionNames(property.value, renames),
+        })),
+      };
+    case 'literal':
+    case 'unknown_expression':
+      return expression;
+    default: {
+      const exhaustiveCheck: never = expression;
+      return exhaustiveCheck;
+    }
+  }
+}
+
+function renameSourceStatementNames(
+  statement: SourceStatementIR,
+  renames: ReadonlyMap<string, string>,
+): SourceStatementIR {
+  switch (statement.kind) {
+    case 'variable_declaration':
+      return {
+        ...statement,
+        declarations: statement.declarations.map((declaration) => ({
+          binding: renameSourceBindingNames(declaration.binding, renames),
+          initializer: declaration.initializer
+            ? renameSourceExpressionNames(declaration.initializer, renames)
+            : undefined,
+        })),
+      };
+    case 'expression_statement':
+      return {
+        ...statement,
+        expression: renameSourceExpressionNames(statement.expression, renames),
+      };
+    case 'return':
+      return {
+        ...statement,
+        expression: statement.expression
+          ? renameSourceExpressionNames(statement.expression, renames)
+          : undefined,
+      };
+    case 'if':
+      return {
+        ...statement,
+        test: renameSourceExpressionNames(statement.test, renames),
+        consequent: statement.consequent.map((child) => renameSourceStatementNames(child, renames)),
+        alternate: statement.alternate.map((child) => renameSourceStatementNames(child, renames)),
+      };
+    case 'while':
+      return {
+        ...statement,
+        test: renameSourceExpressionNames(statement.test, renames),
+        body: statement.body.map((child) => renameSourceStatementNames(child, renames)),
+      };
+    case 'do_while':
+      return {
+        ...statement,
+        body: statement.body.map((child) => renameSourceStatementNames(child, renames)),
+        test: renameSourceExpressionNames(statement.test, renames),
+      };
+    case 'for':
+      return {
+        ...statement,
+        initializer: statement.initializer
+          ? statement.initializer.kind === 'variable_declaration'
+            ? renameSourceStatementNames(
+              statement.initializer,
+              renames,
+            ) as SourceVariableDeclarationStatementIR
+            : renameSourceExpressionNames(statement.initializer, renames)
+          : undefined,
+        test: statement.test ? renameSourceExpressionNames(statement.test, renames) : undefined,
+        incrementor: statement.incrementor
+          ? renameSourceExpressionNames(statement.incrementor, renames)
+          : undefined,
+        body: statement.body.map((child) => renameSourceStatementNames(child, renames)),
+      };
+    case 'for_of':
+      return {
+        ...statement,
+        left: 'kind' in statement.left && statement.left.kind.endsWith('_binding')
+          ? renameSourceBindingNames(statement.left as SourceBindingIR, renames)
+          : renameSourceExpressionNames(statement.left as SourceExpressionIR, renames),
+        right: renameSourceExpressionNames(statement.right, renames),
+        body: statement.body.map((child) => renameSourceStatementNames(child, renames)),
+      };
+    case 'switch':
+      return {
+        ...statement,
+        expression: renameSourceExpressionNames(statement.expression, renames),
+        clauses: statement.clauses.map((clause) => ({
+          ...clause,
+          expression: clause.expression
+            ? renameSourceExpressionNames(clause.expression, renames)
+            : undefined,
+          statements: clause.statements.map((child) => renameSourceStatementNames(child, renames)),
+        })),
+      };
+    case 'throw':
+      return {
+        ...statement,
+        expression: renameSourceExpressionNames(statement.expression, renames),
+      };
+    case 'try':
+      return {
+        ...statement,
+        tryBlock: statement.tryBlock.map((child) => renameSourceStatementNames(child, renames)),
+        catchBinding: statement.catchBinding
+          ? renameSourceBindingNames(statement.catchBinding, renames)
+          : undefined,
+        catchBlock: statement.catchBlock?.map((child) =>
+          renameSourceStatementNames(child, renames)
+        ),
+        finallyBlock: statement.finallyBlock?.map((child) =>
+          renameSourceStatementNames(child, renames)
+        ),
+      };
+    case 'block':
+      return {
+        ...statement,
+        statements: statement.statements.map((child) => renameSourceStatementNames(child, renames)),
+      };
+    case 'break':
+    case 'continue':
+    case 'unknown_statement':
+      return statement;
+    default: {
+      const exhaustiveCheck: never = statement;
+      return exhaustiveCheck;
+    }
+  }
+}
+
 function collectSourceExpressionIdentifierReads(
   expression: SourceExpressionIR,
   names: string[],
@@ -2097,6 +2349,23 @@ function lowerArrowFunctionExpression(
   };
 }
 
+function addInlineSourceName(
+  context: FunctionLoweringContext,
+  renames: Map<string, string>,
+  transientNames: string[],
+  sourceName: string,
+  prefix: string,
+): string {
+  const existing = renames.get(sourceName);
+  if (existing) {
+    return existing;
+  }
+  const internalName = nextTempLocalName(context, prefix);
+  renames.set(sourceName, internalName);
+  transientNames.push(internalName);
+  return internalName;
+}
+
 function lowerClassConstructionDeclaration(
   targetName: string,
   initializer: Extract<SourceExpressionIR, { kind: 'new_expression' }>,
@@ -2131,19 +2400,6 @@ function lowerClassConstructionDeclaration(
   const constructor = classInfo.members.find((member) => member.kind === 'constructor');
   if (constructor && constructor.params.length !== initializer.args.length) {
     context.unsupportedKinds.add('class_constructor_arity');
-    return undefined;
-  }
-  const constructorParamNames = constructor
-    ? constructor.params.map((param, index) =>
-      param.kind === 'identifier_binding' ? param.name : `__source_class_param_${index}`
-    )
-    : [];
-  const transientNames = ['this', ...constructorParamNames];
-  if (
-    transientNames.includes(targetName) ||
-    transientNames.some((name) => contextHasSourceBinding(context, name))
-  ) {
-    context.unsupportedKinds.add('class_constructor_binding_collision');
     return undefined;
   }
 
@@ -2182,6 +2438,20 @@ function lowerClassConstructionDeclaration(
     return statements;
   }
 
+  const renames = new Map<string, string>();
+  const transientNames: string[] = [];
+  const receiverName = addInlineSourceName(
+    context,
+    renames,
+    transientNames,
+    'this',
+    `constructor_${classInfo.name}_this`,
+  );
+  const constructorLocalNames = new Set<string>();
+  constructor.body.forEach((statement) =>
+    collectSourceStatementDeclaredNames(statement, constructorLocalNames)
+  );
+  const params: { internalName: string; value: SemanticExpressionIR }[] = [];
   for (const [index, param] of constructor.params.entries()) {
     if (param.kind !== 'identifier_binding') {
       context.unsupportedKinds.add('class_constructor_parameter');
@@ -2194,20 +2464,50 @@ function lowerClassConstructionDeclaration(
     }
     const value = lowerExpression(arg, context);
     statements.push(...takePendingStatements(context));
-    addLocal(context, param.name, value.representation);
-    context.localDeclarationKinds.set(param.name, 'param');
-    statements.push({ kind: 'local_set', name: param.name, value });
+    params.push({
+      internalName: addInlineSourceName(
+        context,
+        renames,
+        transientNames,
+        param.name,
+        `constructor_${classInfo.name}_${param.name}`,
+      ),
+      value,
+    });
   }
-  addLocal(context, 'this', 'heap_ref');
-  context.localDeclarationKinds.set('this', 'param');
-  context.objectLocals.set('this', objectLocal);
+  constructorLocalNames.forEach((name) =>
+    addInlineSourceName(
+      context,
+      renames,
+      transientNames,
+      name,
+      `constructor_${classInfo.name}_${name}`,
+    )
+  );
+  if (
+    transientNames.includes(targetName) ||
+    transientNames.some((name) => contextHasSourceBinding(context, name))
+  ) {
+    context.unsupportedKinds.add('class_constructor_binding_collision');
+    return undefined;
+  }
+  for (const param of params) {
+    addLocal(context, param.internalName, param.value.representation);
+    context.localDeclarationKinds.set(param.internalName, 'param');
+    statements.push({ kind: 'local_set', name: param.internalName, value: param.value });
+  }
+  addLocal(context, receiverName, 'heap_ref');
+  context.localDeclarationKinds.set(receiverName, 'param');
+  context.objectLocals.set(receiverName, objectLocal);
   statements.push({
     kind: 'local_set',
-    name: 'this',
+    name: receiverName,
     value: { kind: 'local_get', name: targetName, representation: 'heap_ref' },
   });
   statements.push(
-    ...constructor.body.flatMap((statement) => [...lowerStatement(statement, context)]),
+    ...constructor.body.flatMap((statement) => [
+      ...lowerStatement(renameSourceStatementNames(statement, renames), context),
+    ]),
   );
   for (const name of transientNames) {
     context.localRepresentations.delete(name);
@@ -2301,14 +2601,37 @@ function lowerClassStaticMethodCallExpression(
     );
     return undefined;
   }
-  const paramNames = method.params.map((param, index) =>
-    param.kind === 'identifier_binding' ? param.name : `__source_static_method_param_${index}`
-  );
+  const paramBindings: { internalName: string }[] = [];
+  const renames = new Map<string, string>();
+  const transientNames: string[] = [];
+  for (const param of method.params) {
+    if (param.kind !== 'identifier_binding') {
+      context.unsupportedKinds.add(`static_class_method_parameter:${method.name}`);
+      return undefined;
+    }
+    paramBindings.push({
+      internalName: addInlineSourceName(
+        context,
+        renames,
+        transientNames,
+        param.name,
+        `static_method_${method.name}_${param.name}`,
+      ),
+    });
+  }
   const methodLocalNames = new Set<string>();
   preludeStatements.forEach((statement) =>
     collectSourceStatementDeclaredNames(statement, methodLocalNames)
   );
-  const transientNames = [...paramNames, ...methodLocalNames];
+  methodLocalNames.forEach((name) =>
+    addInlineSourceName(
+      context,
+      renames,
+      transientNames,
+      name,
+      `static_method_${method.name}_${name}`,
+    )
+  );
   if (
     transientNames.includes(classInfo.name) ||
     transientNames.some((name) => contextHasSourceBinding(context, name))
@@ -2318,11 +2641,7 @@ function lowerClassStaticMethodCallExpression(
   }
 
   const statements: SemanticStatementIR[] = [];
-  for (const [index, param] of method.params.entries()) {
-    if (param.kind !== 'identifier_binding') {
-      context.unsupportedKinds.add(`static_class_method_parameter:${method.name}`);
-      return undefined;
-    }
+  for (const [index, param] of paramBindings.entries()) {
     const arg = expression.args[index];
     if (!arg) {
       context.unsupportedKinds.add(`static_class_method_argument:${method.name}`);
@@ -2330,14 +2649,19 @@ function lowerClassStaticMethodCallExpression(
     }
     const value = lowerExpression(arg, context);
     statements.push(...takePendingStatements(context));
-    addLocal(context, param.name, value.representation);
-    context.localDeclarationKinds.set(param.name, 'param');
-    statements.push({ kind: 'local_set', name: param.name, value });
+    addLocal(context, param.internalName, value.representation);
+    context.localDeclarationKinds.set(param.internalName, 'param');
+    statements.push({ kind: 'local_set', name: param.internalName, value });
   }
   statements.push(
-    ...preludeStatements.flatMap((statement) => [...lowerStatement(statement, context)]),
+    ...preludeStatements.flatMap((statement) => [
+      ...lowerStatement(renameSourceStatementNames(statement, renames), context),
+    ]),
   );
-  const result = lowerExpression(returnStatement.expression, context);
+  const result = lowerExpression(
+    renameSourceExpressionNames(returnStatement.expression, renames),
+    context,
+  );
   statements.push(...takePendingStatements(context));
   const resultName = nextTempLocalName(context, `static_method_${method.name}_result`);
   addLocal(context, resultName, result.representation);
@@ -2387,32 +2711,47 @@ function lowerClassMethodCallExpression(
     context.unsupportedKinds.add(`class_method_control_flow:${method.name}`);
     return undefined;
   }
-  const paramNames = method.params.map((param, index) =>
-    param.kind === 'identifier_binding' ? param.name : `__source_method_param_${index}`
+  const renames = new Map<string, string>();
+  const transientNames: string[] = [];
+  const receiverName = addInlineSourceName(
+    context,
+    renames,
+    transientNames,
+    'this',
+    `method_${method.name}_this`,
   );
+  const paramBindings: { internalName: string }[] = [];
+  for (const param of method.params) {
+    if (param.kind !== 'identifier_binding') {
+      context.unsupportedKinds.add(`class_method_parameter:${method.name}`);
+      return undefined;
+    }
+    paramBindings.push({
+      internalName: addInlineSourceName(
+        context,
+        renames,
+        transientNames,
+        param.name,
+        `method_${method.name}_${param.name}`,
+      ),
+    });
+  }
   const methodLocalNames = new Set<string>();
   preludeStatements.forEach((statement) =>
     collectSourceStatementDeclaredNames(statement, methodLocalNames)
   );
-  const needsSyntheticThis = objectName !== 'this';
-  const transientNames = [
-    ...(needsSyntheticThis ? ['this'] : []),
-    ...paramNames,
-    ...methodLocalNames,
-  ];
+  methodLocalNames.forEach((name) =>
+    addInlineSourceName(context, renames, transientNames, name, `method_${method.name}_${name}`)
+  );
   if (
-    (needsSyntheticThis && transientNames.includes(objectName)) ||
+    transientNames.includes(objectName) ||
     transientNames.some((name) => contextHasSourceBinding(context, name))
   ) {
     context.unsupportedKinds.add(`class_method_binding_collision:${method.name}`);
     return undefined;
   }
   const statements: SemanticStatementIR[] = [];
-  for (const [index, param] of method.params.entries()) {
-    if (param.kind !== 'identifier_binding') {
-      context.unsupportedKinds.add(`class_method_parameter:${method.name}`);
-      return undefined;
-    }
+  for (const [index, param] of paramBindings.entries()) {
     const arg = expression.args[index];
     if (!arg) {
       context.unsupportedKinds.add(`class_method_argument:${method.name}`);
@@ -2420,24 +2759,27 @@ function lowerClassMethodCallExpression(
     }
     const value = lowerExpression(arg, context);
     statements.push(...takePendingStatements(context));
-    addLocal(context, param.name, value.representation);
-    context.localDeclarationKinds.set(param.name, 'param');
-    statements.push({ kind: 'local_set', name: param.name, value });
+    addLocal(context, param.internalName, value.representation);
+    context.localDeclarationKinds.set(param.internalName, 'param');
+    statements.push({ kind: 'local_set', name: param.internalName, value });
   }
-  if (needsSyntheticThis) {
-    addLocal(context, 'this', 'heap_ref');
-    context.localDeclarationKinds.set('this', 'param');
-    context.objectLocals.set('this', objectLocal);
-    statements.push({
-      kind: 'local_set',
-      name: 'this',
-      value: { kind: 'local_get', name: objectName, representation: 'heap_ref' },
-    });
-  }
+  addLocal(context, receiverName, 'heap_ref');
+  context.localDeclarationKinds.set(receiverName, 'param');
+  context.objectLocals.set(receiverName, objectLocal);
+  statements.push({
+    kind: 'local_set',
+    name: receiverName,
+    value: { kind: 'local_get', name: objectName, representation: 'heap_ref' },
+  });
   statements.push(
-    ...preludeStatements.flatMap((statement) => [...lowerStatement(statement, context)]),
+    ...preludeStatements.flatMap((statement) => [
+      ...lowerStatement(renameSourceStatementNames(statement, renames), context),
+    ]),
   );
-  const result = lowerExpression(returnStatement.expression, context);
+  const result = lowerExpression(
+    renameSourceExpressionNames(returnStatement.expression, renames),
+    context,
+  );
   statements.push(...takePendingStatements(context));
   const resultName = nextTempLocalName(context, `method_${method.name}_result`);
   addLocal(context, resultName, result.representation);
