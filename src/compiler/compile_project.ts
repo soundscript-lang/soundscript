@@ -789,7 +789,7 @@ export function compileProject(options: CompileProjectOptions): CompileProjectRe
         runtime.target,
         snapshot.semantic,
         snapshot.wasmGcPlan,
-      );
+      ) && snapshot.legacyAvailable;
       const packaged = canUseSourceWasmGcPublicPath
         ? {
           backend: 'wasm-gc' as const,

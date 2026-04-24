@@ -701,6 +701,12 @@ function closureObjectLocalNames(func: WasmGcFunctionPlanIR): ReadonlySet<string
       )
     ) {
       names.add(statement.targetName);
+    } else if (
+      statement.kind === 'local_set' &&
+      statement.value.representation === 'closure_ref' &&
+      statement.value.kind === 'global_get'
+    ) {
+      names.add(statement.name);
     }
   });
   return names;

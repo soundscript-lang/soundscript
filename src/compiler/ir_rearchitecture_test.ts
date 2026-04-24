@@ -1262,6 +1262,50 @@ Deno.test('compileProject selects the source-hir wasm-gc plan for pure core scal
   assertEquals(result.artifacts?.backendPlanSource, 'source-hir');
 });
 
+Deno.test('compileProject selects the source-hir wasm-gc plan for pure string array and object bodies', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+          },
+          include: ['src/**/*.ts'],
+          soundscript: {
+            target: 'wasm-node',
+          },
+        },
+        null,
+        2,
+      ),
+    },
+    {
+      path: 'src/index.ts',
+      contents: `
+        export function score(flag: boolean): number {
+          const text = flag ? "left" : "right";
+          const values = [1, 2, 3];
+          const box = { value: values[0] + text.length };
+          return box.value;
+        }
+      `,
+    },
+  ]);
+  const result = compileProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.exitCode, 0);
+  assertEquals(result.diagnostics, []);
+  assertEquals(result.artifacts?.backend, 'wasm-gc');
+  assertEquals(result.artifacts?.backendPlanSource, 'source-hir');
+});
+
 Deno.test('compiler SourceHIR semantic lowering preserves primitive structured control flow', async () => {
   const tempDirectory = await createTempProject([
     {
@@ -4777,10 +4821,10 @@ Deno.test('compiler wasm-gc emitter produces runnable fallback object static pro
   assertEquals(readPlan?.bodyStatus, 'emittable');
   await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
   const wat = await Deno.readTextFile(watPath);
-  assertEquals(wat.includes('(type $fallback_object_layout_object_fallback_value'), true);
-  assertEquals(wat.includes('struct.new $fallback_object_layout_object_fallback_value'), true);
+  assertEquals(wat.includes('(type $fallback_object_layout_object_fallback_value_f64'), true);
+  assertEquals(wat.includes('struct.new $fallback_object_layout_object_fallback_value_f64'), true);
   assertEquals(
-    wat.includes('struct.get $fallback_object_layout_object_fallback_value $value'),
+    wat.includes('struct.get $fallback_object_layout_object_fallback_value_f64 $value'),
     true,
   );
   assertEquals(wat.includes('dynamic_object'), false);

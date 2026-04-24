@@ -1,5 +1,6 @@
 import ts from 'typescript';
 
+import { CompilerUnsupportedError } from './errors.ts';
 import { lowerProgramToCompilerIR } from './lower.ts';
 import type { CompilerJsHostImportIR } from './ir.ts';
 import {
@@ -26,6 +27,7 @@ export interface CompilerIrDebugSnapshot {
     kind: 'source_hir';
     modules: readonly SourceModuleIR[];
   };
+  legacyAvailable: boolean;
   legacyJsHostImports: readonly CompilerJsHostImportIR[];
   legacySemantic: SemanticModuleIR;
   legacyRuntimeManifest: RuntimeManifestIR;
@@ -68,47 +70,71 @@ export function createCompilerIrDebugSnapshot(
   const sourceSemantic = createSemanticModuleFromSourceHIR(source, sharedFacts);
   const sourceRuntimeManifest = createRuntimeManifestFromSemanticModule(sourceSemantic);
   const sourceWasmGcPlan = createWasmGcModulePlan(sourceSemantic, sourceRuntimeManifest);
-  const legacyModule = lowerProgramToCompilerIR(program, projectDirectory);
-  const boundarySurfaces: readonly SemanticBoundarySurfaceIR[] = sharedFacts.boundarySurfaces.map((
-    surface,
-  ) => ({
-    ...surface,
-    runtimeFamilies: collectSemanticRuntimeFamiliesFromTypes([
-      ...surface.params.map((param) => param.type),
-      surface.result,
-    ]),
-  }));
-  const boundaryFamilies = boundarySurfaces.flatMap((surface) => [...surface.runtimeFamilies]);
-  const legacySemantic = createSemanticModuleFromCompilerIR(legacyModule);
-  const semantic = {
-    ...legacySemantic,
-    typeSnapshots: sharedFacts.typeSnapshots,
-    boundarySurfaces,
-    objectLayouts: [...legacySemantic.objectLayouts, ...sharedFacts.objectLayouts]
-      .sort((left, right) =>
-        left.family === right.family
-          ? left.name.localeCompare(right.name)
-          : left.family.localeCompare(right.family)
-      ),
-    runtimeFamilies: [...new Set([...legacySemantic.runtimeFamilies, ...boundaryFamilies])]
-      .sort(),
-  };
-  const runtimeManifest = createRuntimeManifestFromSemanticModule(semantic);
-  const wasmGcPlan = createWasmGcModulePlan(semantic, runtimeManifest);
+  let legacyAvailable = true;
+  let legacyModule;
+  try {
+    legacyModule = lowerProgramToCompilerIR(program, projectDirectory);
+  } catch (error) {
+    if (!(error instanceof CompilerUnsupportedError)) {
+      throw error;
+    }
+    legacyAvailable = false;
+  }
+  const legacySnapshot = legacyModule
+    ? (() => {
+      const boundarySurfaces: readonly SemanticBoundarySurfaceIR[] = sharedFacts.boundarySurfaces
+        .map((surface) => ({
+          ...surface,
+          runtimeFamilies: collectSemanticRuntimeFamiliesFromTypes([
+            ...surface.params.map((param) => param.type),
+            surface.result,
+          ]),
+        }));
+      const boundaryFamilies = boundarySurfaces.flatMap((surface) => [...surface.runtimeFamilies]);
+      const legacySemantic = createSemanticModuleFromCompilerIR(legacyModule);
+      const semantic = {
+        ...legacySemantic,
+        typeSnapshots: sharedFacts.typeSnapshots,
+        boundarySurfaces,
+        objectLayouts: [...legacySemantic.objectLayouts, ...sharedFacts.objectLayouts]
+          .sort((left, right) =>
+            left.family === right.family
+              ? left.name.localeCompare(right.name)
+              : left.family.localeCompare(right.family)
+          ),
+        runtimeFamilies: [...new Set([...legacySemantic.runtimeFamilies, ...boundaryFamilies])]
+          .sort(),
+      };
+      const runtimeManifest = createRuntimeManifestFromSemanticModule(semantic);
+      const wasmGcPlan = createWasmGcModulePlan(semantic, runtimeManifest);
+      return {
+        jsHostImports: legacyModule.jsHostImports ?? [],
+        semantic,
+        runtimeManifest,
+        wasmGcPlan,
+      };
+    })()
+    : {
+      jsHostImports: [],
+      semantic: sourceSemantic,
+      runtimeManifest: sourceRuntimeManifest,
+      wasmGcPlan: sourceWasmGcPlan,
+    };
   return {
     kind: 'compiler_ir_debug_snapshot',
     source,
-    legacyJsHostImports: legacyModule.jsHostImports ?? [],
-    legacySemantic: semantic,
-    legacyRuntimeManifest: runtimeManifest,
-    legacyWasmGcPlan: wasmGcPlan,
+    legacyAvailable,
+    legacyJsHostImports: legacySnapshot.jsHostImports,
+    legacySemantic: legacySnapshot.semantic,
+    legacyRuntimeManifest: legacySnapshot.runtimeManifest,
+    legacyWasmGcPlan: legacySnapshot.wasmGcPlan,
     sharedFacts,
     sourceSemantic,
     sourceRuntimeManifest,
     sourceWasmGcPlan,
-    semantic,
-    runtimeManifest,
-    wasmGcPlan,
+    semantic: legacySnapshot.semantic,
+    runtimeManifest: legacySnapshot.runtimeManifest,
+    wasmGcPlan: legacySnapshot.wasmGcPlan,
   };
 }
 

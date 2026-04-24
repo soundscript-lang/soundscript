@@ -454,15 +454,19 @@ function renderWrapperAssignment(
     ? wrapperUsesSpecializedObjectWrappers(hostImportWrapper)
     : false;
   const boundaryAdaptations = hostImportWrapper
-    ? hostImportWrapper.paramTypes.map((_paramType, index) =>
-      renderInternalToHostBoundaryAssignment(
+    ? hostImportWrapper.paramTypes.map((_paramType, index) => {
+      const boundary = hostImportWrapper.paramBoundaries?.[index];
+      if (boundary?.kind === 'closure') {
+        return '';
+      }
+      return renderInternalToHostBoundaryAssignment(
         `adaptedArgs[${index}]`,
-        hostImportWrapper.paramBoundaries?.[index],
+        boundary,
         `args[${index}]`,
-        collectionBoundaryAdapterForBoundary(hostImportWrapper.paramBoundaries?.[index]),
+        collectionBoundaryAdapterForBoundary(boundary),
         needsObjectState ? 'boundaryState' : undefined,
-      )
-    ).filter((line) => line.length > 0)
+      );
+    }).filter((line) => line.length > 0)
     : [];
   const callbackAdaptations = callbackWrappers.map((wrapper) =>
     `    adaptedArgs[${wrapper.paramIndex}] = wrapClosure(${wrapper.signatureId}, args[${wrapper.paramIndex}], ${

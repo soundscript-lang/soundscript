@@ -1021,6 +1021,12 @@ function addTaggedValueResultHelpersForBoundary(
     }
     return;
   }
+  if (boundary.kind === 'closure') {
+    for (const signature of boundary.signatures ?? []) {
+      addTaggedValueResultHelpersForBoundary(helpers, signature.result);
+    }
+    return;
+  }
   for (const nested of nestedValueBoundaries(boundary)) {
     addTaggedValueResultHelpersForBoundary(helpers, nested);
   }
@@ -1962,7 +1968,6 @@ function createWasmGcWrapperPlan(
     taggedValueResultHelpersForClosureBoundaries(closureBoundaryWrappers),
     taggedValueResultHelpersForHostClosureWrappers(hostClosureWrappers),
     taggedValueResultHelpersForBoundaries(closureBoundaryResultBoundaries),
-    taggedValueResultHelpersForBoundaries(hostClosureParamBoundaries),
     taggedValueResultHelpersForBoundaries(internalToHostBoundaries),
   );
   return {
