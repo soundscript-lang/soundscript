@@ -92,6 +92,13 @@ function renderRuntimeFamilyTypePlan(plan: WasmGcTypePlanIR): readonly string[] 
       '  ))',
     ];
   }
+  if (plan.family === 'host_handle') {
+    return [
+      `  (type ${plan.name} (struct`,
+      '    (field $value externref)',
+      '  ))',
+    ];
+  }
   return [`  ;; runtime-family ${plan.family} type ${plan.name} kind=${plan.wasmKind}`];
 }
 
@@ -371,6 +378,10 @@ function symbolRuntimeTypeName(): string {
 
 function bigintRuntimeTypeName(): string {
   return '$bigint_runtime';
+}
+
+function typeNameForHostHandleRuntime(): string {
+  return '$host_handle_runtime';
 }
 
 function wasmTypeForHostFunctionParam(
@@ -826,6 +837,26 @@ function fallbackObjectLocalLayouts(
   func: WasmGcFunctionPlanIR,
 ): ReadonlyMap<string, FallbackObjectLocalLayout> {
   const layouts = new Map<string, FallbackObjectLocalLayout>();
+  const upsertLayout = (
+    localName: string,
+    representationName: string,
+    entries: FallbackObjectLocalLayout['entries'],
+  ): void => {
+    const existing = layouts.get(localName);
+    const merged = [...(existing?.entries ?? [])];
+    for (const entry of entries) {
+      if (!merged.some((candidate) => candidate.key === entry.key)) {
+        merged.push(entry);
+      }
+    }
+    layouts.set(localName, {
+      typeName: fallbackObjectLayoutTypeName(
+        representationName,
+        merged.map((entry) => entry.key),
+      ),
+      entries: merged,
+    });
+  };
   const visitStatement = (statement: SemanticStatementIR): void => {
     if (statement.kind === 'if') {
       statement.thenBody.forEach(visitStatement);
@@ -837,13 +868,15 @@ function fallbackObjectLocalLayouts(
       return;
     }
     if (statement.kind === 'fallback_object_new') {
-      layouts.set(statement.targetName, {
-        typeName: fallbackObjectLayoutTypeName(
-          statement.representationName,
-          statement.entries.map((entry) => entry.key),
-        ),
-        entries: statement.entries,
-      });
+      upsertLayout(statement.targetName, statement.representationName, statement.entries);
+      return;
+    }
+    if (statement.kind === 'fallback_object_property_get') {
+      upsertLayout(statement.objectName, statement.representationName, [{
+        key: statement.propertyKey,
+        valueName: statement.targetName,
+        valueType: statement.valueType,
+      }]);
     }
   };
   func.body.forEach(visitStatement);
@@ -5153,6 +5186,32 @@ function renderStringEqualityImportPlan(plan: WasmGcModulePlanIR): readonly stri
   return [];
 }
 
+function moduleUsesHostHandleRuntime(plan: WasmGcModulePlanIR): boolean {
+  return plan.typePlans.some((typePlan) =>
+    typePlan.source === 'runtime_family' && typePlan.family === 'host_handle'
+  );
+}
+
+function renderHostHandleHelperFunctions(plan: WasmGcModulePlanIR): readonly string[] {
+  return moduleUsesHostHandleRuntime(plan)
+    ? [
+      '  (func $__soundscript_host_handle_from_host (export "__soundscript_host_handle_from_host") (param $value externref) (result (ref null eq))',
+      '    local.get $value',
+      `    struct.new ${typeNameForHostHandleRuntime()}`,
+      '  )',
+      '  (func $__soundscript_host_handle_to_host (export "__soundscript_host_handle_to_host") (param $value (ref null eq)) (result externref)',
+      '    local.get $value',
+      `    ref.cast (ref ${typeNameForHostHandleRuntime()})`,
+      `    struct.get ${typeNameForHostHandleRuntime()} $value`,
+      '  )',
+      '  (func $__soundscript_host_handle_is (export "__soundscript_host_handle_is") (param $value (ref null eq)) (result i32)',
+      '    local.get $value',
+      `    ref.test (ref ${typeNameForHostHandleRuntime()})`,
+      '  )',
+    ]
+    : [];
+}
+
 function renderStringEqualityHelperFunctions(plan: WasmGcModulePlanIR): readonly string[] {
   const usesStringRuntime = plan.typePlans.some((typePlan) =>
     typePlan.source === 'runtime_family' && typePlan.family === 'string'
@@ -6512,6 +6571,18 @@ function moduleUsesClosureObjects(plan: WasmGcModulePlanIR): boolean {
 
 function renderClosureSignatureTypes(plan: WasmGcModulePlanIR): readonly string[] {
   const signatures = new Map<number, string>();
+  for (const signature of plan.closureSignatures) {
+    signatures.set(
+      signature.id,
+      `  (type ${closureSignatureTypeName(signature.id)} (func${
+        signature.params.map((param) => ` (param ${wasmTypeForCompilerValueType(param)})`).join('')
+      }${
+        signature.resultType.length > 0
+          ? ` (result ${wasmTypeForCompilerValueType(signature.resultType)})`
+          : ''
+      }))`,
+    );
+  }
   for (const func of plan.functionPlans) {
     if (func.closureSignatureId === undefined || func.closureFunctionId === undefined) {
       continue;
@@ -8273,6 +8344,7 @@ export function emitWasmGcModulePlan(plan: WasmGcModulePlanIR): string {
   const externEqualityImportPlans = renderExternEqualityImportPlan(plan);
   const moduleGlobals = plan.moduleGlobals.map(renderModuleGlobalPlan);
   const moduleGlobalInitializers = renderModuleGlobalInitializers(plan);
+  const hostHandleHelperFunctions = renderHostHandleHelperFunctions(plan);
   const lines = [
     '(module',
     '  ;; soundscript wasm-gc shadow module',
@@ -8333,6 +8405,7 @@ export function emitWasmGcModulePlan(plan: WasmGcModulePlanIR): string {
         arrayBoundaryWrapperHelperFunctions.length > 0 ||
         mapBoundaryWrapperHelperFunctions.length > 0 ||
         setBoundaryWrapperHelperFunctions.length > 0 ||
+        hostHandleHelperFunctions.length > 0 ||
         promiseHelperFunctions.length > 0 ||
         asyncGeneratorHelperFunctions.length > 0 || closureDispatchHelpers.length > 0 ||
         hostTaggedWrapperHelperFunctions.length > 0
@@ -8346,6 +8419,7 @@ export function emitWasmGcModulePlan(plan: WasmGcModulePlanIR): string {
         ...arrayBoundaryWrapperHelperFunctions,
         ...mapBoundaryWrapperHelperFunctions,
         ...setBoundaryWrapperHelperFunctions,
+        ...hostHandleHelperFunctions,
         ...promiseHelperFunctions,
         ...hostTaggedWrapperHelperFunctions,
         ...closureDispatchHelpers,

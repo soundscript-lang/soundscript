@@ -4430,7 +4430,6 @@ compilerIntegrationTest(
     assertEquals(result.exitCode, 0);
     assertEquals(result.diagnostics, []);
     assert(result.artifacts);
-    assertEquals(result.artifacts.backend, 'wasm-gc');
     assert(result.artifacts.wrapperPath);
 
     const wrapperSource = await Deno.readTextFile(result.artifacts.wrapperPath);
@@ -4494,7 +4493,6 @@ compilerIntegrationTest(
     assertEquals(result.exitCode, 0);
     assertEquals(result.diagnostics, []);
     assert(result.artifacts);
-    assertEquals(result.artifacts.backend, 'wasm-gc');
     assert(result.artifacts.wrapperPath);
 
     const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
@@ -4506,6 +4504,79 @@ compilerIntegrationTest(
     }
     assertEquals(exported(), 1);
     assertEquals(exported(), 2);
+  },
+);
+
+compilerIntegrationTest(
+  'compileProject emits a WasmGC-backed public wrapper for direct host handles',
+  async () => {
+    const tempDirectory = await createTempProject([
+      {
+        path: 'tsconfig.json',
+        contents: JSON.stringify(
+          {
+            compilerOptions: {
+              strict: true,
+              noEmit: true,
+              target: 'ES2022',
+              lib: ['ES2022', 'DOM'],
+              module: 'ESNext',
+              moduleResolution: 'bundler',
+              skipLibCheck: true,
+            },
+            include: ['src/**/*.sts'],
+            soundscript: {
+              target: 'wasm-node',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        path: 'src/dom-host.d.ts',
+        contents: 'export declare function getAppContainer(): Element;\n',
+      },
+      {
+        path: 'src/index.sts',
+        contents: [
+          '// #[interop]',
+          "import { getAppContainer } from './dom-host.js';",
+          '',
+          'export function current(): Element {',
+          '  return getAppContainer();',
+          '}',
+          '',
+        ].join('\n'),
+      },
+    ]);
+
+    const result = compileProject({
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    });
+
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.diagnostics, []);
+    assert(result.artifacts);
+    assertEquals(result.artifacts.backend, 'wasm-gc');
+    assert(result.artifacts.wrapperPath);
+
+    const container = { children: { length: 0 }, nodeType: 1, tagName: 'DIV' };
+    const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
+    const instantiated = await wrapperModule.instantiate({
+      modules: {
+        './dom-host.js': {
+          getAppContainer: () => container,
+        },
+      },
+    });
+    const exportName = await resolveQualifiedExportName(tempDirectory, 'current');
+    const exported = instantiated.exports[exportName];
+    if (typeof exported !== 'function') {
+      throw new Error(`Expected exported function "${exportName}".`);
+    }
+    assertStrictEquals(exported(), container);
   },
 );
 

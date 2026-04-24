@@ -60,6 +60,7 @@ import { emitWasmGcModulePlan } from './wasm_gc_emitter.ts';
 import type { WasmGcModulePlanIR } from './wasm_gc_backend_ir.ts';
 import { emitWasmGcWrapperModule } from './wasm_gc_wrapper_emitter.ts';
 import { emitCompilerModuleToWat } from './wat_emitter.ts';
+import type { SemanticStatementIR } from './semantic_ir.ts';
 
 export interface CompileProjectOptions {
   projectPath: string;
@@ -627,6 +628,7 @@ function isWasmGcPublicBoundarySupported(
     case 'string':
     case 'symbol':
     case 'bigint':
+    case 'host_handle':
       return true;
     case 'array':
       return isWasmGcPublicBoundarySupported(boundary.element, plan);
@@ -685,6 +687,52 @@ function areWasmGcPublicBoundariesSupported(
   );
 }
 
+function wasmGcPublicStatementBodySupported(
+  statement: SemanticStatementIR,
+  localValueTypes: ReadonlyMap<string, string>,
+): boolean {
+  if (statement.kind === 'fallback_object_property_get' && statement.valueType === 'closure_ref') {
+    return false;
+  }
+  if (
+    statement.kind === 'specialized_object_field_get' &&
+    localValueTypes.get(statement.targetName) === 'closure_ref'
+  ) {
+    return false;
+  }
+  if (statement.kind === 'if') {
+    return statement.thenBody.every((nested) =>
+      wasmGcPublicStatementBodySupported(nested, localValueTypes)
+    ) &&
+      statement.elseBody.every((nested) =>
+        wasmGcPublicStatementBodySupported(nested, localValueTypes)
+      );
+  }
+  if (statement.kind === 'while' || statement.kind === 'do_while') {
+    return statement.body.every((nested) =>
+      wasmGcPublicStatementBodySupported(nested, localValueTypes)
+    ) &&
+      (statement.continueBody?.every((nested) =>
+        wasmGcPublicStatementBodySupported(nested, localValueTypes)
+      ) ?? true);
+  }
+  return true;
+}
+
+function areWasmGcPublicFunctionBodiesSupported(
+  plan: WasmGcModulePlanIR,
+): boolean {
+  return plan.functionPlans.every((func) => {
+    const localValueTypes = new Map([
+      ...func.params.map((param) => [param.name, param.wasmType] as const),
+      ...func.locals.map((local) => [local.name, local.wasmType] as const),
+    ]);
+    return func.body.every((statement) =>
+      wasmGcPublicStatementBodySupported(statement, localValueTypes)
+    );
+  });
+}
+
 function targetSupportsWasmGcPublicWrapper(target: RuntimeTarget): boolean {
   return target === 'wasm-browser' || target === 'wasm-node';
 }
@@ -741,6 +789,7 @@ export function compileProject(options: CompileProjectOptions): CompileProjectRe
       const canUseWasmGcPublicPath = targetSupportsWasmGcPublicWrapper(runtime.target) &&
         snapshot.wasmGcPlan.diagnostics.length === 0 &&
         areWasmGcPublicBoundariesSupported(snapshot) &&
+        areWasmGcPublicFunctionBodiesSupported(snapshot.wasmGcPlan) &&
         snapshot.wasmGcPlan.functionPlans.every((func) => func.bodyStatus === 'emittable');
       const packaged = canUseWasmGcPublicPath
         ? {

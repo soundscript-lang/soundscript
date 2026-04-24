@@ -16,6 +16,7 @@ import {
   type SharedSemanticUnionBoundaryIR,
 } from '../semantic/shared_semantic_facts.ts';
 import type {
+  CompilerClosureSignatureIR,
   CompilerExpressionIR,
   CompilerFunctionIR,
   CompilerHostBoundaryIR,
@@ -831,11 +832,13 @@ export interface SemanticDiagnosticIR {
 }
 
 export type SemanticModuleGlobalIR = CompilerModuleGlobalIR;
+export type SemanticClosureSignatureIR = CompilerClosureSignatureIR;
 
 export interface SemanticModuleIR {
   kind: 'semantic_module';
   functions: readonly SemanticFunctionIR[];
   moduleGlobals: readonly SemanticModuleGlobalIR[];
+  closureSignatures: readonly SemanticClosureSignatureIR[];
   stringLiterals: readonly string[];
   stringLiteralCodeUnits: readonly (readonly number[])[];
   typeSnapshots: readonly SemanticTypeSnapshotIR[];
@@ -3487,6 +3490,7 @@ export function createSemanticModuleFromCompilerIR(module: CompilerModuleIR): Se
     kind: 'semantic_module',
     functions,
     moduleGlobals: module.moduleGlobals ?? [],
+    closureSignatures: module.closureSignatures ?? [],
     stringLiterals: module.stringLiterals ?? [],
     stringLiteralCodeUnits: module.stringLiteralCodeUnits ?? [],
     typeSnapshots: [],

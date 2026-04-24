@@ -1924,6 +1924,7 @@ export function createSemanticModuleFromSourceHIR(
     kind: 'semantic_module',
     functions,
     moduleGlobals: [],
+    closureSignatures: [],
     stringLiterals,
     stringLiteralCodeUnits: stringLiterals.map(codeUnitsForString),
     typeSnapshots: sharedFacts.typeSnapshots as SemanticModuleIR['typeSnapshots'],

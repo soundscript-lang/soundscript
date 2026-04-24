@@ -3,6 +3,7 @@ import type { CompilerTaggedPrimitiveBoundaryKindsIR, CompilerValueType } from '
 import {
   collectSemanticRuntimeFamiliesFromTypes,
   type SemanticBoundarySurfaceIR,
+  type SemanticClosureSignatureIR,
   type SemanticExpressionIR,
   type SemanticHostImportIR,
   type SemanticModuleGlobalIR,
@@ -89,6 +90,7 @@ export interface WasmGcFunctionPlanIR {
 }
 
 export type WasmGcModuleGlobalPlanIR = SemanticModuleGlobalIR;
+export type WasmGcClosureSignaturePlanIR = SemanticClosureSignatureIR;
 
 export interface WasmGcBoundaryValuePlanIR {
   name?: string;
@@ -172,6 +174,7 @@ export interface WasmGcModulePlanIR {
   helperPlans: readonly WasmGcHelperPlanIR[];
   functionPlans: readonly WasmGcFunctionPlanIR[];
   moduleGlobals: readonly WasmGcModuleGlobalPlanIR[];
+  closureSignatures: readonly WasmGcClosureSignaturePlanIR[];
   boundaryPlans: readonly WasmGcBoundaryPlanIR[];
   wrapperPlan: WasmGcWrapperPlanIR;
   diagnostics: readonly WasmGcDiagnosticPlanIR[];
@@ -871,6 +874,7 @@ function valueBoundaryNeedsWrapper(boundary: ValueBoundaryIR | undefined): boole
     case 'string':
     case 'symbol':
     case 'bigint':
+    case 'host_handle':
       return true;
     case 'object':
       return valueBoundarySupportsWasmGcSpecializedObjectWrapper(boundary);
@@ -1681,6 +1685,7 @@ export function createWasmGcModulePlan(
     })),
     functionPlans,
     moduleGlobals: semantic.moduleGlobals,
+    closureSignatures: semantic.closureSignatures,
     boundaryPlans: semantic.boundarySurfaces.map((surface) =>
       createBoundaryPlan(surface, runtimeManifest)
     ),
