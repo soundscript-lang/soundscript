@@ -365,6 +365,12 @@ export type SemanticExpressionIR =
     representation: CompilerValueType;
   }
   | {
+    kind: 'unary';
+    op: 'number.negate' | 'number.identity' | 'boolean.not';
+    value: SemanticExpressionIR;
+    representation: CompilerValueType;
+  }
+  | {
     kind: 'box_new';
     value: SemanticExpressionIR;
     valueType: CompilerValueType;
@@ -3132,6 +3138,9 @@ function collectUnsupportedExpressionKinds(
     case 'binary':
       collectUnsupportedExpressionKinds(expression.left, kinds);
       collectUnsupportedExpressionKinds(expression.right, kinds);
+      break;
+    case 'unary':
+      collectUnsupportedExpressionKinds(expression.value, kinds);
       break;
     case 'owned_number_array_literal':
     case 'owned_string_array_literal':

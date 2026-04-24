@@ -169,6 +169,12 @@ export type SourceExpressionIR =
     span: SourceSpanIR;
   }
   | {
+    kind: 'unary_expression';
+    operator: string;
+    operand: SourceExpressionIR;
+    span: SourceSpanIR;
+  }
+  | {
     kind: 'assignment_expression';
     operator: string;
     left: SourceExpressionIR;
@@ -239,6 +245,10 @@ function declarationKindOf(flags: ts.NodeFlags): 'const' | 'let' | 'var' {
 
 function expressionRoleForChild(role: SourceExpressionRole): SourceExpressionRole {
   return role === 'write' ? 'read' : role;
+}
+
+function prefixUnaryOperatorForSource(operator: ts.PrefixUnaryOperator): string {
+  return ts.tokenToString(operator) ?? syntaxKindName(operator);
 }
 
 function lowerBinding(sourceFile: ts.SourceFile, name: ts.BindingName): SourceBindingIR {
@@ -349,6 +359,15 @@ function lowerExpression(
       kind: 'literal',
       literalKind,
       text: expression.getText(sourceFile),
+      span: spanOf(sourceFile, expression),
+    };
+  }
+
+  if (ts.isPrefixUnaryExpression(expression)) {
+    return {
+      kind: 'unary_expression',
+      operator: prefixUnaryOperatorForSource(expression.operator),
+      operand: lowerExpression(sourceFile, expression.operand),
       span: spanOf(sourceFile, expression),
     };
   }

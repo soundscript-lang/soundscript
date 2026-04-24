@@ -2919,6 +2919,9 @@ function collectNumberArrayScratchFromExpression(
       collectNumberArrayScratchFromExpression(expression.left, uses);
       collectNumberArrayScratchFromExpression(expression.right, uses);
       break;
+    case 'unary':
+      collectNumberArrayScratchFromExpression(expression.value, uses);
+      break;
     case 'owned_number_array_literal':
     case 'owned_string_array_literal':
     case 'owned_heap_array_literal':
@@ -4560,6 +4563,14 @@ function renderExpression(
         ...renderExpression(expression.right, indent, context),
         `${indent}${expression.op}`,
       ];
+    case 'unary':
+      if (expression.op === 'number.identity') {
+        return renderExpression(expression.value, indent, context);
+      }
+      return [
+        ...renderExpression(expression.value, indent, context),
+        `${indent}${expression.op === 'number.negate' ? 'f64.neg' : 'i32.eqz'}`,
+      ];
     case 'unsupported_expression':
       return [`${indent};; unsupported expression ${expression.sourceKind}`];
     default: {
@@ -6036,6 +6047,13 @@ function collectBoxedClosureDispatchSignatureIdsFromExpression(
         closureObjectNames,
       );
       break;
+    case 'unary':
+      collectBoxedClosureDispatchSignatureIdsFromExpression(
+        expression.value,
+        signatureIds,
+        closureObjectNames,
+      );
+      break;
     case 'owned_number_array_literal':
     case 'owned_string_array_literal':
     case 'owned_heap_array_literal':
@@ -6558,6 +6576,9 @@ function collectBoxValueTypesFromExpression(
       collectBoxValueTypesFromExpression(expression.left, valueTypes);
       collectBoxValueTypesFromExpression(expression.right, valueTypes);
       break;
+    case 'unary':
+      collectBoxValueTypesFromExpression(expression.value, valueTypes);
+      break;
     case 'number_literal':
     case 'boolean_literal':
     case 'undefined_literal':
@@ -6877,6 +6898,9 @@ function collectArrayRuntimeTypesFromExpression(
     case 'binary':
       collectArrayRuntimeTypesFromExpression(expression.left, runtimeTypes);
       collectArrayRuntimeTypesFromExpression(expression.right, runtimeTypes);
+      break;
+    case 'unary':
+      collectArrayRuntimeTypesFromExpression(expression.value, runtimeTypes);
       break;
     case 'number_literal':
     case 'boolean_literal':

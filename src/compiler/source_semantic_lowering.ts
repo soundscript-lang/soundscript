@@ -166,6 +166,24 @@ function binaryOperatorForSource(
   }
 }
 
+function unaryOperatorForSource(
+  operator: string,
+  value: SemanticExpressionIR,
+):
+  | { op: 'number.negate' | 'number.identity' | 'boolean.not'; representation: CompilerValueType }
+  | undefined {
+  if (operator === '-' && value.representation === 'f64') {
+    return { op: 'number.negate', representation: 'f64' };
+  }
+  if (operator === '+' && value.representation === 'f64') {
+    return { op: 'number.identity', representation: 'f64' };
+  }
+  if (operator === '!' && value.representation === 'i32') {
+    return { op: 'boolean.not', representation: 'i32' };
+  }
+  return undefined;
+}
+
 function getStringLiteralId(context: FunctionLoweringContext, text: string): number {
   const unquoted = text.length >= 2 ? text.slice(1, -1) : text;
   const existing = context.stringLiteralIds.get(unquoted);
@@ -611,6 +629,20 @@ function lowerExpression(
       }
       context.unsupportedKinds.add(`logical_expression:${expression.operator}`);
       return { kind: 'undefined_literal', representation: 'tagged_ref' };
+    }
+    case 'unary_expression': {
+      const value = lowerExpression(expression.operand, context);
+      const unary = unaryOperatorForSource(expression.operator, value);
+      if (!unary) {
+        context.unsupportedKinds.add(`unary_expression:${expression.operator}`);
+        return { kind: 'undefined_literal', representation: 'tagged_ref' };
+      }
+      return {
+        kind: 'unary',
+        op: unary.op,
+        value,
+        representation: unary.representation,
+      };
     }
     default:
       context.unsupportedKinds.add(expression.kind);
