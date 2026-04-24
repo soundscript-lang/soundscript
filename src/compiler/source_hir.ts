@@ -383,6 +383,58 @@ function lowerLValueExpression(
   return lowerExpression(sourceFile, expression, 'write');
 }
 
+function lowerSourceStringLiteral(
+  sourceFile: ts.SourceFile,
+  node: ts.Node,
+  text: string,
+): SourceExpressionIR {
+  return {
+    kind: 'literal',
+    literalKind: 'string',
+    text: JSON.stringify(text),
+    span: spanOf(sourceFile, node),
+  };
+}
+
+function concatSourceExpressions(
+  sourceFile: ts.SourceFile,
+  node: ts.Node,
+  left: SourceExpressionIR,
+  right: SourceExpressionIR,
+): SourceExpressionIR {
+  return {
+    kind: 'binary_expression',
+    operator: '+',
+    left,
+    right,
+    span: spanOf(sourceFile, node),
+  };
+}
+
+function lowerTemplateExpression(
+  sourceFile: ts.SourceFile,
+  expression: ts.TemplateExpression,
+): SourceExpressionIR {
+  let current = lowerSourceStringLiteral(sourceFile, expression.head, expression.head.text);
+  for (const span of expression.templateSpans) {
+    current = concatSourceExpressions(
+      sourceFile,
+      expression,
+      current,
+      lowerExpression(sourceFile, span.expression),
+    );
+    if (span.literal.text.length > 0) {
+      current = concatSourceExpressions(
+        sourceFile,
+        expression,
+        current,
+        lowerSourceStringLiteral(sourceFile, span.literal, span.literal.text),
+      );
+    }
+  }
+  return current;
+}
+
 function lowerExpression(
   sourceFile: ts.SourceFile,
   expression: ts.Expression,
@@ -390,6 +442,10 @@ function lowerExpression(
 ): SourceExpressionIR {
   if (ts.isParenthesizedExpression(expression)) {
     return lowerExpression(sourceFile, expression.expression, role);
+  }
+
+  if (ts.isTemplateExpression(expression)) {
+    return lowerTemplateExpression(sourceFile, expression);
   }
 
   if (
