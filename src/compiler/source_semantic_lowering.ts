@@ -54,6 +54,7 @@ interface FunctionLoweringContext {
   runtimeFamilies: Set<SemanticRuntimeFamilyId>;
   stringLiteralIds: Map<string, number>;
   stringLiterals: string[];
+  switchBreakLocalStack: string[];
   tempIndex: number;
   unsupportedKinds: Set<string>;
 }
@@ -855,6 +856,123 @@ function lowerArrayForOfStatement(
   ];
 }
 
+function localGetExpression(
+  name: string,
+  representation: CompilerValueType,
+): SemanticExpressionIR {
+  return { kind: 'local_get', name, representation };
+}
+
+function booleanLiteralExpression(value: boolean): SemanticExpressionIR {
+  return { kind: 'boolean_literal', value, representation: 'i32' };
+}
+
+function lowerSwitchClauseStatements(
+  statements: readonly SourceStatementIR[],
+  context: FunctionLoweringContext,
+): readonly SemanticStatementIR[] {
+  return statements.flatMap((child) => [...lowerStatement(child, context)]);
+}
+
+function lowerSwitchStatement(
+  statement: Extract<SourceStatementIR, { kind: 'switch' }>,
+  context: FunctionLoweringContext,
+): readonly SemanticStatementIR[] {
+  const defaultIndex = statement.clauses.findIndex((clause) => clause.kind === 'default');
+  if (defaultIndex >= 0 && defaultIndex !== statement.clauses.length - 1) {
+    context.unsupportedKinds.add('switch_default_position');
+    return [{ kind: 'unsupported_statement', sourceKind: 'switch' }];
+  }
+
+  const discriminant = lowerExpression(statement.expression, context);
+  const discriminantStatements = takePendingStatements(context);
+  const discriminantName = nextTempLocalName(context, 'switch_value');
+  const matchedName = nextTempLocalName(context, 'switch_matched');
+  const activeName = nextTempLocalName(context, 'switch_active');
+  addLocal(context, discriminantName, discriminant.representation);
+  addLocal(context, matchedName, 'i32');
+  addLocal(context, activeName, 'i32');
+
+  const switchStatements: SemanticStatementIR[] = [
+    ...discriminantStatements,
+    { kind: 'local_set', name: discriminantName, value: discriminant },
+    { kind: 'local_set', name: matchedName, value: booleanLiteralExpression(false) },
+    { kind: 'local_set', name: activeName, value: booleanLiteralExpression(true) },
+  ];
+
+  context.switchBreakLocalStack.push(activeName);
+  try {
+    for (const clause of statement.clauses) {
+      const body = lowerSwitchClauseStatements(clause.statements, context);
+      const executeBodyWhenMatched: SemanticStatementIR = {
+        kind: 'if',
+        condition: localGetExpression(activeName, 'i32'),
+        thenBody: [
+          {
+            kind: 'if',
+            condition: localGetExpression(matchedName, 'i32'),
+            thenBody: body,
+            elseBody: clause.kind === 'default'
+              ? [
+                {
+                  kind: 'local_set',
+                  name: matchedName,
+                  value: booleanLiteralExpression(true),
+                },
+                ...body,
+              ]
+              : (() => {
+                if (!clause.expression) {
+                  context.unsupportedKinds.add('switch_case');
+                  return [{ kind: 'unsupported_statement', sourceKind: 'switch' }];
+                }
+                const caseValue = lowerExpression(clause.expression, context);
+                const caseStatements = takePendingStatements(context);
+                const comparison = binaryOperatorForSource(
+                  '===',
+                  localGetExpression(discriminantName, discriminant.representation),
+                  caseValue,
+                );
+                if (!comparison || comparison.representation !== 'i32') {
+                  context.unsupportedKinds.add('switch_case_comparison');
+                  return [{ kind: 'unsupported_statement', sourceKind: 'switch' }];
+                }
+                return [
+                  ...caseStatements,
+                  {
+                    kind: 'if',
+                    condition: {
+                      kind: 'binary',
+                      op: comparison.op,
+                      left: localGetExpression(discriminantName, discriminant.representation),
+                      right: caseValue,
+                      representation: 'i32',
+                    },
+                    thenBody: [
+                      {
+                        kind: 'local_set',
+                        name: matchedName,
+                        value: booleanLiteralExpression(true),
+                      },
+                      ...body,
+                    ],
+                    elseBody: [],
+                  },
+                ];
+              })(),
+          },
+        ],
+        elseBody: [],
+      };
+      switchStatements.push(executeBodyWhenMatched);
+    }
+  } finally {
+    context.switchBreakLocalStack.pop();
+  }
+
+  return switchStatements;
+}
+
 function lowerStatement(
   statement: SourceStatementIR,
   context: FunctionLoweringContext,
@@ -1093,8 +1211,19 @@ function lowerStatement(
         continueBody: [...incrementStatements, ...conditionStatements],
       }];
     }
-    case 'break':
+    case 'switch':
+      return lowerSwitchStatement(statement, context);
+    case 'break': {
+      const switchBreakLocal = context.switchBreakLocalStack.at(-1);
+      if (switchBreakLocal) {
+        return [{
+          kind: 'local_set',
+          name: switchBreakLocal,
+          value: booleanLiteralExpression(false),
+        }];
+      }
       return [{ kind: 'break' }];
+    }
     case 'continue':
       return [{ kind: 'continue' }];
     case 'for_of': {
@@ -1214,6 +1343,7 @@ function lowerFunction(
     runtimeFamilies: new Set(),
     stringLiteralIds,
     stringLiterals,
+    switchBreakLocalStack: [],
     tempIndex: 0,
     unsupportedKinds,
   };

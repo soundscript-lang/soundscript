@@ -60,6 +60,7 @@ export type SourceStatementIR =
   | SourceDoWhileStatementIR
   | SourceForStatementIR
   | SourceForOfStatementIR
+  | SourceSwitchStatementIR
   | SourceBreakStatementIR
   | SourceContinueStatementIR
   | SourceTryStatementIR
@@ -125,6 +126,20 @@ export interface SourceForOfStatementIR {
   left: SourceBindingIR | SourceExpressionIR;
   right: SourceExpressionIR;
   body: SourceStatementIR[];
+  span: SourceSpanIR;
+}
+
+export interface SourceSwitchStatementIR {
+  kind: 'switch';
+  expression: SourceExpressionIR;
+  clauses: readonly SourceSwitchClauseIR[];
+  span: SourceSpanIR;
+}
+
+export interface SourceSwitchClauseIR {
+  kind: 'case' | 'default';
+  expression?: SourceExpressionIR;
+  statements: SourceStatementIR[];
   span: SourceSpanIR;
 }
 
@@ -674,6 +689,28 @@ function lowerStatement(sourceFile: ts.SourceFile, statement: ts.Statement): Sou
       left,
       right: lowerExpression(sourceFile, statement.expression),
       body: lowerStatementList(sourceFile, statement.statement),
+      span: spanOf(sourceFile, statement),
+    };
+  }
+
+  if (ts.isSwitchStatement(statement)) {
+    return {
+      kind: 'switch',
+      expression: lowerExpression(sourceFile, statement.expression),
+      clauses: statement.caseBlock.clauses.map((clause) =>
+        ts.isCaseClause(clause)
+          ? {
+            kind: 'case',
+            expression: lowerExpression(sourceFile, clause.expression),
+            statements: lowerStatements(sourceFile, clause.statements),
+            span: spanOf(sourceFile, clause),
+          }
+          : {
+            kind: 'default',
+            statements: lowerStatements(sourceFile, clause.statements),
+            span: spanOf(sourceFile, clause),
+          }
+      ),
       span: spanOf(sourceFile, statement),
     };
   }
