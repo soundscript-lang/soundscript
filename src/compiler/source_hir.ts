@@ -287,6 +287,10 @@ function lowerExpression(
   expression: ts.Expression,
   role: SourceExpressionRole = 'read',
 ): SourceExpressionIR {
+  if (ts.isParenthesizedExpression(expression)) {
+    return lowerExpression(sourceFile, expression.expression, role);
+  }
+
   if (ts.isIdentifier(expression) && expression.text === 'undefined') {
     return {
       kind: 'literal',
