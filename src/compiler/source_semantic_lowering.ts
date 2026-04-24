@@ -1338,7 +1338,35 @@ function lowerStatement(
         ) {
           const objectName = assignment.left.object.name;
           const index = lowerExpression(assignment.left.index, context);
-          const value = lowerExpression(assignment.right, context);
+          const right = lowerExpression(assignment.right, context);
+          const compoundOperator = compoundAssignmentBinaryOperator(assignment.operator);
+          let value = right;
+          if (compoundOperator) {
+            const arrayRepresentation = context.localRepresentations.get(objectName);
+            if (!arrayRepresentation) {
+              context.unsupportedKinds.add(`element_assignment:${objectName}`);
+              return [{ kind: 'unsupported_statement', sourceKind: 'assignment_expression' }];
+            }
+            const array = localGetExpression(objectName, arrayRepresentation);
+            const arrayLocal = arrayLocalInfoForRead(assignment.left.object, array, context);
+            const current = arrayLocal
+              ? arrayElementExpressionForInfo(array, index, arrayLocal, context)
+              : undefined;
+            const binary = current
+              ? binaryOperatorForSource(compoundOperator, current, right)
+              : undefined;
+            if (!binary || !current) {
+              context.unsupportedKinds.add(`element_compound_assignment:${objectName}`);
+              return [{ kind: 'unsupported_statement', sourceKind: 'assignment_expression' }];
+            }
+            value = {
+              kind: 'binary',
+              op: binary.op,
+              left: current,
+              right,
+              representation: binary.representation,
+            };
+          }
           const arraySet = arrayElementSetStatementForLocal(
             context,
             objectName,
@@ -1363,7 +1391,35 @@ function lowerStatement(
           ) ?? -1;
           if (objectLayout && fieldIndex >= 0) {
             const field = objectLayout.fields[fieldIndex]!;
-            const value = lowerExpression(assignment.right, context);
+            const right = lowerExpression(assignment.right, context);
+            const compoundOperator = compoundAssignmentBinaryOperator(assignment.operator);
+            let value = right;
+            const fieldGetStatements: SemanticStatementIR[] = [];
+            if (compoundOperator) {
+              const currentName = nextTempLocalName(context, `field_${objectName}`);
+              addLocal(context, currentName, field.representation);
+              const current = localGetExpression(currentName, field.representation);
+              const binary = binaryOperatorForSource(compoundOperator, current, right);
+              if (!binary || binary.representation !== field.representation) {
+                context.unsupportedKinds.add(`property_compound_assignment:${field.name}`);
+                return [{ kind: 'unsupported_statement', sourceKind: 'assignment_expression' }];
+              }
+              fieldGetStatements.push({
+                kind: 'specialized_object_field_get',
+                targetName: currentName,
+                objectName,
+                representationName: objectLayout.representationName,
+                fieldIndex,
+                fieldName: field.name,
+              });
+              value = {
+                kind: 'binary',
+                op: binary.op,
+                left: current,
+                right,
+                representation: binary.representation,
+              };
+            }
             if (value.representation !== field.representation) {
               context.unsupportedKinds.add(`property_assignment:${field.name}`);
               return [{ kind: 'unsupported_statement', sourceKind: 'assignment_expression' }];
@@ -1371,6 +1427,7 @@ function lowerStatement(
             context.runtimeFamilies.add('specialized_object');
             return [
               ...takePendingStatements(context),
+              ...fieldGetStatements,
               {
                 kind: 'specialized_object_field_set',
                 objectName,

@@ -2313,6 +2313,58 @@ Deno.test('compiler SourceHIR semantic lowering emits runnable typed array write
   assertEquals((score as () => number)(), 14);
 });
 
+Deno.test('compiler SourceHIR semantic lowering emits runnable compound typed array writes', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: { strict: true },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        export function score(): number {
+          const values = [1, 2];
+          values[0] += 4;
+          values[1] *= 3;
+          return values[0] + values[1];
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createSourceSemanticSnapshot(program, tempDirectory);
+  const semantic = createSemanticModuleFromSourceHIR(snapshot.source, snapshot.sharedFacts);
+  const manifest = createRuntimeManifestFromSemanticModule(semantic);
+  const plan = createWasmGcModulePlan(semantic, manifest);
+  const scorePlan = plan.functionPlans.find((func) => func.name === 'score');
+  const watPath = join(tempDirectory, 'wasm-gc-source-compound-array-writes.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-source-compound-array-writes.wasm');
+
+  assertEquals(
+    manifest.familyRequirements.map((requirement) => requirement.family),
+    ['array'],
+  );
+  assertEquals(scorePlan?.bodyStatus, 'emittable');
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(plan));
+  const result = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(result.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(result.success, true);
+
+  const wasm = await Deno.readFile(wasmPath);
+  const instance = await WebAssembly.instantiate(wasm);
+  const score = instance.instance.exports['main.ts:score'];
+  assertEquals(typeof score, 'function');
+  assertEquals((score as () => number)(), 11);
+});
+
 Deno.test('compiler SourceHIR semantic lowering emits runnable typed array for-of loops', async () => {
   const tempDirectory = await createTempProject([
     {
@@ -2946,6 +2998,54 @@ Deno.test('compiler SourceHIR semantic lowering emits runnable specialized objec
   const score = instance.instance.exports['main.ts:score'];
   assertEquals(typeof score, 'function');
   assertEquals((score as () => number)(), 16);
+});
+
+Deno.test('compiler SourceHIR semantic lowering emits runnable specialized object compound mutation', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: { strict: true },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        export function score(): number {
+          let point = { left: 4, right: 7 };
+          point.left += 2;
+          point.right *= 3;
+          return point.left + point.right;
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createSourceSemanticSnapshot(program, tempDirectory);
+  const semantic = createSemanticModuleFromSourceHIR(snapshot.source, snapshot.sharedFacts);
+  const manifest = createRuntimeManifestFromSemanticModule(semantic);
+  const plan = createWasmGcModulePlan(semantic, manifest);
+  const scorePlan = plan.functionPlans.find((func) => func.name === 'score');
+  const watPath = join(tempDirectory, 'wasm-gc-source-object-compound-mutation.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-source-object-compound-mutation.wasm');
+
+  assertEquals(scorePlan?.bodyStatus, 'emittable');
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(plan));
+  const result = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(result.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(result.success, true);
+
+  const wasm = await Deno.readFile(wasmPath);
+  const instance = await WebAssembly.instantiate(wasm);
+  const score = instance.instance.exports['main.ts:score'];
+  assertEquals(typeof score, 'function');
+  assertEquals((score as () => number)(), 27);
 });
 
 Deno.test('compiler wasm-gc backend plan explains boundary helper emission from manifest', async () => {
