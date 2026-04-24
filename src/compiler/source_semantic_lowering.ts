@@ -1431,6 +1431,8 @@ function lowerStatement(
       const value = lowerExpression(statement.expression, context);
       return [...takePendingStatements(context), { kind: 'throw_tagged', value }];
     }
+    case 'block':
+      return statement.statements.flatMap((child) => [...lowerStatement(child, context)]);
     case 'for_of': {
       const lowered = lowerArrayForOfStatement(statement, context);
       if (lowered) {
