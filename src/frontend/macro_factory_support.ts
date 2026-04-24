@@ -101,6 +101,76 @@ function exportedDeclarationNames(statement: ts.Statement): readonly string[] {
   return [];
 }
 
+function hasExportModifier(node: ts.Node): boolean {
+  const modifiers = ts.canHaveModifiers(node) ? ts.getModifiers(node) : undefined;
+  return !!modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword);
+}
+
+function addMacroApiImportBindings(
+  importClause: ts.ImportClause | undefined,
+  bindings: Set<string>,
+): void {
+  if (!importClause) {
+    return;
+  }
+
+  if (importClause.name) {
+    bindings.add(importClause.name.text);
+  }
+
+  const namedBindings = importClause.namedBindings;
+  if (!namedBindings) {
+    return;
+  }
+
+  if (ts.isNamespaceImport(namedBindings)) {
+    bindings.add(namedBindings.name.text);
+    return;
+  }
+
+  for (const element of namedBindings.elements) {
+    bindings.add(element.name.text);
+  }
+}
+
+function referencesAnyIdentifier(node: ts.Node, identifiers: ReadonlySet<string>): boolean {
+  let found = false;
+
+  function visit(current: ts.Node): void {
+    if (found) {
+      return;
+    }
+    if (ts.isIdentifier(current) && identifiers.has(current.text)) {
+      found = true;
+      return;
+    }
+    ts.forEachChild(current, visit);
+  }
+
+  visit(node);
+  return found;
+}
+
+function isNonExportedMacroApiVariableStatement(
+  statement: ts.Statement,
+  macroApiBindings: ReadonlySet<string>,
+): boolean {
+  if (
+    macroApiBindings.size === 0 ||
+    !ts.isVariableStatement(statement) ||
+    hasExportModifier(statement)
+  ) {
+    return false;
+  }
+
+  const declarations = statement.declarationList.declarations;
+  return declarations.length > 0 &&
+    declarations.every((declaration) =>
+      declaration.initializer !== undefined &&
+      referencesAnyIdentifier(declaration.initializer, macroApiBindings)
+    );
+}
+
 export function sourceTextLooksLikeMacroModule(sourceText: string): boolean {
   return [...MACRO_API_SPECIFIERS].some((specifier) => sourceText.includes(specifier));
 }
@@ -173,6 +243,7 @@ export function stripMacroFactoryAuthoringFromText(
   );
   const spansToBlank: Array<{ start: number; end: number }> = [];
   const strippedMacroExportNames: string[] = [];
+  const macroApiBindings = new Set<string>();
 
   for (const statement of sourceFile.statements) {
     if (
@@ -180,6 +251,15 @@ export function stripMacroFactoryAuthoringFromText(
       ts.isStringLiteral(statement.moduleSpecifier) &&
       MACRO_API_SPECIFIERS.has(statement.moduleSpecifier.text)
     ) {
+      addMacroApiImportBindings(statement.importClause, macroApiBindings);
+      spansToBlank.push({
+        start: statement.getFullStart(),
+        end: statement.getEnd(),
+      });
+      continue;
+    }
+
+    if (isNonExportedMacroApiVariableStatement(statement, macroApiBindings)) {
       spansToBlank.push({
         start: statement.getFullStart(),
         end: statement.getEnd(),

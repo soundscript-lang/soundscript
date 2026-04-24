@@ -206,7 +206,7 @@ Deno.test(
       environment.dispose();
     }
 
-  assertEquals(preparedSourceLookups, 2);
+    assertEquals(preparedSourceLookups, 2);
   },
 );
 
@@ -1122,6 +1122,77 @@ Deno.test(
   },
 );
 
+Deno.test(
+  'createProjectMacroEnvironment rejects source-published package macro constructor-chain escapes',
+  () => {
+    const fileName = '/virtual/index.sts';
+    const preparedProgram = createPreparedProgram({
+      baseHost: createBaseHost(
+        new Map([
+          [
+            fileName,
+            'import { Foo } from "sound-pkg";\nexport const value = Foo();\n',
+          ],
+          [
+            '/virtual/node_modules/sound-pkg/package.json',
+            JSON.stringify(
+              {
+                name: 'sound-pkg',
+                version: '1.0.0',
+                type: 'module',
+                types: './dist/index.d.ts',
+                soundscript: {
+                  source: './src/index.sts',
+                },
+              },
+              null,
+              2,
+            ),
+          ],
+          [
+            '/virtual/node_modules/sound-pkg/dist/index.d.ts',
+            'export declare function Foo(): number;\n',
+          ],
+          [
+            '/virtual/node_modules/sound-pkg/src/index.sts',
+            'export { Foo } from "./macros.macro";\n',
+          ],
+          [
+            '/virtual/node_modules/sound-pkg/src/macros.macro.sts',
+            [
+              "import 'sts:macros';",
+              '',
+              '// #[macro(call)]',
+              'export function Foo() {',
+              '  return {',
+              '    expand(ctx) {',
+              '      const rawGlobal = globalThis.constructor.constructor("return globalThis")();',
+              '      return ctx.output.expr(ctx.quote.expr`${rawGlobal.Date.now()}`);',
+              '    },',
+              '  };',
+              '}',
+              '',
+            ].join('\n'),
+          ],
+        ]),
+      ),
+      options: {
+        target: ts.ScriptTarget.ES2022,
+        module: ts.ModuleKind.ESNext,
+        moduleResolution: ts.ModuleResolutionKind.Bundler,
+        noEmit: true,
+      },
+      rootNames: [fileName],
+    });
+
+    assertThrows(
+      () => printExpandedFile(preparedProgram, fileName),
+      Error,
+      'unsupported ambient runtime API "Function"',
+    );
+  },
+);
+
 Deno.test('createProjectMacroEnvironment rejects #[interop] anywhere in a macro graph', () => {
   const fileName = '/virtual/index.sts';
   const macroFile = '/virtual/macros/defs.macro.sts';
@@ -1471,6 +1542,48 @@ Deno.test('createProjectMacroEnvironment rejects nondeterministic ambient APIs l
     () => printExpandedFile(preparedProgram, fileName),
     Error,
     'uses unsupported ambient runtime API "Math.random"',
+  );
+});
+
+Deno.test('createProjectMacroEnvironment rejects constructor-chain access to raw macro globals', () => {
+  const fileName = '/virtual/index.sts';
+  const macroFile = '/virtual/macros/defs.macro.sts';
+  const preparedProgram = createPreparedProgram({
+    baseHost: createBaseHost(
+      new Map([
+        [fileName, "import { Foo } from './macros/defs.macro';\nexport const value = Foo();\n"],
+        [
+          macroFile,
+          [
+            "import 'sts:macros';",
+            '',
+            '// #[macro(call)]',
+            'export function Foo() {',
+            '  return {',
+            '    expand(ctx) {',
+            '      const rawGlobal = globalThis.constructor.constructor("return globalThis")();',
+            '      return ctx.output.expr(ctx.build.stringLiteral(typeof rawGlobal.Date));',
+            '    },',
+            '  };',
+            '}',
+            '',
+          ].join('\n'),
+        ],
+      ]),
+    ),
+    options: {
+      target: ts.ScriptTarget.ES2022,
+      module: ts.ModuleKind.ESNext,
+      moduleResolution: ts.ModuleResolutionKind.Bundler,
+      noEmit: true,
+    },
+    rootNames: [fileName],
+  });
+
+  assertThrows(
+    () => printExpandedFile(preparedProgram, fileName),
+    Error,
+    'uses unsupported ambient runtime API "Function"',
   );
 });
 

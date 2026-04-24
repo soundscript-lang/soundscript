@@ -82,6 +82,20 @@ async function createWasmGcWrappedExports(
   return wrapperModule.createSoundscriptWasmGcExports(instance);
 }
 
+function hasStatementLike(
+  body: readonly unknown[] | undefined,
+  expected: { readonly kind: string; readonly collectionFamily: string },
+): boolean {
+  return body?.some((statement) => {
+    if (typeof statement !== 'object' || statement === null) {
+      return false;
+    }
+    const record = statement as Record<string, unknown>;
+    return record.kind === expected.kind &&
+      record.collectionFamily === expected.collectionFamily;
+  }) ?? false;
+}
+
 Deno.test('compiler shadow SourceHIR preserves structured control flow and lvalue roles', async () => {
   const tempDirectory = await createTempProject([
     {
@@ -2794,9 +2808,10 @@ Deno.test('compiler wasm-gc emitter produces runnable explicit Map iteration wit
   assertEquals(mainPlan?.bodyStatus, 'emittable');
   assertEquals(JSON.stringify(mainPlan?.body).includes('"kind":"map_values"'), true);
   assertEquals(
-    mainPlan?.body.some((statement) =>
-      statement.kind === 'dynamic_object_entries' && statement.collectionFamily === 'map'
-    ),
+    hasStatementLike(mainPlan?.body, {
+      kind: 'dynamic_object_entries',
+      collectionFamily: 'map',
+    }),
     false,
   );
   await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
@@ -3147,9 +3162,10 @@ Deno.test('compiler wasm-gc emitter produces runnable explicit Map keys iteratio
   assertEquals(mainPlan?.bodyStatus, 'emittable');
   assertEquals(mainPlan?.body.some((statement) => statement.kind === 'map_keys'), true);
   assertEquals(
-    mainPlan?.body.some((statement) =>
-      statement.kind === 'dynamic_object_keys' && statement.collectionFamily === 'map'
-    ),
+    hasStatementLike(mainPlan?.body, {
+      kind: 'dynamic_object_keys',
+      collectionFamily: 'map',
+    }),
     false,
   );
   await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));
@@ -3226,9 +3242,10 @@ Deno.test('compiler wasm-gc emitter produces runnable explicit Map entries itera
   assertEquals(mainPlan?.body.some((statement) => statement.kind === 'map_keys'), true);
   assertEquals(JSON.stringify(mainPlan?.body).includes('"kind":"map_values"'), true);
   assertEquals(
-    mainPlan?.body.some((statement) =>
-      statement.kind === 'dynamic_object_entries' && statement.collectionFamily === 'map'
-    ),
+    hasStatementLike(mainPlan?.body, {
+      kind: 'dynamic_object_entries',
+      collectionFamily: 'map',
+    }),
     false,
   );
   await Deno.writeTextFile(watPath, emitWasmGcModulePlan(snapshot.wasmGcPlan));

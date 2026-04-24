@@ -17067,12 +17067,18 @@ function getDynamicObjectValuesHelperName(
   switch (resultType) {
     case 'owned_array_ref':
       return 'list_dynamic_object_string_values';
+    case 'owned_heap_array_ref':
+      return 'list_dynamic_object_heap_values';
     case 'owned_number_array_ref':
       return 'list_dynamic_object_number_values';
     case 'owned_boolean_array_ref':
       return 'list_dynamic_object_boolean_values';
     case 'owned_tagged_array_ref':
       return 'list_dynamic_object_tagged_values';
+    default: {
+      const exhaustiveCheck: never = resultType;
+      return exhaustiveCheck;
+    }
   }
 }
 
@@ -17349,6 +17355,8 @@ function emitDynamicObjectValuesHelper(
   const helperName = getDynamicObjectValuesHelperName(resultType);
   const resultStructWatType = resultType === 'owned_array_ref'
     ? 'owned_string_array'
+    : resultType === 'owned_heap_array_ref'
+    ? 'owned_heap_array'
     : resultType === 'owned_number_array_ref'
     ? 'owned_number_array'
     : resultType === 'owned_boolean_array_ref'
@@ -17356,6 +17364,8 @@ function emitDynamicObjectValuesHelper(
     : 'owned_tagged_array';
   const resultDataWatType = resultType === 'owned_array_ref'
     ? 'owned_string_array_data'
+    : resultType === 'owned_heap_array_ref'
+    ? 'owned_heap_array_data'
     : resultType === 'owned_number_array_ref'
     ? 'owned_number_array_data'
     : resultType === 'owned_boolean_array_ref'
@@ -17374,6 +17384,8 @@ function emitDynamicObjectValuesHelper(
     `${indent(level)}array.get $${layout.taggedValueArrayWatTypeId}`,
     ...(resultType === 'owned_array_ref'
       ? [`${indent(level)}call $untag_owned_string`]
+      : resultType === 'owned_heap_array_ref'
+      ? [`${indent(level)}call $untag_heap_object`]
       : resultType === 'owned_number_array_ref'
       ? [`${indent(level)}call $untag_number`]
       : resultType === 'owned_boolean_array_ref'
@@ -17517,6 +17529,7 @@ function emitDynamicRuntimeHelpers(
   helperUsage: {
     usesBooleanValueListing: boolean;
     usesCopyEntries: boolean;
+    usesHeapValueListing: boolean;
     usesKeyListing: boolean;
     usesNumberValueListing: boolean;
     usesStringEntryListing: boolean;
@@ -17526,6 +17539,7 @@ function emitDynamicRuntimeHelpers(
   } = {
     usesBooleanValueListing: false,
     usesCopyEntries: false,
+    usesHeapValueListing: false,
     usesKeyListing: false,
     usesNumberValueListing: false,
     usesStringEntryListing: false,
@@ -17539,6 +17553,7 @@ function emitDynamicRuntimeHelpers(
   }
   const usesOrderedListing = helperUsage.usesKeyListing ||
     helperUsage.usesStringValueListing ||
+    helperUsage.usesHeapValueListing ||
     helperUsage.usesNumberValueListing ||
     helperUsage.usesBooleanValueListing ||
     helperUsage.usesTaggedValueListing ||
@@ -17869,6 +17884,9 @@ function emitDynamicRuntimeHelpers(
       : []),
     ...(helperUsage.usesStringValueListing
       ? emitDynamicObjectValuesHelper(layout, 'owned_array_ref')
+      : []),
+    ...(helperUsage.usesHeapValueListing
+      ? emitDynamicObjectValuesHelper(layout, 'owned_heap_array_ref')
       : []),
     ...(helperUsage.usesNumberValueListing
       ? emitDynamicObjectValuesHelper(layout, 'owned_number_array_ref')
@@ -33256,6 +33274,13 @@ export function emitCompilerModuleToWat(module: CompilerModuleIR): string {
         operation.resultType === 'owned_array_ref'
       )
     ) ?? false;
+  const usesDynamicObjectHeapValueListing =
+    module.runtime?.functions.some((func) =>
+      func.operations.some((operation) =>
+        operation.kind === 'list_dynamic_object_values' &&
+        operation.resultType === 'owned_heap_array_ref'
+      )
+    ) ?? false;
   const usesDynamicObjectNumberValueListing =
     module.runtime?.functions.some((func) =>
       func.operations.some((operation) =>
@@ -33618,6 +33643,7 @@ export function emitCompilerModuleToWat(module: CompilerModuleIR): string {
       {
         usesBooleanValueListing: usesDynamicObjectBooleanValueListing,
         usesCopyEntries: usesDynamicObjectEntryCopy,
+        usesHeapValueListing: usesDynamicObjectHeapValueListing,
         usesKeyListing: usesDynamicObjectKeyListing,
         usesNumberValueListing: usesDynamicObjectNumberValueListing,
         usesStringEntryListing: usesDynamicObjectStringEntryListing,

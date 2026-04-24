@@ -371,10 +371,12 @@ Deno.test('createPreparedCompilerHost preserves module shape for stripped macro-
           [
             "import { macroSignature } from 'sts:macros';",
             '',
+            'const TWICE_SIGNATURE = macroSignature.of(macroSignature.expr("value"));',
+            '',
             '// #[macro(call)]',
             'export function Twice() {',
             '  return {',
-            '    signature: macroSignature.of(macroSignature.expr("value")),',
+            '    signature: TWICE_SIGNATURE,',
             '    expand(ctx, signature) {',
             '      if (!signature) {',
             "        throw new Error('expected signature');",
@@ -397,6 +399,8 @@ Deno.test('createPreparedCompilerHost preserves module shape for stripped macro-
   assert(prepared);
   assert(ts.isExternalModule(sourceFile));
   assertStringIncludes(prepared.rewrittenText, 'export declare const Twice: unknown;');
+  assertEquals(prepared.rewrittenText.includes('macroSignature'), false);
+  assertEquals(prepared.rewrittenText.includes('TWICE_SIGNATURE'), false);
   assertEquals(host.frontendDiagnostics(), []);
 });
 

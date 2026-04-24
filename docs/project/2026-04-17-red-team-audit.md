@@ -59,21 +59,28 @@ Legend:
 - `batch-60`: covered by the sixtieth red-team batch added with this record.
 - `batch-61`: covered by the sixty-first red-team batch added with this record.
 - `batch-62`: covered by the sixty-second red-team batch added with this record.
+- `batch-63`: covered by the sixty-third red-team batch added with this record.
+- `batch-64`: covered by the sixty-fourth red-team batch added with this record.
+- `batch-65`: covered by the sixty-fifth red-team batch added with this record.
+- `batch-66`: covered by the sixty-sixth red-team batch added with this record.
+- `batch-67`: covered by the sixty-seventh red-team batch added with this record.
+- `batch-68`: covered by the sixty-eighth red-team batch added with this record.
+- `batch-69`: covered by the sixty-ninth red-team batch added with this record.
 - `audit-debt`: missing coverage that should be closed before calling the family fully audited.
 - `out-of-scope`: explicitly outside the strong soundness claim.
 - `design-gap`: documented future work, not a current guarantee.
 
-| Owned family                         | Fresh project     | Reused prepared                | File-scoped                    | Persistent checker cache | Package verification cache | LSP/incremental session | Build cache/output  | Compiler/target gate |
-| ------------------------------------ | ----------------- | ------------------------------ | ------------------------------ | ------------------------ | -------------------------- | ----------------------- | ------------------- | -------------------- |
-| Prepared/package-source parity       | covered           | covered                        | covered                        | covered,batch-29         | batch-3                    | covered                 | batch-1,10,28,31,52 | batch-60             |
-| Flow/effect invalidation             | covered           | batch-35,40,43                 | covered                        | batch-4,35,40,43         | batch-4,40,43              | batch-35,40,43          | batch-44            | batch-44             |
-| Proof-oracle verification            | covered           | batch-38                       | covered                        | batch-38                 | batch-38                   | batch-38                | batch-44            | batch-44             |
-| BareObject/null-prototype provenance | covered           | covered                        | covered                        | batch-39                 | covered                    | batch-39                | batch-39            | batch-45             |
-| `#[value]` parity                    | covered           | batch-1                        | batch-1                        | batch-1                  | batch-5                    | batch-1                 | batch-1             | covered              |
-| Machine numerics                     | covered           | batch-37                       | batch-37                       | batch-37                 | batch-5                    | batch-37                | batch-1,37          | batch-37             |
-| Macro/capability boundary            | covered,batch-54  | covered,batch-53,54            | batch-53,54,55,57,58           | batch-6,53,54            | batch-41,42,54             | batch-53,54,55,57,58    | batch-7,56,59,62    | batch-8              |
-| Compiler acceptance parity           | covered           | out-of-scope,batch-61          | out-of-scope                   | out-of-scope             | out-of-scope               | out-of-scope            | batch-1,27,30       | covered,batch-27,30  |
-| Project-reference root ownership     | batch-32,47,48,49 | out-of-scope,batch-46,47,48,49 | out-of-scope,batch-46,47,48,49 | batch-32,48,49           | out-of-scope               | batch-34,47,48,49       | batch-33,50,51      | out-of-scope         |
+| Owned family                         | Fresh project             | Reused prepared                | File-scoped                    | Persistent checker cache | Package verification cache | LSP/incremental session | Build cache/output  | Compiler/target gate |
+| ------------------------------------ | ------------------------- | ------------------------------ | ------------------------------ | ------------------------ | -------------------------- | ----------------------- | ------------------- | -------------------- |
+| Prepared/package-source parity       | covered                   | covered                        | covered                        | covered,batch-29         | batch-3                    | covered                 | batch-1,10,28,31,52 | batch-60             |
+| Flow/effect invalidation             | covered,batch-63,66,67    | batch-35,40,43                 | covered                        | batch-4,35,40,43,66      | batch-4,40,43              | batch-35,40,43,66       | batch-44            | batch-44             |
+| Proof-oracle verification            | covered                   | batch-38                       | covered                        | batch-38                 | batch-38                   | batch-38                | batch-44            | batch-44             |
+| BareObject/null-prototype provenance | covered                   | covered                        | covered                        | batch-39                 | covered                    | batch-39                | batch-39            | batch-45             |
+| `#[value]` parity                    | covered                   | batch-1                        | batch-1                        | batch-1                  | batch-5                    | batch-1                 | batch-1             | covered              |
+| Machine numerics                     | covered                   | batch-37                       | batch-37                       | batch-37                 | batch-5                    | batch-37                | batch-1,37          | batch-37             |
+| Macro/capability boundary            | covered,batch-54,64,68,69 | covered,batch-53,54,64,69      | batch-53,54,55,57,58,64        | batch-6,53,54            | batch-41,42,54             | batch-53,54,55,57,58,65 | batch-7,56,59,62,69 | batch-8              |
+| Compiler acceptance parity           | covered                   | out-of-scope,batch-61          | out-of-scope                   | out-of-scope             | out-of-scope               | out-of-scope            | batch-1,27,30       | covered,batch-27,30  |
+| Project-reference root ownership     | batch-32,47,48,49         | out-of-scope,batch-46,47,48,49 | out-of-scope,batch-46,47,48,49 | batch-32,48,49           | out-of-scope               | batch-34,47,48,49       | batch-33,50,51      | out-of-scope         |
 
 ## Batch 1 Findings
 
@@ -1542,6 +1549,142 @@ Legend:
   Further variants, such as larger diamonds or additional macro site kinds, are breadth hardening
   rather than current high-priority audit debt.
 
+## Batch 63 Findings
+
+### Wrapped `Promise.resolve` Thenable Interop
+
+- Attack: import a declaration-backed structural thenable through an explicit `// #[interop]`
+  boundary, then normalize it through direct `Promise.resolve(...)`, `Promise.resolve.call(...)`,
+  and `Promise.resolve.apply(...)`.
+- Routes: fresh `analyzeProject`, interop import projection, checker-owned async Promise surface
+  policy, builtin callable alias resolution, and wrapped builtin invocation handling.
+- Expected result: all three normalization forms report `SOUND1034` with
+  `surfaceKind: promise resolve thenable`; wrapped call/apply routes must not hide structural
+  thenable assimilation behind `Function.prototype.call` or `Function.prototype.apply`.
+- Result: confirmed checker-policy bypass fixed with executable coverage in
+  `src/service/analyze_project_test.ts`. The red run only reported line 4 for direct
+  `Promise.resolve`; after the fix, lines 4, 5, and 6 are all reported.
+- Fix: `src/checker/rules/async_surface.ts` now reuses the existing wrapped-builtin detector for
+  `Promise.resolve.call(...)` and `Promise.resolve.apply(...)`, then applies the existing
+  unsupported-thenable predicate to the recovered first direct argument.
+- Residual risk: this covers fresh analysis. Cache and LSP routes reuse the same rule output but
+  were not re-audited in this narrow Writer-B slice.
+
+## Batch 64 Findings
+
+### Macro VM Constructor-Chain Escape
+
+- Attack: recover string-code generation and the raw VM global through constructor chains, including
+  `globalThis.constructor.constructor`, `Array.constructor`, object constructor chains, and
+  ordinary, async, generator, and async-generator function constructors.
+- Routes: direct macro VM module evaluation, project macro expansion through
+  `createProjectMacroEnvironment`, and source-published package macro expansion.
+- Expected result: every constructor-chain string-code route rejects with the unsupported ambient
+  runtime API `Function`; regular deterministic macro intrinsics remain usable.
+- Result: confirmed production macro-sandbox bypass fixed with executable coverage in
+  `src/frontend/macro_vm_test.ts` and `src/frontend/project_macro_support_test.ts`. The VM context
+  now poisons constructor-based string-code generation and hides raw ambient globals before loading
+  local and source-published package macro modules.
+- Residual risk: this is not an OS sandbox guarantee. It closes the identified VM constructor-chain
+  path to string-code generation and raw ambient globals.
+
+### Package Macro Site-Kind Drift
+
+- Attack: source-published package macro changes from a call macro to a declaration macro while a
+  consumer still invokes it as a call macro.
+- Routes: direct `analyzeProject`, fresh prepared full/file analysis, reused prepared full/file
+  analysis, and incremental session full/file analysis.
+- Expected result: all routes report the same consumer TypeScript diagnostic after drift.
+- Result: breadth coverage added in `tests/integration/red_team_audit_test.ts`. No production bug
+  was found.
+- Residual risk: build/runtime site-kind drift was not separately re-audited because this route
+  fails before emit.
+
+## Batch 65 Findings
+
+### LSP Watched Package Macro Helper Drift
+
+- Attack: open a consumer that imports a package-exported macro, mutate the package macro helper on
+  disk, then send `workspace/didChangeWatchedFiles` without editing the consumer file.
+- Routes: JSON-RPC LSP server, project-service context invalidation, open-document diagnostics, and
+  package macro helper dependency freshness.
+- Expected result: the server invalidates the stale project context and republishes consumer
+  diagnostics that include the helper-induced `TS2322`.
+- Result: confirmed stale-diagnostics route fixed with executable coverage in
+  `src/lsp/server_test.ts`. The LSP server now handles watched-file notifications by invalidating
+  cached project contexts and scheduling diagnostics for every open document.
+- Residual risk: this depends on editors sending `workspace/didChangeWatchedFiles` for
+  package/helper files that can affect open Soundscript documents.
+
+## Batch 66 Findings
+
+### Function Adapter Forwarding Conservatism
+
+- Attack: hide callback forwarding behind unsupported local adapters such as `callback.bind(...)`
+  and `decoder.decode.bind(...)`, then call the bound result through a wrapper.
+- Routes: fresh checker effect summary construction, local callback alias inference, member-path
+  forwarding, persistent checker cache, incremental project sessions, JSON-RPC LSP watched-file
+  diagnostics, and unknown-direct effect preservation.
+- Expected result: unsupported `bind`/`call`/`apply` adapter paths are not recorded as precise
+  forwarded parameters; the enclosing declaration remains conservatively unknown-direct.
+- Result: confirmed checker effect-summary precision bug fixed with executable coverage in
+  `src/checker/engine/context_test.ts`, persistent-cache and incremental-session route coverage in
+  `tests/integration/red_team_audit_test.ts`, and LSP watched-file route coverage in
+  `src/lsp/server_test.ts`. Function adapter member paths now stay conservative instead of producing
+  precise forwarded callback facts, and cold, cached, incremental, and LSP diagnostics match after a
+  direct-callback wrapper mutates to `bind`/`call`/`apply`.
+- Residual risk: package-published declaration-only surfaces were not separately re-audited here;
+  this slice covers local/source effect summary routes where the checker owns callable forwarding.
+
+## Batch 67 Findings
+
+### Recursive Effect Summary Termination
+
+- Attack: analyze the recursive runtime-reference helper fixture through CLI `check` and `build`
+  routes; the checker effect rule should not hang or surface `SOUNDSCRIPT_INTERNAL_ERROR`.
+- Routes: CLI check, CLI build, fresh checker effect-rule summary construction, recursive callable
+  effect-summary fixpoint, and JSON diagnostic normalization.
+- Expected result: the effect summary solver terminates conservatively, preserving unknown-direct
+  effects when a recursive summary graph does not converge quickly enough.
+- Result: confirmed non-termination route fixed with executable coverage in `src/cli/cli_test.ts`.
+  The effect summary solver now bails out to conservative unknown-direct summaries instead of
+  spinning indefinitely on pathological recursive callable graphs.
+- Residual risk: this is a conservative timeout/termination guard. It may produce extra effect
+  diagnostics on pathological graphs, which is sound but can be a false positive.
+
+## Batch 68 Findings
+
+### Source-Published Package Macro Constructor-Chain Escape
+
+- Attack: a source-published `node_modules` package macro uses
+  `globalThis.constructor.constructor("return globalThis")()` during expansion.
+- Routes: package `soundscript.source` resolution, package `.sts` reexport barrels, package
+  `.macro.sts` evaluation, and project macro expansion.
+- Expected result: expansion rejects with unsupported ambient runtime API `Function`.
+- Result: executable coverage added in `src/frontend/project_macro_support_test.ts`;
+  package-authored macros inherit the hardened VM constructor-chain policy.
+- Residual risk: runtime/build materialization was not separately re-audited because expansion fails
+  before emit.
+
+## Batch 69 Findings
+
+### Package Macro Signature Constant Stripping
+
+- Attack: a source-published package macro stores `macroSignature` values in non-exported top-level
+  constants, then returns those constants from macro factories.
+- Routes: prepared compiler-host macro-authoring stripping, CLI check, CLI expand, CLI `deno run`,
+  source-published package macro expansion, and stdlib package-prep project transforms.
+- Expected result: compile-time-only macro API imports and top-level signature constants disappear
+  from the checker/runtime-prepared view, while the original macro module still evaluates for
+  expansion.
+- Result: confirmed package-authored macro regression fixed in
+  `src/frontend/macro_factory_support.ts`, with executable coverage in
+  `src/frontend/project_frontend_test.ts`, `src/cli/cli_test.ts`, and
+  `scripts/release/prepare_npm_test.ts`.
+- Residual risk: the stripper only removes non-exported top-level variable statements whose
+  initializers reference the imported macro API bindings. Exported declarations remain visible and
+  must continue to typecheck as ordinary package surface.
+
 ## Remaining High-Priority Audit Debt
 
 - No unresolved `audit-debt` cells remain in the claim matrix for currently owned guarantees.
@@ -1553,6 +1696,87 @@ Legend:
 Append new batches here with command, result, and notes. Each batch should include at least one
 red-team attack, the route matrix it covers, and the residual risk left behind.
 
+- `deno test --allow-all --filter "wrapped Promise.resolve thenable"
+  src/service/analyze_project_test.ts`:
+  red run failed before the Batch 63 fix because only direct `Promise.resolve(...)` reported
+  `SOUND1034`; green run passed, 1 test in `3s`, after wrapped `.call` and `.apply` invocations also
+  reported `SOUND1034`.
+- `deno test --allow-all --filter "constructor-chain" src/frontend/macro_vm_test.ts`: red run
+  reproduced constructor-chain access to string-code generation; green run passed after VM context
+  hardening rejected all constructor-chain variants.
+- `deno test --allow-all --filter "constructor-chain access"
+  src/frontend/project_macro_support_test.ts`:
+  red run reproduced raw macro-global access through project macro expansion; green run passed after
+  project macro evaluation inherited the hardened VM context.
+- `deno test --allow-all --filter "source-published package macro constructor-chain"
+  src/frontend/project_macro_support_test.ts`:
+  passed, proving package-authored macros loaded through source-published package resolution inherit
+  the hardened constructor-chain VM policy.
+- `deno test --allow-all --filter "package macro site kind drift"
+  tests/integration/red_team_audit_test.ts`:
+  passed, proving direct, fresh prepared, reused prepared, and incremental routes agree after
+  package macro call/declaration site-kind drift.
+- `deno test --allow-all --filter "watched file changes" src/lsp/server_test.ts`: red run reproduced
+  stale open-document diagnostics after package macro helper drift; green run passed after
+  watched-file notifications invalidated project contexts and rescheduled diagnostics.
+- `deno test --allow-env --allow-read --allow-write --allow-run src/checker/engine/context_test.ts`:
+  red run reproduced precise forwarded-parameter facts for unsupported `bind` adapter paths; green
+  run passed, 32 tests, after Function adapter members stayed conservative.
+- `deno test --allow-all --filter "Function adapter forwarding conservative"
+  tests/integration/red_team_audit_test.ts`:
+  passed, proving the persistent checker cache and incremental session routes invalidate a
+  direct-callback wrapper mutation to `bind`/`call`/`apply` and match cold diagnostics.
+- `deno test --allow-all --filter "Function adapter forwarding diagnostics" src/lsp/server_test.ts`:
+  passed, proving LSP watched-file diagnostics republish three `SOUND1041` diagnostics after a
+  helper mutates from direct callback forwarding to `bind`/`call`/`apply`.
+- `deno test --allow-all --filter "module shape for stripped macro-authoring"
+  src/frontend/project_frontend_test.ts`:
+  red run reproduced a stripped macro-authoring view that removed `sts:macros` imports while leaving
+  top-level `macroSignature` constants behind; green run passed after those compile-time-only
+  constants were stripped too.
+- `deno test --allow-all src/frontend/project_frontend_test.ts`: passed, 92 tests, after the macro
+  stripping fix.
+- `deno test --allow-all --filter "package-authored macro" src/cli/cli_test.ts`: passed, 2 tests,
+  proving CLI check, expand, and `deno run` routes accept package-authored macros that use top-level
+  signature constants.
+- `deno test --allow-all --filter "project-transform" scripts/release/prepare_npm_test.ts`: passed,
+  3 tests, proving packaged project-transform macro expansion still handles local macros,
+  source-published dependency macros, and portable `ctx.host` access.
+- `deno test --allow-all --filter "runtime stdlib JS" scripts/release/prepare_npm_test.ts` and
+  `deno test --allow-all --filter "tarball resolves NodeNext" scripts/release/prepare_npm_test.ts`:
+  passed, proving the stdlib JS and packaged tarball routes were not regressed by the macro
+  stripping fix.
+- `deno test --allow-all src/frontend/macro_vm_test.ts src/frontend/project_macro_support_test.ts`:
+  passed, 32 tests, proving the hardened macro VM still supports deterministic local and
+  source-published package macro expansion paths.
+- `deno test --allow-all --filter "watched file changes" src/lsp/server_test.ts`: passed, 2 tests,
+  proving both package macro helper drift and Function adapter effect drift republish diagnostics
+  after watched-file invalidation.
+- `deno test --allow-env --allow-read --allow-write --allow-run --filter
+  "recursive runtime reference helpers" src/cli/cli_test.ts`:
+  red run hung in the checker effect rule after directive validation; green run passed, 1 test in
+  `2s`, after recursive effect-summary solving gained a conservative bailout.
+- `deno fmt --check src/checker/effects.ts src/checker/rules/async_surface.ts
+  src/frontend/macro_factory_support.ts src/frontend/macro_vm.ts src/frontend/macro_vm_test.ts
+  src/frontend/project_frontend_test.ts src/frontend/project_macro_support_test.ts
+  src/lsp/project_service.ts src/lsp/server.ts src/lsp/server_test.ts
+  src/service/analyze_project_test.ts tests/integration/red_team_audit_test.ts
+  docs/project/2026-04-17-red-team-audit.md src/cli/cli_test.ts`:
+  passed for touched non-wasm checker, macro, LSP, service, red-team, CLI, and ledger files.
+- `deno lint src/checker/effects.ts src/checker/rules/async_surface.ts
+  src/frontend/macro_factory_support.ts src/frontend/macro_vm.ts src/frontend/macro_vm_test.ts
+  src/frontend/project_macro_support_test.ts src/lsp/project_service.ts src/lsp/server.ts
+  src/lsp/server_test.ts src/service/analyze_project_test.ts
+  tests/integration/red_team_audit_test.ts src/cli/cli_test.ts`:
+  passed for touched non-wasm checker, macro, LSP, service, CLI, and red-team files that are free of
+  existing lint debt.
+- `deno task check`: passed after the Batch 63-69 fixes.
+- `deno test --allow-all tests/integration/fuzz_test.ts`: passed, 13 tests, including the
+  broad-corpus CLI crash/timeout pass.
+- `deno task test`: attempted as a higher-confidence full gate, then stopped after it reproduced the
+  in-scope package-authored macro regression fixed in Batch 69 plus out-of-scope/broad-suite
+  failures in wasm compiler tests and pure TypeScript universal-policy fixture expectations. Focused
+  reruns for the Batch 69 package macro routes passed after the fix.
 - `deno test --allow-all --filter project-reference src/project/config_test.ts
   src/cli/cli_test.ts`:
   passed, proving `check --references` parsing and CLI forwarding.

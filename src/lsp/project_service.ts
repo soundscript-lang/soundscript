@@ -245,6 +245,22 @@ function getProjectContextCache(session: SessionState): Map<string, CachedProjec
   return cache;
 }
 
+export function invalidateProjectContexts(session: SessionState): void {
+  const cache = projectContextCacheBySession.get(session);
+  if (!cache) {
+    return;
+  }
+
+  const sessions = new Set<IncrementalProjectSession>();
+  for (const context of cache.values()) {
+    sessions.add(context.analysisSession);
+  }
+  for (const analysisSession of sessions) {
+    analysisSession.dispose();
+  }
+  cache.clear();
+}
+
 function projectContextCacheKey(projectPath: string, mode: 'full' | 'sts-local'): string {
   return `${projectPath}::${mode}`;
 }
