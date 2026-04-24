@@ -9,6 +9,7 @@ import type {
 import {
   collectSemanticRuntimeFamiliesFromTypes,
   type SemanticBoundarySurfaceIR,
+  type SemanticClosureSignatureIR,
   type SemanticExpressionIR,
   type SemanticFunctionIR,
   type SemanticModuleIR,
@@ -46,6 +47,18 @@ interface SourceSemanticArrayLocal {
   elementRepresentation: CompilerValueType;
 }
 
+interface SourceSemanticClosureLocal {
+  resultRepresentation: CompilerValueType;
+  signatureId: number;
+}
+
+interface SourceSemanticModuleLoweringState {
+  closureSignatures: SemanticClosureSignatureIR[];
+  generatedFunctions: SemanticFunctionIR[];
+  nextClosureFunctionId: number;
+  nextClosureSignatureId: number;
+}
+
 interface FunctionLoweringContext {
   functionName: string;
   functionResultArrayLocals: Map<string, SourceSemanticArrayLocal>;
@@ -53,7 +66,9 @@ interface FunctionLoweringContext {
   localRepresentations: Map<string, CompilerValueType>;
   locals: { name: string; representation: CompilerValueType }[];
   arrayLocals: Map<string, SourceSemanticArrayLocal>;
+  closureLocals: Map<string, SourceSemanticClosureLocal>;
   localTypesByKey: Map<string, SemanticTypeIR>;
+  moduleState: SourceSemanticModuleLoweringState;
   objectLayoutsByKey: Map<string, SemanticObjectLayoutIR>;
   objectLocals: Map<string, SourceSemanticObjectLocal>;
   pendingStatements: SemanticStatementIR[];
@@ -137,6 +152,40 @@ function representationForSemanticType(type: SemanticTypeIR): CompilerValueType 
       return exhaustiveCheck;
     }
   }
+}
+
+function singleSignatureClosureType(
+  type: SemanticTypeIR | undefined,
+): {
+  params: readonly SemanticTypeIR[];
+  result: SemanticTypeIR;
+} | undefined {
+  if (type?.kind !== 'closure' || !type.signatures || type.signatures.length !== 1) {
+    return undefined;
+  }
+  const [signature] = type.signatures;
+  if (!signature) {
+    return undefined;
+  }
+  return {
+    params: signature.params as readonly SemanticTypeIR[],
+    result: signature.result as SemanticTypeIR,
+  };
+}
+
+function createClosureSignature(
+  moduleState: SourceSemanticModuleLoweringState,
+  params: readonly SemanticTypeIR[],
+  result: SemanticTypeIR,
+): SemanticClosureSignatureIR {
+  const signature: SemanticClosureSignatureIR = {
+    id: moduleState.nextClosureSignatureId,
+    params: params.map(representationForSemanticType),
+    resultType: representationForSemanticType(result),
+  };
+  moduleState.nextClosureSignatureId += 1;
+  moduleState.closureSignatures.push(signature);
+  return signature;
 }
 
 function binaryOperatorForSource(
@@ -970,6 +1019,20 @@ function lowerExpression(
         context.unsupportedKinds.add('call_expression');
         return { kind: 'undefined_literal', representation: 'tagged_ref' };
       }
+      const closureLocal = context.closureLocals.get(expression.callee.name);
+      if (closureLocal) {
+        return {
+          kind: 'closure_call',
+          callee: {
+            kind: 'local_get',
+            name: expression.callee.name,
+            representation: 'closure_ref',
+          },
+          args: expression.args.map((arg) => lowerExpression(arg, context)),
+          signatureId: closureLocal.signatureId,
+          representation: closureLocal.resultRepresentation,
+        };
+      }
       const representation = context.functionResultRepresentations.get(expression.callee.name);
       if (!representation) {
         context.unsupportedKinds.add(`unknown_call:${expression.callee.name}`);
@@ -1564,6 +1627,107 @@ function lowerTryStatement(
   ];
 }
 
+function lowerArrowFunctionExpression(
+  expression: Extract<SourceExpressionIR, { kind: 'arrow_function' }>,
+  closureType: SemanticTypeIR | undefined,
+  parentContext: FunctionLoweringContext,
+): Extract<SemanticExpressionIR, { kind: 'closure_literal' }> | undefined {
+  const signatureType = singleSignatureClosureType(closureType);
+  if (!signatureType || signatureType.params.length !== expression.params.length) {
+    parentContext.unsupportedKinds.add('arrow_function_signature');
+    return undefined;
+  }
+  const closureSignature = createClosureSignature(
+    parentContext.moduleState,
+    signatureType.params,
+    signatureType.result,
+  );
+  const closureFunctionId = parentContext.moduleState.nextClosureFunctionId;
+  parentContext.moduleState.nextClosureFunctionId += 1;
+
+  const localRepresentations = new Map<string, CompilerValueType>();
+  const arrayLocals = new Map<string, SourceSemanticArrayLocal>();
+  const params = expression.params.map((binding, index) => {
+    const type = signatureType.params[index]!;
+    const representation = representationForSemanticType(type);
+    const name = binding.kind === 'identifier_binding'
+      ? binding.name
+      : `__source_closure_param_${index}`;
+    localRepresentations.set(name, representation);
+    const arrayLocal = arrayLocalInfoForSemanticType(type);
+    if (arrayLocal) {
+      arrayLocals.set(name, arrayLocal);
+    }
+    if (binding.kind !== 'identifier_binding') {
+      parentContext.unsupportedKinds.add('arrow_function_parameter');
+    }
+    return { name, representation };
+  });
+
+  const unsupportedKinds = new Set<string>();
+  const closureContext: FunctionLoweringContext = {
+    functionName: `closure_source_${parentContext.functionName}_${closureFunctionId}`,
+    functionResultArrayLocals: parentContext.functionResultArrayLocals,
+    functionResultRepresentations: parentContext.functionResultRepresentations,
+    localRepresentations,
+    locals: [],
+    arrayLocals,
+    closureLocals: new Map(),
+    localTypesByKey: new Map(),
+    moduleState: parentContext.moduleState,
+    objectLayoutsByKey: parentContext.objectLayoutsByKey,
+    objectLocals: new Map(),
+    pendingStatements: [],
+    runtimeFamilies: new Set(),
+    stringLiteralIds: parentContext.stringLiteralIds,
+    stringLiterals: parentContext.stringLiterals,
+    switchBreakLocalStack: [],
+    tempIndex: 0,
+    unsupportedKinds,
+  };
+  const body = [
+    ...expression.body.flatMap((statement) => [...lowerStatement(statement, closureContext)]),
+    { kind: 'trap' } as SemanticStatementIR,
+  ];
+  const unsupportedBodyKinds = [...unsupportedKinds].sort();
+  const runtimeFamilies = collectSemanticRuntimeFamiliesFromTypes([
+    ...signatureType.params,
+    signatureType.result,
+  ]);
+  const functionRuntimeFamilies = [
+    ...new Set([...runtimeFamilies, ...closureContext.runtimeFamilies]),
+  ]
+    .sort();
+  parentContext.moduleState.generatedFunctions.push({
+    name: closureContext.functionName,
+    exportName: '',
+    params,
+    locals: closureContext.locals,
+    result: representationForSemanticType(signatureType.result),
+    body,
+    bodyStatus: unsupportedBodyKinds.length === 0 ? 'emittable' : 'stub',
+    unsupportedBodyKinds,
+    runtimeFamilies: functionRuntimeFamilies,
+    hostImported: false,
+    hostExported: false,
+    unionBoundaries: [],
+    closureFunctionId,
+    closureSignatureId: closureSignature.id,
+    closureCaptureCount: 0,
+    closureCaptureValueTypes: [],
+  });
+
+  parentContext.runtimeFamilies.add('closure');
+  return {
+    kind: 'closure_literal',
+    functionId: closureFunctionId,
+    signatureId: closureSignature.id,
+    captures: [],
+    captureValueTypes: [],
+    representation: 'closure_ref',
+  };
+}
+
 function lowerStatement(
   statement: SourceStatementIR,
   context: FunctionLoweringContext,
@@ -1623,6 +1787,29 @@ function lowerStatement(
         if (declaration.binding.kind !== 'identifier_binding' || !declaration.initializer) {
           context.unsupportedKinds.add('variable_declaration');
           return [{ kind: 'unsupported_statement', sourceKind: 'variable_declaration' }];
+        }
+        if (declaration.initializer.kind === 'arrow_function') {
+          const localType = localTypeForBinding(declaration.binding, context);
+          const closure = lowerArrowFunctionExpression(
+            declaration.initializer,
+            localType,
+            context,
+          );
+          if (!closure) {
+            return [{ kind: 'unsupported_statement', sourceKind: 'variable_declaration' }];
+          }
+          addLocal(context, declaration.binding.name, 'closure_ref');
+          context.closureLocals.set(declaration.binding.name, {
+            signatureId: closure.signatureId,
+            resultRepresentation: representationForSemanticType(
+              singleSignatureClosureType(localType)?.result ?? { kind: 'undefined' },
+            ),
+          });
+          return [{
+            kind: 'local_set',
+            name: declaration.binding.name,
+            value: closure,
+          }];
         }
         if (declaration.initializer.kind === 'object_literal') {
           const fieldValueNames: string[] = [];
@@ -2090,6 +2277,7 @@ function lowerFunction(
   functionResultArrayLocals: Map<string, SourceSemanticArrayLocal>,
   functionResultRepresentations: Map<string, CompilerValueType>,
   objectLayoutsByKey: Map<string, SemanticObjectLayoutIR>,
+  moduleState: SourceSemanticModuleLoweringState,
   stringLiteralIds: Map<string, number>,
   stringLiterals: string[],
 ): SemanticFunctionIR {
@@ -2137,7 +2325,9 @@ function lowerFunction(
     localRepresentations,
     locals: [],
     arrayLocals,
+    closureLocals: new Map(),
     localTypesByKey,
+    moduleState,
     objectLayoutsByKey,
     objectLocals: new Map(),
     pendingStatements: [],
@@ -2242,6 +2432,12 @@ export function createSemanticModuleFromSourceHIR(
       ] as const
     ),
   );
+  const moduleState: SourceSemanticModuleLoweringState = {
+    closureSignatures: [],
+    generatedFunctions: [],
+    nextClosureFunctionId: 0,
+    nextClosureSignatureId: 0,
+  };
   const functionResultRepresentations = new Map<string, CompilerValueType>();
   const functionResultArrayLocals = new Map<string, SourceSemanticArrayLocal>();
   for (const module of source.modules) {
@@ -2268,11 +2464,13 @@ export function createSemanticModuleFromSourceHIR(
         functionResultArrayLocals,
         functionResultRepresentations,
         objectLayoutsByKey,
+        moduleState,
         stringLiteralIds,
         stringLiterals,
       )
     )
   );
+  const allFunctions = [...functions, ...moduleState.generatedFunctions];
   const boundarySurfaces = sharedFacts.boundarySurfaces.map((surface) => ({
     ...(surface as SemanticBoundarySurfaceIR),
     runtimeFamilies: collectSemanticRuntimeFamiliesFromTypes([
@@ -2284,15 +2482,18 @@ export function createSemanticModuleFromSourceHIR(
   boundarySurfaces.forEach((surface) =>
     surface.runtimeFamilies.forEach((family) => runtimeFamilies.add(family))
   );
-  functions.forEach((func) =>
+  allFunctions.forEach((func) =>
     func.runtimeFamilies.forEach((family) => runtimeFamilies.add(family))
   );
+  if (moduleState.closureSignatures.length > 0) {
+    runtimeFamilies.add('closure');
+  }
 
   return {
     kind: 'semantic_module',
-    functions,
+    functions: allFunctions,
     moduleGlobals: [],
-    closureSignatures: [],
+    closureSignatures: moduleState.closureSignatures,
     stringLiterals,
     stringLiteralCodeUnits: stringLiterals.map(codeUnitsForString),
     typeSnapshots: sharedFacts.typeSnapshots as SemanticModuleIR['typeSnapshots'],

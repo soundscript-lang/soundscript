@@ -259,6 +259,12 @@ export type SourceExpressionIR =
     args: readonly SourceExpressionIR[];
     span: SourceSpanIR;
   }
+  | {
+    kind: 'arrow_function';
+    params: readonly SourceBindingIR[];
+    body: readonly SourceStatementIR[];
+    span: SourceSpanIR;
+  }
   | { kind: 'await_expression'; expression: SourceExpressionIR; span: SourceSpanIR }
   | { kind: 'array_literal'; elements: readonly SourceExpressionIR[]; span: SourceSpanIR }
   | {
@@ -626,6 +632,21 @@ function lowerExpression(
       kind: 'new_expression',
       callee: lowerExpression(sourceFile, expression.expression),
       args: expression.arguments?.map((argument) => lowerExpression(sourceFile, argument)) ?? [],
+      span: spanOf(sourceFile, expression),
+    };
+  }
+
+  if (ts.isArrowFunction(expression)) {
+    return {
+      kind: 'arrow_function',
+      params: expression.parameters.map((param) => lowerBinding(sourceFile, param.name)),
+      body: ts.isBlock(expression.body)
+        ? lowerStatements(sourceFile, expression.body.statements)
+        : [{
+          kind: 'return',
+          expression: lowerExpression(sourceFile, expression.body),
+          span: spanOf(sourceFile, expression.body),
+        }],
       span: spanOf(sourceFile, expression),
     };
   }
