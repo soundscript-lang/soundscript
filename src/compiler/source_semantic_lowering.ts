@@ -215,6 +215,60 @@ function arrayLocalInfoForExpression(
   }
 }
 
+function arrayElementSetStatementForLocal(
+  context: FunctionLoweringContext,
+  objectName: string,
+  index: SemanticExpressionIR,
+  value: SemanticExpressionIR,
+): SemanticStatementIR | undefined {
+  if (index.representation !== 'f64') {
+    return undefined;
+  }
+  const arrayRepresentation = context.localRepresentations.get(objectName);
+  if (!arrayRepresentation) {
+    return undefined;
+  }
+  const array: SemanticExpressionIR = {
+    kind: 'local_get',
+    name: objectName,
+    representation: arrayRepresentation,
+  };
+  if (arrayRepresentation === 'owned_number_array_ref' && value.representation === 'f64') {
+    context.runtimeFamilies.add('array');
+    return {
+      kind: 'owned_number_array_set',
+      array,
+      index,
+      value,
+    };
+  }
+  const arrayLocal = context.arrayLocals.get(objectName);
+  if (
+    arrayRepresentation === 'owned_array_ref' &&
+    arrayLocal?.elementRepresentation === 'owned_string_ref' &&
+    value.representation === 'owned_string_ref'
+  ) {
+    context.runtimeFamilies.add('array');
+    context.runtimeFamilies.add('string');
+    return {
+      kind: 'owned_string_array_set',
+      array,
+      index,
+      value,
+    };
+  }
+  if (arrayRepresentation === 'owned_boolean_array_ref' && value.representation === 'i32') {
+    context.runtimeFamilies.add('array');
+    return {
+      kind: 'owned_boolean_array_set',
+      array,
+      index,
+      value,
+    };
+  }
+  return undefined;
+}
+
 function lowerExpression(
   expression: SourceExpressionIR,
   context: FunctionLoweringContext,
@@ -512,6 +566,26 @@ function lowerStatement(
             context.arrayLocals.delete(target);
           }
           return [...statements, { kind: 'local_set', name: target, value }];
+        }
+        if (
+          assignment.left.kind === 'element_access' &&
+          assignment.left.object.kind === 'identifier' &&
+          assignment.left.index
+        ) {
+          const objectName = assignment.left.object.name;
+          const index = lowerExpression(assignment.left.index, context);
+          const value = lowerExpression(assignment.right, context);
+          const arraySet = arrayElementSetStatementForLocal(
+            context,
+            objectName,
+            index,
+            value,
+          );
+          if (!arraySet) {
+            context.unsupportedKinds.add(`element_assignment:${objectName}`);
+            return [{ kind: 'unsupported_statement', sourceKind: 'assignment_expression' }];
+          }
+          return [...takePendingStatements(context), arraySet];
         }
         if (
           assignment.left.kind === 'property_access' &&
