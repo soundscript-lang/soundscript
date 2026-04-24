@@ -75,6 +75,7 @@ export interface CompileProjectResult {
 }
 
 export interface CompileArtifacts {
+  backend: 'wasm-gc' | 'legacy-wasm';
   declarationsPath?: string;
   runtimePath?: string;
   wasmPath?: string;
@@ -741,29 +742,37 @@ export function compileProject(options: CompileProjectOptions): CompileProjectRe
         snapshot.wasmGcPlan.diagnostics.length === 0 &&
         areWasmGcPublicBoundariesSupported(snapshot) &&
         snapshot.wasmGcPlan.functionPlans.every((func) => func.bodyStatus === 'emittable');
-      const toolchain = canUseWasmGcPublicPath
-        ? packageCompilerOutput({
-          jsHostImports: snapshot.legacyJsHostImports,
-          projectPath: options.projectPath,
-          runtimeTarget: runtime.target,
-          wat: emitWasmGcModulePlan(snapshot.wasmGcPlan),
-          wrapperModuleText: createWasmGcPublicWrapperModuleText({
+      const packaged = canUseWasmGcPublicPath
+        ? {
+          backend: 'wasm-gc' as const,
+          toolchain: packageCompilerOutput({
             jsHostImports: snapshot.legacyJsHostImports,
             projectPath: options.projectPath,
-            wasmGcWrapperModuleText: emitWasmGcWrapperModule(snapshot.wasmGcPlan),
+            runtimeTarget: runtime.target,
+            wat: emitWasmGcModulePlan(snapshot.wasmGcPlan),
+            wrapperModuleText: createWasmGcPublicWrapperModuleText({
+              jsHostImports: snapshot.legacyJsHostImports,
+              projectPath: options.projectPath,
+              wasmGcWrapperModuleText: emitWasmGcWrapperModule(snapshot.wasmGcPlan),
+            }),
           }),
-        })
+        }
         : (() => {
           const module = lowerProgramToCompilerIR(program, dirname(options.projectPath));
-          return packageCompilerOutput({
-            jsHostImports: module.jsHostImports,
-            projectPath: options.projectPath,
-            runtimeTarget: runtime.target,
-            wat: emitCompilerModuleToWat(module),
-          });
+          return {
+            backend: 'legacy-wasm' as const,
+            toolchain: packageCompilerOutput({
+              jsHostImports: module.jsHostImports,
+              projectPath: options.projectPath,
+              runtimeTarget: runtime.target,
+              wat: emitCompilerModuleToWat(module),
+            }),
+          };
         })();
+      const { backend, toolchain } = packaged;
       return {
         artifacts: {
+          backend,
           declarationsPath: toolchain.declarationsPath,
           runtimePath: toolchain.runtimePath,
           wasmPath: toolchain.wasmPath,

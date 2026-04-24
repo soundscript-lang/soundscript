@@ -4430,6 +4430,7 @@ compilerIntegrationTest(
     assertEquals(result.exitCode, 0);
     assertEquals(result.diagnostics, []);
     assert(result.artifacts);
+    assertEquals(result.artifacts.backend, 'wasm-gc');
     assert(result.artifacts.wrapperPath);
 
     const wrapperSource = await Deno.readTextFile(result.artifacts.wrapperPath);
@@ -4490,6 +4491,7 @@ compilerIntegrationTest(
     assertEquals(result.exitCode, 0);
     assertEquals(result.diagnostics, []);
     assert(result.artifacts);
+    assertEquals(result.artifacts.backend, 'legacy-wasm');
     assertEquals(result.artifacts.wrapperPath, undefined);
     const wat = await Deno.readTextFile(result.artifacts.watPath!);
     assertFalse(wat.includes('soundscript wasm-gc shadow module'));
