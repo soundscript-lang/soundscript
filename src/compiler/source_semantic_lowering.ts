@@ -1,5 +1,6 @@
 import type { CompilerValueType } from './ir.ts';
 import type {
+  SourceBindingIR,
   SourceExpressionIR,
   SourceFunctionIR,
   SourceModuleIR,
@@ -1029,6 +1030,63 @@ function lowerSwitchStatement(
   return switchStatements;
 }
 
+function specializedObjectLocalForSemanticType(
+  type: SemanticTypeIR,
+  context: FunctionLoweringContext,
+): SourceSemanticObjectLocal | undefined {
+  if (type.kind !== 'object' || type.dynamic || type.fallback || !type.fields) {
+    return undefined;
+  }
+  const fields = type.fields.map((field) => ({
+    name: field.name,
+    representation: representationForSemanticType(field.type as SemanticTypeIR),
+  }));
+  return {
+    representationName: registerSpecializedObjectLayout(context, fields),
+    fields,
+  };
+}
+
+function lowerObjectBindingFromLocal(
+  binding: SourceBindingIR,
+  objectName: string,
+  objectLayout: SourceSemanticObjectLocal,
+  context: FunctionLoweringContext,
+  sourceKind: string,
+): SemanticStatementIR[] | undefined {
+  if (binding.kind !== 'object_binding') {
+    return undefined;
+  }
+  const statements: SemanticStatementIR[] = [];
+  for (const element of binding.elements) {
+    if (element.kind !== 'identifier_binding') {
+      context.unsupportedKinds.add('object_binding');
+      return undefined;
+    }
+    const fieldIndex = objectLayout.fields.findIndex((field) => field.name === element.name);
+    if (fieldIndex < 0) {
+      context.unsupportedKinds.add(`object_binding:${element.name}`);
+      return undefined;
+    }
+    const field = objectLayout.fields[fieldIndex]!;
+    addLocal(context, element.name, field.representation);
+    statements.push({
+      kind: 'specialized_object_field_get',
+      targetName: element.name,
+      objectName,
+      representationName: objectLayout.representationName,
+      fieldIndex,
+      fieldName: field.name,
+    });
+  }
+  context.runtimeFamilies.add('specialized_object');
+  if (statements.length === 0) {
+    context.unsupportedKinds.add(sourceKind);
+    return undefined;
+  }
+  return statements;
+}
+
 function lowerStatement(
   statement: SourceStatementIR,
   context: FunctionLoweringContext,
@@ -1048,31 +1106,17 @@ function lowerStatement(
             context.unsupportedKinds.add(`object_binding:${objectName}`);
             return [{ kind: 'unsupported_statement', sourceKind: 'variable_declaration' }];
           }
-          for (const element of declaration.binding.elements) {
-            if (element.kind !== 'identifier_binding') {
-              context.unsupportedKinds.add('object_binding');
-              return [{ kind: 'unsupported_statement', sourceKind: 'variable_declaration' }];
-            }
-            const fieldIndex = objectLayout.fields.findIndex((field) =>
-              field.name === element.name
-            );
-            if (fieldIndex < 0) {
-              context.unsupportedKinds.add(`object_binding:${element.name}`);
-              return [{ kind: 'unsupported_statement', sourceKind: 'variable_declaration' }];
-            }
-            const field = objectLayout.fields[fieldIndex]!;
-            addLocal(context, element.name, field.representation);
-            statements.push({
-              kind: 'specialized_object_field_get',
-              targetName: element.name,
-              objectName,
-              representationName: objectLayout.representationName,
-              fieldIndex,
-              fieldName: field.name,
-            });
+          const bindingStatements = lowerObjectBindingFromLocal(
+            declaration.binding,
+            objectName,
+            objectLayout,
+            context,
+            'variable_declaration',
+          );
+          if (!bindingStatements) {
+            return [{ kind: 'unsupported_statement', sourceKind: 'variable_declaration' }];
           }
-          context.runtimeFamilies.add('specialized_object');
-          return statements;
+          return [...statements, ...bindingStatements];
         }
         if (declaration.binding.kind === 'array_binding' && declaration.initializer) {
           const initializer = lowerExpression(declaration.initializer, context);
@@ -1448,15 +1492,25 @@ function lowerFunction(
   const boundary = signature?.boundary;
   const localRepresentations = new Map<string, CompilerValueType>();
   const arrayLocals = new Map<string, SourceSemanticArrayLocal>();
-  const params = (signature?.params ?? []).map((param) => {
+  const parameterBindings: {
+    binding: SourceBindingIR;
+    name: string;
+    type: SemanticTypeIR;
+  }[] = [];
+  const params = (signature?.params ?? []).map((param, index) => {
+    const binding = func.params[index];
+    const name = binding?.kind === 'identifier_binding' ? binding.name : `__source_param_${index}`;
     const representation = representationForSemanticType(param.type);
-    localRepresentations.set(param.name, representation);
+    localRepresentations.set(name, representation);
     const arrayLocal = arrayLocalInfoForSemanticType(param.type);
     if (arrayLocal) {
-      arrayLocals.set(param.name, arrayLocal);
+      arrayLocals.set(name, arrayLocal);
+    }
+    if (binding && binding.kind !== 'identifier_binding') {
+      parameterBindings.push({ binding, name, type: param.type });
     }
     return {
-      name: param.name,
+      name,
       representation,
       ...(boundary ? { hostBoundary: param.type } : {}),
     };
@@ -1481,7 +1535,30 @@ function lowerFunction(
   if (!signature) {
     unsupportedKinds.add('missing_function_signature');
   }
-  const body = lowerFunctionBody(func, context);
+  const parameterBindingStatements = parameterBindings.flatMap((param): SemanticStatementIR[] => {
+    if (param.binding.kind === 'object_binding') {
+      const objectLayout = specializedObjectLocalForSemanticType(param.type, context);
+      if (!objectLayout) {
+        context.unsupportedKinds.add('parameter_object_binding');
+        return [{ kind: 'unsupported_statement', sourceKind: 'parameter_binding' }];
+      }
+      context.objectLocals.set(param.name, objectLayout);
+      const statements = lowerObjectBindingFromLocal(
+        param.binding,
+        param.name,
+        objectLayout,
+        context,
+        'parameter_binding',
+      );
+      return statements ?? [{ kind: 'unsupported_statement', sourceKind: 'parameter_binding' }];
+    }
+    context.unsupportedKinds.add('parameter_binding');
+    return [{ kind: 'unsupported_statement', sourceKind: 'parameter_binding' }];
+  });
+  const body = [
+    ...parameterBindingStatements,
+    ...lowerFunctionBody(func, context),
+  ];
   const unsupportedBodyKinds = [...unsupportedKinds].sort();
   const result = signature ? representationForSemanticType(signature.result) : 'tagged_ref';
   const runtimeFamilies = signature
