@@ -11,6 +11,7 @@ import {
   type SemanticExpressionIR,
   type SemanticFunctionIR,
   type SemanticModuleIR,
+  type SemanticObjectLayoutIR,
   type SemanticRuntimeFamilyId,
   type SemanticStatementIR,
   type SemanticTypeIR,
@@ -29,13 +30,25 @@ interface SourceSemanticFunctionSignature {
   result: SemanticTypeIR;
 }
 
+interface SourceSemanticObjectLocal {
+  representationName: string;
+  fields: readonly {
+    name: string;
+    representation: CompilerValueType;
+  }[];
+}
+
 interface FunctionLoweringContext {
   functionResultRepresentations: Map<string, CompilerValueType>;
   localRepresentations: Map<string, CompilerValueType>;
   locals: { name: string; representation: CompilerValueType }[];
+  objectLayoutsByKey: Map<string, SemanticObjectLayoutIR>;
+  objectLocals: Map<string, SourceSemanticObjectLocal>;
+  pendingStatements: SemanticStatementIR[];
   runtimeFamilies: Set<SemanticRuntimeFamilyId>;
   stringLiteralIds: Map<string, number>;
   stringLiterals: string[];
+  tempIndex: number;
   unsupportedKinds: Set<string>;
 }
 
@@ -126,6 +139,56 @@ function getStringLiteralId(context: FunctionLoweringContext, text: string): num
   return id;
 }
 
+function nextTempLocalName(context: FunctionLoweringContext, prefix: string): string {
+  const name = `__source_${prefix}_${context.tempIndex}`;
+  context.tempIndex += 1;
+  return name;
+}
+
+function addLocal(
+  context: FunctionLoweringContext,
+  name: string,
+  representation: CompilerValueType,
+): void {
+  context.localRepresentations.set(name, representation);
+  if (!context.locals.some((local) => local.name === name)) {
+    context.locals.push({ name, representation });
+  }
+}
+
+function takePendingStatements(context: FunctionLoweringContext): SemanticStatementIR[] {
+  const statements = [...context.pendingStatements];
+  context.pendingStatements.length = 0;
+  return statements;
+}
+
+function sourceObjectLayoutName(
+  fields: readonly { name: string; representation: CompilerValueType }[],
+): string {
+  return `source_object:${
+    fields.map((field) => `${field.name}:${field.representation}`).join(',')
+  }`;
+}
+
+function registerSpecializedObjectLayout(
+  context: FunctionLoweringContext,
+  fields: readonly { name: string; representation: CompilerValueType }[],
+): string {
+  const name = sourceObjectLayoutName(fields);
+  const layout: SemanticObjectLayoutIR = {
+    name,
+    family: 'specialized_object',
+    fields: fields.map((field) => field.name),
+    fieldValueTypes: fields.map((field) => ({
+      name: field.name,
+      representation: field.representation,
+    })),
+  };
+  context.objectLayoutsByKey.set(`specialized_object:${name}`, layout);
+  context.runtimeFamilies.add('specialized_object');
+  return name;
+}
+
 function lowerExpression(
   expression: SourceExpressionIR,
   context: FunctionLoweringContext,
@@ -171,6 +234,31 @@ function lowerExpression(
       return { kind: 'local_get', name: expression.name, representation };
     }
     case 'property_access': {
+      if (expression.object.kind === 'identifier') {
+        const objectLayout = context.objectLocals.get(expression.object.name);
+        const fieldIndex = objectLayout?.fields.findIndex((field) =>
+          field.name === expression.property
+        ) ?? -1;
+        if (objectLayout && fieldIndex >= 0) {
+          const field = objectLayout.fields[fieldIndex]!;
+          const tempName = nextTempLocalName(context, `field_${expression.object.name}`);
+          addLocal(context, tempName, field.representation);
+          context.pendingStatements.push({
+            kind: 'specialized_object_field_get',
+            targetName: tempName,
+            objectName: expression.object.name,
+            representationName: objectLayout.representationName,
+            fieldIndex,
+            fieldName: field.name,
+          });
+          context.runtimeFamilies.add('specialized_object');
+          return {
+            kind: 'local_get',
+            name: tempName,
+            representation: field.representation,
+          };
+        }
+      }
       const object = lowerExpression(expression.object, context);
       if (expression.property === 'length' && object.representation === 'owned_string_ref') {
         context.runtimeFamilies.add('string');
@@ -280,13 +368,37 @@ function lowerStatement(
           context.unsupportedKinds.add('variable_declaration');
           return [{ kind: 'unsupported_statement', sourceKind: 'variable_declaration' }];
         }
+        if (declaration.initializer.kind === 'object_literal') {
+          const fieldValueNames: string[] = [];
+          const fieldTypes: { name: string; representation: CompilerValueType }[] = [];
+          const statements: SemanticStatementIR[] = [];
+          for (const property of declaration.initializer.properties) {
+            const value = lowerExpression(property.value, context);
+            statements.push(...takePendingStatements(context));
+            const valueName = nextTempLocalName(context, `object_${declaration.binding.name}`);
+            addLocal(context, valueName, value.representation);
+            statements.push({ kind: 'local_set', name: valueName, value });
+            fieldValueNames.push(valueName);
+            fieldTypes.push({ name: property.name, representation: value.representation });
+          }
+          const representationName = registerSpecializedObjectLayout(context, fieldTypes);
+          addLocal(context, declaration.binding.name, 'heap_ref');
+          context.objectLocals.set(declaration.binding.name, {
+            representationName,
+            fields: fieldTypes,
+          });
+          statements.push({
+            kind: 'specialized_object_new',
+            targetName: declaration.binding.name,
+            representationName,
+            fieldValueNames,
+          });
+          return statements;
+        }
         const value = lowerExpression(declaration.initializer, context);
-        context.localRepresentations.set(declaration.binding.name, value.representation);
-        context.locals.push({
-          name: declaration.binding.name,
-          representation: value.representation,
-        });
-        return [{ kind: 'local_set', name: declaration.binding.name, value }];
+        const statements = takePendingStatements(context);
+        addLocal(context, declaration.binding.name, value.representation);
+        return [...statements, { kind: 'local_set', name: declaration.binding.name, value }];
       });
     }
     case 'expression_statement': {
@@ -301,17 +413,21 @@ function lowerStatement(
           context.unsupportedKinds.add(`unbound_assignment:${target}`);
           return [{ kind: 'unsupported_statement', sourceKind: 'assignment_expression' }];
         }
-        return [{ kind: 'local_set', name: target, value }];
+        const statements = takePendingStatements(context);
+        return [...statements, { kind: 'local_set', name: target, value }];
       }
-      return [{ kind: 'expression', value: lowerExpression(statement.expression, context) }];
+      const value = lowerExpression(statement.expression, context);
+      return [...takePendingStatements(context), { kind: 'expression', value }];
     }
-    case 'return':
-      return [{
+    case 'return': {
+      const value = statement.expression
+        ? lowerExpression(statement.expression, context)
+        : { kind: 'undefined_literal', representation: 'tagged_ref' } as SemanticExpressionIR;
+      return [...takePendingStatements(context), {
         kind: 'return',
-        value: statement.expression
-          ? lowerExpression(statement.expression, context)
-          : { kind: 'undefined_literal', representation: 'tagged_ref' },
+        value,
       }];
+    }
     case 'if': {
       const condition = lowerExpression(statement.test, context);
       if (condition.representation !== 'i32') {
@@ -409,6 +525,7 @@ function lowerFunction(
   func: SourceFunctionIR,
   sharedFacts: SharedSemanticFactsIR,
   functionResultRepresentations: Map<string, CompilerValueType>,
+  objectLayoutsByKey: Map<string, SemanticObjectLayoutIR>,
   stringLiteralIds: Map<string, number>,
   stringLiterals: string[],
 ): SemanticFunctionIR {
@@ -429,9 +546,13 @@ function lowerFunction(
     functionResultRepresentations,
     localRepresentations,
     locals: [],
+    objectLayoutsByKey,
+    objectLocals: new Map(),
+    pendingStatements: [],
     runtimeFamilies: new Set(),
     stringLiteralIds,
     stringLiterals,
+    tempIndex: 0,
     unsupportedKinds,
   };
   if (!signature) {
@@ -479,6 +600,14 @@ export function createSemanticModuleFromSourceHIR(
 ): SemanticModuleIR {
   const stringLiteralIds = new Map<string, number>();
   const stringLiterals: string[] = [];
+  const objectLayoutsByKey = new Map(
+    (sharedFacts.objectLayouts as readonly SemanticObjectLayoutIR[]).map((layout) =>
+      [
+        `${layout.family}:${layout.name}`,
+        layout,
+      ] as const
+    ),
+  );
   const functionResultRepresentations = new Map<string, CompilerValueType>();
   for (const module of source.modules) {
     for (const func of module.functions) {
@@ -498,6 +627,7 @@ export function createSemanticModuleFromSourceHIR(
         func,
         sharedFacts,
         functionResultRepresentations,
+        objectLayoutsByKey,
         stringLiteralIds,
         stringLiterals,
       )
@@ -525,7 +655,11 @@ export function createSemanticModuleFromSourceHIR(
     stringLiteralCodeUnits: stringLiterals.map(codeUnitsForString),
     typeSnapshots: sharedFacts.typeSnapshots as SemanticModuleIR['typeSnapshots'],
     boundarySurfaces,
-    objectLayouts: sharedFacts.objectLayouts as SemanticModuleIR['objectLayouts'],
+    objectLayouts: [...objectLayoutsByKey.values()].sort((left, right) =>
+      left.family === right.family
+        ? left.name.localeCompare(right.name)
+        : left.family.localeCompare(right.family)
+    ),
     unionBoundaries: [],
     runtimeFamilies: [...runtimeFamilies].sort(),
     diagnostics: [],
