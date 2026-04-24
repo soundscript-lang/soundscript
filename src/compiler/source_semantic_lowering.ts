@@ -2226,18 +2226,27 @@ function lowerClassMethodCallExpression(
     context.unsupportedKinds.add(`class_method_arity:${method.name}`);
     return undefined;
   }
-  const [returnStatement] = method.body;
+  const returnStatement = method.body[method.body.length - 1];
   if (
-    method.body.length !== 1 || !returnStatement || returnStatement.kind !== 'return' ||
+    !returnStatement || returnStatement.kind !== 'return' ||
     !returnStatement.expression
   ) {
     context.unsupportedKinds.add(`class_method_body:${method.name}`);
     return undefined;
   }
+  const preludeStatements = method.body.slice(0, -1);
+  if (sourceStatementsContainControlTransfer(preludeStatements)) {
+    context.unsupportedKinds.add(`class_method_control_flow:${method.name}`);
+    return undefined;
+  }
   const paramNames = method.params.map((param, index) =>
     param.kind === 'identifier_binding' ? param.name : `__source_method_param_${index}`
   );
-  const transientNames = ['this', ...paramNames];
+  const methodLocalNames = new Set<string>();
+  preludeStatements.forEach((statement) =>
+    collectSourceStatementDeclaredNames(statement, methodLocalNames)
+  );
+  const transientNames = ['this', ...paramNames, ...methodLocalNames];
   if (
     transientNames.includes(objectName) ||
     transientNames.some((name) =>
@@ -2276,11 +2285,17 @@ function lowerClassMethodCallExpression(
     name: 'this',
     value: { kind: 'local_get', name: objectName, representation: 'heap_ref' },
   });
+  statements.push(
+    ...preludeStatements.flatMap((statement) => [...lowerStatement(statement, context)]),
+  );
   const result = lowerExpression(returnStatement.expression, context);
   statements.push(...takePendingStatements(context));
+  const resultName = nextTempLocalName(context, `method_${method.name}_result`);
+  addLocal(context, resultName, result.representation);
+  statements.push({ kind: 'local_set', name: resultName, value: result });
   clearTransientSourceBindings(context, transientNames);
   context.pendingStatements.push(...statements);
-  return result;
+  return { kind: 'local_get', name: resultName, representation: result.representation };
 }
 
 function lowerStatement(
