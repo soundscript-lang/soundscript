@@ -458,6 +458,11 @@ interface FunctionRenderContext {
   objectLayoutIdsByLocal: ReadonlyMap<string, number>;
   localWasmTypes: ReadonlyMap<string, string>;
   stringLiteralCodeUnits: readonly (readonly number[])[];
+  loopLabels: readonly {
+    breakLabel: string;
+    continueLabel: string;
+    headLabel: string;
+  }[];
 }
 
 interface FallbackObjectLocalLayout {
@@ -496,6 +501,7 @@ const EMPTY_RENDER_CONTEXT: FunctionRenderContext = {
   objectLayoutIdsByLocal: new Map(),
   localWasmTypes: new Map(),
   stringLiteralCodeUnits: [],
+  loopLabels: [],
 };
 
 function closureLocalLiterals(
@@ -3029,6 +3035,9 @@ function collectNumberArrayScratchFromStatement(
     case 'while':
       collectNumberArrayScratchFromExpression(statement.condition, uses);
       statement.body.forEach((nested) => collectNumberArrayScratchFromStatement(nested, uses));
+      statement.continueBody?.forEach((nested) =>
+        collectNumberArrayScratchFromStatement(nested, uses)
+      );
       break;
     case 'specialized_object_new':
     case 'specialized_object_field_get':
@@ -3089,6 +3098,9 @@ function collectNumberArrayScratchFromStatement(
       break;
     case 'throw_tagged':
       collectNumberArrayScratchFromExpression(statement.value, uses);
+      break;
+    case 'break':
+    case 'continue':
       break;
     case 'trap':
     case 'unsupported_statement':
@@ -4883,18 +4895,44 @@ function renderStatement(
           : []),
         `${indent}end`,
       ];
-    case 'while':
+    case 'while': {
+      const loopIndex = context.loopLabels.length;
+      const labels = {
+        breakLabel: `$__source_loop_break_${loopIndex}`,
+        continueLabel: `$__source_loop_continue_${loopIndex}`,
+        headLabel: `$__source_loop_head_${loopIndex}`,
+      };
+      const loopContext: FunctionRenderContext = {
+        ...context,
+        loopLabels: [...context.loopLabels, labels],
+      };
       return [
-        `${indent}block`,
-        `${indent}  loop`,
+        `${indent}block ${labels.breakLabel}`,
+        `${indent}  loop ${labels.headLabel}`,
         ...renderExpression(statement.condition, `${indent}    `, context),
         `${indent}    i32.eqz`,
-        `${indent}    br_if 1`,
-        ...statement.body.flatMap((nested) => renderStatement(nested, `${indent}    `, context)),
-        `${indent}    br 0`,
+        `${indent}    br_if ${labels.breakLabel}`,
+        `${indent}    block ${labels.continueLabel}`,
+        ...statement.body.flatMap((nested) =>
+          renderStatement(nested, `${indent}      `, loopContext)
+        ),
+        `${indent}    end`,
+        ...(statement.continueBody ?? []).flatMap((nested) =>
+          renderStatement(nested, `${indent}    `, loopContext)
+        ),
+        `${indent}    br ${labels.headLabel}`,
         `${indent}  end`,
         `${indent}end`,
       ];
+    }
+    case 'break': {
+      const labels = context.loopLabels.at(-1);
+      return labels ? [`${indent}br ${labels.breakLabel}`] : [`${indent}unreachable`];
+    }
+    case 'continue': {
+      const labels = context.loopLabels.at(-1);
+      return labels ? [`${indent}br ${labels.continueLabel}`] : [`${indent}unreachable`];
+    }
     case 'throw_tagged':
       return [
         ...renderExpression(statement.value, indent, context),
@@ -4952,6 +4990,7 @@ function renderFunctionPlan(
     objectLayoutIdsByLocal: objectLayoutIdsByLocal(func),
     localWasmTypes: localWasmTypes(func),
     stringLiteralCodeUnits,
+    loopLabels: [],
   };
   const scratchLocals = numberArrayScratchLocals(func);
   const params = func.params.map((param, index) =>
@@ -6255,6 +6294,13 @@ function collectBoxedClosureDispatchSignatureIdsFromStatement(
           closureObjectNames,
         )
       );
+      statement.continueBody?.forEach((nested) =>
+        collectBoxedClosureDispatchSignatureIdsFromStatement(
+          nested,
+          signatureIds,
+          closureObjectNames,
+        )
+      );
       break;
     case 'specialized_object_new':
     case 'specialized_object_field_get':
@@ -6297,6 +6343,9 @@ function collectBoxedClosureDispatchSignatureIdsFromStatement(
         signatureIds,
         closureObjectNames,
       );
+      break;
+    case 'break':
+    case 'continue':
       break;
     case 'trap':
     case 'unsupported_statement':
@@ -6631,6 +6680,9 @@ function collectBoxValueTypesFromStatement(
     case 'while':
       collectBoxValueTypesFromExpression(statement.condition, valueTypes);
       statement.body.forEach((nested) => collectBoxValueTypesFromStatement(nested, valueTypes));
+      statement.continueBody?.forEach((nested) =>
+        collectBoxValueTypesFromStatement(nested, valueTypes)
+      );
       break;
     case 'specialized_object_new':
     case 'specialized_object_field_get':
@@ -6665,6 +6717,9 @@ function collectBoxValueTypesFromStatement(
       break;
     case 'throw_tagged':
       collectBoxValueTypesFromExpression(statement.value, valueTypes);
+      break;
+    case 'break':
+    case 'continue':
       break;
     case 'trap':
     case 'unsupported_statement':
@@ -6980,6 +7035,9 @@ function collectArrayRuntimeTypesFromStatement(
       statement.body.forEach((nested) =>
         collectArrayRuntimeTypesFromStatement(nested, runtimeTypes)
       );
+      statement.continueBody?.forEach((nested) =>
+        collectArrayRuntimeTypesFromStatement(nested, runtimeTypes)
+      );
       break;
     case 'specialized_object_new':
     case 'specialized_object_field_get':
@@ -7039,6 +7097,9 @@ function collectArrayRuntimeTypesFromStatement(
       break;
     case 'throw_tagged':
       collectArrayRuntimeTypesFromExpression(statement.value, runtimeTypes);
+      break;
+    case 'break':
+    case 'continue':
       break;
     case 'trap':
     case 'unsupported_statement':

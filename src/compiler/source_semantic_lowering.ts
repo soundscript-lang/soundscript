@@ -1004,10 +1004,8 @@ function lowerStatement(
       return [...conditionStatements, {
         kind: 'while',
         condition,
-        body: [
-          ...statement.body.flatMap((child) => [...lowerStatement(child, context)]),
-          ...conditionStatements,
-        ],
+        body: statement.body.flatMap((child) => [...lowerStatement(child, context)]),
+        continueBody: conditionStatements,
       }];
     }
     case 'for': {
@@ -1039,13 +1037,14 @@ function lowerStatement(
       return [...initializerStatements, ...conditionStatements, {
         kind: 'while',
         condition,
-        body: [
-          ...statement.body.flatMap((child) => [...lowerStatement(child, context)]),
-          ...incrementStatements,
-          ...conditionStatements,
-        ],
+        body: statement.body.flatMap((child) => [...lowerStatement(child, context)]),
+        continueBody: [...incrementStatements, ...conditionStatements],
       }];
     }
+    case 'break':
+      return [{ kind: 'break' }];
+    case 'continue':
+      return [{ kind: 'continue' }];
     case 'for_of': {
       const lowered = lowerArrayForOfStatement(statement, context);
       if (lowered) {

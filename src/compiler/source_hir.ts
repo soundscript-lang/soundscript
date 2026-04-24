@@ -59,6 +59,8 @@ export type SourceStatementIR =
   | SourceWhileStatementIR
   | SourceForStatementIR
   | SourceForOfStatementIR
+  | SourceBreakStatementIR
+  | SourceContinueStatementIR
   | SourceTryStatementIR
   | SourceBlockStatementIR
   | SourceUnknownStatementIR;
@@ -115,6 +117,16 @@ export interface SourceForOfStatementIR {
   left: SourceBindingIR | SourceExpressionIR;
   right: SourceExpressionIR;
   body: SourceStatementIR[];
+  span: SourceSpanIR;
+}
+
+export interface SourceBreakStatementIR {
+  kind: 'break';
+  span: SourceSpanIR;
+}
+
+export interface SourceContinueStatementIR {
+  kind: 'continue';
   span: SourceSpanIR;
 }
 
@@ -279,6 +291,27 @@ function updateOperatorForSource(operator: ts.SyntaxKind): '++' | '--' {
   return operator === ts.SyntaxKind.PlusPlusToken ? '++' : '--';
 }
 
+function isAssignmentOperatorForSource(operator: string): boolean {
+  return [
+    '=',
+    '+=',
+    '-=',
+    '*=',
+    '/=',
+    '%=',
+    '**=',
+    '<<=',
+    '>>=',
+    '>>>=',
+    '&=',
+    '|=',
+    '^=',
+    '&&=',
+    '||=',
+    '??=',
+  ].includes(operator);
+}
+
 function lowerBinding(sourceFile: ts.SourceFile, name: ts.BindingName): SourceBindingIR {
   if (ts.isIdentifier(name)) {
     return {
@@ -436,7 +469,7 @@ function lowerExpression(
 
   if (ts.isBinaryExpression(expression)) {
     const operator = expression.operatorToken.getText(sourceFile);
-    if (operator === '=' || operator.endsWith('=')) {
+    if (isAssignmentOperatorForSource(operator)) {
       return {
         kind: 'assignment_expression',
         operator,
@@ -548,6 +581,20 @@ function lowerStatement(sourceFile: ts.SourceFile, statement: ts.Statement): Sou
       expression: statement.expression
         ? lowerExpression(sourceFile, statement.expression)
         : undefined,
+      span: spanOf(sourceFile, statement),
+    };
+  }
+
+  if (ts.isBreakStatement(statement)) {
+    return {
+      kind: 'break',
+      span: spanOf(sourceFile, statement),
+    };
+  }
+
+  if (ts.isContinueStatement(statement)) {
+    return {
+      kind: 'continue',
       span: spanOf(sourceFile, statement),
     };
   }
