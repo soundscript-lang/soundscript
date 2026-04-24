@@ -2387,6 +2387,13 @@ function rejectUnsupportedClassMembers(
     context.unsupportedKinds.add(`class_member:private:${classInfo.name}.${privateMember.name}`);
     return true;
   }
+  const computedMember = classInfo.members.find((member) =>
+    'computedName' in member && member.computedName !== undefined
+  );
+  if (computedMember) {
+    context.unsupportedKinds.add(`class_member:computed:${classInfo.name}`);
+    return true;
+  }
   const accessor = classInfo.members.find((member) =>
     member.kind === 'getter' || member.kind === 'setter'
   );

@@ -61,6 +61,7 @@ export type SourceClassMemberIR =
     name: string;
     static: boolean;
     privacy: 'public' | 'private';
+    computedName?: SourceExpressionIR;
     params: SourceBindingIR[];
     body: SourceStatementIR[];
     span: SourceSpanIR;
@@ -70,6 +71,7 @@ export type SourceClassMemberIR =
     name: string;
     static: boolean;
     privacy: 'public' | 'private';
+    computedName?: SourceExpressionIR;
     initializer?: SourceExpressionIR;
     span: SourceSpanIR;
   }
@@ -78,6 +80,7 @@ export type SourceClassMemberIR =
     name: string;
     static: boolean;
     privacy: 'public' | 'private';
+    computedName?: SourceExpressionIR;
     span: SourceSpanIR;
   };
 
@@ -327,6 +330,16 @@ function classElementPrivacy(member: ts.ClassElement): 'public' | 'private' {
     return 'private';
   }
   return hasModifier(member, ts.SyntaxKind.PrivateKeyword) ? 'private' : 'public';
+}
+
+function classElementComputedName(
+  sourceFile: ts.SourceFile,
+  member: ts.ClassElement,
+): SourceExpressionIR | undefined {
+  if (!('name' in member) || !member.name || !ts.isComputedPropertyName(member.name)) {
+    return undefined;
+  }
+  return lowerExpression(sourceFile, member.name.expression);
 }
 
 function spanOf(sourceFile: ts.SourceFile, node: ts.Node): SourceSpanIR {
@@ -972,6 +985,7 @@ function lowerFunction(sourceFile: ts.SourceFile, node: ts.FunctionDeclaration):
 function lowerClassMember(sourceFile: ts.SourceFile, member: ts.ClassElement): SourceClassMemberIR {
   const staticMember = hasModifier(member, ts.SyntaxKind.StaticKeyword);
   const privacy = classElementPrivacy(member);
+  const computedName = classElementComputedName(sourceFile, member);
   const span = spanOf(sourceFile, member);
   if (ts.isConstructorDeclaration(member)) {
     return {
@@ -990,6 +1004,7 @@ function lowerClassMember(sourceFile: ts.SourceFile, member: ts.ClassElement): S
       name: member.name.getText(sourceFile),
       static: staticMember,
       privacy,
+      ...(computedName ? { computedName } : {}),
       span,
     };
   }
@@ -999,6 +1014,7 @@ function lowerClassMember(sourceFile: ts.SourceFile, member: ts.ClassElement): S
       name: member.name.getText(sourceFile),
       static: staticMember,
       privacy,
+      ...(computedName ? { computedName } : {}),
       span,
     };
   }
@@ -1008,6 +1024,7 @@ function lowerClassMember(sourceFile: ts.SourceFile, member: ts.ClassElement): S
       name: member.name.getText(sourceFile),
       static: staticMember,
       privacy,
+      ...(computedName ? { computedName } : {}),
       params: member.parameters.map((param) => lowerBinding(sourceFile, param.name)),
       body: member.body ? lowerStatements(sourceFile, member.body.statements) : [],
       span,
@@ -1019,6 +1036,7 @@ function lowerClassMember(sourceFile: ts.SourceFile, member: ts.ClassElement): S
       name: member.name.getText(sourceFile),
       static: staticMember,
       privacy,
+      ...(computedName ? { computedName } : {}),
       initializer: member.initializer ? lowerExpression(sourceFile, member.initializer) : undefined,
       span,
     };
@@ -1028,6 +1046,7 @@ function lowerClassMember(sourceFile: ts.SourceFile, member: ts.ClassElement): S
     name: '<unknown>',
     static: staticMember,
     privacy,
+    ...(computedName ? { computedName } : {}),
     span,
   };
 }

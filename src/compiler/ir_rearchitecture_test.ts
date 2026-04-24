@@ -1247,14 +1247,17 @@ Deno.test('compiler SourceHIR captures class heritage facts before lowering poli
   const source = createSourceHIRFromProgram(program, tempDirectory);
   const child = source.modules[0]?.classes.find((classInfo) => classInfo.name === 'Child');
 
-  assertEquals(child?.heritage.map((heritage) => ({
-    kind: heritage.kind,
-    typeName: heritage.typeName,
-    text: heritage.text,
-  })), [
-    { kind: 'extends', typeName: 'Base', text: 'Base' },
-    { kind: 'implements', typeName: 'Named', text: 'Named' },
-  ]);
+  assertEquals(
+    child?.heritage.map((heritage) => ({
+      kind: heritage.kind,
+      typeName: heritage.typeName,
+      text: heritage.text,
+    })),
+    [
+      { kind: 'extends', typeName: 'Base', text: 'Base' },
+      { kind: 'implements', typeName: 'Named', text: 'Named' },
+    ],
+  );
 });
 
 Deno.test('compiler SourceHIR captures private class member facts before lowering policy', async () => {
@@ -1284,15 +1287,57 @@ Deno.test('compiler SourceHIR captures private class member facts before lowerin
   const source = createSourceHIRFromProgram(program, tempDirectory);
   const counter = source.modules[0]?.classes.find((classInfo) => classInfo.name === 'Counter');
 
-  assertEquals(counter?.members.map((member) => ({
-    kind: member.kind,
-    name: member.name,
-    privacy: member.privacy,
-  })), [
-    { kind: 'property', name: '#value', privacy: 'private' },
-    { kind: 'property', name: 'hidden', privacy: 'private' },
-    { kind: 'method', name: '#read', privacy: 'private' },
+  assertEquals(
+    counter?.members.map((member) => ({
+      kind: member.kind,
+      name: member.name,
+      privacy: member.privacy,
+    })),
+    [
+      { kind: 'property', name: '#value', privacy: 'private' },
+      { kind: 'property', name: 'hidden', privacy: 'private' },
+      { kind: 'method', name: '#read', privacy: 'private' },
+    ],
+  );
+});
+
+Deno.test('compiler SourceHIR captures computed class member facts before lowering policy', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: { strict: true, target: 'ES2022' },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        class Counter {
+          ["value"]: number = 1;
+
+          ["read"](): number {
+            return this["value"];
+          }
+        }
+      `,
+    },
   ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const source = createSourceHIRFromProgram(program, tempDirectory);
+  const counter = source.modules[0]?.classes.find((classInfo) => classInfo.name === 'Counter');
+
+  assertEquals(
+    counter?.members.map((member) => ({
+      kind: member.kind,
+      name: member.name,
+      computedKind: 'computedName' in member ? member.computedName?.kind : undefined,
+    })),
+    [
+      { kind: 'property', name: '["value"]', computedKind: 'literal' },
+      { kind: 'method', name: '["read"]', computedKind: 'literal' },
+    ],
+  );
 });
 
 Deno.test('compiler SourceHIR semantic lowering rejects inherited class construction explicitly', async () => {
@@ -1375,6 +1420,43 @@ Deno.test('compiler SourceHIR semantic lowering rejects private class members ex
   assertEquals(score?.unsupportedBodyKinds, ['class_member:private:Counter.#value']);
   assertEquals(scorePlan?.bodyStatus, 'stub');
   assertEquals(scorePlan?.unsupportedBodyKinds, ['class_member:private:Counter.#value']);
+});
+
+Deno.test('compiler SourceHIR semantic lowering rejects computed class members explicitly', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: { strict: true, target: 'ES2022' },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        class Counter {
+          ["value"]: number = 1;
+        }
+
+        export function score(): number {
+          const counter = new Counter();
+          return 0;
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createSourceSemanticSnapshot(program, tempDirectory);
+  const semantic = createSemanticModuleFromSourceHIR(snapshot.source, snapshot.sharedFacts);
+  const manifest = createRuntimeManifestFromSemanticModule(semantic);
+  const plan = createWasmGcModulePlan(semantic, manifest);
+  const score = semantic.functions.find((func) => func.name === 'score');
+  const scorePlan = plan.functionPlans.find((func) => func.name === 'score');
+
+  assertEquals(score?.bodyStatus, 'stub');
+  assertEquals(score?.unsupportedBodyKinds, ['class_member:computed:Counter']);
+  assertEquals(scorePlan?.bodyStatus, 'stub');
+  assertEquals(scorePlan?.unsupportedBodyKinds, ['class_member:computed:Counter']);
 });
 
 Deno.test('compileProject selects the source-hir wasm-gc plan for pure core scalar modules', async () => {
