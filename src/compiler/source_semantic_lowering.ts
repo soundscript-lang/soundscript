@@ -139,6 +139,16 @@ function binaryOperatorForSource(
   left: SemanticExpressionIR,
   right: SemanticExpressionIR,
 ): { op: string; representation: CompilerValueType } | undefined {
+  if (left.representation === 'i32' && right.representation === 'i32') {
+    switch (operator) {
+      case '===':
+        return { op: 'i32.eq', representation: 'i32' };
+      case '!==':
+        return { op: 'i32.ne', representation: 'i32' };
+      default:
+        return undefined;
+    }
+  }
   if (left.representation !== 'f64' || right.representation !== 'f64') {
     return undefined;
   }
