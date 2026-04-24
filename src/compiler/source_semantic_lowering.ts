@@ -874,6 +874,10 @@ function lowerExpression(
       return { kind: 'local_get', name: expression.name, representation };
     }
     case 'property_access': {
+      const staticProperty = lowerClassStaticPropertyAccessExpression(expression, context);
+      if (staticProperty) {
+        return staticProperty;
+      }
       if (expression.object.kind === 'identifier') {
         const objectLayout = context.objectLocals.get(expression.object.name);
         const field = objectLayout?.fields.find((candidate) =>
@@ -1032,6 +1036,10 @@ function lowerExpression(
       return { kind: 'undefined_literal', representation: 'tagged_ref' };
     }
     case 'call_expression': {
+      const staticMethodCall = lowerClassStaticMethodCallExpression(expression, context);
+      if (staticMethodCall) {
+        return staticMethodCall;
+      }
       const methodCall = lowerClassMethodCallExpression(expression, context);
       if (methodCall) {
         return methodCall;
@@ -2076,13 +2084,17 @@ function lowerClassConstructionDeclaration(
     return undefined;
   }
   const unsupportedMember = classInfo.members.find((member) =>
-    member.static || member.kind === 'getter' || member.kind === 'setter'
+    member.kind === 'getter' || member.kind === 'setter'
   );
   if (unsupportedMember) {
     context.unsupportedKinds.add(`class_member:${unsupportedMember.kind}`);
     return undefined;
   }
-  const properties = classInfo.members.filter((member) => member.kind === 'property');
+  const properties = classInfo.members.filter((
+    member,
+  ): member is Extract<SourceClassMemberIR, { kind: 'property' }> =>
+    member.kind === 'property' && !member.static
+  );
   if (properties.some((property) => !property.initializer)) {
     context.unsupportedKinds.add('class_property_initializer');
     return undefined;
@@ -2197,6 +2209,123 @@ function clearTransientSourceBindings(
     context.localDeclarationKinds.delete(name);
     context.objectLocals.delete(name);
   }
+}
+
+function lowerClassStaticPropertyAccessExpression(
+  expression: Extract<SourceExpressionIR, { kind: 'property_access' }>,
+  context: FunctionLoweringContext,
+): SemanticExpressionIR | undefined {
+  if (expression.object.kind !== 'identifier') {
+    return undefined;
+  }
+  const classInfo = context.classesByName.get(expression.object.name);
+  if (!classInfo) {
+    return undefined;
+  }
+  const property = classInfo.members.find((
+    member,
+  ): member is Extract<SourceClassMemberIR, { kind: 'property' }> =>
+    member.kind === 'property' && member.static && member.name === expression.property
+  );
+  if (!property) {
+    return undefined;
+  }
+  if (!property.initializer) {
+    context.unsupportedKinds.add(`static_class_property:${classInfo.name}.${property.name}`);
+    return undefined;
+  }
+  return lowerExpression(property.initializer, context);
+}
+
+function lowerClassStaticMethodCallExpression(
+  expression: Extract<SourceExpressionIR, { kind: 'call_expression' }>,
+  context: FunctionLoweringContext,
+): SemanticExpressionIR | undefined {
+  if (expression.callee.kind !== 'property_access') {
+    return undefined;
+  }
+  const callee = expression.callee;
+  if (callee.object.kind !== 'identifier') {
+    return undefined;
+  }
+  const classInfo = context.classesByName.get(callee.object.name);
+  const method = classInfo?.members.find((
+    member,
+  ): member is Extract<SourceClassMemberIR, { kind: 'method' }> =>
+    member.kind === 'method' && member.static && member.name === callee.property
+  );
+  if (!classInfo || !method) {
+    return undefined;
+  }
+  if (method.params.length !== expression.args.length) {
+    context.unsupportedKinds.add(`static_class_method_arity:${classInfo.name}.${method.name}`);
+    return undefined;
+  }
+  const returnStatement = method.body[method.body.length - 1];
+  if (
+    !returnStatement || returnStatement.kind !== 'return' ||
+    !returnStatement.expression
+  ) {
+    context.unsupportedKinds.add(`static_class_method_body:${classInfo.name}.${method.name}`);
+    return undefined;
+  }
+  const preludeStatements = method.body.slice(0, -1);
+  if (sourceStatementsContainControlTransfer(preludeStatements)) {
+    context.unsupportedKinds.add(
+      `static_class_method_control_flow:${classInfo.name}.${method.name}`,
+    );
+    return undefined;
+  }
+  const paramNames = method.params.map((param, index) =>
+    param.kind === 'identifier_binding' ? param.name : `__source_static_method_param_${index}`
+  );
+  const methodLocalNames = new Set<string>();
+  preludeStatements.forEach((statement) =>
+    collectSourceStatementDeclaredNames(statement, methodLocalNames)
+  );
+  const transientNames = [...paramNames, ...methodLocalNames];
+  if (
+    transientNames.includes(classInfo.name) ||
+    transientNames.some((name) =>
+      context.localRepresentations.has(name) ||
+      context.objectLocals.has(name) ||
+      context.arrayLocals.has(name) ||
+      context.closureLocals.has(name) ||
+      context.boxedLocals.has(name)
+    )
+  ) {
+    context.unsupportedKinds.add(`static_class_method_binding_collision:${method.name}`);
+    return undefined;
+  }
+
+  const statements: SemanticStatementIR[] = [];
+  for (const [index, param] of method.params.entries()) {
+    if (param.kind !== 'identifier_binding') {
+      context.unsupportedKinds.add(`static_class_method_parameter:${method.name}`);
+      return undefined;
+    }
+    const arg = expression.args[index];
+    if (!arg) {
+      context.unsupportedKinds.add(`static_class_method_argument:${method.name}`);
+      return undefined;
+    }
+    const value = lowerExpression(arg, context);
+    statements.push(...takePendingStatements(context));
+    addLocal(context, param.name, value.representation);
+    context.localDeclarationKinds.set(param.name, 'param');
+    statements.push({ kind: 'local_set', name: param.name, value });
+  }
+  statements.push(
+    ...preludeStatements.flatMap((statement) => [...lowerStatement(statement, context)]),
+  );
+  const result = lowerExpression(returnStatement.expression, context);
+  statements.push(...takePendingStatements(context));
+  const resultName = nextTempLocalName(context, `static_method_${method.name}_result`);
+  addLocal(context, resultName, result.representation);
+  statements.push({ kind: 'local_set', name: resultName, value: result });
+  clearTransientSourceBindings(context, transientNames);
+  context.pendingStatements.push(...statements);
+  return { kind: 'local_get', name: resultName, representation: result.representation };
 }
 
 function lowerClassMethodCallExpression(
