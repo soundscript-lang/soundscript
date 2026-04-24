@@ -444,13 +444,14 @@ function lowerExpression(
   if (
     ts.isNumericLiteral(expression) ||
     ts.isStringLiteral(expression) ||
+    ts.isNoSubstitutionTemplateLiteral(expression) ||
     expression.kind === ts.SyntaxKind.TrueKeyword ||
     expression.kind === ts.SyntaxKind.FalseKeyword ||
     expression.kind === ts.SyntaxKind.NullKeyword
   ) {
     const literalKind = ts.isNumericLiteral(expression)
       ? 'number'
-      : ts.isStringLiteral(expression)
+      : ts.isStringLiteral(expression) || ts.isNoSubstitutionTemplateLiteral(expression)
       ? 'string'
       : expression.kind === ts.SyntaxKind.NullKeyword
       ? 'null'

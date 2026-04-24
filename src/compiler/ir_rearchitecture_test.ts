@@ -1829,6 +1829,56 @@ Deno.test('compiler SourceHIR semantic lowering emits runnable string body runti
   assertEquals((length as () => number)(), 3);
 });
 
+Deno.test('compiler SourceHIR semantic lowering emits runnable no-substitution template literals', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: { strict: true },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        export function length(): number {
+          const text = \`A😀\`;
+          return text.length;
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createSourceSemanticSnapshot(program, tempDirectory);
+  const semantic = createSemanticModuleFromSourceHIR(snapshot.source, snapshot.sharedFacts);
+  const manifest = createRuntimeManifestFromSemanticModule(semantic);
+  const plan = createWasmGcModulePlan(semantic, manifest);
+  const lengthPlan = plan.functionPlans.find((func) => func.name === 'length');
+  const watPath = join(tempDirectory, 'wasm-gc-source-template-literal.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-source-template-literal.wasm');
+
+  assertEquals(
+    manifest.familyRequirements.map((requirement) => requirement.family),
+    ['string'],
+  );
+  assertEquals(lengthPlan?.bodyStatus, 'emittable');
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(plan));
+  const result = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(result.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(result.success, true);
+
+  const wasm = await Deno.readFile(wasmPath);
+  const instance = await WebAssembly.instantiate(wasm);
+  const length = instance.instance.exports['main.ts:length'];
+  assertEquals(typeof length, 'function');
+  assertEquals((length as () => number)(), 3);
+});
+
 Deno.test('compiler SourceHIR semantic lowering emits runnable string concatenation', async () => {
   const tempDirectory = await createTempProject([
     {
