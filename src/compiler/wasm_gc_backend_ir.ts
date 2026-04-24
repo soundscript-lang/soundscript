@@ -16,6 +16,7 @@ import {
 import {
   compilerValueTypeForStorage,
   createCollectionBoundaryAdapterForBoundary,
+  normalizeValueBoundary,
   valueBoundaryFromSemanticType,
   type ValueBoundaryIR,
   valueBoundarySupportsWasmGcSpecializedObjectWrapper,
@@ -78,6 +79,7 @@ export interface WasmGcFunctionPlanIR {
   }[];
   result: string;
   hostResultBoundary?: SemanticTypeIR;
+  hostLocalFallbackBoundary?: SemanticTypeIR;
   body: readonly SemanticStatementIR[];
   bodyStatus: 'emittable' | 'stub';
   unsupportedBodyKinds: readonly string[];
@@ -137,6 +139,14 @@ export interface WasmGcClosureBoundaryWrapperPlanIR {
   resultType: string;
   paramTaggedPrimitiveKinds: readonly (CompilerTaggedPrimitiveBoundaryKindsIR | undefined)[];
   resultTaggedPrimitiveKinds?: CompilerTaggedPrimitiveBoundaryKindsIR;
+  paramBoundaries?: readonly (ValueBoundaryIR | undefined)[];
+  resultBoundary?: ValueBoundaryIR;
+}
+
+export interface WasmGcHostObjectProjectionPropertyWrapperPlanIR {
+  propertyName: string;
+  valueType: CompilerValueType;
+  closureSignatureId?: number;
 }
 
 export type WasmGcCollectionBoundaryAdapterIR = ValueCollectionBoundaryAdapterIR;
@@ -165,6 +175,7 @@ export interface WasmGcWrapperPlanIR {
   hostCallbackWrappers: readonly WasmGcHostCallbackWrapperPlanIR[];
   closureBoundaryWrappers: readonly WasmGcClosureBoundaryWrapperPlanIR[];
   hostClosureWrappers: readonly WasmGcClosureBoundaryWrapperPlanIR[];
+  hostObjectProjectionPropertyWrappers: readonly WasmGcHostObjectProjectionPropertyWrapperPlanIR[];
   hostImportWrappers: readonly WasmGcHostImportWrapperPlanIR[];
   taggedValueAdapterHelpers: readonly string[];
   taggedValueResultHelpers: readonly string[];
@@ -479,6 +490,85 @@ function expressionIsCapturedClosure(
   return false;
 }
 
+function valueBoundaryFromTaggedKinds(
+  kinds: CompilerTaggedPrimitiveBoundaryKindsIR | undefined,
+  heapBoundary?: ValueBoundaryIR,
+): ValueBoundaryIR | undefined {
+  const arms: ValueBoundaryIR[] = [];
+  if (kinds?.includesUndefined) {
+    arms.push({ kind: 'undefined' });
+  }
+  if (kinds?.includesNull) {
+    arms.push({ kind: 'null' });
+  }
+  if (kinds?.includesBoolean) {
+    arms.push({ kind: 'boolean' });
+  }
+  if (kinds?.includesNumber) {
+    arms.push({ kind: 'number' });
+  }
+  if (kinds?.includesString) {
+    arms.push({ kind: 'string' });
+  }
+  if (kinds?.includesSymbol) {
+    arms.push({ kind: 'symbol' });
+  }
+  if (kinds?.includesBigInt) {
+    arms.push({ kind: 'bigint' });
+  }
+  if (heapBoundary) {
+    arms.push(heapBoundary);
+  }
+  if (arms.length === 0) {
+    return undefined;
+  }
+  return arms.length === 1 ? arms[0] : normalizeValueBoundary({ kind: 'union', arms });
+}
+
+function valueBoundaryFromClosureSlot(
+  valueType: CompilerValueType,
+  options?: {
+    closureSignatureId?: number;
+    taggedPrimitiveKinds?: CompilerTaggedPrimitiveBoundaryKindsIR;
+    heapRepresentation?: { name: string };
+    promiseValueBoundary?: unknown;
+  },
+): ValueBoundaryIR | undefined {
+  switch (valueType) {
+    case 'f64':
+      return { kind: 'number' };
+    case 'i32':
+      return { kind: 'boolean' };
+    case 'string_ref':
+      return { kind: 'string' };
+    case 'owned_string_ref':
+      return { kind: 'string', owned: true };
+    case 'symbol_ref':
+      return { kind: 'symbol' };
+    case 'bigint_ref':
+      return { kind: 'bigint' };
+    case 'closure_ref':
+      return options?.closureSignatureId !== undefined
+        ? { kind: 'closure', signatureIds: [options.closureSignatureId] }
+        : { kind: 'closure' };
+    case 'heap_ref':
+      return options?.heapRepresentation
+        ? {
+          kind: 'object',
+          layoutName: options.heapRepresentation.name,
+          fallback: true,
+        }
+        : { kind: 'host_handle' };
+    case 'tagged_ref':
+      return valueBoundaryFromTaggedKinds(
+        options?.taggedPrimitiveKinds,
+        options?.heapRepresentation ? { kind: 'host_handle' } : undefined,
+      );
+    default:
+      return undefined;
+  }
+}
+
 function closureSignatureValueTypes(
   functionPlans: readonly WasmGcFunctionPlanIR[],
   closureSignatures: readonly WasmGcClosureSignaturePlanIR[],
@@ -488,6 +578,8 @@ function closureSignatureValueTypes(
   resultType: string;
   paramTaggedPrimitiveKinds: readonly (CompilerTaggedPrimitiveBoundaryKindsIR | undefined)[];
   resultTaggedPrimitiveKinds?: CompilerTaggedPrimitiveBoundaryKindsIR;
+  paramBoundaries?: readonly (ValueBoundaryIR | undefined)[];
+  resultBoundary?: ValueBoundaryIR;
 } | undefined {
   const signatureSource = functionPlans.find((func) =>
     func.closureSignatureId === signatureId &&
@@ -503,6 +595,17 @@ function closureSignatureValueTypes(
         .map((param) => param.wasmType),
       resultType: signatureSource.result,
       paramTaggedPrimitiveKinds,
+      paramBoundaries: signatureSource.params
+        .slice(signatureSource.closureCaptureCount ?? 0)
+        .map((param, index) =>
+          valueBoundaryFromClosureSlot(param.wasmType as CompilerValueType, {
+            taggedPrimitiveKinds: signatureSource.closureParamTaggedPrimitiveKinds?.[index],
+          })
+        ),
+      resultBoundary: valueBoundaryFromClosureSlot(
+        signatureSource.result as CompilerValueType,
+        { taggedPrimitiveKinds: signatureSource.closureResultTaggedPrimitiveKinds },
+      ),
       ...(compactTaggedPrimitiveKinds(signatureSource.closureResultTaggedPrimitiveKinds) !==
           undefined
         ? {
@@ -523,6 +626,20 @@ function closureSignatureValueTypes(
     paramTaggedPrimitiveKinds: (signature.paramTaggedPrimitiveKinds ?? []).map(
       compactTaggedPrimitiveKinds,
     ),
+    paramBoundaries: signature.params.map((param, index) =>
+      valueBoundaryFromClosureSlot(param, {
+        closureSignatureId: signature.paramClosureSignatureIds?.[index],
+        taggedPrimitiveKinds: signature.paramTaggedPrimitiveKinds?.[index],
+        heapRepresentation: signature.paramHeapRepresentations?.[index] ??
+          signature.paramHeapArrayRepresentations?.[index],
+      })
+    ),
+    resultBoundary: valueBoundaryFromClosureSlot(signature.resultType, {
+      closureSignatureId: signature.resultClosureSignatureId,
+      taggedPrimitiveKinds: signature.resultTaggedPrimitiveKinds,
+      heapRepresentation: signature.resultHeapRepresentation ??
+        signature.resultHeapArrayRepresentation,
+    }),
     ...(compactTaggedPrimitiveKinds(signature.resultTaggedPrimitiveKinds) !== undefined
       ? {
         resultTaggedPrimitiveKinds: compactTaggedPrimitiveKinds(
@@ -968,6 +1085,21 @@ function valueBoundaryNeedsHostImportParamWrapper(
   return valueBoundaryNeedsWrapper(boundary) || boundary?.kind === 'object';
 }
 
+function valueBoundaryAsHostImportResultBoundary(
+  boundary: ValueBoundaryIR | undefined,
+): ValueBoundaryIR | undefined {
+  if (boundary?.kind === 'object') {
+    if (
+      boundary.fallback === true ||
+      boundary.dynamic === true ||
+      !valueBoundarySupportsWasmGcSpecializedObjectWrapper(boundary)
+    ) {
+      return { kind: 'host_handle' };
+    }
+  }
+  return boundary;
+}
+
 function taggedValueResultHelpersForWrappers(
   wrappers: readonly WasmGcHostCallbackWrapperPlanIR[],
 ): readonly string[] {
@@ -1105,11 +1237,13 @@ function createWasmGcHostImportWrapperPlan(
         );
       const hasParamBoundaries =
         paramBoundaries?.some(valueBoundaryNeedsHostImportParamWrapper) === true;
-      const resultBoundary = surface
-        ? valueBoundaryFromSemanticType(surface.result)
-        : func.hostResultBoundary
-        ? valueBoundaryFromSemanticType(func.hostResultBoundary)
-        : undefined;
+      const resultBoundary = valueBoundaryAsHostImportResultBoundary(
+        surface
+          ? valueBoundaryFromSemanticType(surface.result)
+          : func.hostResultBoundary
+          ? valueBoundaryFromSemanticType(func.hostResultBoundary)
+          : undefined,
+      );
       return {
         functionName: func.name,
         hostImportModule: func.hostImport!.module,
@@ -1176,6 +1310,200 @@ function closureBoundaryWrappersForBoundaries(
       const signature = closureSignatureValueTypes(functionPlans, closureSignatures, signatureId);
       return signature ? [{ signatureId, ...signature }] : [];
     });
+}
+
+function semanticTypeIsHostProjectionObject(type: SemanticTypeIR | undefined): boolean {
+  return type?.kind === 'object' && (type.fallback === true || type.dynamic === true);
+}
+
+function hostProjectionClosureSignatureForField(
+  func: WasmGcFunctionPlanIR,
+  propertyName: string,
+): number | undefined {
+  const fields = func.hostLocalFallbackBoundary?.kind === 'object'
+    ? func.hostLocalFallbackBoundary.fields
+    : undefined;
+  const field = fields?.find((candidate) => candidate.name === propertyName);
+  if (field?.type.kind !== 'closure') {
+    return undefined;
+  }
+  return field.type.signatureIds?.[0] ?? field.type.signatures?.[0]?.id;
+}
+
+function hostProjectionPropertyKey(
+  wrapper: WasmGcHostObjectProjectionPropertyWrapperPlanIR,
+): string {
+  return [
+    wrapper.propertyName,
+    wrapper.valueType,
+    wrapper.closureSignatureId ?? '',
+  ].join('\0');
+}
+
+function createHostObjectProjectionPropertyWrappers(
+  functionPlans: readonly WasmGcFunctionPlanIR[],
+): readonly WasmGcHostObjectProjectionPropertyWrapperPlanIR[] {
+  const functionsByName = new Map(functionPlans.map((func) => [func.name, func]));
+  const wrappers = new Map<string, WasmGcHostObjectProjectionPropertyWrapperPlanIR>();
+
+  const addWrapper = (wrapper: WasmGcHostObjectProjectionPropertyWrapperPlanIR): void => {
+    wrappers.set(hostProjectionPropertyKey(wrapper), wrapper);
+  };
+
+  const analyzeStatements = (
+    func: WasmGcFunctionPlanIR,
+    statements: readonly SemanticStatementIR[],
+    objectLocals: Set<string>,
+    closureLocals: Map<string, number>,
+    pendingClosurePropertyLocals: Map<string, string>,
+    taggedHostObjectLocals: Set<string>,
+  ): void => {
+    for (const statement of statements) {
+      if (statement.kind === 'if') {
+        analyzeStatements(
+          func,
+          statement.thenBody,
+          new Set(objectLocals),
+          new Map(closureLocals),
+          new Map(pendingClosurePropertyLocals),
+          new Set(taggedHostObjectLocals),
+        );
+        analyzeStatements(
+          func,
+          statement.elseBody,
+          new Set(objectLocals),
+          new Map(closureLocals),
+          new Map(pendingClosurePropertyLocals),
+          new Set(taggedHostObjectLocals),
+        );
+        continue;
+      }
+      if (statement.kind === 'while' || statement.kind === 'do_while') {
+        analyzeStatements(
+          func,
+          statement.body,
+          new Set(objectLocals),
+          new Map(closureLocals),
+          new Map(pendingClosurePropertyLocals),
+          new Set(taggedHostObjectLocals),
+        );
+        if (statement.continueBody) {
+          analyzeStatements(
+            func,
+            statement.continueBody,
+            new Set(objectLocals),
+            new Map(closureLocals),
+            new Map(pendingClosurePropertyLocals),
+            new Set(taggedHostObjectLocals),
+          );
+        }
+        continue;
+      }
+      if (statement.kind === 'local_set') {
+        if (statement.value.kind === 'call') {
+          const callee = functionsByName.get(statement.value.callee);
+          if (callee?.hostImport && semanticTypeIsHostProjectionObject(callee.hostResultBoundary)) {
+            objectLocals.add(statement.name);
+          }
+        } else if (
+          statement.value.kind === 'closure_call' &&
+          statement.value.callee.kind === 'local_get' &&
+          (
+            closureLocals.has(statement.value.callee.name) ||
+            pendingClosurePropertyLocals.has(statement.value.callee.name)
+          )
+        ) {
+          const pendingProperty = pendingClosurePropertyLocals.get(statement.value.callee.name);
+          if (pendingProperty !== undefined) {
+            closureLocals.set(statement.value.callee.name, statement.value.signatureId);
+            addWrapper({
+              propertyName: pendingProperty,
+              valueType: 'closure_ref',
+              closureSignatureId: statement.value.signatureId,
+            });
+          }
+          if (statement.value.representation === 'tagged_ref') {
+            taggedHostObjectLocals.add(statement.name);
+          } else if (statement.value.representation === 'heap_ref') {
+            objectLocals.add(statement.name);
+          }
+        } else if (
+          statement.value.kind === 'untag_heap_object' &&
+          statement.value.value.kind === 'local_get' &&
+          taggedHostObjectLocals.has(statement.value.value.name)
+        ) {
+          objectLocals.add(statement.name);
+        } else if (statement.value.kind === 'local_get' && objectLocals.has(statement.value.name)) {
+          objectLocals.add(statement.name);
+        } else if (
+          statement.value.kind === 'local_get' && closureLocals.has(statement.value.name)
+        ) {
+          closureLocals.set(statement.name, closureLocals.get(statement.value.name)!);
+        } else if (
+          statement.value.kind === 'local_get' && taggedHostObjectLocals.has(statement.value.name)
+        ) {
+          taggedHostObjectLocals.add(statement.name);
+        }
+        continue;
+      }
+      if (
+        statement.kind === 'fallback_object_property_get' && objectLocals.has(statement.objectName)
+      ) {
+        if (statement.valueType === 'closure_ref') {
+          const signatureId = hostProjectionClosureSignatureForField(
+            func,
+            statement.propertyKey,
+          );
+          if (signatureId === undefined) {
+            pendingClosurePropertyLocals.set(statement.targetName, statement.propertyKey);
+            continue;
+          }
+          closureLocals.set(statement.targetName, signatureId);
+          addWrapper({
+            propertyName: statement.propertyKey,
+            valueType: statement.valueType,
+            closureSignatureId: signatureId,
+          });
+        } else if (statement.valueType === 'f64' || statement.valueType === 'i32') {
+          addWrapper({
+            propertyName: statement.propertyKey,
+            valueType: statement.valueType,
+          });
+        }
+      }
+    }
+  };
+
+  for (const func of functionPlans) {
+    analyzeStatements(func, func.body, new Set(), new Map(), new Map(), new Set());
+  }
+
+  return [...wrappers.values()].sort((left, right) =>
+    hostProjectionPropertyKey(left).localeCompare(hostProjectionPropertyKey(right))
+  );
+}
+
+function closureBoundaryWrappersForSignatureIds(
+  signatureIds: Iterable<number>,
+  functionPlans: readonly WasmGcFunctionPlanIR[],
+  closureSignatures: readonly WasmGcClosureSignaturePlanIR[],
+): readonly WasmGcClosureBoundaryWrapperPlanIR[] {
+  return [...new Set(signatureIds)]
+    .sort((left, right) => left - right)
+    .flatMap((signatureId) => {
+      const signature = closureSignatureValueTypes(functionPlans, closureSignatures, signatureId);
+      return signature ? [{ signatureId, ...signature }] : [];
+    });
+}
+
+function mergeClosureBoundaryWrappers(
+  wrappers: Iterable<WasmGcClosureBoundaryWrapperPlanIR>,
+): readonly WasmGcClosureBoundaryWrapperPlanIR[] {
+  const unique = new Map<number, WasmGcClosureBoundaryWrapperPlanIR>();
+  for (const wrapper of wrappers) {
+    unique.set(wrapper.signatureId, wrapper);
+  }
+  return [...unique.values()].sort((left, right) => left.signatureId - right.signatureId);
 }
 
 function closureSignatureUsesWrapperValues(signature: {
@@ -1253,21 +1581,40 @@ function createWasmGcWrapperPlan(
     functionPlans,
     closureSignatures,
   );
-  const hostClosureWrappers = closureBoundaryWrappersForBoundaries(
-    hostToInternalBoundaries,
+  const hostObjectProjectionPropertyWrappers = createHostObjectProjectionPropertyWrappers(
+    functionPlans,
+  );
+  const hostObjectProjectionClosureWrappers = closureBoundaryWrappersForSignatureIds(
+    hostObjectProjectionPropertyWrappers.flatMap((wrapper) =>
+      wrapper.closureSignatureId !== undefined ? [wrapper.closureSignatureId] : []
+    ),
     functionPlans,
     closureSignatures,
   );
+  const hostClosureWrappers = mergeClosureBoundaryWrappers([
+    ...closureBoundaryWrappersForBoundaries(
+      hostToInternalBoundaries,
+      functionPlans,
+      closureSignatures,
+    ),
+    ...hostObjectProjectionClosureWrappers,
+  ]);
+  const hostClosureParamBoundaries = hostClosureWrappers.flatMap((wrapper) =>
+    wrapper.paramBoundaries ?? []
+  );
+  const hostClosureResultBoundaries = hostClosureWrappers.map((wrapper) => wrapper.resultBoundary);
   const taggedValueAdapterHelpers = mergeSortedUniqueStrings(
     taggedValueAdapterHelpersForWrappers(wrappers),
     taggedValueAdapterHelpersForClosureBoundaries(closureBoundaryWrappers),
     taggedValueAdapterHelpersForHostClosureWrappers(hostClosureWrappers),
+    taggedValueAdapterHelpersForBoundaries(hostClosureResultBoundaries),
     taggedValueAdapterHelpersForBoundaries(hostToInternalBoundaries),
   );
   const taggedValueResultHelpers = mergeSortedUniqueStrings(
     taggedValueResultHelpersForWrappers(wrappers),
     taggedValueResultHelpersForClosureBoundaries(closureBoundaryWrappers),
     taggedValueResultHelpersForHostClosureWrappers(hostClosureWrappers),
+    taggedValueResultHelpersForBoundaries(hostClosureParamBoundaries),
     taggedValueResultHelpersForBoundaries(internalToHostBoundaries),
   );
   return {
@@ -1279,6 +1626,7 @@ function createWasmGcWrapperPlan(
     ),
     closureBoundaryWrappers,
     hostClosureWrappers,
+    hostObjectProjectionPropertyWrappers,
     hostImportWrappers,
     taggedValueAdapterHelpers,
     taggedValueResultHelpers,
@@ -1827,6 +2175,9 @@ export function createWasmGcModulePlan(
     result: func.result,
     ...(func.hostResultBoundary !== undefined
       ? { hostResultBoundary: func.hostResultBoundary }
+      : {}),
+    ...(func.hostLocalFallbackBoundary !== undefined
+      ? { hostLocalFallbackBoundary: func.hostLocalFallbackBoundary }
       : {}),
     body: func.body,
     bodyStatus: func.bodyStatus,

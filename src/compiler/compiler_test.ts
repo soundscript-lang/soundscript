@@ -8905,6 +8905,7 @@ compilerIntegrationTest(
     assertEquals(result.exitCode, 0);
     assertEquals(result.diagnostics, []);
     assert(result.artifacts);
+    assertEquals(result.artifacts.backend, 'wasm-gc');
     assert(result.artifacts.wrapperPath);
 
     const wrapperModule = await import(`file://${result.artifacts.wrapperPath}`);
@@ -10582,6 +10583,7 @@ compilerIntegrationTest(
     assertEquals(result.exitCode, 0);
     assertEquals(result.diagnostics, []);
     assert(result.artifacts);
+    assertEquals(result.artifacts.backend, 'wasm-gc');
     assert(result.artifacts.wrapperPath);
   },
 );

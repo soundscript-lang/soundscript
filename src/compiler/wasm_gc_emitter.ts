@@ -7,6 +7,7 @@ import type {
   WasmGcFieldPlanIR,
   WasmGcFunctionPlanIR,
   WasmGcHelperPlanIR,
+  WasmGcHostObjectProjectionPropertyWrapperPlanIR,
   WasmGcModulePlanIR,
   WasmGcTypePlanIR,
 } from './wasm_gc_backend_ir.ts';
@@ -333,6 +334,71 @@ function renderSpecializedObjectBoundaryHelpers(
       }
     });
   }
+  if (wrapperNeedsFallbackObjectLayoutHelpers(plan)) {
+    const fallbackLayouts = new Map<string, FallbackObjectLocalLayout>();
+    for (const func of plan.functionPlans) {
+      for (const layout of fallbackObjectLocalLayouts(func).values()) {
+        fallbackLayouts.set(layout.typeName, layout);
+      }
+    }
+    for (
+      const layout of [...fallbackLayouts.values()].sort((left, right) =>
+        left.typeName.localeCompare(right.typeName)
+      )
+    ) {
+      const helperBase = objectBoundaryHelperExportBaseName({
+        source: 'object_layout',
+        family: 'fallback_object',
+        name: layout.typeName,
+        wasmKind: 'struct',
+      });
+      if (emitted.has(helperBase)) {
+        continue;
+      }
+      emitted.add(helperBase);
+      lines.push(
+        `  (func $__soundscript_object_new_${helperBase} (export "__soundscript_object_new_${helperBase}") ${
+          layout.entries.map((entry, index) =>
+            `(param $field_${index} ${wasmTypeForCompilerValueType(entry.valueType)})`
+          ).join(' ')
+        } (result (ref null eq))`,
+        ...layout.entries.map((_entry, index) => `    local.get $field_${index}`),
+        `    struct.new ${layout.typeName}`,
+        '  )',
+        `  (func $__soundscript_object_is_${helperBase} (export "__soundscript_object_is_${helperBase}") (param $value (ref null eq)) (result i32)`,
+        '    local.get $value',
+        `    ref.test (ref ${layout.typeName})`,
+        '  )',
+      );
+      for (const entry of layout.entries) {
+        lines.push(
+          `  (func $__soundscript_object_get_${helperBase}_${
+            sanitizeIdentifier(entry.key)
+          } (export "__soundscript_object_get_${helperBase}_${
+            sanitizeIdentifier(entry.key)
+          }") (param $value (ref null eq)) (result ${
+            wasmTypeForCompilerValueType(entry.valueType)
+          })`,
+          '    local.get $value',
+          `    ref.cast (ref ${layout.typeName})`,
+          `    struct.get ${layout.typeName} $${sanitizeIdentifier(entry.key)}`,
+          '  )',
+          `  (func $__soundscript_object_set_${helperBase}_${
+            sanitizeIdentifier(entry.key)
+          } (export "__soundscript_object_set_${helperBase}_${
+            sanitizeIdentifier(entry.key)
+          }") (param $value (ref null eq)) (param $field ${
+            wasmTypeForCompilerValueType(entry.valueType)
+          })`,
+          '    local.get $value',
+          `    ref.cast (ref ${layout.typeName})`,
+          '    local.get $field',
+          `    struct.set ${layout.typeName} $${sanitizeIdentifier(entry.key)}`,
+          '  )',
+        );
+      }
+    }
+  }
   return lines;
 }
 
@@ -473,6 +539,9 @@ interface FunctionRenderContext {
   fallbackObjectLocalLayouts: ReadonlyMap<string, FallbackObjectLocalLayout>;
   dynamicObjectLocalLayouts: ReadonlyMap<string, DynamicObjectLocalLayout>;
   dynamicObjectPropertyOrigins: ReadonlyMap<string, DynamicObjectPropertyOrigin>;
+  hostProjectionObjectLocalNames: ReadonlySet<string>;
+  hostProjectionClosureLocalSignatureIds: ReadonlyMap<string, number>;
+  hostObjectProjectionPropertyWrappers: readonly WasmGcHostObjectProjectionPropertyWrapperPlanIR[];
   mapStorageLocalNames: ReadonlySet<string>;
   hostImportClosureWrapperArgIndicesByCallee: ReadonlyMap<string, ReadonlySet<number>>;
   localAliases: ReadonlyMap<string, string>;
@@ -516,6 +585,9 @@ const EMPTY_RENDER_CONTEXT: FunctionRenderContext = {
   fallbackObjectLocalLayouts: new Map(),
   dynamicObjectLocalLayouts: new Map(),
   dynamicObjectPropertyOrigins: new Map(),
+  hostProjectionObjectLocalNames: new Set(),
+  hostProjectionClosureLocalSignatureIds: new Map(),
+  hostObjectProjectionPropertyWrappers: [],
   mapStorageLocalNames: new Set(),
   hostImportClosureWrapperArgIndicesByCallee: new Map(),
   localAliases: new Map(),
@@ -612,6 +684,148 @@ function closureObjectLocalNames(func: WasmGcFunctionPlanIR): ReadonlySet<string
     }
   });
   return names;
+}
+
+function semanticTypeIsHostProjectionObject(type: SemanticTypeIR | undefined): boolean {
+  return type?.kind === 'object' && (type.fallback === true || type.dynamic === true);
+}
+
+function hostObjectProjectionPropertyKey(
+  wrapper: WasmGcHostObjectProjectionPropertyWrapperPlanIR,
+): string {
+  return [
+    wrapper.propertyName,
+    wrapper.valueType,
+    wrapper.closureSignatureId ?? '',
+  ].join('\0');
+}
+
+function hostObjectProjectionPropertyWrapperForStatement(
+  statement: Extract<
+    SemanticStatementIR,
+    { kind: 'fallback_object_property_get' | 'dynamic_object_property_get' }
+  >,
+  context: FunctionRenderContext,
+): WasmGcHostObjectProjectionPropertyWrapperPlanIR | undefined {
+  const propertyName = statement.kind === 'fallback_object_property_get'
+    ? statement.propertyKey
+    : undefined;
+  if (propertyName === undefined) {
+    return undefined;
+  }
+  const closureSignatureId = statement.valueType === 'closure_ref'
+    ? context.hostProjectionClosureLocalSignatureIds.get(statement.targetName)
+    : undefined;
+  const key = hostObjectProjectionPropertyKey({
+    propertyName,
+    valueType: statement.valueType,
+    ...(closureSignatureId !== undefined ? { closureSignatureId } : {}),
+  });
+  return context.hostObjectProjectionPropertyWrappers.find((wrapper) =>
+    hostObjectProjectionPropertyKey(wrapper) === key
+  );
+}
+
+function hostProjectionLocalInfo(
+  func: WasmGcFunctionPlanIR,
+  plan: WasmGcModulePlanIR,
+): {
+  objectLocalNames: ReadonlySet<string>;
+  closureLocalSignatureIds: ReadonlyMap<string, number>;
+} {
+  const functionsByName = new Map(
+    plan.functionPlans.map((candidate) => [candidate.name, candidate]),
+  );
+  const projectionPropertiesByName = new Map(
+    plan.wrapperPlan.hostObjectProjectionPropertyWrappers.map((wrapper) => [
+      wrapper.propertyName,
+      wrapper,
+    ]),
+  );
+  const objectLocalNames = new Set<string>();
+  const closureLocalSignatureIds = new Map<string, number>();
+  const pendingClosurePropertyLocals = new Map<string, string>();
+  const taggedHostObjectLocalNames = new Set<string>();
+
+  const analyzeStatements = (statements: readonly SemanticStatementIR[]): void => {
+    for (const statement of statements) {
+      if (statement.kind === 'if') {
+        analyzeStatements(statement.thenBody);
+        analyzeStatements(statement.elseBody);
+        continue;
+      }
+      if (statement.kind === 'while' || statement.kind === 'do_while') {
+        analyzeStatements(statement.body);
+        if (statement.continueBody) {
+          analyzeStatements(statement.continueBody);
+        }
+        continue;
+      }
+      if (statement.kind === 'local_set') {
+        if (statement.value.kind === 'call') {
+          const callee = functionsByName.get(statement.value.callee);
+          if (callee?.hostImport && semanticTypeIsHostProjectionObject(callee.hostResultBoundary)) {
+            objectLocalNames.add(statement.name);
+          }
+        } else if (
+          statement.value.kind === 'closure_call' &&
+          statement.value.callee.kind === 'local_get' &&
+          (
+            closureLocalSignatureIds.has(statement.value.callee.name) ||
+            pendingClosurePropertyLocals.has(statement.value.callee.name)
+          )
+        ) {
+          if (pendingClosurePropertyLocals.has(statement.value.callee.name)) {
+            closureLocalSignatureIds.set(statement.value.callee.name, statement.value.signatureId);
+          }
+          if (statement.value.representation === 'tagged_ref') {
+            taggedHostObjectLocalNames.add(statement.name);
+          } else if (statement.value.representation === 'heap_ref') {
+            objectLocalNames.add(statement.name);
+          }
+        } else if (
+          statement.value.kind === 'untag_heap_object' &&
+          statement.value.value.kind === 'local_get' &&
+          taggedHostObjectLocalNames.has(statement.value.value.name)
+        ) {
+          objectLocalNames.add(statement.name);
+        } else if (
+          statement.value.kind === 'local_get' && objectLocalNames.has(statement.value.name)
+        ) {
+          objectLocalNames.add(statement.name);
+        } else if (
+          statement.value.kind === 'local_get' &&
+          closureLocalSignatureIds.has(statement.value.name)
+        ) {
+          closureLocalSignatureIds.set(
+            statement.name,
+            closureLocalSignatureIds.get(statement.value.name)!,
+          );
+        } else if (
+          statement.value.kind === 'local_get' &&
+          taggedHostObjectLocalNames.has(statement.value.name)
+        ) {
+          taggedHostObjectLocalNames.add(statement.name);
+        }
+        continue;
+      }
+      if (
+        statement.kind === 'fallback_object_property_get' &&
+        objectLocalNames.has(statement.objectName) &&
+        statement.valueType === 'closure_ref'
+      ) {
+        const wrapper = projectionPropertiesByName.get(statement.propertyKey);
+        if (wrapper?.closureSignatureId !== undefined) {
+          closureLocalSignatureIds.set(statement.targetName, wrapper.closureSignatureId);
+        } else {
+          pendingClosurePropertyLocals.set(statement.targetName, statement.propertyKey);
+        }
+      }
+    }
+  };
+
+  analyzeStatements(func.body);
+  return { objectLocalNames, closureLocalSignatureIds };
 }
 
 function generatorResultObjectNames(
@@ -743,6 +957,35 @@ function renderClosureObjectValueExpression(
     );
   }
   return renderExpression(expression, indent, context);
+}
+
+function localGetExpression(
+  name: string,
+  representation: CompilerValueType,
+): Extract<SemanticExpressionIR, { kind: 'local_get' }> {
+  return { kind: 'local_get', name, representation };
+}
+
+function renderLocalValueForHeapStorage(
+  name: string,
+  valueType: CompilerValueType,
+  indent: string,
+  context: FunctionRenderContext,
+): readonly string[] {
+  return valueType === 'closure_ref'
+    ? renderClosureObjectValueExpression(localGetExpression(name, valueType), indent, context)
+    : [`${indent}local.get $${sanitizeIdentifier(name)}`];
+}
+
+function renderExpressionForHeapStorage(
+  expression: SemanticExpressionIR,
+  valueType: CompilerValueType,
+  indent: string,
+  context: FunctionRenderContext,
+): readonly string[] {
+  return valueType === 'closure_ref'
+    ? renderClosureObjectValueExpression(expression, indent, context)
+    : renderExpression(expression, indent, context);
 }
 
 function renderPromiseThenHandlerExpression(
@@ -902,6 +1145,34 @@ function fallbackObjectLocalLayouts(
   };
   func.body.forEach(visitStatement);
   return layouts;
+}
+
+function boundaryContainsGenericFallbackObject(boundary: ValueBoundaryIR): boolean {
+  let found = false;
+  visitValueBoundary(boundary, (candidate) => {
+    if (
+      candidate.kind === 'object' &&
+      candidate.fallback === true &&
+      (!candidate.fields || candidate.fields.length === 0)
+    ) {
+      found = true;
+    }
+  });
+  return found;
+}
+
+function wrapperNeedsFallbackObjectLayoutHelpers(plan: WasmGcModulePlanIR): boolean {
+  const wrapperBoundaries = [
+    ...plan.wrapperPlan.hostImportWrappers.flatMap((wrapper) => [
+      ...(wrapper.paramBoundaries ?? []),
+      wrapper.resultBoundary,
+    ]),
+    ...plan.wrapperPlan.exportWrappers.flatMap((wrapper) => [
+      ...(wrapper.paramBoundaries ?? []),
+      wrapper.resultBoundary,
+    ]),
+  ].filter((boundary): boundary is ValueBoundaryIR => boundary !== undefined);
+  return wrapperBoundaries.some(boundaryContainsGenericFallbackObject);
 }
 
 function dynamicObjectLayoutTypeName(
@@ -1267,6 +1538,9 @@ function collectObjectLayoutIdsByLocalFromStatements(
 function objectLayoutIdsByLocal(func: WasmGcFunctionPlanIR): ReadonlyMap<string, number> {
   const layouts = new Map<string, number>();
   collectObjectLayoutIdsByLocalFromStatements(func.body, layouts);
+  for (const [localName, layout] of fallbackObjectLocalLayouts(func)) {
+    layouts.set(localName, stableLayoutId(layout.typeName));
+  }
   return layouts;
 }
 
@@ -4676,8 +4950,14 @@ function renderStatement(
       return [...renderExpression(statement.value, indent, context), `${indent}drop`];
     case 'specialized_object_new':
       return [
-        ...statement.fieldValueNames.map((fieldValueName) =>
-          `${indent}local.get $${sanitizeIdentifier(fieldValueName)}`
+        ...statement.fieldValueNames.flatMap((fieldValueName) =>
+          renderLocalValueForHeapStorage(
+            fieldValueName,
+            (context.localWasmTypes.get(fieldValueName) as CompilerValueType | undefined) ??
+              'heap_ref',
+            indent,
+            context,
+          )
         ),
         `${indent}struct.new ${objectLayoutTypeName(statement.representationName)}`,
         `${indent}local.set $${sanitizeIdentifier(statement.targetName)}`,
@@ -4696,7 +4976,12 @@ function renderStatement(
       return [
         `${indent}local.get $${sanitizeIdentifier(statement.objectName)}`,
         `${indent}ref.cast (ref ${objectLayoutTypeName(statement.representationName)})`,
-        ...renderExpression(statement.value, indent, context),
+        ...renderExpressionForHeapStorage(
+          statement.value,
+          statement.value.representation,
+          indent,
+          context,
+        ),
         `${indent}struct.set ${objectLayoutTypeName(statement.representationName)} $${
           sanitizeIdentifier(statement.fieldName)
         }`,
@@ -4709,14 +4994,36 @@ function renderStatement(
           statement.entries.map((entry) => entry.key),
         );
       return [
-        ...statement.entries.map((entry) =>
-          `${indent}local.get $${sanitizeIdentifier(entry.valueName)}`
+        ...statement.entries.flatMap((entry) =>
+          renderLocalValueForHeapStorage(entry.valueName, entry.valueType, indent, context)
         ),
         `${indent}struct.new ${typeName}`,
         `${indent}local.set $${sanitizeIdentifier(statement.targetName)}`,
       ];
     }
     case 'fallback_object_property_get': {
+      if (context.hostProjectionObjectLocalNames.has(statement.objectName)) {
+        const wrapper = hostObjectProjectionPropertyWrapperForStatement(statement, context);
+        if (wrapper?.valueType === 'closure_ref' && wrapper.closureSignatureId !== undefined) {
+          return [
+            `${indent}local.get $${sanitizeIdentifier(statement.objectName)}`,
+            `${indent}ref.cast (ref ${typeNameForHostHandleRuntime()})`,
+            `${indent}struct.get ${typeNameForHostHandleRuntime()} $value`,
+            `${indent}call ${hostObjectProjectionCallImportName(wrapper)}`,
+            `${indent}call ${hostClosureFromHostFunctionName(wrapper.closureSignatureId)}`,
+            `${indent}local.set $${sanitizeIdentifier(statement.targetName)}`,
+          ];
+        }
+        if (wrapper && (wrapper.valueType === 'f64' || wrapper.valueType === 'i32')) {
+          return [
+            `${indent}local.get $${sanitizeIdentifier(statement.objectName)}`,
+            `${indent}ref.cast (ref ${typeNameForHostHandleRuntime()})`,
+            `${indent}struct.get ${typeNameForHostHandleRuntime()} $value`,
+            `${indent}call ${hostObjectProjectionCallImportName(wrapper)}`,
+            `${indent}local.set $${sanitizeIdentifier(statement.targetName)}`,
+          ];
+        }
+      }
       const layout = context.fallbackObjectLocalLayouts.get(statement.objectName);
       const typeName = layout?.typeName ??
         fallbackObjectLayoutTypeName(statement.representationName, [statement.propertyKey]);
@@ -4745,7 +5052,12 @@ function renderStatement(
           return initialEntry
             ? [
               `${indent}local.get $${sanitizeIdentifier(initialEntry.keyName)}`,
-              `${indent}local.get $${sanitizeIdentifier(initialEntry.valueName)}`,
+              ...renderLocalValueForHeapStorage(
+                initialEntry.valueName,
+                initialEntry.valueType,
+                indent,
+                context,
+              ),
               `${indent}i32.const 1`,
             ]
             : [
@@ -5044,6 +5356,7 @@ function renderStatement(
 
 function renderFunctionPlan(
   func: WasmGcFunctionPlanIR,
+  plan: WasmGcModulePlanIR,
   layoutsByRepresentation: ReadonlyMap<string, DynamicObjectLocalLayout>,
   closureFunctionNames: ReadonlyMap<number, string>,
   hostImportWrapperArgIndicesByCallee: ReadonlyMap<string, ReadonlySet<number>>,
@@ -5067,6 +5380,7 @@ function renderFunctionPlan(
     : '';
   const aliases = localAliases(func);
   const dynamicLayouts = dynamicObjectLocalLayouts(func, layoutsByRepresentation);
+  const hostProjectionLocals = hostProjectionLocalInfo(func, plan);
   const context: FunctionRenderContext = {
     boxLocalValueTypes: boxLocalValueTypes(func),
     closureLocalLiterals: closureLocalLiterals(func),
@@ -5076,6 +5390,9 @@ function renderFunctionPlan(
     fallbackObjectLocalLayouts: fallbackObjectLocalLayouts(func),
     dynamicObjectLocalLayouts: dynamicLayouts,
     dynamicObjectPropertyOrigins: dynamicObjectPropertyOrigins(func, dynamicLayouts, aliases),
+    hostProjectionObjectLocalNames: hostProjectionLocals.objectLocalNames,
+    hostProjectionClosureLocalSignatureIds: hostProjectionLocals.closureLocalSignatureIds,
+    hostObjectProjectionPropertyWrappers: plan.wrapperPlan.hostObjectProjectionPropertyWrappers,
     mapStorageLocalNames: mapStorageLocalNames(func),
     hostImportClosureWrapperArgIndicesByCallee: hostImportWrapperArgIndicesByCallee,
     localAliases: aliases,
@@ -5112,6 +5429,8 @@ function renderFunctionPlan(
             : `(ref null ${
               closureEnvTypeName(context.closureLocalLiterals.get(local.name)!.functionId)
             })`
+          : context.hostProjectionObjectLocalNames.has(local.name)
+          ? '(ref null eq)'
           : context.fallbackObjectLocalLayouts.has(local.name)
           ? `(ref null ${context.fallbackObjectLocalLayouts.get(local.name)!.typeName})`
           : context.dynamicObjectLocalLayouts.has(local.name)
@@ -5249,10 +5568,15 @@ function boundaryUsesHostHandleRuntime(boundary: unknown): boolean {
 }
 
 function moduleUsesDirectHostHandleBoundary(plan: WasmGcModulePlanIR): boolean {
-  return plan.wrapperPlan.hostImportWrappers.some((wrapper) =>
-    wrapper.paramBoundaries?.some(boundaryUsesHostHandleRuntime) === true ||
-    boundaryUsesHostHandleRuntime(wrapper.resultBoundary)
-  ) ||
+  return plan.wrapperPlan.hostObjectProjectionPropertyWrappers.length > 0 ||
+    plan.wrapperPlan.hostClosureWrappers.some((wrapper) =>
+      boundaryUsesHostHandleRuntime(wrapper.resultBoundary) ||
+      wrapper.paramBoundaries?.some(boundaryUsesHostHandleRuntime) === true
+    ) ||
+    plan.wrapperPlan.hostImportWrappers.some((wrapper) =>
+      wrapper.paramBoundaries?.some(boundaryUsesHostHandleRuntime) === true ||
+      boundaryUsesHostHandleRuntime(wrapper.resultBoundary)
+    ) ||
     plan.wrapperPlan.exportWrappers.some((wrapper) =>
       wrapper.paramBoundaries?.some(boundaryUsesHostHandleRuntime) === true ||
       boundaryUsesHostHandleRuntime(wrapper.resultBoundary)
@@ -5291,6 +5615,35 @@ function hostClosureCallImportName(signatureId: number): string {
   return `$__soundscript_host_closure_call_${signatureId}`;
 }
 
+function hostObjectProjectionPropertySuffix(propertyName: string): string {
+  return [...propertyName].map((char) => char.codePointAt(0)!.toString(16).padStart(2, '0')).join(
+    '',
+  );
+}
+
+function hostObjectProjectionPropertyKind(
+  wrapper: WasmGcHostObjectProjectionPropertyWrapperPlanIR,
+): 'function' | 'number' | 'boolean' {
+  if (wrapper.valueType === 'closure_ref') {
+    return 'function';
+  }
+  return wrapper.valueType === 'i32' ? 'boolean' : 'number';
+}
+
+function hostObjectProjectionImportFieldName(
+  wrapper: WasmGcHostObjectProjectionPropertyWrapperPlanIR,
+): string {
+  return `get_${hostObjectProjectionPropertyKind(wrapper)}_${
+    hostObjectProjectionPropertySuffix(wrapper.propertyName)
+  }`;
+}
+
+function hostObjectProjectionCallImportName(
+  wrapper: WasmGcHostObjectProjectionPropertyWrapperPlanIR,
+): string {
+  return `$__soundscript_host_object_${hostObjectProjectionImportFieldName(wrapper)}`;
+}
+
 function renderHostClosureCallImportPlans(plan: WasmGcModulePlanIR): readonly string[] {
   return plan.wrapperPlan.hostClosureWrappers.map((wrapper) =>
     `  (import "soundscript_host_closure" "call_${wrapper.signatureId}" (func ${
@@ -5301,6 +5654,19 @@ function renderHostClosureCallImportPlans(plan: WasmGcModulePlanIR): readonly st
       ).join('')
     } (result ${wasmTypeForCompilerValueType(wrapper.resultType)})))`
   );
+}
+
+function renderHostObjectProjectionImportPlans(plan: WasmGcModulePlanIR): readonly string[] {
+  return plan.wrapperPlan.hostObjectProjectionPropertyWrappers.map((wrapper) => {
+    const resultType = wrapper.valueType === 'closure_ref'
+      ? 'externref'
+      : wasmTypeForCompilerValueType(wrapper.valueType);
+    return `  (import "soundscript_host_object" "${
+      hostObjectProjectionImportFieldName(wrapper)
+    }" (func ${
+      hostObjectProjectionCallImportName(wrapper)
+    } (param externref) (result ${resultType})))`;
+  });
 }
 
 function renderHostClosureHelperFunctions(plan: WasmGcModulePlanIR): readonly string[] {
@@ -5423,6 +5789,17 @@ function wrapperPlanUsesStringBoundaryHelpers(plan: WasmGcModulePlanIR): boolean
     plan.wrapperPlan.hostCallbackWrappers.some((wrapper) =>
       wrapper.paramTaggedPrimitiveKinds.some(taggedKindsIncludeString) ||
       taggedKindsIncludeString(wrapper.resultTaggedPrimitiveKinds)
+    ) ||
+    plan.wrapperPlan.hostClosureWrappers.some((wrapper) =>
+      wrapper.paramTypes.some((paramType) =>
+        paramType === 'string_ref' || paramType === 'owned_string_ref'
+      ) ||
+      wrapper.resultType === 'string_ref' ||
+      wrapper.resultType === 'owned_string_ref' ||
+      wrapper.paramBoundaries?.some((boundary) =>
+          boundary ? valueBoundaryUsesString(boundary) : false
+        ) === true ||
+      (wrapper.resultBoundary ? valueBoundaryUsesString(wrapper.resultBoundary) : false)
     ) ||
     [...wrapperPlanCollectionBoundaryAdapters(plan)].some((adapter) =>
       valueBoundaryUsesString(adapter.kind === 'map' ? adapter.key : adapter.value) ||
@@ -5560,6 +5937,14 @@ function wrapperPlanUsesSymbolBoundaryHelpers(plan: WasmGcModulePlanIR): boolean
       wrapper.resultType === 'symbol_ref' ||
       wrapper.paramTaggedPrimitiveKinds.some(taggedKindsIncludeSymbol) ||
       taggedKindsIncludeSymbol(wrapper.resultTaggedPrimitiveKinds)
+    ) ||
+    plan.wrapperPlan.hostClosureWrappers.some((wrapper) =>
+      wrapper.paramTypes.some((paramType) => paramType === 'symbol_ref') ||
+      wrapper.resultType === 'symbol_ref' ||
+      wrapper.paramBoundaries?.some((boundary) =>
+          boundary ? valueBoundaryUsesSymbol(boundary) : false
+        ) === true ||
+      (wrapper.resultBoundary ? valueBoundaryUsesSymbol(wrapper.resultBoundary) : false)
     );
 }
 
@@ -5578,6 +5963,14 @@ function wrapperPlanUsesBigIntBoundaryHelpers(plan: WasmGcModulePlanIR): boolean
       wrapper.resultType === 'bigint_ref' ||
       wrapper.paramTaggedPrimitiveKinds.some(taggedKindsIncludeBigInt) ||
       taggedKindsIncludeBigInt(wrapper.resultTaggedPrimitiveKinds)
+    ) ||
+    plan.wrapperPlan.hostClosureWrappers.some((wrapper) =>
+      wrapper.paramTypes.some((paramType) => paramType === 'bigint_ref') ||
+      wrapper.resultType === 'bigint_ref' ||
+      wrapper.paramBoundaries?.some((boundary) =>
+          boundary ? valueBoundaryUsesBigInt(boundary) : false
+        ) === true ||
+      (wrapper.resultBoundary ? valueBoundaryUsesBigInt(wrapper.resultBoundary) : false)
     );
 }
 
@@ -8492,6 +8885,7 @@ export function emitWasmGcModulePlan(plan: WasmGcModulePlanIR): string {
     renderHostImportPlan(func, hostImportWrapperArgIndicesByFunction)
   );
   const hostClosureCallImportPlans = renderHostClosureCallImportPlans(plan);
+  const hostObjectProjectionImportPlans = renderHostObjectProjectionImportPlans(plan);
   const stringEqualityImportPlans = renderStringEqualityImportPlan(plan);
   const externEqualityImportPlans = renderExternEqualityImportPlan(plan);
   const moduleGlobals = plan.moduleGlobals.map(renderModuleGlobalPlan);
@@ -8534,12 +8928,14 @@ export function emitWasmGcModulePlan(plan: WasmGcModulePlanIR): string {
         : ['    ;; none']
     ),
     ...(hostImportPlans.length > 0 || hostClosureCallImportPlans.length > 0 ||
+        hostObjectProjectionImportPlans.length > 0 ||
         stringEqualityImportPlans.length > 0 ||
         externEqualityImportPlans.length > 0
       ? [
         '  ;; imports',
         ...hostImportPlans,
         ...hostClosureCallImportPlans,
+        ...hostObjectProjectionImportPlans,
         ...stringEqualityImportPlans,
         ...externEqualityImportPlans,
       ]
@@ -8589,6 +8985,7 @@ export function emitWasmGcModulePlan(plan: WasmGcModulePlanIR): string {
     ...plan.functionPlans.flatMap((func) =>
       renderFunctionPlan(
         func,
+        plan,
         dynamicLayoutsByRepresentation,
         closureFunctionNames,
         hostImportWrapperArgIndicesByCallee,

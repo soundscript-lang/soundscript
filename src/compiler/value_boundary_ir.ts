@@ -250,6 +250,60 @@ export function valueBoundarySupportsWasmGcSpecializedObjectWrapper(
   return valueBoundaryCanUseWasmGcSpecializedObjectWrapper(boundary);
 }
 
+export function valueBoundaryFromCompilerValueType(
+  valueType: CompilerValueType,
+  options: { closureSignatureId?: number } = {},
+): ValueBoundaryIR {
+  switch (valueType) {
+    case 'f64':
+      return { kind: 'number' };
+    case 'i32':
+      return { kind: 'boolean' };
+    case 'string_ref':
+      return { kind: 'string' };
+    case 'owned_string_ref':
+      return { kind: 'string', owned: true };
+    case 'symbol_ref':
+      return { kind: 'symbol' };
+    case 'bigint_ref':
+      return { kind: 'bigint' };
+    case 'closure_ref':
+      return options.closureSignatureId === undefined
+        ? { kind: 'closure' }
+        : { kind: 'closure', signatureIds: [options.closureSignatureId] };
+    case 'tagged_ref':
+      return {
+        kind: 'union',
+        arms: [
+          { kind: 'undefined' },
+          { kind: 'null' },
+          { kind: 'boolean' },
+          { kind: 'number' },
+          { kind: 'string' },
+          { kind: 'symbol' },
+          { kind: 'bigint' },
+          { kind: 'host_handle' },
+        ],
+      };
+    case 'owned_number_array_ref':
+      return { kind: 'array', element: { kind: 'number' } };
+    case 'owned_array_ref':
+      return { kind: 'array', element: { kind: 'string', owned: true } };
+    case 'owned_boolean_array_ref':
+      return { kind: 'array', element: { kind: 'boolean' } };
+    case 'owned_heap_array_ref':
+      return { kind: 'array', element: { kind: 'host_handle' } };
+    case 'owned_tagged_array_ref':
+      return { kind: 'array', element: valueBoundaryFromCompilerValueType('tagged_ref') };
+    case 'class_constructor_ref':
+      return { kind: 'constructor' };
+    case 'heap_ref':
+    case 'box_ref':
+    default:
+      return { kind: 'host_handle' };
+  }
+}
+
 export function valueBoundaryFromSemanticType(type: SemanticTypeIR): ValueBoundaryIR {
   switch (type.kind) {
     case 'finite_union':

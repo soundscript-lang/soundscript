@@ -772,6 +772,7 @@ export interface SemanticFunctionIR {
   runtimeFamilies: readonly SemanticRuntimeFamilyId[];
   hostImport?: SemanticHostImportIR;
   hostResultBoundary?: SemanticTypeIR;
+  hostLocalFallbackBoundary?: SemanticTypeIR;
   hostImported: boolean;
   hostExported: boolean;
   unionBoundaries: readonly SemanticUnionBoundaryIR[];
@@ -1547,6 +1548,10 @@ function collectFunctionFamilies(
   func.hostParamBoundaries?.forEach((param) => addHostBoundaryFamilies(families, param.boundary));
   if (func.hostResultBoundary) {
     addHostBoundaryFamilies(families, func.hostResultBoundary);
+  }
+  if (func.hostLocalFallbackBoundary) {
+    addHostBoundaryFamilies(families, func.hostLocalFallbackBoundary);
+    families.add('host_object_projection');
   }
 
   if (func.hostImport) {
@@ -3486,6 +3491,13 @@ export function createSemanticModuleFromCompilerIR(module: CompilerModuleIR): Se
       ...(hostImport !== undefined ? { hostImport } : {}),
       ...(func.hostResultBoundary !== undefined
         ? { hostResultBoundary: compilerHostBoundaryToSemanticType(func.hostResultBoundary) }
+        : {}),
+      ...(func.hostLocalFallbackBoundary !== undefined
+        ? {
+          hostLocalFallbackBoundary: compilerHostBoundaryToSemanticType(
+            func.hostLocalFallbackBoundary,
+          ),
+        }
         : {}),
       hostImported: func.hostImport !== undefined,
       hostExported: !func.name.startsWith('__'),

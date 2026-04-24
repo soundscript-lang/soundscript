@@ -690,8 +690,7 @@ function areWasmGcPublicBoundariesSupported(
 
 function wasmGcPublicStatementBodySupported(statement: SemanticStatementIR): boolean {
   if (
-    (statement.kind === 'fallback_object_property_get' ||
-      statement.kind === 'dynamic_object_property_get') &&
+    statement.kind === 'dynamic_object_property_get' &&
     statement.valueType === 'closure_ref'
   ) {
     return false;
