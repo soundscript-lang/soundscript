@@ -1036,6 +1036,44 @@ function lowerStatement(
   switch (statement.kind) {
     case 'variable_declaration': {
       return statement.declarations.flatMap((declaration): SemanticStatementIR[] => {
+        if (
+          declaration.binding.kind === 'object_binding' &&
+          declaration.initializer?.kind === 'identifier'
+        ) {
+          const initializer = lowerExpression(declaration.initializer, context);
+          const statements = takePendingStatements(context);
+          const objectName = declaration.initializer.name;
+          const objectLayout = context.objectLocals.get(objectName);
+          if (!objectLayout || initializer.representation !== 'heap_ref') {
+            context.unsupportedKinds.add(`object_binding:${objectName}`);
+            return [{ kind: 'unsupported_statement', sourceKind: 'variable_declaration' }];
+          }
+          for (const element of declaration.binding.elements) {
+            if (element.kind !== 'identifier_binding') {
+              context.unsupportedKinds.add('object_binding');
+              return [{ kind: 'unsupported_statement', sourceKind: 'variable_declaration' }];
+            }
+            const fieldIndex = objectLayout.fields.findIndex((field) =>
+              field.name === element.name
+            );
+            if (fieldIndex < 0) {
+              context.unsupportedKinds.add(`object_binding:${element.name}`);
+              return [{ kind: 'unsupported_statement', sourceKind: 'variable_declaration' }];
+            }
+            const field = objectLayout.fields[fieldIndex]!;
+            addLocal(context, element.name, field.representation);
+            statements.push({
+              kind: 'specialized_object_field_get',
+              targetName: element.name,
+              objectName,
+              representationName: objectLayout.representationName,
+              fieldIndex,
+              fieldName: field.name,
+            });
+          }
+          context.runtimeFamilies.add('specialized_object');
+          return statements;
+        }
         if (declaration.binding.kind !== 'identifier_binding' || !declaration.initializer) {
           context.unsupportedKinds.add('variable_declaration');
           return [{ kind: 'unsupported_statement', sourceKind: 'variable_declaration' }];
