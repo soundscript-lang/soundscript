@@ -38,10 +38,15 @@ interface SourceSemanticObjectLocal {
   }[];
 }
 
+interface SourceSemanticArrayLocal {
+  elementRepresentation: CompilerValueType;
+}
+
 interface FunctionLoweringContext {
   functionResultRepresentations: Map<string, CompilerValueType>;
   localRepresentations: Map<string, CompilerValueType>;
   locals: { name: string; representation: CompilerValueType }[];
+  arrayLocals: Map<string, SourceSemanticArrayLocal>;
   objectLayoutsByKey: Map<string, SemanticObjectLayoutIR>;
   objectLocals: Map<string, SourceSemanticObjectLocal>;
   pendingStatements: SemanticStatementIR[];
@@ -189,6 +194,27 @@ function registerSpecializedObjectLayout(
   return name;
 }
 
+function arrayLocalInfoForExpression(
+  expression: SemanticExpressionIR,
+): SourceSemanticArrayLocal | undefined {
+  switch (expression.kind) {
+    case 'owned_number_array_literal':
+      return {
+        elementRepresentation: 'f64',
+      };
+    case 'owned_string_array_literal':
+      return {
+        elementRepresentation: 'owned_string_ref',
+      };
+    case 'owned_boolean_array_literal':
+      return {
+        elementRepresentation: 'i32',
+      };
+    default:
+      return undefined;
+  }
+}
+
 function lowerExpression(
   expression: SourceExpressionIR,
   context: FunctionLoweringContext,
@@ -293,6 +319,9 @@ function lowerExpression(
       const index = expression.index
         ? lowerExpression(expression.index, context)
         : { kind: 'undefined_literal', representation: 'tagged_ref' } as SemanticExpressionIR;
+      const arrayLocal = expression.object.kind === 'identifier'
+        ? context.arrayLocals.get(expression.object.name)
+        : undefined;
       if (object.representation === 'owned_number_array_ref' && index.representation === 'f64') {
         context.runtimeFamilies.add('array');
         return {
@@ -300,6 +329,32 @@ function lowerExpression(
           value: object,
           index,
           representation: 'f64',
+        };
+      }
+      if (
+        arrayLocal?.elementRepresentation === 'owned_string_ref' &&
+        object.representation === 'owned_array_ref' &&
+        index.representation === 'f64'
+      ) {
+        context.runtimeFamilies.add('array');
+        context.runtimeFamilies.add('string');
+        return {
+          kind: 'owned_string_array_element',
+          value: object,
+          index,
+          representation: 'owned_string_ref',
+        };
+      }
+      if (
+        object.representation === 'owned_boolean_array_ref' &&
+        index.representation === 'f64'
+      ) {
+        context.runtimeFamilies.add('array');
+        return {
+          kind: 'owned_boolean_array_element',
+          value: object,
+          index,
+          representation: 'i32',
         };
       }
       context.unsupportedKinds.add('element_access');
@@ -313,6 +368,23 @@ function lowerExpression(
           kind: 'owned_number_array_literal',
           elements,
           representation: 'owned_number_array_ref',
+        };
+      }
+      if (elements.every((element) => element.representation === 'owned_string_ref')) {
+        context.runtimeFamilies.add('array');
+        context.runtimeFamilies.add('string');
+        return {
+          kind: 'owned_string_array_literal',
+          elements,
+          representation: 'owned_array_ref',
+        };
+      }
+      if (elements.every((element) => element.representation === 'i32')) {
+        context.runtimeFamilies.add('array');
+        return {
+          kind: 'owned_boolean_array_literal',
+          elements,
+          representation: 'owned_boolean_array_ref',
         };
       }
       context.unsupportedKinds.add('array_literal');
@@ -412,6 +484,10 @@ function lowerStatement(
         const value = lowerExpression(declaration.initializer, context);
         const statements = takePendingStatements(context);
         addLocal(context, declaration.binding.name, value.representation);
+        const arrayLocal = arrayLocalInfoForExpression(value);
+        if (arrayLocal) {
+          context.arrayLocals.set(declaration.binding.name, arrayLocal);
+        }
         return [...statements, { kind: 'local_set', name: declaration.binding.name, value }];
       });
     }
@@ -429,6 +505,12 @@ function lowerStatement(
             return [{ kind: 'unsupported_statement', sourceKind: 'assignment_expression' }];
           }
           const statements = takePendingStatements(context);
+          const arrayLocal = arrayLocalInfoForExpression(value);
+          if (arrayLocal) {
+            context.arrayLocals.set(target, arrayLocal);
+          } else {
+            context.arrayLocals.delete(target);
+          }
           return [...statements, { kind: 'local_set', name: target, value }];
         }
         if (
@@ -593,6 +675,7 @@ function lowerFunction(
     functionResultRepresentations,
     localRepresentations,
     locals: [],
+    arrayLocals: new Map(),
     objectLayoutsByKey,
     objectLocals: new Map(),
     pendingStatements: [],
