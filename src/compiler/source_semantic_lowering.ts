@@ -2,6 +2,7 @@ import type { CompilerValueType } from './ir.ts';
 import type {
   SourceBindingIR,
   SourceClassIR,
+  SourceClassMemberIR,
   SourceExpressionIR,
   SourceFunctionIR,
   SourceModuleIR,
@@ -37,6 +38,7 @@ interface SourceSemanticFunctionSignature {
 interface SourceSemanticObjectLocal {
   family: 'specialized_object' | 'fallback_object' | 'dynamic_object';
   representationName: string;
+  className?: string;
   dynamicValueRepresentation?: CompilerValueType;
   fields: readonly {
     name: string;
@@ -1030,6 +1032,10 @@ function lowerExpression(
       return { kind: 'undefined_literal', representation: 'tagged_ref' };
     }
     case 'call_expression': {
+      const methodCall = lowerClassMethodCallExpression(expression, context);
+      if (methodCall) {
+        return methodCall;
+      }
       if (expression.callee.kind !== 'identifier') {
         context.unsupportedKinds.add('call_expression');
         return { kind: 'undefined_literal', representation: 'tagged_ref' };
@@ -2070,8 +2076,7 @@ function lowerClassConstructionDeclaration(
     return undefined;
   }
   const unsupportedMember = classInfo.members.find((member) =>
-    member.static || member.kind === 'method' || member.kind === 'getter' ||
-    member.kind === 'setter'
+    member.static || member.kind === 'getter' || member.kind === 'setter'
   );
   if (unsupportedMember) {
     context.unsupportedKinds.add(`class_member:${unsupportedMember.kind}`);
@@ -2125,6 +2130,7 @@ function lowerClassConstructionDeclaration(
   const objectLocal: SourceSemanticObjectLocal = {
     family: 'specialized_object',
     representationName: registerSpecializedObjectLayout(context, fields),
+    className: classInfo.name,
     fields,
   };
   addLocal(context, targetName, 'heap_ref');
@@ -2177,6 +2183,104 @@ function lowerClassConstructionDeclaration(
     context.objectLocals.delete(name);
   }
   return statements;
+}
+
+function clearTransientSourceBindings(
+  context: FunctionLoweringContext,
+  names: readonly string[],
+): void {
+  for (const name of names) {
+    context.localRepresentations.delete(name);
+    context.arrayLocals.delete(name);
+    context.boxedLocals.delete(name);
+    context.closureLocals.delete(name);
+    context.localDeclarationKinds.delete(name);
+    context.objectLocals.delete(name);
+  }
+}
+
+function lowerClassMethodCallExpression(
+  expression: Extract<SourceExpressionIR, { kind: 'call_expression' }>,
+  context: FunctionLoweringContext,
+): SemanticExpressionIR | undefined {
+  if (expression.callee.kind !== 'property_access') {
+    return undefined;
+  }
+  const callee = expression.callee;
+  if (callee.object.kind !== 'identifier') {
+    return undefined;
+  }
+  const objectName = callee.object.name;
+  const objectLocal = context.objectLocals.get(objectName);
+  const className = objectLocal?.className;
+  const classInfo = className ? context.classesByName.get(className) : undefined;
+  const method = classInfo?.members.find((
+    member,
+  ): member is Extract<SourceClassMemberIR, { kind: 'method' }> =>
+    member.kind === 'method' && !member.static && member.name === callee.property
+  );
+  if (!objectLocal || !classInfo || !method) {
+    return undefined;
+  }
+  if (method.params.length !== expression.args.length) {
+    context.unsupportedKinds.add(`class_method_arity:${method.name}`);
+    return undefined;
+  }
+  const [returnStatement] = method.body;
+  if (
+    method.body.length !== 1 || !returnStatement || returnStatement.kind !== 'return' ||
+    !returnStatement.expression
+  ) {
+    context.unsupportedKinds.add(`class_method_body:${method.name}`);
+    return undefined;
+  }
+  const paramNames = method.params.map((param, index) =>
+    param.kind === 'identifier_binding' ? param.name : `__source_method_param_${index}`
+  );
+  const transientNames = ['this', ...paramNames];
+  if (
+    transientNames.includes(objectName) ||
+    transientNames.some((name) =>
+      context.localRepresentations.has(name) ||
+      context.objectLocals.has(name) ||
+      context.arrayLocals.has(name) ||
+      context.closureLocals.has(name) ||
+      context.boxedLocals.has(name)
+    )
+  ) {
+    context.unsupportedKinds.add(`class_method_binding_collision:${method.name}`);
+    return undefined;
+  }
+  const statements: SemanticStatementIR[] = [];
+  for (const [index, param] of method.params.entries()) {
+    if (param.kind !== 'identifier_binding') {
+      context.unsupportedKinds.add(`class_method_parameter:${method.name}`);
+      return undefined;
+    }
+    const arg = expression.args[index];
+    if (!arg) {
+      context.unsupportedKinds.add(`class_method_argument:${method.name}`);
+      return undefined;
+    }
+    const value = lowerExpression(arg, context);
+    statements.push(...takePendingStatements(context));
+    addLocal(context, param.name, value.representation);
+    context.localDeclarationKinds.set(param.name, 'param');
+    statements.push({ kind: 'local_set', name: param.name, value });
+  }
+  addLocal(context, 'this', 'heap_ref');
+  context.localDeclarationKinds.set('this', 'param');
+  context.objectLocals.set('this', objectLocal);
+  statements.push({
+    kind: 'local_set',
+    name: 'this',
+    value: { kind: 'local_get', name: objectName, representation: 'heap_ref' },
+  });
+  const result = lowerExpression(returnStatement.expression, context);
+  statements.push(...takePendingStatements(context));
+  clearTransientSourceBindings(context, transientNames);
+  context.pendingStatements.push(...statements);
+  return result;
 }
 
 function lowerStatement(
