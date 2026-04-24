@@ -2991,6 +2991,7 @@ function collectNumberArrayScratchFromExpression(
     case 'heap_null':
     case 'owned_string_literal':
     case 'local_get':
+    case 'global_get':
     case 'closure_null':
     case 'unsupported_expression':
       break;
@@ -3008,6 +3009,7 @@ function collectNumberArrayScratchFromStatement(
   switch (statement.kind) {
     case 'return':
     case 'local_set':
+    case 'global_set':
     case 'expression':
       collectNumberArrayScratchFromExpression(statement.value, uses);
       break;
@@ -4235,6 +4237,8 @@ function renderExpression(
       return renderOwnedStringLengthExpression(expression, indent, context);
     case 'local_get':
       return [`${indent}local.get $${sanitizeIdentifier(expression.name)}`];
+    case 'global_get':
+      return [`${indent}global.get $${sanitizeIdentifier(expression.globalName)}`];
     case 'string_to_owned':
     case 'owned_string_to_host':
       return renderExpression(expression.value, indent, context);
@@ -4609,6 +4613,11 @@ function renderStatement(
         `${indent}local.set $${sanitizeIdentifier(statement.name)}`,
       ];
     }
+    case 'global_set':
+      return [
+        ...renderExpression(statement.value, indent, context),
+        `${indent}global.set $${sanitizeIdentifier(statement.globalName)}`,
+      ];
     case 'expression':
       return [...renderExpression(statement.value, indent, context), `${indent}drop`];
     case 'specialized_object_new':
@@ -5084,6 +5093,59 @@ function renderHostImportPlan(
       JSON.stringify(func.hostImport.name)
     } (func $${sanitizeIdentifier(func.name)}${params}${result}))`,
   ];
+}
+
+function renderModuleGlobalPlan(
+  global: WasmGcModulePlanIR['moduleGlobals'][number],
+): string {
+  switch (global.type) {
+    case 'f64':
+      return `  (global $${
+        sanitizeIdentifier(global.globalName)
+      } (mut f64) (f64.const ${global.initialValue}))`;
+    case 'i32':
+      return `  (global $${sanitizeIdentifier(global.globalName)} (mut i32) (i32.const ${
+        global.initialValue ? 1 : 0
+      }))`;
+    case 'tagged_ref':
+      return `  (global $${
+        sanitizeIdentifier(global.globalName)
+      } (mut (ref null ${taggedValueTypeName()})) (ref.null ${taggedValueTypeName()}))`;
+    default: {
+      const exhaustiveCheck: never = global;
+      return exhaustiveCheck;
+    }
+  }
+}
+
+function renderTaggedModuleGlobalInitializer(
+  global: Extract<WasmGcModulePlanIR['moduleGlobals'][number], { type: 'tagged_ref' }>,
+): readonly string[] {
+  const tag = global.initialValue === 'undefined' ? TAGGED_UNDEFINED_TAG : TAGGED_NULL_TAG;
+  return [
+    `    i32.const ${tag}`,
+    '    f64.const 0',
+    '    ref.null extern',
+    '    ref.null eq',
+    `    struct.new ${taggedValueTypeName()}`,
+    `    global.set $${sanitizeIdentifier(global.globalName)}`,
+  ];
+}
+
+function renderModuleGlobalInitializers(plan: WasmGcModulePlanIR): readonly string[] {
+  const taggedGlobals = plan.moduleGlobals.filter((
+    global,
+  ): global is Extract<WasmGcModulePlanIR['moduleGlobals'][number], { type: 'tagged_ref' }> =>
+    global.type === 'tagged_ref'
+  );
+  return taggedGlobals.length > 0
+    ? [
+      '  (func $__soundscript_init_module_globals',
+      ...taggedGlobals.flatMap(renderTaggedModuleGlobalInitializer),
+      '  )',
+      '  (start $__soundscript_init_module_globals)',
+    ]
+    : [];
 }
 
 function renderStringEqualityImportPlan(plan: WasmGcModulePlanIR): readonly string[] {
@@ -6224,6 +6286,7 @@ function collectBoxedClosureDispatchSignatureIdsFromExpression(
     case 'heap_null':
     case 'owned_string_literal':
     case 'local_get':
+    case 'global_get':
     case 'closure_null':
     case 'unsupported_expression':
       break;
@@ -6242,6 +6305,7 @@ function collectBoxedClosureDispatchSignatureIdsFromStatement(
   switch (statement.kind) {
     case 'return':
     case 'local_set':
+    case 'global_set':
     case 'expression':
       collectBoxedClosureDispatchSignatureIdsFromExpression(
         statement.value,
@@ -6665,6 +6729,7 @@ function collectBoxValueTypesFromExpression(
     case 'heap_null':
     case 'owned_string_literal':
     case 'local_get':
+    case 'global_get':
     case 'closure_null':
     case 'unsupported_expression':
       break;
@@ -6682,6 +6747,7 @@ function collectBoxValueTypesFromStatement(
   switch (statement.kind) {
     case 'return':
     case 'local_set':
+    case 'global_set':
     case 'expression':
       collectBoxValueTypesFromExpression(statement.value, valueTypes);
       break;
@@ -6995,6 +7061,7 @@ function collectArrayRuntimeTypesFromExpression(
     case 'heap_null':
     case 'owned_string_literal':
     case 'local_get':
+    case 'global_get':
     case 'closure_null':
     case 'unsupported_expression':
       break;
@@ -7012,6 +7079,7 @@ function collectArrayRuntimeTypesFromStatement(
   switch (statement.kind) {
     case 'return':
     case 'local_set':
+    case 'global_set':
     case 'expression':
       collectArrayRuntimeTypesFromExpression(statement.value, runtimeTypes);
       break;
@@ -7345,7 +7413,8 @@ function renderTaggedValueType(plan: WasmGcModulePlanIR): readonly string[] {
       func.result === 'tagged_ref' ||
       func.params.some((param) => param.wasmType === 'tagged_ref') ||
       func.locals.some((local) => local.wasmType === 'tagged_ref')
-    );
+    ) ||
+    plan.moduleGlobals.some((global) => global.type === 'tagged_ref');
   return usesFiniteUnion
     ? [
       `  (type ${taggedValueTypeName()} (struct`,
@@ -8202,6 +8271,8 @@ export function emitWasmGcModulePlan(plan: WasmGcModulePlanIR): string {
   );
   const stringEqualityImportPlans = renderStringEqualityImportPlan(plan);
   const externEqualityImportPlans = renderExternEqualityImportPlan(plan);
+  const moduleGlobals = plan.moduleGlobals.map(renderModuleGlobalPlan);
+  const moduleGlobalInitializers = renderModuleGlobalInitializers(plan);
   const lines = [
     '(module',
     '  ;; soundscript wasm-gc shadow module',
@@ -8247,6 +8318,12 @@ export function emitWasmGcModulePlan(plan: WasmGcModulePlanIR): string {
         ...externEqualityImportPlans,
       ]
       : []),
+    ...(moduleGlobals.length > 0
+      ? [
+        '  ;; globals',
+        ...moduleGlobals,
+      ]
+      : []),
     '  ;; helpers',
     ...(plan.helperPlans.length > 0 || stringEqualityHelperFunctions.length > 0 ||
         stringConcatHelperFunctions.length > 0 ||
@@ -8278,6 +8355,7 @@ export function emitWasmGcModulePlan(plan: WasmGcModulePlanIR): string {
         '    ;; none',
       ]),
     '  ;; functions',
+    ...moduleGlobalInitializers,
     ...plan.functionPlans.flatMap((func) =>
       renderFunctionPlan(
         func,

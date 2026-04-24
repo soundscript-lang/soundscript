@@ -5,6 +5,7 @@ import {
   type SemanticBoundarySurfaceIR,
   type SemanticExpressionIR,
   type SemanticHostImportIR,
+  type SemanticModuleGlobalIR,
   type SemanticModuleIR,
   type SemanticObjectLayoutIR,
   type SemanticRuntimeFamilyId,
@@ -87,6 +88,8 @@ export interface WasmGcFunctionPlanIR {
   hostImport?: SemanticHostImportIR;
 }
 
+export type WasmGcModuleGlobalPlanIR = SemanticModuleGlobalIR;
+
 export interface WasmGcBoundaryValuePlanIR {
   name?: string;
   type: SemanticTypeIR;
@@ -168,6 +171,7 @@ export interface WasmGcModulePlanIR {
   typePlans: readonly WasmGcTypePlanIR[];
   helperPlans: readonly WasmGcHelperPlanIR[];
   functionPlans: readonly WasmGcFunctionPlanIR[];
+  moduleGlobals: readonly WasmGcModuleGlobalPlanIR[];
   boundaryPlans: readonly WasmGcBoundaryPlanIR[];
   wrapperPlan: WasmGcWrapperPlanIR;
   diagnostics: readonly WasmGcDiagnosticPlanIR[];
@@ -1676,6 +1680,7 @@ export function createWasmGcModulePlan(
       kind: helper.kind,
     })),
     functionPlans,
+    moduleGlobals: semantic.moduleGlobals,
     boundaryPlans: semantic.boundarySurfaces.map((surface) =>
       createBoundaryPlan(surface, runtimeManifest)
     ),

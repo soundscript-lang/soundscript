@@ -19,6 +19,7 @@ import type {
   CompilerExpressionIR,
   CompilerFunctionIR,
   CompilerHostBoundaryIR,
+  CompilerModuleGlobalIR,
   CompilerModuleIR,
   CompilerStatementIR,
   CompilerTaggedPrimitiveBoundaryKindsIR,
@@ -85,6 +86,7 @@ export type SemanticExpressionIR =
     representation: 'f64';
   }
   | { kind: 'local_get'; name: string; representation: CompilerValueType }
+  | { kind: 'global_get'; globalName: string; representation: CompilerValueType }
   | {
     kind: 'string_to_owned';
     value: SemanticExpressionIR;
@@ -391,6 +393,7 @@ export type SemanticExpressionIR =
 export type SemanticStatementIR =
   | { kind: 'return'; value: SemanticExpressionIR }
   | { kind: 'local_set'; name: string; value: SemanticExpressionIR }
+  | { kind: 'global_set'; globalName: string; value: SemanticExpressionIR }
   | { kind: 'expression'; value: SemanticExpressionIR }
   | {
     kind: 'specialized_object_new';
@@ -827,9 +830,12 @@ export interface SemanticDiagnosticIR {
   target: 'wasm-gc';
 }
 
+export type SemanticModuleGlobalIR = CompilerModuleGlobalIR;
+
 export interface SemanticModuleIR {
   kind: 'semantic_module';
   functions: readonly SemanticFunctionIR[];
+  moduleGlobals: readonly SemanticModuleGlobalIR[];
   stringLiterals: readonly string[];
   stringLiteralCodeUnits: readonly (readonly number[])[];
   typeSnapshots: readonly SemanticTypeSnapshotIR[];
@@ -1603,6 +1609,12 @@ function semanticExpressionFromCompilerIR(
       };
     case 'local_get':
       return { kind: 'local_get', name: expression.name, representation: expression.type };
+    case 'global_get':
+      return {
+        kind: 'global_get',
+        globalName: expression.globalName,
+        representation: expression.type,
+      };
     case 'string_to_owned':
       return {
         kind: 'string_to_owned',
@@ -1972,6 +1984,12 @@ function semanticStatementFromCompilerIR(
       return {
         kind: 'local_set',
         name: statement.name,
+        value: semanticExpressionFromCompilerIR(statement.value),
+      };
+    case 'global_set':
+      return {
+        kind: 'global_set',
+        globalName: statement.globalName,
         value: semanticExpressionFromCompilerIR(statement.value),
       };
     case 'expression':
@@ -3243,6 +3261,7 @@ function collectUnsupportedExpressionKinds(
     case 'heap_null':
     case 'owned_string_literal':
     case 'local_get':
+    case 'global_get':
       break;
     default: {
       const exhaustiveCheck: never = expression;
@@ -3258,6 +3277,7 @@ function collectUnsupportedStatementKinds(
   switch (statement.kind) {
     case 'return':
     case 'local_set':
+    case 'global_set':
     case 'expression':
       collectUnsupportedExpressionKinds(statement.value, kinds);
       break;
@@ -3466,6 +3486,7 @@ export function createSemanticModuleFromCompilerIR(module: CompilerModuleIR): Se
   return {
     kind: 'semantic_module',
     functions,
+    moduleGlobals: module.moduleGlobals ?? [],
     stringLiterals: module.stringLiterals ?? [],
     stringLiteralCodeUnits: module.stringLiteralCodeUnits ?? [],
     typeSnapshots: [],

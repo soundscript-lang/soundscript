@@ -1923,6 +1923,7 @@ export function createSemanticModuleFromSourceHIR(
   return {
     kind: 'semantic_module',
     functions,
+    moduleGlobals: [],
     stringLiterals,
     stringLiteralCodeUnits: stringLiterals.map(codeUnitsForString),
     typeSnapshots: sharedFacts.typeSnapshots as SemanticModuleIR['typeSnapshots'],

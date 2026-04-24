@@ -41,6 +41,7 @@ function semanticModuleWithFamilies(
   return {
     kind: 'semantic_module',
     functions: [],
+    moduleGlobals: [],
     stringLiterals: [],
     stringLiteralCodeUnits: [],
     typeSnapshots: [],
