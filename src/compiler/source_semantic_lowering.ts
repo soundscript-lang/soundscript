@@ -1125,6 +1125,62 @@ function lowerArrayBindingFromLocal(
   return statements;
 }
 
+function sourceStatementsContainControlTransfer(
+  statements: readonly SourceStatementIR[],
+): boolean {
+  return statements.some((statement): boolean => {
+    switch (statement.kind) {
+      case 'return':
+      case 'break':
+      case 'continue':
+      case 'throw':
+        return true;
+      case 'block':
+        return sourceStatementsContainControlTransfer(statement.statements);
+      case 'if':
+        return sourceStatementsContainControlTransfer(statement.consequent) ||
+          sourceStatementsContainControlTransfer(statement.alternate);
+      case 'while':
+      case 'do_while':
+      case 'for':
+      case 'for_of':
+        return true;
+      case 'switch':
+        return statement.clauses.some((clause) =>
+          sourceStatementsContainControlTransfer(clause.statements)
+        );
+      case 'try':
+        return sourceStatementsContainControlTransfer(statement.tryBlock) ||
+          sourceStatementsContainControlTransfer(statement.catchBlock ?? []) ||
+          sourceStatementsContainControlTransfer(statement.finallyBlock ?? []);
+      default:
+        return false;
+    }
+  });
+}
+
+function lowerTryStatement(
+  statement: Extract<SourceStatementIR, { kind: 'try' }>,
+  context: FunctionLoweringContext,
+): readonly SemanticStatementIR[] {
+  if (statement.catchBlock || statement.catchBinding) {
+    context.unsupportedKinds.add('try_catch');
+    return [{ kind: 'unsupported_statement', sourceKind: 'try' }];
+  }
+  const finallyBlock = statement.finallyBlock ?? [];
+  if (
+    sourceStatementsContainControlTransfer(statement.tryBlock) ||
+    sourceStatementsContainControlTransfer(finallyBlock)
+  ) {
+    context.unsupportedKinds.add('try_finally_control_flow');
+    return [{ kind: 'unsupported_statement', sourceKind: 'try' }];
+  }
+  return [
+    ...statement.tryBlock.flatMap((child) => [...lowerStatement(child, context)]),
+    ...finallyBlock.flatMap((child) => [...lowerStatement(child, context)]),
+  ];
+}
+
 function lowerStatement(
   statement: SourceStatementIR,
   context: FunctionLoweringContext,
@@ -1433,6 +1489,8 @@ function lowerStatement(
     }
     case 'block':
       return statement.statements.flatMap((child) => [...lowerStatement(child, context)]);
+    case 'try':
+      return lowerTryStatement(statement, context);
     case 'for_of': {
       const lowered = lowerArrayForOfStatement(statement, context);
       if (lowered) {
