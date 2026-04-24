@@ -52,6 +52,8 @@ interface SourceSemanticClosureLocal {
   signatureId: number;
 }
 
+type SourceSemanticLocalDeclarationKind = 'const' | 'let' | 'var' | 'param' | 'capture';
+
 interface SourceSemanticModuleLoweringState {
   closureSignatures: SemanticClosureSignatureIR[];
   generatedFunctions: SemanticFunctionIR[];
@@ -66,7 +68,9 @@ interface FunctionLoweringContext {
   localRepresentations: Map<string, CompilerValueType>;
   locals: { name: string; representation: CompilerValueType }[];
   arrayLocals: Map<string, SourceSemanticArrayLocal>;
+  boxedLocals: Map<string, CompilerValueType>;
   closureLocals: Map<string, SourceSemanticClosureLocal>;
+  localDeclarationKinds: Map<string, SourceSemanticLocalDeclarationKind>;
   localTypesByKey: Map<string, SemanticTypeIR>;
   moduleState: SourceSemanticModuleLoweringState;
   objectLayoutsByKey: Map<string, SemanticObjectLayoutIR>;
@@ -854,6 +858,15 @@ function lowerExpression(
         context.unsupportedKinds.add(`unbound_identifier:${expression.name}`);
         return { kind: 'undefined_literal', representation: 'tagged_ref' };
       }
+      const boxedValueType = context.boxedLocals.get(expression.name);
+      if (representation === 'box_ref' && boxedValueType) {
+        return {
+          kind: 'box_get',
+          box: { kind: 'local_get', name: expression.name, representation: 'box_ref' },
+          valueType: boxedValueType,
+          representation: boxedValueType,
+        };
+      }
       return { kind: 'local_get', name: expression.name, representation };
     }
     case 'property_access': {
@@ -1627,6 +1640,302 @@ function lowerTryStatement(
   ];
 }
 
+function collectSourceBindingNames(binding: SourceBindingIR, names: Set<string>): void {
+  switch (binding.kind) {
+    case 'identifier_binding':
+      names.add(binding.name);
+      break;
+    case 'object_binding':
+    case 'array_binding':
+      binding.elements.forEach((element) => collectSourceBindingNames(element, names));
+      break;
+    case 'unknown_binding':
+      break;
+    default: {
+      const exhaustiveCheck: never = binding;
+      return exhaustiveCheck;
+    }
+  }
+}
+
+function collectSourceStatementDeclaredNames(
+  statement: SourceStatementIR,
+  names: Set<string>,
+): void {
+  switch (statement.kind) {
+    case 'variable_declaration':
+      statement.declarations.forEach((declaration) =>
+        collectSourceBindingNames(declaration.binding, names)
+      );
+      break;
+    case 'if':
+      statement.consequent.forEach((child) => collectSourceStatementDeclaredNames(child, names));
+      statement.alternate.forEach((child) => collectSourceStatementDeclaredNames(child, names));
+      break;
+    case 'while':
+    case 'do_while':
+      statement.body.forEach((child) => collectSourceStatementDeclaredNames(child, names));
+      break;
+    case 'block':
+      statement.statements.forEach((child) => collectSourceStatementDeclaredNames(child, names));
+      break;
+    case 'for':
+      if (statement.initializer?.kind === 'variable_declaration') {
+        collectSourceStatementDeclaredNames(statement.initializer, names);
+      }
+      statement.body.forEach((child) => collectSourceStatementDeclaredNames(child, names));
+      break;
+    case 'for_of':
+      if ('kind' in statement.left && statement.left.kind.endsWith('_binding')) {
+        collectSourceBindingNames(statement.left as SourceBindingIR, names);
+      }
+      statement.body.forEach((child) => collectSourceStatementDeclaredNames(child, names));
+      break;
+    case 'switch':
+      statement.clauses.forEach((clause) =>
+        clause.statements.forEach((child) => collectSourceStatementDeclaredNames(child, names))
+      );
+      break;
+    case 'try':
+      statement.tryBlock.forEach((child) => collectSourceStatementDeclaredNames(child, names));
+      if (statement.catchBinding) {
+        collectSourceBindingNames(statement.catchBinding, names);
+      }
+      statement.catchBlock?.forEach((child) => collectSourceStatementDeclaredNames(child, names));
+      statement.finallyBlock?.forEach((child) => collectSourceStatementDeclaredNames(child, names));
+      break;
+    case 'expression_statement':
+    case 'return':
+    case 'break':
+    case 'continue':
+    case 'throw':
+    case 'unknown_statement':
+      break;
+    default: {
+      const exhaustiveCheck: never = statement;
+      return exhaustiveCheck;
+    }
+  }
+}
+
+function collectSourceExpressionIdentifierReads(
+  expression: SourceExpressionIR,
+  names: string[],
+): void {
+  switch (expression.kind) {
+    case 'identifier':
+      if (expression.role === 'read') {
+        names.push(expression.name);
+      }
+      break;
+    case 'property_access':
+      collectSourceExpressionIdentifierReads(expression.object, names);
+      break;
+    case 'element_access':
+      collectSourceExpressionIdentifierReads(expression.object, names);
+      if (expression.index) {
+        collectSourceExpressionIdentifierReads(expression.index, names);
+      }
+      break;
+    case 'binary_expression':
+    case 'logical_expression':
+      collectSourceExpressionIdentifierReads(expression.left, names);
+      collectSourceExpressionIdentifierReads(expression.right, names);
+      break;
+    case 'unary_expression':
+    case 'update_expression':
+      collectSourceExpressionIdentifierReads(expression.operand, names);
+      break;
+    case 'await_expression':
+      collectSourceExpressionIdentifierReads(expression.expression, names);
+      break;
+    case 'conditional_expression':
+      collectSourceExpressionIdentifierReads(expression.test, names);
+      collectSourceExpressionIdentifierReads(expression.consequent, names);
+      collectSourceExpressionIdentifierReads(expression.alternate, names);
+      break;
+    case 'assignment_expression':
+      collectSourceExpressionIdentifierReads(expression.left, names);
+      collectSourceExpressionIdentifierReads(expression.right, names);
+      break;
+    case 'call_expression':
+    case 'new_expression':
+      collectSourceExpressionIdentifierReads(expression.callee, names);
+      expression.args.forEach((arg) => collectSourceExpressionIdentifierReads(arg, names));
+      break;
+    case 'array_literal':
+      expression.elements.forEach((element) =>
+        collectSourceExpressionIdentifierReads(element, names)
+      );
+      break;
+    case 'object_literal':
+      expression.properties.forEach((property) => {
+        if (property.computedName) {
+          collectSourceExpressionIdentifierReads(property.computedName, names);
+        }
+        collectSourceExpressionIdentifierReads(property.value, names);
+      });
+      break;
+    case 'arrow_function':
+      break;
+    case 'literal':
+    case 'unknown_expression':
+      break;
+    default: {
+      const exhaustiveCheck: never = expression;
+      return exhaustiveCheck;
+    }
+  }
+}
+
+function collectSourceStatementIdentifierReads(
+  statement: SourceStatementIR,
+  names: string[],
+): void {
+  switch (statement.kind) {
+    case 'variable_declaration':
+      statement.declarations.forEach((declaration) => {
+        if (declaration.initializer) {
+          collectSourceExpressionIdentifierReads(declaration.initializer, names);
+        }
+      });
+      break;
+    case 'expression_statement':
+      collectSourceExpressionIdentifierReads(statement.expression, names);
+      break;
+    case 'return':
+      if (statement.expression) {
+        collectSourceExpressionIdentifierReads(statement.expression, names);
+      }
+      break;
+    case 'if':
+      collectSourceExpressionIdentifierReads(statement.test, names);
+      statement.consequent.forEach((child) => collectSourceStatementIdentifierReads(child, names));
+      statement.alternate.forEach((child) => collectSourceStatementIdentifierReads(child, names));
+      break;
+    case 'while':
+      collectSourceExpressionIdentifierReads(statement.test, names);
+      statement.body.forEach((child) => collectSourceStatementIdentifierReads(child, names));
+      break;
+    case 'do_while':
+      statement.body.forEach((child) => collectSourceStatementIdentifierReads(child, names));
+      collectSourceExpressionIdentifierReads(statement.test, names);
+      break;
+    case 'for':
+      if (statement.initializer?.kind === 'variable_declaration') {
+        collectSourceStatementIdentifierReads(statement.initializer, names);
+      } else if (statement.initializer) {
+        collectSourceExpressionIdentifierReads(statement.initializer, names);
+      }
+      if (statement.test) {
+        collectSourceExpressionIdentifierReads(statement.test, names);
+      }
+      if (statement.incrementor) {
+        collectSourceExpressionIdentifierReads(statement.incrementor, names);
+      }
+      statement.body.forEach((child) => collectSourceStatementIdentifierReads(child, names));
+      break;
+    case 'for_of':
+      if (!('kind' in statement.left && statement.left.kind.endsWith('_binding'))) {
+        collectSourceExpressionIdentifierReads(statement.left as SourceExpressionIR, names);
+      }
+      collectSourceExpressionIdentifierReads(statement.right, names);
+      statement.body.forEach((child) => collectSourceStatementIdentifierReads(child, names));
+      break;
+    case 'switch':
+      collectSourceExpressionIdentifierReads(statement.expression, names);
+      statement.clauses.forEach((clause) => {
+        if (clause.expression) {
+          collectSourceExpressionIdentifierReads(clause.expression, names);
+        }
+        clause.statements.forEach((child) => collectSourceStatementIdentifierReads(child, names));
+      });
+      break;
+    case 'throw':
+      collectSourceExpressionIdentifierReads(statement.expression, names);
+      break;
+    case 'try':
+      statement.tryBlock.forEach((child) => collectSourceStatementIdentifierReads(child, names));
+      statement.catchBlock?.forEach((child) => collectSourceStatementIdentifierReads(child, names));
+      statement.finallyBlock?.forEach((child) =>
+        collectSourceStatementIdentifierReads(child, names)
+      );
+      break;
+    case 'block':
+      statement.statements.forEach((child) => collectSourceStatementIdentifierReads(child, names));
+      break;
+    case 'break':
+    case 'continue':
+    case 'unknown_statement':
+      break;
+    default: {
+      const exhaustiveCheck: never = statement;
+      return exhaustiveCheck;
+    }
+  }
+}
+
+function sourceClosureCaptures(
+  expression: Extract<SourceExpressionIR, { kind: 'arrow_function' }>,
+  parentContext: FunctionLoweringContext,
+):
+  | readonly {
+    name: string;
+    value: SemanticExpressionIR;
+    valueType: CompilerValueType;
+  }[]
+  | undefined {
+  const paramNames = new Set<string>();
+  expression.params.forEach((param) => collectSourceBindingNames(param, paramNames));
+  const localNames = new Set<string>();
+  expression.body.forEach((statement) =>
+    collectSourceStatementDeclaredNames(statement, localNames)
+  );
+  const reads: string[] = [];
+  expression.body.forEach((statement) => collectSourceStatementIdentifierReads(statement, reads));
+  const seen = new Set<string>();
+  const captures: {
+    name: string;
+    value: SemanticExpressionIR;
+    valueType: CompilerValueType;
+  }[] = [];
+  let supported = true;
+  for (const name of reads) {
+    if (seen.has(name) || paramNames.has(name) || localNames.has(name)) {
+      continue;
+    }
+    seen.add(name);
+    const representation = parentContext.localRepresentations.get(name);
+    if (!representation) {
+      continue;
+    }
+    const existingBoxedValueType = parentContext.boxedLocals.get(name);
+    if (!existingBoxedValueType && parentContext.localDeclarationKinds.get(name) !== 'const') {
+      parentContext.unsupportedKinds.add(`mutable_closure_capture:${name}`);
+      supported = false;
+      continue;
+    }
+    const valueType = existingBoxedValueType ?? representation;
+    let value: SemanticExpressionIR;
+    if (existingBoxedValueType) {
+      value = {
+        kind: 'local_get',
+        name,
+        representation: 'box_ref',
+      };
+    } else {
+      value = {
+        kind: 'box_new',
+        value: { kind: 'local_get', name, representation },
+        valueType,
+        representation: 'box_ref',
+      };
+    }
+    captures.push({ name, value, valueType });
+  }
+  return supported ? captures : undefined;
+}
+
 function lowerArrowFunctionExpression(
   expression: Extract<SourceExpressionIR, { kind: 'arrow_function' }>,
   closureType: SemanticTypeIR | undefined,
@@ -1647,6 +1956,8 @@ function lowerArrowFunctionExpression(
 
   const localRepresentations = new Map<string, CompilerValueType>();
   const arrayLocals = new Map<string, SourceSemanticArrayLocal>();
+  const boxedLocals = new Map<string, CompilerValueType>();
+  const localDeclarationKinds = new Map<string, SourceSemanticLocalDeclarationKind>();
   const params = expression.params.map((binding, index) => {
     const type = signatureType.params[index]!;
     const representation = representationForSemanticType(type);
@@ -1654,6 +1965,7 @@ function lowerArrowFunctionExpression(
       ? binding.name
       : `__source_closure_param_${index}`;
     localRepresentations.set(name, representation);
+    localDeclarationKinds.set(name, 'param');
     const arrayLocal = arrayLocalInfoForSemanticType(type);
     if (arrayLocal) {
       arrayLocals.set(name, arrayLocal);
@@ -1662,6 +1974,16 @@ function lowerArrowFunctionExpression(
       parentContext.unsupportedKinds.add('arrow_function_parameter');
     }
     return { name, representation };
+  });
+  const captures = sourceClosureCaptures(expression, parentContext);
+  if (!captures) {
+    return undefined;
+  }
+  const captureParams = captures.map((capture) => {
+    localRepresentations.set(capture.name, 'box_ref');
+    boxedLocals.set(capture.name, capture.valueType);
+    localDeclarationKinds.set(capture.name, 'capture');
+    return { name: capture.name, representation: 'box_ref' as const };
   });
 
   const unsupportedKinds = new Set<string>();
@@ -1672,7 +1994,9 @@ function lowerArrowFunctionExpression(
     localRepresentations,
     locals: [],
     arrayLocals,
+    boxedLocals,
     closureLocals: new Map(),
+    localDeclarationKinds,
     localTypesByKey: new Map(),
     moduleState: parentContext.moduleState,
     objectLayoutsByKey: parentContext.objectLayoutsByKey,
@@ -1701,7 +2025,7 @@ function lowerArrowFunctionExpression(
   parentContext.moduleState.generatedFunctions.push({
     name: closureContext.functionName,
     exportName: '',
-    params,
+    params: [...captureParams, ...params],
     locals: closureContext.locals,
     result: representationForSemanticType(signatureType.result),
     body,
@@ -1713,8 +2037,8 @@ function lowerArrowFunctionExpression(
     unionBoundaries: [],
     closureFunctionId,
     closureSignatureId: closureSignature.id,
-    closureCaptureCount: 0,
-    closureCaptureValueTypes: [],
+    closureCaptureCount: captures.length,
+    closureCaptureValueTypes: captures.map((capture) => capture.valueType),
   });
 
   parentContext.runtimeFamilies.add('closure');
@@ -1722,8 +2046,8 @@ function lowerArrowFunctionExpression(
     kind: 'closure_literal',
     functionId: closureFunctionId,
     signatureId: closureSignature.id,
-    captures: [],
-    captureValueTypes: [],
+    captures: captures.map((capture) => capture.value),
+    captureValueTypes: captures.map((capture) => capture.valueType),
     representation: 'closure_ref',
   };
 }
@@ -1799,6 +2123,10 @@ function lowerStatement(
             return [{ kind: 'unsupported_statement', sourceKind: 'variable_declaration' }];
           }
           addLocal(context, declaration.binding.name, 'closure_ref');
+          context.localDeclarationKinds.set(
+            declaration.binding.name,
+            statement.declarationKind,
+          );
           context.closureLocals.set(declaration.binding.name, {
             signatureId: closure.signatureId,
             resultRepresentation: representationForSemanticType(
@@ -1849,6 +2177,10 @@ function lowerStatement(
             fields: fieldTypes,
           };
           addLocal(context, declaration.binding.name, 'heap_ref');
+          context.localDeclarationKinds.set(
+            declaration.binding.name,
+            statement.declarationKind,
+          );
           context.objectLocals.set(declaration.binding.name, resolvedObjectLocal);
           if (resolvedObjectLocal.family === 'fallback_object') {
             statements.push({
@@ -1916,6 +2248,10 @@ function lowerStatement(
         const value = lowerExpression(declaration.initializer, context);
         const statements = takePendingStatements(context);
         addLocal(context, declaration.binding.name, value.representation);
+        context.localDeclarationKinds.set(
+          declaration.binding.name,
+          statement.declarationKind,
+        );
         const arrayLocal = arrayLocalInfoForInitializer(
           declaration.initializer,
           value,
@@ -2325,7 +2661,11 @@ function lowerFunction(
     localRepresentations,
     locals: [],
     arrayLocals,
+    boxedLocals: new Map(),
     closureLocals: new Map(),
+    localDeclarationKinds: new Map(
+      params.map((param) => [param.name, 'param' as const]),
+    ),
     localTypesByKey,
     moduleState,
     objectLayoutsByKey,
