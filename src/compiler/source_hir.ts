@@ -63,6 +63,7 @@ export type SourceStatementIR =
   | SourceSwitchStatementIR
   | SourceBreakStatementIR
   | SourceContinueStatementIR
+  | SourceThrowStatementIR
   | SourceTryStatementIR
   | SourceBlockStatementIR
   | SourceUnknownStatementIR;
@@ -150,6 +151,12 @@ export interface SourceBreakStatementIR {
 
 export interface SourceContinueStatementIR {
   kind: 'continue';
+  span: SourceSpanIR;
+}
+
+export interface SourceThrowStatementIR {
+  kind: 'throw';
+  expression: SourceExpressionIR;
   span: SourceSpanIR;
 }
 
@@ -618,6 +625,14 @@ function lowerStatement(sourceFile: ts.SourceFile, statement: ts.Statement): Sou
   if (ts.isContinueStatement(statement)) {
     return {
       kind: 'continue',
+      span: spanOf(sourceFile, statement),
+    };
+  }
+
+  if (ts.isThrowStatement(statement) && statement.expression) {
+    return {
+      kind: 'throw',
+      expression: lowerExpression(sourceFile, statement.expression),
       span: spanOf(sourceFile, statement),
     };
   }

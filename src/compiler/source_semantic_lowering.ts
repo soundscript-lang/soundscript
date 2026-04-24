@@ -1226,6 +1226,10 @@ function lowerStatement(
     }
     case 'continue':
       return [{ kind: 'continue' }];
+    case 'throw': {
+      const value = lowerExpression(statement.expression, context);
+      return [...takePendingStatements(context), { kind: 'throw_tagged', value }];
+    }
     case 'for_of': {
       const lowered = lowerArrayForOfStatement(statement, context);
       if (lowered) {
