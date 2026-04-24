@@ -3,6 +3,8 @@ import ts from 'typescript';
 // Internal TypeScript host parsing and synthesis helpers.
 // Macro authors should depend on macro_api.ts instead of this module.
 
+const SOUNDSCRIPT_ANNOTATION_COMMENT_PATTERN = /^\/\/\s*#\[/u;
+
 function getFragmentScriptKind(fileName: string): ts.ScriptKind {
   const lowered = fileName.toLowerCase();
   if (lowered.endsWith('.sts') || lowered.endsWith('.tsx') || lowered.endsWith('.jsx')) {
@@ -31,7 +33,48 @@ function createFragmentSourceFile(
   );
 }
 
+function sourceTextForNode(node: ts.Node): string | undefined {
+  try {
+    return node.getSourceFile?.().text;
+  } catch {
+    return undefined;
+  }
+}
+
+function preserveLeadingAnnotationComments(node: ts.Node): void {
+  if (node.kind <= ts.SyntaxKind.LastToken) {
+    return;
+  }
+  if (node.pos < 0) {
+    return;
+  }
+
+  const sourceText = sourceTextForNode(node);
+  if (sourceText === undefined) {
+    return;
+  }
+
+  for (const comment of ts.getLeadingCommentRanges(sourceText, node.pos) ?? []) {
+    if (comment.kind !== ts.SyntaxKind.SingleLineCommentTrivia) {
+      continue;
+    }
+
+    const commentText = sourceText.slice(comment.pos, comment.end);
+    if (!SOUNDSCRIPT_ANNOTATION_COMMENT_PATTERN.test(commentText)) {
+      continue;
+    }
+
+    ts.addSyntheticLeadingComment(
+      node,
+      ts.SyntaxKind.SingleLineCommentTrivia,
+      commentText.slice('//'.length),
+      true,
+    );
+  }
+}
+
 export function synthesizeHostNode<T extends ts.Node>(node: T): T {
+  preserveLeadingAnnotationComments(node);
   ts.setTextRange(node, { pos: -1, end: -1 });
   ts.setOriginalNode(node, undefined);
   ts.forEachChild(node, (child) => {

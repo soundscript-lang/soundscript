@@ -278,6 +278,54 @@ Deno.test('createProjectMacroEnvironment expands generated Try macro sites', () 
   assert(!printed.includes('Try(fetchValue())'));
 });
 
+Deno.test('createProjectMacroEnvironment preserves generated declaration annotations for stdlib macros', () => {
+  const fileName = '/virtual/index.sts';
+  const preparedProgram = createGeneratedMacroTestProgram(
+    [
+      "import { EmitSnapshot } from './macros/defs.macro';",
+      '',
+      'EmitSnapshot();',
+      '',
+    ].join('\n'),
+    [
+      "import 'sts:macros';",
+      '',
+      '// #[macro(call)]',
+      'export function EmitSnapshot() {',
+      '  return {',
+      '    expand(ctx) {',
+      '      return ctx.output.stmts(ctx.quote.stmts`',
+      '        import { codec, decode } from "sts:derive";',
+      '        ',
+      '        // #[value]',
+      '        // #[codec]',
+      '        // #[decode.unknownKeys("strict")]',
+      '        export class TodoSnapshot {',
+      '          readonly id: string;',
+      '          readonly title: string;',
+      '          constructor(id: string, title: string) {',
+      '            this.id = id;',
+      '            this.title = title;',
+      '          }',
+      '        }',
+      '      `);',
+      '    },',
+      '  };',
+      '}',
+      '',
+    ].join('\n'),
+  );
+
+  const printed = printExpandedFileWithBuiltins(preparedProgram, fileName);
+  assertStringIncludes(printed, 'export const TodoSnapshotCodec = ');
+  assertStringIncludes(printed, 'unknownKeys: "strict"');
+  assertStringIncludes(
+    printed,
+    'new TodoSnapshot(__sts_construct_value.id, __sts_construct_value.title)',
+  );
+  assert(!printed.includes('__sts_macro_stmt'));
+});
+
 Deno.test('createProjectMacroEnvironment honors macroExpansionRecursionLimit 0 for generated stdlib macros', () => {
   const fileName = '/virtual/index.sts';
   const preparedProgram = createGeneratedMacroTestProgram(
