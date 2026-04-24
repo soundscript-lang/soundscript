@@ -20,6 +20,7 @@ import {
 import type {
   SharedSemanticFactsIR,
   SharedSemanticFunctionTypeSnapshotIR,
+  SharedSemanticLocalTypeSnapshotIR,
 } from '../semantic/shared_semantic_facts.ts';
 
 interface SourceSemanticFunctionSignature {
@@ -32,6 +33,7 @@ interface SourceSemanticFunctionSignature {
 }
 
 interface SourceSemanticObjectLocal {
+  family: 'specialized_object' | 'fallback_object' | 'dynamic_object';
   representationName: string;
   fields: readonly {
     name: string;
@@ -44,11 +46,13 @@ interface SourceSemanticArrayLocal {
 }
 
 interface FunctionLoweringContext {
+  functionName: string;
   functionResultArrayLocals: Map<string, SourceSemanticArrayLocal>;
   functionResultRepresentations: Map<string, CompilerValueType>;
   localRepresentations: Map<string, CompilerValueType>;
   locals: { name: string; representation: CompilerValueType }[];
   arrayLocals: Map<string, SourceSemanticArrayLocal>;
+  localTypesByKey: Map<string, SemanticTypeIR>;
   objectLayoutsByKey: Map<string, SemanticObjectLayoutIR>;
   objectLocals: Map<string, SourceSemanticObjectLocal>;
   pendingStatements: SemanticStatementIR[];
@@ -304,6 +308,63 @@ function registerSpecializedObjectLayout(
   context.objectLayoutsByKey.set(`specialized_object:${name}`, layout);
   context.runtimeFamilies.add('specialized_object');
   return name;
+}
+
+function registerFallbackObjectLayout(
+  context: FunctionLoweringContext,
+  representationName: string,
+  fields: readonly { name: string; representation: CompilerValueType }[],
+): string {
+  const layout: SemanticObjectLayoutIR = {
+    name: representationName,
+    family: 'fallback_object',
+    fields: fields.map((field) => field.name),
+    fieldValueTypes: fields.map((field) => ({
+      name: field.name,
+      representation: field.representation,
+    })),
+  };
+  context.objectLayoutsByKey.set(`fallback_object:${representationName}`, layout);
+  context.runtimeFamilies.add('fallback_object');
+  return representationName;
+}
+
+function localTypeKey(
+  fileName: string,
+  functionName: string,
+  name: string,
+  start: number,
+  end: number,
+): string {
+  return `${fileName}:${functionName}:${name}:${start}:${end}`;
+}
+
+function localTypeSnapshotKey(snapshot: SharedSemanticLocalTypeSnapshotIR): string {
+  return localTypeKey(
+    snapshot.fileName,
+    snapshot.functionName,
+    snapshot.name,
+    snapshot.span.start,
+    snapshot.span.end,
+  );
+}
+
+function localTypeForBinding(
+  binding: SourceBindingIR,
+  context: FunctionLoweringContext,
+): SemanticTypeIR | undefined {
+  if (binding.kind !== 'identifier_binding') {
+    return undefined;
+  }
+  return context.localTypesByKey.get(
+    localTypeKey(
+      binding.span.fileName,
+      context.functionName,
+      binding.name,
+      binding.span.start,
+      binding.span.end,
+    ),
+  );
 }
 
 function arrayLocalInfoForExpression(
@@ -631,7 +692,7 @@ function lowerUpdateExpression(
     const objectLayout = context.objectLocals.get(objectName);
     const fieldIndex = objectLayout?.fields.findIndex((field) => field.name === propertyName) ??
       -1;
-    if (!objectLayout || fieldIndex < 0) {
+    if (!objectLayout || objectLayout.family !== 'specialized_object' || fieldIndex < 0) {
       return undefined;
     }
     const field = objectLayout.fields[fieldIndex]!;
@@ -734,22 +795,24 @@ function lowerExpression(
     case 'property_access': {
       if (expression.object.kind === 'identifier') {
         const objectLayout = context.objectLocals.get(expression.object.name);
-        const fieldIndex = objectLayout?.fields.findIndex((field) =>
-          field.name === expression.property
-        ) ?? -1;
-        if (objectLayout && fieldIndex >= 0) {
-          const field = objectLayout.fields[fieldIndex]!;
+        const field = objectLayout?.fields.find((candidate) =>
+          candidate.name === expression.property
+        );
+        if (objectLayout && field) {
           const tempName = nextTempLocalName(context, `field_${expression.object.name}`);
           addLocal(context, tempName, field.representation);
-          context.pendingStatements.push({
-            kind: 'specialized_object_field_get',
-            targetName: tempName,
-            objectName: expression.object.name,
-            representationName: objectLayout.representationName,
-            fieldIndex,
-            fieldName: field.name,
-          });
-          context.runtimeFamilies.add('specialized_object');
+          const getStatement = objectFieldGetStatementForLocal(
+            tempName,
+            expression.object.name,
+            objectLayout,
+            expression.property,
+          );
+          if (!getStatement) {
+            context.unsupportedKinds.add(`property_access:${expression.property}`);
+            return { kind: 'undefined_literal', representation: 'tagged_ref' };
+          }
+          context.pendingStatements.push(getStatement);
+          context.runtimeFamilies.add(objectLayout.family);
           return {
             kind: 'local_get',
             name: tempName,
@@ -787,6 +850,34 @@ function lowerExpression(
       return { kind: 'undefined_literal', representation: 'tagged_ref' };
     }
     case 'element_access': {
+      if (expression.object.kind === 'identifier') {
+        const objectLayout = context.objectLocals.get(expression.object.name);
+        const propertyKey = sourceStaticPropertyKey(expression.index);
+        const field = propertyKey
+          ? objectLayout?.fields.find((candidate) => candidate.name === propertyKey)
+          : undefined;
+        if (objectLayout && propertyKey && field) {
+          const tempName = nextTempLocalName(context, `field_${expression.object.name}`);
+          addLocal(context, tempName, field.representation);
+          const getStatement = objectFieldGetStatementForLocal(
+            tempName,
+            expression.object.name,
+            objectLayout,
+            propertyKey,
+          );
+          if (!getStatement) {
+            context.unsupportedKinds.add('element_access');
+            return { kind: 'undefined_literal', representation: 'tagged_ref' };
+          }
+          context.pendingStatements.push(getStatement);
+          context.runtimeFamilies.add(objectLayout.family);
+          return {
+            kind: 'local_get',
+            name: tempName,
+            representation: field.representation,
+          };
+        }
+      }
       const object = lowerExpression(expression.object, context);
       const index = expression.index
         ? lowerExpression(expression.index, context)
@@ -1131,21 +1222,98 @@ function lowerSwitchStatement(
   return switchStatements;
 }
 
-function specializedObjectLocalForSemanticType(
+function objectLocalForSemanticType(
+  type: SemanticTypeIR,
+  fields: readonly { name: string; representation: CompilerValueType }[],
+  context: FunctionLoweringContext,
+): SourceSemanticObjectLocal | undefined {
+  if (type.kind !== 'object') {
+    return undefined;
+  }
+  if (type.dynamic) {
+    context.unsupportedKinds.add('dynamic_object_local');
+    return undefined;
+  }
+  if (type.fallback) {
+    return {
+      family: 'fallback_object',
+      representationName: registerFallbackObjectLayout(
+        context,
+        type.layoutName ?? sourceObjectLayoutName(fields),
+        fields,
+      ),
+      fields,
+    };
+  }
+  return {
+    family: 'specialized_object',
+    representationName: registerSpecializedObjectLayout(context, fields),
+    fields,
+  };
+}
+
+function objectLocalForParameterType(
   type: SemanticTypeIR,
   context: FunctionLoweringContext,
 ): SourceSemanticObjectLocal | undefined {
-  if (type.kind !== 'object' || type.dynamic || type.fallback || !type.fields) {
+  if (type.kind !== 'object' || type.dynamic || !type.fields) {
     return undefined;
   }
   const fields = type.fields.map((field) => ({
     name: field.name,
     representation: representationForSemanticType(field.type as SemanticTypeIR),
   }));
-  return {
-    representationName: registerSpecializedObjectLayout(context, fields),
-    fields,
-  };
+  return objectLocalForSemanticType(type, fields, context);
+}
+
+function quotedSourceStringValue(text: string): string | undefined {
+  try {
+    const value = JSON.parse(text) as unknown;
+    return typeof value === 'string' ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function sourceStaticPropertyKey(expression: SourceExpressionIR | undefined): string | undefined {
+  if (!expression || expression.kind !== 'literal' || expression.literalKind !== 'string') {
+    return undefined;
+  }
+  return quotedSourceStringValue(expression.text);
+}
+
+function objectFieldGetStatementForLocal(
+  targetName: string,
+  objectName: string,
+  objectLayout: SourceSemanticObjectLocal,
+  propertyName: string,
+): SemanticStatementIR | undefined {
+  const fieldIndex = objectLayout.fields.findIndex((field) => field.name === propertyName);
+  if (fieldIndex < 0) {
+    return undefined;
+  }
+  const field = objectLayout.fields[fieldIndex]!;
+  if (objectLayout.family === 'specialized_object') {
+    return {
+      kind: 'specialized_object_field_get',
+      targetName,
+      objectName,
+      representationName: objectLayout.representationName,
+      fieldIndex,
+      fieldName: field.name,
+    };
+  }
+  if (objectLayout.family === 'fallback_object') {
+    return {
+      kind: 'fallback_object_property_get',
+      targetName,
+      objectName,
+      representationName: objectLayout.representationName,
+      propertyKey: field.name,
+      valueType: field.representation,
+    };
+  }
+  return undefined;
 }
 
 function lowerObjectBindingFromLocal(
@@ -1171,16 +1339,19 @@ function lowerObjectBindingFromLocal(
     }
     const field = objectLayout.fields[fieldIndex]!;
     addLocal(context, element.name, field.representation);
-    statements.push({
-      kind: 'specialized_object_field_get',
-      targetName: element.name,
+    const getStatement = objectFieldGetStatementForLocal(
+      element.name,
       objectName,
-      representationName: objectLayout.representationName,
-      fieldIndex,
-      fieldName: field.name,
-    });
+      objectLayout,
+      field.name,
+    );
+    if (!getStatement) {
+      context.unsupportedKinds.add(`object_binding:${element.name}`);
+      return undefined;
+    }
+    statements.push(getStatement);
   }
-  context.runtimeFamilies.add('specialized_object');
+  context.runtimeFamilies.add(objectLayout.family);
   if (statements.length === 0) {
     context.unsupportedKinds.add(sourceKind);
     return undefined;
@@ -1355,18 +1526,39 @@ function lowerStatement(
             fieldValueNames.push(valueName);
             fieldTypes.push({ name: property.name, representation: value.representation });
           }
-          const representationName = registerSpecializedObjectLayout(context, fieldTypes);
-          addLocal(context, declaration.binding.name, 'heap_ref');
-          context.objectLocals.set(declaration.binding.name, {
-            representationName,
+          const localType = localTypeForBinding(declaration.binding, context);
+          const objectLocal = localType
+            ? objectLocalForSemanticType(localType, fieldTypes, context)
+            : undefined;
+          const resolvedObjectLocal = objectLocal ?? {
+            family: 'specialized_object' as const,
+            representationName: registerSpecializedObjectLayout(context, fieldTypes),
             fields: fieldTypes,
-          });
-          statements.push({
-            kind: 'specialized_object_new',
-            targetName: declaration.binding.name,
-            representationName,
-            fieldValueNames,
-          });
+          };
+          addLocal(context, declaration.binding.name, 'heap_ref');
+          context.objectLocals.set(declaration.binding.name, resolvedObjectLocal);
+          if (resolvedObjectLocal.family === 'fallback_object') {
+            statements.push({
+              kind: 'fallback_object_new',
+              targetName: declaration.binding.name,
+              representationName: resolvedObjectLocal.representationName,
+              entries: fieldValueNames.map((valueName, index) => ({
+                key: fieldTypes[index]!.name,
+                valueName,
+                valueType: fieldTypes[index]!.representation,
+              })),
+            });
+          } else if (resolvedObjectLocal.family === 'specialized_object') {
+            statements.push({
+              kind: 'specialized_object_new',
+              targetName: declaration.binding.name,
+              representationName: resolvedObjectLocal.representationName,
+              fieldValueNames,
+            });
+          } else {
+            context.unsupportedKinds.add('dynamic_object_local');
+            statements.push({ kind: 'unsupported_statement', sourceKind: 'variable_declaration' });
+          }
           return statements;
         }
         const value = lowerExpression(declaration.initializer, context);
@@ -1490,7 +1682,7 @@ function lowerStatement(
           const fieldIndex = objectLayout?.fields.findIndex((field) =>
             field.name === propertyName
           ) ?? -1;
-          if (objectLayout && fieldIndex >= 0) {
+          if (objectLayout?.family === 'specialized_object' && fieldIndex >= 0) {
             const field = objectLayout.fields[fieldIndex]!;
             const right = lowerExpression(assignment.right, context);
             const compoundOperator = compoundAssignmentBinaryOperator(assignment.operator);
@@ -1764,12 +1956,23 @@ function lowerFunction(
     };
   });
   const unsupportedKinds = new Set<string>();
+  const localTypesByKey = new Map(
+    sharedFacts.localTypeSnapshots
+      .filter((snapshot) =>
+        snapshot.fileName === module.fileName && snapshot.functionName === func.name
+      )
+      .map((snapshot) =>
+        [localTypeSnapshotKey(snapshot), snapshot.type as SemanticTypeIR] as const
+      ),
+  );
   const context: FunctionLoweringContext = {
+    functionName: func.name,
     functionResultArrayLocals,
     functionResultRepresentations,
     localRepresentations,
     locals: [],
     arrayLocals,
+    localTypesByKey,
     objectLayoutsByKey,
     objectLocals: new Map(),
     pendingStatements: [],
@@ -1785,7 +1988,7 @@ function lowerFunction(
   }
   const parameterBindingStatements = parameterBindings.flatMap((param): SemanticStatementIR[] => {
     if (param.binding.kind === 'object_binding') {
-      const objectLayout = specializedObjectLocalForSemanticType(param.type, context);
+      const objectLayout = objectLocalForParameterType(param.type, context);
       if (!objectLayout) {
         context.unsupportedKinds.add('parameter_object_binding');
         return [{ kind: 'unsupported_statement', sourceKind: 'parameter_binding' }];

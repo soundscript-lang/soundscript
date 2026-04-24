@@ -90,6 +90,20 @@ export type SharedSemanticTypeSnapshotIR =
   | SharedSemanticFunctionTypeSnapshotIR
   | SharedSemanticTypeAliasSnapshotIR;
 
+export interface SharedSemanticLocalTypeSnapshotIR {
+  kind: 'local_type';
+  fileName: string;
+  functionName: string;
+  name: string;
+  span: {
+    start: number;
+    end: number;
+    line: number;
+    column: number;
+  };
+  type: SharedSemanticTypeIR;
+}
+
 export interface SharedSemanticBoundarySurfaceIR {
   kind: 'function_boundary';
   direction: 'import' | 'export';
@@ -112,6 +126,7 @@ export interface SharedSemanticObjectLayoutIR {
 export interface SharedSemanticFactsIR {
   kind: 'shared_semantic_facts';
   typeSnapshots: readonly SharedSemanticTypeSnapshotIR[];
+  localTypeSnapshots: readonly SharedSemanticLocalTypeSnapshotIR[];
   boundarySurfaces: readonly SharedSemanticBoundarySurfaceIR[];
   objectLayouts: readonly SharedSemanticObjectLayoutIR[];
 }
@@ -557,6 +572,19 @@ function classifySharedSemanticTypeInner(
       return { kind: 'host_handle' };
     }
 
+    const stringIndexType = checker.getIndexTypeOfType(type, ts.IndexKind.String);
+    const numberIndexType = checker.getIndexTypeOfType(type, ts.IndexKind.Number);
+    if (stringIndexType || numberIndexType) {
+      const layoutName = objectLayoutName(checker, type);
+      const fields = classifyObjectFields(state, type);
+      return {
+        kind: 'object',
+        layoutName,
+        fallback: true,
+        fields,
+      };
+    }
+
     if (!typeHasProjectDeclaration(state, type)) {
       return { kind: 'host_handle' };
     }
@@ -707,6 +735,87 @@ export function createSharedSemanticTypeSnapshotsFromProgram(
         }
         return [];
       })
+    );
+}
+
+function localTypeSnapshotSpan(
+  sourceFile: ts.SourceFile,
+  node: ts.Node,
+): SharedSemanticLocalTypeSnapshotIR['span'] {
+  const start = node.getStart(sourceFile);
+  const position = sourceFile.getLineAndCharacterOfPosition(start);
+  return {
+    start,
+    end: node.getEnd(),
+    line: position.line + 1,
+    column: position.character + 1,
+  };
+}
+
+function isNestedFunctionLike(node: ts.Node): boolean {
+  return ts.isFunctionDeclaration(node) ||
+    ts.isFunctionExpression(node) ||
+    ts.isArrowFunction(node) ||
+    ts.isMethodDeclaration(node) ||
+    ts.isConstructorDeclaration(node) ||
+    ts.isGetAccessorDeclaration(node) ||
+    ts.isSetAccessorDeclaration(node);
+}
+
+function localTypeSnapshotsFromFunction(
+  checker: ts.TypeChecker,
+  sourceFile: ts.SourceFile,
+  node: ts.FunctionDeclaration,
+  projectDirectory: string,
+): readonly SharedSemanticLocalTypeSnapshotIR[] {
+  const snapshots: SharedSemanticLocalTypeSnapshotIR[] = [];
+  const functionName = node.name?.text ?? '<anonymous>';
+  const visit = (candidate: ts.Node): void => {
+    if (candidate !== node && isNestedFunctionLike(candidate)) {
+      return;
+    }
+    if (ts.isVariableDeclaration(candidate) && ts.isIdentifier(candidate.name)) {
+      snapshots.push({
+        kind: 'local_type',
+        fileName: sourceFile.fileName,
+        functionName,
+        name: candidate.name.text,
+        span: localTypeSnapshotSpan(sourceFile, candidate.name),
+        type: classifyProjectSharedSemanticType(
+          checker,
+          checker.getTypeAtLocation(candidate.name),
+          candidate,
+          projectDirectory,
+        ),
+      });
+    }
+    ts.forEachChild(candidate, visit);
+  };
+  if (node.body) {
+    ts.forEachChild(node.body, visit);
+  }
+  return snapshots;
+}
+
+export function createSharedSemanticLocalTypeSnapshotsFromProgram(
+  program: ts.Program,
+  projectDirectory: string,
+): readonly SharedSemanticLocalTypeSnapshotIR[] {
+  const checker = program.getTypeChecker();
+  return projectSourceFiles(program, projectDirectory)
+    .flatMap((sourceFile) =>
+      sourceFile.statements.flatMap((statement): readonly SharedSemanticLocalTypeSnapshotIR[] =>
+        ts.isFunctionDeclaration(statement)
+          ? localTypeSnapshotsFromFunction(checker, sourceFile, statement, projectDirectory)
+          : []
+      )
+    )
+    .sort((left, right) =>
+      left.fileName === right.fileName
+        ? left.functionName === right.functionName
+          ? left.span.start - right.span.start
+          : left.functionName.localeCompare(right.functionName)
+        : left.fileName.localeCompare(right.fileName)
     );
 }
 
@@ -898,6 +1007,10 @@ export function createSharedSemanticFactsFromProgram(
   projectDirectory: string,
 ): SharedSemanticFactsIR {
   const typeSnapshots = createSharedSemanticTypeSnapshotsFromProgram(program, projectDirectory);
+  const localTypeSnapshots = createSharedSemanticLocalTypeSnapshotsFromProgram(
+    program,
+    projectDirectory,
+  );
   const boundarySurfaces = createSharedSemanticBoundarySurfacesFromProgram(
     program,
     projectDirectory,
@@ -918,6 +1031,7 @@ export function createSharedSemanticFactsFromProgram(
   return {
     kind: 'shared_semantic_facts',
     typeSnapshots,
+    localTypeSnapshots,
     boundarySurfaces,
     objectLayouts,
   };
