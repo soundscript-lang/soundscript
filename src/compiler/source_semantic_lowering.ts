@@ -185,6 +185,54 @@ function unaryOperatorForSource(
   return undefined;
 }
 
+function staticTypeofStringForRepresentation(
+  representation: CompilerValueType,
+): string | undefined {
+  switch (representation) {
+    case 'f64':
+      return 'number';
+    case 'i32':
+      return 'boolean';
+    case 'owned_string_ref':
+      return 'string';
+    case 'symbol_ref':
+      return 'symbol';
+    case 'bigint_ref':
+      return 'bigint';
+    case 'closure_ref':
+    case 'class_constructor_ref':
+      return 'function';
+    case 'heap_ref':
+    case 'owned_number_array_ref':
+    case 'owned_boolean_array_ref':
+    case 'owned_array_ref':
+    case 'owned_heap_array_ref':
+    case 'owned_tagged_array_ref':
+      return 'object';
+    default:
+      return undefined;
+  }
+}
+
+function lowerTypeofExpression(
+  expression: Extract<SourceExpressionIR, { kind: 'unary_expression' }>,
+  context: FunctionLoweringContext,
+): SemanticExpressionIR | undefined {
+  const value = lowerExpression(expression.operand, context);
+  const statements = takePendingStatements(context);
+  const typeName = staticTypeofStringForRepresentation(value.representation);
+  if (!typeName) {
+    return undefined;
+  }
+  context.runtimeFamilies.add('string');
+  context.pendingStatements.push(...statements);
+  return {
+    kind: 'owned_string_literal',
+    literalId: getStringLiteralId(context, JSON.stringify(typeName)),
+    representation: 'owned_string_ref',
+  };
+}
+
 function getStringLiteralId(context: FunctionLoweringContext, text: string): number {
   const unquoted = text.length >= 2 ? text.slice(1, -1) : text;
   const existing = context.stringLiteralIds.get(unquoted);
@@ -737,6 +785,14 @@ function lowerExpression(
       return { kind: 'undefined_literal', representation: 'tagged_ref' };
     }
     case 'unary_expression': {
+      if (expression.operator === 'typeof') {
+        const typeOf = lowerTypeofExpression(expression, context);
+        if (typeOf) {
+          return typeOf;
+        }
+        context.unsupportedKinds.add('typeof_expression');
+        return { kind: 'undefined_literal', representation: 'tagged_ref' };
+      }
       const value = lowerExpression(expression.operand, context);
       const unary = unaryOperatorForSource(expression.operator, value);
       if (!unary) {

@@ -477,6 +477,15 @@ function lowerExpression(
     };
   }
 
+  if (ts.isTypeOfExpression(expression)) {
+    return {
+      kind: 'unary_expression',
+      operator: 'typeof',
+      operand: lowerExpression(sourceFile, expression.expression),
+      span: spanOf(sourceFile, expression),
+    };
+  }
+
   if (ts.isPostfixUnaryExpression(expression)) {
     return {
       kind: 'update_expression',
