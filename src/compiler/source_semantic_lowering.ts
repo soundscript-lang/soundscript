@@ -523,52 +523,143 @@ function lowerUpdateExpression(
   expression: Extract<SourceExpressionIR, { kind: 'update_expression' }>,
   context: FunctionLoweringContext,
 ): SemanticExpressionIR | undefined {
-  if (expression.operand.kind !== 'identifier') {
-    return undefined;
-  }
-  const representation = context.localRepresentations.get(expression.operand.name);
-  if (representation !== 'f64') {
-    return undefined;
-  }
-  const current: SemanticExpressionIR = {
-    kind: 'local_get',
-    name: expression.operand.name,
-    representation: 'f64',
-  };
-  const updated: SemanticExpressionIR = {
+  const updatedExpression = (current: SemanticExpressionIR): SemanticExpressionIR => ({
     kind: 'binary',
     op: expression.operator === '++' ? 'f64.add' : 'f64.sub',
     left: current,
     right: { kind: 'number_literal', value: 1, representation: 'f64' },
     representation: 'f64',
-  };
-  if (expression.prefix) {
-    context.pendingStatements.push({
-      kind: 'local_set',
-      name: expression.operand.name,
-      value: updated,
-    });
-    return {
+  });
+  if (expression.operand.kind === 'identifier') {
+    const representation = context.localRepresentations.get(expression.operand.name);
+    if (representation !== 'f64') {
+      return undefined;
+    }
+    const current: SemanticExpressionIR = {
       kind: 'local_get',
       name: expression.operand.name,
       representation: 'f64',
     };
+    const updated = updatedExpression(current);
+    if (expression.prefix) {
+      context.pendingStatements.push({
+        kind: 'local_set',
+        name: expression.operand.name,
+        value: updated,
+      });
+      return {
+        kind: 'local_get',
+        name: expression.operand.name,
+        representation: 'f64',
+      };
+    }
+    const previousName = nextTempLocalName(context, 'update_previous');
+    addLocal(context, previousName, 'f64');
+    context.pendingStatements.push(
+      { kind: 'local_set', name: previousName, value: current },
+      {
+        kind: 'local_set',
+        name: expression.operand.name,
+        value: updated,
+      },
+    );
+    return {
+      kind: 'local_get',
+      name: previousName,
+      representation: 'f64',
+    };
   }
-  const previousName = nextTempLocalName(context, 'update_previous');
-  addLocal(context, previousName, 'f64');
-  context.pendingStatements.push(
-    { kind: 'local_set', name: previousName, value: current },
-    {
-      kind: 'local_set',
-      name: expression.operand.name,
-      value: updated,
-    },
-  );
-  return {
-    kind: 'local_get',
-    name: previousName,
-    representation: 'f64',
-  };
+
+  if (
+    expression.operand.kind === 'element_access' &&
+    expression.operand.object.kind === 'identifier' &&
+    expression.operand.index
+  ) {
+    const objectName = expression.operand.object.name;
+    const arrayRepresentation = context.localRepresentations.get(objectName);
+    if (!arrayRepresentation) {
+      return undefined;
+    }
+    const index = lowerExpression(expression.operand.index, context);
+    const array = localGetExpression(objectName, arrayRepresentation);
+    const arrayLocal = arrayLocalInfoForRead(expression.operand.object, array, context);
+    const current = arrayLocal
+      ? arrayElementExpressionForInfo(array, index, arrayLocal, context)
+      : undefined;
+    if (!current || current.representation !== 'f64') {
+      return undefined;
+    }
+    const previousName = nextTempLocalName(context, `element_${objectName}`);
+    const updatedName = nextTempLocalName(context, `element_${objectName}_updated`);
+    addLocal(context, previousName, 'f64');
+    addLocal(context, updatedName, 'f64');
+    const updated = updatedExpression(localGetExpression(previousName, 'f64'));
+    const arraySet = arrayElementSetStatementForLocal(
+      context,
+      objectName,
+      index,
+      localGetExpression(updatedName, 'f64'),
+    );
+    if (!arraySet) {
+      return undefined;
+    }
+    context.pendingStatements.push(
+      ...takePendingStatements(context),
+      { kind: 'local_set', name: previousName, value: current },
+      { kind: 'local_set', name: updatedName, value: updated },
+      arraySet,
+    );
+    return localGetExpression(expression.prefix ? updatedName : previousName, 'f64');
+  }
+
+  if (
+    expression.operand.kind === 'property_access' &&
+    expression.operand.object.kind === 'identifier'
+  ) {
+    const objectName = expression.operand.object.name;
+    const propertyName = expression.operand.property;
+    const objectLayout = context.objectLocals.get(objectName);
+    const fieldIndex = objectLayout?.fields.findIndex((field) => field.name === propertyName) ??
+      -1;
+    if (!objectLayout || fieldIndex < 0) {
+      return undefined;
+    }
+    const field = objectLayout.fields[fieldIndex]!;
+    if (field.representation !== 'f64') {
+      return undefined;
+    }
+    const previousName = nextTempLocalName(context, `field_${objectName}`);
+    const updatedName = nextTempLocalName(context, `field_${objectName}_updated`);
+    addLocal(context, previousName, 'f64');
+    addLocal(context, updatedName, 'f64');
+    context.runtimeFamilies.add('specialized_object');
+    context.pendingStatements.push(
+      {
+        kind: 'specialized_object_field_get',
+        targetName: previousName,
+        objectName,
+        representationName: objectLayout.representationName,
+        fieldIndex,
+        fieldName: field.name,
+      },
+      {
+        kind: 'local_set',
+        name: updatedName,
+        value: updatedExpression(localGetExpression(previousName, 'f64')),
+      },
+      {
+        kind: 'specialized_object_field_set',
+        objectName,
+        representationName: objectLayout.representationName,
+        fieldIndex,
+        fieldName: field.name,
+        value: localGetExpression(updatedName, 'f64'),
+      },
+    );
+    return localGetExpression(expression.prefix ? updatedName : previousName, 'f64');
+  }
+
+  return undefined;
 }
 
 function compoundAssignmentBinaryOperator(operator: string): string | undefined {
