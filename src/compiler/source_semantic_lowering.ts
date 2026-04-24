@@ -43,6 +43,7 @@ interface SourceSemanticArrayLocal {
 }
 
 interface FunctionLoweringContext {
+  functionResultArrayLocals: Map<string, SourceSemanticArrayLocal>;
   functionResultRepresentations: Map<string, CompilerValueType>;
   localRepresentations: Map<string, CompilerValueType>;
   locals: { name: string; representation: CompilerValueType }[];
@@ -246,6 +247,18 @@ function arrayLocalInfoForExpression(
     default:
       return undefined;
   }
+}
+
+function arrayLocalInfoForInitializer(
+  source: SourceExpressionIR,
+  expression: SemanticExpressionIR,
+  context: FunctionLoweringContext,
+): SourceSemanticArrayLocal | undefined {
+  if (source.kind === 'call_expression' && source.callee.kind === 'identifier') {
+    return context.functionResultArrayLocals.get(source.callee.name) ??
+      arrayLocalInfoForExpression(expression);
+  }
+  return arrayLocalInfoForExpression(expression);
 }
 
 function arrayLocalInfoForRead(
@@ -684,7 +697,11 @@ function lowerStatement(
         const value = lowerExpression(declaration.initializer, context);
         const statements = takePendingStatements(context);
         addLocal(context, declaration.binding.name, value.representation);
-        const arrayLocal = arrayLocalInfoForExpression(value);
+        const arrayLocal = arrayLocalInfoForInitializer(
+          declaration.initializer,
+          value,
+          context,
+        );
         if (arrayLocal) {
           context.arrayLocals.set(declaration.binding.name, arrayLocal);
         }
@@ -705,7 +722,11 @@ function lowerStatement(
             return [{ kind: 'unsupported_statement', sourceKind: 'assignment_expression' }];
           }
           const statements = takePendingStatements(context);
-          const arrayLocal = arrayLocalInfoForExpression(value);
+          const arrayLocal = arrayLocalInfoForInitializer(
+            assignment.right,
+            value,
+            context,
+          );
           if (arrayLocal) {
             context.arrayLocals.set(target, arrayLocal);
           } else {
@@ -881,6 +902,7 @@ function lowerFunction(
   module: SourceModuleIR,
   func: SourceFunctionIR,
   sharedFacts: SharedSemanticFactsIR,
+  functionResultArrayLocals: Map<string, SourceSemanticArrayLocal>,
   functionResultRepresentations: Map<string, CompilerValueType>,
   objectLayoutsByKey: Map<string, SemanticObjectLayoutIR>,
   stringLiteralIds: Map<string, number>,
@@ -905,6 +927,7 @@ function lowerFunction(
   });
   const unsupportedKinds = new Set<string>();
   const context: FunctionLoweringContext = {
+    functionResultArrayLocals,
     functionResultRepresentations,
     localRepresentations,
     locals: [],
@@ -972,6 +995,7 @@ export function createSemanticModuleFromSourceHIR(
     ),
   );
   const functionResultRepresentations = new Map<string, CompilerValueType>();
+  const functionResultArrayLocals = new Map<string, SourceSemanticArrayLocal>();
   for (const module of source.modules) {
     for (const func of module.functions) {
       const signature = findFunctionSignature(sharedFacts, module, func);
@@ -980,6 +1004,10 @@ export function createSemanticModuleFromSourceHIR(
           func.name,
           representationForSemanticType(signature.result),
         );
+        const arrayLocal = arrayLocalInfoForSemanticType(signature.result);
+        if (arrayLocal) {
+          functionResultArrayLocals.set(func.name, arrayLocal);
+        }
       }
     }
   }
@@ -989,6 +1017,7 @@ export function createSemanticModuleFromSourceHIR(
         module,
         func,
         sharedFacts,
+        functionResultArrayLocals,
         functionResultRepresentations,
         objectLayoutsByKey,
         stringLiteralIds,
