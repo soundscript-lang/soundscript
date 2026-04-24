@@ -57,6 +57,39 @@ interface FunctionLoweringContext {
   unsupportedKinds: Set<string>;
 }
 
+function arrayElementRepresentationForSemanticType(type: SemanticTypeIR): CompilerValueType {
+  return representationForSemanticType(type);
+}
+
+function arrayRepresentationForSemanticType(
+  type: Extract<SemanticTypeIR, { kind: 'array' }>,
+): CompilerValueType {
+  switch (type.element.kind) {
+    case 'number':
+      return 'owned_number_array_ref';
+    case 'boolean':
+      return 'owned_boolean_array_ref';
+    case 'string':
+      return 'owned_array_ref';
+    case 'undefined':
+    case 'null':
+    case 'finite_union':
+    case 'union':
+      return 'owned_tagged_array_ref';
+    default:
+      return 'owned_heap_array_ref';
+  }
+}
+
+function arrayLocalInfoForSemanticType(type: SemanticTypeIR): SourceSemanticArrayLocal | undefined {
+  if (type.kind !== 'array') {
+    return undefined;
+  }
+  return {
+    elementRepresentation: arrayElementRepresentationForSemanticType(type.element),
+  };
+}
+
 function representationForSemanticType(type: SemanticTypeIR): CompilerValueType {
   switch (type.kind) {
     case 'boolean':
@@ -74,7 +107,7 @@ function representationForSemanticType(type: SemanticTypeIR): CompilerValueType 
     case 'finite_union':
       return 'tagged_ref';
     case 'array':
-      return 'owned_array_ref';
+      return arrayRepresentationForSemanticType(type);
     case 'object':
     case 'map':
     case 'set':
@@ -856,9 +889,14 @@ function lowerFunction(
   const signature = findFunctionSignature(sharedFacts, module, func);
   const boundary = signature?.boundary;
   const localRepresentations = new Map<string, CompilerValueType>();
+  const arrayLocals = new Map<string, SourceSemanticArrayLocal>();
   const params = (signature?.params ?? []).map((param) => {
     const representation = representationForSemanticType(param.type);
     localRepresentations.set(param.name, representation);
+    const arrayLocal = arrayLocalInfoForSemanticType(param.type);
+    if (arrayLocal) {
+      arrayLocals.set(param.name, arrayLocal);
+    }
     return {
       name: param.name,
       representation,
@@ -870,7 +908,7 @@ function lowerFunction(
     functionResultRepresentations,
     localRepresentations,
     locals: [],
-    arrayLocals: new Map(),
+    arrayLocals,
     objectLayoutsByKey,
     objectLocals: new Map(),
     pendingStatements: [],
