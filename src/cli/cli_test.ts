@@ -7,6 +7,7 @@ import {
   loadTestMacroPackageFiles,
   TEST_MACRO_PACKAGE_NAME,
 } from '../../tests/support/test_macro_package_fixture.ts';
+import { createGeneratedStdlibMacroFixtureFiles } from '../../tests/support/generated_stdlib_macro_fixture.ts';
 import {
   maybeNormalizeTsconfigForInstalledStdlib,
   writeInstalledStdlibPackage,
@@ -3310,6 +3311,43 @@ Deno.test('runCli deno run executes a .sts entry through a temporary transformed
   assertEquals(seenCommand, 'deno');
   assertEquals(seenArgs[0], 'run');
   assertStringIncludes(result.output, '42');
+});
+
+Deno.test('runCli validates generated stdlib macros across check expand build and deno run', async () => {
+  const tempDirectory = await createTempProject(
+    createGeneratedStdlibMacroFixtureFiles(),
+    { legacySoundMode: false },
+  );
+  const projectPath = join(tempDirectory, 'tsconfig.json');
+  const entryPath = join(tempDirectory, 'src/main.sts');
+
+  const checkResult = await runCli(['check', '--project', projectPath], tempDirectory);
+  assertEquals(checkResult.exitCode, 0, checkResult.output);
+
+  const expandResult = await runCli([
+    'expand',
+    '--project',
+    projectPath,
+    '--file',
+    entryPath,
+  ], tempDirectory);
+  assertEquals(expandResult.exitCode, 0, expandResult.output);
+  assertStringIncludes(expandResult.output, 'export const TodoSnapshotCodec');
+  assert(!expandResult.output.includes('__sts_macro_expr'));
+  assert(!expandResult.output.includes('__sts_macro_stmt'));
+
+  const buildResult = await runCli([
+    'build',
+    '--project',
+    projectPath,
+    '--out-dir',
+    join(tempDirectory, 'dist-package'),
+  ], tempDirectory);
+  assertEquals(buildResult.exitCode, 0, buildResult.output);
+
+  const runResult = await runCli(['deno', 'run', entryPath], tempDirectory);
+  assertEquals(runResult.exitCode, 0, runResult.output);
+  assertStringIncludes(runResult.output, 'Ship recursive macros');
 });
 
 Deno.test('runCli explain renders a diagnostic explanation in text mode', async () => {

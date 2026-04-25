@@ -831,6 +831,12 @@ export function format<E, M extends DecodeMode>(
   , decodeConstraintEffect({ kind: 'format', value: expectedFormat }));
 }
 
+export function array<T, E>(
+  item: Decoder<T, E, 'sync'>,
+): Decoder<readonly T[], E | DecodeFailure, 'sync'>;
+export function array<T, E>(
+  item: Decoder<T, E, 'async'>,
+): Decoder<readonly T[], E | DecodeFailure, 'async'>;
 export function array<T, E, M extends DecodeMode>(
   item: Decoder<T, E, M>,
 ): Decoder<readonly T[], E | DecodeFailure, M> {

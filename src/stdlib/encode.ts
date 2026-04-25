@@ -643,6 +643,12 @@ export function literal<const T extends string | number | boolean | null>(value:
   });
 }
 
+export function array<T, TEncoded, E>(
+  item: Encoder<T, TEncoded, E, 'sync'>,
+): Encoder<readonly T[], readonly TEncoded[], E | EncodeFailure, 'sync'>;
+export function array<T, TEncoded, E>(
+  item: Encoder<T, TEncoded, E, 'async'>,
+): Encoder<readonly T[], readonly TEncoded[], E | EncodeFailure, 'async'>;
 export function array<T, TEncoded, E, M extends EncodeMode>(
   item: Encoder<T, TEncoded, E, M>,
 ): Encoder<readonly T[], readonly TEncoded[], E | EncodeFailure, M> {

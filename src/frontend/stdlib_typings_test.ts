@@ -185,3 +185,28 @@ Deno.test('encode contramap preserves sync mode for exact-optional object projec
     [],
   );
 });
+
+Deno.test('json helpers accept readonly encoded arrays', () => {
+  const fileName = '/virtual/index.ts';
+  const preparedProgram = createPreparedProgramForMacroTest({
+    [fileName]: [
+      "import * as encode from 'sts:encode';",
+      "import * as json from 'sts:json';",
+      "import type { Result } from 'sts:result';",
+      '',
+      'const StringArrayEncoder = encode.array(encode.stringEncoder);',
+      'const values: readonly string[] = ["a", "b"];',
+      'const encoded: Result<string, unknown> = json.encodeJson(values, StringArrayEncoder);',
+      'const jsonValue: json.JsonLikeValue = ["a", "b"] as readonly string[];',
+      'void encoded;',
+      'void jsonValue;',
+      '',
+    ].join('\n'),
+  });
+
+  assertEquals(preparedProgram.frontendDiagnostics(), []);
+  assertEquals(
+    ts.getPreEmitDiagnostics(preparedProgram.program).map((diagnostic) => diagnostic.code),
+    [],
+  );
+});

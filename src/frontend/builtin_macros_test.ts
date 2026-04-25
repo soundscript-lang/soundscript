@@ -2103,6 +2103,63 @@ Deno.test('decode and codec macros typecheck inferred class constructors', () =>
   );
 });
 
+Deno.test('factory-free class codecs preserve sync json bridge and readonly array types', () => {
+  const fileName = '/virtual/index.sts';
+  const files = new Map<string, string>([
+    ...createInstalledStdlibPackageFiles('/virtual').entries(),
+    [
+      fileName,
+      [
+        "import { codec } from 'sts:derive';",
+        "import { array as decodeArray } from 'sts:decode';",
+        "import { array as encodeArray } from 'sts:encode';",
+        "import { decodeJson, encodeJson } from 'sts:json';",
+        "import type { Result } from 'sts:result';",
+        '',
+        '// #[codec]',
+        'class TodoSnapshot {',
+        '  readonly id: string;',
+        '  readonly title: string;',
+        '  constructor(id: string, title: string) {',
+        '    this.id = id;',
+        '    this.title = title;',
+        '  }',
+        '}',
+        '',
+        'const directDecoded: Result<TodoSnapshot, unknown> = TodoSnapshotCodec.decode({',
+        '  id: "todo-1",',
+        '  title: "Ship recursive macros",',
+        '});',
+        'const jsonDecoded: Result<readonly TodoSnapshot[], unknown> = decodeJson(',
+        '  \'[{"id":"todo-1","title":"Ship recursive macros"}]\',',
+        '  decodeArray(TodoSnapshotCodec),',
+        ');',
+        'const snapshots: readonly TodoSnapshot[] = [new TodoSnapshot("todo-1", "Ship recursive macros")];',
+        'const jsonEncoded: Result<string, unknown> = encodeJson(',
+        '  snapshots,',
+        '  encodeArray(TodoSnapshotCodec),',
+        ');',
+        'void directDecoded;',
+        'void jsonDecoded;',
+        'void jsonEncoded;',
+        '',
+      ].join('\n'),
+    ],
+  ]);
+
+  const expanded = expandAndTypecheckBuiltins(files, [fileName]);
+  const expandedFileName = expanded.preparedProgram.toProgramFileName(fileName);
+  const sourceFile = expanded.program.getSourceFile(expandedFileName);
+  assert(sourceFile);
+
+  const printed = printSourceFileForMacroTest(sourceFile);
+  assertStringIncludes(printed, 'export const TodoSnapshotCodec');
+  assertStringIncludes(
+    printed,
+    'new TodoSnapshot(__sts_construct_value.id, __sts_construct_value.title)',
+  );
+});
+
 Deno.test('decode and codec macros typecheck promise-returning declaration transforms', () => {
   const fileName = '/virtual/index.sts';
   const files = new Map<string, string>([
@@ -2111,6 +2168,7 @@ Deno.test('decode and codec macros typecheck promise-returning declaration trans
       fileName,
       [
         "import { codec, decode } from 'sts:derive';",
+        "import { decodeJson, encodeJson } from 'sts:json';",
         "import type { Result } from 'sts:result';",
         '',
         'declare function normalizeDecoded(value: User): Promise<User>;',
@@ -2131,12 +2189,16 @@ Deno.test('decode and codec macros typecheck promise-returning declaration trans
         "const codecValidatedDecode: Promise<Result<User, readonly unknown[]>> = UserCodec.validateDecode({ id: 'user-1' });",
         "const codecEncoded: Promise<Result<{ readonly id: string }, unknown>> = UserCodec.encode({ id: 'user-1' });",
         "const codecValidatedEncode: Promise<Result<{ readonly id: string }, readonly unknown[]>> = UserCodec.validateEncode({ id: 'user-1' });",
+        'const jsonDecoded: Promise<Result<User, unknown>> = decodeJson(\'{"id":"user-1"}\', UserCodec);',
+        "const jsonEncoded: Promise<Result<string, unknown>> = encodeJson({ id: 'user-1' }, UserCodec);",
         'void decoded;',
         'void validated;',
         'void codecDecoded;',
         'void codecValidatedDecode;',
         'void codecEncoded;',
         'void codecValidatedEncode;',
+        'void jsonDecoded;',
+        'void jsonEncoded;',
         '',
       ].join('\n'),
     ],

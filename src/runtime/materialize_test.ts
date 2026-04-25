@@ -5,6 +5,7 @@ import {
   loadTestMacroPackageFiles,
   TEST_MACRO_PACKAGE_NAME,
 } from '../../tests/support/test_macro_package_fixture.ts';
+import { createGeneratedStdlibMacroFixtureFiles } from '../../tests/support/generated_stdlib_macro_fixture.ts';
 import { writeInstalledStdlibPackage } from '../../tests/support/test_installed_stdlib.ts';
 import { materializeRuntimeGraph } from './materialize.ts';
 import { materializeWithLegacySemanticRuntimeProgram } from './runtime_semantic_parity_test_support.ts';
@@ -601,6 +602,37 @@ Deno.test('materializeRuntimeGraph matches the legacy full semantic runtime prog
       outDir,
       'src/contracts.sts',
     );
+  } finally {
+    await Deno.remove(root, { recursive: true }).catch(() => undefined);
+  }
+});
+
+Deno.test('materializeRuntimeGraph expands generated stdlib derive macros recursively', async () => {
+  const root = await Deno.makeTempDir({ prefix: 'soundscript-materialize-generated-stdlib-' });
+  const outDir = join(root, '.soundscript-out');
+
+  try {
+    for (const file of createGeneratedStdlibMacroFixtureFiles()) {
+      await writeProjectFile(root, file.path, file.contents);
+    }
+    await writeInstalledStdlibPackage(root);
+
+    const result = await materializeRuntimeGraph({
+      entryPaths: [join(root, 'src/main.sts')],
+      outDir,
+      workingDirectory: root,
+    });
+
+    assertEquals(result.exitCode, 0, result.output);
+    const emittedEntry = await Deno.readTextFile(join(outDir, 'src/main.js'));
+    assertStringIncludes(emittedEntry, 'const TodoSnapshotCodec');
+    assertStringIncludes(emittedEntry, 'unknownKeys: "strict"');
+    assertStringIncludes(
+      emittedEntry,
+      'new TodoSnapshot(__sts_construct_value.id, __sts_construct_value.title)',
+    );
+    assertEquals(emittedEntry.includes('__sts_macro_expr'), false);
+    assertEquals(emittedEntry.includes('__sts_macro_stmt'), false);
   } finally {
     await Deno.remove(root, { recursive: true }).catch(() => undefined);
   }

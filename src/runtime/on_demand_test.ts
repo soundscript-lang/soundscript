@@ -1,6 +1,7 @@
 import { assertEquals, assertRejects, assertStringIncludes } from '@std/assert';
 import { dirname, join } from '@std/path';
 
+import { createGeneratedStdlibMacroFixtureFiles } from '../../tests/support/generated_stdlib_macro_fixture.ts';
 import { writeInstalledStdlibPackage } from '../../tests/support/test_installed_stdlib.ts';
 import { createOnDemandTransformer } from './on_demand.ts';
 import { transformWithLegacySemanticRuntimeProgram } from './runtime_semantic_parity_test_support.ts';
@@ -82,7 +83,7 @@ Deno.test('createOnDemandTransformer expands valid project macros for local .sts
 
   const transformer = createOnDemandTransformer({ workingDirectory: root });
   const transformed = await transformer.transformModule(join(root, 'src/demo.sts'));
-  assertEquals(transformed.transformMode, 'soundscript-deferred-macro');
+  assertEquals(transformed.transformMode, 'soundscript-semantic-macro');
   assertStringIncludes(transformed.code, 'export const doubled = (value) * 2;');
   assertEquals(transformed.code.includes('__sts_macro_expr('), false);
 });
@@ -143,9 +144,30 @@ Deno.test('createOnDemandTransformer fully lowers macros even with an installed 
 
   const transformer = createOnDemandTransformer({ workingDirectory: root });
   const transformed = await transformer.transformModule(join(root, 'src/demo.sts'));
-  assertEquals(transformed.transformMode, 'soundscript-deferred-macro');
+  assertEquals(transformed.transformMode, 'soundscript-semantic-macro');
   assertStringIncludes(transformed.code, 'export const doubled = (helper) * 2;');
   assertEquals(transformed.code.includes('__sts_macro_expr('), false);
+});
+
+Deno.test('createOnDemandTransformer expands generated stdlib derive macros recursively', async () => {
+  const root = await Deno.makeTempDir({ prefix: 'soundscript-on-demand-generated-stdlib-' });
+  for (const file of createGeneratedStdlibMacroFixtureFiles()) {
+    await writeProjectFile(root, file.path, file.contents);
+  }
+  await writeInstalledStdlibPackage(root);
+
+  const transformer = createOnDemandTransformer({ workingDirectory: root });
+  const transformed = await transformer.transformModule(join(root, 'src/main.sts'));
+
+  assertEquals(transformed.transformMode, 'soundscript-semantic-macro');
+  assertStringIncludes(transformed.code, 'const TodoSnapshotCodec');
+  assertStringIncludes(transformed.code, 'unknownKeys: "strict"');
+  assertStringIncludes(
+    transformed.code,
+    'new TodoSnapshot(__sts_construct_value.id, __sts_construct_value.title)',
+  );
+  assertEquals(transformed.code.includes('__sts_macro_expr'), false);
+  assertEquals(transformed.code.includes('__sts_macro_stmt'), false);
 });
 
 Deno.test('createOnDemandTransformer resolves and transforms local .sts files without rewriting imports to .js', async () => {
@@ -674,7 +696,7 @@ Deno.test('createOnDemandTransformer expands macros in configured TypeScript fil
 
   const transformer = createOnDemandTransformer({ workingDirectory: root });
   const transformed = await transformer.transformModule(join(root, 'src/demo.ts'));
-  assertEquals(transformed.transformMode, 'soundscript-deferred-macro');
+  assertEquals(transformed.transformMode, 'soundscript-semantic-macro');
   assertStringIncludes(transformed.code, 'export const doubled = (value) * 2;');
   assertEquals(transformed.code.includes('__sts_macro_expr('), false);
 });
@@ -935,7 +957,7 @@ Deno.test('createOnDemandTransformer reuses cached semantic runtime closures whe
   assertEquals(semanticProgramRootCounts, [2, 2], logs.join('\n'));
 });
 
-Deno.test('createOnDemandTransformer skips deferred runtime expansion after a file is known to require semantics', async () => {
+Deno.test('createOnDemandTransformer emits macro-bearing files through the semantic pipeline', async () => {
   const root = await Deno.makeTempDir({ prefix: 'soundscript-on-demand-semantic-short-circuit-' });
   await writeProjectFile(
     root,
@@ -1009,9 +1031,6 @@ Deno.test('createOnDemandTransformer skips deferred runtime expansion after a fi
     }
   }
 
-  const deferredExpansionRuns = logs
-    .filter((line) => line.includes('runtime.onDemand.deferredExpansion '))
-    .length;
   const isolatedPreparedProbeRuns = logs
     .filter((line) => line.includes('runtime.onDemand.isolatedPreparedProbe '))
     .length;
@@ -1019,13 +1038,12 @@ Deno.test('createOnDemandTransformer skips deferred runtime expansion after a fi
     .filter((line) => line.includes('runtime.onDemand.semanticEmit '))
     .length;
 
-  assertEquals(deferredExpansionRuns, 1, logs.join('\n'));
   assertEquals(isolatedPreparedProbeRuns, 1, logs.join('\n'));
   assertEquals(semanticEmitRuns, 1, logs.join('\n'));
 });
 
-Deno.test('createOnDemandTransformer reuses deferred runtime emit artifacts for stable macro files', async () => {
-  const root = await Deno.makeTempDir({ prefix: 'soundscript-on-demand-deferred-emit-cache-' });
+Deno.test('createOnDemandTransformer reuses semantic runtime emit artifacts for stable macro files', async () => {
+  const root = await Deno.makeTempDir({ prefix: 'soundscript-on-demand-semantic-emit-cache-' });
   await writeProjectFile(
     root,
     'tsconfig.json',
@@ -1089,8 +1107,8 @@ Deno.test('createOnDemandTransformer reuses deferred runtime emit artifacts for 
     const firstTransformed = await transformer.transformModule(join(root, 'src/demo.sts'));
     const secondTransformed = await transformer.transformModule(join(root, 'src/demo.sts'));
 
-    assertEquals(firstTransformed.transformMode, 'soundscript-deferred-macro');
-    assertEquals(secondTransformed.transformMode, 'soundscript-deferred-macro');
+    assertEquals(firstTransformed.transformMode, 'soundscript-semantic-macro');
+    assertEquals(secondTransformed.transformMode, 'soundscript-semantic-macro');
     assertStringIncludes(secondTransformed.code, 'export const doubled = (value) * 2;');
   } finally {
     console.error = originalError;
@@ -1101,14 +1119,14 @@ Deno.test('createOnDemandTransformer reuses deferred runtime emit artifacts for 
     }
   }
 
-  const deferredEmitRuns = logs
-    .filter((line) => line.includes('runtime.onDemand.deferredEmit '))
+  const semanticEmitRuns = logs
+    .filter((line) => line.includes('runtime.onDemand.semanticEmit '))
     .length;
   const isolatedPreparedProbeRuns = logs
     .filter((line) => line.includes('runtime.onDemand.isolatedPreparedProbe '))
     .length;
 
-  assertEquals(deferredEmitRuns, 1, logs.join('\n'));
+  assertEquals(semanticEmitRuns, 1, logs.join('\n'));
   assertEquals(isolatedPreparedProbeRuns, 1, logs.join('\n'));
 });
 

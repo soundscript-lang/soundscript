@@ -19,14 +19,14 @@ import {
   U64,
 } from './numerics.ts';
 
-export type JsonArray = JsonValue[];
+export type JsonArray = readonly JsonValue[];
 export type JsonObject = {
-  [key: string]: JsonValue;
+  readonly [key: string]: JsonValue;
 };
 export type JsonValue = string | number | boolean | null | JsonObject | JsonArray;
-type LosslessJsonArray = LosslessJsonValue[];
+type LosslessJsonArray = readonly LosslessJsonValue[];
 type LosslessJsonObject = {
-  [key: string]: LosslessJsonValue;
+  readonly [key: string]: LosslessJsonValue;
 };
 export type LosslessJsonValue =
   | string
@@ -37,9 +37,9 @@ export type LosslessJsonValue =
   | LosslessJsonObject
   | LosslessJsonArray;
 
-export type JsonLikeArray = JsonLikeValue[];
+export type JsonLikeArray = readonly JsonLikeValue[];
 export type JsonLikeObject = {
-  [key: string]: JsonLikeValue;
+  readonly [key: string]: JsonLikeValue;
 };
 export type JsonLikeValue =
   | string
@@ -51,9 +51,9 @@ export type JsonLikeValue =
   | JsonLikeObject
   | JsonLikeArray;
 
-export type MachineJsonArray = MachineJsonLikeValue[];
+export type MachineJsonArray = readonly MachineJsonLikeValue[];
 export type MachineJsonObject = {
-  [key: string]: MachineJsonLikeValue;
+  readonly [key: string]: MachineJsonLikeValue;
 };
 export type MachineJsonLikeValue =
   | string
@@ -270,6 +270,14 @@ export function stringifyJsonLike(
   );
 }
 
+export function decodeJson<T, E>(
+  text: string,
+  decoder: Decoder<T, E, 'sync'>,
+): DecodeOutput<T, E | JsonParseFailure, 'sync'>;
+export function decodeJson<T, E>(
+  text: string,
+  decoder: Decoder<T, E, 'async'>,
+): DecodeOutput<T, E | JsonParseFailure, 'async'>;
 export function decodeJson<T, E, M extends DecodeMode>(
   text: string,
   decoder: Decoder<T, E, M>,
@@ -282,6 +290,16 @@ export function decodeJson<T, E, M extends DecodeMode>(
   >;
 }
 
+export function encodeJson<T, E>(
+  value: T,
+  encoder: Encoder<T, JsonLikeValue, E, 'sync'>,
+  options?: JsonStringifyOptions,
+): EncodeOutput<string, E | JsonStringifyFailure, 'sync'>;
+export function encodeJson<T, E>(
+  value: T,
+  encoder: Encoder<T, JsonLikeValue, E, 'async'>,
+  options?: JsonStringifyOptions,
+): EncodeOutput<string, E | JsonStringifyFailure, 'async'>;
 export function encodeJson<T, E, M extends EncodeMode>(
   value: T,
   encoder: Encoder<T, JsonLikeValue, E, M>,
@@ -308,7 +326,7 @@ export function emptyJsonRecord(): JsonObject {
 }
 
 export function copyJsonRecord(value: Readonly<Record<string, JsonValue>>): JsonObject {
-  const copied: JsonObject = {};
+  const copied: Record<string, JsonValue> = {};
   for (const [key, entry] of Object.entries(value)) {
     copied[key] = entry;
   }
@@ -318,7 +336,7 @@ export function copyJsonRecord(value: Readonly<Record<string, JsonValue>>): Json
 export function mergeJsonRecords(
   ...records: readonly Readonly<Record<string, JsonValue>>[]
 ): JsonObject {
-  const merged = emptyJsonRecord();
+  const merged: Record<string, JsonValue> = {};
   for (const record of records) {
     for (const [key, value] of Object.entries(record)) {
       merged[key] = value;
@@ -374,8 +392,11 @@ function stringifyJsonWithInt64ModeInternal(
           return `[${value.map((entry) => stringifyJsonWithInt64ModeInternal(entry, int64Mode, visited)).join(',')}]`;
         }
 
-        const fields = Object.keys(value).map((key) =>
-          `${JSON.stringify(key)}:${stringifyJsonWithInt64ModeInternal(value[key]!, int64Mode, visited)}`
+        const objectValue = value as JsonObject | LosslessJsonObject;
+        const fields = Object.keys(objectValue).map((key) =>
+          `${JSON.stringify(key)}:${
+            stringifyJsonWithInt64ModeInternal(objectValue[key]!, int64Mode, visited)
+          }`
         );
         return `{${fields.join(',')}}`;
       } finally {
@@ -577,14 +598,15 @@ function decodeTaggedMachineJsonValue(value: JsonValue | LosslessJsonValue): Mac
   }
 
   if (value && typeof value === 'object') {
-    const taggedNumeric = decodeTaggedMachineNumeric(value);
+    const objectValue = value as JsonObject | LosslessJsonObject;
+    const taggedNumeric = decodeTaggedMachineNumeric(objectValue);
     if (taggedNumeric) {
       return taggedNumeric;
     }
 
     const result: Record<string, MachineJsonLikeValue> = {};
-    for (const key of Object.keys(value)) {
-      result[key] = decodeTaggedMachineJsonValue(value[key]!);
+    for (const key of Object.keys(objectValue)) {
+      result[key] = decodeTaggedMachineJsonValue(objectValue[key]!);
     }
     return result;
   }
@@ -593,7 +615,7 @@ function decodeTaggedMachineJsonValue(value: JsonValue | LosslessJsonValue): Mac
 }
 
 function decodeTaggedMachineNumeric(
-  value: Record<string, JsonValue | LosslessJsonValue>,
+  value: Readonly<Record<string, JsonValue | LosslessJsonValue>>,
 ): Numeric | undefined {
   const numericKind = value['$numeric'];
   const numericValue = value['value'];
@@ -814,7 +836,7 @@ class LosslessJsonParser {
   }
 
   private parseArray(): LosslessJsonArray {
-    const result: LosslessJsonArray = [];
+    const result: LosslessJsonValue[] = [];
     this.index += 1;
     this.skipWhitespace();
     if (this.text[this.index] === ']') {
@@ -838,7 +860,7 @@ class LosslessJsonParser {
   }
 
   private parseObject(): LosslessJsonObject {
-    const result: LosslessJsonObject = {};
+    const result: Record<string, LosslessJsonValue> = {};
     this.index += 1;
     this.skipWhitespace();
     if (this.text[this.index] === '}') {

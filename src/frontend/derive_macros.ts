@@ -22,6 +22,7 @@ import { macroSignature } from './macro_api.ts';
 import { attachMacroFactoryMetadata } from './macro_api_internal.ts';
 import { inferDeriveHelperMode } from './derive_helper_mode.ts';
 import { semanticLookupNodeForContext } from './macro_context_internal.ts';
+import { MacroError } from './macro_errors.ts';
 import { getInternalChecker } from './macro_type_internal.ts';
 import { getHostDeclaration, getHostNode } from './macro_syntax_internal.ts';
 import {
@@ -1742,6 +1743,36 @@ function recursiveDeclarationEncodeMode(
   macroName: 'codec' | 'encode' = 'encode',
 ): 'async' | 'sync' {
   return recursiveDeclarationEncodeModeInternal(ctx, declaration, macroName, new Map(), new Set());
+}
+
+function tryRecursiveDeclarationDecodeMode(
+  ctx: DeriveContext,
+  declaration: MacroClassDeclSyntax | MacroInterfaceDeclSyntax | MacroTypeAliasDeclSyntax,
+  macroName: 'codec' | 'decode',
+): 'async' | 'sync' | null {
+  try {
+    return recursiveDeclarationDecodeMode(ctx, declaration, macroName);
+  } catch (error) {
+    if (error instanceof MacroError) {
+      return null;
+    }
+    throw error;
+  }
+}
+
+function tryRecursiveDeclarationEncodeMode(
+  ctx: DeriveContext,
+  declaration: MacroClassDeclSyntax | MacroInterfaceDeclSyntax | MacroTypeAliasDeclSyntax,
+  macroName: 'codec' | 'encode' = 'encode',
+): 'async' | 'sync' | null {
+  try {
+    return recursiveDeclarationEncodeMode(ctx, declaration, macroName);
+  } catch (error) {
+    if (error instanceof MacroError) {
+      return null;
+    }
+    throw error;
+  }
 }
 
 function localDeclarationForNamedReference(
@@ -6733,9 +6764,21 @@ export function decode(): MacroDefinition<typeof DECODE_SIGNATURE> {
           `,
         );
       }
-      return ctx.output.stmt(
-        ctx.quote.stmt`
-          export const ${companionName} = ${namedDecoderText};
+      const decodeMode = tryRecursiveDeclarationDecodeMode(ctx, decoded.args.target, 'decode');
+      if (!decodeMode) {
+        return ctx.output.stmt(
+          ctx.quote.stmt`
+            export const ${companionName} = ${namedDecoderText};
+          `,
+        );
+      }
+      const decoderTypeAliasText = decodeMode === 'sync'
+        ? `type ${recursiveDecoderTypeAliasName} = import('sts:decode').Decoder<${typeName}>;`
+        : `type ${recursiveDecoderTypeAliasName} = import('sts:decode').Decoder<${typeName}, unknown, "async">;`;
+      return ctx.output.stmts(
+        ctx.quote.stmts`
+          ${decoderTypeAliasText}
+          export const ${companionName} = ${namedDecoderText} as unknown as ${recursiveDecoderTypeAliasName};
         `,
       );
     },
@@ -6924,9 +6967,29 @@ export function encode(): MacroDefinition<typeof DECODE_SIGNATURE> {
           `,
         );
       }
-      return ctx.output.stmt(
-        ctx.quote.stmt`
-          export const ${companionName} = ${namedEncoderText};
+      const encodeMode = tryRecursiveDeclarationEncodeMode(ctx, decoded.args.target, 'encode');
+      if (!encodeMode) {
+        return ctx.output.stmt(
+          ctx.quote.stmt`
+            export const ${companionName} = ${namedEncoderText};
+          `,
+        );
+      }
+      const encodedAliasText = recursiveEncodedObjectTypeAliasText(
+        ctx,
+        decoded.args.target,
+        typeName,
+        'encode',
+        recursiveEncodedAliasName,
+      ) ?? `import('sts:json').JsonLikeValue`;
+      const encoderTypeAliasText = encodeMode === 'sync'
+        ? `type ${recursiveEncoderTypeAliasName} = import('sts:encode').Encoder<${typeName}, ${recursiveEncodedAliasName}>;`
+        : `type ${recursiveEncoderTypeAliasName} = import('sts:encode').Encoder<${typeName}, ${recursiveEncodedAliasName}, unknown, "async">;`;
+      return ctx.output.stmts(
+        ctx.quote.stmts`
+          type ${recursiveEncodedAliasName} = ${encodedAliasText};
+          ${encoderTypeAliasText}
+          export const ${companionName} = ${namedEncoderText} as unknown as ${recursiveEncoderTypeAliasName};
         `,
       );
     },
@@ -7272,9 +7335,36 @@ export function codec(): MacroDefinition<typeof DECODE_SIGNATURE> {
           `,
         );
       }
-      return ctx.output.stmt(
-        ctx.quote.stmt`
-          export const ${companionName} = ${namedCodecText};
+      const decodeMode = tryRecursiveDeclarationDecodeMode(ctx, decoded.args.target, 'codec');
+      const encodeMode = tryRecursiveDeclarationEncodeMode(ctx, decoded.args.target, 'codec');
+      if (!decodeMode || !encodeMode) {
+        return ctx.output.stmt(
+          ctx.quote.stmt`
+            export const ${companionName} = ${namedCodecText};
+          `,
+        );
+      }
+      const encodedAliasText = recursiveEncodedObjectTypeAliasText(
+        ctx,
+        decoded.args.target,
+        typeName,
+        'codec',
+        recursiveEncodedAliasName,
+      ) ?? `import('sts:json').JsonLikeValue`;
+      const codecDecodeErrorTypeText = decodeMode === 'sync'
+        ? `import('sts:decode').DecodeFailure`
+        : 'unknown';
+      const codecEncodeErrorTypeText = encodeMode === 'sync'
+        ? `import('sts:encode').EncodeFailure`
+        : 'unknown';
+      const codecTypeAliasText = decodeMode === 'sync' && encodeMode === 'sync'
+        ? `type ${recursiveCodecTypeAliasName} = import('sts:codec').Codec<${typeName}, ${recursiveEncodedAliasName}>;`
+        : `type ${recursiveCodecTypeAliasName} = import('sts:codec').Codec<${typeName}, ${recursiveEncodedAliasName}, ${codecDecodeErrorTypeText}, ${codecEncodeErrorTypeText}, "${decodeMode}", "${encodeMode}">;`;
+      return ctx.output.stmts(
+        ctx.quote.stmts`
+          type ${recursiveEncodedAliasName} = ${encodedAliasText};
+          ${codecTypeAliasText}
+          export const ${companionName} = ${namedCodecText} as unknown as ${recursiveCodecTypeAliasName};
         `,
       );
     },

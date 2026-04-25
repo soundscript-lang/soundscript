@@ -1576,6 +1576,84 @@ export function createProjectMacroEnvironment(
     };
   }
 
+  function dedupeGeneratedStdlibMacroImports(
+    sourceFileName: string,
+    sourceText: string,
+  ): string {
+    const sourceFile = ts.createSourceFile(
+      sourceFileName,
+      sourceText,
+      preparedProgram.options.target ?? ts.ScriptTarget.Latest,
+      true,
+      scriptKindForHostFile(sourceFileName),
+    );
+    const seenNamedBindings = new Set<string>();
+    const statements: ts.Statement[] = [];
+    let changed = false;
+
+    for (const statement of sourceFile.statements) {
+      if (
+        !ts.isImportDeclaration(statement) ||
+        !statement.importClause ||
+        !ts.isStringLiteral(statement.moduleSpecifier) ||
+        !builtinDefinitionsBySpecifier.has(statement.moduleSpecifier.text)
+      ) {
+        statements.push(statement);
+        continue;
+      }
+
+      const namedBindings = statement.importClause.namedBindings;
+      if (!namedBindings || !ts.isNamedImports(namedBindings)) {
+        statements.push(statement);
+        continue;
+      }
+
+      const keptElements: ts.ImportSpecifier[] = [];
+      for (const element of namedBindings.elements) {
+        const exportName = element.propertyName?.text ?? element.name.text;
+        const localName = element.name.text;
+        const key = `${statement.moduleSpecifier.text}\u0001${exportName}\u0001${localName}`;
+        if (seenNamedBindings.has(key)) {
+          changed = true;
+          continue;
+        }
+        seenNamedBindings.add(key);
+        keptElements.push(element);
+      }
+
+      if (keptElements.length === namedBindings.elements.length) {
+        statements.push(statement);
+        continue;
+      }
+
+      if (keptElements.length === 0 && !statement.importClause.name) {
+        changed = true;
+        continue;
+      }
+
+      statements.push(
+        ts.factory.updateImportDeclaration(
+          statement,
+          statement.modifiers,
+          ts.factory.updateImportClause(
+            statement.importClause,
+            statement.importClause.isTypeOnly,
+            statement.importClause.name,
+            keptElements.length > 0
+              ? ts.factory.updateNamedImports(namedBindings, keptElements)
+              : undefined,
+          ),
+          statement.moduleSpecifier,
+          statement.attributes,
+        ),
+      );
+    }
+
+    return changed
+      ? ts.createPrinter().printFile(ts.factory.updateSourceFile(sourceFile, statements))
+      : sourceText;
+  }
+
   function loadedAlwaysAvailableDefinition(macroName: string): MacroDefinition | undefined {
     if (!alwaysAvailableDefinitions.has(macroName)) {
       return undefined;
@@ -1601,7 +1679,10 @@ export function createProjectMacroEnvironment(
     let remainingGeneratedRounds = macroExpansionRecursionLimit;
 
     while (true) {
-      const sourceText = printer.printFile(currentSourceFile);
+      const sourceText = dedupeGeneratedStdlibMacroImports(
+        sourceFileName,
+        printer.printFile(currentSourceFile),
+      );
       const generatedPreparedProgram = createGeneratedExpansionPreparedProgram(
         sourceFileName,
         sourceText,
