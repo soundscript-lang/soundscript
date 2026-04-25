@@ -163,7 +163,7 @@ Deno.test('runProgram caches unchanged checker results by default', async () => 
   assertEquals(secondResult.exitCode, firstResult.exitCode);
 });
 
-Deno.test('runProgram checker cache does not persist host TypeScript file reuse artifacts', async () => {
+Deno.test('runProgram checker cache does not persist ordinary host TypeScript file artifacts', async () => {
   const tempDirectory = await createTempProject([
     {
       path: 'tsconfig.json',
@@ -196,7 +196,8 @@ Deno.test('runProgram checker cache does not persist host TypeScript file reuse 
     projectPath,
     workingDirectory: tempDirectory,
   });
-  assert(firstResult.diagnostics.some((diagnostic) => diagnostic.source === 'ts'));
+  assertEquals(firstResult.diagnostics, []);
+  assertEquals(firstResult.exitCode, 0);
 
   const manifest = JSON.parse(await Deno.readTextFile(join(cacheDirectory, 'manifest.json'))) as {
     files: Array<{ view: string }>;
@@ -219,7 +220,7 @@ Deno.test('runProgram checker cache does not persist host TypeScript file reuse 
   assertEquals(secondResult.diagnostics, firstResult.diagnostics);
 });
 
-Deno.test('runProgram does not reuse frontier-only checker cache after host TypeScript edits', async () => {
+Deno.test('runProgram reuses frontier-only checker cache after ordinary host TypeScript edits', async () => {
   const tempDirectory = await createTempProject([
     {
       path: 'tsconfig.json',
@@ -268,20 +269,18 @@ Deno.test('runProgram does not reuse frontier-only checker cache after host Type
       workingDirectory: tempDirectory,
     });
     assert(
-      logs.some((line) => line.includes('[soundscript:checker] project.analyzePreparedProject ')),
+      logs.some((line) => line.includes('[soundscript:checker] project.cache.read ')),
     );
     assert(
-      !logs.some((line) =>
-        line.includes('[soundscript:checker] project.cache.incremental.result ')
-      ),
+      !logs.some((line) => line.includes('[soundscript:checker] project.prepareProjectAnalysis ')),
     );
     return result;
   });
-  assertEquals(secondResult.exitCode, 1);
-  assert(secondResult.diagnostics.some((diagnostic) => diagnostic.source === 'ts'));
+  assertEquals(secondResult.exitCode, 0);
+  assertEquals(secondResult.diagnostics, []);
 });
 
-Deno.test('runProgram host TypeScript diagnostics do not include declaration-only diagnostics when declaration emit is disabled', async () => {
+Deno.test('runProgram leaves pure host TypeScript declaration diagnostics outside checker ownership', async () => {
   const tempDirectory = await createTempProject([
     {
       path: 'tsconfig.json',
@@ -2154,7 +2153,7 @@ Deno.test('runProgram keeps macro package roots out of ordinary package source p
   assertEquals(packageCacheHitResult.exitCode, noCacheResult.exitCode);
 });
 
-Deno.test('runProgram analyzes source-published packages imported by host TypeScript without leaking raw package TS diagnostics', async () => {
+Deno.test('runProgram leaves source-published packages imported only by host TypeScript to built declarations', async () => {
   const tempDirectory = await createTempProject([
     {
       path: 'tsconfig.json',
@@ -2225,7 +2224,7 @@ Deno.test('runProgram analyzes source-published packages imported by host TypeSc
     );
     assert(packageCacheResult?.includes('units=0'), logs.join('\n'));
     assert(
-      logs.some((line) =>
+      !logs.some((line) =>
         line.includes('[soundscript:checker] project.prepare.packageSourcePolicyView ')
       ),
       logs.join('\n'),

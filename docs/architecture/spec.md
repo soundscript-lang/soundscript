@@ -150,8 +150,9 @@ The canonical policy matrix is:
 The canonical ban list is:
 
 - some entries are scoped to `.sts` authoring, such as runtime decorators in `.sts`
-- others are checker-wide semantic policies and apply across analyzed `.ts` and `.sts` source,
-  including source-published package source when it is analyzed from source
+- others are checker-wide semantic policies and apply across owned analyzed source: `.sts`,
+  TypeScript-family files explicitly matched by `soundscript.include`, and source-published package
+  source reached from those owned roots
 
 - `eval`
 - `Function` constructor
@@ -957,12 +958,16 @@ The strong soundness claim is intentionally scoped. It applies only to fully Sou
 code:
 
 - local `.sts`
-- source-published `.sts` package roots and subpaths when they are analyzed from source
+- TypeScript-family files explicitly matched by `soundscript.include`
+- source-published `.sts` package roots and subpaths when reached from owned Soundscript roots and
+  analyzed from source
 - macro-expanded prepared views of `.sts`
 - direct, fresh prepared, reused prepared, and file-scoped analysis of those sources
 
 It does not apply to:
 
+- ordinary `.ts` files, even when they import Soundscript; those diagnostics remain owned by `tsc`
+  and editor TypeScript tooling
 - JS/TS interop boundaries
 - foreign `.d.ts` surfaces beyond the current owned package-source path
 - pure `.ts` soundness
@@ -973,8 +978,8 @@ For compile targets that are in scope, checker/compiler parity is part of the cl
 accepted fully Soundscript-authored programs must either lower successfully or be rejected by an
 explicit compiler-owned target-availability diagnostic.
 
-The maintained owner ledger for that claim lives in `docs/project/soundness-ownership-ledger.md`, including
-the owning suites and matrix axes for each currently owned semantic family.
+The maintained owner ledger for that claim lives in `docs/project/soundness-ownership-ledger.md`,
+including the owning suites and matrix axes for each currently owned semantic family.
 
 ### Current Implementation Status Snapshot
 
@@ -983,8 +988,9 @@ Implemented:
 - `soundscript` runs one shared analysis pipeline that builds a TypeScript program with the bundled
   stdlib host, merges TypeScript pre-emit diagnostics with soundscript diagnostics, and feeds the
   CLI, project services, editor projection, runtime materialization, and compiler entry points
-- mixed `.ts` / `.sts` projects, projected `.sts` surfaces for `.ts` consumers, and source-published
-  package recheck through `package.json#soundscript.exports` are implemented
+- mixed `.ts` / `.sts` projects, owned TypeScript-family roots via `soundscript.include`, and
+  source-published package recheck through `package.json#soundscript.exports` from owned Soundscript
+  roots are implemented
 - the active checker rule pipeline includes directive validation, unsound syntax checks, unsound
   import checks, null-prototype enforcement, relation checks, flow checks, type-guard validation,
   overload validation, async-surface policy, foreign-boundary checks, `#[value]` validation, and

@@ -39,8 +39,8 @@ The stable stdlib surface is intentionally small:
 - `sts:typeclasses` owning `Functor`, `Applicative`, `Monad`, `AsyncMonad`, and `Do`
 
 For a module-by-module overview of the stable and experimental builtin surfaces, see
-[docs/reference/builtin-modules.md](./builtin-modules.md). For a practical guide to
-readonly-first code, `Try`, validation, and JSON boundaries, see
+[docs/reference/builtin-modules.md](./builtin-modules.md). For a practical guide to readonly-first
+code, `Try`, validation, and JSON boundaries, see
 [docs/guides/idiomatic-soundscript.md](../guides/idiomatic-soundscript.md).
 
 ## Runtime Contract
@@ -51,9 +51,10 @@ local runtime wrappers expect `@soundscript/soundscript` to be installed in the 
 an ancestor workspace, because emitted temp-graph modules import the runtime package.
 
 The strong soundness claim discussed in `docs/architecture/spec.md` is narrower than the full stable
-v1 product surface. It applies only to fully Soundscript-authored `.sts` code, including
-source-published `.sts` packages analyzed from source, and it excludes JS/TS interop, foreign
-`.d.ts`, and `// #[unsafe]` proof overrides. The maintained ownership ledger for that claim lives in
+v1 product surface. It applies only to fully Soundscript-authored code: local `.sts`, TypeScript
+family files explicitly matched by `soundscript.include`, and source-published `.sts` packages
+reached from those owned roots. It excludes ordinary `.ts` files, JS/TS interop, foreign `.d.ts`,
+and `// #[unsafe]` proof overrides. The maintained ownership ledger for that claim lives in
 `docs/project/soundness-ownership-ledger.md`.
 
 ## Not Part Of Stable V1
@@ -206,12 +207,16 @@ The strongest current soundness claim is intentionally narrower than the entire 
 It applies only to fully Soundscript-authored code:
 
 - local `.sts`
-- source-published `.sts` packages when they are analyzed from source
+- TypeScript-family files explicitly matched by `soundscript.include`
+- source-published `.sts` packages when they are reached from owned Soundscript roots and analyzed
+  from source
 - macro-expanded prepared views of `.sts`
 - direct, fresh prepared, reused prepared, and file-scoped analysis of those sources
 
 It does not apply to:
 
+- ordinary `.ts` files, even when they import Soundscript; those diagnostics remain owned by `tsc`
+  and editor TypeScript tooling
 - JS/TS interop boundaries
 - foreign `.d.ts` and declaration-only package surfaces
 - pure `.ts` soundness
