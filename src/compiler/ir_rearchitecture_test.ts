@@ -2511,6 +2511,251 @@ Deno.test('compiler SourceHIR semantic lowering emits runnable captured closure 
   assertEquals((score as () => number)(), 7);
 });
 
+Deno.test('compiler SourceHIR semantic lowering emits runnable closure parameter calls', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: { strict: true },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        function apply(fn: (value: number) => number, value: number): number {
+          return fn(value);
+        }
+
+        export function score(): number {
+          const inc = (value: number): number => value + 1;
+          return apply(inc, 41);
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createSourceSemanticSnapshot(program, tempDirectory);
+  const semantic = createSemanticModuleFromSourceHIR(snapshot.source, snapshot.sharedFacts);
+  const manifest = createRuntimeManifestFromSemanticModule(semantic);
+  const plan = createWasmGcModulePlan(semantic, manifest);
+  const applyPlan = plan.functionPlans.find((func) => func.name === 'apply');
+  const scorePlan = plan.functionPlans.find((func) => func.name === 'score');
+  const closurePlan = plan.functionPlans.find((func) => func.closureFunctionId !== undefined);
+  const watPath = join(tempDirectory, 'wasm-gc-source-closure-param.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-source-closure-param.wasm');
+
+  assertEquals(
+    manifest.familyRequirements.map((requirement) => requirement.family),
+    ['closure'],
+  );
+  assertEquals(applyPlan?.bodyStatus, 'emittable');
+  assertEquals(scorePlan?.bodyStatus, 'emittable');
+  assertEquals(closurePlan?.bodyStatus, 'emittable');
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(plan));
+  const wat = await Deno.readTextFile(watPath);
+  assertEquals(wat.includes('(func $closure_dispatch_sig_0'), true);
+  const result = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(result.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(result.success, true);
+
+  const wasm = await Deno.readFile(wasmPath);
+  const instance = await WebAssembly.instantiate(wasm);
+  const score = instance.instance.exports['main.ts:score'];
+  assertEquals(typeof score, 'function');
+  assertEquals((score as () => number)(), 42);
+});
+
+Deno.test('compiler SourceHIR semantic lowering emits runnable captured closures through parameters', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: { strict: true },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        function apply(fn: (value: number) => number): number {
+          return fn(39);
+        }
+
+        export function score(): number {
+          const offset = 3;
+          const add = (value: number): number => value + offset;
+          return apply(add);
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createSourceSemanticSnapshot(program, tempDirectory);
+  const semantic = createSemanticModuleFromSourceHIR(snapshot.source, snapshot.sharedFacts);
+  const manifest = createRuntimeManifestFromSemanticModule(semantic);
+  const plan = createWasmGcModulePlan(semantic, manifest);
+  const applyPlan = plan.functionPlans.find((func) => func.name === 'apply');
+  const scorePlan = plan.functionPlans.find((func) => func.name === 'score');
+  const closurePlan = plan.functionPlans.find((func) => func.closureFunctionId !== undefined);
+  const watPath = join(tempDirectory, 'wasm-gc-source-captured-closure-param.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-source-captured-closure-param.wasm');
+
+  assertEquals(
+    manifest.familyRequirements.map((requirement) => requirement.family),
+    ['closure'],
+  );
+  assertEquals(applyPlan?.bodyStatus, 'emittable');
+  assertEquals(scorePlan?.bodyStatus, 'emittable');
+  assertEquals(closurePlan?.bodyStatus, 'emittable');
+  assertEquals(closurePlan?.closureCaptureCount, 1);
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(plan));
+  const wat = await Deno.readTextFile(watPath);
+  assertEquals(wat.includes('(type $closure_env_0 (struct'), true);
+  assertEquals(wat.includes('(func $closure_dispatch_sig_0'), true);
+  const result = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(result.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(result.success, true);
+
+  const wasm = await Deno.readFile(wasmPath);
+  const instance = await WebAssembly.instantiate(wasm);
+  const score = instance.instance.exports['main.ts:score'];
+  assertEquals(typeof score, 'function');
+  assertEquals((score as () => number)(), 42);
+});
+
+Deno.test('compiler SourceHIR semantic lowering emits runnable closure function results', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: { strict: true },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        function make(offset: number): (value: number) => number {
+          const captured = offset;
+          const add = (value: number): number => value + captured;
+          return add;
+        }
+
+        export function score(): number {
+          const add = make(3);
+          return add(39);
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createSourceSemanticSnapshot(program, tempDirectory);
+  const semantic = createSemanticModuleFromSourceHIR(snapshot.source, snapshot.sharedFacts);
+  const manifest = createRuntimeManifestFromSemanticModule(semantic);
+  const plan = createWasmGcModulePlan(semantic, manifest);
+  const makePlan = plan.functionPlans.find((func) => func.name === 'make');
+  const scorePlan = plan.functionPlans.find((func) => func.name === 'score');
+  const closurePlan = plan.functionPlans.find((func) => func.closureFunctionId !== undefined);
+  const watPath = join(tempDirectory, 'wasm-gc-source-closure-result.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-source-closure-result.wasm');
+
+  assertEquals(
+    manifest.familyRequirements.map((requirement) => requirement.family),
+    ['closure'],
+  );
+  assertEquals(makePlan?.bodyStatus, 'emittable');
+  assertEquals(scorePlan?.bodyStatus, 'emittable');
+  assertEquals(closurePlan?.bodyStatus, 'emittable');
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(plan));
+  const wat = await Deno.readTextFile(watPath);
+  assertEquals(wat.includes('(type $closure_env_0 (struct'), true);
+  assertEquals(wat.includes('(func $closure_dispatch_sig_0'), true);
+  const result = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(result.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(result.success, true);
+
+  const wasm = await Deno.readFile(wasmPath);
+  const instance = await WebAssembly.instantiate(wasm);
+  const score = instance.instance.exports['main.ts:score'];
+  assertEquals(typeof score, 'function');
+  assertEquals((score as () => number)(), 42);
+});
+
+Deno.test('compiler SourceHIR semantic lowering emits runnable direct closure result calls', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: { strict: true },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        function make(offset: number): (value: number) => number {
+          const captured = offset;
+          const add = (value: number): number => value + captured;
+          return add;
+        }
+
+        export function score(): number {
+          return make(3)(39);
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createSourceSemanticSnapshot(program, tempDirectory);
+  const semantic = createSemanticModuleFromSourceHIR(snapshot.source, snapshot.sharedFacts);
+  const manifest = createRuntimeManifestFromSemanticModule(semantic);
+  const plan = createWasmGcModulePlan(semantic, manifest);
+  const makePlan = plan.functionPlans.find((func) => func.name === 'make');
+  const scorePlan = plan.functionPlans.find((func) => func.name === 'score');
+  const closurePlan = plan.functionPlans.find((func) => func.closureFunctionId !== undefined);
+  const watPath = join(tempDirectory, 'wasm-gc-source-direct-closure-result.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-source-direct-closure-result.wasm');
+
+  assertEquals(
+    manifest.familyRequirements.map((requirement) => requirement.family),
+    ['closure'],
+  );
+  assertEquals(makePlan?.bodyStatus, 'emittable');
+  assertEquals(scorePlan?.bodyStatus, 'emittable');
+  assertEquals(closurePlan?.bodyStatus, 'emittable');
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(plan));
+  const result = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(result.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(result.success, true);
+
+  const wasm = await Deno.readFile(wasmPath);
+  const instance = await WebAssembly.instantiate(wasm);
+  const score = instance.instance.exports['main.ts:score'];
+  assertEquals(typeof score, 'function');
+  assertEquals((score as () => number)(), 42);
+});
+
 Deno.test('compiler SourceHIR semantic lowering emits runnable class field construction', async () => {
   const tempDirectory = await createTempProject([
     {
@@ -5375,6 +5620,235 @@ Deno.test('compiler SourceHIR semantic lowering emits runnable specialized objec
   const score = instance.instance.exports['main.ts:score'];
   assertEquals(typeof score, 'function');
   assertEquals((score as (input: number) => number)(4), 11);
+});
+
+Deno.test('compiler SourceHIR semantic lowering emits runnable specialized object parameters', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: { strict: true },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        function sum(point: { left: number; right: number }): number {
+          return point.left + point.right;
+        }
+
+        export function score(input: number): number {
+          const point = { left: input, right: 7 };
+          return sum(point);
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createSourceSemanticSnapshot(program, tempDirectory);
+  const semantic = createSemanticModuleFromSourceHIR(snapshot.source, snapshot.sharedFacts);
+  const manifest = createRuntimeManifestFromSemanticModule(semantic);
+  const plan = createWasmGcModulePlan(semantic, manifest);
+  const sumPlan = plan.functionPlans.find((func) => func.name === 'sum');
+  const scorePlan = plan.functionPlans.find((func) => func.name === 'score');
+  const watPath = join(tempDirectory, 'wasm-gc-source-object-param.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-source-object-param.wasm');
+
+  assertEquals(
+    manifest.familyRequirements.map((requirement) => requirement.family),
+    ['specialized_object'],
+  );
+  assertEquals(sumPlan?.bodyStatus, 'emittable');
+  assertEquals(scorePlan?.bodyStatus, 'emittable');
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(plan));
+  const wat = await Deno.readTextFile(watPath);
+  assertEquals(wat.includes('(type $closure_object (struct'), false);
+  const result = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(result.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(result.success, true);
+
+  const wasm = await Deno.readFile(wasmPath);
+  const instance = await WebAssembly.instantiate(wasm);
+  const score = instance.instance.exports['main.ts:score'];
+  assertEquals(typeof score, 'function');
+  assertEquals((score as (input: number) => number)(4), 11);
+});
+
+Deno.test('compiler SourceHIR semantic lowering emits runnable specialized object function results', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: { strict: true },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        function make(input: number): { left: number; right: number } {
+          const point = { left: input, right: 7 };
+          return point;
+        }
+
+        export function score(input: number): number {
+          return make(input).left + make(input).right;
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createSourceSemanticSnapshot(program, tempDirectory);
+  const semantic = createSemanticModuleFromSourceHIR(snapshot.source, snapshot.sharedFacts);
+  const manifest = createRuntimeManifestFromSemanticModule(semantic);
+  const plan = createWasmGcModulePlan(semantic, manifest);
+  const makePlan = plan.functionPlans.find((func) => func.name === 'make');
+  const scorePlan = plan.functionPlans.find((func) => func.name === 'score');
+  const watPath = join(tempDirectory, 'wasm-gc-source-object-result.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-source-object-result.wasm');
+
+  assertEquals(
+    manifest.familyRequirements.map((requirement) => requirement.family),
+    ['specialized_object'],
+  );
+  assertEquals(makePlan?.bodyStatus, 'emittable');
+  assertEquals(scorePlan?.bodyStatus, 'emittable');
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(plan));
+  const result = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(result.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(result.success, true);
+
+  const wasm = await Deno.readFile(wasmPath);
+  const instance = await WebAssembly.instantiate(wasm);
+  const score = instance.instance.exports['main.ts:score'];
+  assertEquals(typeof score, 'function');
+  assertEquals((score as (input: number) => number)(4), 11);
+});
+
+Deno.test('compiler SourceHIR semantic lowering emits runnable object result destructuring', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: { strict: true },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        function make(input: number): { left: number; right: number } {
+          const point = { left: input, right: 7 };
+          return point;
+        }
+
+        export function score(input: number): number {
+          const { left, right } = make(input);
+          return left + right;
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createSourceSemanticSnapshot(program, tempDirectory);
+  const semantic = createSemanticModuleFromSourceHIR(snapshot.source, snapshot.sharedFacts);
+  const manifest = createRuntimeManifestFromSemanticModule(semantic);
+  const plan = createWasmGcModulePlan(semantic, manifest);
+  const makePlan = plan.functionPlans.find((func) => func.name === 'make');
+  const scorePlan = plan.functionPlans.find((func) => func.name === 'score');
+  const watPath = join(tempDirectory, 'wasm-gc-source-object-result-binding.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-source-object-result-binding.wasm');
+
+  assertEquals(
+    manifest.familyRequirements.map((requirement) => requirement.family),
+    ['specialized_object'],
+  );
+  assertEquals(makePlan?.bodyStatus, 'emittable');
+  assertEquals(scorePlan?.bodyStatus, 'emittable');
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(plan));
+  const result = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(result.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(result.success, true);
+
+  const wasm = await Deno.readFile(wasmPath);
+  const instance = await WebAssembly.instantiate(wasm);
+  const score = instance.instance.exports['main.ts:score'];
+  assertEquals(typeof score, 'function');
+  assertEquals((score as (input: number) => number)(4), 11);
+});
+
+Deno.test('compiler SourceHIR semantic lowering emits runnable specialized object parameter mutation', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: { strict: true },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        function bump(point: { left: number; right: number }): number {
+          point.left += 2;
+          point.right = point.right + 3;
+          return point.left + point.right;
+        }
+
+        export function score(): number {
+          const point = { left: 4, right: 7 };
+          return bump(point);
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createSourceSemanticSnapshot(program, tempDirectory);
+  const semantic = createSemanticModuleFromSourceHIR(snapshot.source, snapshot.sharedFacts);
+  const manifest = createRuntimeManifestFromSemanticModule(semantic);
+  const plan = createWasmGcModulePlan(semantic, manifest);
+  const bumpPlan = plan.functionPlans.find((func) => func.name === 'bump');
+  const scorePlan = plan.functionPlans.find((func) => func.name === 'score');
+  const watPath = join(tempDirectory, 'wasm-gc-source-object-param-mutation.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-source-object-param-mutation.wasm');
+
+  assertEquals(
+    manifest.familyRequirements.map((requirement) => requirement.family),
+    ['specialized_object'],
+  );
+  assertEquals(bumpPlan?.bodyStatus, 'emittable');
+  assertEquals(scorePlan?.bodyStatus, 'emittable');
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(plan));
+  const result = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(result.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(result.success, true);
+
+  const wasm = await Deno.readFile(wasmPath);
+  const instance = await WebAssembly.instantiate(wasm);
+  const score = instance.instance.exports['main.ts:score'];
+  assertEquals(typeof score, 'function');
+  assertEquals((score as () => number)(), 16);
 });
 
 Deno.test('compiler SourceHIR semantic lowering emits runnable specialized object mutation', async () => {

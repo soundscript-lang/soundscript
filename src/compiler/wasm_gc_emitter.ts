@@ -564,6 +564,8 @@ interface FunctionRenderContext {
   hostObjectProjectionPropertyWrappers: readonly WasmGcHostObjectProjectionPropertyWrapperPlanIR[];
   mapStorageLocalNames: ReadonlySet<string>;
   hostImportClosureWrapperArgIndicesByCallee: ReadonlyMap<string, ReadonlySet<number>>;
+  functionParamTypesByCallee: ReadonlyMap<string, readonly string[]>;
+  functionResultType: string;
   localAliases: ReadonlyMap<string, string>;
   objectLayoutIdsByLocal: ReadonlyMap<string, number>;
   localWasmTypes: ReadonlyMap<string, string>;
@@ -610,6 +612,8 @@ const EMPTY_RENDER_CONTEXT: FunctionRenderContext = {
   hostObjectProjectionPropertyWrappers: [],
   mapStorageLocalNames: new Set(),
   hostImportClosureWrapperArgIndicesByCallee: new Map(),
+  functionParamTypesByCallee: new Map(),
+  functionResultType: '',
   localAliases: new Map(),
   objectLayoutIdsByLocal: new Map(),
   localWasmTypes: new Map(),
@@ -681,12 +685,28 @@ function hostImportClosureWrapperArgIndicesByFunction(
   return hostImportClosureWrapperArgIndicesByCallee(plan);
 }
 
+function functionParamTypesByCallee(
+  plan: WasmGcModulePlanIR,
+): ReadonlyMap<string, readonly string[]> {
+  return new Map(
+    plan.functionPlans
+      .filter((func) => !func.hostImport)
+      .map((func) => [func.name, func.params.map((param) => param.wasmType)]),
+  );
+}
+
 function hostCallbackWrapperSignatureIds(plan: WasmGcModulePlanIR): ReadonlySet<number> {
   return new Set(plan.wrapperPlan.hostCallbackWrappers.map((wrapper) => wrapper.signatureId));
 }
 
 function closureObjectLocalNames(func: WasmGcFunctionPlanIR): ReadonlySet<string> {
   const names = new Set<string>();
+  const literalLocals = closureLocalLiterals(func);
+  for (const param of func.params) {
+    if (param.wasmType === 'closure_ref') {
+      names.add(param.name);
+    }
+  }
   visitSemanticStatements(func.body, (statement) => {
     if (statement.kind === 'dynamic_object_property_get' && statement.valueType === 'closure_ref') {
       names.add(statement.targetName);
@@ -705,6 +725,13 @@ function closureObjectLocalNames(func: WasmGcFunctionPlanIR): ReadonlySet<string
       statement.kind === 'local_set' &&
       statement.value.representation === 'closure_ref' &&
       statement.value.kind === 'global_get'
+    ) {
+      names.add(statement.name);
+    } else if (
+      statement.kind === 'local_set' &&
+      statement.value.representation === 'closure_ref' &&
+      statement.value.kind !== 'closure_literal' &&
+      !(statement.value.kind === 'local_get' && literalLocals.has(statement.value.name))
     ) {
       names.add(statement.name);
     }
@@ -4988,9 +5015,10 @@ function renderExpression(
       const hostWrapperArgIndices = context.hostImportClosureWrapperArgIndicesByCallee.get(
         expression.callee,
       );
+      const calleeParamTypes = context.functionParamTypesByCallee.get(expression.callee);
       return [
         ...expression.args.flatMap((arg, index) =>
-          hostWrapperArgIndices?.has(index)
+          hostWrapperArgIndices?.has(index) || calleeParamTypes?.[index] === 'closure_ref'
             ? renderClosureObjectValueExpression(arg, indent, context)
             : renderExpression(arg, indent, context)
         ),
@@ -5069,7 +5097,12 @@ function renderStatement(
 ): readonly string[] {
   switch (statement.kind) {
     case 'return':
-      return [...renderExpression(statement.value, indent, context), `${indent}return`];
+      return [
+        ...(context.functionResultType === 'closure_ref'
+          ? renderClosureObjectValueExpression(statement.value, indent, context)
+          : renderExpression(statement.value, indent, context)),
+        `${indent}return`,
+      ];
     case 'local_set': {
       const dynamicLayout = context.dynamicObjectLocalLayouts.get(statement.name);
       return [
@@ -5497,6 +5530,7 @@ function renderFunctionPlan(
   layoutsByRepresentation: ReadonlyMap<string, DynamicObjectLocalLayout>,
   closureFunctionNames: ReadonlyMap<number, string>,
   hostImportWrapperArgIndicesByCallee: ReadonlyMap<string, ReadonlySet<number>>,
+  paramTypesByCallee: ReadonlyMap<string, readonly string[]>,
   stringLiteralCodeUnits: readonly (readonly number[])[],
 ): readonly string[] {
   if (func.hostImport) {
@@ -5532,6 +5566,8 @@ function renderFunctionPlan(
     hostObjectProjectionPropertyWrappers: plan.wrapperPlan.hostObjectProjectionPropertyWrappers,
     mapStorageLocalNames: mapStorageLocalNames(func),
     hostImportClosureWrapperArgIndicesByCallee: hostImportWrapperArgIndicesByCallee,
+    functionParamTypesByCallee: paramTypesByCallee,
+    functionResultType: func.result,
     localAliases: aliases,
     objectLayoutIdsByLocal: objectLayoutIdsByLocal(func),
     localWasmTypes: localWasmTypes(func),
@@ -9074,6 +9110,7 @@ export function emitWasmGcModulePlan(plan: WasmGcModulePlanIR): string {
   const hostTaggedWrapperHelperFunctions = renderHostTaggedWrapperHelperFunctions(plan);
   const hostImportWrapperArgIndicesByCallee = hostImportClosureWrapperArgIndicesByCallee(plan);
   const hostImportWrapperArgIndicesByFunction = hostImportClosureWrapperArgIndicesByFunction(plan);
+  const paramTypesByCallee = functionParamTypesByCallee(plan);
   const hostImportPlans = plan.functionPlans.flatMap((func) =>
     renderHostImportPlan(func, hostImportWrapperArgIndicesByFunction)
   );
@@ -9182,6 +9219,7 @@ export function emitWasmGcModulePlan(plan: WasmGcModulePlanIR): string {
         dynamicLayoutsByRepresentation,
         closureFunctionNames,
         hostImportWrapperArgIndicesByCallee,
+        paramTypesByCallee,
         plan.stringLiteralCodeUnits ?? [],
       )
     ),

@@ -81,15 +81,15 @@ export const WASM_GC_CORE_CUTOVER_INVENTORY: readonly WasmGcCutoverInventoryEntr
   },
   {
     family: 'objects',
-    status: 'ir-shadowed',
-    focusedGate: 'compileProject emits Wasm GC WAT for specialized fixed-layout ordinary-object reads',
-    nextCutoverStep: 'Promote SourceHIR object layouts to the public WasmGC path for specialized and fallback objects.',
+    status: 'wasm-gc-emittable',
+    focusedGate: 'compiler SourceHIR semantic lowering emits runnable object result destructuring',
+    nextCutoverStep: 'Move remaining object-only legacy cleanup to deletion gates and keep recursive value-boundary storage as the source of truth.',
   },
   {
     family: 'closures',
-    status: 'ir-shadowed',
-    focusedGate: 'compiler wasm-gc wrapper emits erased closure object exports',
-    nextCutoverStep: 'Move closure signatures and captures from legacy compatibility metadata into SourceHIR SemanticIR.',
+    status: 'wasm-gc-emittable',
+    focusedGate: 'compiler SourceHIR semantic lowering emits runnable closure function results',
+    nextCutoverStep: 'Handle multi-signature closure diagnostics and delete legacy closure compatibility paths.',
   },
   {
     family: 'classes',

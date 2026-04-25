@@ -64,6 +64,7 @@ type SourceSemanticLocalDeclarationKind = 'const' | 'let' | 'var' | 'param' | 'c
 
 interface SourceSemanticModuleLoweringState {
   closureSignatures: SemanticClosureSignatureIR[];
+  closureSignaturesByKey: Map<string, SemanticClosureSignatureIR>;
   generatedFunctions: SemanticFunctionIR[];
   nextClosureFunctionId: number;
   nextClosureSignatureId: number;
@@ -193,14 +194,41 @@ function createClosureSignature(
   params: readonly SemanticTypeIR[],
   result: SemanticTypeIR,
 ): SemanticClosureSignatureIR {
+  const paramRepresentations = params.map(representationForSemanticType);
+  const resultType = representationForSemanticType(result);
+  const key = `${paramRepresentations.join(',')}=>${resultType}`;
+  const existing = moduleState.closureSignaturesByKey.get(key);
+  if (existing) {
+    return existing;
+  }
   const signature: SemanticClosureSignatureIR = {
     id: moduleState.nextClosureSignatureId,
-    params: params.map(representationForSemanticType),
-    resultType: representationForSemanticType(result),
+    params: paramRepresentations,
+    resultType,
   };
   moduleState.nextClosureSignatureId += 1;
+  moduleState.closureSignaturesByKey.set(key, signature);
   moduleState.closureSignatures.push(signature);
   return signature;
+}
+
+function closureLocalForSemanticType(
+  type: SemanticTypeIR | undefined,
+  context: FunctionLoweringContext,
+): SourceSemanticClosureLocal | undefined {
+  const signature = singleSignatureClosureType(type);
+  if (!signature) {
+    return undefined;
+  }
+  const closureSignature = createClosureSignature(
+    context.moduleState,
+    signature.params,
+    signature.result,
+  );
+  return {
+    signatureId: closureSignature.id,
+    resultRepresentation: representationForSemanticType(signature.result),
+  };
 }
 
 function binaryOperatorForSource(
@@ -1074,34 +1102,52 @@ function lowerExpression(
       if (methodCall) {
         return methodCall;
       }
-      if (expression.callee.kind !== 'identifier') {
+      if (expression.callee.kind === 'identifier') {
+        const closureLocal = context.closureLocals.get(expression.callee.name);
+        if (closureLocal) {
+          return {
+            kind: 'closure_call',
+            callee: {
+              kind: 'local_get',
+              name: expression.callee.name,
+              representation: 'closure_ref',
+            },
+            args: expression.args.map((arg) => lowerExpression(arg, context)),
+            signatureId: closureLocal.signatureId,
+            representation: closureLocal.resultRepresentation,
+          };
+        }
+        const representation = context.functionResultRepresentations.get(expression.callee.name);
+        if (!representation) {
+          context.unsupportedKinds.add(`unknown_call:${expression.callee.name}`);
+          return { kind: 'undefined_literal', representation: 'tagged_ref' };
+        }
+        return {
+          kind: 'call',
+          callee: expression.callee.name,
+          args: expression.args.map((arg) => lowerExpression(arg, context)),
+          representation,
+        };
+      }
+      const callee = lowerExpression(expression.callee, context);
+      const closureLocal = closureLocalInfoForRead(expression.callee, callee, context);
+      if (!closureLocal) {
         context.unsupportedKinds.add('call_expression');
         return { kind: 'undefined_literal', representation: 'tagged_ref' };
       }
-      const closureLocal = context.closureLocals.get(expression.callee.name);
-      if (closureLocal) {
-        return {
-          kind: 'closure_call',
-          callee: {
-            kind: 'local_get',
-            name: expression.callee.name,
-            representation: 'closure_ref',
-          },
-          args: expression.args.map((arg) => lowerExpression(arg, context)),
-          signatureId: closureLocal.signatureId,
-          representation: closureLocal.resultRepresentation,
-        };
-      }
-      const representation = context.functionResultRepresentations.get(expression.callee.name);
-      if (!representation) {
-        context.unsupportedKinds.add(`unknown_call:${expression.callee.name}`);
-        return { kind: 'undefined_literal', representation: 'tagged_ref' };
-      }
+      const materialized = materializeClosureExpressionForCall(
+        callee,
+        closureLocal,
+        context,
+        'closure_callee',
+      );
+      context.pendingStatements.push(...materialized.statements);
       return {
-        kind: 'call',
-        callee: expression.callee.name,
+        kind: 'closure_call',
+        callee: materialized.callee,
         args: expression.args.map((arg) => lowerExpression(arg, context)),
-        representation,
+        signatureId: closureLocal.signatureId,
+        representation: closureLocal.resultRepresentation,
       };
     }
     case 'new_expression': {
@@ -1621,6 +1667,26 @@ function objectLocalInfoForRead(
   return undefined;
 }
 
+function closureLocalInfoForRead(
+  source: SourceExpressionIR,
+  expression: SemanticExpressionIR,
+  context: FunctionLoweringContext,
+): SourceSemanticClosureLocal | undefined {
+  if (expression.kind === 'local_get') {
+    return context.closureLocals.get(expression.name);
+  }
+  if (source.kind === 'identifier') {
+    return context.closureLocals.get(source.name);
+  }
+  if (source.kind === 'call_expression' && source.callee.kind === 'identifier') {
+    return closureLocalForSemanticType(
+      context.functionResultTypes.get(source.callee.name),
+      context,
+    );
+  }
+  return undefined;
+}
+
 function materializeObjectExpressionForRead(
   expression: SemanticExpressionIR,
   objectLayout: SourceSemanticObjectLocal,
@@ -1638,6 +1704,26 @@ function materializeObjectExpressionForRead(
   return {
     objectName,
     statements: [...leadingStatements, { kind: 'local_set', name: objectName, value: expression }],
+  };
+}
+
+function materializeClosureExpressionForCall(
+  expression: SemanticExpressionIR,
+  closureLocal: SourceSemanticClosureLocal,
+  context: FunctionLoweringContext,
+  prefix: string,
+): { callee: SemanticExpressionIR; statements: SemanticStatementIR[] } {
+  const leadingStatements = takePendingStatements(context);
+  if (expression.kind === 'local_get') {
+    context.closureLocals.set(expression.name, closureLocal);
+    return { callee: expression, statements: leadingStatements };
+  }
+  const closureName = nextTempLocalName(context, prefix);
+  addLocal(context, closureName, 'closure_ref');
+  context.closureLocals.set(closureName, closureLocal);
+  return {
+    callee: { kind: 'local_get', name: closureName, representation: 'closure_ref' },
+    statements: [...leadingStatements, { kind: 'local_set', name: closureName, value: expression }],
   };
 }
 
@@ -2401,6 +2487,20 @@ function lowerArrowFunctionExpression(
     tempIndex: 0,
     unsupportedKinds,
   };
+  for (const [index, paramType] of signatureType.params.entries()) {
+    const param = params[index];
+    if (!param) {
+      continue;
+    }
+    const objectLocal = objectLocalForParameterType(paramType, closureContext);
+    if (objectLocal) {
+      closureContext.objectLocals.set(param.name, objectLocal);
+    }
+    const closureLocal = closureLocalForSemanticType(paramType, closureContext);
+    if (closureLocal) {
+      closureContext.closureLocals.set(param.name, closureLocal);
+    }
+  }
   const body = [
     ...expression.body.flatMap((statement) => [...lowerStatement(statement, closureContext)]),
     { kind: 'trap' } as SemanticStatementIR,
@@ -2991,21 +3091,26 @@ function lowerStatement(
   switch (statement.kind) {
     case 'variable_declaration': {
       return statement.declarations.flatMap((declaration): SemanticStatementIR[] => {
-        if (
-          declaration.binding.kind === 'object_binding' &&
-          declaration.initializer?.kind === 'identifier'
-        ) {
+        if (declaration.binding.kind === 'object_binding' && declaration.initializer) {
           const initializer = lowerExpression(declaration.initializer, context);
-          const statements = takePendingStatements(context);
-          const objectName = declaration.initializer.name;
-          const objectLayout = context.objectLocals.get(objectName);
+          const objectLayout = objectLocalInfoForRead(
+            declaration.initializer,
+            initializer,
+            context,
+          );
           if (!objectLayout || initializer.representation !== 'heap_ref') {
-            context.unsupportedKinds.add(`object_binding:${objectName}`);
+            context.unsupportedKinds.add('object_binding');
             return [{ kind: 'unsupported_statement', sourceKind: 'variable_declaration' }];
           }
+          const materialized = materializeObjectExpressionForRead(
+            initializer,
+            objectLayout,
+            context,
+            'object_binding',
+          );
           const bindingStatements = lowerObjectBindingFromLocal(
             declaration.binding,
-            objectName,
+            materialized.objectName,
             objectLayout,
             context,
             'variable_declaration',
@@ -3013,7 +3118,7 @@ function lowerStatement(
           if (!bindingStatements) {
             return [{ kind: 'unsupported_statement', sourceKind: 'variable_declaration' }];
           }
-          return [...statements, ...bindingStatements];
+          return [...materialized.statements, ...bindingStatements];
         }
         if (declaration.binding.kind === 'array_binding' && declaration.initializer) {
           const initializer = lowerExpression(declaration.initializer, context);
@@ -3218,12 +3323,17 @@ function lowerStatement(
         if (arrayLocal) {
           context.arrayLocals.set(declaration.binding.name, arrayLocal);
         }
-        const objectLocal = declaration.initializer.kind === 'identifier' &&
-            value.representation === 'heap_ref'
-          ? context.objectLocals.get(declaration.initializer.name)
+        const objectLocal = value.representation === 'heap_ref'
+          ? objectLocalInfoForRead(declaration.initializer, value, context)
           : undefined;
         if (objectLocal) {
           context.objectLocals.set(declaration.binding.name, objectLocal);
+        }
+        const closureLocal = value.representation === 'closure_ref'
+          ? closureLocalInfoForRead(declaration.initializer, value, context)
+          : undefined;
+        if (closureLocal) {
+          context.closureLocals.set(declaration.binding.name, closureLocal);
         }
         return [...statements, { kind: 'local_set', name: declaration.binding.name, value }];
       });
@@ -3275,14 +3385,21 @@ function lowerStatement(
           } else {
             context.arrayLocals.delete(target);
           }
-          const objectLocal = assignment.right.kind === 'identifier' &&
-              value.representation === 'heap_ref'
-            ? context.objectLocals.get(assignment.right.name)
+          const objectLocal = !compoundOperator && value.representation === 'heap_ref'
+            ? objectLocalInfoForRead(assignment.right, value, context)
             : undefined;
           if (objectLocal) {
             context.objectLocals.set(target, objectLocal);
           } else {
             context.objectLocals.delete(target);
+          }
+          const closureLocal = !compoundOperator && value.representation === 'closure_ref'
+            ? closureLocalInfoForRead(assignment.right, value, context)
+            : undefined;
+          if (closureLocal) {
+            context.closureLocals.set(target, closureLocal);
+          } else {
+            context.closureLocals.delete(target);
           }
           return [...statements, { kind: 'local_set', name: target, value }];
         }
@@ -3670,6 +3787,10 @@ function lowerFunction(
       if (objectLocal) {
         context.objectLocals.set(loweredParam.name, objectLocal);
       }
+      const closureLocal = closureLocalForSemanticType(param.type, context);
+      if (closureLocal) {
+        context.closureLocals.set(loweredParam.name, closureLocal);
+      }
     }
   }
   const parameterBindingStatements = parameterBindings.flatMap((param): SemanticStatementIR[] => {
@@ -3765,6 +3886,7 @@ export function createSemanticModuleFromSourceHIR(
   );
   const moduleState: SourceSemanticModuleLoweringState = {
     closureSignatures: [],
+    closureSignaturesByKey: new Map(),
     generatedFunctions: [],
     nextClosureFunctionId: 0,
     nextClosureSignatureId: 0,
