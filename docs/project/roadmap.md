@@ -67,8 +67,9 @@ Implemented and shipping in the repo today:
 
 - one shared analysis pipeline used by the CLI, project services, LSP, editor projection, runtime
   materialization, and compiler entry points
-- mixed `.ts` / `.sts` projects, projected `.sts` surfaces for `.ts` consumers, and source-published
-  package recheck through `package.json#soundscript.exports`
+- mixed `.ts` / `.sts` projects, owned TypeScript-family roots via `soundscript.include`, and
+  source-published package recheck through `package.json#soundscript.exports` from owned Soundscript
+  roots
 - CLI commands for `init`, `check`, `build`, `expand`, experimental `compile`, `node`, `deno`,
   `explain`, and `lsp`, plus machine-readable `json` / `ndjson` output on the main project commands
 - a broad LSP/editor surface with diagnostics, hover, signature help, definition, references,
@@ -171,7 +172,8 @@ This includes:
   - local authoring bans remain in force
   - trusted foreign imports may still expose banned JS runtime features as declared
   - imported values are then used as typed after the boundary transform
-- source-published `soundscript` packages rechecked locally as sound-to-sound dependencies
+- source-published `soundscript` packages rechecked locally as sound-to-sound dependencies when
+  reached from owned Soundscript roots
   - current shipped slice: `package.json#soundscript.exports`
 - packages without source treated as foreign dependencies
 - arbitrary JS package interop through `.d.ts` projection rather than blanket `any` or package-wide

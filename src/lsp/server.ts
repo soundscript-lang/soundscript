@@ -17,6 +17,7 @@ import {
   formatOpenDocument,
   highlightOpenDocument,
   hoverOpenDocument,
+  invalidateProjectContexts,
   prepareRenameOpenDocument,
   referencesOpenDocument,
   renameOpenDocument,
@@ -60,6 +61,13 @@ interface DidCloseTextDocumentParams {
   textDocument: {
     uri: string;
   };
+}
+
+interface DidChangeWatchedFilesParams {
+  changes: Array<{
+    type: number;
+    uri: string;
+  }>;
 }
 
 interface TextDocumentPositionParams {
@@ -652,6 +660,17 @@ export function createServer(transport: MessageTransport): LspServer {
                   diagnostics: [],
                 },
               });
+              break;
+            }
+            case 'workspace/didChangeWatchedFiles': {
+              const params = message.params as DidChangeWatchedFilesParams;
+              if (params.changes.length === 0) {
+                break;
+              }
+              invalidateProjectContexts(session);
+              for (const document of session.getAll()) {
+                diagnosticScheduler.schedule(document.uri, INITIAL_DIAGNOSTIC_DELAY_MS);
+              }
               break;
             }
             case 'exit':

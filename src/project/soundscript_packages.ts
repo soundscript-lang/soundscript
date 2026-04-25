@@ -606,6 +606,55 @@ export function getSoundScriptPackageExportInfoForResolvedModule(
   };
 }
 
+function resolveBareSoundScriptPackageSourceModule(
+  moduleSpecifier: string,
+  containingFile: string,
+  host: ModuleResolutionHostLike,
+): ts.ResolvedModuleFull | undefined {
+  const parsedSpecifier = parsePackageSpecifier(moduleSpecifier);
+  if (!parsedSpecifier) {
+    return undefined;
+  }
+
+  let currentDirectory = dirname(containingFile);
+  const visited = new Set<string>();
+  while (!visited.has(normalizePath(currentDirectory))) {
+    visited.add(normalizePath(currentDirectory));
+
+    const packageJsonPath = join(
+      currentDirectory,
+      'node_modules',
+      ...packageNameToPathParts(parsedSpecifier.packageName),
+      'package.json',
+    );
+    if (host.fileExists(packageJsonPath)) {
+      const packageInfo = parsePackageJson(packageJsonPath, host);
+      const sourceEntryPath = packageInfo?.exports.get(parsedSpecifier.exportKey) ??
+        (parsedSpecifier.exportKey === '.' ? packageInfo?.legacySourceEntryPath : undefined);
+      const sourceExtension = sourceEntryPath ? inferExtension(sourceEntryPath) : undefined;
+      if (
+        !sourceEntryPath || !sourceExtension ||
+        isMacroAuthoringSourcePath(sourceEntryPath)
+      ) {
+        return undefined;
+      }
+      return {
+        extension: sourceExtension,
+        isExternalLibraryImport: false,
+        resolvedFileName: sourceEntryPath,
+      };
+    }
+
+    const parentDirectory = dirname(currentDirectory);
+    if (parentDirectory === currentDirectory) {
+      break;
+    }
+    currentDirectory = parentDirectory;
+  }
+
+  return undefined;
+}
+
 export function resolveSoundScriptAwareModule(
   moduleSpecifier: string,
   containingFile: string,
@@ -659,43 +708,7 @@ export function resolveSoundScriptAwareModule(
     return undefined;
   }
 
-  let currentDirectory = dirname(containingFile);
-  const visited = new Set<string>();
-  while (!visited.has(normalizePath(currentDirectory))) {
-    visited.add(normalizePath(currentDirectory));
-
-    const packageJsonPath = join(
-      currentDirectory,
-      'node_modules',
-      ...packageNameToPathParts(parsedSpecifier.packageName),
-      'package.json',
-    );
-    if (host.fileExists(packageJsonPath)) {
-      const packageInfo = parsePackageJson(packageJsonPath, host);
-      const sourceEntryPath = packageInfo?.exports.get(parsedSpecifier.exportKey) ??
-        (parsedSpecifier.exportKey === '.' ? packageInfo?.legacySourceEntryPath : undefined);
-      const sourceExtension = sourceEntryPath ? inferExtension(sourceEntryPath) : undefined;
-      if (sourceEntryPath && isMacroAuthoringSourcePath(sourceEntryPath)) {
-        return undefined;
-      }
-      if (sourceEntryPath && sourceExtension) {
-        return {
-          extension: sourceExtension,
-          isExternalLibraryImport: false,
-          resolvedFileName: sourceEntryPath,
-        };
-      }
-      return undefined;
-    }
-
-    const parentDirectory = dirname(currentDirectory);
-    if (parentDirectory === currentDirectory) {
-      break;
-    }
-    currentDirectory = parentDirectory;
-  }
-
-  return undefined;
+  return resolveBareSoundScriptPackageSourceModule(moduleSpecifier, containingFile, host);
 }
 
 export function remapResolvedModuleToSoundScriptSource(

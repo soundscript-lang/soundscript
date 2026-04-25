@@ -61,6 +61,8 @@ interface ActiveEffectSolveState {
 }
 
 const activeEffectSolveStates = new WeakMap<AnalysisContext, ActiveEffectSolveState>();
+const MIN_EFFECT_SUMMARY_SOLVE_ITERATION_LIMIT = 128;
+const EFFECT_SUMMARY_SOLVE_ITERATION_LIMIT_MULTIPLIER = 16;
 
 function createEffectComposition(
   effects: readonly EffectNameFact[] = [],
@@ -1599,6 +1601,12 @@ function shouldForwardCurrentFunctionAliasCall(
   target: CurrentFunctionAliasTarget,
   signatureSummary: EffectSummaryFact | undefined,
 ): boolean {
+  if (
+    target.memberPath.some((member) => member === 'apply' || member === 'bind' || member === 'call')
+  ) {
+    return false;
+  }
+
   if (target.memberPath.length === 0 || signatureSummary === undefined) {
     return true;
   }
@@ -1963,7 +1971,19 @@ function solveEffectSummaryFixpoint(
 
   initializeDeclaration(rootDeclaration);
 
+  let solveIterations = 0;
+  let bailedOut = false;
   while (state.pending.length > 0) {
+    solveIterations += 1;
+    const iterationLimit = Math.max(
+      MIN_EFFECT_SUMMARY_SOLVE_ITERATION_LIMIT,
+      state.summaries.size * EFFECT_SUMMARY_SOLVE_ITERATION_LIMIT_MULTIPLIER,
+    );
+    if (solveIterations > iterationLimit) {
+      bailedOut = true;
+      break;
+    }
+
     const declaration = state.pending.shift()!;
     state.pendingSet.delete(declaration);
     const current = state.summaries.get(declaration) ?? initializeDeclaration(declaration);
@@ -1975,6 +1995,22 @@ function solveEffectSummaryFixpoint(
     for (const knownDeclaration of state.summaries.keys()) {
       enqueueActiveSolveDeclaration(state, knownDeclaration);
     }
+  }
+
+  if (bailedOut) {
+    for (const [declaration, summary] of state.summaries.entries()) {
+      appendSummaryUnknownDirectReasons(
+        summary,
+        [createEffectUnknownReason(
+          'unsummarizedDeclarationFrontier',
+          'effect summary fixpoint did not converge',
+        )],
+      );
+      summary.forwardedParameters = [];
+      state.summaries.set(declaration, summary);
+    }
+    state.pending = [];
+    state.pendingSet.clear();
   }
 
   activeEffectSolveStates.delete(context);

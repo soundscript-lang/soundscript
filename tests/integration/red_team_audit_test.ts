@@ -2766,6 +2766,155 @@ Deno.test('red-team: package-exported macro output drift matches editor and pack
   }
 });
 
+Deno.test('red-team: package macro site kind drift matches file-scoped and reused analysis', async () => {
+  const createCallMacroSource = (): string =>
+    [
+      "import 'sts:macros';",
+      '',
+      '// #[macro(call)]',
+      'export function Foo() {',
+      '  return {',
+      '    expand(ctx: any) {',
+      '      return ctx.output.expr(ctx.quote.expr`21`);',
+      '    },',
+      '  };',
+      '}',
+      '',
+    ].join('\n');
+  const createDeclMacroSource = (): string =>
+    [
+      "import { macroSignature } from 'sts:macros';",
+      '',
+      '// #[macro(decl)]',
+      'export function Foo() {',
+      '  return {',
+      '    declarationKinds: ["class"] as const,',
+      "    expansionMode: 'augment' as const,",
+      '    signature: macroSignature.of(macroSignature.decl("target")),',
+      '    expand(ctx: any) {',
+      '      return ctx.output.stmt(ctx.quote.stmt`export const marker = 1;`);',
+      '    },',
+      '  };',
+      '}',
+      '',
+    ].join('\n');
+
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: createSoundscriptTsconfig(),
+    },
+    {
+      path: 'src/demo.sts',
+      contents: [
+        'import { Foo } from "sound-pkg";',
+        'export const value: number = Foo();',
+        '',
+      ].join('\n'),
+    },
+    {
+      path: 'node_modules/sound-pkg/package.json',
+      contents: JSON.stringify(
+        {
+          name: 'sound-pkg',
+          version: '1.0.0',
+          type: 'module',
+          types: './dist/index.d.ts',
+          soundscript: {
+            source: './src/index.sts',
+          },
+        },
+        null,
+        2,
+      ),
+    },
+    {
+      path: 'node_modules/sound-pkg/dist/index.d.ts',
+      contents: 'export declare function Foo(): number;\n',
+    },
+    {
+      path: 'node_modules/sound-pkg/src/index.sts',
+      contents: 'export { Foo } from "./macros.macro.sts";\n',
+    },
+    {
+      path: 'node_modules/sound-pkg/src/macros.macro.sts',
+      contents: createCallMacroSource(),
+    },
+  ]);
+  const projectPath = join(tempDirectory, 'tsconfig.json');
+  const demoPath = join(tempDirectory, 'src/demo.sts');
+  const baseOptions = { projectPath, workingDirectory: tempDirectory };
+  const session = new IncrementalProjectSession();
+
+  const initialPreparedProject = prepareProjectAnalysis(baseOptions);
+  try {
+    session.prepare(baseOptions);
+    assertEquals(analyzePreparedProject(initialPreparedProject).diagnostics, []);
+    assertEquals(analyzePreparedProjectForFile(initialPreparedProject, demoPath).diagnostics, []);
+    assertEquals(session.analyzeProject().diagnostics, []);
+    assertEquals(session.analyzeFile(demoPath).diagnostics, []);
+
+    await writeProjectFile(
+      tempDirectory,
+      'node_modules/sound-pkg/src/macros.macro.sts',
+      createDeclMacroSource(),
+    );
+
+    const directResult = await analyzeProject(baseOptions);
+    const freshPreparedProject = prepareProjectAnalysis(baseOptions);
+    const freshFullResult = analyzePreparedProject(freshPreparedProject);
+    const freshFileResult = analyzePreparedProjectForFile(freshPreparedProject, demoPath);
+    const reusedPreparedProject = prepareProjectAnalysis(baseOptions, initialPreparedProject);
+    const reusedFullResult = analyzePreparedProject(reusedPreparedProject);
+    const reusedFileResult = analyzePreparedProjectForFile(reusedPreparedProject, demoPath);
+    session.prepare(baseOptions);
+    const sessionFullResult = session.analyzeProject();
+    const sessionFileResult = session.analyzeFile(demoPath);
+    try {
+      const expectedDiagnostics = toProjectRelativeDiagnostics(
+        directResult.diagnostics,
+        tempDirectory,
+      );
+      assert(
+        expectedDiagnostics.some(([code, path]) =>
+          path === 'src/demo.sts' && code.startsWith('TS')
+        ),
+        JSON.stringify(expectedDiagnostics),
+      );
+      assertEquals(
+        toProjectRelativeDiagnostics(freshFullResult.diagnostics, tempDirectory),
+        expectedDiagnostics,
+      );
+      assertEquals(
+        toProjectRelativeDiagnostics(freshFileResult.diagnostics, tempDirectory),
+        expectedDiagnostics,
+      );
+      assertEquals(
+        toProjectRelativeDiagnostics(reusedFullResult.diagnostics, tempDirectory),
+        expectedDiagnostics,
+      );
+      assertEquals(
+        toProjectRelativeDiagnostics(reusedFileResult.diagnostics, tempDirectory),
+        expectedDiagnostics,
+      );
+      assertEquals(
+        toProjectRelativeDiagnostics(sessionFullResult.diagnostics, tempDirectory),
+        expectedDiagnostics,
+      );
+      assertEquals(
+        toProjectRelativeDiagnostics(sessionFileResult.diagnostics, tempDirectory),
+        expectedDiagnostics,
+      );
+    } finally {
+      disposePreparedAnalysisProject(freshPreparedProject);
+      disposePreparedAnalysisProject(reusedPreparedProject);
+    }
+  } finally {
+    session.dispose();
+    disposePreparedAnalysisProject(initialPreparedProject);
+  }
+});
+
 Deno.test('red-team: package verification cache reuses subpath macro exports', async () => {
   const tempDirectory = await createTempProject([
     {
@@ -4261,6 +4410,153 @@ Deno.test('red-team: persistent checker cache invalidates local forwarded effect
     toProjectRelativeDiagnostics(coldResult.diagnostics, tempDirectory),
   );
   assertEquals(cachedResult.diagnostics[0]?.metadata?.primarySymbol, 'run');
+});
+
+Deno.test('red-team: persistent checker cache keeps Function adapter forwarding conservative', async () => {
+  const createEffectsSource = (useFunctionAdapters: boolean): string =>
+    [
+      'export function pureCallback(value: number): number {',
+      '  return value + 1;',
+      '}',
+      '',
+      'export function auditedBind(callback: (value: number) => number, value: number): number {',
+      ...(useFunctionAdapters
+        ? [
+          '  const invoke = callback.bind(undefined);',
+          '  return invoke(value);',
+        ]
+        : [
+          '  return callback(value);',
+        ]),
+      '}',
+      '',
+      'export function auditedCall(callback: (value: number) => number, value: number): number {',
+      useFunctionAdapters
+        ? '  return callback.call(undefined, value);'
+        : '  return callback(value);',
+      '}',
+      '',
+      'export function auditedApply(callback: (value: number) => number, value: number): number {',
+      useFunctionAdapters
+        ? '  return callback.apply(undefined, [value]);'
+        : '  return callback(value);',
+      '}',
+      '',
+    ].join('\n');
+
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: createSoundscriptTsconfig(),
+    },
+    {
+      path: 'src/index.sts',
+      contents: [
+        'import { auditedApply, auditedBind, auditedCall, pureCallback } from "./effects";',
+        '',
+        '// #[effects(forbid: [host])]',
+        'export function runBind(): number {',
+        '  return auditedBind(pureCallback, 1);',
+        '}',
+        '',
+        '// #[effects(forbid: [host])]',
+        'export function runCall(): number {',
+        '  return auditedCall(pureCallback, 1);',
+        '}',
+        '',
+        '// #[effects(forbid: [host])]',
+        'export function runApply(): number {',
+        '  return auditedApply(pureCallback, 1);',
+        '}',
+        '',
+      ].join('\n'),
+    },
+    {
+      path: 'src/effects.sts',
+      contents: createEffectsSource(false),
+    },
+  ]);
+  const projectPath = join(tempDirectory, 'tsconfig.json');
+  const cacheRoot = await Deno.makeTempDir({ prefix: 'soundscript-red-team-cache-' });
+  const baseOptions = { cacheDir: cacheRoot, projectPath, workingDirectory: tempDirectory };
+  const session = new IncrementalProjectSession();
+
+  try {
+    session.prepare(baseOptions);
+    assertEquals(session.analyzeProject().diagnostics, []);
+    assertEquals(runProgram(baseOptions).diagnostics, []);
+
+    const warmUnchangedResult = withCapturedTimingLogs((logs) => {
+      const result = runProgram(baseOptions);
+      assert(
+        logs.some((line) => line.includes('[soundscript:checker] project.cache.read ')),
+        logs.join('\n'),
+      );
+      assert(
+        !logs.some((line) => line.includes('[soundscript:checker] project.cache.incremental ')),
+        logs.join('\n'),
+      );
+      assert(
+        !logs.some((line) => line.includes('[soundscript:checker] project.cache.write ')),
+        logs.join('\n'),
+      );
+      return result;
+    });
+    assertEquals(warmUnchangedResult.diagnostics, []);
+
+    await writeProjectFile(tempDirectory, 'src/effects.sts', createEffectsSource(true));
+
+    session.prepare(baseOptions);
+    const sessionResult = session.analyzeProject();
+    const coldResult = runProgram({
+      cacheDir: await Deno.makeTempDir({ prefix: 'soundscript-red-team-cache-' }),
+      projectPath,
+      workingDirectory: tempDirectory,
+    });
+    const cachedResult = withCapturedTimingLogs((logs) => {
+      const result = runProgram(baseOptions);
+      assert(
+        logs.some((line) => line.includes('[soundscript:checker] project.cache.read ')),
+        logs.join('\n'),
+      );
+      assert(
+        logs.some((line) =>
+          line.includes('[soundscript:checker] project.cache.incremental ') &&
+          line.includes('changedTrackedFiles=1') &&
+          line.includes('changedDependencyFiles=1')
+        ),
+        logs.join('\n'),
+      );
+      return result;
+    });
+
+    const expectedDiagnostics: readonly (readonly [string, string])[] = [
+      ['SOUND1041', 'src/index.sts'],
+      ['SOUND1041', 'src/index.sts'],
+      ['SOUND1041', 'src/index.sts'],
+    ];
+    assertEquals(
+      toProjectRelativeDiagnostics(sessionResult.diagnostics, tempDirectory),
+      expectedDiagnostics,
+    );
+    assertEquals(coldResult.exitCode, 1, coldResult.output);
+    assertEquals(
+      toProjectRelativeDiagnostics(coldResult.diagnostics, tempDirectory),
+      expectedDiagnostics,
+    );
+    assertEquals(
+      coldResult.diagnostics.map((diagnostic) => diagnostic.metadata?.primarySymbol),
+      ['runBind', 'runCall', 'runApply'],
+    );
+    assertFreshAndCachedDiagnosticsMatch(
+      cachedResult.diagnostics,
+      coldResult.diagnostics,
+      tempDirectory,
+    );
+    assertEquals(cachedResult.exitCode, coldResult.exitCode, cachedResult.output);
+  } finally {
+    session.dispose();
+  }
 });
 
 Deno.test('red-team: persistent checker cache propagates handled forwarded effect drift through dependency closure', async () => {

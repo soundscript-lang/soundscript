@@ -70,7 +70,7 @@ function createBrowserTsconfig(): string {
   );
 }
 
-async function createValueAnalysisProject(
+function createValueAnalysisProject(
   files: Readonly<Record<string, string>>,
 ): Promise<string> {
   return createTempProject({
@@ -79,7 +79,7 @@ async function createValueAnalysisProject(
   });
 }
 
-async function createMacroProject(
+function createMacroProject(
   macroSourceText: string,
   extraFiles: Readonly<Record<string, string>> = {},
 ): Promise<string> {
@@ -1250,6 +1250,63 @@ Deno.test('analyzeProject rejects authored PromiseLike carriers in sound source'
     'SOUND1022',
     'SOUND1022',
   ]);
+});
+
+Deno.test('red-team: analyzeProject rejects wrapped Promise.resolve thenable interop surfaces', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          allowImportingTsExtensions: true,
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+          moduleResolution: 'Bundler',
+        },
+        include: ['src/**/*.ts', 'src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/foreign.ts': [
+      'export interface ForeignThenable<T> {',
+      '  then(onfulfilled: (value: T) => unknown): unknown;',
+      '}',
+      '',
+      'export declare const foreignThenable: ForeignThenable<number>;',
+      '',
+    ].join('\n'),
+    'src/index.sts': [
+      '// #[interop]',
+      'import { foreignThenable } from "./foreign.ts";',
+      '',
+      'const direct = Promise.resolve(foreignThenable);',
+      'const viaCall = Promise.resolve.call(Promise, foreignThenable);',
+      'const viaApply = Promise.resolve.apply(Promise, [foreignThenable]);',
+      '',
+      'void direct;',
+      'void viaCall;',
+      'void viaApply;',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  const promiseResolveThenableDiagnostics = result.diagnostics.filter((diagnostic) =>
+    diagnostic.code === 'SOUND1034' &&
+    diagnostic.metadata?.evidence?.some((fact) =>
+      fact.label === 'surfaceKind' && fact.value === 'promise resolve thenable'
+    )
+  );
+  assertEquals(
+    promiseResolveThenableDiagnostics.map((diagnostic) => diagnostic.line),
+    [4, 5, 6],
+  );
 });
 
 Deno.test('analyzeProject reports actionable guidance for unsupported async surfaces', async () => {
@@ -3684,6 +3741,75 @@ Deno.test('analyzeProject reports actionable guidance for banned TypeScript prag
     result.diagnostics[0]?.hint,
     'Delete the TypeScript pragma and make the code type-check without suppression.',
   );
+});
+
+Deno.test('analyzeProject rejects triple-slash lib reference directives', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/index.sts': [
+      '/// <reference lib="dom" />',
+      'const value = 1;',
+      'void value;',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1023']);
+  assertEquals(result.diagnostics[0]?.metadata?.rule, 'typescript_directive_banned');
+  assertEquals(result.diagnostics[0]?.metadata?.primarySymbol, '/// <reference lib="dom" />');
+  assertEquals(
+    result.diagnostics[0]?.metadata?.evidence?.map((fact) => `${fact.label}:${fact.value}`),
+    ['directiveText:/// <reference lib="dom" />'],
+  );
+});
+
+Deno.test('analyzeProject keeps triple-slash directive diagnostics alongside TypeScript errors', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/index.sts': [
+      '/// <reference lib="dom" />',
+      'const value: number = "bad";',
+      'void value;',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assert(result.diagnostics.some((diagnostic) => diagnostic.code === 'TS2322'));
+  assert(result.diagnostics.some((diagnostic) => diagnostic.code === 'SOUND1023'));
 });
 
 Deno.test('analyzeProject gives feature-specific guidance for var declarations', async () => {

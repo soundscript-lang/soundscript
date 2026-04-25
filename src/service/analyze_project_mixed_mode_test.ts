@@ -137,7 +137,7 @@ Deno.test('analyzeProject keeps .ts on ordinary TS semantics in mixed .ts/.sts p
   assertEquals(result.diagnostics[0]?.column, 7);
 });
 
-Deno.test('analyzeProject treats included TypeScript frontier files separately from host TypeScript files', async () => {
+Deno.test('analyzeProject does not analyze unrelated host roots for explicit soundscript includes', async () => {
   const tempDirectory = await createTempProject({
     'tsconfig.json': JSON.stringify(
       {
@@ -187,22 +187,129 @@ Deno.test('analyzeProject treats included TypeScript frontier files separately f
     ]],
   );
   assert(preparedProject.stsView !== null);
-  assert(preparedProject.tsView !== null);
+  assertEquals(preparedProject.tsView, null);
   assertEquals(
     preparedProject.stsView.program.getRootFileNames().map((fileName) =>
       preparedProject.stsView!.preparedProgram.toSourceFileName(fileName)
     ).sort(),
     [join(tempDirectory, 'src/frontier.ts')],
   );
+});
+
+Deno.test('analyzeProject ignores ordinary host roots that import soundscript', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+          moduleResolution: 'Bundler',
+          allowImportingTsExtensions: true,
+        },
+        include: ['src/**/*.ts'],
+        soundscript: {},
+      },
+      null,
+      2,
+    ),
+    'src/frontier.sts': [
+      'export const value: number = 1;',
+      '',
+    ].join('\n'),
+    'src/host.ts': [
+      'import { value } from "./frontier.sts";',
+      'const text: string = value;',
+      'void text;',
+      '',
+    ].join('\n'),
+    'src/unrelated.ts': [
+      'const broken: string = 1;',
+      'void broken;',
+      '',
+    ].join('\n'),
+  });
+
+  const baseOptions = {
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  };
+
+  const result = await analyzeProject(baseOptions);
+  const preparedProject = prepareProjectAnalysis(baseOptions);
+
+  assertEquals(result.diagnostics, []);
+  assertEquals(preparedProject.tsView, null);
+  assertEquals(preparedProject.stsView, null);
+  assertEquals(preparedProject.stsProgramRootNames, []);
+});
+
+Deno.test('analyzeProject checks TypeScript-family files explicitly matched by soundscript.include', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+          moduleResolution: 'Bundler',
+          allowImportingTsExtensions: true,
+        },
+        include: ['src/**/*.ts', 'src/**/*.sts'],
+        soundscript: {
+          include: ['src/host.ts'],
+        },
+      },
+      null,
+      2,
+    ),
+    'src/frontier.sts': [
+      'export const value: number = 1;',
+      '',
+    ].join('\n'),
+    'src/host.ts': [
+      'import { value } from "./frontier.sts";',
+      'const text: string = value;',
+      'void text;',
+      '',
+    ].join('\n'),
+    'src/unrelated.ts': [
+      'const broken: string = 1;',
+      'void broken;',
+      '',
+    ].join('\n'),
+  });
+
+  const baseOptions = {
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  };
+
+  const result = await analyzeProject(baseOptions);
+  const preparedProject = prepareProjectAnalysis(baseOptions);
+
   assertEquals(
-    preparedProject.tsView.program.getRootFileNames().map((fileName) =>
-      preparedProject.tsView!.preparedProgram.toSourceFileName(fileName)
+    summarizeDiagnostics(result.diagnostics),
+    [[
+      'TS2322',
+      join(tempDirectory, 'src/host.ts'),
+      2,
+      7,
+    ]],
+  );
+  assertEquals(preparedProject.tsView, null);
+  assert(preparedProject.stsView !== null);
+  assertEquals(
+    preparedProject.stsView.program.getRootFileNames().map((fileName) =>
+      preparedProject.stsView!.preparedProgram.toSourceFileName(fileName)
     ).sort(),
-    [join(tempDirectory, 'src/host.ts')],
+    [join(tempDirectory, 'src/frontier.sts'), join(tempDirectory, 'src/host.ts')],
   );
 });
 
-Deno.test('analyzeProject exposes bare machine numerics only to .sts files in mixed projects', async () => {
+Deno.test('analyzeProject ignores ordinary .ts roots when checking machine numerics in mixed projects', async () => {
   const tempDirectory = await createTempProject({
     'tsconfig.json': JSON.stringify(
       {
@@ -235,13 +342,7 @@ Deno.test('analyzeProject exposes bare machine numerics only to .sts files in mi
     workingDirectory: tempDirectory,
   });
 
-  assertEquals(
-    result.diagnostics.map((diagnostic) => [String(diagnostic.code), diagnostic.filePath]),
-    [
-      ['TS2304', join(tempDirectory, 'src/plain.ts')],
-      ['TS2304', join(tempDirectory, 'src/plain.ts')],
-    ],
-  );
+  assertEquals(result.diagnostics, []);
 });
 
 Deno.test('analyzeProject reports mixed machine numerics at original .sts locations', async () => {
@@ -1014,17 +1115,12 @@ Deno.test('prepareProjectAnalysis reuses .sts artifacts when only .ts inputs cha
 
   assert(initialPreparedProject.stsView !== null);
   assert(reusedPreparedProject.stsView !== null);
-  assert(initialPreparedProject.tsView !== null);
-  assert(reusedPreparedProject.tsView !== null);
+  assertEquals(initialPreparedProject.tsView, null);
+  assertEquals(reusedPreparedProject.tsView, null);
   assert(initialPreparedProject.stsView === reusedPreparedProject.stsView);
   assert(
     initialPreparedProject.localProjectedDeclarationOverrides ===
       reusedPreparedProject.localProjectedDeclarationOverrides,
-  );
-  const helperFilePath = join(tempDirectory, 'src/helper.ts');
-  assert(
-    initialPreparedProject.tsView.program.getSourceFile(helperFilePath) ===
-      reusedPreparedProject.tsView.program.getSourceFile(helperFilePath),
   );
 });
 
@@ -1141,6 +1237,122 @@ Deno.test('prepareProjectAnalysis can defer the ts view for .sts-local work', as
 
   assert(preparedProject.stsView !== null);
   assertEquals(preparedProject.tsView, null);
+});
+
+Deno.test('prepareProjectAnalysis does not scan host-only roots when the ts view is deferred', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+          moduleResolution: 'Bundler',
+          allowImportingTsExtensions: true,
+        },
+        include: ['src/host.ts', 'src/sound.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/host.ts': 'import { hidden } from "./hidden.sts";\nvoid hidden;\n',
+    'src/hidden.sts': 'export const hidden = Object.create(null);\n',
+    'src/sound.sts': 'export const value: number = 1;\n',
+  });
+
+  const preparedProject = prepareProjectAnalysis(
+    {
+      projectPath: join(tempDirectory, 'tsconfig.json'),
+      workingDirectory: tempDirectory,
+    },
+    undefined,
+    { deferTypescriptView: true },
+  );
+
+  assert(preparedProject.stsView !== null);
+  assertEquals(preparedProject.tsView, null);
+  assertEquals(
+    preparedProject.stsProgramRootNames,
+    [join(tempDirectory, 'src/sound.sts')],
+  );
+});
+
+Deno.test('prepareProjectAnalysis ignores .sts roots reached only through dynamic host imports', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+          moduleResolution: 'Bundler',
+          allowImportingTsExtensions: true,
+        },
+        include: ['src/**/*.ts'],
+      },
+      null,
+      2,
+    ),
+    'src/host.ts': [
+      'export async function load() {',
+      '  return await import("./dynamic.sts");',
+      '}',
+      '',
+    ].join('\n'),
+    'src/dynamic.sts': [
+      'const dict = Object.create(null);',
+      'export const plain: object = dict;',
+      '',
+    ].join('\n'),
+  });
+
+  const preparedProject = prepareProjectAnalysis({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(preparedProject.stsProgramRootNames, []);
+  assertEquals(preparedProject.stsView, null);
+  assertEquals(analyzePreparedProject(preparedProject).diagnostics, []);
+});
+
+Deno.test('IncrementalProjectSession reuses deferred prepared projects without scanning host-only roots', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+          moduleResolution: 'Bundler',
+          allowImportingTsExtensions: true,
+        },
+        include: ['src/host.ts', 'src/sound.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/host.ts': 'import { hidden } from "./hidden.sts";\nvoid hidden;\n',
+    'src/hidden.sts': 'export const hidden = Object.create(null);\n',
+    'src/sound.sts': 'export const value: number = 1;\n',
+  });
+  const session = new IncrementalProjectSession();
+  const options = {
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  };
+
+  const firstPreparedProject = session.prepare(options, { deferTypescriptView: true });
+  const secondPreparedProject = session.prepare(options, { deferTypescriptView: true });
+
+  assertStrictEquals(secondPreparedProject, firstPreparedProject);
+  assertEquals(
+    secondPreparedProject.stsProgramRootNames,
+    [join(tempDirectory, 'src/sound.sts')],
+  );
 });
 
 Deno.test('prepareProjectAnalysis skips local projection work for pure local .sts projects', async () => {
@@ -1515,7 +1727,7 @@ Deno.test(
 );
 
 Deno.test(
-  'IncrementalProjectSession reuses unaffected .ts file analysis across unrelated .sts override changes',
+  'IncrementalProjectSession leaves ordinary .ts file analysis outside Soundscript ownership across .sts overrides',
   async () => {
     const tempDirectory = await createTempProject({
       'tsconfig.json': JSON.stringify(
@@ -1547,6 +1759,7 @@ Deno.test(
       workingDirectory: tempDirectory,
     });
     const initialIndexResult = session.analyzeFile(indexFilePath);
+    assertEquals(initialIndexResult.diagnostics, []);
 
     session.prepare({
       fileOverrides: new Map([[otherFilePath, 'export const other = 2;\n']]),
@@ -1554,7 +1767,7 @@ Deno.test(
       workingDirectory: tempDirectory,
     });
     const reusedIndexResult = session.analyzeFile(indexFilePath);
-    assertStrictEquals(reusedIndexResult, initialIndexResult);
+    assertEquals(reusedIndexResult.diagnostics, []);
 
     session.prepare({
       fileOverrides: new Map([[helperFilePath, 'export const helper = "broken";\n']]),
@@ -1562,12 +1775,12 @@ Deno.test(
       workingDirectory: tempDirectory,
     });
     const rebuiltIndexResult = session.analyzeFile(indexFilePath);
-    assertNotStrictEquals(rebuiltIndexResult, reusedIndexResult);
+    assertEquals(rebuiltIndexResult.diagnostics, []);
   },
 );
 
 Deno.test(
-  'IncrementalProjectSession reuses unaffected .ts file analysis across unrelated .ts override changes',
+  'IncrementalProjectSession leaves pure .ts file analysis outside Soundscript ownership across .ts overrides',
   async () => {
     const tempDirectory = await createTempProject({
       'tsconfig.json': JSON.stringify(
@@ -1599,6 +1812,7 @@ Deno.test(
       workingDirectory: tempDirectory,
     });
     const initialIndexResult = session.analyzeFile(indexFilePath);
+    assertEquals(initialIndexResult.diagnostics, []);
 
     session.prepare({
       fileOverrides: new Map([[otherFilePath, 'export const other = 2;\n']]),
@@ -1606,7 +1820,7 @@ Deno.test(
       workingDirectory: tempDirectory,
     });
     const reusedIndexResult = session.analyzeFile(indexFilePath);
-    assertStrictEquals(reusedIndexResult, initialIndexResult);
+    assertEquals(reusedIndexResult.diagnostics, []);
 
     session.prepare({
       fileOverrides: new Map([[helperFilePath, 'export const helper = "broken";\n']]),
@@ -1614,12 +1828,12 @@ Deno.test(
       workingDirectory: tempDirectory,
     });
     const rebuiltIndexResult = session.analyzeFile(indexFilePath);
-    assertNotStrictEquals(rebuiltIndexResult, reusedIndexResult);
+    assertEquals(rebuiltIndexResult.diagnostics, []);
   },
 );
 
 Deno.test(
-  'IncrementalProjectSession reuses unaffected .sts file analysis across unrelated .ts override changes',
+  'IncrementalProjectSession invalidates .sts file analysis across imported .ts override changes',
   async () => {
     const tempDirectory = await createTempProject({
       'tsconfig.json': JSON.stringify(
@@ -1635,7 +1849,8 @@ Deno.test(
         null,
         2,
       ),
-      'src/index.sts': 'import { helper } from "./helper";\nexport const value = helper;\n',
+      'src/index.sts':
+        'import { helper } from "./helper";\nconst exact: number = helper;\nexport const value = exact;\n',
       'src/helper.ts': 'export const helper = 1;\n',
       'src/other.ts': 'export const other = 1;\n',
     });
@@ -1651,6 +1866,11 @@ Deno.test(
       workingDirectory: tempDirectory,
     });
     const initialIndexResult = session.analyzeFile(indexFilePath);
+    assertEquals(initialIndexResult.diagnostics.map((diagnostic) => diagnostic.code), [
+      'SOUND1005',
+      'SOUND1005',
+      'SOUND1005',
+    ]);
 
     session.prepare({
       fileOverrides: new Map([[otherFilePath, 'export const other = 2;\n']]),
@@ -1658,7 +1878,11 @@ Deno.test(
       workingDirectory: tempDirectory,
     });
     const reusedIndexResult = session.analyzeFile(indexFilePath);
-    assertStrictEquals(reusedIndexResult, initialIndexResult);
+    assertEquals(reusedIndexResult.diagnostics.map((diagnostic) => diagnostic.code), [
+      'SOUND1005',
+      'SOUND1005',
+      'SOUND1005',
+    ]);
 
     session.prepare({
       fileOverrides: new Map([[helperFilePath, 'export const helper = "broken";\n']]),
@@ -1667,11 +1891,14 @@ Deno.test(
     });
     const rebuiltIndexResult = session.analyzeFile(indexFilePath);
     assertNotStrictEquals(rebuiltIndexResult, reusedIndexResult);
+    assertEquals(rebuiltIndexResult.diagnostics.map((diagnostic) => diagnostic.code), [
+      'TS2322',
+    ]);
   },
 );
 
 Deno.test(
-  'IncrementalProjectSession rebuilds .ts view after dependency disk drift with unrelated override',
+  'IncrementalProjectSession leaves ordinary .ts dependency drift outside Soundscript ownership',
   async () => {
     const tempDirectory = await createTempProject({
       'tsconfig.json': JSON.stringify(
@@ -1723,16 +1950,14 @@ Deno.test(
     session.prepare(nextOptions);
     const sessionResult = session.analyzeFile(indexFilePath);
 
-    assertEquals(freshResult.diagnostics.map((diagnostic) => diagnostic.code), ['TS2322']);
+    assertEquals(freshResult.diagnostics, []);
     assertEquals(
       {
         diagnostics: sessionResult.diagnostics.map((diagnostic) => diagnostic.code),
-        staleResultRejected: sessionResult !== initialIndexResult,
         summary: sessionResult.summary,
       },
       {
         diagnostics: freshResult.diagnostics.map((diagnostic) => diagnostic.code),
-        staleResultRejected: true,
         summary: freshResult.summary,
       },
     );
@@ -1847,7 +2072,10 @@ Deno.test('prepareProjectAnalysis invalidates .sts artifacts when .sts inputs ch
     {
       ...baseOptions,
       fileOverrides: new Map([
-        [join(tempDirectory, 'src/producer.sts'), 'export const value: string = "next";\n'],
+        [
+          join(tempDirectory, 'src/producer.sts'),
+          'const dict = Object.create(null);\nexport const value: object = dict;\n',
+        ],
       ]),
     },
     initialPreparedProject,
@@ -1856,10 +2084,6 @@ Deno.test('prepareProjectAnalysis invalidates .sts artifacts when .sts inputs ch
   assert(initialPreparedProject.stsView !== null);
   assert(updatedPreparedProject.stsView !== null);
   assert(initialPreparedProject.stsView !== updatedPreparedProject.stsView);
-  assert(
-    initialPreparedProject.localProjectedDeclarationOverrides !==
-      updatedPreparedProject.localProjectedDeclarationOverrides,
-  );
   const helperSourcePath = join(tempDirectory, 'src/helper.sts');
   assert(
     initialPreparedProject.stsView.preparedProgram.preparedHost.getPreparedSourceFile(
@@ -1869,17 +2093,11 @@ Deno.test('prepareProjectAnalysis invalidates .sts artifacts when .sts inputs ch
         helperSourcePath,
       ),
   );
-  assert(updatedPreparedProject.tsView !== null);
-  assert(initialPreparedProject.tsView !== null);
-  assert(
-    initialPreparedProject.tsView.program.getSourceFile(join(tempDirectory, 'src/consumer.ts')) ===
-      updatedPreparedProject.tsView.program.getSourceFile(join(tempDirectory, 'src/consumer.ts')),
-  );
+  assertEquals(updatedPreparedProject.tsView, null);
+  assertEquals(initialPreparedProject.tsView, null);
   assertEquals(
-    updatedPreparedProject.tsView.program.getSemanticDiagnostics().map((diagnostic) =>
-      diagnostic.code
-    ),
-    [2322],
+    analyzePreparedProject(updatedPreparedProject).diagnostics.map((diagnostic) => diagnostic.code),
+    ['SOUND1024'],
   );
 });
 
@@ -2229,7 +2447,7 @@ Deno.test(
 );
 
 Deno.test(
-  'prepareProjectAnalysis preserves local projected declarations when outDir rewrites .sts emit paths',
+  'prepareProjectAnalysis skips local projected declarations for ordinary host consumers when outDir rewrites .sts emit paths',
   async () => {
     const tempDirectory = await createTempProject({
       'tsconfig.json': JSON.stringify(
@@ -2256,12 +2474,9 @@ Deno.test(
       workingDirectory: tempDirectory,
     });
 
-    assertEquals(preparedProject.localProjectedDeclarationOverrides?.size, 1);
-    assertEquals(
-      preparedProject.localProjectedDeclarationOverrides?.has(join(tempDirectory, 'src/index.sts')),
-      true,
-    );
+    assertEquals(preparedProject.localProjectedDeclarationOverrides, undefined);
     assertEquals(preparedProject.packageSourcePolicyView, null);
+    assertEquals(preparedProject.tsView, null);
     assertEquals(analyzePreparedProject(preparedProject).diagnostics, []);
   },
 );
@@ -2316,7 +2531,7 @@ Deno.test(
   },
 );
 
-Deno.test('analyzeProject lets .ts import .sts exports that use macros internally', async () => {
+Deno.test('analyzeProject leaves ordinary .ts imports of macro-backed .sts exports outside ownership', async () => {
   const tempDirectory = await createTempProject({
     'tsconfig.json': JSON.stringify(
       {
@@ -2357,13 +2572,7 @@ Deno.test('analyzeProject lets .ts import .sts exports that use macros internall
     projectPath: join(tempDirectory, 'tsconfig.json'),
     workingDirectory: tempDirectory,
   });
-  assert(preparedProject.tsView !== null);
-  assertEquals(
-    preparedProject.tsView.program.getSourceFiles().some((sourceFile) =>
-      sourceFile.fileName.endsWith('/node_modules/sound-pkg/src/index.sts.ts')
-    ),
-    false,
-  );
+  assertEquals(preparedProject.tsView, null);
 });
 
 Deno.test('analyzeProject rechecks source-published SoundScript packages in .sts projects', async () => {
@@ -2806,7 +3015,7 @@ Deno.test('analyzeProject lets .ts import an explicit .sts specifier', async () 
   assertEquals(result.diagnostics, []);
 });
 
-Deno.test('analyzeProject uses projected surfaces for source-published SoundScript packages in pure .ts projects', async () => {
+Deno.test('analyzeProject leaves source-published packages imported only by pure .ts to built declarations', async () => {
   const tempDirectory = await createTempProject({
     'tsconfig.json': JSON.stringify(
       {
@@ -2848,16 +3057,21 @@ Deno.test('analyzeProject uses projected surfaces for source-published SoundScri
     ].join('\n'),
   });
 
-  const result = await analyzeProject({
+  const options = {
     projectPath: join(tempDirectory, 'tsconfig.json'),
     workingDirectory: tempDirectory,
-  });
+  };
+  const result = await analyzeProject(options);
+  const preparedProject = prepareProjectAnalysis(options);
 
   assertEquals(result.diagnostics, []);
+  assertEquals(preparedProject.stsView, null);
+  assertEquals(preparedProject.tsView, null);
+  assertEquals(preparedProject.packageSourcePolicyView, null);
 });
 
 Deno.test(
-  'analyzeProject uses projected surfaces for soundscript.exports packages in pure .ts projects',
+  'analyzeProject leaves soundscript.exports packages imported only by pure .ts to built declarations',
   async () => {
     const tempDirectory = await createTempProject({
       'tsconfig.json': JSON.stringify(
@@ -2915,17 +3129,22 @@ Deno.test(
       ].join('\n'),
     });
 
-    const result = await analyzeProject({
+    const options = {
       projectPath: join(tempDirectory, 'tsconfig.json'),
       workingDirectory: tempDirectory,
-    });
+    };
+    const result = await analyzeProject(options);
+    const preparedProject = prepareProjectAnalysis(options);
 
     assertEquals(result.diagnostics, []);
+    assertEquals(preparedProject.stsView, null);
+    assertEquals(preparedProject.tsView, null);
+    assertEquals(preparedProject.packageSourcePolicyView, null);
   },
 );
 
 Deno.test(
-  'analyzePreparedProjectForFile suppresses raw ts diagnostics for source-published package files in pure .ts projects',
+  'analyzePreparedProjectForFile does not prepare package-source views for pure .ts consumers',
   async () => {
     const tempDirectory = await createTempProject({
       'tsconfig.json': JSON.stringify(
@@ -2985,11 +3204,14 @@ Deno.test(
     assertEquals(directResult.diagnostics, []);
     assertEquals(wholePreparedResult.diagnostics, []);
     assertEquals(fileScopedResult.diagnostics, []);
+    assertEquals(preparedProject.stsView, null);
+    assertEquals(preparedProject.tsView, null);
+    assertEquals(preparedProject.packageSourcePolicyView, null);
   },
 );
 
 Deno.test(
-  'analyzePreparedProjectForFile includes dependency-side package macro diagnostics for pure .ts consumers',
+  'analyzePreparedProjectForFile ignores dependency-side package macro diagnostics for pure .ts consumers',
   async () => {
     const tempDirectory = await createTempProject({
       'tsconfig.json': JSON.stringify(
@@ -3052,19 +3274,15 @@ Deno.test(
     const wholePreparedResult = analyzePreparedProject(preparedProject);
     const fileScopedResult = analyzePreparedProjectForFile(preparedProject, filePath);
 
-    const directCodes = directResult.diagnostics.map((diagnostic) => diagnostic.code);
-    assertEquals(directCodes, ['TS2305']);
-    assertEquals(wholePreparedResult.diagnostics.map((diagnostic) => diagnostic.code), directCodes);
-    assertEquals(fileScopedResult.diagnostics.map((diagnostic) => diagnostic.code), directCodes);
-    assertStringIncludes(
-      fileScopedResult.diagnostics[0]?.filePath ?? '',
-      '/node_modules/sound-pkg/src/index.sts',
-    );
+    assertEquals(directResult.diagnostics, []);
+    assertEquals(wholePreparedResult.diagnostics, []);
+    assertEquals(fileScopedResult.diagnostics, []);
+    assertEquals(preparedProject.packageSourcePolicyView, null);
   },
 );
 
 Deno.test(
-  'analyzePreparedProjectForFile includes dependency-side local macro diagnostics for pure .ts consumers',
+  'analyzePreparedProjectForFile ignores dependency-side local macro diagnostics for pure .ts consumers',
   async () => {
     const tempDirectory = await createTempProject({
       'tsconfig.json': JSON.stringify(
@@ -3114,16 +3332,14 @@ Deno.test(
     const wholePreparedResult = analyzePreparedProject(preparedProject);
     const fileScopedResult = analyzePreparedProjectForFile(preparedProject, filePath);
 
-    const directCodes = directResult.diagnostics.map((diagnostic) => diagnostic.code);
-    assertEquals(directCodes, ['TS2305']);
-    assertEquals(wholePreparedResult.diagnostics.map((diagnostic) => diagnostic.code), directCodes);
-    assertEquals(fileScopedResult.diagnostics.map((diagnostic) => diagnostic.code), directCodes);
-    assertStringIncludes(fileScopedResult.diagnostics[0]?.filePath ?? '', '/src/lib.sts');
+    assertEquals(directResult.diagnostics, []);
+    assertEquals(wholePreparedResult.diagnostics, []);
+    assertEquals(fileScopedResult.diagnostics, []);
   },
 );
 
 Deno.test(
-  'analyzePreparedProjectForFile includes dependency-side local soundscript diagnostics for pure .ts consumers',
+  'analyzePreparedProjectForFile ignores dependency-side local soundscript diagnostics for pure .ts consumers',
   async () => {
     const tempDirectory = await createTempProject({
       'tsconfig.json': JSON.stringify(
@@ -3135,7 +3351,7 @@ Deno.test(
             module: 'ESNext',
             moduleResolution: 'Bundler',
           },
-          include: ['src/**/*'],
+          include: ['src/**/*.ts'],
         },
         null,
         2,
@@ -3163,15 +3379,14 @@ Deno.test(
     const wholePreparedResult = analyzePreparedProject(preparedProject);
     const fileScopedResult = analyzePreparedProjectForFile(preparedProject, filePath);
 
-    const directCodes = directResult.diagnostics.map((diagnostic) => diagnostic.code);
-    assert(directCodes.includes('SOUND1024'));
-    assertEquals(wholePreparedResult.diagnostics.map((diagnostic) => diagnostic.code), directCodes);
-    assertEquals(fileScopedResult.diagnostics.map((diagnostic) => diagnostic.code), directCodes);
+    assertEquals(directResult.diagnostics, []);
+    assertEquals(wholePreparedResult.diagnostics, []);
+    assertEquals(fileScopedResult.diagnostics, []);
   },
 );
 
 Deno.test(
-  'analyzePreparedProjectForFile includes transitive package macro diagnostics for pure .ts consumers',
+  'analyzePreparedProjectForFile ignores transitive package macro diagnostics for pure .ts consumers',
   async () => {
     const tempDirectory = await createTempProject({
       'tsconfig.json': JSON.stringify(
@@ -3235,19 +3450,15 @@ Deno.test(
     const wholePreparedResult = analyzePreparedProject(preparedProject);
     const fileScopedResult = analyzePreparedProjectForFile(preparedProject, filePath);
 
-    const directCodes = directResult.diagnostics.map((diagnostic) => diagnostic.code);
-    assertEquals(directCodes, ['TS2305']);
-    assertEquals(wholePreparedResult.diagnostics.map((diagnostic) => diagnostic.code), directCodes);
-    assertEquals(fileScopedResult.diagnostics.map((diagnostic) => diagnostic.code), directCodes);
-    assertStringIncludes(
-      fileScopedResult.diagnostics[0]?.filePath ?? '',
-      '/node_modules/sound-pkg/src/mid.sts.d.ts',
-    );
+    assertEquals(directResult.diagnostics, []);
+    assertEquals(wholePreparedResult.diagnostics, []);
+    assertEquals(fileScopedResult.diagnostics, []);
+    assertEquals(preparedProject.packageSourcePolicyView, null);
   },
 );
 
 Deno.test(
-  'prepareProjectAnalysis keeps root package macro same-kind output changes in parity across direct prepared and file-scoped analysis',
+  'prepareProjectAnalysis keeps root package macro drift outside ordinary host TypeScript ownership',
   async () => {
     const tempDirectory = await createTempProject({
       'tsconfig.json': JSON.stringify(
@@ -3317,8 +3528,7 @@ Deno.test(
     const reusedFileScopedResult = analyzePreparedProjectForFile(reusedPreparedProject, filePath);
 
     const expected = summarizeDiagnostics(directResult.diagnostics);
-    assertEquals(expected.map(([code]) => code), ['TS2305']);
-    assertEquals(expected[0]?.[1], filePath);
+    assertEquals(expected, []);
     assertEquals(
       summarizeDiagnostics(freshPreparedResult.diagnostics),
       expected,
@@ -3335,11 +3545,13 @@ Deno.test(
       summarizeDiagnostics(reusedFileScopedResult.diagnostics),
       expected,
     );
+    assertEquals(freshPreparedProject.packageSourcePolicyView, null);
+    assertEquals(reusedPreparedProject.packageSourcePolicyView, null);
   },
 );
 
 Deno.test(
-  'prepareProjectAnalysis keeps package subpath macro same-kind output changes in parity across direct prepared and file-scoped analysis',
+  'prepareProjectAnalysis keeps package subpath macro drift outside ordinary host TypeScript ownership',
   async () => {
     const tempDirectory = await createTempProject({
       'tsconfig.json': JSON.stringify(
@@ -3419,8 +3631,7 @@ Deno.test(
     const reusedFileScopedResult = analyzePreparedProjectForFile(reusedPreparedProject, filePath);
 
     const expected = summarizeDiagnostics(directResult.diagnostics);
-    assertEquals(expected.map(([code]) => code), ['TS2305']);
-    assertEquals(expected[0]?.[1], filePath);
+    assertEquals(expected, []);
     assertEquals(
       summarizeDiagnostics(freshPreparedResult.diagnostics),
       expected,
@@ -3437,6 +3648,8 @@ Deno.test(
       summarizeDiagnostics(reusedFileScopedResult.diagnostics),
       expected,
     );
+    assertEquals(freshPreparedProject.packageSourcePolicyView, null);
+    assertEquals(reusedPreparedProject.packageSourcePolicyView, null);
   },
 );
 
@@ -3812,7 +4025,7 @@ Deno.test(
 );
 
 Deno.test(
-  'analyzeProject typechecks Do programs against source-published HKT effect packages in pure .ts projects',
+  'analyzeProject leaves source-published HKT effect packages imported by pure .ts to declarations',
   async () => {
     const tempDirectory = await createTempProject({
       'tsconfig.json': JSON.stringify(
@@ -3962,17 +4175,21 @@ Deno.test(
       ].join('\n'),
     });
 
-    const result = await analyzeProject({
+    const options = {
       projectPath: join(tempDirectory, 'tsconfig.json'),
       workingDirectory: tempDirectory,
-    });
+    };
+    const result = await analyzeProject(options);
+    const preparedProject = prepareProjectAnalysis(options);
 
     assertEquals(result.diagnostics, []);
+    assertEquals(preparedProject.stsView, null);
+    assertEquals(preparedProject.packageSourcePolicyView, null);
   },
 );
 
 Deno.test(
-  'analyzeProject typechecks Do programs against source-published HKT layer packages in pure .ts projects',
+  'analyzeProject leaves source-published HKT layer packages imported by pure .ts to declarations',
   async () => {
     const tempDirectory = await createTempProject({
       'tsconfig.json': JSON.stringify(
@@ -4187,17 +4404,21 @@ Deno.test(
       ].join('\n'),
     });
 
-    const result = await analyzeProject({
+    const options = {
       projectPath: join(tempDirectory, 'tsconfig.json'),
       workingDirectory: tempDirectory,
-    });
+    };
+    const result = await analyzeProject(options);
+    const preparedProject = prepareProjectAnalysis(options);
 
     assertEquals(result.diagnostics, []);
+    assertEquals(preparedProject.stsView, null);
+    assertEquals(preparedProject.packageSourcePolicyView, null);
   },
 );
 
 Deno.test(
-  'analyzeProject typechecks higher-arity source-published HKT packages in pure .ts projects',
+  'analyzeProject leaves higher-arity source-published HKT packages imported by pure .ts to declarations',
   async () => {
     const tempDirectory = await createTempProject({
       'tsconfig.json': JSON.stringify(
@@ -4375,17 +4596,21 @@ Deno.test(
       ].join('\n'),
     });
 
-    const result = await analyzeProject({
+    const options = {
       projectPath: join(tempDirectory, 'tsconfig.json'),
       workingDirectory: tempDirectory,
-    });
+    };
+    const result = await analyzeProject(options);
+    const preparedProject = prepareProjectAnalysis(options);
 
     assertEquals(result.diagnostics, []);
+    assertEquals(preparedProject.stsView, null);
+    assertEquals(preparedProject.packageSourcePolicyView, null);
   },
 );
 
 Deno.test(
-  'analyzeProject rejects PromiseLike async surfaces in source-published package roots in pure .ts projects',
+  'analyzeProject rejects PromiseLike async surfaces in source-published package roots from owned .sts',
   async () => {
     const tempDirectory = await createTempProject({
       'tsconfig.json': JSON.stringify(
@@ -4397,12 +4622,12 @@ Deno.test(
             module: 'ESNext',
             moduleResolution: 'Bundler',
           },
-          include: ['src/**/*.ts'],
+          include: ['src/**/*.sts'],
         },
         null,
         2,
       ),
-      'src/index.ts': [
+      'src/index.sts': [
         "import { load, type Deferred } from 'sound-async-effect';",
         '',
         'declare const promise: Promise<number>;',
@@ -4445,13 +4670,13 @@ Deno.test(
 
     assertEquals(
       result.diagnostics.map((diagnostic) => diagnostic.code),
-      ['SOUND1034', 'SOUND1034', 'SOUND1034', 'SOUND1022'],
+      ['SOUND1034', 'SOUND1029', 'SOUND1034', 'SOUND1034', 'SOUND1034', 'SOUND1022'],
     );
   },
 );
 
 Deno.test(
-  'analyzeProject rejects PromiseLike async surfaces in source-published package subpaths',
+  'analyzeProject rejects PromiseLike async surfaces in source-published package subpaths from owned .sts',
   async () => {
     const tempDirectory = await createTempProject({
       'tsconfig.json': JSON.stringify(
@@ -4463,12 +4688,12 @@ Deno.test(
             module: 'ESNext',
             moduleResolution: 'Bundler',
           },
-          include: ['src/**/*.ts'],
+          include: ['src/**/*.sts'],
         },
         null,
         2,
       ),
-      'src/index.ts': [
+      'src/index.sts': [
         "import { load, type Deferred } from 'sound-async-effect/sub';",
         '',
         'declare const promise: Promise<number>;',
@@ -4522,7 +4747,7 @@ Deno.test(
 
     assertEquals(
       result.diagnostics.map((diagnostic) => diagnostic.code),
-      ['SOUND1034', 'SOUND1034', 'SOUND1034', 'SOUND1022'],
+      ['SOUND1034', 'SOUND1029', 'SOUND1034', 'SOUND1034', 'SOUND1034', 'SOUND1022'],
     );
   },
 );

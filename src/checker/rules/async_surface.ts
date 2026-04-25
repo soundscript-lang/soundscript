@@ -6,8 +6,10 @@ import { getNodeDiagnosticRange, type SoundDiagnostic } from '../diagnostics.ts'
 import { isForeignSourceFile } from '../../project/soundscript_packages.ts';
 
 import {
+  getWrappedBuiltinInvocation,
   matchesResolvedBuiltinCallableValue,
   matchesResolvedBuiltinSignature,
+  type WrappedBuiltinInvocation,
 } from './resolved_builtins.ts';
 
 type PromiseLikeChecker = ts.TypeChecker & {
@@ -282,33 +284,60 @@ function getAwaitDiagnosticInfo(
     : undefined;
 }
 
+function getWrappedInvocationArgument(
+  node: ts.CallExpression,
+  invocation: WrappedBuiltinInvocation,
+  directArgumentIndex: number,
+): ts.Expression | undefined {
+  if (invocation.wrapperKind === 'call') {
+    return node.arguments[directArgumentIndex + 1];
+  }
+
+  const argumentList = node.arguments[1];
+  if (!argumentList || !ts.isArrayLiteralExpression(argumentList)) {
+    return undefined;
+  }
+
+  const element = argumentList.elements[directArgumentIndex];
+  return element && ts.isExpression(element) ? element : undefined;
+}
+
 function getPromiseResolveDiagnosticInfo(
   context: AnalysisContext,
   node: ts.Node,
 ): AsyncSurfaceDiagnosticInfo | undefined {
-  if (
-    !ts.isCallExpression(node) ||
-    node.arguments.length === 0 ||
-    !(
-      matchesResolvedBuiltinSignature(context, node, {
-        ownerNames: ['PromiseConstructor'],
-        memberNames: ['resolve'],
-      }) ||
-      matchesResolvedBuiltinCallableValue(context, node.expression, {
-        ownerNames: ['PromiseConstructor'],
-        memberNames: ['resolve'],
-      })
-    )
-  ) {
+  if (!ts.isCallExpression(node)) {
     return undefined;
   }
 
-  return isUnsupportedThenableType(context, context.checker.getTypeAtLocation(node.arguments[0]))
+  const wrappedInvocation = getWrappedBuiltinInvocation(node);
+  const promiseResolveArgument = wrappedInvocation &&
+      matchesResolvedBuiltinCallableValue(context, wrappedInvocation.target, {
+        ownerNames: ['PromiseConstructor'],
+        memberNames: ['resolve'],
+      })
+    ? getWrappedInvocationArgument(node, wrappedInvocation, 0)
+    : node.arguments.length > 0 &&
+        (
+          matchesResolvedBuiltinSignature(context, node, {
+            ownerNames: ['PromiseConstructor'],
+            memberNames: ['resolve'],
+          }) ||
+          matchesResolvedBuiltinCallableValue(context, node.expression, {
+            ownerNames: ['PromiseConstructor'],
+            memberNames: ['resolve'],
+          })
+        )
+    ? node.arguments[0]
+    : undefined;
+
+  return promiseResolveArgument &&
+      isUnsupportedThenableType(context, context.checker.getTypeAtLocation(promiseResolveArgument))
     ? {
-      node: node.arguments[0],
-      primarySymbol: getSurfacePrimarySymbol(node.arguments[0]),
+      node: promiseResolveArgument,
+      primarySymbol: getSurfacePrimarySymbol(promiseResolveArgument),
       surfaceKind: 'promise resolve thenable',
-      surfaceText: getSurfaceText(context, node.arguments[0]),
+      surfaceText: getSurfaceText(context, promiseResolveArgument),
     }
     : undefined;
 }

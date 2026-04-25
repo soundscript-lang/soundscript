@@ -172,7 +172,10 @@ function captureStdlibBuiltinMacroError(source: string): MacroError {
   throw new Error('Expected stdlib builtin macro expansion to fail.');
 }
 
-function createBaseHost(files: ReadonlyMap<string, string>, compilerOptions: ts.CompilerOptions = {}): ts.CompilerHost {
+function createBaseHost(
+  files: ReadonlyMap<string, string>,
+  compilerOptions: ts.CompilerOptions = {},
+): ts.CompilerHost {
   const baseHost = ts.createCompilerHost({
     ...compilerOptions,
     target: ts.ScriptTarget.ES2022,
@@ -807,6 +810,34 @@ Deno.test('decode macro supports parameterless classes via public instance field
   assert(!printed.includes('secret: value.secret'));
 });
 
+Deno.test('decode macro infers field-matching class constructors', () => {
+  const { printed } = expandWithStdlibBuiltins([
+    "import { decode } from 'sts:derive';",
+    '',
+    '// #[decode]',
+    'class User {',
+    '  readonly id: string;',
+    '  readonly total: bigint;',
+    '  constructor(',
+    '    id: string,',
+    '    total: bigint,',
+    '  ) {',
+    '    this.id = id;',
+    '    this.total = total;',
+    '  }',
+    '}',
+    '',
+  ].join('\n'));
+
+  assertStringIncludes(printed, 'export const UserDecoder = ');
+  assertStringIncludes(printed, 'const __sts_construct_value = ({');
+  assertStringIncludes(
+    printed,
+    'return new User(__sts_construct_value.id, __sts_construct_value.total);',
+  );
+  assertStringIncludes(printed, 'helperText: "new User(value.id, value.total)"');
+});
+
 Deno.test('decode macro supports class factory annotations', () => {
   const { printed } = expandWithStdlibBuiltins([
     "import { decode } from 'sts:derive';",
@@ -1024,13 +1055,13 @@ Deno.test('decode macro supports declaration-level transforms', () => {
   assertStringIncludes(printed, 'normalizeUser');
 });
 
-Deno.test('decode macro rejects class constructors with parameters in v1', () => {
+Deno.test('decode macro rejects class constructors whose parameters cannot be inferred', () => {
   const error = captureStdlibBuiltinMacroError([
     "import { decode } from 'sts:derive';",
     '',
     '// #[decode]',
     'class User {',
-    '  constructor(id: string) {}',
+    '  constructor(rawId: string) {}',
     '  id: string = "";',
     '}',
     '',
@@ -1038,7 +1069,7 @@ Deno.test('decode macro rejects class constructors with parameters in v1', () =>
 
   assertEquals(
     error.message,
-    'decode class support in v1 requires a constructor with no parameters.',
+    'decode class constructor parameters must match decoded class fields in v1.',
   );
 });
 
@@ -1698,6 +1729,35 @@ Deno.test('codec macro supports parameterless classes via public instance fields
   assertStringIncludes(printed, 'total: value.total');
 });
 
+Deno.test('codec macro infers field-matching class constructors', () => {
+  const { printed } = expandWithStdlibBuiltins([
+    "import { codec } from 'sts:derive';",
+    '',
+    '// #[codec]',
+    'class User {',
+    '  readonly id: string;',
+    '  readonly total: bigint;',
+    '  constructor(',
+    '    id: string,',
+    '    total: bigint,',
+    '  ) {',
+    '    this.id = id;',
+    '    this.total = total;',
+    '  }',
+    '}',
+    '',
+  ].join('\n'));
+
+  assertStringIncludes(printed, 'export const UserCodec = ');
+  assertStringIncludes(printed, 'const __sts_construct_value = ({');
+  assertStringIncludes(
+    printed,
+    'return new User(__sts_construct_value.id, __sts_construct_value.total);',
+  );
+  assertStringIncludes(printed, 'id: value.id');
+  assertStringIncludes(printed, 'helperText: "new User(value.id, value.total)"');
+});
+
 Deno.test('codec macro supports class factory annotations', () => {
   const { printed } = expandWithStdlibBuiltins([
     "import { codec } from 'sts:derive';",
@@ -1845,13 +1905,13 @@ Deno.test('codec macro supports declaration-level decode and encode transforms',
   assertStringIncludes(printed, 'normalizeEncodedUser');
 });
 
-Deno.test('codec macro rejects class constructors with parameters in v1', () => {
+Deno.test('codec macro rejects class constructors whose parameters cannot be inferred', () => {
   const error = captureStdlibBuiltinMacroError([
     "import { codec } from 'sts:derive';",
     '',
     '// #[codec]',
     'class User {',
-    '  constructor(id: string) {}',
+    '  constructor(rawId: string) {}',
     '  id: string = "";',
     '}',
     '',
@@ -1859,7 +1919,7 @@ Deno.test('codec macro rejects class constructors with parameters in v1', () => 
 
   assertEquals(
     error.message,
-    'codec class support in v1 requires a constructor with no parameters.',
+    'codec class constructor parameters must match decoded class fields in v1.',
   );
 });
 
@@ -1988,6 +2048,118 @@ Deno.test('decode and codec macros typecheck promise-returning class factories',
   assertStringIncludes(printed, 'User.fromJson(({');
 });
 
+Deno.test('decode and codec macros typecheck inferred class constructors', () => {
+  const fileName = '/virtual/index.sts';
+  const files = new Map<string, string>([
+    ...createInstalledStdlibPackageFiles('/virtual').entries(),
+    [
+      fileName,
+      [
+        "import { codec, decode } from 'sts:derive';",
+        "import type { Result } from 'sts:result';",
+        '',
+        '// #[decode]',
+        '// #[codec]',
+        'class User {',
+        '  readonly id: string;',
+        '  readonly total: bigint;',
+        '  constructor(',
+        '    id: string,',
+        '    total: bigint,',
+        '  ) {',
+        '    this.id = id;',
+        '    this.total = total;',
+        '  }',
+        '}',
+        '',
+        "const decoded: Result<User, unknown> = UserDecoder.decode({ id: 'user-1', total: 12n });",
+        "const validated: Result<User, readonly unknown[]> = UserDecoder.validateDecode({ id: 'user-1', total: 12n });",
+        "const codecDecoded: Result<User, unknown> = UserCodec.decode({ id: 'user-1', total: 12n });",
+        "const codecValidatedDecode: Result<User, readonly unknown[]> = UserCodec.validateDecode({ id: 'user-1', total: 12n });",
+        "const codecEncoded: Result<{ readonly id: string; readonly total: bigint }, unknown> = UserCodec.encode(new User('user-1', 12n));",
+        "const codecValidatedEncode: Result<{ readonly id: string; readonly total: bigint }, readonly unknown[]> = UserCodec.validateEncode(new User('user-1', 12n));",
+        'void decoded;',
+        'void validated;',
+        'void codecDecoded;',
+        'void codecValidatedDecode;',
+        'void codecEncoded;',
+        'void codecValidatedEncode;',
+        '',
+      ].join('\n'),
+    ],
+  ]);
+
+  const expanded = expandAndTypecheckBuiltins(files, [fileName]);
+  const expandedFileName = expanded.preparedProgram.toProgramFileName(fileName);
+  const sourceFile = expanded.program.getSourceFile(expandedFileName);
+  assert(sourceFile);
+
+  const printed = printSourceFileForMacroTest(sourceFile);
+  assertStringIncludes(printed, 'export const UserDecoder = ');
+  assertStringIncludes(printed, 'export const UserCodec = ');
+  assertStringIncludes(
+    printed,
+    'return new User(__sts_construct_value.id, __sts_construct_value.total);',
+  );
+});
+
+Deno.test('factory-free class codecs preserve sync json bridge and readonly array types', () => {
+  const fileName = '/virtual/index.sts';
+  const files = new Map<string, string>([
+    ...createInstalledStdlibPackageFiles('/virtual').entries(),
+    [
+      fileName,
+      [
+        "import { codec } from 'sts:derive';",
+        "import { array as decodeArray } from 'sts:decode';",
+        "import { array as encodeArray } from 'sts:encode';",
+        "import { decodeJson, encodeJson } from 'sts:json';",
+        "import type { Result } from 'sts:result';",
+        '',
+        '// #[codec]',
+        'class TodoSnapshot {',
+        '  readonly id: string;',
+        '  readonly title: string;',
+        '  constructor(id: string, title: string) {',
+        '    this.id = id;',
+        '    this.title = title;',
+        '  }',
+        '}',
+        '',
+        'const directDecoded: Result<TodoSnapshot, unknown> = TodoSnapshotCodec.decode({',
+        '  id: "todo-1",',
+        '  title: "Ship recursive macros",',
+        '});',
+        'const jsonDecoded: Result<readonly TodoSnapshot[], unknown> = decodeJson(',
+        '  \'[{"id":"todo-1","title":"Ship recursive macros"}]\',',
+        '  decodeArray(TodoSnapshotCodec),',
+        ');',
+        'const snapshots: readonly TodoSnapshot[] = [new TodoSnapshot("todo-1", "Ship recursive macros")];',
+        'const jsonEncoded: Result<string, unknown> = encodeJson(',
+        '  snapshots,',
+        '  encodeArray(TodoSnapshotCodec),',
+        ');',
+        'void directDecoded;',
+        'void jsonDecoded;',
+        'void jsonEncoded;',
+        '',
+      ].join('\n'),
+    ],
+  ]);
+
+  const expanded = expandAndTypecheckBuiltins(files, [fileName]);
+  const expandedFileName = expanded.preparedProgram.toProgramFileName(fileName);
+  const sourceFile = expanded.program.getSourceFile(expandedFileName);
+  assert(sourceFile);
+
+  const printed = printSourceFileForMacroTest(sourceFile);
+  assertStringIncludes(printed, 'export const TodoSnapshotCodec');
+  assertStringIncludes(
+    printed,
+    'new TodoSnapshot(__sts_construct_value.id, __sts_construct_value.title)',
+  );
+});
+
 Deno.test('decode and codec macros typecheck promise-returning declaration transforms', () => {
   const fileName = '/virtual/index.sts';
   const files = new Map<string, string>([
@@ -1996,6 +2168,7 @@ Deno.test('decode and codec macros typecheck promise-returning declaration trans
       fileName,
       [
         "import { codec, decode } from 'sts:derive';",
+        "import { decodeJson, encodeJson } from 'sts:json';",
         "import type { Result } from 'sts:result';",
         '',
         'declare function normalizeDecoded(value: User): Promise<User>;',
@@ -2016,12 +2189,16 @@ Deno.test('decode and codec macros typecheck promise-returning declaration trans
         "const codecValidatedDecode: Promise<Result<User, readonly unknown[]>> = UserCodec.validateDecode({ id: 'user-1' });",
         "const codecEncoded: Promise<Result<{ readonly id: string }, unknown>> = UserCodec.encode({ id: 'user-1' });",
         "const codecValidatedEncode: Promise<Result<{ readonly id: string }, readonly unknown[]>> = UserCodec.validateEncode({ id: 'user-1' });",
+        'const jsonDecoded: Promise<Result<User, unknown>> = decodeJson(\'{"id":"user-1"}\', UserCodec);',
+        "const jsonEncoded: Promise<Result<string, unknown>> = encodeJson({ id: 'user-1' }, UserCodec);",
         'void decoded;',
         'void validated;',
         'void codecDecoded;',
         'void codecValidatedDecode;',
         'void codecEncoded;',
         'void codecValidatedEncode;',
+        'void jsonDecoded;',
+        'void jsonEncoded;',
         '',
       ].join('\n'),
     ],

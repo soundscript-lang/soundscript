@@ -163,7 +163,7 @@ Deno.test('runProgram caches unchanged checker results by default', async () => 
   assertEquals(secondResult.exitCode, firstResult.exitCode);
 });
 
-Deno.test('runProgram checker cache does not persist host TypeScript file reuse artifacts', async () => {
+Deno.test('runProgram checker cache does not persist ordinary host TypeScript file artifacts', async () => {
   const tempDirectory = await createTempProject([
     {
       path: 'tsconfig.json',
@@ -196,7 +196,8 @@ Deno.test('runProgram checker cache does not persist host TypeScript file reuse 
     projectPath,
     workingDirectory: tempDirectory,
   });
-  assert(firstResult.diagnostics.some((diagnostic) => diagnostic.source === 'ts'));
+  assertEquals(firstResult.diagnostics, []);
+  assertEquals(firstResult.exitCode, 0);
 
   const manifest = JSON.parse(await Deno.readTextFile(join(cacheDirectory, 'manifest.json'))) as {
     files: Array<{ view: string }>;
@@ -219,7 +220,7 @@ Deno.test('runProgram checker cache does not persist host TypeScript file reuse 
   assertEquals(secondResult.diagnostics, firstResult.diagnostics);
 });
 
-Deno.test('runProgram does not reuse frontier-only checker cache after host TypeScript edits', async () => {
+Deno.test('runProgram reuses frontier-only checker cache after ordinary host TypeScript edits', async () => {
   const tempDirectory = await createTempProject([
     {
       path: 'tsconfig.json',
@@ -268,20 +269,18 @@ Deno.test('runProgram does not reuse frontier-only checker cache after host Type
       workingDirectory: tempDirectory,
     });
     assert(
-      logs.some((line) => line.includes('[soundscript:checker] project.analyzePreparedProject ')),
+      logs.some((line) => line.includes('[soundscript:checker] project.cache.read ')),
     );
     assert(
-      !logs.some((line) =>
-        line.includes('[soundscript:checker] project.cache.incremental.result ')
-      ),
+      !logs.some((line) => line.includes('[soundscript:checker] project.prepareProjectAnalysis ')),
     );
     return result;
   });
-  assertEquals(secondResult.exitCode, 1);
-  assert(secondResult.diagnostics.some((diagnostic) => diagnostic.source === 'ts'));
+  assertEquals(secondResult.exitCode, 0);
+  assertEquals(secondResult.diagnostics, []);
 });
 
-Deno.test('runProgram host TypeScript diagnostics do not include declaration-only diagnostics when declaration emit is disabled', async () => {
+Deno.test('runProgram leaves pure host TypeScript declaration diagnostics outside checker ownership', async () => {
   const tempDirectory = await createTempProject([
     {
       path: 'tsconfig.json',
@@ -1982,7 +1981,179 @@ Deno.test('runProgram reuses source-published package verification cache without
   assertEquals(secondResult.exitCode, firstResult.exitCode);
 });
 
-Deno.test('runProgram analyzes source-published packages imported by host TypeScript without leaking raw package TS diagnostics', async () => {
+Deno.test('runProgram keeps macro package roots out of ordinary package source policy diagnostics', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+            moduleResolution: 'Bundler',
+          },
+          include: ['src/**/*.sts'],
+        },
+        null,
+        2,
+      ),
+    },
+    {
+      path: 'src/index.sts',
+      contents: [
+        'import type { ComponentToken } from "sound-pkg";',
+        'import { mount } from "sound-pkg/browser";',
+        'type LocalToken = ComponentToken;',
+        'const localToken: LocalToken | undefined = undefined;',
+        'void localToken;',
+        'void mount;',
+        '',
+      ].join('\n'),
+    },
+    {
+      path: 'node_modules/sound-pkg/package.json',
+      contents: JSON.stringify(
+        {
+          name: 'sound-pkg',
+          version: '1.0.0',
+          type: 'module',
+          exports: {
+            '.': {
+              types: './dist/index.d.ts',
+              import: './dist/index.js',
+            },
+            './browser': {
+              types: './dist/browser.d.ts',
+              import: './dist/browser.js',
+            },
+            './runtime': {
+              types: './dist/runtime.d.ts',
+              import: './dist/runtime.js',
+            },
+          },
+          soundscript: {
+            version: 1,
+            exports: {
+              '.': { source: './src/index.macro.sts' },
+              './browser': { source: './src/browser.api.sts' },
+              './runtime': { source: './src/runtime.api.sts' },
+            },
+          },
+        },
+        null,
+        2,
+      ),
+    },
+    {
+      path: 'node_modules/sound-pkg/dist/index.d.ts',
+      contents: 'export interface ComponentToken { readonly value: unknown; }\n',
+    },
+    {
+      path: 'node_modules/sound-pkg/dist/browser.d.ts',
+      contents: 'export declare function mount(): void;\n',
+    },
+    {
+      path: 'node_modules/sound-pkg/dist/runtime.d.ts',
+      contents: 'export declare function queue(): void;\n',
+    },
+    {
+      path: 'node_modules/sound-pkg/src/index.macro.sts',
+      contents: [
+        "import { helper } from './component_decl_impl.macro.sts';",
+        'export interface ComponentToken { readonly value: typeof helper; }',
+        '',
+      ].join('\n'),
+    },
+    {
+      path: 'node_modules/sound-pkg/src/component_decl_impl.macro.sts',
+      contents: 'export const helper: string = 1;\n',
+    },
+    {
+      path: 'node_modules/sound-pkg/src/browser.api.sts',
+      contents: [
+        "import { queue } from './runtime.api';",
+        'export function mount(): void {',
+        '  queue();',
+        '  throw new Error("browser.api.sts is a checker-only package contract.");',
+        '}',
+        '',
+      ].join('\n'),
+    },
+    {
+      path: 'node_modules/sound-pkg/src/runtime.api.sts',
+      contents: [
+        'export function queue(): void {',
+        '  throw new Error("runtime.api.sts is a checker-only package contract.");',
+        '}',
+        '',
+      ].join('\n'),
+    },
+  ]);
+  const projectPath = join(tempDirectory, 'tsconfig.json');
+  const cacheRoot = join(tempDirectory, 'explicit-cache');
+
+  const noCacheResult = runProgram({
+    cacheDir: cacheRoot,
+    projectPath,
+    useCache: false,
+    workingDirectory: tempDirectory,
+  });
+  assertEquals(noCacheResult.diagnostics, []);
+
+  const firstCachedResult = withCapturedTimingLogs((logs) => {
+    const result = runProgram({
+      cacheDir: cacheRoot,
+      projectPath,
+      workingDirectory: tempDirectory,
+    });
+    const packageCacheResult = logs.find((line) =>
+      line.includes('[soundscript:checker] project.packageVerificationCache.result ')
+    );
+    assert(packageCacheResult?.includes('misses=1'), logs.join('\n'));
+    const packageSourcePolicyLine = logs.find((line) =>
+      line.includes('[soundscript:checker] project.prepare.packageSourcePolicyView ')
+    );
+    assert(packageSourcePolicyLine?.includes('rootCount=2'), logs.join('\n'));
+    assert(!packageSourcePolicyLine?.includes('rootCount=3'), logs.join('\n'));
+    return result;
+  });
+
+  assertEquals(firstCachedResult.diagnostics, noCacheResult.diagnostics);
+  assertEquals(firstCachedResult.output, noCacheResult.output);
+  assertEquals(firstCachedResult.exitCode, noCacheResult.exitCode);
+
+  await Deno.remove(resolveCheckerCacheDirectory(projectPath, cacheRoot), {
+    recursive: true,
+  });
+
+  const packageCacheHitResult = withCapturedTimingLogs((logs) => {
+    const result = runProgram({
+      cacheDir: cacheRoot,
+      projectPath,
+      workingDirectory: tempDirectory,
+    });
+    const packageCacheResult = logs.find((line) =>
+      line.includes('[soundscript:checker] project.packageVerificationCache.result ')
+    );
+    assert(packageCacheResult?.includes('hits=1'), logs.join('\n'));
+    assert(packageCacheResult?.includes('misses=0'), logs.join('\n'));
+    assert(
+      !logs.some((line) =>
+        line.includes('[soundscript:checker] project.prepare.packageSourcePolicyView ')
+      ),
+      logs.join('\n'),
+    );
+    return result;
+  });
+
+  assertEquals(packageCacheHitResult.diagnostics, noCacheResult.diagnostics);
+  assertEquals(packageCacheHitResult.output, noCacheResult.output);
+  assertEquals(packageCacheHitResult.exitCode, noCacheResult.exitCode);
+});
+
+Deno.test('runProgram leaves source-published packages imported only by host TypeScript to built declarations', async () => {
   const tempDirectory = await createTempProject([
     {
       path: 'tsconfig.json',
@@ -2053,7 +2224,7 @@ Deno.test('runProgram analyzes source-published packages imported by host TypeSc
     );
     assert(packageCacheResult?.includes('units=0'), logs.join('\n'));
     assert(
-      logs.some((line) =>
+      !logs.some((line) =>
         line.includes('[soundscript:checker] project.prepare.packageSourcePolicyView ')
       ),
       logs.join('\n'),

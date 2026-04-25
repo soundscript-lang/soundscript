@@ -162,8 +162,9 @@ The canonical policy matrix is:
 The canonical ban list is:
 
 - some entries are scoped to `.sts` authoring, such as runtime decorators in `.sts`
-- others are checker-wide semantic policies and apply across analyzed `.ts` and `.sts` source,
-  including source-published package source when it is analyzed from source
+- others are checker-wide semantic policies and apply across owned analyzed source: `.sts`,
+  TypeScript-family files explicitly matched by `soundscript.include`, and source-published package
+  source reached from those owned roots
 
 - `eval`
 - `Function` constructor
@@ -264,8 +265,8 @@ The canonical ban list is:
   - `debugger`
   - comma operator
   - `void 0`
-  - TypeScript pragma comments such as `@ts-ignore`, `@ts-expect-error`, `@ts-nocheck`, and
-    `@ts-check`
+  - TypeScript pragma and directive comments such as `@ts-ignore`, `@ts-expect-error`,
+    `@ts-nocheck`, `@ts-check`, and triple-slash reference directives
   - angle-bracket assertions
   - labeled statements
   - runtime `this` outside methods, constructors, getters, and setters
@@ -546,9 +547,10 @@ That principle implies:
   `as any as T`, and equivalent multi-step bridge casts are banned outright rather than treated as
   valid proof overrides
 
-TypeScript pragma comments are outside this proof-override model. `soundscript` does not permit
-`@ts-ignore`, `@ts-expect-error`, `@ts-nocheck`, `@ts-check`, or other `@ts-` pragmas because they
-silence or reconfigure checking outside the checker-owned policy surface.
+TypeScript pragma and directive comments are outside this proof-override model. `soundscript` does
+not permit `@ts-ignore`, `@ts-expect-error`, `@ts-nocheck`, `@ts-check`, other `@ts-` pragmas, or
+triple-slash reference directives because they silence or reconfigure checking outside the
+checker-owned policy surface.
 
 Angle-bracket assertions are outside this proof-override model as well. `soundscript` permits only
 the `as` spelling for explicit proof overrides; `<T>expr` assertions are banned outright as a legacy
@@ -968,12 +970,16 @@ The strong soundness claim is intentionally scoped. It applies only to fully Sou
 code:
 
 - local `.sts`
-- source-published `.sts` package roots and subpaths when they are analyzed from source
+- TypeScript-family files explicitly matched by `soundscript.include`
+- source-published `.sts` package roots and subpaths when reached from owned Soundscript roots and
+  analyzed from source
 - macro-expanded prepared views of `.sts`
 - direct, fresh prepared, reused prepared, and file-scoped analysis of those sources
 
 It does not apply to:
 
+- ordinary `.ts` files, even when they import Soundscript; those diagnostics remain owned by `tsc`
+  and editor TypeScript tooling
 - JS/TS interop boundaries
 - foreign `.d.ts` surfaces beyond the current owned package-source path
 - pure `.ts` soundness
@@ -994,8 +1000,9 @@ Implemented:
 - `soundscript` runs one shared analysis pipeline that builds a TypeScript program with the bundled
   stdlib host, merges TypeScript pre-emit diagnostics with soundscript diagnostics, and feeds the
   CLI, project services, editor projection, runtime materialization, and compiler entry points
-- mixed `.ts` / `.sts` projects, projected `.sts` surfaces for `.ts` consumers, and source-published
-  package recheck through `package.json#soundscript.exports` are implemented
+- mixed `.ts` / `.sts` projects, owned TypeScript-family roots via `soundscript.include`, and
+  source-published package recheck through `package.json#soundscript.exports` from owned Soundscript
+  roots are implemented
 - the active checker rule pipeline includes directive validation, unsound syntax checks, unsound
   import checks, null-prototype enforcement, relation checks, flow checks, type-guard validation,
   overload validation, async-surface policy, foreign-boundary checks, `#[value]` validation, and

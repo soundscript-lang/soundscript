@@ -1,10 +1,7 @@
 import { dirname, extname, join, relative } from '../platform/path.ts';
 import ts from 'typescript';
 
-import {
-  formatDiagnostics,
-  type MergedDiagnostic,
-} from '../checker/diagnostics.ts';
+import { formatDiagnostics, type MergedDiagnostic } from '../checker/diagnostics.ts';
 import { MacroError } from '../frontend/macro_errors.ts';
 import { isSoundscriptSourceFile } from '../frontend/project_frontend.ts';
 import { isSoundscriptMacroSourceFile } from '../project/soundscript_files.ts';
@@ -21,15 +18,11 @@ import {
   writeTextFile,
 } from '../platform/host.ts';
 import { loadRuntimeProgramConfig } from './project_roots.ts';
+import { collectRuntimeSemanticClosure } from './semantic_closure.ts';
 import {
-  collectRuntimeSemanticClosure,
-} from './semantic_closure.ts';
-import {
-  createDeferredRuntimeExpansion,
   createPreparedRuntimeProgram,
   createSemanticRuntimeExpansion,
-  expandSemanticPlaceholdersOnDeferredSourceFile,
-  finalizeRuntimeExpandedSourceFile,
+  expandSemanticRuntimeSourceFile,
   type SemanticRuntimeExpansion,
 } from './runtime_macro_pipeline.ts';
 import { inlineSourceMapComment, stripTrailingSourceMapComment } from './source_maps.ts';
@@ -391,20 +384,21 @@ export async function materializeRuntimeGraph(
 
   const runtimeConfig = loadRuntimeProgramConfig(entryProjectPath);
   const reachableRuntimePaths = collectReachableRuntimePaths(options.entryPaths);
-  const semanticSeedPaths = [...new Set(reachableRuntimePaths.filter((fileName) =>
-    runtimeConfig.loadedConfig.isSoundscriptSourceFile(fileName) ||
-    isSoundscriptSourceFile(fileName) ||
-    isSoundscriptMacroSourceFile(fileName)
-  ))].sort();
+  const semanticSeedPaths = [
+    ...new Set(
+      reachableRuntimePaths.filter((fileName) =>
+        runtimeConfig.loadedConfig.isSoundscriptSourceFile(fileName) ||
+        isSoundscriptSourceFile(fileName) ||
+        isSoundscriptMacroSourceFile(fileName)
+      ),
+    ),
+  ].sort();
   const projectContext = {
     loadedConfig: runtimeConfig.loadedConfig,
     projectPath: entryProjectPath,
   };
   let preparedProgram = semanticSeedPaths.length > 0
     ? createPreparedRuntimeProgram(projectContext, semanticSeedPaths)
-    : undefined;
-  let deferredExpansion = preparedProgram
-    ? createDeferredRuntimeExpansion(preparedProgram)
     : undefined;
   const semanticExpansionsBySignature = new Map<string, SemanticRuntimeExpansion>();
   let semanticLastUsedSignature: string | undefined;
@@ -451,11 +445,12 @@ export async function materializeRuntimeGraph(
 
       const sourceText = readTextFileSync(sourceFileName);
       const outputPath = toRuntimeCodeOutputPath(projectRoot, sourceFileName, options.outDir);
-      const isFrontierRuntimeFile = runtimeConfig.loadedConfig.isSoundscriptSourceFile(sourceFileName) ||
+      const isFrontierRuntimeFile =
+        runtimeConfig.loadedConfig.isSoundscriptSourceFile(sourceFileName) ||
         isSoundscriptSourceFile(sourceFileName);
       const artifact = isFrontierRuntimeFile
         ? (() => {
-          if (!preparedProgram || !deferredExpansion) {
+          if (!preparedProgram) {
             throw new Error(`Missing prepared runtime program for ${sourceFileName}.`);
           }
           const programFileName = preparedProgram.toProgramFileName(sourceFileName);
@@ -475,21 +470,6 @@ export async function materializeRuntimeGraph(
               },
             );
           }
-          const semanticRequiredPlaceholderIds = deferredExpansion.semanticRequiredPlaceholderIdsByFile.get(
-            programFileName,
-          );
-          if (!semanticRequiredPlaceholderIds || semanticRequiredPlaceholderIds.size === 0) {
-            const deferredSourceFile = deferredExpansion.expandedFiles.get(programFileName);
-            if (!deferredSourceFile) {
-              throw new Error(`Missing deferred expanded source file for ${sourceFileName}.`);
-            }
-            return transpileExpandedSourceFileToEsm(
-              sourceFileName,
-              outputPath,
-              finalizeRuntimeExpandedSourceFile(preparedProgram, deferredSourceFile),
-            );
-          }
-
           const closure = collectRuntimeSemanticClosure(projectContext, [sourceFileName]);
           let semanticExpansion = semanticExpansionsBySignature.get(closure.signature);
           if (!semanticExpansion) {
@@ -504,8 +484,7 @@ export async function materializeRuntimeGraph(
             semanticExpansionsBySignature.set(closure.signature, semanticExpansion);
           }
           semanticLastUsedSignature = closure.signature;
-          const semanticSourceFile = expandSemanticPlaceholdersOnDeferredSourceFile(
-            deferredExpansion,
+          const semanticSourceFile = expandSemanticRuntimeSourceFile(
             semanticExpansion,
             sourceFileName,
           );
@@ -565,7 +544,6 @@ export async function materializeRuntimeGraph(
     }
     throw error;
   } finally {
-    deferredExpansion?.dispose();
     preparedProgram?.dispose(false);
     for (const semanticExpansion of semanticExpansionsBySignature.values()) {
       semanticExpansion.dispose();

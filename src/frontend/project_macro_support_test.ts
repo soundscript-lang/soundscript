@@ -10,7 +10,18 @@ import ts from 'typescript';
 
 import { normalizeRuntimeContext } from '../project/config.ts';
 import { installTestDisposableCleanup } from './builtin_expanded_program_test_cleanup.ts';
-import { SemanticMacroExpansionRequiredError } from './macro_errors.ts';
+import {
+  getAlwaysAvailableBuiltinMacroDefinitions,
+  getAlwaysAvailableBuiltinMacroExports,
+  getBuiltinMacroDefinitionsBySpecifier,
+  getBuiltinMacroExportsBySpecifier,
+  getBuiltinMacroFactoriesBySpecifier,
+} from './builtin_macro_support.ts';
+import { type MacroDefinition, macroSignature } from './macro_api.ts';
+import { attachMacroFactoryMetadata } from './macro_api_internal.ts';
+import { MacroError, SemanticMacroExpansionRequiredError } from './macro_errors.ts';
+import { createPreparedProgramForMacroTest } from './macro_test_helpers.ts';
+import { collectNamedMacroDefinitions } from './macro_loader.ts';
 import {
   createPreparedCompilerHostReuseState,
   createPreparedProgram as createPreparedProgramRaw,
@@ -92,6 +103,37 @@ function printExpandedFile(
   }
 }
 
+function printExpandedFileWithBuiltins(
+  preparedProgram: ReturnType<typeof createPreparedProgram>,
+  fileName: string,
+  options: { readonly macroExpansionRecursionLimit?: number } = {},
+  extraBuiltinDefinitionsBySpecifier: ReadonlyMap<
+    string,
+    ReadonlyMap<string, MacroDefinition>
+  > = new Map(),
+): string {
+  const environment = createProjectMacroEnvironment(
+    preparedProgram,
+    new Map([
+      ...getBuiltinMacroDefinitionsBySpecifier().entries(),
+      ...extraBuiltinDefinitionsBySpecifier.entries(),
+    ]),
+    getBuiltinMacroExportsBySpecifier(preparedProgram),
+    getBuiltinMacroFactoriesBySpecifier(),
+    getAlwaysAvailableBuiltinMacroDefinitions(),
+    getAlwaysAvailableBuiltinMacroExports(preparedProgram),
+    options,
+  );
+  try {
+    const expanded = environment.expandPreparedProgram();
+    const sourceFile = expanded.get(preparedProgram.toProgramFileName(fileName));
+    assert(sourceFile);
+    return ts.createPrinter().printFile(sourceFile);
+  } finally {
+    environment.dispose();
+  }
+}
+
 function createMacroPreparedProgram(
   macroSourceText: string,
   extraFiles: ReadonlyMap<string, string> = new Map(),
@@ -133,6 +175,317 @@ function createTopLevelMacroText(body: string): string {
     '',
   ].join('\n');
 }
+
+const EMPTY_MACRO_SIGNATURE = macroSignature.of();
+
+function createGeneratedMacroTestProgram(
+  sourceText: string,
+  macroSourceText: string,
+): ReturnType<typeof createPreparedProgram> {
+  return trackDisposable(createPreparedProgramForMacroTest({
+    '/virtual/index.sts': sourceText,
+    '/virtual/macros/defs.macro.sts': macroSourceText,
+  }, {
+    compilerOptions: { strict: false },
+  }));
+}
+
+function createGeneratedMacroTestDefinitions(): ReadonlyMap<
+  string,
+  ReadonlyMap<string, MacroDefinition>
+> {
+  const First = attachMacroFactoryMetadata(
+    function First(): MacroDefinition<typeof EMPTY_MACRO_SIGNATURE> {
+      return {
+        expand(ctx) {
+          return ctx.output.expr(ctx.quote.expr`todo("second")`);
+        },
+        signature: EMPTY_MACRO_SIGNATURE,
+      };
+    },
+    { form: 'call', moduleFileName: '/virtual/sts-test-macros.ts' },
+  );
+  return new Map([
+    ['sts:test', collectNamedMacroDefinitions('sts:test', { First })],
+  ]);
+}
+
+Deno.test('createProjectMacroEnvironment expands stdlib macros emitted by user macros', () => {
+  const fileName = '/virtual/index.sts';
+  const preparedProgram = createGeneratedMacroTestProgram(
+    [
+      "import { EmitTodo } from './macros/defs.macro';",
+      '',
+      'export const value = EmitTodo();',
+      '',
+    ].join('\n'),
+    [
+      "import 'sts:macros';",
+      '',
+      '// #[macro(call)]',
+      'export function EmitTodo() {',
+      '  return {',
+      '    expand(ctx) {',
+      '      return ctx.output.expr(ctx.quote.expr`todo("generated")`);',
+      '    },',
+      '  };',
+      '}',
+      '',
+    ].join('\n'),
+  );
+
+  const printed = printExpandedFileWithBuiltins(preparedProgram, fileName);
+  assertStringIncludes(printed, 'throw new Error(`TODO: ${String("generated")}`);');
+  assert(!printed.includes('__sts_macro_expr'));
+  assert(!printed.includes('todo("generated")'));
+});
+
+Deno.test('createProjectMacroEnvironment expands generated Try macro sites', () => {
+  const fileName = '/virtual/index.sts';
+  const preparedProgram = createGeneratedMacroTestProgram(
+    [
+      "import { type Result, ok } from 'sts:prelude';",
+      "import { EmitTry } from './macros/defs.macro';",
+      '',
+      'declare function fetchValue(): Result<number, string>;',
+      '',
+      'export function compute(): Result<number, string> {',
+      '  const value = EmitTry();',
+      '  return ok(value);',
+      '}',
+      '',
+    ].join('\n'),
+    [
+      "import 'sts:macros';",
+      '',
+      '// #[macro(call)]',
+      'export function EmitTry() {',
+      '  return {',
+      '    expand(ctx) {',
+      '      return ctx.output.expr(ctx.quote.expr`Try(fetchValue())`);',
+      '    },',
+      '  };',
+      '}',
+      '',
+    ].join('\n'),
+  );
+
+  const printed = printExpandedFileWithBuiltins(preparedProgram, fileName);
+  assertStringIncludes(printed, 'const __sts_attempt_');
+  assertStringIncludes(printed, 'const value = __sts_attempt_');
+  assertStringIncludes(printed, 'return ok(value);');
+  assert(!printed.includes('__sts_macro_expr'));
+  assert(!printed.includes('Try(fetchValue())'));
+});
+
+Deno.test('createProjectMacroEnvironment preserves generated declaration annotations for stdlib macros', () => {
+  const fileName = '/virtual/index.sts';
+  const preparedProgram = createGeneratedMacroTestProgram(
+    [
+      "import { EmitSnapshot } from './macros/defs.macro';",
+      '',
+      'EmitSnapshot();',
+      '',
+    ].join('\n'),
+    [
+      "import 'sts:macros';",
+      '',
+      '// #[macro(call)]',
+      'export function EmitSnapshot() {',
+      '  return {',
+      '    expand(ctx) {',
+      '      return ctx.output.stmts(ctx.quote.stmts`',
+      '        import { codec, decode } from "sts:derive";',
+      '        ',
+      '        // #[value]',
+      '        // #[codec]',
+      '        // #[decode.unknownKeys("strict")]',
+      '        export class TodoSnapshot {',
+      '          readonly id: string;',
+      '          readonly title: string;',
+      '          constructor(id: string, title: string) {',
+      '            this.id = id;',
+      '            this.title = title;',
+      '          }',
+      '        }',
+      '      `);',
+      '    },',
+      '  };',
+      '}',
+      '',
+    ].join('\n'),
+  );
+
+  const printed = printExpandedFileWithBuiltins(preparedProgram, fileName);
+  assertStringIncludes(printed, 'export const TodoSnapshotCodec = ');
+  assertStringIncludes(printed, 'unknownKeys: "strict"');
+  assertStringIncludes(
+    printed,
+    'new TodoSnapshot(__sts_construct_value.id, __sts_construct_value.title)',
+  );
+  assert(!printed.includes('__sts_macro_stmt'));
+});
+
+Deno.test('createProjectMacroEnvironment handles duplicate generated stdlib macro imports', () => {
+  const fileName = '/virtual/index.sts';
+  const preparedProgram = createGeneratedMacroTestProgram(
+    [
+      "import { EmitSnapshots } from './macros/defs.macro';",
+      '',
+      'EmitSnapshots();',
+      '',
+    ].join('\n'),
+    [
+      "import 'sts:macros';",
+      '',
+      '// #[macro(call)]',
+      'export function EmitSnapshots() {',
+      '  return {',
+      '    expand(ctx) {',
+      '      return ctx.output.stmts(ctx.quote.stmts`',
+      '        import { codec, decode } from "sts:derive";',
+      '        import { codec, decode } from "sts:derive";',
+      '        ',
+      '        // #[value]',
+      '        // #[codec]',
+      '        // #[decode.unknownKeys("strict")]',
+      '        export class TodoSnapshot {',
+      '          readonly id: string;',
+      '          constructor(id: string) {',
+      '            this.id = id;',
+      '          }',
+      '        }',
+      '      `);',
+      '    },',
+      '  };',
+      '}',
+      '',
+    ].join('\n'),
+  );
+
+  const printed = printExpandedFileWithBuiltins(preparedProgram, fileName);
+  assertStringIncludes(printed, 'export const TodoSnapshotCodec = ');
+  assertStringIncludes(printed, 'unknownKeys: "strict"');
+  assert(!printed.includes('__sts_macro_stmt'));
+});
+
+Deno.test('createProjectMacroEnvironment honors macroExpansionRecursionLimit 0 for generated stdlib macros', () => {
+  const fileName = '/virtual/index.sts';
+  const preparedProgram = createGeneratedMacroTestProgram(
+    [
+      "import { EmitTodo } from './macros/defs.macro';",
+      '',
+      'export const value = EmitTodo();',
+      '',
+    ].join('\n'),
+    [
+      "import 'sts:macros';",
+      '',
+      '// #[macro(call)]',
+      'export function EmitTodo() {',
+      '  return {',
+      '    expand(ctx) {',
+      '      return ctx.output.expr(ctx.quote.expr`todo("generated")`);',
+      '    },',
+      '  };',
+      '}',
+      '',
+    ].join('\n'),
+  );
+
+  const error = assertThrows(
+    () =>
+      printExpandedFileWithBuiltins(
+        preparedProgram,
+        fileName,
+        { macroExpansionRecursionLimit: 0 },
+      ),
+    MacroError,
+  );
+  assertEquals(error.code, 'SOUNDSCRIPT_MACRO_RECURSION_LIMIT');
+  assertStringIncludes(error.message, 'recursion limit 0');
+  assertStringIncludes(error.message, 'generated macro "todo"');
+});
+
+Deno.test('createProjectMacroEnvironment rejects generated user macro invocations', () => {
+  const fileName = '/virtual/index.sts';
+  const preparedProgram = createGeneratedMacroTestProgram(
+    [
+      "import { Bar, EmitBar } from './macros/defs.macro';",
+      '',
+      'export const value = EmitBar();',
+      '',
+    ].join('\n'),
+    [
+      "import 'sts:macros';",
+      '',
+      '// #[macro(call)]',
+      'export function EmitBar() {',
+      '  return {',
+      '    expand(ctx) {',
+      '      return ctx.output.expr(ctx.quote.expr`Bar()`);',
+      '    },',
+      '  };',
+      '}',
+      '',
+      '// #[macro(call)]',
+      'export function Bar() {',
+      '  return {',
+      '    expand(ctx) {',
+      '      return ctx.output.expr(ctx.quote.expr`2`);',
+      '    },',
+      '  };',
+      '}',
+      '',
+    ].join('\n'),
+  );
+
+  const error = assertThrows(
+    () => printExpandedFileWithBuiltins(preparedProgram, fileName),
+    MacroError,
+  );
+  assertEquals(error.code, 'SOUNDSCRIPT_MACRO_GENERATED_NON_STDLIB');
+  assertStringIncludes(error.message, 'Generated macro invocation "Bar" is not allowed yet');
+});
+
+Deno.test('createProjectMacroEnvironment rejects generated macro rounds beyond the configured limit', () => {
+  const fileName = '/virtual/index.sts';
+  const preparedProgram = createGeneratedMacroTestProgram(
+    [
+      "import { EmitFirst } from './macros/defs.macro';",
+      "import { First } from 'sts:test';",
+      '',
+      'export const value = EmitFirst();',
+      '',
+    ].join('\n'),
+    [
+      "import 'sts:macros';",
+      '',
+      '// #[macro(call)]',
+      'export function EmitFirst() {',
+      '  return {',
+      '    expand(ctx) {',
+      '      return ctx.output.expr(ctx.quote.expr`First()`);',
+      '    },',
+      '  };',
+      '}',
+      '',
+    ].join('\n'),
+  );
+
+  const error = assertThrows(
+    () =>
+      printExpandedFileWithBuiltins(
+        preparedProgram,
+        fileName,
+        { macroExpansionRecursionLimit: 1 },
+        createGeneratedMacroTestDefinitions(),
+      ),
+    MacroError,
+  );
+  assertEquals(error.code, 'SOUNDSCRIPT_MACRO_RECURSION_LIMIT');
+  assertStringIncludes(error.message, 'generated macro "todo"');
+});
 
 const topLevelAccessorMacroCases = [
   {
@@ -206,7 +559,7 @@ Deno.test(
       environment.dispose();
     }
 
-  assertEquals(preparedSourceLookups, 2);
+    assertEquals(preparedSourceLookups, 2);
   },
 );
 
@@ -1122,6 +1475,77 @@ Deno.test(
   },
 );
 
+Deno.test(
+  'createProjectMacroEnvironment rejects source-published package macro constructor-chain escapes',
+  () => {
+    const fileName = '/virtual/index.sts';
+    const preparedProgram = createPreparedProgram({
+      baseHost: createBaseHost(
+        new Map([
+          [
+            fileName,
+            'import { Foo } from "sound-pkg";\nexport const value = Foo();\n',
+          ],
+          [
+            '/virtual/node_modules/sound-pkg/package.json',
+            JSON.stringify(
+              {
+                name: 'sound-pkg',
+                version: '1.0.0',
+                type: 'module',
+                types: './dist/index.d.ts',
+                soundscript: {
+                  source: './src/index.sts',
+                },
+              },
+              null,
+              2,
+            ),
+          ],
+          [
+            '/virtual/node_modules/sound-pkg/dist/index.d.ts',
+            'export declare function Foo(): number;\n',
+          ],
+          [
+            '/virtual/node_modules/sound-pkg/src/index.sts',
+            'export { Foo } from "./macros.macro";\n',
+          ],
+          [
+            '/virtual/node_modules/sound-pkg/src/macros.macro.sts',
+            [
+              "import 'sts:macros';",
+              '',
+              '// #[macro(call)]',
+              'export function Foo() {',
+              '  return {',
+              '    expand(ctx) {',
+              '      const rawGlobal = globalThis.constructor.constructor("return globalThis")();',
+              '      return ctx.output.expr(ctx.quote.expr`${rawGlobal.Date.now()}`);',
+              '    },',
+              '  };',
+              '}',
+              '',
+            ].join('\n'),
+          ],
+        ]),
+      ),
+      options: {
+        target: ts.ScriptTarget.ES2022,
+        module: ts.ModuleKind.ESNext,
+        moduleResolution: ts.ModuleResolutionKind.Bundler,
+        noEmit: true,
+      },
+      rootNames: [fileName],
+    });
+
+    assertThrows(
+      () => printExpandedFile(preparedProgram, fileName),
+      Error,
+      'unsupported ambient runtime API "Function"',
+    );
+  },
+);
+
 Deno.test('createProjectMacroEnvironment rejects #[interop] anywhere in a macro graph', () => {
   const fileName = '/virtual/index.sts';
   const macroFile = '/virtual/macros/defs.macro.sts';
@@ -1471,6 +1895,48 @@ Deno.test('createProjectMacroEnvironment rejects nondeterministic ambient APIs l
     () => printExpandedFile(preparedProgram, fileName),
     Error,
     'uses unsupported ambient runtime API "Math.random"',
+  );
+});
+
+Deno.test('createProjectMacroEnvironment rejects constructor-chain access to raw macro globals', () => {
+  const fileName = '/virtual/index.sts';
+  const macroFile = '/virtual/macros/defs.macro.sts';
+  const preparedProgram = createPreparedProgram({
+    baseHost: createBaseHost(
+      new Map([
+        [fileName, "import { Foo } from './macros/defs.macro';\nexport const value = Foo();\n"],
+        [
+          macroFile,
+          [
+            "import 'sts:macros';",
+            '',
+            '// #[macro(call)]',
+            'export function Foo() {',
+            '  return {',
+            '    expand(ctx) {',
+            '      const rawGlobal = globalThis.constructor.constructor("return globalThis")();',
+            '      return ctx.output.expr(ctx.build.stringLiteral(typeof rawGlobal.Date));',
+            '    },',
+            '  };',
+            '}',
+            '',
+          ].join('\n'),
+        ],
+      ]),
+    ),
+    options: {
+      target: ts.ScriptTarget.ES2022,
+      module: ts.ModuleKind.ESNext,
+      moduleResolution: ts.ModuleResolutionKind.Bundler,
+      noEmit: true,
+    },
+    rootNames: [fileName],
+  });
+
+  assertThrows(
+    () => printExpandedFile(preparedProgram, fileName),
+    Error,
+    'uses unsupported ambient runtime API "Function"',
   );
 });
 

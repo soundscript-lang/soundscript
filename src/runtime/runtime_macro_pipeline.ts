@@ -12,9 +12,9 @@ import {
 } from '../frontend/builtin_macro_support.ts';
 import { SemanticMacroExpansionRequiredError } from '../frontend/macro_errors.ts';
 import {
+  type ExpandMacroPlaceholder,
   expandMacroPlaceholdersWithRegistry,
   expandPreparedProgramWithFileRegistries,
-  type ExpandMacroPlaceholder,
 } from '../frontend/macro_expander.ts';
 import {
   classifyImportedBindingUsage,
@@ -22,10 +22,7 @@ import {
   stripCompileTimeOnlyImportedBindings,
 } from '../frontend/import_binding_usage.ts';
 import type { CollectedResolvedMacroPlaceholder } from '../frontend/macro_resolver.ts';
-import {
-  createPreparedProgram,
-  type PreparedProgram,
-} from '../frontend/project_frontend.ts';
+import { createPreparedProgram, type PreparedProgram } from '../frontend/project_frontend.ts';
 import {
   createProjectMacroEnvironment,
   type ProjectMacroEnvironment,
@@ -96,7 +93,9 @@ export function createDeferredRuntimeExpansion(
         const registriesByFile = new Map<
           string,
           {
-            advancedRegistry: ReturnType<ProjectMacroEnvironment['registriesForFile']>['advancedRegistry'];
+            advancedRegistry: ReturnType<
+              ProjectMacroEnvironment['registriesForFile']
+            >['advancedRegistry'];
             registry: ReadonlyMap<string, ExpandMacroPlaceholder>;
           }
         >();
@@ -105,25 +104,29 @@ export function createDeferredRuntimeExpansion(
             continue;
           }
           const registries = macroEnvironment.registriesForFile(sourceFile);
-          const wrappedRegistry = new Map(registries.registry.entries().map(([macroName, expander]) => [
-            macroName,
-            ((resolved: Parameters<ExpandMacroPlaceholder>[0]) => {
-              try {
-                return expander(resolved);
-              } catch (error) {
-                if (!(error instanceof SemanticMacroExpansionRequiredError)) {
-                  throw error;
+          const wrappedRegistry = new Map(
+            registries.registry.entries().map(([macroName, expander]) => [
+              macroName,
+              (resolved: Parameters<ExpandMacroPlaceholder>[0]) => {
+                try {
+                  return expander(resolved);
+                } catch (error) {
+                  if (!(error instanceof SemanticMacroExpansionRequiredError)) {
+                    throw error;
+                  }
+                  let placeholderIds = semanticRequiredPlaceholderIdsByFile.get(
+                    sourceFile.fileName,
+                  );
+                  if (!placeholderIds) {
+                    placeholderIds = new Set<number>();
+                    semanticRequiredPlaceholderIdsByFile.set(sourceFile.fileName, placeholderIds);
+                  }
+                  placeholderIds.add(error.placeholderId);
+                  return undefined;
                 }
-                let placeholderIds = semanticRequiredPlaceholderIdsByFile.get(sourceFile.fileName);
-                if (!placeholderIds) {
-                  placeholderIds = new Set<number>();
-                  semanticRequiredPlaceholderIdsByFile.set(sourceFile.fileName, placeholderIds);
-                }
-                placeholderIds.add(error.placeholderId);
-                return undefined;
-              }
-            }),
-          ]));
+              },
+            ]),
+          );
           registriesByFile.set(sourceFile.fileName, {
             advancedRegistry: registries.advancedRegistry,
             registry: wrappedRegistry,
@@ -198,7 +201,8 @@ export function createSemanticRuntimeExpansion(
   const preparedProgram = measureCheckerTiming(
     'runtime.onDemand.semanticPreparedProgram',
     { rootCount: rootNames.length },
-    () => createPreparedRuntimeProgram(projectContext, rootNames, previousExpansion?.preparedProgram),
+    () =>
+      createPreparedRuntimeProgram(projectContext, rootNames, previousExpansion?.preparedProgram),
     { always: true },
   );
   const macroEnvironment = createProjectMacroEnvironment(
@@ -219,6 +223,26 @@ export function createSemanticRuntimeExpansion(
   };
 }
 
+export function expandSemanticRuntimeSourceFile(
+  semanticExpansion: SemanticRuntimeExpansion,
+  fileName: string,
+): ts.SourceFile {
+  const programFileName = semanticExpansion.preparedProgram.toProgramFileName(fileName);
+  const expandedFiles = semanticExpansion.macroEnvironment.expandPreparedProgram(
+    true,
+    true,
+    false,
+  );
+  const expandedSourceFile = expandedFiles.get(programFileName);
+  if (!expandedSourceFile) {
+    throw new Error(`Missing semantic expanded source file for ${fileName}.`);
+  }
+  return finalizeRuntimeExpandedSourceFile(
+    semanticExpansion.preparedProgram,
+    expandedSourceFile,
+  );
+}
+
 function collectRuntimeResolvedPlaceholdersById(
   preparedProgram: PreparedProgram,
   sourceFile: ts.SourceFile,
@@ -232,7 +256,8 @@ function collectRuntimeResolvedPlaceholdersById(
     if (
       ts.isCallExpression(node) &&
       ts.isIdentifier(node.expression) &&
-      (node.expression.text === '__sts_macro_expr' || node.expression.text === '__sts_macro_stmt') &&
+      (node.expression.text === '__sts_macro_expr' ||
+        node.expression.text === '__sts_macro_stmt') &&
       node.arguments.length === 1 &&
       ts.isNumericLiteral(node.arguments[0]!)
     ) {
@@ -279,11 +304,15 @@ export function expandSemanticPlaceholdersOnDeferredSourceFile(
   if (!semanticRequiredPlaceholderIds || semanticRequiredPlaceholderIds.size === 0) {
     return deferredSourceFile;
   }
-  const semanticProgramSourceFile = semanticExpansion.preparedProgram.program.getSourceFile(programFileName);
+  const semanticProgramSourceFile = semanticExpansion.preparedProgram.program.getSourceFile(
+    programFileName,
+  );
   if (!semanticProgramSourceFile) {
     throw new Error(`Missing semantic prepared source file for ${fileName}.`);
   }
-  const registries = semanticExpansion.macroEnvironment.registriesForFile(semanticProgramSourceFile);
+  const registries = semanticExpansion.macroEnvironment.registriesForFile(
+    semanticProgramSourceFile,
+  );
   const collected = collectRuntimeResolvedPlaceholdersById(
     semanticExpansion.preparedProgram,
     deferredSourceFile,

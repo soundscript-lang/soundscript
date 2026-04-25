@@ -2,7 +2,6 @@ import ts from 'typescript';
 import { dirname, isAbsolute, join } from '../platform/path.ts';
 
 import {
-  createProjectCompilerHost,
   createSoundStdlibCompilerHost,
   resolveBundledTypesDirectory,
 } from '../bundled/sound_stdlib.ts';
@@ -24,11 +23,9 @@ import {
   sourceTextLooksLikeMacroModule,
   usesLegacyDefineMacroAuthoring,
 } from '../frontend/macro_factory_support.ts';
-import { withStdPackageModuleResolution } from '../frontend/std_package_support.ts';
 import {
   capturePersistentPreparedCompilerHostReuseSnapshot,
   clearPreparedCompilerHostReuseState,
-  createPreparedProgram,
   emitProjectedDeclarations,
   getLineAndCharacterOfPosition,
   getPositionOfLineAndCharacter,
@@ -193,58 +190,6 @@ export interface PersistentPreparedAnalysisProjectReuseSnapshots {
   packageSourcePolicy?: PersistentPreparedAnalysisViewReuseSnapshot;
   sts?: PersistentPreparedAnalysisViewReuseSnapshot;
   ts?: PersistentPreparedAnalysisViewReuseSnapshot;
-}
-
-const EMPTY_MACRO_CACHE_STATS: MacroModuleCacheStats = {
-  bindingPlanCacheHits: 0,
-  bindingPlanCacheInvalidations: 0,
-  bindingPlanCacheMisses: 0,
-  expandedFileCacheHits: 0,
-  expandedFileCacheInvalidations: 0,
-  expandedFileCacheMisses: 0,
-  evaluatedModules: 0,
-  moduleCacheHits: 0,
-  moduleCacheInvalidations: 0,
-  moduleCacheMisses: 0,
-};
-
-const NOOP_PROJECT_MACRO_ENVIRONMENT: ProjectMacroEnvironment = {
-  cacheStats(): MacroModuleCacheStats {
-    return EMPTY_MACRO_CACHE_STATS;
-  },
-  definitionsForFile(): ReadonlyMap<string, never> {
-    return new Map<string, never>();
-  },
-  dispose(): void {
-  },
-  expandPreparedProgram(): ReadonlyMap<string, ts.SourceFile> {
-    return new Map();
-  },
-  registriesForFile(): {
-    advancedRegistry: ReadonlyMap<string, never>;
-    registry: ReadonlyMap<string, never>;
-  } {
-    return {
-      advancedRegistry: new Map<string, never>(),
-      registry: new Map<string, never>(),
-    };
-  },
-  siteKindsBySpecifierForFile(): ReadonlyMap<string, ReadonlyMap<string, never>> {
-    return new Map<string, ReadonlyMap<string, never>>();
-  },
-  trackedDependencyFilesForFile(): readonly string[] {
-    return [];
-  },
-  trackedDependencyFiles(): readonly string[] {
-    return [];
-  },
-};
-
-function createDiagnosticPreparedFileMap(
-  preparedProgram: PreparedProgram,
-): ReadonlyMap<string, PreparedSourceFile> {
-  void preparedProgram;
-  return new Map<string, PreparedSourceFile>();
 }
 
 function createPreparePersistentBuildInfoPath(
@@ -697,7 +642,9 @@ function createPreparedProjectSessionFreshnessSignature(
 function createCurrentProjectSessionFreshnessSignature(
   options: AnalyzeProjectOptions,
   previousPreparedProject: PreparedAnalysisProject,
+  prepareOptions: PrepareProjectAnalysisOptions,
 ): string {
+  void prepareOptions;
   const loadedConfig = loadConfig(
     options.projectPath,
     { target: options.target },
@@ -716,17 +663,8 @@ function createCurrentProjectSessionFreshnessSignature(
   );
   const soundscriptRootNames = allRootNames.filter(loadedConfig.isSoundscriptSourceFile);
   const declarationRootNames = allRootNames.filter(isDeclarationRootFileName);
-  const typescriptRootNames = allRootNames.filter((fileName) =>
-    !loadedConfig.isSoundscriptSourceFile(fileName)
-  );
-  const typescriptReachableSoundscriptRootNames = collectSoundscriptDependenciesFromHostRoots(
-    typescriptRootNames,
-    loadedConfig.frontierCommandLine.options,
-    options.fileOverrides,
-    loadedConfig.isSoundscriptSourceFile,
-  );
-  const stsProgramRootNames = combineRootNames(
-    combineRootNames(soundscriptRootNames, typescriptReachableSoundscriptRootNames),
+  const stsProgramRootNames = soundscriptRootNames.length === 0 ? [] : combineRootNames(
+    soundscriptRootNames,
     declarationRootNames,
   );
   return createProjectSessionFreshnessSignature(
@@ -825,7 +763,11 @@ export class IncrementalProjectSession {
       analyzeProjectOptionsEqual(this.#optionsSnapshot, options) &&
       prepareProjectAnalysisOptionsEqual(this.#prepareOptions, prepareOptions) &&
       this.#preparedProjectFreshnessSignature ===
-        createCurrentProjectSessionFreshnessSignature(options, this.#preparedProject)
+        createCurrentProjectSessionFreshnessSignature(
+          options,
+          this.#preparedProject,
+          prepareOptions,
+        )
     ) {
       if (this.#prepareReferenceSessions(options)) {
         this.#analyzedProject = null;
@@ -1371,16 +1313,26 @@ function createModuleResolutionHostWithOverrides(
       [...fileOverrides.entries()].map(([fileName, text]) => [ts.sys.resolvePath(fileName), text]),
     )
     : new Map<string, string>();
+  const overrideFileNames = new Set(normalizedOverrides.keys());
+  const overrideDirectoryNames = new Set<string>();
+  for (const fileName of overrideFileNames) {
+    let directoryName = dirname(fileName);
+    while (!overrideDirectoryNames.has(directoryName)) {
+      overrideDirectoryNames.add(directoryName);
+      const parentDirectoryName = dirname(directoryName);
+      if (parentDirectoryName === directoryName) {
+        break;
+      }
+      directoryName = parentDirectoryName;
+    }
+  }
 
   return {
     directoryExists(directoryName) {
       const normalizedDirectoryName = ts.sys.resolvePath(directoryName);
       if (
-        [...normalizedOverrides.keys()].some((fileName) =>
-          fileName === normalizedDirectoryName ||
-          fileName.startsWith(`${normalizedDirectoryName}/`) ||
-          fileName.startsWith(`${normalizedDirectoryName}\\`)
-        )
+        overrideFileNames.has(normalizedDirectoryName) ||
+        overrideDirectoryNames.has(normalizedDirectoryName)
       ) {
         return true;
       }
@@ -1401,6 +1353,16 @@ function createModuleResolutionHostWithOverrides(
 
 function isDeclarationRootFileName(fileName: string): boolean {
   return fileName.endsWith('.d.ts') || fileName.endsWith('.d.mts') || fileName.endsWith('.d.cts');
+}
+
+function isNonDeclarationTypeScriptSourceFileName(fileName: string): boolean {
+  const lowered = fileName.toLowerCase();
+  return (
+    lowered.endsWith('.ts') ||
+    lowered.endsWith('.tsx') ||
+    lowered.endsWith('.mts') ||
+    lowered.endsWith('.cts')
+  ) && !isDeclarationRootFileName(lowered);
 }
 
 function isRelativeOrAbsoluteModuleSpecifier(moduleSpecifier: string): boolean {
@@ -1446,6 +1408,7 @@ function collectReachableSoundscriptDependencyFiles(
   compilerOptions: ts.CompilerOptions,
   fileOverrides: ReadonlyMap<string, string> | undefined,
   isSoundscriptFile: (fileName: string) => boolean,
+  options: { readonly includeNonDeclarationTypeScriptDependencies?: boolean } = {},
 ): readonly string[] {
   const host = createModuleResolutionHostWithOverrides(fileOverrides);
   const visited = new Set<string>();
@@ -1453,7 +1416,10 @@ function collectReachableSoundscriptDependencyFiles(
 
   function visit(fileName: string): void {
     const sourceFileName = ts.sys.resolvePath(toSourceFileName(fileName));
-    if (!isSoundscriptFile(sourceFileName) || visited.has(sourceFileName)) {
+    const shouldVisit = isSoundscriptFile(sourceFileName) ||
+      (options.includeNonDeclarationTypeScriptDependencies === true &&
+        isNonDeclarationTypeScriptSourceFileName(sourceFileName));
+    if (!shouldVisit || visited.has(sourceFileName)) {
       return;
     }
 
@@ -1496,68 +1462,6 @@ function collectReachableSoundscriptDependencyFiles(
   return reachableFiles;
 }
 
-function collectSoundscriptDependenciesFromHostRoots(
-  rootNames: readonly string[],
-  compilerOptions: ts.CompilerOptions,
-  fileOverrides: ReadonlyMap<string, string> | undefined,
-  isSoundscriptFile: (fileName: string) => boolean,
-): readonly string[] {
-  const host = createModuleResolutionHostWithOverrides(fileOverrides);
-  const visited = new Set<string>();
-  const soundscriptDependencies = new Set<string>();
-
-  function visit(fileName: string): void {
-    const sourceFileName = ts.sys.resolvePath(toSourceFileName(fileName));
-    if (visited.has(sourceFileName)) {
-      return;
-    }
-    visited.add(sourceFileName);
-
-    const sourceText = host.readFile(sourceFileName);
-    if (!sourceText) {
-      return;
-    }
-
-    const sourceFile = ts.createSourceFile(
-      sourceFileName,
-      sourceText,
-      ts.ScriptTarget.Latest,
-      true,
-      ts.ScriptKind.TS,
-    );
-    for (const moduleSpecifier of getStaticSourceFileModuleSpecifiers(sourceFile)) {
-      const resolvedModule = resolveSoundScriptAwareModule(
-        moduleSpecifier,
-        sourceFileName,
-        compilerOptions,
-        host,
-      );
-      if (!resolvedModule) {
-        continue;
-      }
-
-      const dependencyFileName = ts.sys.resolvePath(
-        toSourceFileName(resolvedModule.resolvedFileName),
-      );
-      if (isSoundscriptFile(dependencyFileName)) {
-        soundscriptDependencies.add(dependencyFileName);
-        visit(dependencyFileName);
-        continue;
-      }
-
-      if (!isDeclarationRootFileName(dependencyFileName)) {
-        visit(dependencyFileName);
-      }
-    }
-  }
-
-  for (const rootName of rootNames) {
-    visit(rootName);
-  }
-
-  return [...soundscriptDependencies].sort();
-}
-
 function createSoundscriptRootContentSignature(
   rootNames: readonly string[],
   compilerOptions: ts.CompilerOptions,
@@ -1576,6 +1480,7 @@ function createSoundscriptRootContentSignature(
         compilerOptions,
         fileOverrides,
         isSoundscriptFile,
+        { includeNonDeclarationTypeScriptDependencies: true },
       ),
       ...declarationRootNames,
     ]),
@@ -1586,17 +1491,6 @@ function createSoundscriptRootContentSignature(
       return `${fileName}\u0001${text.length}\u0001${text}`;
     })
     .join('\u0002');
-}
-
-function getConfigFileParsingDiagnostics(
-  diagnostics: readonly ts.Diagnostic[],
-  additionalRootNames: readonly string[] = [],
-): readonly ts.Diagnostic[] {
-  if (additionalRootNames.length === 0) {
-    return diagnostics;
-  }
-
-  return diagnostics.filter((diagnostic) => diagnostic.code !== 18003);
 }
 
 function remapDiagnostics<T extends MergedDiagnostic>(diagnostics: readonly T[]): T[] {
@@ -2175,75 +2069,6 @@ function prepareAnalysisView(
   };
 }
 
-function prepareHostAnalysisView(
-  options: AnalyzeProjectOptions,
-  loadedConfig: ReturnType<typeof loadConfig>,
-  rootNames: readonly string[],
-  configFileParsingDiagnostics: readonly ts.Diagnostic[],
-  projectedDeclarationOverrides: ReadonlyMap<string, string> | undefined,
-  reusableCompilerHostState?: PreparedCompilerHostReuseState,
-  oldProgram?: ts.Program,
-  persistentBuildInfoDirectory?: string,
-): PreparedAnalysisView | null {
-  if (rootNames.length === 0) {
-    return null;
-  }
-
-  const preparedProgram = createPreparedProgram({
-    allowSoundscriptProgramFileResolution: false,
-    baseHost: withStdPackageModuleResolution(
-      createProjectCompilerHost(
-        loadedConfig.commandLine.options,
-        dirname(options.projectPath),
-      ),
-      loadedConfig.commandLine.options,
-    ),
-    configFileParsingDiagnostics,
-    configuredSoundscriptFileNames: loadedConfig.soundscriptConfiguredFileNames,
-    expansionEnabled: false,
-    fileOverrides: options.fileOverrides ?? new Map(),
-    oldProgram,
-    options: loadedConfig.commandLine.options,
-    persistentSemanticDiagnosticsBuildInfoPath: createPreparePersistentBuildInfoPath(
-      persistentBuildInfoDirectory,
-      'ts',
-      'semantic',
-    ),
-    projectReferences: loadedConfig.commandLine.projectReferences,
-    projectedDeclarationOverrides,
-    runtime: loadedConfig.runtime,
-    reusableCompilerHostState,
-    rootNames,
-  });
-  persistPreparedProgramBuildInfo(preparedProgram);
-  const program = preparedProgram.program;
-  const analysisContext = createAnalysisContext({
-    includeSourceFile: (sourceFile) =>
-      shouldAnalyzeTypescriptViewSourceFile(sourceFile, loadedConfig.isSoundscriptSourceFile),
-    isSoundscriptSourceFile: preparedProgram.isSoundscriptSourceFile,
-    isGeneratedNode: () => false,
-    program,
-    runtime: loadedConfig.runtime,
-    workingDirectory: options.workingDirectory,
-  });
-
-  return {
-    analysisContext,
-    analysisPreparedProgram: preparedProgram,
-    diagnosticPreparedFiles: createDiagnosticPreparedFileMap(preparedProgram),
-    frontendDiagnostics: remapDiagnostics(preparedProgram.frontendDiagnostics()),
-    macroEnvironment: NOOP_PROJECT_MACRO_ENVIRONMENT,
-    macroCacheStats: EMPTY_MACRO_CACHE_STATS,
-    preparedProgram,
-    program,
-    runSound: false,
-    runUniversalPolicy: false,
-    tsDiagnosticSourceFileFilter: undefined,
-    tsDiagnosticPrograms: [{ program }],
-    universalPolicyScope: 'full',
-  };
-}
-
 export function createPreparedAnalysisProjectFromBuiltinExpandedProgram(
   options: AnalyzeProjectOptions,
   loadedConfig: ReturnType<typeof loadConfig>,
@@ -2584,7 +2409,8 @@ function retainSoundDiagnosticsAlongsideTsErrors(
 ): readonly SoundDiagnostic[] {
   return diagnostics.filter((diagnostic): diagnostic is SoundDiagnostic =>
     diagnostic.source === 'sound' &&
-    (diagnostic.code === SOUND_DIAGNOSTIC_CODES.constructionLifecycleViolation ||
+    (diagnostic.code === SOUND_DIAGNOSTIC_CODES.bannedTypeScriptPragma ||
+      diagnostic.code === SOUND_DIAGNOSTIC_CODES.constructionLifecycleViolation ||
       diagnostic.code === SOUND_DIAGNOSTIC_CODES.fieldReadBeforeInitialization)
   );
 }
@@ -3843,20 +3669,9 @@ export function prepareProjectAnalysis(
       );
       const soundscriptRootNames = allRootNames.filter(loadedConfig.isSoundscriptSourceFile);
       const declarationRootNames = allRootNames.filter(isDeclarationRootFileName);
-      const typescriptRootNames = allRootNames.filter((fileName) =>
-        !loadedConfig.isSoundscriptSourceFile(fileName)
-      );
-      const typescriptReachableSoundscriptRootNames = collectSoundscriptDependenciesFromHostRoots(
-        typescriptRootNames,
-        loadedConfig.frontierCommandLine.options,
-        options.fileOverrides,
-        loadedConfig.isSoundscriptSourceFile,
-      );
-      const projectedSoundscriptRootNames = combineRootNames(
-        soundscriptRootNames,
-        typescriptReachableSoundscriptRootNames,
-      );
-      const stsProgramRootNames = combineRootNames(
+      const shouldDeferTypescriptView = prepareOptions.deferTypescriptView === true;
+      const projectedSoundscriptRootNames = soundscriptRootNames;
+      const stsProgramRootNames = soundscriptRootNames.length === 0 ? [] : combineRootNames(
         projectedSoundscriptRootNames,
         declarationRootNames,
       );
@@ -3877,10 +3692,6 @@ export function prepareProjectAnalysis(
           projectedDeclarationOverrides: new Map<string, string>(),
           units: [],
         };
-      const configFileParsingDiagnostics = getConfigFileParsingDiagnostics(
-        loadedConfig.diagnostics,
-        options.additionalRootNames,
-      );
       const soundscriptFileOverridesSignature = createFileOverrideSignature(
         options.fileOverrides,
         loadedConfig.isSoundscriptSourceFile,
@@ -3967,7 +3778,6 @@ export function prepareProjectAnalysis(
           { always: true },
         );
       })();
-      const shouldDeferTypescriptView = prepareOptions.deferTypescriptView === true;
       if (shouldDeferTypescriptView) {
         const canReuseLocalProjectedDeclarationOverrides = canReuseStsArtifacts &&
           reusableProject?.localProjectedDeclarationOverrides !== undefined;
@@ -4004,8 +3814,8 @@ export function prepareProjectAnalysis(
         applyMacroCacheStatsToMetadata(prepareMetadata, aggregateMacroCacheStats(preparedProject));
         return preparedProject;
       }
-      const needsSupplementalProjectionViews = typescriptRootNames.length > 0 ||
-        packageVerificationCacheProbe.misses.length > 0 ||
+      const needsSupplementalProjectionViews =
+        packageVerificationCacheProbe.misses.some((unit) => unit.policyRootNames.length > 0) ||
         (stsView !== null &&
           hasNonRootProjectedDeclarationCandidates(
             stsView.program,
@@ -4069,19 +3879,13 @@ export function prepareProjectAnalysis(
         localProjectedDeclarationOverrides,
         cachedPackageProjectedDeclarationOverrides,
       );
-      const typescriptReachablePackageSourceRootNames = projectedSoundscriptRootNames.filter(
-        (rootName) => isSupplementalPackageSourceCandidate(rootName, projectPackageJsonPath),
-      );
       const packageProjectedDeclarationRootNames = combineRootNames(
         collectProjectedDeclarationCandidateRootNamesFromPrograms(
           [stsView?.program],
           projectedDeclarationOverrides,
           projectPackageJsonPath,
         ),
-        combineRootNames(
-          typescriptReachablePackageSourceRootNames,
-          packageVerificationCacheProbe.misses.flatMap((unit) => unit.rootNames),
-        ),
+        packageVerificationCacheProbe.misses.flatMap((unit) => unit.policyRootNames),
       ).sort();
       const packageSourcePolicyContentSignature = packageProjectedDeclarationRootNames.length === 0
         ? ''
@@ -4108,44 +3912,6 @@ export function prepareProjectAnalysis(
           reusableProject.localProjectedDeclarationOverrides,
           projectedDeclarationOverrides,
         );
-      const reusableTsViewContentSignature = reusableProject
-        ? createPreparedViewProgramContentSignature(
-          reusableProject.tsView,
-          options.fileOverrides ?? new Map(),
-        )
-        : '';
-      const canReuseTsView = canReuseConfigArtifacts &&
-        rootNamesEqual(
-          reusableProject.tsView?.program.getRootFileNames().map(toSourceFileName) ?? [],
-          typescriptRootNames,
-        ) &&
-        reusableProject.typescriptViewContentSignature === reusableTsViewContentSignature &&
-        !projectedDeclarationOverridesDiffer(
-          reusableProject.localProjectedDeclarationOverrides,
-          projectedDeclarationOverrides,
-        );
-      const tsView = canReuseTsView ? reusableProject?.tsView ?? null : measureCheckerTiming(
-        'project.prepare.hostView',
-        {
-          projectionCount: localProjectedDeclarationOverrides?.size ?? 0,
-          rootCount: typescriptRootNames.length,
-        },
-        () =>
-          prepareHostAnalysisView(
-            options,
-            loadedConfig,
-            typescriptRootNames,
-            configFileParsingDiagnostics,
-            projectedDeclarationOverrides,
-            canReuseConfigArtifacts
-              ? reusableProject?.tsCompilerHostReuseState
-              : persistentTsCompilerHostReuseState,
-            canReuseConfigArtifacts ? reusableProject?.tsView?.program : undefined,
-            prepareOptions.persistentBuildInfoDirectory,
-          ),
-        { always: true },
-      );
-
       const preparedProject = {
         analyzeOptions: { ...options },
         configReuseSignature,
@@ -4201,12 +3967,11 @@ export function prepareProjectAnalysis(
         stsProgramRootNames,
         soundscriptRootNames,
         stsView,
-        tsCompilerHostReuseState: tsView?.preparedProgram.preparedHost.reuseState,
-        typescriptViewContentSignature: createPreparedViewProgramContentSignature(
-          tsView,
-          options.fileOverrides ?? new Map(),
-        ),
-        tsView,
+        tsCompilerHostReuseState: canReuseConfigArtifacts
+          ? reusableProject?.tsCompilerHostReuseState
+          : persistentTsCompilerHostReuseState,
+        typescriptViewContentSignature: '',
+        tsView: null,
       };
       applyMacroCacheStatsToMetadata(prepareMetadata, aggregateMacroCacheStats(preparedProject));
       return preparedProject;
@@ -4477,7 +4242,7 @@ function collectPreparedProjectDiagnosticPathsForFile(
     : [filePath];
 }
 
-function collectPreparedProjectCacheDependencyPathsForFile(
+export function collectPreparedProjectCacheDependencyPathsForFile(
   preparedProject: PreparedAnalysisProject,
   filePath: string,
 ): readonly string[] {

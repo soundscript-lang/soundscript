@@ -117,6 +117,7 @@ export type BuiltinExpandedProgram = BuiltinDiagnosticProgram;
 
 export interface CreateBuiltinExpandedProgramOptions extends CreatePreparedProgramOptions {
   allowSupplementalDiagnosticPrograms?: boolean;
+  macroExpansionRecursionLimit?: number;
   numericLoweringTarget?: NumericLoweringTarget;
 }
 
@@ -124,10 +125,12 @@ export interface CreateBuiltinDiagnosticProgramOptions
   extends CreateBuiltinExpandedProgramOptions {}
 
 export interface CreateBuiltinEmitProgramOptions extends CreatePreparedProgramOptions {
+  macroExpansionRecursionLimit?: number;
   numericLoweringTarget?: NumericLoweringTarget;
 }
 
 export interface CreateBuiltinRuntimeProgramOptions extends CreatePreparedProgramOptions {
+  macroExpansionRecursionLimit?: number;
   numericLoweringTarget?: NumericLoweringTarget;
 }
 
@@ -1260,6 +1263,7 @@ function createBuiltinProgramStageContext(
         getBuiltinMacroFactoriesBySpecifier(),
         getAlwaysAvailableBuiltinMacroDefinitions(),
         getAlwaysAvailableBuiltinMacroExports(preparedProgram),
+        { macroExpansionRecursionLimit: options.macroExpansionRecursionLimit },
       ),
     { always: true },
   );

@@ -153,6 +153,109 @@ Deno.test('project service reuses prepared sts-local analysis state across open-
   );
 });
 
+Deno.test('project service refreshes sts-local diagnostics when an imported TypeScript open document changes', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+          allowImportingTsExtensions: true,
+        },
+        include: ['src/**/*.ts', 'src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/helper.ts': 'export const helper = 1;\n',
+    'src/demo.sts':
+      "// #[interop]\nimport { helper } from './helper.ts';\nconst exact: number = helper;\n",
+  });
+
+  const session = new SessionState();
+  const demoPath = join(tempDirectory, 'src/demo.sts');
+  const helperPath = join(tempDirectory, 'src/helper.ts');
+  const demoUri = toFileUrl(demoPath).href;
+  const helperUri = toFileUrl(helperPath).href;
+  session.open({
+    uri: demoUri,
+    languageId: 'soundscript',
+    version: 1,
+    text: "// #[interop]\nimport { helper } from './helper.ts';\nconst exact: number = helper;\n",
+  });
+  session.open({
+    uri: helperUri,
+    languageId: 'typescript',
+    version: 1,
+    text: 'export const helper = 1;\n',
+  });
+
+  assertEquals(analyzeOpenDocument(demoUri, session).diagnostics, []);
+
+  session.update(helperUri, 2, 'export const helper = "wrong";\n');
+
+  assertEquals(
+    analyzeOpenDocument(demoUri, session).diagnostics.map((diagnostic) => [
+      diagnostic.code,
+      diagnostic.filePath,
+    ]),
+    [['TS2322', demoPath]],
+  );
+});
+
+Deno.test('project service keeps sts-local state when an unrelated TypeScript document opens', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+        },
+        include: ['src/**/*.ts', 'src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/demo.sts': 'export const value = 1;\n',
+    'src/unrelated.ts': 'export const unrelated = 1;\n',
+  });
+
+  const session = new SessionState();
+  const demoUri = toFileUrl(join(tempDirectory, 'src/demo.sts')).href;
+  const unrelatedUri = toFileUrl(join(tempDirectory, 'src/unrelated.ts')).href;
+  session.open({
+    uri: demoUri,
+    languageId: 'soundscript',
+    version: 1,
+    text: 'export const value = 1;\n',
+  });
+
+  const initialPreparedProject = getPreparedProjectForTest(demoUri, session, 'sts-local');
+  assert(initialPreparedProject !== null);
+
+  session.open({
+    uri: unrelatedUri,
+    languageId: 'typescript',
+    version: 1,
+    text: 'export const unrelated = 2;\n',
+  });
+
+  const preparedProjectAfterUnrelatedOpen = getPreparedProjectForTest(
+    demoUri,
+    session,
+    'sts-local',
+  );
+
+  assert(
+    Object.is(preparedProjectAfterUnrelatedOpen, initialPreparedProject),
+    'Expected sts-local context reuse after opening an unrelated TypeScript document.',
+  );
+});
+
 Deno.test('project service refreshes recursive referenced roots for full project diagnostics', async () => {
   const tempDirectory = await createTempProject({
     'app/tsconfig.json': JSON.stringify(

@@ -141,6 +141,81 @@ async function createPackageExportedMacroDriftWorkspace(): Promise<string> {
   return workspace;
 }
 
+async function createFunctionAdapterForwardingWorkspace(): Promise<string> {
+  const workspace = await Deno.makeTempDir({
+    prefix: 'soundscript-lsp-function-adapter-forwarding-',
+  });
+  await Deno.mkdir(join(workspace, 'src'), { recursive: true });
+  await writeInstalledStdlibPackage(workspace);
+  await writeWorkspaceFiles(workspace, {
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+          moduleResolution: 'Bundler',
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/index.sts': [
+      'import { auditedApply, auditedBind, auditedCall, pureCallback } from "./effects";',
+      '',
+      '// #[effects(forbid: [host])]',
+      'export function runBind(): number {',
+      '  return auditedBind(pureCallback, 1);',
+      '}',
+      '',
+      '// #[effects(forbid: [host])]',
+      'export function runCall(): number {',
+      '  return auditedCall(pureCallback, 1);',
+      '}',
+      '',
+      '// #[effects(forbid: [host])]',
+      'export function runApply(): number {',
+      '  return auditedApply(pureCallback, 1);',
+      '}',
+      '',
+    ].join('\n'),
+    'src/effects.sts': createFunctionAdapterForwardingEffectsSource(false),
+  });
+  return workspace;
+}
+
+function createFunctionAdapterForwardingEffectsSource(useFunctionAdapters: boolean): string {
+  return [
+    'export function pureCallback(value: number): number {',
+    '  return value + 1;',
+    '}',
+    '',
+    'export function auditedBind(callback: (value: number) => number, value: number): number {',
+    ...(useFunctionAdapters
+      ? [
+        '  const invoke = callback.bind(undefined);',
+        '  return invoke(value);',
+      ]
+      : [
+        '  return callback(value);',
+      ]),
+    '}',
+    '',
+    'export function auditedCall(callback: (value: number) => number, value: number): number {',
+    useFunctionAdapters ? '  return callback.call(undefined, value);' : '  return callback(value);',
+    '}',
+    '',
+    'export function auditedApply(callback: (value: number) => number, value: number): number {',
+    useFunctionAdapters
+      ? '  return callback.apply(undefined, [value]);'
+      : '  return callback(value);',
+    '}',
+    '',
+  ].join('\n');
+}
+
 function createUserDefinedTwiceMacroText(): string {
   return [
     "import { macroSignature, type InvocationSyntax } from 'sts:macros';",
@@ -10803,6 +10878,150 @@ Deno.test(
     assertEquals(consumerParams.diagnostics.map((diagnostic) => diagnostic.code), [
       'TS2322',
     ]);
+
+    await shutdownServer(client, startPromise);
+  },
+);
+
+Deno.test(
+  'LSP server refreshes package-exported macro helper drift from watched file changes',
+  async () => {
+    const workspace = await createPackageExportedMacroDriftWorkspace();
+    const { client, startPromise } = await initializeServer(workspace);
+
+    const consumerUri = `file://${workspace}/src/consumer.sts`;
+    const helperUri = `file://${workspace}/node_modules/sound-pkg/src/helper.macro.sts`;
+    const consumerText = [
+      'import { Foo } from "sound-pkg/api";',
+      'export const value: number = Foo();',
+      '',
+    ].join('\n');
+
+    await client.sendNotification('textDocument/didOpen', {
+      textDocument: {
+        uri: consumerUri,
+        languageId: 'soundscript',
+        version: 1,
+        text: consumerText,
+      },
+    });
+    const initialConsumerNotification = await withTimeout(
+      client.readNotification('textDocument/publishDiagnostics'),
+      250,
+      'Timed out waiting for initial watched-file consumer publishDiagnostics.',
+    );
+    const initialConsumerParams = initialConsumerNotification.params as {
+      diagnostics: Array<{ code: string }>;
+      uri: string;
+    };
+
+    assertEquals(initialConsumerParams.uri, consumerUri);
+    assertEquals(initialConsumerParams.diagnostics, []);
+
+    await Deno.writeTextFile(
+      join(workspace, 'node_modules/sound-pkg/src/helper.macro.sts'),
+      'export const helperExpression = \'"wrong"\';\n',
+    );
+
+    await client.sendNotification('workspace/didChangeWatchedFiles', {
+      changes: [{ uri: helperUri, type: 2 }],
+    });
+    const consumerNotification = await withTimeout(
+      client.readNotification('textDocument/publishDiagnostics'),
+      500,
+      'Timed out waiting for watched-file consumer publishDiagnostics after helper drift.',
+    );
+    const consumerParams = consumerNotification.params as {
+      diagnostics: Array<{ code: string }>;
+      uri: string;
+    };
+
+    assertEquals(consumerParams.uri, consumerUri);
+    assertEquals(consumerParams.diagnostics.map((diagnostic) => diagnostic.code), [
+      'TS2322',
+    ]);
+
+    await shutdownServer(client, startPromise);
+  },
+);
+
+Deno.test(
+  'LSP server refreshes Function adapter forwarding diagnostics from watched file changes',
+  async () => {
+    const workspace = await createFunctionAdapterForwardingWorkspace();
+    const { client, startPromise } = await initializeServer(workspace);
+
+    const indexUri = `file://${workspace}/src/index.sts`;
+    const effectsUri = `file://${workspace}/src/effects.sts`;
+    const indexText = [
+      'import { auditedApply, auditedBind, auditedCall, pureCallback } from "./effects";',
+      '',
+      '// #[effects(forbid: [host])]',
+      'export function runBind(): number {',
+      '  return auditedBind(pureCallback, 1);',
+      '}',
+      '',
+      '// #[effects(forbid: [host])]',
+      'export function runCall(): number {',
+      '  return auditedCall(pureCallback, 1);',
+      '}',
+      '',
+      '// #[effects(forbid: [host])]',
+      'export function runApply(): number {',
+      '  return auditedApply(pureCallback, 1);',
+      '}',
+      '',
+    ].join('\n');
+
+    await client.sendNotification('textDocument/didOpen', {
+      textDocument: {
+        uri: indexUri,
+        languageId: 'soundscript',
+        version: 1,
+        text: indexText,
+      },
+    });
+    const initialNotification = await withTimeout(
+      client.readNotification('textDocument/publishDiagnostics'),
+      250,
+      'Timed out waiting for initial Function adapter publishDiagnostics.',
+    );
+    const initialParams = initialNotification.params as {
+      diagnostics: Array<{ code: string }>;
+      uri: string;
+    };
+
+    assertEquals(initialParams.uri, indexUri);
+    assertEquals(initialParams.diagnostics, []);
+
+    await Deno.writeTextFile(
+      join(workspace, 'src/effects.sts'),
+      createFunctionAdapterForwardingEffectsSource(true),
+    );
+
+    await client.sendNotification('workspace/didChangeWatchedFiles', {
+      changes: [{ uri: effectsUri, type: 2 }],
+    });
+    const changedNotification = await withTimeout(
+      client.readNotification('textDocument/publishDiagnostics'),
+      500,
+      'Timed out waiting for watched-file Function adapter diagnostics.',
+    );
+    const changedParams = changedNotification.params as {
+      diagnostics: Array<{ code: string; data?: { metadata?: { primarySymbol?: string } } }>;
+      uri: string;
+    };
+
+    assertEquals(changedParams.uri, indexUri);
+    assertEquals(changedParams.diagnostics.map((diagnostic) => diagnostic.code), [
+      'SOUND1041',
+      'SOUND1041',
+      'SOUND1041',
+    ]);
+    assertEquals(
+      changedParams.diagnostics.map((diagnostic) => diagnostic.data?.metadata?.primarySymbol),
+      ['runBind', 'runCall', 'runApply'],
+    );
 
     await shutdownServer(client, startPromise);
   },

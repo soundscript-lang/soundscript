@@ -22,12 +22,9 @@ import {
 } from './transform.ts';
 import { collectRuntimeSemanticClosure } from './semantic_closure.ts';
 import {
-  createDeferredRuntimeExpansion,
   createPreparedRuntimeProgram,
   createSemanticRuntimeExpansion,
-  type DeferredRuntimeExpansion,
-  expandSemanticPlaceholdersOnDeferredSourceFile,
-  finalizeRuntimeExpandedSourceFile,
+  expandSemanticRuntimeSourceFile,
   type SemanticRuntimeExpansion,
 } from './runtime_macro_pipeline.ts';
 
@@ -42,8 +39,7 @@ interface TransformProjectContext {
 }
 
 interface TransformProjectSession {
-  deferredExpansion?: DeferredRuntimeExpansion;
-  macroModeHintsByFile: Map<string, { mode: 'deferred' | 'semantic'; sourceHash: string }>;
+  macroModeHintsByFile: Map<string, { sourceHash: string }>;
   preparedProgram?: PreparedProgram;
   preparedRoots: Set<string>;
   projectContext: TransformProjectContext;
@@ -54,7 +50,6 @@ interface TransformProjectSession {
   semanticClosureRootsBySignature: Map<string, readonly string[]>;
   semanticLastUsedSignature?: string;
   semanticExpansionsBySignature: Map<string, SemanticRuntimeExpansion>;
-  semanticRequiredSourceHashes: Map<string, string>;
 }
 
 export type OnDemandTransformMode =
@@ -370,66 +365,6 @@ function transpilePreparedSourceFile(
   };
 }
 
-function transpileDeferredExpandedSourceFile(
-  expansion: DeferredRuntimeExpansion,
-  fileName: string,
-  projectPath: string,
-  compilerOptions: ts.CompilerOptions,
-  runtimeTypeScriptSupport: ReturnType<typeof detectRuntimeTypeScriptSupport>,
-): OnDemandTransformResult {
-  const cachedArtifact = expansion.emittedArtifactsByFile.get(fileName);
-  if (cachedArtifact) {
-    return cachedArtifact as OnDemandTransformResult;
-  }
-
-  const result = measureCheckerTiming(
-    'runtime.onDemand.deferredEmit',
-    { fileName },
-    () => {
-      const sourceFile = expansion.expandedFiles.get(
-        expansion.preparedProgram.toProgramFileName(fileName),
-      );
-      if (!sourceFile) {
-        throw new Error(`Missing deferred expanded source file for ${fileName}.`);
-      }
-
-      const sourceText = ts.createPrinter().printFile(
-        finalizeRuntimeExpandedSourceFile(expansion.preparedProgram, sourceFile),
-      );
-      const artifact = runtimeTypeScriptSupport !== false &&
-          !runtimeRequiresJavaScriptFallback(sourceText, fileName)
-        ? emitTypeScriptModuleDirect(
-          fileName,
-          sourceText,
-          {
-            moduleSpecifierMode: 'preserve',
-            target: ts.ScriptTarget.ES2022,
-            jsxImportSource: compilerOptions.jsxImportSource,
-          },
-        )
-        : transpileTypeScriptModuleToEsm(
-          fileName,
-          `${fileName}.js`,
-          sourceText,
-          {
-            module: ts.ModuleKind.ES2022,
-            moduleSpecifierMode: 'preserve',
-            target: ts.ScriptTarget.ES2022,
-            jsxImportSource: compilerOptions.jsxImportSource,
-          },
-        );
-      return {
-        ...artifact,
-        projectPath,
-        transformMode: 'soundscript-deferred-macro' as const,
-      };
-    },
-    { always: true },
-  );
-  expansion.emittedArtifactsByFile.set(fileName, result);
-  return result;
-}
-
 export function createOnDemandTransformer(
   options: OnDemandTransformerOptions = {},
 ): SyncOnDemandTransformer {
@@ -480,7 +415,6 @@ export function createOnDemandTransformer(
       semanticEmittedArtifactsBySignature: new Map(),
       semanticClosureRootsBySignature: new Map(),
       semanticExpansionsBySignature: new Map(),
-      semanticRequiredSourceHashes: new Map(),
     };
     projectSessionsByPath.set(projectContext.projectPath, session);
     return session;
@@ -537,29 +471,9 @@ export function createOnDemandTransformer(
       [...session.preparedRoots],
       currentProgram,
     );
-    session.deferredExpansion?.dispose();
-    session.deferredExpansion = undefined;
     currentProgram?.dispose(false);
     session.preparedProgram = nextProgram;
     return nextProgram;
-  }
-
-  function ensureDeferredExpansionForPreparedProgram(
-    session: TransformProjectSession,
-  ): DeferredRuntimeExpansion {
-    const currentExpansion = session.deferredExpansion;
-    const preparedProgram = session.preparedProgram;
-    if (!preparedProgram) {
-      throw new Error('Missing prepared program for deferred runtime expansion.');
-    }
-    if (currentExpansion?.preparedProgram === preparedProgram) {
-      return currentExpansion;
-    }
-
-    const nextExpansion = createDeferredRuntimeExpansion(preparedProgram);
-    currentExpansion?.dispose();
-    session.deferredExpansion = nextExpansion;
-    return nextExpansion;
   }
 
   function transformModuleSync(fileName: string): OnDemandTransformResult {
@@ -623,7 +537,6 @@ export function createOnDemandTransformer(
 
         if (preparedFile.rewriteResult.macrosById.size === 0) {
           session.macroModeHintsByFile.delete(fileName);
-          session.semanticRequiredSourceHashes.delete(fileName);
           const result = transpilePreparedSourceFile(
             preparedProgram,
             fileName,
@@ -635,32 +548,7 @@ export function createOnDemandTransformer(
           return result;
         }
 
-        const knownSemanticSourceHash = session.semanticRequiredSourceHashes.get(fileName);
-        if (knownSemanticSourceHash !== undefined && knownSemanticSourceHash !== sourceHash) {
-          session.semanticRequiredSourceHashes.delete(fileName);
-        }
-
-        if (session.semanticRequiredSourceHashes.get(fileName) !== sourceHash) {
-          const deferredExpansion = ensureDeferredExpansionForPreparedProgram(session);
-          const semanticRequiredPlaceholders = deferredExpansion
-            .semanticRequiredPlaceholderIdsByFile
-            .get(preparedProgram.toProgramFileName(fileName));
-          if (!semanticRequiredPlaceholders || semanticRequiredPlaceholders.size === 0) {
-            session.macroModeHintsByFile.set(fileName, { mode: 'deferred', sourceHash });
-            session.semanticRequiredSourceHashes.delete(fileName);
-            return transpileDeferredExpandedSourceFile(
-              deferredExpansion,
-              fileName,
-              projectContext.projectPath,
-              projectContext.compilerOptions,
-              runtimeTypeScriptSupport,
-            );
-          }
-
-          session.macroModeHintsByFile.set(fileName, { mode: 'semantic', sourceHash });
-          session.semanticRequiredSourceHashes.set(fileName, sourceHash);
-        }
-
+        session.macroModeHintsByFile.set(fileName, { sourceHash });
         const semanticRuntime = ensureSemanticRuntimeExpansionForFile(
           session,
           [fileName],
@@ -680,8 +568,7 @@ export function createOnDemandTransformer(
           return cachedSemanticArtifact.result;
         }
 
-        const semanticSourceFile = expandSemanticPlaceholdersOnDeferredSourceFile(
-          ensureDeferredExpansionForPreparedProgram(session),
+        const semanticSourceFile = expandSemanticRuntimeSourceFile(
           semanticRuntime.expansion,
           fileName,
         );

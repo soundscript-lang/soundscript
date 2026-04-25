@@ -4,6 +4,7 @@ import { createAnnotationLookup } from '../language/annotation_syntax.ts';
 import { fromFileUrl } from '../platform/path.ts';
 import type {
   MacroAnnotation,
+  MacroClassConstructorSyntax,
   MacroClassDeclSyntax,
   MacroClassFieldSyntax,
   MacroDefinition,
@@ -21,6 +22,7 @@ import { macroSignature } from './macro_api.ts';
 import { attachMacroFactoryMetadata } from './macro_api_internal.ts';
 import { inferDeriveHelperMode } from './derive_helper_mode.ts';
 import { semanticLookupNodeForContext } from './macro_context_internal.ts';
+import { MacroError } from './macro_errors.ts';
 import { getInternalChecker } from './macro_type_internal.ts';
 import { getHostDeclaration, getHostNode } from './macro_syntax_internal.ts';
 import {
@@ -264,7 +266,9 @@ function objectProjectionText(fields: readonly ObjectProjectionField[]): string 
     ${
     fields.map((field) =>
       field.optional
-        ? `...(${field.valueText} === undefined ? {} : { ${propertyKeyText(field.keyName)}: ${field.valueText} })`
+        ? `...(${field.valueText} === undefined ? {} : { ${
+          propertyKeyText(field.keyName)
+        }: ${field.valueText} })`
         : `${propertyKeyText(field.keyName)}: ${field.valueText}`
     ).join(',\n')
   }
@@ -1739,6 +1743,36 @@ function recursiveDeclarationEncodeMode(
   macroName: 'codec' | 'encode' = 'encode',
 ): 'async' | 'sync' {
   return recursiveDeclarationEncodeModeInternal(ctx, declaration, macroName, new Map(), new Set());
+}
+
+function tryRecursiveDeclarationDecodeMode(
+  ctx: DeriveContext,
+  declaration: MacroClassDeclSyntax | MacroInterfaceDeclSyntax | MacroTypeAliasDeclSyntax,
+  macroName: 'codec' | 'decode',
+): 'async' | 'sync' | null {
+  try {
+    return recursiveDeclarationDecodeMode(ctx, declaration, macroName);
+  } catch (error) {
+    if (error instanceof MacroError) {
+      return null;
+    }
+    throw error;
+  }
+}
+
+function tryRecursiveDeclarationEncodeMode(
+  ctx: DeriveContext,
+  declaration: MacroClassDeclSyntax | MacroInterfaceDeclSyntax | MacroTypeAliasDeclSyntax,
+  macroName: 'codec' | 'encode' = 'encode',
+): 'async' | 'sync' | null {
+  try {
+    return recursiveDeclarationEncodeMode(ctx, declaration, macroName);
+  } catch (error) {
+    if (error instanceof MacroError) {
+      return null;
+    }
+    throw error;
+  }
 }
 
 function localDeclarationForNamedReference(
@@ -3797,18 +3831,20 @@ function classFactoryMetadataEffectText(
   declaration: MacroClassDeclSyntax,
   macroName: 'codec' | 'decode',
   typeName: string,
+  instantiateText: string,
 ): string {
   const annotation = findAnnotation(
     resolvedDeclarationAnnotations(ctx, declaration),
     `${macroName}.factory`,
   );
   if (!annotation) {
+    const helperText = instantiateText.split(CLASS_DECODE_VALUE_PLACEHOLDER).join('value');
     return `{
       kind: 'opaque',
       effect: 'factory',
       async: false,
       helperName: ${JSON.stringify(typeName)},
-      helperText: ${JSON.stringify(`Object.assign(new ${typeName}(), value)`)},
+      helperText: ${JSON.stringify(helperText)},
     }`;
   }
   const helperIdentifier = annotationIdentifierArgument(annotation);
@@ -4678,11 +4714,12 @@ function nestedDecodeHelperTextFromFields(
   const projectionText = objectProjectionText(decodedFields.map((field) => ({
     keyName: field.localName,
     optional: field.optional,
-    valueText: decodeDefaultProjectionText(propertyAccessText('value', field.wireName), field.defaultText),
+    valueText: decodeDefaultProjectionText(
+      propertyAccessText('value', field.wireName),
+      field.defaultText,
+    ),
   })));
-  const helperText = isIdentityProjection
-    ? `${decodeObject}(${shapeText})`
-    : `${decodeMap}(
+  const helperText = isIdentityProjection ? `${decodeObject}(${shapeText})` : `${decodeMap}(
     ${decodeObject}(${shapeText}),
     (value) => ${projectionText},
   )`;
@@ -4716,9 +4753,7 @@ function nestedEncodeHelperTextFromFields(
     optional: field.optional,
     valueText: propertyAccessText('value', field.localName),
   })));
-  const helperText = isIdentityProjection
-    ? `${encodeObject}(${shapeText})`
-    : `${encodeContramap}(
+  const helperText = isIdentityProjection ? `${encodeObject}(${shapeText})` : `${encodeContramap}(
     ${encodeObject}(${shapeText}),
     (value) => ${projectionText},
   )`;
@@ -4872,7 +4907,10 @@ function nestedDecodeHelperText(
   const projectionText = objectProjectionText(fields.map((field) => ({
     keyName: field.localName,
     optional: field.optional,
-    valueText: decodeDefaultProjectionText(propertyAccessText('value', field.wireName), field.defaultText),
+    valueText: decodeDefaultProjectionText(
+      propertyAccessText('value', field.wireName),
+      field.defaultText,
+    ),
   })));
   const helperText = isIdentityProjection ? `${decodeObject}(${shapeText})` : `${decodeMap}(
     ${decodeObject}(${shapeText}),
@@ -5194,10 +5232,59 @@ function fieldFromDecodeClassField(
   };
 }
 
-function classHasConstructorParameters(declaration: MacroClassDeclSyntax): boolean {
-  return declaration.members().some((member) =>
+function classConstructorWithParameters(
+  declaration: MacroClassDeclSyntax,
+): MacroClassConstructorSyntax | null {
+  const constructors = declaration.members().filter((
+    member,
+  ): member is MacroClassConstructorSyntax =>
     member.memberKind === 'constructor' && member.parameters.length > 0
   );
+  return constructors.find((constructor) => constructor.body() !== null) ?? constructors[0] ?? null;
+}
+
+function classConstructorParameterNames(
+  constructor: MacroClassConstructorSyntax,
+): readonly string[] | null {
+  const names: string[] = [];
+  for (const parameter of constructor.parameters) {
+    if (
+      parameter.name === null || parameter.isRest() ||
+      parameter.bindingIdentifiers().length !== 1
+    ) {
+      return null;
+    }
+    names.push(parameter.name);
+  }
+  return names;
+}
+
+function classConstructorParametersMatchFields(
+  parameterNames: readonly string[],
+  fields: readonly { readonly localName: string }[],
+): boolean {
+  if (parameterNames.length !== fields.length) {
+    return false;
+  }
+  const parameterNameSet = new Set(parameterNames);
+  if (parameterNameSet.size !== parameterNames.length) {
+    return false;
+  }
+  const fieldNameSet = new Set(fields.map((field) => field.localName));
+  return parameterNames.every((parameterName) => fieldNameSet.has(parameterName));
+}
+
+function classDecodeProjectionText(instantiateText: string, projectionText: string): string {
+  const occurrenceCount = instantiateText.split(CLASS_DECODE_VALUE_PLACEHOLDER).length - 1;
+  if (occurrenceCount <= 1) {
+    return `(${instantiateText.replace(CLASS_DECODE_VALUE_PLACEHOLDER, projectionText)})`;
+  }
+
+  const projectedValueName = '__sts_construct_value';
+  return `(() => {
+    const ${projectedValueName} = ${projectionText};
+    return ${instantiateText.split(CLASS_DECODE_VALUE_PLACEHOLDER).join(projectedValueName)};
+  })()`;
 }
 
 function classifySelfStaticHelper(
@@ -5284,6 +5371,7 @@ function classDecodeInstantiateText(
   declaration: MacroClassDeclSyntax,
   macroName: 'codec' | 'decode',
   typeName: string,
+  fields: readonly { readonly localName: string }[],
 ): string {
   const factoryAnnotation = findAnnotation(
     ctx.syntax.annotations(declaration),
@@ -5332,11 +5420,23 @@ function classDecodeInstantiateText(
     return `${factoryIdentifier}(${CLASS_DECODE_VALUE_PLACEHOLDER})`;
   }
 
-  if (classHasConstructorParameters(declaration)) {
-    ctx.error(
-      `${macroName} class support in v1 requires a constructor with no parameters.`,
-      declaration,
-    );
+  const constructor = classConstructorWithParameters(declaration);
+  if (constructor) {
+    const parameterNames = classConstructorParameterNames(constructor);
+    if (
+      parameterNames === null ||
+      !classConstructorParametersMatchFields(parameterNames, fields)
+    ) {
+      ctx.error(
+        `${macroName} class constructor parameters must match decoded class fields in v1.`,
+        constructor,
+      );
+    }
+    return `new ${typeName}(${
+      parameterNames.map((parameterName) =>
+        propertyAccessText(CLASS_DECODE_VALUE_PLACEHOLDER, parameterName)
+      ).join(', ')
+    })`;
   }
 
   return `Object.assign(new ${typeName}(), ${CLASS_DECODE_VALUE_PLACEHOLDER})`;
@@ -5357,12 +5457,19 @@ function collectDecodeFields(
       `decode currently requires named ${shape.declarationKind} declarations.`,
       declaration,
     );
+  const fields = shape.fields.map((field) =>
+    decodeFieldFromReflectedShape(ctx, field, typeName, declaration)
+  );
   return {
-    fields: shape.fields.map((field) =>
-      decodeFieldFromReflectedShape(ctx, field, typeName, declaration)
-    ),
+    fields,
     instantiateText: decoded.caseName === 'class'
-      ? classDecodeInstantiateText(ctx, declaration as MacroClassDeclSyntax, 'decode', typeName)
+      ? classDecodeInstantiateText(
+        ctx,
+        declaration as MacroClassDeclSyntax,
+        'decode',
+        typeName,
+        fields,
+      )
       : null,
     typeName,
   };
@@ -5723,12 +5830,19 @@ function collectCodecFields(
   const shape = objectLikeDeclarationShape(ctx, declaration, 'codec');
   const typeName = shape.name ??
     ctx.error(`codec currently requires named ${shape.declarationKind} declarations.`, declaration);
+  const fields = shape.fields.map((field) =>
+    codecFieldFromReflectedShape(ctx, field, typeName, declaration)
+  );
   return {
-    fields: shape.fields.map((field) =>
-      codecFieldFromReflectedShape(ctx, field, typeName, declaration)
-    ),
+    fields,
     instantiateText: decoded.caseName === 'class'
-      ? classDecodeInstantiateText(ctx, declaration as MacroClassDeclSyntax, 'codec', typeName)
+      ? classDecodeInstantiateText(
+        ctx,
+        declaration as MacroClassDeclSyntax,
+        'codec',
+        typeName,
+        fields,
+      )
       : null,
     typeName,
   };
@@ -6569,7 +6683,7 @@ export function decode(): MacroDefinition<typeof DECODE_SIGNATURE> {
       })));
       const finalProjectionText = instantiateText === null
         ? projectionText
-        : `(${instantiateText.replace(CLASS_DECODE_VALUE_PLACEHOLDER, projectionText)})`;
+        : classDecodeProjectionText(instantiateText, projectionText);
       const objectCallText = `${object}(${shapeText}${
         objectPolicyText ? `, { unknownKeys: ${objectPolicyText} }` : ''
       })`;
@@ -6587,6 +6701,11 @@ export function decode(): MacroDefinition<typeof DECODE_SIGNATURE> {
               decoded.args.target as MacroClassDeclSyntax,
               'decode',
               typeName,
+              instantiateText ??
+                ctx.error(
+                  'Internal error: class decoder is missing construction text.',
+                  decoded.args.target,
+                ),
             ),
           }
           : {},
@@ -6645,9 +6764,21 @@ export function decode(): MacroDefinition<typeof DECODE_SIGNATURE> {
           `,
         );
       }
-      return ctx.output.stmt(
-        ctx.quote.stmt`
-          export const ${companionName} = ${namedDecoderText};
+      const decodeMode = tryRecursiveDeclarationDecodeMode(ctx, decoded.args.target, 'decode');
+      if (!decodeMode) {
+        return ctx.output.stmt(
+          ctx.quote.stmt`
+            export const ${companionName} = ${namedDecoderText};
+          `,
+        );
+      }
+      const decoderTypeAliasText = decodeMode === 'sync'
+        ? `type ${recursiveDecoderTypeAliasName} = import('sts:decode').Decoder<${typeName}>;`
+        : `type ${recursiveDecoderTypeAliasName} = import('sts:decode').Decoder<${typeName}, unknown, "async">;`;
+      return ctx.output.stmts(
+        ctx.quote.stmts`
+          ${decoderTypeAliasText}
+          export const ${companionName} = ${namedDecoderText} as unknown as ${recursiveDecoderTypeAliasName};
         `,
       );
     },
@@ -6836,9 +6967,29 @@ export function encode(): MacroDefinition<typeof DECODE_SIGNATURE> {
           `,
         );
       }
-      return ctx.output.stmt(
-        ctx.quote.stmt`
-          export const ${companionName} = ${namedEncoderText};
+      const encodeMode = tryRecursiveDeclarationEncodeMode(ctx, decoded.args.target, 'encode');
+      if (!encodeMode) {
+        return ctx.output.stmt(
+          ctx.quote.stmt`
+            export const ${companionName} = ${namedEncoderText};
+          `,
+        );
+      }
+      const encodedAliasText = recursiveEncodedObjectTypeAliasText(
+        ctx,
+        decoded.args.target,
+        typeName,
+        'encode',
+        recursiveEncodedAliasName,
+      ) ?? `import('sts:json').JsonLikeValue`;
+      const encoderTypeAliasText = encodeMode === 'sync'
+        ? `type ${recursiveEncoderTypeAliasName} = import('sts:encode').Encoder<${typeName}, ${recursiveEncodedAliasName}>;`
+        : `type ${recursiveEncoderTypeAliasName} = import('sts:encode').Encoder<${typeName}, ${recursiveEncodedAliasName}, unknown, "async">;`;
+      return ctx.output.stmts(
+        ctx.quote.stmts`
+          type ${recursiveEncodedAliasName} = ${encodedAliasText};
+          ${encoderTypeAliasText}
+          export const ${companionName} = ${namedEncoderText} as unknown as ${recursiveEncoderTypeAliasName};
         `,
       );
     },
@@ -7016,7 +7167,7 @@ export function codec(): MacroDefinition<typeof DECODE_SIGNATURE> {
       })));
       const finalDecodeProjectionText = instantiateText === null
         ? decodeProjectionText
-        : `(${instantiateText.replace(CLASS_DECODE_VALUE_PLACEHOLDER, decodeProjectionText)})`;
+        : classDecodeProjectionText(instantiateText, decodeProjectionText);
 
       const encodeShapeText = fields.length === 0 ? '{}' : `{
             ${
@@ -7053,6 +7204,11 @@ export function codec(): MacroDefinition<typeof DECODE_SIGNATURE> {
               decoded.args.target as MacroClassDeclSyntax,
               'codec',
               typeName,
+              instantiateText ??
+                ctx.error(
+                  'Internal error: class codec is missing construction text.',
+                  decoded.args.target,
+                ),
             ),
           }
           : {},
@@ -7179,9 +7335,36 @@ export function codec(): MacroDefinition<typeof DECODE_SIGNATURE> {
           `,
         );
       }
-      return ctx.output.stmt(
-        ctx.quote.stmt`
-          export const ${companionName} = ${namedCodecText};
+      const decodeMode = tryRecursiveDeclarationDecodeMode(ctx, decoded.args.target, 'codec');
+      const encodeMode = tryRecursiveDeclarationEncodeMode(ctx, decoded.args.target, 'codec');
+      if (!decodeMode || !encodeMode) {
+        return ctx.output.stmt(
+          ctx.quote.stmt`
+            export const ${companionName} = ${namedCodecText};
+          `,
+        );
+      }
+      const encodedAliasText = recursiveEncodedObjectTypeAliasText(
+        ctx,
+        decoded.args.target,
+        typeName,
+        'codec',
+        recursiveEncodedAliasName,
+      ) ?? `import('sts:json').JsonLikeValue`;
+      const codecDecodeErrorTypeText = decodeMode === 'sync'
+        ? `import('sts:decode').DecodeFailure`
+        : 'unknown';
+      const codecEncodeErrorTypeText = encodeMode === 'sync'
+        ? `import('sts:encode').EncodeFailure`
+        : 'unknown';
+      const codecTypeAliasText = decodeMode === 'sync' && encodeMode === 'sync'
+        ? `type ${recursiveCodecTypeAliasName} = import('sts:codec').Codec<${typeName}, ${recursiveEncodedAliasName}>;`
+        : `type ${recursiveCodecTypeAliasName} = import('sts:codec').Codec<${typeName}, ${recursiveEncodedAliasName}, ${codecDecodeErrorTypeText}, ${codecEncodeErrorTypeText}, "${decodeMode}", "${encodeMode}">;`;
+      return ctx.output.stmts(
+        ctx.quote.stmts`
+          type ${recursiveEncodedAliasName} = ${encodedAliasText};
+          ${codecTypeAliasText}
+          export const ${companionName} = ${namedCodecText} as unknown as ${recursiveCodecTypeAliasName};
         `,
       );
     },

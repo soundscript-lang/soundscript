@@ -4,6 +4,7 @@ import ts from 'typescript';
 import type { MergedDiagnostic } from '../checker/diagnostics.ts';
 import {
   analyzePreparedProjectForFile,
+  collectPreparedProjectCacheDependencyPathsForFile,
   getPreparedAnalysisViewForFile,
   IncrementalProjectSession,
   type PreparedAnalysisProject,
@@ -221,6 +222,7 @@ interface CachedProjectContext {
   analysisSession: IncrementalProjectSession;
   documentsKey: string;
   mode: 'full' | 'sts-local';
+  stsDependencyDocumentsKeys: Map<string, string>;
   stsDocumentsKey: string;
   preparedProject: PreparedAnalysisProject;
 }
@@ -243,6 +245,22 @@ function getProjectContextCache(session: SessionState): Map<string, CachedProjec
   }
 
   return cache;
+}
+
+export function invalidateProjectContexts(session: SessionState): void {
+  const cache = projectContextCacheBySession.get(session);
+  if (!cache) {
+    return;
+  }
+
+  const sessions = new Set<IncrementalProjectSession>();
+  for (const context of cache.values()) {
+    sessions.add(context.analysisSession);
+  }
+  for (const analysisSession of sessions) {
+    analysisSession.dispose();
+  }
+  cache.clear();
 }
 
 function projectContextCacheKey(projectPath: string, mode: 'full' | 'sts-local'): string {
@@ -344,6 +362,7 @@ function toFileOverrideMap(documents: readonly OpenDocument[]): ReadonlyMap<stri
 function collectAdditionalRootNames(
   projectPath: string,
   documents: readonly OpenDocument[],
+  includeFilePath: (filePath: string) => boolean = () => true,
 ): readonly string[] {
   const projectDirectory = dirname(projectPath);
   return documents
@@ -356,7 +375,7 @@ function collectAdditionalRootNames(
       const withTrailingSlash = projectDirectory.endsWith('/')
         ? projectDirectory
         : `${projectDirectory}/`;
-      return filePath.startsWith(withTrailingSlash);
+      return filePath.startsWith(withTrailingSlash) && includeFilePath(filePath);
     })
     .sort();
 }
@@ -404,6 +423,29 @@ function createStsDocumentsKey(
     .join('|');
 }
 
+function createOpenDocumentKeyForPaths(
+  documents: readonly OpenDocument[],
+  filePaths: readonly string[],
+): string {
+  const pathSet = new Set(filePaths.map((filePath) => ts.sys.resolvePath(filePath)));
+  return documents
+    .filter((document) => pathSet.has(ts.sys.resolvePath(fromFileUrl(document.uri))))
+    .map((document) => `${document.uri}:${document.version}`)
+    .sort()
+    .join('|');
+}
+
+function createStsDependencyDocumentsKey(
+  preparedProject: PreparedAnalysisProject,
+  filePath: string,
+  documents: readonly OpenDocument[],
+): string {
+  return createOpenDocumentKeyForPaths(
+    documents,
+    collectPreparedProjectCacheDependencyPathsForFile(preparedProject, filePath),
+  );
+}
+
 function getProjectContext(
   filePath: string,
   session: SessionState,
@@ -415,15 +457,19 @@ function getProjectContext(
   }
 
   const documents = session.getAll();
-  const additionalRootNames = collectAdditionalRootNames(projectPath, documents);
   const loadedConfig = loadConfig(projectPath);
   const isProjectSoundscriptFile = loadedConfig.isSoundscriptSourceFile;
-  const documentsKey = createProjectDocumentsKey(projectPath, documents);
-  const stsDocumentsKey = createStsDocumentsKey(projectPath, documents, isProjectSoundscriptFile);
   const projectContextCache = getProjectContextCache(session);
   const mode = requestedMode === 'sts-local' && isProjectSoundscriptFile(filePath)
     ? 'sts-local'
     : 'full';
+  const additionalRootNames = collectAdditionalRootNames(
+    projectPath,
+    documents,
+    mode === 'sts-local' ? isProjectSoundscriptFile : undefined,
+  );
+  const documentsKey = createProjectDocumentsKey(projectPath, documents);
+  const stsDocumentsKey = createStsDocumentsKey(projectPath, documents, isProjectSoundscriptFile);
   const analyzeReferences = mode === 'full' &&
     (loadedConfig.commandLine.projectReferences?.length ?? 0) > 0;
   const cached = projectContextCache.get(projectContextCacheKey(projectPath, mode));
@@ -441,10 +487,26 @@ function getProjectContext(
   const canReuseCachedForFull = cached !== undefined &&
     rootsMatch &&
     cached.documentsKey === documentsKey;
+  const cachedStsDependencyDocumentsKey = cached && rootsMatch &&
+      cached.stsDocumentsKey === stsDocumentsKey
+    ? createStsDependencyDocumentsKey(cached.preparedProject, filePath, documents)
+    : null;
+  const shouldRebuildStsLocalFresh = mode === 'sts-local' &&
+    cached !== undefined &&
+    rootsMatch &&
+    cached.stsDocumentsKey === stsDocumentsKey &&
+    cached.stsDependencyDocumentsKeys.get(filePath) !== cachedStsDependencyDocumentsKey;
   const canReuseCachedForStsLocal = cached !== undefined &&
     rootsMatch &&
-    cached.stsDocumentsKey === stsDocumentsKey;
-  const reusableContext = rootsMatch ? cached : alternateRootsMatch ? alternateCached : undefined;
+    cached.stsDocumentsKey === stsDocumentsKey &&
+    cached.stsDependencyDocumentsKeys.get(filePath) === cachedStsDependencyDocumentsKey;
+  const reusableContext = shouldRebuildStsLocalFresh
+    ? undefined
+    : rootsMatch
+    ? cached
+    : alternateRootsMatch
+    ? alternateCached
+    : undefined;
   const canReusePreparedProject = reusableContext !== undefined;
   if (
     (mode === 'full' && canReuseCachedForFull && !analyzeReferences) ||
@@ -454,12 +516,15 @@ function getProjectContext(
   }
 
   const prepareStart = performance.now();
-  const analysisSession = cached?.analysisSession ?? new IncrementalProjectSession();
+  const analysisSession = shouldRebuildStsLocalFresh
+    ? new IncrementalProjectSession()
+    : cached?.analysisSession ?? new IncrementalProjectSession();
   const context: CachedProjectContext = {
     additionalRootNames,
     analysisSession,
     documentsKey,
     mode,
+    stsDependencyDocumentsKeys: new Map(),
     stsDocumentsKey,
     preparedProject: analysisSession.prepare(
       {
@@ -473,6 +538,12 @@ function getProjectContext(
       canReusePreparedProject ? reusableContext.preparedProject : undefined,
     ),
   };
+  if (mode === 'sts-local') {
+    context.stsDependencyDocumentsKeys.set(
+      filePath,
+      createStsDependencyDocumentsKey(context.preparedProject, filePath, documents),
+    );
+  }
   const macroCacheStats = aggregateMacroCacheStats(context.preparedProject);
   logLspTiming(
     'project.prepare',
