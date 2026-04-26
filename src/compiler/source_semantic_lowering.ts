@@ -72,7 +72,9 @@ interface SourceSemanticModuleLoweringState {
 
 interface FunctionLoweringContext {
   functionName: string;
+  currentResultType?: SemanticTypeIR;
   functionResultArrayLocals: Map<string, SourceSemanticArrayLocal>;
+  functionParamTypes: Map<string, readonly SemanticTypeIR[]>;
   functionResultRepresentations: Map<string, CompilerValueType>;
   functionResultTypes: Map<string, SemanticTypeIR>;
   localRepresentations: Map<string, CompilerValueType>;
@@ -86,6 +88,7 @@ interface FunctionLoweringContext {
   moduleState: SourceSemanticModuleLoweringState;
   objectLayoutsByKey: Map<string, SemanticObjectLayoutIR>;
   objectLocals: Map<string, SourceSemanticObjectLocal>;
+  unionLocals: Map<string, SemanticTypeIR>;
   classesByName: ReadonlyMap<string, SourceClassIR>;
   pendingStatements: SemanticStatementIR[];
   runtimeFamilies: Set<SemanticRuntimeFamilyId>;
@@ -167,6 +170,122 @@ function representationForSemanticType(type: SemanticTypeIR): CompilerValueType 
       const exhaustiveCheck: never = type;
       return exhaustiveCheck;
     }
+  }
+}
+
+function isFiniteUnionSemanticType(type: SemanticTypeIR | undefined): boolean {
+  return type?.kind === 'finite_union' || type?.kind === 'union';
+}
+
+function taggedUnionExpressionForValue(
+  value: SemanticExpressionIR,
+  context: FunctionLoweringContext,
+): SemanticExpressionIR | undefined {
+  if (value.representation === 'tagged_ref') {
+    context.runtimeFamilies.add('finite_union');
+    return value;
+  }
+  context.runtimeFamilies.add('finite_union');
+  switch (value.representation) {
+    case 'f64':
+      return { kind: 'tag_number', value, representation: 'tagged_ref' };
+    case 'i32':
+      return { kind: 'tag_boolean', value, representation: 'tagged_ref' };
+    case 'owned_string_ref':
+      context.runtimeFamilies.add('string');
+      return { kind: 'tag_string', value, representation: 'tagged_ref' };
+    case 'symbol_ref':
+      context.runtimeFamilies.add('symbol');
+      return { kind: 'tag_symbol', value, representation: 'tagged_ref' };
+    case 'bigint_ref':
+      context.runtimeFamilies.add('bigint');
+      return { kind: 'tag_bigint', value, representation: 'tagged_ref' };
+    case 'heap_ref':
+    case 'owned_number_array_ref':
+    case 'owned_boolean_array_ref':
+    case 'owned_array_ref':
+    case 'owned_heap_array_ref':
+    case 'owned_tagged_array_ref':
+    case 'closure_ref':
+    case 'class_constructor_ref':
+      return { kind: 'tag_heap_object', value, representation: 'tagged_ref' };
+    default:
+      return undefined;
+  }
+}
+
+function untagUnionExpressionForRepresentation(
+  value: SemanticExpressionIR,
+  representation: CompilerValueType,
+  context: FunctionLoweringContext,
+): SemanticExpressionIR | undefined {
+  if (value.representation !== 'tagged_ref') {
+    return value.representation === representation ? value : undefined;
+  }
+  context.runtimeFamilies.add('finite_union');
+  switch (representation) {
+    case 'f64':
+      return { kind: 'untag_number', value, representation: 'f64' };
+    case 'i32':
+      return { kind: 'untag_boolean', value, representation: 'i32' };
+    case 'owned_string_ref':
+      context.runtimeFamilies.add('string');
+      return { kind: 'untag_owned_string', value, representation: 'owned_string_ref' };
+    case 'symbol_ref':
+      context.runtimeFamilies.add('symbol');
+      return { kind: 'untag_symbol', value, representation: 'symbol_ref' };
+    case 'bigint_ref':
+      context.runtimeFamilies.add('bigint');
+      return { kind: 'untag_bigint', value, representation: 'bigint_ref' };
+    case 'heap_ref':
+    case 'owned_number_array_ref':
+    case 'owned_boolean_array_ref':
+    case 'owned_array_ref':
+    case 'owned_heap_array_ref':
+    case 'owned_tagged_array_ref':
+    case 'closure_ref':
+    case 'class_constructor_ref':
+      return { kind: 'untag_heap_object', value, representation };
+    default:
+      return undefined;
+  }
+}
+
+function adaptExpressionToSemanticType(
+  value: SemanticExpressionIR,
+  targetType: SemanticTypeIR | undefined,
+  context: FunctionLoweringContext,
+): SemanticExpressionIR | undefined {
+  if (!targetType) {
+    return value;
+  }
+  if (isFiniteUnionSemanticType(targetType)) {
+    return taggedUnionExpressionForValue(value, context);
+  }
+  const targetRepresentation = representationForSemanticType(targetType);
+  if (value.representation === targetRepresentation) {
+    return value;
+  }
+  return untagUnionExpressionForRepresentation(value, targetRepresentation, context);
+}
+
+function unionTagForTypeofLiteral(text: string): number | undefined {
+  const unquoted = text.length >= 2 ? text.slice(1, -1) : text;
+  switch (unquoted) {
+    case 'number':
+      return 2;
+    case 'boolean':
+      return 1;
+    case 'string':
+      return 3;
+    case 'symbol':
+      return 5;
+    case 'bigint':
+      return 7;
+    case 'object':
+      return 4;
+    default:
+      return undefined;
   }
 }
 
@@ -339,6 +458,155 @@ function lowerTypeofExpression(
     literalId: getStringLiteralId(context, JSON.stringify(typeName)),
     representation: 'owned_string_ref',
   };
+}
+
+function sourceExpressionHasTaggedUnionRepresentation(
+  expression: SourceExpressionIR,
+  context: FunctionLoweringContext,
+): boolean {
+  switch (expression.kind) {
+    case 'identifier':
+      return context.localRepresentations.get(expression.name) === 'tagged_ref' ||
+        context.unionLocals.has(expression.name);
+    case 'call_expression':
+      return expression.callee.kind === 'identifier' &&
+        context.functionResultRepresentations.get(expression.callee.name) === 'tagged_ref';
+    case 'conditional_expression':
+      return sourceExpressionHasTaggedUnionRepresentation(expression.consequent, context) &&
+        sourceExpressionHasTaggedUnionRepresentation(expression.alternate, context);
+    default:
+      return false;
+  }
+}
+
+function lowerUnionBinaryExpression(
+  expression: Extract<SourceExpressionIR, { kind: 'binary_expression' }>,
+  context: FunctionLoweringContext,
+): SemanticExpressionIR | undefined {
+  if (expression.operator !== '===' && expression.operator !== '!==') {
+    return undefined;
+  }
+  const negated = expression.operator === '!==';
+  if (
+    expression.left.kind === 'unary_expression' &&
+    expression.left.operator === 'typeof' &&
+    expression.right.kind === 'literal' &&
+    expression.right.literalKind === 'string'
+  ) {
+    const tag = unionTagForTypeofLiteral(expression.right.text);
+    if (tag === undefined) {
+      return undefined;
+    }
+    if (!sourceExpressionHasTaggedUnionRepresentation(expression.left.operand, context)) {
+      return undefined;
+    }
+    const value = lowerExpression(expression.left.operand, context);
+    if (value.representation !== 'tagged_ref') {
+      return undefined;
+    }
+    context.runtimeFamilies.add('finite_union');
+    return { kind: 'tagged_has_tag', value, tag, negated, representation: 'i32' };
+  }
+  if (
+    expression.right.kind === 'unary_expression' &&
+    expression.right.operator === 'typeof' &&
+    expression.left.kind === 'literal' &&
+    expression.left.literalKind === 'string'
+  ) {
+    const tag = unionTagForTypeofLiteral(expression.left.text);
+    if (tag === undefined) {
+      return undefined;
+    }
+    if (!sourceExpressionHasTaggedUnionRepresentation(expression.right.operand, context)) {
+      return undefined;
+    }
+    const value = lowerExpression(expression.right.operand, context);
+    if (value.representation !== 'tagged_ref') {
+      return undefined;
+    }
+    context.runtimeFamilies.add('finite_union');
+    return { kind: 'tagged_has_tag', value, tag, negated, representation: 'i32' };
+  }
+  if (
+    expression.right.kind === 'literal' &&
+    expression.right.literalKind === 'null' &&
+    sourceExpressionHasTaggedUnionRepresentation(expression.left, context)
+  ) {
+    const value = lowerExpression(expression.left, context);
+    if (value.representation !== 'tagged_ref') {
+      return undefined;
+    }
+    context.runtimeFamilies.add('finite_union');
+    return {
+      kind: 'tagged_is_null',
+      value,
+      negated,
+      representation: 'i32',
+    };
+  }
+  if (
+    expression.left.kind === 'literal' &&
+    expression.left.literalKind === 'null' &&
+    sourceExpressionHasTaggedUnionRepresentation(expression.right, context)
+  ) {
+    const value = lowerExpression(expression.right, context);
+    if (value.representation !== 'tagged_ref') {
+      return undefined;
+    }
+    context.runtimeFamilies.add('finite_union');
+    return {
+      kind: 'tagged_is_null',
+      value,
+      negated,
+      representation: 'i32',
+    };
+  }
+  if (
+    expression.right.kind === 'literal' &&
+    expression.right.literalKind === 'undefined' &&
+    sourceExpressionHasTaggedUnionRepresentation(expression.left, context)
+  ) {
+    const value = lowerExpression(expression.left, context);
+    if (value.representation !== 'tagged_ref') {
+      return undefined;
+    }
+    context.runtimeFamilies.add('finite_union');
+    return {
+      kind: 'tagged_is_undefined',
+      value,
+      negated,
+      representation: 'i32',
+    };
+  }
+  if (
+    expression.left.kind === 'literal' &&
+    expression.left.literalKind === 'undefined' &&
+    sourceExpressionHasTaggedUnionRepresentation(expression.right, context)
+  ) {
+    const value = lowerExpression(expression.right, context);
+    if (value.representation !== 'tagged_ref') {
+      return undefined;
+    }
+    context.runtimeFamilies.add('finite_union');
+    return {
+      kind: 'tagged_is_undefined',
+      value,
+      negated,
+      representation: 'i32',
+    };
+  }
+  return undefined;
+}
+
+function lowerCallArguments(
+  args: readonly SourceExpressionIR[],
+  paramTypes: readonly SemanticTypeIR[] | undefined,
+  context: FunctionLoweringContext,
+): SemanticExpressionIR[] {
+  return args.map((arg, index) => {
+    const value = lowerExpression(arg, context);
+    return adaptExpressionToSemanticType(value, paramTypes?.[index], context) ?? value;
+  });
 }
 
 function getStringLiteralId(context: FunctionLoweringContext, text: string): number {
@@ -687,14 +955,21 @@ function lowerConditionalExpression(
 ): SemanticExpressionIR | undefined {
   const condition = lowerExpression(expression.test, context);
   const conditionStatements = takePendingStatements(context);
-  const consequent = lowerExpression(expression.consequent, context);
+  let consequent = lowerExpression(expression.consequent, context);
   const consequentStatements = takePendingStatements(context);
-  const alternate = lowerExpression(expression.alternate, context);
+  let alternate = lowerExpression(expression.alternate, context);
   const alternateStatements = takePendingStatements(context);
-  if (
-    condition.representation !== 'i32' || consequent.representation !== alternate.representation
-  ) {
+  if (condition.representation !== 'i32') {
     return undefined;
+  }
+  if (consequent.representation !== alternate.representation) {
+    const taggedConsequent = taggedUnionExpressionForValue(consequent, context);
+    const taggedAlternate = taggedUnionExpressionForValue(alternate, context);
+    if (!taggedConsequent || !taggedAlternate) {
+      return undefined;
+    }
+    consequent = taggedConsequent;
+    alternate = taggedAlternate;
   }
   const resultName = nextTempLocalName(context, 'conditional');
   addLocal(context, resultName, consequent.representation);
@@ -1112,7 +1387,7 @@ function lowerExpression(
               name: expression.callee.name,
               representation: 'closure_ref',
             },
-            args: expression.args.map((arg) => lowerExpression(arg, context)),
+            args: lowerCallArguments(expression.args, undefined, context),
             signatureId: closureLocal.signatureId,
             representation: closureLocal.resultRepresentation,
           };
@@ -1125,7 +1400,11 @@ function lowerExpression(
         return {
           kind: 'call',
           callee: expression.callee.name,
-          args: expression.args.map((arg) => lowerExpression(arg, context)),
+          args: lowerCallArguments(
+            expression.args,
+            context.functionParamTypes.get(expression.callee.name),
+            context,
+          ),
           representation,
         };
       }
@@ -1145,7 +1424,7 @@ function lowerExpression(
       return {
         kind: 'closure_call',
         callee: materialized.callee,
-        args: expression.args.map((arg) => lowerExpression(arg, context)),
+        args: lowerCallArguments(expression.args, undefined, context),
         signatureId: closureLocal.signatureId,
         representation: closureLocal.resultRepresentation,
       };
@@ -1165,8 +1444,12 @@ function lowerExpression(
       return { kind: 'local_get', name: targetName, representation: 'heap_ref' };
     }
     case 'binary_expression': {
-      const left = lowerExpression(expression.left, context);
-      const right = lowerExpression(expression.right, context);
+      const unionBinary = lowerUnionBinaryExpression(expression, context);
+      if (unionBinary) {
+        return unionBinary;
+      }
+      let left = lowerExpression(expression.left, context);
+      let right = lowerExpression(expression.right, context);
       if (
         expression.operator === '+' &&
         left.representation === 'owned_string_ref' &&
@@ -1180,6 +1463,26 @@ function lowerExpression(
           right,
           representation: 'owned_string_ref',
         };
+      }
+      if (
+        ['+', '-', '*', '/', '>', '>=', '<', '<='].includes(expression.operator) &&
+        left.representation === 'tagged_ref' &&
+        right.representation === 'f64'
+      ) {
+        const untaggedLeft = untagUnionExpressionForRepresentation(left, 'f64', context);
+        if (untaggedLeft) {
+          left = untaggedLeft;
+        }
+      }
+      if (
+        ['+', '-', '*', '/', '>', '>=', '<', '<='].includes(expression.operator) &&
+        right.representation === 'tagged_ref' &&
+        left.representation === 'f64'
+      ) {
+        const untaggedRight = untagUnionExpressionForRepresentation(right, 'f64', context);
+        if (untaggedRight) {
+          right = untaggedRight;
+        }
       }
       const binary = binaryOperatorForSource(expression.operator, left, right);
       if (!binary) {
@@ -2464,7 +2767,9 @@ function lowerArrowFunctionExpression(
   const unsupportedKinds = new Set<string>();
   const closureContext: FunctionLoweringContext = {
     functionName: `closure_source_${parentContext.functionName}_${closureFunctionId}`,
+    currentResultType: signatureType.result,
     functionResultArrayLocals: parentContext.functionResultArrayLocals,
+    functionParamTypes: parentContext.functionParamTypes,
     functionResultRepresentations: parentContext.functionResultRepresentations,
     functionResultTypes: parentContext.functionResultTypes,
     localRepresentations,
@@ -2478,6 +2783,7 @@ function lowerArrowFunctionExpression(
     moduleState: parentContext.moduleState,
     objectLayoutsByKey: parentContext.objectLayoutsByKey,
     objectLocals: new Map(),
+    unionLocals: new Map(),
     classesByName: parentContext.classesByName,
     pendingStatements: [],
     runtimeFamilies: new Set(),
@@ -3310,7 +3616,12 @@ function lowerStatement(
         }
         const value = lowerExpression(declaration.initializer, context);
         const statements = takePendingStatements(context);
-        addLocal(context, declaration.binding.name, value.representation);
+        const localType = localTypeForBinding(declaration.binding, context);
+        addLocal(
+          context,
+          declaration.binding.name,
+          isFiniteUnionSemanticType(localType) ? 'tagged_ref' : value.representation,
+        );
         context.localDeclarationKinds.set(
           declaration.binding.name,
           statement.declarationKind,
@@ -3322,6 +3633,19 @@ function lowerStatement(
         );
         if (arrayLocal) {
           context.arrayLocals.set(declaration.binding.name, arrayLocal);
+        }
+        if (isFiniteUnionSemanticType(localType)) {
+          const unionValue = adaptExpressionToSemanticType(value, localType, context);
+          if (!unionValue) {
+            context.unsupportedKinds.add('finite_union_assignment');
+            return [{ kind: 'unsupported_statement', sourceKind: 'variable_declaration' }];
+          }
+          context.unionLocals.set(declaration.binding.name, localType!);
+          return [...statements, {
+            kind: 'local_set',
+            name: declaration.binding.name,
+            value: unionValue,
+          }];
         }
         const objectLocal = value.representation === 'heap_ref'
           ? objectLocalInfoForRead(declaration.initializer, value, context)
@@ -3516,9 +3840,14 @@ function lowerStatement(
       return [...takePendingStatements(context), { kind: 'expression', value }];
     }
     case 'return': {
-      const value = statement.expression
+      const rawValue = statement.expression
         ? lowerExpression(statement.expression, context)
         : { kind: 'undefined_literal', representation: 'tagged_ref' } as SemanticExpressionIR;
+      const value = adaptExpressionToSemanticType(
+        rawValue,
+        context.currentResultType,
+        context,
+      ) ?? rawValue;
       return [...takePendingStatements(context), {
         kind: 'return',
         value,
@@ -3702,6 +4031,7 @@ function lowerFunction(
   func: SourceFunctionIR,
   sharedFacts: SharedSemanticFactsIR,
   functionResultArrayLocals: Map<string, SourceSemanticArrayLocal>,
+  functionParamTypes: Map<string, readonly SemanticTypeIR[]>,
   functionResultRepresentations: Map<string, CompilerValueType>,
   functionResultTypes: Map<string, SemanticTypeIR>,
   objectLayoutsByKey: Map<string, SemanticObjectLayoutIR>,
@@ -3749,7 +4079,9 @@ function lowerFunction(
   );
   const context: FunctionLoweringContext = {
     functionName: func.name,
+    currentResultType: signature?.result,
     functionResultArrayLocals,
+    functionParamTypes,
     functionResultRepresentations,
     functionResultTypes,
     localRepresentations,
@@ -3765,6 +4097,7 @@ function lowerFunction(
     moduleState,
     objectLayoutsByKey,
     objectLocals: new Map(),
+    unionLocals: new Map(),
     classesByName,
     pendingStatements: [],
     runtimeFamilies: new Set(),
@@ -3786,6 +4119,9 @@ function lowerFunction(
       const objectLocal = objectLocalForParameterType(param.type, context);
       if (objectLocal) {
         context.objectLocals.set(loweredParam.name, objectLocal);
+      }
+      if (isFiniteUnionSemanticType(param.type)) {
+        context.unionLocals.set(loweredParam.name, param.type);
       }
       const closureLocal = closureLocalForSemanticType(param.type, context);
       if (closureLocal) {
@@ -3899,10 +4235,12 @@ export function createSemanticModuleFromSourceHIR(
   const functionResultRepresentations = new Map<string, CompilerValueType>();
   const functionResultArrayLocals = new Map<string, SourceSemanticArrayLocal>();
   const functionResultTypes = new Map<string, SemanticTypeIR>();
+  const functionParamTypes = new Map<string, readonly SemanticTypeIR[]>();
   for (const module of source.modules) {
     for (const func of module.functions) {
       const signature = findFunctionSignature(sharedFacts, module, func);
       if (signature) {
+        functionParamTypes.set(func.name, signature.params.map((param) => param.type));
         functionResultTypes.set(func.name, signature.result);
         functionResultRepresentations.set(
           func.name,
@@ -3922,6 +4260,7 @@ export function createSemanticModuleFromSourceHIR(
         func,
         sharedFacts,
         functionResultArrayLocals,
+        functionParamTypes,
         functionResultRepresentations,
         functionResultTypes,
         objectLayoutsByKey,

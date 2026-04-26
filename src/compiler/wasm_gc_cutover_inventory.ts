@@ -105,9 +105,9 @@ export const WASM_GC_CORE_CUTOVER_INVENTORY: readonly WasmGcCutoverInventoryEntr
   },
   {
     family: 'unions',
-    status: 'ir-shadowed',
-    focusedGate: 'compiler value boundary TS classifier reuses shared semantic facts',
-    nextCutoverStep: 'Make finite union algebra feed ordinary lowering, storage planning, and target diagnostics uniformly.',
+    status: 'wasm-gc-emittable',
+    focusedGate: 'compiler SourceHIR semantic lowering emits runnable mixed scalar union typeof checks',
+    nextCutoverStep: 'Extend direct SourceHIR union narrowing through object, collection, closure, and async payloads before deleting legacy union helpers.',
   },
   {
     family: 'map_set',
