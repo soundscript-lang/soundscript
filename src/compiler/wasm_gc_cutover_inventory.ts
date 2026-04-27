@@ -152,17 +152,16 @@ export const WASM_GC_CORE_CUTOVER_INVENTORY: readonly WasmGcCutoverInventoryEntr
   {
     family: 'errors',
     status: 'ir-shadowed',
-    focusedGate: 'compiler SourceHIR semantic lowering emits builtin Error throw runtime family',
+    focusedGate: 'compiler SourceHIR semantic lowering catches direct builtin Error throws',
     nextCutoverStep:
-      'Add source-owned catch/error completion records and boundary projection before marking errors WasmGC-emittable.',
+      'Add error property projection, catch binding narrowing, and boundary projection before marking errors WasmGC-emittable.',
   },
   {
     family: 'try_catch_finally',
     status: 'ir-shadowed',
-    focusedGate:
-      'compiler SourceHIR semantic lowering emits runnable try return finally completion',
+    focusedGate: 'compiler SourceHIR semantic lowering catches direct builtin Error throws',
     nextCutoverStep:
-      'Add source-owned catch/error completion records before marking the full try/catch/finally family WasmGC-emittable.',
+      'Generalize SourceHIR completion records through nested catch/finally, returns, and loop control before marking the full try/catch/finally family WasmGC-emittable.',
   },
 ];
 

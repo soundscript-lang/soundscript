@@ -98,6 +98,11 @@ interface SourceSemanticConstructorLocal {
   className: string;
 }
 
+interface SourceSemanticThrowTarget {
+  thrownFlagName: string;
+  thrownValueName: string;
+}
+
 type SourceSemanticLocalDeclarationKind = 'const' | 'let' | 'var' | 'param' | 'capture';
 
 interface SourceSemanticModuleLoweringState {
@@ -135,6 +140,7 @@ interface FunctionLoweringContext {
   stringLiteralIds: Map<string, number>;
   stringLiterals: string[];
   switchBreakLocalStack: string[];
+  throwTargets: SourceSemanticThrowTarget[];
   tempIndex: number;
   unsupportedKinds: Set<string>;
 }
@@ -2709,13 +2715,123 @@ function sourceStatementsContainControlTransfer(
   });
 }
 
+function sourceStatementsContainUnsupportedCatchableTryFlow(
+  statements: readonly SourceStatementIR[],
+): boolean {
+  return statements.some((statement): boolean => {
+    switch (statement.kind) {
+      case 'break':
+      case 'continue':
+      case 'while':
+      case 'do_while':
+      case 'for':
+      case 'for_of':
+      case 'switch':
+      case 'try':
+        return true;
+      case 'block':
+        return sourceStatementsContainUnsupportedCatchableTryFlow(statement.statements);
+      case 'if':
+        return sourceStatementsContainUnsupportedCatchableTryFlow(statement.consequent) ||
+          sourceStatementsContainUnsupportedCatchableTryFlow(statement.alternate);
+      default:
+        return false;
+    }
+  });
+}
+
+function catchableTryActiveCondition(target: SourceSemanticThrowTarget): SemanticExpressionIR {
+  return {
+    kind: 'binary',
+    op: 'i32.eq',
+    left: localGetExpression(target.thrownFlagName, 'i32'),
+    right: booleanLiteralExpression(false),
+    representation: 'i32',
+  };
+}
+
+function lowerTryCatchStatement(
+  statement: Extract<SourceStatementIR, { kind: 'try' }>,
+  context: FunctionLoweringContext,
+): readonly SemanticStatementIR[] {
+  const catchBlock = statement.catchBlock;
+  if (!catchBlock) {
+    context.unsupportedKinds.add('try_catch');
+    return [{ kind: 'unsupported_statement', sourceKind: 'try' }];
+  }
+  if (statement.finallyBlock && statement.finallyBlock.length > 0) {
+    context.unsupportedKinds.add('try_catch_finally');
+    return [{ kind: 'unsupported_statement', sourceKind: 'try' }];
+  }
+  if (sourceStatementsContainUnsupportedCatchableTryFlow(statement.tryBlock)) {
+    context.unsupportedKinds.add('try_catch_control_flow');
+    return [{ kind: 'unsupported_statement', sourceKind: 'try' }];
+  }
+  if (statement.catchBinding && statement.catchBinding.kind !== 'identifier_binding') {
+    context.unsupportedKinds.add('try_catch_binding');
+    return [{ kind: 'unsupported_statement', sourceKind: 'try' }];
+  }
+
+  const thrownFlagName = nextTempLocalName(context, 'try_catch_thrown');
+  const thrownValueName = nextTempLocalName(context, 'try_catch_value');
+  const target: SourceSemanticThrowTarget = { thrownFlagName, thrownValueName };
+  addLocal(context, thrownFlagName, 'i32');
+  addLocal(context, thrownValueName, 'tagged_ref');
+  context.runtimeFamilies.add('finite_union');
+
+  const statements: SemanticStatementIR[] = [
+    {
+      kind: 'local_set',
+      name: thrownFlagName,
+      value: booleanLiteralExpression(false),
+    },
+    {
+      kind: 'local_set',
+      name: thrownValueName,
+      value: { kind: 'undefined_literal', representation: 'tagged_ref' },
+    },
+  ];
+
+  context.throwTargets.push(target);
+  try {
+    for (const child of statement.tryBlock) {
+      statements.push({
+        kind: 'if',
+        condition: catchableTryActiveCondition(target),
+        thenBody: [...lowerStatement(child, context)],
+        elseBody: [],
+      });
+    }
+  } finally {
+    context.throwTargets.pop();
+  }
+
+  const catchStatements: SemanticStatementIR[] = [];
+  if (statement.catchBinding?.kind === 'identifier_binding') {
+    addLocal(context, statement.catchBinding.name, 'tagged_ref');
+    context.localDeclarationKinds.set(statement.catchBinding.name, 'let');
+    catchStatements.push({
+      kind: 'local_set',
+      name: statement.catchBinding.name,
+      value: localGetExpression(thrownValueName, 'tagged_ref'),
+    });
+  }
+  catchStatements.push(...catchBlock.flatMap((child) => [...lowerStatement(child, context)]));
+  statements.push({
+    kind: 'if',
+    condition: localGetExpression(thrownFlagName, 'i32'),
+    thenBody: catchStatements,
+    elseBody: [],
+  });
+  return statements;
+}
+
 function lowerTryStatement(
   statement: Extract<SourceStatementIR, { kind: 'try' }>,
   context: FunctionLoweringContext,
 ): readonly SemanticStatementIR[] {
   if (statement.catchBlock || statement.catchBinding) {
-    context.unsupportedKinds.add('try_catch');
-    return [{ kind: 'unsupported_statement', sourceKind: 'try' }];
+    return lowerTryCatchStatement(statement, context);
   }
   const finallyBlock = statement.finallyBlock ?? [];
   if (sourceStatementsContainControlTransfer(finallyBlock)) {
@@ -3392,6 +3508,7 @@ function lowerArrowFunctionExpression(
     stringLiteralIds: parentContext.stringLiteralIds,
     stringLiterals: parentContext.stringLiterals,
     switchBreakLocalStack: [],
+    throwTargets: [],
     tempIndex: 0,
     unsupportedKinds,
   };
@@ -4628,7 +4745,25 @@ function lowerStatement(
       return [{ kind: 'continue' }];
     case 'throw': {
       const value = lowerExpression(statement.expression, context);
-      return [...takePendingStatements(context), { kind: 'throw_tagged', value }];
+      const pendingStatements = takePendingStatements(context);
+      const throwTarget = context.throwTargets.at(-1);
+      if (throwTarget) {
+        const taggedValue = taggedUnionExpressionForValue(value, context);
+        if (!taggedValue) {
+          context.unsupportedKinds.add('try_catch_throw_value');
+          return [{ kind: 'unsupported_statement', sourceKind: 'throw' }];
+        }
+        return [
+          ...pendingStatements,
+          { kind: 'local_set', name: throwTarget.thrownValueName, value: taggedValue },
+          {
+            kind: 'local_set',
+            name: throwTarget.thrownFlagName,
+            value: booleanLiteralExpression(true),
+          },
+        ];
+      }
+      return [...pendingStatements, { kind: 'throw_tagged', value }];
     }
     case 'block':
       return statement.statements.flatMap((child) => [...lowerStatement(child, context)]);
@@ -4791,6 +4926,7 @@ function lowerFunction(
     stringLiteralIds,
     stringLiterals,
     switchBreakLocalStack: [],
+    throwTargets: [],
     tempIndex: 0,
     unsupportedKinds,
   };
