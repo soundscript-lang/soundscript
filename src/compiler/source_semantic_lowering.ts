@@ -2829,15 +2829,30 @@ function lowerTryCatchStatement(
   const catchLeadingStatements = catchReturnIndex >= 0
     ? catchBlock.slice(0, catchReturnIndex)
     : catchBlock;
+  const tryReturnIndex = statement.tryBlock.findIndex((child) => child.kind === 'return');
+  const tryReturnStatement = tryReturnIndex >= 0
+    ? statement.tryBlock[tryReturnIndex] as Extract<SourceStatementIR, { kind: 'return' }>
+    : undefined;
+  const tryLeadingStatements = tryReturnIndex >= 0
+    ? statement.tryBlock.slice(0, tryReturnIndex)
+    : statement.tryBlock;
+  const supportsTryReturnThroughFinally = finallyBlock.length > 0 &&
+    tryReturnStatement !== undefined &&
+    statement.tryBlock.length === tryReturnIndex + 1 &&
+    !sourceStatementsContainControlTransfer(tryLeadingStatements);
   const supportsCatchReturnThroughFinally = finallyBlock.length > 0 &&
     catchReturnStatement !== undefined &&
     catchBlock.length === catchReturnIndex + 1 &&
     !sourceStatementsContainControlTransfer(catchLeadingStatements);
+  const supportsReturnThroughFinally = supportsTryReturnThroughFinally ||
+    supportsCatchReturnThroughFinally;
   if (
     finallyBlock.length > 0 &&
     (
       sourceStatementsContainControlTransfer(finallyBlock) ||
-      sourceStatementsContainReturn(statement.tryBlock) ||
+      (
+        supportsTryReturnThroughFinally ? false : sourceStatementsContainReturn(statement.tryBlock)
+      ) ||
       (
         supportsCatchReturnThroughFinally
           ? false
@@ -2865,22 +2880,22 @@ function lowerTryCatchStatement(
   addLocal(context, thrownHeapName, 'heap_ref');
   addLocal(context, thrownValueName, 'tagged_ref');
   context.runtimeFamilies.add('finite_union');
-  const catchReturnFlagName = supportsCatchReturnThroughFinally
+  const completionReturnFlagName = supportsReturnThroughFinally
     ? nextTempLocalName(context, 'try_catch_return')
     : undefined;
-  const catchReturnValueName = supportsCatchReturnThroughFinally
+  const completionReturnValueName = supportsReturnThroughFinally
     ? nextTempLocalName(context, 'try_catch_return_value')
     : undefined;
-  const catchReturnRepresentation = supportsCatchReturnThroughFinally
+  const completionReturnRepresentation = supportsReturnThroughFinally
     ? context.currentResultType
       ? representationForSemanticType(context.currentResultType)
       : 'tagged_ref'
     : undefined;
-  if (catchReturnFlagName) {
-    addLocal(context, catchReturnFlagName, 'i32');
+  if (completionReturnFlagName) {
+    addLocal(context, completionReturnFlagName, 'i32');
   }
-  if (catchReturnValueName && catchReturnRepresentation) {
-    addLocal(context, catchReturnValueName, catchReturnRepresentation);
+  if (completionReturnValueName && completionReturnRepresentation) {
+    addLocal(context, completionReturnValueName, completionReturnRepresentation);
   }
 
   const statements: SemanticStatementIR[] = [
@@ -2899,22 +2914,63 @@ function lowerTryCatchStatement(
       name: thrownValueName,
       value: { kind: 'undefined_literal', representation: 'tagged_ref' },
     },
-    ...(catchReturnFlagName
+    ...(completionReturnFlagName
       ? [{
         kind: 'local_set' as const,
-        name: catchReturnFlagName,
+        name: completionReturnFlagName,
         value: booleanLiteralExpression(false),
       }]
       : []),
   ];
 
+  const captureReturnStatements = (
+    returnStatement: Extract<SourceStatementIR, { kind: 'return' }>,
+  ): readonly SemanticStatementIR[] => {
+    if (
+      !completionReturnFlagName || !completionReturnValueName ||
+      !completionReturnRepresentation
+    ) {
+      context.unsupportedKinds.add('try_catch_return_value');
+      return [{ kind: 'unsupported_statement', sourceKind: 'try' }];
+    }
+    const rawValue = returnStatement.expression
+      ? lowerExpression(returnStatement.expression, context)
+      : { kind: 'undefined_literal', representation: 'tagged_ref' } as SemanticExpressionIR;
+    const value = adaptExpressionToSemanticType(
+      rawValue,
+      context.currentResultType,
+      context,
+    ) ?? rawValue;
+    if (value.representation !== completionReturnRepresentation) {
+      context.unsupportedKinds.add('try_catch_return_value');
+      return [{ kind: 'unsupported_statement', sourceKind: 'try' }];
+    }
+    return [
+      ...takePendingStatements(context),
+      { kind: 'local_set', name: completionReturnValueName, value },
+      {
+        kind: 'local_set',
+        name: completionReturnFlagName,
+        value: booleanLiteralExpression(true),
+      },
+    ];
+  };
+
   context.throwTargets.push(target);
   try {
-    for (const child of statement.tryBlock) {
+    for (const child of tryLeadingStatements) {
       statements.push({
         kind: 'if',
         condition: catchableTryActiveCondition(target),
         thenBody: [...lowerStatement(child, context)],
+        elseBody: [],
+      });
+    }
+    if (supportsTryReturnThroughFinally && tryReturnStatement) {
+      statements.push({
+        kind: 'if',
+        condition: catchableTryActiveCondition(target),
+        thenBody: [...captureReturnStatements(tryReturnStatement)],
         elseBody: [],
       });
     }
@@ -2923,13 +2979,23 @@ function lowerTryCatchStatement(
   }
 
   const catchStatements: SemanticStatementIR[] = [];
-  if (statement.catchBinding?.kind === 'identifier_binding') {
-    addLocal(context, statement.catchBinding.name, 'heap_ref');
-    context.localDeclarationKinds.set(statement.catchBinding.name, 'let');
-    context.objectLocals.set(statement.catchBinding.name, builtinErrorObjectLocal(context));
+  const catchBindingName = statement.catchBinding?.kind === 'identifier_binding'
+    ? statement.catchBinding.name
+    : undefined;
+  const catchBindingReads = catchBindingName
+    ? (() => {
+      const reads: string[] = [];
+      catchBlock.forEach((child) => collectSourceStatementIdentifierReads(child, reads));
+      return reads.includes(catchBindingName);
+    })()
+    : false;
+  if (catchBindingName && catchBindingReads) {
+    addLocal(context, catchBindingName, 'heap_ref');
+    context.localDeclarationKinds.set(catchBindingName, 'let');
+    context.objectLocals.set(catchBindingName, builtinErrorObjectLocal(context));
     catchStatements.push({
       kind: 'local_set',
-      name: statement.catchBinding.name,
+      name: catchBindingName,
       value: localGetExpression(thrownHeapName, 'heap_ref'),
     });
   }
@@ -2938,29 +3004,9 @@ function lowerTryCatchStatement(
   );
   if (
     supportsCatchReturnThroughFinally && catchReturnStatement &&
-    catchReturnFlagName && catchReturnValueName && catchReturnRepresentation
+    completionReturnFlagName && completionReturnValueName && completionReturnRepresentation
   ) {
-    const rawValue = catchReturnStatement.expression
-      ? lowerExpression(catchReturnStatement.expression, context)
-      : { kind: 'undefined_literal', representation: 'tagged_ref' } as SemanticExpressionIR;
-    const value = adaptExpressionToSemanticType(
-      rawValue,
-      context.currentResultType,
-      context,
-    ) ?? rawValue;
-    if (value.representation !== catchReturnRepresentation) {
-      context.unsupportedKinds.add('try_catch_return_value');
-      return [{ kind: 'unsupported_statement', sourceKind: 'try' }];
-    }
-    catchStatements.push(
-      ...takePendingStatements(context),
-      { kind: 'local_set', name: catchReturnValueName, value },
-      {
-        kind: 'local_set',
-        name: catchReturnFlagName,
-        value: booleanLiteralExpression(true),
-      },
-    );
+    catchStatements.push(...captureReturnStatements(catchReturnStatement));
   }
   statements.push({
     kind: 'if',
@@ -2969,13 +3015,13 @@ function lowerTryCatchStatement(
     elseBody: [],
   });
   statements.push(...finallyBlock.flatMap((child) => [...lowerStatement(child, context)]));
-  if (catchReturnFlagName && catchReturnValueName && catchReturnRepresentation) {
+  if (completionReturnFlagName && completionReturnValueName && completionReturnRepresentation) {
     statements.push({
       kind: 'if',
-      condition: localGetExpression(catchReturnFlagName, 'i32'),
+      condition: localGetExpression(completionReturnFlagName, 'i32'),
       thenBody: [{
         kind: 'return',
-        value: localGetExpression(catchReturnValueName, catchReturnRepresentation),
+        value: localGetExpression(completionReturnValueName, completionReturnRepresentation),
       }],
       elseBody: [],
     });
