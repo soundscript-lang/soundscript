@@ -31,6 +31,7 @@ export const SOUND_DIAGNOSTIC_CODES = {
   ambientHostValueRequiresExplicitBoundary: 'SOUND1039',
   invalidEffectAnnotation: 'SOUND1040',
   effectContractViolation: 'SOUND1041',
+  unavailableRuntimeCapability: 'SOUND1042',
 } as const;
 
 export type SoundDiagnosticCode =
@@ -76,12 +77,13 @@ export const SOUND_DIAGNOSTIC_MESSAGES = {
     'Construction-time dispatch and this escape are not allowed before construction completes.',
   fieldReadBeforeInitialization:
     'Instance fields may not be read before definite initialization in soundscript.',
-  definiteAssignmentAssertion:
-    'Definite-assignment assertions are not supported in soundscript.',
+  definiteAssignmentAssertion: 'Definite-assignment assertions are not supported in soundscript.',
   ambientHostValueRequiresExplicitBoundary:
     "Ambient host values cannot be used directly in soundscript without an explicit boundary import or same-file '// #[extern]' declaration.",
   invalidEffectAnnotation: 'Effects annotation contract is invalid.',
   effectContractViolation: 'Effect contract violation.',
+  unavailableRuntimeCapability:
+    'This stdlib module is not available for the selected Soundscript runtime target.',
 } as const;
 
 export const COMPILER_DIAGNOSTIC_CODES = {

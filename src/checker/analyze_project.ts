@@ -2410,6 +2410,7 @@ function retainSoundDiagnosticsAlongsideTsErrors(
   return diagnostics.filter((diagnostic): diagnostic is SoundDiagnostic =>
     diagnostic.source === 'sound' &&
     (diagnostic.code === SOUND_DIAGNOSTIC_CODES.bannedTypeScriptPragma ||
+      diagnostic.code === SOUND_DIAGNOSTIC_CODES.unavailableRuntimeCapability ||
       diagnostic.code === SOUND_DIAGNOSTIC_CODES.constructionLifecycleViolation ||
       diagnostic.code === SOUND_DIAGNOSTIC_CODES.fieldReadBeforeInitialization)
   );

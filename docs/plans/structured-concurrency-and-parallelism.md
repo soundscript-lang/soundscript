@@ -330,6 +330,9 @@ export class ThreadPool implements AsyncDisposable {
 time, so `Runtime.with({ threadPool })` can override it inside a dynamic scope without changing code
 that uses the normal default. Storing `ThreadPool.default` for later should preserve this ambient
 lookup behavior; a manually created pool from `ThreadPool.fixed(...)` is the stable owned value.
+Reading `ThreadPool.default` must not start workers. The target runtime initializes the managed pool
+only on first work submission, or earlier only when explicit runtime configuration asks for eager
+startup.
 
 The spelling is intentionally explicit: it tells the reader this is not ordinary async IO and not
 promise fanout. It is sendable work scheduled onto the managed worker pool for the current runtime.
@@ -471,19 +474,22 @@ the cancellation model, and not an error propagation mechanism.
 Sketch:
 
 ```ts
-namespace AsyncContext {
-  class Variable<T> {
-    constructor(options?: { name?: string; defaultValue?: T });
-    get(): T | undefined;
-    run<R>(value: T, body: () => R): R;
-  }
-
-  class Snapshot {
-    constructor();
-    run<R>(body: () => R): R;
-    static wrap<F extends (...args: any[]) => any>(fn: F): F;
-  }
+class AsyncContextVariable<T> {
+  constructor(options?: { name?: string; defaultValue?: T });
+  get(): T | undefined;
+  run<R>(value: T, body: () => R): R;
 }
+
+class AsyncContextSnapshot {
+  constructor();
+  run<R>(body: () => R): R;
+  static wrap<F extends (...args: any[]) => any>(fn: F): F;
+}
+
+const AsyncContext: {
+  readonly Variable: typeof AsyncContextVariable;
+  readonly Snapshot: typeof AsyncContextSnapshot;
+};
 ```
 
 Rules:
@@ -647,6 +653,15 @@ Runtime context rule:
   behavior.
 - JS wrappers generated for exported async functions should enter the runtime before calling user
   code, so normal JS interop does not require manual runtime construction.
+
+Terminology:
+
+- The runtime substrate is the scheduler, compiler-owned promise records, async frames, host
+  completion bridge, and worker completion queue that resume suspended work.
+- The runtime provider is the target-specific facade that installs capabilities, default executor
+  policy, `TaskGroup`, `AsyncContext`, and worker-pool handles on top of that substrate.
+- The thread runtime is a pay-for-play provider component. It is loaded and initialized only when
+  code uses `ThreadPool`, `Thread`, shared synchronization, or explicit runtime configuration.
 
 ## Full Example: HTTP Server
 
@@ -1155,6 +1170,10 @@ Implementation:
 - `ThreadPool` can use Node `worker_threads` or browser Workers where configured and available.
 - `Thread.spawn` can use one worker per thread where available.
 - Sendability maps to structured clone / transfer / SharedArrayBuffer capability rules.
+- `ThreadPool.default` is a lazy provider handle. Node and browser targets must not start a worker
+  pool until the first `run` / `map` call or explicit eager runtime configuration.
+- Worker entrypoints must be top-level/importable functions at first. Arbitrary captured closures
+  are deferred until the compiler has a real lifting and sendability story.
 
 Limitations:
 
@@ -1190,6 +1209,10 @@ Implementation:
   message passing.
 - Values crossing workers use `Send` lowering: serialization, transfer, or shared buffers.
 - Shared memory uses WebAssembly shared memory only in profiles that support it.
+- `ThreadPool.default` remains lazy. Wrapper generation should include worker bootstrap assets only
+  when the program references worker-backed APIs or explicit runtime config requests them.
+- Worker entrypoints initially must be imported/exported functions whose boundary types satisfy
+  `Send`; closure lifting is a later optimization.
 
 Limitations:
 
@@ -1283,6 +1306,11 @@ Limitations:
 The current WasmGC compiler-owned promise runtime should become the substrate for this model. It
 should not be bypassed by a separate task runtime.
 
+In other words, `sts:concurrency/runtime` is not a competing scheduler for WasmGC. It is the public
+provider facade over the existing compiler-owned async substrate. On JS targets the facade delegates
+to host promises and host async-context support; on WasmGC it extends the compiler-owned promise
+runtime with task-group, cancellation, deadline, context, and worker-completion records.
+
 Required runtime concepts:
 
 - `PromiseRecord`: existing compiler-owned promise state
@@ -1342,6 +1370,8 @@ Compiler and linker behavior:
 
 - Do not include thread runtime unless thread APIs are referenced.
 - Do not initialize the default pool until first use or explicit config requires it.
+- Do not generate JS/Wasm worker bootstrap assets unless thread APIs or explicit runtime config need
+  them.
 - Do not include async context storage unless `AsyncContext` variables or snapshots are used.
 - Do not include task-group policy machinery unless `TaskGroup` is used.
 - Keep Send/Share checker metadata compile-time when no thread boundary exists.
@@ -1594,8 +1624,12 @@ Benchmarks:
 
 - What is the minimal initial `Send` proof the checker can enforce without making value types too
   hard to use?
-- Should `ThreadPool.default.run` require exported entrypoints on JS/Wasm targets, or can the
-  compiler safely lift some local pure functions?
 - Should `AsyncContext` variables default to cross-thread propagation if `T: Send`, or require an
   explicit option?
 - How much of the native runtime should be built before exposing thread APIs as stable?
+
+Resolved initial decisions:
+
+- `ThreadPool.default.run` should require top-level/importable entrypoints on JS and Wasm targets in
+  the first implementation. Compiler lifting of local pure functions can be added later as an
+  optimization once closure capture, bundle identity, and `Send` proof rules are mature.

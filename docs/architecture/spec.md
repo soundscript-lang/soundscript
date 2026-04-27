@@ -1031,8 +1031,9 @@ Implemented:
 - the builtin/runtime module surface under `sts:*` is implemented, with the stable v1 core centered
   on `sts:prelude`, `sts:result`, `sts:match`, `sts:failures`, `sts:url`, `sts:fetch`, `sts:text`,
   `sts:random`, `sts:json`, `sts:compare`, `sts:hash`, `sts:decode`, `sts:encode`, `sts:codec`,
-  `sts:derive`, `sts:async`, `sts:hkt`, `sts:typeclasses`, and `sts:macros`, plus implemented
-  experimental builtin modules such as `sts:numerics`, `sts:value`, and `sts:experimental/*`
+  `sts:derive`, `sts:concurrency/task`, `sts:capabilities`, `sts:time`, `sts:console`, `sts:path`,
+  `sts:bytes`, `sts:hkt`, `sts:typeclasses`, and `sts:macros`, plus implemented experimental builtin
+  modules such as `sts:numerics`, `sts:value`, and `sts:experimental/*`
 - the macro system is implemented as a real compile-time surface with declaration, rewrite,
   control-flow, branch, and fragment macro support, restricted worker-backed macro evaluation,
   target/runtime semantics hooks, and editor hooks for hover, semantic tokens, formatting, bindings,

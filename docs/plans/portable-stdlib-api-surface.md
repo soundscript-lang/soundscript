@@ -319,39 +319,41 @@ import type { Result } from 'sts:result';
 
 export type Task<T, E = Failure> = () => AsyncResult<T, E>;
 
-export namespace Task {
-  export type AllResult<T> = {
-    readonly [K in keyof T]: T[K] extends Task<infer V, unknown> ? V : never;
-  };
+export type TaskAllResult<T> = {
+  readonly [K in keyof T]: T[K] extends Task<infer V, unknown> ? V : never;
+};
 
-  export function succeed<T>(value: T): Task<T, never>;
-  export function fail<E>(error: E): Task<never, E>;
-  export function fromResult<T, E>(result: Result<T, E>): Task<T, E>;
-  export function fromAsyncResult<T, E>(work: () => AsyncResult<T, E>): Task<T, E>;
-  export function fromPromise<T>(
+export interface TaskModule {
+  succeed<T>(value: T): Task<T, never>;
+  fail<E>(error: E): Task<never, E>;
+  fromResult<T, E>(result: Result<T, E>): Task<T, E>;
+  fromAsyncResult<T, E>(work: () => AsyncResult<T, E>): Task<T, E>;
+  fromPromise<T>(
     body: () => Promise<T>,
     mapFailure?: (error: unknown) => Failure,
   ): Task<T, Failure>;
 
-  export function map<A, B, E>(task: Task<A, E>, fn: (value: A) => B): Task<B, E>;
-  export function flatMap<A, B, E1, E2>(
+  map<A, B, E>(task: Task<A, E>, fn: (value: A) => B): Task<B, E>;
+  flatMap<A, B, E1, E2>(
     task: Task<A, E1>,
     fn: (value: A) => Task<B, E2>,
   ): Task<B, E1 | E2>;
-  export function recover<A, B, E>(
+  recover<A, B, E>(
     task: Task<A, E>,
     fn: (error: E) => B | AsyncResult<B, Failure>,
   ): Task<A | B, Failure>;
 
-  export function all<T extends Record<string, Task<unknown, E>>, E>(
+  all<T extends Record<string, Task<unknown, E>>, E>(
     tasks: T,
-  ): Task<AllResult<T>, E>;
-  export function race<T, E>(tasks: readonly [Task<T, E>, ...Task<T, E>[]]): Task<T, E>;
-  export function timeout<T, E>(
+  ): Task<TaskAllResult<T>, E>;
+  race<T, E>(tasks: readonly [Task<T, E>, ...Task<T, E>[]]): Task<T, E>;
+  timeout<T, E>(
     task: Task<T, E>,
     duration: Duration,
   ): Task<T, E | TimeoutFailure>;
 }
+
+export const Task: TaskModule;
 ```
 
 Migration note: remove the current top-level `sts:async.parallel(...)` helper before this surface
@@ -386,6 +388,12 @@ export class TaskHandle<T, E = Failure> {
   cancel(reason?: Failure): void;
 }
 
+export interface ThreadPoolOptions {
+  readonly workers: number | 'available';
+  readonly name?: string;
+  readonly queueLimit?: number;
+}
+
 export class ThreadPool implements AsyncDisposable {
   static get default(): ThreadPool;
   static fixed(options: ThreadPoolOptions): ThreadPool;
@@ -412,19 +420,22 @@ export class Thread<I, O, E = Failure> {
   static blockOn<T, E = Failure>(work: () => AsyncResult<T, E>): Result<T, E>;
 }
 
-export namespace AsyncContext {
-  export class Variable<T> {
-    constructor(options?: { name?: string; defaultValue?: T });
-    get(): T | undefined;
-    run<R>(value: T, body: () => R): R;
-  }
-
-  export class Snapshot {
-    constructor();
-    run<R>(body: () => R): R;
-    static wrap<F extends (...args: unknown[]) => unknown>(fn: F): F;
-  }
+export class AsyncContextVariable<T> {
+  constructor(options?: { name?: string; defaultValue?: T });
+  get(): T | undefined;
+  run<R>(value: T, body: () => R): R;
 }
+
+export class AsyncContextSnapshot {
+  constructor();
+  run<R>(body: () => R): R;
+  static wrap<F extends (...args: unknown[]) => unknown>(fn: F): F;
+}
+
+export const AsyncContext: {
+  readonly Variable: typeof AsyncContextVariable;
+  readonly Snapshot: typeof AsyncContextSnapshot;
+};
 
 export type Send<T> = T;
 export type Share<T> = T;
@@ -443,6 +454,12 @@ export type Send<T> = T;
 export type Share<T> = T;
 
 export type ThreadEntry<I, O, E = Failure> = (input: I) => Result<O, E> | AsyncResult<O, E>;
+
+export interface ThreadPoolOptions {
+  readonly workers: number | 'available';
+  readonly name?: string;
+  readonly queueLimit?: number;
+}
 
 export class ThreadPool implements AsyncDisposable {
   static get default(): ThreadPool;
