@@ -34,7 +34,9 @@ The stable stdlib surface is intentionally small:
 - `sts:codec` owning codec contracts and adapter helpers
 - `sts:derive` owning compiler-provided declaration macros such as `eq`, `hash`, `decode`, `encode`,
   `codec`, and `tagged`
-- `sts:async` owning the `Task<T, E>` contract and result-first async helpers
+- `sts:concurrency` owning `AsyncResult<T, E>`, `TaskGroup`, and the normal structured-concurrency
+  teaching surface
+- `sts:concurrency/task` owning the `Task<T, E>` contract and `Task.*` helpers
 - `sts:hkt` owning low-level higher-kinded type machinery
 - `sts:typeclasses` owning `Functor`, `Applicative`, `Monad`, `AsyncMonad`, and `Do`
 
@@ -258,8 +260,8 @@ The stable package story for v1 is:
 
 - compiler-owned source-time builtin modules such as `sts:prelude`, `sts:failures`, `sts:json`,
   `sts:result`, `sts:match`, `sts:url`, `sts:fetch`, `sts:text`, `sts:random`, `sts:compare`,
-  `sts:hash`, `sts:decode`, `sts:encode`, `sts:codec`, `sts:derive`, `sts:async`, `sts:hkt`,
-  `sts:typeclasses`, and `sts:macros`
+  `sts:hash`, `sts:decode`, `sts:encode`, `sts:codec`, `sts:derive`, `sts:concurrency`,
+  `sts:concurrency/task`, `sts:hkt`, `sts:typeclasses`, and `sts:macros`
 - `@soundscript/soundscript` as the canonical npm package for the CLI, language server, and emitted
   runtime / TypeScript interop surface under `@soundscript/soundscript/*`
 - `package.json#soundscript.exports` for shipped `.sts` package-source discovery
