@@ -65,6 +65,7 @@ interface SourceSemanticObjectLocal {
 
 const SOUNDSCRIPT_PROMISE_RESOLVE_HELPER_NAME = '__soundscript_promise_resolve';
 const SOUNDSCRIPT_PROMISE_REJECT_HELPER_NAME = '__soundscript_promise_reject';
+const SOUNDSCRIPT_PROMISE_THEN_HELPER_NAME = '__soundscript_promise_then';
 
 interface SourceSemanticArrayLocal {
   elementRepresentation: CompilerValueType;
@@ -376,6 +377,22 @@ function promiseValueTypeForSemanticType(
   return type?.kind === 'promise' ? type.value : undefined;
 }
 
+function promiseReactionTaggedValueType(): SemanticTypeIR {
+  return { kind: 'finite_union', arms: [] };
+}
+
+function promiseReactionClosureType(paramCount: number): SemanticTypeIR {
+  const taggedValue = promiseReactionTaggedValueType();
+  return {
+    kind: 'closure',
+    signatures: [{
+      id: 0,
+      params: Array.from({ length: paramCount }, () => taggedValue),
+      result: taggedValue,
+    }],
+  };
+}
+
 function projectObjectExpressionToSemanticType(
   source: SourceExpressionIR,
   value: SemanticExpressionIR,
@@ -455,6 +472,64 @@ function projectObjectExpressionToSemanticType(
   }
   context.pendingStatements.push(...statements);
   return { kind: 'local_get', name: targetName, representation: 'heap_ref' };
+}
+
+function lowerPromiseReactionHandlerExpression(
+  expression: SourceExpressionIR | undefined,
+  context: FunctionLoweringContext,
+): SemanticExpressionIR {
+  if (!expression) {
+    return { kind: 'closure_null', representation: 'closure_ref' };
+  }
+  if (expression.kind === 'arrow_function') {
+    const closure = lowerArrowFunctionExpression(
+      expression,
+      promiseReactionClosureType(expression.params.length),
+      context,
+    );
+    if (closure) {
+      return closure;
+    }
+    return { kind: 'closure_null', representation: 'closure_ref' };
+  }
+  const value = lowerExpression(expression, context);
+  if (value.representation === 'closure_ref') {
+    return value;
+  }
+  context.unsupportedKinds.add('Promise.then:handler');
+  return { kind: 'closure_null', representation: 'closure_ref' };
+}
+
+function lowerPromiseThenCallExpression(
+  expression: Extract<SourceExpressionIR, { kind: 'call_expression' }>,
+  context: FunctionLoweringContext,
+): SemanticExpressionIR | undefined {
+  if (
+    expression.callee.kind !== 'property_access' ||
+    expression.callee.property !== 'then'
+  ) {
+    return undefined;
+  }
+  if (expression.args.length < 1 || expression.args.length > 2) {
+    context.unsupportedKinds.add('Promise.then:arity');
+    return { kind: 'undefined_literal', representation: 'tagged_ref' };
+  }
+  const receiver = lowerExpression(expression.callee.object, context);
+  if (receiver.representation !== 'heap_ref') {
+    context.unsupportedKinds.add('Promise.then:receiver');
+    return { kind: 'undefined_literal', representation: 'tagged_ref' };
+  }
+  const onFulfilled = lowerPromiseReactionHandlerExpression(expression.args[0], context);
+  const onRejected = lowerPromiseReactionHandlerExpression(expression.args[1], context);
+  context.runtimeFamilies.add('promise');
+  context.runtimeFamilies.add('closure');
+  context.runtimeFamilies.add('finite_union');
+  return {
+    kind: 'call',
+    callee: SOUNDSCRIPT_PROMISE_THEN_HELPER_NAME,
+    args: [receiver, onFulfilled, onRejected],
+    representation: 'heap_ref',
+  };
 }
 
 function lowerPromiseStaticCallExpression(
@@ -1606,6 +1681,10 @@ function lowerExpression(
       return { kind: 'undefined_literal', representation: 'tagged_ref' };
     }
     case 'call_expression': {
+      const promiseThenCall = lowerPromiseThenCallExpression(expression, context);
+      if (promiseThenCall) {
+        return promiseThenCall;
+      }
       const promiseStaticCall = lowerPromiseStaticCallExpression(expression, context);
       if (promiseStaticCall) {
         return promiseStaticCall;
