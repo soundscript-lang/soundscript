@@ -6,7 +6,10 @@ import { dirname, join } from '../platform/path.ts';
 import { SOUND_DIAGNOSTIC_CODES } from '../checker/engine/diagnostic_codes.ts';
 import { describeUnsupportedFeature } from '../checker/unsupported_feature_messages.ts';
 import * as publicMacroApi from '../macros.ts';
-import { getSoundScriptPackageExportInfoForResolvedModule } from '../project/soundscript_packages.ts';
+import {
+  getSoundScriptPackageExportInfoForResolvedModule,
+  type SoundScriptPackageExportInfo,
+} from '../project/soundscript_packages.ts';
 
 import type { MacroDefinition } from './macro_api.ts';
 import { getLoadedMacroDefinitionMetadata } from './macro_api_internal.ts';
@@ -288,11 +291,16 @@ interface MacroExpansionTimingStats {
   graphCompileGraphs: number;
   graphCompileMs: number;
   importUsageMs: number;
+  interopImportCheckMs: number;
   likelyMacroModuleMs: number;
   macroExecutionMs: number;
   moduleEvalRoots: number;
   moduleEvalMs: number;
+  packageExportInfoMs: number;
+  policyValidationMs: number;
+  preferredMacroResolutionMs: number;
   resolveImportMs: number;
+  tsModuleResolutionMs: number;
   rewriteMacroExecutionCount: number;
   sourceExpansionFiles: number;
   sourceExpansionMs: number;
@@ -314,11 +322,16 @@ function createMacroExpansionTimingStats(): MacroExpansionTimingStats {
     graphCompileGraphs: 0,
     graphCompileMs: 0,
     importUsageMs: 0,
+    interopImportCheckMs: 0,
     likelyMacroModuleMs: 0,
     macroExecutionMs: 0,
     moduleEvalRoots: 0,
     moduleEvalMs: 0,
+    packageExportInfoMs: 0,
+    policyValidationMs: 0,
+    preferredMacroResolutionMs: 0,
     resolveImportMs: 0,
+    tsModuleResolutionMs: 0,
     rewriteMacroExecutionCount: 0,
     sourceExpansionFiles: 0,
     sourceExpansionMs: 0,
@@ -626,20 +639,35 @@ function inferMacroMutableContainerKind(
 
 function createModuleResolutionHost(preparedProgram: PreparedProgram): ts.ModuleResolutionHost {
   const baseHost = preparedProgram.preparedHost.host;
+  const fileExistsCache = new Map<string, boolean>();
+  const readFileCache = new Map<string, string | undefined>();
   return {
     directoryExists: baseHost.directoryExists?.bind(baseHost),
     fileExists(fileName: string): boolean {
       const sourceFileName = toSourceFileName(fileName);
-      return preparedProgram.preparedHost.getPreparedSourceFile(sourceFileName) !== undefined ||
-        baseHost.fileExists(sourceFileName);
+      const cached = fileExistsCache.get(sourceFileName);
+      if (cached !== undefined) {
+        return cached;
+      }
+      const exists = baseHost.fileExists(sourceFileName) ||
+        preparedProgram.preparedHost.getPreparedSourceFile(sourceFileName) !== undefined;
+      fileExistsCache.set(sourceFileName, exists);
+      return exists;
     },
     getCurrentDirectory: baseHost.getCurrentDirectory?.bind(baseHost) ??
       (() => ts.sys.getCurrentDirectory()),
     getDirectories: baseHost.getDirectories?.bind(baseHost),
     readFile(fileName: string): string | undefined {
       const sourceFileName = toSourceFileName(fileName);
-      return preparedProgram.preparedHost.getPreparedSourceFile(sourceFileName)?.originalText ??
-        baseHost.readFile(sourceFileName);
+      if (readFileCache.has(sourceFileName)) {
+        return readFileCache.get(sourceFileName);
+      }
+      const text = isSoundscriptSourceFile(sourceFileName)
+        ? preparedProgram.preparedHost.readOriginalFile(sourceFileName) ??
+          preparedProgram.preparedHost.getPreparedSourceFile(sourceFileName)?.originalText
+        : baseHost.readFile(sourceFileName);
+      readFileCache.set(sourceFileName, text);
+      return text;
     },
     realpath: baseHost.realpath?.bind(baseHost),
     useCaseSensitiveFileNames: () => ts.sys.useCaseSensitiveFileNames,
@@ -1012,6 +1040,7 @@ export function createProjectMacroEnvironment(
   const resolutionHost = createModuleResolutionHost(preparedProgram);
   const moduleResolutionCache = preparedProgram.preparedHost.reuseState.moduleResolutionCache ??
     createPreparedCompilerHostReuseState().moduleResolutionCache;
+  const packageExportInfoCache = new Map<string, SoundScriptPackageExportInfo | null>();
   const resolvedImportCache = new Map<string, string | null>();
   const evaluatedModuleCache = new Map<string, MutableEvaluatedModule>();
   const compiledArtifactCache = new Map<string, CachedMacroModuleArtifactEntry>();
@@ -1022,6 +1051,10 @@ export function createProjectMacroEnvironment(
   const macroModuleScanCache = new Map<string, ReadonlyMap<string, ScannedMacroFactoryExport>>();
   const macroModuleSourceFileCache = new Map<string, ts.SourceFile>();
   const macroModuleSourceTextCache = new Map<string, string>();
+  const macroGraphInteropImportRangeCache = new Map<
+    string,
+    { readonly start: number; readonly end: number } | null
+  >();
   const macroModuleCompilationDependencySourceTextsCache = new Map<
     string,
     ReadonlyMap<string, string>
@@ -1685,6 +1718,7 @@ export function createProjectMacroEnvironment(
         binding.specifier,
         resolvedRuntimeFileName,
         resolutionHost,
+        { trustMacroAuthoringSourcePath: true },
       )?.sourceEntryPath;
       const resolvedFileName = packageMacroSourceEntry
         ? toSourceFileName(packageMacroSourceEntry)
@@ -1735,11 +1769,9 @@ export function createProjectMacroEnvironment(
       if (override !== undefined) {
         return override;
       }
-      const preparedSource = preparedProgram.preparedHost.getPreparedSourceFile(sourceFileName);
-      if (preparedSource) {
-        return preparedSource.originalText;
-      }
-      return baseHost.readFile(sourceFileName) ?? baseHost.readFile(fileName);
+      return preparedProgram.preparedHost.readOriginalFile(sourceFileName) ??
+        baseHost.readFile(sourceFileName) ??
+        baseHost.readFile(fileName);
     };
 
     return {
@@ -1747,6 +1779,7 @@ export function createProjectMacroEnvironment(
       fileExists(fileName: string): boolean {
         const sourceFileName = preparedProgram.toSourceFileName(fileName);
         return fileOverrides.has(sourceFileName) ||
+          preparedProgram.preparedHost.readOriginalFile(sourceFileName) !== undefined ||
           preparedProgram.preparedHost.getPreparedSourceFile(sourceFileName) !== undefined ||
           baseHost.fileExists(sourceFileName) ||
           baseHost.fileExists(fileName);
@@ -2122,7 +2155,7 @@ export function createProjectMacroEnvironment(
     try {
       const normalizedContainingFileName = toSourceFileName(containingFileName);
       if (options.fromMacroGraph && isLoadableMacroModuleFile(normalizedContainingFileName)) {
-        validateMacroModuleSourcePolicy(normalizedContainingFileName);
+        validateMacroModuleSourcePolicyMeasured(normalizedContainingFileName);
       }
       if (
         specifier === MACRO_API_MODULE_SPECIFIER || builtinDefinitionsBySpecifier.has(specifier)
@@ -2136,15 +2169,22 @@ export function createProjectMacroEnvironment(
         return cached;
       }
 
-      const resolved =
-        resolvePreferredSoundscriptMacroModule(specifier, normalizedContainingFileName) ??
-          ts.resolveModuleName(
-            specifier,
-            normalizedContainingFileName,
-            preparedProgram.options,
-            resolutionHost,
-            moduleResolutionCache,
-          ).resolvedModule;
+      const preferredResolved = measureActiveMacroTiming(
+        'preferredMacroResolutionMs',
+        () => resolvePreferredSoundscriptMacroModule(specifier, normalizedContainingFileName),
+      );
+      const resolved = preferredResolved ??
+        measureActiveMacroTiming(
+          'tsModuleResolutionMs',
+          () =>
+            ts.resolveModuleName(
+              specifier,
+              normalizedContainingFileName,
+              preparedProgram.options,
+              resolutionHost,
+              moduleResolutionCache,
+            ).resolvedModule,
+        );
       const resolvedRuntimeFileName = resolved?.resolvedFileName;
       if (!resolvedRuntimeFileName) {
         resolvedImportCache.set(cacheKey, null);
@@ -2152,9 +2192,9 @@ export function createProjectMacroEnvironment(
       }
 
       if (options.fromMacroGraph) {
-        const interopImportRange = findMacroGraphInteropImportRange(
-          normalizedContainingFileName,
-          specifier,
+        const interopImportRange = measureActiveMacroTiming(
+          'interopImportCheckMs',
+          () => findMacroGraphInteropImportRange(normalizedContainingFileName, specifier),
         );
         if (interopImportRange) {
           throw createMacroModuleError(
@@ -2177,17 +2217,16 @@ export function createProjectMacroEnvironment(
         );
       }
 
-      const packageMacroSourceEntry = getSoundScriptPackageExportInfoForResolvedModule(
+      const packageMacroSourceEntry = packageExportInfoForResolvedModule(
         specifier,
         resolvedRuntimeFileName,
-        resolutionHost,
       )?.sourceEntryPath;
       const resolvedFileName = packageMacroSourceEntry
         ? toSourceFileName(packageMacroSourceEntry)
         : toSourceFileName(resolvedRuntimeFileName);
       if (!isLoadableMacroModuleFile(resolvedFileName)) {
         if (isPureMacroReexportBridgeModule(resolvedFileName)) {
-          validateMacroModuleSourcePolicy(resolvedFileName);
+          validateMacroModuleSourcePolicyMeasured(resolvedFileName);
           resolvedImportCache.set(cacheKey, resolvedFileName);
           return resolvedFileName;
         }
@@ -2214,7 +2253,7 @@ export function createProjectMacroEnvironment(
         );
       }
 
-      validateMacroModuleSourcePolicy(resolvedFileName);
+      validateMacroModuleSourcePolicyMeasured(resolvedFileName);
       resolvedImportCache.set(cacheKey, resolvedFileName);
       return resolvedFileName;
     } finally {
@@ -2286,8 +2325,8 @@ export function createProjectMacroEnvironment(
       return cached;
     }
 
-    const preparedSource = preparedProgram.preparedHost.getPreparedSourceFile(fileName);
-    const sourceText = preparedSource?.originalText;
+    const sourceText = preparedProgram.preparedHost.readOriginalFile(fileName) ??
+      preparedProgram.preparedHost.getPreparedSourceFile(fileName)?.originalText;
     if (sourceText === undefined) {
       throw new Error(`Could not read macro module "${fileName}".`);
     }
@@ -2310,6 +2349,33 @@ export function createProjectMacroEnvironment(
     );
     macroModuleSourceFileCache.set(fileName, sourceFile);
     return sourceFile;
+  }
+
+  function validateMacroModuleSourcePolicyMeasured(fileName: string): void {
+    measureActiveMacroTiming('policyValidationMs', () => validateMacroModuleSourcePolicy(fileName));
+  }
+
+  function packageExportInfoForResolvedModule(
+    specifier: string,
+    resolvedRuntimeFileName: string,
+  ): SoundScriptPackageExportInfo | undefined {
+    const cacheKey = `${specifier}\u0000${resolvedRuntimeFileName}`;
+    const cached = packageExportInfoCache.get(cacheKey);
+    if (cached !== undefined) {
+      return cached ?? undefined;
+    }
+    const result = measureActiveMacroTiming(
+      'packageExportInfoMs',
+      () =>
+        getSoundScriptPackageExportInfoForResolvedModule(
+          specifier,
+          resolvedRuntimeFileName,
+          resolutionHost,
+          { trustMacroAuthoringSourcePath: true },
+        ),
+    );
+    packageExportInfoCache.set(cacheKey, result ?? null);
+    return result;
   }
 
   function isPureMacroReexportBridgeModule(fileName: string): boolean {
@@ -2513,6 +2579,16 @@ export function createProjectMacroEnvironment(
     fileName: string,
     specifier: string,
   ): { readonly start: number; readonly end: number } | null {
+    const cacheKey = `${fileName}\u0000${specifier}`;
+    const cached = macroGraphInteropImportRangeCache.get(cacheKey);
+    if (cached !== undefined) {
+      return cached;
+    }
+    if (!sourceTextForMacroModule(fileName).includes('#[interop]')) {
+      macroGraphInteropImportRangeCache.set(cacheKey, null);
+      return null;
+    }
+
     const sourceFile = sourceFileForMacroModule(fileName);
     const annotationLookup = createAnnotationLookup(sourceFile);
     for (const statement of sourceFile.statements) {
@@ -2529,8 +2605,11 @@ export function createProjectMacroEnvironment(
       if (!interopAnnotation || !block) {
         continue;
       }
-      return { start: block.range.start, end: block.range.end };
+      const result = { start: block.range.start, end: block.range.end };
+      macroGraphInteropImportRangeCache.set(cacheKey, result);
+      return result;
     }
+    macroGraphInteropImportRangeCache.set(cacheKey, null);
     return null;
   }
 
@@ -2583,7 +2662,7 @@ export function createProjectMacroEnvironment(
     }
 
     visited.add(fileName);
-    validateMacroModuleSourcePolicy(fileName);
+    validateMacroModuleSourcePolicyMeasured(fileName);
     const dependencySourceTexts = new Map<string, string>([[
       fileName,
       sourceTextForMacroModule(fileName),
@@ -2759,7 +2838,10 @@ export function createProjectMacroEnvironment(
       fileExists(candidateFileName: string): boolean {
         if (isSoundscriptSourceFile(toSourceFileName(candidateFileName))) {
           const sourceFileName = toSourceFileName(candidateFileName);
-          if (preparedProgram.preparedHost.getPreparedSourceFile(sourceFileName)) {
+          if (
+            preparedProgram.preparedHost.readOriginalFile(sourceFileName) !== undefined ||
+            preparedProgram.preparedHost.getPreparedSourceFile(sourceFileName)
+          ) {
             return true;
           }
         }
@@ -2768,10 +2850,11 @@ export function createProjectMacroEnvironment(
       readFile(candidateFileName: string): string | undefined {
         if (isSoundscriptSourceFile(toSourceFileName(candidateFileName))) {
           const sourceFileName = toSourceFileName(candidateFileName);
-          const preparedSource = preparedProgram.preparedHost.getPreparedSourceFile(sourceFileName);
-          if (preparedSource) {
-            return preparedSource.originalText;
+          const originalSource = preparedProgram.preparedHost.readOriginalFile(sourceFileName);
+          if (originalSource !== undefined) {
+            return originalSource;
           }
+          return preparedProgram.preparedHost.getPreparedSourceFile(sourceFileName)?.originalText;
         }
         return baseHost.readFile(candidateFileName);
       },
@@ -2912,7 +2995,7 @@ export function createProjectMacroEnvironment(
     }
 
     const sourceText = sourceTextForMacroModule(fileName);
-    validateMacroModuleSourcePolicy(fileName);
+    validateMacroModuleSourcePolicyMeasured(fileName);
     const compiledArtifact = compileResolvedMacroModuleArtifact(fileName);
 
     const moduleRecord: MutableEvaluatedModule = {
@@ -3808,16 +3891,23 @@ export function createProjectMacroEnvironment(
             graphCompileGraphs: expansionTimingStats.graphCompileGraphs,
             graphCompileMs: Number(expansionTimingStats.graphCompileMs.toFixed(1)),
             importUsageMs: Number(expansionTimingStats.importUsageMs.toFixed(1)),
+            interopImportCheckMs: Number(expansionTimingStats.interopImportCheckMs.toFixed(1)),
             likelyMacroModuleMs: Number(expansionTimingStats.likelyMacroModuleMs.toFixed(1)),
             macroExecutionCount: expansionTimingStats.advancedMacroExecutionCount +
               expansionTimingStats.rewriteMacroExecutionCount,
             macroExecutionMs: Number(expansionTimingStats.macroExecutionMs.toFixed(1)),
             moduleEvalMs: Number(expansionTimingStats.moduleEvalMs.toFixed(1)),
             moduleEvalRoots: expansionTimingStats.moduleEvalRoots,
+            packageExportInfoMs: Number(expansionTimingStats.packageExportInfoMs.toFixed(1)),
+            policyValidationMs: Number(expansionTimingStats.policyValidationMs.toFixed(1)),
+            preferredMacroResolutionMs: Number(
+              expansionTimingStats.preferredMacroResolutionMs.toFixed(1),
+            ),
             resolveImportMs: Number(expansionTimingStats.resolveImportMs.toFixed(1)),
             rewriteMacroExecutionCount: expansionTimingStats.rewriteMacroExecutionCount,
             sourceExpansionFiles: expansionTimingStats.sourceExpansionFiles,
             sourceExpansionMs: Number(expansionTimingStats.sourceExpansionMs.toFixed(1)),
+            tsModuleResolutionMs: Number(expansionTimingStats.tsModuleResolutionMs.toFixed(1)),
           },
           { always: true },
         );

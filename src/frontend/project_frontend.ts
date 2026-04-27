@@ -801,6 +801,7 @@ export interface PreparedCompilerHost {
   getCachedPreparedSourceFiles(): readonly PreparedSourceFile[];
   getMacroPlaceholderIndex(): MacroPlaceholderIndex;
   host: ts.CompilerHost;
+  readOriginalFile(fileName: string): string | undefined;
   reuseState: PreparedCompilerHostReuseState;
   sourceFileCacheStats(): {
     projectedDeclarationHits: number;
@@ -4268,6 +4269,7 @@ export function createPreparedCompilerHost(
         specifier,
         resolved.resolvedFileName,
         moduleResolutionHost,
+        { trustMacroAuthoringSourcePath: true },
       )?.sourceEntryPath
       : undefined;
     const resolvedFileName = resolved?.resolvedFileName
@@ -5022,6 +5024,10 @@ export function createPreparedCompilerHost(
           resolvedModule: resolvedModule as ts.ResolvedModuleFull | undefined,
         }));
       },
+    },
+    readOriginalFile(fileName: string): string | undefined {
+      const sourceFileName = toSourceFileName(fileName);
+      return fileOverrides.get(sourceFileName) ?? baseHost.readFile(sourceFileName);
     },
     reuseState: reusableState,
     sourceFileCacheStats(): {
