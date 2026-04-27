@@ -32,6 +32,17 @@ import {
   valueBoundaryFromSemanticType,
 } from './value_boundary_ir.ts';
 
+const SOUNDSCRIPT_BUILTIN_ERROR_INTERNAL_BRAND_KEY = '__ss_error_brand';
+const BUILTIN_ERROR_CONSTRUCTOR_NAMES = new Set([
+  'Error',
+  'EvalError',
+  'RangeError',
+  'ReferenceError',
+  'SyntaxError',
+  'TypeError',
+  'URIError',
+]);
+
 interface SourceSemanticFunctionSignature {
   boundary?: SemanticBoundarySurfaceIR;
   params: readonly {
@@ -1511,6 +1522,10 @@ function lowerExpression(
       };
     }
     case 'new_expression': {
+      const builtinError = lowerBuiltinErrorNewExpression(expression, context);
+      if (builtinError) {
+        return builtinError;
+      }
       const targetName = nextTempLocalName(context, 'class_instance');
       const statements = lowerClassConstructionDeclaration(
         targetName,
@@ -1987,6 +2002,183 @@ function materializeStaticOwnedStringKey(
       },
     }],
   };
+}
+
+function materializeOwnedStringLiteralValue(
+  value: string,
+  context: FunctionLoweringContext,
+  prefix: string,
+): { valueName: string; valueType: 'owned_string_ref'; statements: SemanticStatementIR[] } {
+  context.runtimeFamilies.add('string');
+  const valueName = nextTempLocalName(context, prefix);
+  addLocal(context, valueName, 'owned_string_ref');
+  return {
+    valueName,
+    valueType: 'owned_string_ref',
+    statements: [{
+      kind: 'local_set',
+      name: valueName,
+      value: {
+        kind: 'owned_string_literal',
+        literalId: getStringLiteralId(context, JSON.stringify(value)),
+        representation: 'owned_string_ref',
+      },
+    }],
+  };
+}
+
+function builtinErrorConstructorNameFromExpression(
+  expression: SourceExpressionIR,
+): string | undefined {
+  if (expression.kind === 'identifier' && BUILTIN_ERROR_CONSTRUCTOR_NAMES.has(expression.name)) {
+    return expression.name;
+  }
+  if (
+    expression.kind === 'property_access' &&
+    expression.object.kind === 'identifier' &&
+    expression.object.name === 'globalThis' &&
+    BUILTIN_ERROR_CONSTRUCTOR_NAMES.has(expression.property)
+  ) {
+    return expression.property;
+  }
+  return undefined;
+}
+
+function builtinErrorCauseExpression(
+  expression: SourceExpressionIR,
+  context: FunctionLoweringContext,
+): SourceExpressionIR | undefined {
+  if (expression.kind === 'literal' && expression.literalKind === 'undefined') {
+    return undefined;
+  }
+  if (expression.kind !== 'object_literal') {
+    context.unsupportedKinds.add('builtin_error_options');
+    return undefined;
+  }
+  const cause = expression.properties.find((property) =>
+    !property.computedName && property.name === 'cause'
+  );
+  return cause?.value;
+}
+
+function lowerBuiltinErrorNewExpression(
+  expression: Extract<SourceExpressionIR, { kind: 'new_expression' }>,
+  context: FunctionLoweringContext,
+): SemanticExpressionIR | undefined {
+  const constructorName = builtinErrorConstructorNameFromExpression(expression.callee);
+  if (!constructorName) {
+    return undefined;
+  }
+  if (expression.args.length > 2) {
+    context.unsupportedKinds.add('builtin_error_constructor_arity');
+    return { kind: 'undefined_literal', representation: 'tagged_ref' };
+  }
+
+  context.runtimeFamilies.add('error');
+  context.runtimeFamilies.add('finite_union');
+  const representationName = registerDynamicObjectLayout(context, 'builtin_error');
+  const targetName = nextTempLocalName(context, 'error');
+  addLocal(context, targetName, 'heap_ref');
+  context.objectLocals.set(targetName, {
+    family: 'dynamic_object',
+    representationName,
+    fields: [],
+  });
+
+  const statements: SemanticStatementIR[] = [];
+  const brandKey = materializeStaticOwnedStringKey(
+    SOUNDSCRIPT_BUILTIN_ERROR_INTERNAL_BRAND_KEY,
+    context,
+    'error_brand_key',
+  );
+  const nameKey = materializeStaticOwnedStringKey('name', context, 'error_name_key');
+  const messageKey = materializeStaticOwnedStringKey('message', context, 'error_message_key');
+  const causeKey = materializeStaticOwnedStringKey('cause', context, 'error_cause_key');
+  const nameValue = materializeOwnedStringLiteralValue(
+    constructorName,
+    context,
+    'error_name_value',
+  );
+  const messageValue = expression.args[0]
+    ? materializeExpressionValue(
+      expression.args[0],
+      context,
+      'error_message_value',
+      undefined,
+      'owned_string_ref',
+    )
+    : materializeOwnedStringLiteralValue('', context, 'error_message_value');
+  if (!messageValue) {
+    context.unsupportedKinds.add('builtin_error_message');
+    return { kind: 'undefined_literal', representation: 'tagged_ref' };
+  }
+  const causeExpression = expression.args[1]
+    ? builtinErrorCauseExpression(expression.args[1], context)
+    : undefined;
+  const causeValue = causeExpression
+    ? materializeExpressionValue(
+      causeExpression,
+      context,
+      'error_cause_value',
+      undefined,
+      'tagged_ref',
+    )
+    : (() => {
+      const valueName = nextTempLocalName(context, 'error_cause_value');
+      addLocal(context, valueName, 'tagged_ref');
+      return {
+        valueName,
+        valueType: 'tagged_ref' as const,
+        statements: [{
+          kind: 'local_set' as const,
+          name: valueName,
+          value: { kind: 'undefined_literal', representation: 'tagged_ref' } as const,
+        }],
+      };
+    })();
+  if (!causeValue) {
+    context.unsupportedKinds.add('builtin_error_cause');
+    return { kind: 'undefined_literal', representation: 'tagged_ref' };
+  }
+
+  statements.push(
+    ...brandKey.statements,
+    ...nameKey.statements,
+    ...messageKey.statements,
+    ...causeKey.statements,
+    ...nameValue.statements,
+    ...messageValue.statements,
+    ...causeValue.statements,
+    {
+      kind: 'dynamic_object_new',
+      targetName,
+      representationName,
+      entries: [
+        {
+          keyName: brandKey.keyName,
+          valueName: nameValue.valueName,
+          valueType: nameValue.valueType,
+        },
+        {
+          keyName: nameKey.keyName,
+          valueName: nameValue.valueName,
+          valueType: nameValue.valueType,
+        },
+        {
+          keyName: messageKey.keyName,
+          valueName: messageValue.valueName,
+          valueType: messageValue.valueType,
+        },
+        {
+          keyName: causeKey.keyName,
+          valueName: causeValue.valueName,
+          valueType: causeValue.valueType,
+        },
+      ],
+    },
+  );
+  context.pendingStatements.push(...statements);
+  return { kind: 'local_get', name: targetName, representation: 'heap_ref' };
 }
 
 function homogeneousFieldRepresentation(

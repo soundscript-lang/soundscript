@@ -18,6 +18,7 @@ import {
   normalizeSemanticUnionBoundary,
   type SemanticModuleIR,
   type SemanticRuntimeFamilyId,
+  type SemanticStatementIR,
   type SemanticTypeIR,
 } from './semantic_ir.ts';
 import { createRuntimeManifestFromSemanticModule } from './runtime_manifest_ir.ts';
@@ -58,6 +59,26 @@ function semanticModuleWithFamilies(
     runtimeFamilies,
     diagnostics: [],
   };
+}
+
+function hasSemanticStatementKind(
+  statements: readonly SemanticStatementIR[],
+  kind: SemanticStatementIR['kind'],
+): boolean {
+  return statements.some((statement) => {
+    if (statement.kind === kind) {
+      return true;
+    }
+    if (statement.kind === 'if') {
+      return hasSemanticStatementKind(statement.thenBody, kind) ||
+        hasSemanticStatementKind(statement.elseBody, kind);
+    }
+    if (statement.kind === 'while' || statement.kind === 'do_while') {
+      return hasSemanticStatementKind(statement.body, kind) ||
+        hasSemanticStatementKind(statement.continueBody ?? [], kind);
+    }
+    return false;
+  });
 }
 
 async function createSemanticTypeFixture(
@@ -4345,6 +4366,62 @@ Deno.test('compiler SourceHIR semantic lowering emits throw statements as traps'
 
   assertEquals(manifest.familyRequirements, []);
   assertEquals(scorePlan?.bodyStatus, 'emittable');
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(plan));
+  const result = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(result.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(result.success, true);
+
+  const wasm = await Deno.readFile(wasmPath);
+  const instance = await WebAssembly.instantiate(wasm);
+  const score = instance.instance.exports['main.ts:score'];
+  assertEquals(typeof score, 'function');
+  assertEquals((score as (input: number) => number)(4), 5);
+});
+
+Deno.test('compiler SourceHIR semantic lowering emits builtin Error throw runtime family', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: { strict: true },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        export function score(input: number): number {
+          if (input < 0) {
+            throw new Error("negative");
+          }
+          return input + 1;
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createSourceSemanticSnapshot(program, tempDirectory);
+  const semantic = createSemanticModuleFromSourceHIR(snapshot.source, snapshot.sharedFacts);
+  const manifest = createRuntimeManifestFromSemanticModule(semantic);
+  const plan = createWasmGcModulePlan(semantic, manifest);
+  const scorePlan = plan.functionPlans.find((func) => func.name === 'score');
+  const watPath = join(tempDirectory, 'wasm-gc-source-error-throw.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-source-error-throw.wasm');
+
+  assertEquals(
+    manifest.familyRequirements.map((requirement) => requirement.family),
+    ['dynamic_object', 'error', 'finite_union', 'string'],
+  );
+  assertEquals(scorePlan?.bodyStatus, 'emittable');
+  assertEquals(
+    scorePlan ? hasSemanticStatementKind(scorePlan.body, 'dynamic_object_new') : false,
+    true,
+  );
   await Deno.writeTextFile(watPath, emitWasmGcModulePlan(plan));
   const result = await new Deno.Command('wasm-tools', {
     args: ['parse', watPath, '-o', wasmPath],
