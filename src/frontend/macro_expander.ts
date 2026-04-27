@@ -32,6 +32,10 @@ export type MacroExpanderRegistry = ReadonlyMap<string, ExpandMacroPlaceholder>;
 export const MACRO_EXPANSION_START_MARKER_PREFIX = '__SS_MACRO_EXPANSION_START_';
 export const MACRO_EXPANSION_END_MARKER_PREFIX = '__SS_MACRO_EXPANSION_END_';
 
+export interface MacroExpansionTimingObserver {
+  recordMacroExecution(kind: 'advanced' | 'rewrite', durationMs: number): void;
+}
+
 export interface MacroModule {
   expanders: Readonly<Record<string, ExpandMacroPlaceholder>>;
   moduleName: string;
@@ -275,6 +279,7 @@ function expandAdvancedMacroPlaceholdersInSourceFile(
   rewriteRegistry: MacroExpanderRegistry = new Map(),
   siteKindsBySpecifier: ReadonlyMap<string, ReadonlyMap<string, ImportedMacroSiteKind>> = new Map(),
   annotateExpansions = false,
+  timingObserver?: MacroExpansionTimingObserver,
 ): ts.SourceFile {
   if (registry.size === 0) {
     return sourceFile;
@@ -300,7 +305,9 @@ function expandAdvancedMacroPlaceholdersInSourceFile(
     if (!expander) {
       continue;
     }
+    const start = performance.now();
     const expansion = expander(site.resolved, nestedRegistries);
+    timingObserver?.recordMacroExecution('advanced', performance.now() - start);
     if (expansion) {
       expansions.set(site.resolved.placeholder.id, expansion);
       runtimeImports.push(...(expansion.runtimeImports ?? []));
@@ -1504,6 +1511,7 @@ export function expandMacroPlaceholdersWithRegistry(
   registry: MacroExpanderRegistry,
   preserveMissingExpanders = false,
   annotateExpansions = false,
+  timingObserver?: MacroExpansionTimingObserver,
 ): ts.SourceFile {
   return expandMacroPlaceholdersInSourceFile(sourceFile, collected, (resolved) => {
     const expander = registry.get(resolved.placeholder.invocation.nameText);
@@ -1516,7 +1524,12 @@ export function expandMacroPlaceholdersWithRegistry(
       );
     }
 
-    return expander(resolved);
+    const start = performance.now();
+    try {
+      return expander(resolved);
+    } finally {
+      timingObserver?.recordMacroExecution('rewrite', performance.now() - start);
+    }
   }, annotateExpansions);
 }
 
@@ -1539,6 +1552,9 @@ export function expandPreparedProgramWithRegistry(
       collected,
       advancedRegistry,
       registry,
+      new Map(),
+      false,
+      undefined,
     );
     expandedFiles.set(
       sourceFile.fileName,
@@ -1573,8 +1589,11 @@ export function expandPreparedProgramWithFileRegistries(
   preserveMissingExpanders = false,
   annotateExpansions = false,
   sourceFiles = preparedProgram.program.getSourceFiles(),
+  timingObserver?: MacroExpansionTimingObserver,
 ): ReadonlyMap<string, ts.SourceFile> {
-  const nonDeclarationSourceFiles = sourceFiles.filter((sourceFile) => !sourceFile.isDeclarationFile);
+  const nonDeclarationSourceFiles = sourceFiles.filter((sourceFile) =>
+    !sourceFile.isDeclarationFile
+  );
   const collected = collectResolvedMacroPlaceholders(preparedProgram, nonDeclarationSourceFiles);
   const expandedFiles = new Map<string, ts.SourceFile>();
 
@@ -1592,6 +1611,7 @@ export function expandPreparedProgramWithFileRegistries(
       registry,
       siteKindsBySpecifier,
       annotateExpansions,
+      timingObserver,
     );
     expandedFiles.set(
       sourceFile.fileName,
@@ -1601,6 +1621,7 @@ export function expandPreparedProgramWithFileRegistries(
         registry,
         preserveMissingExpanders,
         annotateExpansions,
+        timingObserver,
       ),
     );
   }

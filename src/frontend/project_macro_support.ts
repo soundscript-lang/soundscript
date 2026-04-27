@@ -1,5 +1,6 @@
 import ts from 'typescript';
 
+import { logCheckerTiming } from '../checker/timing.ts';
 import { createAnnotationLookup } from '../language/annotation_syntax.ts';
 import { dirname, join } from '../platform/path.ts';
 import { SOUND_DIAGNOSTIC_CODES } from '../checker/engine/diagnostic_codes.ts';
@@ -30,7 +31,10 @@ import {
   usesLegacyDefineMacroAuthoring,
 } from './macro_factory_support.ts';
 import { collectImportedNamedBindings } from './macro_site_kind_support.ts';
-import { expandPreparedProgramWithFileRegistries } from './macro_expander.ts';
+import {
+  expandPreparedProgramWithFileRegistries,
+  type MacroExpansionTimingObserver,
+} from './macro_expander.ts';
 import {
   classifyImportedBindingUsage,
   type ImportedBindingUsage,
@@ -267,6 +271,58 @@ export interface MacroModuleCacheStats {
   moduleCacheHits: number;
   moduleCacheInvalidations: number;
   moduleCacheMisses: number;
+}
+
+interface MacroExpansionTimingStats {
+  advancedMacroExecutionCount: number;
+  authorityResolutionMs: number;
+  bindingCacheWriteMs: number;
+  bindingPlanFiles: number;
+  bindingPlanMs: number;
+  definitionLoadMs: number;
+  dependencySignatureMs: number;
+  exportLoadMs: number;
+  generatedStdlibFiles: number;
+  generatedStdlibMs: number;
+  graphCompileFiles: number;
+  graphCompileGraphs: number;
+  graphCompileMs: number;
+  importUsageMs: number;
+  likelyMacroModuleMs: number;
+  macroExecutionMs: number;
+  moduleEvalRoots: number;
+  moduleEvalMs: number;
+  resolveImportMs: number;
+  rewriteMacroExecutionCount: number;
+  sourceExpansionFiles: number;
+  sourceExpansionMs: number;
+}
+
+function createMacroExpansionTimingStats(): MacroExpansionTimingStats {
+  return {
+    advancedMacroExecutionCount: 0,
+    authorityResolutionMs: 0,
+    bindingCacheWriteMs: 0,
+    bindingPlanFiles: 0,
+    bindingPlanMs: 0,
+    definitionLoadMs: 0,
+    dependencySignatureMs: 0,
+    exportLoadMs: 0,
+    generatedStdlibFiles: 0,
+    generatedStdlibMs: 0,
+    graphCompileFiles: 0,
+    graphCompileGraphs: 0,
+    graphCompileMs: 0,
+    importUsageMs: 0,
+    likelyMacroModuleMs: 0,
+    macroExecutionMs: 0,
+    moduleEvalRoots: 0,
+    moduleEvalMs: 0,
+    resolveImportMs: 0,
+    rewriteMacroExecutionCount: 0,
+    sourceExpansionFiles: 0,
+    sourceExpansionMs: 0,
+  };
 }
 
 export interface ProjectMacroEnvironment {
@@ -964,7 +1020,12 @@ export function createProjectMacroEnvironment(
   const macroModuleCandidateCache = new Map<string, boolean>();
   const macroReexportBridgeCache = new Map<string, boolean>();
   const macroModuleScanCache = new Map<string, ReadonlyMap<string, ScannedMacroFactoryExport>>();
+  const macroModuleSourceFileCache = new Map<string, ts.SourceFile>();
   const macroModuleSourceTextCache = new Map<string, string>();
+  const macroModuleCompilationDependencySourceTextsCache = new Map<
+    string,
+    ReadonlyMap<string, string>
+  >();
   const validatedMacroModuleFiles = new Set<string>();
   const definitionsByResolvedFile = new Map<string, ReadonlyMap<string, MacroDefinition>>();
   const exportsByResolvedFile = new Map<string, LoadedNamedMacroExports>();
@@ -1002,6 +1063,30 @@ export function createProjectMacroEnvironment(
   const stableReuseState = getStableProjectMacroEnvironmentReuseState(
     preparedProgram.preparedHost.reuseState,
   );
+  let activeMacroTimingStats: MacroExpansionTimingStats | null = null;
+  let macroModuleEvaluationDepth = 0;
+
+  function recordActiveMacroTiming(
+    key: keyof MacroExpansionTimingStats,
+    value: number,
+  ): void {
+    if (!activeMacroTimingStats) {
+      return;
+    }
+    activeMacroTimingStats[key] += value;
+  }
+
+  function measureActiveMacroTiming<T>(
+    key: keyof MacroExpansionTimingStats,
+    fn: () => T,
+  ): T {
+    const start = performance.now();
+    try {
+      return fn();
+    } finally {
+      recordActiveMacroTiming(key, performance.now() - start);
+    }
+  }
 
   function macroNamesForFile(sourceFile: ts.SourceFile): ReadonlySet<string> {
     const cached = macroNamesByFile.get(sourceFile.fileName);
@@ -1021,12 +1106,23 @@ export function createProjectMacroEnvironment(
     return names;
   }
 
+  function fnv1aHash(text: string, seed = 0x811c9dc5): number {
+    let hash = seed;
+    for (let index = 0; index < text.length; index += 1) {
+      hash ^= text.charCodeAt(index);
+      hash = Math.imul(hash, 0x01000193) >>> 0;
+    }
+    return hash >>> 0;
+  }
+
   function serializeDependencySourceTexts(
     dependencySourceTexts: ReadonlyMap<string, string>,
   ): string {
     return [...dependencySourceTexts.entries()]
       .sort(([left], [right]) => left.localeCompare(right))
-      .map(([fileName, text]) => `${fileName}\u0001${text.length}\u0001${text}`)
+      .map(([fileName, text]) =>
+        `${fileName}\u0001${text.length}\u0001${fnv1aHash(text).toString(16)}`
+      )
       .join('\u0002');
   }
 
@@ -1103,7 +1199,7 @@ export function createProjectMacroEnvironment(
         continue;
       }
       for (
-        const [dependencyFileName, sourceText] of collectDependencySourceTextsForCompilation(
+        const [dependencyFileName, sourceText] of dependencySourceTextsForCompilation(
           authorityBinding.resolvedFileName,
         )
       ) {
@@ -1260,8 +1356,13 @@ export function createProjectMacroEnvironment(
       return cached;
     }
 
+    const dependencySignatureStart = performance.now();
     const signature = serializeDependencySourceTexts(
-      collectDependencySourceTextsForCompilation(fileName),
+      dependencySourceTextsForCompilation(fileName),
+    );
+    recordActiveMacroTiming(
+      'dependencySignatureMs',
+      performance.now() - dependencySignatureStart,
     );
     macroModuleExpansionDependencySignatureCache.set(fileName, signature);
     return signature;
@@ -2017,101 +2118,108 @@ export function createProjectMacroEnvironment(
     specifier: string,
     options: { readonly fromMacroGraph?: boolean } = {},
   ): string | null {
-    const normalizedContainingFileName = toSourceFileName(containingFileName);
-    if (options.fromMacroGraph && isLoadableMacroModuleFile(normalizedContainingFileName)) {
-      validateMacroModuleSourcePolicy(normalizedContainingFileName);
-    }
-    if (specifier === MACRO_API_MODULE_SPECIFIER || builtinDefinitionsBySpecifier.has(specifier)) {
-      return specifier;
-    }
+    const resolveImportStart = performance.now();
+    try {
+      const normalizedContainingFileName = toSourceFileName(containingFileName);
+      if (options.fromMacroGraph && isLoadableMacroModuleFile(normalizedContainingFileName)) {
+        validateMacroModuleSourcePolicy(normalizedContainingFileName);
+      }
+      if (
+        specifier === MACRO_API_MODULE_SPECIFIER || builtinDefinitionsBySpecifier.has(specifier)
+      ) {
+        return specifier;
+      }
 
-    const cacheKey = `${normalizedContainingFileName}\u0000${specifier}`;
-    const cached = resolvedImportCache.get(cacheKey);
-    if (cached !== undefined) {
-      return cached;
-    }
+      const cacheKey = `${normalizedContainingFileName}\u0000${specifier}`;
+      const cached = resolvedImportCache.get(cacheKey);
+      if (cached !== undefined) {
+        return cached;
+      }
 
-    const resolved =
-      resolvePreferredSoundscriptMacroModule(specifier, normalizedContainingFileName) ??
-        ts.resolveModuleName(
+      const resolved =
+        resolvePreferredSoundscriptMacroModule(specifier, normalizedContainingFileName) ??
+          ts.resolveModuleName(
+            specifier,
+            normalizedContainingFileName,
+            preparedProgram.options,
+            resolutionHost,
+            moduleResolutionCache,
+          ).resolvedModule;
+      const resolvedRuntimeFileName = resolved?.resolvedFileName;
+      if (!resolvedRuntimeFileName) {
+        resolvedImportCache.set(cacheKey, null);
+        return null;
+      }
+
+      if (options.fromMacroGraph) {
+        const interopImportRange = findMacroGraphInteropImportRange(
+          normalizedContainingFileName,
           specifier,
-          normalizedContainingFileName,
-          preparedProgram.options,
-          resolutionHost,
-          moduleResolutionCache,
-        ).resolvedModule;
-    const resolvedRuntimeFileName = resolved?.resolvedFileName;
-    if (!resolvedRuntimeFileName) {
-      resolvedImportCache.set(cacheKey, null);
-      return null;
-    }
+        );
+        if (interopImportRange) {
+          throw createMacroModuleError(
+            normalizedContainingFileName,
+            sourceTextForMacroModule(normalizedContainingFileName),
+            `Macro module "${normalizedContainingFileName}" cannot use #[interop] anywhere in its dependency graph. Macro graphs must stay entirely inside soundscript source.`,
+            MACRO_GRAPH_ERROR_CODES.forbiddenInterop,
+            interopImportRange.start,
+            interopImportRange.end,
+          );
+        }
+      }
 
-    if (options.fromMacroGraph) {
-      const interopImportRange = findMacroGraphInteropImportRange(
-        normalizedContainingFileName,
-        specifier,
-      );
-      if (interopImportRange) {
+      if (isProjectedSoundscriptDeclarationFile(resolvedRuntimeFileName)) {
         throw createMacroModuleError(
           normalizedContainingFileName,
           sourceTextForMacroModule(normalizedContainingFileName),
-          `Macro module "${normalizedContainingFileName}" cannot use #[interop] anywhere in its dependency graph. Macro graphs must stay entirely inside soundscript source.`,
+          `Macro module "${normalizedContainingFileName}" cannot import "${specifier}" because macro graphs cannot cross projected declaration boundaries or #[interop] edges.`,
           MACRO_GRAPH_ERROR_CODES.forbiddenInterop,
-          interopImportRange.start,
-          interopImportRange.end,
         );
       }
-    }
 
-    if (isProjectedSoundscriptDeclarationFile(resolvedRuntimeFileName)) {
-      throw createMacroModuleError(
-        normalizedContainingFileName,
-        sourceTextForMacroModule(normalizedContainingFileName),
-        `Macro module "${normalizedContainingFileName}" cannot import "${specifier}" because macro graphs cannot cross projected declaration boundaries or #[interop] edges.`,
-        MACRO_GRAPH_ERROR_CODES.forbiddenInterop,
-      );
-    }
+      const packageMacroSourceEntry = getSoundScriptPackageExportInfoForResolvedModule(
+        specifier,
+        resolvedRuntimeFileName,
+        resolutionHost,
+      )?.sourceEntryPath;
+      const resolvedFileName = packageMacroSourceEntry
+        ? toSourceFileName(packageMacroSourceEntry)
+        : toSourceFileName(resolvedRuntimeFileName);
+      if (!isLoadableMacroModuleFile(resolvedFileName)) {
+        if (isPureMacroReexportBridgeModule(resolvedFileName)) {
+          validateMacroModuleSourcePolicy(resolvedFileName);
+          resolvedImportCache.set(cacheKey, resolvedFileName);
+          return resolvedFileName;
+        }
 
-    const packageMacroSourceEntry = getSoundScriptPackageExportInfoForResolvedModule(
-      specifier,
-      resolvedRuntimeFileName,
-      resolutionHost,
-    )?.sourceEntryPath;
-    const resolvedFileName = packageMacroSourceEntry
-      ? toSourceFileName(packageMacroSourceEntry)
-      : toSourceFileName(resolvedRuntimeFileName);
-    if (!isLoadableMacroModuleFile(resolvedFileName)) {
-      if (isPureMacroReexportBridgeModule(resolvedFileName)) {
-        validateMacroModuleSourcePolicy(resolvedFileName);
-        resolvedImportCache.set(cacheKey, resolvedFileName);
-        return resolvedFileName;
-      }
-
-      const resolvedSourceText =
-        preparedProgram.preparedHost.getPreparedSourceFile(resolvedFileName)?.originalText ??
-          resolutionHost.readFile(resolvedFileName) ??
-          '';
-      const looksLikeMacroModule = sourceTextLooksLikeMacroModule(resolvedSourceText) ||
-        usesLegacyDefineMacroAuthoring(resolvedSourceText);
-      if (looksLikeMacroModule) {
+        const resolvedSourceText =
+          preparedProgram.preparedHost.getPreparedSourceFile(resolvedFileName)?.originalText ??
+            resolutionHost.readFile(resolvedFileName) ??
+            '';
+        const looksLikeMacroModule = sourceTextLooksLikeMacroModule(resolvedSourceText) ||
+          usesLegacyDefineMacroAuthoring(resolvedSourceText);
+        if (looksLikeMacroModule) {
+          throw createMacroModuleError(
+            normalizedContainingFileName,
+            sourceTextForMacroModule(normalizedContainingFileName),
+            `Macro import "${specifier}" resolved to "${resolvedFileName}", but user-authored macro modules must come from a soundscript .macro.sts module.`,
+            MACRO_GRAPH_ERROR_CODES.unsupportedSourceKind,
+          );
+        }
         throw createMacroModuleError(
           normalizedContainingFileName,
           sourceTextForMacroModule(normalizedContainingFileName),
-          `Macro import "${specifier}" resolved to "${resolvedFileName}", but user-authored macro modules must come from a soundscript .macro.sts module.`,
-          MACRO_GRAPH_ERROR_CODES.unsupportedSourceKind,
+          `Macro module "${normalizedContainingFileName}" cannot import non-macro source "${specifier}". Macro graphs may only depend on .macro.sts modules.`,
+          MACRO_GRAPH_ERROR_CODES.nonSoundscriptDependency,
         );
       }
-      throw createMacroModuleError(
-        normalizedContainingFileName,
-        sourceTextForMacroModule(normalizedContainingFileName),
-        `Macro module "${normalizedContainingFileName}" cannot import non-macro source "${specifier}". Macro graphs may only depend on .macro.sts modules.`,
-        MACRO_GRAPH_ERROR_CODES.nonSoundscriptDependency,
-      );
-    }
 
-    validateMacroModuleSourcePolicy(resolvedFileName);
-    resolvedImportCache.set(cacheKey, resolvedFileName);
-    return resolvedFileName;
+      validateMacroModuleSourcePolicy(resolvedFileName);
+      resolvedImportCache.set(cacheKey, resolvedFileName);
+      return resolvedFileName;
+    } finally {
+      recordActiveMacroTiming('resolveImportMs', performance.now() - resolveImportStart);
+    }
   }
 
   function resolvePreferredSoundscriptMacroModule(
@@ -2151,17 +2259,25 @@ export function createProjectMacroEnvironment(
   }
 
   function isLikelyMacroModule(fileName: string): boolean {
-    const cached = macroModuleCandidateCache.get(fileName);
-    if (cached !== undefined) {
-      return cached;
-    }
+    const likelyMacroModuleStart = performance.now();
+    try {
+      const cached = macroModuleCandidateCache.get(fileName);
+      if (cached !== undefined) {
+        return cached;
+      }
 
-    const sourceText = sourceTextForMacroModule(fileName);
-    const result = sourceTextLooksLikeMacroModule(sourceText) ||
-      usesLegacyDefineMacroAuthoring(sourceText) ||
-      isPureMacroReexportBridgeModule(fileName);
-    macroModuleCandidateCache.set(fileName, result);
-    return result;
+      const sourceText = sourceTextForMacroModule(fileName);
+      const result = sourceTextLooksLikeMacroModule(sourceText) ||
+        usesLegacyDefineMacroAuthoring(sourceText) ||
+        isPureMacroReexportBridgeModule(fileName);
+      macroModuleCandidateCache.set(fileName, result);
+      return result;
+    } finally {
+      recordActiveMacroTiming(
+        'likelyMacroModuleMs',
+        performance.now() - likelyMacroModuleStart,
+      );
+    }
   }
 
   function sourceTextForMacroModule(fileName: string): string {
@@ -2180,6 +2296,22 @@ export function createProjectMacroEnvironment(
     return sourceText;
   }
 
+  function sourceFileForMacroModule(fileName: string): ts.SourceFile {
+    const cached = macroModuleSourceFileCache.get(fileName);
+    if (cached) {
+      return cached;
+    }
+    const sourceFile = ts.createSourceFile(
+      fileName,
+      sourceTextForMacroModule(fileName),
+      ts.ScriptTarget.Latest,
+      true,
+      scriptKindForHostFile(fileName),
+    );
+    macroModuleSourceFileCache.set(fileName, sourceFile);
+    return sourceFile;
+  }
+
   function isPureMacroReexportBridgeModule(fileName: string): boolean {
     const cached = macroReexportBridgeCache.get(fileName);
     if (cached !== undefined) {
@@ -2191,14 +2323,7 @@ export function createProjectMacroEnvironment(
       return false;
     }
 
-    const sourceText = sourceTextForMacroModule(fileName);
-    const sourceFile = ts.createSourceFile(
-      fileName,
-      sourceText,
-      ts.ScriptTarget.Latest,
-      true,
-      scriptKindForHostFile(fileName),
-    );
+    const sourceFile = sourceFileForMacroModule(fileName);
 
     let sawReexport = false;
     for (const statement of sourceFile.statements) {
@@ -2231,13 +2356,7 @@ export function createProjectMacroEnvironment(
     }
 
     const sourceText = sourceTextForMacroModule(fileName);
-    const sourceFile = ts.createSourceFile(
-      fileName,
-      sourceText,
-      ts.ScriptTarget.Latest,
-      true,
-      scriptKindForHostFile(fileName),
-    );
+    const sourceFile = sourceFileForMacroModule(fileName);
     const interopIndex = sourceText.indexOf('#[interop]');
     if (interopIndex >= 0) {
       throw createMacroModuleError(
@@ -2394,14 +2513,7 @@ export function createProjectMacroEnvironment(
     fileName: string,
     specifier: string,
   ): { readonly start: number; readonly end: number } | null {
-    const sourceText = sourceTextForMacroModule(fileName);
-    const sourceFile = ts.createSourceFile(
-      fileName,
-      sourceText,
-      ts.ScriptTarget.Latest,
-      true,
-      scriptKindForHostFile(fileName),
-    );
+    const sourceFile = sourceFileForMacroModule(fileName);
     const annotationLookup = createAnnotationLookup(sourceFile);
     for (const statement of sourceFile.statements) {
       if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)) {
@@ -2440,14 +2552,7 @@ export function createProjectMacroEnvironment(
   }
 
   function collectImportedSpecifiersForMacroModule(fileName: string): string[] {
-    const sourceText = sourceTextForMacroModule(fileName);
-    const sourceFile = ts.createSourceFile(
-      fileName,
-      sourceText,
-      ts.ScriptTarget.Latest,
-      true,
-      scriptKindForHostFile(fileName),
-    );
+    const sourceFile = sourceFileForMacroModule(fileName);
     const specifiers: string[] = [];
     for (const statement of sourceFile.statements) {
       if (
@@ -2501,6 +2606,18 @@ export function createProjectMacroEnvironment(
         dependencySourceTexts.set(dependencyFileName, dependencySourceText);
       }
     }
+    return dependencySourceTexts;
+  }
+
+  function dependencySourceTextsForCompilation(
+    fileName: string,
+  ): ReadonlyMap<string, string> {
+    const cached = macroModuleCompilationDependencySourceTextsCache.get(fileName);
+    if (cached) {
+      return cached;
+    }
+    const dependencySourceTexts = collectDependencySourceTextsForCompilation(fileName);
+    macroModuleCompilationDependencySourceTextsCache.set(fileName, dependencySourceTexts);
     return dependencySourceTexts;
   }
 
@@ -2679,94 +2796,101 @@ export function createProjectMacroEnvironment(
     stableCompiledArtifactCache.delete(fileName);
     macroCacheStats.moduleCacheMisses += 1;
 
+    const graphCompileStart = performance.now();
     const dependencySourceTexts = collectDependencySourceTextsForCompilation(fileName);
     const graphRootNames = [...dependencySourceTexts.keys()];
-    const macroTargetProgram = createPreparedProgram({
-      alwaysAvailableMacroSiteKinds,
-      baseHost: createMacroTargetBaseHost(),
-      configuredSoundscriptFileNames: preparedProgram.configuredSoundscriptFileNames,
-      expansionEnabled: false,
-      options: {
-        ...preparedProgram.options,
-        module: ts.ModuleKind.CommonJS,
-        moduleResolution: ts.ModuleResolutionKind.Node10,
-        noEmit: false,
-        target: ts.ScriptTarget.ES2022,
-      },
-      preserveMacroAuthoring: true,
-      reusableCompilerHostState: macroTargetReuseState,
-      rootNames: graphRootNames,
-      runtime: preparedProgram.runtime,
-    });
-    const frontendDiagnostics = macroTargetProgram.frontendDiagnostics().filter((diagnostic) =>
-      diagnostic.category === 'error'
-    );
-    if (frontendDiagnostics.length > 0) {
-      const expansionDisabledDiagnostic = frontendDiagnostics.find((diagnostic) =>
-        diagnostic.code === 'SOUNDSCRIPT_EXPANSION_DISABLED'
+    try {
+      const macroTargetProgram = createPreparedProgram({
+        alwaysAvailableMacroSiteKinds,
+        baseHost: createMacroTargetBaseHost(),
+        configuredSoundscriptFileNames: preparedProgram.configuredSoundscriptFileNames,
+        expansionEnabled: false,
+        options: {
+          ...preparedProgram.options,
+          module: ts.ModuleKind.CommonJS,
+          moduleResolution: ts.ModuleResolutionKind.Node10,
+          noEmit: false,
+          target: ts.ScriptTarget.ES2022,
+        },
+        preserveMacroAuthoring: true,
+        reusableCompilerHostState: macroTargetReuseState,
+        rootNames: graphRootNames,
+        runtime: preparedProgram.runtime,
+      });
+      const frontendDiagnostics = macroTargetProgram.frontendDiagnostics().filter((diagnostic) =>
+        diagnostic.category === 'error'
       );
-      if (expansionDisabledDiagnostic) {
-        const diagnosticFilePath = expansionDisabledDiagnostic.filePath ?? fileName;
+      if (frontendDiagnostics.length > 0) {
+        const expansionDisabledDiagnostic = frontendDiagnostics.find((diagnostic) =>
+          diagnostic.code === 'SOUNDSCRIPT_EXPANSION_DISABLED'
+        );
+        if (expansionDisabledDiagnostic) {
+          const diagnosticFilePath = expansionDisabledDiagnostic.filePath ?? fileName;
+          throw createMacroModuleError(
+            diagnosticFilePath,
+            sourceTextForMacroModule(diagnosticFilePath),
+            `Macro module "${diagnosticFilePath}" cannot contain macro invocations. Macro authoring modules compile as soundscript, but macro syntax is disabled inside the macro target.`,
+            MACRO_GRAPH_ERROR_CODES.forbiddenInvocation,
+            0,
+            0,
+          );
+        }
+
+        const diagnostic = frontendDiagnostics[0]!;
+        const diagnosticFilePath = diagnostic.filePath ?? fileName;
         throw createMacroModuleError(
           diagnosticFilePath,
           sourceTextForMacroModule(diagnosticFilePath),
-          `Macro module "${diagnosticFilePath}" cannot contain macro invocations. Macro authoring modules compile as soundscript, but macro syntax is disabled inside the macro target.`,
-          MACRO_GRAPH_ERROR_CODES.forbiddenInvocation,
-          0,
-          0,
-        );
-      }
-
-      const diagnostic = frontendDiagnostics[0]!;
-      const diagnosticFilePath = diagnostic.filePath ?? fileName;
-      throw createMacroModuleError(
-        diagnosticFilePath,
-        sourceTextForMacroModule(diagnosticFilePath),
-        diagnostic.message,
-        'SOUNDSCRIPT_MACRO_EXPANSION',
-        0,
-        0,
-      );
-    }
-
-    for (const graphFileName of graphRootNames) {
-      const sourceFile = macroTargetProgram.program.getSourceFile(
-        macroTargetProgram.toProgramFileName(graphFileName),
-      );
-      if (!sourceFile) {
-        throw createMacroModuleError(
-          graphFileName,
-          sourceTextForMacroModule(graphFileName),
-          `Failed to compile macro module "${graphFileName}".`,
+          diagnostic.message,
           'SOUNDSCRIPT_MACRO_EXPANSION',
+          0,
+          0,
         );
       }
 
-      const tsDiagnostics = [
-        ...macroTargetProgram.program.getSyntacticDiagnostics(sourceFile),
-        ...macroTargetProgram.program.getSemanticDiagnostics(sourceFile),
-      ].filter((diagnostic) => diagnostic.category === ts.DiagnosticCategory.Error);
-      if (tsDiagnostics.length > 0) {
-        throw createMacroModuleErrorFromDiagnostic(
-          tsDiagnostics[0]!,
+      for (const graphFileName of graphRootNames) {
+        const sourceFile = macroTargetProgram.program.getSourceFile(
+          macroTargetProgram.toProgramFileName(graphFileName),
+        );
+        if (!sourceFile) {
+          throw createMacroModuleError(
+            graphFileName,
+            sourceTextForMacroModule(graphFileName),
+            `Failed to compile macro module "${graphFileName}".`,
+            'SOUNDSCRIPT_MACRO_EXPANSION',
+          );
+        }
+
+        const tsDiagnostics = [
+          ...macroTargetProgram.program.getSyntacticDiagnostics(sourceFile),
+          ...macroTargetProgram.program.getSemanticDiagnostics(sourceFile),
+        ].filter((diagnostic) => diagnostic.category === ts.DiagnosticCategory.Error);
+        if (tsDiagnostics.length > 0) {
+          throw createMacroModuleErrorFromDiagnostic(
+            tsDiagnostics[0]!,
+            graphFileName,
+            `Failed to compile macro module "${graphFileName}".`,
+          );
+        }
+
+        const javaScriptText = emitCommonJsMacroArtifactWithFallback(
+          macroTargetProgram,
+          sourceFile,
           graphFileName,
-          `Failed to compile macro module "${graphFileName}".`,
+          macroTargetProgram.options,
         );
+
+        const artifact: CachedMacroModuleArtifactEntry = {
+          dependencySourceTexts,
+          javaScriptText,
+        };
+        compiledArtifactCache.set(graphFileName, artifact);
+        stableCompiledArtifactCache.set(graphFileName, artifact);
       }
-
-      const javaScriptText = emitCommonJsMacroArtifactWithFallback(
-        macroTargetProgram,
-        sourceFile,
-        graphFileName,
-        macroTargetProgram.options,
-      );
-
-      const artifact: CachedMacroModuleArtifactEntry = {
-        dependencySourceTexts,
-        javaScriptText,
-      };
-      compiledArtifactCache.set(graphFileName, artifact);
-      stableCompiledArtifactCache.set(graphFileName, artifact);
+    } finally {
+      recordActiveMacroTiming('graphCompileMs', performance.now() - graphCompileStart);
+      recordActiveMacroTiming('graphCompileGraphs', 1);
+      recordActiveMacroTiming('graphCompileFiles', graphRootNames.length);
     }
 
     const compiled = compiledArtifactCache.get(fileName);
@@ -2828,17 +2952,28 @@ export function createProjectMacroEnvironment(
         moduleRecord.directDependencies.add(resolved);
         return loadResolvedModuleValue(resolved);
       };
-      moduleRecord.exports = macroModuleEvaluator.evaluateCommonJsModule(
-        compiledArtifact.javaScriptText,
-        {
-          crypto: portableGlobalThis.crypto,
-          exports: moduleRecord.exports,
-          fileName,
-          globalThis: portableGlobalThis,
-          math: portableGlobalThis.Math,
-          require,
-        },
-      );
+      const shouldRecordModuleEval = macroModuleEvaluationDepth === 0;
+      const moduleEvalStart = performance.now();
+      macroModuleEvaluationDepth += 1;
+      try {
+        moduleRecord.exports = macroModuleEvaluator.evaluateCommonJsModule(
+          compiledArtifact.javaScriptText,
+          {
+            crypto: portableGlobalThis.crypto,
+            exports: moduleRecord.exports,
+            fileName,
+            globalThis: portableGlobalThis,
+            math: portableGlobalThis.Math,
+            require,
+          },
+        );
+      } finally {
+        macroModuleEvaluationDepth -= 1;
+        if (shouldRecordModuleEval) {
+          recordActiveMacroTiming('moduleEvalMs', performance.now() - moduleEvalStart);
+          recordActiveMacroTiming('moduleEvalRoots', 1);
+        }
+      }
     } catch (error) {
       if (error instanceof MacroError) {
         throw error;
@@ -2865,6 +3000,7 @@ export function createProjectMacroEnvironment(
     }
 
     let definitions: ReadonlyMap<string, MacroDefinition>;
+    const definitionLoadStart = performance.now();
     try {
       definitions = collectNamedMacroDefinitions(
         fileName,
@@ -2886,6 +3022,7 @@ export function createProjectMacroEnvironment(
         'SOUNDSCRIPT_MACRO_EXPANSION',
       );
     }
+    recordActiveMacroTiming('definitionLoadMs', performance.now() - definitionLoadStart);
     definitionsByResolvedFile.set(fileName, definitions);
     return definitions;
   }
@@ -2897,6 +3034,7 @@ export function createProjectMacroEnvironment(
     }
 
     let exports: LoadedNamedMacroExports;
+    const exportLoadStart = performance.now();
     try {
       exports = collectNamedMacroExports(
         fileName,
@@ -2920,6 +3058,7 @@ export function createProjectMacroEnvironment(
         'SOUNDSCRIPT_MACRO_EXPANSION',
       );
     }
+    recordActiveMacroTiming('exportLoadMs', performance.now() - exportLoadStart);
     exportsByResolvedFile.set(fileName, exports);
     return exports;
   }
@@ -2960,13 +3099,7 @@ export function createProjectMacroEnvironment(
       }
 
       const sourceText = sourceTextForMacroModule(fileName);
-      const sourceFile = ts.createSourceFile(
-        fileName,
-        sourceText,
-        ts.ScriptTarget.Latest,
-        true,
-        scriptKindForHostFile(fileName),
-      );
+      const sourceFile = sourceFileForMacroModule(fileName);
       const importedBindingsByLocalName = new Map(
         collectImportedNamedBindings(fileName, sourceText)
           .map((binding) => [binding.localName, binding] as const),
@@ -3115,6 +3248,7 @@ export function createProjectMacroEnvironment(
       macroCacheStats.bindingPlanCacheMisses += 1;
     }
 
+    const bindingPlanStart = performance.now();
     const definitions = new Map<string, MacroDefinition>();
     const registry = new Map<string, RewriteMacroExpander>();
     const advancedRegistry = new Map<string, AdvancedMacroExpander>();
@@ -3188,9 +3322,11 @@ export function createProjectMacroEnvironment(
       }
 
       for (const { localName, exportName } of candidateBindings) {
+        const authorityStart = performance.now();
         const authority = builtinDefinitions
           ? { dependencyFiles: new Set<string>(), exportName, resolvedFileName: specifier }
           : resolveMacroBindingAuthority(resolved, exportName);
+        recordActiveMacroTiming('authorityResolutionMs', performance.now() - authorityStart);
         if (!authority) {
           continue;
         }
@@ -3253,6 +3389,7 @@ export function createProjectMacroEnvironment(
 
     const originalFileName = preparedProgram.toSourceFileName(sourceFile.fileName);
     const preparedSource = preparedProgram.preparedHost.getPreparedSourceFile(originalFileName);
+    const importUsageStart = performance.now();
     const classificationSourceFile = ts.createSourceFile(
       originalFileName,
       preparedSource?.originalText ?? sourceFile.text,
@@ -3272,6 +3409,7 @@ export function createProjectMacroEnvironment(
         importedBindingUsage.set(localName, 'runtimeOnly');
       }
     }
+    recordActiveMacroTiming('importUsageMs', performance.now() - importUsageStart);
 
     const loaded = {
       advancedRegistry,
@@ -3281,6 +3419,7 @@ export function createProjectMacroEnvironment(
       registry,
       siteKindsBySpecifier,
     };
+    const bindingCacheWriteStart = performance.now();
     storeCachedBindingPlan(
       sourceFile.fileName,
       createCachedPerFileMacroBindingPlanEntry(
@@ -3291,7 +3430,10 @@ export function createProjectMacroEnvironment(
         resolutionDependencyFiles,
       ),
     );
+    recordActiveMacroTiming('bindingCacheWriteMs', performance.now() - bindingCacheWriteStart);
     bindingsByFile.set(sourceFile.fileName, loaded);
+    recordActiveMacroTiming('bindingPlanMs', performance.now() - bindingPlanStart);
+    recordActiveMacroTiming('bindingPlanFiles', 1);
     return loaded;
   }
 
@@ -3326,109 +3468,67 @@ export function createProjectMacroEnvironment(
       preserveMissingExpanders = false,
       annotateExpansions = false,
     ): ReadonlyMap<string, ts.SourceFile> {
-      const expansionModeKey = createExpandedFilesModeKey(
-        preserveRemovedImportStatements,
-        preserveMissingExpanders,
-        annotateExpansions,
-      );
-      const cachedExpandedFiles = stableReuseState.expandedFilesByMode.get(expansionModeKey);
-      const hadReusableMacroState = cachedExpandedFiles !== undefined ||
-        stableReuseState.bindingPlansByFile.size > 0 ||
-        stableReuseState.dependencySourceTextsByFile.size > 0 ||
-        stableReuseState.expandedFilesByMode.size > 0;
-      const expandedFiles = cachedExpandedFiles ?? new Map<string, ts.SourceFile>();
-      stableReuseState.expandedFilesByMode.set(expansionModeKey, expandedFiles);
-      const registriesByFile = new Map<
-        string,
-        {
-          registry: ReadonlyMap<string, RewriteMacroExpander>;
-          advancedRegistry: ReadonlyMap<string, AdvancedMacroExpander>;
-          siteKindsBySpecifier: ReadonlyMap<string, ReadonlyMap<string, ImportedMacroSiteKind>>;
-        }
-      >();
-      const bindingUsageByFile = new Map<string, ReadonlyMap<string, ImportedBindingUsage>>();
-      const expansionCacheKeyByFile = new Map<string, string>();
-      const hasBindingsByFile = new Map<string, boolean>();
-      const expansionCache = preparedProgram.preparedHost.reuseState.expandedMacroSourceFiles;
-      const macroSourceFiles: ts.SourceFile[] = [];
-      const currentProgramSourceFiles = new Set(
-        [...preparedProgram.preparedHost.reuseState.programSourceFiles].filter(
-          isExpandableProgramSourceFile,
-        ),
-      );
-      const removedProgramSourceFiles = [
-        ...preparedProgram.preparedHost.reuseState
-          .removedProgramSourceFiles,
-      ].filter(isExpandableProgramSourceFile);
-      const affectedSourceFiles = new Set<string>();
+      const expansionTimingStats = createMacroExpansionTimingStats();
+      const previousActiveMacroTimingStats = activeMacroTimingStats;
+      const expandDetailsStart = performance.now();
+      const timingObserver: MacroExpansionTimingObserver = {
+        recordMacroExecution(kind, durationMs): void {
+          recordActiveMacroTiming('macroExecutionMs', durationMs);
+          recordActiveMacroTiming(
+            kind === 'advanced' ? 'advancedMacroExecutionCount' : 'rewriteMacroExecutionCount',
+            1,
+          );
+        },
+      };
+      activeMacroTimingStats = expansionTimingStats;
 
-      for (const removedFileName of removedProgramSourceFiles) {
-        clearCachedBindingPlan(removedFileName);
-        expansionCache.delete(removedFileName);
-        for (const modeExpandedFiles of stableReuseState.expandedFilesByMode.values()) {
-          modeExpandedFiles.delete(removedFileName);
-        }
-        const removedSourcePath = preparedProgram.toSourceFileName(removedFileName);
-        for (
-          const dependentFileName of stableReuseState.dependentFilesByDependencyFile.get(
-            removedSourcePath,
-          ) ?? []
-        ) {
-          if (currentProgramSourceFiles.has(dependentFileName)) {
-            affectedSourceFiles.add(dependentFileName);
+      const runExpansion = (): ReadonlyMap<string, ts.SourceFile> => {
+        const expansionModeKey = createExpandedFilesModeKey(
+          preserveRemovedImportStatements,
+          preserveMissingExpanders,
+          annotateExpansions,
+        );
+        const cachedExpandedFiles = stableReuseState.expandedFilesByMode.get(expansionModeKey);
+        const hadReusableMacroState = cachedExpandedFiles !== undefined ||
+          stableReuseState.bindingPlansByFile.size > 0 ||
+          stableReuseState.dependencySourceTextsByFile.size > 0 ||
+          stableReuseState.expandedFilesByMode.size > 0;
+        const expandedFiles = cachedExpandedFiles ?? new Map<string, ts.SourceFile>();
+        stableReuseState.expandedFilesByMode.set(expansionModeKey, expandedFiles);
+        const registriesByFile = new Map<
+          string,
+          {
+            registry: ReadonlyMap<string, RewriteMacroExpander>;
+            advancedRegistry: ReadonlyMap<string, AdvancedMacroExpander>;
+            siteKindsBySpecifier: ReadonlyMap<string, ReadonlyMap<string, ImportedMacroSiteKind>>;
           }
-        }
-      }
+        >();
+        const bindingUsageByFile = new Map<string, ReadonlyMap<string, ImportedBindingUsage>>();
+        const expansionCacheKeyByFile = new Map<string, string>();
+        const hasBindingsByFile = new Map<string, boolean>();
+        const expansionCache = preparedProgram.preparedHost.reuseState.expandedMacroSourceFiles;
+        const macroSourceFiles: ts.SourceFile[] = [];
+        const currentProgramSourceFiles = new Set(
+          [...preparedProgram.preparedHost.reuseState.programSourceFiles].filter(
+            isExpandableProgramSourceFile,
+          ),
+        );
+        const removedProgramSourceFiles = [
+          ...preparedProgram.preparedHost.reuseState
+            .removedProgramSourceFiles,
+        ].filter(isExpandableProgramSourceFile);
+        const affectedSourceFiles = new Set<string>();
 
-      if (!processedPreparedProgramChangedMacroFiles) {
-        processedPreparedProgramChangedMacroFiles = true;
-        const changedMacroModuleFiles = hadReusableMacroState
-          ? [
-            ...preparedProgram.preparedHost.reuseState.changedProgramSourceFiles,
-          ].filter((changedFileName) => {
-            const changedSourcePath = preparedProgram.toSourceFileName(changedFileName);
-            if (isSoundscriptMacroSourceFile(changedSourcePath)) {
-              return true;
-            }
-            try {
-              return isLikelyMacroModule(changedSourcePath);
-            } catch {
-              return false;
-            }
-          })
-          : [];
-        if (changedMacroModuleFiles.length > 0) {
-          stableCompiledArtifactCache.clear();
-          compiledArtifactCache.clear();
-          preparedProgram.preparedHost.reuseState.builtinAnnotatedSourceFiles.clear();
-          preparedProgram.preparedHost.reuseState.builtinFinalSourceFiles.clear();
-          for (const currentFileName of currentProgramSourceFiles) {
-            affectedSourceFiles.add(currentFileName);
+        for (const removedFileName of removedProgramSourceFiles) {
+          clearCachedBindingPlan(removedFileName);
+          expansionCache.delete(removedFileName);
+          for (const modeExpandedFiles of stableReuseState.expandedFilesByMode.values()) {
+            modeExpandedFiles.delete(removedFileName);
           }
-        }
-      }
-
-      if (!cachedExpandedFiles) {
-        for (const fileName of currentProgramSourceFiles) {
-          affectedSourceFiles.add(fileName);
-        }
-      } else {
-        for (
-          const [dependencyFileName, cachedSourceText] of stableReuseState
-            .dependencySourceTextsByFile
-        ) {
-          let currentSourceText: string | undefined;
-          try {
-            currentSourceText = sourceTextForMacroModule(dependencyFileName);
-          } catch {
-            currentSourceText = undefined;
-          }
-          if (currentSourceText === cachedSourceText) {
-            continue;
-          }
+          const removedSourcePath = preparedProgram.toSourceFileName(removedFileName);
           for (
             const dependentFileName of stableReuseState.dependentFilesByDependencyFile.get(
-              dependencyFileName,
+              removedSourcePath,
             ) ?? []
           ) {
             if (currentProgramSourceFiles.has(dependentFileName)) {
@@ -3436,56 +3536,176 @@ export function createProjectMacroEnvironment(
             }
           }
         }
-        for (
-          const changedFileName of preparedProgram.preparedHost.reuseState.changedProgramSourceFiles
-        ) {
-          if (!isExpandableProgramSourceFile(changedFileName)) {
-            continue;
-          }
-          affectedSourceFiles.add(changedFileName);
-          const changedSourcePath = preparedProgram.toSourceFileName(changedFileName);
-          for (
-            const dependentFileName of stableReuseState.dependentFilesByDependencyFile.get(
-              changedSourcePath,
-            ) ?? []
-          ) {
-            if (currentProgramSourceFiles.has(dependentFileName)) {
-              affectedSourceFiles.add(dependentFileName);
+
+        if (!processedPreparedProgramChangedMacroFiles) {
+          processedPreparedProgramChangedMacroFiles = true;
+          const changedMacroModuleFiles = hadReusableMacroState
+            ? [
+              ...preparedProgram.preparedHost.reuseState.changedProgramSourceFiles,
+            ].filter((changedFileName) => {
+              const changedSourcePath = preparedProgram.toSourceFileName(changedFileName);
+              if (isSoundscriptMacroSourceFile(changedSourcePath)) {
+                return true;
+              }
+              try {
+                return isLikelyMacroModule(changedSourcePath);
+              } catch {
+                return false;
+              }
+            })
+            : [];
+          if (changedMacroModuleFiles.length > 0) {
+            stableCompiledArtifactCache.clear();
+            compiledArtifactCache.clear();
+            preparedProgram.preparedHost.reuseState.builtinAnnotatedSourceFiles.clear();
+            preparedProgram.preparedHost.reuseState.builtinFinalSourceFiles.clear();
+            for (const currentFileName of currentProgramSourceFiles) {
+              affectedSourceFiles.add(currentFileName);
             }
           }
         }
-        for (const fileName of currentProgramSourceFiles) {
-          if (!expandedFiles.has(fileName)) {
+
+        if (!cachedExpandedFiles) {
+          for (const fileName of currentProgramSourceFiles) {
             affectedSourceFiles.add(fileName);
           }
-        }
-        for (const fileName of currentProgramSourceFiles) {
-          if (!affectedSourceFiles.has(fileName) && expandedFiles.has(fileName)) {
-            macroCacheStats.expandedFileCacheHits += 1;
+        } else {
+          for (
+            const [dependencyFileName, cachedSourceText] of stableReuseState
+              .dependencySourceTextsByFile
+          ) {
+            let currentSourceText: string | undefined;
+            try {
+              currentSourceText = sourceTextForMacroModule(dependencyFileName);
+            } catch {
+              currentSourceText = undefined;
+            }
+            if (currentSourceText === cachedSourceText) {
+              continue;
+            }
+            for (
+              const dependentFileName of stableReuseState.dependentFilesByDependencyFile.get(
+                dependencyFileName,
+              ) ?? []
+            ) {
+              if (currentProgramSourceFiles.has(dependentFileName)) {
+                affectedSourceFiles.add(dependentFileName);
+              }
+            }
+          }
+          for (
+            const changedFileName of preparedProgram.preparedHost.reuseState
+              .changedProgramSourceFiles
+          ) {
+            if (!isExpandableProgramSourceFile(changedFileName)) {
+              continue;
+            }
+            affectedSourceFiles.add(changedFileName);
+            const changedSourcePath = preparedProgram.toSourceFileName(changedFileName);
+            for (
+              const dependentFileName of stableReuseState.dependentFilesByDependencyFile.get(
+                changedSourcePath,
+              ) ?? []
+            ) {
+              if (currentProgramSourceFiles.has(dependentFileName)) {
+                affectedSourceFiles.add(dependentFileName);
+              }
+            }
+          }
+          for (const fileName of currentProgramSourceFiles) {
+            if (!expandedFiles.has(fileName)) {
+              affectedSourceFiles.add(fileName);
+            }
+          }
+          for (const fileName of currentProgramSourceFiles) {
+            if (!affectedSourceFiles.has(fileName) && expandedFiles.has(fileName)) {
+              macroCacheStats.expandedFileCacheHits += 1;
+            }
+          }
+          if (affectedSourceFiles.size === 0) {
+            return expandedFiles;
           }
         }
-        if (affectedSourceFiles.size === 0) {
-          return expandedFiles;
-        }
-      }
 
-      for (const fileName of affectedSourceFiles) {
-        const sourceFile = preparedProgram.program.getSourceFile(fileName);
-        if (!sourceFile || sourceFile.isDeclarationFile) {
-          expandedFiles.delete(fileName);
-          continue;
-        }
-        const cachedExpandedSourceFile = expansionCache.get(sourceFile.fileName);
-        const macroNames = macroNamesForFile(sourceFile);
-        if (macroNames.size === 0) {
-          clearCachedBindingPlan(sourceFile.fileName);
-          const sourceFileName = preparedProgram.toSourceFileName(sourceFile.fileName);
-          const preparedSource = preparedProgram.preparedHost.getPreparedSourceFile(sourceFileName);
-          const nonMacroExpansionCacheKey = createNonMacroExpansionCacheKey(
+        for (const fileName of affectedSourceFiles) {
+          const sourceFile = preparedProgram.program.getSourceFile(fileName);
+          if (!sourceFile || sourceFile.isDeclarationFile) {
+            expandedFiles.delete(fileName);
+            continue;
+          }
+          const cachedExpandedSourceFile = expansionCache.get(sourceFile.fileName);
+          const macroNames = macroNamesForFile(sourceFile);
+          if (macroNames.size === 0) {
+            clearCachedBindingPlan(sourceFile.fileName);
+            const sourceFileName = preparedProgram.toSourceFileName(sourceFile.fileName);
+            const preparedSource = preparedProgram.preparedHost.getPreparedSourceFile(
+              sourceFileName,
+            );
+            const nonMacroExpansionCacheKey = createNonMacroExpansionCacheKey(
+              sourceFile,
+              preparedSource,
+            );
+            if (cachedExpandedSourceFile?.cacheKey === nonMacroExpansionCacheKey) {
+              macroCacheStats.expandedFileCacheHits += 1;
+              expandedFiles.set(sourceFile.fileName, cachedExpandedSourceFile.sourceFile);
+              continue;
+            }
+            if (cachedExpandedSourceFile) {
+              macroCacheStats.expandedFileCacheInvalidations += 1;
+            } else {
+              macroCacheStats.expandedFileCacheMisses += 1;
+            }
+            const expandedSourceFile = preparedSource
+              ? ts.createSourceFile(
+                sourceFile.fileName,
+                preparedSource.originalText,
+                preparedProgram.options.target ?? ts.ScriptTarget.Latest,
+                true,
+                scriptKindForHostFile(sourceFile.fileName),
+              )
+              : sourceFile;
+            expandedFiles.set(sourceFile.fileName, expandedSourceFile);
+            expansionCache.set(sourceFile.fileName, {
+              cacheKey: nonMacroExpansionCacheKey,
+              sourceFile: expandedSourceFile,
+            });
+            continue;
+          }
+
+          const cachedBindingPlan = stableReuseState.bindingPlansByFile.get(sourceFile.fileName);
+          if (
+            cachedExpandedSourceFile && cachedBindingPlan &&
+            isCachedMacroBindingPlanValid(sourceFile, cachedBindingPlan)
+          ) {
+            const sourceFileName = preparedProgram.toSourceFileName(sourceFile.fileName);
+            const preparedSource = preparedProgram.preparedHost.getPreparedSourceFile(
+              sourceFileName,
+            );
+            const cachedExpansionCacheKey = createExpansionCacheKeyFromPreparedState(
+              sourceFile,
+              cachedBindingPlan.expansionDependencySignature,
+              cachedBindingPlan.importedBindingUsage,
+              preserveRemovedImportStatements,
+              preserveMissingExpanders,
+              annotateExpansions,
+              preparedSource,
+            );
+            if (cachedExpandedSourceFile.cacheKey === cachedExpansionCacheKey) {
+              macroCacheStats.expandedFileCacheHits += 1;
+              expandedFiles.set(sourceFile.fileName, cachedExpandedSourceFile.sourceFile);
+              continue;
+            }
+          }
+
+          const bindings = bindingsForSourceFile(sourceFile);
+          const expansionCacheKey = createExpansionCacheKey(
             sourceFile,
-            preparedSource,
+            bindings,
+            preserveRemovedImportStatements,
+            preserveMissingExpanders,
+            annotateExpansions,
           );
-          if (cachedExpandedSourceFile?.cacheKey === nonMacroExpansionCacheKey) {
+          if (cachedExpandedSourceFile?.cacheKey === expansionCacheKey) {
             macroCacheStats.expandedFileCacheHits += 1;
             expandedFiles.set(sourceFile.fileName, cachedExpandedSourceFile.sourceFile);
             continue;
@@ -3495,122 +3715,114 @@ export function createProjectMacroEnvironment(
           } else {
             macroCacheStats.expandedFileCacheMisses += 1;
           }
-          const expandedSourceFile = preparedSource
-            ? ts.createSourceFile(
-              sourceFile.fileName,
-              preparedSource.originalText,
-              preparedProgram.options.target ?? ts.ScriptTarget.Latest,
-              true,
-              scriptKindForHostFile(sourceFile.fileName),
-            )
-            : sourceFile;
-          expandedFiles.set(sourceFile.fileName, expandedSourceFile);
-          expansionCache.set(sourceFile.fileName, {
-            cacheKey: nonMacroExpansionCacheKey,
-            sourceFile: expandedSourceFile,
+          registriesByFile.set(sourceFile.fileName, {
+            registry: bindings.registry,
+            advancedRegistry: bindings.advancedRegistry,
+            siteKindsBySpecifier: bindings.siteKindsBySpecifier,
           });
-          continue;
+          expansionCacheKeyByFile.set(sourceFile.fileName, expansionCacheKey);
+          bindingUsageByFile.set(sourceFile.fileName, bindings.importedBindingUsage);
+          hasBindingsByFile.set(sourceFile.fileName, hasResolvedMacroBindings(bindings));
+          macroSourceFiles.push(sourceFile);
         }
 
-        const cachedBindingPlan = stableReuseState.bindingPlansByFile.get(sourceFile.fileName);
-        if (
-          cachedExpandedSourceFile && cachedBindingPlan &&
-          isCachedMacroBindingPlanValid(sourceFile, cachedBindingPlan)
-        ) {
-          const sourceFileName = preparedProgram.toSourceFileName(sourceFile.fileName);
-          const preparedSource = preparedProgram.preparedHost.getPreparedSourceFile(sourceFileName);
-          const cachedExpansionCacheKey = createExpansionCacheKeyFromPreparedState(
-            sourceFile,
-            cachedBindingPlan.expansionDependencySignature,
-            cachedBindingPlan.importedBindingUsage,
-            preserveRemovedImportStatements,
-            preserveMissingExpanders,
-            annotateExpansions,
-            preparedSource,
-          );
-          if (cachedExpandedSourceFile.cacheKey === cachedExpansionCacheKey) {
-            macroCacheStats.expandedFileCacheHits += 1;
-            expandedFiles.set(sourceFile.fileName, cachedExpandedSourceFile.sourceFile);
-            continue;
+        recordActiveMacroTiming('sourceExpansionFiles', macroSourceFiles.length);
+        const expanded = macroSourceFiles.length > 0
+          ? measureActiveMacroTiming(
+            'sourceExpansionMs',
+            () =>
+              expandPreparedProgramWithFileRegistries(
+                preparedProgram,
+                registriesByFile,
+                preserveMissingExpanders,
+                annotateExpansions,
+                macroSourceFiles,
+                timingObserver,
+              ),
+          )
+          : new Map<string, ts.SourceFile>();
+        for (const [fileName, sourceFile] of expanded.entries()) {
+          let finalExpandedSourceFile: ts.SourceFile;
+          if (!hasBindingsByFile.get(fileName)) {
+            const sourceFileName = preparedProgram.toSourceFileName(fileName);
+            const preparedSource = preparedProgram.preparedHost.getPreparedSourceFile(
+              sourceFileName,
+            );
+            finalExpandedSourceFile = preparedSource
+              ? ts.createSourceFile(
+                fileName,
+                preparedSource.originalText,
+                preparedProgram.options.target ?? ts.ScriptTarget.Latest,
+                true,
+                scriptKindForHostFile(fileName),
+              )
+              : sourceFile;
+          } else {
+            finalExpandedSourceFile = stripCompileTimeOnlyImportedBindings(
+              sourceFile,
+              bindingUsageByFile.get(fileName) ?? new Map(),
+              preserveRemovedImportStatements,
+            );
+            const generatedStdlibStart = performance.now();
+            finalExpandedSourceFile = expandGeneratedStdlibMacros(
+              finalExpandedSourceFile,
+              preserveRemovedImportStatements,
+              preserveMissingExpanders,
+              annotateExpansions,
+            );
+            recordActiveMacroTiming('generatedStdlibMs', performance.now() - generatedStdlibStart);
+            recordActiveMacroTiming('generatedStdlibFiles', 1);
+          }
+
+          expandedFiles.set(fileName, finalExpandedSourceFile);
+          const expansionCacheKey = expansionCacheKeyByFile.get(fileName);
+          if (expansionCacheKey !== undefined) {
+            expansionCache.set(fileName, {
+              cacheKey: expansionCacheKey,
+              sourceFile: finalExpandedSourceFile,
+            });
           }
         }
+        return expandedFiles;
+      };
 
-        const bindings = bindingsForSourceFile(sourceFile);
-        const expansionCacheKey = createExpansionCacheKey(
-          sourceFile,
-          bindings,
-          preserveRemovedImportStatements,
-          preserveMissingExpanders,
-          annotateExpansions,
+      try {
+        return runExpansion();
+      } finally {
+        const durationMs = performance.now() - expandDetailsStart;
+        logCheckerTiming(
+          'project.prepare.macro.expandDetails',
+          durationMs,
+          {
+            advancedMacroExecutionCount: expansionTimingStats.advancedMacroExecutionCount,
+            authorityResolutionMs: Number(expansionTimingStats.authorityResolutionMs.toFixed(1)),
+            bindingCacheWriteMs: Number(expansionTimingStats.bindingCacheWriteMs.toFixed(1)),
+            bindingPlanFiles: expansionTimingStats.bindingPlanFiles,
+            bindingPlanMs: Number(expansionTimingStats.bindingPlanMs.toFixed(1)),
+            definitionLoadMs: Number(expansionTimingStats.definitionLoadMs.toFixed(1)),
+            dependencySignatureMs: Number(expansionTimingStats.dependencySignatureMs.toFixed(1)),
+            exportLoadMs: Number(expansionTimingStats.exportLoadMs.toFixed(1)),
+            generatedStdlibFiles: expansionTimingStats.generatedStdlibFiles,
+            generatedStdlibMs: Number(expansionTimingStats.generatedStdlibMs.toFixed(1)),
+            graphCompileFiles: expansionTimingStats.graphCompileFiles,
+            graphCompileGraphs: expansionTimingStats.graphCompileGraphs,
+            graphCompileMs: Number(expansionTimingStats.graphCompileMs.toFixed(1)),
+            importUsageMs: Number(expansionTimingStats.importUsageMs.toFixed(1)),
+            likelyMacroModuleMs: Number(expansionTimingStats.likelyMacroModuleMs.toFixed(1)),
+            macroExecutionCount: expansionTimingStats.advancedMacroExecutionCount +
+              expansionTimingStats.rewriteMacroExecutionCount,
+            macroExecutionMs: Number(expansionTimingStats.macroExecutionMs.toFixed(1)),
+            moduleEvalMs: Number(expansionTimingStats.moduleEvalMs.toFixed(1)),
+            moduleEvalRoots: expansionTimingStats.moduleEvalRoots,
+            resolveImportMs: Number(expansionTimingStats.resolveImportMs.toFixed(1)),
+            rewriteMacroExecutionCount: expansionTimingStats.rewriteMacroExecutionCount,
+            sourceExpansionFiles: expansionTimingStats.sourceExpansionFiles,
+            sourceExpansionMs: Number(expansionTimingStats.sourceExpansionMs.toFixed(1)),
+          },
+          { always: true },
         );
-        if (cachedExpandedSourceFile?.cacheKey === expansionCacheKey) {
-          macroCacheStats.expandedFileCacheHits += 1;
-          expandedFiles.set(sourceFile.fileName, cachedExpandedSourceFile.sourceFile);
-          continue;
-        }
-        if (cachedExpandedSourceFile) {
-          macroCacheStats.expandedFileCacheInvalidations += 1;
-        } else {
-          macroCacheStats.expandedFileCacheMisses += 1;
-        }
-        registriesByFile.set(sourceFile.fileName, {
-          registry: bindings.registry,
-          advancedRegistry: bindings.advancedRegistry,
-          siteKindsBySpecifier: bindings.siteKindsBySpecifier,
-        });
-        expansionCacheKeyByFile.set(sourceFile.fileName, expansionCacheKey);
-        bindingUsageByFile.set(sourceFile.fileName, bindings.importedBindingUsage);
-        hasBindingsByFile.set(sourceFile.fileName, hasResolvedMacroBindings(bindings));
-        macroSourceFiles.push(sourceFile);
+        activeMacroTimingStats = previousActiveMacroTimingStats;
       }
-
-      const expanded = macroSourceFiles.length > 0
-        ? expandPreparedProgramWithFileRegistries(
-          preparedProgram,
-          registriesByFile,
-          preserveMissingExpanders,
-          annotateExpansions,
-          macroSourceFiles,
-        )
-        : new Map<string, ts.SourceFile>();
-      for (const [fileName, sourceFile] of expanded.entries()) {
-        let finalExpandedSourceFile: ts.SourceFile;
-        if (!hasBindingsByFile.get(fileName)) {
-          const sourceFileName = preparedProgram.toSourceFileName(fileName);
-          const preparedSource = preparedProgram.preparedHost.getPreparedSourceFile(sourceFileName);
-          finalExpandedSourceFile = preparedSource
-            ? ts.createSourceFile(
-              fileName,
-              preparedSource.originalText,
-              preparedProgram.options.target ?? ts.ScriptTarget.Latest,
-              true,
-              scriptKindForHostFile(fileName),
-            )
-            : sourceFile;
-        } else {
-          finalExpandedSourceFile = stripCompileTimeOnlyImportedBindings(
-            sourceFile,
-            bindingUsageByFile.get(fileName) ?? new Map(),
-            preserveRemovedImportStatements,
-          );
-          finalExpandedSourceFile = expandGeneratedStdlibMacros(
-            finalExpandedSourceFile,
-            preserveRemovedImportStatements,
-            preserveMissingExpanders,
-            annotateExpansions,
-          );
-        }
-
-        expandedFiles.set(fileName, finalExpandedSourceFile);
-        const expansionCacheKey = expansionCacheKeyByFile.get(fileName);
-        if (expansionCacheKey !== undefined) {
-          expansionCache.set(fileName, {
-            cacheKey: expansionCacheKey,
-            sourceFile: finalExpandedSourceFile,
-          });
-        }
-      }
-      return expandedFiles;
     },
     trackedDependencyFilesForFile(sourceFile: ts.SourceFile): readonly string[] {
       try {

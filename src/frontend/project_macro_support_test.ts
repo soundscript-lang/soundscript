@@ -445,6 +445,53 @@ Deno.test('createProjectMacroEnvironment ignores macro-looking generated string 
   assert(!printed.includes('__sts_macro_stmt'));
 });
 
+Deno.test('createProjectMacroEnvironment reports macro expansion detail timing', () => {
+  const originalTimingEnv = Deno.env.get('SOUNDSCRIPT_CHECKER_TIMING');
+  const originalError = console.error;
+  const logs: string[] = [];
+  console.error = (...args: unknown[]) => {
+    logs.push(args.map((arg) => String(arg)).join(' '));
+  };
+
+  try {
+    Deno.env.set('SOUNDSCRIPT_CHECKER_TIMING', '1');
+    const preparedProgram = createMacroPreparedProgram(
+      [
+        "import 'sts:macros';",
+        '',
+        '// #[macro(call)]',
+        'export function Foo() {',
+        '  return {',
+        '    expand(ctx) {',
+        '      return ctx.output.expr(ctx.quote.expr`1`);',
+        '    },',
+        '  };',
+        '}',
+        '',
+      ].join('\n'),
+    );
+
+    printExpandedFile(preparedProgram, '/virtual/index.sts');
+  } finally {
+    if (originalTimingEnv === undefined) {
+      Deno.env.delete('SOUNDSCRIPT_CHECKER_TIMING');
+    } else {
+      Deno.env.set('SOUNDSCRIPT_CHECKER_TIMING', originalTimingEnv);
+    }
+    console.error = originalError;
+  }
+
+  const detailLog = logs.find((line) =>
+    line.includes('[soundscript:checker] project.prepare.macro.expandDetails ')
+  );
+  assert(detailLog);
+  assertStringIncludes(detailLog, 'graphCompileGraphs=1');
+  assertStringIncludes(detailLog, 'bindingPlanFiles=1');
+  assertStringIncludes(detailLog, 'moduleEvalRoots=1');
+  assertStringIncludes(detailLog, 'macroExecutionCount=2');
+  assertStringIncludes(detailLog, 'sourceExpansionFiles=1');
+});
+
 Deno.test('createProjectMacroEnvironment honors macroExpansionRecursionLimit 0 for generated stdlib macros', () => {
   const fileName = '/virtual/index.sts';
   const preparedProgram = createGeneratedMacroTestProgram(

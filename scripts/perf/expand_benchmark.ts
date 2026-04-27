@@ -427,12 +427,22 @@ function semanticBuildMedian(result: ScenarioResult): number {
   );
 }
 
+function macroDetailMedian(result: ScenarioResult, metadataKey: string): number {
+  return median(
+    result.iterations.map((iteration) =>
+      iteration.timings
+        .filter((entry) => entry.stage === 'project.prepare.macro.expandDetails')
+        .reduce((total, entry) => total + Number(entry.metadata[metadataKey] ?? 0), 0)
+    ),
+  );
+}
+
 function markdownReport(results: readonly ScenarioResult[]): string {
   const lines = [
     '# Soundscript Expand Benchmark',
     '',
-    '| scenario | wall median ms | initial ms | expand macros ms | annotated ms | final ms | semantic builds |',
-    '| --- | ---: | ---: | ---: | ---: | ---: | ---: |',
+    '| scenario | wall median ms | initial ms | expand macros ms | graph compile ms | module eval ms | binding plan ms | macro exec ms | source expansion ms | annotated ms | final ms | semantic builds |',
+    '| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |',
   ];
   for (const result of results) {
     lines.push(
@@ -440,9 +450,15 @@ function markdownReport(results: readonly ScenarioResult[]): string {
         median(result.iterations.map((iteration) => iteration.wallMs)).toFixed(1)
       } | ${stageMedian(result, 'project.prepare.builtin.initialProgram').toFixed(1)} | ${
         stageMedian(result, 'project.prepare.builtin.expandMacros').toFixed(1)
-      } | ${stageMedian(result, 'project.prepare.builtin.annotatedProgram').toFixed(1)} | ${
-        stageMedian(result, 'project.prepare.builtin.finalProgram').toFixed(1)
-      } | ${semanticBuildMedian(result).toFixed(1)} |`,
+      } | ${macroDetailMedian(result, 'graphCompileMs').toFixed(1)} | ${
+        macroDetailMedian(result, 'moduleEvalMs').toFixed(1)
+      } | ${macroDetailMedian(result, 'bindingPlanMs').toFixed(1)} | ${
+        macroDetailMedian(result, 'macroExecutionMs').toFixed(1)
+      } | ${macroDetailMedian(result, 'sourceExpansionMs').toFixed(1)} | ${
+        stageMedian(result, 'project.prepare.builtin.annotatedProgram').toFixed(1)
+      } | ${stageMedian(result, 'project.prepare.builtin.finalProgram').toFixed(1)} | ${
+        semanticBuildMedian(result).toFixed(1)
+      } |`,
     );
   }
   lines.push('');
