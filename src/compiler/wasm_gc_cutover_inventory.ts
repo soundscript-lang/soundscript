@@ -133,9 +133,9 @@ export const WASM_GC_CORE_CUTOVER_INVENTORY: readonly WasmGcCutoverInventoryEntr
     family: 'promises',
     status: 'ir-shadowed',
     focusedGate:
-      'compileProject selects the source-hir wasm-gc plan for internal await continuations',
+      'compileProject selects the source-hir wasm-gc plan for internal Promise.finally reactions',
     nextCutoverStep:
-      'Move Promise.all/race/finally and multi-await frame paths into SourceHIR SemanticIR without JS Promise substrate.',
+      'Move Promise.all/race, semantic Promise.finally value preservation, and multi-await frame paths into SourceHIR SemanticIR without JS Promise substrate.',
   },
   {
     family: 'generators',

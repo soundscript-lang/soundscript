@@ -529,7 +529,11 @@ function lowerPromiseThenCallExpression(
 ): SemanticExpressionIR | undefined {
   if (
     expression.callee.kind !== 'property_access' ||
-    (expression.callee.property !== 'then' && expression.callee.property !== 'catch')
+    (
+      expression.callee.property !== 'then' &&
+      expression.callee.property !== 'catch' &&
+      expression.callee.property !== 'finally'
+    )
   ) {
     return undefined;
   }
@@ -546,12 +550,19 @@ function lowerPromiseThenCallExpression(
     context.unsupportedKinds.add(`Promise.${methodName}:receiver`);
     return { kind: 'undefined_literal', representation: 'tagged_ref' };
   }
-  const onFulfilled = methodName === 'then'
-    ? lowerPromiseReactionHandlerExpression(expression.args[0], context)
-    : lowerPromiseReactionHandlerExpression(undefined, context);
-  const onRejected = methodName === 'catch'
-    ? lowerPromiseReactionHandlerExpression(expression.args[0], context)
-    : lowerPromiseReactionHandlerExpression(expression.args[1], context);
+  let onFulfilled: SemanticExpressionIR;
+  let onRejected: SemanticExpressionIR;
+  if (methodName === 'then') {
+    onFulfilled = lowerPromiseReactionHandlerExpression(expression.args[0], context);
+    onRejected = lowerPromiseReactionHandlerExpression(expression.args[1], context);
+  } else if (methodName === 'catch') {
+    onFulfilled = lowerPromiseReactionHandlerExpression(undefined, context);
+    onRejected = lowerPromiseReactionHandlerExpression(expression.args[0], context);
+  } else {
+    const onFinally = lowerPromiseReactionHandlerExpression(expression.args[0], context);
+    onFulfilled = onFinally;
+    onRejected = onFinally;
+  }
   context.runtimeFamilies.add('promise');
   context.runtimeFamilies.add('closure');
   context.runtimeFamilies.add('finite_union');
