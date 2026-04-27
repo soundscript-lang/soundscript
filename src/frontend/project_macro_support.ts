@@ -1347,6 +1347,264 @@ export function createProjectMacroEnvironment(
     return siteKindsBySpecifier;
   }
 
+  function sourceTextHasGeneratedAnnotationSyntax(sourceText: string): boolean {
+    return /(^|\n)\s*(?:\/\/|\/\*)\s*#\[/u.test(sourceText);
+  }
+
+  function escapeRegExp(source: string): string {
+    return source.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+  }
+
+  function sourceTextHasGeneratedAnnotationForName(sourceText: string, name: string): boolean {
+    return new RegExp(
+      `(^|\\n)\\s*(?://|/\\*)\\s*#\\[\\s*${escapeRegExp(name)}(?:[.\\](]|\\s)`,
+      'u',
+    ).test(sourceText);
+  }
+
+  function collectGeneratedStdlibMacroSiteNames(sourceFile: ts.SourceFile): {
+    readonly annotationNames: Set<string>;
+    readonly callNames: Set<string>;
+    readonly tagNames: Set<string>;
+  } {
+    const annotationNames = new Set<string>();
+    const callNames = new Set<string>();
+    const tagNames = new Set<string>();
+
+    for (const [macroName, siteKind] of alwaysAvailableMacroSiteKinds.entries()) {
+      if (siteKind === 'annotation') {
+        annotationNames.add(macroName);
+      } else if (siteKind === 'call') {
+        callNames.add(macroName);
+      } else {
+        tagNames.add(macroName);
+      }
+    }
+
+    const generatedSiteKindsBySpecifier = builtinMacroSiteKindsForGeneratedExpansion();
+    for (const statement of sourceFile.statements) {
+      if (
+        !ts.isImportDeclaration(statement) ||
+        !statement.importClause ||
+        !ts.isStringLiteral(statement.moduleSpecifier)
+      ) {
+        continue;
+      }
+
+      const explicitKinds = generatedSiteKindsBySpecifier.get(statement.moduleSpecifier.text);
+      if (!explicitKinds) {
+        continue;
+      }
+
+      if (statement.importClause.name) {
+        const localName = statement.importClause.name.text;
+        const explicitKind = explicitKinds.get('default');
+        if (explicitKind === 'annotation') {
+          annotationNames.add(localName);
+        } else if (explicitKind === 'call') {
+          callNames.add(localName);
+        } else if (explicitKind === 'tag') {
+          tagNames.add(localName);
+        }
+      }
+
+      const namedBindings = statement.importClause.namedBindings;
+      if (!namedBindings || !ts.isNamedImports(namedBindings)) {
+        continue;
+      }
+
+      for (const element of namedBindings.elements) {
+        const localName = element.name.text;
+        const exportName = element.propertyName?.text ?? localName;
+        const explicitKind = explicitKinds.get(exportName);
+        if (explicitKind === 'annotation') {
+          annotationNames.add(localName);
+        } else if (explicitKind === 'call') {
+          callNames.add(localName);
+        } else if (explicitKind === 'tag') {
+          tagNames.add(localName);
+        }
+      }
+    }
+
+    return { annotationNames, callNames, tagNames };
+  }
+
+  function sourceFileMayContainGeneratedStdlibMacro(
+    sourceFile: ts.SourceFile,
+    sourceText: string,
+  ): boolean {
+    const { annotationNames, callNames, tagNames } = collectGeneratedStdlibMacroSiteNames(
+      sourceFile,
+    );
+
+    if (
+      annotationNames.size > 0 &&
+      sourceTextHasGeneratedAnnotationSyntax(sourceText)
+    ) {
+      return true;
+    }
+
+    let found = false;
+    const visit = (node: ts.Node): void => {
+      if (found) {
+        return;
+      }
+      if (
+        ts.isCallExpression(node) &&
+        ts.isIdentifier(node.expression) &&
+        callNames.has(node.expression.text)
+      ) {
+        found = true;
+        return;
+      }
+      if (
+        ts.isTaggedTemplateExpression(node) &&
+        ts.isIdentifier(node.tag) &&
+        tagNames.has(node.tag.text)
+      ) {
+        found = true;
+        return;
+      }
+      ts.forEachChild(node, visit);
+    };
+
+    ts.forEachChild(sourceFile, visit);
+    return found;
+  }
+
+  function sourceFileMayContainGeneratedUserMacroImport(
+    sourceFile: ts.SourceFile,
+    sourceText: string,
+  ): boolean {
+    const importedBindings: Array<{
+      readonly exportName: string;
+      readonly localName: string;
+      readonly specifier: string;
+    }> = [];
+    for (const statement of sourceFile.statements) {
+      if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)) {
+        continue;
+      }
+
+      const specifier = statement.moduleSpecifier.text;
+      if (
+        specifier === MACRO_API_MODULE_SPECIFIER || builtinDefinitionsBySpecifier.has(specifier)
+      ) {
+        continue;
+      }
+
+      if (statement.importClause?.isTypeOnly === true) {
+        continue;
+      }
+
+      if (statement.importClause?.name) {
+        importedBindings.push({
+          exportName: 'default',
+          localName: statement.importClause.name.text,
+          specifier,
+        });
+      }
+
+      const namedBindings = statement.importClause?.namedBindings;
+      if (!namedBindings || !ts.isNamedImports(namedBindings)) {
+        continue;
+      }
+
+      for (const element of namedBindings.elements) {
+        if (!element.isTypeOnly) {
+          importedBindings.push({
+            exportName: element.propertyName?.text ?? element.name.text,
+            localName: element.name.text,
+            specifier,
+          });
+        }
+      }
+    }
+
+    if (importedBindings.length === 0) {
+      return false;
+    }
+
+    const importedLocalNames = new Set(importedBindings.map((binding) => binding.localName));
+    const usedCandidateNames = new Set<string>();
+    for (const localName of importedLocalNames) {
+      if (sourceTextHasGeneratedAnnotationForName(sourceText, localName)) {
+        usedCandidateNames.add(localName);
+      }
+    }
+
+    const visit = (node: ts.Node): void => {
+      if (
+        ts.isCallExpression(node) &&
+        ts.isIdentifier(node.expression) &&
+        importedLocalNames.has(node.expression.text)
+      ) {
+        usedCandidateNames.add(node.expression.text);
+        return;
+      }
+      if (
+        ts.isTaggedTemplateExpression(node) &&
+        ts.isIdentifier(node.tag) &&
+        importedLocalNames.has(node.tag.text)
+      ) {
+        usedCandidateNames.add(node.tag.text);
+        return;
+      }
+      ts.forEachChild(node, visit);
+    };
+
+    ts.forEachChild(sourceFile, visit);
+    if (usedCandidateNames.size === 0) {
+      return false;
+    }
+
+    for (const binding of importedBindings) {
+      if (!usedCandidateNames.has(binding.localName)) {
+        continue;
+      }
+
+      const resolved = resolvePreferredSoundscriptMacroModule(
+        binding.specifier,
+        sourceFile.fileName,
+      ) ??
+        ts.resolveModuleName(
+          binding.specifier,
+          sourceFile.fileName,
+          preparedProgram.options,
+          resolutionHost,
+          moduleResolutionCache,
+        ).resolvedModule;
+      const resolvedRuntimeFileName = resolved?.resolvedFileName;
+      if (!resolvedRuntimeFileName) {
+        continue;
+      }
+
+      const packageMacroSourceEntry = getSoundScriptPackageExportInfoForResolvedModule(
+        binding.specifier,
+        resolvedRuntimeFileName,
+        resolutionHost,
+      )?.sourceEntryPath;
+      const resolvedFileName = packageMacroSourceEntry
+        ? toSourceFileName(packageMacroSourceEntry)
+        : toSourceFileName(resolvedRuntimeFileName);
+      if (!isSoundscriptSourceFile(resolvedFileName)) {
+        continue;
+      }
+
+      const scanned = isLoadableMacroModuleFile(resolvedFileName) ||
+          isPureMacroReexportBridgeModule(resolvedFileName) ||
+          isLikelyMacroModule(resolvedFileName)
+        ? scannedFactoriesForMacroModule(resolvedFileName)
+        : new Map();
+      if (scanned.has(binding.exportName)) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
   function createGeneratedMacroError(
     sourceText: string,
     invocation: ParsedMacroInvocation,
@@ -1683,17 +1941,32 @@ export function createProjectMacroEnvironment(
         sourceFileName,
         printer.printFile(currentSourceFile),
       );
+      const generatedSourceFile = ts.createSourceFile(
+        sourceFileName,
+        sourceText,
+        preparedProgram.options.target ?? ts.ScriptTarget.Latest,
+        true,
+        scriptKindForHostFile(sourceFileName),
+      );
+      if (
+        !sourceFileMayContainGeneratedStdlibMacro(generatedSourceFile, sourceText) &&
+        !sourceFileMayContainGeneratedUserMacroImport(generatedSourceFile, sourceText)
+      ) {
+        return currentSourceFile;
+      }
       const generatedPreparedProgram = createGeneratedExpansionPreparedProgram(
         sourceFileName,
         sourceText,
       );
       try {
         const programFileName = generatedPreparedProgram.toProgramFileName(sourceFileName);
-        const generatedSourceFile = generatedPreparedProgram.program.getSourceFile(programFileName);
+        const generatedProgramSourceFile = generatedPreparedProgram.program.getSourceFile(
+          programFileName,
+        );
         const generatedPreparedSource = generatedPreparedProgram.preparedHost
           .getPreparedSourceFile(sourceFileName);
         const invocations = [...(generatedPreparedSource?.rewriteResult.macrosById.values() ?? [])];
-        if (invocations.length === 0 || !generatedSourceFile) {
+        if (invocations.length === 0 || !generatedProgramSourceFile) {
           return currentSourceFile;
         }
         if (remainingGeneratedRounds <= 0) {
@@ -1715,7 +1988,7 @@ export function createProjectMacroEnvironment(
         const expandedGeneratedFiles = expandPreparedProgramWithFileRegistries(
           generatedPreparedProgram,
           new Map([[
-            generatedSourceFile.fileName,
+            generatedProgramSourceFile.fileName,
             {
               advancedRegistry: bindings.advancedRegistry,
               registry: bindings.registry,
@@ -1724,10 +1997,11 @@ export function createProjectMacroEnvironment(
           ]]),
           preserveMissingExpanders,
           annotateExpansions,
-          [generatedSourceFile],
+          [generatedProgramSourceFile],
         );
         currentSourceFile = stripCompileTimeOnlyImportedBindings(
-          expandedGeneratedFiles.get(generatedSourceFile.fileName) ?? generatedSourceFile,
+          expandedGeneratedFiles.get(generatedProgramSourceFile.fileName) ??
+            generatedProgramSourceFile,
           bindings.importedBindingUsage,
           preserveRemovedImportStatements,
         );
