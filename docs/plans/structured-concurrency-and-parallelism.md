@@ -83,6 +83,15 @@ import {
 } from 'sts:concurrency';
 ```
 
+`sts:concurrency` is the normal teaching surface. It should re-export from descriptive submodules
+instead of creating unrelated top-level modules:
+
+- `sts:concurrency/task`
+- `sts:concurrency/parallel`
+- `sts:concurrency/sync`
+- `sts:concurrency/atomics`
+- `sts:concurrency/runtime`
+
 The first public surface should be small:
 
 - `AsyncResult<T, E = Failure>`: alias for `Promise<Result<T, E>>`
@@ -98,13 +107,13 @@ The first public surface should be small:
 Avoid separate top-level namespaces like `Async`, `Parallel`, `Cpu`, and `Runtime` in the normal
 teaching path. Those names multiply concepts without adding semantic clarity.
 
-Advanced runtime control may still exist, but should be secondary:
+Runtime/provider control may still exist, but should be secondary:
 
 ```ts
-import { Runtime } from 'sts:concurrency/advanced';
+import { Runtime } from 'sts:concurrency/runtime';
 ```
 
-`Runtime.with(...)` is an advanced scoped override of the ambient runtime configuration: executor,
+`Runtime.with(...)` is a specialized scoped override of the ambient runtime configuration: executor,
 deadline root, cancellation root, scheduler policy, tracing hooks, provider capabilities, and async
 context behavior. Normal applications should not need to call it.
 
@@ -606,10 +615,10 @@ export async function main(): AsyncResult<void, Failure> {
 }
 ```
 
-Advanced override:
+Runtime override:
 
 ```ts
-import { Runtime } from 'sts:concurrency/advanced';
+import { Runtime } from 'sts:concurrency/runtime';
 
 async function rebuildIndex(): AsyncResult<IndexStats, Failure> {
   return await Runtime.with(
@@ -624,7 +633,7 @@ async function rebuildIndex(): AsyncResult<IndexStats, Failure> {
 
 `Runtime.with(...)` is basically "override the ambient runtime/executor for this dynamic scope." It
 is analogous to Kotlin `withContext(...)` or Swift executor preference APIs. It should be documented
-as advanced because most applications should configure the runtime at the boundary and then use
+as specialized because most applications should configure the runtime at the boundary and then use
 `TaskGroup` / `ThreadPool.default` inside the program.
 
 Runtime context rule:
@@ -957,9 +966,9 @@ Proposed effect mapping:
 | `group.fork(...)`                   | `concurrency.fork`; child body carries its own effects   |
 | `group.all(...)`                    | `suspend.await`, `concurrency.fork`, `concurrency.join`  |
 | `handle.join()`                     | `suspend.await`, `concurrency.join`                      |
-| `ThreadPool.default.run(...)`       | `parallel.thread`                                        |
-| `await ThreadPool.default.run(...)` | `suspend.await`, `parallel.thread`                       |
-| `Thread.spawn(...)`                 | `parallel.thread`, possible `host.thread`                |
+| `ThreadPool.default.run(...)`       | `concurrency.parallel.thread`                            |
+| `await ThreadPool.default.run(...)` | `suspend.await`, `concurrency.parallel.thread`           |
+| `Thread.spawn(...)`                 | `concurrency.parallel.thread`, possible `host.thread`    |
 | `Thread.blockingJoin()`             | `thread.block`                                           |
 | `Thread.blockOn(...)`               | `thread.block`, target-gated                             |
 | `AsyncContext.Variable.get()`       | likely no effect                                         |
@@ -972,8 +981,8 @@ Open questions:
 
 - Whether `concurrency.fork` and `concurrency.join` should be explicit first-class effects or folded
   into `suspend.await`.
-- Whether `parallel.thread` should be allowed in all native profiles by default or require a profile
-  capability.
+- Whether `concurrency.parallel.thread` should be allowed in all native profiles by default or
+  require a profile capability.
 - Whether any native profile should allow a narrow expert-mode escape hatch for blocking inside
   already-suspended runtime contexts. V1 should reject it.
 
@@ -1573,7 +1582,7 @@ Benchmarks:
 - CPU `ThreadPool.map`
 - request fanout handler benchmark against Go baseline where comparable
 
-### Slice 5: Advanced Runtime And Libraries
+### Slice 5: Runtime Overrides And Libraries
 
 - Add `Runtime.with(...)`.
 - Add supervisor/userspace goroutine helper if still desired.

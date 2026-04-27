@@ -311,7 +311,7 @@ V1 should not try to annotate every builtin by hand.
 
 The right scope is the frontier that materially affects precision:
 
-- callback-heavy stdlib helpers such as `sts:async`
+- callback-heavy stdlib helpers such as `sts:concurrency/task`
 - host-backed stdlib helpers such as `sts:fetch`, `sts:debug`, and `sts:random`
 - promise continuations
 - array higher-order methods

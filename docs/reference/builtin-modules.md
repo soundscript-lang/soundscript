@@ -9,8 +9,8 @@ without repeating imports in every file.
 
 The ambient names are:
 
-- carriers and constructors: `Result`, `Option`, `Ok`, `Err`, `Some`, `None`, `ok`, `err`,
-  `some`, `none`
+- carriers and constructors: `Result`, `Option`, `Ok`, `Err`, `Some`, `None`, `ok`, `err`, `some`,
+  `none`
 - control-flow helpers: `Try`, `Match`, `where`, `Defer`
 - carrier guards: `isOk`, `isErr`, `isSome`, `isNone`
 - failure helpers and terminal helpers: `Failure`, `todo`, `unreachable`
@@ -44,18 +44,18 @@ The stable `sts:*` surface stays focused and composable.
 - `sts:failures` owns `Failure`, `ErrorFrame`, and `normalizeThrown(...)`.
 - `sts:json` owns JSON boundary helpers for parsing, stringifying, and plain JSON validation, plus
   small record helpers such as `isJsonObject`, `emptyJsonRecord`, `copyJsonRecord`, and
-  `mergeJsonRecords`, plus bridge helpers such as `decodeJson`, `encodeJson`,
-  `validateDecodeJson`, and `validateEncodeJson`.
-- `sts:decode` owns decoder contracts and structural decode helpers such as `literal`,
-  `nullable`, `defaulted`, `preprocess`, `minLength`, `startsWith`, `multipleOf`, `pattern`,
-  `format`, object key policy helpers, and `validateDecode(...)`.
-- `sts:encode` owns encoder contracts, structural encode combinators, object key policy helpers,
-  and `validateEncode(...)`.
+  `mergeJsonRecords`, plus bridge helpers such as `decodeJson`, `encodeJson`, `validateDecodeJson`,
+  and `validateEncodeJson`.
+- `sts:decode` owns decoder contracts and structural decode helpers such as `literal`, `nullable`,
+  `defaulted`, `preprocess`, `minLength`, `startsWith`, `multipleOf`, `pattern`, `format`, object
+  key policy helpers, and `validateDecode(...)`.
+- `sts:encode` owns encoder contracts, structural encode combinators, object key policy helpers, and
+  `validateEncode(...)`.
 - `sts:codec` owns codec contracts and adapter helpers, including explicit conversion helpers such
   as `codec.isoDate` and `codec.url`.
 - `sts:metadata` owns derive metadata inspection helpers such as `metadataOf(...)` and
   `attachMetadata(...)`.
-- `sts:async` owns `Task<T, E>` and result-first async helpers.
+- `sts:async` currently owns `Task<T, E>` and result-first async helpers.
 - `sts:compare` owns `Eq`, `Order`, and comparator composition helpers.
 - `sts:hash` owns hashing and equality-key protocols.
 - `sts:derive` owns compiler-provided declaration macros such as `eq`, `hash`, `decode`, `encode`,
@@ -66,6 +66,23 @@ The stable `sts:*` surface stays focused and composable.
 
 If you are deciding where a helper should live, prefer the narrowest leaf module that honestly
 matches the ownership boundary.
+
+## Planned Pre-V1 Breaking Direction
+
+Soundscript does not have external compatibility obligations yet, so the stdlib can still make
+breaking cleanup changes before the stable contract.
+
+The current async helper shape should be replaced before stabilization:
+
+- move `Task<T, E>` and task helpers from `sts:async` to `sts:concurrency/task`
+- expose task helpers as `Task.*` rather than a flat set of bare functions
+- remove or rename ambiguous promise-fanout helpers such as `parallel(...)`
+- keep true parallel execution under `sts:concurrency/parallel`
+- keep synchronization and atomic shared-memory APIs under `sts:concurrency/sync` and
+  `sts:concurrency/atomics`, not top-level `sts:sync` or `sts:atomics`
+
+The fuller proposed surface is tracked in
+[`docs/plans/portable-stdlib-api-surface.md`](../plans/portable-stdlib-api-surface.md).
 
 ## Experimental Modules
 
@@ -90,8 +107,7 @@ For most application code, start with this order:
 
 - `sts:prelude` for small result/option/control-flow helpers
 - `sts:json` for JSON boundaries
-- `sts:decode` and `sts:encode` for schema-driven validation, issue accumulation, and
-  serialization
+- `sts:decode` and `sts:encode` for schema-driven validation, issue accumulation, and serialization
 - `sts:failures` when you need to normalize foreign throws or attach structured failure data
 
 ## See Also

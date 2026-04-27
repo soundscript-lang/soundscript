@@ -16,6 +16,7 @@ older context that no longer matches the current implementation.
 - `effect-system-v1.md`
 - `js-value-types.md`
 - `nominal-types-and-class-identity.md`
+- `portable-stdlib-api-surface.md`
 - `runtime-target-platform-and-interop.md`
 - `structured-concurrency-and-parallelism.md`
 - `test262-migration.md`
