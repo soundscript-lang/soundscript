@@ -66,6 +66,9 @@ interface SourceSemanticObjectLocal {
 const SOUNDSCRIPT_PROMISE_RESOLVE_HELPER_NAME = '__soundscript_promise_resolve';
 const SOUNDSCRIPT_PROMISE_REJECT_HELPER_NAME = '__soundscript_promise_reject';
 const SOUNDSCRIPT_PROMISE_THEN_HELPER_NAME = '__soundscript_promise_then';
+const SOUNDSCRIPT_PROMISE_NEW_PENDING_HELPER_NAME = '__soundscript_promise_new_pending';
+const SOUNDSCRIPT_PROMISE_RESOLVE_INTO_HELPER_NAME = '__soundscript_promise_resolve_into';
+const SOUNDSCRIPT_PROMISE_REJECT_INTO_HELPER_NAME = '__soundscript_promise_reject_into';
 
 interface SourceSemanticArrayLocal {
   elementRepresentation: CompilerValueType;
@@ -608,6 +611,195 @@ function lowerPromiseStaticCallExpression(
     args: [taggedValue],
     representation: 'heap_ref',
   };
+}
+
+function promiseTargetCapture(
+  targetName: string,
+): Extract<SemanticExpressionIR, { kind: 'box_new' }> {
+  return {
+    kind: 'box_new',
+    value: {
+      kind: 'tag_heap_object',
+      value: localGetExpression(targetName, 'heap_ref'),
+      representation: 'tagged_ref',
+    },
+    valueType: 'tagged_ref',
+    representation: 'box_ref',
+  };
+}
+
+function promiseTargetFromCapture(): SemanticExpressionIR {
+  return {
+    kind: 'box_get',
+    box: localGetExpression('capture_target_0', 'box_ref'),
+    valueType: 'tagged_ref',
+    representation: 'tagged_ref',
+  };
+}
+
+function pushPromiseRejectIntoClosure(
+  context: FunctionLoweringContext,
+  signatureId: number,
+): number {
+  const closureFunctionId = context.moduleState.nextClosureFunctionId;
+  context.moduleState.nextClosureFunctionId += 1;
+  context.moduleState.generatedFunctions.push({
+    name: `closure_source_async_await_rejected_${closureFunctionId}`,
+    exportName: '',
+    params: [
+      { name: 'capture_target_0', representation: 'box_ref' },
+      { name: 'promise_reason', representation: 'tagged_ref' },
+    ],
+    locals: [],
+    result: 'tagged_ref',
+    body: [
+      {
+        kind: 'expression',
+        value: {
+          kind: 'call',
+          callee: SOUNDSCRIPT_PROMISE_REJECT_INTO_HELPER_NAME,
+          args: [
+            promiseTargetFromCapture(),
+            localGetExpression('promise_reason', 'tagged_ref'),
+          ],
+          representation: 'tagged_ref',
+        },
+      },
+      { kind: 'return', value: { kind: 'undefined_literal', representation: 'tagged_ref' } },
+    ],
+    bodyStatus: 'emittable',
+    unsupportedBodyKinds: [],
+    runtimeFamilies: ['finite_union', 'promise'],
+    hostImported: false,
+    hostExported: false,
+    unionBoundaries: [],
+    closureFunctionId,
+    closureSignatureId: signatureId,
+    closureCaptureCount: 1,
+    closureCaptureValueTypes: ['tagged_ref'],
+  });
+  return closureFunctionId;
+}
+
+function createGeneratedClosureContext(
+  parentContext: FunctionLoweringContext,
+  functionName: string,
+  currentResultType: SemanticTypeIR,
+): FunctionLoweringContext {
+  return {
+    functionName,
+    asyncFunction: false,
+    currentResultType,
+    functionResultArrayLocals: parentContext.functionResultArrayLocals,
+    functionParamTypes: parentContext.functionParamTypes,
+    functionResultRepresentations: parentContext.functionResultRepresentations,
+    functionResultTypes: parentContext.functionResultTypes,
+    localRepresentations: new Map([
+      ['capture_target_0', 'box_ref'],
+      ['promise_value', 'tagged_ref'],
+    ]),
+    locals: [],
+    arrayLocals: new Map(),
+    boxedLocals: new Map(),
+    closureLocals: new Map(),
+    constructorLocals: new Map(),
+    localDeclarationKinds: new Map([
+      ['capture_target_0', 'capture'],
+      ['promise_value', 'param'],
+    ]),
+    localTypesByKey: new Map(),
+    mapLocals: new Map(),
+    moduleState: parentContext.moduleState,
+    objectLayoutsByKey: parentContext.objectLayoutsByKey,
+    objectLocals: new Map(),
+    setLocals: new Map(),
+    unionLocals: new Map(),
+    classesByName: parentContext.classesByName,
+    pendingStatements: [],
+    runtimeFamilies: new Set(['finite_union', 'promise']),
+    stringLiteralIds: parentContext.stringLiteralIds,
+    stringLiterals: parentContext.stringLiterals,
+    switchBreakLocalStack: [],
+    throwTargets: [],
+    completionTargets: [],
+    tempIndex: 0,
+    unsupportedKinds: new Set(),
+  };
+}
+
+function pushPromiseAwaitFulfilledClosure(
+  context: FunctionLoweringContext,
+  signatureId: number,
+  awaitedBinding: SourceBindingIR,
+  awaitedRepresentation: CompilerValueType,
+  returnStatement: Extract<SourceStatementIR, { kind: 'return' }>,
+): number | undefined {
+  if (awaitedBinding.kind !== 'identifier_binding') {
+    context.unsupportedKinds.add('async_await_binding');
+    return undefined;
+  }
+  const closureFunctionId = context.moduleState.nextClosureFunctionId;
+  context.moduleState.nextClosureFunctionId += 1;
+  const closureContext = createGeneratedClosureContext(
+    context,
+    `closure_source_async_await_fulfilled_${closureFunctionId}`,
+    promiseReactionTaggedValueType(),
+  );
+  addLocal(closureContext, awaitedBinding.name, awaitedRepresentation);
+  const awaitedValue = untagUnionExpressionForRepresentation(
+    localGetExpression('promise_value', 'tagged_ref'),
+    awaitedRepresentation,
+    closureContext,
+  );
+  if (!awaitedValue) {
+    context.unsupportedKinds.add('async_await_value');
+    return undefined;
+  }
+  const returnValue = returnStatement.expression
+    ? lowerExpression(returnStatement.expression, closureContext)
+    : { kind: 'undefined_literal', representation: 'tagged_ref' } as SemanticExpressionIR;
+  const taggedReturnValue = taggedUnionExpressionForValue(returnValue, closureContext);
+  if (!taggedReturnValue) {
+    context.unsupportedKinds.add('async_await_return_value');
+    return undefined;
+  }
+  const body: SemanticStatementIR[] = [
+    { kind: 'local_set', name: awaitedBinding.name, value: awaitedValue },
+    ...takePendingStatements(closureContext),
+    {
+      kind: 'expression',
+      value: {
+        kind: 'call',
+        callee: SOUNDSCRIPT_PROMISE_RESOLVE_INTO_HELPER_NAME,
+        args: [promiseTargetFromCapture(), taggedReturnValue],
+        representation: 'tagged_ref',
+      },
+    },
+    { kind: 'return', value: { kind: 'undefined_literal', representation: 'tagged_ref' } },
+  ];
+  const unsupportedBodyKinds = [...closureContext.unsupportedKinds].sort();
+  context.moduleState.generatedFunctions.push({
+    name: closureContext.functionName,
+    exportName: '',
+    params: [
+      { name: 'capture_target_0', representation: 'box_ref' },
+      { name: 'promise_value', representation: 'tagged_ref' },
+    ],
+    locals: closureContext.locals,
+    result: 'tagged_ref',
+    body,
+    bodyStatus: unsupportedBodyKinds.length === 0 ? 'emittable' : 'stub',
+    unsupportedBodyKinds,
+    runtimeFamilies: [...new Set([...closureContext.runtimeFamilies])].sort(),
+    hostImported: false,
+    hostExported: false,
+    unionBoundaries: [],
+    closureFunctionId,
+    closureSignatureId: signatureId,
+    closureCaptureCount: 1,
+    closureCaptureValueTypes: ['tagged_ref'],
+  });
+  return closureFunctionId;
 }
 
 function unionTagForTypeofLiteral(text: string): number | undefined {
@@ -5823,6 +6015,109 @@ function lowerFunctionBody(
   return body.length > 0 ? [...body, { kind: 'trap' }] : [{ kind: 'trap' }];
 }
 
+function lowerSingleAwaitAsyncFunctionBody(
+  func: SourceFunctionIR,
+  context: FunctionLoweringContext,
+): readonly SemanticStatementIR[] | undefined {
+  if (!func.async || context.currentResultType?.kind !== 'promise' || func.body.length !== 2) {
+    return undefined;
+  }
+  const [declarationStatement, returnStatement] = func.body;
+  if (
+    declarationStatement?.kind !== 'variable_declaration' ||
+    declarationStatement.declarations.length !== 1 ||
+    returnStatement?.kind !== 'return'
+  ) {
+    return undefined;
+  }
+  const [declaration] = declarationStatement.declarations;
+  if (
+    !declaration ||
+    declaration.binding.kind !== 'identifier_binding' ||
+    declaration.initializer?.kind !== 'await_expression'
+  ) {
+    return undefined;
+  }
+  const awaitedType = localTypeForBinding(declaration.binding, context);
+  if (!awaitedType) {
+    context.unsupportedKinds.add('async_await_value_type');
+    return [{ kind: 'unsupported_statement', sourceKind: 'await_expression' }, { kind: 'trap' }];
+  }
+  const awaitedRepresentation = representationForSemanticType(awaitedType);
+  const awaitedSource = lowerExpression(declaration.initializer.expression, context);
+  const awaitedSourceStatements = takePendingStatements(context);
+  if (awaitedSource.representation !== 'heap_ref') {
+    context.unsupportedKinds.add('async_await_source');
+    return [{ kind: 'unsupported_statement', sourceKind: 'await_expression' }, { kind: 'trap' }];
+  }
+
+  const taggedValue = promiseReactionTaggedValueType();
+  const closureSignature = createClosureSignature(context.moduleState, [taggedValue], taggedValue);
+  const fulfilledFunctionId = pushPromiseAwaitFulfilledClosure(
+    context,
+    closureSignature.id,
+    declaration.binding,
+    awaitedRepresentation,
+    returnStatement,
+  );
+  const rejectedFunctionId = pushPromiseRejectIntoClosure(context, closureSignature.id);
+  if (fulfilledFunctionId === undefined) {
+    return [{ kind: 'unsupported_statement', sourceKind: 'await_expression' }, { kind: 'trap' }];
+  }
+
+  const targetPromiseName = nextTempLocalName(context, 'async_await_target');
+  const awaitedSourceName = nextTempLocalName(context, 'async_await_source');
+  addLocal(context, targetPromiseName, 'heap_ref');
+  addLocal(context, awaitedSourceName, 'heap_ref');
+  context.runtimeFamilies.add('closure');
+  context.runtimeFamilies.add('finite_union');
+  context.runtimeFamilies.add('promise');
+  const targetCapture = promiseTargetCapture(targetPromiseName);
+  return [
+    {
+      kind: 'local_set',
+      name: targetPromiseName,
+      value: {
+        kind: 'call',
+        callee: SOUNDSCRIPT_PROMISE_NEW_PENDING_HELPER_NAME,
+        args: [],
+        representation: 'heap_ref',
+      },
+    },
+    ...awaitedSourceStatements,
+    { kind: 'local_set', name: awaitedSourceName, value: awaitedSource },
+    {
+      kind: 'expression',
+      value: {
+        kind: 'call',
+        callee: SOUNDSCRIPT_PROMISE_THEN_HELPER_NAME,
+        args: [
+          localGetExpression(awaitedSourceName, 'heap_ref'),
+          {
+            kind: 'closure_literal',
+            functionId: fulfilledFunctionId,
+            signatureId: closureSignature.id,
+            captures: [targetCapture],
+            captureValueTypes: ['tagged_ref'],
+            representation: 'closure_ref',
+          },
+          {
+            kind: 'closure_literal',
+            functionId: rejectedFunctionId,
+            signatureId: closureSignature.id,
+            captures: [targetCapture],
+            captureValueTypes: ['tagged_ref'],
+            representation: 'closure_ref',
+          },
+        ],
+        representation: 'heap_ref',
+      },
+    },
+    { kind: 'return', value: localGetExpression(targetPromiseName, 'heap_ref') },
+    { kind: 'trap' },
+  ];
+}
+
 function findBoundarySurface(
   sharedFacts: SharedSemanticFactsIR,
   module: SourceModuleIR,
@@ -6032,9 +6327,13 @@ function lowerFunction(
     context.unsupportedKinds.add('parameter_binding');
     return [{ kind: 'unsupported_statement', sourceKind: 'parameter_binding' }];
   });
+  const loweredBody = lowerSingleAwaitAsyncFunctionBody(func, context) ?? lowerFunctionBody(
+    func,
+    context,
+  );
   const body = [
     ...parameterBindingStatements,
-    ...lowerFunctionBody(func, context),
+    ...loweredBody,
   ];
   const unsupportedBodyKinds = [...unsupportedKinds].sort();
   const result = signature ? representationForSemanticType(signature.result) : 'tagged_ref';

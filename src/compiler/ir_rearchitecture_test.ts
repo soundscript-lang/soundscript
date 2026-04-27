@@ -2645,6 +2645,76 @@ Deno.test('compileProject selects the source-hir wasm-gc plan for internal async
   assertEquals(result.artifacts?.backendPlanSource, 'source-hir');
 });
 
+Deno.test('compileProject selects the source-hir wasm-gc plan for internal await continuations', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+            lib: ['ES2022'],
+          },
+          include: ['src/**/*.ts'],
+          soundscript: {
+            target: 'wasm-node',
+          },
+        },
+        null,
+        2,
+      ),
+    },
+    {
+      path: 'src/index.ts',
+      contents: `
+        async function value(): Promise<number> {
+          const item = await Promise.resolve(4);
+          return item + 1;
+        }
+
+        export function score(): number {
+          value();
+          return 1;
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createSourceSemanticSnapshot(program, tempDirectory);
+  const semantic = createSemanticModuleFromSourceHIR(snapshot.source, snapshot.sharedFacts);
+  const manifest = createRuntimeManifestFromSemanticModule(semantic);
+  const plan = createWasmGcModulePlan(semantic, manifest);
+  const valuePlan = plan.functionPlans.find((func) => func.name === 'value');
+  const continuationPlan = plan.functionPlans.find((func) =>
+    func.name.startsWith('closure_source_async_await_fulfilled')
+  );
+  const wat = emitWasmGcModulePlan(plan);
+  const result = compileProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(
+    manifest.familyRequirements.map((requirement) => requirement.family),
+    ['closure', 'finite_union', 'promise'],
+  );
+  assertEquals(valuePlan?.bodyStatus, 'emittable');
+  assertEquals(continuationPlan?.bodyStatus, 'emittable');
+  assertEquals(wat.includes('call $soundscript_promise_new_pending'), true);
+  assertEquals(wat.includes('call $soundscript_promise_then'), true);
+  assertEquals(wat.includes('call $soundscript_promise_resolve_into'), true);
+  assertEquals(wat.includes('call $soundscript_promise_reject_into'), true);
+  assertEquals(wat.includes('Promise.resolve'), false);
+  assertEquals(wat.includes('jspi'), false);
+  assertEquals(result.exitCode, 0);
+  assertEquals(result.diagnostics, []);
+  assertEquals(result.artifacts?.backend, 'wasm-gc');
+  assertEquals(result.artifacts?.backendPlanSource, 'source-hir');
+});
+
 Deno.test('compiler SourceHIR semantic lowering preserves primitive structured control flow', async () => {
   const tempDirectory = await createTempProject([
     {
