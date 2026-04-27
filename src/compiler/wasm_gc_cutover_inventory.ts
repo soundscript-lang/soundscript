@@ -142,8 +142,8 @@ export const WASM_GC_CORE_CUTOVER_INVENTORY: readonly WasmGcCutoverInventoryEntr
   {
     family: 'try_catch_finally',
     status: 'ir-shadowed',
-    focusedGate: 'compileProject catches sync builtin Error throws',
-    nextCutoverStep: 'Normalize sync try/catch/finally onto the same completion model used by async and generator frames.',
+    focusedGate: 'compiler SourceHIR semantic lowering emits runnable try return finally completion',
+    nextCutoverStep: 'Add source-owned catch/error completion records before marking the full try/catch/finally family WasmGC-emittable.',
   },
 ];
 

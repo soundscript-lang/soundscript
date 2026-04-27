@@ -2526,10 +2526,46 @@ function lowerTryStatement(
     return [{ kind: 'unsupported_statement', sourceKind: 'try' }];
   }
   const finallyBlock = statement.finallyBlock ?? [];
-  if (
-    sourceStatementsContainControlTransfer(statement.tryBlock) ||
-    sourceStatementsContainControlTransfer(finallyBlock)
-  ) {
+  if (sourceStatementsContainControlTransfer(finallyBlock)) {
+    context.unsupportedKinds.add('try_finally_control_flow');
+    return [{ kind: 'unsupported_statement', sourceKind: 'try' }];
+  }
+  const returnIndex = statement.tryBlock.findIndex((child) => child.kind === 'return');
+  if (returnIndex >= 0) {
+    const leadingTryStatements = statement.tryBlock.slice(0, returnIndex);
+    const returnStatement = statement.tryBlock[returnIndex] as Extract<
+      SourceStatementIR,
+      { kind: 'return' }
+    >;
+    if (
+      statement.tryBlock.length !== returnIndex + 1 ||
+      sourceStatementsContainControlTransfer(leadingTryStatements)
+    ) {
+      context.unsupportedKinds.add('try_finally_control_flow');
+      return [{ kind: 'unsupported_statement', sourceKind: 'try' }];
+    }
+    const leadingLoweredStatements = leadingTryStatements.flatMap((child) => [
+      ...lowerStatement(child, context),
+    ]);
+    const rawValue = returnStatement.expression
+      ? lowerExpression(returnStatement.expression, context)
+      : { kind: 'undefined_literal', representation: 'tagged_ref' } as SemanticExpressionIR;
+    const value = adaptExpressionToSemanticType(
+      rawValue,
+      context.currentResultType,
+      context,
+    ) ?? rawValue;
+    const resultName = nextTempLocalName(context, 'try_finally_return');
+    addLocal(context, resultName, value.representation);
+    return [
+      ...leadingLoweredStatements,
+      ...takePendingStatements(context),
+      { kind: 'local_set', name: resultName, value },
+      ...finallyBlock.flatMap((child) => [...lowerStatement(child, context)]),
+      { kind: 'return', value: localGetExpression(resultName, value.representation) },
+    ];
+  }
+  if (sourceStatementsContainControlTransfer(statement.tryBlock)) {
     context.unsupportedKinds.add('try_finally_control_flow');
     return [{ kind: 'unsupported_statement', sourceKind: 'try' }];
   }
