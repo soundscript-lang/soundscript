@@ -3378,20 +3378,58 @@ function lowerTryCatchStatement(
     }
   }
   if (completionBreakFlagName) {
-    statements.push({
-      kind: 'if',
-      condition: localGetExpression(completionBreakFlagName, 'i32'),
-      thenBody: [{ kind: 'break' }],
-      elseBody: [],
-    });
+    const activeCompletionTarget = context.completionTargets.at(-1);
+    if (activeCompletionTarget) {
+      if (!activeCompletionTarget.breakFlagName) {
+        context.unsupportedKinds.add('try_catch_loop_control');
+        statements.push({ kind: 'unsupported_statement', sourceKind: 'try' });
+      } else {
+        statements.push({
+          kind: 'if',
+          condition: localGetExpression(completionBreakFlagName, 'i32'),
+          thenBody: [{
+            kind: 'local_set',
+            name: activeCompletionTarget.breakFlagName,
+            value: booleanLiteralExpression(true),
+          }],
+          elseBody: [],
+        });
+      }
+    } else {
+      statements.push({
+        kind: 'if',
+        condition: localGetExpression(completionBreakFlagName, 'i32'),
+        thenBody: [{ kind: 'break' }],
+        elseBody: [],
+      });
+    }
   }
   if (completionContinueFlagName) {
-    statements.push({
-      kind: 'if',
-      condition: localGetExpression(completionContinueFlagName, 'i32'),
-      thenBody: [{ kind: 'continue' }],
-      elseBody: [],
-    });
+    const activeCompletionTarget = context.completionTargets.at(-1);
+    if (activeCompletionTarget) {
+      if (!activeCompletionTarget.continueFlagName) {
+        context.unsupportedKinds.add('try_catch_loop_control');
+        statements.push({ kind: 'unsupported_statement', sourceKind: 'try' });
+      } else {
+        statements.push({
+          kind: 'if',
+          condition: localGetExpression(completionContinueFlagName, 'i32'),
+          thenBody: [{
+            kind: 'local_set',
+            name: activeCompletionTarget.continueFlagName,
+            value: booleanLiteralExpression(true),
+          }],
+          elseBody: [],
+        });
+      }
+    } else {
+      statements.push({
+        kind: 'if',
+        condition: localGetExpression(completionContinueFlagName, 'i32'),
+        thenBody: [{ kind: 'continue' }],
+        elseBody: [],
+      });
+    }
   }
   return statements;
 }
