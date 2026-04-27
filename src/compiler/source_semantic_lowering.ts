@@ -104,6 +104,12 @@ interface SourceSemanticThrowTarget {
   thrownValueName: string;
 }
 
+interface SourceSemanticCompletionTarget {
+  returnFlagName: string;
+  returnValueName: string;
+  returnRepresentation: CompilerValueType;
+}
+
 type SourceSemanticLocalDeclarationKind = 'const' | 'let' | 'var' | 'param' | 'capture';
 
 interface SourceSemanticModuleLoweringState {
@@ -142,6 +148,7 @@ interface FunctionLoweringContext {
   stringLiterals: string[];
   switchBreakLocalStack: string[];
   throwTargets: SourceSemanticThrowTarget[];
+  completionTargets: SourceSemanticCompletionTarget[];
   tempIndex: number;
   unsupportedKinds: Set<string>;
 }
@@ -2812,6 +2819,73 @@ function catchableTryActiveCondition(target: SourceSemanticThrowTarget): Semanti
   };
 }
 
+function createReturnCompletionTarget(
+  context: FunctionLoweringContext,
+  prefix: string,
+): SourceSemanticCompletionTarget {
+  const returnFlagName = nextTempLocalName(context, `${prefix}_return`);
+  const returnValueName = nextTempLocalName(context, `${prefix}_return_value`);
+  const returnRepresentation = context.currentResultType
+    ? representationForSemanticType(context.currentResultType)
+    : 'tagged_ref';
+  addLocal(context, returnFlagName, 'i32');
+  addLocal(context, returnValueName, returnRepresentation);
+  return { returnFlagName, returnValueName, returnRepresentation };
+}
+
+function initializeReturnCompletionTarget(
+  target: SourceSemanticCompletionTarget,
+): SemanticStatementIR {
+  return {
+    kind: 'local_set',
+    name: target.returnFlagName,
+    value: booleanLiteralExpression(false),
+  };
+}
+
+function captureReturnCompletion(
+  returnStatement: Extract<SourceStatementIR, { kind: 'return' }>,
+  target: SourceSemanticCompletionTarget,
+  context: FunctionLoweringContext,
+  sourceKind: string,
+): readonly SemanticStatementIR[] {
+  const rawValue = returnStatement.expression
+    ? lowerExpression(returnStatement.expression, context)
+    : { kind: 'undefined_literal', representation: 'tagged_ref' } as SemanticExpressionIR;
+  const value = adaptExpressionToSemanticType(
+    rawValue,
+    context.currentResultType,
+    context,
+  ) ?? rawValue;
+  if (value.representation !== target.returnRepresentation) {
+    context.unsupportedKinds.add(`${sourceKind}_return_value`);
+    return [{ kind: 'unsupported_statement', sourceKind }];
+  }
+  return [
+    ...takePendingStatements(context),
+    { kind: 'local_set', name: target.returnValueName, value },
+    {
+      kind: 'local_set',
+      name: target.returnFlagName,
+      value: booleanLiteralExpression(true),
+    },
+  ];
+}
+
+function dispatchReturnCompletionTarget(
+  target: SourceSemanticCompletionTarget,
+): SemanticStatementIR {
+  return {
+    kind: 'if',
+    condition: localGetExpression(target.returnFlagName, 'i32'),
+    thenBody: [{
+      kind: 'return',
+      value: localGetExpression(target.returnValueName, target.returnRepresentation),
+    }],
+    elseBody: [],
+  };
+}
+
 function lowerTryCatchStatement(
   statement: Extract<SourceStatementIR, { kind: 'try' }>,
   context: FunctionLoweringContext,
@@ -3141,15 +3215,41 @@ function lowerTryCatchStatement(
   });
   statements.push(...finallyBlock.flatMap((child) => [...lowerStatement(child, context)]));
   if (completionReturnFlagName && completionReturnValueName && completionReturnRepresentation) {
-    statements.push({
-      kind: 'if',
-      condition: localGetExpression(completionReturnFlagName, 'i32'),
-      thenBody: [{
-        kind: 'return',
-        value: localGetExpression(completionReturnValueName, completionReturnRepresentation),
-      }],
-      elseBody: [],
-    });
+    const activeCompletionTarget = context.completionTargets.at(-1);
+    if (activeCompletionTarget) {
+      if (activeCompletionTarget.returnRepresentation !== completionReturnRepresentation) {
+        context.unsupportedKinds.add('try_catch_return_value');
+        statements.push({ kind: 'unsupported_statement', sourceKind: 'try' });
+      } else {
+        statements.push({
+          kind: 'if',
+          condition: localGetExpression(completionReturnFlagName, 'i32'),
+          thenBody: [
+            {
+              kind: 'local_set',
+              name: activeCompletionTarget.returnValueName,
+              value: localGetExpression(completionReturnValueName, completionReturnRepresentation),
+            },
+            {
+              kind: 'local_set',
+              name: activeCompletionTarget.returnFlagName,
+              value: booleanLiteralExpression(true),
+            },
+          ],
+          elseBody: [],
+        });
+      }
+    } else {
+      statements.push({
+        kind: 'if',
+        condition: localGetExpression(completionReturnFlagName, 'i32'),
+        thenBody: [{
+          kind: 'return',
+          value: localGetExpression(completionReturnValueName, completionReturnRepresentation),
+        }],
+        elseBody: [],
+      });
+    }
   }
   if (completionBreakFlagName) {
     statements.push({
@@ -3221,6 +3321,14 @@ function lowerTryStatement(
     const leadingLoweredStatements = leadingTryStatements.flatMap((child) => [
       ...lowerStatement(child, context),
     ]);
+    const activeCompletionTarget = context.completionTargets.at(-1);
+    if (activeCompletionTarget) {
+      return [
+        ...leadingLoweredStatements,
+        ...captureReturnCompletion(returnStatement, activeCompletionTarget, context, 'try'),
+        ...finallyBlock.flatMap((child) => [...lowerStatement(child, context)]),
+      ];
+    }
     const rawValue = returnStatement.expression
       ? lowerExpression(returnStatement.expression, context)
       : { kind: 'undefined_literal', representation: 'tagged_ref' } as SemanticExpressionIR;
@@ -3237,6 +3345,26 @@ function lowerTryStatement(
       { kind: 'local_set', name: resultName, value },
       ...finallyBlock.flatMap((child) => [...lowerStatement(child, context)]),
       { kind: 'return', value: localGetExpression(resultName, value.representation) },
+    ];
+  }
+  if (
+    statement.tryBlock.length === 1 &&
+    statement.tryBlock[0]?.kind === 'try' &&
+    sourceStatementsContainReturn(statement.tryBlock)
+  ) {
+    const completionTarget = createReturnCompletionTarget(context, 'try_finally_nested');
+    context.completionTargets.push(completionTarget);
+    let tryStatements: readonly SemanticStatementIR[];
+    try {
+      tryStatements = statement.tryBlock.flatMap((child) => [...lowerStatement(child, context)]);
+    } finally {
+      context.completionTargets.pop();
+    }
+    return [
+      initializeReturnCompletionTarget(completionTarget),
+      ...tryStatements,
+      ...finallyBlock.flatMap((child) => [...lowerStatement(child, context)]),
+      dispatchReturnCompletionTarget(completionTarget),
     ];
   }
   if (sourceStatementsContainControlTransfer(statement.tryBlock)) {
@@ -3875,6 +4003,7 @@ function lowerArrowFunctionExpression(
     stringLiterals: parentContext.stringLiterals,
     switchBreakLocalStack: [],
     throwTargets: [],
+    completionTargets: [],
     tempIndex: 0,
     unsupportedKinds,
   };
@@ -5008,6 +5137,15 @@ function lowerStatement(
       return [...takePendingStatements(context), { kind: 'expression', value }];
     }
     case 'return': {
+      const activeCompletionTarget = context.completionTargets.at(-1);
+      if (activeCompletionTarget) {
+        return captureReturnCompletion(
+          statement,
+          activeCompletionTarget,
+          context,
+          'return',
+        );
+      }
       const rawValue = statement.expression
         ? lowerExpression(statement.expression, context)
         : { kind: 'undefined_literal', representation: 'tagged_ref' } as SemanticExpressionIR;
@@ -5300,6 +5438,7 @@ function lowerFunction(
     stringLiterals,
     switchBreakLocalStack: [],
     throwTargets: [],
+    completionTargets: [],
     tempIndex: 0,
     unsupportedKinds,
   };
