@@ -2778,6 +2778,30 @@ function sourceStatementsContainUnsupportedCatchableTryFlow(
   });
 }
 
+function sourceStatementsContainReturn(
+  statements: readonly SourceStatementIR[],
+): boolean {
+  return statements.some((statement): boolean => {
+    switch (statement.kind) {
+      case 'return':
+        return true;
+      case 'block':
+        return sourceStatementsContainReturn(statement.statements);
+      case 'if':
+        return sourceStatementsContainReturn(statement.consequent) ||
+          sourceStatementsContainReturn(statement.alternate);
+      case 'switch':
+        return statement.clauses.some((clause) => sourceStatementsContainReturn(clause.statements));
+      case 'try':
+        return sourceStatementsContainReturn(statement.tryBlock) ||
+          sourceStatementsContainReturn(statement.catchBlock ?? []) ||
+          sourceStatementsContainReturn(statement.finallyBlock ?? []);
+      default:
+        return false;
+    }
+  });
+}
+
 function catchableTryActiveCondition(target: SourceSemanticThrowTarget): SemanticExpressionIR {
   return {
     kind: 'binary',
@@ -2793,12 +2817,20 @@ function lowerTryCatchStatement(
   context: FunctionLoweringContext,
 ): readonly SemanticStatementIR[] {
   const catchBlock = statement.catchBlock;
+  const finallyBlock = statement.finallyBlock ?? [];
   if (!catchBlock) {
     context.unsupportedKinds.add('try_catch');
     return [{ kind: 'unsupported_statement', sourceKind: 'try' }];
   }
-  if (statement.finallyBlock && statement.finallyBlock.length > 0) {
-    context.unsupportedKinds.add('try_catch_finally');
+  if (
+    finallyBlock.length > 0 &&
+    (
+      sourceStatementsContainControlTransfer(finallyBlock) ||
+      sourceStatementsContainReturn(statement.tryBlock) ||
+      sourceStatementsContainControlTransfer(catchBlock)
+    )
+  ) {
+    context.unsupportedKinds.add('try_catch_finally_control_flow');
     return [{ kind: 'unsupported_statement', sourceKind: 'try' }];
   }
   if (sourceStatementsContainUnsupportedCatchableTryFlow(statement.tryBlock)) {
@@ -2869,6 +2901,7 @@ function lowerTryCatchStatement(
     thenBody: catchStatements,
     elseBody: [],
   });
+  statements.push(...finallyBlock.flatMap((child) => [...lowerStatement(child, context)]));
   return statements;
 }
 
