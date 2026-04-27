@@ -574,6 +574,108 @@ function lowerPromiseThenCallExpression(
   };
 }
 
+function lowerPromiseRaceCallExpression(
+  expression: Extract<SourceExpressionIR, { kind: 'call_expression' }>,
+  context: FunctionLoweringContext,
+): SemanticExpressionIR | undefined {
+  if (
+    expression.callee.kind !== 'property_access' ||
+    expression.callee.object.kind !== 'identifier' ||
+    expression.callee.object.name !== 'Promise' ||
+    expression.callee.property !== 'race'
+  ) {
+    return undefined;
+  }
+  if (expression.args.length !== 1) {
+    context.unsupportedKinds.add('Promise.race:arity');
+    return { kind: 'undefined_literal', representation: 'tagged_ref' };
+  }
+  const [raceSource] = expression.args;
+  if (raceSource?.kind !== 'array_literal') {
+    context.unsupportedKinds.add('Promise.race:source');
+    return { kind: 'undefined_literal', representation: 'tagged_ref' };
+  }
+
+  const taggedValue = promiseReactionTaggedValueType();
+  const closureSignature = raceSource.elements.length > 0
+    ? createClosureSignature(context.moduleState, [taggedValue], taggedValue)
+    : undefined;
+  const fulfilledFunctionId = closureSignature
+    ? pushPromiseResolveIntoClosure(context, closureSignature.id)
+    : undefined;
+  const rejectedFunctionId = closureSignature
+    ? pushPromiseRejectIntoClosure(context, closureSignature.id)
+    : undefined;
+  const targetPromiseName = nextTempLocalName(context, 'promise_race_target');
+  addLocal(context, targetPromiseName, 'heap_ref');
+  const statements: SemanticStatementIR[] = [{
+    kind: 'local_set',
+    name: targetPromiseName,
+    value: {
+      kind: 'call',
+      callee: SOUNDSCRIPT_PROMISE_NEW_PENDING_HELPER_NAME,
+      args: [],
+      representation: 'heap_ref',
+    },
+  }];
+
+  for (const element of raceSource.elements) {
+    const source = lowerExpression(element, context);
+    const sourceStatements = takePendingStatements(context);
+    if (
+      source.representation !== 'heap_ref' ||
+      !closureSignature ||
+      fulfilledFunctionId === undefined ||
+      rejectedFunctionId === undefined
+    ) {
+      context.unsupportedKinds.add('Promise.race:element');
+      return { kind: 'undefined_literal', representation: 'tagged_ref' };
+    }
+    const sourceName = nextTempLocalName(context, 'promise_race_source');
+    addLocal(context, sourceName, 'heap_ref');
+    const targetCapture = promiseTargetCapture(targetPromiseName);
+    statements.push(
+      ...sourceStatements,
+      { kind: 'local_set', name: sourceName, value: source },
+      {
+        kind: 'expression',
+        value: {
+          kind: 'call',
+          callee: SOUNDSCRIPT_PROMISE_THEN_HELPER_NAME,
+          args: [
+            localGetExpression(sourceName, 'heap_ref'),
+            {
+              kind: 'closure_literal',
+              functionId: fulfilledFunctionId,
+              signatureId: closureSignature.id,
+              captures: [targetCapture],
+              captureValueTypes: ['tagged_ref'],
+              representation: 'closure_ref',
+            },
+            {
+              kind: 'closure_literal',
+              functionId: rejectedFunctionId,
+              signatureId: closureSignature.id,
+              captures: [targetCapture],
+              captureValueTypes: ['tagged_ref'],
+              representation: 'closure_ref',
+            },
+          ],
+          representation: 'heap_ref',
+        },
+      },
+    );
+  }
+
+  context.pendingStatements.push(...statements);
+  context.runtimeFamilies.add('promise');
+  if (raceSource.elements.length > 0) {
+    context.runtimeFamilies.add('closure');
+    context.runtimeFamilies.add('finite_union');
+  }
+  return localGetExpression(targetPromiseName, 'heap_ref');
+}
+
 function lowerPromiseStaticCallExpression(
   expression: Extract<SourceExpressionIR, { kind: 'call_expression' }>,
   context: FunctionLoweringContext,
@@ -584,6 +686,10 @@ function lowerPromiseStaticCallExpression(
     expression.callee.object.name !== 'Promise'
   ) {
     return undefined;
+  }
+  const promiseRaceCall = lowerPromiseRaceCallExpression(expression, context);
+  if (promiseRaceCall) {
+    return promiseRaceCall;
   }
   const helperName = expression.callee.property === 'resolve'
     ? SOUNDSCRIPT_PROMISE_RESOLVE_HELPER_NAME
@@ -672,6 +778,50 @@ function pushPromiseRejectIntoClosure(
           args: [
             promiseTargetFromCapture(),
             localGetExpression('promise_reason', 'tagged_ref'),
+          ],
+          representation: 'tagged_ref',
+        },
+      },
+      { kind: 'return', value: { kind: 'undefined_literal', representation: 'tagged_ref' } },
+    ],
+    bodyStatus: 'emittable',
+    unsupportedBodyKinds: [],
+    runtimeFamilies: ['finite_union', 'promise'],
+    hostImported: false,
+    hostExported: false,
+    unionBoundaries: [],
+    closureFunctionId,
+    closureSignatureId: signatureId,
+    closureCaptureCount: 1,
+    closureCaptureValueTypes: ['tagged_ref'],
+  });
+  return closureFunctionId;
+}
+
+function pushPromiseResolveIntoClosure(
+  context: FunctionLoweringContext,
+  signatureId: number,
+): number {
+  const closureFunctionId = context.moduleState.nextClosureFunctionId;
+  context.moduleState.nextClosureFunctionId += 1;
+  context.moduleState.generatedFunctions.push({
+    name: `closure_source_promise_fulfilled_${closureFunctionId}`,
+    exportName: '',
+    params: [
+      { name: 'capture_target_0', representation: 'box_ref' },
+      { name: 'promise_value', representation: 'tagged_ref' },
+    ],
+    locals: [],
+    result: 'tagged_ref',
+    body: [
+      {
+        kind: 'expression',
+        value: {
+          kind: 'call',
+          callee: SOUNDSCRIPT_PROMISE_RESOLVE_INTO_HELPER_NAME,
+          args: [
+            promiseTargetFromCapture(),
+            localGetExpression('promise_value', 'tagged_ref'),
           ],
           representation: 'tagged_ref',
         },
