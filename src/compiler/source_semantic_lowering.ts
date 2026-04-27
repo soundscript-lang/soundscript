@@ -2876,18 +2876,17 @@ function lowerTryCatchStatement(
   const supportsTryReturnThroughFinally = finallyBlock.length > 0 && supportsTryTerminalReturn;
   const supportsCatchReturnThroughFinally = finallyBlock.length > 0 &&
     supportsCatchTerminalReturn;
-  const supportsTryLoopControlThroughFinally = finallyBlock.length > 0 &&
-    tryLoopControlStatement !== undefined &&
+  const supportsTryTerminalLoopControl = tryLoopControlStatement !== undefined &&
     statement.tryBlock.length === tryLoopControlIndex + 1 &&
     !sourceStatementsContainControlTransfer(tryLoopControlLeadingStatements);
+  const supportsTryLoopControlThroughFinally = finallyBlock.length > 0 &&
+    supportsTryTerminalLoopControl;
   const supportsCatchLoopControlThroughFinally = finallyBlock.length > 0 &&
     catchLoopControlStatement !== undefined &&
     catchBlock.length === catchLoopControlIndex + 1 &&
     !sourceStatementsContainControlTransfer(catchLoopControlLeadingStatements);
   const supportsReturnThroughFinally = supportsTryReturnThroughFinally ||
     supportsCatchReturnThroughFinally;
-  const supportsLoopControlThroughFinally = supportsTryLoopControlThroughFinally ||
-    supportsCatchLoopControlThroughFinally;
   const supportsCatchCompletionThroughFinally = supportsCatchReturnThroughFinally ||
     supportsCatchLoopControlThroughFinally;
   if (
@@ -2907,7 +2906,7 @@ function lowerTryCatchStatement(
     context.unsupportedKinds.add('try_catch_finally_control_flow');
     return [{ kind: 'unsupported_statement', sourceKind: 'try' }];
   }
-  const catchableTryFlowStatements = supportsTryLoopControlThroughFinally
+  const catchableTryFlowStatements = supportsTryTerminalLoopControl
     ? tryLoopControlLeadingStatements
     : statement.tryBlock;
   if (sourceStatementsContainUnsupportedCatchableTryFlow(catchableTryFlowStatements)) {
@@ -3051,7 +3050,7 @@ function lowerTryCatchStatement(
 
   context.throwTargets.push(target);
   try {
-    const guardedTryStatements = supportsTryLoopControlThroughFinally
+    const guardedTryStatements = supportsTryTerminalLoopControl
       ? tryLoopControlLeadingStatements
       : tryLeadingStatements;
     for (const child of guardedTryStatements) {
@@ -3082,6 +3081,13 @@ function lowerTryCatchStatement(
         kind: 'if',
         condition: catchableTryActiveCondition(target),
         thenBody: [...captureLoopControlStatements(tryLoopControlStatement)],
+        elseBody: [],
+      });
+    } else if (supportsTryTerminalLoopControl && tryLoopControlStatement) {
+      statements.push({
+        kind: 'if',
+        condition: catchableTryActiveCondition(target),
+        thenBody: [...lowerStatement(tryLoopControlStatement, context)],
         elseBody: [],
       });
     }
