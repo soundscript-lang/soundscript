@@ -3041,6 +3041,28 @@ function lowerTryStatement(
     context.unsupportedKinds.add('try_finally_control_flow');
     return [{ kind: 'unsupported_statement', sourceKind: 'try' }];
   }
+  const loopControlIndex = statement.tryBlock.findIndex((child) =>
+    child.kind === 'break' || child.kind === 'continue'
+  );
+  if (loopControlIndex >= 0) {
+    const leadingTryStatements = statement.tryBlock.slice(0, loopControlIndex);
+    const controlStatement = statement.tryBlock[loopControlIndex] as Extract<
+      SourceStatementIR,
+      { kind: 'break' | 'continue' }
+    >;
+    if (
+      statement.tryBlock.length !== loopControlIndex + 1 ||
+      sourceStatementsContainControlTransfer(leadingTryStatements)
+    ) {
+      context.unsupportedKinds.add('try_finally_control_flow');
+      return [{ kind: 'unsupported_statement', sourceKind: 'try' }];
+    }
+    return [
+      ...leadingTryStatements.flatMap((child) => [...lowerStatement(child, context)]),
+      ...finallyBlock.flatMap((child) => [...lowerStatement(child, context)]),
+      ...lowerStatement(controlStatement, context),
+    ];
+  }
   const returnIndex = statement.tryBlock.findIndex((child) => child.kind === 'return');
   if (returnIndex >= 0) {
     const leadingTryStatements = statement.tryBlock.slice(0, returnIndex);
