@@ -55,7 +55,13 @@ The stable `sts:*` surface stays focused and composable.
   as `codec.isoDate` and `codec.url`.
 - `sts:metadata` owns derive metadata inspection helpers such as `metadataOf(...)` and
   `attachMetadata(...)`.
-- `sts:async` currently owns `Task<T, E>` and result-first async helpers.
+- `sts:concurrency/task` owns `Task<T, E>` and result-first async helpers exposed through `Task.*`.
+- `sts:concurrency/runtime` owns js-node structured concurrency primitives such as `TaskGroup` and
+  `AsyncContext`; other targets gate that module until they have a provider.
+- `sts:capabilities`, `sts:time`, `sts:console`, `sts:path`, and `sts:bytes` are JS-neutral portable
+  support modules.
+- `sts:fs`, `sts:env`, `sts:cli`, `sts:process`, `sts:http`, and `sts:net` are initial js-node
+  provider modules and are capability-gated away from browser/Wasm targets.
 - `sts:compare` owns `Eq`, `Order`, and comparator composition helpers.
 - `sts:hash` owns hashing and equality-key protocols.
 - `sts:derive` owns compiler-provided declaration macros such as `eq`, `hash`, `decode`, `encode`,
@@ -67,16 +73,16 @@ The stable `sts:*` surface stays focused and composable.
 If you are deciding where a helper should live, prefer the narrowest leaf module that honestly
 matches the ownership boundary.
 
-## Planned Pre-V1 Breaking Direction
+## Pre-V1 Breaking Direction
 
 Soundscript does not have external compatibility obligations yet, so the stdlib can still make
 breaking cleanup changes before the stable contract.
 
-The current async helper shape should be replaced before stabilization:
+The old async helper shape has been removed:
 
-- move `Task<T, E>` and task helpers from `sts:async` to `sts:concurrency/task`
-- expose task helpers as `Task.*` rather than a flat set of bare functions
-- remove or rename ambiguous promise-fanout helpers such as `parallel(...)`
+- use `sts:concurrency/task` instead of `sts:async`
+- access task helpers through `Task.*` rather than a flat set of bare functions
+- use `Task.all(...)` for promise fanout instead of the removed `parallel(...)`
 - keep true parallel execution under `sts:concurrency/parallel`
 - keep synchronization and atomic shared-memory APIs under `sts:concurrency/sync` and
   `sts:concurrency/atomics`, not top-level `sts:sync` or `sts:atomics`

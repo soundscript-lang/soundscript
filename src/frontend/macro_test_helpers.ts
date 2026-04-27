@@ -1,12 +1,12 @@
 import ts from 'typescript';
 
 import {
-  ASYNC_STDLIB_DECLARATION_FILE,
-  ASYNC_STDLIB_DECLARATION_TEXT,
   CODEC_STDLIB_DECLARATION_FILE,
   CODEC_STDLIB_DECLARATION_TEXT,
   COMPARE_STDLIB_DECLARATION_FILE,
   COMPARE_STDLIB_DECLARATION_TEXT,
+  CONCURRENCY_TASK_STDLIB_DECLARATION_FILE,
+  CONCURRENCY_TASK_STDLIB_DECLARATION_TEXT,
   DECODE_STDLIB_DECLARATION_FILE,
   DECODE_STDLIB_DECLARATION_TEXT,
   DERIVE_STDLIB_DECLARATION_FILE,
@@ -49,7 +49,10 @@ interface CreatePreparedProgramForMacroTestOptions {
   >;
 }
 
-function createBaseHost(files: ReadonlyMap<string, string>, compilerOptions: ts.CompilerOptions): ts.CompilerHost {
+function createBaseHost(
+  files: ReadonlyMap<string, string>,
+  compilerOptions: ts.CompilerOptions,
+): ts.CompilerHost {
   const baseHost = ts.createCompilerHost(compilerOptions);
 
   return withSqlStdlibModuleResolution(
@@ -102,8 +105,8 @@ export function createPreparedProgramForMacroTest(
   if (!fileMap.has(CODEC_STDLIB_DECLARATION_FILE)) {
     fileMap.set(CODEC_STDLIB_DECLARATION_FILE, CODEC_STDLIB_DECLARATION_TEXT);
   }
-  if (!fileMap.has(ASYNC_STDLIB_DECLARATION_FILE)) {
-    fileMap.set(ASYNC_STDLIB_DECLARATION_FILE, ASYNC_STDLIB_DECLARATION_TEXT);
+  if (!fileMap.has(CONCURRENCY_TASK_STDLIB_DECLARATION_FILE)) {
+    fileMap.set(CONCURRENCY_TASK_STDLIB_DECLARATION_FILE, CONCURRENCY_TASK_STDLIB_DECLARATION_TEXT);
   }
   if (!fileMap.has(ERROR_STDLIB_DECLARATION_FILE)) {
     fileMap.set(ERROR_STDLIB_DECLARATION_FILE, ERROR_STDLIB_DECLARATION_TEXT);

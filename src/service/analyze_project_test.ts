@@ -2390,6 +2390,159 @@ Deno.test('analyzeProject resolves portable sts platform modules on wasm-wasi', 
   assertEquals(result.diagnostics, []);
 });
 
+Deno.test('analyzeProject rejects removed sts:async imports with migration guidance', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': createSoundscriptOnlyTsconfig(),
+    'src/index.sts': [
+      "import { succeed } from 'sts:async';",
+      '',
+      'void succeed;',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    target: 'js-node',
+    workingDirectory: tempDirectory,
+  });
+
+  const capabilityDiagnostics = result.diagnostics.filter((diagnostic) =>
+    diagnostic.code === 'SOUND1042'
+  );
+  assertEquals(capabilityDiagnostics.map((diagnostic) => diagnostic.metadata?.primarySymbol), [
+    'sts:async',
+  ]);
+  assertEquals(
+    capabilityDiagnostics[0]?.hint,
+    'Use `sts:concurrency/task` for portable task helpers.',
+  );
+});
+
+Deno.test('analyzeProject accepts browser-supported portable stdlib modules', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': createBrowserTsconfig(),
+    'src/index.sts': [
+      "import { Task } from 'sts:concurrency/task';",
+      "import { hasCapability } from 'sts:capabilities';",
+      "import { log } from 'sts:console';",
+      "import { Duration, sleep } from 'sts:time';",
+      "import { join } from 'sts:path';",
+      "import { Bytes } from 'sts:bytes';",
+      '',
+      'const task = Task.map(Task.succeed(1), (value: number) => value + 1);',
+      'const path = join("assets", "app.js");',
+      'const bytes = Bytes.fromString(path);',
+      'const ready = hasCapability("fetch");',
+      'log(path, bytes, ready);',
+      'void sleep(Duration.milliseconds(1));',
+      'void task;',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    target: 'js-browser',
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics, []);
+});
+
+Deno.test('analyzeProject gates js-node-only concurrency runtime modules on js-browser', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': createBrowserTsconfig(),
+    'src/index.sts': [
+      "import { TaskGroup } from 'sts:concurrency/runtime';",
+      '',
+      'void TaskGroup;',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    target: 'js-browser',
+    workingDirectory: tempDirectory,
+  });
+
+  const capabilityDiagnostics = result.diagnostics.filter((diagnostic) =>
+    diagnostic.code === 'SOUND1042'
+  );
+  assertEquals(capabilityDiagnostics.map((diagnostic) => diagnostic.metadata?.primarySymbol), [
+    'sts:concurrency/runtime',
+  ]);
+});
+
+Deno.test('analyzeProject resolves js-node provider stdlib modules on js-node', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+          types: ['node'],
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/index.sts': [
+      "import { readText } from 'sts:fs';",
+      "import { get } from 'sts:env';",
+      "import { args } from 'sts:cli';",
+      "import { cwd } from 'sts:process';",
+      "import { serve } from 'sts:http';",
+      "import { lookup } from 'sts:net';",
+      '',
+      'void readText;',
+      'void get;',
+      'void args;',
+      'void cwd;',
+      'void serve;',
+      'void lookup;',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    target: 'js-node',
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics, []);
+});
+
+Deno.test('analyzeProject gates js-node provider modules on js-browser', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': createBrowserTsconfig(),
+    'src/index.sts': [
+      "import { readText } from 'sts:fs';",
+      '',
+      'void readText;',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    target: 'js-browser',
+    workingDirectory: tempDirectory,
+  });
+
+  const capabilityDiagnostics = result.diagnostics.filter((diagnostic) =>
+    diagnostic.code === 'SOUND1042'
+  );
+  assertEquals(capabilityDiagnostics.map((diagnostic) => diagnostic.metadata?.primarySymbol), [
+    'sts:fs',
+  ]);
+});
+
 Deno.test('analyzeProject resolves stdlib v2 json and compare modules through the analysis pipeline', async () => {
   const tempDirectory = await createTempProject({
     'tsconfig.json': JSON.stringify(
@@ -2437,7 +2590,7 @@ Deno.test('analyzeProject resolves stdlib v2 json and compare modules through th
   assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), []);
 });
 
-Deno.test('analyzeProject resolves stdlib v3 hash decode codec and async modules through the analysis pipeline', async () => {
+Deno.test('analyzeProject resolves stdlib v3 hash decode codec and concurrency modules through the analysis pipeline', async () => {
   const tempDirectory = await createTempProject({
     'tsconfig.json': JSON.stringify(
       {
@@ -2454,11 +2607,10 @@ Deno.test('analyzeProject resolves stdlib v3 hash decode codec and async modules
     ),
     'src/index.sts': [
       "import { isErr } from 'sts:prelude';",
-      "import * as async from 'sts:async';",
+      "import { Task } from 'sts:concurrency/task';",
       "import * as codec from 'sts:codec';",
       "import * as decode from 'sts:decode';",
       "import * as hash from 'sts:hash';",
-      "import type { Task } from 'sts:async';",
       "import type { Codec } from 'sts:codec';",
       "import type { Decoder } from 'sts:decode';",
       "import type { HashEq } from 'sts:hash';",
@@ -2497,8 +2649,8 @@ Deno.test('analyzeProject resolves stdlib v3 hash decode codec and async modules
       '}',
       'const encodedText: string = encoded.value;',
       '',
-      'const baseTask = async.fromPromise(async () => "user");',
-      'const derivedTask = async.map(baseTask, (value: string) => value.length + encodedText.length + hashCode);',
+      'const baseTask = Task.fromPromise(async () => "user");',
+      'const derivedTask = Task.map(baseTask, (value: string) => value.length + encodedText.length + hashCode);',
       'const loadedContracts: LoadedContracts | undefined = undefined;',
       'void loadedContracts;',
       'void parsedTags;',
@@ -5882,7 +6034,7 @@ Deno.test('analyzeProject accepts pure Promise continuations under forbid fails 
   assertEquals(result.diagnostics, []);
 });
 
-Deno.test('analyzeProject accepts sts:async task constructors under forbid contracts', async () => {
+Deno.test('analyzeProject accepts sts:concurrency/task task constructors under forbid contracts', async () => {
   const tempDirectory = await createTempProject({
     'tsconfig.json': JSON.stringify(
       {
@@ -5898,13 +6050,12 @@ Deno.test('analyzeProject accepts sts:async task constructors under forbid contr
       2,
     ),
     'src/index.sts': [
-      "import * as async from 'sts:async';",
-      "import type { Task } from 'sts:async';",
+      "import { Task } from 'sts:concurrency/task';",
       '',
       '// #[effects(forbid: [fails, suspend, mut, host])]',
       'function build(project: (value: number) => number): Task<number> {',
-      '  const seed = async.fromPromise(async () => 1);',
-      '  return async.map(seed, project);',
+      '  const seed = Task.fromPromise(async () => 1);',
+      '  return Task.map(seed, project);',
       '}',
       '',
       'const plusOne = (value: number): number => value + 1;',
@@ -10322,7 +10473,7 @@ Deno.test('analyzeProject preserves narrowing across shared collection callback 
   assertEquals(result.diagnostics, []);
 });
 
-Deno.test('analyzeProject preserves narrowing across sts:async task constructor helpers', async () => {
+Deno.test('analyzeProject preserves narrowing across sts:concurrency/task task constructor helpers', async () => {
   const tempDirectory = await createTempProject({
     'tsconfig.json': JSON.stringify(
       {
@@ -10338,12 +10489,11 @@ Deno.test('analyzeProject preserves narrowing across sts:async task constructor 
       2,
     ),
     'src/index.sts': [
-      "import * as async from 'sts:async';",
-      "import type { Task } from 'sts:async';",
+      "import { Task } from 'sts:concurrency/task';",
       '',
       'function use(box: { value: string | null }, task: Task<number>): string {',
       '  if (box.value !== null) {',
-      '    const mapped = async.map(task, (value: number) => value + 1);',
+      '    const mapped = Task.map(task, (value: number) => value + 1);',
       '    void mapped;',
       '    const value: string = box.value;',
       '    return value;',

@@ -306,8 +306,14 @@ async function prepareStdlibPackage(version: string): Promise<void> {
   await Deno.mkdir(join(CANONICAL_DIST, 'soundscript', 'experimental'), { recursive: true });
   await Deno.mkdir(join(CANONICAL_DIST, 'bin'), { recursive: true });
 
-  const stdlibDeclarationsByBaseName = new Map(
-    [...getStdlibDeclarationTexts().entries()].map(([filePath, text]) => [basename(filePath), text] as const),
+  const stdlibDeclarationRoot = dirname(STDLIB_DECLARATION_FILE);
+  const stdlibDeclarationsByRelativePath = new Map(
+    [...getStdlibDeclarationTexts().entries()].map(([filePath, text]) =>
+      [
+        relative(stdlibDeclarationRoot, filePath),
+        text,
+      ] as const
+    ),
   );
   const rootSource = rewriteModuleSpecifiersForEmit(
     Deno.readTextFileSync(join(ROOT, 'src', 'stdlib', 'index.ts')),
@@ -315,7 +321,7 @@ async function prepareStdlibPackage(version: string): Promise<void> {
     { moduleSpecifierMode: 'source-sts' },
   );
   const rootDeclarations = rewriteModuleSpecifiersForEmit(
-    stdlibDeclarationsByBaseName.get('index.d.ts') ??
+    stdlibDeclarationsByRelativePath.get('index.d.ts') ??
       (() => {
         throw new Error('Missing generated stdlib declaration for index.d.ts.');
       })(),
@@ -340,7 +346,7 @@ async function prepareStdlibPackage(version: string): Promise<void> {
       { moduleSpecifierMode: 'source-sts' },
     );
     const rewrittenDeclarations = rewriteModuleSpecifiersForEmit(
-      stdlibDeclarationsByBaseName.get(`${moduleName}.d.ts`) ??
+      stdlibDeclarationsByRelativePath.get(`${moduleName}.d.ts`) ??
         (() => {
           throw new Error(`Missing generated stdlib declaration for ${moduleName}.d.ts.`);
         })(),
@@ -368,7 +374,7 @@ async function prepareStdlibPackage(version: string): Promise<void> {
       { moduleSpecifierMode: 'source-sts' },
     );
     const rewrittenDeclarations = rewriteModuleSpecifiersForEmit(
-      stdlibDeclarationsByBaseName.get(`${moduleName}.d.ts`) ??
+      stdlibDeclarationsByRelativePath.get(`${moduleName}.d.ts`) ??
         (() => {
           throw new Error(`Missing generated stdlib declaration for ${moduleName}.d.ts.`);
         })(),
