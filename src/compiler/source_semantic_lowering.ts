@@ -128,6 +128,7 @@ interface SourceSemanticModuleLoweringState {
 
 interface FunctionLoweringContext {
   functionName: string;
+  asyncFunction: boolean;
   currentResultType?: SemanticTypeIR;
   functionResultArrayLocals: Map<string, SourceSemanticArrayLocal>;
   functionParamTypes: Map<string, readonly SemanticTypeIR[]>;
@@ -393,6 +394,25 @@ function promiseReactionClosureType(paramCount: number): SemanticTypeIR {
   };
 }
 
+function promiseResolveExpressionForValue(
+  rawValue: SemanticExpressionIR,
+  promiseValueType: SemanticTypeIR | undefined,
+  context: FunctionLoweringContext,
+): SemanticExpressionIR | undefined {
+  const value = adaptExpressionToSemanticType(rawValue, promiseValueType, context) ?? rawValue;
+  const taggedValue = taggedUnionExpressionForValue(value, context);
+  if (!taggedValue) {
+    return undefined;
+  }
+  context.runtimeFamilies.add('promise');
+  return {
+    kind: 'call',
+    callee: SOUNDSCRIPT_PROMISE_RESOLVE_HELPER_NAME,
+    args: [taggedValue],
+    representation: 'heap_ref',
+  };
+}
+
 function projectObjectExpressionToSemanticType(
   source: SourceExpressionIR,
   value: SemanticExpressionIR,
@@ -567,6 +587,14 @@ function lowerPromiseStaticCallExpression(
     ? lowerExpression(expression.args[0], context)
     : { kind: 'undefined_literal', representation: 'tagged_ref' } as SemanticExpressionIR;
   const promiseValueType = promiseValueTypeForSemanticType(context.currentResultType);
+  if (helperName === SOUNDSCRIPT_PROMISE_RESOLVE_HELPER_NAME) {
+    const resolved = promiseResolveExpressionForValue(rawValue, promiseValueType, context);
+    if (!resolved) {
+      context.unsupportedKinds.add(`Promise.${expression.callee.property}:value`);
+      return { kind: 'undefined_literal', representation: 'tagged_ref' };
+    }
+    return resolved;
+  }
   const value = adaptExpressionToSemanticType(rawValue, promiseValueType, context) ?? rawValue;
   const taggedValue = taggedUnionExpressionForValue(value, context);
   if (!taggedValue) {
@@ -4445,6 +4473,7 @@ function lowerArrowFunctionExpression(
   const unsupportedKinds = new Set<string>();
   const closureContext: FunctionLoweringContext = {
     functionName: `closure_source_${parentContext.functionName}_${closureFunctionId}`,
+    asyncFunction: false,
     currentResultType: signatureType.result,
     functionResultArrayLocals: parentContext.functionResultArrayLocals,
     functionParamTypes: parentContext.functionParamTypes,
@@ -5617,6 +5646,21 @@ function lowerStatement(
       const rawValue = statement.expression
         ? lowerExpression(statement.expression, context)
         : { kind: 'undefined_literal', representation: 'tagged_ref' } as SemanticExpressionIR;
+      if (context.asyncFunction && context.currentResultType?.kind === 'promise') {
+        const promiseValue = promiseResolveExpressionForValue(
+          rawValue,
+          context.currentResultType.value,
+          context,
+        );
+        if (!promiseValue) {
+          context.unsupportedKinds.add('async_return_value');
+          return [{ kind: 'unsupported_statement', sourceKind: 'return' }];
+        }
+        return [...takePendingStatements(context), {
+          kind: 'return',
+          value: promiseValue,
+        }];
+      }
       const value = adaptExpressionToSemanticType(
         rawValue,
         context.currentResultType,
@@ -5887,6 +5931,7 @@ function lowerFunction(
   );
   const context: FunctionLoweringContext = {
     functionName: func.name,
+    asyncFunction: func.async,
     currentResultType: signature?.result,
     functionResultArrayLocals,
     functionParamTypes,
