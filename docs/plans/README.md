@@ -17,6 +17,7 @@ older context that no longer matches the current implementation.
 - `js-value-types.md`
 - `nominal-types-and-class-identity.md`
 - `runtime-target-platform-and-interop.md`
+- `structured-concurrency-and-parallelism.md`
 - `test262-migration.md`
 - `wasm-async-runtime-and-host-integration.md`
 - `wasm-js-interop-addendum.md`
