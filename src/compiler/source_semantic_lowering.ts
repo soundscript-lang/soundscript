@@ -105,9 +105,11 @@ interface SourceSemanticThrowTarget {
 }
 
 interface SourceSemanticCompletionTarget {
-  returnFlagName: string;
-  returnValueName: string;
-  returnRepresentation: CompilerValueType;
+  returnFlagName?: string;
+  returnValueName?: string;
+  returnRepresentation?: CompilerValueType;
+  breakFlagName?: string;
+  continueFlagName?: string;
 }
 
 type SourceSemanticLocalDeclarationKind = 'const' | 'let' | 'var' | 'param' | 'capture';
@@ -2809,6 +2811,36 @@ function sourceStatementsContainReturn(
   });
 }
 
+function sourceStatementsContainLoopControl(
+  statements: readonly SourceStatementIR[],
+  kind: 'break' | 'continue',
+): boolean {
+  return statements.some((statement): boolean => {
+    switch (statement.kind) {
+      case 'break':
+      case 'continue':
+        return statement.kind === kind;
+      case 'block':
+        return sourceStatementsContainLoopControl(statement.statements, kind);
+      case 'if':
+        return sourceStatementsContainLoopControl(statement.consequent, kind) ||
+          sourceStatementsContainLoopControl(statement.alternate, kind);
+      case 'try':
+        return sourceStatementsContainLoopControl(statement.tryBlock, kind) ||
+          sourceStatementsContainLoopControl(statement.catchBlock ?? [], kind) ||
+          sourceStatementsContainLoopControl(statement.finallyBlock ?? [], kind);
+      case 'while':
+      case 'do_while':
+      case 'for':
+      case 'for_of':
+      case 'switch':
+        return false;
+      default:
+        return false;
+    }
+  });
+}
+
 function catchableTryActiveCondition(target: SourceSemanticThrowTarget): SemanticExpressionIR {
   return {
     kind: 'binary',
@@ -2833,14 +2865,57 @@ function createReturnCompletionTarget(
   return { returnFlagName, returnValueName, returnRepresentation };
 }
 
+function createLoopControlCompletionTarget(
+  context: FunctionLoweringContext,
+  prefix: string,
+  needsBreak: boolean,
+  needsContinue: boolean,
+): SourceSemanticCompletionTarget {
+  const breakFlagName = needsBreak ? nextTempLocalName(context, `${prefix}_break`) : undefined;
+  const continueFlagName = needsContinue
+    ? nextTempLocalName(context, `${prefix}_continue`)
+    : undefined;
+  if (breakFlagName) {
+    addLocal(context, breakFlagName, 'i32');
+  }
+  if (continueFlagName) {
+    addLocal(context, continueFlagName, 'i32');
+  }
+  return { breakFlagName, continueFlagName };
+}
+
 function initializeReturnCompletionTarget(
   target: SourceSemanticCompletionTarget,
 ): SemanticStatementIR {
+  if (!target.returnFlagName) {
+    return { kind: 'unsupported_statement', sourceKind: 'return' };
+  }
   return {
     kind: 'local_set',
     name: target.returnFlagName,
     value: booleanLiteralExpression(false),
   };
+}
+
+function initializeLoopControlCompletionTarget(
+  target: SourceSemanticCompletionTarget,
+): readonly SemanticStatementIR[] {
+  const statements: SemanticStatementIR[] = [];
+  if (target.breakFlagName) {
+    statements.push({
+      kind: 'local_set',
+      name: target.breakFlagName,
+      value: booleanLiteralExpression(false),
+    });
+  }
+  if (target.continueFlagName) {
+    statements.push({
+      kind: 'local_set',
+      name: target.continueFlagName,
+      value: booleanLiteralExpression(false),
+    });
+  }
+  return statements;
 }
 
 function captureReturnCompletion(
@@ -2849,6 +2924,10 @@ function captureReturnCompletion(
   context: FunctionLoweringContext,
   sourceKind: string,
 ): readonly SemanticStatementIR[] {
+  if (!target.returnFlagName || !target.returnValueName || !target.returnRepresentation) {
+    context.unsupportedKinds.add(`${sourceKind}_return_value`);
+    return [{ kind: 'unsupported_statement', sourceKind }];
+  }
   const rawValue = returnStatement.expression
     ? lowerExpression(returnStatement.expression, context)
     : { kind: 'undefined_literal', representation: 'tagged_ref' } as SemanticExpressionIR;
@@ -2872,9 +2951,29 @@ function captureReturnCompletion(
   ];
 }
 
+function captureLoopControlCompletion(
+  kind: 'break' | 'continue',
+  target: SourceSemanticCompletionTarget,
+  context: FunctionLoweringContext,
+): readonly SemanticStatementIR[] {
+  const flagName = kind === 'break' ? target.breakFlagName : target.continueFlagName;
+  if (!flagName) {
+    context.unsupportedKinds.add(`try_finally_${kind}`);
+    return [{ kind: 'unsupported_statement', sourceKind: kind }];
+  }
+  return [{
+    kind: 'local_set',
+    name: flagName,
+    value: booleanLiteralExpression(true),
+  }];
+}
+
 function dispatchReturnCompletionTarget(
   target: SourceSemanticCompletionTarget,
 ): SemanticStatementIR {
+  if (!target.returnFlagName || !target.returnValueName || !target.returnRepresentation) {
+    return { kind: 'unsupported_statement', sourceKind: 'return' };
+  }
   return {
     kind: 'if',
     condition: localGetExpression(target.returnFlagName, 'i32'),
@@ -2884,6 +2983,29 @@ function dispatchReturnCompletionTarget(
     }],
     elseBody: [],
   };
+}
+
+function dispatchLoopControlCompletionTarget(
+  target: SourceSemanticCompletionTarget,
+): readonly SemanticStatementIR[] {
+  const statements: SemanticStatementIR[] = [];
+  if (target.breakFlagName) {
+    statements.push({
+      kind: 'if',
+      condition: localGetExpression(target.breakFlagName, 'i32'),
+      thenBody: [{ kind: 'break' }],
+      elseBody: [],
+    });
+  }
+  if (target.continueFlagName) {
+    statements.push({
+      kind: 'if',
+      condition: localGetExpression(target.continueFlagName, 'i32'),
+      thenBody: [{ kind: 'continue' }],
+      elseBody: [],
+    });
+  }
+  return statements;
 }
 
 function lowerTryCatchStatement(
@@ -3217,7 +3339,11 @@ function lowerTryCatchStatement(
   if (completionReturnFlagName && completionReturnValueName && completionReturnRepresentation) {
     const activeCompletionTarget = context.completionTargets.at(-1);
     if (activeCompletionTarget) {
-      if (activeCompletionTarget.returnRepresentation !== completionReturnRepresentation) {
+      if (
+        !activeCompletionTarget.returnFlagName ||
+        !activeCompletionTarget.returnValueName ||
+        activeCompletionTarget.returnRepresentation !== completionReturnRepresentation
+      ) {
         context.unsupportedKinds.add('try_catch_return_value');
         statements.push({ kind: 'unsupported_statement', sourceKind: 'try' });
       } else {
@@ -3347,12 +3473,25 @@ function lowerTryStatement(
       { kind: 'return', value: localGetExpression(resultName, value.representation) },
     ];
   }
-  if (
-    statement.tryBlock.length === 1 &&
-    statement.tryBlock[0]?.kind === 'try' &&
-    sourceStatementsContainReturn(statement.tryBlock)
-  ) {
-    const completionTarget = createReturnCompletionTarget(context, 'try_finally_nested');
+  if (statement.tryBlock.length === 1 && statement.tryBlock[0]?.kind === 'try') {
+    const needsNestedReturn = sourceStatementsContainReturn(statement.tryBlock);
+    const needsNestedBreak = sourceStatementsContainLoopControl(statement.tryBlock, 'break');
+    const needsNestedContinue = sourceStatementsContainLoopControl(statement.tryBlock, 'continue');
+    const completionTarget: SourceSemanticCompletionTarget = {
+      ...(needsNestedReturn ? createReturnCompletionTarget(context, 'try_finally_nested') : {}),
+      ...(needsNestedBreak || needsNestedContinue
+        ? createLoopControlCompletionTarget(
+          context,
+          'try_finally_nested',
+          needsNestedBreak,
+          needsNestedContinue,
+        )
+        : {}),
+    };
+    if (!needsNestedReturn && !needsNestedBreak && !needsNestedContinue) {
+      context.unsupportedKinds.add('try_finally_control_flow');
+      return [{ kind: 'unsupported_statement', sourceKind: 'try' }];
+    }
     context.completionTargets.push(completionTarget);
     let tryStatements: readonly SemanticStatementIR[];
     try {
@@ -3361,10 +3500,12 @@ function lowerTryStatement(
       context.completionTargets.pop();
     }
     return [
-      initializeReturnCompletionTarget(completionTarget),
+      ...(needsNestedReturn ? [initializeReturnCompletionTarget(completionTarget)] : []),
+      ...initializeLoopControlCompletionTarget(completionTarget),
       ...tryStatements,
       ...finallyBlock.flatMap((child) => [...lowerStatement(child, context)]),
-      dispatchReturnCompletionTarget(completionTarget),
+      ...(needsNestedReturn ? [dispatchReturnCompletionTarget(completionTarget)] : []),
+      ...dispatchLoopControlCompletionTarget(completionTarget),
     ];
   }
   if (sourceStatementsContainControlTransfer(statement.tryBlock)) {
@@ -5243,10 +5384,19 @@ function lowerStatement(
           value: booleanLiteralExpression(false),
         }];
       }
+      const activeCompletionTarget = context.completionTargets.at(-1);
+      if (activeCompletionTarget?.breakFlagName) {
+        return captureLoopControlCompletion('break', activeCompletionTarget, context);
+      }
       return [{ kind: 'break' }];
     }
-    case 'continue':
+    case 'continue': {
+      const activeCompletionTarget = context.completionTargets.at(-1);
+      if (activeCompletionTarget?.continueFlagName) {
+        return captureLoopControlCompletion('continue', activeCompletionTarget, context);
+      }
       return [{ kind: 'continue' }];
+    }
     case 'throw': {
       const value = lowerExpression(statement.expression, context);
       const pendingStatements = takePendingStatements(context);
