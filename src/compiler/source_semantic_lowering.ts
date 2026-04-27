@@ -506,21 +506,29 @@ function lowerPromiseThenCallExpression(
 ): SemanticExpressionIR | undefined {
   if (
     expression.callee.kind !== 'property_access' ||
-    expression.callee.property !== 'then'
+    (expression.callee.property !== 'then' && expression.callee.property !== 'catch')
   ) {
     return undefined;
   }
-  if (expression.args.length < 1 || expression.args.length > 2) {
-    context.unsupportedKinds.add('Promise.then:arity');
+  const methodName = expression.callee.property;
+  const aritySupported = methodName === 'then'
+    ? expression.args.length >= 1 && expression.args.length <= 2
+    : expression.args.length === 1;
+  if (!aritySupported) {
+    context.unsupportedKinds.add(`Promise.${methodName}:arity`);
     return { kind: 'undefined_literal', representation: 'tagged_ref' };
   }
   const receiver = lowerExpression(expression.callee.object, context);
   if (receiver.representation !== 'heap_ref') {
-    context.unsupportedKinds.add('Promise.then:receiver');
+    context.unsupportedKinds.add(`Promise.${methodName}:receiver`);
     return { kind: 'undefined_literal', representation: 'tagged_ref' };
   }
-  const onFulfilled = lowerPromiseReactionHandlerExpression(expression.args[0], context);
-  const onRejected = lowerPromiseReactionHandlerExpression(expression.args[1], context);
+  const onFulfilled = methodName === 'then'
+    ? lowerPromiseReactionHandlerExpression(expression.args[0], context)
+    : lowerPromiseReactionHandlerExpression(undefined, context);
+  const onRejected = methodName === 'catch'
+    ? lowerPromiseReactionHandlerExpression(expression.args[0], context)
+    : lowerPromiseReactionHandlerExpression(expression.args[1], context);
   context.runtimeFamilies.add('promise');
   context.runtimeFamilies.add('closure');
   context.runtimeFamilies.add('finite_union');
