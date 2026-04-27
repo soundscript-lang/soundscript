@@ -369,6 +369,82 @@ Deno.test('createProjectMacroEnvironment handles duplicate generated stdlib macr
   assert(!printed.includes('__sts_macro_stmt'));
 });
 
+Deno.test('createProjectMacroEnvironment ignores unused generated user macro imports', () => {
+  const fileName = '/virtual/index.sts';
+  const preparedProgram = createGeneratedMacroTestProgram(
+    [
+      "import { EmitPlainRuntimeCode } from './macros/defs.macro';",
+      '',
+      'EmitPlainRuntimeCode();',
+      '',
+    ].join('\n'),
+    [
+      "import 'sts:macros';",
+      '',
+      '// #[macro(call)]',
+      'export function EmitPlainRuntimeCode() {',
+      '  return {',
+      '    expand(ctx) {',
+      '      return ctx.output.stmts(ctx.quote.stmts`',
+      "        import { RuntimeOnlyMacro } from './macros/defs.macro';",
+      '        export const value = 1;',
+      '        export const message = "RuntimeOnlyMacro is not invoked";',
+      '      `);',
+      '    },',
+      '  };',
+      '}',
+      '',
+      '// #[macro(call)]',
+      'export function RuntimeOnlyMacro() {',
+      '  return {',
+      '    expand(ctx) {',
+      '      return ctx.output.expr(ctx.quote.expr`2`);',
+      '    },',
+      '  };',
+      '}',
+      '',
+    ].join('\n'),
+  );
+
+  const printed = printExpandedFileWithBuiltins(preparedProgram, fileName);
+  assertStringIncludes(printed, 'export const value = 1;');
+  assertStringIncludes(printed, '"RuntimeOnlyMacro is not invoked"');
+  assert(!printed.includes('__sts_macro_stmt'));
+});
+
+Deno.test('createProjectMacroEnvironment ignores macro-looking generated string literals', () => {
+  const fileName = '/virtual/index.sts';
+  const preparedProgram = createGeneratedMacroTestProgram(
+    [
+      "import { EmitMacroLookingText } from './macros/defs.macro';",
+      '',
+      'EmitMacroLookingText();',
+      '',
+    ].join('\n'),
+    [
+      "import 'sts:macros';",
+      '',
+      '// #[macro(call)]',
+      'export function EmitMacroLookingText() {',
+      '  return {',
+      '    expand(ctx) {',
+      '      return ctx.output.stmts(ctx.quote.stmts`',
+      '        export const message = "// #[value] is documentation text";',
+      '        export const multiline = "\\\\n// #[codec]\\\\nnot an annotation";',
+      '      `);',
+      '    },',
+      '  };',
+      '}',
+      '',
+    ].join('\n'),
+  );
+
+  const printed = printExpandedFileWithBuiltins(preparedProgram, fileName);
+  assertStringIncludes(printed, '"// #[value] is documentation text"');
+  assertStringIncludes(printed, 'not an annotation');
+  assert(!printed.includes('__sts_macro_stmt'));
+});
+
 Deno.test('createProjectMacroEnvironment honors macroExpansionRecursionLimit 0 for generated stdlib macros', () => {
   const fileName = '/virtual/index.sts';
   const preparedProgram = createGeneratedMacroTestProgram(

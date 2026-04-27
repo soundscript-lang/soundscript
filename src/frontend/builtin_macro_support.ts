@@ -68,6 +68,7 @@ import {
   lowerJsxSyntaxToRuntimeCalls,
   mapProgramRangeToSource,
   persistPreparedProgramBuildInfo,
+  type PreparedCompilerHostReuseState,
   type PreparedProgram,
   type PreparedSourceFile,
   toSourceFileName,
@@ -97,6 +98,7 @@ interface BuiltinProgramBase {
   dispose(): void;
   frontendDiagnostics(): readonly MergedDiagnostic[];
   macroEnvironment: ProjectMacroEnvironment;
+  outputTextBySourceFileName: ReadonlyMap<string, string>;
   preparedProgram: PreparedProgram;
   program: ts.Program;
   tsDiagnosticPrograms: readonly BuiltinExpandedTsDiagnosticProgram[];
@@ -1051,6 +1053,37 @@ function createBuiltinMacroDiagnostic(error: MacroError): MergedDiagnostic {
   };
 }
 
+function primePreparedCompilerHostReuseState(
+  target: PreparedCompilerHostReuseState,
+  sourceProgram: PreparedProgram,
+): void {
+  const source = sourceProgram.preparedHost.reuseState;
+  if (target.programSourceFiles.size > 0 || target.rewrittenSourceFiles.size > 0) {
+    return;
+  }
+
+  target.macroModuleArtifactCache = source.macroModuleArtifactCache;
+  target.moduleResolutionCache = source.moduleResolutionCache;
+  target.moduleResolutionCacheSignature = source.moduleResolutionCacheSignature;
+  target.previousProgramSourceFiles = new Set(source.programSourceFiles);
+  target.preparedSourceFiles = new Map(source.preparedSourceFiles);
+  target.programSourceFiles = new Set(source.programSourceFiles);
+  target.projectedDeclarationBuilderProgram = source.projectedDeclarationBuilderProgram;
+  target.projectedDeclarationOutputs = source.projectedDeclarationOutputs;
+  target.projectedDeclarationOptionSignature = source.projectedDeclarationOptionSignature;
+  target.projectedDeclarationProgram = source.projectedDeclarationProgram;
+  target.projectedDeclarationRootNamesSignature = source.projectedDeclarationRootNamesSignature;
+  target.projectedDeclarationSourceFiles = new Map(source.projectedDeclarationSourceFiles);
+  target.resolvedModulesByKey = new Map(source.resolvedModulesByKey);
+  target.rewrittenSourceFiles = new Map(source.rewrittenSourceFiles);
+  target.semanticDiagnosticsBuildInfoPath = source.semanticDiagnosticsBuildInfoPath;
+  target.semanticDiagnosticsBuilderProgram = source.semanticDiagnosticsBuilderProgram;
+  target.semanticDiagnosticsOptionSignature = source.semanticDiagnosticsOptionSignature;
+  target.semanticDiagnosticsProjectReferencesSignature =
+    source.semanticDiagnosticsProjectReferencesSignature;
+  target.semanticDiagnosticsRootNamesSignature = source.semanticDiagnosticsRootNamesSignature;
+}
+
 export function withBuiltinMacroSupport(
   options: CreatePreparedProgramOptions,
 ): CreatePreparedProgramOptions {
@@ -1114,7 +1147,10 @@ export function expandPreparedProgramWithBuiltinsForDiagnostics(
 }
 
 interface BuiltinProgramStageContext {
-  createStagePreparedProgramOptions(stage: 'annotated' | 'final'): CreatePreparedProgramOptions;
+  createStagePreparedProgramOptions(
+    stage: 'annotated' | 'final',
+    seedProgram: PreparedProgram,
+  ): CreatePreparedProgramOptions;
   diagnosticPreparedFiles: Map<string, PreparedSourceFile>;
   frontendDiagnostics: MergedDiagnostic[];
   macroEnvironment: ProjectMacroEnvironment;
@@ -1154,6 +1190,7 @@ function createBuiltinProgramBaseResult(
   ownedPreparedPrograms: readonly PreparedProgram[],
   preparedProgram: PreparedProgram,
   program: ts.Program,
+  outputTextBySourceFileName: ReadonlyMap<string, string> = new Map(),
   tsDiagnosticPrograms: readonly BuiltinExpandedTsDiagnosticProgram[] = [{ program }],
 ): BuiltinProgramBase {
   return {
@@ -1179,6 +1216,7 @@ function createBuiltinProgramBaseResult(
     },
     frontendDiagnostics: () => frontendDiagnostics,
     macroEnvironment,
+    outputTextBySourceFileName,
     preparedProgram,
     program,
     tsDiagnosticPrograms,
@@ -1193,6 +1231,7 @@ function createBuiltinDiagnosticProgramResult(
   ownedPreparedPrograms: readonly PreparedProgram[],
   preparedProgram: PreparedProgram,
   program: ts.Program,
+  outputTextBySourceFileName: ReadonlyMap<string, string> = new Map(),
   tsDiagnosticPrograms: readonly BuiltinExpandedTsDiagnosticProgram[] = [{ program }],
 ): BuiltinDiagnosticProgram {
   return createBuiltinProgramBaseResult(
@@ -1203,6 +1242,7 @@ function createBuiltinDiagnosticProgramResult(
     ownedPreparedPrograms,
     preparedProgram,
     program,
+    outputTextBySourceFileName,
     tsDiagnosticPrograms,
   );
 }
@@ -1232,24 +1272,30 @@ function createBuiltinProgramStageContext(
     { always: true },
   );
   persistPreparedProgramBuildInfo(preparedProgram);
-  const getBuiltinStageReuseState = (stage: 'annotated' | 'final') => {
+  const getBuiltinStageReuseState = (
+    stage: 'annotated' | 'final',
+    seedProgram: PreparedProgram,
+  ) => {
     const primaryReuseState = preparedProgram.preparedHost.reuseState;
     const stageReuseStates = primaryReuseState.builtinStageReuseStates ??= {};
     const existingStageReuseState = stageReuseStates[stage];
     if (existingStageReuseState) {
+      primePreparedCompilerHostReuseState(existingStageReuseState, seedProgram);
       return existingStageReuseState;
     }
     const stageReuseState = createPreparedCompilerHostReuseState(
       supportedOptions.baseHost.getCurrentDirectory?.() ?? ts.sys.getCurrentDirectory(),
     );
+    primePreparedCompilerHostReuseState(stageReuseState, seedProgram);
     stageReuseStates[stage] = stageReuseState;
     return stageReuseState;
   };
   const createStagePreparedProgramOptions = (
     stage: 'annotated' | 'final',
+    seedProgram: PreparedProgram,
   ): CreatePreparedProgramOptions => ({
     ...withPersistentSemanticBuildInfoStage(supportedOptions, stage),
-    reusableCompilerHostState: getBuiltinStageReuseState(stage),
+    reusableCompilerHostState: getBuiltinStageReuseState(stage, seedProgram),
   });
   const frontendDiagnostics: MergedDiagnostic[] = [...preparedProgram.frontendDiagnostics()];
   const macroEnvironment = measureCheckerTiming(
@@ -1397,7 +1443,7 @@ function createBuiltinAnnotatedStage(
       },
       () =>
         context.trackPreparedProgram(createPreparedProgram({
-          ...context.createStagePreparedProgramOptions('annotated'),
+          ...context.createStagePreparedProgramOptions('annotated', context.preparedProgram),
           fileOverrides: annotatedOverrides,
           invalidateModuleResolutions: false,
           oldProgram: context.preparedProgram.program,
@@ -1449,7 +1495,7 @@ function createBuiltinEmitStagePreparation(
         }
 
         const nextNumericsProgram = context.trackPreparedProgram(createPreparedProgram({
-          ...context.createStagePreparedProgramOptions('final'),
+          ...context.createStagePreparedProgramOptions('final', numericsProgram),
           fileOverrides: numericOverrides,
           invalidateModuleResolutions: false,
           oldProgram: numericsProgram.program,
@@ -1754,7 +1800,7 @@ function createBuiltinFinalProgram(
     },
     () =>
       context.trackPreparedProgram(createPreparedProgram({
-        ...context.createStagePreparedProgramOptions('final'),
+        ...context.createStagePreparedProgramOptions('final', emitStage.numericsProgram),
         fileOverrides: emitStage.finalOverrides,
         invalidateModuleResolutions: false,
         oldProgram: emitStage.numericsProgram.program,
@@ -1784,7 +1830,7 @@ function createSupplementalTsDiagnosticPrograms(
     },
     () =>
       context.trackPreparedProgram(createPreparedProgram({
-        ...context.createStagePreparedProgramOptions('final'),
+        ...context.createStagePreparedProgramOptions('final', emitStage.numericsProgram),
         fileOverrides: emitStage.finalOverrides,
         invalidateModuleResolutions: false,
         oldProgram: emitStage.numericsProgram.program,
@@ -1858,6 +1904,7 @@ function createBuiltinEmitProgramInternal(
     [...context.ownedPreparedPrograms],
     context.preparedProgram,
     analysisPreparedProgram.program,
+    emitStage.finalOverrides,
   );
 }
 
@@ -1921,6 +1968,7 @@ export function createBuiltinDiagnosticProgram(
       [...context.ownedPreparedPrograms],
       context.preparedProgram,
       analysisPreparedProgram.program,
+      emitStage.finalOverrides,
       supplementalTsDiagnosticPrograms,
     );
   }
@@ -1935,6 +1983,7 @@ export function createBuiltinDiagnosticProgram(
     [...context.ownedPreparedPrograms],
     context.preparedProgram,
     expandedProgram.program,
+    emitStage.finalOverrides,
   );
 }
 

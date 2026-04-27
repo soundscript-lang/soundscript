@@ -253,7 +253,8 @@ export async function expandProject(options: ExpandProjectOptions): Promise<Expa
       const sourceFileName = toSourceFileName(sourceFile.fileName);
       const outputPath = toOutputPath(projectDirectory, sourceFileName, options.outDir);
       await makeDirectory(dirname(outputPath));
-      const outputText = printer.printFile(sourceFile);
+      const outputText = expandedProgram.outputTextBySourceFileName.get(sourceFileName) ??
+        printer.printFile(sourceFile);
       await writeTextFile(outputPath, outputText);
       emittedFiles.push(outputPath);
     }

@@ -2431,6 +2431,71 @@ Deno.test('createBuiltinExpandedProgram keeps the final rebuilt program when err
   }
 });
 
+Deno.test('createBuiltinExpandedProgram primes builtin stage reuse from previous stages', () => {
+  const fileName = '/virtual/index.sts';
+  const originalTimingEnv = Deno.env.get('SOUNDSCRIPT_CHECKER_TIMING');
+  const originalError = console.error;
+  const logs: string[] = [];
+  console.error = (...args: unknown[]) => {
+    logs.push(args.map((arg) => String(arg)).join(' '));
+  };
+
+  try {
+    Deno.env.set('SOUNDSCRIPT_CHECKER_TIMING', '1');
+
+    const builtinExpanded = createBuiltinExpandedProgram({
+      baseHost: createBaseHost(
+        new Map([
+          [
+            fileName,
+            [
+              "type Ok = { tag: 'ok'; value: number };",
+              "type Err = { tag: 'err'; error: string };",
+              'declare const value: Ok | Err | undefined;',
+              'export const matched = Match(value, [',
+              '  ({ value }: Ok) => value,',
+              '  ({ error }: Err) => error.length,',
+              '  (_: undefined) => 0,',
+              ']);',
+              'try {',
+              '  throw new Error("boom");',
+              '} catch (error) {',
+              '  console.log(error.message);',
+              '}',
+              '',
+            ].join('\n'),
+          ],
+        ]),
+      ),
+      options: {
+        target: ts.ScriptTarget.ES2022,
+        module: ts.ModuleKind.ESNext,
+        moduleResolution: ts.ModuleResolutionKind.Bundler,
+        noEmit: true,
+        strict: true,
+      },
+      rootNames: [fileName],
+    });
+
+    assertEquals(ts.getPreEmitDiagnostics(builtinExpanded.program), []);
+    const semanticReuseLogs = logs.filter((line) =>
+      line.includes('[soundscript:checker] project.prepare.semanticBuilderHostReuse ')
+    );
+    assertEquals(semanticReuseLogs.length >= 3, true);
+    assertStringIncludes(semanticReuseLogs[1]!, 'changedProgramFiles=1');
+    assertStringIncludes(semanticReuseLogs[1]!, 'rewrittenSourceFileCacheHits=');
+    assertStringIncludes(semanticReuseLogs[2]!, 'changedProgramFiles=1');
+    assertStringIncludes(semanticReuseLogs[2]!, 'rewrittenSourceFileCacheHits=');
+  } finally {
+    if (originalTimingEnv === undefined) {
+      Deno.env.delete('SOUNDSCRIPT_CHECKER_TIMING');
+    } else {
+      Deno.env.set('SOUNDSCRIPT_CHECKER_TIMING', originalTimingEnv);
+    }
+    console.error = originalError;
+  }
+});
+
 Deno.test('createBuiltinExpandedProgram reuses unchanged builtin rewrite artifacts across .sts edits', () => {
   const changedFileName = '/virtual/changed.sts';
   const stableFileName = '/virtual/stable.sts';

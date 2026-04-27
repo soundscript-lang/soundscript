@@ -2680,6 +2680,7 @@ export function createProjectMacroEnvironment(
     macroCacheStats.moduleCacheMisses += 1;
 
     const dependencySourceTexts = collectDependencySourceTextsForCompilation(fileName);
+    const graphRootNames = [...dependencySourceTexts.keys()];
     const macroTargetProgram = createPreparedProgram({
       alwaysAvailableMacroSiteKinds,
       baseHost: createMacroTargetBaseHost(),
@@ -2694,7 +2695,7 @@ export function createProjectMacroEnvironment(
       },
       preserveMacroAuthoring: true,
       reusableCompilerHostState: macroTargetReuseState,
-      rootNames: [fileName],
+      rootNames: graphRootNames,
       runtime: preparedProgram.runtime,
     });
     const frontendDiagnostics = macroTargetProgram.frontendDiagnostics().filter((diagnostic) =>
@@ -2728,10 +2729,48 @@ export function createProjectMacroEnvironment(
       );
     }
 
-    const sourceFile = macroTargetProgram.program.getSourceFile(
-      macroTargetProgram.toProgramFileName(fileName),
-    );
-    if (!sourceFile) {
+    for (const graphFileName of graphRootNames) {
+      const sourceFile = macroTargetProgram.program.getSourceFile(
+        macroTargetProgram.toProgramFileName(graphFileName),
+      );
+      if (!sourceFile) {
+        throw createMacroModuleError(
+          graphFileName,
+          sourceTextForMacroModule(graphFileName),
+          `Failed to compile macro module "${graphFileName}".`,
+          'SOUNDSCRIPT_MACRO_EXPANSION',
+        );
+      }
+
+      const tsDiagnostics = [
+        ...macroTargetProgram.program.getSyntacticDiagnostics(sourceFile),
+        ...macroTargetProgram.program.getSemanticDiagnostics(sourceFile),
+      ].filter((diagnostic) => diagnostic.category === ts.DiagnosticCategory.Error);
+      if (tsDiagnostics.length > 0) {
+        throw createMacroModuleErrorFromDiagnostic(
+          tsDiagnostics[0]!,
+          graphFileName,
+          `Failed to compile macro module "${graphFileName}".`,
+        );
+      }
+
+      const javaScriptText = emitCommonJsMacroArtifactWithFallback(
+        macroTargetProgram,
+        sourceFile,
+        graphFileName,
+        macroTargetProgram.options,
+      );
+
+      const artifact: CachedMacroModuleArtifactEntry = {
+        dependencySourceTexts,
+        javaScriptText,
+      };
+      compiledArtifactCache.set(graphFileName, artifact);
+      stableCompiledArtifactCache.set(graphFileName, artifact);
+    }
+
+    const compiled = compiledArtifactCache.get(fileName);
+    if (!compiled) {
       throw createMacroModuleError(
         fileName,
         sourceTextForMacroModule(fileName),
@@ -2739,33 +2778,7 @@ export function createProjectMacroEnvironment(
         'SOUNDSCRIPT_MACRO_EXPANSION',
       );
     }
-
-    const tsDiagnostics = [
-      ...macroTargetProgram.program.getSyntacticDiagnostics(sourceFile),
-      ...macroTargetProgram.program.getSemanticDiagnostics(sourceFile),
-    ].filter((diagnostic) => diagnostic.category === ts.DiagnosticCategory.Error);
-    if (tsDiagnostics.length > 0) {
-      throw createMacroModuleErrorFromDiagnostic(
-        tsDiagnostics[0]!,
-        fileName,
-        `Failed to compile macro module "${fileName}".`,
-      );
-    }
-
-    const javaScriptText = emitCommonJsMacroArtifactWithFallback(
-      macroTargetProgram,
-      sourceFile,
-      fileName,
-      macroTargetProgram.options,
-    );
-
-    const artifact: CachedMacroModuleArtifactEntry = {
-      dependencySourceTexts,
-      javaScriptText,
-    };
-    compiledArtifactCache.set(fileName, artifact);
-    stableCompiledArtifactCache.set(fileName, artifact);
-    return artifact;
+    return compiled;
   }
 
   function loadResolvedModuleValue(fileName: string): Record<string, unknown> {
