@@ -4550,6 +4550,65 @@ Deno.test('compiler SourceHIR semantic lowering reads caught builtin Error messa
   assertEquals((score as () => number)(), 4);
 });
 
+Deno.test('compiler SourceHIR semantic lowering projects caught builtin Error bindings into object params', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: { strict: true },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        function messageLength(error: { message: string }): number {
+          return error.message.length;
+        }
+
+        export function score(): number {
+          let value = 0;
+          try {
+            throw new Error("project");
+          } catch (error: any) {
+            value = messageLength(error);
+          }
+          return value;
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createSourceSemanticSnapshot(program, tempDirectory);
+  const semantic = createSemanticModuleFromSourceHIR(snapshot.source, snapshot.sharedFacts);
+  const manifest = createRuntimeManifestFromSemanticModule(semantic);
+  const plan = createWasmGcModulePlan(semantic, manifest);
+  const scorePlan = plan.functionPlans.find((func) => func.name === 'score');
+  const watPath = join(tempDirectory, 'wasm-gc-source-caught-error-object-param.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-source-caught-error-object-param.wasm');
+
+  assertEquals(
+    manifest.familyRequirements.map((requirement) => requirement.family),
+    ['dynamic_object', 'error', 'finite_union', 'specialized_object', 'string'],
+  );
+  assertEquals(scorePlan?.bodyStatus, 'emittable');
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(plan));
+  const result = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(result.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(result.success, true);
+
+  const wasm = await Deno.readFile(wasmPath);
+  const instance = await WebAssembly.instantiate(wasm);
+  const score = instance.instance.exports['main.ts:score'];
+  assertEquals(typeof score, 'function');
+  assertEquals((score as () => number)(), 7);
+});
+
 Deno.test('compiler SourceHIR semantic lowering runs finally after caught Error throws', async () => {
   const tempDirectory = await createTempProject([
     {

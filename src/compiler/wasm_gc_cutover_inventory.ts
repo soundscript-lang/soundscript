@@ -151,10 +151,11 @@ export const WASM_GC_CORE_CUTOVER_INVENTORY: readonly WasmGcCutoverInventoryEntr
   },
   {
     family: 'errors',
-    status: 'ir-shadowed',
-    focusedGate: 'compiler SourceHIR semantic lowering reads caught builtin Error messages',
+    status: 'wasm-gc-emittable',
+    focusedGate:
+      'compiler SourceHIR semantic lowering projects caught builtin Error bindings into object params',
     nextCutoverStep:
-      'Add catch binding narrowing and boundary projection before marking errors WasmGC-emittable.',
+      'Convert remaining accepted Error edge cases into explicit target-aware diagnostics and delete replaced legacy error paths.',
   },
   {
     family: 'try_catch_finally',

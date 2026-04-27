@@ -367,6 +367,87 @@ function adaptExpressionToSemanticType(
   return untagUnionExpressionForRepresentation(value, targetRepresentation, context);
 }
 
+function projectObjectExpressionToSemanticType(
+  source: SourceExpressionIR,
+  value: SemanticExpressionIR,
+  targetType: SemanticTypeIR | undefined,
+  context: FunctionLoweringContext,
+): SemanticExpressionIR | undefined {
+  if (!targetType || targetType.kind !== 'object' || value.representation !== 'heap_ref') {
+    return undefined;
+  }
+  const sourceLayout = objectLocalInfoForRead(source, value, context);
+  const targetLayout = objectLocalForParameterType(targetType, context);
+  if (!sourceLayout || !targetLayout || targetLayout.className) {
+    return undefined;
+  }
+  if (
+    sourceLayout.family === targetLayout.family &&
+    sourceLayout.representationName === targetLayout.representationName
+  ) {
+    return value;
+  }
+  if (targetLayout.family !== 'specialized_object' && targetLayout.family !== 'fallback_object') {
+    context.unsupportedKinds.add('object_projection_dynamic_target');
+    return undefined;
+  }
+  for (const field of targetLayout.fields) {
+    const sourceField = sourceLayout.fields.find((candidate) => candidate.name === field.name);
+    if (!sourceField || sourceField.representation !== field.representation) {
+      context.unsupportedKinds.add(`object_projection:${field.name}`);
+      return undefined;
+    }
+  }
+
+  const sourceObject = materializeObjectExpressionForRead(
+    value,
+    sourceLayout,
+    context,
+    'object_projection_source',
+  );
+  const statements: SemanticStatementIR[] = [...sourceObject.statements];
+  const fieldValueNames: string[] = [];
+  for (const field of targetLayout.fields) {
+    const fieldRead = objectPropertyReadValueFromLocal(
+      sourceObject.objectName,
+      field.name,
+      sourceLayout,
+      context,
+    );
+    if (!fieldRead || fieldRead.value.representation !== field.representation) {
+      context.unsupportedKinds.add(`object_projection:${field.name}`);
+      return undefined;
+    }
+    statements.push(...fieldRead.statements);
+    fieldValueNames.push(fieldRead.value.name);
+  }
+
+  const targetName = nextTempLocalName(context, 'object_projection');
+  addLocal(context, targetName, 'heap_ref');
+  context.objectLocals.set(targetName, targetLayout);
+  if (targetLayout.family === 'specialized_object') {
+    statements.push({
+      kind: 'specialized_object_new',
+      targetName,
+      representationName: targetLayout.representationName,
+      fieldValueNames,
+    });
+  } else {
+    statements.push({
+      kind: 'fallback_object_new',
+      targetName,
+      representationName: targetLayout.representationName,
+      entries: targetLayout.fields.map((field, index) => ({
+        key: field.name,
+        valueName: fieldValueNames[index]!,
+        valueType: field.representation,
+      })),
+    });
+  }
+  context.pendingStatements.push(...statements);
+  return { kind: 'local_get', name: targetName, representation: 'heap_ref' };
+}
+
 function unionTagForTypeofLiteral(text: string): number | undefined {
   const unquoted = text.length >= 2 ? text.slice(1, -1) : text;
   switch (unquoted) {
@@ -703,7 +784,8 @@ function lowerCallArguments(
 ): SemanticExpressionIR[] {
   return args.map((arg, index) => {
     const value = lowerExpression(arg, context);
-    return adaptExpressionToSemanticType(value, paramTypes?.[index], context) ?? value;
+    return projectObjectExpressionToSemanticType(arg, value, paramTypes?.[index], context) ??
+      adaptExpressionToSemanticType(value, paramTypes?.[index], context) ?? value;
   });
 }
 
@@ -2259,56 +2341,77 @@ function objectFieldGetStatementForLocal(
   return undefined;
 }
 
-function lowerObjectPropertyReadFromLocal(
+function objectPropertyReadValueFromLocal(
   objectName: string,
   propertyName: string,
+  objectLayout: SourceSemanticObjectLocal,
   context: FunctionLoweringContext,
-): SemanticExpressionIR | undefined {
-  const objectLayout = context.objectLocals.get(objectName);
-  const field = objectLayout?.fields.find((candidate) => candidate.name === propertyName);
-  if (!objectLayout || !field) {
+): {
+  statements: SemanticStatementIR[];
+  value: Extract<SemanticExpressionIR, { kind: 'local_get' }>;
+} | undefined {
+  const field = objectLayout.fields.find((candidate) => candidate.name === propertyName);
+  if (!field) {
     return undefined;
   }
-  const tempName = nextTempLocalName(context, `field_${objectName}`);
-  addLocal(context, tempName, field.representation);
+  const targetName = nextTempLocalName(context, `field_${objectName}`);
+  addLocal(context, targetName, field.representation);
   if (objectLayout.family === 'dynamic_object') {
     const key = materializeStaticOwnedStringKey(
       propertyName,
       context,
       `dynamic_field_${objectName}`,
     );
-    context.pendingStatements.push(...key.statements, {
-      kind: 'dynamic_object_property_get',
-      targetName: tempName,
-      objectName,
-      representationName: objectLayout.representationName,
-      propertyKeyName: key.keyName,
-      valueType: field.representation,
-    });
     context.runtimeFamilies.add('dynamic_object');
     return {
-      kind: 'local_get',
-      name: tempName,
-      representation: field.representation,
+      statements: [...key.statements, {
+        kind: 'dynamic_object_property_get',
+        targetName,
+        objectName,
+        representationName: objectLayout.representationName,
+        propertyKeyName: key.keyName,
+        valueType: field.representation,
+      }],
+      value: { kind: 'local_get', name: targetName, representation: field.representation },
     };
   }
   const getStatement = objectFieldGetStatementForLocal(
-    tempName,
+    targetName,
     objectName,
     objectLayout,
     propertyName,
   );
   if (!getStatement) {
     context.unsupportedKinds.add(`property_access:${propertyName}`);
-    return { kind: 'undefined_literal', representation: 'tagged_ref' };
+    return undefined;
   }
-  context.pendingStatements.push(getStatement);
   context.runtimeFamilies.add(objectLayout.family);
   return {
-    kind: 'local_get',
-    name: tempName,
-    representation: field.representation,
+    statements: [getStatement],
+    value: { kind: 'local_get', name: targetName, representation: field.representation },
   };
+}
+
+function lowerObjectPropertyReadFromLocal(
+  objectName: string,
+  propertyName: string,
+  context: FunctionLoweringContext,
+): SemanticExpressionIR | undefined {
+  const objectLayout = context.objectLocals.get(objectName);
+  if (!objectLayout) {
+    return undefined;
+  }
+  const read = objectPropertyReadValueFromLocal(
+    objectName,
+    propertyName,
+    objectLayout,
+    context,
+  );
+  if (!read) {
+    return undefined;
+  }
+  context.pendingStatements.push(...read.statements);
+  return read.value;
 }
 
 function lowerCollectionPropertyAccessExpression(
