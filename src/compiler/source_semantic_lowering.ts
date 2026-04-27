@@ -63,6 +63,9 @@ interface SourceSemanticObjectLocal {
   }[];
 }
 
+const SOUNDSCRIPT_PROMISE_RESOLVE_HELPER_NAME = '__soundscript_promise_resolve';
+const SOUNDSCRIPT_PROMISE_REJECT_HELPER_NAME = '__soundscript_promise_reject';
+
 interface SourceSemanticArrayLocal {
   elementRepresentation: CompilerValueType;
 }
@@ -367,6 +370,12 @@ function adaptExpressionToSemanticType(
   return untagUnionExpressionForRepresentation(value, targetRepresentation, context);
 }
 
+function promiseValueTypeForSemanticType(
+  type: SemanticTypeIR | undefined,
+): SemanticTypeIR | undefined {
+  return type?.kind === 'promise' ? type.value : undefined;
+}
+
 function projectObjectExpressionToSemanticType(
   source: SourceExpressionIR,
   value: SemanticExpressionIR,
@@ -446,6 +455,48 @@ function projectObjectExpressionToSemanticType(
   }
   context.pendingStatements.push(...statements);
   return { kind: 'local_get', name: targetName, representation: 'heap_ref' };
+}
+
+function lowerPromiseStaticCallExpression(
+  expression: Extract<SourceExpressionIR, { kind: 'call_expression' }>,
+  context: FunctionLoweringContext,
+): SemanticExpressionIR | undefined {
+  if (
+    expression.callee.kind !== 'property_access' ||
+    expression.callee.object.kind !== 'identifier' ||
+    expression.callee.object.name !== 'Promise'
+  ) {
+    return undefined;
+  }
+  const helperName = expression.callee.property === 'resolve'
+    ? SOUNDSCRIPT_PROMISE_RESOLVE_HELPER_NAME
+    : expression.callee.property === 'reject'
+    ? SOUNDSCRIPT_PROMISE_REJECT_HELPER_NAME
+    : undefined;
+  if (!helperName) {
+    return undefined;
+  }
+  if (expression.args.length > 1) {
+    context.unsupportedKinds.add(`Promise.${expression.callee.property}:arity`);
+    return { kind: 'undefined_literal', representation: 'tagged_ref' };
+  }
+  const rawValue = expression.args[0]
+    ? lowerExpression(expression.args[0], context)
+    : { kind: 'undefined_literal', representation: 'tagged_ref' } as SemanticExpressionIR;
+  const promiseValueType = promiseValueTypeForSemanticType(context.currentResultType);
+  const value = adaptExpressionToSemanticType(rawValue, promiseValueType, context) ?? rawValue;
+  const taggedValue = taggedUnionExpressionForValue(value, context);
+  if (!taggedValue) {
+    context.unsupportedKinds.add(`Promise.${expression.callee.property}:value`);
+    return { kind: 'undefined_literal', representation: 'tagged_ref' };
+  }
+  context.runtimeFamilies.add('promise');
+  return {
+    kind: 'call',
+    callee: helperName,
+    args: [taggedValue],
+    representation: 'heap_ref',
+  };
 }
 
 function unionTagForTypeofLiteral(text: string): number | undefined {
@@ -1555,6 +1606,10 @@ function lowerExpression(
       return { kind: 'undefined_literal', representation: 'tagged_ref' };
     }
     case 'call_expression': {
+      const promiseStaticCall = lowerPromiseStaticCallExpression(expression, context);
+      if (promiseStaticCall) {
+        return promiseStaticCall;
+      }
       const collectionMethodCall = lowerCollectionMethodCallExpression(expression, context);
       if (collectionMethodCall) {
         return collectionMethodCall;
