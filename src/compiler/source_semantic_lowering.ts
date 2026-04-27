@@ -100,6 +100,7 @@ interface SourceSemanticConstructorLocal {
 
 interface SourceSemanticThrowTarget {
   thrownFlagName: string;
+  thrownHeapName: string;
   thrownValueName: string;
 }
 
@@ -2067,6 +2068,26 @@ function builtinErrorCauseExpression(
   return cause?.value;
 }
 
+function builtinErrorFields(): SourceSemanticObjectLocal['fields'] {
+  return [
+    { name: SOUNDSCRIPT_BUILTIN_ERROR_INTERNAL_BRAND_KEY, representation: 'owned_string_ref' },
+    { name: 'name', representation: 'owned_string_ref' },
+    { name: 'message', representation: 'owned_string_ref' },
+    { name: 'cause', representation: 'tagged_ref' },
+  ];
+}
+
+function builtinErrorObjectLocal(
+  context: FunctionLoweringContext,
+  representationName = registerDynamicObjectLayout(context, 'builtin_error'),
+): SourceSemanticObjectLocal {
+  return {
+    family: 'dynamic_object',
+    representationName,
+    fields: builtinErrorFields(),
+  };
+}
+
 function lowerBuiltinErrorNewExpression(
   expression: Extract<SourceExpressionIR, { kind: 'new_expression' }>,
   context: FunctionLoweringContext,
@@ -2085,11 +2106,7 @@ function lowerBuiltinErrorNewExpression(
   const representationName = registerDynamicObjectLayout(context, 'builtin_error');
   const targetName = nextTempLocalName(context, 'error');
   addLocal(context, targetName, 'heap_ref');
-  context.objectLocals.set(targetName, {
-    family: 'dynamic_object',
-    representationName,
-    fields: [],
-  });
+  context.objectLocals.set(targetName, builtinErrorObjectLocal(context, representationName));
 
   const statements: SemanticStatementIR[] = [];
   const brandKey = materializeStaticOwnedStringKey(
@@ -2245,6 +2262,27 @@ function lowerObjectPropertyReadFromLocal(
   }
   const tempName = nextTempLocalName(context, `field_${objectName}`);
   addLocal(context, tempName, field.representation);
+  if (objectLayout.family === 'dynamic_object') {
+    const key = materializeStaticOwnedStringKey(
+      propertyName,
+      context,
+      `dynamic_field_${objectName}`,
+    );
+    context.pendingStatements.push(...key.statements, {
+      kind: 'dynamic_object_property_get',
+      targetName: tempName,
+      objectName,
+      representationName: objectLayout.representationName,
+      propertyKeyName: key.keyName,
+      valueType: field.representation,
+    });
+    context.runtimeFamilies.add('dynamic_object');
+    return {
+      kind: 'local_get',
+      name: tempName,
+      representation: field.representation,
+    };
+  }
   const getStatement = objectFieldGetStatementForLocal(
     tempName,
     objectName,
@@ -2773,9 +2811,11 @@ function lowerTryCatchStatement(
   }
 
   const thrownFlagName = nextTempLocalName(context, 'try_catch_thrown');
+  const thrownHeapName = nextTempLocalName(context, 'try_catch_heap');
   const thrownValueName = nextTempLocalName(context, 'try_catch_value');
-  const target: SourceSemanticThrowTarget = { thrownFlagName, thrownValueName };
+  const target: SourceSemanticThrowTarget = { thrownFlagName, thrownHeapName, thrownValueName };
   addLocal(context, thrownFlagName, 'i32');
+  addLocal(context, thrownHeapName, 'heap_ref');
   addLocal(context, thrownValueName, 'tagged_ref');
   context.runtimeFamilies.add('finite_union');
 
@@ -2784,6 +2824,11 @@ function lowerTryCatchStatement(
       kind: 'local_set',
       name: thrownFlagName,
       value: booleanLiteralExpression(false),
+    },
+    {
+      kind: 'local_set',
+      name: thrownHeapName,
+      value: { kind: 'heap_null', representation: 'heap_ref' },
     },
     {
       kind: 'local_set',
@@ -2808,12 +2853,13 @@ function lowerTryCatchStatement(
 
   const catchStatements: SemanticStatementIR[] = [];
   if (statement.catchBinding?.kind === 'identifier_binding') {
-    addLocal(context, statement.catchBinding.name, 'tagged_ref');
+    addLocal(context, statement.catchBinding.name, 'heap_ref');
     context.localDeclarationKinds.set(statement.catchBinding.name, 'let');
+    context.objectLocals.set(statement.catchBinding.name, builtinErrorObjectLocal(context));
     catchStatements.push({
       kind: 'local_set',
       name: statement.catchBinding.name,
-      value: localGetExpression(thrownValueName, 'tagged_ref'),
+      value: localGetExpression(thrownHeapName, 'heap_ref'),
     });
   }
   catchStatements.push(...catchBlock.flatMap((child) => [...lowerStatement(child, context)]));
@@ -4755,6 +4801,13 @@ function lowerStatement(
         }
         return [
           ...pendingStatements,
+          {
+            kind: 'local_set',
+            name: throwTarget.thrownHeapName,
+            value: value.representation === 'heap_ref'
+              ? value
+              : { kind: 'heap_null', representation: 'heap_ref' },
+          },
           { kind: 'local_set', name: throwTarget.thrownValueName, value: taggedValue },
           {
             kind: 'local_set',
