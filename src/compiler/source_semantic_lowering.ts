@@ -676,6 +676,171 @@ function lowerPromiseRaceCallExpression(
   return localGetExpression(targetPromiseName, 'heap_ref');
 }
 
+function lowerPromiseAllCallExpression(
+  expression: Extract<SourceExpressionIR, { kind: 'call_expression' }>,
+  context: FunctionLoweringContext,
+): SemanticExpressionIR | undefined {
+  if (
+    expression.callee.kind !== 'property_access' ||
+    expression.callee.object.kind !== 'identifier' ||
+    expression.callee.object.name !== 'Promise' ||
+    expression.callee.property !== 'all'
+  ) {
+    return undefined;
+  }
+  if (expression.args.length !== 1) {
+    context.unsupportedKinds.add('Promise.all:arity');
+    return { kind: 'undefined_literal', representation: 'tagged_ref' };
+  }
+  const [allSource] = expression.args;
+  if (allSource?.kind !== 'array_literal') {
+    context.unsupportedKinds.add('Promise.all:source');
+    return { kind: 'undefined_literal', representation: 'tagged_ref' };
+  }
+  if (!promiseAllNumberArrayResultType(context)) {
+    context.unsupportedKinds.add('Promise.all:result');
+    return { kind: 'undefined_literal', representation: 'tagged_ref' };
+  }
+
+  const resultsName = nextTempLocalName(context, 'promise_all_results');
+  addLocal(context, resultsName, 'owned_number_array_ref');
+  const resultArraySet: SemanticStatementIR = {
+    kind: 'local_set',
+    name: resultsName,
+    value: {
+      kind: 'owned_number_array_literal',
+      elements: Array.from(
+        { length: allSource.elements.length },
+        () => ({ kind: 'number_literal', value: 0, representation: 'f64' } as const),
+      ),
+      representation: 'owned_number_array_ref',
+    },
+  };
+  context.runtimeFamilies.add('array');
+  context.runtimeFamilies.add('finite_union');
+  context.runtimeFamilies.add('promise');
+
+  if (allSource.elements.length === 0) {
+    context.pendingStatements.push(resultArraySet);
+    return {
+      kind: 'call',
+      callee: SOUNDSCRIPT_PROMISE_RESOLVE_HELPER_NAME,
+      args: [{
+        kind: 'tag_heap_object',
+        value: localGetExpression(resultsName, 'owned_number_array_ref'),
+        representation: 'tagged_ref',
+      }],
+      representation: 'heap_ref',
+    };
+  }
+
+  const taggedValue = promiseReactionTaggedValueType();
+  const closureSignature = createClosureSignature(context.moduleState, [taggedValue], taggedValue);
+  const fulfilledFunctionId = pushPromiseAllNumberFulfilledClosure(
+    context,
+    closureSignature.id,
+  );
+  const rejectedFunctionId = pushPromiseRejectIntoClosure(context, closureSignature.id);
+  const targetPromiseName = nextTempLocalName(context, 'promise_all_target');
+  const remainingBoxName = nextTempLocalName(context, 'promise_all_remaining');
+  addLocal(context, targetPromiseName, 'heap_ref');
+  addLocal(context, remainingBoxName, 'box_ref');
+  const statements: SemanticStatementIR[] = [
+    resultArraySet,
+    {
+      kind: 'local_set',
+      name: targetPromiseName,
+      value: {
+        kind: 'call',
+        callee: SOUNDSCRIPT_PROMISE_NEW_PENDING_HELPER_NAME,
+        args: [],
+        representation: 'heap_ref',
+      },
+    },
+    {
+      kind: 'local_set',
+      name: remainingBoxName,
+      value: {
+        kind: 'box_new',
+        value: {
+          kind: 'number_literal',
+          value: allSource.elements.length,
+          representation: 'f64',
+        },
+        valueType: 'f64',
+        representation: 'box_ref',
+      },
+    },
+  ];
+
+  for (const [index, element] of allSource.elements.entries()) {
+    const source = lowerExpression(element, context);
+    const sourceStatements = takePendingStatements(context);
+    if (source.representation !== 'heap_ref') {
+      context.unsupportedKinds.add('Promise.all:element');
+      return { kind: 'undefined_literal', representation: 'tagged_ref' };
+    }
+    const sourceName = nextTempLocalName(context, 'promise_all_source');
+    addLocal(context, sourceName, 'heap_ref');
+    const targetCapture = promiseTargetCapture(targetPromiseName);
+    statements.push(
+      ...sourceStatements,
+      { kind: 'local_set', name: sourceName, value: source },
+      {
+        kind: 'expression',
+        value: {
+          kind: 'call',
+          callee: SOUNDSCRIPT_PROMISE_THEN_HELPER_NAME,
+          args: [
+            localGetExpression(sourceName, 'heap_ref'),
+            {
+              kind: 'closure_literal',
+              functionId: fulfilledFunctionId,
+              signatureId: closureSignature.id,
+              captures: [
+                targetCapture,
+                {
+                  kind: 'box_new',
+                  value: localGetExpression(resultsName, 'owned_number_array_ref'),
+                  valueType: 'owned_number_array_ref',
+                  representation: 'box_ref',
+                },
+                localGetExpression(remainingBoxName, 'box_ref'),
+                {
+                  kind: 'box_new',
+                  value: { kind: 'number_literal', value: index, representation: 'f64' },
+                  valueType: 'f64',
+                  representation: 'box_ref',
+                },
+              ],
+              captureValueTypes: [
+                'tagged_ref',
+                'owned_number_array_ref',
+                'box_ref',
+                'f64',
+              ],
+              representation: 'closure_ref',
+            },
+            {
+              kind: 'closure_literal',
+              functionId: rejectedFunctionId,
+              signatureId: closureSignature.id,
+              captures: [targetCapture],
+              captureValueTypes: ['tagged_ref'],
+              representation: 'closure_ref',
+            },
+          ],
+          representation: 'heap_ref',
+        },
+      },
+    );
+  }
+
+  context.pendingStatements.push(...statements);
+  context.runtimeFamilies.add('closure');
+  return localGetExpression(targetPromiseName, 'heap_ref');
+}
+
 function lowerPromiseStaticCallExpression(
   expression: Extract<SourceExpressionIR, { kind: 'call_expression' }>,
   context: FunctionLoweringContext,
@@ -690,6 +855,10 @@ function lowerPromiseStaticCallExpression(
   const promiseRaceCall = lowerPromiseRaceCallExpression(expression, context);
   if (promiseRaceCall) {
     return promiseRaceCall;
+  }
+  const promiseAllCall = lowerPromiseAllCallExpression(expression, context);
+  if (promiseAllCall) {
+    return promiseAllCall;
   }
   const helperName = expression.callee.property === 'resolve'
     ? SOUNDSCRIPT_PROMISE_RESOLVE_HELPER_NAME
@@ -838,6 +1007,121 @@ function pushPromiseResolveIntoClosure(
     closureSignatureId: signatureId,
     closureCaptureCount: 1,
     closureCaptureValueTypes: ['tagged_ref'],
+  });
+  return closureFunctionId;
+}
+
+function promiseAllNumberArrayResultType(context: FunctionLoweringContext): boolean {
+  const promiseValueType = promiseValueTypeForSemanticType(context.currentResultType);
+  return promiseValueType?.kind === 'array' && promiseValueType.element.kind === 'number';
+}
+
+function promiseAllCaptureGet(
+  name: string,
+  valueType: CompilerValueType,
+): SemanticExpressionIR {
+  return {
+    kind: 'box_get',
+    box: localGetExpression(name, 'box_ref'),
+    valueType,
+    representation: valueType,
+  };
+}
+
+function pushPromiseAllNumberFulfilledClosure(
+  context: FunctionLoweringContext,
+  signatureId: number,
+): number {
+  const closureFunctionId = context.moduleState.nextClosureFunctionId;
+  context.moduleState.nextClosureFunctionId += 1;
+  const remainingLocalName = 'remaining_after_settle';
+  const resultsArray = promiseAllCaptureGet('capture_results_1', 'owned_number_array_ref');
+  const remainingValue = promiseAllCaptureGet('capture_remaining_2', 'f64');
+  const indexValue = promiseAllCaptureGet('capture_index_3', 'f64');
+  context.moduleState.generatedFunctions.push({
+    name: `closure_source_promise_all_fulfilled_${closureFunctionId}`,
+    exportName: '',
+    params: [
+      { name: 'capture_target_0', representation: 'box_ref' },
+      { name: 'capture_results_1', representation: 'box_ref' },
+      { name: 'capture_remaining_2', representation: 'box_ref' },
+      { name: 'capture_index_3', representation: 'box_ref' },
+      { name: 'promise_value', representation: 'tagged_ref' },
+    ],
+    locals: [{ name: remainingLocalName, representation: 'f64' }],
+    result: 'tagged_ref',
+    body: [
+      {
+        kind: 'owned_number_array_set',
+        array: resultsArray,
+        index: indexValue,
+        value: {
+          kind: 'untag_number',
+          value: localGetExpression('promise_value', 'tagged_ref'),
+          representation: 'f64',
+        },
+      },
+      {
+        kind: 'local_set',
+        name: remainingLocalName,
+        value: {
+          kind: 'binary',
+          op: 'f64.sub',
+          left: remainingValue,
+          right: { kind: 'number_literal', value: 1, representation: 'f64' },
+          representation: 'f64',
+        },
+      },
+      {
+        kind: 'box_set',
+        box: localGetExpression('capture_remaining_2', 'box_ref'),
+        value: localGetExpression(remainingLocalName, 'f64'),
+        valueType: 'f64',
+      },
+      {
+        kind: 'if',
+        condition: {
+          kind: 'binary',
+          op: 'f64.eq',
+          left: localGetExpression(remainingLocalName, 'f64'),
+          right: { kind: 'number_literal', value: 0, representation: 'f64' },
+          representation: 'i32',
+        },
+        thenBody: [{
+          kind: 'expression',
+          value: {
+            kind: 'call',
+            callee: SOUNDSCRIPT_PROMISE_RESOLVE_INTO_HELPER_NAME,
+            args: [
+              promiseTargetFromCapture(),
+              {
+                kind: 'tag_heap_object',
+                value: resultsArray,
+                representation: 'tagged_ref',
+              },
+            ],
+            representation: 'tagged_ref',
+          },
+        }],
+        elseBody: [],
+      },
+      { kind: 'return', value: { kind: 'undefined_literal', representation: 'tagged_ref' } },
+    ],
+    bodyStatus: 'emittable',
+    unsupportedBodyKinds: [],
+    runtimeFamilies: ['array', 'finite_union', 'promise'],
+    hostImported: false,
+    hostExported: false,
+    unionBoundaries: [],
+    closureFunctionId,
+    closureSignatureId: signatureId,
+    closureCaptureCount: 4,
+    closureCaptureValueTypes: [
+      'tagged_ref',
+      'owned_number_array_ref',
+      'box_ref',
+      'f64',
+    ],
   });
   return closureFunctionId;
 }
