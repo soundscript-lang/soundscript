@@ -159,7 +159,7 @@ export const WASM_GC_CORE_CUTOVER_INVENTORY: readonly WasmGcCutoverInventoryEntr
   {
     family: 'try_catch_finally',
     status: 'ir-shadowed',
-    focusedGate: 'compiler SourceHIR semantic lowering runs finally before try continue completion',
+    focusedGate: 'compiler SourceHIR semantic lowering runs finally before catch continue',
     nextCutoverStep:
       'Generalize SourceHIR completion records through nested catch/finally, returns, and loop control before marking the full try/catch/finally family WasmGC-emittable.',
   },

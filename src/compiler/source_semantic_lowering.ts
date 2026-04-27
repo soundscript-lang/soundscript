@@ -2829,12 +2829,36 @@ function lowerTryCatchStatement(
   const catchLeadingStatements = catchReturnIndex >= 0
     ? catchBlock.slice(0, catchReturnIndex)
     : catchBlock;
+  const catchLoopControlIndex = catchBlock.findIndex((child) =>
+    child.kind === 'break' || child.kind === 'continue'
+  );
+  const catchLoopControlStatement = catchLoopControlIndex >= 0
+    ? catchBlock[catchLoopControlIndex] as Extract<
+      SourceStatementIR,
+      { kind: 'break' | 'continue' }
+    >
+    : undefined;
+  const catchLoopControlLeadingStatements = catchLoopControlIndex >= 0
+    ? catchBlock.slice(0, catchLoopControlIndex)
+    : catchBlock;
   const tryReturnIndex = statement.tryBlock.findIndex((child) => child.kind === 'return');
   const tryReturnStatement = tryReturnIndex >= 0
     ? statement.tryBlock[tryReturnIndex] as Extract<SourceStatementIR, { kind: 'return' }>
     : undefined;
   const tryLeadingStatements = tryReturnIndex >= 0
     ? statement.tryBlock.slice(0, tryReturnIndex)
+    : statement.tryBlock;
+  const tryLoopControlIndex = statement.tryBlock.findIndex((child) =>
+    child.kind === 'break' || child.kind === 'continue'
+  );
+  const tryLoopControlStatement = tryLoopControlIndex >= 0
+    ? statement.tryBlock[tryLoopControlIndex] as Extract<
+      SourceStatementIR,
+      { kind: 'break' | 'continue' }
+    >
+    : undefined;
+  const tryLoopControlLeadingStatements = tryLoopControlIndex >= 0
+    ? statement.tryBlock.slice(0, tryLoopControlIndex)
     : statement.tryBlock;
   const supportsTryReturnThroughFinally = finallyBlock.length > 0 &&
     tryReturnStatement !== undefined &&
@@ -2844,8 +2868,20 @@ function lowerTryCatchStatement(
     catchReturnStatement !== undefined &&
     catchBlock.length === catchReturnIndex + 1 &&
     !sourceStatementsContainControlTransfer(catchLeadingStatements);
+  const supportsTryLoopControlThroughFinally = finallyBlock.length > 0 &&
+    tryLoopControlStatement !== undefined &&
+    statement.tryBlock.length === tryLoopControlIndex + 1 &&
+    !sourceStatementsContainControlTransfer(tryLoopControlLeadingStatements);
+  const supportsCatchLoopControlThroughFinally = finallyBlock.length > 0 &&
+    catchLoopControlStatement !== undefined &&
+    catchBlock.length === catchLoopControlIndex + 1 &&
+    !sourceStatementsContainControlTransfer(catchLoopControlLeadingStatements);
   const supportsReturnThroughFinally = supportsTryReturnThroughFinally ||
     supportsCatchReturnThroughFinally;
+  const supportsLoopControlThroughFinally = supportsTryLoopControlThroughFinally ||
+    supportsCatchLoopControlThroughFinally;
+  const supportsCatchCompletionThroughFinally = supportsCatchReturnThroughFinally ||
+    supportsCatchLoopControlThroughFinally;
   if (
     finallyBlock.length > 0 &&
     (
@@ -2854,7 +2890,7 @@ function lowerTryCatchStatement(
         supportsTryReturnThroughFinally ? false : sourceStatementsContainReturn(statement.tryBlock)
       ) ||
       (
-        supportsCatchReturnThroughFinally
+        supportsCatchCompletionThroughFinally
           ? false
           : sourceStatementsContainControlTransfer(catchBlock)
       )
@@ -2863,7 +2899,10 @@ function lowerTryCatchStatement(
     context.unsupportedKinds.add('try_catch_finally_control_flow');
     return [{ kind: 'unsupported_statement', sourceKind: 'try' }];
   }
-  if (sourceStatementsContainUnsupportedCatchableTryFlow(statement.tryBlock)) {
+  const catchableTryFlowStatements = supportsTryLoopControlThroughFinally
+    ? tryLoopControlLeadingStatements
+    : statement.tryBlock;
+  if (sourceStatementsContainUnsupportedCatchableTryFlow(catchableTryFlowStatements)) {
     context.unsupportedKinds.add('try_catch_control_flow');
     return [{ kind: 'unsupported_statement', sourceKind: 'try' }];
   }
@@ -2891,11 +2930,27 @@ function lowerTryCatchStatement(
       ? representationForSemanticType(context.currentResultType)
       : 'tagged_ref'
     : undefined;
+  const completionBreakFlagName =
+    (supportsTryLoopControlThroughFinally && tryLoopControlStatement?.kind === 'break') ||
+      (supportsCatchLoopControlThroughFinally && catchLoopControlStatement?.kind === 'break')
+      ? nextTempLocalName(context, 'try_catch_break')
+      : undefined;
+  const completionContinueFlagName =
+    (supportsTryLoopControlThroughFinally && tryLoopControlStatement?.kind === 'continue') ||
+      (supportsCatchLoopControlThroughFinally && catchLoopControlStatement?.kind === 'continue')
+      ? nextTempLocalName(context, 'try_catch_continue')
+      : undefined;
   if (completionReturnFlagName) {
     addLocal(context, completionReturnFlagName, 'i32');
   }
   if (completionReturnValueName && completionReturnRepresentation) {
     addLocal(context, completionReturnValueName, completionReturnRepresentation);
+  }
+  if (completionBreakFlagName) {
+    addLocal(context, completionBreakFlagName, 'i32');
+  }
+  if (completionContinueFlagName) {
+    addLocal(context, completionContinueFlagName, 'i32');
   }
 
   const statements: SemanticStatementIR[] = [
@@ -2918,6 +2973,20 @@ function lowerTryCatchStatement(
       ? [{
         kind: 'local_set' as const,
         name: completionReturnFlagName,
+        value: booleanLiteralExpression(false),
+      }]
+      : []),
+    ...(completionBreakFlagName
+      ? [{
+        kind: 'local_set' as const,
+        name: completionBreakFlagName,
+        value: booleanLiteralExpression(false),
+      }]
+      : []),
+    ...(completionContinueFlagName
+      ? [{
+        kind: 'local_set' as const,
+        name: completionContinueFlagName,
         value: booleanLiteralExpression(false),
       }]
       : []),
@@ -2955,10 +3024,29 @@ function lowerTryCatchStatement(
       },
     ];
   };
+  const captureLoopControlStatements = (
+    controlStatement: Extract<SourceStatementIR, { kind: 'break' | 'continue' }>,
+  ): readonly SemanticStatementIR[] => {
+    const flagName = controlStatement.kind === 'break'
+      ? completionBreakFlagName
+      : completionContinueFlagName;
+    if (!flagName) {
+      context.unsupportedKinds.add('try_catch_loop_control');
+      return [{ kind: 'unsupported_statement', sourceKind: 'try' }];
+    }
+    return [{
+      kind: 'local_set',
+      name: flagName,
+      value: booleanLiteralExpression(true),
+    }];
+  };
 
   context.throwTargets.push(target);
   try {
-    for (const child of tryLeadingStatements) {
+    const guardedTryStatements = supportsTryLoopControlThroughFinally
+      ? tryLoopControlLeadingStatements
+      : tryLeadingStatements;
+    for (const child of guardedTryStatements) {
       statements.push({
         kind: 'if',
         condition: catchableTryActiveCondition(target),
@@ -2971,6 +3059,14 @@ function lowerTryCatchStatement(
         kind: 'if',
         condition: catchableTryActiveCondition(target),
         thenBody: [...captureReturnStatements(tryReturnStatement)],
+        elseBody: [],
+      });
+    }
+    if (supportsTryLoopControlThroughFinally && tryLoopControlStatement) {
+      statements.push({
+        kind: 'if',
+        condition: catchableTryActiveCondition(target),
+        thenBody: [...captureLoopControlStatements(tryLoopControlStatement)],
         elseBody: [],
       });
     }
@@ -2999,14 +3095,20 @@ function lowerTryCatchStatement(
       value: localGetExpression(thrownHeapName, 'heap_ref'),
     });
   }
+  const guardedCatchStatements = supportsCatchLoopControlThroughFinally
+    ? catchLoopControlLeadingStatements
+    : catchLeadingStatements;
   catchStatements.push(
-    ...catchLeadingStatements.flatMap((child) => [...lowerStatement(child, context)]),
+    ...guardedCatchStatements.flatMap((child) => [...lowerStatement(child, context)]),
   );
   if (
     supportsCatchReturnThroughFinally && catchReturnStatement &&
     completionReturnFlagName && completionReturnValueName && completionReturnRepresentation
   ) {
     catchStatements.push(...captureReturnStatements(catchReturnStatement));
+  }
+  if (supportsCatchLoopControlThroughFinally && catchLoopControlStatement) {
+    catchStatements.push(...captureLoopControlStatements(catchLoopControlStatement));
   }
   statements.push({
     kind: 'if',
@@ -3023,6 +3125,22 @@ function lowerTryCatchStatement(
         kind: 'return',
         value: localGetExpression(completionReturnValueName, completionReturnRepresentation),
       }],
+      elseBody: [],
+    });
+  }
+  if (completionBreakFlagName) {
+    statements.push({
+      kind: 'if',
+      condition: localGetExpression(completionBreakFlagName, 'i32'),
+      thenBody: [{ kind: 'break' }],
+      elseBody: [],
+    });
+  }
+  if (completionContinueFlagName) {
+    statements.push({
+      kind: 'if',
+      condition: localGetExpression(completionContinueFlagName, 'i32'),
+      thenBody: [{ kind: 'continue' }],
       elseBody: [],
     });
   }
