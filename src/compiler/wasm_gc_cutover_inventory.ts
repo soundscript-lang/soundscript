@@ -111,9 +111,9 @@ export const WASM_GC_CORE_CUTOVER_INVENTORY: readonly WasmGcCutoverInventoryEntr
   },
   {
     family: 'map_set',
-    status: 'ir-shadowed',
-    focusedGate: 'compiler wasm-gc collection boundary adapters are structured instead of cross-product enums',
-    nextCutoverStep: 'Complete Map/Set lowering from recursive value boundaries instead of legacy collection operations.',
+    status: 'wasm-gc-emittable',
+    focusedGate: 'compiler SourceHIR semantic lowering emits runnable Set mutation flow',
+    nextCutoverStep: 'Extend direct collection lowering through iterators and nested collection payloads before deleting legacy collection operations.',
   },
   {
     family: 'promises',

@@ -26,6 +26,11 @@ import type {
   SharedSemanticFunctionTypeSnapshotIR,
   SharedSemanticLocalTypeSnapshotIR,
 } from '../semantic/shared_semantic_facts.ts';
+import {
+  compilerValueTypeForStorage,
+  selectWasmGcStorage,
+  valueBoundaryFromSemanticType,
+} from './value_boundary_ir.ts';
 
 interface SourceSemanticFunctionSignature {
   boundary?: SemanticBoundarySurfaceIR;
@@ -49,6 +54,28 @@ interface SourceSemanticObjectLocal {
 
 interface SourceSemanticArrayLocal {
   elementRepresentation: CompilerValueType;
+}
+
+interface SourceSemanticMapLocal {
+  valueType: SemanticTypeIR;
+  valueRepresentation: CompilerValueType;
+}
+
+type SourceSemanticSetValuesArrayType = Extract<
+  SemanticStatementIR,
+  { kind: 'set_new' }
+>['valuesArrayType'];
+
+type SourceSemanticSetValuesElementType = Extract<
+  SemanticStatementIR,
+  { kind: 'set_new' }
+>['valuesElementType'];
+
+interface SourceSemanticSetLocal {
+  valueType: SemanticTypeIR;
+  valueRepresentation: CompilerValueType;
+  valuesArrayType: SourceSemanticSetValuesArrayType;
+  valuesElementType: SourceSemanticSetValuesElementType;
 }
 
 interface SourceSemanticClosureLocal {
@@ -85,9 +112,11 @@ interface FunctionLoweringContext {
   constructorLocals: Map<string, SourceSemanticConstructorLocal>;
   localDeclarationKinds: Map<string, SourceSemanticLocalDeclarationKind>;
   localTypesByKey: Map<string, SemanticTypeIR>;
+  mapLocals: Map<string, SourceSemanticMapLocal>;
   moduleState: SourceSemanticModuleLoweringState;
   objectLayoutsByKey: Map<string, SemanticObjectLayoutIR>;
   objectLocals: Map<string, SourceSemanticObjectLocal>;
+  setLocals: Map<string, SourceSemanticSetLocal>;
   unionLocals: Map<string, SemanticTypeIR>;
   classesByName: ReadonlyMap<string, SourceClassIR>;
   pendingStatements: SemanticStatementIR[];
@@ -129,6 +158,48 @@ function arrayLocalInfoForSemanticType(type: SemanticTypeIR): SourceSemanticArra
   }
   return {
     elementRepresentation: arrayElementRepresentationForSemanticType(type.element),
+  };
+}
+
+function mapLocalInfoForSemanticType(
+  type: SemanticTypeIR | undefined,
+): SourceSemanticMapLocal | undefined {
+  if (!type || type.kind !== 'map' || type.key.kind !== 'string') {
+    return undefined;
+  }
+  return {
+    valueType: type.value,
+    valueRepresentation: compilerValueTypeForStorage(
+      selectWasmGcStorage(valueBoundaryFromSemanticType(type.value)),
+    ),
+  };
+}
+
+function setLocalInfoForSemanticType(
+  type: SemanticTypeIR | undefined,
+): SourceSemanticSetLocal | undefined {
+  if (!type || type.kind !== 'set') {
+    return undefined;
+  }
+  const valueStorage = selectWasmGcStorage(valueBoundaryFromSemanticType(type.value));
+  const valueRepresentation = compilerValueTypeForStorage(valueStorage);
+  const valuesArrayType: SourceSemanticSetValuesArrayType = valueRepresentation === 'f64'
+    ? 'owned_number_array_ref'
+    : valueRepresentation === 'i32'
+    ? 'owned_boolean_array_ref'
+    : valueRepresentation === 'owned_string_ref'
+    ? 'owned_array_ref'
+    : 'owned_tagged_array_ref';
+  const valuesElementType: SourceSemanticSetValuesElementType = valueRepresentation === 'f64' ||
+      valueRepresentation === 'i32' ||
+      valueRepresentation === 'owned_string_ref'
+    ? valueRepresentation
+    : 'tagged_ref';
+  return {
+    valueType: type.value,
+    valueRepresentation,
+    valuesArrayType,
+    valuesElementType,
   };
 }
 
@@ -644,6 +715,8 @@ function contextHasSourceBinding(context: FunctionLoweringContext, name: string)
     context.arrayLocals.has(name) ||
     context.closureLocals.has(name) ||
     context.constructorLocals.has(name) ||
+    context.mapLocals.has(name) ||
+    context.setLocals.has(name) ||
     context.boxedLocals.has(name);
 }
 
@@ -1210,6 +1283,10 @@ function lowerExpression(
       if (staticProperty) {
         return staticProperty;
       }
+      const collectionProperty = lowerCollectionPropertyAccessExpression(expression, context);
+      if (collectionProperty) {
+        return collectionProperty;
+      }
       if (expression.object.kind === 'identifier') {
         const field = lowerObjectPropertyReadFromLocal(
           expression.object.name,
@@ -1369,6 +1446,10 @@ function lowerExpression(
       return { kind: 'undefined_literal', representation: 'tagged_ref' };
     }
     case 'call_expression': {
+      const collectionMethodCall = lowerCollectionMethodCallExpression(expression, context);
+      if (collectionMethodCall) {
+        return collectionMethodCall;
+      }
       const staticMethodCall = lowerClassStaticMethodCallExpression(expression, context);
       if (staticMethodCall) {
         return staticMethodCall;
@@ -1853,6 +1934,39 @@ function materializeOwnedStringKeyExpression(
   };
 }
 
+function materializeExpressionValue(
+  expression: SourceExpressionIR,
+  context: FunctionLoweringContext,
+  prefix: string,
+  targetType?: SemanticTypeIR,
+  targetRepresentation?: CompilerValueType,
+):
+  | { valueName: string; valueType: CompilerValueType; statements: SemanticStatementIR[] }
+  | undefined {
+  const rawValue = lowerExpression(expression, context);
+  const statements = takePendingStatements(context);
+  const typedValue = adaptExpressionToSemanticType(rawValue, targetType, context) ?? rawValue;
+  const value = targetRepresentation === 'tagged_ref' && typedValue.representation !== 'tagged_ref'
+    ? taggedUnionExpressionForValue(typedValue, context)
+    : typedValue;
+  if (!value) {
+    return undefined;
+  }
+  if (targetRepresentation && value.representation !== targetRepresentation) {
+    return undefined;
+  }
+  if (value.kind === 'local_get') {
+    return { valueName: value.name, valueType: value.representation, statements };
+  }
+  const valueName = nextTempLocalName(context, prefix);
+  addLocal(context, valueName, value.representation);
+  return {
+    valueName,
+    valueType: value.representation,
+    statements: [...statements, { kind: 'local_set', name: valueName, value }],
+  };
+}
+
 function materializeStaticOwnedStringKey(
   key: string,
   context: FunctionLoweringContext,
@@ -1952,6 +2066,230 @@ function lowerObjectPropertyReadFromLocal(
   };
 }
 
+function lowerCollectionPropertyAccessExpression(
+  expression: Extract<SourceExpressionIR, { kind: 'property_access' }>,
+  context: FunctionLoweringContext,
+): SemanticExpressionIR | undefined {
+  if (expression.object.kind !== 'identifier' || expression.property !== 'size') {
+    return undefined;
+  }
+  const mapLocal = context.mapLocals.get(expression.object.name);
+  if (mapLocal) {
+    const targetName = nextTempLocalName(context, `map_size_${expression.object.name}`);
+    addLocal(context, targetName, 'f64');
+    context.pendingStatements.push({
+      kind: 'map_size',
+      targetName,
+      objectName: expression.object.name,
+      storage: true,
+    });
+    context.runtimeFamilies.add('map');
+    return localGetExpression(targetName, 'f64');
+  }
+  const setLocal = context.setLocals.get(expression.object.name);
+  if (setLocal) {
+    const targetName = nextTempLocalName(context, `set_size_${expression.object.name}`);
+    addLocal(context, targetName, 'f64');
+    context.pendingStatements.push({
+      kind: 'set_size',
+      targetName,
+      objectName: expression.object.name,
+      valuesArrayType: setLocal.valuesArrayType,
+    });
+    context.runtimeFamilies.add('set');
+    context.runtimeFamilies.add('array');
+    return localGetExpression(targetName, 'f64');
+  }
+  return undefined;
+}
+
+function lowerMapMethodCallExpression(
+  objectName: string,
+  methodName: string,
+  args: readonly SourceExpressionIR[],
+  mapLocal: SourceSemanticMapLocal,
+  context: FunctionLoweringContext,
+): SemanticExpressionIR | undefined {
+  if (methodName === 'set' && args.length >= 2) {
+    const key = materializeOwnedStringKeyExpression(args[0]!, context, `map_key_${objectName}`);
+    const value = materializeExpressionValue(
+      args[1]!,
+      context,
+      `map_value_${objectName}`,
+      mapLocal.valueType,
+    );
+    if (!key || !value) {
+      context.unsupportedKinds.add('map_set');
+      return { kind: 'undefined_literal', representation: 'tagged_ref' };
+    }
+    context.pendingStatements.push(...key.statements, ...value.statements, {
+      kind: 'map_set',
+      objectName,
+      keyName: key.keyName,
+      valueName: value.valueName,
+      valueType: value.valueType,
+    });
+    context.runtimeFamilies.add('map');
+    context.runtimeFamilies.add('finite_union');
+    return localGetExpression(objectName, 'heap_ref');
+  }
+  if (methodName === 'get' && args.length >= 1) {
+    const key = materializeOwnedStringKeyExpression(args[0]!, context, `map_key_${objectName}`);
+    if (!key) {
+      context.unsupportedKinds.add('map_get');
+      return { kind: 'undefined_literal', representation: 'tagged_ref' };
+    }
+    const targetName = nextTempLocalName(context, `map_value_${objectName}`);
+    addLocal(context, targetName, 'tagged_ref');
+    context.pendingStatements.push(...key.statements, {
+      kind: 'map_get',
+      targetName,
+      objectName,
+      keyName: key.keyName,
+    });
+    context.runtimeFamilies.add('map');
+    context.runtimeFamilies.add('finite_union');
+    return localGetExpression(targetName, 'tagged_ref');
+  }
+  if ((methodName === 'has' || methodName === 'delete') && args.length >= 1) {
+    const key = materializeOwnedStringKeyExpression(args[0]!, context, `map_key_${objectName}`);
+    if (!key) {
+      context.unsupportedKinds.add(`map_${methodName}`);
+      return { kind: 'undefined_literal', representation: 'tagged_ref' };
+    }
+    const targetName = nextTempLocalName(context, `map_${methodName}_${objectName}`);
+    addLocal(context, targetName, 'i32');
+    context.pendingStatements.push(...key.statements, {
+      kind: methodName === 'has' ? 'map_has' : 'map_delete',
+      targetName,
+      objectName,
+      keyName: key.keyName,
+    });
+    context.runtimeFamilies.add('map');
+    context.runtimeFamilies.add('finite_union');
+    return localGetExpression(targetName, 'i32');
+  }
+  if (methodName === 'clear' && args.length === 0) {
+    const targetName = nextTempLocalName(context, `map_clear_${objectName}`);
+    addLocal(context, targetName, 'tagged_ref');
+    context.pendingStatements.push({
+      kind: 'map_clear',
+      targetName,
+      objectName,
+    });
+    context.runtimeFamilies.add('map');
+    context.runtimeFamilies.add('finite_union');
+    return localGetExpression(targetName, 'tagged_ref');
+  }
+  return undefined;
+}
+
+function lowerSetMethodCallExpression(
+  objectName: string,
+  methodName: string,
+  args: readonly SourceExpressionIR[],
+  setLocal: SourceSemanticSetLocal,
+  context: FunctionLoweringContext,
+): SemanticExpressionIR | undefined {
+  if (methodName === 'add' && args.length >= 1) {
+    const value = materializeExpressionValue(
+      args[0]!,
+      context,
+      `set_value_${objectName}`,
+      setLocal.valueType,
+      setLocal.valuesElementType,
+    );
+    if (!value) {
+      context.unsupportedKinds.add('set_add');
+      return { kind: 'undefined_literal', representation: 'tagged_ref' };
+    }
+    context.pendingStatements.push(...value.statements, {
+      kind: 'set_add',
+      objectName,
+      valueName: value.valueName,
+      valuesArrayType: setLocal.valuesArrayType,
+      valuesElementType: setLocal.valuesElementType,
+    });
+    context.runtimeFamilies.add('set');
+    context.runtimeFamilies.add('array');
+    return localGetExpression(objectName, 'heap_ref');
+  }
+  if ((methodName === 'has' || methodName === 'delete') && args.length >= 1) {
+    const value = materializeExpressionValue(
+      args[0]!,
+      context,
+      `set_value_${objectName}`,
+      setLocal.valueType,
+      setLocal.valuesElementType,
+    );
+    if (!value) {
+      context.unsupportedKinds.add(`set_${methodName}`);
+      return { kind: 'undefined_literal', representation: 'tagged_ref' };
+    }
+    const targetName = nextTempLocalName(context, `set_${methodName}_${objectName}`);
+    addLocal(context, targetName, 'i32');
+    context.pendingStatements.push(...value.statements, {
+      kind: methodName === 'has' ? 'set_has' : 'set_delete',
+      targetName,
+      objectName,
+      valueName: value.valueName,
+      valuesArrayType: setLocal.valuesArrayType,
+      valuesElementType: setLocal.valuesElementType,
+    });
+    context.runtimeFamilies.add('set');
+    context.runtimeFamilies.add('array');
+    return localGetExpression(targetName, 'i32');
+  }
+  if (methodName === 'clear' && args.length === 0) {
+    const targetName = nextTempLocalName(context, `set_clear_${objectName}`);
+    addLocal(context, targetName, 'tagged_ref');
+    context.pendingStatements.push({
+      kind: 'set_clear',
+      targetName,
+      objectName,
+      valuesArrayType: setLocal.valuesArrayType,
+    });
+    context.runtimeFamilies.add('set');
+    context.runtimeFamilies.add('array');
+    return localGetExpression(targetName, 'tagged_ref');
+  }
+  return undefined;
+}
+
+function lowerCollectionMethodCallExpression(
+  expression: Extract<SourceExpressionIR, { kind: 'call_expression' }>,
+  context: FunctionLoweringContext,
+): SemanticExpressionIR | undefined {
+  if (
+    expression.callee.kind !== 'property_access' ||
+    expression.callee.object.kind !== 'identifier'
+  ) {
+    return undefined;
+  }
+  const objectName = expression.callee.object.name;
+  const mapLocal = context.mapLocals.get(objectName);
+  if (mapLocal) {
+    return lowerMapMethodCallExpression(
+      objectName,
+      expression.callee.property,
+      expression.args,
+      mapLocal,
+      context,
+    );
+  }
+  const setLocal = context.setLocals.get(objectName);
+  if (setLocal) {
+    return lowerSetMethodCallExpression(
+      objectName,
+      expression.callee.property,
+      expression.args,
+      setLocal,
+      context,
+    );
+  }
+  return undefined;
+}
+
 function objectLocalInfoForRead(
   source: SourceExpressionIR,
   expression: SemanticExpressionIR,
@@ -1966,6 +2304,40 @@ function objectLocalInfoForRead(
   if (source.kind === 'call_expression' && source.callee.kind === 'identifier') {
     const resultType = context.functionResultTypes.get(source.callee.name);
     return resultType ? objectLocalForParameterType(resultType, context) : undefined;
+  }
+  return undefined;
+}
+
+function mapLocalInfoForRead(
+  source: SourceExpressionIR,
+  expression: SemanticExpressionIR,
+  context: FunctionLoweringContext,
+): SourceSemanticMapLocal | undefined {
+  if (expression.kind === 'local_get') {
+    return context.mapLocals.get(expression.name);
+  }
+  if (source.kind === 'identifier') {
+    return context.mapLocals.get(source.name);
+  }
+  if (source.kind === 'call_expression' && source.callee.kind === 'identifier') {
+    return mapLocalInfoForSemanticType(context.functionResultTypes.get(source.callee.name));
+  }
+  return undefined;
+}
+
+function setLocalInfoForRead(
+  source: SourceExpressionIR,
+  expression: SemanticExpressionIR,
+  context: FunctionLoweringContext,
+): SourceSemanticSetLocal | undefined {
+  if (expression.kind === 'local_get') {
+    return context.setLocals.get(expression.name);
+  }
+  if (source.kind === 'identifier') {
+    return context.setLocals.get(source.name);
+  }
+  if (source.kind === 'call_expression' && source.callee.kind === 'identifier') {
+    return setLocalInfoForSemanticType(context.functionResultTypes.get(source.callee.name));
   }
   return undefined;
 }
@@ -2780,9 +3152,11 @@ function lowerArrowFunctionExpression(
     constructorLocals: new Map(),
     localDeclarationKinds,
     localTypesByKey: new Map(),
+    mapLocals: new Map(),
     moduleState: parentContext.moduleState,
     objectLayoutsByKey: parentContext.objectLayoutsByKey,
     objectLocals: new Map(),
+    setLocals: new Map(),
     unionLocals: new Map(),
     classesByName: parentContext.classesByName,
     pendingStatements: [],
@@ -2801,6 +3175,14 @@ function lowerArrowFunctionExpression(
     const objectLocal = objectLocalForParameterType(paramType, closureContext);
     if (objectLocal) {
       closureContext.objectLocals.set(param.name, objectLocal);
+    }
+    const mapLocal = mapLocalInfoForSemanticType(paramType);
+    if (mapLocal) {
+      closureContext.mapLocals.set(param.name, mapLocal);
+    }
+    const setLocal = setLocalInfoForSemanticType(paramType);
+    if (setLocal) {
+      closureContext.setLocals.set(param.name, setLocal);
     }
     const closureLocal = closureLocalForSemanticType(paramType, closureContext);
     if (closureLocal) {
@@ -3470,6 +3852,53 @@ function lowerStatement(
           }
         }
         if (declaration.initializer.kind === 'new_expression') {
+          const localType = localTypeForBinding(declaration.binding, context);
+          if (
+            declaration.initializer.callee.kind === 'identifier' &&
+            declaration.initializer.callee.name === 'Map'
+          ) {
+            const mapLocal = mapLocalInfoForSemanticType(localType);
+            if (!mapLocal) {
+              context.unsupportedKinds.add('map_new');
+              return [{ kind: 'unsupported_statement', sourceKind: 'variable_declaration' }];
+            }
+            addLocal(context, declaration.binding.name, 'heap_ref');
+            context.localDeclarationKinds.set(
+              declaration.binding.name,
+              statement.declarationKind,
+            );
+            context.mapLocals.set(declaration.binding.name, mapLocal);
+            context.runtimeFamilies.add('map');
+            return [{
+              kind: 'map_new',
+              targetName: declaration.binding.name,
+              storage: true,
+            }];
+          }
+          if (
+            declaration.initializer.callee.kind === 'identifier' &&
+            declaration.initializer.callee.name === 'Set'
+          ) {
+            const setLocal = setLocalInfoForSemanticType(localType);
+            if (!setLocal) {
+              context.unsupportedKinds.add('set_new');
+              return [{ kind: 'unsupported_statement', sourceKind: 'variable_declaration' }];
+            }
+            addLocal(context, declaration.binding.name, 'heap_ref');
+            context.localDeclarationKinds.set(
+              declaration.binding.name,
+              statement.declarationKind,
+            );
+            context.setLocals.set(declaration.binding.name, setLocal);
+            context.runtimeFamilies.add('set');
+            context.runtimeFamilies.add('array');
+            return [{
+              kind: 'set_new',
+              targetName: declaration.binding.name,
+              valuesArrayType: setLocal.valuesArrayType,
+              valuesElementType: setLocal.valuesElementType,
+            }];
+          }
           const classConstruction = lowerClassConstructionDeclaration(
             declaration.binding.name,
             declaration.initializer,
@@ -3653,6 +4082,18 @@ function lowerStatement(
         if (objectLocal) {
           context.objectLocals.set(declaration.binding.name, objectLocal);
         }
+        const mapLocal = value.representation === 'heap_ref'
+          ? mapLocalInfoForRead(declaration.initializer, value, context)
+          : undefined;
+        if (mapLocal) {
+          context.mapLocals.set(declaration.binding.name, mapLocal);
+        }
+        const setLocal = value.representation === 'heap_ref'
+          ? setLocalInfoForRead(declaration.initializer, value, context)
+          : undefined;
+        if (setLocal) {
+          context.setLocals.set(declaration.binding.name, setLocal);
+        }
         const closureLocal = value.representation === 'closure_ref'
           ? closureLocalInfoForRead(declaration.initializer, value, context)
           : undefined;
@@ -3716,6 +4157,22 @@ function lowerStatement(
             context.objectLocals.set(target, objectLocal);
           } else {
             context.objectLocals.delete(target);
+          }
+          const mapLocal = !compoundOperator && value.representation === 'heap_ref'
+            ? mapLocalInfoForRead(assignment.right, value, context)
+            : undefined;
+          if (mapLocal) {
+            context.mapLocals.set(target, mapLocal);
+          } else {
+            context.mapLocals.delete(target);
+          }
+          const setLocal = !compoundOperator && value.representation === 'heap_ref'
+            ? setLocalInfoForRead(assignment.right, value, context)
+            : undefined;
+          if (setLocal) {
+            context.setLocals.set(target, setLocal);
+          } else {
+            context.setLocals.delete(target);
           }
           const closureLocal = !compoundOperator && value.representation === 'closure_ref'
             ? closureLocalInfoForRead(assignment.right, value, context)
@@ -4094,9 +4551,11 @@ function lowerFunction(
       params.map((param) => [param.name, 'param' as const]),
     ),
     localTypesByKey,
+    mapLocals: new Map(),
     moduleState,
     objectLayoutsByKey,
     objectLocals: new Map(),
+    setLocals: new Map(),
     unionLocals: new Map(),
     classesByName,
     pendingStatements: [],
@@ -4122,6 +4581,14 @@ function lowerFunction(
       }
       if (isFiniteUnionSemanticType(param.type)) {
         context.unionLocals.set(loweredParam.name, param.type);
+      }
+      const mapLocal = mapLocalInfoForSemanticType(param.type);
+      if (mapLocal) {
+        context.mapLocals.set(loweredParam.name, mapLocal);
+      }
+      const setLocal = setLocalInfoForSemanticType(param.type);
+      if (setLocal) {
+        context.setLocals.set(loweredParam.name, setLocal);
       }
       const closureLocal = closureLocalForSemanticType(param.type, context);
       if (closureLocal) {

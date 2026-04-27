@@ -7702,6 +7702,136 @@ Deno.test('compiler wasm-gc emitter produces runnable dynamic object alias write
   assertEquals((read as (flag: number) => number)(1), 4);
 });
 
+Deno.test('compiler SourceHIR semantic lowering emits runnable Map mutation flow', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: { strict: true },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        export function main(): number {
+          const map = new Map<string, number>();
+          map.set("left", 3);
+          map.set("right", 7);
+          let score = map.size * 10;
+          const left = map.get("left");
+          if (left !== undefined) {
+            score = score + left;
+          }
+          if (map.has("missing")) {
+            score = score + 1000;
+          }
+          if (map.delete("right")) {
+            score = score + map.size;
+          }
+          map.clear();
+          return score + map.size;
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createSourceSemanticSnapshot(program, tempDirectory);
+  const semantic = createSemanticModuleFromSourceHIR(snapshot.source, snapshot.sharedFacts);
+  const manifest = createRuntimeManifestFromSemanticModule(semantic);
+  const plan = createWasmGcModulePlan(semantic, manifest);
+  const mainPlan = plan.functionPlans.find((func) => func.name === 'main');
+  const watPath = join(tempDirectory, 'wasm-gc-source-map-mutation-flow.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-source-map-mutation-flow.wasm');
+
+  assertEquals(
+    manifest.familyRequirements.map((requirement) => requirement.family),
+    ['finite_union', 'map', 'string'],
+  );
+  assertEquals(mainPlan?.bodyStatus, 'emittable');
+  assertEquals(mainPlan?.body.some((statement) => statement.kind === 'map_new'), true);
+  assertEquals(mainPlan?.body.some((statement) => statement.kind === 'map_set'), true);
+  assertEquals(mainPlan?.body.some((statement) => statement.kind === 'map_get'), true);
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(plan));
+  const result = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(result.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(result.success, true);
+
+  const wasm = await Deno.readFile(wasmPath);
+  const instance = await WebAssembly.instantiate(wasm);
+  const main = instance.instance.exports['main.ts:main'];
+  assertEquals(typeof main, 'function');
+  assertEquals((main as () => number)(), 24);
+});
+
+Deno.test('compiler SourceHIR semantic lowering emits runnable Set mutation flow', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify({
+        compilerOptions: { strict: true },
+        files: ['main.ts'],
+      }),
+    },
+    {
+      path: 'main.ts',
+      contents: `
+        export function main(): number {
+          const set = new Set<string>();
+          set.add("left");
+          set.add("right");
+          let score = set.size * 10;
+          if (set.has("left")) {
+            score = score + 1;
+          }
+          if (set.delete("right")) {
+            score = score + set.size;
+          }
+          set.clear();
+          return score + set.size;
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createSourceSemanticSnapshot(program, tempDirectory);
+  const semantic = createSemanticModuleFromSourceHIR(snapshot.source, snapshot.sharedFacts);
+  const manifest = createRuntimeManifestFromSemanticModule(semantic);
+  const plan = createWasmGcModulePlan(semantic, manifest);
+  const mainPlan = plan.functionPlans.find((func) => func.name === 'main');
+  const watPath = join(tempDirectory, 'wasm-gc-source-set-mutation-flow.wat');
+  const wasmPath = join(tempDirectory, 'wasm-gc-source-set-mutation-flow.wasm');
+
+  assertEquals(
+    manifest.familyRequirements.map((requirement) => requirement.family),
+    ['array', 'set', 'string'],
+  );
+  assertEquals(mainPlan?.bodyStatus, 'emittable');
+  assertEquals(mainPlan?.body.some((statement) => statement.kind === 'set_new'), true);
+  assertEquals(mainPlan?.body.some((statement) => statement.kind === 'set_add'), true);
+  assertEquals(mainPlan?.body.some((statement) => statement.kind === 'set_has'), true);
+  await Deno.writeTextFile(watPath, emitWasmGcModulePlan(plan));
+  const result = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  const stderr = new TextDecoder().decode(result.stderr).trim();
+  assertEquals(stderr, '');
+  assertEquals(result.success, true);
+
+  const wasm = await Deno.readFile(wasmPath);
+  const instance = await WebAssembly.instantiate(wasm);
+  const main = instance.instance.exports['main.ts:main'];
+  assertEquals(typeof main, 'function');
+  assertEquals((main as () => number)(), 22);
+});
+
 Deno.test('compiler wasm-gc emitter uses explicit Map runtime for read-only empty Map size reads', async () => {
   const tempDirectory = await createTempProject([
     {
