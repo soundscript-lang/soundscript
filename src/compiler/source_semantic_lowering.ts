@@ -2860,14 +2860,22 @@ function lowerTryCatchStatement(
   const tryLoopControlLeadingStatements = tryLoopControlIndex >= 0
     ? statement.tryBlock.slice(0, tryLoopControlIndex)
     : statement.tryBlock;
-  const supportsTryReturnThroughFinally = finallyBlock.length > 0 &&
-    tryReturnStatement !== undefined &&
+  const supportsTryTerminalReturn = tryReturnStatement !== undefined &&
     statement.tryBlock.length === tryReturnIndex + 1 &&
     !sourceStatementsContainControlTransfer(tryLeadingStatements);
-  const supportsCatchReturnThroughFinally = finallyBlock.length > 0 &&
-    catchReturnStatement !== undefined &&
+  const supportsCatchTerminalReturn = catchReturnStatement !== undefined &&
     catchBlock.length === catchReturnIndex + 1 &&
     !sourceStatementsContainControlTransfer(catchLeadingStatements);
+  if (
+    (tryReturnStatement && !supportsTryTerminalReturn) ||
+    (catchReturnStatement && !supportsCatchTerminalReturn)
+  ) {
+    context.unsupportedKinds.add('try_catch_control_flow');
+    return [{ kind: 'unsupported_statement', sourceKind: 'try' }];
+  }
+  const supportsTryReturnThroughFinally = finallyBlock.length > 0 && supportsTryTerminalReturn;
+  const supportsCatchReturnThroughFinally = finallyBlock.length > 0 &&
+    supportsCatchTerminalReturn;
   const supportsTryLoopControlThroughFinally = finallyBlock.length > 0 &&
     tryLoopControlStatement !== undefined &&
     statement.tryBlock.length === tryLoopControlIndex + 1 &&
@@ -3061,6 +3069,13 @@ function lowerTryCatchStatement(
         thenBody: [...captureReturnStatements(tryReturnStatement)],
         elseBody: [],
       });
+    } else if (supportsTryTerminalReturn && tryReturnStatement) {
+      statements.push({
+        kind: 'if',
+        condition: catchableTryActiveCondition(target),
+        thenBody: [...lowerStatement(tryReturnStatement, context)],
+        elseBody: [],
+      });
     }
     if (supportsTryLoopControlThroughFinally && tryLoopControlStatement) {
       statements.push({
@@ -3106,6 +3121,8 @@ function lowerTryCatchStatement(
     completionReturnFlagName && completionReturnValueName && completionReturnRepresentation
   ) {
     catchStatements.push(...captureReturnStatements(catchReturnStatement));
+  } else if (supportsCatchTerminalReturn && catchReturnStatement) {
+    catchStatements.push(...lowerStatement(catchReturnStatement, context));
   }
   if (supportsCatchLoopControlThroughFinally && catchLoopControlStatement) {
     catchStatements.push(...captureLoopControlStatements(catchLoopControlStatement));
