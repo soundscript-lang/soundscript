@@ -3037,6 +3037,13 @@ function lowerTryCatchStatement(
   const catchLoopControlLeadingStatements = catchLoopControlIndex >= 0
     ? catchBlock.slice(0, catchLoopControlIndex)
     : catchBlock;
+  const catchThrowIndex = catchBlock.findIndex((child) => child.kind === 'throw');
+  const catchThrowStatement = catchThrowIndex >= 0
+    ? catchBlock[catchThrowIndex] as Extract<SourceStatementIR, { kind: 'throw' }>
+    : undefined;
+  const catchThrowLeadingStatements = catchThrowIndex >= 0
+    ? catchBlock.slice(0, catchThrowIndex)
+    : catchBlock;
   const tryReturnIndex = statement.tryBlock.findIndex((child) => child.kind === 'return');
   const tryReturnStatement = tryReturnIndex >= 0
     ? statement.tryBlock[tryReturnIndex] as Extract<SourceStatementIR, { kind: 'return' }>
@@ -3081,10 +3088,16 @@ function lowerTryCatchStatement(
     catchLoopControlStatement !== undefined &&
     catchBlock.length === catchLoopControlIndex + 1 &&
     !sourceStatementsContainControlTransfer(catchLoopControlLeadingStatements);
+  const supportsCatchThrowThroughFinally = finallyBlock.length > 0 &&
+    catchThrowStatement !== undefined &&
+    catchBlock.length === catchThrowIndex + 1 &&
+    !sourceStatementsContainControlTransfer(catchThrowLeadingStatements) &&
+    context.throwTargets.length > 0;
   const supportsReturnThroughFinally = supportsTryReturnThroughFinally ||
     supportsCatchReturnThroughFinally;
   const supportsCatchCompletionThroughFinally = supportsCatchReturnThroughFinally ||
-    supportsCatchLoopControlThroughFinally;
+    supportsCatchLoopControlThroughFinally ||
+    supportsCatchThrowThroughFinally;
   if (
     finallyBlock.length > 0 &&
     (
@@ -3105,7 +3118,12 @@ function lowerTryCatchStatement(
   const catchableTryFlowStatements = supportsTryTerminalLoopControl
     ? tryLoopControlLeadingStatements
     : statement.tryBlock;
-  if (sourceStatementsContainUnsupportedCatchableTryFlow(catchableTryFlowStatements)) {
+  const supportsNestedCatchableTry = catchableTryFlowStatements.length === 1 &&
+    catchableTryFlowStatements[0]?.kind === 'try';
+  if (
+    !supportsNestedCatchableTry &&
+    sourceStatementsContainUnsupportedCatchableTryFlow(catchableTryFlowStatements)
+  ) {
     context.unsupportedKinds.add('try_catch_control_flow');
     return [{ kind: 'unsupported_statement', sourceKind: 'try' }];
   }
@@ -3314,6 +3332,8 @@ function lowerTryCatchStatement(
   }
   const guardedCatchStatements = supportsCatchLoopControlThroughFinally
     ? catchLoopControlLeadingStatements
+    : supportsCatchThrowThroughFinally
+    ? catchThrowLeadingStatements
     : catchLeadingStatements;
   catchStatements.push(
     ...guardedCatchStatements.flatMap((child) => [...lowerStatement(child, context)]),
@@ -3328,6 +3348,9 @@ function lowerTryCatchStatement(
   }
   if (supportsCatchLoopControlThroughFinally && catchLoopControlStatement) {
     catchStatements.push(...captureLoopControlStatements(catchLoopControlStatement));
+  }
+  if (supportsCatchThrowThroughFinally && catchThrowStatement) {
+    catchStatements.push(...lowerStatement(catchThrowStatement, context));
   }
   statements.push({
     kind: 'if',
@@ -3509,6 +3532,27 @@ function lowerTryStatement(
       { kind: 'local_set', name: resultName, value },
       ...finallyBlock.flatMap((child) => [...lowerStatement(child, context)]),
       { kind: 'return', value: localGetExpression(resultName, value.representation) },
+    ];
+  }
+  const throwIndex = statement.tryBlock.findIndex((child) => child.kind === 'throw');
+  if (throwIndex >= 0) {
+    const leadingTryStatements = statement.tryBlock.slice(0, throwIndex);
+    const throwStatement = statement.tryBlock[throwIndex] as Extract<
+      SourceStatementIR,
+      { kind: 'throw' }
+    >;
+    if (
+      statement.tryBlock.length !== throwIndex + 1 ||
+      sourceStatementsContainControlTransfer(leadingTryStatements) ||
+      !context.throwTargets.at(-1)
+    ) {
+      context.unsupportedKinds.add('try_finally_control_flow');
+      return [{ kind: 'unsupported_statement', sourceKind: 'try' }];
+    }
+    return [
+      ...leadingTryStatements.flatMap((child) => [...lowerStatement(child, context)]),
+      ...lowerStatement(throwStatement, context),
+      ...finallyBlock.flatMap((child) => [...lowerStatement(child, context)]),
     ];
   }
   if (statement.tryBlock.length === 1 && statement.tryBlock[0]?.kind === 'try') {
