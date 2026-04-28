@@ -70,9 +70,8 @@ export const SOURCE_ONLY_RUNTIME_MODULES = [
   'debug',
 ] as const;
 
-export const HOST_RUNTIME_MODULES = [
-  'host/dom',
-  'host/node',
+export const RAW_HOST_RUNTIME_MODULES = [
+  'web/dom',
 ] as const;
 
 export const CLI_TARGETS: readonly CliTarget[] = [

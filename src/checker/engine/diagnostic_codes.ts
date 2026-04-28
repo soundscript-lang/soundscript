@@ -79,7 +79,7 @@ export const SOUND_DIAGNOSTIC_MESSAGES = {
     'Instance fields may not be read before definite initialization in soundscript.',
   definiteAssignmentAssertion: 'Definite-assignment assertions are not supported in soundscript.',
   ambientHostValueRequiresExplicitBoundary:
-    "Ambient host values cannot be used directly in soundscript without an explicit boundary import or same-file '// #[extern]' declaration.",
+    'Ambient host values cannot be used directly in soundscript without an explicit boundary import.',
   invalidEffectAnnotation: 'Effects annotation contract is invalid.',
   effectContractViolation: 'Effect contract violation.',
   unavailableRuntimeCapability:

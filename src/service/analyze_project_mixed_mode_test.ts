@@ -708,6 +708,7 @@ Deno.test(
 
     const result = await analyzeProject({
       projectPath: join(tempDirectory, 'tsconfig.json'),
+      target: 'js-browser',
       workingDirectory: tempDirectory,
     });
 
@@ -1984,7 +1985,7 @@ Deno.test(
       ),
       'src/index.sts': [
         '// #[interop]',
-        'import { document } from "host:dom";',
+        'import { document } from "web:dom";',
         '',
         'export function main(): Element | null {',
         "  return document.getElementById('app');",
@@ -1995,6 +1996,7 @@ Deno.test(
 
     const result = await analyzeProject({
       projectPath: join(tempDirectory, 'tsconfig.json'),
+      target: 'js-browser',
       workingDirectory: tempDirectory,
     });
 

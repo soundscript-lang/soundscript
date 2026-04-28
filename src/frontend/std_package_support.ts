@@ -48,21 +48,17 @@ import {
 } from '../project/soundscript_runtime_specifiers.ts';
 import { captureTypeScriptDeclarationOutputs } from './typescript_effect_declarations.ts';
 import {
-  HOST_DOM_DECLARATION_FILE,
-  HOST_DOM_MODULE_SPECIFIER,
-  HOST_NODE_DECLARATION_FILE,
-  HOST_NODE_MODULE_SPECIFIER,
   resolveHostDeclarationFile,
+  WEB_DOM_DECLARATION_FILE,
+  WEB_DOM_MODULE_SPECIFIER,
 } from './host_declaration_resolution.ts';
 import { fileExistsSync, readTextFileSync, runtimeExecPath } from '../platform/host.ts';
 import { basename, dirname, fromFileUrl, join, relative } from '../platform/path.ts';
 
 export {
-  HOST_DOM_DECLARATION_FILE,
-  HOST_DOM_MODULE_SPECIFIER,
-  HOST_NODE_DECLARATION_FILE,
-  HOST_NODE_MODULE_SPECIFIER,
   resolveHostDeclarationFile,
+  WEB_DOM_DECLARATION_FILE,
+  WEB_DOM_MODULE_SPECIFIER,
 } from './host_declaration_resolution.ts';
 
 export const STDLIB_MODULE_SPECIFIER = STS_PRELUDE_MODULE_SPECIFIER;
@@ -644,8 +640,7 @@ export const DEBUG_STDLIB_DECLARATION_TEXT = readStdlibDeclarationText(
 export const NUMERICS_STDLIB_DECLARATION_TEXT = readStdlibDeclarationText(
   NUMERICS_STDLIB_DECLARATION_FILE,
 );
-export const HOST_DOM_DECLARATION_TEXT = readStdlibDeclarationText(HOST_DOM_DECLARATION_FILE);
-export const HOST_NODE_DECLARATION_TEXT = readStdlibDeclarationText(HOST_NODE_DECLARATION_FILE);
+export const WEB_DOM_DECLARATION_TEXT = readStdlibDeclarationText(WEB_DOM_DECLARATION_FILE);
 
 const STDLIB_DECLARATION_FILES = new Map<string, string>([
   [STDLIB_MODULE_SPECIFIER, STDLIB_DECLARATION_FILE],
@@ -698,8 +693,7 @@ const STDLIB_DECLARATION_FILES = new Map<string, string>([
 ]);
 const STDLIB_DECLARATION_FILE_SET = new Set(STDLIB_DECLARATION_FILES.values());
 const HOST_DECLARATION_FILES = new Map<string, string>([
-  [HOST_DOM_MODULE_SPECIFIER, HOST_DOM_DECLARATION_FILE],
-  [HOST_NODE_MODULE_SPECIFIER, HOST_NODE_DECLARATION_FILE],
+  [WEB_DOM_MODULE_SPECIFIER, WEB_DOM_DECLARATION_FILE],
 ]);
 const VIRTUAL_DECLARATION_FILE_SET = new Set([
   ...STDLIB_DECLARATION_FILES.values(),
@@ -753,8 +747,7 @@ const STDLIB_DECLARATION_TEXTS = new Map<string, string>([
   ),
   [DEBUG_STDLIB_DECLARATION_FILE, DEBUG_STDLIB_DECLARATION_TEXT],
   [NUMERICS_STDLIB_DECLARATION_FILE, NUMERICS_STDLIB_DECLARATION_TEXT],
-  [HOST_DOM_DECLARATION_FILE, HOST_DOM_DECLARATION_TEXT],
-  [HOST_NODE_DECLARATION_FILE, HOST_NODE_DECLARATION_TEXT],
+  [WEB_DOM_DECLARATION_FILE, WEB_DOM_DECLARATION_TEXT],
 ]);
 
 function resolveRelativeStdlibDeclarationFile(

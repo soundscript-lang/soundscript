@@ -283,12 +283,12 @@ Deno.test('std package support resolves nested stdlib declaration runtime paths 
   const tempDirectory = await Deno.makeTempDir();
   try {
     const execPath = `${tempDirectory}/bin/soundscript`;
-    const fallbackFilePath = `${tempDirectory}/bin/src/stdlib/host/dom.d.ts`;
-    await Deno.mkdir(`${tempDirectory}/bin/src/stdlib/host`, { recursive: true });
-    await Deno.writeTextFile(fallbackFilePath, 'export type RuntimeHostDom = true;\n');
+    const fallbackFilePath = `${tempDirectory}/bin/src/stdlib/web/dom.d.ts`;
+    await Deno.mkdir(`${tempDirectory}/bin/src/stdlib/web`, { recursive: true });
+    await Deno.writeTextFile(fallbackFilePath, 'export type RuntimeWebDom = true;\n');
 
     const resolved = resolveStdlibDeclarationRuntimePath(
-      '/missing/source/tree/src/stdlib/host/dom.d.ts',
+      '/missing/source/tree/src/stdlib/web/dom.d.ts',
       {
         execPath,
       },
