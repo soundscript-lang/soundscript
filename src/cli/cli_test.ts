@@ -828,8 +828,7 @@ Deno.test('runCli check --format json includes structured flow invalidation meta
     {
       path: 'src/index.sts',
       contents: [
-        '// #[extern]',
-        'declare function mutate(box: { value: string | null }): void;',
+        'function mutate(box: { value: string | null }): void { box.value = null; }',
         '',
         'function use(box: { value: string | null }) {',
         '  if (box.value !== null) {',
@@ -1328,8 +1327,7 @@ Deno.test('runCli check --format json includes structured non-null assertion met
     {
       path: 'src/index.sts',
       contents: [
-        '// #[extern]',
-        'declare const maybe: string | undefined;',
+        'const maybe: string | undefined = undefined;',
         'const value = maybe!;',
         '',
       ].join('\n'),
@@ -1442,7 +1440,7 @@ Deno.test('runCli check --format json includes structured null-prototype creatio
   ]);
 });
 
-Deno.test('runCli check --format json includes structured invalid-annotation-target metadata', async () => {
+Deno.test('runCli check --format json includes structured retired extern metadata', async () => {
   const tempDirectory = await createTempProject([
     {
       path: 'tsconfig.json',
@@ -1490,30 +1488,36 @@ Deno.test('runCli check --format json includes structured invalid-annotation-tar
   };
 
   assertEquals(result.exitCode, 1);
-  assertEquals(payload.diagnostics[0]?.code, 'SOUND1027');
-  assertEquals(payload.diagnostics[0]?.metadata?.rule, 'invalid_annotation_target');
+  assertEquals(payload.diagnostics[0]?.code, 'SOUND1007');
+  assertEquals(payload.diagnostics[0]?.metadata?.rule, 'extern_annotation_removed');
   assertEquals(payload.diagnostics[0]?.metadata?.primarySymbol, '#[extern]');
-  assertEquals(payload.diagnostics[0]?.metadata?.replacementFamily, 'supported_annotation_site');
-  assertEquals(payload.diagnostics[0]?.metadata?.fixability, 'local_rewrite');
+  assertEquals(payload.diagnostics[0]?.metadata?.replacementFamily, 'extern_import_boundary');
+  assertEquals(payload.diagnostics[0]?.metadata?.fixability, 'boundary_annotation');
   assertEquals(
     payload.diagnostics[0]?.metadata?.evidence?.map((fact) => `${fact.label}:${fact.value}`),
     [
       'annotationName:extern',
-      'expectedTarget:local ambient runtime declaration',
-      'actualTarget:variable declaration',
+      'registeredBuiltins:effects, interop, newtype, unsafe, value, variance',
     ],
   );
   assertEquals(
     payload.diagnostics[0]?.metadata?.counterexample,
-    'An annotation attached to the wrong syntax node can look like it blesses code even though that site does not support the annotation’s semantics.',
+    'A same-file extern declaration gives the identifier a local declaration while its ambient type source stays implicit.',
   );
   assertEquals(
     payload.diagnostics[0]?.metadata?.example,
-    'Move `#[extern]` to a local ambient runtime declaration, or remove it if this code is an ordinary implementation.',
+    [
+      '// #[interop]',
+      "import { __APP_CONFIG__ as config } from 'extern:globalThis';",
+    ].join('\n'),
   );
   assertEquals(payload.diagnostics[0]?.notes, [
-    '`#[extern]` must attach to a local ambient runtime declaration, but this annotation is attached to a variable declaration.',
-    'Example: Move `#[extern]` to a local ambient runtime declaration, or remove it if this code is an ordinary implementation.',
+    '`#[extern]` has been removed; use a reserved `extern:*` import or an ordinary `#[interop]` host import instead.',
+    'Registered builtin annotations in v1 are `#[effects(...)]`, `#[interop]`, `#[newtype]`, `#[unsafe]`, `#[value]`, and `#[variance(...)]`.',
+    [
+      'Example: // #[interop]',
+      "import { __APP_CONFIG__ as config } from 'extern:globalThis';",
+    ].join('\n'),
   ]);
 });
 
@@ -1566,9 +1570,9 @@ Deno.test('runCli check --format json includes structured ambient-extern metadat
 
   assertEquals(result.exitCode, 1);
   assertEquals(payload.diagnostics[0]?.code, 'SOUND1029');
-  assertEquals(payload.diagnostics[0]?.metadata?.rule, 'ambient_runtime_requires_extern');
+  assertEquals(payload.diagnostics[0]?.metadata?.rule, 'ambient_runtime_requires_import_boundary');
   assertEquals(payload.diagnostics[0]?.metadata?.primarySymbol, 'envName');
-  assertEquals(payload.diagnostics[0]?.metadata?.replacementFamily, 'site_local_extern_boundary');
+  assertEquals(payload.diagnostics[0]?.metadata?.replacementFamily, 'extern_import_boundary');
   assertEquals(payload.diagnostics[0]?.metadata?.fixability, 'boundary_annotation');
   assertEquals(
     payload.diagnostics[0]?.metadata?.evidence?.map((fact) => `${fact.label}:${fact.value}`),
@@ -1576,15 +1580,21 @@ Deno.test('runCli check --format json includes structured ambient-extern metadat
   );
   assertEquals(
     payload.diagnostics[0]?.metadata?.counterexample,
-    'Without `#[extern]`, a declaration-only runtime name looks like ordinary checked soundscript even though there is no local implementation.',
+    'A same-file ambient declaration gives the identifier a local declaration while the host value still comes from outside checked soundscript.',
   );
   assertEquals(
     payload.diagnostics[0]?.metadata?.example,
-    'Add `// #[extern]` immediately above the declaration, or replace the declaration with a real implementation.',
+    [
+      '// #[interop]',
+      "import { __APP_CONFIG__ as config } from 'extern:globalThis';",
+    ].join('\n'),
   );
   assertEquals(payload.diagnostics[0]?.notes, [
-    'This local ambient runtime declaration introduces `envName` without a site-local extern boundary.',
-    'Example: Add `// #[extern]` immediately above the declaration, or replace the declaration with a real implementation.',
+    'This local ambient runtime declaration introduces `envName` without an explicit import boundary.',
+    [
+      'Example: // #[interop]',
+      "import { __APP_CONFIG__ as config } from 'extern:globalThis';",
+    ].join('\n'),
   ]);
 });
 
@@ -1609,7 +1619,6 @@ Deno.test('runCli check --format json includes structured exported-ambient metad
     {
       path: 'src/index.sts',
       contents: [
-        '// #[extern]',
         'export declare const envName: string;',
         '',
       ].join('\n'),
@@ -1654,11 +1663,11 @@ Deno.test('runCli check --format json includes structured exported-ambient metad
   );
   assertEquals(
     payload.diagnostics[0]?.metadata?.example,
-    "Move the declaration to '.d.ts', keep it local with `// #[extern]`, or replace it with a real implementation.",
+    "Move the declaration to '.d.ts' and expose values through explicit imports, or replace it with a real implementation.",
   );
   assertEquals(payload.diagnostics[0]?.notes, [
     'This ambient runtime declaration exports `envName` from a soundscript module even though there is no local implementation.',
-    "Example: Move the declaration to '.d.ts', keep it local with `// #[extern]`, or replace it with a real implementation.",
+    "Example: Move the declaration to '.d.ts' and expose values through explicit imports, or replace it with a real implementation.",
   ]);
 });
 
@@ -1683,8 +1692,8 @@ Deno.test('runCli check --format json includes structured annotation-arguments m
     {
       path: 'src/index.sts',
       contents: [
-        '// #[extern(answer: 1)]',
-        'declare const envName: string;',
+        '// #[unsafe(answer: 1)]',
+        'const envName = "dev";',
         '',
       ].join('\n'),
     },
@@ -1712,7 +1721,7 @@ Deno.test('runCli check --format json includes structured annotation-arguments m
   assertEquals(result.exitCode, 1);
   assertEquals(payload.diagnostics[0]?.code, 'SOUND1028');
   assertEquals(payload.diagnostics[0]?.metadata?.rule, 'annotation_arguments_not_supported');
-  assertEquals(payload.diagnostics[0]?.metadata?.primarySymbol, '#[extern]');
+  assertEquals(payload.diagnostics[0]?.metadata?.primarySymbol, '#[unsafe]');
   assertEquals(
     payload.diagnostics[0]?.metadata?.replacementFamily,
     'supported_annotation_arguments',
@@ -1720,7 +1729,7 @@ Deno.test('runCli check --format json includes structured annotation-arguments m
   assertEquals(payload.diagnostics[0]?.metadata?.fixability, 'local_rewrite');
   assertEquals(
     payload.diagnostics[0]?.metadata?.evidence?.map((fact) => `${fact.label}:${fact.value}`),
-    ['annotationName:extern', 'argumentsText:(answer: 1)', 'supportedForm:bare form only'],
+    ['annotationName:unsafe', 'argumentsText:(answer: 1)', 'supportedForm:bare form only'],
   );
   assertEquals(
     payload.diagnostics[0]?.metadata?.counterexample,
@@ -1728,11 +1737,11 @@ Deno.test('runCli check --format json includes structured annotation-arguments m
   );
   assertEquals(
     payload.diagnostics[0]?.metadata?.example,
-    'Remove the arguments from `#[extern(answer: 1)]`.',
+    'Remove the arguments from `#[unsafe(answer: 1)]`.',
   );
   assertEquals(payload.diagnostics[0]?.notes, [
-    '`#[extern]` does not accept arguments in v1; this annotation uses `(answer: 1)`.',
-    'Example: Remove the arguments from `#[extern(answer: 1)]`.',
+    '`#[unsafe]` does not accept arguments in v1; this annotation uses `(answer: 1)`.',
+    'Example: Remove the arguments from `#[unsafe(answer: 1)]`.',
   ]);
 });
 
@@ -1814,7 +1823,7 @@ Deno.test('runCli check --format json includes structured malformed-annotation m
   ]);
 });
 
-Deno.test('runCli check --format json preserves unknown annotations without diagnostics', async () => {
+Deno.test('runCli check --format json reports unknown annotation metadata', async () => {
   const tempDirectory = await createTempProject([
     {
       path: 'tsconfig.json',
@@ -1835,7 +1844,7 @@ Deno.test('runCli check --format json preserves unknown annotations without diag
     {
       path: 'src/index.sts',
       contents: [
-        '// #[eq]',
+        '// #[mystery]',
         'type User = { id: string };',
         '',
       ].join('\n'),
@@ -1845,10 +1854,14 @@ Deno.test('runCli check --format json preserves unknown annotations without diag
   const result = await runCli(
     ['check', '--project', join(tempDirectory, 'tsconfig.json'), '--format', 'json'],
   );
-  const payload = JSON.parse(result.output) as { diagnostics: unknown[] };
+  const payload = JSON.parse(result.output) as {
+    diagnostics: Array<{ code: string; metadata?: { primarySymbol?: string; rule?: string } }>;
+  };
 
-  assertEquals(result.exitCode, 0);
-  assertEquals(payload.diagnostics, []);
+  assertEquals(result.exitCode, 1);
+  assertEquals(payload.diagnostics[0]?.code, 'SOUND1007');
+  assertEquals(payload.diagnostics[0]?.metadata?.rule, 'unknown_annotation');
+  assertEquals(payload.diagnostics[0]?.metadata?.primarySymbol, '#[mystery]');
 });
 
 Deno.test('runCli check --format json includes structured duplicate-annotation metadata', async () => {
@@ -1872,9 +1885,9 @@ Deno.test('runCli check --format json includes structured duplicate-annotation m
     {
       path: 'src/index.sts',
       contents: [
-        '// #[extern]',
-        '// #[extern]',
-        'declare const envName: string;',
+        '// #[unsafe]',
+        '// #[unsafe]',
+        'const envName = "dev";',
         '',
       ].join('\n'),
     },
@@ -1902,7 +1915,7 @@ Deno.test('runCli check --format json includes structured duplicate-annotation m
   assertEquals(result.exitCode, 1);
   assertEquals(payload.diagnostics[0]?.code, 'SOUND1026');
   assertEquals(payload.diagnostics[0]?.metadata?.rule, 'duplicate_annotation');
-  assertEquals(payload.diagnostics[0]?.metadata?.primarySymbol, '#[extern]');
+  assertEquals(payload.diagnostics[0]?.metadata?.primarySymbol, '#[unsafe]');
   assertEquals(
     payload.diagnostics[0]?.metadata?.replacementFamily,
     'single_annotation_per_block',
@@ -1910,7 +1923,7 @@ Deno.test('runCli check --format json includes structured duplicate-annotation m
   assertEquals(payload.diagnostics[0]?.metadata?.fixability, 'local_rewrite');
   assertEquals(
     payload.diagnostics[0]?.metadata?.evidence?.map((fact) => `${fact.label}:${fact.value}`),
-    ['annotationName:extern', 'occurrenceCount:2'],
+    ['annotationName:unsafe', 'occurrenceCount:2'],
   );
   assertEquals(
     payload.diagnostics[0]?.metadata?.counterexample,
@@ -1918,11 +1931,11 @@ Deno.test('runCli check --format json includes structured duplicate-annotation m
   );
   assertEquals(
     payload.diagnostics[0]?.metadata?.example,
-    'Keep one `#[extern]` entry in the block and remove the duplicate.',
+    'Keep one `#[unsafe]` entry in the block and remove the duplicate.',
   );
   assertEquals(payload.diagnostics[0]?.notes, [
-    '`#[extern]` appears 2 times in the same attached annotation block.',
-    'Example: Keep one `#[extern]` entry in the block and remove the duplicate.',
+    '`#[unsafe]` appears 2 times in the same attached annotation block.',
+    'Example: Keep one `#[unsafe]` entry in the block and remove the duplicate.',
   ]);
 });
 
@@ -3464,11 +3477,10 @@ Deno.test('runCli explain renders repair recipes for boundary and cleanup diagno
 
   assertEquals(duplicateResult.exitCode, 0);
   assertStringIncludes(duplicateResult.output, 'Repair heuristic:');
-  assertStringIncludes(duplicateResult.output, '// #[extern]');
+  assertStringIncludes(duplicateResult.output, '// #[unsafe]');
 
   assertEquals(invalidTargetResult.exitCode, 0);
   assertStringIncludes(invalidTargetResult.output, 'Repair heuristic:');
-  assertStringIncludes(invalidTargetResult.output, '// #[extern]');
   assertStringIncludes(invalidTargetResult.output, '// #[interop]');
 
   assertEquals(ambientExportResult.exitCode, 0);
@@ -4039,8 +4051,7 @@ Deno.test('runCli reports unsound syntax bans for any assertions and non-null as
       contents: [
         'const value: any = 1;',
         "const coerced = JSON.parse('1') as number;",
-        '// #[extern]',
-        'declare const maybe: string | undefined;',
+        'const maybe: string | undefined = undefined;',
         'const forced = maybe!;',
         '',
       ].join('\n'),
@@ -4077,8 +4088,7 @@ Deno.test('runCli trusts the next statement when unsafe is present', async () =>
     {
       path: 'src/index.ts',
       contents: [
-        '// #[extern]',
-        'declare const maybe: string | undefined;',
+        'const maybe: string | undefined = undefined;',
         '// #[unsafe]',
         'const trusted = maybe!;',
         'const untrusted = maybe!;',
@@ -4093,7 +4103,7 @@ Deno.test('runCli trusts the next statement when unsafe is present', async () =>
   assertEquals(result.diagnostics.length, 1);
   assertEquals(result.diagnostics[0]?.code, 'SOUND1003');
   assertStringIncludes(result.output, 'SOUND1003');
-  assertStringIncludes(result.output, 'src/index.sts:5:19');
+  assertStringIncludes(result.output, 'src/index.sts:4:19');
 });
 
 Deno.test('runCli does not let unsafe suppress any inside a trusted assertion', async () => {
@@ -4117,8 +4127,7 @@ Deno.test('runCli does not let unsafe suppress any inside a trusted assertion', 
     {
       path: 'src/index.ts',
       contents: [
-        '// #[extern]',
-        'declare const value: unknown;',
+        'const value: unknown = 1;',
         '// #[unsafe]',
         'const leaked = value as any;',
         '',
@@ -4131,7 +4140,7 @@ Deno.test('runCli does not let unsafe suppress any inside a trusted assertion', 
   assertEquals(result.exitCode, 1);
   assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['SOUND1001']);
   assertStringIncludes(result.output, 'SOUND1001');
-  assertStringIncludes(result.output, 'src/index.sts:4:25');
+  assertStringIncludes(result.output, 'src/index.sts:3:25');
 });
 
 Deno.test('runCli models Object.create(null) as BareObject', async () => {
@@ -6003,8 +6012,7 @@ Deno.test('runCli reports malformed annotation comments and keeps enclosed state
     {
       path: 'src/index.ts',
       contents: [
-        '// #[extern]',
-        'declare const maybe: string | undefined;',
+        'const maybe: string | undefined = undefined;',
         '// #[unsafe',
         "const trustedAssertion = JSON.parse('1') as number;",
         'const trustedNonNull = maybe!;',
@@ -6021,8 +6029,8 @@ Deno.test('runCli reports malformed annotation comments and keeps enclosed state
     result.diagnostics.map((diagnostic) => diagnostic.code),
     ['SOUND1006', 'SOUND1002', 'SOUND1003', 'SOUND1003'],
   );
-  assertStringIncludes(result.output, 'src/index.sts:3:1');
-  assertStringIncludes(result.output, 'src/index.sts:6:19');
+  assertStringIncludes(result.output, 'src/index.sts:2:1');
+  assertStringIncludes(result.output, 'src/index.sts:5:19');
 });
 
 Deno.test('runCli does not treat malformed unsafe annotations as file-wide trust', async () => {
@@ -6195,8 +6203,8 @@ Deno.test('runCli respects experimentalDecorators in pure TypeScript projects', 
 
   const result = await runCli(['check', '--project', join(tempDirectory, 'tsconfig.json')]);
 
-  assertEquals(result.exitCode, 1);
-  assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['TS1238']);
+  assertEquals(result.exitCode, 0);
+  assertEquals(result.diagnostics, []);
 });
 
 Deno.test('runCli forces the sound compiler option baseline even when tsconfig disables it', async () => {

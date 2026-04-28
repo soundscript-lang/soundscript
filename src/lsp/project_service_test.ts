@@ -429,7 +429,7 @@ Deno.test('project service keeps full and sts-local prepared state cached indepe
 
   const fullPreparedProject = getPreparedProjectForTest(uri, session, 'full');
   assert(fullPreparedProject !== null);
-  assert(fullPreparedProject.tsView !== null);
+  assert(fullPreparedProject !== initialLocalPreparedProject);
 
   const localPreparedProjectAfterFull = getPreparedProjectForTest(uri, session, 'sts-local');
   assert(localPreparedProjectAfterFull !== null);
@@ -655,8 +655,8 @@ Deno.test('project service diagnostics ignore commented-out macro code', async (
 
 Deno.test('project service offers a SOUND1020 quick fix to capture narrowed members before call boundaries', async () => {
   const text = [
-    '// #[extern]',
-    'declare function mutate(box: { value: string | null }): void;',
+    'function mutate(box: { value: string | null }): void { box.value = null; }',
+    '',
     '',
     'function use(box: { value: string | null }) {',
     '  if (box.value !== null) {',
@@ -729,8 +729,8 @@ Deno.test('project service offers a SOUND1020 quick fix to capture narrowed memb
 
 Deno.test('project service offers a SOUND1020 quick fix to capture narrowed members before await boundaries', async () => {
   const text = [
-    '// #[extern]',
-    'declare function refresh(): Promise<void>;',
+    'function refresh(): Promise<void> { return Promise.resolve(); }',
+    '',
     '',
     'async function use(box: { value: string | null }) {',
     '  if (box.value !== null) {',
@@ -879,8 +879,8 @@ Deno.test('project service offers a SOUND1020 quick fix to capture narrowed memb
 
 Deno.test('project service skips SOUND1020 capture quick fixes for non-literal computed paths', async () => {
   const text = [
-    '// #[extern]',
-    'declare function mutate(box: Record<string, string | null>): void;',
+    'function mutate(box: Record<string, string | null>): void { box.value = null; }',
+    '',
     '',
     'function use(box: Record<string, string | null>, key: string) {',
     '  if (box[key] !== null) {',
@@ -935,8 +935,8 @@ Deno.test('project service skips SOUND1020 capture quick fixes for non-literal c
 
 Deno.test('project service suffixes captured SOUND1020 locals when the preferred name is already taken', async () => {
   const text = [
-    '// #[extern]',
-    'declare function mutate(box: { value: string | null }): void;',
+    'function mutate(box: { value: string | null }): void { box.value = null; }',
+    '',
     '',
     'function use(box: { value: string | null }) {',
     '  const boxValue = "taken";',

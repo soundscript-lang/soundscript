@@ -1629,8 +1629,7 @@ function hasAsyncBoundary(declaration: EffectCallableDeclaration): boolean {
 
 function hasHostBoundaryAnnotation(context: AnalysisContext, node: ts.Node): boolean {
   const lookup = context.getAnnotationLookup(node.getSourceFile());
-  return lookup.hasAttachedAnnotation(node, 'extern') ||
-    lookup.hasAttachedAnnotation(node, 'interop');
+  return lookup.hasAttachedAnnotation(node, 'interop');
 }
 
 function buildDeclarationOnlySummary(

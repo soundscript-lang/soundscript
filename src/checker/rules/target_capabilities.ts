@@ -1,6 +1,7 @@
 import ts from 'typescript';
 
 import {
+  isExternModuleSpecifier,
   STS_CLI_MODULE_SPECIFIER,
   STS_CONCURRENCY_ATOMICS_MODULE_SPECIFIER,
   STS_CONCURRENCY_MODULE_SPECIFIER,
@@ -87,6 +88,21 @@ function unavailableModuleForTarget(
       example: "import process from 'node:process';",
       hint:
         'Use `node:*` only on node-family targets, or move the Node dependency behind a target-specific boundary.',
+    };
+  }
+
+  if (
+    isExternModuleSpecifier(specifier) &&
+    context.runtime.target !== 'js-browser' &&
+    context.runtime.target !== 'js-node'
+  ) {
+    return {
+      reason:
+        '`extern:*` currently requires a JavaScript-hosted target; Wasm and standalone provider wiring is deferred.',
+      replacementFamily: 'raw_host_boundary',
+      example: "import { __APP_CONFIG__ as config } from 'extern:globalThis';",
+      hint:
+        'Use `extern:*` only on JS targets until the Wasm host-wrapper provider is implemented.',
     };
   }
 

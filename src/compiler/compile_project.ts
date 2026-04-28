@@ -28,6 +28,7 @@ import {
   type RuntimeTarget,
 } from '../project/config.ts';
 import { createBuiltinDiagnosticProgram } from '../frontend/builtin_macro_support.ts';
+import { isExternDeclarationModuleFileName } from '../frontend/extern_module_support.ts';
 import {
   getLineAndCharacterOfPosition,
   getPositionOfLineAndCharacter,
@@ -467,9 +468,9 @@ function collectTsDiagnostics(
     });
   });
 
-  return diagnostics.map((diagnostic) =>
-    toMappedMergedDiagnostic(diagnostic, diagnosticPreparedFiles)
-  );
+  return diagnostics.filter((diagnostic) =>
+    !diagnostic.file || !isExternDeclarationModuleFileName(diagnostic.file.fileName)
+  ).map((diagnostic) => toMappedMergedDiagnostic(diagnostic, diagnosticPreparedFiles));
 }
 
 function collectDiagnostics(

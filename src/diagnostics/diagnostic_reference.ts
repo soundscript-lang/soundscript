@@ -765,6 +765,38 @@ const DIAGNOSTIC_REFERENCES = {
   },
   SOUND1039: {
     code: 'SOUND1039',
+    title: 'Ambient host values require an explicit boundary',
+    summary:
+      'A value from DOM, Node, or another ambient declaration file is being used directly in `.sts` without an explicit import boundary.',
+    repairHeuristic:
+      'Import the value through `web:*`, `node:*`, `native:*`, or `extern:*` behind `// #[interop]`, or replace the ambient declaration with checked local code.',
+    details: [
+      'Ambient declaration files may still provide types, but runtime values must cross an explicit boundary before checked soundscript code can use them.',
+      '`extern:globalThis` is the default boundary for app/embedder globals that are properties of `globalThis`.',
+      '`extern:global` exists for true ambient lexical/global bindings that are not guaranteed to be `globalThis` properties.',
+    ],
+    examples: [
+      {
+        bad: 'const apiBase = __APP_CONFIG__.apiBase;',
+        good: [
+          '// #[interop]',
+          "import { __APP_CONFIG__ as config } from 'extern:globalThis';",
+          '',
+          'const apiBase = config.apiBase;',
+        ].join('\n'),
+      },
+    ],
+    suggestions: [
+      {
+        applicability: 'manual',
+        title: 'Import through an explicit boundary',
+        message:
+          'Add a `// #[interop]` import from the appropriate host or extern module instead of reading the ambient value directly.',
+      },
+    ],
+  },
+  SOUND1040: {
+    code: 'SOUND1040',
     title: 'Effects annotations must use the supported v0.2.0 contract shape',
     summary:
       'soundscript only accepts `#[effects(...)]` on supported callable or callback-parameter sites, using the `add`, `forbid`, and `forward` contract shape with parameter-rooted forwarding references.',
@@ -791,8 +823,8 @@ const DIAGNOSTIC_REFERENCES = {
       },
     ],
   },
-  SOUND1040: {
-    code: 'SOUND1040',
+  SOUND1041: {
+    code: 'SOUND1041',
     title: 'Effect contracts must match implementation and callback arguments',
     summary:
       'A `forbid` contract only holds when the callable implementation and any constrained callback arguments stay within the declared effect surface.',
@@ -825,6 +857,62 @@ const DIAGNOSTIC_REFERENCES = {
         title: 'Align the contract with the implementation',
         message:
           'Remove the forbidden effect from the implementation or callback path, or loosen the `forbid` contract so callers are not promised behavior the checker cannot prove.',
+      },
+    ],
+  },
+  SOUND1042: {
+    code: 'SOUND1042',
+    title: 'Runtime capability is unavailable for this target',
+    summary: 'A selected target cannot provide the imported stdlib or raw host module capability.',
+    repairHeuristic:
+      'Move to a target that provides the capability, select the supported replacement module named in metadata, or keep the dependency behind a target-specific boundary.',
+    details: [
+      'Provider-backed modules such as filesystem, process, raw networking, and structured concurrency runtime support are target-gated.',
+      'Legacy module specifiers such as `sts:async`, `host:dom`, and `host:node` report this diagnostic with migration metadata.',
+      'JS-browser receives only capabilities that can be implemented honestly on the browser platform.',
+    ],
+    examples: [
+      {
+        bad: "import { Task } from 'sts:async';",
+        good: "import { Task } from 'sts:concurrency/task';",
+      },
+    ],
+    suggestions: [
+      {
+        applicability: 'manual',
+        title: 'Use a supported target capability',
+        message:
+          'Switch to the replacement module when one is provided, or move the target-specific dependency behind an explicit host boundary.',
+      },
+    ],
+  },
+  SOUND1043: {
+    code: 'SOUND1043',
+    title: 'Extern import boundary is invalid',
+    summary:
+      '`extern:*` imports must be named `// #[interop]` imports backed by included ambient value declarations.',
+    repairHeuristic:
+      'Use a named import from `extern:globalThis` or `extern:global`, add `// #[interop]` immediately above it, and make sure an included `.d.ts` declares the imported ambient value.',
+    details: [
+      '`extern:globalThis` reads properties from `globalThis`; `extern:global` reads true ambient bindings by identifier.',
+      'Default imports, namespace imports, side-effect imports, wildcard exports, and re-exports from `extern:*` are rejected.',
+      'Aliases are allowed, but the imported name must resolve to an included ambient value declaration.',
+    ],
+    examples: [
+      {
+        bad: "import config from 'extern:globalThis';",
+        good: [
+          '// #[interop]',
+          "import { __APP_CONFIG__ as config } from 'extern:globalThis';",
+        ].join('\n'),
+      },
+    ],
+    suggestions: [
+      {
+        applicability: 'manual',
+        title: 'Use a named extern interop import',
+        message:
+          'Replace the invalid extern form with a named `// #[interop]` import, or move the dependency behind a concrete host module.',
       },
     ],
   },
@@ -950,13 +1038,13 @@ const DIAGNOSTIC_REFERENCES = {
     examples: [
       {
         bad: [
-          '// #[extern]',
-          '// #[extern]',
-          'declare const envName: string;',
+          '// #[unsafe]',
+          '// #[unsafe]',
+          'const envName = readEnv();',
         ].join('\n'),
         good: [
-          '// #[extern]',
-          'declare const envName: string;',
+          '// #[unsafe]',
+          'const envName = readEnv();',
         ].join('\n'),
       },
     ],
@@ -975,18 +1063,18 @@ const DIAGNOSTIC_REFERENCES = {
     summary:
       'The annotation was attached to a declaration or statement shape that does not support it.',
     repairHeuristic:
-      'Move the annotation to the syntax shape it actually belongs to. `#[interop]` belongs on import-like boundaries, `#[extern]` on same-file ambient runtime declarations, `#[unsafe]` on local proof overrides, and `#[variance(...)]` on generic interfaces or type aliases.',
+      'Move the annotation to the syntax shape it actually belongs to. `#[interop]` belongs on import-like boundaries, `#[unsafe]` on local proof overrides, and `#[variance(...)]` on generic interfaces or type aliases.',
     details: [
       '`// #[interop]` is for import-like boundaries. `// #[unsafe]` is for local proof-override sites.',
-      '`// #[extern]` is for same-file ambient runtime declarations. `// #[variance(...)]` is only for generic interfaces and type aliases.',
-      '`// #[extern]` does not bless ambient predicate or assertion signatures, including extern-backed values whose callable or member surfaces would act as unchecked proof oracles.',
+      '`// #[variance(...)]` is only for generic interfaces and type aliases.',
+      '`#[extern]` has been removed; app/embedder ambient values now use `extern:*` imports behind `// #[interop]`.',
       'The checker records both the expected target family and the actual syntax node so tools can tell you exactly which annotation to move and where it belongs.',
     ],
     examples: [
       {
         bad: [
-          '// #[extern]',
-          'import { value } from "./lib.ts";',
+          '// #[interop]',
+          'const value = readHostValue();',
         ].join('\n'),
         good: [
           '// #[interop]',
@@ -999,7 +1087,7 @@ const DIAGNOSTIC_REFERENCES = {
         applicability: 'manual',
         title: 'Move the annotation to a supported site',
         message:
-          'Attach `// #[interop]` to the import boundary itself, `// #[unsafe]` to the proof-override site, `// #[extern]` to the local ambient declaration, or `// #[variance(...)]` to the generic interface or type alias.',
+          'Attach `// #[interop]` to the import boundary itself, `// #[unsafe]` to the proof-override site, or `// #[variance(...)]` to the generic interface or type alias.',
       },
     ],
   },
@@ -1016,8 +1104,8 @@ const DIAGNOSTIC_REFERENCES = {
     ],
     examples: [
       {
-        bad: '// #[extern(foo)]',
-        good: '// #[extern]',
+        bad: '// #[unsafe(reason: "manual proof")]',
+        good: '// #[unsafe]',
       },
     ],
     suggestions: [
@@ -1031,31 +1119,32 @@ const DIAGNOSTIC_REFERENCES = {
   },
   SOUND1029: {
     code: 'SOUND1029',
-    title: 'Ambient runtime declarations require `#[extern]`',
+    title: 'Ambient runtime declarations are not allowed in `.sts`',
     summary:
-      'A local ambient runtime declaration in a soundscript file must be explicitly marked as an extern boundary.',
+      'A local ambient runtime declaration in a soundscript file must move behind an explicit import boundary.',
     repairHeuristic:
-      'Mark same-file ambient runtime declarations with `// #[extern]` immediately above the declaration, or replace the declaration with a real implementation.',
+      'Move ambient values to an included `.d.ts` file and import them through `extern:globalThis` or `extern:global` with `// #[interop]`, or replace the declaration with a real implementation.',
     details: [
-      'Use `// #[extern]` only for same-file runtime-provided declarations such as host globals or compiler-injected helpers.',
+      'Same-file `declare const`, `declare function`, and `declare class` runtime values are not part of the checked `.sts` surface.',
+      '`extern:*` imports make the value boundary explicit while still inferring from included ambient declarations.',
       'The marker does not legalize other banned ambient forms such as `declare global`, `declare module`, `declare namespace`, or `declare enum`.',
-      'The diagnostic metadata includes the declaration kind and declared name so tools can point directly at the missing boundary.',
+      'The diagnostic metadata includes the declaration kind and declared name so tools can point directly at the unsupported declaration.',
     ],
     examples: [
       {
         bad: 'declare const envName: string;',
         good: [
-          '// #[extern]',
-          'declare const envName: string;',
+          '// #[interop]',
+          "import { envName } from 'extern:globalThis';",
         ].join('\n'),
       },
     ],
     suggestions: [
       {
         applicability: 'manual',
-        title: 'Mark the local extern boundary',
+        title: 'Move to an explicit extern import',
         message:
-          'Add `// #[extern]` immediately above the declaration, or replace the declaration with a real implementation.',
+          'Move the ambient declaration to `.d.ts` and import the value through `extern:*`, or replace the declaration with a real implementation.',
       },
     ],
   },
@@ -1065,10 +1154,10 @@ const DIAGNOSTIC_REFERENCES = {
     summary:
       'Declaration-only runtime values cannot be published from `.sts` files because they invent exports with no implementation.',
     repairHeuristic:
-      'Either remove the export and keep the declaration as a same-file extern, or move the declaration-only surface to `.d.ts`. If the symbol is meant to be exported from `.sts`, replace the declaration with a real implementation.',
+      'Move the declaration-only surface to `.d.ts`. If the symbol is meant to be exported from `.sts`, replace the declaration with a real implementation.',
     details: [
       'Move declaration-only exports to `.d.ts`, or provide a real `.sts` or `.ts` implementation instead.',
-      'Keep `// #[extern]` for local same-file runtime names only; it does not turn an exported declaration-only surface into a real module implementation.',
+      '`extern:*` imports are local value boundaries and are not a way to publish declaration-only module surfaces.',
     ],
     examples: [
       {
@@ -1084,8 +1173,7 @@ const DIAGNOSTIC_REFERENCES = {
       {
         applicability: 'manual',
         title: 'Move the surface to `.d.ts` or implement it',
-        message:
-          'Keep `// #[extern]` for local same-file externs only; exported declaration-only surfaces belong in `.d.ts` or in real runtime code.',
+        message: 'Exported declaration-only surfaces belong in `.d.ts` or in real runtime code.',
       },
     ],
   },

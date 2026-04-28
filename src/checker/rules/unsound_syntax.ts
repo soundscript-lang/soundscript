@@ -248,8 +248,10 @@ function createAmbientRuntimeRequiresExternDiagnostic(
 ): SoundDiagnostic {
   const diagnosticNode = getAmbientRuntimeDeclarationDiagnosticNode(declarationNode);
   const info = getAmbientRuntimeDeclarationInfo(declarationNode);
-  const example =
-    'Add `// #[extern]` immediately above the declaration, or replace the declaration with a real implementation.';
+  const example = [
+    '// #[interop]',
+    "import { __APP_CONFIG__ as config } from 'extern:globalThis';",
+  ].join('\n');
 
   return createDiagnostic(
     diagnosticNode,
@@ -257,28 +259,28 @@ function createAmbientRuntimeRequiresExternDiagnostic(
     SOUND_DIAGNOSTIC_MESSAGES.ambientRuntimeDeclarationRequiresExtern,
     {
       metadata: {
-        rule: 'ambient_runtime_requires_extern',
+        rule: 'ambient_runtime_requires_import_boundary',
         primarySymbol: info.name,
         fixability: 'boundary_annotation',
         invariant:
-          'Declaration-only runtime names in `.sts` files must be marked as explicit extern boundaries instead of looking like ordinary checked implementations.',
-        replacementFamily: 'site_local_extern_boundary',
+          'Declaration-only runtime names in `.sts` files must cross an explicit import boundary instead of being declared locally.',
+        replacementFamily: 'extern_import_boundary',
         evidence: [
           { label: 'declarationKind', value: info.kind },
           ...(info.name ? [{ label: 'declarationName', value: info.name }] : []),
         ],
         counterexample:
-          'Without `#[extern]`, a declaration-only runtime name looks like ordinary checked soundscript even though there is no local implementation.',
+          'A same-file ambient declaration gives the identifier a local declaration while the host value still comes from outside checked soundscript.',
         example,
       },
       notes: [
         `This local ambient runtime declaration introduces \`${
           info.name ?? 'this name'
-        }\` without a site-local extern boundary.`,
+        }\` without an explicit import boundary.`,
         `Example: ${example}`,
       ],
       hint:
-        "Use '// #[extern]' only for local runtime-provided declarations, or replace the declaration with a real implementation.",
+        'Move the ambient declaration to `.d.ts` and import the value through `extern:*`, or replace it with a real implementation.',
     },
   );
 }
@@ -288,7 +290,7 @@ function createAmbientRuntimeExportDiagnostic(
 ): SoundDiagnostic {
   const declarationInfo = getAmbientRuntimeDeclarationInfo(info.declarationNode);
   const example =
-    "Move the declaration to '.d.ts', keep it local with `// #[extern]`, or replace it with a real implementation.";
+    "Move the declaration to '.d.ts' and expose values through explicit imports, or replace it with a real implementation.";
 
   return createDiagnostic(
     info.diagnosticNode,
@@ -300,7 +302,7 @@ function createAmbientRuntimeExportDiagnostic(
         primarySymbol: declarationInfo.name,
         fixability: 'api_redesign',
         invariant:
-          'Declaration-only runtime names may stay local extern boundaries, but they may not become exported checked module surfaces without implementations.',
+          'Declaration-only runtime names may not become exported checked module surfaces without implementations.',
         replacementFamily: 'ambient_surface_split_or_real_implementation',
         evidence: [
           { label: 'declarationKind', value: declarationInfo.kind },
@@ -319,8 +321,7 @@ function createAmbientRuntimeExportDiagnostic(
         }\` from a soundscript module even though there is no local implementation.`,
         `Example: ${example}`,
       ],
-      hint:
-        "Keep declaration-only runtime names local with '// #[extern]', move exported declaration-only surfaces to '.d.ts', or provide a real implementation.",
+      hint: "Move exported declaration-only surfaces to '.d.ts' or provide a real implementation.",
     },
   );
 }
@@ -548,14 +549,6 @@ function isDefinitelyStringType(
   type: ts.Type,
 ): boolean {
   return getPrimitiveFamily(checker, type) === 'string';
-}
-
-function isDefinitelyNumericType(
-  checker: ts.TypeChecker,
-  type: ts.Type,
-): boolean {
-  const family = getPrimitiveFamily(checker, type);
-  return family === 'number' || family === 'bigint';
 }
 
 function isDefinitelyNumberType(
@@ -1258,10 +1251,6 @@ function isAmbientRuntimeDeclarationReexported(
   return false;
 }
 
-function hasExternDirective(context: AnalysisContext, node: ts.Node): boolean {
-  return context.getAnnotationLookup(node.getSourceFile()).hasAttachedAnnotation(node, 'extern');
-}
-
 function isAmbientRuntimeDeclarationExported(node: AmbientRuntimeDeclarationNode): boolean {
   return hasModifier(node, ts.SyntaxKind.ExportKeyword) ||
     hasModifier(node, ts.SyntaxKind.DefaultKeyword);
@@ -1362,10 +1351,6 @@ function getAmbientRuntimeRequiresExternDeclarationNode(
     isAmbientRuntimeDeclarationExported(declarationNode) ||
     isAmbientRuntimeDeclarationReexported(context, declarationNode)
   ) {
-    return undefined;
-  }
-
-  if (hasExternDirective(context, declarationNode)) {
     return undefined;
   }
 
