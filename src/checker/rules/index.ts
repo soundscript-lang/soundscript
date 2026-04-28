@@ -5,6 +5,7 @@ import { measureCheckerTiming } from '../timing.ts';
 import { runAmbientHostValueRules } from './ambient_host_values.ts';
 import { runAnnotationValidationRules } from './directive_validation.ts';
 import { runEffectRules } from './effects.ts';
+import { runExternImportRules } from './extern_imports.ts';
 import { type FlowFileRuleCache, runFlowRules } from './flow.ts';
 import { runNamespaceObjectRules } from './namespace_object.ts';
 import { runNullPrototypeRules } from './null_prototype.ts';
@@ -165,6 +166,7 @@ export function runSoundAnalysis(
   const diagnostics = [
     ...runTimedSoundRule('directiveValidation', context, runAnnotationValidationRules),
     ...runTimedSoundRule('targetCapabilities', context, runTargetCapabilityRules),
+    ...runTimedSoundRule('externImports', context, runExternImportRules),
     ...runTimedCachedFileRule(
       'effects',
       context,

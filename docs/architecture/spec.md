@@ -481,10 +481,11 @@ The canonical end-state annotation surface is **site-local only**:
 - `// #[interop]` attached to the immediately following import boundary
 
 Current compiler-visible annotations use this same comment-attached `// #[...]` form rather than
-decorator-like spellings. The implemented builtin surface includes `// #[extern]`, `// #[interop]`,
-`// #[unsafe]`, `// #[variance(...)]`, `// #[newtype]`, and `// #[value]`. Future additions such as
-`// #[effects(...)]`, `// #[noescape]`, and `// #[inline]` should extend that same surface instead
-of inventing a second annotation syntax.
+decorator-like spellings. The implemented builtin surface includes `// #[interop]`, `// #[unsafe]`,
+`// #[effects(...)]`, `// #[variance(...)]`, `// #[newtype]`, and `// #[value]`. Future additions
+such as `// #[noescape]` and `// #[inline]` should extend that same surface instead of inventing a
+second annotation syntax. `#[extern]` has been removed in favor of explicit `extern:*` imports
+behind `// #[interop]`.
 
 Annotation blocks are not region-scoped. They stay attached to the immediate next supported node
 because broader regions are harder to audit and make it easier for unrelated proof overrides to
@@ -1014,8 +1015,8 @@ Implemented:
   PromiseLike/thenable bans, receiver-sensitive callable extraction/rebinding bans,
   construction-time dispatch and `this` escape bans, field read-before-initialization bans, and the
   main callable-mutation paths that would treat functions as ordinary extensible objects
-- current annotation support includes `#[extern]`, `#[interop]`, `#[unsafe]`, `#[variance(...)]`,
-  `#[newtype]`, and `#[value]`
+- current annotation support includes `#[interop]`, `#[unsafe]`, `#[effects(...)]`,
+  `#[variance(...)]`, `#[newtype]`, and `#[value]`
 - class nominality in soundscript is implemented, `#[newtype]` carries nominal identity through
   projected declarations and relation checks, and `#[value]` is implemented as a restricted class
   form with dedicated checker rules plus JS emit/runtime support

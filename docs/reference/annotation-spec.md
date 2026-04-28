@@ -92,9 +92,9 @@ declaration macro using a reserved builtin name, the import must be aliased befo
 annotation site.
 
 Unknown namespaces are preserved by reflection and ignored by core soundscript behavior unless a
-builtin rule or an imported declaration macro explicitly claims them. This is what allows
-user-space tooling to attach metadata such as `#[openapi.example(...)]` without teaching the core
-checker about every downstream library.
+builtin rule or an imported declaration macro explicitly claims them. This is what allows user-space
+tooling to attach metadata such as `#[openapi.example(...)]` without teaching the core checker about
+every downstream library.
 
 ## Attachment Targets
 
@@ -121,14 +121,14 @@ Builtin directives validate their own target rules:
 - `#[effects(...)]` attaches to callable declarations and callable type members, plus
   function-valued parameters for parameter-local negative contracts
 - `#[interop]` attaches to import boundaries
-- `#[extern]` attaches to local ambient runtime declarations
 - `#[variance(...)]` attaches to generic `interface` or `type alias` declarations
 - `#[newtype]` attaches to `type alias` declarations
 - `#[value]` attaches to class declarations
 - `#[unsafe]` attaches to local proof-override declarations or statements and waives one contiguous
   proof-override chain at the selected site
 
-Using a known annotation on the wrong target is an error.
+Using a known annotation on the wrong target is an error. `#[extern]` has been removed; app/embedder
+ambient values must be imported through `extern:*` modules behind `#[interop]`.
 
 ### `#[effects(...)]`
 
@@ -179,9 +179,9 @@ Current semantic direction:
 - function-valued parameters may use `forbid` only
 - `unknown: [direct]` is valid only on declaration-only callable surfaces and marks the
   declaration's direct effect surface as intentionally unknown
-- overload signatures with an implementation sibling must not carry callable-level or parameter-level
-  `#[effects(...)]`; the implementation declaration is the single effect source of truth for the
-  overload group
+- overload signatures with an implementation sibling must not carry callable-level or
+  parameter-level `#[effects(...)]`; the implementation declaration is the single effect source of
+  truth for the overload group
 - the standard semantic core currently includes `fails`, `fails.throws`, `fails.rejects`, `suspend`,
   `suspend.await`, `suspend.yield`, `mut`, `host`, `host.io`, `host.random`, `host.time`,
   `host.system`, and `host.ffi`
@@ -197,8 +197,8 @@ Current effect-set semantics:
 - overlap is by ancestor/descendant relation, so `forbid: [host]` conflicts with `host.io`,
   `host.node.fs`, `host.browser.dom`, and any other `host.*` effect
 - there is no allow-list or "all except ..." surface in `#[effects(...)]`
-- transitive effects stay honest, so policies like "allow database I/O but forbid other I/O" are
-  not representable today without a different abstraction model
+- transitive effects stay honest, so policies like "allow database I/O but forbid other I/O" are not
+  representable today without a different abstraction model
 
 Current forwarding semantics:
 
@@ -230,8 +230,8 @@ Current failure-discharge rule:
 
 Current declaration-projection note:
 
-- soundscript package declarations, including the shipped `sts:*` stdlib surface, are generated
-  from source and project the checker summary onto the emitted declaration text
+- soundscript package declarations, including the shipped `sts:*` stdlib surface, are generated from
+  source and project the checker summary onto the emitted declaration text
 - that means most bodyful library code should not need hand-authored declaration-only effect
   summaries; the remaining explicit stdlib annotations are primarily host-frontier facades over
   ambient globals

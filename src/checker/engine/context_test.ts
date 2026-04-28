@@ -197,8 +197,8 @@ Deno.test('createAnalysisContext indexes attached annotations and parses annotat
         'import { value } from "./lib";',
         'export const imported = value;',
         '',
-        '// #[extern]',
-        'declare const externalValue: string;',
+        '// #[unsafe]',
+        'const externalValue = "host";',
         '',
         '// #[variance(T: out, E: in)]',
         'export interface Result<T, E> {',
@@ -301,7 +301,7 @@ Deno.test('createAnalysisContext indexes attached annotations and parses annotat
   );
   assertEquals(
     annotations.getAttachedAnnotations(externDeclaration).map((annotation) => annotation.name),
-    ['extern'],
+    ['unsafe'],
   );
   assertEquals(
     annotations.getAttachedAnnotations(interfaceDeclaration).map((annotation) => ({
@@ -314,7 +314,7 @@ Deno.test('createAnalysisContext indexes attached annotations and parses annotat
   );
   assertEquals(annotations.hasAttachedAnnotation(singleLine, 'unsafe'), true);
   assertEquals(annotations.hasAttachedAnnotation(importDeclaration, 'interop'), true);
-  assertEquals(annotations.hasAttachedAnnotation(externDeclaration, 'extern'), true);
+  assertEquals(annotations.hasAttachedAnnotation(externDeclaration, 'unsafe'), true);
   assertEquals(annotations.hasAttachedAnnotation(interfaceDeclaration, 'variance'), true);
 });
 
@@ -345,7 +345,7 @@ Deno.test('createAnalysisContext only parses annotations from real comments and 
         '`;',
         '',
         'export const embeddedExtern = `',
-        '// #[extern]',
+        '// #[unsafe]',
         'not a real annotation either',
         '`;',
         '',

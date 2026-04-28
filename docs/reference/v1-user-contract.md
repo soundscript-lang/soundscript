@@ -125,14 +125,11 @@ For foreign boundaries, the stable rule is:
 - after a trusted boundary read, the extracted value is used as typed
 - namespace objects themselves are still not ordinary values and may not be stored or forwarded
 
-For local runtime-provided declarations inside sound code, the stable rule is:
+For app/embedder ambient values, the stable rule is:
 
-- same-file ambient runtime declarations such as `declare const`, `declare let`, `declare var`,
-  `declare function`, and `declare class` require a site-local `// #[extern]` marker
-- `// #[extern]` is separate from `// #[interop]` and `// #[unsafe]`: it marks a local
-  extern/runtime boundary, not an import boundary or proof override
-- `// #[extern]` does not legalize ambient proof oracles such as predicate or assertion signatures,
-  including the same surfaces hidden inside extern-backed object or class types
+- ambient value declarations live in included `.d.ts` files, not same-file `.sts` declarations
+- values cross into `.sts` through `extern:globalThis` or `extern:global` named imports
+- every `extern:*` import requires `// #[interop]`
 - ambient runtime declarations may not be exported from `.sts`; declaration-only exported surfaces
   belong in `.d.ts`
 

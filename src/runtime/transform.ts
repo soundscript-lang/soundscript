@@ -7,6 +7,10 @@ import {
   normalizeValueSemanticsInSourceText,
 } from '../frontend/value_normalization.ts';
 import { builtinRuntimeImportSpecifier } from '../project/soundscript_runtime_specifiers.ts';
+import {
+  EXTERN_GLOBAL_THIS_MODULE_SPECIFIER,
+  isExternModuleSpecifier,
+} from '../frontend/extern_module_support.ts';
 
 import {
   composeRewrittenSourceMapToOriginal,
@@ -158,13 +162,113 @@ function rewriteRuntimeModuleSpecifiers(
   return rewritten;
 }
 
+function isIdentifierText(text: string): boolean {
+  return /^[$A-Z_a-z][$\w]*$/u.test(text);
+}
+
+function externBindingExpression(specifier: string, importedName: string): string {
+  if (specifier !== EXTERN_GLOBAL_THIS_MODULE_SPECIFIER) {
+    return importedName;
+  }
+
+  return isIdentifierText(importedName)
+    ? `globalThis.${importedName}`
+    : `globalThis[${JSON.stringify(importedName)}]`;
+}
+
+function rewriteExternImportStatement(
+  sourceFile: ts.SourceFile,
+  statement: ts.ImportDeclaration,
+): string | undefined {
+  if (
+    !ts.isStringLiteralLike(statement.moduleSpecifier) ||
+    !isExternModuleSpecifier(statement.moduleSpecifier.text)
+  ) {
+    return undefined;
+  }
+
+  if (statement.importClause?.isTypeOnly) {
+    return '';
+  }
+
+  const namedBindings = statement.importClause?.namedBindings;
+  if (!namedBindings || !ts.isNamedImports(namedBindings)) {
+    return statement.getText(sourceFile);
+  }
+
+  const moduleSpecifier = statement.moduleSpecifier.text;
+  const declarations = namedBindings.elements
+    .filter((element) => !element.isTypeOnly)
+    .map((element) => {
+      const importedNameNode = element.propertyName ?? element.name;
+      const importedName = ts.isIdentifier(importedNameNode) ||
+          ts.isStringLiteralLike(importedNameNode)
+        ? importedNameNode.text
+        : element.name.text;
+      const localName = element.name.text;
+      return `const ${localName} = ${
+        externBindingExpression(
+          moduleSpecifier,
+          importedName,
+        )
+      };`;
+    });
+
+  return declarations.join('\n');
+}
+
+function rewriteExternImports(code: string, fileName: string): string {
+  const scriptKind = /\.(?:[cm]?tsx|jsx)$/iu.test(fileName)
+    ? ts.ScriptKind.TSX
+    : /\.(?:[cm]?js)$/iu.test(fileName)
+    ? ts.ScriptKind.JS
+    : ts.ScriptKind.TS;
+  const sourceFile = ts.createSourceFile(
+    fileName,
+    code,
+    ts.ScriptTarget.ES2022,
+    true,
+    scriptKind,
+  );
+  const replacements: Array<{ start: number; end: number; text: string }> = [];
+
+  for (const statement of sourceFile.statements) {
+    if (!ts.isImportDeclaration(statement)) {
+      continue;
+    }
+
+    const replacementText = rewriteExternImportStatement(sourceFile, statement);
+    if (replacementText === undefined) {
+      continue;
+    }
+
+    replacements.push({
+      start: statement.getFullStart(),
+      end: statement.getEnd(),
+      text: replacementText,
+    });
+  }
+
+  if (replacements.length === 0) {
+    return code;
+  }
+
+  let rewritten = code;
+  for (const replacement of replacements.sort((left, right) => right.start - left.start)) {
+    rewritten = `${rewritten.slice(0, replacement.start)}${replacement.text}${
+      rewritten.slice(replacement.end)
+    }`;
+  }
+  return rewritten;
+}
+
 export function rewriteModuleSpecifiersForEmit(
   sourceText: string,
   fileName: string,
   options: { moduleSpecifierMode?: ModuleSpecifierMode } = {},
 ): string {
   return rewriteRuntimeModuleSpecifiers(
-    sourceText,
+    rewriteExternImports(sourceText, fileName),
     fileName,
     options.moduleSpecifierMode ?? 'emit-js',
   );
@@ -329,7 +433,7 @@ function normalizeTranspiledMap(
   map.sources = [sourcePath];
   map.sourcesContent = [sourceText];
   const rewrittenCode = rewriteRuntimeModuleSpecifiers(
-    transpiled.outputText,
+    rewriteExternImports(transpiled.outputText, sourcePath),
     sourcePath,
     moduleSpecifierMode,
   );
@@ -376,7 +480,7 @@ export function emitPreparedSoundscriptModuleDirect(
     options.valueProgram,
   );
   const rewrittenCode = rewriteRuntimeModuleSpecifiers(
-    runtimePreparedFile.rewrittenText,
+    rewriteExternImports(runtimePreparedFile.rewrittenText, sourceFileName),
     sourceFileName,
     options.moduleSpecifierMode ?? 'emit-js',
   );
@@ -414,7 +518,7 @@ export function transpilePreparedSoundscriptModuleToEsm(
   );
 
   const rewrittenCode = rewriteRuntimeModuleSpecifiers(
-    transpiled.outputText,
+    rewriteExternImports(transpiled.outputText, sourceFileName),
     sourceFileName,
     options.moduleSpecifierMode ?? 'emit-js',
   );
@@ -438,7 +542,7 @@ export function emitTypeScriptModuleDirect(
   options: RuntimeTranspileOptions = {},
 ): RuntimeTransformArtifact {
   const rewrittenCode = rewriteRuntimeModuleSpecifiers(
-    sourceText,
+    rewriteExternImports(sourceText, sourceFileName),
     sourceFileName,
     options.moduleSpecifierMode ?? 'emit-js',
   );

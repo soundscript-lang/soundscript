@@ -534,7 +534,10 @@ function getProjectContext(
         workingDirectory: dirname(projectPath),
         fileOverrides: toFileOverrideMap(documents),
       },
-      { deferTypescriptView: mode === 'sts-local' },
+      {
+        deferTypescriptView: mode === 'sts-local',
+        forceTypescriptView: mode === 'full',
+      },
       canReusePreparedProject ? reusableContext.preparedProject : undefined,
     ),
   };
@@ -2502,44 +2505,6 @@ function createAddInteropCodeAction(
       changes: {
         [uri]: [{
           newText: `${indentation}// #[interop]\n`,
-          range: {
-            start: { line, character: 0 },
-            end: { line, character: 0 },
-          },
-        }],
-      },
-    },
-  };
-}
-
-function createAddExternCodeAction(
-  uri: string,
-  diagnostic: CodeActionDiagnosticInput,
-  text: string,
-): CodeAction | undefined {
-  if (diagnostic.code !== 'SOUND1029') {
-    return undefined;
-  }
-
-  const line = diagnostic.range?.start.line;
-  if (line === undefined) {
-    return undefined;
-  }
-
-  const lines = documentLineTexts(text);
-  const lineText = lines[line];
-  if (lineText === undefined) {
-    return undefined;
-  }
-
-  const indentation = lineIndentation(lineText);
-  return {
-    title: 'Add #[extern] boundary',
-    kind: 'quickfix',
-    edit: {
-      changes: {
-        [uri]: [{
-          newText: `${indentation}// #[extern]\n`,
           range: {
             start: { line, character: 0 },
             end: { line, character: 0 },
@@ -4543,14 +4508,6 @@ const BUILTIN_ANNOTATION_HOVER_DETAILS: Readonly<
     readonly syntax: string;
   }>
 > = {
-  extern: {
-    summary: 'Marks a local ambient runtime declaration as an explicit extern boundary.',
-    syntax: '// #[extern]',
-    details: [
-      'Use `#[extern]` only for same-file runtime-provided declarations such as host globals or compiler-injected helpers.',
-      'This attaches to local ambient declarations, not to ordinary imports.',
-    ],
-  },
   interop: {
     summary: 'Marks an import-like boundary where unsound foreign values enter soundscript.',
     syntax: '// #[interop]',
@@ -7623,11 +7580,6 @@ export function codeActionsOpenDocument(
       const interopAction = createAddInteropCodeAction(uri, filePath, diagnostic, text, session);
       if (interopAction) {
         actions.push(interopAction);
-      }
-
-      const externAction = createAddExternCodeAction(uri, diagnostic, text);
-      if (externAction) {
-        actions.push(externAction);
       }
 
       const unsupportedFeatureAction = createUnsupportedFeatureRewriteCodeAction(

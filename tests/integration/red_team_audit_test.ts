@@ -10638,19 +10638,21 @@ Deno.test('red-team: cached effect summaries track member-path forwarded callbac
 Deno.test('red-team: cached effect summaries track rewrite forwarded effect drift', async () => {
   const createIndexSource = (rewriteForwardedFails: boolean): string =>
     [
-      '// #[extern]',
       '// #[effects(add: [fails.throws])]',
-      'declare function parseJson(): unknown;',
+      'function parseJson(): unknown {',
+      '  return JSON.parse(\'{"ok": true}\');',
+      '}',
       '',
-      '// #[extern]',
       rewriteForwardedFails
         ? '// #[effects(forward: [{ from: callback, rewrite: [{ from: fails, to: fails.rejects }] }])]'
         : '// #[effects(forward: [callback])]',
-      'declare function toPromise(callback: () => unknown): Promise<unknown>;',
+      'function wrapCallback(callback: () => unknown): unknown {',
+      '  return callback();',
+      '}',
       '',
       '// #[effects(forbid: [fails.throws])]',
-      'export function run(): Promise<unknown> {',
-      '  return toPromise(parseJson);',
+      'export function run(): unknown {',
+      '  return wrapCallback(parseJson);',
       '}',
       '',
     ].join('\n');

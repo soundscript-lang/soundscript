@@ -4533,8 +4533,10 @@ Deno.test('expandPreparedProgramWithLoadedModules composes Try control-flow rewr
 Deno.test('Try macro keeps preceding annotation comments out of the expanded operand text', async () => {
   const { printed } = await expandWithBuiltins([
     "import { type Result, ok } from 'sts:prelude';",
-    '// #[extern]',
-    'declare function fetchValue(): Result<number, string>;',
+    '// #[unsafe]',
+    'function fetchValue(): Result<number, string> {',
+    '  return ok(1);',
+    '}',
     '',
     'function compute(): Result<number, string> {',
     '  const value = Try(fetchValue());',
@@ -4544,7 +4546,7 @@ Deno.test('Try macro keeps preceding annotation comments out of the expanded ope
   ].join('\n'));
 
   assertStringIncludes(printed, 'const __sts_attempt_1_1 = fetchValue();');
-  assertEquals(printed.includes('fetchValue( // #[extern]'), false);
+  assertEquals(printed.includes('fetchValue( // #[unsafe]'), false);
 });
 
 Deno.test('Try macro rewrites assignment-statement sites through the public advanced path', async () => {

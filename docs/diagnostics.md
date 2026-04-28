@@ -6,20 +6,20 @@ CLI, checker, frontend, and compiler.
 ## SOUND1001
 
 `any` is banned in soundscript. Replace it with a concrete type, `unknown`, or an explicit boundary
-that validates incoming data.
-Keep foreign or uncertain data as `unknown` until validation proves the precise type you want.
+that validates incoming data. Keep foreign or uncertain data as `unknown` until validation proves
+the precise type you want.
 
 ## SOUND1002
 
-Unchecked type assertions are banned in soundscript. Narrow with runtime checks instead of `as`.
-At boundaries, prefer a validator or interop wrapper that returns the target type honestly.
+Unchecked type assertions are banned in soundscript. Narrow with runtime checks instead of `as`. At
+boundaries, prefer a validator or interop wrapper that returns the target type honestly.
 `// #[unsafe]` can waive one local proof-override chain, but it still does not legalize
 checker-reset bridge casts such as `unknown -> T`, `as unknown as T`, or `as any as T`.
 
 ## SOUND1003
 
-Non-null assertions are banned in soundscript. Prove non-nullness with control flow before use.
-Use an explicit check, early return, throw, or fallback instead of discarding nullability with `!`.
+Non-null assertions are banned in soundscript. Prove non-nullness with control flow before use. Use
+an explicit check, early return, throw, or fallback instead of discarding nullability with `!`.
 
 ## SOUND1004
 
@@ -47,23 +47,23 @@ carry any checked semantics.
 
 ## SOUND1017
 
-A user-defined type guard or assertion does not prove the predicate it declares.
-Make the body prove the claimed predicate on every `true` path, or return `boolean` and narrow at
-the call site if the target is not one soundscript can verify directly.
+A user-defined type guard or assertion does not prove the predicate it declares. Make the body prove
+the claimed predicate on every `true` path, or return `boolean` and narrow at the call site if the
+target is not one soundscript can verify directly.
 
 ## SOUND1018
 
-An overload implementation does not satisfy all of its declared signatures.
-Every overload is a promise to callers, so the shared body has to return results that match each
-declared overload honestly. Broaden the implementation signature if needed, then branch inside the
-body so each overload path returns the result type it promised.
+An overload implementation does not satisfy all of its declared signatures. Every overload is a
+promise to callers, so the shared body has to return results that match each declared overload
+honestly. Broaden the implementation signature if needed, then branch inside the body so each
+overload path returns the result type it promised.
 
 ## SOUND1019
 
 An assignment depends on an assignability relation that soundscript treats as unsound. Common
 examples include mutable array variance, callable parameter variance, and widening a value to an
-unrelated class target that only matches structurally.
-For the most common before/after fixes, see the `Common Rewrites` guide.
+unrelated class target that only matches structurally. For the most common before/after fixes, see
+the `Common Rewrites` guide.
 
 ## SOUND1020
 
@@ -71,23 +71,22 @@ Earlier narrowing was invalidated by aliasing, mutation, callback escape, or sus
 the value after the invalidating boundary instead of carrying the earlier proof forward. When the
 value is already a stable primitive or immutable snapshot, copy it into a fresh local before the
 boundary and use that local afterward instead. The structured metadata for this diagnostic names the
-narrowed value, boundary kind, invalidating expression, and earlier proof site.
-For the most common before/after fixes, see the `Common Rewrites` guide.
+narrowed value, boundary kind, invalidating expression, and earlier proof site. For the most common
+before/after fixes, see the `Common Rewrites` guide.
 
 ## SOUND1021
 
 Prototype-surgery null-prototype creation is banned in soundscript. The modeled `BareObject` path
 for `Object.create(null)` remains separate. Prefer `Object.create(null)` plus `BareObject` when you
-really need a null-prototype value, or use an ordinary object or `Map` instead of prototype
-surgery.
+really need a null-prototype value, or use an ordinary object or `Map` instead of prototype surgery.
 
 ## SOUND1022
 
 The primary diagnostic message names the exact unsupported JavaScript or TypeScript feature and
 usually includes a hint for a supported alternative. Common examples include truthiness-based
-control flow, reflective APIs, prototype mutation, sparse arrays, and similar hazard-prone
-surfaces. Replace the unsupported construct with the smaller explicit pattern soundscript expects,
-such as `===` instead of loose equality or an explicit null check instead of truthiness narrowing.
+control flow, reflective APIs, prototype mutation, sparse arrays, and similar hazard-prone surfaces.
+Replace the unsupported construct with the smaller explicit pattern soundscript expects, such as
+`===` instead of loose equality or an explicit null check instead of truthiness narrowing.
 
 ## SOUND1023
 
@@ -101,14 +100,13 @@ unchecked assumption to an explicit interop or extern boundary.
 
 An exotic object value is being widened to a plain object surface that soundscript treats as unsafe.
 Common examples include null-prototype values, module namespace objects, and typed arrays/DataView.
-Keep the precise non-ordinary type when you need its semantics, or project immediately to the
-member or wrapper you actually need instead of widening to plain `object`.
+Keep the precise non-ordinary type when you need its semantics, or project immediately to the member
+or wrapper you actually need instead of widening to plain `object`.
 
 ## SOUND1025
 
-Only `Error` values may be thrown in soundscript.
-Wrap strings, plain objects, or other payloads with `new Error(...)` or a concrete `Error`
-subclass before throwing.
+Only `Error` values may be thrown in soundscript. Wrap strings, plain objects, or other payloads
+with `new Error(...)` or a concrete `Error` subclass before throwing.
 
 ## SOUND1026
 
@@ -119,10 +117,10 @@ occurrence count so tooling can safely remove the extra entry.
 ## SOUND1027
 
 An annotation was attached to a declaration or statement shape that does not support it.
-`// #[interop]` belongs on import-like boundaries, `// #[unsafe]` on local proof-override sites,
-`// #[extern]` on same-file ambient runtime declarations, and `// #[variance(...)]` on generic
-interfaces or type aliases. The diagnostic metadata names both the expected target family and the
-actual syntax node to make automated fixes easier.
+`// #[interop]` belongs on import-like boundaries, `// #[unsafe]` on local proof-override sites, and
+`// #[variance(...)]` on generic interfaces or type aliases. The diagnostic metadata names both the
+expected target family and the actual syntax node to make automated fixes easier. `#[extern]` has
+been removed; app/embedder ambient values now use `extern:*` imports behind `// #[interop]`.
 
 ## SOUND1028
 
@@ -132,30 +130,59 @@ builtin surface here: it accepts either the bare form or `// #[value(deep: true)
 
 ## SOUND1029
 
-Local ambient runtime declarations in `.sts` require a site-local `// #[extern]` marker.
-Use it only for same-file runtime-provided names such as host globals or compiler-injected
-helpers. If the declaration should be ordinary checked code, replace it with a real
+Local ambient runtime declarations in `.sts` are not supported. Move ambient value/type declarations
+to an included `.d.ts` file, then import the value through `extern:globalThis` or `extern:global`
+behind `// #[interop]`. If the declaration should be ordinary checked code, replace it with a real
 implementation instead.
 
 ## SOUND1030
 
 Ambient runtime declarations may not be exported from `.sts`. Use `.d.ts` for declaration-only
-exports, or provide a real implementation. `// #[extern]` stays local; it does not turn an exported
-declaration-only surface into a real module implementation. Remove the export when the declaration
-is only local, or move the declaration-only contract to `.d.ts` if the symbol is part of the
-published type surface.
+exports, or provide a real implementation. Remove the export when the declaration is only local, or
+move the declaration-only contract to `.d.ts` if the symbol is part of the published type surface.
 
 ## SOUND1031
 
 The `// #[variance(...)]` contract is malformed, incomplete, duplicated, or otherwise not a valid
-total declaration contract. Mention every type parameter exactly once with `in`, `out`, `inout`,
-or `independent`, and keep the checked contract on only one merged declaration. The metadata
-records the parse failure or duplicate-contract evidence.
+total declaration contract. Mention every type parameter exactly once with `in`, `out`, `inout`, or
+`independent`, and keep the checked contract on only one merged declaration. The metadata records
+the parse failure or duplicate-contract evidence.
 
 ## SOUND1032
 
 The checked `// #[variance(...)]` contract does not match the declaration variance the checker can
 actually prove from the surface.
+
+## SOUND1039
+
+Ambient host values from DOM, Node, or other declaration files cannot be read directly from `.sts`.
+Import the value through an explicit boundary such as `web:*`, `node:*`, `native:*`, or `extern:*`
+with `// #[interop]`. Ambient `.d.ts` files may still provide the type information behind that
+boundary.
+
+## SOUND1040
+
+Effects annotations must use the supported contract shape for their target. Use `add`, `forbid`, and
+`forward` only on supported callable or callback-parameter sites, and keep forwarding references
+rooted in real parameters.
+
+## SOUND1041
+
+An effect `forbid` contract does not match the implementation or callback argument flow. Remove the
+forbidden effect, tighten the callback argument, or relax the contract to match the callable’s real
+effect surface.
+
+## SOUND1042
+
+The selected target cannot provide the imported stdlib or host capability. Use the replacement
+module named in the diagnostic metadata, select a runtime target that supports the capability, or
+move the dependency behind a target-specific boundary.
+
+## SOUND1043
+
+`extern:*` imports must be explicit named `// #[interop]` imports backed by included ambient value
+declarations. Default imports, namespace imports, side-effect imports, and re-exports are rejected;
+missing ambient names should be added to `.d.ts` or replaced with a concrete host import.
 
 ## SOUND1034
 
@@ -167,26 +194,25 @@ thenable, awaited thenable, Promise subclass, or a `Promise.resolve` normalizati
 
 ## SOUND1035
 
-Receiver-sensitive callables cannot become ordinary first-class values in soundscript.
-Keep the call in member form like `obj.method()`, or wrap it in a lambda that preserves the
-original receiver instead of extracting the method itself. The metadata records the receiver type
-and member name so tooling can synthesize wrapper suggestions like `() => obj.method()`.
+Receiver-sensitive callables cannot become ordinary first-class values in soundscript. Keep the call
+in member form like `obj.method()`, or wrap it in a lambda that preserves the original receiver
+instead of extracting the method itself. The metadata records the receiver type and member name so
+tooling can synthesize wrapper suggestions like `() => obj.method()`.
 
 ## SOUND1036
 
-Construction-time dispatch and `this` escape are not allowed before construction completes.
-This includes calling `this.method()`, `super.method()`, reading accessors during construction,
-passing `this` to helpers, or returning/storing aliases that let partially initialized instances
-escape early. The metadata records the specific hazard kind, such as receiver dispatch or tracked
-`this` escape, so diagnostics can explain the exact construction hazard instead of only naming the
-rule.
+Construction-time dispatch and `this` escape are not allowed before construction completes. This
+includes calling `this.method()`, `super.method()`, reading accessors during construction, passing
+`this` to helpers, or returning/storing aliases that let partially initialized instances escape
+early. The metadata records the specific hazard kind, such as receiver dispatch or tracked `this`
+escape, so diagnostics can explain the exact construction hazard instead of only naming the rule.
 
 ## SOUND1033
 
 Builtin directive names win in annotation position. If an imported annotation macro uses the same
-binding name, such as `variance`, alias the import and use that alias in the annotation instead.
-The metadata includes the builtin name, import specifier, and conflicting binding so tools can
-offer a safe alias rewrite.
+binding name, such as `variance`, alias the import and use that alias in the annotation instead. The
+metadata includes the builtin name, import specifier, and conflicting binding so tools can offer a
+safe alias rewrite.
 
 ## SOUND1037
 

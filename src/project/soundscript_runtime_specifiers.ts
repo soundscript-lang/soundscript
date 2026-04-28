@@ -39,6 +39,8 @@ export const STS_THUNK_MODULE_SPECIFIER = STS_EXPERIMENTAL_THUNK_MODULE_SPECIFIE
 export const STS_NUMERICS_MODULE_SPECIFIER = 'sts:numerics';
 export const STS_MACROS_MODULE_SPECIFIER = 'sts:macros';
 export const WEB_DOM_MODULE_SPECIFIER = 'web:dom';
+export const EXTERN_GLOBAL_THIS_MODULE_SPECIFIER = 'extern:globalThis';
+export const EXTERN_GLOBAL_MODULE_SPECIFIER = 'extern:global';
 
 export const STS_EXPERIMENTAL_SQL_MODULE_SPECIFIER = 'sts:experimental/sql';
 export const STS_EXPERIMENTAL_CSS_MODULE_SPECIFIER = 'sts:experimental/css';
@@ -136,6 +138,11 @@ const BUILTIN_RUNTIME_MODULE_SPECIFIERS = new Map<string, string>([
 
 export function isSoundscriptProtocolSpecifier(moduleSpecifier: string): boolean {
   return moduleSpecifier.startsWith('sts:');
+}
+
+export function isExternModuleSpecifier(moduleSpecifier: string): boolean {
+  return moduleSpecifier === EXTERN_GLOBAL_THIS_MODULE_SPECIFIER ||
+    moduleSpecifier === EXTERN_GLOBAL_MODULE_SPECIFIER;
 }
 
 export function isBuiltinRuntimeModuleSpecifier(moduleSpecifier: string): boolean {
