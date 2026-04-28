@@ -287,13 +287,9 @@ interface MacroExpansionTimingStats {
   exportLoadMs: number;
   generatedStdlibFiles: number;
   generatedStdlibMs: number;
-  graphCollectDepsMs: number;
   graphCompileFiles: number;
   graphCompileGraphs: number;
-  graphDiagnosticsMs: number;
-  graphEmitMs: number;
   graphCompileMs: number;
-  graphPrepareProgramMs: number;
   importUsageMs: number;
   interopImportCheckMs: number;
   likelyMacroModuleMs: number;
@@ -322,13 +318,9 @@ function createMacroExpansionTimingStats(): MacroExpansionTimingStats {
     exportLoadMs: 0,
     generatedStdlibFiles: 0,
     generatedStdlibMs: 0,
-    graphCollectDepsMs: 0,
     graphCompileFiles: 0,
     graphCompileGraphs: 0,
-    graphDiagnosticsMs: 0,
-    graphEmitMs: 0,
     graphCompileMs: 0,
-    graphPrepareProgramMs: 0,
     importUsageMs: 0,
     interopImportCheckMs: 0,
     likelyMacroModuleMs: 0,
@@ -2785,11 +2777,35 @@ export function createProjectMacroEnvironment(
     );
   }
 
-  function transpileCommonJsMacroArtifact(
+  function emitCommonJsMacroArtifactWithFallback(
+    macroTargetProgram: PreparedProgram,
     sourceFile: ts.SourceFile,
     fileName: string,
     compilerOptions: ts.CompilerOptions,
   ): string {
+    let javaScriptText: string | undefined;
+    const emitResult = macroTargetProgram.program.emit(
+      sourceFile,
+      (_outputFileName: string, text: string) => {
+        javaScriptText = text;
+      },
+      undefined,
+      false,
+    );
+    const emitDiagnostics = emitResult.diagnostics.filter((diagnostic: ts.Diagnostic) =>
+      diagnostic.category === ts.DiagnosticCategory.Error
+    );
+    if (emitDiagnostics.length > 0) {
+      throw createMacroModuleErrorFromDiagnostic(
+        emitDiagnostics[0]!,
+        fileName,
+        `Failed to emit macro module "${fileName}".`,
+      );
+    }
+    if (javaScriptText !== undefined && !/^\s*(?:import|export)\b/mu.test(javaScriptText)) {
+      return javaScriptText;
+    }
+
     const transpiled = ts.transpileModule(sourceFile.text, {
       compilerOptions: {
         ...compilerOptions,
@@ -2813,21 +2829,6 @@ export function createProjectMacroEnvironment(
       );
     }
     return transpiled.outputText;
-  }
-
-  function transpileCommonJsMacroArtifacts(
-    graphSourceFiles: ReadonlyMap<string, ts.SourceFile>,
-    compilerOptions: ts.CompilerOptions,
-  ): Map<string, string> {
-    const javaScriptTexts = new Map<string, string>();
-    for (const [graphFileName, sourceFile] of graphSourceFiles) {
-      javaScriptTexts.set(
-        graphFileName,
-        transpileCommonJsMacroArtifact(sourceFile, graphFileName, compilerOptions),
-      );
-    }
-
-    return javaScriptTexts;
   }
 
   function createMacroTargetBaseHost(): ts.CompilerHost {
@@ -2879,39 +2880,28 @@ export function createProjectMacroEnvironment(
     macroCacheStats.moduleCacheMisses += 1;
 
     const graphCompileStart = performance.now();
-    const dependencySourceTexts = measureActiveMacroTiming(
-      'graphCollectDepsMs',
-      () => collectDependencySourceTextsForCompilation(fileName),
-    );
+    const dependencySourceTexts = collectDependencySourceTextsForCompilation(fileName);
     const graphRootNames = [...dependencySourceTexts.keys()];
     try {
-      const macroTargetProgram = measureActiveMacroTiming(
-        'graphPrepareProgramMs',
-        () =>
-          createPreparedProgram({
-            alwaysAvailableMacroSiteKinds,
-            baseHost: createMacroTargetBaseHost(),
-            configuredSoundscriptFileNames: preparedProgram.configuredSoundscriptFileNames,
-            expansionEnabled: false,
-            options: {
-              ...preparedProgram.options,
-              module: ts.ModuleKind.CommonJS,
-              moduleResolution: ts.ModuleResolutionKind.Node10,
-              noEmit: false,
-              target: ts.ScriptTarget.ES2022,
-            },
-            preserveMacroAuthoring: true,
-            reusableCompilerHostState: macroTargetReuseState,
-            rootNames: graphRootNames,
-            runtime: preparedProgram.runtime,
-          }),
-      );
-      const frontendDiagnostics = measureActiveMacroTiming(
-        'graphDiagnosticsMs',
-        () =>
-          macroTargetProgram.frontendDiagnostics().filter((diagnostic) =>
-            diagnostic.category === 'error'
-          ),
+      const macroTargetProgram = createPreparedProgram({
+        alwaysAvailableMacroSiteKinds,
+        baseHost: createMacroTargetBaseHost(),
+        configuredSoundscriptFileNames: preparedProgram.configuredSoundscriptFileNames,
+        expansionEnabled: false,
+        options: {
+          ...preparedProgram.options,
+          module: ts.ModuleKind.CommonJS,
+          moduleResolution: ts.ModuleResolutionKind.Node10,
+          noEmit: false,
+          target: ts.ScriptTarget.ES2022,
+        },
+        preserveMacroAuthoring: true,
+        reusableCompilerHostState: macroTargetReuseState,
+        rootNames: graphRootNames,
+        runtime: preparedProgram.runtime,
+      });
+      const frontendDiagnostics = macroTargetProgram.frontendDiagnostics().filter((diagnostic) =>
+        diagnostic.category === 'error'
       );
       if (frontendDiagnostics.length > 0) {
         const expansionDisabledDiagnostic = frontendDiagnostics.find((diagnostic) =>
@@ -2941,7 +2931,6 @@ export function createProjectMacroEnvironment(
         );
       }
 
-      const graphSourceFiles = new Map<string, ts.SourceFile>();
       for (const graphFileName of graphRootNames) {
         const sourceFile = macroTargetProgram.program.getSourceFile(
           macroTargetProgram.toProgramFileName(graphFileName),
@@ -2955,16 +2944,10 @@ export function createProjectMacroEnvironment(
           );
         }
 
-        graphSourceFiles.set(graphFileName, sourceFile);
-
-        const tsDiagnostics = measureActiveMacroTiming(
-          'graphDiagnosticsMs',
-          () =>
-            [
-              ...macroTargetProgram.program.getSyntacticDiagnostics(sourceFile),
-              ...macroTargetProgram.program.getSemanticDiagnostics(sourceFile),
-            ].filter((diagnostic) => diagnostic.category === ts.DiagnosticCategory.Error),
-        );
+        const tsDiagnostics = [
+          ...macroTargetProgram.program.getSyntacticDiagnostics(sourceFile),
+          ...macroTargetProgram.program.getSemanticDiagnostics(sourceFile),
+        ].filter((diagnostic) => diagnostic.category === ts.DiagnosticCategory.Error);
         if (tsDiagnostics.length > 0) {
           throw createMacroModuleErrorFromDiagnostic(
             tsDiagnostics[0]!,
@@ -2972,26 +2955,14 @@ export function createProjectMacroEnvironment(
             `Failed to compile macro module "${graphFileName}".`,
           );
         }
-      }
 
-      const emittedArtifacts = measureActiveMacroTiming(
-        'graphEmitMs',
-        () =>
-          transpileCommonJsMacroArtifacts(
-            graphSourceFiles,
-            macroTargetProgram.options,
-          ),
-      );
-      for (const graphFileName of graphRootNames) {
-        const javaScriptText = emittedArtifacts.get(graphFileName);
-        if (javaScriptText === undefined) {
-          throw createMacroModuleError(
-            graphFileName,
-            sourceTextForMacroModule(graphFileName),
-            `Failed to emit macro module "${graphFileName}".`,
-            'SOUNDSCRIPT_MACRO_EXPANSION',
-          );
-        }
+        const javaScriptText = emitCommonJsMacroArtifactWithFallback(
+          macroTargetProgram,
+          sourceFile,
+          graphFileName,
+          macroTargetProgram.options,
+        );
+
         const artifact: CachedMacroModuleArtifactEntry = {
           dependencySourceTexts,
           javaScriptText,
@@ -3916,13 +3887,9 @@ export function createProjectMacroEnvironment(
             exportLoadMs: Number(expansionTimingStats.exportLoadMs.toFixed(1)),
             generatedStdlibFiles: expansionTimingStats.generatedStdlibFiles,
             generatedStdlibMs: Number(expansionTimingStats.generatedStdlibMs.toFixed(1)),
-            graphCollectDepsMs: Number(expansionTimingStats.graphCollectDepsMs.toFixed(1)),
             graphCompileFiles: expansionTimingStats.graphCompileFiles,
             graphCompileGraphs: expansionTimingStats.graphCompileGraphs,
-            graphDiagnosticsMs: Number(expansionTimingStats.graphDiagnosticsMs.toFixed(1)),
-            graphEmitMs: Number(expansionTimingStats.graphEmitMs.toFixed(1)),
             graphCompileMs: Number(expansionTimingStats.graphCompileMs.toFixed(1)),
-            graphPrepareProgramMs: Number(expansionTimingStats.graphPrepareProgramMs.toFixed(1)),
             importUsageMs: Number(expansionTimingStats.importUsageMs.toFixed(1)),
             interopImportCheckMs: Number(expansionTimingStats.interopImportCheckMs.toFixed(1)),
             likelyMacroModuleMs: Number(expansionTimingStats.likelyMacroModuleMs.toFixed(1)),

@@ -486,8 +486,6 @@ Deno.test('createProjectMacroEnvironment reports macro expansion detail timing',
   );
   assert(detailLog);
   assertStringIncludes(detailLog, 'graphCompileGraphs=1');
-  assertStringIncludes(detailLog, 'graphPrepareProgramMs=');
-  assertStringIncludes(detailLog, 'graphEmitMs=');
   assertStringIncludes(detailLog, 'bindingPlanFiles=1');
   assertStringIncludes(detailLog, 'moduleEvalRoots=1');
   assertStringIncludes(detailLog, 'macroExecutionCount=2');
