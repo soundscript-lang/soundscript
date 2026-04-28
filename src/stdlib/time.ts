@@ -2,6 +2,17 @@ import { err, ok } from 'sts:result';
 import { type AsyncResult, CancellationFailure, DeadlineFailure } from 'sts:concurrency/task';
 import { Failure } from 'sts:failures';
 
+export interface AbortSignal {
+  readonly aborted: boolean;
+  readonly reason: unknown;
+  addEventListener(
+    type: 'abort',
+    listener: () => void,
+    options?: { readonly once?: boolean },
+  ): void;
+  removeEventListener(type: 'abort', listener: () => void): void;
+}
+
 export interface OperationOptions {
   readonly signal?: AbortSignal;
 }
