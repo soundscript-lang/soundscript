@@ -1,20 +1,17 @@
+import process from 'node:process';
+
 import { Failure, normalizeThrown } from 'sts:failures';
 import { err, ok, type Result } from 'sts:result';
 
-interface ProcessLike {
-  readonly argv?: readonly string[];
+export interface ProcessInfo {
   readonly pid?: number;
+  readonly ppid?: number;
+  readonly executable?: string;
   readonly platform?: string;
-  readonly versions?: { readonly node?: string };
-  cwd?(): string;
-  exit?(code?: number): never;
-  exitCode?: number;
-  uptime?(): number;
+  readonly arch?: string;
 }
 
-function nodeProcess(): ProcessLike | undefined {
-  return (globalThis as typeof globalThis & { process?: ProcessLike }).process;
-}
+export type SignalName = 'SIGINT' | 'SIGTERM' | 'SIGHUP' | 'SIGQUIT' | 'SIGKILL';
 
 function failureFromUnknown(value: unknown): Failure {
   if (value instanceof Failure) {
@@ -24,59 +21,86 @@ function failureFromUnknown(value: unknown): Failure {
   return new Failure(normalized.message, { cause: normalized });
 }
 
+export function info(): Result<ProcessInfo, Failure> {
+  try {
+    return ok({
+      pid: process.pid,
+      ppid: process.ppid,
+      executable: process.execPath,
+      platform: process.platform,
+      arch: process.arch,
+    });
+  } catch (error) {
+    return err(failureFromUnknown(error));
+  }
+}
+
 export function cwd(): Result<string, Failure> {
   try {
-    const value = nodeProcess()?.cwd?.();
-    return value === undefined
-      ? err(new Failure('Current working directory is unavailable.'))
-      : ok(value);
+    return ok(process.cwd());
+  } catch (error) {
+    return err(failureFromUnknown(error));
+  }
+}
+
+export function chdir(path: string): Result<void, Failure> {
+  try {
+    process.chdir(path);
+    return ok(undefined);
   } catch (error) {
     return err(failureFromUnknown(error));
   }
 }
 
 export function pid(): Result<number, Failure> {
-  const value = nodeProcess()?.pid;
-  return value === undefined ? err(new Failure('Process pid is unavailable.')) : ok(value);
+  return ok(process.pid);
 }
 
 export function platform(): Result<string, Failure> {
-  const value = nodeProcess()?.platform;
-  return value === undefined ? err(new Failure('Process platform is unavailable.')) : ok(value);
+  return ok(process.platform);
 }
 
 export function uptime(): Result<number, Failure> {
   try {
-    const value = nodeProcess()?.uptime?.();
-    return value === undefined ? err(new Failure('Process uptime is unavailable.')) : ok(value);
+    return ok(process.uptime());
   } catch (error) {
     return err(failureFromUnknown(error));
   }
 }
 
 export function setExitCode(code: number): Result<void, Failure> {
-  const process = nodeProcess();
-  if (!process) {
-    return err(new Failure('Process exit code is unavailable.'));
-  }
   process.exitCode = code;
   return ok(undefined);
 }
 
-export function exit(code = 0): never {
-  const process = nodeProcess();
-  if (!process?.exit) {
-    throw new Failure('Process exit is unavailable.');
+export function onSignal(signal: SignalName, handler: () => void): Result<Disposable, Failure> {
+  try {
+    process.on(signal, handler);
+    const dispose = (): void => {
+      process.off(signal, handler);
+    };
+    return ok({
+      dispose,
+      [Symbol.dispose]: dispose,
+    });
+  } catch (error) {
+    return err(failureFromUnknown(error));
   }
+}
+
+export function exit(code = 0): never {
   process.exit(code);
   throw new Failure('Process exit returned unexpectedly.');
 }
 
 export const Process = Object.freeze({
+  info,
   cwd,
+  chdir,
   pid,
   platform,
   uptime,
   setExitCode,
+  onSignal,
   exit,
 });

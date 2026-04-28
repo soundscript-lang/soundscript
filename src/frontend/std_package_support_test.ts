@@ -239,12 +239,23 @@ Deno.test('std package support projects generated Task object declarations', () 
   assertStringIncludes(CONSOLE_STDLIB_DECLARATION_TEXT, 'export declare const console');
   assertStringIncludes(PATH_STDLIB_DECLARATION_TEXT, 'export declare function join');
   assertStringIncludes(BYTES_STDLIB_DECLARATION_TEXT, 'export declare const Bytes');
-  assertStringIncludes(FS_STDLIB_DECLARATION_TEXT, 'export declare function readText');
+  assertStringIncludes(FS_STDLIB_DECLARATION_TEXT, 'export declare function readTextFile');
+  assertStringIncludes(FS_STDLIB_DECLARATION_TEXT, 'export declare function writeTextFile');
+  assertStringIncludes(FS_STDLIB_DECLARATION_TEXT, 'export declare function stat');
+  assertStringIncludes(FS_STDLIB_DECLARATION_TEXT, 'export declare function readDir');
   assertStringIncludes(ENV_STDLIB_DECLARATION_TEXT, 'export declare function get');
+  assertStringIncludes(ENV_STDLIB_DECLARATION_TEXT, 'export declare const required');
+  assertStringIncludes(ENV_STDLIB_DECLARATION_TEXT, 'export declare function toRecord');
   assertStringIncludes(CLI_STDLIB_DECLARATION_TEXT, 'export declare function args');
-  assertStringIncludes(PROCESS_STDLIB_DECLARATION_TEXT, 'export declare function cwd');
+  assertStringIncludes(CLI_STDLIB_DECLARATION_TEXT, 'export declare function stdio');
+  assertStringIncludes(CLI_STDLIB_DECLARATION_TEXT, 'export declare function terminalSize');
+  assertStringIncludes(PROCESS_STDLIB_DECLARATION_TEXT, 'export declare function info');
+  assertStringIncludes(
+    PROCESS_STDLIB_DECLARATION_TEXT,
+    'export declare function onSignal(signal: SignalName, handler: () => void): Result<Disposable, Failure>;',
+  );
   assertStringIncludes(HTTP_STDLIB_DECLARATION_TEXT, 'export declare function serve');
-  assertStringIncludes(NET_STDLIB_DECLARATION_TEXT, 'export declare function lookup');
+  assertStringIncludes(NET_STDLIB_DECLARATION_TEXT, 'export declare function lookupHost');
 });
 
 Deno.test('std package support rewrites generated relative stdlib declaration imports away from .ts sources', () => {
