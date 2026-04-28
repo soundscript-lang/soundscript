@@ -530,6 +530,124 @@ function lowerPromiseReactionHandlerExpression(
   return { kind: 'closure_null', representation: 'closure_ref' };
 }
 
+function promiseFinallyHandlerFromCapture(): SemanticExpressionIR {
+  return {
+    kind: 'box_get',
+    box: localGetExpression('capture_handler_0', 'box_ref'),
+    valueType: 'closure_ref',
+    representation: 'closure_ref',
+  };
+}
+
+function promiseFinallyHandlerCapture(
+  handler: Extract<SemanticExpressionIR, { kind: 'closure_literal' }>,
+): Extract<SemanticExpressionIR, { kind: 'box_new' }> {
+  return {
+    kind: 'box_new',
+    value: handler,
+    valueType: 'closure_ref',
+    representation: 'box_ref',
+  };
+}
+
+function pushPromiseFinallyFulfilledClosure(
+  context: FunctionLoweringContext,
+  signatureId: number,
+  handler: Extract<SemanticExpressionIR, { kind: 'closure_literal' }>,
+): number {
+  const closureFunctionId = context.moduleState.nextClosureFunctionId;
+  context.moduleState.nextClosureFunctionId += 1;
+  context.moduleState.generatedFunctions.push({
+    name: `closure_source_promise_finally_fulfilled_${closureFunctionId}`,
+    exportName: '',
+    params: [
+      { name: 'capture_handler_0', representation: 'box_ref' },
+      { name: 'promise_value', representation: 'tagged_ref' },
+    ],
+    locals: [],
+    result: 'tagged_ref',
+    body: [
+      {
+        kind: 'expression',
+        value: {
+          kind: 'closure_call',
+          callee: promiseFinallyHandlerFromCapture(),
+          args: [],
+          signatureId: handler.signatureId,
+          representation: 'tagged_ref',
+        },
+      },
+      { kind: 'return', value: localGetExpression('promise_value', 'tagged_ref') },
+    ],
+    bodyStatus: 'emittable',
+    unsupportedBodyKinds: [],
+    runtimeFamilies: ['closure', 'finite_union'],
+    hostImported: false,
+    hostExported: false,
+    unionBoundaries: [],
+    closureFunctionId,
+    closureSignatureId: signatureId,
+    closureCaptureCount: 1,
+    closureCaptureValueTypes: ['closure_ref'],
+  });
+  return closureFunctionId;
+}
+
+function pushPromiseFinallyRejectedClosure(
+  context: FunctionLoweringContext,
+  signatureId: number,
+  handler: Extract<SemanticExpressionIR, { kind: 'closure_literal' }>,
+): number {
+  const closureFunctionId = context.moduleState.nextClosureFunctionId;
+  context.moduleState.nextClosureFunctionId += 1;
+  context.moduleState.generatedFunctions.push({
+    name: `closure_source_promise_finally_rejected_${closureFunctionId}`,
+    exportName: '',
+    params: [
+      { name: 'capture_handler_0', representation: 'box_ref' },
+      { name: 'promise_reason', representation: 'tagged_ref' },
+    ],
+    locals: [],
+    result: 'tagged_ref',
+    body: [
+      {
+        kind: 'expression',
+        value: {
+          kind: 'closure_call',
+          callee: promiseFinallyHandlerFromCapture(),
+          args: [],
+          signatureId: handler.signatureId,
+          representation: 'tagged_ref',
+        },
+      },
+      {
+        kind: 'return',
+        value: {
+          kind: 'tag_heap_object',
+          value: {
+            kind: 'call',
+            callee: SOUNDSCRIPT_PROMISE_REJECT_HELPER_NAME,
+            args: [localGetExpression('promise_reason', 'tagged_ref')],
+            representation: 'heap_ref',
+          },
+          representation: 'tagged_ref',
+        },
+      },
+    ],
+    bodyStatus: 'emittable',
+    unsupportedBodyKinds: [],
+    runtimeFamilies: ['closure', 'finite_union', 'promise'],
+    hostImported: false,
+    hostExported: false,
+    unionBoundaries: [],
+    closureFunctionId,
+    closureSignatureId: signatureId,
+    closureCaptureCount: 1,
+    closureCaptureValueTypes: ['closure_ref'],
+  });
+  return closureFunctionId;
+}
+
 function lowerPromiseThenCallExpression(
   expression: Extract<SourceExpressionIR, { kind: 'call_expression' }>,
   context: FunctionLoweringContext,
@@ -567,8 +685,39 @@ function lowerPromiseThenCallExpression(
     onRejected = lowerPromiseReactionHandlerExpression(expression.args[0], context);
   } else {
     const onFinally = lowerPromiseReactionHandlerExpression(expression.args[0], context);
-    onFulfilled = onFinally;
-    onRejected = onFinally;
+    if (onFinally.kind !== 'closure_literal') {
+      context.unsupportedKinds.add('Promise.finally:handler');
+      return { kind: 'undefined_literal', representation: 'tagged_ref' };
+    }
+    const taggedValue = promiseReactionTaggedValueType();
+    const closureSignature = createClosureSignature(context.moduleState, [taggedValue], taggedValue);
+    const fulfilledFunctionId = pushPromiseFinallyFulfilledClosure(
+      context,
+      closureSignature.id,
+      onFinally,
+    );
+    const rejectedFunctionId = pushPromiseFinallyRejectedClosure(
+      context,
+      closureSignature.id,
+      onFinally,
+    );
+    const handlerCapture = promiseFinallyHandlerCapture(onFinally);
+    onFulfilled = {
+      kind: 'closure_literal',
+      functionId: fulfilledFunctionId,
+      signatureId: closureSignature.id,
+      captures: [handlerCapture],
+      captureValueTypes: ['closure_ref'],
+      representation: 'closure_ref',
+    };
+    onRejected = {
+      kind: 'closure_literal',
+      functionId: rejectedFunctionId,
+      signatureId: closureSignature.id,
+      captures: [handlerCapture],
+      captureValueTypes: ['closure_ref'],
+      representation: 'closure_ref',
+    };
   }
   context.runtimeFamilies.add('promise');
   context.runtimeFamilies.add('closure');

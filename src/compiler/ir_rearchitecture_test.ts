@@ -2609,6 +2609,8 @@ Deno.test('compileProject selects the source-hir wasm-gc plan for internal Promi
         export function score(): number {
           Promise.resolve(4).finally(() => {
             const marker = 0;
+          }).then((item) => {
+            return item;
           });
           return 1;
         }
@@ -2622,6 +2624,8 @@ Deno.test('compileProject selects the source-hir wasm-gc plan for internal Promi
   const plan = createWasmGcModulePlan(semantic, manifest);
   const scorePlan = plan.functionPlans.find((func) => func.name === 'score');
   const wat = emitWasmGcModulePlan(plan);
+  const watPath = join(tempDirectory, 'source-hir-promise-finally.wat');
+  const wasmPath = join(tempDirectory, 'source-hir-promise-finally.wasm');
   const result = compileProject({
     projectPath: join(tempDirectory, 'tsconfig.json'),
     workingDirectory: tempDirectory,
@@ -2635,9 +2639,19 @@ Deno.test('compileProject selects the source-hir wasm-gc plan for internal Promi
   assertEquals(wat.includes('call $soundscript_promise_resolve'), true);
   assertEquals(wat.includes('(func $soundscript_promise_then'), true);
   assertEquals(wat.includes('call $soundscript_promise_then'), true);
+  assertEquals(wat.includes('closure_source_promise_finally_fulfilled'), true);
+  assertEquals(wat.includes('closure_source_promise_finally_rejected'), true);
   assertEquals(wat.includes('Promise.resolve'), false);
   assertEquals(wat.includes('Promise.finally'), false);
   assertEquals(wat.includes('jspi'), false);
+  await Deno.writeTextFile(watPath, wat);
+  const parseResult = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  assertEquals(new TextDecoder().decode(parseResult.stderr).trim(), '');
+  assertEquals(parseResult.success, true);
   assertEquals(result.exitCode, 0);
   assertEquals(result.diagnostics, []);
   assertEquals(result.artifacts?.backend, 'wasm-gc');
