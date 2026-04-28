@@ -12,6 +12,7 @@ import {
   STS_HTTP_MODULE_SPECIFIER,
   STS_NET_MODULE_SPECIFIER,
   STS_PROCESS_MODULE_SPECIFIER,
+  WEB_DOM_MODULE_SPECIFIER,
 } from '../../project/soundscript_runtime_specifiers.ts';
 import { toSourceFileName } from '../../frontend/project_frontend.ts';
 import { SOUND_DIAGNOSTIC_CODES, SOUND_DIAGNOSTIC_MESSAGES } from '../engine/diagnostic_codes.ts';
@@ -21,9 +22,14 @@ import { getNodeDiagnosticRange, type SoundDiagnostic } from '../diagnostics.ts'
 interface UnavailableModule {
   readonly reason: string;
   readonly replacement?: string;
+  readonly example?: string;
+  readonly hint?: string;
+  readonly replacementFamily?: string;
 }
 
 const LEGACY_ASYNC_SPECIFIER = 'sts:async';
+const LEGACY_HOST_DOM_SPECIFIER = 'host:dom';
+const LEGACY_HOST_NODE_SPECIFIER = 'host:node';
 
 function unavailableModuleForTarget(
   context: AnalysisContext,
@@ -33,6 +39,54 @@ function unavailableModuleForTarget(
     return {
       reason: '`sts:async` was removed; task helpers now live under `sts:concurrency/task`.',
       replacement: 'sts:concurrency/task',
+    };
+  }
+
+  if (specifier === LEGACY_HOST_DOM_SPECIFIER) {
+    return {
+      reason: '`host:dom` was removed; raw Web platform imports now use `web:dom`.',
+      replacement: 'web:dom',
+      replacementFamily: 'raw_host_boundary',
+      example: "import { document } from 'web:dom';",
+      hint: 'Use `web:dom` for raw DOM globals behind `// #[interop]`.',
+    };
+  }
+
+  if (specifier === LEGACY_HOST_NODE_SPECIFIER) {
+    return {
+      reason:
+        '`host:node` was removed; raw Node access now uses ordinary Node builtin modules such as `node:process` and `node:buffer`.',
+      replacementFamily: 'raw_host_boundary',
+      example: "import process from 'node:process';\nimport { Buffer } from 'node:buffer';",
+      hint: 'Use ordinary `node:*` builtin imports behind `// #[interop]`.',
+    };
+  }
+
+  if (
+    specifier === WEB_DOM_MODULE_SPECIFIER &&
+    context.runtime.target !== 'js-browser' &&
+    context.runtime.target !== 'wasm-browser'
+  ) {
+    return {
+      reason: '`web:dom` requires a browser-family runtime target.',
+      replacementFamily: 'raw_host_boundary',
+      example: "import { document } from 'web:dom';",
+      hint:
+        'Use `web:dom` only on browser-family targets, or move the DOM dependency behind a target-specific boundary.',
+    };
+  }
+
+  if (
+    specifier.startsWith('node:') &&
+    context.runtime.target !== 'js-node' &&
+    context.runtime.target !== 'wasm-node'
+  ) {
+    return {
+      reason: 'raw Node builtin imports require a node-family runtime target.',
+      replacementFamily: 'raw_host_boundary',
+      example: "import process from 'node:process';",
+      hint:
+        'Use `node:*` only on node-family targets, or move the Node dependency behind a target-specific boundary.',
     };
   }
 
@@ -93,10 +147,11 @@ function createDiagnostic(
       rule: 'target_capability',
       primarySymbol: specifier,
       fixability: info.replacement ? 'local_rewrite' : 'api_redesign',
-      replacementFamily: 'portable_stdlib_capability',
-      example: info.replacement
-        ? `import { Task } from '${info.replacement}';`
-        : `Remove the import or select a target that provides ${specifier}.`,
+      replacementFamily: info.replacementFamily ?? 'portable_stdlib_capability',
+      example: info.example ??
+        (info.replacement
+          ? `import { Task } from '${info.replacement}';`
+          : `Remove the import or select a target that provides ${specifier}.`),
       evidence: [
         { label: 'moduleSpecifier', value: specifier },
         { label: 'runtimeTarget', value: context.runtime.target },
@@ -105,9 +160,10 @@ function createDiagnostic(
     notes: [
       `${specifier} is unavailable for ${context.runtime.target}. ${info.reason}`,
     ],
-    hint: info.replacement
-      ? `Use \`${info.replacement}\` for portable task helpers.`
-      : 'Select a runtime target with this provider capability or keep the dependency behind a host boundary.',
+    hint: info.hint ??
+      (info.replacement
+        ? `Use \`${info.replacement}\` for portable task helpers.`
+        : 'Select a runtime target with this provider capability or keep the dependency behind a host boundary.'),
     ...getNodeDiagnosticRange(node),
   };
 }

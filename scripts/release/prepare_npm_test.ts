@@ -313,6 +313,8 @@ Deno.test('prepare_npm --stdlib-only emits canonical package source maps and .st
   assertEquals(packageJson.exports?.['./experimental/component'], undefined);
   assertEquals(packageJson.exports?.['./host/dom'], undefined);
   assertEquals(packageJson.exports?.['./host/node'], undefined);
+  assertEquals(packageJson.exports?.['./web/dom']?.types, './web/dom.d.ts');
+  assertEquals(packageJson.exports?.['./web/dom']?.import, './web/dom.js');
   assertEquals(packageJson.exports?.['./value'] !== undefined, true);
   assertEquals(packageJson.exports?.['./derive'] !== undefined, true);
   assertEquals(packageJson.exports?.['./numerics'] !== undefined, true);
@@ -667,11 +669,23 @@ Deno.test('prepare_npm --stdlib-only project-transform macro-expands source-publ
         sharedCode?: string;
         sharedPath?: string;
       };
-      assertEquals((payload.packageEntry ?? '').endsWith('/node_modules/example-pkg/src/index.sts'), true);
-      assertEquals((payload.sharedPath ?? '').endsWith('/node_modules/example-pkg/src/shared.sts'), true);
+      assertEquals(
+        (payload.packageEntry ?? '').endsWith('/node_modules/example-pkg/src/index.sts'),
+        true,
+      );
+      assertEquals(
+        (payload.sharedPath ?? '').endsWith('/node_modules/example-pkg/src/shared.sts'),
+        true,
+      );
       assertStringIncludes(payload.contractsCode ?? '', 'export const UserCodec =');
-      assertStringIncludes(payload.sharedCode ?? '', "import { UserCodec } from './contracts.sts';");
-      assertStringIncludes(payload.sharedCode ?? '', "export const encoded = UserCodec.encode({ id: 'user-1' });");
+      assertStringIncludes(
+        payload.sharedCode ?? '',
+        "import { UserCodec } from './contracts.sts';",
+      );
+      assertStringIncludes(
+        payload.sharedCode ?? '',
+        "export const encoded = UserCodec.encode({ id: 'user-1' });",
+      );
     } finally {
       await Deno.remove(projectRoot, { recursive: true }).catch(() => undefined);
     }

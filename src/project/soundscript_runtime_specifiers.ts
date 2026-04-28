@@ -38,8 +38,7 @@ export const STS_EXPERIMENTAL_THUNK_MODULE_SPECIFIER = 'sts:experimental/thunk';
 export const STS_THUNK_MODULE_SPECIFIER = STS_EXPERIMENTAL_THUNK_MODULE_SPECIFIER;
 export const STS_NUMERICS_MODULE_SPECIFIER = 'sts:numerics';
 export const STS_MACROS_MODULE_SPECIFIER = 'sts:macros';
-export const HOST_DOM_MODULE_SPECIFIER = 'host:dom';
-export const HOST_NODE_MODULE_SPECIFIER = 'host:node';
+export const WEB_DOM_MODULE_SPECIFIER = 'web:dom';
 
 export const STS_EXPERIMENTAL_SQL_MODULE_SPECIFIER = 'sts:experimental/sql';
 export const STS_EXPERIMENTAL_CSS_MODULE_SPECIFIER = 'sts:experimental/css';
@@ -132,8 +131,7 @@ const BUILTIN_RUNTIME_MODULE_SPECIFIERS = new Map<string, string>([
     `${SOUNDSCRIPT_EXPERIMENTAL_RUNTIME_PREFIX}/graphql`,
   ],
   [STS_EXPERIMENTAL_DEBUG_MODULE_SPECIFIER, `${SOUNDSCRIPT_EXPERIMENTAL_RUNTIME_PREFIX}/debug`],
-  [HOST_DOM_MODULE_SPECIFIER, `${SOUNDSCRIPT_RUNTIME_PACKAGE_NAME}/host/dom`],
-  [HOST_NODE_MODULE_SPECIFIER, `${SOUNDSCRIPT_RUNTIME_PACKAGE_NAME}/host/node`],
+  [WEB_DOM_MODULE_SPECIFIER, `${SOUNDSCRIPT_RUNTIME_PACKAGE_NAME}/web/dom`],
 ]);
 
 export function isSoundscriptProtocolSpecifier(moduleSpecifier: string): boolean {

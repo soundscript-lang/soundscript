@@ -1476,7 +1476,7 @@ Deno.test('analyzeProject loads the bundled node extern pack on node-family targ
       '// #[interop]',
       'import { scheduler, setTimeout as waitTimeout } from "node:timers/promises";',
       '// #[interop]',
-      "import { process } from 'host:node';",
+      'import process from "node:process";',
       '',
       'const cwd = process.cwd();',
       'const path = join(cwd, "notes.txt");',
@@ -1523,6 +1523,13 @@ Deno.test('analyzeProject loads the bundled node extern pack on node-family targ
     'TS2307',
     'TS2307',
     'TS2307',
+    'SOUND1042',
+    'SOUND1042',
+    'SOUND1042',
+    'SOUND1042',
+    'SOUND1042',
+    'SOUND1042',
+    'SOUND1042',
   ]);
 });
 Deno.test('analyzeProject tracks bundled deno extern builtins under effect contracts', async () => {
@@ -1714,7 +1721,7 @@ Deno.test('analyzeProject tracks bundled node builtins under effect contracts', 
     ),
     'src/index.sts': [
       '// #[interop]',
-      'import { Buffer as ModuleBuffer } from "node:buffer";',
+      'import { Buffer, Buffer as ModuleBuffer } from "node:buffer";',
       '// #[interop]',
       'import { createHash, createHmac, getRandomValues, randomBytes, randomFill, randomFillSync, randomInt, randomUUID } from "node:crypto";',
       '// #[interop]',
@@ -1728,7 +1735,7 @@ Deno.test('analyzeProject tracks bundled node builtins under effect contracts', 
       '// #[interop]',
       'import { scheduler, setImmediate as waitImmediate, setTimeout as waitTimeout } from "node:timers/promises";',
       '// #[interop]',
-      "import { Buffer, process } from 'host:node';",
+      'import process from "node:process";',
       '',
       '// #[effects(forbid: [host])]',
       'function readCurrentDirectory(): string {',
@@ -2125,7 +2132,7 @@ Deno.test('analyzeProject tracks bundled node builtins under effect contracts', 
   );
 });
 
-Deno.test('analyzeProject exposes portable web globals on wasm-wasi', async () => {
+Deno.test('analyzeProject exposes explicit raw web globals on js-browser', async () => {
   const tempDirectory = await createTempProject({
     'tsconfig.json': JSON.stringify(
       {
@@ -2143,7 +2150,7 @@ Deno.test('analyzeProject exposes portable web globals on wasm-wasi', async () =
     ),
     'src/index.sts': [
       '// #[interop]',
-      "import { document, window } from 'host:dom';",
+      "import { document, window } from 'web:dom';",
       '',
       'const title = document.title;',
       'const href = window.location.href;',
@@ -2162,12 +2169,12 @@ Deno.test('analyzeProject exposes portable web globals on wasm-wasi', async () =
   assertEquals(result.diagnostics, []);
 });
 
-Deno.test('analyzeProject rejects host:dom imports when DOM libs are unavailable', async () => {
+Deno.test('analyzeProject rejects web:dom imports when DOM libs are unavailable', async () => {
   const tempDirectory = await createTempProject({
     'tsconfig.json': createSoundscriptOnlyTsconfig(),
     'src/index.sts': [
       '// #[interop]',
-      "import { document } from 'host:dom';",
+      "import { document } from 'web:dom';",
       '',
       'void document;',
       '',
@@ -2181,6 +2188,112 @@ Deno.test('analyzeProject rejects host:dom imports when DOM libs are unavailable
   });
 
   assertEquals(result.diagnostics.map((diagnostic) => diagnostic.code), ['TS2307']);
+});
+
+Deno.test('analyzeProject rejects legacy host shims with migration guidance', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          lib: ['ES2024', 'DOM'],
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+          types: ['node'],
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/index.sts': [
+      '// #[interop]',
+      "import { document } from 'host:dom';",
+      '// #[interop]',
+      "import { process } from 'host:node';",
+      '',
+      'void document;',
+      'void process;',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    target: 'js-browser',
+    workingDirectory: tempDirectory,
+  });
+
+  const capabilityDiagnostics = result.diagnostics.filter((diagnostic) =>
+    diagnostic.code === 'SOUND1042'
+  );
+  assertEquals(capabilityDiagnostics.map((diagnostic) => diagnostic.metadata?.primarySymbol), [
+    'host:dom',
+    'host:node',
+  ]);
+  assertEquals(capabilityDiagnostics.map((diagnostic) => diagnostic.hint), [
+    'Use `web:dom` for raw DOM globals behind `// #[interop]`.',
+    'Use ordinary `node:*` builtin imports behind `// #[interop]`.',
+  ]);
+});
+
+Deno.test('analyzeProject gates raw web and node imports by runtime target', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': JSON.stringify(
+      {
+        compilerOptions: {
+          lib: ['ES2024', 'DOM'],
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+          types: ['node'],
+        },
+        include: ['src/**/*.sts'],
+      },
+      null,
+      2,
+    ),
+    'src/web-on-node.sts': [
+      '// #[interop]',
+      "import { document } from 'web:dom';",
+      '',
+      'void document;',
+      '',
+    ].join('\n'),
+    'src/node-on-browser.sts': [
+      '// #[interop]',
+      "import process from 'node:process';",
+      '',
+      'void process;',
+      '',
+    ].join('\n'),
+  });
+
+  const webOnNode = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    target: 'js-node',
+    workingDirectory: tempDirectory,
+  });
+  const nodeOnBrowser = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    target: 'js-browser',
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(
+    webOnNode.diagnostics.filter((diagnostic) => diagnostic.code === 'SOUND1042').map((
+      diagnostic,
+    ) => diagnostic.metadata?.primarySymbol),
+    ['web:dom'],
+  );
+  assertEquals(
+    nodeOnBrowser.diagnostics.filter((diagnostic) => diagnostic.code === 'SOUND1042').map((
+      diagnostic,
+    ) => diagnostic.metadata?.primarySymbol),
+    ['node:process'],
+  );
 });
 
 Deno.test(
@@ -2223,7 +2336,7 @@ Deno.test(
   },
 );
 
-Deno.test('analyzeProject resolves explicit host:node imports when compilerOptions.types requests node', async () => {
+Deno.test('analyzeProject resolves explicit node:* imports when compilerOptions.types requests node', async () => {
   const tempDirectory = await createTempProject({
     'tsconfig.json': JSON.stringify(
       {
@@ -2241,7 +2354,9 @@ Deno.test('analyzeProject resolves explicit host:node imports when compilerOptio
     ),
     'src/index.sts': [
       '// #[interop]',
-      "import { Buffer, process } from 'host:node';",
+      "import { Buffer } from 'node:buffer';",
+      '// #[interop]',
+      "import process from 'node:process';",
       '',
       'const cwd = process.cwd();',
       "const bytes = Buffer.from('sound');",
@@ -2260,7 +2375,7 @@ Deno.test('analyzeProject resolves explicit host:node imports when compilerOptio
   assertEquals(result.diagnostics, []);
 });
 
-Deno.test('analyzeProject rejects host:node imports when compilerOptions.types omits node', async () => {
+Deno.test('analyzeProject rejects node:* imports when compilerOptions.types omits node', async () => {
   const tempDirectory = await createTempProject({
     'tsconfig.json': JSON.stringify(
       {
@@ -2278,7 +2393,7 @@ Deno.test('analyzeProject rejects host:node imports when compilerOptions.types o
     ),
     'src/index.sts': [
       '// #[interop]',
-      "import { process } from 'host:node';",
+      "import process from 'node:process';",
       '',
       'void process;',
       '',
@@ -6151,7 +6266,7 @@ Deno.test('analyzeProject allows fresh local scratch mutation under forbid mut',
     'tsconfig.json': createBrowserTsconfig(),
     'src/index.sts': [
       '// #[interop]',
-      'import { window } from "host:dom";',
+      'import { window } from "web:dom";',
       '',
       'class Counter {',
       '  value = 0;',
@@ -6634,7 +6749,7 @@ Deno.test('analyzeProject treats deferred host schedulers as host effects withou
     'tsconfig.json': createBrowserTsconfig(),
     'src/index.sts': [
       '// #[interop]',
-      'import { window } from "host:dom";',
+      'import { window } from "web:dom";',
       '',
       '// #[effects(forbid: [host])]',
       'function schedule(): void {',
@@ -6683,7 +6798,7 @@ Deno.test('analyzeProject tracks fetch host-object families and stdlib wrappers 
     'tsconfig.json': createBrowserTsconfig(),
     'src/index.sts': [
       '// #[interop]',
-      'import { window } from "host:dom";',
+      'import { window } from "web:dom";',
       '',
       'import { Headers as FetchHeaders, Request as FetchRequest, Response as FetchResponse } from "sts:fetch";',
       'import { crypto as randomCrypto } from "sts:random";',
@@ -6774,7 +6889,7 @@ Deno.test('analyzeProject tracks URL and text builtins under effect contracts', 
     'tsconfig.json': createBrowserTsconfig(),
     'src/index.sts': [
       '// #[interop]',
-      'import { window } from "host:dom";',
+      'import { window } from "web:dom";',
       '',
       'import { URL as StdURL, URLSearchParams as StdURLSearchParams } from "sts:url";',
       'import { TextEncoder as StdTextEncoder, TextDecoder as StdTextDecoder } from "sts:text";',
@@ -6865,7 +6980,7 @@ Deno.test('analyzeProject tracks abort and cloning builtins under effect contrac
     'tsconfig.json': createBrowserTsconfig(),
     'src/index.sts': [
       '// #[interop]',
-      'import { window } from "host:dom";',
+      'import { window } from "web:dom";',
       '',
       '// #[effects(forbid: [host])]',
       'function buildController(): AbortController {',
@@ -6940,7 +7055,7 @@ Deno.test('analyzeProject tracks DOM listener and object URL builtins under effe
     'tsconfig.json': createBrowserTsconfig(),
     'src/index.sts': [
       '// #[interop]',
-      'import { window } from "host:dom";',
+      'import { window } from "web:dom";',
       '',
       'let registered = 0;',
       '',
@@ -7012,7 +7127,7 @@ Deno.test('analyzeProject tracks DOM mutation and dispatch builtins under effect
     'tsconfig.json': createBrowserTsconfig(),
     'src/index.sts': [
       '// #[interop]',
-      'import { document, window } from "host:dom";',
+      'import { document, window } from "web:dom";',
       '',
       '// #[effects(forbid: [fails, suspend, mut, host])]',
       'function buildEvent(): Event {',
@@ -7113,7 +7228,7 @@ Deno.test('analyzeProject tracks browser messaging builtins under effect contrac
     'tsconfig.json': createBrowserTsconfig(),
     'src/index.sts': [
       '// #[interop]',
-      'import { window } from "host:dom";',
+      'import { window } from "web:dom";',
       '',
       '// #[effects(forbid: [fails])]',
       'function sendWindowMessage(targetOrigin: string): void {',
@@ -7162,7 +7277,7 @@ Deno.test('analyzeProject tracks worker and socket builtins under effect contrac
     'tsconfig.json': createBrowserTsconfig(),
     'src/index.sts': [
       '// #[interop]',
-      'import { window } from "host:dom";',
+      'import { window } from "web:dom";',
       '',
       '// #[effects(forbid: [fails])]',
       'function openWorker(scriptUrl: string): Worker {',
@@ -7267,7 +7382,7 @@ Deno.test('analyzeProject tracks request and file builtins under effect contract
     'tsconfig.json': createBrowserTsconfig(),
     'src/index.sts': [
       '// #[interop]',
-      'import { window } from "host:dom";',
+      'import { window } from "web:dom";',
       '',
       '// #[effects(forbid: [fails, suspend, mut, host])]',
       'function buildEmptyFormData(): FormData {',
@@ -7515,7 +7630,7 @@ Deno.test('analyzeProject tracks browser storage and navigation builtins under e
     'tsconfig.json': createBrowserTsconfig(),
     'src/index.sts': [
       '// #[interop]',
-      'import { window } from "host:dom";',
+      'import { window } from "web:dom";',
       '',
       '// #[effects(forbid: [host])]',
       'function readStoredValue(): string | null {',
@@ -7592,7 +7707,7 @@ Deno.test('analyzeProject tracks JSON and console builtins under effect contract
     'tsconfig.json': createBrowserTsconfig(),
     'src/index.sts': [
       '// #[interop]',
-      'import { window } from "host:dom";',
+      'import { window } from "web:dom";',
       'const console = window.console;',
       '',
       '// #[effects(forbid: [fails])]',
@@ -7655,7 +7770,7 @@ Deno.test('analyzeProject tracks result, json, and debug stdlib helpers under ef
     'tsconfig.json': createBrowserTsconfig(),
     'src/index.sts': [
       '// #[interop]',
-      'import { window } from "host:dom";',
+      'import { window } from "web:dom";',
       'const console = window.console;',
       '',
       'import { resultOf, ok } from "sts:result";',
@@ -7934,7 +8049,7 @@ Deno.test('analyzeProject reports unknown forwarded effects in callable relation
     'tsconfig.json': createBrowserTsconfig(),
     'src/index.sts': [
       '// #[interop]',
-      'import { window } from "host:dom";',
+      'import { window } from "web:dom";',
       '',
       'interface Decoder<T> {',
       '  readonly decode: (value: number) => T;',
@@ -8121,7 +8236,7 @@ Deno.test('analyzeProject keeps callable assignment as conservative as direct lo
     'tsconfig.json': createBrowserTsconfig(),
     'src/index.sts': [
       '// #[interop]',
-      'import { window } from "host:dom";',
+      'import { window } from "web:dom";',
       '',
       'function fail(value: number): number {',
       '  throw new Error("boom");',
@@ -9357,7 +9472,7 @@ Deno.test('analyzeProject applies macro rewriting in in-memory file overrides be
         join(tempDirectory, 'src/index.sts'),
         [
           '// #[interop]',
-          "import { window } from 'host:dom';",
+          "import { window } from 'web:dom';",
           "import { log } from 'sts:experimental/debug';",
           'const console = window.console;',
           '// #[extern]',
@@ -9454,7 +9569,7 @@ Deno.test('analyzeProject preserves ordinary TypeScript diagnostic lines after m
         join(tempDirectory, 'src/index.sts'),
         [
           '// #[interop]',
-          "import { window } from 'host:dom';",
+          "import { window } from 'web:dom';",
           "import { log } from 'sts:experimental/debug';",
           'const console = window.console;',
           '// #[extern]',
@@ -9476,7 +9591,7 @@ Deno.test('analyzeProject expands import-scoped builtin macros before TypeScript
     'tsconfig.json': createBrowserTsconfig(),
     'src/index.sts': [
       '// #[interop]',
-      "import { window } from 'host:dom';",
+      "import { window } from 'web:dom';",
       "import { log } from 'sts:experimental/debug';",
       'const console = window.console;',
       '// #[extern]',
@@ -10874,7 +10989,7 @@ Deno.test('analyzeProject keeps local forwarding inference conservative for unst
     'tsconfig.json': createBrowserTsconfig(),
     'src/index.sts': [
       '// #[interop]',
-      'import { window } from "host:dom";',
+      'import { window } from "web:dom";',
       'const queueMicrotask = window.queueMicrotask;',
       '',
       'interface Decoder<T> {',
@@ -10962,7 +11077,7 @@ Deno.test('analyzeProject keeps unsupported local forwarding adapters conservati
     'tsconfig.json': createBrowserTsconfig(),
     'src/index.sts': [
       '// #[interop]',
-      'import { window } from "host:dom";',
+      'import { window } from "web:dom";',
       '',
       'function fail(value: number): number {',
       '  void value;',
@@ -11084,7 +11199,7 @@ Deno.test('analyzeProject preserves narrowing across deferred host schedulers', 
     'tsconfig.json': createBrowserTsconfig(),
     'src/index.sts': [
       '// #[interop]',
-      'import { window } from "host:dom";',
+      'import { window } from "web:dom";',
       '',
       'function use(box: { value: string | null }): string {',
       '  if (box.value !== null) {',

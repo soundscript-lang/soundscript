@@ -16,6 +16,7 @@ import {
   DIST_ROOT,
   LICENSE_SOURCE,
   parseVersion,
+  RAW_HOST_RUNTIME_MODULES,
   ROOT,
   SHIM_DIST,
   SOUNDSCRIPT_HOMEPAGE_URL,
@@ -398,6 +399,27 @@ async function prepareStdlibPackage(version: string): Promise<void> {
       rewrittenDeclarations,
     );
   }
+
+  for (const moduleName of RAW_HOST_RUNTIME_MODULES) {
+    const sourcePath = join(ROOT, 'src', 'stdlib', `${moduleName}.ts`);
+    const declarationPath = join(ROOT, 'src', 'stdlib', `${moduleName}.d.ts`);
+    const rewrittenSource = rewriteModuleSpecifiersForEmit(
+      Deno.readTextFileSync(sourcePath),
+      sourcePath,
+      { moduleSpecifierMode: 'emit-js' },
+    );
+    await writeTranspiledModule(
+      join(CANONICAL_DIST, `${moduleName}.js`),
+      sourcePath,
+      rewrittenSource,
+      `./src/stdlib/${moduleName}.ts`,
+    );
+    await writeTextFile(
+      join(CANONICAL_DIST, `${moduleName}.d.ts`),
+      Deno.readTextFileSync(declarationPath),
+    );
+  }
+
   await Deno.writeTextFile(
     join(CANONICAL_DIST, 'bin', 'soundscript.js'),
     createCliLauncherSource(),
@@ -434,6 +456,13 @@ async function prepareStdlibPackage(version: string): Promise<void> {
         },
       ],
       ...STABLE_RUNTIME_MODULES.map((moduleName) => [
+        `./${moduleName}`,
+        {
+          types: `./${moduleName}.d.ts`,
+          import: `./${moduleName}.js`,
+        },
+      ]),
+      ...RAW_HOST_RUNTIME_MODULES.map((moduleName) => [
         `./${moduleName}`,
         {
           types: `./${moduleName}.d.ts`,
@@ -478,6 +507,11 @@ async function prepareStdlibPackage(version: string): Promise<void> {
       'index.d.ts',
       'project-transform/**',
       ...STABLE_RUNTIME_MODULES.flatMap((moduleName) => [
+        `${moduleName}.js`,
+        `${moduleName}.js.map`,
+        `${moduleName}.d.ts`,
+      ]),
+      ...RAW_HOST_RUNTIME_MODULES.flatMap((moduleName) => [
         `${moduleName}.js`,
         `${moduleName}.js.map`,
         `${moduleName}.d.ts`,
