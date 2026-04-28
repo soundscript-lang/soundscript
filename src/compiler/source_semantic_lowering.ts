@@ -187,6 +187,13 @@ function arrayRepresentationForSemanticType(
   }
 }
 
+type PromiseAllSupportedArrayValueType =
+  | 'owned_heap_array_ref'
+  | 'owned_array_ref'
+  | 'owned_number_array_ref'
+  | 'owned_boolean_array_ref'
+  | 'owned_tagged_array_ref';
+
 function arrayLocalInfoForSemanticType(type: SemanticTypeIR): SourceSemanticArrayLocal | undefined {
   if (type.kind !== 'array') {
     return undefined;
@@ -697,24 +704,18 @@ function lowerPromiseAllCallExpression(
     context.unsupportedKinds.add('Promise.all:source');
     return { kind: 'undefined_literal', representation: 'tagged_ref' };
   }
-  if (!promiseAllNumberArrayResultType(context)) {
+  const resultArrayType = promiseAllResultArrayType(context);
+  if (!resultArrayType) {
     context.unsupportedKinds.add('Promise.all:result');
     return { kind: 'undefined_literal', representation: 'tagged_ref' };
   }
 
   const resultsName = nextTempLocalName(context, 'promise_all_results');
-  addLocal(context, resultsName, 'owned_number_array_ref');
+  addLocal(context, resultsName, resultArrayType);
   const resultArraySet: SemanticStatementIR = {
     kind: 'local_set',
     name: resultsName,
-    value: {
-      kind: 'owned_number_array_literal',
-      elements: Array.from(
-        { length: allSource.elements.length },
-        () => ({ kind: 'number_literal', value: 0, representation: 'f64' } as const),
-      ),
-      representation: 'owned_number_array_ref',
-    },
+    value: promiseAllResultArrayLiteral(resultArrayType, allSource.elements.length, context),
   };
   context.runtimeFamilies.add('array');
   context.runtimeFamilies.add('finite_union');
@@ -727,7 +728,7 @@ function lowerPromiseAllCallExpression(
       callee: SOUNDSCRIPT_PROMISE_RESOLVE_HELPER_NAME,
       args: [{
         kind: 'tag_heap_object',
-        value: localGetExpression(resultsName, 'owned_number_array_ref'),
+        value: localGetExpression(resultsName, resultArrayType),
         representation: 'tagged_ref',
       }],
       representation: 'heap_ref',
@@ -736,9 +737,10 @@ function lowerPromiseAllCallExpression(
 
   const taggedValue = promiseReactionTaggedValueType();
   const closureSignature = createClosureSignature(context.moduleState, [taggedValue], taggedValue);
-  const fulfilledFunctionId = pushPromiseAllNumberFulfilledClosure(
+  const fulfilledFunctionId = pushPromiseAllFulfilledClosure(
     context,
     closureSignature.id,
+    resultArrayType,
   );
   const rejectedFunctionId = pushPromiseRejectIntoClosure(context, closureSignature.id);
   const targetPromiseName = nextTempLocalName(context, 'promise_all_target');
@@ -801,8 +803,8 @@ function lowerPromiseAllCallExpression(
                 targetCapture,
                 {
                   kind: 'box_new',
-                  value: localGetExpression(resultsName, 'owned_number_array_ref'),
-                  valueType: 'owned_number_array_ref',
+                  value: localGetExpression(resultsName, resultArrayType),
+                  valueType: resultArrayType,
                   representation: 'box_ref',
                 },
                 localGetExpression(remainingBoxName, 'box_ref'),
@@ -815,7 +817,7 @@ function lowerPromiseAllCallExpression(
               ],
               captureValueTypes: [
                 'tagged_ref',
-                'owned_number_array_ref',
+                resultArrayType,
                 'box_ref',
                 'f64',
               ],
@@ -1011,9 +1013,24 @@ function pushPromiseResolveIntoClosure(
   return closureFunctionId;
 }
 
-function promiseAllNumberArrayResultType(context: FunctionLoweringContext): boolean {
+function promiseAllResultArrayType(
+  context: FunctionLoweringContext,
+): PromiseAllSupportedArrayValueType | undefined {
   const promiseValueType = promiseValueTypeForSemanticType(context.currentResultType);
-  return promiseValueType?.kind === 'array' && promiseValueType.element.kind === 'number';
+  if (promiseValueType?.kind !== 'array') {
+    return undefined;
+  }
+  const arrayType = arrayRepresentationForSemanticType(promiseValueType);
+  switch (arrayType) {
+    case 'owned_heap_array_ref':
+    case 'owned_array_ref':
+    case 'owned_number_array_ref':
+    case 'owned_boolean_array_ref':
+    case 'owned_tagged_array_ref':
+      return arrayType;
+    default:
+      return undefined;
+  }
 }
 
 function promiseAllCaptureGet(
@@ -1028,16 +1045,124 @@ function promiseAllCaptureGet(
   };
 }
 
-function pushPromiseAllNumberFulfilledClosure(
+function promiseAllResultArrayLiteral(
+  arrayType: PromiseAllSupportedArrayValueType,
+  length: number,
+  context: FunctionLoweringContext,
+): SemanticExpressionIR {
+  switch (arrayType) {
+    case 'owned_heap_array_ref':
+      return {
+        kind: 'owned_heap_array_literal',
+        elements: Array.from(
+          { length },
+          () => ({ kind: 'heap_null', representation: 'heap_ref' } as const),
+        ),
+        representation: 'owned_heap_array_ref',
+      };
+    case 'owned_array_ref':
+      context.runtimeFamilies.add('string');
+      return {
+        kind: 'owned_string_array_literal',
+        elements: Array.from(
+          { length },
+          () => ({
+            kind: 'owned_string_literal',
+            literalId: getStringLiteralId(context, JSON.stringify('')),
+            representation: 'owned_string_ref',
+          } as const),
+        ),
+        representation: 'owned_array_ref',
+      };
+    case 'owned_number_array_ref':
+      return {
+        kind: 'owned_number_array_literal',
+        elements: Array.from(
+          { length },
+          () => ({ kind: 'number_literal', value: 0, representation: 'f64' } as const),
+        ),
+        representation: 'owned_number_array_ref',
+      };
+    case 'owned_boolean_array_ref':
+      return {
+        kind: 'owned_boolean_array_literal',
+        elements: Array.from(
+          { length },
+          () => ({ kind: 'boolean_literal', value: false, representation: 'i32' } as const),
+        ),
+        representation: 'owned_boolean_array_ref',
+      };
+    case 'owned_tagged_array_ref':
+      return {
+        kind: 'owned_tagged_array_literal',
+        elements: Array.from(
+          { length },
+          () => ({ kind: 'undefined_literal', representation: 'tagged_ref' } as const),
+        ),
+        representation: 'owned_tagged_array_ref',
+      };
+  }
+}
+
+function promiseAllValueFromTagged(
+  taggedValue: SemanticExpressionIR,
+  arrayType: PromiseAllSupportedArrayValueType,
+  context: FunctionLoweringContext,
+): SemanticExpressionIR {
+  switch (arrayType) {
+    case 'owned_heap_array_ref':
+      return untagUnionExpressionForRepresentation(taggedValue, 'heap_ref', context)!;
+    case 'owned_array_ref':
+      return untagUnionExpressionForRepresentation(taggedValue, 'owned_string_ref', context)!;
+    case 'owned_number_array_ref':
+      return untagUnionExpressionForRepresentation(taggedValue, 'f64', context)!;
+    case 'owned_boolean_array_ref':
+      return untagUnionExpressionForRepresentation(taggedValue, 'i32', context)!;
+    case 'owned_tagged_array_ref':
+      return taggedValue;
+  }
+}
+
+function promiseAllResultArraySetStatement(
+  arrayType: PromiseAllSupportedArrayValueType,
+  array: SemanticExpressionIR,
+  index: SemanticExpressionIR,
+  taggedValue: SemanticExpressionIR,
+  context: FunctionLoweringContext,
+): SemanticStatementIR {
+  const value = promiseAllValueFromTagged(taggedValue, arrayType, context);
+  switch (arrayType) {
+    case 'owned_heap_array_ref':
+      return { kind: 'owned_heap_array_set', array, index, value };
+    case 'owned_array_ref':
+      return { kind: 'owned_string_array_set', array, index, value };
+    case 'owned_number_array_ref':
+      return { kind: 'owned_number_array_set', array, index, value };
+    case 'owned_boolean_array_ref':
+      return { kind: 'owned_boolean_array_set', array, index, value };
+    case 'owned_tagged_array_ref':
+      return { kind: 'owned_tagged_array_set', array, index, value };
+  }
+}
+
+function pushPromiseAllFulfilledClosure(
   context: FunctionLoweringContext,
   signatureId: number,
+  resultArrayType: PromiseAllSupportedArrayValueType,
 ): number {
   const closureFunctionId = context.moduleState.nextClosureFunctionId;
   context.moduleState.nextClosureFunctionId += 1;
   const remainingLocalName = 'remaining_after_settle';
-  const resultsArray = promiseAllCaptureGet('capture_results_1', 'owned_number_array_ref');
+  const resultsArray = promiseAllCaptureGet('capture_results_1', resultArrayType);
   const remainingValue = promiseAllCaptureGet('capture_remaining_2', 'f64');
   const indexValue = promiseAllCaptureGet('capture_index_3', 'f64');
+  const resultSetStatement = promiseAllResultArraySetStatement(
+    resultArrayType,
+    resultsArray,
+    indexValue,
+    localGetExpression('promise_value', 'tagged_ref'),
+    context,
+  );
   context.moduleState.generatedFunctions.push({
     name: `closure_source_promise_all_fulfilled_${closureFunctionId}`,
     exportName: '',
@@ -1051,16 +1176,7 @@ function pushPromiseAllNumberFulfilledClosure(
     locals: [{ name: remainingLocalName, representation: 'f64' }],
     result: 'tagged_ref',
     body: [
-      {
-        kind: 'owned_number_array_set',
-        array: resultsArray,
-        index: indexValue,
-        value: {
-          kind: 'untag_number',
-          value: localGetExpression('promise_value', 'tagged_ref'),
-          representation: 'f64',
-        },
-      },
+      resultSetStatement,
       {
         kind: 'local_set',
         name: remainingLocalName,
@@ -1118,7 +1234,7 @@ function pushPromiseAllNumberFulfilledClosure(
     closureCaptureCount: 4,
     closureCaptureValueTypes: [
       'tagged_ref',
-      'owned_number_array_ref',
+      resultArrayType,
       'box_ref',
       'f64',
     ],

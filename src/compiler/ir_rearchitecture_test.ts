@@ -2804,6 +2804,97 @@ Deno.test('compileProject selects the source-hir wasm-gc plan for internal Promi
   assertEquals(result.artifacts?.backendPlanSource, 'source-hir');
 });
 
+Deno.test('compileProject selects the source-hir wasm-gc plan for internal Promise.all non-number arrays', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+            lib: ['ES2022'],
+          },
+          include: ['src/**/*.ts'],
+          soundscript: {
+            target: 'wasm-node',
+          },
+        },
+        null,
+        2,
+      ),
+    },
+    {
+      path: 'src/index.ts',
+      contents: `
+        function labels(): Promise<string[]> {
+          return Promise.all([Promise.resolve('left'), Promise.resolve('right')]);
+        }
+
+        function flags(): Promise<boolean[]> {
+          return Promise.all([Promise.resolve(true), Promise.resolve(false)]);
+        }
+
+        function mixed(): Promise<Array<string | null>> {
+          return Promise.all([Promise.resolve<string | null>('ready'), Promise.resolve<string | null>(null)]);
+        }
+
+        export function score(): number {
+          labels();
+          flags();
+          mixed();
+          return 1;
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createSourceSemanticSnapshot(program, tempDirectory);
+  const semantic = createSemanticModuleFromSourceHIR(snapshot.source, snapshot.sharedFacts);
+  const manifest = createRuntimeManifestFromSemanticModule(semantic);
+  const plan = createWasmGcModulePlan(semantic, manifest);
+  const labelsPlan = plan.functionPlans.find((func) => func.name === 'labels');
+  const flagsPlan = plan.functionPlans.find((func) => func.name === 'flags');
+  const mixedPlan = plan.functionPlans.find((func) => func.name === 'mixed');
+  const scorePlan = plan.functionPlans.find((func) => func.name === 'score');
+  const wat = emitWasmGcModulePlan(plan);
+  const watPath = join(tempDirectory, 'source-hir-promise-all-non-number.wat');
+  const wasmPath = join(tempDirectory, 'source-hir-promise-all-non-number.wasm');
+  const result = compileProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(
+    manifest.familyRequirements.map((requirement) => requirement.family),
+    ['array', 'closure', 'finite_union', 'promise', 'string'],
+  );
+  assertEquals(labelsPlan?.bodyStatus, 'emittable');
+  assertEquals(flagsPlan?.bodyStatus, 'emittable');
+  assertEquals(mixedPlan?.bodyStatus, 'emittable');
+  assertEquals(scorePlan?.bodyStatus, 'emittable');
+  assertEquals(wat.includes('promise_all_results'), true);
+  assertEquals(wat.includes('call $soundscript_promise_then'), true);
+  assertEquals(wat.includes('call $soundscript_promise_resolve_into'), true);
+  assertEquals(wat.includes('Promise.resolve'), false);
+  assertEquals(wat.includes('Promise.all'), false);
+  assertEquals(wat.includes('jspi'), false);
+  await Deno.writeTextFile(watPath, wat);
+  const parseResult = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  assertEquals(new TextDecoder().decode(parseResult.stderr).trim(), '');
+  assertEquals(parseResult.success, true);
+  assertEquals(result.exitCode, 0);
+  assertEquals(result.diagnostics, []);
+  assertEquals(result.artifacts?.backend, 'wasm-gc');
+  assertEquals(result.artifacts?.backendPlanSource, 'source-hir');
+});
+
 Deno.test('compileProject selects the source-hir wasm-gc plan for internal async Promise returns', async () => {
   const tempDirectory = await createTempProject([
     {
