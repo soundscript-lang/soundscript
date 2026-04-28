@@ -2398,6 +2398,45 @@ function compoundAssignmentBinaryOperator(operator: string): string | undefined 
   }
 }
 
+function lowerObjectLiteralExpression(
+  expression: Extract<SourceExpressionIR, { kind: 'object_literal' }>,
+  context: FunctionLoweringContext,
+): SemanticExpressionIR {
+  const fieldValueNames: string[] = [];
+  const fields: { name: string; representation: CompilerValueType }[] = [];
+  const statements: SemanticStatementIR[] = [];
+  for (const property of expression.properties) {
+    if (property.computedName) {
+      context.unsupportedKinds.add('object_literal_computed');
+      return { kind: 'undefined_literal', representation: 'tagged_ref' };
+    }
+    const value = lowerExpression(property.value, context);
+    statements.push(...takePendingStatements(context));
+    const valueName = nextTempLocalName(context, `object_literal_${property.name}`);
+    addLocal(context, valueName, value.representation);
+    statements.push({ kind: 'local_set', name: valueName, value });
+    fieldValueNames.push(valueName);
+    fields.push({ name: property.name, representation: value.representation });
+  }
+
+  const objectName = nextTempLocalName(context, 'object_literal');
+  const objectLocal: SourceSemanticObjectLocal = {
+    family: 'specialized_object',
+    representationName: registerSpecializedObjectLayout(context, fields),
+    fields,
+  };
+  addLocal(context, objectName, 'heap_ref');
+  context.objectLocals.set(objectName, objectLocal);
+  context.pendingStatements.push(...statements, {
+    kind: 'specialized_object_new',
+    targetName: objectName,
+    representationName: objectLocal.representationName,
+    fieldValueNames,
+  });
+  context.runtimeFamilies.add('specialized_object');
+  return localGetExpression(objectName, 'heap_ref');
+}
+
 function lowerExpression(
   expression: SourceExpressionIR,
   context: FunctionLoweringContext,
@@ -2618,6 +2657,8 @@ function lowerExpression(
       context.unsupportedKinds.add('array_literal');
       return { kind: 'undefined_literal', representation: 'tagged_ref' };
     }
+    case 'object_literal':
+      return lowerObjectLiteralExpression(expression, context);
     case 'call_expression': {
       const promiseThenCall = lowerPromiseThenCallExpression(expression, context);
       if (promiseThenCall) {
