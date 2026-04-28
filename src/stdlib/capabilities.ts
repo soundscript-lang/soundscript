@@ -41,9 +41,47 @@ function defaultManifest(): readonly CapabilityInfo[] {
   const node = isNodeRuntime();
 
   return [
+    { name: 'platform.console', status: 'available' },
+    {
+      name: 'platform.fetch',
+      status: hasFetch ? 'available' : 'unavailable',
+      reason: hasFetch ? undefined : 'global fetch is not available',
+    },
+    {
+      name: 'platform.streams',
+      status: typeof globalThis.ReadableStream === 'function' &&
+          typeof globalThis.WritableStream === 'function'
+        ? 'available'
+        : 'unavailable',
+      reason: typeof globalThis.ReadableStream === 'function' &&
+          typeof globalThis.WritableStream === 'function'
+        ? undefined
+        : 'Web Streams globals are not available',
+    },
+    {
+      name: 'platform.text',
+      status: hasTextCodec ? 'available' : 'unavailable',
+      reason: hasTextCodec ? undefined : 'TextEncoder or TextDecoder is not available',
+    },
+    {
+      name: 'platform.crypto.random',
+      status: hasCrypto ? 'available' : 'unavailable',
+      reason: hasCrypto ? undefined : 'global crypto is not available',
+    },
     { name: 'console', status: 'available' },
     { name: 'time', status: 'available' },
     { name: 'path', status: 'available' },
+    {
+      name: 'streams',
+      status: typeof globalThis.ReadableStream === 'function' &&
+          typeof globalThis.WritableStream === 'function'
+        ? 'available'
+        : 'unavailable',
+      reason: typeof globalThis.ReadableStream === 'function' &&
+          typeof globalThis.WritableStream === 'function'
+        ? undefined
+        : 'Web Streams globals are not available',
+    },
     { name: 'bytes', status: hasTextCodec ? 'available' : 'unavailable' },
     { name: 'concurrency.task', status: 'available' },
     {

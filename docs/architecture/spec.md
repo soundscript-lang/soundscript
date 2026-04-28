@@ -437,8 +437,8 @@ environment. Packages without usable source metadata are foreign dependencies an
 
 The standard library should prefer Web-standard platform APIs wherever the semantics are honest.
 Portable globals and leaf modules are both part of the intended contract. The repo already ships
-`sts:url`, `sts:fetch`, `sts:text`, and `sts:random`; `sts:streams` remains part of the intended
-broader platform surface:
+`sts:url`, `sts:fetch`, `sts:streams`, `sts:text`, and `sts:random` as the initial broader platform
+surface:
 
 - globals and leaf modules:
   - `URL`, `URLSearchParams` and `sts:url`

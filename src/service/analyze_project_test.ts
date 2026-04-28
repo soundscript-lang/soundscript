@@ -2666,6 +2666,7 @@ Deno.test('analyzeProject resolves portable sts platform modules on wasm-wasi', 
     'src/index.sts': [
       'import { URL, URLSearchParams } from "sts:url";',
       'import { fetch, Headers, Request } from "sts:fetch";',
+      'import { fromBytes, readAllBytes } from "sts:streams";',
       'import { TextEncoder, TextDecoder } from "sts:text";',
       'import { crypto } from "sts:random";',
       '',
@@ -2676,11 +2677,14 @@ Deno.test('analyzeProject resolves portable sts platform modules on wasm-wasi', 
       'const encoder = new TextEncoder();',
       'const decoder = new TextDecoder();',
       'const bytes = encoder.encode(url.href);',
+      'const stream = fromBytes(bytes);',
+      'const streamBytes = readAllBytes(stream);',
       'const text = decoder.decode(bytes);',
       'const cryptoRef = crypto;',
       '',
       'void params;',
       'void responsePromise;',
+      'void streamBytes;',
       'void cryptoRef;',
       'void text;',
       '',
@@ -2818,6 +2822,32 @@ Deno.test('analyzeProject resolves js-node provider stdlib modules on js-node', 
   const result = await analyzeProject({
     projectPath: join(tempDirectory, 'tsconfig.json'),
     target: 'js-node',
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(result.diagnostics, []);
+});
+
+Deno.test('analyzeProject resolves web portable stdlib modules on js-browser', async () => {
+  const tempDirectory = await createTempProject({
+    'tsconfig.json': createBrowserTsconfig(),
+    'src/index.sts': [
+      "import { request } from 'sts:fetch';",
+      "import { readAllBytes } from 'sts:streams';",
+      "import { encodeUtf8 } from 'sts:text';",
+      "import { randomBytes } from 'sts:random';",
+      '',
+      'void request;',
+      'void readAllBytes;',
+      'void encodeUtf8;',
+      'void randomBytes;',
+      '',
+    ].join('\n'),
+  });
+
+  const result = await analyzeProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    target: 'js-browser',
     workingDirectory: tempDirectory,
   });
 

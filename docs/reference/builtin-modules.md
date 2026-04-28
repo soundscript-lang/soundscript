@@ -58,8 +58,8 @@ The stable `sts:*` surface stays focused and composable.
 - `sts:concurrency/task` owns `Task<T, E>` and result-first async helpers exposed through `Task.*`.
 - `sts:concurrency/runtime` owns js-node structured concurrency primitives such as `TaskGroup` and
   `AsyncContext`; other targets gate that module until they have a provider.
-- `sts:capabilities`, `sts:time`, `sts:console`, `sts:path`, and `sts:bytes` are JS-neutral portable
-  support modules.
+- `sts:capabilities`, `sts:time`, `sts:console`, `sts:streams`, `sts:path`, and `sts:bytes` are
+  JS-neutral portable support modules.
 - `sts:fs`, `sts:env`, `sts:cli`, `sts:process`, `sts:http`, and `sts:net` are initial js-node
   provider modules and are capability-gated away from browser/Wasm targets.
 - `sts:compare` owns `Eq`, `Order`, and comparator composition helpers.
@@ -68,7 +68,8 @@ The stable `sts:*` surface stays focused and composable.
   `codec`, and `tagged`.
 - `sts:hkt` owns low-level higher-kinded type machinery.
 - `sts:typeclasses` owns `Functor`, `Applicative`, `Monad`, `AsyncMonad`, and `Do`.
-- `sts:url`, `sts:fetch`, `sts:text`, and `sts:random` are the initial portable leaf modules.
+- `sts:url`, `sts:fetch`, `sts:streams`, `sts:text`, and `sts:random` are the initial portable leaf
+  modules.
 
 If you are deciding where a helper should live, prefer the narrowest leaf module that honestly
 matches the ownership boundary.

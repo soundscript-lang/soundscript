@@ -32,6 +32,7 @@ export const STABLE_RUNTIME_MODULES = [
   'failures',
   'url',
   'fetch',
+  'streams',
   'text',
   'random',
   'json',

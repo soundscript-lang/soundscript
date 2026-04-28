@@ -1,9 +1,18 @@
 import { URL, URLSearchParams } from 'sts:url';
+import { type Bytes, Bytes as BytesApi } from 'sts:bytes';
+import type { DecodeMode, Decoder } from 'sts:decode';
+import { type AsyncResult, CancellationFailure } from 'sts:concurrency/task';
+import { Failure, normalizeThrown } from 'sts:failures';
+import { err, ok, type Result } from 'sts:result';
 
 export interface AbortSignal {
   readonly aborted: boolean;
   readonly reason: unknown;
   throwIfAborted(): void;
+}
+
+export interface OperationOptions {
+  readonly signal?: AbortSignal;
 }
 
 export type HeadersInit = Headers | Iterable<readonly [string, string]> | Record<string, string>;
@@ -46,9 +55,9 @@ export interface Headers {
 
 export const Headers: {
   // #[effects(add: [host.ffi])]
-  new(init?: HeadersInit): Headers;
+  new (init?: HeadersInit): Headers;
 } = globalThis.Headers as unknown as {
-  new(init?: HeadersInit): Headers;
+  new (init?: HeadersInit): Headers;
 };
 
 export interface Request {
@@ -68,9 +77,9 @@ export interface Request {
 
 export const Request: {
   // #[effects(add: [host.ffi])]
-  new(input: RequestInfo, init?: RequestInit): Request;
+  new (input: RequestInfo, init?: RequestInit): Request;
 } = globalThis.Request as unknown as {
-  new(input: RequestInfo, init?: RequestInit): Request;
+  new (input: RequestInfo, init?: RequestInit): Request;
 };
 
 export interface Response {
@@ -91,7 +100,7 @@ export interface Response {
 
 export const Response: {
   // #[effects(add: [host.ffi])]
-  new(body?: BodyInit | null, init?: ResponseInit): Response;
+  new (body?: BodyInit | null, init?: ResponseInit): Response;
   // #[effects(add: [host.ffi])]
   error(): Response;
   // #[effects(add: [host.ffi])]
@@ -99,7 +108,7 @@ export const Response: {
   // #[effects(add: [host.ffi])]
   redirect(url: string | URL, status?: number): Response;
 } = globalThis.Response as unknown as {
-  new(body?: BodyInit | null, init?: ResponseInit): Response;
+  new (body?: BodyInit | null, init?: ResponseInit): Response;
   error(): Response;
   json(data: unknown, init?: ResponseInit): Response;
   redirect(url: string | URL, status?: number): Response;
@@ -111,3 +120,108 @@ export const fetch: {
 } = globalThis.fetch.bind(globalThis) as unknown as {
   (input: RequestInfo, init?: RequestInit): Promise<Response>;
 };
+
+export type FetchFailure = Failure;
+
+function failureFromUnknown(value: unknown): Failure {
+  if (value instanceof Failure) {
+    return value;
+  }
+  const normalized = normalizeThrown(value);
+  return new Failure(normalized.message, { cause: normalized });
+}
+
+function cancellationFailure(signal: AbortSignal): CancellationFailure {
+  return signal.reason instanceof CancellationFailure
+    ? signal.reason
+    : new CancellationFailure('Operation was cancelled.', signal.reason);
+}
+
+function abortResult<T>(signal?: AbortSignal): Result<T, CancellationFailure> | undefined {
+  return signal?.aborted ? err(cancellationFailure(signal)) : undefined;
+}
+
+export async function request(
+  input: RequestInfo,
+  init: RequestInit = {},
+): AsyncResult<Response, FetchFailure> {
+  const aborted = abortResult<Response>(init.signal ?? undefined);
+  if (aborted) {
+    return aborted;
+  }
+
+  try {
+    return ok(await fetch(input, init));
+  } catch (error) {
+    return err(failureFromUnknown(error));
+  }
+}
+
+export async function readJson<T, E = Failure>(
+  response: Response,
+  decoder: Decoder<T, E, DecodeMode>,
+  options: OperationOptions = {},
+): AsyncResult<T, E | Failure> {
+  const aborted = abortResult<T>(options.signal);
+  if (aborted) {
+    return aborted;
+  }
+
+  try {
+    const value = await response.json();
+    const afterRead = abortResult<T>(options.signal);
+    if (afterRead) {
+      return afterRead;
+    }
+    return await decoder.decode(value) as Result<T, E | Failure>;
+  } catch (error) {
+    return err(failureFromUnknown(error));
+  }
+}
+
+export async function readText(
+  response: Response,
+  options: OperationOptions = {},
+): AsyncResult<string, Failure> {
+  const aborted = abortResult<string>(options.signal);
+  if (aborted) {
+    return aborted;
+  }
+
+  try {
+    const text = await response.text();
+    const afterRead = abortResult<string>(options.signal);
+    return afterRead ?? ok(text);
+  } catch (error) {
+    return err(failureFromUnknown(error));
+  }
+}
+
+export async function readBytes(
+  response: Response,
+  options: OperationOptions = {},
+): AsyncResult<Bytes, Failure> {
+  const aborted = abortResult<Bytes>(options.signal);
+  if (aborted) {
+    return aborted;
+  }
+
+  try {
+    const bytes = BytesApi.from(await response.arrayBuffer());
+    const afterRead = abortResult<Bytes>(options.signal);
+    return afterRead ?? ok(bytes);
+  } catch (error) {
+    return err(failureFromUnknown(error));
+  }
+}
+
+export const Fetch = Object.freeze({
+  Headers,
+  Request,
+  Response,
+  fetch,
+  request,
+  readJson,
+  readText,
+  readBytes,
+});
