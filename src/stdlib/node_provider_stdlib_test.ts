@@ -12,6 +12,26 @@ import { Process } from './process.ts';
 import { err, ok } from './result.ts';
 import { readAllText, writeAllBytes } from './streams.ts';
 
+const TEST_TLS_KEY = `-----BEGIN PRIVATE KEY-----
+MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgE8peNPets+qmSHFl
+ow9wcVaPzz6zLUGRQAQlMO7/aWqhRANCAAQLvA8wqUUnglgvRdLE6R3gRRHas3Jg
+dktbeR1meNbwGHhW/aG4Ygq45q70LGywoFaehFvWcJhnt8LKuZELWYla
+-----END PRIVATE KEY-----
+`;
+
+const TEST_TLS_CERT = `-----BEGIN CERTIFICATE-----
+MIIBmjCCAT+gAwIBAgIUDArU7mOwU3WMpPS1UVmgy0rmWJowCgYIKoZIzj0EAwIw
+FDESMBAGA1UEAwwJbG9jYWxob3N0MB4XDTI2MDUwMjAyNDQxMFoXDTI3MDUwMjAy
+NDQxMFowFDESMBAGA1UEAwwJbG9jYWxob3N0MFkwEwYHKoZIzj0CAQYIKoZIzj0D
+AQcDQgAEC7wPMKlFJ4JYL0XSxOkd4EUR2rNyYHZLW3kdZnjW8Bh4Vv2huGIKuOau
+9CxssKBWnoRb1nCYZ7fCyrmRC1mJWqNvMG0wHQYDVR0OBBYEFN8m7HfKOdMB6XAT
+0DHS3Fnri6uNMB8GA1UdIwQYMBaAFN8m7HfKOdMB6XAT0DHS3Fnri6uNMA8GA1Ud
+EwEB/wQFMAMBAf8wGgYDVR0RBBMwEYIJbG9jYWxob3N0hwR/AAABMAoGCCqGSM49
+BAMCA0kAMEYCIQCpcO4XADr/rKSkoPWgWUP7P/NiHc7tasxRS5X0shTpRQIhAPa3
+NOqUIa71l4JQaWGbIwAcoWhteATnwFJtNQGocg7+
+-----END CERTIFICATE-----
+`;
+
 Deno.test('node provider fs reads and writes AsyncResult values', async () => {
   const tempDirectory = await Deno.makeTempDir();
   const path = `${tempDirectory}/nested/value.txt`;
@@ -151,6 +171,70 @@ Deno.test('node provider net opens TCP loopback streams', async () => {
 
     const response = await readAllText(client.value.readable);
     assertEquals(response.tag === 'ok' ? response.value : undefined, 'pong');
+  } finally {
+    await client.value.close();
+    await server.value.close();
+    await listener.value.close();
+  }
+});
+
+Deno.test('node provider net opens TLS loopback streams', async () => {
+  const listener = await Net.listenTls({
+    cert: TEST_TLS_CERT,
+    key: TEST_TLS_KEY,
+    port: 0,
+  });
+
+  assertEquals(listener.tag, 'ok');
+  assertEquals(hasCapability('net.tls'), true);
+  if (listener.tag === 'err') {
+    return;
+  }
+
+  const accepted = listener.value.accept();
+  const client = await Net.connectTls({
+    hostname: '127.0.0.1',
+    port: listener.value.address.port,
+    rejectUnauthorized: false,
+    serverName: 'localhost',
+  });
+
+  assertEquals(client.tag, 'ok');
+  if (client.tag === 'err') {
+    await listener.value.close();
+    return;
+  }
+
+  const server = await accepted;
+  assertEquals(server.tag, 'ok');
+  if (server.tag === 'err') {
+    await client.value.close();
+    await listener.value.close();
+    return;
+  }
+
+  try {
+    assertEquals(typeof client.value.authorized, 'boolean');
+    assertEquals(
+      await writeAllBytes(client.value.writable, Bytes.fromString('secure-ping')),
+      ok(undefined),
+    );
+
+    const serverReader = server.value.readable.getReader();
+    const request = await serverReader.read();
+    serverReader.releaseLock();
+    assertEquals(
+      request.value ? Bytes.toString(new Uint8Array(request.value.buffer)) : undefined,
+      'secure-ping',
+    );
+
+    const serverWriter = server.value.writable.getWriter();
+    await serverWriter.write(Bytes.fromString('secure-pong'));
+    await serverWriter.close();
+    serverWriter.releaseLock();
+
+    const response = await readAllText(client.value.readable);
+    assertEquals(response.tag === 'ok' ? response.value : undefined, 'secure-pong');
   } finally {
     await client.value.close();
     await server.value.close();
