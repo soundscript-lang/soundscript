@@ -1049,6 +1049,10 @@ export interface ServeOptions {
   readonly port: number;
   readonly signal?: AbortSignal;
   readonly name?: string;
+  readonly maxRequestBodyBytes?: number;
+  readonly headersTimeout?: Duration;
+  readonly requestTimeout?: Duration;
+  readonly keepAliveTimeout?: Duration;
 }
 
 export interface CloseOptions {
@@ -1068,6 +1072,10 @@ export function listen(options: ServeOptions & { handle: Handler }): AsyncResult
 export function serve(options: ServeOptions & { handle: Handler }): AsyncResult<void, Failure>;
 ```
 
+`maxRequestBodyBytes` should reject known oversized `Content-Length` requests before invoking
+handlers and enforce streamed Web-handler bodies as they are read. Timeout options map to the
+provider's HTTP server lifecycle controls.
+
 Advanced server options can be added after the first slice:
 
 - TLS
@@ -1075,7 +1083,6 @@ Advanced server options can be added after the first slice:
 - WebSocket upgrade
 - handler execution through `ThreadPool`
 - connection limits
-- request body size limits
 
 ## `sts:transport`
 
@@ -1230,19 +1237,19 @@ Legend:
 The current implementation intentionally starts with JS targets and leaves Wasm provider work gated
 until the Wasm runtime/compiler path is ready.
 
-| Module/API                                                                    | js-browser today               | js-node today                                                                                                                           |
-| ----------------------------------------------------------------------------- | ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------- |
-| `sts:concurrency/task`                                                        | implemented                    | implemented                                                                                                                             |
-| `sts:concurrency/runtime`                                                     | gated                          | `TaskGroup`, `TaskHandle`, `AsyncContext`, `Runtime`                                                                                    |
-| `sts:capabilities`, `sts:time`, `sts:console`, `sts:path`, `sts:bytes`        | implemented                    | implemented                                                                                                                             |
-| `sts:url`, `sts:fetch`, `sts:streams`, `sts:text`, `sts:random`               | implemented                    | implemented                                                                                                                             |
-| `sts:fs`                                                                      | gated                          | file read/write, stat/lstat, directories, copy/rename/remove, real path                                                                 |
-| `sts:env`                                                                     | gated                          | read, require, set, remove, record snapshot                                                                                             |
-| `sts:cli`                                                                     | gated                          | args, stdio metadata, terminal checks, terminal size                                                                                    |
-| `sts:process`                                                                 | gated                          | process info/cwd/platform/uptime/signals/exit code and child process spawn/output                                                       |
-| `sts:http`                                                                    | gated                          | Web `Request`/`Response` server, ready `listen`, run-until-closed `serve`, force-deadline `close`, low-level Node handler compatibility |
-| `sts:net`                                                                     | gated                          | DNS lookup, TCP connect/listen, TLS connect/listen                                                                                      |
-| `sts:concurrency/parallel`, `sts:concurrency/sync`, `sts:concurrency/atomics` | gated/unsupported placeholders | gated/unsupported placeholders                                                                                                          |
+| Module/API                                                                    | js-browser today               | js-node today                                                                                                                                                         |
+| ----------------------------------------------------------------------------- | ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `sts:concurrency/task`                                                        | implemented                    | implemented                                                                                                                                                           |
+| `sts:concurrency/runtime`                                                     | gated                          | `TaskGroup`, `TaskHandle`, `AsyncContext`, `Runtime`                                                                                                                  |
+| `sts:capabilities`, `sts:time`, `sts:console`, `sts:path`, `sts:bytes`        | implemented                    | implemented                                                                                                                                                           |
+| `sts:url`, `sts:fetch`, `sts:streams`, `sts:text`, `sts:random`               | implemented                    | implemented                                                                                                                                                           |
+| `sts:fs`                                                                      | gated                          | file read/write, stat/lstat, directories, copy/rename/remove, real path                                                                                               |
+| `sts:env`                                                                     | gated                          | read, require, set, remove, record snapshot                                                                                                                           |
+| `sts:cli`                                                                     | gated                          | args, stdio metadata, terminal checks, terminal size                                                                                                                  |
+| `sts:process`                                                                 | gated                          | process info/cwd/platform/uptime/signals/exit code and child process spawn/output                                                                                     |
+| `sts:http`                                                                    | gated                          | Web `Request`/`Response` server, ready `listen`, run-until-closed `serve`, body limits, server timeouts, force-deadline `close`, low-level Node handler compatibility |
+| `sts:net`                                                                     | gated                          | DNS lookup, TCP connect/listen, TLS connect/listen                                                                                                                    |
+| `sts:concurrency/parallel`, `sts:concurrency/sync`, `sts:concurrency/atomics` | gated/unsupported placeholders | gated/unsupported placeholders                                                                                                                                        |
 
 Browser code should continue to use Web-platform APIs for browser-native capabilities. `sts:fetch`
 is the portable HTTP client surface; `WebSocket` and WebTransport remain Web-platform APIs until a

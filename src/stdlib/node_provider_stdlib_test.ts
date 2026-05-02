@@ -318,6 +318,94 @@ Deno.test('node provider http listen returns a ready Web server', async () => {
   }
 });
 
+Deno.test('node provider http enforces maximum request body size', async () => {
+  let handled = 0;
+  const serverResult = await Http.listen({
+    hostname: '127.0.0.1',
+    port: 0,
+    maxRequestBodyBytes: 4,
+    handle(request) {
+      handled += 1;
+      return (async () => ok(new Response(await request.text())))();
+    },
+  });
+
+  assertEquals(serverResult.tag, 'ok');
+  if (serverResult.tag === 'err') {
+    return;
+  }
+
+  try {
+    const accepted = await fetch(`http://127.0.0.1:${serverResult.value.address.port}/body`, {
+      body: 'ping',
+      method: 'POST',
+    });
+    assertEquals(accepted.status, 200);
+    assertEquals(await accepted.text(), 'ping');
+
+    const rejected = await fetch(`http://127.0.0.1:${serverResult.value.address.port}/body`, {
+      body: 'hello',
+      method: 'POST',
+    });
+    assertEquals(rejected.status, 413);
+    assertEquals(await rejected.text(), 'HTTP request body exceeded 4 bytes.');
+    assertEquals(handled, 1);
+
+    const chunked = await Deno.connect({
+      hostname: '127.0.0.1',
+      port: serverResult.value.address.port,
+    });
+    try {
+      const rawRequest = [
+        'POST /body HTTP/1.1',
+        `Host: 127.0.0.1:${serverResult.value.address.port}`,
+        'Transfer-Encoding: chunked',
+        'Connection: close',
+        '',
+        '5',
+        'hello',
+        '0',
+        '',
+        '',
+      ].join('\r\n');
+      await chunked.write(new TextEncoder().encode(rawRequest));
+      const chunkedResponse = await readConnectionText(chunked);
+      assertEquals(chunkedResponse.includes('HTTP/1.1 413'), true);
+      assertEquals(chunkedResponse.includes('HTTP request body exceeded 4 bytes.'), true);
+      assertEquals(handled, 2);
+    } finally {
+      chunked.close();
+    }
+  } finally {
+    assertEquals((await serverResult.value.close()).tag, 'ok');
+  }
+});
+
+Deno.test('node provider http accepts server timeout options', async () => {
+  const serverResult = await Http.listen({
+    hostname: '127.0.0.1',
+    port: 0,
+    headersTimeout: Duration.milliseconds(250),
+    requestTimeout: Duration.milliseconds(250),
+    keepAliveTimeout: Duration.milliseconds(250),
+    handle() {
+      return new Response('timeout-options');
+    },
+  });
+
+  assertEquals(serverResult.tag, 'ok');
+  if (serverResult.tag === 'err') {
+    return;
+  }
+
+  try {
+    const response = await fetch(`http://127.0.0.1:${serverResult.value.address.port}/timeouts`);
+    assertEquals(await response.text(), 'timeout-options');
+  } finally {
+    assertEquals((await serverResult.value.close()).tag, 'ok');
+  }
+});
+
 Deno.test('node provider http close accepts force deadlines', async () => {
   const serverResult = await Http.listen({
     hostname: '127.0.0.1',
@@ -362,6 +450,35 @@ Deno.test('node provider http keeps low-level Node handler compatibility', async
   }
 });
 
+Deno.test('node provider http applies known body limits to low-level Node handlers', async () => {
+  let handled = false;
+  const serverResult = await Http.serve(
+    { hostname: '127.0.0.1', port: 0, maxRequestBodyBytes: 2 },
+    (_request, response) => {
+      handled = true;
+      response.statusCode = 200;
+      response.end('node');
+    },
+  );
+
+  assertEquals(serverResult.tag, 'ok');
+  if (serverResult.tag === 'err') {
+    return;
+  }
+
+  try {
+    const response = await fetch(`http://127.0.0.1:${serverResult.value.port}/`, {
+      body: 'toolarge',
+      method: 'POST',
+    });
+    assertEquals(response.status, 413);
+    assertEquals(await response.text(), 'HTTP request body exceeded 2 bytes.');
+    assertEquals(handled, false);
+  } finally {
+    assertEquals((await serverResult.value.close()).tag, 'ok');
+  }
+});
+
 Deno.test('node provider http serve exits when signal is already aborted', async () => {
   const controller = new AbortController();
   controller.abort();
@@ -386,4 +503,25 @@ async function waitForHttpServerPort(server: { readonly address: { readonly port
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
   throw new Error('HTTP server did not start listening.');
+}
+
+async function readConnectionText(connection: Deno.Conn): Promise<string> {
+  const chunks: Uint8Array[] = [];
+  const buffer = new Uint8Array(1024);
+  while (true) {
+    const read = await connection.read(buffer);
+    if (read === null) {
+      break;
+    }
+    chunks.push(buffer.slice(0, read));
+  }
+
+  const totalLength = chunks.reduce((total, chunk) => total + chunk.byteLength, 0);
+  const output = new Uint8Array(totalLength);
+  let offset = 0;
+  for (const chunk of chunks) {
+    output.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder().decode(output);
 }
