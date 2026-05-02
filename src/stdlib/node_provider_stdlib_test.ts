@@ -294,6 +294,29 @@ Deno.test('node provider http serves Web Request and Response handlers', async (
   }
 });
 
+Deno.test('node provider http listen returns a ready Web server', async () => {
+  const serverResult = await Http.listen({
+    hostname: '127.0.0.1',
+    port: 0,
+    handle(request) {
+      return new Response(`ready:${new URL(request.url).pathname}`);
+    },
+  });
+
+  assertEquals(serverResult.tag, 'ok');
+  if (serverResult.tag === 'err') {
+    return;
+  }
+
+  try {
+    assertEquals(serverResult.value.address.port > 0, true);
+    const response = await fetch(`http://127.0.0.1:${serverResult.value.address.port}/listen`);
+    assertEquals(await response.text(), 'ready:/listen');
+  } finally {
+    assertEquals((await serverResult.value.close()).tag, 'ok');
+  }
+});
+
 Deno.test('node provider http keeps low-level Node handler compatibility', async () => {
   const serverResult = await Http.serve(
     { hostname: '127.0.0.1', port: 0 },
