@@ -11,6 +11,11 @@ export interface DnsAddress {
 
 export type IpAddress = string;
 
+export interface SocketAddress {
+  readonly hostname: string;
+  readonly port: number;
+}
+
 export interface OperationOptions {
   readonly signal?: AbortSignal;
 }
