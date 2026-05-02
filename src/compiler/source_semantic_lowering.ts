@@ -6910,6 +6910,22 @@ function collectSourceAwaitAssignmentTargetLiveNames(
   }
 }
 
+function mergeSourceAsyncCaptures(
+  left: readonly SourceAsyncCapture[],
+  right: readonly SourceAsyncCapture[],
+): readonly SourceAsyncCapture[] {
+  const captures: SourceAsyncCapture[] = [];
+  const seen = new Set<string>();
+  for (const capture of [...left, ...right]) {
+    if (seen.has(capture.name)) {
+      continue;
+    }
+    seen.add(capture.name);
+    captures.push(capture);
+  }
+  return captures;
+}
+
 function sourceAsyncLiveNamesAfterAwait(
   steps: readonly SourceAwaitStep[],
   index: number,
@@ -6928,6 +6944,21 @@ function sourceAsyncLiveNamesAfterAwait(
   trailingStatements.forEach((statement) =>
     collectSourceStatementIdentifierReads(statement, names)
   );
+  if (returnStatement.expression) {
+    collectSourceExpressionIdentifierReads(returnStatement.expression, names);
+  }
+  return names;
+}
+
+function sourceAsyncLoopLiveNames(
+  statement: Extract<SourceStatementIR, { kind: 'while' }>,
+  afterStatements: readonly SourceStatementIR[],
+  returnStatement: Extract<SourceStatementIR, { kind: 'return' }>,
+): readonly string[] {
+  const names: string[] = [];
+  collectSourceExpressionIdentifierReads(statement.test, names);
+  statement.body.forEach((child) => collectSourceStatementIdentifierReads(child, names));
+  afterStatements.forEach((child) => collectSourceStatementIdentifierReads(child, names));
   if (returnStatement.expression) {
     collectSourceExpressionIdentifierReads(returnStatement.expression, names);
   }
@@ -7613,6 +7644,303 @@ function lowerSourceAwaitStepsToPromiseReturn(
   ];
 }
 
+function lowerAsyncPromiseTargetResolution(
+  afterStatements: readonly SourceStatementIR[],
+  returnStatement: Extract<SourceStatementIR, { kind: 'return' }>,
+  context: FunctionLoweringContext,
+): readonly SemanticStatementIR[] | undefined {
+  const body = afterStatements.flatMap((statement) => [...lowerStatement(statement, context)]);
+  const returnValue = returnStatement.expression
+    ? lowerExpression(returnStatement.expression, context)
+    : { kind: 'undefined_literal', representation: 'tagged_ref' } as SemanticExpressionIR;
+  const taggedReturnValue = taggedUnionExpressionForValue(returnValue, context);
+  if (!taggedReturnValue) {
+    context.unsupportedKinds.add('async_await_return_value');
+    return undefined;
+  }
+  return [
+    ...body,
+    ...takePendingStatements(context),
+    {
+      kind: 'expression',
+      value: {
+        kind: 'call',
+        callee: SOUNDSCRIPT_PROMISE_RESOLVE_INTO_HELPER_NAME,
+        args: [promiseTargetFromCapture(), taggedReturnValue],
+        representation: 'tagged_ref',
+      },
+    },
+    { kind: 'return', value: { kind: 'undefined_literal', representation: 'tagged_ref' } },
+  ];
+}
+
+function asyncLoopStepCallExpression(
+  loopStepFunctionName: string,
+  loopCaptures: readonly SourceAsyncCapture[],
+): SemanticExpressionIR {
+  return {
+    kind: 'call',
+    callee: loopStepFunctionName,
+    args: [
+      localGetExpression('capture_target_0', 'box_ref'),
+      ...loopCaptures.map((capture) => localGetExpression(capture.name, 'box_ref')),
+      { kind: 'undefined_literal', representation: 'tagged_ref' },
+    ],
+    representation: 'tagged_ref',
+  };
+}
+
+function pushAsyncWhileAfterAwaitClosure(
+  context: FunctionLoweringContext,
+  signatureId: number,
+  captures: readonly SourceAsyncCapture[],
+  loopCaptures: readonly SourceAsyncCapture[],
+  loopStepFunctionName: string,
+  step: SourceAwaitStep,
+  bodyTrailingStatements: readonly SourceStatementIR[],
+): number | undefined {
+  const closureFunctionId = context.moduleState.nextClosureFunctionId;
+  context.moduleState.nextClosureFunctionId += 1;
+  const closureContext = createAsyncAwaitContinuationContext(
+    context,
+    `closure_source_async_while_fulfilled_${closureFunctionId}`,
+    captures,
+  );
+  const body: SemanticStatementIR[] = [];
+  if (step.binding || step.assignmentTarget) {
+    const representation = step.representation ??
+      (step.assignmentTarget
+        ? awaitedAssignmentValueRepresentation(step.assignmentTarget, closureContext)
+        : undefined);
+    if (!representation || (step.binding && !step.type)) {
+      context.unsupportedKinds.add('async_while_await_value_type');
+      return undefined;
+    }
+    const awaitedValue = untagUnionExpressionForRepresentation(
+      localGetExpression('promise_value', 'tagged_ref'),
+      representation,
+      closureContext,
+    );
+    if (!awaitedValue) {
+      context.unsupportedKinds.add('async_while_await_value');
+      return undefined;
+    }
+    if (step.binding) {
+      addLocal(closureContext, step.binding.name, representation);
+      closureContext.localDeclarationKinds.set(step.binding.name, 'const');
+      registerSemanticLocalMetadata(closureContext, step.binding.name, step.type!);
+      body.push({ kind: 'local_set', name: step.binding.name, value: awaitedValue });
+    } else if (step.assignmentTarget) {
+      const assignmentStatements = lowerAwaitedAssignmentTargetSet(
+        step.assignmentTarget,
+        awaitedValue,
+        closureContext,
+      );
+      if (!assignmentStatements) {
+        context.unsupportedKinds.add(`async_while_await_assignment:${step.assignmentTarget.kind}`);
+        return undefined;
+      }
+      body.push(...assignmentStatements);
+    }
+  }
+  body.push(
+    ...bodyTrailingStatements.flatMap((
+      statement,
+    ) => [...lowerStatement(statement, closureContext)]),
+    { kind: 'expression', value: asyncLoopStepCallExpression(loopStepFunctionName, loopCaptures) },
+    { kind: 'return', value: { kind: 'undefined_literal', representation: 'tagged_ref' } },
+  );
+
+  const unsupportedBodyKinds = [...closureContext.unsupportedKinds].sort();
+  context.moduleState.generatedFunctions.push({
+    name: closureContext.functionName,
+    exportName: '',
+    params: [
+      { name: 'capture_target_0', representation: 'box_ref' },
+      ...captures.map((capture) => ({
+        name: capture.name,
+        representation: 'box_ref' as const,
+      })),
+      { name: 'promise_value', representation: 'tagged_ref' },
+    ],
+    locals: closureContext.locals,
+    result: 'tagged_ref',
+    body,
+    bodyStatus: unsupportedBodyKinds.length === 0 ? 'emittable' : 'stub',
+    unsupportedBodyKinds,
+    runtimeFamilies: [...new Set([...closureContext.runtimeFamilies])].sort(),
+    hostImported: false,
+    hostExported: false,
+    unionBoundaries: [],
+    closureFunctionId,
+    closureSignatureId: signatureId,
+    closureCaptureCount: 1 + captures.length,
+    closureCaptureValueTypes: [
+      'tagged_ref',
+      ...captures.map((capture) => capture.valueType),
+    ],
+  });
+  return closureFunctionId;
+}
+
+function pushAsyncWhileStepClosure(
+  context: FunctionLoweringContext,
+  signatureId: number,
+  captures: readonly SourceAsyncCapture[],
+  statement: Extract<SourceStatementIR, { kind: 'while' }>,
+  afterStatements: readonly SourceStatementIR[],
+  returnStatement: Extract<SourceStatementIR, { kind: 'return' }>,
+): number | undefined {
+  const closureFunctionId = context.moduleState.nextClosureFunctionId;
+  context.moduleState.nextClosureFunctionId += 1;
+  const functionName = `closure_source_async_while_step_${closureFunctionId}`;
+  const closureContext = createAsyncAwaitContinuationContext(context, functionName, captures);
+  const condition = lowerExpression(statement.test, closureContext);
+  const conditionStatements = takePendingStatements(closureContext);
+  if (condition.representation !== 'i32') {
+    context.unsupportedKinds.add('async_while_condition');
+    return undefined;
+  }
+  const collected = collectSourceAwaitStepsFromSequentialStatements(
+    statement.body,
+    closureContext,
+  );
+  if (!collected || collected.steps.length !== 1) {
+    context.unsupportedKinds.add('async_while_body');
+    return undefined;
+  }
+  const [step] = collected.steps;
+  if (!step) {
+    context.unsupportedKinds.add('async_while_step');
+    return undefined;
+  }
+  const leadingStatements = step.leadingStatements.flatMap((leadingStatement) => [
+    ...lowerStatement(leadingStatement, closureContext),
+  ]);
+  const awaitedSource = lowerExpression(step.source, closureContext);
+  const awaitedSourceStatements = takePendingStatements(closureContext);
+  if (awaitedSource.representation !== 'heap_ref') {
+    context.unsupportedKinds.add('async_while_await_source');
+    return undefined;
+  }
+  const afterCaptures = mergeSourceAsyncCaptures(
+    captures,
+    sourceAsyncCapturesForLiveNames(
+      closureContext,
+      sourceAsyncLiveNamesAfterAwait(
+        collected.steps,
+        0,
+        [statement, ...afterStatements],
+        returnStatement,
+      ),
+    ),
+  );
+  const fulfilledFunctionId = pushAsyncWhileAfterAwaitClosure(
+    closureContext,
+    signatureId,
+    afterCaptures,
+    captures,
+    functionName,
+    step,
+    collected.trailingStatements,
+  );
+  const rejectedFunctionId = pushPromiseRejectIntoClosure(closureContext, signatureId);
+  if (fulfilledFunctionId === undefined) {
+    context.unsupportedKinds.add('async_while_continuation');
+    return undefined;
+  }
+  const awaitedSourceName = nextTempLocalName(closureContext, 'async_while_source');
+  addLocal(closureContext, awaitedSourceName, 'heap_ref');
+  const captureValues = asyncAwaitContinuationCaptureValues(
+    afterCaptures,
+    localGetExpression('capture_target_0', 'box_ref'),
+    closureContext,
+  );
+  const resolveStatements = lowerAsyncPromiseTargetResolution(
+    afterStatements,
+    returnStatement,
+    closureContext,
+  );
+  if (!resolveStatements) {
+    context.unsupportedKinds.add('async_while_return');
+    return undefined;
+  }
+  const body: SemanticStatementIR[] = [
+    ...conditionStatements,
+    {
+      kind: 'if',
+      condition,
+      thenBody: [
+        ...leadingStatements,
+        ...awaitedSourceStatements,
+        { kind: 'local_set', name: awaitedSourceName, value: awaitedSource },
+        {
+          kind: 'expression',
+          value: {
+            kind: 'call',
+            callee: SOUNDSCRIPT_PROMISE_THEN_HELPER_NAME,
+            args: [
+              localGetExpression(awaitedSourceName, 'heap_ref'),
+              {
+                kind: 'closure_literal',
+                functionId: fulfilledFunctionId,
+                signatureId,
+                captures: captureValues.map((capture) => capture.value),
+                captureValueTypes: captureValues.map((capture) => capture.valueType),
+                representation: 'closure_ref',
+              },
+              {
+                kind: 'closure_literal',
+                functionId: rejectedFunctionId,
+                signatureId,
+                captures: [localGetExpression('capture_target_0', 'box_ref')],
+                captureValueTypes: ['tagged_ref'],
+                representation: 'closure_ref',
+              },
+            ],
+            representation: 'heap_ref',
+          },
+        },
+        { kind: 'return', value: { kind: 'undefined_literal', representation: 'tagged_ref' } },
+      ],
+      elseBody: resolveStatements,
+    },
+    { kind: 'return', value: { kind: 'undefined_literal', representation: 'tagged_ref' } },
+  ];
+  closureContext.runtimeFamilies.add('closure');
+
+  const unsupportedBodyKinds = [...closureContext.unsupportedKinds].sort();
+  context.moduleState.generatedFunctions.push({
+    name: closureContext.functionName,
+    exportName: '',
+    params: [
+      { name: 'capture_target_0', representation: 'box_ref' },
+      ...captures.map((capture) => ({
+        name: capture.name,
+        representation: 'box_ref' as const,
+      })),
+      { name: 'promise_value', representation: 'tagged_ref' },
+    ],
+    locals: closureContext.locals,
+    result: 'tagged_ref',
+    body,
+    bodyStatus: unsupportedBodyKinds.length === 0 ? 'emittable' : 'stub',
+    unsupportedBodyKinds,
+    runtimeFamilies: [...new Set([...closureContext.runtimeFamilies])].sort(),
+    hostImported: false,
+    hostExported: false,
+    unionBoundaries: [],
+    closureFunctionId,
+    closureSignatureId: signatureId,
+    closureCaptureCount: 1 + captures.length,
+    closureCaptureValueTypes: [
+      'tagged_ref',
+      ...captures.map((capture) => capture.valueType),
+    ],
+  });
+  return closureFunctionId;
+}
+
 function lowerSequentialAwaitAsyncFunctionBody(
   func: SourceFunctionIR,
   context: FunctionLoweringContext,
@@ -7769,12 +8097,107 @@ function lowerConditionalAwaitAsyncFunctionBody(
   return undefined;
 }
 
+function lowerLoopAwaitAsyncFunctionBody(
+  func: SourceFunctionIR,
+  context: FunctionLoweringContext,
+): readonly SemanticStatementIR[] | undefined {
+  if (!func.async || context.currentResultType?.kind !== 'promise' || func.body.length < 2) {
+    return undefined;
+  }
+  const returnStatement = func.body.at(-1);
+  if (returnStatement?.kind !== 'return') {
+    return undefined;
+  }
+  let leadingStatements: readonly SourceStatementIR[] = [];
+  const candidateStatements = func.body.slice(0, -1);
+  for (const [index, statement] of candidateStatements.entries()) {
+    if (!sourceStatementContainsAwaitExpression(statement)) {
+      leadingStatements = [...leadingStatements, statement];
+      continue;
+    }
+    if (
+      statement.kind !== 'while' ||
+      sourceExpressionContainsAwaitExpression(statement.test)
+    ) {
+      return undefined;
+    }
+    const afterStatements = candidateStatements.slice(index + 1);
+    if (
+      afterStatements.some((afterStatement) =>
+        sourceStatementContainsAwaitExpression(afterStatement)
+      )
+    ) {
+      return undefined;
+    }
+    const loweredLeadingStatements = leadingStatements.flatMap((leadingStatement) => [
+      ...lowerStatement(leadingStatement, context),
+    ]);
+    const taggedValue = promiseReactionTaggedValueType();
+    const closureSignature = createClosureSignature(
+      context.moduleState,
+      [taggedValue],
+      taggedValue,
+    );
+    const captures = sourceAsyncCapturesForLiveNames(
+      context,
+      sourceAsyncLoopLiveNames(statement, afterStatements, returnStatement),
+    );
+    const loopStepFunctionId = pushAsyncWhileStepClosure(
+      context,
+      closureSignature.id,
+      captures,
+      statement,
+      afterStatements,
+      returnStatement,
+    );
+    if (loopStepFunctionId === undefined) {
+      return [{ kind: 'unsupported_statement', sourceKind: 'while' }, { kind: 'trap' }];
+    }
+    const targetPromiseName = nextTempLocalName(context, 'async_while_target');
+    addLocal(context, targetPromiseName, 'heap_ref');
+    context.runtimeFamilies.add('closure');
+    context.runtimeFamilies.add('finite_union');
+    context.runtimeFamilies.add('promise');
+    const targetCapture = promiseTargetCapture(targetPromiseName);
+    const captureValues = asyncAwaitContinuationCaptureValues(captures, targetCapture, context);
+    return [
+      {
+        kind: 'local_set',
+        name: targetPromiseName,
+        value: {
+          kind: 'call',
+          callee: SOUNDSCRIPT_PROMISE_NEW_PENDING_HELPER_NAME,
+          args: [],
+          representation: 'heap_ref',
+        },
+      },
+      ...loweredLeadingStatements,
+      {
+        kind: 'expression',
+        value: {
+          kind: 'call',
+          callee: `closure_source_async_while_step_${loopStepFunctionId}`,
+          args: [
+            ...captureValues.map((capture) => capture.value),
+            { kind: 'undefined_literal', representation: 'tagged_ref' },
+          ],
+          representation: 'tagged_ref',
+        },
+      },
+      { kind: 'return', value: localGetExpression(targetPromiseName, 'heap_ref') },
+      { kind: 'trap' },
+    ];
+  }
+  return undefined;
+}
+
 function lowerAwaitAsyncFunctionBody(
   func: SourceFunctionIR,
   context: FunctionLoweringContext,
 ): readonly SemanticStatementIR[] | undefined {
   return lowerSequentialAwaitAsyncFunctionBody(func, context) ??
-    lowerConditionalAwaitAsyncFunctionBody(func, context);
+    lowerConditionalAwaitAsyncFunctionBody(func, context) ??
+    lowerLoopAwaitAsyncFunctionBody(func, context);
 }
 
 function findBoundarySurface(
