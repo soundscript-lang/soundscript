@@ -6661,7 +6661,13 @@ function lowerFunctionBody(
 
 type SourceAwaitAssignmentTarget =
   | { kind: 'identifier'; name: string }
-  | { kind: 'array_element'; objectName: string; index: SourceExpressionIR };
+  | { kind: 'array_element'; objectName: string; index: SourceExpressionIR }
+  | {
+    kind: 'property';
+    objectName: string;
+    propertyName: string;
+    span: SourceExpressionIR['span'];
+  };
 
 interface SourceAwaitStep {
   assignmentTarget?: SourceAwaitAssignmentTarget;
@@ -6894,6 +6900,9 @@ function collectSourceAwaitAssignmentTargetLiveNames(
       names.push(target.objectName);
       collectSourceExpressionIdentifierReads(target.index, names);
       break;
+    case 'property':
+      names.push(target.objectName);
+      break;
     default: {
       const exhaustiveCheck: never = target;
       return exhaustiveCheck;
@@ -7075,6 +7084,11 @@ function awaitedAssignmentValueRepresentation(
       );
       return arrayLocal?.elementRepresentation;
     }
+    case 'property': {
+      const objectLayout = context.objectLocals.get(target.objectName);
+      return objectLayout?.fields.find((field) => field.name === target.propertyName)
+        ?.representation;
+    }
     default: {
       const exhaustiveCheck: never = target;
       return exhaustiveCheck;
@@ -7124,6 +7138,47 @@ function lowerAwaitedAssignmentTargetSet(
         awaitedValue,
       );
       return arraySet ? [...arrayStatements, ...indexStatements, arraySet] : undefined;
+    }
+    case 'property': {
+      const sourceObject: Extract<SourceExpressionIR, { kind: 'identifier' }> = {
+        kind: 'identifier',
+        name: target.objectName,
+        role: 'read',
+        span: target.span,
+      };
+      const object = lowerExpression(sourceObject, context);
+      const objectLayout = objectLocalInfoForRead(sourceObject, object, context);
+      if (!objectLayout || objectLayout.family !== 'specialized_object') {
+        return undefined;
+      }
+      const fieldIndex = objectLayout.fields.findIndex((field) =>
+        field.name === target.propertyName
+      );
+      if (fieldIndex < 0) {
+        return undefined;
+      }
+      const field = objectLayout.fields[fieldIndex]!;
+      if (field.representation !== awaitedValue.representation) {
+        return undefined;
+      }
+      const materialized = materializeObjectExpressionForRead(
+        object,
+        objectLayout,
+        context,
+        'async_await_property',
+      );
+      context.runtimeFamilies.add('specialized_object');
+      return [
+        ...materialized.statements,
+        {
+          kind: 'specialized_object_field_set',
+          objectName: materialized.objectName,
+          representationName: objectLayout.representationName,
+          fieldIndex,
+          fieldName: field.name,
+          value: awaitedValue,
+        },
+      ];
     }
     default: {
       const exhaustiveCheck: never = target;
@@ -7397,6 +7452,27 @@ function lowerAwaitAsyncFunctionBody(
           kind: 'array_element',
           objectName: statement.expression.left.object.name,
           index: statement.expression.left.index,
+        },
+        leadingStatements: pendingLeadingStatements,
+        source: statement.expression.right.expression,
+      });
+      pendingLeadingStatements = [];
+      continue;
+    }
+    if (
+      statement.kind === 'expression_statement' &&
+      statement.expression.kind === 'assignment_expression' &&
+      statement.expression.operator === '=' &&
+      statement.expression.left.kind === 'property_access' &&
+      statement.expression.left.object.kind === 'identifier' &&
+      statement.expression.right.kind === 'await_expression'
+    ) {
+      steps.push({
+        assignmentTarget: {
+          kind: 'property',
+          objectName: statement.expression.left.object.name,
+          propertyName: statement.expression.left.property,
+          span: statement.expression.left.span,
         },
         leadingStatements: pendingLeadingStatements,
         source: statement.expression.right.expression,
