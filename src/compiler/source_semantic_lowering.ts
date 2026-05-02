@@ -1986,25 +1986,17 @@ function arrayElementExpressionForInfo(
   return undefined;
 }
 
-function arrayElementSetStatementForLocal(
+function arrayElementSetStatementForExpression(
   context: FunctionLoweringContext,
-  objectName: string,
+  array: SemanticExpressionIR,
+  arrayLocal: SourceSemanticArrayLocal | undefined,
   index: SemanticExpressionIR,
   value: SemanticExpressionIR,
 ): SemanticStatementIR | undefined {
   if (index.representation !== 'f64') {
     return undefined;
   }
-  const arrayRepresentation = context.localRepresentations.get(objectName);
-  if (!arrayRepresentation) {
-    return undefined;
-  }
-  const array: SemanticExpressionIR = {
-    kind: 'local_get',
-    name: objectName,
-    representation: arrayRepresentation,
-  };
-  if (arrayRepresentation === 'owned_number_array_ref' && value.representation === 'f64') {
+  if (array.representation === 'owned_number_array_ref' && value.representation === 'f64') {
     context.runtimeFamilies.add('array');
     return {
       kind: 'owned_number_array_set',
@@ -2013,9 +2005,8 @@ function arrayElementSetStatementForLocal(
       value,
     };
   }
-  const arrayLocal = context.arrayLocals.get(objectName);
   if (
-    arrayRepresentation === 'owned_array_ref' &&
+    array.representation === 'owned_array_ref' &&
     arrayLocal?.elementRepresentation === 'owned_string_ref' &&
     value.representation === 'owned_string_ref'
   ) {
@@ -2028,7 +2019,7 @@ function arrayElementSetStatementForLocal(
       value,
     };
   }
-  if (arrayRepresentation === 'owned_boolean_array_ref' && value.representation === 'i32') {
+  if (array.representation === 'owned_boolean_array_ref' && value.representation === 'i32') {
     context.runtimeFamilies.add('array');
     return {
       kind: 'owned_boolean_array_set',
@@ -2038,6 +2029,25 @@ function arrayElementSetStatementForLocal(
     };
   }
   return undefined;
+}
+
+function arrayElementSetStatementForLocal(
+  context: FunctionLoweringContext,
+  objectName: string,
+  index: SemanticExpressionIR,
+  value: SemanticExpressionIR,
+): SemanticStatementIR | undefined {
+  const arrayRepresentation = context.localRepresentations.get(objectName);
+  if (!arrayRepresentation) {
+    return undefined;
+  }
+  return arrayElementSetStatementForExpression(
+    context,
+    localGetExpression(objectName, arrayRepresentation),
+    context.arrayLocals.get(objectName),
+    index,
+    value,
+  );
 }
 
 function lowerBooleanLogicalExpression(
@@ -6649,8 +6659,12 @@ function lowerFunctionBody(
   return body.length > 0 ? [...body, { kind: 'trap' }] : [{ kind: 'trap' }];
 }
 
+type SourceAwaitAssignmentTarget =
+  | { kind: 'identifier'; name: string }
+  | { kind: 'array_element'; objectName: string; index: SourceExpressionIR };
+
 interface SourceAwaitStep {
-  assignmentTargetName?: string;
+  assignmentTarget?: SourceAwaitAssignmentTarget;
   binding?: Extract<SourceBindingIR, { kind: 'identifier_binding' }>;
   leadingStatements: readonly SourceStatementIR[];
   source: SourceExpressionIR;
@@ -6865,6 +6879,28 @@ function asyncAwaitContinuationCaptureValues(
   return captureValues;
 }
 
+function collectSourceAwaitAssignmentTargetLiveNames(
+  target: SourceAwaitAssignmentTarget | undefined,
+  names: string[],
+): void {
+  if (!target) {
+    return;
+  }
+  switch (target.kind) {
+    case 'identifier':
+      names.push(target.name);
+      break;
+    case 'array_element':
+      names.push(target.objectName);
+      collectSourceExpressionIdentifierReads(target.index, names);
+      break;
+    default: {
+      const exhaustiveCheck: never = target;
+      return exhaustiveCheck;
+    }
+  }
+}
+
 function sourceAsyncLiveNamesAfterAwait(
   steps: readonly SourceAwaitStep[],
   index: number,
@@ -6872,15 +6908,9 @@ function sourceAsyncLiveNamesAfterAwait(
   returnStatement: Extract<SourceStatementIR, { kind: 'return' }>,
 ): readonly string[] {
   const names: string[] = [];
-  const currentAssignmentTarget = steps[index]?.assignmentTargetName;
-  if (currentAssignmentTarget) {
-    names.push(currentAssignmentTarget);
-  }
+  collectSourceAwaitAssignmentTargetLiveNames(steps[index]?.assignmentTarget, names);
   for (let nextIndex = index + 1; nextIndex < steps.length; nextIndex += 1) {
-    const assignmentTarget = steps[nextIndex]!.assignmentTargetName;
-    if (assignmentTarget) {
-      names.push(assignmentTarget);
-    }
+    collectSourceAwaitAssignmentTargetLiveNames(steps[nextIndex]!.assignmentTarget, names);
     steps[nextIndex]!.leadingStatements.forEach((statement) =>
       collectSourceStatementIdentifierReads(statement, names)
     );
@@ -7015,6 +7045,93 @@ function sourceStatementContainsAwaitExpression(statement: SourceStatementIR): b
   }
 }
 
+function awaitedAssignmentValueRepresentation(
+  target: SourceAwaitAssignmentTarget,
+  context: FunctionLoweringContext,
+): CompilerValueType | undefined {
+  switch (target.kind) {
+    case 'identifier': {
+      const targetRepresentation = context.localRepresentations.get(target.name);
+      return targetRepresentation === 'box_ref'
+        ? context.boxedLocals.get(target.name)
+        : targetRepresentation;
+    }
+    case 'array_element': {
+      const array = lowerExpression({
+        kind: 'identifier',
+        name: target.objectName,
+        role: 'read',
+        span: target.index.span,
+      }, context);
+      const arrayLocal = arrayLocalInfoForRead(
+        {
+          kind: 'identifier',
+          name: target.objectName,
+          role: 'read',
+          span: target.index.span,
+        },
+        array,
+        context,
+      );
+      return arrayLocal?.elementRepresentation;
+    }
+    default: {
+      const exhaustiveCheck: never = target;
+      return exhaustiveCheck;
+    }
+  }
+}
+
+function lowerAwaitedAssignmentTargetSet(
+  target: SourceAwaitAssignmentTarget,
+  awaitedValue: SemanticExpressionIR,
+  context: FunctionLoweringContext,
+): readonly SemanticStatementIR[] | undefined {
+  switch (target.kind) {
+    case 'identifier': {
+      const targetRepresentation = context.localRepresentations.get(target.name);
+      const boxedValueType = context.boxedLocals.get(target.name);
+      if (targetRepresentation === 'box_ref' && boxedValueType === awaitedValue.representation) {
+        return [{
+          kind: 'box_set',
+          box: localGetExpression(target.name, 'box_ref'),
+          value: awaitedValue,
+          valueType: awaitedValue.representation,
+        }];
+      }
+      if (targetRepresentation === awaitedValue.representation) {
+        return [{ kind: 'local_set', name: target.name, value: awaitedValue }];
+      }
+      return undefined;
+    }
+    case 'array_element': {
+      const sourceObject: Extract<SourceExpressionIR, { kind: 'identifier' }> = {
+        kind: 'identifier',
+        name: target.objectName,
+        role: 'read',
+        span: target.index.span,
+      };
+      const array = lowerExpression(sourceObject, context);
+      const arrayStatements = takePendingStatements(context);
+      const index = lowerExpression(target.index, context);
+      const indexStatements = takePendingStatements(context);
+      const arrayLocal = arrayLocalInfoForRead(sourceObject, array, context);
+      const arraySet = arrayElementSetStatementForExpression(
+        context,
+        array,
+        arrayLocal,
+        index,
+        awaitedValue,
+      );
+      return arraySet ? [...arrayStatements, ...indexStatements, arraySet] : undefined;
+    }
+    default: {
+      const exhaustiveCheck: never = target;
+      return exhaustiveCheck;
+    }
+  }
+}
+
 function pushAsyncAwaitFulfilledClosure(
   context: FunctionLoweringContext,
   signatureId: number,
@@ -7037,14 +7154,11 @@ function pushAsyncAwaitFulfilledClosure(
     captures,
   );
   const body: SemanticStatementIR[] = [];
-  if (step.binding || step.assignmentTargetName) {
-    const targetName = step.assignmentTargetName;
-    const targetRepresentation = targetName
-      ? closureContext.localRepresentations.get(targetName)
-      : undefined;
-    const boxedValueType = targetName ? closureContext.boxedLocals.get(targetName) : undefined;
+  if (step.binding || step.assignmentTarget) {
     const representation = step.representation ??
-      (targetRepresentation === 'box_ref' ? boxedValueType : targetRepresentation);
+      (step.assignmentTarget
+        ? awaitedAssignmentValueRepresentation(step.assignmentTarget, closureContext)
+        : undefined);
     if (!representation || (step.binding && !step.type)) {
       context.unsupportedKinds.add('async_await_value_type');
       return undefined;
@@ -7063,20 +7177,17 @@ function pushAsyncAwaitFulfilledClosure(
       closureContext.localDeclarationKinds.set(step.binding.name, 'const');
       registerSemanticLocalMetadata(closureContext, step.binding.name, step.type!);
       body.push({ kind: 'local_set', name: step.binding.name, value: awaitedValue });
-    } else {
-      if (targetName && targetRepresentation === 'box_ref' && boxedValueType === representation) {
-        body.push({
-          kind: 'box_set',
-          box: localGetExpression(targetName, 'box_ref'),
-          value: awaitedValue,
-          valueType: representation,
-        });
-      } else if (targetName && targetRepresentation === representation) {
-        body.push({ kind: 'local_set', name: targetName, value: awaitedValue });
-      } else {
-        context.unsupportedKinds.add(`async_await_assignment:${targetName}`);
+    } else if (step.assignmentTarget) {
+      const assignmentStatements = lowerAwaitedAssignmentTargetSet(
+        step.assignmentTarget,
+        awaitedValue,
+        closureContext,
+      );
+      if (!assignmentStatements) {
+        context.unsupportedKinds.add(`async_await_assignment:${step.assignmentTarget.kind}`);
         return undefined;
       }
+      body.push(...assignmentStatements);
     }
   }
   const statementsBeforeNextAwait = index === steps.length - 1
@@ -7265,7 +7376,28 @@ function lowerAwaitAsyncFunctionBody(
       statement.expression.right.kind === 'await_expression'
     ) {
       steps.push({
-        assignmentTargetName: statement.expression.left.name,
+        assignmentTarget: { kind: 'identifier', name: statement.expression.left.name },
+        leadingStatements: pendingLeadingStatements,
+        source: statement.expression.right.expression,
+      });
+      pendingLeadingStatements = [];
+      continue;
+    }
+    if (
+      statement.kind === 'expression_statement' &&
+      statement.expression.kind === 'assignment_expression' &&
+      statement.expression.operator === '=' &&
+      statement.expression.left.kind === 'element_access' &&
+      statement.expression.left.object.kind === 'identifier' &&
+      statement.expression.left.index &&
+      statement.expression.right.kind === 'await_expression'
+    ) {
+      steps.push({
+        assignmentTarget: {
+          kind: 'array_element',
+          objectName: statement.expression.left.object.name,
+          index: statement.expression.left.index,
+        },
         leadingStatements: pendingLeadingStatements,
         source: statement.expression.right.expression,
       });
