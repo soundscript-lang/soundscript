@@ -7182,6 +7182,7 @@ function lowerAwaitAsyncFunctionBody(
   }
   const steps: SourceAwaitStep[] = [];
   let pendingLeadingStatements: SourceStatementIR[] = [];
+  let continuationReturnStatement = returnStatement;
   for (const statement of func.body.slice(0, -1)) {
     if (statement.kind === 'variable_declaration' && statement.declarations.length === 1) {
       const [declaration] = statement.declarations;
@@ -7214,6 +7215,36 @@ function lowerAwaitAsyncFunctionBody(
     }
     pendingLeadingStatements.push(statement);
   }
+  if (returnStatement.expression?.kind === 'await_expression') {
+    const awaitedType = context.currentResultType.value;
+    if (!awaitedType) {
+      context.unsupportedKinds.add('async_return_await_value_type');
+      return [{ kind: 'unsupported_statement', sourceKind: 'await_expression' }, { kind: 'trap' }];
+    }
+    const syntheticName = nextTempLocalName(context, 'async_return_await');
+    const syntheticBinding: Extract<SourceBindingIR, { kind: 'identifier_binding' }> = {
+      kind: 'identifier_binding',
+      name: syntheticName,
+      span: returnStatement.expression.span,
+    };
+    steps.push({
+      binding: syntheticBinding,
+      leadingStatements: pendingLeadingStatements,
+      source: returnStatement.expression.expression,
+      type: awaitedType,
+      representation: representationForSemanticType(awaitedType),
+    });
+    pendingLeadingStatements = [];
+    continuationReturnStatement = {
+      ...returnStatement,
+      expression: {
+        kind: 'identifier',
+        name: syntheticName,
+        role: 'read',
+        span: returnStatement.expression.span,
+      },
+    };
+  }
   if (steps.length === 0) {
     return undefined;
   }
@@ -7233,7 +7264,12 @@ function lowerAwaitAsyncFunctionBody(
   const closureSignature = createClosureSignature(context.moduleState, [taggedValue], taggedValue);
   const firstCaptures = sourceAsyncCapturesForLiveNames(
     context,
-    sourceAsyncLiveNamesAfterAwait(steps, 0, pendingLeadingStatements, returnStatement),
+    sourceAsyncLiveNamesAfterAwait(
+      steps,
+      0,
+      pendingLeadingStatements,
+      continuationReturnStatement,
+    ),
   );
   const fulfilledFunctionId = pushAsyncAwaitFulfilledClosure(
     context,
@@ -7242,7 +7278,7 @@ function lowerAwaitAsyncFunctionBody(
     0,
     firstCaptures,
     pendingLeadingStatements,
-    returnStatement,
+    continuationReturnStatement,
   );
   const rejectedFunctionId = pushPromiseRejectIntoClosure(context, closureSignature.id);
   if (fulfilledFunctionId === undefined) {

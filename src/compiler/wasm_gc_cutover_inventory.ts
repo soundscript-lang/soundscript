@@ -133,7 +133,7 @@ export const WASM_GC_CORE_CUTOVER_INVENTORY: readonly WasmGcCutoverInventoryEntr
     family: 'promises',
     status: 'ir-shadowed',
     focusedGate:
-      'compileProject selects the source-hir wasm-gc plan for awaited continuations with local captures',
+      'compileProject selects the source-hir wasm-gc plan for return await continuations',
     nextCutoverStep:
       'Broaden SourceHIR async-await lowering beyond top-level awaited declarations while keeping JSPI limited to host-promise boundaries.',
   },
