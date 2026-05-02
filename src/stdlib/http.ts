@@ -7,9 +7,9 @@ import {
 import type { AddressInfo } from 'node:net';
 import { Readable, Writable } from 'node:stream';
 
+import { type AsyncResult, CancellationFailure } from 'sts:concurrency/task';
 import { Failure, normalizeThrown } from 'sts:failures';
 import { err, ok, type Result } from 'sts:result';
-import type { AsyncResult } from 'sts:concurrency/task';
 import type { SocketAddress } from 'sts:net';
 
 export type HttpRequest = IncomingMessage;
@@ -43,6 +43,12 @@ function failureFromUnknown(value: unknown): Failure {
   }
   const normalized = normalizeThrown(value);
   return new Failure(normalized.message, { cause: normalized });
+}
+
+function cancellationFailure(signal: AbortSignal): CancellationFailure {
+  return signal.reason instanceof CancellationFailure
+    ? signal.reason
+    : new CancellationFailure('Operation was cancelled.', signal.reason);
 }
 
 function isResult<T, E>(value: unknown): value is Result<T, E> {
@@ -144,7 +150,12 @@ export class Server implements AsyncDisposable {
   readonly #options: ServeOptions & { readonly handle: Handler };
   readonly #nodeServer: NodeHttpServer;
   #address: SocketAddress;
+  #listenResult?: AsyncResult<Server, Failure>;
   #serveResult?: AsyncResult<void, Failure>;
+  #closedResult?: AsyncResult<void, Failure>;
+  #abortSignal?: AbortSignal;
+  #abortHandler?: () => void;
+  #closed = false;
 
   constructor(options: ServeOptions & { readonly handle: Handler }) {
     this.#options = options;
@@ -174,41 +185,51 @@ export class Server implements AsyncDisposable {
     }
   }
 
-  serve(): AsyncResult<void, Failure> {
-    if (this.#serveResult) {
-      return this.#serveResult;
+  listen(): AsyncResult<Server, Failure> {
+    if (this.#listenResult) {
+      return this.#listenResult;
     }
 
-    this.#serveResult = new Promise((resolve) => {
+    this.#listenResult = new Promise((resolve) => {
       const signal = this.#options.signal;
       if (signal?.aborted) {
-        resolve(ok(undefined));
+        this.#closed = true;
+        resolve(err(cancellationFailure(signal)));
         return;
       }
 
       const cleanup = (): void => {
         this.#nodeServer.off('error', onError);
-        this.#nodeServer.off('close', onClose);
         this.#nodeServer.off('listening', onListening);
         signal?.removeEventListener('abort', onAbort);
       };
       const onAbort = (): void => {
-        this.close();
+        if (!signal) {
+          return;
+        }
+        cleanup();
+        this.#closed = true;
+        try {
+          this.#nodeServer.close();
+        } catch {
+          // Closing a not-yet-listening server is best-effort during cancellation.
+        }
+        resolve(err(cancellationFailure(signal)));
       };
       const onListening = (): void => {
         this.#address = nodeAddressToSocketAddress(this.#nodeServer.address(), this.#address);
+        cleanup();
+        this.#attachAbortClose();
+        void this.closed();
+        resolve(ok(this));
       };
       const onError = (error: Error): void => {
         cleanup();
+        this.#closed = true;
         resolve(err(failureFromUnknown(error)));
-      };
-      const onClose = (): void => {
-        cleanup();
-        resolve(ok(undefined));
       };
 
       this.#nodeServer.once('error', onError);
-      this.#nodeServer.once('close', onClose);
       this.#nodeServer.once('listening', onListening);
       signal?.addEventListener('abort', onAbort, { once: true });
 
@@ -220,17 +241,69 @@ export class Server implements AsyncDisposable {
       }
     });
 
+    return this.#listenResult;
+  }
+
+  serve(): AsyncResult<void, Failure> {
+    if (this.#serveResult) {
+      return this.#serveResult;
+    }
+
+    this.#serveResult = (async () => {
+      const listened = await this.listen();
+      if (listened.tag === 'err') {
+        return this.#options.signal?.aborted ? ok(undefined) : listened;
+      }
+      return await this.closed();
+    })();
+
     return this.#serveResult;
+  }
+
+  closed(): AsyncResult<void, Failure> {
+    if (this.#closed) {
+      return Promise.resolve(ok(undefined));
+    }
+    if (this.#closedResult) {
+      return this.#closedResult;
+    }
+
+    this.#closedResult = new Promise((resolve) => {
+      const cleanup = (): void => {
+        this.#nodeServer.off('close', onClose);
+        this.#nodeServer.off('error', onError);
+      };
+      const onClose = (): void => {
+        cleanup();
+        this.#closed = true;
+        this.#detachAbortClose();
+        resolve(ok(undefined));
+      };
+      const onError = (error: Error): void => {
+        cleanup();
+        this.#closed = true;
+        this.#detachAbortClose();
+        resolve(err(failureFromUnknown(error)));
+      };
+
+      this.#nodeServer.once('close', onClose);
+      this.#nodeServer.once('error', onError);
+    });
+
+    return this.#closedResult;
   }
 
   close(): AsyncResult<void, Failure> {
     return new Promise((resolve) => {
-      if (!this.#nodeServer.listening) {
+      this.#detachAbortClose();
+      if (this.#closed || !this.#nodeServer.listening) {
+        this.#closed = true;
         resolve(ok(undefined));
         return;
       }
 
       this.#nodeServer.close((error) => {
+        this.#closed = true;
         resolve(error ? err(failureFromUnknown(error)) : ok(undefined));
       });
     });
@@ -241,6 +314,28 @@ export class Server implements AsyncDisposable {
     if (result.tag === 'err') {
       throw result.error;
     }
+  }
+
+  #attachAbortClose(): void {
+    const signal = this.#options.signal;
+    if (!signal || this.#abortHandler) {
+      return;
+    }
+
+    const onAbort = (): void => {
+      this.close();
+    };
+    this.#abortSignal = signal;
+    this.#abortHandler = onAbort;
+    signal.addEventListener('abort', onAbort, { once: true });
+  }
+
+  #detachAbortClose(): void {
+    if (this.#abortSignal && this.#abortHandler) {
+      this.#abortSignal.removeEventListener('abort', this.#abortHandler);
+    }
+    this.#abortSignal = undefined;
+    this.#abortHandler = undefined;
   }
 }
 
@@ -290,6 +385,16 @@ export function serveNode(
   });
 }
 
+export function listen(
+  options: ServeOptions & { readonly handle: Handler },
+): AsyncResult<Server, Failure> {
+  const created = server(options);
+  if (created.tag === 'err') {
+    return Promise.resolve(created);
+  }
+  return created.value.listen();
+}
+
 export function serve(
   options: ServeOptions & { readonly handle: Handler },
 ): AsyncResult<void, Failure>;
@@ -314,6 +419,7 @@ export function serve(
 
 export const Http = Object.freeze({
   server,
+  listen,
   serve,
   serveNode,
 });
