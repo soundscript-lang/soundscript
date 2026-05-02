@@ -261,6 +261,10 @@ Deno.test('std package support projects generated Task object declarations', () 
   assertStringIncludes(HTTP_STDLIB_DECLARATION_TEXT, 'export declare function serve');
   assertStringIncludes(HTTP_STDLIB_DECLARATION_TEXT, 'export declare function serveNode');
   assertStringIncludes(NET_STDLIB_DECLARATION_TEXT, 'export declare function lookupHost');
+  assertStringIncludes(NET_STDLIB_DECLARATION_TEXT, 'export declare class TcpConnection');
+  assertStringIncludes(NET_STDLIB_DECLARATION_TEXT, 'export declare class TcpListener');
+  assertStringIncludes(NET_STDLIB_DECLARATION_TEXT, 'export declare function connect');
+  assertStringIncludes(NET_STDLIB_DECLARATION_TEXT, 'export declare function listen');
 });
 
 Deno.test('std package support rewrites generated relative stdlib declaration imports away from .ts sources', () => {
