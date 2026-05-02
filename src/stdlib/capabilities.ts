@@ -120,6 +120,11 @@ function defaultManifest(): readonly CapabilityInfo[] {
       reason: node ? undefined : 'requires a node-family provider',
     },
     {
+      name: 'process.child',
+      status: node ? 'available' : 'unavailable',
+      reason: node ? undefined : 'requires a node-family provider',
+    },
+    {
       name: 'net.dns',
       status: node ? 'available' : 'unavailable',
       reason: node ? undefined : 'requires a node-family provider',

@@ -10,6 +10,7 @@ import { Http } from './http.ts';
 import { Net } from './net.ts';
 import { Process } from './process.ts';
 import { err, ok } from './result.ts';
+import { readAllText } from './streams.ts';
 
 Deno.test('node provider fs reads and writes AsyncResult values', async () => {
   const tempDirectory = await Deno.makeTempDir();
@@ -58,6 +59,42 @@ Deno.test('node provider env and process expose host state through Result', () =
   assertEquals(Env.remove(variable).tag, 'ok');
   assertEquals(Process.cwd().tag, 'ok');
   assertEquals(Process.info().tag, 'ok');
+  assertEquals(hasCapability('process.child'), true);
+});
+
+Deno.test('node provider process runs child commands and exposes piped output', async () => {
+  const output = await Process.output(Deno.execPath(), {
+    args: ['eval', 'console.log("sound")'],
+  });
+
+  assertEquals(output.tag, 'ok');
+  assertEquals(output.tag === 'ok' ? Bytes.toString(output.value.stdout) : undefined, 'sound\n');
+  assertEquals(output.tag === 'ok' ? output.value.success : undefined, true);
+
+  const failed = await Process.output(Deno.execPath(), {
+    args: ['eval', 'Deno.exit(7)'],
+  });
+  assertEquals(failed.tag === 'ok' ? failed.value.success : undefined, false);
+  assertEquals(failed.tag === 'ok' ? failed.value.code : undefined, 7);
+
+  const child = await Process.spawn(Deno.execPath(), {
+    args: ['eval', 'console.log("spawned")'],
+    stdout: 'piped',
+    stderr: 'piped',
+  });
+
+  assertEquals(child.tag, 'ok');
+  if (child.tag === 'err') {
+    return;
+  }
+
+  const text = child.value.stdout ? await readAllText(child.value.stdout) : undefined;
+  const status = await child.value.status();
+  const cachedStatus = await child.value.status();
+
+  assertEquals(text?.tag === 'ok' ? text.value : undefined, 'spawned\n');
+  assertEquals(status.tag === 'ok' ? status.value.success : undefined, true);
+  assertEquals(cachedStatus.tag === 'ok' ? cachedStatus.value.success : undefined, true);
 });
 
 Deno.test('node provider net resolves localhost', async () => {
