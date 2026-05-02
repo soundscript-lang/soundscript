@@ -27,6 +27,10 @@ export interface ServeOptions {
   readonly port: number;
   readonly signal?: AbortSignal;
   readonly name?: string;
+  readonly maxRequestBodyBytes?: number;
+  readonly headersTimeout?: Duration;
+  readonly requestTimeout?: Duration;
+  readonly keepAliveTimeout?: Duration;
 }
 
 export interface CloseOptions {
@@ -41,6 +45,19 @@ export type NodeHttpHandler = (
 export type HttpHandler = NodeHttpHandler;
 
 export type Handler = (request: Request) => Response | AsyncResult<Response, Failure>;
+
+export class RequestBodyTooLargeFailure extends Failure {
+  readonly limit: number;
+  readonly actual?: number;
+
+  constructor(limit: number, actual?: number) {
+    super(`HTTP request body exceeded ${limit} bytes.`);
+    this.limit = limit;
+    if (actual !== undefined) {
+      this.actual = actual;
+    }
+  }
+}
 
 function failureFromUnknown(value: unknown): Failure {
   if (value instanceof Failure) {
@@ -76,6 +93,44 @@ function nodeAddressToSocketAddress(
     };
   }
   return fallback;
+}
+
+function validateDurationOption(name: string, value: Duration | undefined): void {
+  if (value === undefined) {
+    return;
+  }
+  if (!Number.isFinite(value.milliseconds) || value.milliseconds < 0) {
+    throw new Failure(`${name} must be a non-negative finite duration.`);
+  }
+}
+
+function validateServeOptions(options: ServeOptions): void {
+  if (
+    options.maxRequestBodyBytes !== undefined &&
+    (!Number.isSafeInteger(options.maxRequestBodyBytes) || options.maxRequestBodyBytes < 0)
+  ) {
+    throw new Failure('maxRequestBodyBytes must be a non-negative safe integer.');
+  }
+
+  validateDurationOption('headersTimeout', options.headersTimeout);
+  validateDurationOption('requestTimeout', options.requestTimeout);
+  validateDurationOption('keepAliveTimeout', options.keepAliveTimeout);
+}
+
+function durationMilliseconds(value: Duration): number {
+  return Math.max(0, Math.trunc(value.milliseconds));
+}
+
+function applyNodeServerOptions(server: NodeHttpServer, options: ServeOptions): void {
+  if (options.headersTimeout) {
+    server.headersTimeout = durationMilliseconds(options.headersTimeout);
+  }
+  if (options.requestTimeout) {
+    server.requestTimeout = durationMilliseconds(options.requestTimeout);
+  }
+  if (options.keepAliveTimeout) {
+    server.keepAliveTimeout = durationMilliseconds(options.keepAliveTimeout);
+  }
 }
 
 function trackSocket(sockets: Set<Socket>, socket: Socket): void {
@@ -132,6 +187,50 @@ function closeNodeServer(
   });
 }
 
+function contentLength(request: IncomingMessage): number | undefined {
+  const raw = request.headers['content-length'];
+  const value = Array.isArray(raw) ? raw[0] : raw;
+  if (value === undefined) {
+    return undefined;
+  }
+
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
+}
+
+function requestBodyLimitFailure(
+  request: IncomingMessage,
+  maxRequestBodyBytes: number | undefined,
+): RequestBodyTooLargeFailure | undefined {
+  if (maxRequestBodyBytes === undefined) {
+    return undefined;
+  }
+
+  const knownLength = contentLength(request);
+  return knownLength !== undefined && knownLength > maxRequestBodyBytes
+    ? new RequestBodyTooLargeFailure(maxRequestBodyBytes, knownLength)
+    : undefined;
+}
+
+function limitBodyStream(
+  body: ReadableStream<Uint8Array>,
+  maxRequestBodyBytes: number,
+): ReadableStream<Uint8Array> {
+  let total = 0;
+  return body.pipeThrough(
+    new TransformStream<Uint8Array, Uint8Array>({
+      transform(chunk, controller) {
+        total += chunk.byteLength;
+        if (total > maxRequestBodyBytes) {
+          controller.error(new RequestBodyTooLargeFailure(maxRequestBodyBytes, total));
+          return;
+        }
+        controller.enqueue(chunk);
+      },
+    }),
+  );
+}
+
 function requestHeaders(request: IncomingMessage): Headers {
   const headers = new Headers();
   for (const [name, value] of Object.entries(request.headers)) {
@@ -157,7 +256,11 @@ function requestUrl(request: IncomingMessage, fallback: SocketAddress): string {
   return `http://${host}${path}`;
 }
 
-function webRequestFromNode(request: IncomingMessage, fallback: SocketAddress): Request {
+function webRequestFromNode(
+  request: IncomingMessage,
+  fallback: SocketAddress,
+  options: ServeOptions,
+): Request {
   const method = request.method ?? 'GET';
   const init: RequestInit & { duplex?: 'half' } = {
     headers: requestHeaders(request),
@@ -165,7 +268,16 @@ function webRequestFromNode(request: IncomingMessage, fallback: SocketAddress): 
   };
 
   if (method !== 'GET' && method !== 'HEAD') {
-    init.body = Readable.toWeb(request as Readable) as unknown as ReadableStream;
+    const maxRequestBodyBytes = options.maxRequestBodyBytes;
+    const bodyLimitFailure = requestBodyLimitFailure(request, maxRequestBodyBytes);
+    if (bodyLimitFailure) {
+      throw bodyLimitFailure;
+    }
+
+    const body = Readable.toWeb(request as Readable) as unknown as ReadableStream<Uint8Array>;
+    init.body = (maxRequestBodyBytes === undefined
+      ? body
+      : limitBodyStream(body, maxRequestBodyBytes)) as unknown as ReadableStream;
     init.duplex = 'half';
   }
 
@@ -174,7 +286,9 @@ function webRequestFromNode(request: IncomingMessage, fallback: SocketAddress): 
 
 function failureResponse(error: unknown): Response {
   const failure = failureFromUnknown(error);
-  return new Response(failure.message, { status: 500 });
+  return new Response(failure.message, {
+    status: failure instanceof RequestBodyTooLargeFailure ? 413 : 500,
+  });
 }
 
 async function writeWebResponse(
@@ -218,6 +332,7 @@ export class Server implements AsyncDisposable {
   #closed = false;
 
   constructor(options: ServeOptions & { readonly handle: Handler }) {
+    validateServeOptions(options);
     this.#options = options;
     this.#address = {
       hostname: options.hostname ?? '0.0.0.0',
@@ -226,6 +341,7 @@ export class Server implements AsyncDisposable {
     this.#nodeServer = nodeCreateServer((request, response) => {
       this.#handle(request, response);
     });
+    applyNodeServerOptions(this.#nodeServer, options);
     this.#nodeServer.on('connection', (socket) => {
       trackSocket(this.#sockets, socket);
     });
@@ -237,7 +353,7 @@ export class Server implements AsyncDisposable {
 
   async #handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
     try {
-      const webRequest = webRequestFromNode(request, this.#address);
+      const webRequest = webRequestFromNode(request, this.#address, this.#options);
       const result = await this.#options.handle(webRequest);
       const webResponse = isResult<Response, Failure>(result)
         ? result.tag === 'ok' ? result.value : failureResponse(result.error)
@@ -412,14 +528,28 @@ export function serveNode(
   options: ServeOptions,
   handler: NodeHttpHandler,
 ): AsyncResult<HttpServer, Failure> {
+  try {
+    validateServeOptions(options);
+  } catch (error) {
+    return Promise.resolve(err(failureFromUnknown(error)));
+  }
+
   return new Promise((resolve) => {
     const sockets = new Set<Socket>();
     const server = nodeCreateServer((request, response) => {
+      const bodyLimitFailure = requestBodyLimitFailure(request, options.maxRequestBodyBytes);
+      if (bodyLimitFailure) {
+        response.statusCode = 413;
+        response.end(bodyLimitFailure.message);
+        return;
+      }
+
       Promise.resolve(handler(request, response)).catch((error) => {
         response.statusCode = 500;
         response.end(normalizeThrown(error).message);
       });
     });
+    applyNodeServerOptions(server, options);
     server.on('connection', (socket) => {
       trackSocket(sockets, socket);
     });

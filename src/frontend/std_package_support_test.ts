@@ -257,6 +257,10 @@ Deno.test('std package support projects generated Task object declarations', () 
     PROCESS_STDLIB_DECLARATION_TEXT,
     'export declare function onSignal(signal: SignalName, handler: () => void): Result<Disposable, Failure>;',
   );
+  assertStringIncludes(HTTP_STDLIB_DECLARATION_TEXT, 'maxRequestBodyBytes?: number');
+  assertStringIncludes(HTTP_STDLIB_DECLARATION_TEXT, 'headersTimeout?: Duration');
+  assertStringIncludes(HTTP_STDLIB_DECLARATION_TEXT, 'requestTimeout?: Duration');
+  assertStringIncludes(HTTP_STDLIB_DECLARATION_TEXT, 'keepAliveTimeout?: Duration');
   assertStringIncludes(HTTP_STDLIB_DECLARATION_TEXT, 'export declare function server');
   assertStringIncludes(HTTP_STDLIB_DECLARATION_TEXT, 'export interface CloseOptions');
   assertStringIncludes(HTTP_STDLIB_DECLARATION_TEXT, 'close(options?: CloseOptions)');
