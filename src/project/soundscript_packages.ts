@@ -616,11 +616,33 @@ function parsePackageJsonForExport(
     return undefined;
   }
 
+  const exportsMap = new Map<string, string>();
+  for (const [candidateExportKey, candidateSourceEntryPath] of rawExportsMap) {
+    if (
+      options.trustMacroAuthoringSourcePath &&
+      candidateExportKey === exportKey &&
+      isMacroAuthoringSourcePath(candidateSourceEntryPath)
+    ) {
+      exportsMap.set(candidateExportKey, candidateSourceEntryPath);
+    } else if (
+      isTrustedPublishedPackageSourceClosure(candidateSourceEntryPath, draftPackageInfo, host)
+    ) {
+      exportsMap.set(candidateExportKey, candidateSourceEntryPath);
+    }
+  }
+  const legacySourceEntryPath = rawLegacySourceEntryPath &&
+      (options.trustMacroAuthoringSourcePath &&
+          exportKey === '.' &&
+          isMacroAuthoringSourcePath(rawLegacySourceEntryPath) ||
+        isTrustedPublishedPackageSourceClosure(rawLegacySourceEntryPath, draftPackageInfo, host))
+    ? rawLegacySourceEntryPath
+    : undefined;
+
   return {
     exportKey,
     packageInfo: {
-      exports: new Map([[exportKey, sourceEntryPath]]),
-      legacySourceEntryPath: exportKey === '.' ? rawLegacySourceEntryPath : undefined,
+      exports: exportsMap,
+      legacySourceEntryPath,
       name: packageName,
       packageJsonPath,
       packageRoot,

@@ -1139,23 +1139,12 @@ export function createProjectMacroEnvironment(
     return names;
   }
 
-  function fnv1aHash(text: string, seed = 0x811c9dc5): number {
-    let hash = seed;
-    for (let index = 0; index < text.length; index += 1) {
-      hash ^= text.charCodeAt(index);
-      hash = Math.imul(hash, 0x01000193) >>> 0;
-    }
-    return hash >>> 0;
-  }
-
   function serializeDependencySourceTexts(
     dependencySourceTexts: ReadonlyMap<string, string>,
   ): string {
     return [...dependencySourceTexts.entries()]
       .sort(([left], [right]) => left.localeCompare(right))
-      .map(([fileName, text]) =>
-        `${fileName}\u0001${text.length}\u0001${fnv1aHash(text).toString(16)}`
-      )
+      .map(([fileName, text]) => `${fileName}\u0001${text.length}\u0001${text}`)
       .join('\u0002');
   }
 

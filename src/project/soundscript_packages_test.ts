@@ -81,3 +81,49 @@ Deno.test('getSoundScriptPackageExportInfoForResolvedModule can trust macro sour
   assert(trusted);
   assertEquals(trusted.sourceEntryPath, macroSourcePath);
 });
+
+Deno.test('getSoundScriptPackageExportInfoForResolvedModule returns full package export info', () => {
+  const packageRoot = '/workspace/node_modules/pkg';
+  const packageJsonPath = join(packageRoot, 'package.json');
+  const resolvedRuntimeFileName = join(packageRoot, 'dist/extra.d.ts');
+  const indexSourcePath = join(packageRoot, 'src/index.sts');
+  const extraSourcePath = join(packageRoot, 'src/extra.sts');
+  const host = createHost(
+    new Map([
+      [
+        packageJsonPath,
+        JSON.stringify({
+          name: 'pkg',
+          soundscript: {
+            version: 1,
+            exports: {
+              '.': {
+                source: './src/index.sts',
+              },
+              './extra': {
+                source: './src/extra.sts',
+              },
+            },
+          },
+        }),
+      ],
+      [join(packageRoot, 'dist/index.d.ts'), 'export declare const index: number;\n'],
+      [resolvedRuntimeFileName, 'export declare const extra: number;\n'],
+      [indexSourcePath, 'export const index = 1;\n'],
+      [extraSourcePath, 'export const extra = 2;\n'],
+    ]),
+  );
+
+  const packageExport = getSoundScriptPackageExportInfoForResolvedModule(
+    'pkg/extra',
+    resolvedRuntimeFileName,
+    host,
+  );
+
+  assert(packageExport);
+  assertEquals(packageExport.sourceEntryPath, extraSourcePath);
+  assertEquals([...packageExport.packageInfo.exports.entries()], [
+    ['.', indexSourcePath],
+    ['./extra', extraSourcePath],
+  ]);
+});

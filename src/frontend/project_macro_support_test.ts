@@ -1089,6 +1089,61 @@ Deno.test(
   },
 );
 
+Deno.test(
+  'createProjectMacroEnvironment invalidates expanded files for exact macro dependency source changes',
+  () => {
+    const fileName = '/virtual/index.sts';
+    const macroFile = '/virtual/macros/defs.macro.sts';
+    const helperFile = '/virtual/macros/helper.macro.sts';
+    const reuseState = createPreparedCompilerHostReuseState('/virtual');
+    const macroSource = [
+      "import 'sts:macros';",
+      "import { helperValue } from './helper.macro';",
+      '',
+      '// #[macro(call)]',
+      'export function Foo() {',
+      '  return {',
+      '    expand(ctx) {',
+      '      return ctx.output.expr(ctx.quote.expr`${JSON.stringify(helperValue)}`);',
+      '    },',
+      '  };',
+      '}',
+      '',
+    ].join('\n');
+    const createProgram = (helperValue: string, oldProgram?: ts.Program) =>
+      createPreparedProgram({
+        baseHost: createBaseHost(
+          new Map([
+            [fileName, "import { Foo } from './macros/defs.macro';\nexport const value = Foo();\n"],
+            [macroFile, macroSource],
+            [helperFile, `export const helperValue = "${helperValue}";\n`],
+          ]),
+        ),
+        oldProgram,
+        options: {
+          target: ts.ScriptTarget.ES2022,
+          module: ts.ModuleKind.ESNext,
+          moduleResolution: ts.ModuleResolutionKind.Bundler,
+          noEmit: true,
+        },
+        reusableCompilerHostState: reuseState,
+        rootNames: [fileName],
+      });
+
+    // These two helper sources have the same length and collide under the previous
+    // 32-bit FNV dependency signature shortcut. Cache validity must depend on the
+    // exact source text instead.
+    const firstProgram = createProgram('htdi5qip');
+    const firstExpanded = printExpandedFile(firstProgram, fileName);
+
+    const secondProgram = createProgram('ofw3agyf', firstProgram.program);
+    const secondExpanded = printExpandedFile(secondProgram, fileName);
+
+    assertStringIncludes(firstExpanded, '"htdi5qip"');
+    assertStringIncludes(secondExpanded, '"ofw3agyf"');
+  },
+);
+
 Deno.test('createProjectMacroEnvironment reparses remote statement expansions using the caller source file script kind', () => {
   const fileName = '/virtual/index.sts';
   const macroFile = '/virtual/macros/defs.macro.sts';
