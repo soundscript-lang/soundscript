@@ -6650,11 +6650,11 @@ function lowerFunctionBody(
 }
 
 interface SourceAwaitStep {
-  binding: Extract<SourceBindingIR, { kind: 'identifier_binding' }>;
+  binding?: Extract<SourceBindingIR, { kind: 'identifier_binding' }>;
   leadingStatements: readonly SourceStatementIR[];
   source: SourceExpressionIR;
-  type: SemanticTypeIR;
-  representation: CompilerValueType;
+  type?: SemanticTypeIR;
+  representation?: CompilerValueType;
 }
 
 interface SourceAsyncCapture {
@@ -7027,22 +7027,27 @@ function pushAsyncAwaitFulfilledClosure(
     `closure_source_async_await_fulfilled_${closureFunctionId}`,
     captures,
   );
-  addLocal(closureContext, step.binding.name, step.representation);
-  closureContext.localDeclarationKinds.set(step.binding.name, 'const');
-  registerSemanticLocalMetadata(closureContext, step.binding.name, step.type);
-  const awaitedValue = untagUnionExpressionForRepresentation(
-    localGetExpression('promise_value', 'tagged_ref'),
-    step.representation,
-    closureContext,
-  );
-  if (!awaitedValue) {
-    context.unsupportedKinds.add('async_await_value');
-    return undefined;
+  const body: SemanticStatementIR[] = [];
+  if (step.binding) {
+    const representation = step.representation;
+    if (!representation || !step.type) {
+      context.unsupportedKinds.add('async_await_value_type');
+      return undefined;
+    }
+    addLocal(closureContext, step.binding.name, representation);
+    closureContext.localDeclarationKinds.set(step.binding.name, 'const');
+    registerSemanticLocalMetadata(closureContext, step.binding.name, step.type);
+    const awaitedValue = untagUnionExpressionForRepresentation(
+      localGetExpression('promise_value', 'tagged_ref'),
+      representation,
+      closureContext,
+    );
+    if (!awaitedValue) {
+      context.unsupportedKinds.add('async_await_value');
+      return undefined;
+    }
+    body.push({ kind: 'local_set', name: step.binding.name, value: awaitedValue });
   }
-
-  const body: SemanticStatementIR[] = [
-    { kind: 'local_set', name: step.binding.name, value: awaitedValue },
-  ];
   const statementsBeforeNextAwait = index === steps.length - 1
     ? trailingStatements
     : steps[index + 1]!.leadingStatements;
@@ -7209,6 +7214,17 @@ function lowerAwaitAsyncFunctionBody(
         pendingLeadingStatements = [];
         continue;
       }
+    }
+    if (
+      statement.kind === 'expression_statement' &&
+      statement.expression.kind === 'await_expression'
+    ) {
+      steps.push({
+        leadingStatements: pendingLeadingStatements,
+        source: statement.expression.expression,
+      });
+      pendingLeadingStatements = [];
+      continue;
     }
     if (sourceStatementContainsAwaitExpression(statement)) {
       return undefined;
