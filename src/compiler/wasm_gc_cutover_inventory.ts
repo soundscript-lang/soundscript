@@ -132,9 +132,10 @@ export const WASM_GC_CORE_CUTOVER_INVENTORY: readonly WasmGcCutoverInventoryEntr
   {
     family: 'promises',
     status: 'ir-shadowed',
-    focusedGate: 'compileProject selects the source-hir wasm-gc plan for async catch binding reads',
+    focusedGate:
+      'compiler SourceHIR semantic lowering emits emittable catch body return, throw, rethrow, and combined try-catch-finally plans',
     nextCutoverStep:
-      'Broaden SourceHIR async-await lowering through rethrow and catch/finally completion paths while keeping JSPI limited to host-promise boundaries.',
+      'Add finally control-flow precedence (throw/return override in finally) for async contexts, then promote promises to wasm-gc-emittable.',
   },
   {
     family: 'generators',

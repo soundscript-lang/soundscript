@@ -4484,6 +4484,633 @@ Deno.test('compileProject selects the source-hir wasm-gc plan for async catch bi
   assertEquals(result.artifacts?.backendPlanSource, 'source-hir');
 });
 
+Deno.test('compileProject selects the source-hir wasm-gc plan for async catch body returns', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+            lib: ['ES2022'],
+          },
+          include: ['src/**/*.ts'],
+          soundscript: {
+            target: 'wasm-node',
+          },
+        },
+        null,
+        2,
+      ),
+    },
+    {
+      path: 'src/index.ts',
+      contents: `
+        async function value(seed: number): Promise<number> {
+          try {
+            await Promise.reject(seed + 1);
+          } catch {
+            return 99;
+          }
+          return 0;
+        }
+
+        export function score(): number {
+          value(1);
+          return 1;
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createSourceSemanticSnapshot(program, tempDirectory);
+  const semantic = createSemanticModuleFromSourceHIR(snapshot.source, snapshot.sharedFacts);
+  const manifest = createRuntimeManifestFromSemanticModule(semantic);
+  const plan = createWasmGcModulePlan(semantic, manifest);
+  const valuePlan = plan.functionPlans.find((func) => func.name === 'value');
+  const wat = emitWasmGcModulePlan(plan);
+  const watPath = join(tempDirectory, 'source-hir-catch-return-await.wat');
+  const wasmPath = join(tempDirectory, 'source-hir-catch-return-await.wasm');
+  const result = compileProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(valuePlan?.bodyStatus, 'emittable');
+  assertEquals(
+    plan.functionPlans.every((func) => func.bodyStatus === 'emittable'),
+    true,
+  );
+  assertEquals(wat.includes('jspi'), false);
+  assertEquals(wat.includes('Promise.resolve'), false);
+  assertEquals(wat.includes('Promise.reject'), false);
+  await Deno.writeTextFile(watPath, wat);
+  const parseResult = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  assertEquals(new TextDecoder().decode(parseResult.stderr).trim(), '');
+  assertEquals(parseResult.success, true);
+  assertEquals(result.exitCode, 0);
+  assertEquals(result.diagnostics, []);
+  assertEquals(result.artifacts?.backend, 'wasm-gc');
+  assertEquals(result.artifacts?.backendPlanSource, 'source-hir');
+});
+
+Deno.test('compileProject selects the source-hir wasm-gc plan for async catch body throws new Error', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+            lib: ['ES2022'],
+          },
+          include: ['src/**/*.ts'],
+          soundscript: {
+            target: 'wasm-node',
+          },
+        },
+        null,
+        2,
+      ),
+    },
+    {
+      path: 'src/index.ts',
+      contents: `
+        async function value(seed: number): Promise<number> {
+          try {
+            await Promise.reject(seed + 1);
+          } catch {
+            throw new Error("fail");
+          }
+          return 0;
+        }
+
+        export function score(): number {
+          value(1);
+          return 1;
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createSourceSemanticSnapshot(program, tempDirectory);
+  const semantic = createSemanticModuleFromSourceHIR(snapshot.source, snapshot.sharedFacts);
+  const manifest = createRuntimeManifestFromSemanticModule(semantic);
+  const plan = createWasmGcModulePlan(semantic, manifest);
+  const valuePlan = plan.functionPlans.find((func) => func.name === 'value');
+  const wat = emitWasmGcModulePlan(plan);
+  const watPath = join(tempDirectory, 'source-hir-catch-throw-await.wat');
+  const wasmPath = join(tempDirectory, 'source-hir-catch-throw-await.wasm');
+  const result = compileProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(valuePlan?.bodyStatus, 'emittable');
+  assertEquals(
+    plan.functionPlans.every((func) => func.bodyStatus === 'emittable'),
+    true,
+  );
+  assertEquals(wat.includes('jspi'), false);
+  assertEquals(wat.includes('Promise.resolve'), false);
+  assertEquals(wat.includes('Promise.reject'), false);
+  await Deno.writeTextFile(watPath, wat);
+  const parseResult = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  assertEquals(new TextDecoder().decode(parseResult.stderr).trim(), '');
+  assertEquals(parseResult.success, true);
+  assertEquals(result.exitCode, 0);
+  assertEquals(result.diagnostics, []);
+  assertEquals(result.artifacts?.backend, 'wasm-gc');
+  assertEquals(result.artifacts?.backendPlanSource, 'source-hir');
+});
+
+Deno.test('compileProject selects the source-hir wasm-gc plan for async catch body rethrows caught Error', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+            lib: ['ES2022'],
+          },
+          include: ['src/**/*.ts'],
+          soundscript: {
+            target: 'wasm-node',
+          },
+        },
+        null,
+        2,
+      ),
+    },
+    {
+      path: 'src/index.ts',
+      contents: `
+        async function value(seed: number): Promise<number> {
+          try {
+            await Promise.reject(seed + 1);
+          } catch (reason) {
+            throw reason;
+          }
+          return 0;
+        }
+
+        export function score(): number {
+          value(1);
+          return 1;
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createSourceSemanticSnapshot(program, tempDirectory);
+  const semantic = createSemanticModuleFromSourceHIR(snapshot.source, snapshot.sharedFacts);
+  const manifest = createRuntimeManifestFromSemanticModule(semantic);
+  const plan = createWasmGcModulePlan(semantic, manifest);
+  const valuePlan = plan.functionPlans.find((func) => func.name === 'value');
+  const wat = emitWasmGcModulePlan(plan);
+  const watPath = join(tempDirectory, 'source-hir-catch-rethrow-await.wat');
+  const wasmPath = join(tempDirectory, 'source-hir-catch-rethrow-await.wasm');
+
+  assertEquals(valuePlan?.bodyStatus, 'emittable');
+  assertEquals(
+    plan.functionPlans.every((func) => func.bodyStatus === 'emittable'),
+    true,
+  );
+  assertEquals(wat.includes('jspi'), false);
+  assertEquals(wat.includes('Promise.resolve'), false);
+  assertEquals(wat.includes('Promise.reject'), false);
+  assertEquals(wat.includes('call $soundscript_promise_reject_into'), true);
+  await Deno.writeTextFile(watPath, wat);
+  const parseResult = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  assertEquals(new TextDecoder().decode(parseResult.stderr).trim(), '');
+  assertEquals(parseResult.success, true);
+});
+
+Deno.test('compileProject selects the source-hir wasm-gc plan for async catch binding reads after narrowing', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+            lib: ['ES2022'],
+          },
+          include: ['src/**/*.ts'],
+          soundscript: {
+            target: 'wasm-node',
+          },
+        },
+        null,
+        2,
+      ),
+    },
+    {
+      path: 'src/index.ts',
+      contents: `
+        async function value(seed: number): Promise<number> {
+          let total = seed;
+          try {
+            await Promise.reject(seed + 2);
+            total = 99;
+          } catch (reason) {
+            if (typeof reason === "number") {
+              total = total + reason;
+            }
+          }
+          return total + seed;
+        }
+
+        export function score(): number {
+          value(1);
+          return 1;
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createSourceSemanticSnapshot(program, tempDirectory);
+  const semantic = createSemanticModuleFromSourceHIR(snapshot.source, snapshot.sharedFacts);
+  const manifest = createRuntimeManifestFromSemanticModule(semantic);
+  const plan = createWasmGcModulePlan(semantic, manifest);
+  const valuePlan = plan.functionPlans.find((func) => func.name === 'value');
+  const rejectedCatchPlans = plan.functionPlans.filter((func) =>
+    func.name.startsWith('closure_source_async_await_rejected_catch')
+  );
+  const wat = emitWasmGcModulePlan(plan);
+  const watPath = join(tempDirectory, 'source-hir-catch-binding-narrow-await.wat');
+  const wasmPath = join(tempDirectory, 'source-hir-catch-binding-narrow-await.wasm');
+  const result = compileProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(valuePlan?.bodyStatus, 'emittable');
+  assertEquals(rejectedCatchPlans.length, 1);
+  assertEquals(rejectedCatchPlans.every((func) => func.bodyStatus === 'emittable'), true);
+  assertEquals(wat.includes('jspi'), false);
+  assertEquals(wat.includes('Promise.resolve'), false);
+  assertEquals(wat.includes('Promise.reject'), false);
+  await Deno.writeTextFile(watPath, wat);
+  const parseResult = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  assertEquals(new TextDecoder().decode(parseResult.stderr).trim(), '');
+  assertEquals(parseResult.success, true);
+  assertEquals(result.exitCode, 0);
+  assertEquals(result.diagnostics, []);
+  assertEquals(result.artifacts?.backend, 'wasm-gc');
+  assertEquals(result.artifacts?.backendPlanSource, 'source-hir');
+});
+
+Deno.test('compileProject selects the source-hir wasm-gc plan for async try-catch-finally fulfillment', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+            lib: ['ES2022'],
+          },
+          include: ['src/**/*.ts'],
+          soundscript: {
+            target: 'wasm-node',
+          },
+        },
+        null,
+        2,
+      ),
+    },
+    {
+      path: 'src/index.ts',
+      contents: `
+        async function value(seed: number): Promise<number> {
+          let result = seed;
+          try {
+            result = await Promise.resolve(seed + 1);
+          } catch {
+            result = 99;
+          } finally {
+            result = result + 10;
+          }
+          return result + seed;
+        }
+
+        export function score(): number {
+          value(1);
+          return 1;
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createSourceSemanticSnapshot(program, tempDirectory);
+  const semantic = createSemanticModuleFromSourceHIR(snapshot.source, snapshot.sharedFacts);
+  const manifest = createRuntimeManifestFromSemanticModule(semantic);
+  const plan = createWasmGcModulePlan(semantic, manifest);
+  const valuePlan = plan.functionPlans.find((func) => func.name === 'value');
+  const fulfilledPlans = plan.functionPlans.filter((func) =>
+    func.name.startsWith('closure_source_async_await_fulfilled')
+  );
+  const finallyPlans = plan.functionPlans.filter((func) =>
+    func.name.startsWith('closure_source_async_await_finally')
+  );
+  const wat = emitWasmGcModulePlan(plan);
+  const watPath = join(tempDirectory, 'source-hir-try-catch-finally-fulfill.wat');
+  const wasmPath = join(tempDirectory, 'source-hir-try-catch-finally-fulfill.wasm');
+  const result = compileProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(
+    manifest.familyRequirements.map((requirement) => requirement.family),
+    ['closure', 'finite_union', 'promise'],
+  );
+  assertEquals(valuePlan?.bodyStatus, 'emittable');
+  assertEquals(fulfilledPlans.length, 1);
+  assertEquals(fulfilledPlans.every((func) => func.bodyStatus === 'emittable'), true);
+  assertEquals(wat.includes('call $soundscript_promise_new_pending'), true);
+  assertEquals(wat.includes('call $soundscript_promise_then'), true);
+  assertEquals(wat.includes('call $soundscript_promise_resolve_into'), true);
+  assertEquals(wat.includes('jspi'), false);
+  assertEquals(wat.includes('Promise.resolve'), false);
+  assertEquals(wat.includes('Promise.reject'), false);
+  await Deno.writeTextFile(watPath, wat);
+  const parseResult = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  assertEquals(new TextDecoder().decode(parseResult.stderr).trim(), '');
+  assertEquals(parseResult.success, true);
+  assertEquals(result.exitCode, 0);
+  assertEquals(result.diagnostics, []);
+  assertEquals(result.artifacts?.backend, 'wasm-gc');
+  assertEquals(result.artifacts?.backendPlanSource, 'source-hir');
+});
+
+Deno.test('compileProject selects the source-hir wasm-gc plan for async try-catch-finally rejection', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+            lib: ['ES2022'],
+          },
+          include: ['src/**/*.ts'],
+          soundscript: {
+            target: 'wasm-node',
+          },
+        },
+        null,
+        2,
+      ),
+    },
+    {
+      path: 'src/index.ts',
+      contents: `
+        async function value(seed: number): Promise<number> {
+          let result = seed;
+          try {
+            result = await Promise.reject(seed + 2);
+            result = 99;
+          } catch {
+            result = 3;
+          } finally {
+            result = result + 10;
+          }
+          return result + seed;
+        }
+
+        export function score(): number {
+          value(1);
+          return 1;
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createSourceSemanticSnapshot(program, tempDirectory);
+  const semantic = createSemanticModuleFromSourceHIR(snapshot.source, snapshot.sharedFacts);
+  const manifest = createRuntimeManifestFromSemanticModule(semantic);
+  const plan = createWasmGcModulePlan(semantic, manifest);
+  const valuePlan = plan.functionPlans.find((func) => func.name === 'value');
+  const rejectedCatchPlans = plan.functionPlans.filter((func) =>
+    func.name.startsWith('closure_source_async_await_rejected_catch')
+  );
+  const finallyPlans = plan.functionPlans.filter((func) =>
+    func.name.startsWith('closure_source_async_await_finally')
+  );
+  const wat = emitWasmGcModulePlan(plan);
+  const watPath = join(tempDirectory, 'source-hir-try-catch-finally-reject.wat');
+  const wasmPath = join(tempDirectory, 'source-hir-try-catch-finally-reject.wasm');
+  const result = compileProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(
+    manifest.familyRequirements.map((requirement) => requirement.family),
+    ['closure', 'finite_union', 'promise'],
+  );
+  assertEquals(valuePlan?.bodyStatus, 'emittable');
+  assertEquals(rejectedCatchPlans.length, 1);
+  assertEquals(rejectedCatchPlans.every((func) => func.bodyStatus === 'emittable'), true);
+  assertEquals(wat.includes('call $soundscript_promise_new_pending'), true);
+  assertEquals(wat.includes('call $soundscript_promise_then'), true);
+  assertEquals(wat.includes('call $soundscript_promise_resolve_into'), true);
+  assertEquals(wat.includes('jspi'), false);
+  assertEquals(wat.includes('Promise.resolve'), false);
+  assertEquals(wat.includes('Promise.reject'), false);
+  await Deno.writeTextFile(watPath, wat);
+  const parseResult = await new Deno.Command('wasm-tools', {
+    args: ['parse', watPath, '-o', wasmPath],
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output();
+  assertEquals(new TextDecoder().decode(parseResult.stderr).trim(), '');
+  assertEquals(parseResult.success, true);
+  assertEquals(result.exitCode, 0);
+  assertEquals(result.diagnostics, []);
+  assertEquals(result.artifacts?.backend, 'wasm-gc');
+  assertEquals(result.artifacts?.backendPlanSource, 'source-hir');
+});
+
+Deno.test('compileProject selects the source-hir wasm-gc plan for async finally throw precedence over fulfillment', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+            lib: ['ES2022'],
+          },
+          include: ['src/**/*.ts'],
+          soundscript: {
+            target: 'wasm-node',
+          },
+        },
+        null,
+        2,
+      ),
+    },
+    {
+      path: 'src/index.ts',
+      contents: `
+        async function value(seed: number): Promise<number> {
+          try {
+            await Promise.resolve(1);
+          } finally {
+            throw new Error("final");
+          }
+          return 0;
+        }
+
+        export function score(): number {
+          value(1);
+          return 1;
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createSourceSemanticSnapshot(program, tempDirectory);
+  const semantic = createSemanticModuleFromSourceHIR(snapshot.source, snapshot.sharedFacts);
+  const manifest = createRuntimeManifestFromSemanticModule(semantic);
+  const plan = createWasmGcModulePlan(semantic, manifest);
+  const valuePlan = plan.functionPlans.find((func) => func.name === 'value');
+  const finallyPlans = plan.functionPlans.filter((func) =>
+    func.name.startsWith('closure_source_async_await_finally')
+  );
+  const wat = emitWasmGcModulePlan(plan);
+  const watPath = join(tempDirectory, 'source-hir-finally-throw-prec.wat');
+  const wasmPath = join(tempDirectory, 'source-hir-finally-throw-prec.wasm');
+  const result = compileProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(valuePlan?.bodyStatus, 'emittable');
+  assertEquals(
+    plan.functionPlans.every((func) => func.bodyStatus === 'emittable'),
+    true,
+  );
+  assertEquals(wat.includes('jspi'), false);
+  assertEquals(wat.includes('Promise.resolve'), false);
+  assertEquals(wat.includes('Promise.reject'), false);
+  assertEquals(wat.includes('call $soundscript_promise_reject_into'), true);
+});
+
+Deno.test('compileProject selects the source-hir wasm-gc plan for async finally return precedence-over try return', async () => {
+  const tempDirectory = await createTempProject([
+    {
+      path: 'tsconfig.json',
+      contents: JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+            noEmit: true,
+            target: 'ES2022',
+            module: 'ESNext',
+            lib: ['ES2022'],
+          },
+          include: ['src/**/*.ts'],
+          soundscript: {
+            target: 'wasm-node',
+          },
+        },
+        null,
+        2,
+      ),
+    },
+    {
+      path: 'src/index.ts',
+      contents: `
+        async function value(seed: number): Promise<number> {
+          try {
+            await Promise.resolve(1);
+            return 4;
+          } finally {
+            return 5;
+          }
+        }
+
+        export function score(): number {
+          value(1);
+          return 1;
+        }
+      `,
+    },
+  ]);
+  const program = createCompilerProgram(join(tempDirectory, 'tsconfig.json'));
+  const snapshot = createSourceSemanticSnapshot(program, tempDirectory);
+  const semantic = createSemanticModuleFromSourceHIR(snapshot.source, snapshot.sharedFacts);
+  const manifest = createRuntimeManifestFromSemanticModule(semantic);
+  const plan = createWasmGcModulePlan(semantic, manifest);
+  const valuePlan = plan.functionPlans.find((func) => func.name === 'value');
+  const finallyPlans = plan.functionPlans.filter((func) =>
+    func.name.startsWith('closure_source_async_await_finally')
+  );
+  const wat = emitWasmGcModulePlan(plan);
+  const watPath = join(tempDirectory, 'source-hir-finally-return-prec.wat');
+  const wasmPath = join(tempDirectory, 'source-hir-finally-return-prec.wasm');
+  const result = compileProject({
+    projectPath: join(tempDirectory, 'tsconfig.json'),
+    workingDirectory: tempDirectory,
+  });
+
+  assertEquals(valuePlan?.bodyStatus, 'emittable');
+  assertEquals(
+    plan.functionPlans.every((func) => func.bodyStatus === 'emittable'),
+    true,
+  );
+  assertEquals(wat.includes('jspi'), false);
+  assertEquals(wat.includes('Promise.resolve'), false);
+  assertEquals(wat.includes('Promise.reject'), false);
+  assertEquals(wat.includes('call $soundscript_promise_resolve_into'), true);
+});
+
 Deno.test('compiler SourceHIR semantic lowering preserves primitive structured control flow', async () => {
   const tempDirectory = await createTempProject([
     {

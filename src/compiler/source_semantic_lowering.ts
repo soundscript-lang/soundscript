@@ -119,6 +119,15 @@ interface SourceSemanticCompletionTarget {
   continueFlagName?: string;
 }
 
+const ASYNC_COMPLETION_NORMAL = 0;
+const ASYNC_COMPLETION_RETURN = 1;
+const ASYNC_COMPLETION_THROW = 2;
+
+interface AsyncCompletionNames {
+  kindName: string;
+  valueName: string;
+}
+
 type SourceSemanticLocalDeclarationKind = 'const' | 'let' | 'var' | 'param' | 'capture';
 
 interface SourceSemanticModuleLoweringState {
@@ -1128,6 +1137,8 @@ function pushPromiseRejectIntoClosureWithFinally(
   signatureId: number,
   finallyStatements: readonly SourceStatementIR[],
   captures: readonly SourceAsyncCapture[],
+  finallyReturnStatement?: Extract<SourceStatementIR, { kind: 'return' }>,
+  finallyThrowStatement?: Extract<SourceStatementIR, { kind: 'throw' }>,
 ): number | undefined {
   if (sourceStatementsContainControlTransfer(finallyStatements)) {
     context.unsupportedKinds.add('async_await_finally_control_flow');
@@ -1143,7 +1154,43 @@ function pushPromiseRejectIntoClosureWithFinally(
   const body: SemanticStatementIR[] = [
     ...finallyStatements.flatMap((statement) => [...lowerStatement(statement, closureContext)]),
     ...takePendingStatements(closureContext),
-    {
+  ];
+  if (finallyReturnStatement) {
+    const finallyReturnValue = finallyReturnStatement.expression
+      ? lowerExpression(finallyReturnStatement.expression, closureContext)
+      : { kind: 'undefined_literal', representation: 'tagged_ref' } as SemanticExpressionIR;
+    const taggedFinallyReturn = taggedUnionExpressionForValue(finallyReturnValue, closureContext);
+    if (!taggedFinallyReturn) {
+      context.unsupportedKinds.add('async_await_return_value');
+      return undefined;
+    }
+    body.push({
+      kind: 'expression',
+      value: {
+        kind: 'call',
+        callee: SOUNDSCRIPT_PROMISE_RESOLVE_INTO_HELPER_NAME,
+        args: [promiseTargetFromCapture(), taggedFinallyReturn],
+        representation: 'tagged_ref',
+      },
+    });
+  } else if (finallyThrowStatement) {
+    const finallyThrowValue = lowerExpression(finallyThrowStatement.expression, closureContext);
+    const taggedFinallyThrow = taggedUnionExpressionForValue(finallyThrowValue, closureContext);
+    if (!taggedFinallyThrow) {
+      context.unsupportedKinds.add('async_await_throw_value');
+      return undefined;
+    }
+    body.push({
+      kind: 'expression',
+      value: {
+        kind: 'call',
+        callee: SOUNDSCRIPT_PROMISE_REJECT_INTO_HELPER_NAME,
+        args: [promiseTargetFromCapture(), taggedFinallyThrow],
+        representation: 'tagged_ref',
+      },
+    });
+  } else {
+    body.push({
       kind: 'expression',
       value: {
         kind: 'call',
@@ -1154,9 +1201,9 @@ function pushPromiseRejectIntoClosureWithFinally(
         ],
         representation: 'tagged_ref',
       },
-    },
-    { kind: 'return', value: { kind: 'undefined_literal', representation: 'tagged_ref' } },
-  ];
+    });
+  }
+  body.push({ kind: 'return', value: { kind: 'undefined_literal', representation: 'tagged_ref' } });
   const unsupportedBodyKinds = [...closureContext.unsupportedKinds].sort();
   context.moduleState.generatedFunctions.push({
     name: closureContext.functionName,
@@ -1189,22 +1236,301 @@ function pushPromiseRejectIntoClosureWithFinally(
   return closureFunctionId;
 }
 
+function createAsyncCompletionNames(
+  context: FunctionLoweringContext,
+  prefix: string,
+): AsyncCompletionNames {
+  const kindName = nextTempLocalName(context, `${prefix}_completion_kind`);
+  const valueName = nextTempLocalName(context, `${prefix}_completion_value`);
+  addLocal(context, kindName, 'i32');
+  addLocal(context, valueName, 'tagged_ref');
+  return { kindName, valueName };
+}
+
+function initAsyncCompletionStatements(names: AsyncCompletionNames): SemanticStatementIR[] {
+  return [
+    {
+      kind: 'local_set',
+      name: names.kindName,
+      value: booleanLiteralExpression(false),
+    },
+    {
+      kind: 'local_set',
+      name: names.valueName,
+      value: { kind: 'undefined_literal', representation: 'tagged_ref' },
+    },
+  ];
+}
+
+function setAsyncCompletionReturnStatements(
+  names: AsyncCompletionNames,
+  value: SemanticExpressionIR,
+): SemanticStatementIR[] {
+  return [
+    { kind: 'local_set', name: names.valueName, value },
+    {
+      kind: 'local_set',
+      name: names.kindName,
+      value: booleanLiteralExpression(true),
+    },
+  ];
+}
+
+function setAsyncCompletionThrowStatements(
+  names: AsyncCompletionNames,
+  value: SemanticExpressionIR,
+): SemanticStatementIR[] {
+  return [
+    { kind: 'local_set', name: names.valueName, value },
+    {
+      kind: 'local_set',
+      name: names.kindName,
+      value: booleanLiteralExpression(true),
+    },
+  ];
+}
+
+function asyncCompletionDispatchStatements(
+  names: AsyncCompletionNames,
+): SemanticStatementIR[] {
+  const isReturn = localGetExpression(names.kindName, 'i32');
+  return [
+    {
+      kind: 'if',
+      condition: isReturn,
+      thenBody: [{
+        kind: 'expression',
+        value: {
+          kind: 'call',
+          callee: SOUNDSCRIPT_PROMISE_RESOLVE_INTO_HELPER_NAME,
+          args: [
+            promiseTargetFromCapture(),
+            localGetExpression(names.valueName, 'tagged_ref'),
+          ],
+          representation: 'tagged_ref',
+        },
+      }, {
+        kind: 'return',
+        value: { kind: 'undefined_literal', representation: 'tagged_ref' },
+      }],
+      elseBody: [],
+    },
+    {
+      kind: 'expression',
+      value: {
+        kind: 'call',
+        callee: SOUNDSCRIPT_PROMISE_RESOLVE_INTO_HELPER_NAME,
+        args: [
+          promiseTargetFromCapture(),
+          localGetExpression(names.valueName, 'tagged_ref'),
+        ],
+        representation: 'tagged_ref',
+      },
+    },
+    { kind: 'return', value: { kind: 'undefined_literal', representation: 'tagged_ref' } },
+  ];
+}
+
+function pushAsyncCompletionFinallyDispatchClosure(
+  context: FunctionLoweringContext,
+  signatureId: number,
+  finallyBlock: readonly SourceStatementIR[],
+  finallyReturnStatement: Extract<SourceStatementIR, { kind: 'return' }> | undefined,
+  finallyThrowStatement: Extract<SourceStatementIR, { kind: 'throw' }> | undefined,
+  completion: AsyncCompletionNames,
+  captures: readonly SourceAsyncCapture[],
+): number | undefined {
+  if (
+    finallyReturnStatement || finallyThrowStatement
+      ? sourceStatementsContainControlTransfer(
+        finallyReturnStatement
+          ? finallyBlock.filter((s) => s !== finallyReturnStatement)
+          : finallyThrowStatement
+          ? finallyBlock.filter((s) => s !== finallyThrowStatement)
+          : finallyBlock,
+      )
+      : sourceStatementsContainControlTransfer(finallyBlock)
+  ) {
+    context.unsupportedKinds.add('async_await_finally_control_flow');
+    return undefined;
+  }
+  const closureFunctionId = context.moduleState.nextClosureFunctionId;
+  context.moduleState.nextClosureFunctionId += 1;
+  const closureContext = createAsyncAwaitContinuationContext(
+    context,
+    `closure_source_async_await_finally_dispatch_${closureFunctionId}`,
+    captures,
+  );
+  addLocal(closureContext, completion.kindName, 'i32');
+  addLocal(closureContext, completion.valueName, 'tagged_ref');
+  const body: SemanticStatementIR[] = [
+    {
+      kind: 'local_set',
+      name: completion.kindName,
+      value: {
+        kind: 'box_get',
+        box: localGetExpression(completion.kindName, 'box_ref'),
+        valueType: 'i32',
+        representation: 'i32',
+      },
+    },
+    {
+      kind: 'local_set',
+      name: completion.valueName,
+      value: {
+        kind: 'box_get',
+        box: localGetExpression(completion.valueName, 'box_ref'),
+        valueType: 'tagged_ref',
+        representation: 'tagged_ref',
+      },
+    },
+  ];
+  if (finallyReturnStatement) {
+    const leadingFinallyStatements = finallyBlock.filter((s) => s !== finallyReturnStatement);
+    body.push(
+      ...leadingFinallyStatements.flatMap((s) => [...lowerStatement(s, closureContext)]),
+    );
+    const returnValue = finallyReturnStatement.expression
+      ? lowerExpression(finallyReturnStatement.expression, closureContext)
+      : { kind: 'undefined_literal', representation: 'tagged_ref' } as SemanticExpressionIR;
+    const taggedValue = taggedUnionExpressionForValue(returnValue, closureContext);
+    if (!taggedValue) {
+      context.unsupportedKinds.add('async_await_return_value');
+      return undefined;
+    }
+    body.push(
+      ...takePendingStatements(closureContext),
+      { kind: 'local_set', name: completion.valueName, value: taggedValue },
+      {
+        kind: 'local_set',
+        name: completion.kindName,
+        value: booleanLiteralExpression(true),
+      },
+    );
+  } else if (finallyThrowStatement) {
+    const leadingFinallyStatements = finallyBlock.filter((s) => s !== finallyThrowStatement);
+    body.push(
+      ...leadingFinallyStatements.flatMap((s) => [...lowerStatement(s, closureContext)]),
+    );
+    const throwValue = lowerExpression(finallyThrowStatement.expression, closureContext);
+    const taggedValue = taggedUnionExpressionForValue(throwValue, closureContext);
+    if (!taggedValue) {
+      context.unsupportedKinds.add('async_await_throw_value');
+      return undefined;
+    }
+    body.push(
+      ...takePendingStatements(closureContext),
+      { kind: 'local_set', name: completion.valueName, value: taggedValue },
+      {
+        kind: 'local_set',
+        name: completion.kindName,
+        value: booleanLiteralExpression(true),
+      },
+    );
+  } else {
+    body.push(
+      ...finallyBlock.flatMap((s) => [...lowerStatement(s, closureContext)]),
+    );
+  }
+  body.push(
+    {
+      kind: 'box_set',
+      box: localGetExpression(completion.kindName, 'box_ref'),
+      value: localGetExpression(completion.kindName, 'i32'),
+      valueType: 'i32',
+    },
+    {
+      kind: 'box_set',
+      box: localGetExpression(completion.valueName, 'box_ref'),
+      value: localGetExpression(completion.valueName, 'tagged_ref'),
+      valueType: 'tagged_ref',
+    },
+    { kind: 'return', value: { kind: 'undefined_literal', representation: 'tagged_ref' } },
+  );
+  const unsupportedBodyKinds = [...closureContext.unsupportedKinds].sort();
+  context.moduleState.generatedFunctions.push({
+    name: closureContext.functionName,
+    exportName: '',
+    params: [
+      { name: 'capture_target_0', representation: 'box_ref' },
+      ...captures.map((capture) => ({
+        name: capture.name,
+        representation: 'box_ref' as const,
+      })),
+      { name: completion.kindName, representation: 'box_ref' },
+      { name: completion.valueName, representation: 'box_ref' },
+    ],
+    locals: closureContext.locals,
+    result: 'tagged_ref',
+    body,
+    bodyStatus: unsupportedBodyKinds.length === 0 ? 'emittable' : 'stub',
+    unsupportedBodyKinds,
+    runtimeFamilies: [...new Set([...closureContext.runtimeFamilies])].sort(),
+    hostImported: false,
+    hostExported: false,
+    unionBoundaries: [],
+    closureFunctionId,
+    closureSignatureId: signatureId,
+    closureCaptureCount: 3 + captures.length,
+    closureCaptureValueTypes: [
+      'tagged_ref',
+      ...captures.map((capture) => capture.valueType),
+      'i32',
+      'tagged_ref',
+    ],
+  });
+  return closureFunctionId;
+}
+
 function pushPromiseCatchIntoClosure(
   context: FunctionLoweringContext,
   signatureId: number,
   catchInfo: NonNullable<SourceAwaitContinuationOptions['rejectionCatch']>,
   captures: readonly SourceAsyncCapture[],
+  options?: SourceAwaitContinuationOptions,
 ): number | undefined {
   if (
     catchInfo.catchBlock.some((statement) => sourceStatementContainsAwaitExpression(statement)) ||
-    sourceStatementsContainControlTransfer(catchInfo.catchBlock) ||
     catchInfo.afterStatements.some((statement) => sourceStatementContainsAwaitExpression(statement))
+  ) {
+    context.unsupportedKinds.add('async_await_catch_control_flow');
+    return undefined;
+  }
+  const catchReturnStatement = catchInfo.catchReturnStatement;
+  const catchThrowStatement = catchInfo.catchThrowStatement;
+  const catchLeadingStatements = catchReturnStatement
+    ? catchInfo.catchBlock.filter((s) => s !== catchReturnStatement)
+    : catchThrowStatement
+    ? catchInfo.catchBlock.filter((s) => s !== catchThrowStatement)
+    : catchInfo.catchBlock;
+  if (
+    (catchReturnStatement || catchThrowStatement)
+      ? sourceStatementsContainControlTransfer(catchLeadingStatements)
+      : sourceStatementsContainControlTransfer(catchInfo.catchBlock)
   ) {
     context.unsupportedKinds.add('async_await_catch_control_flow');
     return undefined;
   }
   if (catchInfo.catchBinding && catchInfo.catchBinding.kind !== 'identifier_binding') {
     context.unsupportedKinds.add('async_await_catch_binding');
+    return undefined;
+  }
+  const finallyBlock = options?.finallyBlock;
+  const finallyReturnStatement = options?.finallyReturnStatement;
+  const finallyThrowStatement = options?.finallyThrowStatement;
+  if (
+    finallyBlock &&
+    (finallyReturnStatement || finallyThrowStatement
+      ? sourceStatementsContainControlTransfer(
+        finallyReturnStatement
+          ? finallyBlock.filter((s) => s !== finallyReturnStatement)
+          : finallyThrowStatement
+          ? finallyBlock.filter((s) => s !== finallyThrowStatement)
+          : finallyBlock,
+      )
+      : sourceStatementsContainControlTransfer(finallyBlock))
+  ) {
+    context.unsupportedKinds.add('async_await_finally_control_flow');
     return undefined;
   }
   const catchBindingName = catchInfo.catchBinding?.kind === 'identifier_binding'
@@ -1228,8 +1554,6 @@ function pushPromiseCatchIntoClosure(
     captures,
   );
   if (catchBindingName && catchBindingUsed) {
-    // Promise rejection reasons are compiler-owned tagged values at the boundary.
-    // Keep this local tagged and let ordinary expression lowering untag when needed.
     addLocal(closureContext, catchBindingName, 'tagged_ref');
     closureContext.localDeclarationKinds.set(catchBindingName, 'let');
   }
@@ -1240,23 +1564,160 @@ function pushPromiseCatchIntoClosure(
       value: localGetExpression('promise_reason', 'tagged_ref'),
     }]
     : [];
-  const catchBody = catchInfo.catchBlock.flatMap((statement) => [
+  const catchBody = catchLeadingStatements.flatMap((statement) => [
     ...lowerStatement(statement, closureContext),
   ]);
-  const resolveStatements = lowerAsyncPromiseTargetResolution(
-    catchInfo.afterStatements,
-    catchInfo.returnStatement,
-    closureContext,
-  );
-  if (!resolveStatements) {
-    context.unsupportedKinds.add('async_await_catch_return');
-    return undefined;
-  }
   const body: SemanticStatementIR[] = [
     ...catchBindingStatements,
     ...catchBody,
-    ...resolveStatements,
   ];
+  if (catchReturnStatement) {
+    const returnValue = catchReturnStatement.expression
+      ? lowerExpression(catchReturnStatement.expression, closureContext)
+      : { kind: 'undefined_literal', representation: 'tagged_ref' } as SemanticExpressionIR;
+    const taggedReturnValue = taggedUnionExpressionForValue(returnValue, closureContext);
+    if (!taggedReturnValue) {
+      context.unsupportedKinds.add('async_await_catch_return_value');
+      return undefined;
+    }
+    body.push(...takePendingStatements(closureContext));
+    if (finallyBlock) {
+      body.push(
+        { kind: 'local_set', name: 'promise_value', value: taggedReturnValue },
+        ...finallyBlock.flatMap((s) => [...lowerStatement(s, closureContext)]),
+      );
+      const finallyTagged = handleFinallyCompletionOverride(closureContext, finallyBlock);
+      if (finallyTagged !== undefined) {
+        if (finallyTagged === false) {
+          context.unsupportedKinds.add('async_await_finally_control_flow');
+          return undefined;
+        }
+        body.push(...finallyTagged);
+      } else {
+        body.push({
+          kind: 'expression',
+          value: {
+            kind: 'call',
+            callee: SOUNDSCRIPT_PROMISE_RESOLVE_INTO_HELPER_NAME,
+            args: [
+              promiseTargetFromCapture(),
+              localGetExpression('promise_value', 'tagged_ref'),
+            ],
+            representation: 'tagged_ref',
+          },
+        });
+      }
+    } else {
+      body.push({
+        kind: 'expression',
+        value: {
+          kind: 'call',
+          callee: SOUNDSCRIPT_PROMISE_RESOLVE_INTO_HELPER_NAME,
+          args: [
+            promiseTargetFromCapture(),
+            taggedReturnValue,
+          ],
+          representation: 'tagged_ref',
+        },
+      });
+    }
+  } else if (catchThrowStatement) {
+    if (catchThrowStatement.expression) {
+      const throwValue = lowerExpression(catchThrowStatement.expression, closureContext);
+      const taggedThrowValue = taggedUnionExpressionForValue(throwValue, closureContext);
+      if (!taggedThrowValue) {
+        context.unsupportedKinds.add('async_await_catch_throw_value');
+        return undefined;
+      }
+      body.push(...takePendingStatements(closureContext));
+      if (finallyBlock) {
+        body.push(
+          ...finallyBlock.flatMap((s) => [...lowerStatement(s, closureContext)]),
+        );
+        body.push({
+          kind: 'expression',
+          value: {
+            kind: 'call',
+            callee: SOUNDSCRIPT_PROMISE_REJECT_INTO_HELPER_NAME,
+            args: [
+              promiseTargetFromCapture(),
+              taggedThrowValue,
+            ],
+            representation: 'tagged_ref',
+          },
+        });
+      } else {
+        body.push({
+          kind: 'expression',
+          value: {
+            kind: 'call',
+            callee: SOUNDSCRIPT_PROMISE_REJECT_INTO_HELPER_NAME,
+            args: [
+              promiseTargetFromCapture(),
+              taggedThrowValue,
+            ],
+            representation: 'tagged_ref',
+          },
+        });
+      }
+    } else {
+      body.push(...takePendingStatements(closureContext));
+      if (finallyBlock) {
+        body.push(
+          ...finallyBlock.flatMap((s) => [...lowerStatement(s, closureContext)]),
+        );
+      }
+      body.push({
+        kind: 'expression',
+        value: {
+          kind: 'call',
+          callee: SOUNDSCRIPT_PROMISE_REJECT_INTO_HELPER_NAME,
+          args: [
+            promiseTargetFromCapture(),
+            localGetExpression('promise_reason', 'tagged_ref'),
+          ],
+          representation: 'tagged_ref',
+        },
+      });
+    }
+  } else {
+    if (finallyBlock) {
+      body.push(
+        ...finallyBlock.flatMap((s) => [...lowerStatement(s, closureContext)]),
+      );
+      const handleResult = handleFinallyCompletionOverride(closureContext, finallyBlock);
+      if (handleResult !== undefined) {
+        if (handleResult === false) {
+          context.unsupportedKinds.add('async_await_finally_control_flow');
+          return undefined;
+        }
+        body.push(...handleResult);
+      } else {
+        const resolveStatements = lowerAsyncPromiseTargetResolution(
+          catchInfo.afterStatements,
+          catchInfo.returnStatement,
+          closureContext,
+        );
+        if (!resolveStatements) {
+          context.unsupportedKinds.add('async_await_catch_return');
+          return undefined;
+        }
+        body.push(...resolveStatements);
+      }
+    } else {
+      const resolveStatements = lowerAsyncPromiseTargetResolution(
+        catchInfo.afterStatements,
+        catchInfo.returnStatement,
+        closureContext,
+      );
+      if (!resolveStatements) {
+        context.unsupportedKinds.add('async_await_catch_return');
+        return undefined;
+      }
+      body.push(...resolveStatements);
+    }
+  }
+  body.push({ kind: 'return', value: { kind: 'undefined_literal', representation: 'tagged_ref' } });
   const unsupportedBodyKinds = [...closureContext.unsupportedKinds].sort();
   context.moduleState.generatedFunctions.push({
     name: closureContext.functionName,
@@ -1287,6 +1748,96 @@ function pushPromiseCatchIntoClosure(
     ],
   });
   return closureFunctionId;
+}
+
+function handleFinallyCompletionOverride(
+  context: FunctionLoweringContext,
+  finallyBlock: readonly SourceStatementIR[],
+): readonly SemanticStatementIR[] | false | undefined {
+  const finallyReturnIndex = finallyBlock.findIndex((s) => s.kind === 'return');
+  const finallyThrowIndex = finallyBlock.findIndex((s) => s.kind === 'throw');
+  if (finallyReturnIndex < 0 && finallyThrowIndex < 0) {
+    return undefined;
+  }
+  if (finallyReturnIndex >= 0) {
+    const returnStatement = finallyBlock[finallyReturnIndex] as Extract<
+      SourceStatementIR,
+      { kind: 'return' }
+    >;
+    const leadingStatements = finallyBlock.slice(0, finallyReturnIndex);
+    if (sourceStatementsContainControlTransfer(leadingStatements)) {
+      return false;
+    }
+    const trailingStatements = finallyBlock.slice(finallyReturnIndex + 1);
+    const overrideBody: SemanticStatementIR[] = [
+      ...leadingStatements.flatMap((s) => [...lowerStatement(s, context)]),
+    ];
+    const returnValue = returnStatement.expression
+      ? lowerExpression(returnStatement.expression, context)
+      : { kind: 'undefined_literal', representation: 'tagged_ref' } as SemanticExpressionIR;
+    const taggedValue = taggedUnionExpressionForValue(returnValue, context);
+    if (!taggedValue) {
+      return false;
+    }
+    overrideBody.push(
+      ...takePendingStatements(context),
+      {
+        kind: 'expression',
+        value: {
+          kind: 'call',
+          callee: SOUNDSCRIPT_PROMISE_RESOLVE_INTO_HELPER_NAME,
+          args: [
+            promiseTargetFromCapture(),
+            taggedValue,
+          ],
+          representation: 'tagged_ref',
+        },
+      },
+    );
+    overrideBody.push(
+      ...trailingStatements.flatMap((s) => [...lowerStatement(s, context)]),
+    );
+    return overrideBody;
+  }
+  if (finallyThrowIndex >= 0) {
+    const throwStatement = finallyBlock[finallyThrowIndex] as Extract<
+      SourceStatementIR,
+      { kind: 'throw' }
+    >;
+    const leadingStatements = finallyBlock.slice(0, finallyThrowIndex);
+    if (sourceStatementsContainControlTransfer(leadingStatements)) {
+      return false;
+    }
+    const trailingStatements = finallyBlock.slice(finallyThrowIndex + 1);
+    const overrideBody: SemanticStatementIR[] = [
+      ...leadingStatements.flatMap((s) => [...lowerStatement(s, context)]),
+    ];
+    const throwValue = lowerExpression(throwStatement.expression, context);
+    const taggedValue = taggedUnionExpressionForValue(throwValue, context);
+    if (!taggedValue) {
+      return false;
+    }
+    overrideBody.push(
+      ...takePendingStatements(context),
+      {
+        kind: 'expression',
+        value: {
+          kind: 'call',
+          callee: SOUNDSCRIPT_PROMISE_REJECT_INTO_HELPER_NAME,
+          args: [
+            promiseTargetFromCapture(),
+            taggedValue,
+          ],
+          representation: 'tagged_ref',
+        },
+      },
+    );
+    overrideBody.push(
+      ...trailingStatements.flatMap((s) => [...lowerStatement(s, context)]),
+    );
+    return overrideBody;
+  }
+  return undefined;
 }
 
 function pushPromiseResolveIntoClosure(
@@ -7035,8 +7586,14 @@ interface SourceAwaitContinuationOptions {
     catchBlock: readonly SourceStatementIR[];
     catchBinding?: SourceBindingIR;
     returnStatement: Extract<SourceStatementIR, { kind: 'return' }>;
+    catchReturnStatement?: Extract<SourceStatementIR, { kind: 'return' }>;
+    catchThrowStatement?: Extract<SourceStatementIR, { kind: 'throw' }>;
   };
   rejectionFinalizerStatements?: readonly SourceStatementIR[];
+  finallyBlock?: readonly SourceStatementIR[];
+  finallyReturnStatement?: Extract<SourceStatementIR, { kind: 'return' }>;
+  finallyThrowStatement?: Extract<SourceStatementIR, { kind: 'throw' }>;
+  completion?: AsyncCompletionNames;
 }
 
 interface SourceAsyncCapture {
@@ -7629,6 +8186,7 @@ function pushAsyncAwaitRejectedClosure(
       signatureId,
       options.rejectionCatch,
       captures,
+      options,
     );
     if (functionId === undefined) {
       return undefined;
@@ -7651,6 +8209,8 @@ function pushAsyncAwaitRejectedClosure(
       signatureId,
       finalizerStatements,
       captures,
+      options?.finallyReturnStatement,
+      options?.finallyThrowStatement,
     )
     : pushPromiseRejectIntoClosure(context, signatureId);
   if (functionId === undefined) {
@@ -7730,23 +8290,61 @@ function pushAsyncAwaitFulfilledClosure(
     ) => [...lowerStatement(statement, closureContext)]),
   );
   if (index === steps.length - 1) {
-    const returnValue = returnStatement.expression
-      ? lowerExpression(returnStatement.expression, closureContext)
-      : { kind: 'undefined_literal', representation: 'tagged_ref' } as SemanticExpressionIR;
-    const taggedReturnValue = taggedUnionExpressionForValue(returnValue, closureContext);
-    if (!taggedReturnValue) {
-      context.unsupportedKinds.add('async_await_return_value');
-      return undefined;
+    const finallyReturnStatement = options?.finallyReturnStatement;
+    const finallyThrowStatement = options?.finallyThrowStatement;
+    if (finallyReturnStatement) {
+      const finallyReturnValue = finallyReturnStatement.expression
+        ? lowerExpression(finallyReturnStatement.expression, closureContext)
+        : { kind: 'undefined_literal', representation: 'tagged_ref' } as SemanticExpressionIR;
+      const taggedFinallyReturn = taggedUnionExpressionForValue(finallyReturnValue, closureContext);
+      if (!taggedFinallyReturn) {
+        context.unsupportedKinds.add('async_await_return_value');
+        return undefined;
+      }
+      body.push(...takePendingStatements(closureContext), {
+        kind: 'expression',
+        value: {
+          kind: 'call',
+          callee: SOUNDSCRIPT_PROMISE_RESOLVE_INTO_HELPER_NAME,
+          args: [promiseTargetFromCapture(), taggedFinallyReturn],
+          representation: 'tagged_ref',
+        },
+      }, { kind: 'return', value: { kind: 'undefined_literal', representation: 'tagged_ref' } });
+    } else if (finallyThrowStatement) {
+      const finallyThrowValue = lowerExpression(finallyThrowStatement.expression, closureContext);
+      const taggedFinallyThrow = taggedUnionExpressionForValue(finallyThrowValue, closureContext);
+      if (!taggedFinallyThrow) {
+        context.unsupportedKinds.add('async_await_throw_value');
+        return undefined;
+      }
+      body.push(...takePendingStatements(closureContext), {
+        kind: 'expression',
+        value: {
+          kind: 'call',
+          callee: SOUNDSCRIPT_PROMISE_REJECT_INTO_HELPER_NAME,
+          args: [promiseTargetFromCapture(), taggedFinallyThrow],
+          representation: 'tagged_ref',
+        },
+      }, { kind: 'return', value: { kind: 'undefined_literal', representation: 'tagged_ref' } });
+    } else {
+      const returnValue = returnStatement.expression
+        ? lowerExpression(returnStatement.expression, closureContext)
+        : { kind: 'undefined_literal', representation: 'tagged_ref' } as SemanticExpressionIR;
+      const taggedReturnValue = taggedUnionExpressionForValue(returnValue, closureContext);
+      if (!taggedReturnValue) {
+        context.unsupportedKinds.add('async_await_return_value');
+        return undefined;
+      }
+      body.push(...takePendingStatements(closureContext), {
+        kind: 'expression',
+        value: {
+          kind: 'call',
+          callee: SOUNDSCRIPT_PROMISE_RESOLVE_INTO_HELPER_NAME,
+          args: [promiseTargetFromCapture(), taggedReturnValue],
+          representation: 'tagged_ref',
+        },
+      }, { kind: 'return', value: { kind: 'undefined_literal', representation: 'tagged_ref' } });
     }
-    body.push(...takePendingStatements(closureContext), {
-      kind: 'expression',
-      value: {
-        kind: 'call',
-        callee: SOUNDSCRIPT_PROMISE_RESOLVE_INTO_HELPER_NAME,
-        args: [promiseTargetFromCapture(), taggedReturnValue],
-        representation: 'tagged_ref',
-      },
-    }, { kind: 'return', value: { kind: 'undefined_literal', representation: 'tagged_ref' } });
   } else {
     const nextStep = steps[index + 1]!;
     const awaitedSource = lowerExpression(nextStep.source, closureContext);
@@ -8887,11 +9485,65 @@ function lowerTryFinallyAwaitAsyncFunctionBody(
   func: SourceFunctionIR,
   context: FunctionLoweringContext,
 ): readonly SemanticStatementIR[] | undefined {
-  if (!func.async || context.currentResultType?.kind !== 'promise' || func.body.length < 2) {
+  if (!func.async || context.currentResultType?.kind !== 'promise' || func.body.length < 1) {
     return undefined;
   }
   const returnStatement = func.body.at(-1);
   if (returnStatement?.kind !== 'return') {
+    const candidateStatementsNoReturn = func.body;
+    for (const statement of candidateStatementsNoReturn) {
+      if (!sourceStatementContainsAwaitExpression(statement)) continue;
+      if (statement.kind === 'try' && !statement.catchBlock && statement.finallyBlock) {
+        const tryBlockArr = (statement as { tryBlock: SourceStatementIR[] }).tryBlock;
+        const finallyBlockArr = statement.finallyBlock;
+        const tryLastIdx = tryBlockArr.length - 1;
+        const tryLast = tryLastIdx >= 0 ? tryBlockArr[tryLastIdx] : undefined;
+        const tryReturnStatement = tryLast?.kind === 'return'
+          ? tryLast as SourceStatementIR & { kind: 'return' }
+          : undefined;
+        const finallyLastIdx = finallyBlockArr.length - 1;
+        const finallyLast = finallyLastIdx >= 0 ? finallyBlockArr[finallyLastIdx] : undefined;
+        const finallyReturnStatement = finallyLast?.kind === 'return'
+          ? finallyLast as SourceStatementIR & { kind: 'return' }
+          : undefined;
+        const effectiveReturn = finallyReturnStatement || tryReturnStatement;
+        if (!effectiveReturn) return undefined;
+        const tryLeading = tryReturnStatement
+          ? tryBlockArr.slice(0, tryLastIdx)
+          : tryBlockArr;
+        const finallyLeading = finallyReturnStatement
+          ? finallyBlockArr.slice(0, finallyLastIdx)
+          : finallyBlockArr;
+        if (
+          sourceStatementsContainControlTransfer(tryLeading) ||
+          sourceStatementsContainControlTransfer(finallyLeading)
+        ) {
+          return undefined;
+        }
+        const afterStatements = candidateStatementsNoReturn.slice(1);
+        if (afterStatements.some((a) => sourceStatementContainsAwaitExpression(a))) {
+          return undefined;
+        }
+        const collected = collectSourceAwaitStepsFromSequentialStatements(tryLeading, context);
+        if (!collected || collected.steps.length === 0) return undefined;
+        const [firstStep, ...remainingSteps] = collected.steps;
+        if (!firstStep) return undefined;
+        const steps: SourceAwaitStep[] = [
+          { ...firstStep, leadingStatements: [...firstStep.leadingStatements] },
+          ...remainingSteps,
+        ];
+        return lowerSourceAwaitStepsToPromiseReturn(
+          steps,
+          [...collected.trailingStatements, ...finallyLeading, ...afterStatements],
+          effectiveReturn,
+          context,
+          {
+            rejectionFinalizerStatements: finallyLeading,
+            finallyReturnStatement: finallyReturnStatement ?? undefined,
+          },
+        );
+      }
+    }
     return undefined;
   }
   let leadingStatements: readonly SourceStatementIR[] = [];
@@ -8901,6 +9553,26 @@ function lowerTryFinallyAwaitAsyncFunctionBody(
       leadingStatements = [...leadingStatements, statement];
       continue;
     }
+      const finallyBlockRaw = (statement as { finallyBlock?: readonly SourceStatementIR[] }).finallyBlock;
+      const finallyReturnIndex = finallyBlockRaw ? finallyBlockRaw.length - 1 : -1;
+      const finallyReturnCandidate = finallyReturnIndex >= 0 && finallyBlockRaw
+        ? finallyBlockRaw[finallyReturnIndex]
+        : undefined;
+      const finallyReturnStatement = finallyReturnCandidate?.kind === 'return'
+        ? finallyReturnCandidate as Extract<SourceStatementIR, { kind: 'return' }>
+        : undefined;
+      const finallyThrowCandidate = finallyReturnIndex >= 0 && finallyBlockRaw
+        ? finallyBlockRaw[finallyReturnIndex]
+        : undefined;
+      const finallyThrowStatement = !finallyReturnStatement && finallyThrowCandidate?.kind === 'throw'
+        ? finallyThrowCandidate as Extract<SourceStatementIR, { kind: 'throw' }>
+        : undefined;
+      const finallyLeadingStatements = (finallyReturnStatement || finallyThrowStatement) && finallyBlockRaw
+        ? finallyBlockRaw.slice(0, finallyReturnIndex)
+        : finallyBlockRaw ?? [];
+      const finallyHasControlTransfer = (finallyReturnStatement || finallyThrowStatement)
+        ? sourceStatementsContainControlTransfer(finallyLeadingStatements)
+        : sourceStatementsContainControlTransfer(finallyBlockRaw ?? []);
     if (
       statement.kind !== 'try' ||
       statement.catchBlock ||
@@ -8908,9 +9580,67 @@ function lowerTryFinallyAwaitAsyncFunctionBody(
       statement.finallyBlock === undefined ||
       statement.finallyBlock.some((child) => sourceStatementContainsAwaitExpression(child)) ||
       sourceStatementsContainControlTransfer(statement.tryBlock) ||
-      sourceStatementsContainControlTransfer(statement.finallyBlock)
+      finallyHasControlTransfer
     ) {
-      return undefined;
+      const tryReturnIndex = statement.tryBlock.length - 1;
+      const tryReturnCandidate = statement.tryBlock[tryReturnIndex];
+      const tryReturnStatement = tryReturnCandidate?.kind === 'return'
+        ? tryReturnCandidate as Extract<SourceStatementIR, { kind: 'return' }>
+        : undefined;
+      const tryLeadingStatements = tryReturnStatement
+        ? statement.tryBlock.slice(0, tryReturnIndex)
+        : statement.tryBlock;
+      const tryHasOnlyTerminalReturn = tryReturnStatement !== undefined &&
+        !sourceStatementsContainControlTransfer(tryLeadingStatements);
+      const failsFastChecks = statement.kind !== 'try' ||
+        statement.catchBlock ||
+        statement.catchBinding ||
+        statement.finallyBlock === undefined ||
+        statement.finallyBlock.some((child) => sourceStatementContainsAwaitExpression(child));
+      if (failsFastChecks || !tryHasOnlyTerminalReturn || finallyHasControlTransfer) {
+        return undefined;
+      }
+      const afterStatementsForTryReturn = candidateStatements.slice(index + 1);
+      if (
+        afterStatementsForTryReturn.some((afterStatement) =>
+          sourceStatementContainsAwaitExpression(afterStatement)
+        )
+      ) {
+        return undefined;
+      }
+      const collectedForTryReturn = collectSourceAwaitStepsFromSequentialStatements(
+        tryLeadingStatements,
+        context,
+      );
+      if (!collectedForTryReturn || collectedForTryReturn.steps.length === 0) {
+        return undefined;
+      }
+      const [firstStepForTryReturn, ...remainingStepsForTryReturn] = collectedForTryReturn.steps;
+      if (!firstStepForTryReturn) {
+        return undefined;
+      }
+      const stepsForTryReturn: SourceAwaitStep[] = [
+        {
+          ...firstStepForTryReturn,
+          leadingStatements: [...leadingStatements, ...firstStepForTryReturn.leadingStatements],
+        },
+        ...remainingStepsForTryReturn,
+      ];
+      return lowerSourceAwaitStepsToPromiseReturn(
+        stepsForTryReturn,
+        [
+          ...collectedForTryReturn.trailingStatements,
+          ...finallyLeadingStatements,
+          ...afterStatementsForTryReturn,
+        ],
+        tryReturnStatement,
+        context,
+        {
+          rejectionFinalizerStatements: finallyLeadingStatements,
+          finallyReturnStatement,
+          finallyThrowStatement,
+        },
+      );
     }
     const afterStatements = candidateStatements.slice(index + 1);
     if (
@@ -8942,15 +9672,37 @@ function lowerTryFinallyAwaitAsyncFunctionBody(
       steps,
       [
         ...collected.trailingStatements,
-        ...statement.finallyBlock,
+        ...finallyLeadingStatements,
         ...afterStatements,
       ],
       returnStatement,
       context,
-      { rejectionFinalizerStatements: statement.finallyBlock },
+      {
+        rejectionFinalizerStatements: finallyLeadingStatements,
+        finallyReturnStatement,
+        finallyThrowStatement,
+      },
     );
   }
   return undefined;
+}
+
+function catchBlockTerminalReturn(
+  catchBlock: readonly SourceStatementIR[],
+): Extract<SourceStatementIR, { kind: 'return' }> | undefined {
+  const lastIndex = catchBlock.length - 1;
+  if (lastIndex < 0) return undefined;
+  const last = catchBlock[lastIndex];
+  return last?.kind === 'return' ? last as Extract<SourceStatementIR, { kind: 'return' }> : undefined;
+}
+
+function catchBlockTerminalThrow(
+  catchBlock: readonly SourceStatementIR[],
+): Extract<SourceStatementIR, { kind: 'throw' }> | undefined {
+  const lastIndex = catchBlock.length - 1;
+  if (lastIndex < 0) return undefined;
+  const last = catchBlock[lastIndex];
+  return last?.kind === 'throw' ? last as Extract<SourceStatementIR, { kind: 'throw' }> : undefined;
 }
 
 function lowerTryCatchAwaitAsyncFunctionBody(
@@ -8971,14 +9723,31 @@ function lowerTryCatchAwaitAsyncFunctionBody(
       leadingStatements = [...leadingStatements, statement];
       continue;
     }
+    const catchReturnStatement = statement.catchBlock
+      ? catchBlockTerminalReturn(statement.catchBlock)
+      : undefined;
+    const catchThrowStatement = statement.catchBlock
+      ? catchBlockTerminalThrow(statement.catchBlock)
+      : undefined;
+    const catchLeadingStatements = catchReturnStatement
+      ? statement.catchBlock.filter((s) => s !== catchReturnStatement)
+      : catchThrowStatement
+      ? statement.catchBlock.filter((s) => s !== catchThrowStatement)
+      : statement.catchBlock;
+    const catchHasControlTransfer = (catchReturnStatement || catchThrowStatement)
+      ? sourceStatementsContainControlTransfer(catchLeadingStatements)
+      : sourceStatementsContainControlTransfer((statement as any).catchBlock || []);
     if (
       statement.kind !== 'try' ||
       !statement.catchBlock ||
-      statement.finallyBlock !== undefined ||
       statement.catchBlock.some((child) => sourceStatementContainsAwaitExpression(child)) ||
       sourceStatementsContainControlTransfer(statement.tryBlock) ||
-      sourceStatementsContainControlTransfer(statement.catchBlock)
+      catchHasControlTransfer
     ) {
+      return undefined;
+    }
+    const finallyBlock = (statement as any).finallyBlock as readonly SourceStatementIR[] | undefined;
+    if (finallyBlock && sourceStatementsContainControlTransfer(finallyBlock)) {
       return undefined;
     }
     const afterStatements = candidateStatements.slice(index + 1);
@@ -9007,9 +9776,12 @@ function lowerTryCatchAwaitAsyncFunctionBody(
       },
       ...remainingSteps,
     ];
+    const trailingStatements = finallyBlock
+      ? [...collected.trailingStatements, ...finallyBlock, ...afterStatements]
+      : [...collected.trailingStatements, ...afterStatements];
     return lowerSourceAwaitStepsToPromiseReturn(
       steps,
-      [...collected.trailingStatements, ...afterStatements],
+      trailingStatements,
       returnStatement,
       context,
       {
@@ -9018,7 +9790,10 @@ function lowerTryCatchAwaitAsyncFunctionBody(
           catchBinding: statement.catchBinding,
           catchBlock: statement.catchBlock,
           returnStatement,
+          catchReturnStatement,
+          catchThrowStatement,
         },
+        finallyBlock,
       },
     );
   }
