@@ -127,3 +127,57 @@ Deno.test('getSoundScriptPackageExportInfoForResolvedModule returns full package
     ['./extra', extraSourcePath],
   ]);
 });
+
+Deno.test('getSoundScriptPackageExportInfoForResolvedModule keeps full package info when trusting one macro export', () => {
+  const packageRoot = '/workspace/node_modules/pkg';
+  const packageJsonPath = join(packageRoot, 'package.json');
+  const resolvedRuntimeFileName = join(packageRoot, 'dist/index.d.ts');
+  const indexSourcePath = join(packageRoot, 'src/index.macro.sts');
+  const extraSourcePath = join(packageRoot, 'src/extra.macro.sts');
+  const host = createHost(
+    new Map([
+      [
+        packageJsonPath,
+        JSON.stringify({
+          name: 'pkg',
+          soundscript: {
+            version: 1,
+            exports: {
+              '.': {
+                source: './src/index.macro.sts',
+              },
+              './extra': {
+                source: './src/extra.macro.sts',
+              },
+            },
+          },
+        }),
+      ],
+      [resolvedRuntimeFileName, 'export declare const index: number;\n'],
+      [join(packageRoot, 'dist/extra.d.ts'), 'export declare const extra: number;\n'],
+      [indexSourcePath, "import { helper } from './helper.ts';\nexport { helper };\n"],
+      [extraSourcePath, "import { extra } from './extra-helper.ts';\nexport { extra };\n"],
+      [join(packageRoot, 'src/helper.ts'), 'export const helper = 1;\n'],
+      [join(packageRoot, 'src/extra-helper.ts'), 'export const extra = 2;\n'],
+    ]),
+  );
+
+  assertEquals(
+    getSoundScriptPackageExportInfoForResolvedModule('pkg', resolvedRuntimeFileName, host),
+    undefined,
+  );
+
+  const packageExport = getSoundScriptPackageExportInfoForResolvedModule(
+    'pkg',
+    resolvedRuntimeFileName,
+    host,
+    { trustMacroAuthoringSourcePath: true },
+  );
+
+  assert(packageExport);
+  assertEquals(packageExport.sourceEntryPath, indexSourcePath);
+  assertEquals([...packageExport.packageInfo.exports.entries()], [
+    ['.', indexSourcePath],
+    ['./extra', extraSourcePath],
+  ]);
+});

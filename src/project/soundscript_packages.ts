@@ -616,43 +616,9 @@ function parsePackageJsonForExport(
     return undefined;
   }
 
-  const exportsMap = new Map<string, string>();
-  for (const [candidateExportKey, candidateSourceEntryPath] of rawExportsMap) {
-    if (
-      options.trustMacroAuthoringSourcePath &&
-      candidateExportKey === exportKey &&
-      isMacroAuthoringSourcePath(candidateSourceEntryPath)
-    ) {
-      exportsMap.set(candidateExportKey, candidateSourceEntryPath);
-    } else if (
-      isTrustedPublishedPackageSourceClosure(candidateSourceEntryPath, draftPackageInfo, host)
-    ) {
-      exportsMap.set(candidateExportKey, candidateSourceEntryPath);
-    }
-  }
-  const legacySourceEntryPath = rawLegacySourceEntryPath &&
-      (options.trustMacroAuthoringSourcePath &&
-          exportKey === '.' &&
-          isMacroAuthoringSourcePath(rawLegacySourceEntryPath) ||
-        isTrustedPublishedPackageSourceClosure(rawLegacySourceEntryPath, draftPackageInfo, host))
-    ? rawLegacySourceEntryPath
-    : undefined;
-
   return {
     exportKey,
-    packageInfo: {
-      exports: exportsMap,
-      legacySourceEntryPath,
-      name: packageName,
-      packageJsonPath,
-      packageRoot,
-      toolchain: typeof soundscriptRecord.toolchain === 'string'
-        ? soundscriptRecord.toolchain
-        : undefined,
-      version: typeof soundscriptRecord.version === 'number'
-        ? soundscriptRecord.version
-        : undefined,
-    },
+    packageInfo: draftPackageInfo,
     sourceEntryPath,
   };
 }
