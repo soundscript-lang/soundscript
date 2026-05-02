@@ -23,6 +23,10 @@ export interface SoundScriptPackageInfo {
   version?: number;
 }
 
+export interface SoundScriptPackageExportInfoOptions {
+  trustMacroAuthoringSourcePath?: boolean;
+}
+
 interface ModuleResolutionHostLike {
   directoryExists?(directoryName: string): boolean;
   fileExists(fileName: string): boolean;
@@ -346,39 +350,6 @@ function collectPackageLocalImportSpecifiers(
   const moduleSpecifiers = new Set(
     ts.preProcessFile(sourceText, true, true).importedFiles.map((entry) => entry.fileName),
   );
-  const sourceFile = ts.createSourceFile(
-    fileName,
-    sourceText,
-    ts.ScriptTarget.Latest,
-    true,
-    ts.ScriptKind.TS,
-  );
-
-  const visit = (node: ts.Node): void => {
-    if (
-      (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) &&
-      node.moduleSpecifier &&
-      ts.isStringLiteralLike(node.moduleSpecifier)
-    ) {
-      moduleSpecifiers.add(node.moduleSpecifier.text);
-    } else if (
-      ts.isImportEqualsDeclaration(node) &&
-      ts.isExternalModuleReference(node.moduleReference) &&
-      node.moduleReference.expression &&
-      ts.isStringLiteralLike(node.moduleReference.expression)
-    ) {
-      moduleSpecifiers.add(node.moduleReference.expression.text);
-    } else if (
-      ts.isImportTypeNode(node) &&
-      ts.isLiteralTypeNode(node.argument) &&
-      ts.isStringLiteralLike(node.argument.literal)
-    ) {
-      moduleSpecifiers.add(node.argument.literal.text);
-    }
-
-    ts.forEachChild(node, visit);
-  };
-  visit(sourceFile);
 
   return [...moduleSpecifiers].sort();
 }
@@ -559,6 +530,133 @@ function parsePackageJson(
   };
 }
 
+function parsePackageJsonForExport(
+  packageJsonPath: string,
+  exportKey: string,
+  host: ModuleResolutionHostLike,
+  options: SoundScriptPackageExportInfoOptions = {},
+): SoundScriptPackageExportInfo | undefined {
+  const packageJsonText = host.readFile(packageJsonPath);
+  if (!packageJsonText) {
+    return undefined;
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(packageJsonText);
+  } catch {
+    return undefined;
+  }
+
+  if (!parsed || typeof parsed !== 'object') {
+    return undefined;
+  }
+
+  const packageRecord = parsed as Record<string, unknown>;
+  const packageName = typeof packageRecord.name === 'string' ? packageRecord.name : undefined;
+  const soundscript = packageRecord.soundscript;
+  if (!packageName || !soundscript || typeof soundscript !== 'object') {
+    return undefined;
+  }
+
+  const soundscriptRecord = soundscript as Record<string, unknown>;
+  const packageRoot = dirname(packageJsonPath);
+  const rawExportsMap = new Map<string, string>();
+  const rawExports = soundscriptRecord.exports;
+
+  if (rawExports && typeof rawExports === 'object') {
+    for (const [rawKey, rawValue] of Object.entries(rawExports as Record<string, unknown>)) {
+      const normalizedExportKey = normalizeSoundscriptExportKey(rawKey);
+      if (!normalizedExportKey || !rawValue || typeof rawValue !== 'object') {
+        continue;
+      }
+
+      const source = (rawValue as Record<string, unknown>).source;
+      if (typeof source !== 'string' || source.length === 0) {
+        continue;
+      }
+
+      const resolved = resolvePackageLocalSoundScriptSourcePath(
+        packageName,
+        packageRoot,
+        source,
+        host,
+      );
+      if (resolved) {
+        rawExportsMap.set(normalizedExportKey, resolved);
+      }
+    }
+  }
+
+  const legacySource = soundscriptRecord.source;
+  const rawLegacySourceEntryPath = typeof legacySource === 'string' && legacySource.length > 0
+    ? resolvePackageLocalSoundScriptSourcePath(packageName, packageRoot, legacySource, host)
+    : undefined;
+  const sourceEntryPath = rawExportsMap.get(exportKey) ??
+    (exportKey === '.' ? rawLegacySourceEntryPath : undefined);
+  if (!sourceEntryPath) {
+    return undefined;
+  }
+
+  const draftPackageInfo: SoundScriptPackageInfo = {
+    exports: rawExportsMap,
+    legacySourceEntryPath: rawLegacySourceEntryPath,
+    name: packageName,
+    packageJsonPath,
+    packageRoot,
+    toolchain: typeof soundscriptRecord.toolchain === 'string'
+      ? soundscriptRecord.toolchain
+      : undefined,
+    version: typeof soundscriptRecord.version === 'number' ? soundscriptRecord.version : undefined,
+  };
+  if (
+    !(options.trustMacroAuthoringSourcePath && isMacroAuthoringSourcePath(sourceEntryPath)) &&
+    !isTrustedPublishedPackageSourceClosure(sourceEntryPath, draftPackageInfo, host)
+  ) {
+    return undefined;
+  }
+
+  const exportsMap = new Map<string, string>();
+  for (const [candidateExportKey, candidateSourceEntryPath] of rawExportsMap) {
+    if (
+      options.trustMacroAuthoringSourcePath &&
+      candidateExportKey === exportKey &&
+      isMacroAuthoringSourcePath(candidateSourceEntryPath)
+    ) {
+      exportsMap.set(candidateExportKey, candidateSourceEntryPath);
+    } else if (
+      isTrustedPublishedPackageSourceClosure(candidateSourceEntryPath, draftPackageInfo, host)
+    ) {
+      exportsMap.set(candidateExportKey, candidateSourceEntryPath);
+    }
+  }
+  const legacySourceEntryPath = rawLegacySourceEntryPath &&
+      (options.trustMacroAuthoringSourcePath &&
+          exportKey === '.' &&
+          isMacroAuthoringSourcePath(rawLegacySourceEntryPath) ||
+        isTrustedPublishedPackageSourceClosure(rawLegacySourceEntryPath, draftPackageInfo, host))
+    ? rawLegacySourceEntryPath
+    : undefined;
+
+  return {
+    exportKey,
+    packageInfo: {
+      exports: exportsMap,
+      legacySourceEntryPath,
+      name: packageName,
+      packageJsonPath,
+      packageRoot,
+      toolchain: typeof soundscriptRecord.toolchain === 'string'
+        ? soundscriptRecord.toolchain
+        : undefined,
+      version: typeof soundscriptRecord.version === 'number'
+        ? soundscriptRecord.version
+        : undefined,
+    },
+    sourceEntryPath,
+  };
+}
+
 export function loadSoundScriptPackageInfo(
   packageJsonPath: string,
   host: ModuleResolutionHostLike,
@@ -582,28 +680,28 @@ export function getSoundScriptPackageExportInfoForResolvedModule(
   moduleSpecifier: string,
   resolvedFileName: string,
   host: ModuleResolutionHostLike,
+  options: SoundScriptPackageExportInfoOptions = {},
 ): SoundScriptPackageExportInfo | undefined {
   const parsedSpecifier = parsePackageSpecifier(moduleSpecifier);
   if (!parsedSpecifier) {
     return undefined;
   }
 
-  const packageInfo = getSoundScriptPackageInfoForResolvedModule(resolvedFileName, host);
-  if (!packageInfo || packageInfo.name !== parsedSpecifier.packageName) {
+  const packageJsonPath = findNearestPackageJson(resolvedFileName, host);
+  if (!packageJsonPath) {
     return undefined;
   }
 
-  const sourceEntryPath = packageInfo.exports.get(parsedSpecifier.exportKey) ??
-    (parsedSpecifier.exportKey === '.' ? packageInfo.legacySourceEntryPath : undefined);
-  if (!sourceEntryPath) {
+  const packageExport = parsePackageJsonForExport(
+    packageJsonPath,
+    parsedSpecifier.exportKey,
+    host,
+    options,
+  );
+  if (!packageExport || packageExport.packageInfo.name !== parsedSpecifier.packageName) {
     return undefined;
   }
-
-  return {
-    exportKey: parsedSpecifier.exportKey,
-    packageInfo,
-    sourceEntryPath,
-  };
+  return packageExport;
 }
 
 function resolveBareSoundScriptPackageSourceModule(

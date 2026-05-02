@@ -2,6 +2,7 @@
 .deno/
 bin/
 coverage/
+.bench/
 dist/
 node_modules/
 !src/bundled/typescript/types/node_modules/

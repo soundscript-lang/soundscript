@@ -369,6 +369,129 @@ Deno.test('createProjectMacroEnvironment handles duplicate generated stdlib macr
   assert(!printed.includes('__sts_macro_stmt'));
 });
 
+Deno.test('createProjectMacroEnvironment ignores unused generated user macro imports', () => {
+  const fileName = '/virtual/index.sts';
+  const preparedProgram = createGeneratedMacroTestProgram(
+    [
+      "import { EmitPlainRuntimeCode } from './macros/defs.macro';",
+      '',
+      'EmitPlainRuntimeCode();',
+      '',
+    ].join('\n'),
+    [
+      "import 'sts:macros';",
+      '',
+      '// #[macro(call)]',
+      'export function EmitPlainRuntimeCode() {',
+      '  return {',
+      '    expand(ctx) {',
+      '      return ctx.output.stmts(ctx.quote.stmts`',
+      "        import { RuntimeOnlyMacro } from './macros/defs.macro';",
+      '        export const value = 1;',
+      '        export const message = "RuntimeOnlyMacro is not invoked";',
+      '      `);',
+      '    },',
+      '  };',
+      '}',
+      '',
+      '// #[macro(call)]',
+      'export function RuntimeOnlyMacro() {',
+      '  return {',
+      '    expand(ctx) {',
+      '      return ctx.output.expr(ctx.quote.expr`2`);',
+      '    },',
+      '  };',
+      '}',
+      '',
+    ].join('\n'),
+  );
+
+  const printed = printExpandedFileWithBuiltins(preparedProgram, fileName);
+  assertStringIncludes(printed, 'export const value = 1;');
+  assertStringIncludes(printed, '"RuntimeOnlyMacro is not invoked"');
+  assert(!printed.includes('__sts_macro_stmt'));
+});
+
+Deno.test('createProjectMacroEnvironment ignores macro-looking generated string literals', () => {
+  const fileName = '/virtual/index.sts';
+  const preparedProgram = createGeneratedMacroTestProgram(
+    [
+      "import { EmitMacroLookingText } from './macros/defs.macro';",
+      '',
+      'EmitMacroLookingText();',
+      '',
+    ].join('\n'),
+    [
+      "import 'sts:macros';",
+      '',
+      '// #[macro(call)]',
+      'export function EmitMacroLookingText() {',
+      '  return {',
+      '    expand(ctx) {',
+      '      return ctx.output.stmts(ctx.quote.stmts`',
+      '        export const message = "// #[value] is documentation text";',
+      '        export const multiline = "\\\\n// #[codec]\\\\nnot an annotation";',
+      '      `);',
+      '    },',
+      '  };',
+      '}',
+      '',
+    ].join('\n'),
+  );
+
+  const printed = printExpandedFileWithBuiltins(preparedProgram, fileName);
+  assertStringIncludes(printed, '"// #[value] is documentation text"');
+  assertStringIncludes(printed, 'not an annotation');
+  assert(!printed.includes('__sts_macro_stmt'));
+});
+
+Deno.test('createProjectMacroEnvironment reports macro expansion detail timing', () => {
+  const originalTimingEnv = Deno.env.get('SOUNDSCRIPT_CHECKER_TIMING');
+  const originalError = console.error;
+  const logs: string[] = [];
+  console.error = (...args: unknown[]) => {
+    logs.push(args.map((arg) => String(arg)).join(' '));
+  };
+
+  try {
+    Deno.env.set('SOUNDSCRIPT_CHECKER_TIMING', '1');
+    const preparedProgram = createMacroPreparedProgram(
+      [
+        "import 'sts:macros';",
+        '',
+        '// #[macro(call)]',
+        'export function Foo() {',
+        '  return {',
+        '    expand(ctx) {',
+        '      return ctx.output.expr(ctx.quote.expr`1`);',
+        '    },',
+        '  };',
+        '}',
+        '',
+      ].join('\n'),
+    );
+
+    printExpandedFile(preparedProgram, '/virtual/index.sts');
+  } finally {
+    if (originalTimingEnv === undefined) {
+      Deno.env.delete('SOUNDSCRIPT_CHECKER_TIMING');
+    } else {
+      Deno.env.set('SOUNDSCRIPT_CHECKER_TIMING', originalTimingEnv);
+    }
+    console.error = originalError;
+  }
+
+  const detailLog = logs.find((line) =>
+    line.includes('[soundscript:checker] project.prepare.macro.expandDetails ')
+  );
+  assert(detailLog);
+  assertStringIncludes(detailLog, 'graphCompileGraphs=1');
+  assertStringIncludes(detailLog, 'bindingPlanFiles=1');
+  assertStringIncludes(detailLog, 'moduleEvalRoots=1');
+  assertStringIncludes(detailLog, 'macroExecutionCount=2');
+  assertStringIncludes(detailLog, 'sourceExpansionFiles=1');
+});
+
 Deno.test('createProjectMacroEnvironment honors macroExpansionRecursionLimit 0 for generated stdlib macros', () => {
   const fileName = '/virtual/index.sts';
   const preparedProgram = createGeneratedMacroTestProgram(
@@ -963,6 +1086,61 @@ Deno.test(
     } finally {
       secondEnvironment.dispose();
     }
+  },
+);
+
+Deno.test(
+  'createProjectMacroEnvironment invalidates expanded files for exact macro dependency source changes',
+  () => {
+    const fileName = '/virtual/index.sts';
+    const macroFile = '/virtual/macros/defs.macro.sts';
+    const helperFile = '/virtual/macros/helper.macro.sts';
+    const reuseState = createPreparedCompilerHostReuseState('/virtual');
+    const macroSource = [
+      "import 'sts:macros';",
+      "import { helperValue } from './helper.macro';",
+      '',
+      '// #[macro(call)]',
+      'export function Foo() {',
+      '  return {',
+      '    expand(ctx) {',
+      '      return ctx.output.expr(ctx.quote.expr`${JSON.stringify(helperValue)}`);',
+      '    },',
+      '  };',
+      '}',
+      '',
+    ].join('\n');
+    const createProgram = (helperValue: string, oldProgram?: ts.Program) =>
+      createPreparedProgram({
+        baseHost: createBaseHost(
+          new Map([
+            [fileName, "import { Foo } from './macros/defs.macro';\nexport const value = Foo();\n"],
+            [macroFile, macroSource],
+            [helperFile, `export const helperValue = "${helperValue}";\n`],
+          ]),
+        ),
+        oldProgram,
+        options: {
+          target: ts.ScriptTarget.ES2022,
+          module: ts.ModuleKind.ESNext,
+          moduleResolution: ts.ModuleResolutionKind.Bundler,
+          noEmit: true,
+        },
+        reusableCompilerHostState: reuseState,
+        rootNames: [fileName],
+      });
+
+    // These two helper sources have the same length and collide under the previous
+    // 32-bit FNV dependency signature shortcut. Cache validity must depend on the
+    // exact source text instead.
+    const firstProgram = createProgram('htdi5qip');
+    const firstExpanded = printExpandedFile(firstProgram, fileName);
+
+    const secondProgram = createProgram('ofw3agyf', firstProgram.program);
+    const secondExpanded = printExpandedFile(secondProgram, fileName);
+
+    assertStringIncludes(firstExpanded, '"htdi5qip"');
+    assertStringIncludes(secondExpanded, '"ofw3agyf"');
   },
 );
 
