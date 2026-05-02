@@ -7485,21 +7485,15 @@ function appendSourceAwaitStepFromSequentialStatement(
   return [...pendingLeadingStatements, statement];
 }
 
-function lowerAwaitAsyncFunctionBody(
-  func: SourceFunctionIR,
+function collectSourceAwaitStepsFromSequentialStatements(
+  statements: readonly SourceStatementIR[],
   context: FunctionLoweringContext,
-): readonly SemanticStatementIR[] | undefined {
-  if (!func.async || context.currentResultType?.kind !== 'promise' || func.body.length < 2) {
-    return undefined;
-  }
-  const returnStatement = func.body.at(-1);
-  if (returnStatement?.kind !== 'return') {
-    return undefined;
-  }
+):
+  | { steps: readonly SourceAwaitStep[]; trailingStatements: readonly SourceStatementIR[] }
+  | undefined {
   const steps: SourceAwaitStep[] = [];
   let pendingLeadingStatements: readonly SourceStatementIR[] = [];
-  let continuationReturnStatement = returnStatement;
-  for (const statement of func.body.slice(0, -1)) {
+  for (const statement of statements) {
     const nextPending = appendSourceAwaitStepFromSequentialStatement(
       statement,
       steps,
@@ -7511,36 +7505,15 @@ function lowerAwaitAsyncFunctionBody(
     }
     pendingLeadingStatements = nextPending;
   }
-  if (returnStatement.expression?.kind === 'await_expression') {
-    const awaitedType = context.currentResultType.value;
-    if (!awaitedType) {
-      context.unsupportedKinds.add('async_return_await_value_type');
-      return [{ kind: 'unsupported_statement', sourceKind: 'await_expression' }, { kind: 'trap' }];
-    }
-    const syntheticName = nextTempLocalName(context, 'async_return_await');
-    const syntheticBinding: Extract<SourceBindingIR, { kind: 'identifier_binding' }> = {
-      kind: 'identifier_binding',
-      name: syntheticName,
-      span: returnStatement.expression.span,
-    };
-    steps.push({
-      binding: syntheticBinding,
-      leadingStatements: pendingLeadingStatements,
-      source: returnStatement.expression.expression,
-      type: awaitedType,
-      representation: representationForSemanticType(awaitedType),
-    });
-    pendingLeadingStatements = [];
-    continuationReturnStatement = {
-      ...returnStatement,
-      expression: {
-        kind: 'identifier',
-        name: syntheticName,
-        role: 'read',
-        span: returnStatement.expression.span,
-      },
-    };
-  }
+  return { steps, trailingStatements: pendingLeadingStatements };
+}
+
+function lowerSourceAwaitStepsToPromiseReturn(
+  steps: readonly SourceAwaitStep[],
+  trailingStatements: readonly SourceStatementIR[],
+  returnStatement: Extract<SourceStatementIR, { kind: 'return' }>,
+  context: FunctionLoweringContext,
+): readonly SemanticStatementIR[] | undefined {
   if (steps.length === 0) {
     return undefined;
   }
@@ -7563,8 +7536,8 @@ function lowerAwaitAsyncFunctionBody(
     sourceAsyncLiveNamesAfterAwait(
       steps,
       0,
-      pendingLeadingStatements,
-      continuationReturnStatement,
+      trailingStatements,
+      returnStatement,
     ),
   );
   const fulfilledFunctionId = pushAsyncAwaitFulfilledClosure(
@@ -7573,8 +7546,8 @@ function lowerAwaitAsyncFunctionBody(
     steps,
     0,
     firstCaptures,
-    pendingLeadingStatements,
-    continuationReturnStatement,
+    trailingStatements,
+    returnStatement,
   );
   const rejectedFunctionId = pushPromiseRejectIntoClosure(context, closureSignature.id);
   if (fulfilledFunctionId === undefined) {
@@ -7638,6 +7611,170 @@ function lowerAwaitAsyncFunctionBody(
     { kind: 'return', value: localGetExpression(targetPromiseName, 'heap_ref') },
     { kind: 'trap' },
   ];
+}
+
+function lowerSequentialAwaitAsyncFunctionBody(
+  func: SourceFunctionIR,
+  context: FunctionLoweringContext,
+): readonly SemanticStatementIR[] | undefined {
+  if (!func.async || context.currentResultType?.kind !== 'promise' || func.body.length < 2) {
+    return undefined;
+  }
+  const returnStatement = func.body.at(-1);
+  if (returnStatement?.kind !== 'return') {
+    return undefined;
+  }
+  const collected = collectSourceAwaitStepsFromSequentialStatements(
+    func.body.slice(0, -1),
+    context,
+  );
+  if (!collected) {
+    return undefined;
+  }
+  const steps = [...collected.steps];
+  let trailingStatements = collected.trailingStatements;
+  let continuationReturnStatement = returnStatement;
+  if (returnStatement.expression?.kind === 'await_expression') {
+    const awaitedType = context.currentResultType.value;
+    if (!awaitedType) {
+      context.unsupportedKinds.add('async_return_await_value_type');
+      return [{ kind: 'unsupported_statement', sourceKind: 'await_expression' }, { kind: 'trap' }];
+    }
+    const syntheticName = nextTempLocalName(context, 'async_return_await');
+    const syntheticBinding: Extract<SourceBindingIR, { kind: 'identifier_binding' }> = {
+      kind: 'identifier_binding',
+      name: syntheticName,
+      span: returnStatement.expression.span,
+    };
+    steps.push({
+      binding: syntheticBinding,
+      leadingStatements: trailingStatements,
+      source: returnStatement.expression.expression,
+      type: awaitedType,
+      representation: representationForSemanticType(awaitedType),
+    });
+    trailingStatements = [];
+    continuationReturnStatement = {
+      ...returnStatement,
+      expression: {
+        kind: 'identifier',
+        name: syntheticName,
+        role: 'read',
+        span: returnStatement.expression.span,
+      },
+    };
+  }
+  return lowerSourceAwaitStepsToPromiseReturn(
+    steps,
+    trailingStatements,
+    continuationReturnStatement,
+    context,
+  );
+}
+
+function lowerConditionalAwaitBranchBody(
+  statements: readonly SourceStatementIR[],
+  afterStatements: readonly SourceStatementIR[],
+  returnStatement: Extract<SourceStatementIR, { kind: 'return' }>,
+  context: FunctionLoweringContext,
+): { containsAwait: boolean; body: readonly SemanticStatementIR[] } | undefined {
+  if (!statements.some((statement) => sourceStatementContainsAwaitExpression(statement))) {
+    return {
+      containsAwait: false,
+      body: statements.flatMap((statement) => [...lowerStatement(statement, context)]),
+    };
+  }
+  const collected = collectSourceAwaitStepsFromSequentialStatements(statements, context);
+  if (!collected || collected.steps.length === 0) {
+    return undefined;
+  }
+  const body = lowerSourceAwaitStepsToPromiseReturn(
+    collected.steps,
+    [...collected.trailingStatements, ...afterStatements],
+    returnStatement,
+    context,
+  );
+  return body ? { containsAwait: true, body } : undefined;
+}
+
+function lowerConditionalAwaitAsyncFunctionBody(
+  func: SourceFunctionIR,
+  context: FunctionLoweringContext,
+): readonly SemanticStatementIR[] | undefined {
+  if (!func.async || context.currentResultType?.kind !== 'promise' || func.body.length < 2) {
+    return undefined;
+  }
+  const returnStatement = func.body.at(-1);
+  if (returnStatement?.kind !== 'return') {
+    return undefined;
+  }
+  let leadingStatements: readonly SourceStatementIR[] = [];
+  const candidateStatements = func.body.slice(0, -1);
+  for (const [index, statement] of candidateStatements.entries()) {
+    if (!sourceStatementContainsAwaitExpression(statement)) {
+      leadingStatements = [...leadingStatements, statement];
+      continue;
+    }
+    if (
+      statement.kind !== 'if' ||
+      sourceExpressionContainsAwaitExpression(statement.test)
+    ) {
+      return undefined;
+    }
+    const afterStatements = candidateStatements.slice(index + 1);
+    if (
+      afterStatements.some((afterStatement) =>
+        sourceStatementContainsAwaitExpression(afterStatement)
+      )
+    ) {
+      return undefined;
+    }
+    const loweredLeadingStatements = leadingStatements.flatMap((leadingStatement) => [
+      ...lowerStatement(leadingStatement, context),
+    ]);
+    const condition = lowerExpression(statement.test, context);
+    const conditionStatements = takePendingStatements(context);
+    if (condition.representation !== 'i32') {
+      context.unsupportedKinds.add('if_condition');
+    }
+    const thenBranch = lowerConditionalAwaitBranchBody(
+      statement.consequent,
+      afterStatements,
+      returnStatement,
+      context,
+    );
+    const elseBranch = lowerConditionalAwaitBranchBody(
+      statement.alternate,
+      afterStatements,
+      returnStatement,
+      context,
+    );
+    if (!thenBranch || !elseBranch || (!thenBranch.containsAwait && !elseBranch.containsAwait)) {
+      return undefined;
+    }
+    return [
+      ...loweredLeadingStatements,
+      ...conditionStatements,
+      {
+        kind: 'if',
+        condition,
+        thenBody: thenBranch.body,
+        elseBody: elseBranch.body,
+      },
+      ...afterStatements.flatMap((afterStatement) => [...lowerStatement(afterStatement, context)]),
+      ...lowerStatement(returnStatement, context),
+      { kind: 'trap' },
+    ];
+  }
+  return undefined;
+}
+
+function lowerAwaitAsyncFunctionBody(
+  func: SourceFunctionIR,
+  context: FunctionLoweringContext,
+): readonly SemanticStatementIR[] | undefined {
+  return lowerSequentialAwaitAsyncFunctionBody(func, context) ??
+    lowerConditionalAwaitAsyncFunctionBody(func, context);
 }
 
 function findBoundarySurface(
