@@ -10,7 +10,7 @@ import { Http } from './http.ts';
 import { Net } from './net.ts';
 import { Process } from './process.ts';
 import { err, ok } from './result.ts';
-import { readAllText } from './streams.ts';
+import { readAllText, writeAllBytes } from './streams.ts';
 
 Deno.test('node provider fs reads and writes AsyncResult values', async () => {
   const tempDirectory = await Deno.makeTempDir();
@@ -102,6 +102,60 @@ Deno.test('node provider net resolves localhost', async () => {
 
   assertEquals(result.tag, 'ok');
   assertEquals(hasCapability('net.dns'), true);
+});
+
+Deno.test('node provider net opens TCP loopback streams', async () => {
+  const listener = await Net.listen({ hostname: '127.0.0.1', port: 0 });
+
+  assertEquals(listener.tag, 'ok');
+  assertEquals(hasCapability('net.tcp'), true);
+  if (listener.tag === 'err') {
+    return;
+  }
+
+  const accepted = listener.value.accept();
+  const client = await Net.connect(listener.value.address);
+
+  assertEquals(client.tag, 'ok');
+  if (client.tag === 'err') {
+    await listener.value.close();
+    return;
+  }
+
+  const server = await accepted;
+  assertEquals(server.tag, 'ok');
+  if (server.tag === 'err') {
+    await client.value.close();
+    await listener.value.close();
+    return;
+  }
+
+  try {
+    assertEquals(
+      await writeAllBytes(client.value.writable, Bytes.fromString('ping')),
+      ok(undefined),
+    );
+
+    const serverReader = server.value.readable.getReader();
+    const request = await serverReader.read();
+    serverReader.releaseLock();
+    assertEquals(
+      request.value ? Bytes.toString(new Uint8Array(request.value.buffer)) : undefined,
+      'ping',
+    );
+
+    const serverWriter = server.value.writable.getWriter();
+    await serverWriter.write(Bytes.fromString('pong'));
+    await serverWriter.close();
+    serverWriter.releaseLock();
+
+    const response = await readAllText(client.value.readable);
+    assertEquals(response.tag === 'ok' ? response.value : undefined, 'pong');
+  } finally {
+    await client.value.close();
+    await server.value.close();
+    await listener.value.close();
+  }
 });
 
 Deno.test('node provider cli exposes arguments and terminal metadata through Result', () => {
