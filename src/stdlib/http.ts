@@ -4,13 +4,14 @@ import {
   type Server as NodeHttpServer,
   type ServerResponse,
 } from 'node:http';
-import type { AddressInfo } from 'node:net';
+import type { AddressInfo, Socket } from 'node:net';
 import { Readable, Writable } from 'node:stream';
 
 import { type AsyncResult, CancellationFailure } from 'sts:concurrency/task';
 import { Failure, normalizeThrown } from 'sts:failures';
 import { err, ok, type Result } from 'sts:result';
 import type { SocketAddress } from 'sts:net';
+import type { Duration } from 'sts:time';
 
 export type HttpRequest = IncomingMessage;
 export type HttpResponse = ServerResponse;
@@ -18,7 +19,7 @@ export type HttpResponse = ServerResponse;
 export interface HttpServer {
   readonly port: number;
   readonly address: SocketAddress;
-  close(): AsyncResult<void, Failure>;
+  close(options?: CloseOptions): AsyncResult<void, Failure>;
 }
 
 export interface ServeOptions {
@@ -26,6 +27,10 @@ export interface ServeOptions {
   readonly port: number;
   readonly signal?: AbortSignal;
   readonly name?: string;
+}
+
+export interface CloseOptions {
+  readonly forceAfter?: Duration;
 }
 
 export type NodeHttpHandler = (
@@ -71,6 +76,60 @@ function nodeAddressToSocketAddress(
     };
   }
   return fallback;
+}
+
+function trackSocket(sockets: Set<Socket>, socket: Socket): void {
+  sockets.add(socket);
+  socket.once('close', () => {
+    sockets.delete(socket);
+  });
+}
+
+function forceCloseSockets(server: NodeHttpServer, sockets: Set<Socket>): void {
+  server.closeAllConnections?.();
+  for (const socket of sockets) {
+    socket.destroy();
+  }
+}
+
+function scheduleForceClose(
+  server: NodeHttpServer,
+  sockets: Set<Socket>,
+  options: CloseOptions,
+): (() => void) | undefined {
+  if (!options.forceAfter) {
+    return undefined;
+  }
+
+  const timerId = setTimeout(() => {
+    forceCloseSockets(server, sockets);
+  }, Math.max(0, options.forceAfter.milliseconds));
+
+  return () => clearTimeout(timerId);
+}
+
+function closeNodeServer(
+  server: NodeHttpServer,
+  sockets: Set<Socket>,
+  options: CloseOptions,
+): AsyncResult<void, Failure> {
+  return new Promise((resolve) => {
+    if (!server.listening) {
+      resolve(ok(undefined));
+      return;
+    }
+
+    const cancelForceClose = scheduleForceClose(server, sockets, options);
+    try {
+      server.close((error) => {
+        cancelForceClose?.();
+        resolve(error ? err(failureFromUnknown(error)) : ok(undefined));
+      });
+    } catch (error) {
+      cancelForceClose?.();
+      resolve(err(failureFromUnknown(error)));
+    }
+  });
 }
 
 function requestHeaders(request: IncomingMessage): Headers {
@@ -149,6 +208,7 @@ async function writeHandlerFailure(response: ServerResponse, error: unknown): Pr
 export class Server implements AsyncDisposable {
   readonly #options: ServeOptions & { readonly handle: Handler };
   readonly #nodeServer: NodeHttpServer;
+  readonly #sockets = new Set<Socket>();
   #address: SocketAddress;
   #listenResult?: AsyncResult<Server, Failure>;
   #serveResult?: AsyncResult<void, Failure>;
@@ -165,6 +225,9 @@ export class Server implements AsyncDisposable {
     };
     this.#nodeServer = nodeCreateServer((request, response) => {
       this.#handle(request, response);
+    });
+    this.#nodeServer.on('connection', (socket) => {
+      trackSocket(this.#sockets, socket);
     });
   }
 
@@ -293,20 +356,16 @@ export class Server implements AsyncDisposable {
     return this.#closedResult;
   }
 
-  close(): AsyncResult<void, Failure> {
-    return new Promise((resolve) => {
-      this.#detachAbortClose();
-      if (this.#closed || !this.#nodeServer.listening) {
-        this.#closed = true;
-        resolve(ok(undefined));
-        return;
-      }
+  async close(options: CloseOptions = {}): AsyncResult<void, Failure> {
+    this.#detachAbortClose();
+    if (this.#closed || !this.#nodeServer.listening) {
+      this.#closed = true;
+      return ok(undefined);
+    }
 
-      this.#nodeServer.close((error) => {
-        this.#closed = true;
-        resolve(error ? err(failureFromUnknown(error)) : ok(undefined));
-      });
-    });
+    const result = await closeNodeServer(this.#nodeServer, this.#sockets, options);
+    this.#closed = true;
+    return result;
   }
 
   async [Symbol.asyncDispose](): Promise<void> {
@@ -354,11 +413,15 @@ export function serveNode(
   handler: NodeHttpHandler,
 ): AsyncResult<HttpServer, Failure> {
   return new Promise((resolve) => {
+    const sockets = new Set<Socket>();
     const server = nodeCreateServer((request, response) => {
       Promise.resolve(handler(request, response)).catch((error) => {
         response.statusCode = 500;
         response.end(normalizeThrown(error).message);
       });
+    });
+    server.on('connection', (socket) => {
+      trackSocket(sockets, socket);
     });
 
     server.once('error', (error) => {
@@ -373,12 +436,8 @@ export function serveNode(
       resolve(ok({
         port: socketAddress.port,
         address: socketAddress,
-        close() {
-          return new Promise((closeResolve) => {
-            server.close((error) => {
-              closeResolve(error ? err(failureFromUnknown(error)) : ok(undefined));
-            });
-          });
+        close(closeOptions: CloseOptions = {}) {
+          return closeNodeServer(server, sockets, closeOptions);
         },
       }));
     });

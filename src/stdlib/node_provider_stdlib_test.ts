@@ -11,6 +11,7 @@ import { Net } from './net.ts';
 import { Process } from './process.ts';
 import { err, ok } from './result.ts';
 import { readAllText, writeAllBytes } from './streams.ts';
+import { Duration } from './time.ts';
 
 const TEST_TLS_KEY = `-----BEGIN PRIVATE KEY-----
 MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgE8peNPets+qmSHFl
@@ -315,6 +316,28 @@ Deno.test('node provider http listen returns a ready Web server', async () => {
   } finally {
     assertEquals((await serverResult.value.close()).tag, 'ok');
   }
+});
+
+Deno.test('node provider http close accepts force deadlines', async () => {
+  const serverResult = await Http.listen({
+    hostname: '127.0.0.1',
+    port: 0,
+    handle() {
+      return new Response('closing');
+    },
+  });
+
+  assertEquals(serverResult.tag, 'ok');
+  if (serverResult.tag === 'err') {
+    return;
+  }
+
+  const response = await fetch(`http://127.0.0.1:${serverResult.value.address.port}/slow`);
+  assertEquals(await response.text(), 'closing');
+  const closed = await serverResult.value.close({ forceAfter: Duration.milliseconds(1) });
+
+  assertEquals(closed.tag, 'ok');
+  assertEquals((await serverResult.value.closed()).tag, 'ok');
 });
 
 Deno.test('node provider http keeps low-level Node handler compatibility', async () => {
