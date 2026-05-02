@@ -1189,6 +1189,93 @@ function pushPromiseRejectIntoClosureWithFinally(
   return closureFunctionId;
 }
 
+function pushPromiseCatchIntoClosure(
+  context: FunctionLoweringContext,
+  signatureId: number,
+  catchInfo: NonNullable<SourceAwaitContinuationOptions['rejectionCatch']>,
+  captures: readonly SourceAsyncCapture[],
+): number | undefined {
+  if (
+    catchInfo.catchBlock.some((statement) => sourceStatementContainsAwaitExpression(statement)) ||
+    sourceStatementsContainControlTransfer(catchInfo.catchBlock) ||
+    catchInfo.afterStatements.some((statement) => sourceStatementContainsAwaitExpression(statement))
+  ) {
+    context.unsupportedKinds.add('async_await_catch_control_flow');
+    return undefined;
+  }
+  if (catchInfo.catchBinding && catchInfo.catchBinding.kind !== 'identifier_binding') {
+    context.unsupportedKinds.add('async_await_catch_binding');
+    return undefined;
+  }
+  const catchBindingName = catchInfo.catchBinding?.kind === 'identifier_binding'
+    ? catchInfo.catchBinding.name
+    : undefined;
+  if (catchBindingName) {
+    const reads: string[] = [];
+    catchInfo.catchBlock.forEach((statement) =>
+      collectSourceStatementIdentifierReads(statement, reads)
+    );
+    if (reads.includes(catchBindingName)) {
+      context.unsupportedKinds.add('async_await_catch_binding');
+      return undefined;
+    }
+  }
+
+  const closureFunctionId = context.moduleState.nextClosureFunctionId;
+  context.moduleState.nextClosureFunctionId += 1;
+  const closureContext = createAsyncAwaitContinuationContext(
+    context,
+    `closure_source_async_await_rejected_catch_${closureFunctionId}`,
+    captures,
+  );
+  const catchBody = catchInfo.catchBlock.flatMap((statement) => [
+    ...lowerStatement(statement, closureContext),
+  ]);
+  const resolveStatements = lowerAsyncPromiseTargetResolution(
+    catchInfo.afterStatements,
+    catchInfo.returnStatement,
+    closureContext,
+  );
+  if (!resolveStatements) {
+    context.unsupportedKinds.add('async_await_catch_return');
+    return undefined;
+  }
+  const body: SemanticStatementIR[] = [
+    ...catchBody,
+    ...resolveStatements,
+  ];
+  const unsupportedBodyKinds = [...closureContext.unsupportedKinds].sort();
+  context.moduleState.generatedFunctions.push({
+    name: closureContext.functionName,
+    exportName: '',
+    params: [
+      { name: 'capture_target_0', representation: 'box_ref' },
+      ...captures.map((capture) => ({
+        name: capture.name,
+        representation: 'box_ref' as const,
+      })),
+      { name: 'promise_reason', representation: 'tagged_ref' },
+    ],
+    locals: closureContext.locals,
+    result: 'tagged_ref',
+    body,
+    bodyStatus: unsupportedBodyKinds.length === 0 ? 'emittable' : 'stub',
+    unsupportedBodyKinds,
+    runtimeFamilies: [...new Set([...closureContext.runtimeFamilies])].sort(),
+    hostImported: false,
+    hostExported: false,
+    unionBoundaries: [],
+    closureFunctionId,
+    closureSignatureId: signatureId,
+    closureCaptureCount: 1 + captures.length,
+    closureCaptureValueTypes: [
+      'tagged_ref',
+      ...captures.map((capture) => capture.valueType),
+    ],
+  });
+  return closureFunctionId;
+}
+
 function pushPromiseResolveIntoClosure(
   context: FunctionLoweringContext,
   signatureId: number,
@@ -6930,6 +7017,12 @@ interface SourceAwaitStep {
 }
 
 interface SourceAwaitContinuationOptions {
+  rejectionCatch?: {
+    afterStatements: readonly SourceStatementIR[];
+    catchBlock: readonly SourceStatementIR[];
+    catchBinding?: SourceBindingIR;
+    returnStatement: Extract<SourceStatementIR, { kind: 'return' }>;
+  };
   rejectionFinalizerStatements?: readonly SourceStatementIR[];
 }
 
@@ -7217,6 +7310,20 @@ function sourceAsyncLiveNamesForStatements(
   return names;
 }
 
+function sourceAsyncLiveNamesForCatchContinuation(
+  catchInfo: NonNullable<SourceAwaitContinuationOptions['rejectionCatch']>,
+): readonly string[] {
+  const names = [...sourceAsyncLiveNamesForStatements(catchInfo.catchBlock)];
+  catchInfo.afterStatements.forEach((statement) => {
+    collectSourceStatementIdentifierReads(statement, names);
+    collectSourceStatementAssignedNames(statement, names);
+  });
+  if (catchInfo.returnStatement.expression) {
+    collectSourceExpressionIdentifierReads(catchInfo.returnStatement.expression, names);
+  }
+  return names;
+}
+
 function sourceAsyncLoopLiveNames(
   statement: Extract<SourceStatementIR, { kind: 'while' }>,
   afterStatements: readonly SourceStatementIR[],
@@ -7499,6 +7606,25 @@ function pushAsyncAwaitRejectedClosure(
     }[];
   }
   | undefined {
+  if (options?.rejectionCatch) {
+    const captures = sourceAsyncCapturesForLiveNames(
+      context,
+      sourceAsyncLiveNamesForCatchContinuation(options.rejectionCatch),
+    );
+    const functionId = pushPromiseCatchIntoClosure(
+      context,
+      signatureId,
+      options.rejectionCatch,
+      captures,
+    );
+    if (functionId === undefined) {
+      return undefined;
+    }
+    return {
+      functionId,
+      captureValues: asyncAwaitContinuationCaptureValues(captures, targetCapture, context),
+    };
+  }
   const finalizerStatements = options?.rejectionFinalizerStatements ?? [];
   const captures = finalizerStatements.length > 0
     ? sourceAsyncCapturesForLiveNames(
@@ -8814,6 +8940,78 @@ function lowerTryFinallyAwaitAsyncFunctionBody(
   return undefined;
 }
 
+function lowerTryCatchAwaitAsyncFunctionBody(
+  func: SourceFunctionIR,
+  context: FunctionLoweringContext,
+): readonly SemanticStatementIR[] | undefined {
+  if (!func.async || context.currentResultType?.kind !== 'promise' || func.body.length < 2) {
+    return undefined;
+  }
+  const returnStatement = func.body.at(-1);
+  if (returnStatement?.kind !== 'return') {
+    return undefined;
+  }
+  let leadingStatements: readonly SourceStatementIR[] = [];
+  const candidateStatements = func.body.slice(0, -1);
+  for (const [index, statement] of candidateStatements.entries()) {
+    if (!sourceStatementContainsAwaitExpression(statement)) {
+      leadingStatements = [...leadingStatements, statement];
+      continue;
+    }
+    if (
+      statement.kind !== 'try' ||
+      !statement.catchBlock ||
+      statement.finallyBlock !== undefined ||
+      statement.catchBlock.some((child) => sourceStatementContainsAwaitExpression(child)) ||
+      sourceStatementsContainControlTransfer(statement.tryBlock) ||
+      sourceStatementsContainControlTransfer(statement.catchBlock)
+    ) {
+      return undefined;
+    }
+    const afterStatements = candidateStatements.slice(index + 1);
+    if (
+      afterStatements.some((afterStatement) =>
+        sourceStatementContainsAwaitExpression(afterStatement)
+      )
+    ) {
+      return undefined;
+    }
+    const collected = collectSourceAwaitStepsFromSequentialStatements(
+      statement.tryBlock,
+      context,
+    );
+    if (!collected || collected.steps.length === 0) {
+      return undefined;
+    }
+    const [firstStep, ...remainingSteps] = collected.steps;
+    if (!firstStep) {
+      return undefined;
+    }
+    const steps: SourceAwaitStep[] = [
+      {
+        ...firstStep,
+        leadingStatements: [...leadingStatements, ...firstStep.leadingStatements],
+      },
+      ...remainingSteps,
+    ];
+    return lowerSourceAwaitStepsToPromiseReturn(
+      steps,
+      [...collected.trailingStatements, ...afterStatements],
+      returnStatement,
+      context,
+      {
+        rejectionCatch: {
+          afterStatements,
+          catchBinding: statement.catchBinding,
+          catchBlock: statement.catchBlock,
+          returnStatement,
+        },
+      },
+    );
+  }
+  return undefined;
+}
+
 function lowerAwaitAsyncFunctionBody(
   func: SourceFunctionIR,
   context: FunctionLoweringContext,
@@ -8821,7 +9019,8 @@ function lowerAwaitAsyncFunctionBody(
   return lowerSequentialAwaitAsyncFunctionBody(func, context) ??
     lowerConditionalAwaitAsyncFunctionBody(func, context) ??
     lowerLoopAwaitAsyncFunctionBody(func, context) ??
-    lowerTryFinallyAwaitAsyncFunctionBody(func, context);
+    lowerTryFinallyAwaitAsyncFunctionBody(func, context) ??
+    lowerTryCatchAwaitAsyncFunctionBody(func, context);
 }
 
 function findBoundarySurface(
